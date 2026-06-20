@@ -32,3 +32,27 @@ zyronchain/
     ├── blockchain.py
     ├── transaction.py
     └── wallet.py
+## API Routes
+
+```text
+GET /                Explorer page
+GET /api             Blockchain status
+GET /mine/<address>  Mine a new block
+GET /balance/<address>  Check wallet balance
+POST /transaction    Add a new transaction
+```
+
+## Roadmap
+
+- Dark mode explorer
+- Create transaction form
+- Mine block button
+- Wallet generator page
+- Digital signatures
+- P2P node system
+- Testnet
+- Mainnet
+
+## Status
+
+ZyronChain is currently in early development.
