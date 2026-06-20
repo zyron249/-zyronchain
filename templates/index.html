@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ZyronChain Explorer</title>
+</head>
+<body>
+    <h1>ZyronChain Explorer</h1>
+
+    <h2>Status</h2>
+    <p>Total Blocks: {{ total_blocks }}</p>
+    <p>Chain Valid: {{ valid }}</p>
+
+    <h2>Blocks</h2>
+
+    {% for block in blocks %}
+        <div style="border:1px solid #ccc; padding:10px; margin:10px;">
+            <h3>Block #{{ block.index }}</h3>
+            <p><b>Hash:</b> {{ block.hash }}</p>
+            <p><b>Previous Hash:</b> {{ block.previous_hash }}</p>
+            <p><b>Transactions:</b> {{ block.transactions }}</p>
+        </div>
+    {% endfor %}
+</body>
+</html>
