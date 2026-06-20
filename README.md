@@ -56,3 +56,9 @@ POST /transaction    Add a new transaction
 ## Status
 
 ZyronChain is currently in early development.
+## Current Version
+
+v0.1.0 Genesis Release
+## Live Demo
+
+https://zyronchain.onrender.com
