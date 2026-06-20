@@ -1,4 +1,4 @@
-from flask import Flask, request
+from flask import Flask, request, render_template
 from zyron.blockchain import Blockchain
 
 app = Flask(__name__)
@@ -7,7 +7,17 @@ chain = Blockchain()
 
 
 @app.route("/")
-def home():
+def explorer():
+    return render_template(
+        "index.html",
+        total_blocks=len(chain.chain),
+        valid=chain.is_chain_valid(),
+        blocks=chain.chain
+    )
+
+
+@app.route("/api")
+def api_home():
     return {
         "name": "ZyronChain",
         "blocks": len(chain.chain),
@@ -21,7 +31,8 @@ def mine(address):
 
     return {
         "message": "Block mined",
-        "miner": address
+        "miner": address,
+        "total_blocks": len(chain.chain)
     }
 
 
@@ -44,7 +55,8 @@ def transaction():
     )
 
     return {
-        "txid": txid
+        "txid": txid,
+        "message": "Transaction added"
     }
 
 
