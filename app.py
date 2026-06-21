@@ -33,10 +33,15 @@ def api_home():
     }
 
 
+@app.route("/wallet/new")
+def new_wallet():
+    wallet = Wallet()
+    return wallet.to_dict()
+
+
 @app.route("/mine/<address>")
 def mine(address):
     chain.mine_pending_transactions(address)
-
     return {
         "message": "Block mined",
         "miner": address,
@@ -52,12 +57,6 @@ def balance(address):
     }
 
 
-@app.route("/wallet/new")
-def new_wallet():
-    wallet = Wallet()
-    return wallet.to_dict()
-
-
 @app.route("/transaction", methods=["POST"])
 def transaction():
     data = request.json
@@ -67,14 +66,25 @@ def transaction():
         receiver=data["receiver"],
         amount=data["amount"],
         public_key=data.get("public_key"),
-        signature=data.get("signature")
+        signature=data.get("signature"),
+        timestamp=data.get("timestamp"),
+        txid=data.get("txid")
     )
 
     txid = chain.add_transaction(tx)
 
     return {
+        "message": "Transaction added to mempool",
         "txid": txid,
-        "message": "Transaction added to mempool"
+        "pending_transactions": len(chain.pending_transactions)
+    }
+
+
+@app.route("/mempool")
+def mempool():
+    return {
+        "pending_transactions": chain.pending_transactions,
+        "count": len(chain.pending_transactions)
     }
 
 
