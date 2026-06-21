@@ -37,7 +37,12 @@ def explorer():
         mining_reward=chain.mining_reward,
         peers=len(peers)
     )
-
+@app.route("/debug/db")
+def debug_db():
+    return {
+        "database_url_exists": bool(chain.storage.database_url),
+        "database_url_prefix": chain.storage.database_url[:30] if chain.storage.database_url else None
+    }
 
 @app.route("/api")
 def api_home():
