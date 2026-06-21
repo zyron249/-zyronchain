@@ -121,6 +121,46 @@ def transaction():
     }
 
 
+@app.route("/wallet/send", methods=["POST"])
+def wallet_send():
+    data = request.json or {}
+
+    required_fields = ["sender", "receiver", "amount", "private_key", "public_key"]
+
+    for field in required_fields:
+        if field not in data:
+            return {
+                "message": "Transfer rejected",
+                "error": f"Missing field: {field}"
+            }, 400
+
+    tx = Transaction(
+        sender=data["sender"],
+        receiver=data["receiver"],
+        amount=float(data["amount"]),
+        public_key=data["public_key"]
+    )
+
+    try:
+        tx.sign_transaction(data["private_key"])
+        txid = chain.add_transaction(tx)
+
+        return {
+            "message": "Transfer accepted",
+            "txid": txid,
+            "sender": tx.sender,
+            "receiver": tx.receiver,
+            "amount": tx.amount,
+            "pending_transactions": len(chain.pending_transactions)
+        }
+
+    except Exception as error:
+        return {
+            "message": "Transfer rejected",
+            "error": str(error)
+        }, 400
+
+
 @app.route("/transfer/demo", methods=["POST"])
 def transfer_demo():
     data = request.json or {}
