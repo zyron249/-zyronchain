@@ -2,3 +2,4 @@ flask
 ecdsa
 requests
 psycopg2-binary
+gunicorn
