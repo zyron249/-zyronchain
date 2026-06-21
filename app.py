@@ -1,4 +1,5 @@
 import os
+import requests
 from flask import Flask, request, render_template
 from zyron.blockchain import Blockchain
 from zyron.wallet import Wallet
@@ -66,6 +67,7 @@ def new_wallet():
 @app.route("/mine/<address>")
 def mine(address):
     chain.mine_pending_transactions(address)
+
     return {
         "message": "Block mined",
         "miner": address,
@@ -136,6 +138,42 @@ def register_node():
         "message": "Node registered",
         "nodes": list(peers),
         "count": len(peers)
+    }
+
+
+@app.route("/nodes/sync")
+def sync_nodes():
+    longest_chain = None
+    max_length = len(chain.chain)
+
+    for node in peers:
+        try:
+            response = requests.get(f"{node}/chain", timeout=5)
+
+            if response.status_code == 200:
+                data = response.json()
+                length = data.get("length")
+                remote_chain = data.get("chain")
+
+                if length and remote_chain and length > max_length:
+                    max_length = length
+                    longest_chain = remote_chain
+
+        except Exception:
+            continue
+
+    if longest_chain:
+        return {
+            "message": "Longer chain found",
+            "replaced": False,
+            "note": "Chain download works. Full replacement will be added in the next version.",
+            "new_length": max_length
+        }
+
+    return {
+        "message": "Current chain is already the longest",
+        "replaced": False,
+        "length": len(chain.chain)
     }
 
 
