@@ -122,10 +122,14 @@ def balance(address):
 
 @app.route("/address/<address>")
 def address_page(address):
+    transactions = chain.get_address_transactions(address)
+
     return {
         "address": address,
         "balance": chain.get_balance(address),
         "available_balance": chain.get_available_balance(address),
+        "transaction_count": len(transactions),
+        "transactions": transactions,
         "chain_valid": chain.is_chain_valid()
     }
 
