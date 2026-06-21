@@ -4,13 +4,19 @@ from flask import Flask, request, render_template
 from zyron.blockchain import Blockchain
 from zyron.wallet import Wallet
 from zyron.transaction import Transaction
+from zyron.storage import BlockchainStorage
 
 app = Flask(__name__)
 chain = Blockchain()
+storage = BlockchainStorage()
 
-peers = {
-    "https://zyronchain-node2.onrender.com"
-}
+peers = set(storage.load_peers())
+
+if not peers:
+    peers = {
+        "https://zyronchain-node2.onrender.com"
+    }
+    storage.save_peer("https://zyronchain-node2.onrender.com")
 
 
 def block_to_dict(block):
@@ -37,12 +43,16 @@ def explorer():
         mining_reward=chain.mining_reward,
         peers=len(peers)
     )
+
+
 @app.route("/debug/db")
 def debug_db():
     return {
         "database_url_exists": bool(chain.storage.database_url),
-        "database_url_prefix": chain.storage.database_url[:30] if chain.storage.database_url else None
+        "database_url_prefix": chain.storage.database_url[:30] if chain.storage.database_url else None,
+        "stored_peers": list(peers)
     }
+
 
 @app.route("/api")
 def api_home():
@@ -264,6 +274,7 @@ def register_node():
         }, 400
 
     peers.add(node)
+    storage.save_peer(node)
 
     return {
         "message": "Node registered",
