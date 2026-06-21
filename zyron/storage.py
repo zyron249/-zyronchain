@@ -19,6 +19,13 @@ class BlockchainStorage:
                         block_data JSONB NOT NULL
                     );
                 """)
+
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS blockchain_peers (
+                        node_url TEXT PRIMARY KEY
+                    );
+                """)
+
                 conn.commit()
 
     def save_chain(self, chain_data):
@@ -62,5 +69,42 @@ class BlockchainStorage:
 
         if not rows:
             return None
+
+        return [row[0] for row in rows]
+
+    def save_peer(self, node_url):
+        if not self.database_url:
+            return
+
+        self.setup_database()
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO blockchain_peers (node_url)
+                    VALUES (%s)
+                    ON CONFLICT (node_url) DO NOTHING;
+                    """,
+                    (node_url,)
+                )
+
+                conn.commit()
+
+    def load_peers(self):
+        if not self.database_url:
+            return []
+
+        self.setup_database()
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT node_url
+                    FROM blockchain_peers
+                    ORDER BY node_url ASC;
+                """)
+
+                rows = cur.fetchall()
 
         return [row[0] for row in rows]
