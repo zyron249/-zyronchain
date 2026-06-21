@@ -50,6 +50,28 @@ class Blockchain:
             return
         self.chain = [self.dict_to_block(block_data) for block_data in data]
 
+    def get_block(self, index):
+        try:
+            index = int(index)
+        except ValueError:
+            return {
+                "found": False,
+                "error": "Invalid block index"
+            }
+
+        for block in self.chain:
+            if block.index == index:
+                return {
+                    "found": True,
+                    "block": self.block_to_dict(block)
+                }
+
+        return {
+            "found": False,
+            "error": "Block not found",
+            "index": index
+        }
+
     def is_valid_chain(self, chain_to_validate):
         target = "0" * self.difficulty
 
