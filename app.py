@@ -9,6 +9,18 @@ chain = Blockchain()
 peers = set()
 
 
+def block_to_dict(block):
+    return {
+        "index": block.index,
+        "timestamp": block.timestamp,
+        "transactions": block.transactions,
+        "previous_hash": block.previous_hash,
+        "difficulty": block.difficulty,
+        "nonce": block.nonce,
+        "hash": block.hash
+    }
+
+
 @app.route("/")
 def explorer():
     return render_template(
@@ -32,6 +44,15 @@ def api_home():
         "difficulty": chain.difficulty,
         "mining_reward": chain.mining_reward,
         "peers": list(peers),
+        "valid": chain.is_chain_valid()
+    }
+
+
+@app.route("/chain")
+def get_chain():
+    return {
+        "length": len(chain.chain),
+        "chain": [block_to_dict(block) for block in chain.chain],
         "valid": chain.is_chain_valid()
     }
 
