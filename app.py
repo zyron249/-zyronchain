@@ -7,7 +7,10 @@ from zyron.transaction import Transaction
 
 app = Flask(__name__)
 chain = Blockchain()
-peers = set()
+
+peers = {
+    "https://zyronchain-node2.onrender.com"
+}
 
 
 def block_to_dict(block):
