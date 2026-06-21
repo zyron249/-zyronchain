@@ -10,90 +10,98 @@
             margin: 0;
             padding: 20px;
         }
-    .container {
-        max-width: 950px;
-        margin: auto;
-    }
-    .header {
-        text-align: center;
-        margin-bottom: 30px;
-    }
-    .card {
-        background: #111827;
-        border: 1px solid #334155;
-        border-radius: 12px;
-        padding: 16px;
-        margin-bottom: 16px;
-    }
-    .buttons a {
-        display: inline-block;
-        background: #2563eb;
-        color: white;
-        padding: 10px 14px;
-        border-radius: 8px;
-        text-decoration: none;
-        margin: 5px;
-    }
-    .hash {
-        word-break: break-all;
-        color: #93c5fd;
-    }
-    .success {
-        color: #22c55e;
-    }
-    pre {
-        white-space: pre-wrap;
-        word-break: break-word;
-    }
-</style>
+
+        .container {
+            max-width: 950px;
+            margin: auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: #111827;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+
+        .buttons a {
+            display: inline-block;
+            background: #2563eb;
+            color: white;
+            padding: 10px 14px;
+            border-radius: 8px;
+            text-decoration: none;
+            margin: 5px;
+        }
+
+        .hash {
+            word-break: break-all;
+            color: #93c5fd;
+        }
+
+        .success {
+            color: #22c55e;
+        }
+
+        pre {
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
-    <div class="header">
-        <h1>ZyronChain Explorer</h1>
-        <p>Live blockchain explorer for ZyronChain</p>
-        <div class="buttons">
-            <a href="/mine/miner1">Mine Block</a>
-            <a href="/wallet/new">Generate Wallet</a>
-            <a href="/balance/miner1">Miner Balance</a>
-            <a href="/mempool">Mempool</a>
-            <a href="/nodes">Nodes</a>
-            <a href="/chain">Chain API</a>
-            <a href="/nodes/sync">Sync Nodes</a>
-            <a href="/api">API Status</a>
+
+        <div class="header">
+            <h1>ZyronChain Explorer</h1>
+            <p>Live blockchain explorer for ZyronChain</p>
+
+            <div class="buttons">
+                <a href="/mine/miner1">Mine Block</a>
+                <a href="/wallet/new">Generate Wallet</a>
+                <a href="/balance/miner1">Miner Balance</a>
+                <a href="/address/miner1">Address Explorer</a>
+                <a href="/mempool">Mempool</a>
+                <a href="/nodes">Nodes</a>
+                <a href="/chain">Chain API</a>
+                <a href="/nodes/sync">Sync Nodes</a>
+                <a href="/api">API Status</a>
+            </div>
         </div>
+
+        <div class="card">
+            <h2>Network Status</h2>
+
+            <p>Total Blocks: <b>{{ total_blocks }}</b></p>
+            <p>Pending Transactions: <b>{{ pending_transactions }}</b></p>
+            <p>Connected Peers: <b>{{ peers }}</b></p>
+            <p>Difficulty: <b>{{ difficulty }}</b></p>
+            <p>Mining Reward: <b>{{ mining_reward }} ZYN</b></p>
+            <p>Chain Valid: <b class="success">{{ valid }}</b></p>
+        </div>
+
+        <h2>Blocks</h2>
+
+        {% for block in blocks %}
+        <div class="card">
+            <h3>Block #{{ block.index }}</h3>
+
+            <p><b>Hash:</b></p>
+            <p class="hash">{{ block.hash }}</p>
+
+            <p><b>Previous Hash:</b></p>
+            <p class="hash">{{ block.previous_hash }}</p>
+
+            <p><b>Transactions:</b></p>
+            <pre>{{ block.transactions }}</pre>
+        </div>
+        {% endfor %}
+
     </div>
-    <div class="card">
-        <h2>Network Status</h2>
-        <p>Total Blocks: <b>{{ total_blocks }}</b></p>
-        <p>Pending Transactions:
-            <b>{{ pending_transactions }}</b>
-        </p>
-        <p>Connected Peers:
-            <b>{{ peers }}</b>
-        </p>
-        <p>Difficulty:
-            <b>{{ difficulty }}</b>
-        </p>
-        <p>Mining Reward:
-            <b>{{ mining_reward }} ZYN</b>
-        </p>
-        <p>Chain Valid:
-            <b class="success">{{ valid }}</b>
-        </p>
-    </div>
-    <h2>Blocks</h2>
-    {% for block in blocks %}
-    <div class="card">
-        <h3>Block #{{ block.index }}</h3>
-        <p><b>Hash:</b></p>
-        <p class="hash">{{ block.hash }}</p>
-        <p><b>Previous Hash:</b></p>
-        <p class="hash">{{ block.previous_hash }}</p>
-        <p><b>Transactions:</b></p>
-        <pre>{{ block.transactions }}</pre>
-    </div>
-    {% endfor %}
-</div>
 </body>
 </html>
