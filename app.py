@@ -82,6 +82,25 @@ def new_wallet():
     return wallet.to_dict()
 
 
+@app.route("/faucet/<address>")
+def faucet(address):
+    old_reward = chain.mining_reward
+    chain.mining_reward = 25
+
+    chain.mine_pending_transactions(address)
+
+    chain.mining_reward = old_reward
+
+    return {
+        "message": "Faucet sent test ZYN",
+        "address": address,
+        "amount": 25,
+        "balance": chain.get_balance(address),
+        "total_blocks": len(chain.chain),
+        "chain_valid": chain.is_chain_valid()
+    }
+
+
 @app.route("/mine/<address>")
 def mine(address):
     chain.mine_pending_transactions(address)
