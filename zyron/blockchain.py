@@ -24,19 +24,38 @@ class Blockchain:
     def get_latest_block(self):
         return self.chain[-1]
 
+    def block_to_dict(self, block):
+        return {
+            "index": block.index,
+            "timestamp": block.timestamp,
+            "transactions": block.transactions,
+            "previous_hash": block.previous_hash,
+            "difficulty": block.difficulty,
+            "nonce": block.nonce,
+            "hash": block.hash
+        }
+
+    def dict_to_block(self, block_data):
+        block = Block(
+            block_data["index"],
+            block_data["transactions"],
+            block_data["previous_hash"],
+            block_data.get("difficulty", 4)
+        )
+
+        block.timestamp = block_data["timestamp"]
+        block.nonce = block_data["nonce"]
+        block.hash = block_data["hash"]
+
+        return block
+
     def save_chain(self):
         chain_data = []
 
         for block in self.chain:
-            chain_data.append({
-                "index": block.index,
-                "timestamp": block.timestamp,
-                "transactions": block.transactions,
-                "previous_hash": block.previous_hash,
-                "difficulty": block.difficulty,
-                "nonce": block.nonce,
-                "hash": block.hash
-            })
+            chain_data.append(
+                self.block_to_dict(block)
+            )
 
         self.storage.save_chain(chain_data)
 
@@ -49,21 +68,72 @@ class Blockchain:
         loaded_chain = []
 
         for block_data in data:
-            block = Block(
-                block_data["index"],
-                block_data["transactions"],
-                block_data["previous_hash"],
-                block_data.get("difficulty", 4)
+            loaded_chain.append(
+                self.dict_to_block(block_data)
             )
-
-            block.timestamp = block_data["timestamp"]
-            block.nonce = block_data["nonce"]
-            block.hash = block_data["hash"]
-
-            loaded_chain.append(block)
 
         if loaded_chain:
             self.chain = loaded_chain
+
+    def is_valid_chain(self, chain_to_validate):
+        target = "0" * self.difficulty
+
+        for i in range(1, len(chain_to_validate)):
+            current = chain_to_validate[i]
+            previous = chain_to_validate[i - 1]
+
+            if current.hash != current.calculate_hash():
+                return False
+
+            if current.previous_hash != previous.hash:
+                return False
+
+            if not current.hash.startswith(target):
+                return False
+
+            for tx_data in current.transactions:
+                if isinstance(tx_data, dict):
+                    tx = Transaction.from_dict(tx_data)
+
+                    if not tx.is_valid():
+                        return False
+
+        return True
+
+    def replace_chain(self, new_chain_data):
+        if not new_chain_data:
+            return {
+                "replaced": False,
+                "reason": "No chain data provided"
+            }
+
+        new_chain = []
+
+        for block_data in new_chain_data:
+            new_chain.append(
+                self.dict_to_block(block_data)
+            )
+
+        if len(new_chain) <= len(self.chain):
+            return {
+                "replaced": False,
+                "reason": "Incoming chain is not longer"
+            }
+
+        if not self.is_valid_chain(new_chain):
+            return {
+                "replaced": False,
+                "reason": "Incoming chain is invalid"
+            }
+
+        self.chain = new_chain
+        self.pending_transactions = []
+        self.save_chain()
+
+        return {
+            "replaced": True,
+            "new_length": len(self.chain)
+        }
 
     def get_pending_spent_amount(self, address):
         total = 0
@@ -167,26 +237,4 @@ class Blockchain:
         }
 
     def is_chain_valid(self):
-        target = "0" * self.difficulty
-
-        for i in range(1, len(self.chain)):
-            current = self.chain[i]
-            previous = self.chain[i - 1]
-
-            if current.hash != current.calculate_hash():
-                return False
-
-            if current.previous_hash != previous.hash:
-                return False
-
-            if not current.hash.startswith(target):
-                return False
-
-            for tx_data in current.transactions:
-                if isinstance(tx_data, dict):
-                    tx = Transaction.from_dict(tx_data)
-
-                    if not tx.is_valid():
-                        return False
-
-        return True
+        return self.is_valid_chain(self.chain)
