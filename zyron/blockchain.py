@@ -65,6 +65,30 @@ class Blockchain:
 
         return balance
 
+    def get_transaction(self, txid):
+        for block in self.chain:
+            for tx in block.transactions:
+                if isinstance(tx, dict) and tx.get("txid") == txid:
+                    return {
+                        "found": True,
+                        "block_index": block.index,
+                        "transaction": tx
+                    }
+
+        for tx in self.pending_transactions:
+            if isinstance(tx, dict) and tx.get("txid") == txid:
+                return {
+                    "found": True,
+                    "block_index": None,
+                    "status": "pending",
+                    "transaction": tx
+                }
+
+        return {
+            "found": False,
+            "txid": txid
+        }
+
     def is_chain_valid(self):
         target = "0" * self.difficulty
 
