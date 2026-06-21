@@ -83,6 +83,15 @@ def balance(address):
     }
 
 
+@app.route("/address/<address>")
+def address_page(address):
+    return {
+        "address": address,
+        "balance": chain.get_balance(address),
+        "chain_valid": chain.is_chain_valid()
+    }
+
+
 @app.route("/transaction", methods=["POST"])
 def transaction():
     data = request.json
