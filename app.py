@@ -6,6 +6,7 @@ from zyron.transaction import Transaction
 
 app = Flask(__name__)
 chain = Blockchain()
+peers = set()
 
 
 @app.route("/")
@@ -17,7 +18,8 @@ def explorer():
         blocks=chain.chain,
         pending_transactions=len(chain.pending_transactions),
         difficulty=chain.difficulty,
-        mining_reward=chain.mining_reward
+        mining_reward=chain.mining_reward,
+        peers=len(peers)
     )
 
 
@@ -29,6 +31,7 @@ def api_home():
         "pending_transactions": len(chain.pending_transactions),
         "difficulty": chain.difficulty,
         "mining_reward": chain.mining_reward,
+        "peers": list(peers),
         "valid": chain.is_chain_valid()
     }
 
@@ -85,6 +88,33 @@ def mempool():
     return {
         "pending_transactions": chain.pending_transactions,
         "count": len(chain.pending_transactions)
+    }
+
+
+@app.route("/nodes")
+def get_nodes():
+    return {
+        "nodes": list(peers),
+        "count": len(peers)
+    }
+
+
+@app.route("/nodes/register", methods=["POST"])
+def register_node():
+    data = request.json
+    node = data.get("node")
+
+    if not node:
+        return {
+            "error": "Node address is required"
+        }, 400
+
+    peers.add(node)
+
+    return {
+        "message": "Node registered",
+        "nodes": list(peers),
+        "count": len(peers)
     }
 
 
