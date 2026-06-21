@@ -266,37 +266,49 @@ def register_node():
 
 @app.route("/nodes/sync")
 def sync_nodes():
-    longest_chain = None
-    max_length = len(chain.chain)
+    sync_results = []
+    replaced = False
 
     for node in peers:
         try:
             response = requests.get(f"{node}/chain", timeout=5)
 
-            if response.status_code == 200:
-                data = response.json()
-                length = data.get("length")
-                remote_chain = data.get("chain")
+            if response.status_code != 200:
+                sync_results.append({
+                    "node": node,
+                    "status": "failed",
+                    "reason": f"HTTP {response.status_code}"
+                })
+                continue
 
-                if length and remote_chain and length > max_length:
-                    max_length = length
-                    longest_chain = remote_chain
+            data = response.json()
+            remote_chain = data.get("chain")
+            remote_length = data.get("length")
 
-        except Exception:
-            continue
+            result = chain.replace_chain(remote_chain)
 
-    if longest_chain:
-        return {
-            "message": "Longer chain found",
-            "replaced": False,
-            "note": "Chain download works. Full replacement will be added in the next version.",
-            "new_length": max_length
-        }
+            sync_results.append({
+                "node": node,
+                "remote_length": remote_length,
+                "result": result
+            })
+
+            if result.get("replaced"):
+                replaced = True
+
+        except Exception as error:
+            sync_results.append({
+                "node": node,
+                "status": "failed",
+                "reason": str(error)
+            })
 
     return {
-        "message": "Current chain is already the longest",
-        "replaced": False,
-        "length": len(chain.chain)
+        "message": "Node synchronization completed",
+        "replaced": replaced,
+        "current_length": len(chain.chain),
+        "peers_checked": len(peers),
+        "results": sync_results
     }
 
 
