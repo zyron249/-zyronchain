@@ -1,5 +1,6 @@
 from flask import Flask, request, render_template
 from zyron.blockchain import Blockchain
+from zyron.wallet import Wallet
 
 app = Flask(__name__)
 
