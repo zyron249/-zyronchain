@@ -65,9 +65,38 @@ class Blockchain:
         if loaded_chain:
             self.chain = loaded_chain
 
+    def get_pending_spent_amount(self, address):
+        total = 0
+
+        for tx in self.pending_transactions:
+            if isinstance(tx, dict) and tx.get("sender") == address:
+                total += tx["amount"]
+
+        return total
+
+    def get_available_balance(self, address):
+        confirmed_balance = self.get_balance(address)
+        pending_spent = self.get_pending_spent_amount(address)
+
+        return confirmed_balance - pending_spent
+
     def add_transaction(self, transaction):
         if not transaction.is_valid():
             raise Exception("Invalid transaction signature")
+
+        if transaction.sender == "SYSTEM":
+            self.pending_transactions.append(
+                transaction.to_dict()
+            )
+            return transaction.txid
+
+        if transaction.amount <= 0:
+            raise Exception("Transaction amount must be greater than zero")
+
+        available_balance = self.get_available_balance(transaction.sender)
+
+        if available_balance < transaction.amount:
+            raise Exception("Insufficient balance")
 
         self.pending_transactions.append(
             transaction.to_dict()
