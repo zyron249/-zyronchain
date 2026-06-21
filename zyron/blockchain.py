@@ -1,89 +1,27 @@
-from zyron.block import Block
-from zyron.transaction import Transaction
+def is_chain_valid(self):
 
+    target = "0" * self.difficulty
 
-class Blockchain:
-    def __init__(self):
-        self.chain = [self.create_genesis_block()]
-        self.difficulty = 4
-        self.pending_transactions = []
-        self.mining_reward = 50
+    for i in range(1, len(self.chain)):
 
-    def create_genesis_block(self):
-        return Block(
-            0,
-            ["Genesis Block"],
-            "0"
-        )
+        current = self.chain[i]
+        previous = self.chain[i - 1]
 
-    def get_latest_block(self):
-        return self.chain[-1]
+        if current.hash != current.calculate_hash():
+            return False
 
-    def add_transaction(self, transaction):
+        if current.previous_hash != previous.hash:
+            return False
 
-        if not transaction.is_valid():
-            raise Exception("Invalid transaction signature")
+        if not current.hash.startswith(target):
+            return False
 
-        self.pending_transactions.append(
-            transaction.to_dict()
-        )
+        for tx_data in current.transactions:
 
-        return transaction.txid
+            if isinstance(tx_data, dict):
+                tx = Transaction.from_dict(tx_data)
 
-    def mine_pending_transactions(self, miner_address):
+                if not tx.is_valid():
+                    return False
 
-        reward_tx = Transaction(
-            "SYSTEM",
-            miner_address,
-            self.mining_reward
-        )
-
-        self.pending_transactions.append(
-            reward_tx.to_dict()
-        )
-
-        block = Block(
-            len(self.chain),
-            self.pending_transactions,
-            self.get_latest_block().hash,
-            self.difficulty
-        )
-
-        block.mine()
-
-        self.chain.append(block)
-
-        self.pending_transactions = []
-
-    def get_balance(self, address):
-
-        balance = 0
-
-        for block in self.chain:
-
-            for tx in block.transactions:
-
-                if isinstance(tx, dict):
-
-                    if tx["sender"] == address:
-                        balance -= tx["amount"]
-
-                    if tx["receiver"] == address:
-                        balance += tx["amount"]
-
-        return balance
-
-    def is_chain_valid(self):
-
-        for i in range(1, len(self.chain)):
-
-            current = self.chain[i]
-            previous = self.chain[i - 1]
-
-            if current.hash != current.calculate_hash():
-                return False
-
-            if current.previous_hash != previous.hash:
-                return False
-
-        return True
+    return True
