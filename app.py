@@ -1,9 +1,10 @@
+import os
 from flask import Flask, request, render_template
 from zyron.blockchain import Blockchain
 from zyron.wallet import Wallet
+from zyron.transaction import Transaction
 
 app = Flask(__name__)
-
 chain = Blockchain()
 
 
@@ -13,7 +14,10 @@ def explorer():
         "index.html",
         total_blocks=len(chain.chain),
         valid=chain.is_chain_valid(),
-        blocks=chain.chain
+        blocks=chain.chain,
+        pending_transactions=len(chain.pending_transactions),
+        difficulty=chain.difficulty,
+        mining_reward=chain.mining_reward
     )
 
 
@@ -22,6 +26,9 @@ def api_home():
     return {
         "name": "ZyronChain",
         "blocks": len(chain.chain),
+        "pending_transactions": len(chain.pending_transactions),
+        "difficulty": chain.difficulty,
+        "mining_reward": chain.mining_reward,
         "valid": chain.is_chain_valid()
     }
 
@@ -43,31 +50,34 @@ def balance(address):
         "address": address,
         "balance": chain.get_balance(address)
     }
+
+
 @app.route("/wallet/new")
 def new_wallet():
     wallet = Wallet()
+    return wallet.to_dict()
 
-    return {
-        "address": wallet.address,
-        "public_key": wallet.get_public_key(),
-        "private_key": wallet.get_private_key()
-    }
 
 @app.route("/transaction", methods=["POST"])
 def transaction():
     data = request.json
 
-    txid = chain.add_transaction(
-        data["sender"],
-        data["receiver"],
-        data["amount"]
+    tx = Transaction(
+        sender=data["sender"],
+        receiver=data["receiver"],
+        amount=data["amount"],
+        public_key=data.get("public_key"),
+        signature=data.get("signature")
     )
+
+    txid = chain.add_transaction(tx)
 
     return {
         "txid": txid,
-        "message": "Transaction added"
+        "message": "Transaction added to mempool"
     }
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
