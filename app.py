@@ -43,7 +43,15 @@ def balance(address):
         "address": address,
         "balance": chain.get_balance(address)
     }
+@app.route("/wallet/new")
+def new_wallet():
+    wallet = Wallet()
 
+    return {
+        "address": wallet.address,
+        "public_key": wallet.get_public_key(),
+        "private_key": wallet.get_private_key()
+    }
 
 @app.route("/transaction", methods=["POST"])
 def transaction():
