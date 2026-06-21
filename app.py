@@ -123,7 +123,7 @@ def transaction():
 
 @app.route("/transfer/demo", methods=["POST"])
 def transfer_demo():
-    data = request.json
+    data = request.json or {}
 
     sender_wallet = Wallet()
     receiver_wallet = Wallet()
@@ -139,20 +139,54 @@ def transfer_demo():
 
     try:
         txid = chain.add_transaction(tx)
+
+        return {
+            "message": "Transfer accepted",
+            "txid": txid,
+            "sender": sender_wallet.to_dict(),
+            "receiver": receiver_wallet.to_dict(),
+            "amount": tx.amount,
+            "pending_transactions": len(chain.pending_transactions)
+        }
+
     except Exception as error:
         return {
-            "error": str(error),
-            "message": "Transfer rejected"
+            "message": "Transfer rejected",
+            "error": str(error)
         }, 400
 
-    return {
-        "message": "Signed transfer created and added to mempool",
-        "txid": txid,
-        "sender": sender_wallet.to_dict(),
-        "receiver": receiver_wallet.to_dict(),
-        "amount": tx.amount,
-        "pending_transactions": len(chain.pending_transactions)
-    }
+
+@app.route("/test-transfer")
+def test_transfer():
+    sender_wallet = Wallet()
+    receiver_wallet = Wallet()
+
+    tx = Transaction(
+        sender=sender_wallet.address,
+        receiver=receiver_wallet.address,
+        amount=10,
+        public_key=sender_wallet.get_public_key()
+    )
+
+    tx.sign_transaction(sender_wallet.get_private_key())
+
+    try:
+        txid = chain.add_transaction(tx)
+
+        return {
+            "message": "Transfer accepted",
+            "txid": txid,
+            "sender": sender_wallet.address,
+            "receiver": receiver_wallet.address,
+            "amount": tx.amount,
+            "pending_transactions": len(chain.pending_transactions)
+        }
+
+    except Exception as error:
+        return {
+            "message": "Transfer rejected",
+            "error": str(error)
+        }
 
 
 @app.route("/mempool")
