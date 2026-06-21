@@ -2,32 +2,87 @@
 <html>
 <head>
     <title>ZyronChain Explorer</title>
+    <style>
+        body {
+            background: #0f172a;
+            color: #e5e7eb;
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: #111827;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+
+        .buttons a {
+            display: inline-block;
+            background: #2563eb;
+            color: white;
+            padding: 10px 14px;
+            border-radius: 8px;
+            text-decoration: none;
+            margin: 5px;
+        }
+
+        .hash {
+            word-break: break-all;
+            color: #93c5fd;
+        }
+
+        .success {
+            color: #22c55e;
+        }
+    </style>
 </head>
 <body>
-    <h1>ZyronChain Explorer</h1>
+    <div class="container">
+        <div class="header">
+            <h1>ZyronChain Explorer</h1>
+            <p>Live blockchain explorer for ZyronChain</p>
 
-    <p>
-        <a href="/mine/miner1">Mine Block</a>
-    </p>
-
-    <p>
-        <a href="/wallet/new">Generate Wallet</a>
-    </p>
-
-    <h2>Status</h2>
-
-    <p>Total Blocks: {{ total_blocks }}</p>
-    <p>Chain Valid: {{ valid }}</p>
-
-    <h2>Blocks</h2>
-
-    {% for block in blocks %}
-        <div style="border:1px solid #ccc; padding:10px; margin:10px;">
-            <h3>Block #{{ block.index }}</h3>
-            <p><b>Hash:</b> {{ block.hash }}</p>
-            <p><b>Previous Hash:</b> {{ block.previous_hash }}</p>
-            <p><b>Transactions:</b> {{ block.transactions }}</p>
+            <div class="buttons">
+                <a href="/mine/miner1">Mine Block</a>
+                <a href="/wallet/new">Generate Wallet</a>
+                <a href="/api">API Status</a>
+            </div>
         </div>
-    {% endfor %}
+
+        <div class="card">
+            <h2>Network Status</h2>
+            <p>Total Blocks: <b>{{ total_blocks }}</b></p>
+            <p>Chain Valid: <b class="success">{{ valid }}</b></p>
+        </div>
+
+        <h2>Blocks</h2>
+
+        {% for block in blocks %}
+            <div class="card">
+                <h3>Block #{{ block.index }}</h3>
+                <p><b>Hash:</b></p>
+                <p class="hash">{{ block.hash }}</p>
+
+                <p><b>Previous Hash:</b></p>
+                <p class="hash">{{ block.previous_hash }}</p>
+
+                <p><b>Transactions:</b></p>
+                <pre>{{ block.transactions }}</pre>
+            </div>
+        {% endfor %}
+    </div>
 </body>
 </html>
