@@ -177,6 +177,25 @@ def new_wallet():
     return wallet.to_dict()
 
 
+@app.route("/wallet/recover", methods=["POST"])
+def recover_wallet():
+    data = request.json or {}
+    mnemonic = data.get("mnemonic")
+
+    if not mnemonic:
+        return {
+            "message": "Wallet recovery failed",
+            "error": "Mnemonic is required"
+        }, 400
+
+    wallet = Wallet(mnemonic=mnemonic)
+
+    return {
+        "message": "Wallet recovered",
+        "wallet": wallet.to_dict()
+    }
+
+
 @app.route("/faucet/<address>")
 def faucet(address):
     now = time.time()
