@@ -2,6 +2,7 @@
 <html>
 <head>
     <title>ZyronChain Explorer</title>
+
     <style>
         body {
             background: #0f172a;
@@ -12,7 +13,7 @@
         }
 
         .container {
-            max-width: 950px;
+            max-width: 1000px;
             margin: auto;
         }
 
@@ -39,6 +40,10 @@
             margin: 5px;
         }
 
+        .buttons a:hover {
+            background: #1d4ed8;
+        }
+
         .hash {
             word-break: break-all;
             color: #93c5fd;
@@ -52,57 +57,168 @@
             white-space: pre-wrap;
             word-break: break-word;
         }
+
+        input {
+            width: 75%;
+            padding: 10px;
+            border-radius: 8px;
+            border: none;
+            margin-right: 8px;
+        }
+
+        button {
+            padding: 10px 14px;
+            border: none;
+            border-radius: 8px;
+            background: #2563eb;
+            color: white;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #1d4ed8;
+        }
+
+        .block-link {
+            color: #60a5fa;
+            text-decoration: none;
+        }
+
+        .block-link:hover {
+            text-decoration: underline;
+        }
     </style>
 </head>
+
 <body>
-    <div class="container">
 
-        <div class="header">
-            <h1>ZyronChain Explorer</h1>
-            <p>Live blockchain explorer for ZyronChain</p>
+<div class="container">
 
-            <div class="buttons">
-                <a href="/mine/miner1">Mine Block</a>
-                <a href="/wallet/new">Generate Wallet</a>
-                <a href="/balance/miner1">Miner Balance</a>
-                <a href="/address/miner1">Address Explorer</a>
-                <a href="/test-transfer">Test Transfer</a>
-                <a href="/mempool">Mempool</a>
-                <a href="/nodes">Nodes</a>
-                <a href="/chain">Chain API</a>
-                <a href="/nodes/sync">Sync Nodes</a>
-                <a href="/api">API Status</a>
-            </div>
+    <div class="header">
+
+        <h1>🚀 ZyronChain Explorer</h1>
+        <p>Live Blockchain Explorer for ZyronChain</p>
+
+        <div class="buttons">
+            <a href="/mine/miner1">Mine Block</a>
+            <a href="/wallet/new">Generate Wallet</a>
+            <a href="/balance/miner1">Miner Balance</a>
+            <a href="/address/miner1">Address Explorer</a>
+            <a href="/test-transfer">Test Transfer</a>
+            <a href="/mempool">Mempool</a>
+            <a href="/nodes">Nodes</a>
+            <a href="/chain">Chain API</a>
+            <a href="/nodes/sync">Sync Nodes</a>
+            <a href="/api">API Status</a>
         </div>
-
-        <div class="card">
-            <h2>Network Status</h2>
-
-            <p>Total Blocks: <b>{{ total_blocks }}</b></p>
-            <p>Pending Transactions: <b>{{ pending_transactions }}</b></p>
-            <p>Connected Peers: <b>{{ peers }}</b></p>
-            <p>Difficulty: <b>{{ difficulty }}</b></p>
-            <p>Mining Reward: <b>{{ mining_reward }} ZYN</b></p>
-            <p>Chain Valid: <b class="success">{{ valid }}</b></p>
-        </div>
-
-        <h2>Blocks</h2>
-
-        {% for block in blocks %}
-        <div class="card">
-            <h3>Block #{{ block.index }}</h3>
-
-            <p><b>Hash:</b></p>
-            <p class="hash">{{ block.hash }}</p>
-
-            <p><b>Previous Hash:</b></p>
-            <p class="hash">{{ block.previous_hash }}</p>
-
-            <p><b>Transactions:</b></p>
-            <pre>{{ block.transactions }}</pre>
-        </div>
-        {% endfor %}
 
     </div>
+
+    <div class="card">
+
+        <h2>🔍 Explorer Search</h2>
+
+        <form onsubmit="window.location='/address/' + document.getElementById('addressInput').value; return false;">
+            <input
+                id="addressInput"
+                type="text"
+                placeholder="Enter Wallet Address (ZYN...)"
+            >
+            <button type="submit">
+                Search Address
+            </button>
+        </form>
+
+        <br>
+
+        <form onsubmit="window.location='/tx/' + document.getElementById('txInput').value; return false;">
+            <input
+                id="txInput"
+                type="text"
+                placeholder="Enter Transaction ID"
+            >
+            <button type="submit">
+                Search TX
+            </button>
+        </form>
+
+        <br>
+
+        <form onsubmit="window.location='/block/' + document.getElementById('blockInput').value; return false;">
+            <input
+                id="blockInput"
+                type="number"
+                placeholder="Enter Block Number"
+            >
+            <button type="submit">
+                Search Block
+            </button>
+        </form>
+
+    </div>
+
+    <div class="card">
+
+        <h2>🌐 Network Status</h2>
+
+        <p>Total Blocks: <b>{{ total_blocks }}</b></p>
+
+        <p>Pending Transactions:
+            <b>{{ pending_transactions }}</b>
+        </p>
+
+        <p>Connected Peers:
+            <b>{{ peers }}</b>
+        </p>
+
+        <p>Difficulty:
+            <b>{{ difficulty }}</b>
+        </p>
+
+        <p>Mining Reward:
+            <b>{{ mining_reward }} ZYN</b>
+        </p>
+
+        <p>Chain Valid:
+            <b class="success">{{ valid }}</b>
+        </p>
+
+    </div>
+
+    <h2>⛓ Latest Blocks</h2>
+
+    {% for block in blocks|reverse %}
+
+    <div class="card">
+
+        <h3>
+            <a
+                class="block-link"
+                href="/block/{{ block.index }}"
+            >
+                Block #{{ block.index }}
+            </a>
+        </h3>
+
+        <p><b>Hash:</b></p>
+        <p class="hash">
+            {{ block.hash }}
+        </p>
+
+        <p><b>Previous Hash:</b></p>
+        <p class="hash">
+            {{ block.previous_hash }}
+        </p>
+
+        <p><b>Transactions:</b></p>
+
+        <pre>{{ block.transactions }}</pre>
+
+    </div>
+
+    {% endfor %}
+
+</div>
+
 </body>
 </html>
