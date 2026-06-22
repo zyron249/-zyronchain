@@ -26,22 +26,62 @@ FAUCET_AMOUNT = 25
 FAUCET_COOLDOWN_SECONDS = 24 * 60 * 60
 
 
+def sync_chain_from_node(node):
+    response = requests.get(f"{node}/chain", timeout=5)
+
+    if response.status_code != 200:
+        return {
+            "node": node,
+            "status": "failed",
+            "reason": f"HTTP {response.status_code}"
+        }
+
+    data = response.json()
+    remote_chain = data.get("chain")
+    remote_length = data.get("length")
+
+    result = chain.replace_chain(remote_chain)
+
+    return {
+        "node": node,
+        "remote_length": remote_length,
+        "result": result
+    }
+
+
+def sync_mempool_from_node(node):
+    response = requests.get(f"{node}/mempool", timeout=5)
+
+    if response.status_code != 200:
+        return {
+            "node": node,
+            "status": "failed",
+            "reason": f"HTTP {response.status_code}"
+        }
+
+    data = response.json()
+    remote_transactions = data.get("pending_transactions", [])
+
+    result = chain.sync_mempool(remote_transactions)
+
+    return {
+        "node": node,
+        "remote_pending": len(remote_transactions),
+        "result": result
+    }
+
+
 def auto_sync_loop():
     while True:
         time.sleep(AUTO_SYNC_INTERVAL)
 
         for node in list(peers):
             try:
-                response = requests.get(f"{node}/chain", timeout=5)
+                chain_result = sync_chain_from_node(node)
+                mempool_result = sync_mempool_from_node(node)
 
-                if response.status_code == 200:
-                    data = response.json()
-                    remote_chain = data.get("chain")
-
-                    result = chain.replace_chain(remote_chain)
-
-                    if result.get("replaced"):
-                        print("Auto sync replaced chain:", result)
+                print("Auto chain sync:", chain_result)
+                print("Auto mempool sync:", mempool_result)
 
             except Exception as error:
                 print("Auto sync failed:", str(error))
@@ -351,6 +391,38 @@ def mempool():
     }
 
 
+@app.route("/mempool/sync")
+def mempool_sync():
+    sync_results = []
+    total_accepted = 0
+    total_rejected = 0
+
+    for node in peers:
+        try:
+            result = sync_mempool_from_node(node)
+            sync_results.append(result)
+
+            mempool_result = result.get("result", {})
+            total_accepted += mempool_result.get("accepted", 0)
+            total_rejected += mempool_result.get("rejected", 0)
+
+        except Exception as error:
+            sync_results.append({
+                "node": node,
+                "status": "failed",
+                "reason": str(error)
+            })
+
+    return {
+        "message": "Mempool synchronization completed",
+        "peers_checked": len(peers),
+        "accepted": total_accepted,
+        "rejected": total_rejected,
+        "pending_transactions": len(chain.pending_transactions),
+        "results": sync_results
+    }
+
+
 @app.route("/nodes")
 def get_nodes():
     return {
@@ -386,29 +458,12 @@ def sync_nodes():
 
     for node in peers:
         try:
-            response = requests.get(f"{node}/chain", timeout=5)
+            result = sync_chain_from_node(node)
+            sync_results.append(result)
 
-            if response.status_code != 200:
-                sync_results.append({
-                    "node": node,
-                    "status": "failed",
-                    "reason": f"HTTP {response.status_code}"
-                })
-                continue
+            chain_result = result.get("result", {})
 
-            data = response.json()
-            remote_chain = data.get("chain")
-            remote_length = data.get("length")
-
-            result = chain.replace_chain(remote_chain)
-
-            sync_results.append({
-                "node": node,
-                "remote_length": remote_length,
-                "result": result
-            })
-
-            if result.get("replaced"):
+            if chain_result.get("replaced"):
                 replaced = True
 
         except Exception as error:
@@ -424,6 +479,40 @@ def sync_nodes():
         "current_length": len(chain.chain),
         "peers_checked": len(peers),
         "results": sync_results
+    }
+
+
+@app.route("/sync/all")
+def sync_all():
+    chain_results = []
+    mempool_results = []
+
+    for node in peers:
+        try:
+            chain_results.append(sync_chain_from_node(node))
+        except Exception as error:
+            chain_results.append({
+                "node": node,
+                "status": "failed",
+                "reason": str(error)
+            })
+
+        try:
+            mempool_results.append(sync_mempool_from_node(node))
+        except Exception as error:
+            mempool_results.append({
+                "node": node,
+                "status": "failed",
+                "reason": str(error)
+            })
+
+    return {
+        "message": "Full synchronization completed",
+        "chain_results": chain_results,
+        "mempool_results": mempool_results,
+        "current_length": len(chain.chain),
+        "pending_transactions": len(chain.pending_transactions),
+        "peers_checked": len(peers)
     }
 
 
