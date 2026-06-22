@@ -9,7 +9,10 @@ class Blockchain:
         self.chain = [self.create_genesis_block()]
         self.difficulty = 4
         self.pending_transactions = []
-        self.mining_reward = 50
+        self.max_supply = 50_000_000
+        self.initial_mining_reward = 50
+        self.halving_interval = 100_000
+        self.mining_reward = self.get_current_reward()
         self.load_chain()
 
     def create_genesis_block(self):
@@ -49,6 +52,44 @@ class Blockchain:
         if not data:
             return
         self.chain = [self.dict_to_block(block_data) for block_data in data]
+        self.mining_reward = self.get_current_reward()
+
+    def get_total_supply(self):
+        total = 0
+
+        for block in self.chain:
+            for tx in block.transactions:
+                if isinstance(tx, dict) and tx.get("sender") == "SYSTEM":
+                    total += tx.get("amount", 0)
+
+        return total
+
+    def get_current_reward(self):
+        halvings = len(self.chain) // self.halving_interval
+        reward = self.initial_mining_reward / (2 ** halvings)
+
+        if reward < 0.00000001:
+            return 0
+
+        return reward
+
+    def get_remaining_supply(self):
+        remaining = self.max_supply - self.get_total_supply()
+        return max(remaining, 0)
+
+    def get_supply_info(self):
+        return {
+            "max_supply": self.max_supply,
+            "total_supply": self.get_total_supply(),
+            "remaining_supply": self.get_remaining_supply(),
+            "current_reward": self.get_current_reward(),
+            "halving_interval": self.halving_interval,
+            "next_halving_block": (
+                ((len(self.chain) // self.halving_interval) + 1)
+                * self.halving_interval
+            ),
+            "current_block_height": len(self.chain) - 1
+        }
 
     def get_block(self, index):
         try:
@@ -110,6 +151,7 @@ class Blockchain:
 
         self.chain = new_chain
         self.pending_transactions = []
+        self.mining_reward = self.get_current_reward()
         self.save_chain()
 
         return {"replaced": True, "new_length": len(self.chain)}
@@ -142,8 +184,18 @@ class Blockchain:
         return transaction.txid
 
     def mine_pending_transactions(self, miner_address):
-        reward_tx = Transaction("SYSTEM", miner_address, self.mining_reward)
-        self.pending_transactions.append(reward_tx.to_dict())
+        current_reward = self.get_current_reward()
+        remaining_supply = self.get_remaining_supply()
+
+        if remaining_supply <= 0:
+            current_reward = 0
+
+        if current_reward > remaining_supply:
+            current_reward = remaining_supply
+
+        if current_reward > 0:
+            reward_tx = Transaction("SYSTEM", miner_address, current_reward)
+            self.pending_transactions.append(reward_tx.to_dict())
 
         block = Block(
             len(self.chain),
@@ -154,6 +206,7 @@ class Blockchain:
 
         block.mine()
         self.chain.append(block)
+        self.mining_reward = self.get_current_reward()
         self.save_chain()
         self.pending_transactions = []
 
