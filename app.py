@@ -76,6 +76,11 @@ def get_chain():
     }
 
 
+@app.route("/block/<index>")
+def block_page(index):
+    return chain.get_block(index)
+
+
 @app.route("/wallet/new")
 def new_wallet():
     wallet = Wallet()
