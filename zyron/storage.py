@@ -26,6 +26,13 @@ class BlockchainStorage:
                     );
                 """)
 
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS faucet_claims (
+                        address TEXT PRIMARY KEY,
+                        last_claim DOUBLE PRECISION NOT NULL
+                    );
+                """)
+
                 conn.commit()
 
     def save_chain(self, chain_data):
@@ -108,3 +115,47 @@ class BlockchainStorage:
                 rows = cur.fetchall()
 
         return [row[0] for row in rows]
+
+    def save_faucet_claim(self, address, timestamp):
+        if not self.database_url:
+            return
+
+        self.setup_database()
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO faucet_claims (address, last_claim)
+                    VALUES (%s, %s)
+                    ON CONFLICT (address)
+                    DO UPDATE SET last_claim = EXCLUDED.last_claim;
+                    """,
+                    (address, timestamp)
+                )
+
+                conn.commit()
+
+    def get_last_faucet_claim(self, address):
+        if not self.database_url:
+            return None
+
+        self.setup_database()
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT last_claim
+                    FROM faucet_claims
+                    WHERE address = %s;
+                    """,
+                    (address,)
+                )
+
+                row = cur.fetchone()
+
+        if not row:
+            return None
+
+        return row[0]
