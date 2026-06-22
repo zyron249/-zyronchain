@@ -22,6 +22,8 @@ if not peers:
 
 
 AUTO_SYNC_INTERVAL = 60
+FAUCET_AMOUNT = 25
+FAUCET_COOLDOWN_SECONDS = 24 * 60 * 60
 
 
 def auto_sync_loop():
@@ -85,7 +87,9 @@ def debug_db():
         "database_url_exists": bool(chain.storage.database_url),
         "database_url_prefix": chain.storage.database_url[:30] if chain.storage.database_url else None,
         "stored_peers": list(peers),
-        "auto_sync_interval": AUTO_SYNC_INTERVAL
+        "auto_sync_interval": AUTO_SYNC_INTERVAL,
+        "faucet_amount": FAUCET_AMOUNT,
+        "faucet_cooldown_seconds": FAUCET_COOLDOWN_SECONDS
     }
 
 
@@ -131,17 +135,36 @@ def new_wallet():
 
 @app.route("/faucet/<address>")
 def faucet(address):
+    now = time.time()
+    last_claim = storage.get_last_faucet_claim(address)
+
+    if last_claim:
+        seconds_since_claim = now - float(last_claim)
+        seconds_remaining = FAUCET_COOLDOWN_SECONDS - seconds_since_claim
+
+        if seconds_remaining > 0:
+            return {
+                "message": "Faucet cooldown active",
+                "address": address,
+                "allowed": False,
+                "seconds_remaining": int(seconds_remaining),
+                "hours_remaining": round(seconds_remaining / 3600, 2),
+                "balance": chain.get_balance(address),
+                "chain_valid": chain.is_chain_valid()
+            }, 429
+
     old_reward = chain.mining_reward
-    chain.mining_reward = 25
+    chain.mining_reward = FAUCET_AMOUNT
 
     chain.mine_pending_transactions(address)
 
     chain.mining_reward = old_reward
+    storage.save_faucet_claim(address, now)
 
     return {
         "message": "Faucet sent test ZYN",
         "address": address,
-        "amount": 25,
+        "amount": FAUCET_AMOUNT,
         "balance": chain.get_balance(address),
         "total_blocks": len(chain.chain),
         "chain_valid": chain.is_chain_valid()
