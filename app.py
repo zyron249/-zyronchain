@@ -74,7 +74,7 @@ def explorer():
         blocks=chain.chain,
         pending_transactions=len(chain.pending_transactions),
         difficulty=chain.difficulty,
-        mining_reward=chain.mining_reward,
+        mining_reward=chain.get_current_reward(),
         peers=len(peers)
     )
 
@@ -96,11 +96,17 @@ def api_home():
         "blocks": len(chain.chain),
         "pending_transactions": len(chain.pending_transactions),
         "difficulty": chain.difficulty,
-        "mining_reward": chain.mining_reward,
+        "mining_reward": chain.get_current_reward(),
         "peers": list(peers),
         "valid": chain.is_chain_valid(),
-        "auto_sync_interval": AUTO_SYNC_INTERVAL
+        "auto_sync_interval": AUTO_SYNC_INTERVAL,
+        "supply": chain.get_supply_info()
     }
+
+
+@app.route("/supply")
+def supply():
+    return chain.get_supply_info()
 
 
 @app.route("/chain")
@@ -149,6 +155,9 @@ def mine(address):
     return {
         "message": "Block mined",
         "miner": address,
+        "reward": chain.get_current_reward(),
+        "total_supply": chain.get_total_supply(),
+        "remaining_supply": chain.get_remaining_supply(),
         "total_blocks": len(chain.chain)
     }
 
