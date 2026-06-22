@@ -1,5 +1,7 @@
 import os
 import requests
+import threading
+import time
 from flask import Flask, request, render_template
 from zyron.blockchain import Blockchain
 from zyron.wallet import Wallet
@@ -17,6 +19,38 @@ if not peers:
         "https://zyronchain-node2.onrender.com"
     }
     storage.save_peer("https://zyronchain-node2.onrender.com")
+
+
+AUTO_SYNC_INTERVAL = 60
+
+
+def auto_sync_loop():
+    while True:
+        time.sleep(AUTO_SYNC_INTERVAL)
+
+        for node in list(peers):
+            try:
+                response = requests.get(f"{node}/chain", timeout=5)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    remote_chain = data.get("chain")
+
+                    result = chain.replace_chain(remote_chain)
+
+                    if result.get("replaced"):
+                        print("Auto sync replaced chain:", result)
+
+            except Exception as error:
+                print("Auto sync failed:", str(error))
+
+
+sync_thread = threading.Thread(
+    target=auto_sync_loop,
+    daemon=True
+)
+
+sync_thread.start()
 
 
 def block_to_dict(block):
@@ -50,7 +84,8 @@ def debug_db():
     return {
         "database_url_exists": bool(chain.storage.database_url),
         "database_url_prefix": chain.storage.database_url[:30] if chain.storage.database_url else None,
-        "stored_peers": list(peers)
+        "stored_peers": list(peers),
+        "auto_sync_interval": AUTO_SYNC_INTERVAL
     }
 
 
@@ -63,7 +98,8 @@ def api_home():
         "difficulty": chain.difficulty,
         "mining_reward": chain.mining_reward,
         "peers": list(peers),
-        "valid": chain.is_chain_valid()
+        "valid": chain.is_chain_valid(),
+        "auto_sync_interval": AUTO_SYNC_INTERVAL
     }
 
 
