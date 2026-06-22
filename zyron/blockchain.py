@@ -156,6 +156,85 @@ class Blockchain:
 
         return {"replaced": True, "new_length": len(self.chain)}
 
+    def has_transaction(self, txid):
+        for block in self.chain:
+            for tx in block.transactions:
+                if isinstance(tx, dict) and tx.get("txid") == txid:
+                    return True
+
+        for tx in self.pending_transactions:
+            if isinstance(tx, dict) and tx.get("txid") == txid:
+                return True
+
+        return False
+
+    def add_transaction_from_dict(self, tx_data):
+        if not isinstance(tx_data, dict):
+            return {
+                "accepted": False,
+                "reason": "Invalid transaction data"
+            }
+
+        txid = tx_data.get("txid")
+
+        if not txid:
+            return {
+                "accepted": False,
+                "reason": "Missing txid"
+            }
+
+        if self.has_transaction(txid):
+            return {
+                "accepted": False,
+                "reason": "Transaction already exists",
+                "txid": txid
+            }
+
+        try:
+            tx = Transaction.from_dict(tx_data)
+            accepted_txid = self.add_transaction(tx)
+
+            return {
+                "accepted": True,
+                "txid": accepted_txid
+            }
+
+        except Exception as error:
+            return {
+                "accepted": False,
+                "reason": str(error),
+                "txid": txid
+            }
+
+    def sync_mempool(self, remote_transactions):
+        if not isinstance(remote_transactions, list):
+            return {
+                "accepted": 0,
+                "rejected": 0,
+                "results": [],
+                "reason": "Remote transactions must be a list"
+            }
+
+        accepted = 0
+        rejected = 0
+        results = []
+
+        for tx_data in remote_transactions:
+            result = self.add_transaction_from_dict(tx_data)
+            results.append(result)
+
+            if result.get("accepted"):
+                accepted += 1
+            else:
+                rejected += 1
+
+        return {
+            "accepted": accepted,
+            "rejected": rejected,
+            "pending_transactions": len(self.pending_transactions),
+            "results": results
+        }
+
     def get_pending_spent_amount(self, address):
         total = 0
         for tx in self.pending_transactions:
@@ -169,6 +248,9 @@ class Blockchain:
     def add_transaction(self, transaction):
         if not transaction.is_valid():
             raise Exception("Invalid transaction signature")
+
+        if self.has_transaction(transaction.txid):
+            raise Exception("Transaction already exists")
 
         if transaction.sender == "SYSTEM":
             self.pending_transactions.append(transaction.to_dict())
