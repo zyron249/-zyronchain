@@ -20,7 +20,6 @@ if not peers:
     }
     storage.save_peer("https://zyronchain-node2.onrender.com")
 
-
 AUTO_SYNC_INTERVAL = 60
 FAUCET_AMOUNT = 25
 FAUCET_COOLDOWN_SECONDS = 24 * 60 * 60
@@ -119,6 +118,11 @@ def explorer():
         mining_reward=chain.get_current_reward(),
         peers=len(peers)
     )
+
+
+@app.route("/wallet")
+def wallet_page():
+    return render_template("wallet.html")
 
 
 @app.route("/debug/db")
