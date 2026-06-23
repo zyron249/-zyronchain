@@ -70,6 +70,38 @@ def sync_mempool_from_node(node):
     }
 
 
+def broadcast_transaction(tx_data):
+    results = []
+
+    for node in list(peers):
+        try:
+            response = requests.post(
+                f"{node}/transaction",
+                json=tx_data,
+                timeout=5
+            )
+
+            try:
+                response_data = response.json()
+            except Exception:
+                response_data = {"raw_response": response.text}
+
+            results.append({
+                "node": node,
+                "status_code": response.status_code,
+                "response": response_data
+            })
+
+        except Exception as error:
+            results.append({
+                "node": node,
+                "status": "failed",
+                "reason": str(error)
+            })
+
+    return results
+
+
 def auto_sync_loop():
     while True:
         time.sleep(AUTO_SYNC_INTERVAL)
@@ -285,7 +317,7 @@ def transaction_page(txid):
 
 @app.route("/transaction", methods=["POST"])
 def transaction():
-    data = request.json
+    data = request.json or {}
 
     tx = Transaction(
         sender=data["sender"],
@@ -298,11 +330,14 @@ def transaction():
     )
 
     txid = chain.add_transaction(tx)
+    tx_data = tx.to_dict()
+    broadcast_results = broadcast_transaction(tx_data)
 
     return {
         "message": "Transaction added to mempool",
         "txid": txid,
-        "pending_transactions": len(chain.pending_transactions)
+        "pending_transactions": len(chain.pending_transactions),
+        "broadcast": broadcast_results
     }
 
 
@@ -329,6 +364,8 @@ def wallet_send():
     try:
         tx.sign_transaction(data["private_key"])
         txid = chain.add_transaction(tx)
+        tx_data = tx.to_dict()
+        broadcast_results = broadcast_transaction(tx_data)
 
         return {
             "message": "Transfer accepted",
@@ -336,7 +373,8 @@ def wallet_send():
             "sender": tx.sender,
             "receiver": tx.receiver,
             "amount": tx.amount,
-            "pending_transactions": len(chain.pending_transactions)
+            "pending_transactions": len(chain.pending_transactions),
+            "broadcast": broadcast_results
         }
 
     except Exception as error:
@@ -364,6 +402,8 @@ def transfer_demo():
 
     try:
         txid = chain.add_transaction(tx)
+        tx_data = tx.to_dict()
+        broadcast_results = broadcast_transaction(tx_data)
 
         return {
             "message": "Transfer accepted",
@@ -371,7 +411,8 @@ def transfer_demo():
             "sender": sender_wallet.to_dict(),
             "receiver": receiver_wallet.to_dict(),
             "amount": tx.amount,
-            "pending_transactions": len(chain.pending_transactions)
+            "pending_transactions": len(chain.pending_transactions),
+            "broadcast": broadcast_results
         }
 
     except Exception as error:
@@ -397,6 +438,8 @@ def test_transfer():
 
     try:
         txid = chain.add_transaction(tx)
+        tx_data = tx.to_dict()
+        broadcast_results = broadcast_transaction(tx_data)
 
         return {
             "message": "Transfer accepted",
@@ -404,7 +447,8 @@ def test_transfer():
             "sender": sender_wallet.address,
             "receiver": receiver_wallet.address,
             "amount": tx.amount,
-            "pending_transactions": len(chain.pending_transactions)
+            "pending_transactions": len(chain.pending_transactions),
+            "broadcast": broadcast_results
         }
 
     except Exception as error:
@@ -464,7 +508,7 @@ def get_nodes():
 
 @app.route("/nodes/register", methods=["POST"])
 def register_node():
-    data = request.json
+    data = request.json or {}
     node = data.get("node")
 
     if not node:
