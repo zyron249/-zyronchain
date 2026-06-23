@@ -78,7 +78,6 @@ class Blockchain:
 
         if actual_time < expected_time / 2:
             self.difficulty += 1
-
         elif actual_time > expected_time * 2:
             self.difficulty -= 1
 
@@ -153,7 +152,6 @@ class Blockchain:
         for i in range(1, len(chain_to_validate)):
             current = chain_to_validate[i]
             previous = chain_to_validate[i - 1]
-
             target = "0" * current.difficulty
 
             if current.hash != current.calculate_hash():
@@ -224,7 +222,6 @@ class Blockchain:
         try:
             tx = Transaction.from_dict(tx_data)
             accepted_txid = self.add_transaction(tx)
-
             return {"accepted": True, "txid": accepted_txid}
 
         except Exception as error:
@@ -265,9 +262,11 @@ class Blockchain:
 
     def get_pending_spent_amount(self, address):
         total = 0
+
         for tx in self.pending_transactions:
             if isinstance(tx, dict) and tx.get("sender") == address:
                 total += tx["amount"]
+
         return total
 
     def get_available_balance(self, address):
@@ -330,6 +329,7 @@ class Blockchain:
                 if isinstance(tx, dict):
                     if tx["sender"] == address:
                         balance -= tx["amount"]
+
                     if tx["receiver"] == address:
                         balance += tx["amount"]
 
@@ -376,6 +376,83 @@ class Blockchain:
 
         transactions.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
         return transactions
+
+    def get_total_transaction_count(self):
+        count = 0
+
+        for block in self.chain:
+            for tx in block.transactions:
+                if isinstance(tx, dict):
+                    count += 1
+
+        return count
+
+    def get_all_addresses(self):
+        addresses = set()
+
+        for block in self.chain:
+            for tx in block.transactions:
+                if not isinstance(tx, dict):
+                    continue
+
+                sender = tx.get("sender")
+                receiver = tx.get("receiver")
+
+                if sender and sender != "SYSTEM":
+                    addresses.add(sender)
+
+                if receiver:
+                    addresses.add(receiver)
+
+        return list(addresses)
+
+    def get_rich_list(self, limit=100):
+        rich_list = []
+
+        for address in self.get_all_addresses():
+            balance = self.get_balance(address)
+
+            if balance > 0:
+                rich_list.append({
+                    "address": address,
+                    "balance": balance
+                })
+
+        rich_list.sort(key=lambda x: x["balance"], reverse=True)
+        return rich_list[:limit]
+
+    def get_average_block_time(self):
+        if len(self.chain) < 2:
+            return 0
+
+        first_block = self.chain[0]
+        latest_block = self.chain[-1]
+
+        total_time = latest_block.timestamp - first_block.timestamp
+        block_count = len(self.chain) - 1
+
+        if block_count <= 0:
+            return 0
+
+        return round(total_time / block_count, 2)
+
+    def get_stats(self):
+        latest_block = self.get_latest_block()
+
+        return {
+            "name": "ZyronChain",
+            "blocks": len(self.chain),
+            "current_block_height": len(self.chain) - 1,
+            "latest_block_hash": latest_block.hash,
+            "difficulty": self.difficulty,
+            "pending_transactions": len(self.pending_transactions),
+            "total_transactions": self.get_total_transaction_count(),
+            "total_addresses": len(self.get_all_addresses()),
+            "average_block_time_seconds": self.get_average_block_time(),
+            "chain_valid": self.is_chain_valid(),
+            "supply": self.get_supply_info(),
+            "network": self.get_network_info()
+        }
 
     def is_chain_valid(self):
         return self.is_valid_chain(self.chain)
