@@ -60,19 +60,21 @@
 
         input {
             width: 75%;
-            padding: 10px;
+            padding: 12px;
             border-radius: 8px;
             border: none;
             margin-right: 8px;
+            font-size: 15px;
         }
 
         button {
-            padding: 10px 14px;
+            padding: 12px 16px;
             border: none;
             border-radius: 8px;
             background: #2563eb;
             color: white;
             cursor: pointer;
+            font-size: 15px;
         }
 
         button:hover {
@@ -87,6 +89,11 @@
         .block-link:hover {
             text-decoration: underline;
         }
+
+        .small {
+            color: #94a3b8;
+            font-size: 14px;
+        }
     </style>
 </head>
 
@@ -100,15 +107,17 @@
         <p>Live Blockchain Explorer for ZyronChain</p>
 
         <div class="buttons">
+            <a href="/wallet">Web Wallet</a>
             <a href="/mine/miner1">Mine Block</a>
             <a href="/wallet/new">Generate Wallet</a>
             <a href="/balance/miner1">Miner Balance</a>
             <a href="/address/miner1">Address Explorer</a>
-            <a href="/test-transfer">Test Transfer</a>
             <a href="/mempool">Mempool</a>
             <a href="/nodes">Nodes</a>
+            <a href="/network">Network</a>
+            <a href="/health">Health</a>
             <a href="/chain">Chain API</a>
-            <a href="/nodes/sync">Sync Nodes</a>
+            <a href="/sync/all">Sync All</a>
             <a href="/api">API Status</a>
         </div>
 
@@ -116,44 +125,20 @@
 
     <div class="card">
 
-        <h2>🔍 Explorer Search</h2>
+        <h2>🔍 Search Blockchain</h2>
 
-        <form onsubmit="window.location='/address/' + document.getElementById('addressInput').value; return false;">
+        <form onsubmit="searchExplorer(); return false;">
             <input
-                id="addressInput"
+                id="searchInput"
                 type="text"
-                placeholder="Enter Wallet Address (ZYN...)"
+                placeholder="Search block number, TXID, or ZYN address..."
             >
-            <button type="submit">
-                Search Address
-            </button>
+            <button type="submit">Search</button>
         </form>
 
-        <br>
-
-        <form onsubmit="window.location='/tx/' + document.getElementById('txInput').value; return false;">
-            <input
-                id="txInput"
-                type="text"
-                placeholder="Enter Transaction ID"
-            >
-            <button type="submit">
-                Search TX
-            </button>
-        </form>
-
-        <br>
-
-        <form onsubmit="window.location='/block/' + document.getElementById('blockInput').value; return false;">
-            <input
-                id="blockInput"
-                type="number"
-                placeholder="Enter Block Number"
-            >
-            <button type="submit">
-                Search Block
-            </button>
-        </form>
+        <p class="small">
+            Examples: <b>15</b>, <b>ZYN...</b>, or transaction hash
+        </p>
 
     </div>
 
@@ -192,26 +177,18 @@
     <div class="card">
 
         <h3>
-            <a
-                class="block-link"
-                href="/block/{{ block.index }}"
-            >
+            <a class="block-link" href="/block/{{ block.index }}">
                 Block #{{ block.index }}
             </a>
         </h3>
 
         <p><b>Hash:</b></p>
-        <p class="hash">
-            {{ block.hash }}
-        </p>
+        <p class="hash">{{ block.hash }}</p>
 
         <p><b>Previous Hash:</b></p>
-        <p class="hash">
-            {{ block.previous_hash }}
-        </p>
+        <p class="hash">{{ block.previous_hash }}</p>
 
         <p><b>Transactions:</b></p>
-
         <pre>{{ block.transactions }}</pre>
 
     </div>
@@ -219,6 +196,29 @@
     {% endfor %}
 
 </div>
+
+<script>
+function searchExplorer() {
+    const value = document.getElementById("searchInput").value.trim();
+
+    if (!value) {
+        alert("Please enter block number, TXID, or address");
+        return;
+    }
+
+    if (/^\d+$/.test(value)) {
+        window.location.href = "/block/" + value;
+        return;
+    }
+
+    if (value.startsWith("ZYN")) {
+        window.location.href = "/address/" + value;
+        return;
+    }
+
+    window.location.href = "/tx/" + value;
+}
+</script>
 
 </body>
 </html>
