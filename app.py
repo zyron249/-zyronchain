@@ -235,6 +235,27 @@ def richlist():
     }
 
 
+@app.route("/latest-transactions")
+def latest_transactions():
+    return {
+        "count": len(chain.get_latest_transactions()),
+        "transactions": chain.get_latest_transactions()
+    }
+
+
+@app.route("/miners")
+def miners():
+    return {
+        "count": len(chain.get_mining_leaderboard()),
+        "miners": chain.get_mining_leaderboard()
+    }
+
+
+@app.route("/explorer-summary")
+def explorer_summary():
+    return chain.get_explorer_summary()
+
+
 @app.route("/debug/db")
 def debug_db():
     return {
@@ -260,7 +281,8 @@ def api_home():
         "auto_sync_interval": AUTO_SYNC_INTERVAL,
         "supply": chain.get_supply_info(),
         "network": chain.get_network_info(),
-        "stats": chain.get_stats()
+        "stats": chain.get_stats(),
+        "explorer_summary": chain.get_explorer_summary()
     }
 
 
