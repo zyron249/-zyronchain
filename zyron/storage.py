@@ -116,6 +116,45 @@ class BlockchainStorage:
 
         return [row[0] for row in rows]
 
+    def peer_exists(self, node_url):
+        if not self.database_url:
+            return False
+
+        self.setup_database()
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM blockchain_peers
+                    WHERE node_url = %s;
+                    """,
+                    (node_url,)
+                )
+
+                row = cur.fetchone()
+
+        return row is not None
+
+    def remove_peer(self, node_url):
+        if not self.database_url:
+            return
+
+        self.setup_database()
+
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM blockchain_peers
+                    WHERE node_url = %s;
+                    """,
+                    (node_url,)
+                )
+
+                conn.commit()
+
     def save_faucet_claim(self, address, timestamp):
         if not self.database_url:
             return
