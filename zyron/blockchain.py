@@ -7,12 +7,19 @@ class Blockchain:
     def __init__(self):
         self.storage = BlockchainStorage()
         self.chain = [self.create_genesis_block()]
+
         self.difficulty = 4
+        self.min_difficulty = 2
+        self.max_difficulty = 8
+        self.target_block_time = 30
+        self.difficulty_adjustment_interval = 5
+
         self.pending_transactions = []
         self.max_supply = 50_000_000
         self.initial_mining_reward = 50
         self.halving_interval = 100_000
         self.mining_reward = self.get_current_reward()
+
         self.load_chain()
 
     def create_genesis_block(self):
@@ -51,8 +58,47 @@ class Blockchain:
         data = self.storage.load_chain()
         if not data:
             return
+
         self.chain = [self.dict_to_block(block_data) for block_data in data]
+        self.difficulty = self.get_latest_block().difficulty
         self.mining_reward = self.get_current_reward()
+
+    def adjust_difficulty(self):
+        if len(self.chain) < self.difficulty_adjustment_interval + 1:
+            return self.difficulty
+
+        if len(self.chain) % self.difficulty_adjustment_interval != 0:
+            return self.difficulty
+
+        latest_block = self.chain[-1]
+        previous_adjustment_block = self.chain[-self.difficulty_adjustment_interval]
+
+        actual_time = latest_block.timestamp - previous_adjustment_block.timestamp
+        expected_time = self.target_block_time * self.difficulty_adjustment_interval
+
+        if actual_time < expected_time / 2:
+            self.difficulty += 1
+
+        elif actual_time > expected_time * 2:
+            self.difficulty -= 1
+
+        if self.difficulty < self.min_difficulty:
+            self.difficulty = self.min_difficulty
+
+        if self.difficulty > self.max_difficulty:
+            self.difficulty = self.max_difficulty
+
+        return self.difficulty
+
+    def get_network_info(self):
+        return {
+            "difficulty": self.difficulty,
+            "min_difficulty": self.min_difficulty,
+            "max_difficulty": self.max_difficulty,
+            "target_block_time": self.target_block_time,
+            "difficulty_adjustment_interval": self.difficulty_adjustment_interval,
+            "current_block_height": len(self.chain) - 1
+        }
 
     def get_total_supply(self):
         total = 0
@@ -95,30 +141,20 @@ class Blockchain:
         try:
             index = int(index)
         except ValueError:
-            return {
-                "found": False,
-                "error": "Invalid block index"
-            }
+            return {"found": False, "error": "Invalid block index"}
 
         for block in self.chain:
             if block.index == index:
-                return {
-                    "found": True,
-                    "block": self.block_to_dict(block)
-                }
+                return {"found": True, "block": self.block_to_dict(block)}
 
-        return {
-            "found": False,
-            "error": "Block not found",
-            "index": index
-        }
+        return {"found": False, "error": "Block not found", "index": index}
 
     def is_valid_chain(self, chain_to_validate):
-        target = "0" * self.difficulty
-
         for i in range(1, len(chain_to_validate)):
             current = chain_to_validate[i]
             previous = chain_to_validate[i - 1]
+
+            target = "0" * current.difficulty
 
             if current.hash != current.calculate_hash():
                 return False
@@ -151,6 +187,7 @@ class Blockchain:
 
         self.chain = new_chain
         self.pending_transactions = []
+        self.difficulty = self.get_latest_block().difficulty
         self.mining_reward = self.get_current_reward()
         self.save_chain()
 
@@ -170,18 +207,12 @@ class Blockchain:
 
     def add_transaction_from_dict(self, tx_data):
         if not isinstance(tx_data, dict):
-            return {
-                "accepted": False,
-                "reason": "Invalid transaction data"
-            }
+            return {"accepted": False, "reason": "Invalid transaction data"}
 
         txid = tx_data.get("txid")
 
         if not txid:
-            return {
-                "accepted": False,
-                "reason": "Missing txid"
-            }
+            return {"accepted": False, "reason": "Missing txid"}
 
         if self.has_transaction(txid):
             return {
@@ -194,10 +225,7 @@ class Blockchain:
             tx = Transaction.from_dict(tx_data)
             accepted_txid = self.add_transaction(tx)
 
-            return {
-                "accepted": True,
-                "txid": accepted_txid
-            }
+            return {"accepted": True, "txid": accepted_txid}
 
         except Exception as error:
             return {
@@ -278,6 +306,8 @@ class Blockchain:
         if current_reward > 0:
             reward_tx = Transaction("SYSTEM", miner_address, current_reward)
             self.pending_transactions.append(reward_tx.to_dict())
+
+        self.adjust_difficulty()
 
         block = Block(
             len(self.chain),
