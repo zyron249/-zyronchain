@@ -13,7 +13,7 @@
         }
 
         .container {
-            max-width: 1000px;
+            max-width: 1200px;
             margin: auto;
         }
 
@@ -28,6 +28,32 @@
             border-radius: 12px;
             padding: 16px;
             margin-bottom: 16px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 14px;
+            margin-bottom: 16px;
+        }
+
+        .stat-card {
+            background: #111827;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 16px;
+        }
+
+        .stat-card h3 {
+            margin: 0;
+            color: #94a3b8;
+            font-size: 14px;
+        }
+
+        .stat-card p {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 10px 0 0 0;
         }
 
         .buttons a {
@@ -51,6 +77,10 @@
 
         .success {
             color: #22c55e;
+        }
+
+        .danger {
+            color: #ef4444;
         }
 
         pre {
@@ -81,18 +111,41 @@
             background: #1d4ed8;
         }
 
-        .block-link {
+        a {
             color: #60a5fa;
             text-decoration: none;
         }
 
-        .block-link:hover {
+        a:hover {
             text-decoration: underline;
         }
 
         .small {
             color: #94a3b8;
             font-size: 14px;
+        }
+
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        .table th,
+        .table td {
+            border-bottom: 1px solid #334155;
+            padding: 10px;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        .table th {
+            color: #94a3b8;
+        }
+
+        .short {
+            max-width: 180px;
+            word-break: break-all;
         }
     </style>
 </head>
@@ -102,29 +155,25 @@
 <div class="container">
 
     <div class="header">
-
         <h1>🚀 ZyronChain Explorer</h1>
         <p>Live Blockchain Explorer for ZyronChain</p>
 
         <div class="buttons">
             <a href="/wallet">Web Wallet</a>
-            <a href="/mine/miner1">Mine Block</a>
-            <a href="/wallet/new">Generate Wallet</a>
-            <a href="/balance/miner1">Miner Balance</a>
-            <a href="/address/miner1">Address Explorer</a>
-            <a href="/mempool">Mempool</a>
-            <a href="/nodes">Nodes</a>
+            <a href="/stats">Stats</a>
+            <a href="/richlist">Rich List</a>
+            <a href="/latest-transactions">Latest TX</a>
+            <a href="/miners">Miners</a>
             <a href="/network">Network</a>
             <a href="/health">Health</a>
-            <a href="/chain">Chain API</a>
+            <a href="/mempool">Mempool</a>
+            <a href="/nodes">Nodes</a>
             <a href="/sync/all">Sync All</a>
-            <a href="/api">API Status</a>
+            <a href="/api">API</a>
         </div>
-
     </div>
 
     <div class="card">
-
         <h2>🔍 Search Blockchain</h2>
 
         <form onsubmit="searchExplorer(); return false;">
@@ -139,35 +188,107 @@
         <p class="small">
             Examples: <b>15</b>, <b>ZYN...</b>, or transaction hash
         </p>
+    </div>
 
+    <div class="grid">
+        <div class="stat-card">
+            <h3>Total Blocks</h3>
+            <p id="statBlocks">{{ total_blocks }}</p>
+        </div>
+
+        <div class="stat-card">
+            <h3>Pending TX</h3>
+            <p id="statPending">{{ pending_transactions }}</p>
+        </div>
+
+        <div class="stat-card">
+            <h3>Difficulty</h3>
+            <p id="statDifficulty">{{ difficulty }}</p>
+        </div>
+
+        <div class="stat-card">
+            <h3>Peers</h3>
+            <p id="statPeers">{{ peers }}</p>
+        </div>
+
+        <div class="stat-card">
+            <h3>Mining Reward</h3>
+            <p id="statReward">{{ mining_reward }} ZYN</p>
+        </div>
+
+        <div class="stat-card">
+            <h3>Chain Valid</h3>
+            <p id="statValid" class="success">{{ valid }}</p>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h2>📊 Supply</h2>
+            <p>Total Supply: <b id="totalSupply">Loading...</b></p>
+            <p>Remaining Supply: <b id="remainingSupply">Loading...</b></p>
+            <p>Max Supply: <b id="maxSupply">50,000,000</b></p>
+            <p>Next Halving Block: <b id="nextHalving">Loading...</b></p>
+        </div>
+
+        <div class="card">
+            <h2>🌐 Network</h2>
+            <p>Height: <b id="networkHeight">Loading...</b></p>
+            <p>Average Block Time: <b id="avgBlockTime">Loading...</b></p>
+            <p>Total Transactions: <b id="totalTx">Loading...</b></p>
+            <p>Total Addresses: <b id="totalAddresses">Loading...</b></p>
+        </div>
     </div>
 
     <div class="card">
+        <h2>🧾 Latest Transactions</h2>
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>TXID</th>
+                    <th>Block</th>
+                    <th>From</th>
+                    <th>To</th>
+                    <th>Amount</th>
+                </tr>
+            </thead>
+            <tbody id="latestTxBody">
+                <tr><td colspan="5">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
 
-        <h2>🌐 Network Status</h2>
+    <div class="grid">
+        <div class="card">
+            <h2>🏆 Rich List</h2>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Address</th>
+                        <th>Balance</th>
+                    </tr>
+                </thead>
+                <tbody id="richListBody">
+                    <tr><td colspan="2">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
 
-        <p>Total Blocks: <b>{{ total_blocks }}</b></p>
-
-        <p>Pending Transactions:
-            <b>{{ pending_transactions }}</b>
-        </p>
-
-        <p>Connected Peers:
-            <b>{{ peers }}</b>
-        </p>
-
-        <p>Difficulty:
-            <b>{{ difficulty }}</b>
-        </p>
-
-        <p>Mining Reward:
-            <b>{{ mining_reward }} ZYN</b>
-        </p>
-
-        <p>Chain Valid:
-            <b class="success">{{ valid }}</b>
-        </p>
-
+        <div class="card">
+            <h2>⛏ Mining Leaderboard</h2>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Miner</th>
+                        <th>Blocks</th>
+                        <th>Rewards</th>
+                    </tr>
+                </thead>
+                <tbody id="minersBody">
+                    <tr><td colspan="3">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
     </div>
 
     <h2>⛓ Latest Blocks</h2>
@@ -175,9 +296,8 @@
     {% for block in blocks|reverse %}
 
     <div class="card">
-
         <h3>
-            <a class="block-link" href="/block/{{ block.index }}">
+            <a href="/block/{{ block.index }}">
                 Block #{{ block.index }}
             </a>
         </h3>
@@ -190,7 +310,6 @@
 
         <p><b>Transactions:</b></p>
         <pre>{{ block.transactions }}</pre>
-
     </div>
 
     {% endfor %}
@@ -218,6 +337,86 @@ function searchExplorer() {
 
     window.location.href = "/tx/" + value;
 }
+
+function shortText(value, length = 12) {
+    if (!value) return "";
+    if (value.length <= length) return value;
+    return value.slice(0, length) + "...";
+}
+
+async function loadExplorerSummary() {
+    try {
+        const res = await fetch("/explorer-summary");
+        const data = await res.json();
+
+        document.getElementById("totalSupply").textContent = data.supply.total_supply + " ZYN";
+        document.getElementById("remainingSupply").textContent = data.supply.remaining_supply + " ZYN";
+        document.getElementById("maxSupply").textContent = data.supply.max_supply + " ZYN";
+        document.getElementById("nextHalving").textContent = data.supply.next_halving_block;
+
+        document.getElementById("networkHeight").textContent = data.current_block_height;
+        document.getElementById("avgBlockTime").textContent = data.average_block_time_seconds + " sec";
+        document.getElementById("totalTx").textContent = data.total_transactions;
+        document.getElementById("totalAddresses").textContent = data.total_addresses;
+
+        const latestTxBody = document.getElementById("latestTxBody");
+        latestTxBody.innerHTML = "";
+
+        if (!data.latest_transactions || data.latest_transactions.length === 0) {
+            latestTxBody.innerHTML = "<tr><td colspan='5'>No transactions yet.</td></tr>";
+        } else {
+            data.latest_transactions.forEach(tx => {
+                latestTxBody.innerHTML += `
+                    <tr>
+                        <td class="short"><a href="/tx/${tx.txid}">${shortText(tx.txid)}</a></td>
+                        <td><a href="/block/${tx.block_index}">${tx.block_index}</a></td>
+                        <td class="short">${shortText(tx.sender)}</td>
+                        <td class="short">${shortText(tx.receiver)}</td>
+                        <td>${tx.amount}</td>
+                    </tr>
+                `;
+            });
+        }
+
+        const richListBody = document.getElementById("richListBody");
+        richListBody.innerHTML = "";
+
+        if (!data.rich_list || data.rich_list.length === 0) {
+            richListBody.innerHTML = "<tr><td colspan='2'>No addresses yet.</td></tr>";
+        } else {
+            data.rich_list.forEach(item => {
+                richListBody.innerHTML += `
+                    <tr>
+                        <td class="short"><a href="/address/${item.address}">${shortText(item.address, 18)}</a></td>
+                        <td>${item.balance} ZYN</td>
+                    </tr>
+                `;
+            });
+        }
+
+        const minersBody = document.getElementById("minersBody");
+        minersBody.innerHTML = "";
+
+        if (!data.mining_leaderboard || data.mining_leaderboard.length === 0) {
+            minersBody.innerHTML = "<tr><td colspan='3'>No miners yet.</td></tr>";
+        } else {
+            data.mining_leaderboard.forEach(miner => {
+                minersBody.innerHTML += `
+                    <tr>
+                        <td class="short"><a href="/address/${miner.address}">${shortText(miner.address, 18)}</a></td>
+                        <td>${miner.blocks_mined}</td>
+                        <td>${miner.total_rewards} ZYN</td>
+                    </tr>
+                `;
+            });
+        }
+
+    } catch (error) {
+        console.error(error);
+    }
+}
+
+loadExplorerSummary();
 </script>
 
 </body>
