@@ -1,36 +1,32 @@
 import hashlib
 import ecdsa
-import secrets
-
-
-WORD_LIST = [
-    "apple", "river", "moon", "stone", "cloud", "fire",
-    "tree", "wolf", "mountain", "light", "ocean", "star",
-    "gold", "shadow", "wind", "earth", "blue", "green",
-    "storm", "sun", "night", "dream", "iron", "silver"
-]
+from mnemonic import Mnemonic
 
 
 class Wallet:
     def __init__(self, mnemonic=None):
-        self.mnemonic = mnemonic if mnemonic else self.generate_mnemonic()
+        self.mnemo = Mnemonic("english")
+
+        if mnemonic:
+            if not self.mnemo.check(mnemonic):
+                raise ValueError("Invalid BIP39 mnemonic")
+            self.mnemonic = mnemonic
+        else:
+            self.mnemonic = self.generate_mnemonic()
+
         self.private_key = self.private_key_from_mnemonic(self.mnemonic)
         self.public_key = self.private_key.get_verifying_key()
         self.address = self.create_address()
 
     def generate_mnemonic(self):
-        words = []
-
-        for _ in range(12):
-            words.append(secrets.choice(WORD_LIST))
-
-        return " ".join(words)
+        return self.mnemo.generate(strength=128)
 
     def private_key_from_mnemonic(self, mnemonic):
-        seed = hashlib.sha256(mnemonic.encode()).digest()
+        seed = self.mnemo.to_seed(mnemonic, passphrase="")
+        private_key_bytes = hashlib.sha256(seed).digest()
 
         return ecdsa.SigningKey.from_string(
-            seed,
+            private_key_bytes,
             curve=ecdsa.SECP256k1
         )
 
