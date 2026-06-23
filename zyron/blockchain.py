@@ -436,6 +436,74 @@ class Blockchain:
 
         return round(total_time / block_count, 2)
 
+    def get_latest_transactions(self, limit=10):
+        transactions = []
+
+        for block in self.chain:
+            for tx in block.transactions:
+                if not isinstance(tx, dict):
+                    continue
+
+                transactions.append({
+                    "block_index": block.index,
+                    "txid": tx.get("txid"),
+                    "sender": tx.get("sender"),
+                    "receiver": tx.get("receiver"),
+                    "amount": tx.get("amount"),
+                    "timestamp": tx.get("timestamp")
+                })
+
+        transactions.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+        return transactions[:limit]
+
+    def get_mining_leaderboard(self, limit=100):
+        miners = {}
+
+        for block in self.chain:
+            for tx in block.transactions:
+                if not isinstance(tx, dict):
+                    continue
+
+                if tx.get("sender") == "SYSTEM":
+                    miner = tx.get("receiver")
+                    amount = tx.get("amount", 0)
+
+                    if miner not in miners:
+                        miners[miner] = {
+                            "address": miner,
+                            "blocks_mined": 0,
+                            "total_rewards": 0
+                        }
+
+                    miners[miner]["blocks_mined"] += 1
+                    miners[miner]["total_rewards"] += amount
+
+        leaderboard = list(miners.values())
+        leaderboard.sort(key=lambda x: x["total_rewards"], reverse=True)
+
+        return leaderboard[:limit]
+
+    def get_explorer_summary(self):
+        latest_block = self.get_latest_block()
+
+        return {
+            "name": "ZyronChain",
+            "blocks": len(self.chain),
+            "current_block_height": len(self.chain) - 1,
+            "latest_block_hash": latest_block.hash,
+            "difficulty": self.difficulty,
+            "pending_transactions": len(self.pending_transactions),
+            "total_transactions": self.get_total_transaction_count(),
+            "total_addresses": len(self.get_all_addresses()),
+            "average_block_time_seconds": self.get_average_block_time(),
+            "chain_valid": self.is_chain_valid(),
+            "supply": self.get_supply_info(),
+            "network": self.get_network_info(),
+            "latest_transactions": self.get_latest_transactions(10),
+            "rich_list": self.get_rich_list(10),
+            "mining_leaderboard": self.get_mining_leaderboard(10)
+        }
+
     def get_stats(self):
         latest_block = self.get_latest_block()
 
