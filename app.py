@@ -148,8 +148,14 @@ def api_home():
         "peers": list(peers),
         "valid": chain.is_chain_valid(),
         "auto_sync_interval": AUTO_SYNC_INTERVAL,
-        "supply": chain.get_supply_info()
+        "supply": chain.get_supply_info(),
+        "network": chain.get_network_info()
     }
+
+
+@app.route("/network")
+def network():
+    return chain.get_network_info()
 
 
 @app.route("/supply")
@@ -242,6 +248,8 @@ def mine(address):
         "message": "Block mined",
         "miner": address,
         "reward": chain.get_current_reward(),
+        "difficulty": chain.difficulty,
+        "network": chain.get_network_info(),
         "total_supply": chain.get_total_supply(),
         "remaining_supply": chain.get_remaining_supply(),
         "total_blocks": len(chain.chain)
