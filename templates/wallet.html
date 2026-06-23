@@ -2,54 +2,217 @@
 <html>
 <head>
     <title>Zyron Web Wallet</title>
+
+    <style>
+        body {
+            background: #0f172a;
+            color: #e5e7eb;
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: auto;
+        }
+
+        .card {
+            background: #111827;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+
+        input, textarea {
+            width: 100%;
+            padding: 10px;
+            border-radius: 8px;
+            border: none;
+            margin: 6px 0;
+        }
+
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 10px 14px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin: 4px;
+        }
+
+        button:hover {
+            background: #1d4ed8;
+        }
+
+        pre {
+            background: #020617;
+            padding: 12px;
+            border-radius: 8px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .warning {
+            color: #facc15;
+        }
+    </style>
 </head>
-<body style="background:#0f172a;color:white;font-family:Arial;padding:20px;">
 
-<h1>🚀 Zyron Web Wallet</h1>
+<body>
 
-<button onclick="createWallet()">Create Wallet</button>
-<button onclick="getBalance()">Check Balance</button>
-<button onclick="claimFaucet()">Claim Faucet</button>
+<div class="container">
 
-<h2>Wallet</h2>
-<pre id="walletBox"></pre>
+    <h1>🚀 Zyron Web Wallet</h1>
+    <p class="warning">Never share your mnemonic or private key. This is still testnet software.</p>
 
-<h2>Send ZYN</h2>
-<input id="receiver" placeholder="Receiver Address" style="width:400px;">
-<input id="amount" placeholder="Amount" type="number">
-<button onclick="sendZyn()">Send</button>
+    <div class="card">
+        <h2>Create Wallet</h2>
+        <button onclick="createWallet()">Create New Wallet</button>
+    </div>
 
-<h2>Result</h2>
-<pre id="resultBox"></pre>
+    <div class="card">
+        <h2>Recover Wallet</h2>
+        <textarea id="mnemonicInput" rows="3" placeholder="Enter your 12-word BIP39 mnemonic"></textarea>
+        <button onclick="recoverWallet()">Recover Wallet</button>
+    </div>
+
+    <div class="card">
+        <h2>Wallet</h2>
+        <button onclick="copyAddress()">Copy Address</button>
+        <button onclick="togglePrivateKey()">Show / Hide Private Key</button>
+        <pre id="walletBox">No wallet loaded.</pre>
+    </div>
+
+    <div class="card">
+        <h2>Balance & Faucet</h2>
+        <button onclick="getBalance()">Check Balance</button>
+        <button onclick="claimFaucet()">Claim Faucet</button>
+    </div>
+
+    <div class="card">
+        <h2>Send ZYN</h2>
+        <input id="receiver" placeholder="Receiver Address">
+        <input id="amount" placeholder="Amount" type="number" step="0.00000001">
+        <button onclick="sendZyn()">Send ZYN</button>
+    </div>
+
+    <div class="card">
+        <h2>Transaction History</h2>
+        <button onclick="loadTransactions()">Load Transactions</button>
+        <pre id="txBox">No transactions loaded.</pre>
+    </div>
+
+    <div class="card">
+        <h2>Result</h2>
+        <pre id="resultBox">No result yet.</pre>
+    </div>
+
+</div>
 
 <script>
 let wallet = null;
+let showPrivateKey = false;
+
+function safeWalletView() {
+    if (!wallet) return "No wallet loaded.";
+
+    const view = {
+        address: wallet.address,
+        mnemonic: wallet.mnemonic,
+        public_key: wallet.public_key
+    };
+
+    if (showPrivateKey) {
+        view.private_key = wallet.private_key;
+    } else {
+        view.private_key = "HIDDEN";
+    }
+
+    return JSON.stringify(view, null, 2);
+}
+
+function updateWalletBox() {
+    document.getElementById('walletBox').textContent = safeWalletView();
+}
 
 async function createWallet() {
     const res = await fetch('/wallet/new');
     wallet = await res.json();
-    document.getElementById('walletBox').textContent = JSON.stringify(wallet, null, 2);
+    showPrivateKey = false;
+    updateWalletBox();
+    document.getElementById('resultBox').textContent = "Wallet created successfully.";
+}
+
+async function recoverWallet() {
+    const mnemonic = document.getElementById('mnemonicInput').value.trim();
+
+    if (!mnemonic) {
+        alert("Please enter mnemonic");
+        return;
+    }
+
+    const res = await fetch('/wallet/recover', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ mnemonic: mnemonic })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+        document.getElementById('resultBox').textContent = JSON.stringify(data, null, 2);
+        return;
+    }
+
+    wallet = data.wallet;
+    showPrivateKey = false;
+    updateWalletBox();
+
+    document.getElementById('resultBox').textContent = "Wallet recovered successfully.";
+}
+
+function togglePrivateKey() {
+    if (!wallet) return alert('Load wallet first');
+    showPrivateKey = !showPrivateKey;
+    updateWalletBox();
+}
+
+async function copyAddress() {
+    if (!wallet) return alert('Load wallet first');
+    await navigator.clipboard.writeText(wallet.address);
+    document.getElementById('resultBox').textContent = "Address copied.";
 }
 
 async function getBalance() {
-    if (!wallet) return alert('Create wallet first');
+    if (!wallet) return alert('Load wallet first');
+
     const res = await fetch('/address/' + wallet.address);
     const data = await res.json();
+
     document.getElementById('resultBox').textContent = JSON.stringify(data, null, 2);
 }
 
 async function claimFaucet() {
-    if (!wallet) return alert('Create wallet first');
+    if (!wallet) return alert('Load wallet first');
+
     const res = await fetch('/faucet/' + wallet.address);
     const data = await res.json();
+
     document.getElementById('resultBox').textContent = JSON.stringify(data, null, 2);
 }
 
 async function sendZyn() {
-    if (!wallet) return alert('Create wallet first');
+    if (!wallet) return alert('Load wallet first');
 
-    const receiver = document.getElementById('receiver').value;
+    const receiver = document.getElementById('receiver').value.trim();
     const amount = document.getElementById('amount').value;
+
+    if (!receiver || !amount) {
+        alert("Receiver and amount are required");
+        return;
+    }
 
     const res = await fetch('/wallet/send', {
         method: 'POST',
@@ -65,6 +228,15 @@ async function sendZyn() {
 
     const data = await res.json();
     document.getElementById('resultBox').textContent = JSON.stringify(data, null, 2);
+}
+
+async function loadTransactions() {
+    if (!wallet) return alert('Load wallet first');
+
+    const res = await fetch('/address/' + wallet.address);
+    const data = await res.json();
+
+    document.getElementById('txBox').textContent = JSON.stringify(data.transactions || [], null, 2);
 }
 </script>
 
