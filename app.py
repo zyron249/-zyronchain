@@ -203,6 +203,25 @@ def wallet_page():
     return render_template("wallet.html")
 
 
+@app.route("/health")
+def health():
+    return {
+        "status": "online",
+        "name": "ZyronChain",
+        "chain_valid": chain.is_chain_valid(),
+        "blocks": len(chain.chain),
+        "current_block_height": len(chain.chain) - 1,
+        "pending_transactions": len(chain.pending_transactions),
+        "peers": len(peers),
+        "peer_list": list(peers),
+        "database_connected": bool(chain.storage.database_url),
+        "difficulty": chain.difficulty,
+        "auto_sync_interval": AUTO_SYNC_INTERVAL,
+        "network": chain.get_network_info(),
+        "supply": chain.get_supply_info()
+    }
+
+
 @app.route("/debug/db")
 def debug_db():
     return {
