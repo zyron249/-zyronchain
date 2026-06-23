@@ -222,6 +222,19 @@ def health():
     }
 
 
+@app.route("/stats")
+def stats():
+    return chain.get_stats()
+
+
+@app.route("/richlist")
+def richlist():
+    return {
+        "count": len(chain.get_rich_list()),
+        "rich_list": chain.get_rich_list()
+    }
+
+
 @app.route("/debug/db")
 def debug_db():
     return {
@@ -246,7 +259,8 @@ def api_home():
         "valid": chain.is_chain_valid(),
         "auto_sync_interval": AUTO_SYNC_INTERVAL,
         "supply": chain.get_supply_info(),
-        "network": chain.get_network_info()
+        "network": chain.get_network_info(),
+        "stats": chain.get_stats()
     }
 
 
