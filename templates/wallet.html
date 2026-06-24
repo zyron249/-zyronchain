@@ -50,6 +50,7 @@
     <h2>Send ZYN</h2>
     <input id="receiver" placeholder="Receiver Address">
     <input id="amount" placeholder="Amount" type="number" step="0.00000001">
+    <input id="fee" placeholder="Fee" type="number" step="0.00000001" value="0.01">
     <button onclick="sendZyn()">Send ZYN</button>
 </div>
 
@@ -165,50 +166,96 @@ async function claimFaucet() {
     document.getElementById("resultBox").textContent = JSON.stringify(data, null, 2);
 }
 
+async function getNextNonce() {
+    const res = await fetch("/nonce/" + wallet.address);
+    const data = await res.json();
+
+    if (!res.ok) {
+        throw new Error(data.error || "Nonce lookup failed");
+    }
+
+    return data.next_nonce;
+}
+
 async function sendZyn() {
     if (!wallet) return alert("Load wallet first");
 
     const receiver = document.getElementById("receiver").value.trim();
     const amountInput = document.getElementById("amount").value;
+    const feeInput = document.getElementById("fee").value || "0.01";
 
     if (!receiver || !amountInput) {
         alert("Receiver and amount are required");
         return;
     }
 
-    const amount = pythonFloatString(amountInput);
-    const timestamp = Date.now() / 1000;
+    try {
+        const version = 1;
+        const chainId = "zyron-testnet-1";
+        const nonce = await getNextNonce();
+        const amount = pythonFloatString(amountInput);
+        const fee = pythonFloatString(feeInput);
+        const timestamp = Date.now() / 1000;
 
-    const dataToSign = wallet.address + receiver + amount + timestamp;
-    const txidData = wallet.address + receiver + amount + timestamp + wallet.public_key;
+        const dataToSign =
+            String(version) +
+            chainId +
+            String(nonce) +
+            wallet.address +
+            receiver +
+            amount +
+            fee +
+            String(timestamp);
 
-    const key = ec.keyFromPrivate(wallet.private_key, "hex");
-    const signatureObject = key.sign(dataToSign);
+        const txidData =
+            String(version) +
+            chainId +
+            String(nonce) +
+            wallet.address +
+            receiver +
+            amount +
+            fee +
+            String(timestamp) +
+            wallet.public_key;
 
-    const r = signatureObject.r.toString("hex").padStart(64, "0");
-    const s = signatureObject.s.toString("hex").padStart(64, "0");
-    const signature = r + s;
+        const key = ec.keyFromPrivate(wallet.private_key, "hex");
+        const signatureObject = key.sign(dataToSign);
 
-    const txid = await sha256Hex(txidData);
+        const r = signatureObject.r.toString("hex").padStart(64, "0");
+        const s = signatureObject.s.toString("hex").padStart(64, "0");
+        const signature = r + s;
 
-    const signedTx = {
-        sender: wallet.address,
-        receiver: receiver,
-        amount: Number(amount),
-        public_key: wallet.public_key,
-        signature: signature,
-        timestamp: timestamp,
-        txid: txid
-    };
+        const txid = await sha256Hex(txidData);
 
-    const res = await fetch("/transaction", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(signedTx)
-    });
+        const signedTx = {
+            version: version,
+            chain_id: chainId,
+            nonce: nonce,
+            sender: wallet.address,
+            receiver: receiver,
+            amount: Number(amount),
+            fee: Number(fee),
+            public_key: wallet.public_key,
+            signature: signature,
+            timestamp: timestamp,
+            txid: txid
+        };
 
-    const data = await res.json();
-    document.getElementById("resultBox").textContent = JSON.stringify(data, null, 2);
+        const res = await fetch("/transaction", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(signedTx)
+        });
+
+        const data = await res.json();
+        document.getElementById("resultBox").textContent = JSON.stringify(data, null, 2);
+
+    } catch (error) {
+        document.getElementById("resultBox").textContent = JSON.stringify({
+            message: "Transaction failed",
+            error: error.message
+        }, null, 2);
+    }
 }
 
 async function loadTransactions() {
