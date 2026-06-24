@@ -1,3 +1,4 @@
+import re
 from zyron.block import Block
 from zyron.transaction import Transaction
 from zyron.storage import BlockchainStorage
@@ -21,6 +22,12 @@ class Blockchain:
         self.mining_reward = self.get_current_reward()
 
         self.load_chain()
+
+    def is_valid_address(self, address):
+        if not isinstance(address, str):
+            return False
+
+        return re.fullmatch(r"ZYN[a-fA-F0-9]{40}", address) is not None
 
     def create_genesis_block(self):
         return Block(0, ["Genesis Block"], "0")
@@ -165,6 +172,15 @@ class Blockchain:
 
             for tx_data in current.transactions:
                 if isinstance(tx_data, dict):
+                    sender = tx_data.get("sender")
+                    receiver = tx_data.get("receiver")
+
+                    if sender != "SYSTEM" and not self.is_valid_address(sender):
+                        return False
+
+                    if not self.is_valid_address(receiver):
+                        return False
+
                     tx = Transaction.from_dict(tx_data)
                     if not tx.is_valid():
                         return False
@@ -280,8 +296,17 @@ class Blockchain:
             raise Exception("Transaction already exists")
 
         if transaction.sender == "SYSTEM":
+            if not self.is_valid_address(transaction.receiver):
+                raise Exception("Invalid receiver address")
+
             self.pending_transactions.append(transaction.to_dict())
             return transaction.txid
+
+        if not self.is_valid_address(transaction.sender):
+            raise Exception("Invalid sender address")
+
+        if not self.is_valid_address(transaction.receiver):
+            raise Exception("Invalid receiver address")
 
         if transaction.amount <= 0:
             raise Exception("Transaction amount must be greater than zero")
@@ -293,6 +318,9 @@ class Blockchain:
         return transaction.txid
 
     def mine_pending_transactions(self, miner_address):
+        if not self.is_valid_address(miner_address):
+            raise Exception("Invalid miner address")
+
         current_reward = self.get_current_reward()
         remaining_supply = self.get_remaining_supply()
 
@@ -398,10 +426,10 @@ class Blockchain:
                 sender = tx.get("sender")
                 receiver = tx.get("receiver")
 
-                if sender and sender != "SYSTEM":
+                if sender and sender != "SYSTEM" and self.is_valid_address(sender):
                     addresses.add(sender)
 
-                if receiver:
+                if receiver and self.is_valid_address(receiver):
                     addresses.add(receiver)
 
         return list(addresses)
@@ -444,11 +472,20 @@ class Blockchain:
                 if not isinstance(tx, dict):
                     continue
 
+                sender = tx.get("sender")
+                receiver = tx.get("receiver")
+
+                if sender != "SYSTEM" and not self.is_valid_address(sender):
+                    continue
+
+                if not self.is_valid_address(receiver):
+                    continue
+
                 transactions.append({
                     "block_index": block.index,
                     "txid": tx.get("txid"),
-                    "sender": tx.get("sender"),
-                    "receiver": tx.get("receiver"),
+                    "sender": sender,
+                    "receiver": receiver,
                     "amount": tx.get("amount"),
                     "timestamp": tx.get("timestamp")
                 })
@@ -467,6 +504,9 @@ class Blockchain:
                 if tx.get("sender") == "SYSTEM":
                     miner = tx.get("receiver")
                     amount = tx.get("amount", 0)
+
+                    if not self.is_valid_address(miner):
+                        continue
 
                     if miner not in miners:
                         miners[miner] = {
