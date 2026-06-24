@@ -256,6 +256,22 @@ def explorer_summary():
     return chain.get_explorer_summary()
 
 
+@app.route("/nonce/<address>")
+def nonce(address):
+    if not chain.is_valid_address(address):
+        return {
+            "message": "Nonce lookup failed",
+            "error": "Invalid address",
+            "address": address
+        }, 400
+
+    return {
+        "address": address,
+        "current_nonce": chain.get_nonce(address),
+        "next_nonce": chain.get_next_nonce(address)
+    }
+
+
 @app.route("/debug/db")
 def debug_db():
     return {
@@ -324,75 +340,113 @@ def recover_wallet():
     if not mnemonic:
         return {"message": "Wallet recovery failed", "error": "Mnemonic is required"}, 400
 
-    wallet = Wallet(mnemonic=mnemonic)
-    return {"message": "Wallet recovered", "wallet": wallet.to_dict()}
+    try:
+        wallet = Wallet(mnemonic=mnemonic)
+        return {"message": "Wallet recovered", "wallet": wallet.to_dict()}
+    except Exception as error:
+        return {"message": "Wallet recovery failed", "error": str(error)}, 400
 
 
 @app.route("/faucet/<address>")
 def faucet(address):
-    now = time.time()
-    last_claim = storage.get_last_faucet_claim(address)
-
-    if last_claim:
-        seconds_since_claim = now - float(last_claim)
-        seconds_remaining = FAUCET_COOLDOWN_SECONDS - seconds_since_claim
-
-        if seconds_remaining > 0:
+    try:
+        if not chain.is_valid_address(address):
             return {
-                "message": "Faucet cooldown active",
-                "address": address,
-                "allowed": False,
-                "seconds_remaining": int(seconds_remaining),
-                "hours_remaining": round(seconds_remaining / 3600, 2),
-                "balance": chain.get_balance(address),
-                "chain_valid": chain.is_chain_valid()
-            }, 429
+                "message": "Faucet rejected",
+                "error": "Invalid address",
+                "address": address
+            }, 400
 
-    old_reward = chain.mining_reward
-    chain.mining_reward = FAUCET_AMOUNT
-    chain.mine_pending_transactions(address)
-    chain.mining_reward = old_reward
-    storage.save_faucet_claim(address, now)
+        now = time.time()
+        last_claim = storage.get_last_faucet_claim(address)
 
-    return {
-        "message": "Faucet sent test ZYN",
-        "address": address,
-        "amount": FAUCET_AMOUNT,
-        "balance": chain.get_balance(address),
-        "total_blocks": len(chain.chain),
-        "chain_valid": chain.is_chain_valid()
-    }
+        if last_claim:
+            seconds_since_claim = now - float(last_claim)
+            seconds_remaining = FAUCET_COOLDOWN_SECONDS - seconds_since_claim
+
+            if seconds_remaining > 0:
+                return {
+                    "message": "Faucet cooldown active",
+                    "address": address,
+                    "allowed": False,
+                    "seconds_remaining": int(seconds_remaining),
+                    "hours_remaining": round(seconds_remaining / 3600, 2),
+                    "balance": chain.get_balance(address),
+                    "chain_valid": chain.is_chain_valid()
+                }, 429
+
+        old_reward = chain.mining_reward
+        chain.mining_reward = FAUCET_AMOUNT
+        chain.mine_pending_transactions(address)
+        chain.mining_reward = old_reward
+        storage.save_faucet_claim(address, now)
+
+        return {
+            "message": "Faucet sent test ZYN",
+            "address": address,
+            "amount": FAUCET_AMOUNT,
+            "balance": chain.get_balance(address),
+            "total_blocks": len(chain.chain),
+            "chain_valid": chain.is_chain_valid()
+        }
+
+    except Exception as error:
+        return {"message": "Faucet rejected", "error": str(error)}, 400
 
 
 @app.route("/mine/<address>")
 def mine(address):
-    chain.mine_pending_transactions(address)
+    try:
+        chain.mine_pending_transactions(address)
 
-    return {
-        "message": "Block mined",
-        "miner": address,
-        "reward": chain.get_current_reward(),
-        "difficulty": chain.difficulty,
-        "network": chain.get_network_info(),
-        "total_supply": chain.get_total_supply(),
-        "remaining_supply": chain.get_remaining_supply(),
-        "total_blocks": len(chain.chain)
-    }
+        return {
+            "message": "Block mined",
+            "miner": address,
+            "reward": chain.get_current_reward(),
+            "difficulty": chain.difficulty,
+            "network": chain.get_network_info(),
+            "total_supply": chain.get_total_supply(),
+            "remaining_supply": chain.get_remaining_supply(),
+            "total_blocks": len(chain.chain)
+        }
+
+    except Exception as error:
+        return {
+            "message": "Mining rejected",
+            "error": str(error),
+            "miner": address
+        }, 400
 
 
 @app.route("/balance/<address>")
 def balance(address):
+    if not chain.is_valid_address(address):
+        return {
+            "message": "Balance lookup failed",
+            "error": "Invalid address",
+            "address": address
+        }, 400
+
     return {"address": address, "balance": chain.get_balance(address)}
 
 
 @app.route("/address/<address>")
 def address_page(address):
+    if not chain.is_valid_address(address):
+        return {
+            "message": "Address lookup failed",
+            "error": "Invalid address",
+            "address": address
+        }, 400
+
     transactions = chain.get_address_transactions(address)
 
     return {
         "address": address,
         "balance": chain.get_balance(address),
         "available_balance": chain.get_available_balance(address),
+        "nonce": chain.get_nonce(address),
+        "next_nonce": chain.get_next_nonce(address),
         "transaction_count": len(transactions),
         "transactions": transactions,
         "chain_valid": chain.is_chain_valid()
@@ -408,62 +462,63 @@ def transaction_page(txid):
 def transaction():
     data = request.json or {}
 
-    tx = Transaction(
-        sender=data["sender"],
-        receiver=data["receiver"],
-        amount=float(data["amount"]),
-        public_key=data.get("public_key"),
-        signature=data.get("signature"),
-        timestamp=data.get("timestamp"),
-        txid=data.get("txid")
-    )
-
-    txid = chain.add_transaction(tx)
-    tx_data = tx.to_dict()
-    broadcast_results = broadcast_transaction(tx_data)
-
-    return {
-        "message": "Transaction added to mempool",
-        "txid": txid,
-        "pending_transactions": len(chain.pending_transactions),
-        "broadcast": broadcast_results
-    }
-
-
-@app.route("/wallet/send", methods=["POST"])
-def wallet_send():
-    data = request.json or {}
-    required_fields = ["sender", "receiver", "amount", "private_key", "public_key"]
+    required_fields = [
+        "sender",
+        "receiver",
+        "amount",
+        "public_key",
+        "signature",
+        "timestamp",
+        "txid",
+        "nonce"
+    ]
 
     for field in required_fields:
         if field not in data:
-            return {"message": "Transfer rejected", "error": f"Missing field: {field}"}, 400
-
-    tx = Transaction(
-        sender=data["sender"],
-        receiver=data["receiver"],
-        amount=float(data["amount"]),
-        public_key=data["public_key"]
-    )
+            return {
+                "message": "Transaction rejected",
+                "error": f"Missing field: {field}"
+            }, 400
 
     try:
-        tx.sign_transaction(data["private_key"])
+        tx = Transaction(
+            version=int(data.get("version", 1)),
+            chain_id=data.get("chain_id", "zyron-testnet-1"),
+            nonce=int(data["nonce"]),
+            sender=data["sender"],
+            receiver=data["receiver"],
+            amount=float(data["amount"]),
+            fee=float(data.get("fee", 0.01)),
+            public_key=data.get("public_key"),
+            signature=data.get("signature"),
+            timestamp=data.get("timestamp"),
+            txid=data.get("txid")
+        )
+
         txid = chain.add_transaction(tx)
         tx_data = tx.to_dict()
         broadcast_results = broadcast_transaction(tx_data)
 
         return {
-            "message": "Transfer accepted",
+            "message": "Transaction added to mempool",
             "txid": txid,
-            "sender": tx.sender,
-            "receiver": tx.receiver,
-            "amount": tx.amount,
             "pending_transactions": len(chain.pending_transactions),
             "broadcast": broadcast_results
         }
 
     except Exception as error:
-        return {"message": "Transfer rejected", "error": str(error)}, 400
+        return {
+            "message": "Transaction rejected",
+            "error": str(error)
+        }, 400
+
+
+@app.route("/wallet/send", methods=["POST"])
+def wallet_send():
+    return {
+        "message": "Endpoint disabled",
+        "error": "Private keys must never be sent to the server. Use signed transactions via /transaction."
+    }, 410
 
 
 @app.route("/transfer/demo", methods=["POST"])
@@ -477,7 +532,9 @@ def transfer_demo():
         sender=sender_wallet.address,
         receiver=receiver_wallet.address,
         amount=float(data.get("amount", 10)),
-        public_key=sender_wallet.get_public_key()
+        public_key=sender_wallet.get_public_key(),
+        nonce=chain.get_next_nonce(sender_wallet.address),
+        fee=float(data.get("fee", 0.01))
     )
 
     tx.sign_transaction(sender_wallet.get_private_key())
@@ -493,6 +550,8 @@ def transfer_demo():
             "sender": sender_wallet.to_dict(),
             "receiver": receiver_wallet.to_dict(),
             "amount": tx.amount,
+            "fee": tx.fee,
+            "nonce": tx.nonce,
             "pending_transactions": len(chain.pending_transactions),
             "broadcast": broadcast_results
         }
@@ -510,7 +569,9 @@ def test_transfer():
         sender=sender_wallet.address,
         receiver=receiver_wallet.address,
         amount=10,
-        public_key=sender_wallet.get_public_key()
+        public_key=sender_wallet.get_public_key(),
+        nonce=chain.get_next_nonce(sender_wallet.address),
+        fee=0.01
     )
 
     tx.sign_transaction(sender_wallet.get_private_key())
@@ -526,12 +587,14 @@ def test_transfer():
             "sender": sender_wallet.address,
             "receiver": receiver_wallet.address,
             "amount": tx.amount,
+            "fee": tx.fee,
+            "nonce": tx.nonce,
             "pending_transactions": len(chain.pending_transactions),
             "broadcast": broadcast_results
         }
 
     except Exception as error:
-        return {"message": "Transfer rejected", "error": str(error)}
+        return {"message": "Transfer rejected", "error": str(error)}, 400
 
 
 @app.route("/mempool")
