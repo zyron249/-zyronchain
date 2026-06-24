@@ -2,118 +2,89 @@
 <html>
 <head>
     <title>Zyron Web Wallet</title>
+    <script src="https://cdn.jsdelivr.net/npm/elliptic@6.5.7/dist/elliptic.min.js"></script>
 
     <style>
-        body {
-            background: #0f172a;
-            color: #e5e7eb;
-            font-family: Arial, sans-serif;
-            padding: 20px;
-        }
-
-        .container {
-            max-width: 1000px;
-            margin: auto;
-        }
-
-        .card {
-            background: #111827;
-            border: 1px solid #334155;
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 16px;
-        }
-
-        input, textarea {
-            width: 100%;
-            padding: 10px;
-            border-radius: 8px;
-            border: none;
-            margin: 6px 0;
-        }
-
-        button {
-            background: #2563eb;
-            color: white;
-            border: none;
-            padding: 10px 14px;
-            border-radius: 8px;
-            cursor: pointer;
-            margin: 4px;
-        }
-
-        button:hover {
-            background: #1d4ed8;
-        }
-
-        pre {
-            background: #020617;
-            padding: 12px;
-            border-radius: 8px;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }
-
-        .warning {
-            color: #facc15;
-        }
+        body { background:#0f172a; color:#e5e7eb; font-family:Arial; padding:20px; }
+        .container { max-width:1000px; margin:auto; }
+        .card { background:#111827; border:1px solid #334155; border-radius:12px; padding:16px; margin-bottom:16px; }
+        input, textarea { width:100%; padding:10px; border-radius:8px; border:none; margin:6px 0; }
+        button { background:#2563eb; color:white; border:none; padding:10px 14px; border-radius:8px; cursor:pointer; margin:4px; }
+        button:hover { background:#1d4ed8; }
+        pre { background:#020617; padding:12px; border-radius:8px; white-space:pre-wrap; word-break:break-word; }
+        .warning { color:#facc15; }
     </style>
 </head>
 
 <body>
-
 <div class="container">
 
-    <h1>🚀 Zyron Web Wallet</h1>
-    <p class="warning">Never share your mnemonic or private key. This is still testnet software.</p>
+<h1>🚀 Zyron Web Wallet</h1>
+<p class="warning">Never share your mnemonic or private key. Private key is not sent when sending ZYN.</p>
 
-    <div class="card">
-        <h2>Create Wallet</h2>
-        <button onclick="createWallet()">Create New Wallet</button>
-    </div>
+<div class="card">
+    <h2>Create Wallet</h2>
+    <button onclick="createWallet()">Create New Wallet</button>
+</div>
 
-    <div class="card">
-        <h2>Recover Wallet</h2>
-        <textarea id="mnemonicInput" rows="3" placeholder="Enter your 12-word BIP39 mnemonic"></textarea>
-        <button onclick="recoverWallet()">Recover Wallet</button>
-    </div>
+<div class="card">
+    <h2>Recover Wallet</h2>
+    <textarea id="mnemonicInput" rows="3" placeholder="Enter your 12-word BIP39 mnemonic"></textarea>
+    <button onclick="recoverWallet()">Recover Wallet</button>
+</div>
 
-    <div class="card">
-        <h2>Wallet</h2>
-        <button onclick="copyAddress()">Copy Address</button>
-        <button onclick="togglePrivateKey()">Show / Hide Private Key</button>
-        <pre id="walletBox">No wallet loaded.</pre>
-    </div>
+<div class="card">
+    <h2>Wallet</h2>
+    <button onclick="copyAddress()">Copy Address</button>
+    <button onclick="togglePrivateKey()">Show / Hide Private Key</button>
+    <pre id="walletBox">No wallet loaded.</pre>
+</div>
 
-    <div class="card">
-        <h2>Balance & Faucet</h2>
-        <button onclick="getBalance()">Check Balance</button>
-        <button onclick="claimFaucet()">Claim Faucet</button>
-    </div>
+<div class="card">
+    <h2>Balance & Faucet</h2>
+    <button onclick="getBalance()">Check Balance</button>
+    <button onclick="claimFaucet()">Claim Faucet</button>
+</div>
 
-    <div class="card">
-        <h2>Send ZYN</h2>
-        <input id="receiver" placeholder="Receiver Address">
-        <input id="amount" placeholder="Amount" type="number" step="0.00000001">
-        <button onclick="sendZyn()">Send ZYN</button>
-    </div>
+<div class="card">
+    <h2>Send ZYN</h2>
+    <input id="receiver" placeholder="Receiver Address">
+    <input id="amount" placeholder="Amount" type="number" step="0.00000001">
+    <button onclick="sendZyn()">Send ZYN</button>
+</div>
 
-    <div class="card">
-        <h2>Transaction History</h2>
-        <button onclick="loadTransactions()">Load Transactions</button>
-        <pre id="txBox">No transactions loaded.</pre>
-    </div>
+<div class="card">
+    <h2>Transaction History</h2>
+    <button onclick="loadTransactions()">Load Transactions</button>
+    <pre id="txBox">No transactions loaded.</pre>
+</div>
 
-    <div class="card">
-        <h2>Result</h2>
-        <pre id="resultBox">No result yet.</pre>
-    </div>
+<div class="card">
+    <h2>Result</h2>
+    <pre id="resultBox">No result yet.</pre>
+</div>
 
 </div>
 
 <script>
 let wallet = null;
 let showPrivateKey = false;
+const ec = new elliptic.ec("secp256k1");
+
+function pythonFloatString(value) {
+    const number = Number(value);
+    if (Number.isInteger(number)) return number.toFixed(1);
+    return String(number);
+}
+
+async function sha256Hex(text) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(text);
+    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(hashBuffer))
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
+}
 
 function safeWalletView() {
     if (!wallet) return "No wallet loaded.";
@@ -121,122 +92,132 @@ function safeWalletView() {
     const view = {
         address: wallet.address,
         mnemonic: wallet.mnemonic,
-        public_key: wallet.public_key
+        public_key: wallet.public_key,
+        private_key: showPrivateKey ? wallet.private_key : "HIDDEN"
     };
-
-    if (showPrivateKey) {
-        view.private_key = wallet.private_key;
-    } else {
-        view.private_key = "HIDDEN";
-    }
 
     return JSON.stringify(view, null, 2);
 }
 
 function updateWalletBox() {
-    document.getElementById('walletBox').textContent = safeWalletView();
+    document.getElementById("walletBox").textContent = safeWalletView();
 }
 
 async function createWallet() {
-    const res = await fetch('/wallet/new');
+    const res = await fetch("/wallet/new");
     wallet = await res.json();
     showPrivateKey = false;
     updateWalletBox();
-    document.getElementById('resultBox').textContent = "Wallet created successfully.";
+    document.getElementById("resultBox").textContent = "Wallet created successfully.";
 }
 
 async function recoverWallet() {
-    const mnemonic = document.getElementById('mnemonicInput').value.trim();
+    const mnemonic = document.getElementById("mnemonicInput").value.trim();
 
-    if (!mnemonic) {
-        alert("Please enter mnemonic");
-        return;
-    }
+    if (!mnemonic) return alert("Please enter mnemonic");
 
-    const res = await fetch('/wallet/recover', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ mnemonic: mnemonic })
+    const res = await fetch("/wallet/recover", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ mnemonic })
     });
 
     const data = await res.json();
 
     if (!res.ok) {
-        document.getElementById('resultBox').textContent = JSON.stringify(data, null, 2);
+        document.getElementById("resultBox").textContent = JSON.stringify(data, null, 2);
         return;
     }
 
     wallet = data.wallet;
     showPrivateKey = false;
     updateWalletBox();
-
-    document.getElementById('resultBox').textContent = "Wallet recovered successfully.";
+    document.getElementById("resultBox").textContent = "Wallet recovered successfully.";
 }
 
 function togglePrivateKey() {
-    if (!wallet) return alert('Load wallet first');
+    if (!wallet) return alert("Load wallet first");
     showPrivateKey = !showPrivateKey;
     updateWalletBox();
 }
 
 async function copyAddress() {
-    if (!wallet) return alert('Load wallet first');
+    if (!wallet) return alert("Load wallet first");
     await navigator.clipboard.writeText(wallet.address);
-    document.getElementById('resultBox').textContent = "Address copied.";
+    document.getElementById("resultBox").textContent = "Address copied.";
 }
 
 async function getBalance() {
-    if (!wallet) return alert('Load wallet first');
+    if (!wallet) return alert("Load wallet first");
 
-    const res = await fetch('/address/' + wallet.address);
+    const res = await fetch("/address/" + wallet.address);
     const data = await res.json();
 
-    document.getElementById('resultBox').textContent = JSON.stringify(data, null, 2);
+    document.getElementById("resultBox").textContent = JSON.stringify(data, null, 2);
 }
 
 async function claimFaucet() {
-    if (!wallet) return alert('Load wallet first');
+    if (!wallet) return alert("Load wallet first");
 
-    const res = await fetch('/faucet/' + wallet.address);
+    const res = await fetch("/faucet/" + wallet.address);
     const data = await res.json();
 
-    document.getElementById('resultBox').textContent = JSON.stringify(data, null, 2);
+    document.getElementById("resultBox").textContent = JSON.stringify(data, null, 2);
 }
 
 async function sendZyn() {
-    if (!wallet) return alert('Load wallet first');
+    if (!wallet) return alert("Load wallet first");
 
-    const receiver = document.getElementById('receiver').value.trim();
-    const amount = document.getElementById('amount').value;
+    const receiver = document.getElementById("receiver").value.trim();
+    const amountInput = document.getElementById("amount").value;
 
-    if (!receiver || !amount) {
+    if (!receiver || !amountInput) {
         alert("Receiver and amount are required");
         return;
     }
 
-    const res = await fetch('/wallet/send', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-            sender: wallet.address,
-            receiver: receiver,
-            amount: amount,
-            private_key: wallet.private_key,
-            public_key: wallet.public_key
-        })
+    const amount = pythonFloatString(amountInput);
+    const timestamp = Date.now() / 1000;
+
+    const dataToSign = wallet.address + receiver + amount + timestamp;
+    const txidData = wallet.address + receiver + amount + timestamp + wallet.public_key;
+
+    const key = ec.keyFromPrivate(wallet.private_key, "hex");
+    const signatureObject = key.sign(dataToSign);
+
+    const r = signatureObject.r.toString("hex").padStart(64, "0");
+    const s = signatureObject.s.toString("hex").padStart(64, "0");
+    const signature = r + s;
+
+    const txid = await sha256Hex(txidData);
+
+    const signedTx = {
+        sender: wallet.address,
+        receiver: receiver,
+        amount: Number(amount),
+        public_key: wallet.public_key,
+        signature: signature,
+        timestamp: timestamp,
+        txid: txid
+    };
+
+    const res = await fetch("/transaction", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(signedTx)
     });
 
     const data = await res.json();
-    document.getElementById('resultBox').textContent = JSON.stringify(data, null, 2);
+    document.getElementById("resultBox").textContent = JSON.stringify(data, null, 2);
 }
 
 async function loadTransactions() {
-    if (!wallet) return alert('Load wallet first');
+    if (!wallet) return alert("Load wallet first");
 
-    const res = await fetch('/address/' + wallet.address);
+    const res = await fetch("/address/" + wallet.address);
     const data = await res.json();
 
-    document.getElementById('txBox').textContent = JSON.stringify(data.transactions || [], null, 2);
+    document.getElementById("txBox").textContent = JSON.stringify(data.transactions || [], null, 2);
 }
 </script>
 
