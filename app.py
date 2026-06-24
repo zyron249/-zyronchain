@@ -3,12 +3,21 @@ import requests
 import threading
 import time
 from flask import Flask, request, render_template
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from zyron.blockchain import Blockchain
 from zyron.wallet import Wallet
 from zyron.transaction import Transaction
 from zyron.storage import BlockchainStorage
 
 app = Flask(__name__)
+
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["300 per hour"]
+)
+
 chain = Blockchain()
 storage = BlockchainStorage()
 
@@ -163,7 +172,6 @@ def auto_sync_loop():
                 print("Auto chain sync:", sync_chain_from_node(node))
                 print("Auto mempool sync:", sync_mempool_from_node(node))
                 print("Auto peer discovery:", discover_peers_from_node(node))
-
             except Exception as error:
                 print("Auto sync failed:", str(error))
 
@@ -333,6 +341,7 @@ def new_wallet():
 
 
 @app.route("/wallet/recover", methods=["POST"])
+@limiter.limit("10 per minute")
 def recover_wallet():
     data = request.json or {}
     mnemonic = data.get("mnemonic")
@@ -348,6 +357,7 @@ def recover_wallet():
 
 
 @app.route("/faucet/<address>")
+@limiter.limit("5 per hour")
 def faucet(address):
     try:
         if not chain.is_valid_address(address):
@@ -395,6 +405,7 @@ def faucet(address):
 
 
 @app.route("/mine/<address>")
+@limiter.limit("10 per minute")
 def mine(address):
     try:
         chain.mine_pending_transactions(address)
@@ -459,6 +470,7 @@ def transaction_page(txid):
 
 
 @app.route("/transaction", methods=["POST"])
+@limiter.limit("30 per minute")
 def transaction():
     data = request.json or {}
 
@@ -639,6 +651,7 @@ def get_nodes():
 
 
 @app.route("/nodes/register", methods=["POST"])
+@limiter.limit("10 per hour")
 def register_node():
     data = request.json or {}
     node = data.get("node")
