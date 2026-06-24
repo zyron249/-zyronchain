@@ -26,7 +26,6 @@ class Blockchain:
     def is_valid_address(self, address):
         if not isinstance(address, str):
             return False
-
         return re.fullmatch(r"ZYN[a-fA-F0-9]{40}", address) is not None
 
     def create_genesis_block(self):
@@ -143,6 +142,23 @@ class Blockchain:
             "current_block_height": len(self.chain) - 1
         }
 
+    def get_nonce(self, address):
+        nonce = 0
+
+        for block in self.chain:
+            for tx in block.transactions:
+                if isinstance(tx, dict) and tx.get("sender") == address:
+                    nonce = max(nonce, int(tx.get("nonce", 0)))
+
+        for tx in self.pending_transactions:
+            if isinstance(tx, dict) and tx.get("sender") == address:
+                nonce = max(nonce, int(tx.get("nonce", 0)))
+
+        return nonce
+
+    def get_next_nonce(self, address):
+        return self.get_nonce(address) + 1
+
     def get_block(self, index):
         try:
             index = int(index)
@@ -170,22 +186,46 @@ class Blockchain:
             if not current.hash.startswith(target):
                 return False
 
+            expected_nonces = {}
+
             for tx_data in current.transactions:
-                if isinstance(tx_data, dict):
-                    sender = tx_data.get("sender")
-                    receiver = tx_data.get("receiver")
+                if not isinstance(tx_data, dict):
+                    continue
 
-                    if sender != "SYSTEM" and not self.is_valid_address(sender):
-                        return False
+                sender = tx_data.get("sender")
+                receiver = tx_data.get("receiver")
 
-                    if not self.is_valid_address(receiver):
-                        return False
+                if sender != "SYSTEM" and not self.is_valid_address(sender):
+                    return False
 
-                    tx = Transaction.from_dict(tx_data)
-                    if not tx.is_valid():
+                if not self.is_valid_address(receiver):
+                    return False
+
+                tx = Transaction.from_dict(tx_data)
+
+                if not tx.is_valid():
+                    return False
+
+                if sender != "SYSTEM":
+                    previous_nonce = expected_nonces.get(sender, self.get_nonce_before_block(sender, current.index))
+                    if tx.nonce != previous_nonce + 1:
                         return False
+                    expected_nonces[sender] = tx.nonce
 
         return True
+
+    def get_nonce_before_block(self, address, block_index):
+        nonce = 0
+
+        for block in self.chain:
+            if block.index >= block_index:
+                break
+
+            for tx in block.transactions:
+                if isinstance(tx, dict) and tx.get("sender") == address:
+                    nonce = max(nonce, int(tx.get("nonce", 0)))
+
+        return nonce
 
     def replace_chain(self, new_chain_data):
         if not new_chain_data:
@@ -281,7 +321,7 @@ class Blockchain:
 
         for tx in self.pending_transactions:
             if isinstance(tx, dict) and tx.get("sender") == address:
-                total += tx["amount"]
+                total += float(tx.get("amount", 0)) + float(tx.get("fee", 0))
 
         return total
 
@@ -311,7 +351,17 @@ class Blockchain:
         if transaction.amount <= 0:
             raise Exception("Transaction amount must be greater than zero")
 
-        if self.get_available_balance(transaction.sender) < transaction.amount:
+        if transaction.fee < 0:
+            raise Exception("Transaction fee cannot be negative")
+
+        expected_nonce = self.get_next_nonce(transaction.sender)
+
+        if transaction.nonce != expected_nonce:
+            raise Exception(f"Invalid nonce. Expected {expected_nonce}")
+
+        total_cost = transaction.amount + transaction.fee
+
+        if self.get_available_balance(transaction.sender) < total_cost:
             raise Exception("Insufficient balance")
 
         self.pending_transactions.append(transaction.to_dict())
@@ -330,8 +380,22 @@ class Blockchain:
         if current_reward > remaining_supply:
             current_reward = remaining_supply
 
-        if current_reward > 0:
-            reward_tx = Transaction("SYSTEM", miner_address, current_reward)
+        total_fees = 0
+
+        for tx in self.pending_transactions:
+            if isinstance(tx, dict) and tx.get("sender") != "SYSTEM":
+                total_fees += float(tx.get("fee", 0))
+
+        miner_payment = current_reward + total_fees
+
+        if current_reward > 0 or total_fees > 0:
+            reward_tx = Transaction(
+                "SYSTEM",
+                miner_address,
+                miner_payment,
+                fee=0,
+                nonce=0
+            )
             self.pending_transactions.append(reward_tx.to_dict())
 
         self.adjust_difficulty()
@@ -355,11 +419,15 @@ class Blockchain:
         for block in self.chain:
             for tx in block.transactions:
                 if isinstance(tx, dict):
-                    if tx["sender"] == address:
-                        balance -= tx["amount"]
+                    amount = float(tx.get("amount", 0))
+                    fee = float(tx.get("fee", 0))
 
-                    if tx["receiver"] == address:
-                        balance += tx["amount"]
+                    if tx.get("sender") == address:
+                        balance -= amount
+                        balance -= fee
+
+                    if tx.get("receiver") == address:
+                        balance += amount
 
         return balance
 
@@ -399,6 +467,8 @@ class Blockchain:
                         "sender": tx.get("sender"),
                         "receiver": tx.get("receiver"),
                         "amount": tx.get("amount"),
+                        "fee": tx.get("fee", 0),
+                        "nonce": tx.get("nonce", 0),
                         "timestamp": tx.get("timestamp")
                     })
 
@@ -487,6 +557,8 @@ class Blockchain:
                     "sender": sender,
                     "receiver": receiver,
                     "amount": tx.get("amount"),
+                    "fee": tx.get("fee", 0),
+                    "nonce": tx.get("nonce", 0),
                     "timestamp": tx.get("timestamp")
                 })
 
@@ -503,7 +575,7 @@ class Blockchain:
 
                 if tx.get("sender") == "SYSTEM":
                     miner = tx.get("receiver")
-                    amount = tx.get("amount", 0)
+                    amount = float(tx.get("amount", 0))
 
                     if not self.is_valid_address(miner):
                         continue
