@@ -2,6 +2,7 @@ import re
 from zyron.block import Block
 from zyron.transaction import Transaction
 from zyron.storage import BlockchainStorage
+from zyron.wallet import address_from_public_key
 
 
 class Blockchain:
@@ -27,6 +28,19 @@ class Blockchain:
         if not isinstance(address, str):
             return False
         return re.fullmatch(r"ZYN[a-fA-F0-9]{40}", address) is not None
+
+    def transaction_public_key_matches_sender(self, transaction):
+        if transaction.sender == "SYSTEM":
+            return True
+
+        if not transaction.public_key:
+            return False
+
+        try:
+            derived_address = address_from_public_key(transaction.public_key)
+            return derived_address == transaction.sender
+        except Exception:
+            return False
 
     def create_genesis_block(self):
         return Block(0, ["Genesis Block"], "0")
@@ -111,7 +125,7 @@ class Blockchain:
         for block in self.chain:
             for tx in block.transactions:
                 if isinstance(tx, dict) and tx.get("sender") == "SYSTEM":
-                    total += tx.get("amount", 0)
+                    total += float(tx.get("amount", 0))
 
         return total
 
@@ -158,6 +172,19 @@ class Blockchain:
 
     def get_next_nonce(self, address):
         return self.get_nonce(address) + 1
+
+    def get_nonce_before_block(self, address, block_index):
+        nonce = 0
+
+        for block in self.chain:
+            if block.index >= block_index:
+                break
+
+            for tx in block.transactions:
+                if isinstance(tx, dict) and tx.get("sender") == address:
+                    nonce = max(nonce, int(tx.get("nonce", 0)))
+
+        return nonce
 
     def get_block(self, index):
         try:
@@ -206,26 +233,21 @@ class Blockchain:
                 if not tx.is_valid():
                     return False
 
+                if not self.transaction_public_key_matches_sender(tx):
+                    return False
+
                 if sender != "SYSTEM":
-                    previous_nonce = expected_nonces.get(sender, self.get_nonce_before_block(sender, current.index))
+                    previous_nonce = expected_nonces.get(
+                        sender,
+                        self.get_nonce_before_block(sender, current.index)
+                    )
+
                     if tx.nonce != previous_nonce + 1:
                         return False
+
                     expected_nonces[sender] = tx.nonce
 
         return True
-
-    def get_nonce_before_block(self, address, block_index):
-        nonce = 0
-
-        for block in self.chain:
-            if block.index >= block_index:
-                break
-
-            for tx in block.transactions:
-                if isinstance(tx, dict) and tx.get("sender") == address:
-                    nonce = max(nonce, int(tx.get("nonce", 0)))
-
-        return nonce
 
     def replace_chain(self, new_chain_data):
         if not new_chain_data:
@@ -331,6 +353,9 @@ class Blockchain:
     def add_transaction(self, transaction):
         if not transaction.is_valid():
             raise Exception("Invalid transaction signature")
+
+        if not self.transaction_public_key_matches_sender(transaction):
+            raise Exception("Public key does not match sender address")
 
         if self.has_transaction(transaction.txid):
             raise Exception("Transaction already exists")
