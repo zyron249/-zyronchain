@@ -3,6 +3,12 @@ import ecdsa
 from mnemonic import Mnemonic
 
 
+def address_from_public_key(public_key_hex):
+    public_key_bytes = bytes.fromhex(public_key_hex)
+    sha256_hash = hashlib.sha256(public_key_bytes).hexdigest()
+    return "ZYN" + sha256_hash[:40]
+
+
 class Wallet:
     def __init__(self, mnemonic=None):
         self.mnemo = Mnemonic("english")
@@ -31,9 +37,7 @@ class Wallet:
         )
 
     def create_address(self):
-        public_key_bytes = self.public_key.to_string()
-        sha256_hash = hashlib.sha256(public_key_bytes).hexdigest()
-        return "ZYN" + sha256_hash[:40]
+        return address_from_public_key(self.get_public_key())
 
     def get_private_key(self):
         return self.private_key.to_string().hex()
