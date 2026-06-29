@@ -2,6 +2,9 @@ import os
 import requests
 import threading
 import time
+import socket
+import ipaddress
+from urllib.parse import urlparse
 from flask import Flask, request, render_template
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -23,19 +26,157 @@ storage = BlockchainStorage()
 
 peers = set(storage.load_peers())
 
-if not peers:
-    peers = {
-        "https://zyronchain-node2.onrender.com"
-    }
-    storage.save_peer("https://zyronchain-node2.onrender.com")
-
 AUTO_SYNC_INTERVAL = 60
 FAUCET_AMOUNT = 25
 FAUCET_COOLDOWN_SECONDS = 24 * 60 * 60
+MAX_PEERS = 50
+PEER_TIMEOUT = 5
+
+
+def normalize_peer_url(node):
+    if not isinstance(node, str):
+        return None
+    return node.strip().rstrip("/")
+
+
+def is_private_or_local_host(hostname):
+    if not hostname:
+        return True
+
+    if hostname in ["localhost", "127.0.0.1", "0.0.0.0", "::1"]:
+        return True
+
+    try:
+        ip = ipaddress.ip_address(hostname)
+        return (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_unspecified
+        )
+    except ValueError:
+        pass
+
+    try:
+        resolved_ips = socket.getaddrinfo(hostname, None)
+        for item in resolved_ips:
+            ip_text = item[4][0]
+            ip = ipaddress.ip_address(ip_text)
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_multicast
+                or ip.is_unspecified
+            ):
+                return True
+    except Exception:
+        return True
+
+    return False
+
+
+def is_valid_peer_url(node):
+    node = normalize_peer_url(node)
+
+    if not node:
+        return False, "Peer URL is empty"
+
+    parsed = urlparse(node)
+
+    if parsed.scheme != "https":
+        return False, "Only https peer URLs are allowed"
+
+    if not parsed.netloc or not parsed.hostname:
+        return False, "Invalid peer hostname"
+
+    if parsed.username or parsed.password:
+        return False, "Peer URL must not contain username or password"
+
+    if parsed.path not in ["", "/"]:
+        return False, "Peer URL must be a base URL only"
+
+    if parsed.query or parsed.fragment:
+        return False, "Peer URL must not contain query or fragment"
+
+    if is_private_or_local_host(parsed.hostname):
+        return False, "Private, local, or unreachable hosts are not allowed"
+
+    return True, "Valid peer URL"
+
+
+def add_peer(node):
+    node = normalize_peer_url(node)
+    valid, reason = is_valid_peer_url(node)
+
+    if not valid:
+        return {"added": False, "node": node, "reason": reason}
+
+    if len(peers) >= MAX_PEERS and node not in peers:
+        return {"added": False, "node": node, "reason": "Maximum peer limit reached"}
+
+    if node in peers:
+        return {"added": False, "node": node, "reason": "Peer already exists"}
+
+    peers.add(node)
+    storage.save_peer(node)
+
+    return {"added": True, "node": node, "reason": "Peer added"}
+
+
+def ping_peer(node):
+    node = normalize_peer_url(node)
+    valid, reason = is_valid_peer_url(node)
+
+    if not valid:
+        return {
+            "node": node,
+            "online": False,
+            "reason": reason
+        }
+
+    try:
+        start = time.time()
+        response = requests.get(f"{node}/peer/status", timeout=PEER_TIMEOUT)
+        latency_ms = round((time.time() - start) * 1000, 2)
+
+        try:
+            data = response.json()
+        except Exception:
+            data = {"raw_response": response.text[:500]}
+
+        return {
+            "node": node,
+            "online": response.status_code == 200,
+            "status_code": response.status_code,
+            "latency_ms": latency_ms,
+            "response": data
+        }
+
+    except Exception as error:
+        return {
+            "node": node,
+            "online": False,
+            "reason": str(error)
+        }
+
+
+if not peers:
+    default_peer = "https://zyronchain-node2.onrender.com"
+    result = add_peer(default_peer)
+    if not result.get("added"):
+        print("Default peer skipped:", result)
 
 
 def sync_chain_from_node(node):
-    response = requests.get(f"{node}/chain", timeout=5)
+    node = normalize_peer_url(node)
+    valid, reason = is_valid_peer_url(node)
+
+    if not valid:
+        return {"node": node, "status": "failed", "reason": reason}
+
+    response = requests.get(f"{node}/chain", timeout=PEER_TIMEOUT)
 
     if response.status_code != 200:
         return {"node": node, "status": "failed", "reason": f"HTTP {response.status_code}"}
@@ -51,7 +192,13 @@ def sync_chain_from_node(node):
 
 
 def sync_mempool_from_node(node):
-    response = requests.get(f"{node}/mempool", timeout=5)
+    node = normalize_peer_url(node)
+    valid, reason = is_valid_peer_url(node)
+
+    if not valid:
+        return {"node": node, "status": "failed", "reason": reason}
+
+    response = requests.get(f"{node}/mempool", timeout=PEER_TIMEOUT)
 
     if response.status_code != 200:
         return {"node": node, "status": "failed", "reason": f"HTTP {response.status_code}"}
@@ -68,7 +215,13 @@ def sync_mempool_from_node(node):
 
 
 def discover_peers_from_node(node):
-    response = requests.get(f"{node}/nodes", timeout=5)
+    node = normalize_peer_url(node)
+    valid, reason = is_valid_peer_url(node)
+
+    if not valid:
+        return {"node": node, "status": "failed", "reason": reason}
+
+    response = requests.get(f"{node}/nodes", timeout=PEER_TIMEOUT)
 
     if response.status_code != 200:
         return {"node": node, "status": "failed", "reason": f"HTTP {response.status_code}"}
@@ -80,13 +233,12 @@ def discover_peers_from_node(node):
     skipped = []
 
     for remote_node in remote_nodes:
-        if not remote_node or remote_node in peers:
-            skipped.append(remote_node)
-            continue
+        result = add_peer(remote_node)
 
-        peers.add(remote_node)
-        storage.save_peer(remote_node)
-        added.append(remote_node)
+        if result.get("added"):
+            added.append(result.get("node"))
+        else:
+            skipped.append(result)
 
     return {
         "node": node,
@@ -97,6 +249,7 @@ def discover_peers_from_node(node):
 
 
 def broadcast_peer(new_node):
+    new_node = normalize_peer_url(new_node)
     results = []
 
     for node in list(peers):
@@ -107,13 +260,13 @@ def broadcast_peer(new_node):
             response = requests.post(
                 f"{node}/nodes/register",
                 json={"node": new_node},
-                timeout=5
+                timeout=PEER_TIMEOUT
             )
 
             try:
                 response_data = response.json()
             except Exception:
-                response_data = {"raw_response": response.text}
+                response_data = {"raw_response": response.text[:500]}
 
             results.append({
                 "node": node,
@@ -139,13 +292,13 @@ def broadcast_transaction(tx_data):
             response = requests.post(
                 f"{node}/transaction",
                 json=tx_data,
-                timeout=5
+                timeout=PEER_TIMEOUT
             )
 
             try:
                 response_data = response.json()
             except Exception:
-                response_data = {"raw_response": response.text}
+                response_data = {"raw_response": response.text[:500]}
 
             results.append({
                 "node": node,
@@ -228,6 +381,51 @@ def health():
         "network": chain.get_network_info(),
         "supply": chain.get_supply_info()
     }
+
+
+@app.route("/peer/status")
+def peer_status():
+    return {
+        "status": "online",
+        "name": "ZyronChain",
+        "chain_id": "zyron-testnet-1",
+        "chain_valid": chain.is_chain_valid(),
+        "height": len(chain.chain) - 1,
+        "blocks": len(chain.chain),
+        "latest_block_hash": chain.get_latest_block().hash,
+        "cumulative_work": chain.get_chain_work(),
+        "pending_transactions": len(chain.pending_transactions),
+        "peers": len(peers),
+        "timestamp": time.time()
+    }
+
+
+@app.route("/peers/health")
+def peers_health():
+    results = [ping_peer(node) for node in list(peers)]
+
+    online = sum(1 for result in results if result.get("online"))
+    offline = len(results) - online
+
+    return {
+        "peer_count": len(peers),
+        "online": online,
+        "offline": offline,
+        "results": results
+    }
+
+
+@app.route("/peers/ping", methods=["POST"])
+@limiter.limit("20 per minute")
+def peers_ping():
+    data = request.json or {}
+    node = data.get("node")
+
+    if node:
+        return ping_peer(node)
+
+    results = [ping_peer(peer) for peer in list(peers)]
+    return {"results": results}
 
 
 @app.route("/stats")
@@ -654,20 +852,23 @@ def get_nodes():
 @limiter.limit("10 per hour")
 def register_node():
     data = request.json or {}
-    node = data.get("node")
+    node = normalize_peer_url(data.get("node"))
 
-    if not node:
-        return {"error": "Node address is required"}, 400
+    result = add_peer(node)
 
-    if node not in peers:
-        peers.add(node)
-        storage.save_peer(node)
-        broadcast_results = broadcast_peer(node)
-    else:
-        broadcast_results = []
+    if not result.get("added"):
+        return {
+            "message": "Node registration rejected",
+            "result": result,
+            "nodes": list(peers),
+            "count": len(peers)
+        }, 400
+
+    broadcast_results = broadcast_peer(node)
 
     return {
         "message": "Node registered",
+        "result": result,
         "nodes": list(peers),
         "count": len(peers),
         "broadcast": broadcast_results
@@ -695,7 +896,7 @@ def peers_discover():
 @app.route("/peers/remove", methods=["POST"])
 def peers_remove():
     data = request.json or {}
-    node = data.get("node")
+    node = normalize_peer_url(data.get("node"))
 
     if not node:
         return {"error": "Node address is required"}, 400
