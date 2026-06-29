@@ -36,7 +36,13 @@ class Blockchain:
         if not transaction.public_key:
             return False
 
-            def create_genesis_block(self):
+        try:
+            derived_address = address_from_public_key(transaction.public_key)
+            return derived_address == transaction.sender
+        except Exception:
+            return False
+
+    def create_genesis_block(self):
         return Block(
             index=0,
             transactions=["Genesis Block"],
@@ -76,9 +82,9 @@ class Blockchain:
             block_data["index"],
             block_data["transactions"],
             block_data["previous_hash"],
-            block_data.get("difficulty", 4)
+            block_data.get("difficulty", 4),
+            timestamp=block_data.get("timestamp")
         )
-        block.timestamp = block_data["timestamp"]
         block.nonce = block_data["nonce"]
         block.hash = block_data["hash"]
         return block
