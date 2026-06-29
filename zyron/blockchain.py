@@ -1,4 +1,5 @@
 import re
+import time
 from zyron.block import Block
 from zyron.transaction import Transaction
 from zyron.storage import BlockchainStorage
@@ -6,6 +7,9 @@ from zyron.wallet import address_from_public_key
 
 
 class Blockchain:
+    GENESIS_TIMESTAMP = 1704067200
+    MAX_FUTURE_BLOCK_TIME = 120
+
     def __init__(self):
         self.storage = BlockchainStorage()
         self.chain = [self.create_genesis_block()]
@@ -32,13 +36,11 @@ class Blockchain:
     def transaction_public_key_matches_sender(self, transaction):
         if transaction.sender == "SYSTEM":
             return True
-
         if not transaction.public_key:
             return False
 
         try:
-            derived_address = address_from_public_key(transaction.public_key)
-            return derived_address == transaction.sender
+            return address_from_public_key(transaction.public_key) == transaction.sender
         except Exception:
             return False
 
@@ -48,7 +50,7 @@ class Blockchain:
             transactions=["Genesis Block"],
             previous_hash="0",
             difficulty=4,
-            timestamp=1704067200
+            timestamp=self.GENESIS_TIMESTAMP
         )
 
     def get_latest_block(self):
@@ -59,12 +61,7 @@ class Blockchain:
 
     def get_chain_work(self, chain_to_measure=None):
         chain_to_measure = chain_to_measure if chain_to_measure is not None else self.chain
-        total_work = 0
-
-        for block in chain_to_measure:
-            total_work += self.get_block_work(block)
-
-        return total_work
+        return sum(self.get_block_work(block) for block in chain_to_measure)
 
     def block_to_dict(self, block):
         return {
@@ -119,12 +116,7 @@ class Blockchain:
         elif actual_time > expected_time * 2:
             self.difficulty -= 1
 
-        if self.difficulty < self.min_difficulty:
-            self.difficulty = self.min_difficulty
-
-        if self.difficulty > self.max_difficulty:
-            self.difficulty = self.max_difficulty
-
+        self.difficulty = max(self.min_difficulty, min(self.difficulty, self.max_difficulty))
         return self.difficulty
 
     def get_network_info(self):
@@ -140,26 +132,19 @@ class Blockchain:
 
     def get_total_supply(self):
         total = 0
-
         for block in self.chain:
             for tx in block.transactions:
                 if isinstance(tx, dict) and tx.get("sender") == "SYSTEM":
                     total += float(tx.get("amount", 0))
-
         return total
 
     def get_current_reward(self):
         halvings = len(self.chain) // self.halving_interval
         reward = self.initial_mining_reward / (2 ** halvings)
-
-        if reward < 0.00000001:
-            return 0
-
-        return reward
+        return 0 if reward < 0.00000001 else reward
 
     def get_remaining_supply(self):
-        remaining = self.max_supply - self.get_total_supply()
-        return max(remaining, 0)
+        return max(self.max_supply - self.get_total_supply(), 0)
 
     def get_supply_info(self):
         return {
@@ -168,10 +153,7 @@ class Blockchain:
             "remaining_supply": self.get_remaining_supply(),
             "current_reward": self.get_current_reward(),
             "halving_interval": self.halving_interval,
-            "next_halving_block": (
-                ((len(self.chain) // self.halving_interval) + 1)
-                * self.halving_interval
-            ),
+            "next_halving_block": ((len(self.chain) // self.halving_interval) + 1) * self.halving_interval,
             "current_block_height": len(self.chain) - 1
         }
 
@@ -218,13 +200,37 @@ class Blockchain:
 
         return {"found": False, "error": "Block not found", "index": index}
 
+    def is_valid_genesis_block(self, genesis_block):
+        expected_genesis = self.create_genesis_block()
+
+        return (
+            genesis_block.index == expected_genesis.index
+            and genesis_block.timestamp == expected_genesis.timestamp
+            and genesis_block.transactions == expected_genesis.transactions
+            and genesis_block.previous_hash == expected_genesis.previous_hash
+            and genesis_block.difficulty == expected_genesis.difficulty
+            and genesis_block.hash == expected_genesis.hash
+        )
+
     def is_valid_chain(self, chain_to_validate):
+        if not chain_to_validate:
+            return False
+
+        if not self.is_valid_genesis_block(chain_to_validate[0]):
+            return False
+
         for i in range(1, len(chain_to_validate)):
             current = chain_to_validate[i]
             previous = chain_to_validate[i - 1]
             target = "0" * current.difficulty
 
             if current.index != previous.index + 1:
+                return False
+
+            if current.timestamp <= previous.timestamp:
+                return False
+
+            if current.timestamp > time.time() + self.MAX_FUTURE_BLOCK_TIME:
                 return False
 
             if current.hash != current.calculate_hash():
@@ -327,23 +333,14 @@ class Blockchain:
             return {"accepted": False, "reason": "Missing txid"}
 
         if self.has_transaction(txid):
-            return {
-                "accepted": False,
-                "reason": "Transaction already exists",
-                "txid": txid
-            }
+            return {"accepted": False, "reason": "Transaction already exists", "txid": txid}
 
         try:
             tx = Transaction.from_dict(tx_data)
             accepted_txid = self.add_transaction(tx)
             return {"accepted": True, "txid": accepted_txid}
-
         except Exception as error:
-            return {
-                "accepted": False,
-                "reason": str(error),
-                "txid": txid
-            }
+            return {"accepted": False, "reason": str(error), "txid": txid}
 
     def sync_mempool(self, remote_transactions):
         if not isinstance(remote_transactions, list):
@@ -496,20 +493,11 @@ class Blockchain:
         for block in self.chain:
             for tx in block.transactions:
                 if isinstance(tx, dict) and tx.get("txid") == txid:
-                    return {
-                        "found": True,
-                        "block_index": block.index,
-                        "transaction": tx
-                    }
+                    return {"found": True, "block_index": block.index, "transaction": tx}
 
         for tx in self.pending_transactions:
             if isinstance(tx, dict) and tx.get("txid") == txid:
-                return {
-                    "found": True,
-                    "block_index": None,
-                    "status": "pending",
-                    "transaction": tx
-                }
+                return {"found": True, "block_index": None, "status": "pending", "transaction": tx}
 
         return {"found": False, "txid": txid}
 
@@ -572,10 +560,7 @@ class Blockchain:
             balance = self.get_balance(address)
 
             if balance > 0:
-                rich_list.append({
-                    "address": address,
-                    "balance": balance
-                })
+                rich_list.append({"address": address, "balance": balance})
 
         rich_list.sort(key=lambda x: x["balance"], reverse=True)
         return rich_list[:limit]
@@ -586,7 +571,6 @@ class Blockchain:
 
         first_block = self.chain[0]
         latest_block = self.chain[-1]
-
         total_time = latest_block.timestamp - first_block.timestamp
         block_count = len(self.chain) - 1
 
@@ -653,7 +637,6 @@ class Blockchain:
 
         leaderboard = list(miners.values())
         leaderboard.sort(key=lambda x: x["total_rewards"], reverse=True)
-
         return leaderboard[:limit]
 
     def get_explorer_summary(self):
