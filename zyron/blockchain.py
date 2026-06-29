@@ -9,6 +9,7 @@ from zyron.wallet import address_from_public_key
 class Blockchain:
     GENESIS_TIMESTAMP = 1704067200
     MAX_FUTURE_BLOCK_TIME = 120
+    MAX_BLOCK_TRANSACTIONS = 1000
 
     def __init__(self):
         self.storage = BlockchainStorage()
@@ -188,6 +189,22 @@ class Blockchain:
 
         return nonce
 
+    def get_sorted_pending_transactions(self):
+        normal_transactions = [
+            tx for tx in self.pending_transactions
+            if isinstance(tx, dict) and tx.get("sender") != "SYSTEM"
+        ]
+
+        normal_transactions.sort(
+            key=lambda tx: (
+                float(tx.get("fee", 0)),
+                float(tx.get("timestamp", 0))
+            ),
+            reverse=True
+        )
+
+        return normal_transactions[:self.MAX_BLOCK_TRANSACTIONS]
+
     def get_block(self, index):
         try:
             index = int(index)
@@ -233,6 +250,9 @@ class Blockchain:
             if current.timestamp > time.time() + self.MAX_FUTURE_BLOCK_TIME:
                 return False
 
+            if len(current.transactions) > self.MAX_BLOCK_TRANSACTIONS + 1:
+                return False
+
             if current.hash != current.calculate_hash():
                 return False
 
@@ -243,13 +263,28 @@ class Blockchain:
                 return False
 
             expected_nonces = {}
+            seen_txids = set()
+            system_tx_count = 0
 
             for tx_data in current.transactions:
                 if not isinstance(tx_data, dict):
                     continue
 
+                txid = tx_data.get("txid")
+
+                if txid:
+                    if txid in seen_txids:
+                        return False
+                    seen_txids.add(txid)
+
                 sender = tx_data.get("sender")
                 receiver = tx_data.get("receiver")
+
+                if sender == "SYSTEM":
+                    system_tx_count += 1
+
+                    if system_tx_count > 1:
+                        return False
 
                 if sender != "SYSTEM" and not self.is_valid_address(sender):
                     return False
@@ -429,6 +464,8 @@ class Blockchain:
         if not self.is_valid_address(miner_address):
             raise Exception("Invalid miner address")
 
+        selected_transactions = self.get_sorted_pending_transactions()
+
         current_reward = self.get_current_reward()
         remaining_supply = self.get_remaining_supply()
 
@@ -440,10 +477,10 @@ class Blockchain:
 
         total_fees = 0
 
-        for tx in self.pending_transactions:
-            if isinstance(tx, dict) and tx.get("sender") != "SYSTEM":
-                total_fees += float(tx.get("fee", 0))
+        for tx in selected_transactions:
+            total_fees += float(tx.get("fee", 0))
 
+        block_transactions = list(selected_transactions)
         miner_payment = current_reward + total_fees
 
         if current_reward > 0 or total_fees > 0:
@@ -454,13 +491,13 @@ class Blockchain:
                 fee=0,
                 nonce=0
             )
-            self.pending_transactions.append(reward_tx.to_dict())
+            block_transactions.append(reward_tx.to_dict())
 
         self.adjust_difficulty()
 
         block = Block(
             len(self.chain),
-            self.pending_transactions,
+            block_transactions,
             self.get_latest_block().hash,
             self.difficulty
         )
@@ -469,7 +506,17 @@ class Blockchain:
         self.chain.append(block)
         self.mining_reward = self.get_current_reward()
         self.save_chain()
-        self.pending_transactions = []
+
+        selected_txids = {
+            tx.get("txid")
+            for tx in selected_transactions
+            if isinstance(tx, dict)
+        }
+
+        self.pending_transactions = [
+            tx for tx in self.pending_transactions
+            if not isinstance(tx, dict) or tx.get("txid") not in selected_txids
+        ]
 
     def get_balance(self, address):
         balance = 0
