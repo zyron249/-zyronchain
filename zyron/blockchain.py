@@ -48,6 +48,18 @@ class Blockchain:
     def get_latest_block(self):
         return self.chain[-1]
 
+    def get_block_work(self, block):
+        return 16 ** int(block.difficulty)
+
+    def get_chain_work(self, chain_to_measure=None):
+        chain_to_measure = chain_to_measure if chain_to_measure is not None else self.chain
+        total_work = 0
+
+        for block in chain_to_measure:
+            total_work += self.get_block_work(block)
+
+        return total_work
+
     def block_to_dict(self, block):
         return {
             "index": block.index,
@@ -116,7 +128,8 @@ class Blockchain:
             "max_difficulty": self.max_difficulty,
             "target_block_time": self.target_block_time,
             "difficulty_adjustment_interval": self.difficulty_adjustment_interval,
-            "current_block_height": len(self.chain) - 1
+            "current_block_height": len(self.chain) - 1,
+            "cumulative_work": self.get_chain_work()
         }
 
     def get_total_supply(self):
@@ -173,10 +186,11 @@ class Blockchain:
     def get_next_nonce(self, address):
         return self.get_nonce(address) + 1
 
-    def get_nonce_before_block(self, address, block_index):
+    def get_nonce_before_block(self, address, block_index, chain_to_search=None):
         nonce = 0
+        chain_to_search = chain_to_search if chain_to_search is not None else self.chain
 
-        for block in self.chain:
+        for block in chain_to_search:
             if block.index >= block_index:
                 break
 
@@ -203,6 +217,9 @@ class Blockchain:
             current = chain_to_validate[i]
             previous = chain_to_validate[i - 1]
             target = "0" * current.difficulty
+
+            if current.index != previous.index + 1:
+                return False
 
             if current.hash != current.calculate_hash():
                 return False
@@ -239,7 +256,7 @@ class Blockchain:
                 if sender != "SYSTEM":
                     previous_nonce = expected_nonces.get(
                         sender,
-                        self.get_nonce_before_block(sender, current.index)
+                        self.get_nonce_before_block(sender, current.index, chain_to_validate)
                     )
 
                     if tx.nonce != previous_nonce + 1:
@@ -255,11 +272,19 @@ class Blockchain:
 
         new_chain = [self.dict_to_block(block_data) for block_data in new_chain_data]
 
-        if len(new_chain) <= len(self.chain):
-            return {"replaced": False, "reason": "Incoming chain is not longer"}
-
         if not self.is_valid_chain(new_chain):
             return {"replaced": False, "reason": "Incoming chain is invalid"}
+
+        current_work = self.get_chain_work(self.chain)
+        incoming_work = self.get_chain_work(new_chain)
+
+        if incoming_work <= current_work:
+            return {
+                "replaced": False,
+                "reason": "Incoming chain does not have more cumulative work",
+                "current_work": current_work,
+                "incoming_work": incoming_work
+            }
 
         self.chain = new_chain
         self.pending_transactions = []
@@ -267,7 +292,12 @@ class Blockchain:
         self.mining_reward = self.get_current_reward()
         self.save_chain()
 
-        return {"replaced": True, "new_length": len(self.chain)}
+        return {
+            "replaced": True,
+            "new_length": len(self.chain),
+            "current_work": current_work,
+            "incoming_work": incoming_work
+        }
 
     def has_transaction(self, txid):
         for block in self.chain:
@@ -629,6 +659,7 @@ class Blockchain:
             "current_block_height": len(self.chain) - 1,
             "latest_block_hash": latest_block.hash,
             "difficulty": self.difficulty,
+            "cumulative_work": self.get_chain_work(),
             "pending_transactions": len(self.pending_transactions),
             "total_transactions": self.get_total_transaction_count(),
             "total_addresses": len(self.get_all_addresses()),
@@ -650,6 +681,7 @@ class Blockchain:
             "current_block_height": len(self.chain) - 1,
             "latest_block_hash": latest_block.hash,
             "difficulty": self.difficulty,
+            "cumulative_work": self.get_chain_work(),
             "pending_transactions": len(self.pending_transactions),
             "total_transactions": self.get_total_transaction_count(),
             "total_addresses": len(self.get_all_addresses()),
