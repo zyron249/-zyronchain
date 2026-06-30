@@ -31,6 +31,8 @@ FAUCET_AMOUNT = 25
 FAUCET_COOLDOWN_SECONDS = 24 * 60 * 60
 MAX_PEERS = 50
 PEER_TIMEOUT = 5
+MAX_PEER_FAILURES = 3
+peer_failures = {}
 
 
 def normalize_peer_url(node):
@@ -121,8 +123,62 @@ def add_peer(node):
 
     peers.add(node)
     storage.save_peer(node)
+    peer_failures[node] = 0
 
     return {"added": True, "node": node, "reason": "Peer added"}
+
+
+def remove_peer(node):
+    node = normalize_peer_url(node)
+
+    if node in peers:
+        peers.remove(node)
+
+    storage.remove_peer(node)
+
+    if node in peer_failures:
+        del peer_failures[node]
+
+    return {
+        "removed": True,
+        "node": node
+    }
+
+
+def record_peer_success(node):
+    node = normalize_peer_url(node)
+    if node:
+        peer_failures[node] = 0
+
+
+def record_peer_failure(node, reason):
+    node = normalize_peer_url(node)
+
+    if not node:
+        return {
+            "node": node,
+            "failure_count": 0,
+            "max_failures": MAX_PEER_FAILURES,
+            "removed": False,
+            "reason": reason
+        }
+
+    current_failures = peer_failures.get(node, 0) + 1
+    peer_failures[node] = current_failures
+
+    removed = False
+
+    if current_failures >= MAX_PEER_FAILURES:
+        remove_peer(node)
+        removed = True
+
+    return {
+        "node": node,
+        "failure_count": current_failures,
+        "max_failures": MAX_PEER_FAILURES,
+        "removed": removed,
+        "reason": reason
+    }
 
 
 def ping_peer(node):
@@ -130,9 +186,12 @@ def ping_peer(node):
     valid, reason = is_valid_peer_url(node)
 
     if not valid:
+        failure = record_peer_failure(node, reason)
         return {
             "node": node,
             "online": False,
+            "failure_score": peer_failures.get(node, 0),
+            "failure": failure,
             "reason": reason
         }
 
@@ -146,18 +205,32 @@ def ping_peer(node):
         except Exception:
             data = {"raw_response": response.text[:500]}
 
+        if response.status_code == 200:
+            record_peer_success(node)
+            online = True
+            failure = None
+        else:
+            failure = record_peer_failure(node, f"HTTP {response.status_code}")
+            online = False
+
         return {
             "node": node,
-            "online": response.status_code == 200,
+            "online": online,
             "status_code": response.status_code,
             "latency_ms": latency_ms,
+            "failure_score": peer_failures.get(node, 0),
+            "failure": failure,
             "response": data
         }
 
     except Exception as error:
+        failure = record_peer_failure(node, str(error))
+
         return {
             "node": node,
             "online": False,
+            "failure_score": peer_failures.get(node, 0),
+            "failure": failure,
             "reason": str(error)
         }
 
@@ -174,21 +247,34 @@ def sync_chain_from_node(node):
     valid, reason = is_valid_peer_url(node)
 
     if not valid:
-        return {"node": node, "status": "failed", "reason": reason}
+        failure = record_peer_failure(node, reason)
+        return {"node": node, "status": "failed", "reason": reason, "failure": failure}
 
-    response = requests.get(f"{node}/chain", timeout=PEER_TIMEOUT)
+    try:
+        response = requests.get(f"{node}/chain", timeout=PEER_TIMEOUT)
 
-    if response.status_code != 200:
-        return {"node": node, "status": "failed", "reason": f"HTTP {response.status_code}"}
+        if response.status_code != 200:
+            failure = record_peer_failure(node, f"HTTP {response.status_code}")
+            return {
+                "node": node,
+                "status": "failed",
+                "reason": f"HTTP {response.status_code}",
+                "failure": failure
+            }
 
-    data = response.json()
-    result = chain.replace_chain(data.get("chain"))
+        data = response.json()
+        result = chain.replace_chain(data.get("chain"))
+        record_peer_success(node)
 
-    return {
-        "node": node,
-        "remote_length": data.get("length"),
-        "result": result
-    }
+        return {
+            "node": node,
+            "remote_length": data.get("length"),
+            "result": result
+        }
+
+    except Exception as error:
+        failure = record_peer_failure(node, str(error))
+        return {"node": node, "status": "failed", "reason": str(error), "failure": failure}
 
 
 def sync_mempool_from_node(node):
@@ -196,22 +282,35 @@ def sync_mempool_from_node(node):
     valid, reason = is_valid_peer_url(node)
 
     if not valid:
-        return {"node": node, "status": "failed", "reason": reason}
+        failure = record_peer_failure(node, reason)
+        return {"node": node, "status": "failed", "reason": reason, "failure": failure}
 
-    response = requests.get(f"{node}/mempool", timeout=PEER_TIMEOUT)
+    try:
+        response = requests.get(f"{node}/mempool", timeout=PEER_TIMEOUT)
 
-    if response.status_code != 200:
-        return {"node": node, "status": "failed", "reason": f"HTTP {response.status_code}"}
+        if response.status_code != 200:
+            failure = record_peer_failure(node, f"HTTP {response.status_code}")
+            return {
+                "node": node,
+                "status": "failed",
+                "reason": f"HTTP {response.status_code}",
+                "failure": failure
+            }
 
-    data = response.json()
-    remote_transactions = data.get("pending_transactions", [])
-    result = chain.sync_mempool(remote_transactions)
+        data = response.json()
+        remote_transactions = data.get("pending_transactions", [])
+        result = chain.sync_mempool(remote_transactions)
+        record_peer_success(node)
 
-    return {
-        "node": node,
-        "remote_pending": len(remote_transactions),
-        "result": result
-    }
+        return {
+            "node": node,
+            "remote_pending": len(remote_transactions),
+            "result": result
+        }
+
+    except Exception as error:
+        failure = record_peer_failure(node, str(error))
+        return {"node": node, "status": "failed", "reason": str(error), "failure": failure}
 
 
 def discover_peers_from_node(node):
@@ -219,33 +318,47 @@ def discover_peers_from_node(node):
     valid, reason = is_valid_peer_url(node)
 
     if not valid:
-        return {"node": node, "status": "failed", "reason": reason}
+        failure = record_peer_failure(node, reason)
+        return {"node": node, "status": "failed", "reason": reason, "failure": failure}
 
-    response = requests.get(f"{node}/nodes", timeout=PEER_TIMEOUT)
+    try:
+        response = requests.get(f"{node}/nodes", timeout=PEER_TIMEOUT)
 
-    if response.status_code != 200:
-        return {"node": node, "status": "failed", "reason": f"HTTP {response.status_code}"}
+        if response.status_code != 200:
+            failure = record_peer_failure(node, f"HTTP {response.status_code}")
+            return {
+                "node": node,
+                "status": "failed",
+                "reason": f"HTTP {response.status_code}",
+                "failure": failure
+            }
 
-    data = response.json()
-    remote_nodes = data.get("nodes", [])
+        data = response.json()
+        remote_nodes = data.get("nodes", [])
 
-    added = []
-    skipped = []
+        added = []
+        skipped = []
 
-    for remote_node in remote_nodes:
-        result = add_peer(remote_node)
+        for remote_node in remote_nodes:
+            result = add_peer(remote_node)
 
-        if result.get("added"):
-            added.append(result.get("node"))
-        else:
-            skipped.append(result)
+            if result.get("added"):
+                added.append(result.get("node"))
+            else:
+                skipped.append(result)
 
-    return {
-        "node": node,
-        "remote_count": len(remote_nodes),
-        "added": added,
-        "skipped": skipped
-    }
+        record_peer_success(node)
+
+        return {
+            "node": node,
+            "remote_count": len(remote_nodes),
+            "added": added,
+            "skipped": skipped
+        }
+
+    except Exception as error:
+        failure = record_peer_failure(node, str(error))
+        return {"node": node, "status": "failed", "reason": str(error), "failure": failure}
 
 
 def broadcast_peer(new_node):
@@ -268,17 +381,25 @@ def broadcast_peer(new_node):
             except Exception:
                 response_data = {"raw_response": response.text[:500]}
 
+            if response.status_code == 200:
+                record_peer_success(node)
+            else:
+                record_peer_failure(node, f"HTTP {response.status_code}")
+
             results.append({
                 "node": node,
                 "status_code": response.status_code,
+                "failure_score": peer_failures.get(node, 0),
                 "response": response_data
             })
 
         except Exception as error:
+            failure = record_peer_failure(node, str(error))
             results.append({
                 "node": node,
                 "status": "failed",
-                "reason": str(error)
+                "reason": str(error),
+                "failure": failure
             })
 
     return results
@@ -300,17 +421,25 @@ def broadcast_transaction(tx_data):
             except Exception:
                 response_data = {"raw_response": response.text[:500]}
 
+            if response.status_code in [200, 201]:
+                record_peer_success(node)
+            else:
+                record_peer_failure(node, f"HTTP {response.status_code}")
+
             results.append({
                 "node": node,
                 "status_code": response.status_code,
+                "failure_score": peer_failures.get(node, 0),
                 "response": response_data
             })
 
         except Exception as error:
+            failure = record_peer_failure(node, str(error))
             results.append({
                 "node": node,
                 "status": "failed",
-                "reason": str(error)
+                "reason": str(error),
+                "failure": failure
             })
 
     return results
@@ -326,7 +455,8 @@ def auto_sync_loop():
                 print("Auto mempool sync:", sync_mempool_from_node(node))
                 print("Auto peer discovery:", discover_peers_from_node(node))
             except Exception as error:
-                print("Auto sync failed:", str(error))
+                failure = record_peer_failure(node, str(error))
+                print("Auto sync failed:", failure)
 
 
 sync_thread = threading.Thread(target=auto_sync_loop, daemon=True)
@@ -375,6 +505,7 @@ def health():
         "pending_transactions": len(chain.pending_transactions),
         "peers": len(peers),
         "peer_list": list(peers),
+        "peer_failures": peer_failures,
         "database_connected": bool(chain.storage.database_url),
         "difficulty": chain.difficulty,
         "auto_sync_interval": AUTO_SYNC_INTERVAL,
@@ -411,6 +542,7 @@ def peers_health():
         "peer_count": len(peers),
         "online": online,
         "offline": offline,
+        "peer_failures": peer_failures,
         "results": results
     }
 
@@ -425,7 +557,7 @@ def peers_ping():
         return ping_peer(node)
 
     results = [ping_peer(peer) for peer in list(peers)]
-    return {"results": results}
+    return {"results": results, "peer_failures": peer_failures}
 
 
 @app.route("/stats")
@@ -484,6 +616,7 @@ def debug_db():
         "database_url_exists": bool(chain.storage.database_url),
         "database_url_prefix": chain.storage.database_url[:30] if chain.storage.database_url else None,
         "stored_peers": list(peers),
+        "peer_failures": peer_failures,
         "auto_sync_interval": AUTO_SYNC_INTERVAL,
         "faucet_amount": FAUCET_AMOUNT,
         "faucet_cooldown_seconds": FAUCET_COOLDOWN_SECONDS
@@ -499,6 +632,7 @@ def api_home():
         "difficulty": chain.difficulty,
         "mining_reward": chain.get_current_reward(),
         "peers": list(peers),
+        "peer_failures": peer_failures,
         "valid": chain.is_chain_valid(),
         "auto_sync_interval": AUTO_SYNC_INTERVAL,
         "supply": chain.get_supply_info(),
@@ -821,17 +955,13 @@ def mempool_sync():
     total_accepted = 0
     total_rejected = 0
 
-    for node in peers:
-        try:
-            result = sync_mempool_from_node(node)
-            sync_results.append(result)
+    for node in list(peers):
+        result = sync_mempool_from_node(node)
+        sync_results.append(result)
 
-            mempool_result = result.get("result", {})
-            total_accepted += mempool_result.get("accepted", 0)
-            total_rejected += mempool_result.get("rejected", 0)
-
-        except Exception as error:
-            sync_results.append({"node": node, "status": "failed", "reason": str(error)})
+        mempool_result = result.get("result", {})
+        total_accepted += mempool_result.get("accepted", 0)
+        total_rejected += mempool_result.get("rejected", 0)
 
     return {
         "message": "Mempool synchronization completed",
@@ -845,7 +975,11 @@ def mempool_sync():
 
 @app.route("/nodes")
 def get_nodes():
-    return {"nodes": list(peers), "count": len(peers)}
+    return {
+        "nodes": list(peers),
+        "count": len(peers),
+        "peer_failures": peer_failures
+    }
 
 
 @app.route("/nodes/register", methods=["POST"])
@@ -880,15 +1014,13 @@ def peers_discover():
     results = []
 
     for node in list(peers):
-        try:
-            results.append(discover_peers_from_node(node))
-        except Exception as error:
-            results.append({"node": node, "status": "failed", "reason": str(error)})
+        results.append(discover_peers_from_node(node))
 
     return {
         "message": "Peer discovery completed",
         "peer_count": len(peers),
         "peers": list(peers),
+        "peer_failures": peer_failures,
         "results": results
     }
 
@@ -901,14 +1033,11 @@ def peers_remove():
     if not node:
         return {"error": "Node address is required"}, 400
 
-    if node in peers:
-        peers.remove(node)
-
-    storage.remove_peer(node)
+    result = remove_peer(node)
 
     return {
         "message": "Peer removed",
-        "node": node,
+        "result": result,
         "peer_count": len(peers),
         "peers": list(peers)
     }
@@ -919,23 +1048,20 @@ def sync_nodes():
     sync_results = []
     replaced = False
 
-    for node in peers:
-        try:
-            result = sync_chain_from_node(node)
-            sync_results.append(result)
+    for node in list(peers):
+        result = sync_chain_from_node(node)
+        sync_results.append(result)
 
-            chain_result = result.get("result", {})
-            if chain_result.get("replaced"):
-                replaced = True
-
-        except Exception as error:
-            sync_results.append({"node": node, "status": "failed", "reason": str(error)})
+        chain_result = result.get("result", {})
+        if chain_result.get("replaced"):
+            replaced = True
 
     return {
         "message": "Node synchronization completed",
         "replaced": replaced,
         "current_length": len(chain.chain),
         "peers_checked": len(peers),
+        "peer_failures": peer_failures,
         "results": sync_results
     }
 
@@ -946,21 +1072,10 @@ def sync_all():
     mempool_results = []
     peer_results = []
 
-    for node in peers:
-        try:
-            chain_results.append(sync_chain_from_node(node))
-        except Exception as error:
-            chain_results.append({"node": node, "status": "failed", "reason": str(error)})
-
-        try:
-            mempool_results.append(sync_mempool_from_node(node))
-        except Exception as error:
-            mempool_results.append({"node": node, "status": "failed", "reason": str(error)})
-
-        try:
-            peer_results.append(discover_peers_from_node(node))
-        except Exception as error:
-            peer_results.append({"node": node, "status": "failed", "reason": str(error)})
+    for node in list(peers):
+        chain_results.append(sync_chain_from_node(node))
+        mempool_results.append(sync_mempool_from_node(node))
+        peer_results.append(discover_peers_from_node(node))
 
     return {
         "message": "Full synchronization completed",
@@ -970,7 +1085,8 @@ def sync_all():
         "current_length": len(chain.chain),
         "pending_transactions": len(chain.pending_transactions),
         "peers_checked": len(peers),
-        "peer_count": len(peers)
+        "peer_count": len(peers),
+        "peer_failures": peer_failures
     }
 
 
