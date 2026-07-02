@@ -37,6 +37,7 @@ class Blockchain:
     def transaction_public_key_matches_sender(self, transaction):
         if transaction.sender == "SYSTEM":
             return True
+
         if not transaction.public_key:
             return False
 
@@ -99,25 +100,35 @@ class Blockchain:
         self.difficulty = self.get_latest_block().difficulty
         self.mining_reward = self.get_current_reward()
 
-    def adjust_difficulty(self):
-        if len(self.chain) < self.difficulty_adjustment_interval + 1:
+    def calculate_expected_difficulty(self, chain_context):
+        if not chain_context:
             return self.difficulty
 
-        if len(self.chain) % self.difficulty_adjustment_interval != 0:
-            return self.difficulty
+        current_height = len(chain_context)
 
-        latest_block = self.chain[-1]
-        previous_adjustment_block = self.chain[-self.difficulty_adjustment_interval]
+        if current_height < self.difficulty_adjustment_interval + 1:
+            return chain_context[-1].difficulty
+
+        if current_height % self.difficulty_adjustment_interval != 0:
+            return chain_context[-1].difficulty
+
+        latest_block = chain_context[-1]
+        previous_adjustment_block = chain_context[-self.difficulty_adjustment_interval]
 
         actual_time = latest_block.timestamp - previous_adjustment_block.timestamp
         expected_time = self.target_block_time * self.difficulty_adjustment_interval
 
-        if actual_time < expected_time / 2:
-            self.difficulty += 1
-        elif actual_time > expected_time * 2:
-            self.difficulty -= 1
+        new_difficulty = latest_block.difficulty
 
-        self.difficulty = max(self.min_difficulty, min(self.difficulty, self.max_difficulty))
+        if actual_time < expected_time / 2:
+            new_difficulty += 1
+        elif actual_time > expected_time * 2:
+            new_difficulty -= 1
+
+        return max(self.min_difficulty, min(new_difficulty, self.max_difficulty))
+
+    def adjust_difficulty(self):
+        self.difficulty = self.calculate_expected_difficulty(self.chain)
         return self.difficulty
 
     def get_network_info(self):
@@ -240,8 +251,21 @@ class Blockchain:
             current = chain_to_validate[i]
             previous = chain_to_validate[i - 1]
             target = "0" * current.difficulty
+            expected_difficulty = self.calculate_expected_difficulty(chain_to_validate[:i])
 
             if current.index != previous.index + 1:
+                return False
+
+            if current.difficulty != expected_difficulty:
+                return False
+
+            if abs(int(current.difficulty) - int(previous.difficulty)) > 1:
+                return False
+
+            if current.difficulty < self.min_difficulty:
+                return False
+
+            if current.difficulty > self.max_difficulty:
                 return False
 
             if current.timestamp <= previous.timestamp:
@@ -493,13 +517,14 @@ class Blockchain:
             )
             block_transactions.append(reward_tx.to_dict())
 
-        self.adjust_difficulty()
+        new_difficulty = self.calculate_expected_difficulty(self.chain)
+        self.difficulty = new_difficulty
 
         block = Block(
             len(self.chain),
             block_transactions,
             self.get_latest_block().hash,
-            self.difficulty
+            new_difficulty
         )
 
         block.mine()
