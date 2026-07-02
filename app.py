@@ -29,16 +29,122 @@ peers = set(storage.load_peers())
 AUTO_SYNC_INTERVAL = 60
 FAUCET_AMOUNT = 25
 FAUCET_COOLDOWN_SECONDS = 24 * 60 * 60
+
 MAX_PEERS = 50
 PEER_TIMEOUT = 5
 MAX_PEER_FAILURES = 3
+
+PEER_INITIAL_SCORE = 50
+PEER_SUCCESS_REWARD = 1
+PEER_FAILURE_PENALTY = 10
+PEER_INVALID_CHAIN_PENALTY = 25
+PEER_BLACKLIST_SCORE = 0
+PEER_MAX_SCORE = 100
+
 peer_failures = {}
+peer_scores = {}
+peer_blacklist = set()
 
 
 def normalize_peer_url(node):
     if not isinstance(node, str):
         return None
     return node.strip().rstrip("/")
+
+
+def is_blacklisted(node):
+    node = normalize_peer_url(node)
+    return node in peer_blacklist
+
+
+def get_peer_score(node):
+    node = normalize_peer_url(node)
+    return peer_scores.get(node, PEER_INITIAL_SCORE)
+
+
+def save_peer_reputation_state():
+    if hasattr(storage, "save_peer_reputation"):
+        storage.save_peer_reputation(
+            {
+                "scores": peer_scores,
+                "blacklist": list(peer_blacklist),
+                "failures": peer_failures
+            }
+        )
+
+
+def load_peer_reputation_state():
+    if not hasattr(storage, "load_peer_reputation"):
+        return
+
+    try:
+        data = storage.load_peer_reputation() or {}
+        scores = data.get("scores", {})
+        blacklist = data.get("blacklist", [])
+        failures = data.get("failures", {})
+
+        if isinstance(scores, dict):
+            peer_scores.update(scores)
+
+        if isinstance(blacklist, list):
+            peer_blacklist.update(blacklist)
+
+        if isinstance(failures, dict):
+            peer_failures.update(failures)
+
+    except Exception as error:
+        print("Peer reputation load skipped:", str(error))
+
+
+def reward_peer(node, amount=PEER_SUCCESS_REWARD):
+    node = normalize_peer_url(node)
+
+    if not node:
+        return None
+
+    current_score = get_peer_score(node)
+    new_score = min(PEER_MAX_SCORE, current_score + amount)
+    peer_scores[node] = new_score
+    peer_failures[node] = 0
+
+    save_peer_reputation_state()
+
+    return {
+        "node": node,
+        "score": new_score,
+        "blacklisted": is_blacklisted(node)
+    }
+
+
+def penalize_peer(node, reason, amount=PEER_FAILURE_PENALTY):
+    node = normalize_peer_url(node)
+
+    if not node:
+        return {
+            "node": node,
+            "score": None,
+            "blacklisted": False,
+            "reason": reason
+        }
+
+    current_score = get_peer_score(node)
+    new_score = max(0, current_score - amount)
+    peer_scores[node] = new_score
+
+    if new_score <= PEER_BLACKLIST_SCORE:
+        peer_blacklist.add(node)
+        if node in peers:
+            peers.remove(node)
+        storage.remove_peer(node)
+
+    save_peer_reputation_state()
+
+    return {
+        "node": node,
+        "score": new_score,
+        "blacklisted": is_blacklisted(node),
+        "reason": reason
+    }
 
 
 def is_private_or_local_host(hostname):
@@ -85,6 +191,9 @@ def is_valid_peer_url(node):
     if not node:
         return False, "Peer URL is empty"
 
+    if is_blacklisted(node):
+        return False, "Peer is blacklisted"
+
     parsed = urlparse(node)
 
     if parsed.scheme != "https":
@@ -108,6 +217,9 @@ def is_valid_peer_url(node):
     return True, "Valid peer URL"
 
 
+load_peer_reputation_state()
+
+
 def add_peer(node):
     node = normalize_peer_url(node)
     valid, reason = is_valid_peer_url(node)
@@ -124,8 +236,11 @@ def add_peer(node):
     peers.add(node)
     storage.save_peer(node)
     peer_failures[node] = 0
+    peer_scores[node] = get_peer_score(node)
 
-    return {"added": True, "node": node, "reason": "Peer added"}
+    save_peer_reputation_state()
+
+    return {"added": True, "node": node, "reason": "Peer added", "score": peer_scores[node]}
 
 
 def remove_peer(node):
@@ -139,9 +254,49 @@ def remove_peer(node):
     if node in peer_failures:
         del peer_failures[node]
 
+    save_peer_reputation_state()
+
     return {
         "removed": True,
         "node": node
+    }
+
+
+def blacklist_peer(node, reason="Manual blacklist"):
+    node = normalize_peer_url(node)
+
+    if not node:
+        return {"blacklisted": False, "reason": "Invalid node"}
+
+    peer_blacklist.add(node)
+    peer_scores[node] = 0
+    remove_peer(node)
+    save_peer_reputation_state()
+
+    return {
+        "blacklisted": True,
+        "node": node,
+        "reason": reason
+    }
+
+
+def unblacklist_peer(node):
+    node = normalize_peer_url(node)
+
+    if not node:
+        return {"unblacklisted": False, "reason": "Invalid node"}
+
+    if node in peer_blacklist:
+        peer_blacklist.remove(node)
+
+    peer_scores[node] = PEER_INITIAL_SCORE
+    peer_failures[node] = 0
+    save_peer_reputation_state()
+
+    return {
+        "unblacklisted": True,
+        "node": node,
+        "score": peer_scores[node]
     }
 
 
@@ -149,6 +304,7 @@ def record_peer_success(node):
     node = normalize_peer_url(node)
     if node:
         peer_failures[node] = 0
+        reward_peer(node)
 
 
 def record_peer_failure(node, reason):
@@ -160,11 +316,14 @@ def record_peer_failure(node, reason):
             "failure_count": 0,
             "max_failures": MAX_PEER_FAILURES,
             "removed": False,
-            "reason": reason
+            "reason": reason,
+            "reputation": None
         }
 
     current_failures = peer_failures.get(node, 0) + 1
     peer_failures[node] = current_failures
+
+    reputation = penalize_peer(node, reason, PEER_FAILURE_PENALTY)
 
     removed = False
 
@@ -177,7 +336,8 @@ def record_peer_failure(node, reason):
         "failure_count": current_failures,
         "max_failures": MAX_PEER_FAILURES,
         "removed": removed,
-        "reason": reason
+        "reason": reason,
+        "reputation": reputation
     }
 
 
@@ -191,6 +351,8 @@ def ping_peer(node):
             "node": node,
             "online": False,
             "failure_score": peer_failures.get(node, 0),
+            "score": get_peer_score(node),
+            "blacklisted": is_blacklisted(node),
             "failure": failure,
             "reason": reason
         }
@@ -219,6 +381,8 @@ def ping_peer(node):
             "status_code": response.status_code,
             "latency_ms": latency_ms,
             "failure_score": peer_failures.get(node, 0),
+            "score": get_peer_score(node),
+            "blacklisted": is_blacklisted(node),
             "failure": failure,
             "response": data
         }
@@ -230,6 +394,8 @@ def ping_peer(node):
             "node": node,
             "online": False,
             "failure_score": peer_failures.get(node, 0),
+            "score": get_peer_score(node),
+            "blacklisted": is_blacklisted(node),
             "failure": failure,
             "reason": str(error)
         }
@@ -264,12 +430,25 @@ def sync_chain_from_node(node):
 
         data = response.json()
         result = chain.replace_chain(data.get("chain"))
-        record_peer_success(node)
+
+        if result.get("replaced") or result.get("reason") == "Incoming chain does not have more cumulative work":
+            record_peer_success(node)
+        elif result.get("reason") == "Incoming chain is invalid":
+            reputation = penalize_peer(node, "Invalid chain data", PEER_INVALID_CHAIN_PENALTY)
+            return {
+                "node": node,
+                "remote_length": data.get("length"),
+                "result": result,
+                "reputation": reputation
+            }
+        else:
+            record_peer_success(node)
 
         return {
             "node": node,
             "remote_length": data.get("length"),
-            "result": result
+            "result": result,
+            "score": get_peer_score(node)
         }
 
     except Exception as error:
@@ -300,12 +479,18 @@ def sync_mempool_from_node(node):
         data = response.json()
         remote_transactions = data.get("pending_transactions", [])
         result = chain.sync_mempool(remote_transactions)
-        record_peer_success(node)
+
+        if result.get("accepted", 0) > 0:
+            record_peer_success(node)
+
+        if result.get("rejected", 0) > result.get("accepted", 0) + 10:
+            penalize_peer(node, "Too many rejected mempool transactions", PEER_FAILURE_PENALTY)
 
         return {
             "node": node,
             "remote_pending": len(remote_transactions),
-            "result": result
+            "result": result,
+            "score": get_peer_score(node)
         }
 
     except Exception as error:
@@ -353,7 +538,8 @@ def discover_peers_from_node(node):
             "node": node,
             "remote_count": len(remote_nodes),
             "added": added,
-            "skipped": skipped
+            "skipped": skipped,
+            "score": get_peer_score(node)
         }
 
     except Exception as error:
@@ -367,6 +553,9 @@ def broadcast_peer(new_node):
 
     for node in list(peers):
         if node == new_node:
+            continue
+
+        if is_blacklisted(node):
             continue
 
         try:
@@ -390,6 +579,8 @@ def broadcast_peer(new_node):
                 "node": node,
                 "status_code": response.status_code,
                 "failure_score": peer_failures.get(node, 0),
+                "score": get_peer_score(node),
+                "blacklisted": is_blacklisted(node),
                 "response": response_data
             })
 
@@ -409,6 +600,9 @@ def broadcast_transaction(tx_data):
     results = []
 
     for node in list(peers):
+        if is_blacklisted(node):
+            continue
+
         try:
             response = requests.post(
                 f"{node}/transaction",
@@ -430,6 +624,8 @@ def broadcast_transaction(tx_data):
                 "node": node,
                 "status_code": response.status_code,
                 "failure_score": peer_failures.get(node, 0),
+                "score": get_peer_score(node),
+                "blacklisted": is_blacklisted(node),
                 "response": response_data
             })
 
@@ -450,6 +646,10 @@ def auto_sync_loop():
         time.sleep(AUTO_SYNC_INTERVAL)
 
         for node in list(peers):
+            if is_blacklisted(node):
+                remove_peer(node)
+                continue
+
             try:
                 print("Auto chain sync:", sync_chain_from_node(node))
                 print("Auto mempool sync:", sync_mempool_from_node(node))
@@ -506,6 +706,8 @@ def health():
         "peers": len(peers),
         "peer_list": list(peers),
         "peer_failures": peer_failures,
+        "peer_scores": peer_scores,
+        "peer_blacklist": list(peer_blacklist),
         "database_connected": bool(chain.storage.database_url),
         "difficulty": chain.difficulty,
         "auto_sync_interval": AUTO_SYNC_INTERVAL,
@@ -531,6 +733,55 @@ def peer_status():
     }
 
 
+@app.route("/peers/reputation")
+def peers_reputation():
+    return {
+        "peer_count": len(peers),
+        "peers": list(peers),
+        "scores": peer_scores,
+        "failures": peer_failures,
+        "blacklist": list(peer_blacklist),
+        "rules": {
+            "initial_score": PEER_INITIAL_SCORE,
+            "success_reward": PEER_SUCCESS_REWARD,
+            "failure_penalty": PEER_FAILURE_PENALTY,
+            "invalid_chain_penalty": PEER_INVALID_CHAIN_PENALTY,
+            "blacklist_score": PEER_BLACKLIST_SCORE,
+            "max_score": PEER_MAX_SCORE
+        }
+    }
+
+
+@app.route("/peers/blacklist", methods=["POST"])
+@limiter.limit("10 per hour")
+def peers_blacklist():
+    data = request.json or {}
+    node = data.get("node")
+
+    result = blacklist_peer(node, "Manual blacklist")
+
+    return {
+        "message": "Peer blacklisted" if result.get("blacklisted") else "Peer blacklist failed",
+        "result": result,
+        "blacklist": list(peer_blacklist)
+    }
+
+
+@app.route("/peers/unblacklist", methods=["POST"])
+@limiter.limit("10 per hour")
+def peers_unblacklist():
+    data = request.json or {}
+    node = data.get("node")
+
+    result = unblacklist_peer(node)
+
+    return {
+        "message": "Peer unblacklisted" if result.get("unblacklisted") else "Peer unblacklist failed",
+        "result": result,
+        "blacklist": list(peer_blacklist)
+    }
+
+
 @app.route("/peers/health")
 def peers_health():
     results = [ping_peer(node) for node in list(peers)]
@@ -543,6 +794,8 @@ def peers_health():
         "online": online,
         "offline": offline,
         "peer_failures": peer_failures,
+        "peer_scores": peer_scores,
+        "peer_blacklist": list(peer_blacklist),
         "results": results
     }
 
@@ -557,7 +810,12 @@ def peers_ping():
         return ping_peer(node)
 
     results = [ping_peer(peer) for peer in list(peers)]
-    return {"results": results, "peer_failures": peer_failures}
+    return {
+        "results": results,
+        "peer_failures": peer_failures,
+        "peer_scores": peer_scores,
+        "peer_blacklist": list(peer_blacklist)
+    }
 
 
 @app.route("/stats")
@@ -617,6 +875,8 @@ def debug_db():
         "database_url_prefix": chain.storage.database_url[:30] if chain.storage.database_url else None,
         "stored_peers": list(peers),
         "peer_failures": peer_failures,
+        "peer_scores": peer_scores,
+        "peer_blacklist": list(peer_blacklist),
         "auto_sync_interval": AUTO_SYNC_INTERVAL,
         "faucet_amount": FAUCET_AMOUNT,
         "faucet_cooldown_seconds": FAUCET_COOLDOWN_SECONDS
@@ -633,6 +893,8 @@ def api_home():
         "mining_reward": chain.get_current_reward(),
         "peers": list(peers),
         "peer_failures": peer_failures,
+        "peer_scores": peer_scores,
+        "peer_blacklist": list(peer_blacklist),
         "valid": chain.is_chain_valid(),
         "auto_sync_interval": AUTO_SYNC_INTERVAL,
         "supply": chain.get_supply_info(),
@@ -943,6 +1205,9 @@ def test_transfer():
 
 @app.route("/mempool")
 def mempool():
+    if hasattr(chain, "get_mempool_info"):
+        return chain.get_mempool_info()
+
     return {
         "pending_transactions": chain.pending_transactions,
         "count": len(chain.pending_transactions)
@@ -978,7 +1243,9 @@ def get_nodes():
     return {
         "nodes": list(peers),
         "count": len(peers),
-        "peer_failures": peer_failures
+        "peer_failures": peer_failures,
+        "peer_scores": peer_scores,
+        "peer_blacklist": list(peer_blacklist)
     }
 
 
@@ -1021,6 +1288,8 @@ def peers_discover():
         "peer_count": len(peers),
         "peers": list(peers),
         "peer_failures": peer_failures,
+        "peer_scores": peer_scores,
+        "peer_blacklist": list(peer_blacklist),
         "results": results
     }
 
@@ -1062,6 +1331,8 @@ def sync_nodes():
         "current_length": len(chain.chain),
         "peers_checked": len(peers),
         "peer_failures": peer_failures,
+        "peer_scores": peer_scores,
+        "peer_blacklist": list(peer_blacklist),
         "results": sync_results
     }
 
@@ -1086,7 +1357,9 @@ def sync_all():
         "pending_transactions": len(chain.pending_transactions),
         "peers_checked": len(peers),
         "peer_count": len(peers),
-        "peer_failures": peer_failures
+        "peer_failures": peer_failures,
+        "peer_scores": peer_scores,
+        "peer_blacklist": list(peer_blacklist)
     }
 
 
