@@ -662,7 +662,7 @@ class Blockchain:
         total_cost = transaction.amount + transaction.fee
 
         if self.get_available_balance(transaction.sender) < total_cost:
-            raise Exception("Double-spend rejected: insufficient available balance after pending transactions")
+            raise Exception("Double-spend rejected: Insufficient balance after pending transactions")
 
         self.pending_transactions.append(transaction.to_dict())
         self.enforce_mempool_limit()
