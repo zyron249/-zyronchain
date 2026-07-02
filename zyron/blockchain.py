@@ -10,6 +10,8 @@ class Blockchain:
     GENESIS_TIMESTAMP = 1704067200
     MAX_FUTURE_BLOCK_TIME = 120
     MAX_BLOCK_TRANSACTIONS = 1000
+    MAX_MEMPOOL_SIZE = 5000
+    MEMPOOL_TX_TTL_SECONDS = 3600
 
     def __init__(self):
         self.storage = BlockchainStorage()
@@ -139,7 +141,9 @@ class Blockchain:
             "target_block_time": self.target_block_time,
             "difficulty_adjustment_interval": self.difficulty_adjustment_interval,
             "current_block_height": len(self.chain) - 1,
-            "cumulative_work": self.get_chain_work()
+            "cumulative_work": self.get_chain_work(),
+            "max_mempool_size": self.MAX_MEMPOOL_SIZE,
+            "mempool_ttl_seconds": self.MEMPOOL_TX_TTL_SECONDS
         }
 
     def get_total_supply(self):
@@ -177,9 +181,21 @@ class Blockchain:
                 if isinstance(tx, dict) and tx.get("sender") == address:
                     nonce = max(nonce, int(tx.get("nonce", 0)))
 
+        self.cleanup_mempool()
+
         for tx in self.pending_transactions:
             if isinstance(tx, dict) and tx.get("sender") == address:
                 nonce = max(nonce, int(tx.get("nonce", 0)))
+
+        return nonce
+
+    def get_confirmed_nonce(self, address):
+        nonce = 0
+
+        for block in self.chain:
+            for tx in block.transactions:
+                if isinstance(tx, dict) and tx.get("sender") == address:
+                    nonce = max(nonce, int(tx.get("nonce", 0)))
 
         return nonce
 
@@ -200,7 +216,56 @@ class Blockchain:
 
         return nonce
 
-    def get_sorted_pending_transactions(self):
+    def has_pending_nonce_conflict(self, sender, nonce):
+        self.cleanup_mempool()
+
+        for tx in self.pending_transactions:
+            if not isinstance(tx, dict):
+                continue
+
+            if tx.get("sender") == sender and int(tx.get("nonce", -1)) == int(nonce):
+                return True
+
+        return False
+
+    def cleanup_mempool(self):
+        now = time.time()
+        cleaned_transactions = []
+
+        for tx in self.pending_transactions:
+            if not isinstance(tx, dict):
+                continue
+
+            if tx.get("sender") == "SYSTEM":
+                continue
+
+            tx_timestamp = float(tx.get("timestamp", now))
+
+            if now - tx_timestamp <= self.MEMPOOL_TX_TTL_SECONDS:
+                cleaned_transactions.append(tx)
+
+        self.pending_transactions = cleaned_transactions
+
+    def get_min_mempool_fee(self):
+        self.cleanup_mempool()
+
+        if len(self.pending_transactions) < self.MAX_MEMPOOL_SIZE:
+            return 0
+
+        fees = [
+            float(tx.get("fee", 0))
+            for tx in self.pending_transactions
+            if isinstance(tx, dict) and tx.get("sender") != "SYSTEM"
+        ]
+
+        if not fees:
+            return 0
+
+        return min(fees)
+
+    def enforce_mempool_limit(self):
+        self.cleanup_mempool()
+
         normal_transactions = [
             tx for tx in self.pending_transactions
             if isinstance(tx, dict) and tx.get("sender") != "SYSTEM"
@@ -214,7 +279,88 @@ class Blockchain:
             reverse=True
         )
 
-        return normal_transactions[:self.MAX_BLOCK_TRANSACTIONS]
+        self.pending_transactions = normal_transactions[:self.MAX_MEMPOOL_SIZE]
+
+    def get_pending_spent_amount(self, address):
+        self.cleanup_mempool()
+        total = 0
+
+        for tx in self.pending_transactions:
+            if isinstance(tx, dict) and tx.get("sender") == address:
+                total += float(tx.get("amount", 0)) + float(tx.get("fee", 0))
+
+        return total
+
+    def get_available_balance(self, address):
+        return self.get_balance(address) - self.get_pending_spent_amount(address)
+
+    def get_sorted_pending_transactions(self):
+        self.cleanup_mempool()
+
+        normal_transactions = [
+            tx for tx in self.pending_transactions
+            if isinstance(tx, dict) and tx.get("sender") != "SYSTEM"
+        ]
+
+        selected = []
+        selected_txids = set()
+        working_nonces = {}
+        working_spent = {}
+
+        for tx in normal_transactions:
+            sender = tx.get("sender")
+            if sender and sender not in working_nonces:
+                working_nonces[sender] = self.get_confirmed_nonce(sender)
+                working_spent[sender] = 0
+
+        while len(selected) < self.MAX_BLOCK_TRANSACTIONS:
+            candidates = []
+
+            for tx in normal_transactions:
+                txid = tx.get("txid")
+
+                if txid in selected_txids:
+                    continue
+
+                sender = tx.get("sender")
+                if not sender:
+                    continue
+
+                expected_nonce = working_nonces.get(sender, self.get_confirmed_nonce(sender)) + 1
+
+                if int(tx.get("nonce", -1)) != expected_nonce:
+                    continue
+
+                amount = float(tx.get("amount", 0))
+                fee = float(tx.get("fee", 0))
+                total_cost = amount + fee
+                available_balance = self.get_balance(sender) - working_spent.get(sender, 0)
+
+                if available_balance < total_cost:
+                    continue
+
+                candidates.append(tx)
+
+            if not candidates:
+                break
+
+            candidates.sort(
+                key=lambda tx: (
+                    float(tx.get("fee", 0)),
+                    float(tx.get("timestamp", 0))
+                ),
+                reverse=True
+            )
+
+            selected_tx = candidates[0]
+            selected.append(selected_tx)
+            selected_txids.add(selected_tx.get("txid"))
+
+            sender = selected_tx.get("sender")
+            working_nonces[sender] = int(selected_tx.get("nonce", working_nonces.get(sender, 0) + 1))
+            working_spent[sender] = working_spent.get(sender, 0) + float(selected_tx.get("amount", 0)) + float(selected_tx.get("fee", 0))
+
+        return selected
 
     def get_block(self, index):
         try:
@@ -287,6 +433,7 @@ class Blockchain:
                 return False
 
             expected_nonces = {}
+            spent_in_block = {}
             seen_txids = set()
             system_tx_count = 0
 
@@ -333,9 +480,40 @@ class Blockchain:
                     if tx.nonce != previous_nonce + 1:
                         return False
 
+                    total_cost = float(tx.amount) + float(tx.fee)
+                    balance_before_block = self.get_balance_before_block(sender, current.index, chain_to_validate)
+
+                    if spent_in_block.get(sender, 0) + total_cost > balance_before_block:
+                        return False
+
+                    spent_in_block[sender] = spent_in_block.get(sender, 0) + total_cost
                     expected_nonces[sender] = tx.nonce
 
         return True
+
+    def get_balance_before_block(self, address, block_index, chain_to_search=None):
+        balance = 0
+        chain_to_search = chain_to_search if chain_to_search is not None else self.chain
+
+        for block in chain_to_search:
+            if block.index >= block_index:
+                break
+
+            for tx in block.transactions:
+                if not isinstance(tx, dict):
+                    continue
+
+                amount = float(tx.get("amount", 0))
+                fee = float(tx.get("fee", 0))
+
+                if tx.get("sender") == address:
+                    balance -= amount
+                    balance -= fee
+
+                if tx.get("receiver") == address:
+                    balance += amount
+
+        return balance
 
     def replace_chain(self, new_chain_data):
         if not new_chain_data:
@@ -376,6 +554,8 @@ class Blockchain:
                 if isinstance(tx, dict) and tx.get("txid") == txid:
                     return True
 
+        self.cleanup_mempool()
+
         for tx in self.pending_transactions:
             if isinstance(tx, dict) and tx.get("txid") == txid:
                 return True
@@ -410,6 +590,8 @@ class Blockchain:
                 "reason": "Remote transactions must be a list"
             }
 
+        self.cleanup_mempool()
+
         accepted = 0
         rejected = 0
         results = []
@@ -423,6 +605,8 @@ class Blockchain:
             else:
                 rejected += 1
 
+        self.enforce_mempool_limit()
+
         return {
             "accepted": accepted,
             "rejected": rejected,
@@ -430,19 +614,9 @@ class Blockchain:
             "results": results
         }
 
-    def get_pending_spent_amount(self, address):
-        total = 0
-
-        for tx in self.pending_transactions:
-            if isinstance(tx, dict) and tx.get("sender") == address:
-                total += float(tx.get("amount", 0)) + float(tx.get("fee", 0))
-
-        return total
-
-    def get_available_balance(self, address):
-        return self.get_balance(address) - self.get_pending_spent_amount(address)
-
     def add_transaction(self, transaction):
+        self.cleanup_mempool()
+
         if not transaction.is_valid():
             raise Exception("Invalid transaction signature")
 
@@ -457,6 +631,7 @@ class Blockchain:
                 raise Exception("Invalid receiver address")
 
             self.pending_transactions.append(transaction.to_dict())
+            self.enforce_mempool_limit()
             return transaction.txid
 
         if not self.is_valid_address(transaction.sender):
@@ -471,6 +646,14 @@ class Blockchain:
         if transaction.fee < 0:
             raise Exception("Transaction fee cannot be negative")
 
+        min_fee = self.get_min_mempool_fee()
+
+        if len(self.pending_transactions) >= self.MAX_MEMPOOL_SIZE and transaction.fee <= min_fee:
+            raise Exception(f"Mempool full. Transaction fee must be greater than {min_fee}")
+
+        if self.has_pending_nonce_conflict(transaction.sender, transaction.nonce):
+            raise Exception("Double-spend rejected: sender already has a pending transaction with this nonce")
+
         expected_nonce = self.get_next_nonce(transaction.sender)
 
         if transaction.nonce != expected_nonce:
@@ -479,15 +662,17 @@ class Blockchain:
         total_cost = transaction.amount + transaction.fee
 
         if self.get_available_balance(transaction.sender) < total_cost:
-            raise Exception("Insufficient balance")
+            raise Exception("Double-spend rejected: insufficient available balance after pending transactions")
 
         self.pending_transactions.append(transaction.to_dict())
+        self.enforce_mempool_limit()
         return transaction.txid
 
     def mine_pending_transactions(self, miner_address):
         if not self.is_valid_address(miner_address):
             raise Exception("Invalid miner address")
 
+        self.cleanup_mempool()
         selected_transactions = self.get_sorted_pending_transactions()
 
         current_reward = self.get_current_reward()
@@ -543,6 +728,8 @@ class Blockchain:
             if not isinstance(tx, dict) or tx.get("txid") not in selected_txids
         ]
 
+        self.enforce_mempool_limit()
+
     def get_balance(self, address):
         balance = 0
 
@@ -562,6 +749,8 @@ class Blockchain:
         return balance
 
     def get_transaction(self, txid):
+        self.cleanup_mempool()
+
         for block in self.chain:
             for tx in block.transactions:
                 if isinstance(tx, dict) and tx.get("txid") == txid:
@@ -682,6 +871,17 @@ class Blockchain:
         transactions.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
         return transactions[:limit]
 
+    def get_mempool_info(self):
+        self.cleanup_mempool()
+
+        return {
+            "count": len(self.pending_transactions),
+            "max_size": self.MAX_MEMPOOL_SIZE,
+            "ttl_seconds": self.MEMPOOL_TX_TTL_SECONDS,
+            "min_fee": self.get_min_mempool_fee(),
+            "pending_transactions": self.pending_transactions
+        }
+
     def get_mining_leaderboard(self, limit=100):
         miners = {}
 
@@ -713,6 +913,7 @@ class Blockchain:
 
     def get_explorer_summary(self):
         latest_block = self.get_latest_block()
+        self.cleanup_mempool()
 
         return {
             "name": "ZyronChain",
@@ -722,6 +923,8 @@ class Blockchain:
             "difficulty": self.difficulty,
             "cumulative_work": self.get_chain_work(),
             "pending_transactions": len(self.pending_transactions),
+            "max_mempool_size": self.MAX_MEMPOOL_SIZE,
+            "mempool_ttl_seconds": self.MEMPOOL_TX_TTL_SECONDS,
             "total_transactions": self.get_total_transaction_count(),
             "total_addresses": len(self.get_all_addresses()),
             "average_block_time_seconds": self.get_average_block_time(),
@@ -735,6 +938,7 @@ class Blockchain:
 
     def get_stats(self):
         latest_block = self.get_latest_block()
+        self.cleanup_mempool()
 
         return {
             "name": "ZyronChain",
@@ -744,6 +948,8 @@ class Blockchain:
             "difficulty": self.difficulty,
             "cumulative_work": self.get_chain_work(),
             "pending_transactions": len(self.pending_transactions),
+            "max_mempool_size": self.MAX_MEMPOOL_SIZE,
+            "mempool_ttl_seconds": self.MEMPOOL_TX_TTL_SECONDS,
             "total_transactions": self.get_total_transaction_count(),
             "total_addresses": len(self.get_all_addresses()),
             "average_block_time_seconds": self.get_average_block_time(),
