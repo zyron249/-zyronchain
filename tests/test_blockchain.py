@@ -143,3 +143,22 @@ def test_transaction_fees_are_not_counted_as_new_supply():
 
     assert chain.is_chain_valid() is True
     assert chain.get_total_supply() == 100
+
+
+def test_new_mempool_rejects_legacy_v1_transaction():
+    chain = Blockchain()
+    sender = Wallet()
+    receiver = Wallet()
+
+    tx = Transaction(
+        version=Transaction.LEGACY_VERSION,
+        sender=sender.address,
+        receiver=receiver.address,
+        amount=1,
+        public_key=sender.get_public_key(),
+        nonce=1
+    )
+    tx.sign_transaction(sender.get_private_key())
+
+    with pytest.raises(Exception, match="protocol version"):
+        chain.add_transaction(tx)
