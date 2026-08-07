@@ -244,3 +244,24 @@ def test_two_nodes_converge_on_chain_mempool_and_balance():
     assert node_a.get_latest_block().hash == node_b.get_latest_block().hash
     assert node_a.get_balance(receiver.address) == node_b.get_balance(receiver.address)
     assert node_a.get_balance(receiver.address) == 7
+
+
+def test_stale_transaction_is_rejected_from_mempool():
+    import time
+
+    chain = Blockchain()
+    sender = Wallet()
+    receiver = Wallet()
+
+    tx = Transaction(
+        sender=sender.address,
+        receiver=receiver.address,
+        amount=1,
+        public_key=sender.get_public_key(),
+        nonce=1,
+        timestamp=time.time() - chain.MEMPOOL_TX_TTL_SECONDS - 1
+    )
+    tx.sign_transaction(sender.get_private_key())
+
+    with pytest.raises(Exception, match="too old"):
+        chain.add_transaction(tx)
