@@ -47,3 +47,34 @@ def test_invalid_signature_rejected():
     tx.signature = "deadbeef"
 
     assert tx.is_valid() is False
+
+
+def test_non_finite_transaction_amount_rejected():
+    wallet = Wallet()
+
+    tx = Transaction(
+        sender=wallet.address,
+        receiver="ZYN1234567890abcdef1234567890abcdef123456",
+        amount=float("nan"),
+        public_key=wallet.get_public_key()
+    )
+
+    tx.sign_transaction(wallet.get_private_key())
+
+    assert tx.is_valid() is False
+
+
+def test_non_finite_transaction_fee_rejected():
+    wallet = Wallet()
+
+    tx = Transaction(
+        sender=wallet.address,
+        receiver="ZYN1234567890abcdef1234567890abcdef123456",
+        amount=1,
+        fee=float("inf"),
+        public_key=wallet.get_public_key()
+    )
+
+    tx.sign_transaction(wallet.get_private_key())
+
+    assert tx.is_valid() is False
