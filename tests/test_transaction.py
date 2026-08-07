@@ -113,3 +113,32 @@ def test_legacy_v1_signature_remains_valid_for_chain_history():
     tx.sign_transaction(wallet.get_private_key())
 
     assert tx.is_valid() is True
+
+
+def test_oversized_signature_is_rejected_before_crypto_verification():
+    wallet = Wallet()
+
+    tx = Transaction(
+        sender=wallet.address,
+        receiver="ZYN1234567890abcdef1234567890abcdef123456",
+        amount=1,
+        public_key=wallet.get_public_key()
+    )
+    tx.signature = "aa" * 100_000
+
+    assert tx.is_valid() is False
+
+
+def test_malformed_txid_is_rejected():
+    wallet = Wallet()
+
+    tx = Transaction(
+        sender=wallet.address,
+        receiver="ZYN1234567890abcdef1234567890abcdef123456",
+        amount=1,
+        public_key=wallet.get_public_key()
+    )
+    tx.sign_transaction(wallet.get_private_key())
+    tx.txid = "not-a-valid-txid"
+
+    assert tx.is_valid() is False
