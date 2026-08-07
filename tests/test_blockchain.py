@@ -201,3 +201,46 @@ def test_reorg_recovers_valid_orphaned_transaction_to_mempool():
         pending.get("txid") == tx.txid
         for pending in chain.pending_transactions
     )
+
+
+def test_two_nodes_converge_on_chain_mempool_and_balance():
+    node_a = Blockchain()
+    node_b = Blockchain()
+    sender = Wallet()
+    receiver = Wallet()
+    miner = Wallet()
+
+    node_a.mine_pending_transactions(sender.address)
+
+    initial_sync = node_b.replace_chain([
+        node_a.block_to_dict(block)
+        for block in node_a.chain
+    ])
+    assert initial_sync["replaced"] is True
+    assert node_b.get_latest_block().hash == node_a.get_latest_block().hash
+
+    tx = Transaction(
+        sender=sender.address,
+        receiver=receiver.address,
+        amount=7,
+        fee=0.25,
+        public_key=sender.get_public_key(),
+        nonce=node_a.get_next_nonce(sender.address)
+    )
+    tx.sign_transaction(sender.get_private_key())
+    node_a.add_transaction(tx)
+
+    mempool_sync = node_b.sync_mempool(node_a.pending_transactions)
+    assert mempool_sync["accepted"] == 1
+
+    node_b.mine_pending_transactions(miner.address)
+
+    final_sync = node_a.replace_chain([
+        node_b.block_to_dict(block)
+        for block in node_b.chain
+    ])
+
+    assert final_sync["replaced"] is True
+    assert node_a.get_latest_block().hash == node_b.get_latest_block().hash
+    assert node_a.get_balance(receiver.address) == node_b.get_balance(receiver.address)
+    assert node_a.get_balance(receiver.address) == 7
