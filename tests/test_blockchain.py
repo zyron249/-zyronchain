@@ -1,3 +1,4 @@
+import pytest
 from zyron.blockchain import Blockchain
 from zyron.wallet import Wallet
 from zyron.transaction import Transaction
@@ -83,3 +84,62 @@ def test_insufficient_balance_rejected():
         assert False
     except Exception as error:
         assert "Insufficient balance" in str(error)
+
+
+def test_external_system_transaction_rejected():
+    chain = Blockchain()
+    receiver = Wallet()
+
+    forged_reward = Transaction(
+        "SYSTEM",
+        receiver.address,
+        1_000_000,
+        fee=0,
+        nonce=0
+    )
+
+    with pytest.raises(Exception, match="SYSTEM transactions"):
+        chain.add_transaction(forged_reward)
+
+
+def test_chain_rejects_inflated_mining_reward():
+    chain = Blockchain()
+    miner = Wallet()
+
+    chain.mine_pending_transactions(miner.address)
+
+    block = chain.get_latest_block()
+    reward_data = block.transactions[-1]
+    reward_data["amount"] = float(reward_data["amount"]) + 1_000_000
+
+    forged_reward = Transaction.from_dict(reward_data)
+    reward_data["txid"] = forged_reward.calculate_txid()
+
+    block.nonce = 0
+    block.mine()
+
+    assert chain.is_chain_valid() is False
+
+
+def test_transaction_fees_are_not_counted_as_new_supply():
+    chain = Blockchain()
+    sender = Wallet()
+    receiver = Wallet()
+    miner = Wallet()
+
+    chain.mine_pending_transactions(sender.address)
+
+    tx = Transaction(
+        sender=sender.address,
+        receiver=receiver.address,
+        amount=1,
+        fee=2,
+        public_key=sender.get_public_key(),
+        nonce=chain.get_next_nonce(sender.address)
+    )
+    tx.sign_transaction(sender.get_private_key())
+    chain.add_transaction(tx)
+    chain.mine_pending_transactions(miner.address)
+
+    assert chain.is_chain_valid() is True
+    assert chain.get_total_supply() == 100
