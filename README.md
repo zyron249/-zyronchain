@@ -83,6 +83,7 @@ Set a strong random token in the node environment:
 
 ```text
 ZYRON_ADMIN_TOKEN=<strong-random-secret>
+ZYRON_RATE_LIMIT_STORAGE_URI=redis://<host>:6379/0
 ```
 
 Send it only to administrative endpoints over HTTPS:
@@ -91,4 +92,4 @@ Send it only to administrative endpoints over HTTPS:
 X-Zyron-Admin-Token: <strong-random-secret>
 ```
 
-For multi-process or multi-instance production deployments, configure Flask-Limiter with a shared rate-limit backend rather than its in-memory default.
+For multi-process or multi-instance deployments, set `ZYRON_RATE_LIMIT_STORAGE_URI` to a shared Redis URL (for example `redis://host:6379/0`). The in-memory default is intended only for a single local/test process.
