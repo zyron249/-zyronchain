@@ -1117,7 +1117,7 @@ def transaction():
 
     try:
         tx = Transaction(
-            version=int(data.get("version", 1)),
+            version=int(data.get("version", Transaction.CURRENT_VERSION)),
             chain_id=data.get("chain_id", "zyron-testnet-1"),
             nonce=int(data["nonce"]),
             sender=data["sender"],
