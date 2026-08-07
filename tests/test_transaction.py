@@ -78,3 +78,38 @@ def test_non_finite_transaction_fee_rejected():
     tx.sign_transaction(wallet.get_private_key())
 
     assert tx.is_valid() is False
+
+
+def test_protocol_v2_signature_is_deterministic():
+    wallet = Wallet()
+
+    tx = Transaction(
+        sender=wallet.address,
+        receiver="ZYN1234567890abcdef1234567890abcdef123456",
+        amount=5,
+        public_key=wallet.get_public_key()
+    )
+
+    tx.sign_transaction(wallet.get_private_key())
+    first_signature = tx.signature
+    tx.sign_transaction(wallet.get_private_key())
+
+    assert tx.version == Transaction.CURRENT_VERSION
+    assert tx.signature == first_signature
+    assert tx.is_valid() is True
+
+
+def test_legacy_v1_signature_remains_valid_for_chain_history():
+    wallet = Wallet()
+
+    tx = Transaction(
+        version=Transaction.LEGACY_VERSION,
+        sender=wallet.address,
+        receiver="ZYN1234567890abcdef1234567890abcdef123456",
+        amount=5,
+        public_key=wallet.get_public_key()
+    )
+
+    tx.sign_transaction(wallet.get_private_key())
+
+    assert tx.is_valid() is True
