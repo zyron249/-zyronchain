@@ -58,7 +58,7 @@ POST /transaction    Add a signed transaction
 ZyronChain is currently in early development.
 ## Current Version
 
-v0.1.0 Genesis Release
+v0.2.0 Testnet Hardening Release
 ## Live Demo
 
 https://zyronchain.onrender.com
@@ -93,3 +93,27 @@ X-Zyron-Admin-Token: <strong-random-secret>
 ```
 
 For multi-process or multi-instance deployments, set `ZYRON_RATE_LIMIT_STORAGE_URI` to a shared Redis URL (for example `redis://host:6379/0`). The in-memory default is intended only for a single local/test process.
+
+
+## Run a persistent testnet node
+
+Use one application worker per node because consensus and mempool state are held in-process and persisted through PostgreSQL.
+
+```bash
+export DATABASE_URL=postgresql://...
+export ZYRON_ADMIN_TOKEN=<strong-random-secret>
+export ZYRON_RATE_LIMIT_STORAGE_URI=redis://127.0.0.1:6379/0
+gunicorn --workers 1 --bind 0.0.0.0:5000 app:app
+```
+
+Run tests before deploying:
+
+```bash
+pytest -q
+```
+
+### Node-to-node behavior
+
+Nodes compare valid chains by cumulative proof-of-work. A higher-work chain is accepted only after full consensus validation. Pending and orphaned signed transactions are revalidated against the winning chain before returning to the mempool.
+
+New transactions use protocol v2 (secp256k1 with SHA-256). Legacy v1/SHA-1 signatures remain accepted only when validating historical chain data and are rejected from the live mempool.
