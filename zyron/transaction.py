@@ -98,6 +98,14 @@ class Transaction:
         if not math.isfinite(timestamp):
             return False
 
+        if not isinstance(self.txid, str) or len(self.txid) != 64:
+            return False
+
+        try:
+            bytes.fromhex(self.txid)
+        except ValueError:
+            return False
+
         if self.sender == "SYSTEM":
             if self.amount <= 0:
                 return False
@@ -123,6 +131,12 @@ class Transaction:
             return False
 
         if not self.public_key or not self.signature:
+            return False
+
+        if not isinstance(self.public_key, str) or len(self.public_key) != 128:
+            return False
+
+        if not isinstance(self.signature, str) or len(self.signature) != 128:
             return False
 
         try:
