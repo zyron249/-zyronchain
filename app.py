@@ -17,10 +17,16 @@ from zyron.storage import BlockchainStorage
 
 app = Flask(__name__)
 
+RATE_LIMIT_STORAGE_URI = os.environ.get(
+    "ZYRON_RATE_LIMIT_STORAGE_URI",
+    "memory://"
+)
+
 limiter = Limiter(
     get_remote_address,
     app=app,
-    default_limits=["300 per hour"]
+    default_limits=["300 per hour"],
+    storage_uri=RATE_LIMIT_STORAGE_URI
 )
 
 chain = Blockchain()
