@@ -1,10 +1,21 @@
 import re
 import time
 import math
+import threading
+from functools import wraps
 from zyron.block import Block
 from zyron.transaction import Transaction
 from zyron.storage import BlockchainStorage
 from zyron.wallet import address_from_public_key
+
+
+def synchronized(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
 
 
 class Blockchain:
@@ -15,6 +26,7 @@ class Blockchain:
     MEMPOOL_TX_TTL_SECONDS = 3600
 
     def __init__(self):
+        self._lock = threading.RLock()
         self.storage = BlockchainStorage()
         self.chain = [self.create_genesis_block()]
 
@@ -257,6 +269,7 @@ class Blockchain:
 
         return False
 
+    @synchronized
     def cleanup_mempool(self):
         now = time.time()
         cleaned_transactions = []
@@ -292,6 +305,7 @@ class Blockchain:
 
         return min(fees)
 
+    @synchronized
     def enforce_mempool_limit(self):
         self.cleanup_mempool()
 
@@ -616,6 +630,7 @@ class Blockchain:
 
         return balance
 
+    @synchronized
     def replace_chain(self, new_chain_data):
         if not new_chain_data:
             return {"replaced": False, "reason": "No chain data provided"}
@@ -636,17 +651,51 @@ class Blockchain:
                 "incoming_work": incoming_work
             }
 
+        previous_chain = self.chain
+        previous_pending = list(self.pending_transactions)
+
+        confirmed_txids = {
+            tx.get("txid")
+            for block in new_chain
+            for tx in block.transactions
+            if isinstance(tx, dict) and tx.get("txid")
+        }
+
+        orphaned_transactions = []
+        for block in previous_chain[1:]:
+            for tx in block.transactions:
+                if (
+                    isinstance(tx, dict)
+                    and tx.get("sender") != "SYSTEM"
+                    and tx.get("txid") not in confirmed_txids
+                ):
+                    orphaned_transactions.append(tx)
+
         self.chain = new_chain
         self.pending_transactions = []
         self.difficulty = self.get_latest_block().difficulty
         self.mining_reward = self.get_current_reward()
+
+        recovered = 0
+        dropped = 0
+        recovery_candidates = previous_pending + orphaned_transactions
+
+        for tx_data in recovery_candidates:
+            result = self.add_transaction_from_dict(tx_data)
+            if result.get("accepted"):
+                recovered += 1
+            else:
+                dropped += 1
+
         self.save_chain()
 
         return {
             "replaced": True,
             "new_length": len(self.chain),
             "current_work": current_work,
-            "incoming_work": incoming_work
+            "incoming_work": incoming_work,
+            "recovered_transactions": recovered,
+            "dropped_transactions": dropped
         }
 
     def has_transaction(self, txid):
@@ -663,6 +712,7 @@ class Blockchain:
 
         return False
 
+    @synchronized
     def add_transaction_from_dict(self, tx_data):
         if not isinstance(tx_data, dict):
             return {"accepted": False, "reason": "Invalid transaction data"}
@@ -682,6 +732,7 @@ class Blockchain:
         except Exception as error:
             return {"accepted": False, "reason": str(error), "txid": txid}
 
+    @synchronized
     def sync_mempool(self, remote_transactions):
         if not isinstance(remote_transactions, list):
             return {
@@ -715,11 +766,17 @@ class Blockchain:
             "results": results
         }
 
+    @synchronized
     def add_transaction(self, transaction):
         self.cleanup_mempool()
 
         if transaction.sender == "SYSTEM":
             raise Exception("SYSTEM transactions can only be created while mining")
+
+        if transaction.version != Transaction.CURRENT_VERSION:
+            raise Exception(
+                f"New transactions must use protocol version {Transaction.CURRENT_VERSION}"
+            )
 
         if not transaction.is_valid():
             raise Exception("Invalid transaction signature")
@@ -772,6 +829,7 @@ class Blockchain:
         self.enforce_mempool_limit()
         return transaction.txid
 
+    @synchronized
     def mine_pending_transactions(self, miner_address):
         if not self.is_valid_address(miner_address):
             raise Exception("Invalid miner address")
@@ -809,11 +867,18 @@ class Blockchain:
         new_difficulty = self.calculate_expected_difficulty(self.chain)
         self.difficulty = new_difficulty
 
+        latest_block = self.get_latest_block()
+        block_timestamp = max(
+            time.time(),
+            float(latest_block.timestamp) + 0.000001
+        )
+
         block = Block(
             len(self.chain),
             block_transactions,
-            self.get_latest_block().hash,
-            new_difficulty
+            latest_block.hash,
+            new_difficulty,
+            timestamp=block_timestamp
         )
 
         block.mine()
