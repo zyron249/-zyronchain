@@ -16,6 +16,7 @@ from zyron.transaction import Transaction
 from zyron.storage import BlockchainStorage
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
 
 RATE_LIMIT_STORAGE_URI = os.environ.get(
     "ZYRON_RATE_LIMIT_STORAGE_URI",
