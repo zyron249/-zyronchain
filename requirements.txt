@@ -6,3 +6,5 @@ gunicorn
 mnemonic
 Flask-Limiter
 pytest
+
+redis>=5,<7
