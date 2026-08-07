@@ -162,3 +162,42 @@ def test_new_mempool_rejects_legacy_v1_transaction():
 
     with pytest.raises(Exception, match="protocol version"):
         chain.add_transaction(tx)
+
+
+def test_reorg_recovers_valid_orphaned_transaction_to_mempool():
+    chain = Blockchain()
+    fork = Blockchain()
+    sender = Wallet()
+    receiver = Wallet()
+    miner = Wallet()
+
+    chain.mine_pending_transactions(sender.address)
+
+    tx = Transaction(
+        sender=sender.address,
+        receiver=receiver.address,
+        amount=5,
+        public_key=sender.get_public_key(),
+        nonce=chain.get_next_nonce(sender.address)
+    )
+    tx.sign_transaction(sender.get_private_key())
+    chain.add_transaction(tx)
+    chain.mine_pending_transactions(miner.address)
+
+    fork.mine_pending_transactions(sender.address)
+    fork.mine_pending_transactions(miner.address)
+    fork.mine_pending_transactions(miner.address)
+
+    incoming = [
+        fork.block_to_dict(block)
+        for block in fork.chain
+    ]
+
+    result = chain.replace_chain(incoming)
+
+    assert result["replaced"] is True
+    assert result["recovered_transactions"] == 1
+    assert any(
+        pending.get("txid") == tx.txid
+        for pending in chain.pending_transactions
+    )
