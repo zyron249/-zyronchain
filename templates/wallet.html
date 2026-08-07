@@ -258,7 +258,7 @@ async function sendZyn() {
     }
 
     try {
-        const version = 1;
+        const version = 2;
         const chainId = "zyron-testnet-1";
         const nonce = await getNextNonce();
         const amount = pythonFloatString(amountInput);
@@ -289,7 +289,7 @@ async function sendZyn() {
         const key = ec.keyFromPrivate(wallet.private_key, "hex");
         const signingDigest = new Uint8Array(
             await crypto.subtle.digest(
-                "SHA-1",
+                "SHA-256",
                 new TextEncoder().encode(dataToSign)
             )
         );
