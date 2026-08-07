@@ -24,6 +24,7 @@ class Blockchain:
     MAX_BLOCK_TRANSACTIONS = 1000
     MAX_MEMPOOL_SIZE = 5000
     MEMPOOL_TX_TTL_SECONDS = 3600
+    MAX_TX_FUTURE_SECONDS = 120
 
     def __init__(self):
         self._lock = threading.RLock()
@@ -525,6 +526,9 @@ class Blockchain:
                 if not tx.is_valid():
                     return False
 
+                if float(tx.timestamp) > float(current.timestamp):
+                    return False
+
                 if tx.sender == "SYSTEM":
                     system_transactions.append(tx)
                 else:
@@ -780,6 +784,15 @@ class Blockchain:
 
         if not transaction.is_valid():
             raise Exception("Invalid transaction signature")
+
+        now = time.time()
+        transaction_timestamp = float(transaction.timestamp)
+
+        if transaction_timestamp > now + self.MAX_TX_FUTURE_SECONDS:
+            raise Exception("Transaction timestamp is too far in the future")
+
+        if now - transaction_timestamp > self.MEMPOOL_TX_TTL_SECONDS:
+            raise Exception("Transaction is too old for the mempool")
 
         if not self.transaction_public_key_matches_sender(transaction):
             raise Exception("Public key does not match sender address")
