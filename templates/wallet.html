@@ -20,7 +20,7 @@
 <div class="container">
 
 <h1>🚀 Zyron Web Wallet</h1>
-<p class="warning">Never share your mnemonic or private key. Private key is not sent when sending ZYN.</p>
+<p class="warning">Keys are generated and recovered in your browser. Never send your mnemonic or private key to a node.</p>
 
 <div class="card">
     <h2>Create Wallet</h2>
@@ -43,7 +43,7 @@
 <div class="card">
     <h2>Balance & Faucet</h2>
     <button onclick="getBalance()">Check Balance</button>
-    <button onclick="claimFaucet()">Claim Faucet</button>
+    <button onclick="claimFaucet()">Claim Testnet Faucet</button>
 </div>
 
 <div class="card">
@@ -78,13 +78,73 @@ function pythonFloatString(value) {
     return String(number);
 }
 
-async function sha256Hex(text) {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(text);
-    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-    return Array.from(new Uint8Array(hashBuffer))
+function bytesToHex(bytes) {
+    return Array.from(bytes)
         .map(b => b.toString(16).padStart(2, "0"))
         .join("");
+}
+
+function hexToBytes(hex) {
+    if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length % 2 !== 0) {
+        throw new Error("Invalid hex value");
+    }
+
+    const result = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < result.length; i++) {
+        result[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    }
+    return result;
+}
+
+async function digestHex(algorithm, bytes) {
+    const hashBuffer = await crypto.subtle.digest(algorithm, bytes);
+    return bytesToHex(new Uint8Array(hashBuffer));
+}
+
+async function sha256Hex(text) {
+    return digestHex(
+        "SHA-256",
+        new TextEncoder().encode(text)
+    );
+}
+
+async function walletFromPrivateKey(privateKeyHex) {
+    const key = ec.keyFromPrivate(privateKeyHex, "hex");
+    const uncompressedPublicKey = key.getPublic().encode("hex", false);
+    const publicKey = uncompressedPublicKey.slice(2);
+    const addressHash = await digestHex(
+        "SHA-256",
+        hexToBytes(publicKey)
+    );
+
+    return {
+        address: "ZYN" + addressHash.slice(0, 40),
+        public_key: publicKey,
+        private_key: privateKeyHex.toLowerCase()
+    };
+}
+
+async function privateKeyFromMnemonic(mnemonic) {
+    const normalized = mnemonic.normalize("NFKD");
+    const keyMaterial = await crypto.subtle.importKey(
+        "raw",
+        new TextEncoder().encode(normalized),
+        "PBKDF2",
+        false,
+        ["deriveBits"]
+    );
+    const seedBits = await crypto.subtle.deriveBits(
+        {
+            name: "PBKDF2",
+            hash: "SHA-512",
+            salt: new TextEncoder().encode("mnemonic"),
+            iterations: 2048
+        },
+        keyMaterial,
+        512
+    );
+    const seed = new Uint8Array(seedBits);
+    return digestHex("SHA-256", seed);
 }
 
 function safeWalletView() {
@@ -92,7 +152,6 @@ function safeWalletView() {
 
     const view = {
         address: wallet.address,
-        mnemonic: wallet.mnemonic,
         public_key: wallet.public_key,
         private_key: showPrivateKey ? wallet.private_key : "HIDDEN"
     };
@@ -105,11 +164,18 @@ function updateWalletBox() {
 }
 
 async function createWallet() {
-    const res = await fetch("/wallet/new");
-    wallet = await res.json();
+    const entropy = crypto.getRandomValues(new Uint8Array(32));
+    let privateKeyHex = bytesToHex(entropy);
+
+    if (/^0+$/.test(privateKeyHex)) {
+        return createWallet();
+    }
+
+    wallet = await walletFromPrivateKey(privateKeyHex);
     showPrivateKey = false;
     updateWalletBox();
-    document.getElementById("resultBox").textContent = "Wallet created successfully.";
+    document.getElementById("resultBox").textContent =
+        "Wallet created locally. Back up the private key offline before receiving funds.";
 }
 
 async function recoverWallet() {
@@ -117,23 +183,25 @@ async function recoverWallet() {
 
     if (!mnemonic) return alert("Please enter mnemonic");
 
-    const res = await fetch("/wallet/recover", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ mnemonic })
-    });
+    try {
+        const wordCount = mnemonic.split(/\s+/).length;
+        if (![12, 15, 18, 21, 24].includes(wordCount)) {
+            throw new Error("BIP39 mnemonic must contain 12, 15, 18, 21, or 24 words");
+        }
 
-    const data = await res.json();
-
-    if (!res.ok) {
-        document.getElementById("resultBox").textContent = JSON.stringify(data, null, 2);
-        return;
+        const privateKeyHex = await privateKeyFromMnemonic(mnemonic);
+        wallet = await walletFromPrivateKey(privateKeyHex);
+        showPrivateKey = false;
+        updateWalletBox();
+        document.getElementById("mnemonicInput").value = "";
+        document.getElementById("resultBox").textContent =
+            "Wallet recovered locally. The mnemonic was not sent to the node.";
+    } catch (error) {
+        document.getElementById("resultBox").textContent = JSON.stringify({
+            message: "Wallet recovery failed",
+            error: error.message
+        }, null, 2);
     }
-
-    wallet = data.wallet;
-    showPrivateKey = false;
-    updateWalletBox();
-    document.getElementById("resultBox").textContent = "Wallet recovered successfully.";
 }
 
 function togglePrivateKey() {
@@ -190,7 +258,7 @@ async function sendZyn() {
     }
 
     try {
-        const version = 1;
+        const version = 2;
         const chainId = "zyron-testnet-1";
         const nonce = await getNextNonce();
         const amount = pythonFloatString(amountInput);
@@ -219,7 +287,13 @@ async function sendZyn() {
             wallet.public_key;
 
         const key = ec.keyFromPrivate(wallet.private_key, "hex");
-        const signatureObject = key.sign(dataToSign);
+        const signingDigest = new Uint8Array(
+            await crypto.subtle.digest(
+                "SHA-256",
+                new TextEncoder().encode(dataToSign)
+            )
+        );
+        const signatureObject = key.sign(signingDigest);
 
         const r = signatureObject.r.toString("hex").padStart(64, "0");
         const s = signatureObject.s.toString("hex").padStart(64, "0");

@@ -4,6 +4,8 @@ import threading
 import time
 import socket
 import ipaddress
+import hmac
+from functools import wraps
 from urllib.parse import urlparse
 from flask import Flask, request, render_template
 from flask_limiter import Limiter
@@ -14,11 +16,18 @@ from zyron.transaction import Transaction
 from zyron.storage import BlockchainStorage
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
+
+RATE_LIMIT_STORAGE_URI = os.environ.get(
+    "ZYRON_RATE_LIMIT_STORAGE_URI",
+    "memory://"
+)
 
 limiter = Limiter(
     get_remote_address,
     app=app,
-    default_limits=["300 per hour"]
+    default_limits=["300 per hour"],
+    storage_uri=RATE_LIMIT_STORAGE_URI
 )
 
 chain = Blockchain()
@@ -29,6 +38,8 @@ peers = set(storage.load_peers())
 AUTO_SYNC_INTERVAL = 60
 FAUCET_AMOUNT = 25
 FAUCET_COOLDOWN_SECONDS = 24 * 60 * 60
+ADMIN_TOKEN = os.environ.get("ZYRON_ADMIN_TOKEN")
+ENABLE_TESTNET_FAUCET = os.environ.get("ZYRON_ENABLE_TESTNET_FAUCET", "0") == "1"
 
 MAX_PEERS = 50
 PEER_TIMEOUT = 5
@@ -44,6 +55,27 @@ PEER_MAX_SCORE = 100
 peer_failures = {}
 peer_scores = {}
 peer_blacklist = set()
+
+
+def admin_required(handler):
+    @wraps(handler)
+    def wrapped(*args, **kwargs):
+        if not ADMIN_TOKEN:
+            return {
+                "message": "Admin API disabled",
+                "error": "ZYRON_ADMIN_TOKEN is not configured"
+            }, 503
+
+        provided_token = request.headers.get("X-Zyron-Admin-Token", "")
+
+        if not provided_token or not hmac.compare_digest(provided_token, ADMIN_TOKEN):
+            return {
+                "message": "Admin authorization required"
+            }, 403
+
+        return handler(*args, **kwargs)
+
+    return wrapped
 
 
 def normalize_peer_url(node):
@@ -754,6 +786,7 @@ def peers_reputation():
 
 @app.route("/peers/blacklist", methods=["POST"])
 @limiter.limit("10 per hour")
+@admin_required
 def peers_blacklist():
     data = request.json or {}
     node = data.get("node")
@@ -769,6 +802,7 @@ def peers_blacklist():
 
 @app.route("/peers/unblacklist", methods=["POST"])
 @limiter.limit("10 per hour")
+@admin_required
 def peers_unblacklist():
     data = request.json or {}
     node = data.get("node")
@@ -783,6 +817,7 @@ def peers_unblacklist():
 
 
 @app.route("/peers/health")
+@admin_required
 def peers_health():
     results = [ping_peer(node) for node in list(peers)]
 
@@ -802,6 +837,7 @@ def peers_health():
 
 @app.route("/peers/ping", methods=["POST"])
 @limiter.limit("20 per minute")
+@admin_required
 def peers_ping():
     data = request.json or {}
     node = data.get("node")
@@ -869,10 +905,10 @@ def nonce(address):
 
 
 @app.route("/debug/db")
+@admin_required
 def debug_db():
     return {
         "database_url_exists": bool(chain.storage.database_url),
-        "database_url_prefix": chain.storage.database_url[:30] if chain.storage.database_url else None,
         "stored_peers": list(peers),
         "peer_failures": peer_failures,
         "peer_scores": peer_scores,
@@ -930,30 +966,30 @@ def block_page(index):
 
 @app.route("/wallet/new")
 def new_wallet():
-    wallet = Wallet()
-    return wallet.to_dict()
+    return {
+        "message": "Server-side wallet generation disabled",
+        "error": "Generate private keys locally in the browser or an offline wallet"
+    }, 410
 
 
 @app.route("/wallet/recover", methods=["POST"])
-@limiter.limit("10 per minute")
 def recover_wallet():
-    data = request.json or {}
-    mnemonic = data.get("mnemonic")
-
-    if not mnemonic:
-        return {"message": "Wallet recovery failed", "error": "Mnemonic is required"}, 400
-
-    try:
-        wallet = Wallet(mnemonic=mnemonic)
-        return {"message": "Wallet recovered", "wallet": wallet.to_dict()}
-    except Exception as error:
-        return {"message": "Wallet recovery failed", "error": str(error)}, 400
+    return {
+        "message": "Server-side wallet recovery disabled",
+        "error": "Mnemonic phrases and private keys must never be sent to the node"
+    }, 410
 
 
 @app.route("/faucet/<address>")
 @limiter.limit("5 per hour")
 def faucet(address):
     try:
+        if not ENABLE_TESTNET_FAUCET:
+            return {
+                "message": "Testnet faucet disabled",
+                "error": "Set ZYRON_ENABLE_TESTNET_FAUCET=1 only on an isolated testnet node"
+            }, 503
+
         if not chain.is_valid_address(address):
             return {
                 "message": "Faucet rejected",
@@ -979,16 +1015,15 @@ def faucet(address):
                     "chain_valid": chain.is_chain_valid()
                 }, 429
 
-        old_reward = chain.mining_reward
-        chain.mining_reward = FAUCET_AMOUNT
+        balance_before = chain.get_balance(address)
         chain.mine_pending_transactions(address)
-        chain.mining_reward = old_reward
+        balance_after = chain.get_balance(address)
         storage.save_faucet_claim(address, now)
 
         return {
-            "message": "Faucet sent test ZYN",
+            "message": "Testnet block reward mined",
             "address": address,
-            "amount": FAUCET_AMOUNT,
+            "amount": balance_after - balance_before,
             "balance": chain.get_balance(address),
             "total_blocks": len(chain.chain),
             "chain_valid": chain.is_chain_valid()
@@ -998,8 +1033,9 @@ def faucet(address):
         return {"message": "Faucet rejected", "error": str(error)}, 400
 
 
-@app.route("/mine/<address>")
-@limiter.limit("10 per minute")
+@app.route("/mine/<address>", methods=["POST"])
+@limiter.limit("2 per minute")
+@admin_required
 def mine(address):
     try:
         chain.mine_pending_transactions(address)
@@ -1088,7 +1124,7 @@ def transaction():
 
     try:
         tx = Transaction(
-            version=int(data.get("version", 1)),
+            version=int(data.get("version", Transaction.CURRENT_VERSION)),
             chain_id=data.get("chain_id", "zyron-testnet-1"),
             nonce=int(data["nonce"]),
             sender=data["sender"],
@@ -1129,78 +1165,18 @@ def wallet_send():
 
 @app.route("/transfer/demo", methods=["POST"])
 def transfer_demo():
-    data = request.json or {}
-
-    sender_wallet = Wallet()
-    receiver_wallet = Wallet()
-
-    tx = Transaction(
-        sender=sender_wallet.address,
-        receiver=receiver_wallet.address,
-        amount=float(data.get("amount", 10)),
-        public_key=sender_wallet.get_public_key(),
-        nonce=chain.get_next_nonce(sender_wallet.address),
-        fee=float(data.get("fee", 0.01))
-    )
-
-    tx.sign_transaction(sender_wallet.get_private_key())
-
-    try:
-        txid = chain.add_transaction(tx)
-        tx_data = tx.to_dict()
-        broadcast_results = broadcast_transaction(tx_data)
-
-        return {
-            "message": "Transfer accepted",
-            "txid": txid,
-            "sender": sender_wallet.to_dict(),
-            "receiver": receiver_wallet.to_dict(),
-            "amount": tx.amount,
-            "fee": tx.fee,
-            "nonce": tx.nonce,
-            "pending_transactions": len(chain.pending_transactions),
-            "broadcast": broadcast_results
-        }
-
-    except Exception as error:
-        return {"message": "Transfer rejected", "error": str(error)}, 400
+    return {
+        "message": "Endpoint disabled",
+        "error": "Demo endpoints must not create or expose server-side private keys"
+    }, 410
 
 
 @app.route("/test-transfer")
 def test_transfer():
-    sender_wallet = Wallet()
-    receiver_wallet = Wallet()
-
-    tx = Transaction(
-        sender=sender_wallet.address,
-        receiver=receiver_wallet.address,
-        amount=10,
-        public_key=sender_wallet.get_public_key(),
-        nonce=chain.get_next_nonce(sender_wallet.address),
-        fee=0.01
-    )
-
-    tx.sign_transaction(sender_wallet.get_private_key())
-
-    try:
-        txid = chain.add_transaction(tx)
-        tx_data = tx.to_dict()
-        broadcast_results = broadcast_transaction(tx_data)
-
-        return {
-            "message": "Transfer accepted",
-            "txid": txid,
-            "sender": sender_wallet.address,
-            "receiver": receiver_wallet.address,
-            "amount": tx.amount,
-            "fee": tx.fee,
-            "nonce": tx.nonce,
-            "pending_transactions": len(chain.pending_transactions),
-            "broadcast": broadcast_results
-        }
-
-    except Exception as error:
-        return {"message": "Transfer rejected", "error": str(error)}, 400
+    return {
+        "message": "Endpoint disabled",
+        "error": "Use a locally signed transaction via POST /transaction"
+    }, 410
 
 
 @app.route("/mempool")
@@ -1214,7 +1190,8 @@ def mempool():
     }
 
 
-@app.route("/mempool/sync")
+@app.route("/mempool/sync", methods=["POST"])
+@admin_required
 def mempool_sync():
     sync_results = []
     total_accepted = 0
@@ -1276,7 +1253,8 @@ def register_node():
     }
 
 
-@app.route("/peers/discover")
+@app.route("/peers/discover", methods=["POST"])
+@admin_required
 def peers_discover():
     results = []
 
@@ -1295,6 +1273,7 @@ def peers_discover():
 
 
 @app.route("/peers/remove", methods=["POST"])
+@admin_required
 def peers_remove():
     data = request.json or {}
     node = normalize_peer_url(data.get("node"))
@@ -1312,7 +1291,8 @@ def peers_remove():
     }
 
 
-@app.route("/nodes/sync")
+@app.route("/nodes/sync", methods=["POST"])
+@admin_required
 def sync_nodes():
     sync_results = []
     replaced = False
@@ -1337,7 +1317,8 @@ def sync_nodes():
     }
 
 
-@app.route("/sync/all")
+@app.route("/sync/all", methods=["POST"])
+@admin_required
 def sync_all():
     chain_results = []
     mempool_results = []

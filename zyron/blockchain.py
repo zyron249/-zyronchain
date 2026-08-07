@@ -1,9 +1,21 @@
 import re
 import time
+import math
+import threading
+from functools import wraps
 from zyron.block import Block
 from zyron.transaction import Transaction
 from zyron.storage import BlockchainStorage
 from zyron.wallet import address_from_public_key
+
+
+def synchronized(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
 
 
 class Blockchain:
@@ -12,8 +24,10 @@ class Blockchain:
     MAX_BLOCK_TRANSACTIONS = 1000
     MAX_MEMPOOL_SIZE = 5000
     MEMPOOL_TX_TTL_SECONDS = 3600
+    MAX_TX_FUTURE_SECONDS = 120
 
     def __init__(self):
+        self._lock = threading.RLock()
         self.storage = BlockchainStorage()
         self.chain = [self.create_genesis_block()]
 
@@ -98,7 +112,20 @@ class Blockchain:
         if not data:
             return
 
-        self.chain = [self.dict_to_block(block_data) for block_data in data]
+        try:
+            candidate_chain = [
+                self.dict_to_block(block_data)
+                for block_data in data
+            ]
+        except Exception as error:
+            print("Stored chain rejected:", str(error))
+            return
+
+        if not self.is_valid_chain(candidate_chain):
+            print("Stored chain rejected: consensus validation failed")
+            return
+
+        self.chain = candidate_chain
         self.difficulty = self.get_latest_block().difficulty
         self.mining_reward = self.get_current_reward()
 
@@ -146,18 +173,33 @@ class Blockchain:
             "mempool_ttl_seconds": self.MEMPOOL_TX_TTL_SECONDS
         }
 
-    def get_total_supply(self):
-        total = 0
-        for block in self.chain:
-            for tx in block.transactions:
-                if isinstance(tx, dict) and tx.get("sender") == "SYSTEM":
-                    total += float(tx.get("amount", 0))
-        return total
-
-    def get_current_reward(self):
-        halvings = len(self.chain) // self.halving_interval
+    def get_block_subsidy(self, block_index):
+        halvings = int(block_index) // self.halving_interval
         reward = self.initial_mining_reward / (2 ** halvings)
         return 0 if reward < 0.00000001 else reward
+
+    def get_total_supply(self):
+        total = 0.0
+
+        for block in self.chain[1:]:
+            block_fees = 0.0
+            system_amount = 0.0
+
+            for tx in block.transactions:
+                if not isinstance(tx, dict):
+                    continue
+
+                if tx.get("sender") == "SYSTEM":
+                    system_amount += float(tx.get("amount", 0))
+                else:
+                    block_fees += float(tx.get("fee", 0))
+
+            total += max(system_amount - block_fees, 0)
+
+        return min(total, self.max_supply)
+
+    def get_current_reward(self):
+        return self.get_block_subsidy(len(self.chain))
 
     def get_remaining_supply(self):
         return max(self.max_supply - self.get_total_supply(), 0)
@@ -228,6 +270,7 @@ class Blockchain:
 
         return False
 
+    @synchronized
     def cleanup_mempool(self):
         now = time.time()
         cleaned_transactions = []
@@ -263,6 +306,7 @@ class Blockchain:
 
         return min(fees)
 
+    @synchronized
     def enforce_mempool_limit(self):
         self.cleanup_mempool()
 
@@ -393,11 +437,37 @@ class Blockchain:
         if not self.is_valid_genesis_block(chain_to_validate[0]):
             return False
 
+        validated_supply = 0.0
+        seen_chain_txids = set()
+
         for i in range(1, len(chain_to_validate)):
             current = chain_to_validate[i]
             previous = chain_to_validate[i - 1]
+
+            if not isinstance(current.index, int) or isinstance(current.index, bool):
+                return False
+
+            if not isinstance(current.difficulty, int) or isinstance(current.difficulty, bool):
+                return False
+
+            if not isinstance(current.nonce, int) or isinstance(current.nonce, bool) or current.nonce < 0:
+                return False
+
+            if not isinstance(current.transactions, list):
+                return False
+
+            try:
+                current_timestamp = float(current.timestamp)
+            except (TypeError, ValueError, OverflowError):
+                return False
+
+            if not math.isfinite(current_timestamp):
+                return False
+
+            expected_difficulty = self.calculate_expected_difficulty(
+                chain_to_validate[:i]
+            )
             target = "0" * current.difficulty
-            expected_difficulty = self.calculate_expected_difficulty(chain_to_validate[:i])
 
             if current.index != previous.index + 1:
                 return False
@@ -432,62 +502,111 @@ class Blockchain:
             if not current.hash.startswith(target):
                 return False
 
-            expected_nonces = {}
-            spent_in_block = {}
-            seen_txids = set()
-            system_tx_count = 0
+            parsed_transactions = []
+            system_transactions = []
+            block_fees = 0.0
 
             for tx_data in current.transactions:
                 if not isinstance(tx_data, dict):
-                    continue
-
-                txid = tx_data.get("txid")
-
-                if txid:
-                    if txid in seen_txids:
-                        return False
-                    seen_txids.add(txid)
-
-                sender = tx_data.get("sender")
-                receiver = tx_data.get("receiver")
-
-                if sender == "SYSTEM":
-                    system_tx_count += 1
-
-                    if system_tx_count > 1:
-                        return False
-
-                if sender != "SYSTEM" and not self.is_valid_address(sender):
                     return False
 
-                if not self.is_valid_address(receiver):
+                try:
+                    tx = Transaction.from_dict(tx_data)
+                except (KeyError, TypeError, ValueError, OverflowError):
                     return False
 
-                tx = Transaction.from_dict(tx_data)
+                if not tx.txid or tx.txid in seen_chain_txids:
+                    return False
+
+                seen_chain_txids.add(tx.txid)
+
+                if not self.is_valid_address(tx.receiver):
+                    return False
 
                 if not tx.is_valid():
                     return False
 
-                if not self.transaction_public_key_matches_sender(tx):
+                if float(tx.timestamp) > float(current.timestamp):
                     return False
 
-                if sender != "SYSTEM":
-                    previous_nonce = expected_nonces.get(
-                        sender,
-                        self.get_nonce_before_block(sender, current.index, chain_to_validate)
+                if tx.sender == "SYSTEM":
+                    system_transactions.append(tx)
+                else:
+                    if not self.is_valid_address(tx.sender):
+                        return False
+
+                    if not self.transaction_public_key_matches_sender(tx):
+                        return False
+
+                    block_fees += tx.fee
+
+                parsed_transactions.append(tx)
+
+            if not math.isfinite(block_fees) or block_fees < 0:
+                return False
+
+            if len(system_transactions) > 1:
+                return False
+
+            if system_transactions and parsed_transactions[-1].sender != "SYSTEM":
+                return False
+
+            block_subsidy = self.get_block_subsidy(current.index)
+            remaining_supply = max(self.max_supply - validated_supply, 0)
+            minted_subsidy = min(block_subsidy, remaining_supply)
+            expected_miner_payment = minted_subsidy + block_fees
+
+            if expected_miner_payment > 0:
+                if len(system_transactions) != 1:
+                    return False
+
+                reward_tx = system_transactions[0]
+
+                if not math.isclose(
+                    reward_tx.amount,
+                    expected_miner_payment,
+                    rel_tol=0,
+                    abs_tol=0.00000001
+                ):
+                    return False
+            elif system_transactions:
+                return False
+
+            expected_nonces = {}
+            spent_in_block = {}
+
+            for tx in parsed_transactions:
+                if tx.sender == "SYSTEM":
+                    continue
+
+                previous_nonce = expected_nonces.get(
+                    tx.sender,
+                    self.get_nonce_before_block(
+                        tx.sender,
+                        current.index,
+                        chain_to_validate
                     )
+                )
 
-                    if tx.nonce != previous_nonce + 1:
-                        return False
+                if tx.nonce != previous_nonce + 1:
+                    return False
 
-                    total_cost = float(tx.amount) + float(tx.fee)
-                    balance_before_block = self.get_balance_before_block(sender, current.index, chain_to_validate)
+                total_cost = tx.amount + tx.fee
+                balance_before_block = self.get_balance_before_block(
+                    tx.sender,
+                    current.index,
+                    chain_to_validate
+                )
 
-                    if spent_in_block.get(sender, 0) + total_cost > balance_before_block:
-                        return False
+                if spent_in_block.get(tx.sender, 0) + total_cost > balance_before_block:
+                    return False
 
-                    spent_in_block[sender] = spent_in_block.get(sender, 0) + total_cost
-                    expected_nonces[sender] = tx.nonce
+                spent_in_block[tx.sender] = (
+                    spent_in_block.get(tx.sender, 0) + total_cost
+                )
+                expected_nonces[tx.sender] = tx.nonce
+
+            validated_supply += minted_subsidy
 
         return True
 
@@ -515,6 +634,7 @@ class Blockchain:
 
         return balance
 
+    @synchronized
     def replace_chain(self, new_chain_data):
         if not new_chain_data:
             return {"replaced": False, "reason": "No chain data provided"}
@@ -535,17 +655,51 @@ class Blockchain:
                 "incoming_work": incoming_work
             }
 
+        previous_chain = self.chain
+        previous_pending = list(self.pending_transactions)
+
+        confirmed_txids = {
+            tx.get("txid")
+            for block in new_chain
+            for tx in block.transactions
+            if isinstance(tx, dict) and tx.get("txid")
+        }
+
+        orphaned_transactions = []
+        for block in previous_chain[1:]:
+            for tx in block.transactions:
+                if (
+                    isinstance(tx, dict)
+                    and tx.get("sender") != "SYSTEM"
+                    and tx.get("txid") not in confirmed_txids
+                ):
+                    orphaned_transactions.append(tx)
+
         self.chain = new_chain
         self.pending_transactions = []
         self.difficulty = self.get_latest_block().difficulty
         self.mining_reward = self.get_current_reward()
+
+        recovered = 0
+        dropped = 0
+        recovery_candidates = previous_pending + orphaned_transactions
+
+        for tx_data in recovery_candidates:
+            result = self.add_transaction_from_dict(tx_data)
+            if result.get("accepted"):
+                recovered += 1
+            else:
+                dropped += 1
+
         self.save_chain()
 
         return {
             "replaced": True,
             "new_length": len(self.chain),
             "current_work": current_work,
-            "incoming_work": incoming_work
+            "incoming_work": incoming_work,
+            "recovered_transactions": recovered,
+            "dropped_transactions": dropped
         }
 
     def has_transaction(self, txid):
@@ -562,6 +716,7 @@ class Blockchain:
 
         return False
 
+    @synchronized
     def add_transaction_from_dict(self, tx_data):
         if not isinstance(tx_data, dict):
             return {"accepted": False, "reason": "Invalid transaction data"}
@@ -581,6 +736,7 @@ class Blockchain:
         except Exception as error:
             return {"accepted": False, "reason": str(error), "txid": txid}
 
+    @synchronized
     def sync_mempool(self, remote_transactions):
         if not isinstance(remote_transactions, list):
             return {
@@ -614,11 +770,29 @@ class Blockchain:
             "results": results
         }
 
+    @synchronized
     def add_transaction(self, transaction):
         self.cleanup_mempool()
 
+        if transaction.sender == "SYSTEM":
+            raise Exception("SYSTEM transactions can only be created while mining")
+
+        if transaction.version != Transaction.CURRENT_VERSION:
+            raise Exception(
+                f"New transactions must use protocol version {Transaction.CURRENT_VERSION}"
+            )
+
         if not transaction.is_valid():
             raise Exception("Invalid transaction signature")
+
+        now = time.time()
+        transaction_timestamp = float(transaction.timestamp)
+
+        if transaction_timestamp > now + self.MAX_TX_FUTURE_SECONDS:
+            raise Exception("Transaction timestamp is too far in the future")
+
+        if now - transaction_timestamp > self.MEMPOOL_TX_TTL_SECONDS:
+            raise Exception("Transaction is too old for the mempool")
 
         if not self.transaction_public_key_matches_sender(transaction):
             raise Exception("Public key does not match sender address")
@@ -668,6 +842,7 @@ class Blockchain:
         self.enforce_mempool_limit()
         return transaction.txid
 
+    @synchronized
     def mine_pending_transactions(self, miner_address):
         if not self.is_valid_address(miner_address):
             raise Exception("Invalid miner address")
@@ -705,11 +880,18 @@ class Blockchain:
         new_difficulty = self.calculate_expected_difficulty(self.chain)
         self.difficulty = new_difficulty
 
+        latest_block = self.get_latest_block()
+        block_timestamp = max(
+            time.time(),
+            float(latest_block.timestamp) + 0.000001
+        )
+
         block = Block(
             len(self.chain),
             block_transactions,
-            self.get_latest_block().hash,
-            new_difficulty
+            latest_block.hash,
+            new_difficulty,
+            timestamp=block_timestamp
         )
 
         block.mine()
