@@ -1,5 +1,6 @@
 import time
 import hashlib
+import math
 import ecdsa
 
 
@@ -67,14 +68,34 @@ class Transaction:
         ).hex()
 
     def is_valid(self):
-        if self.sender == "SYSTEM":
-            return True
-
         if self.chain_id != "zyron-testnet-1":
             return False
 
         if self.version != 1:
             return False
+
+        if not math.isfinite(self.amount) or not math.isfinite(self.fee):
+            return False
+
+        try:
+            timestamp = float(self.timestamp)
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+        if not math.isfinite(timestamp):
+            return False
+
+        if self.sender == "SYSTEM":
+            if self.amount <= 0:
+                return False
+
+            if self.fee != 0 or self.nonce != 0:
+                return False
+
+            if self.public_key is not None or self.signature is not None:
+                return False
+
+            return self.txid == self.calculate_txid()
 
         if self.amount <= 0:
             return False
