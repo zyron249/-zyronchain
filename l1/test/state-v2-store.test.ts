@@ -14,7 +14,7 @@ test("State v2 disk store atomically reopens committed node/value state", async 
     const first = store.state()
       .set("account:alice", { balanceAtoms: 100, nonce: 1 })
       .set("activity-epoch:7", { settled: true });
-    await store.commit(first);
+    await store.commit(first, ["account:alice", "activity-epoch:7"]);
     const reopened = await StateV2DiskStore.open(directory);
     assert.equal(reopened.state().root(), first.root());
     assert.deepEqual(reopened.state().get("account:alice"), { balanceAtoms: 100, nonce: 1 });
@@ -37,7 +37,7 @@ test("State v2 persistence tracks only changed Merkle paths after a checkpoint",
     for (let index = 0; index < 2_000; index += 1) {
       state = state.set(`account:${index}`, { balanceAtoms: index, nonce: 0 });
     }
-    await store.commit(state);
+    await store.commit(state, Array.from({ length: 2_000 }, (_, index) => `account:${index}`));
 
     const checkpoint = store.state();
     assert.equal(checkpoint.pendingNodeRecords().length, 0);
@@ -59,7 +59,7 @@ test("State v2 disk store ignores an unterminated crash tail after a committed r
   try {
     const store = await StateV2DiskStore.open(directory);
     const state = store.state().set("account:alice", { balanceAtoms: 5, nonce: 1 });
-    await store.commit(state);
+    await store.commit(state, ["account:alice"]);
     await appendFile(join(directory, "state-v2.nodes.ndjson"), "{partial-crash-tail", "utf8");
     const reopened = await StateV2DiskStore.open(directory);
     assert.equal(reopened.state().root(), state.root());
@@ -72,7 +72,7 @@ test("State v2 disk store fails closed on checksum corruption", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-corrupt-"));
   try {
     const store = await StateV2DiskStore.open(directory);
-    await store.commit(store.state().set("account:alice", { balanceAtoms: 5, nonce: 1 }));
+    await store.commit(store.state().set("account:alice", { balanceAtoms: 5, nonce: 1 }), ["account:alice"]);
     const path = join(directory, "state-v2.nodes.ndjson");
     const lines = (await readFile(path, "utf8")).trimEnd().split("\n");
     const envelope = JSON.parse(lines[0]!) as { checksum: string };
@@ -92,7 +92,7 @@ test("State v2 disk store fails closed when the committed root references a miss
     const committed = store.state()
       .set("account:alice", { balanceAtoms: 5, nonce: 1 })
       .set("account:bob", { balanceAtoms: 7, nonce: 2 });
-    await store.commit(committed);
+    await store.commit(committed, ["account:alice", "account:bob"]);
 
     const rootMetadata = JSON.parse(await readFile(join(directory, "state-v2.root.json"), "utf8")) as {
       root: string;
@@ -107,6 +107,46 @@ test("State v2 disk store fails closed when the committed root references a miss
     await writeFile(nodesPath, `${withoutCommittedRoot.join("\n")}\n`, "utf8");
 
     await assert.rejects(() => StateV2DiskStore.open(directory), /Missing State v2 node record/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("State v2 semantic key index is durable, complete, and ignores pre-root crash orphans", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-keys-crash-"));
+  try {
+    const store = await StateV2DiskStore.open(directory);
+    const first = store.state().set("account:alice", { balanceAtoms: 5, nonce: 1 });
+    await store.commit(first, ["account:alice"]);
+    const second = first.set("account:bob", { balanceAtoms: 7, nonce: 0 });
+    await assert.rejects(
+      () => store.commit(second, ["account:bob"], {
+        afterSemanticKeysSync: () => { throw new Error("injected crash before root commit"); }
+      }),
+      /injected crash/
+    );
+
+    const reopened = await StateV2DiskStore.open(directory);
+    assert.equal(reopened.state().root(), first.root());
+    assert.deepEqual(reopened.semanticKeyPreimages(), ["account:alice"]);
+    assert.equal(reopened.semanticIndexWouldBeComplete(second, []), true);
+    await reopened.commit(second);
+    assert.equal((await StateV2DiskStore.open(directory)).state().root(), second.root());
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("State v2 semantic key index fails closed on checksum corruption", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-keys-corrupt-"));
+  try {
+    const store = await StateV2DiskStore.open(directory);
+    await store.commit(store.state().set("account:alice", { balanceAtoms: 5, nonce: 1 }), ["account:alice"]);
+    const path = join(directory, "state-v2.keys.ndjson");
+    const envelope = JSON.parse((await readFile(path, "utf8")).trim()) as { key: string; checksum: string };
+    envelope.checksum = "00".repeat(32);
+    await writeFile(path, `${JSON.stringify(envelope)}\n`, "utf8");
+    await assert.rejects(() => StateV2DiskStore.open(directory), /semantic key checksum mismatch/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
