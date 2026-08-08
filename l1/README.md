@@ -165,3 +165,18 @@ that digest through an independent trusted channel before treating the file as a
 The node deliberately does **not** fast-import snapshot files yet: a bare state root does
 not commit validator/protocol schedules, so skipping history without an independently
 trusted full-snapshot digest would weaken consensus safety.
+
+Local recovery checkpoints are different: they are created only after the finalized block
+log is durable, bind the full chain/genesis/tip/state/governance snapshot, and are revalidated
+against their exact finalized-log boundary before suffix replay. To measure the restart
+benefit on synthetic finalized history without making wall-clock timing a flaky CI gate:
+
+```sh
+npm run bench:restart
+ZYRON_BENCH_BLOCKS=2000 npm run bench:restart
+```
+
+The benchmark first reopens with the checkpoint hidden (full replay), then restores the same
+checkpoint and reopens via verified suffix replay. It fails if either path reaches a different
+tip or if the checkpoint path is not actually used, and prints both timings plus the observed
+speedup. Benchmark timing is evidence for capacity planning, not a consensus correctness rule.
