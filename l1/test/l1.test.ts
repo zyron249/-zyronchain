@@ -22,7 +22,14 @@ import { stateV2FromLedgerSnapshot } from "../src/state-v2.js";
 import { LedgerState } from "../src/state.js";
 import { createSignedPeerRecord, loadOrCreateNodeIdentity, signPeerRequest } from "../src/peer-identity.js";
 import { PeerReputationStore } from "../src/peer-reputation.js";
-import { createRpcServer, NodeService, PeerClient, produceFinalizedBlock } from "../src/node.js";
+import {
+  createRpcServer,
+  diversityOrderedPeers,
+  NodeService,
+  peerDiversityBucket,
+  PeerClient,
+  produceFinalizedBlock
+} from "../src/node.js";
 import type { GenesisConfig } from "../src/types.js";
 
 const validatorOnePrivate = "01".padStart(64, "0");
@@ -952,6 +959,23 @@ test("peer client bounds configured peer fanout", () => {
   const peers = Array.from({ length: 65 }, (_, index) => `https://node-${index}.example:9137`);
   assert.throws(() => new PeerClient(peers), /Too many configured peers/);
   assert.equal(new PeerClient(peers.slice(0, 64)).peers.length, 64);
+});
+
+test("peer sync ordering prevents one host or IPv4 subnet from dominating early candidates", () => {
+  const subnetOne = "https://10.20.30.1:9137";
+  const subnetTwo = "https://10.20.30.2:9137";
+  const hostOne = "https://node-a.example:9137";
+  const subnetThree = "https://10.20.30.99:9138";
+  const hostTwo = "https://node-b.example:9137";
+  const peers = [subnetOne, subnetTwo, hostOne, subnetThree, hostTwo];
+
+  assert.equal(peerDiversityBucket(subnetOne), "ipv4:10.20.30.0/24");
+  assert.equal(peerDiversityBucket(subnetThree), "ipv4:10.20.30.0/24");
+  assert.equal(peerDiversityBucket(hostOne), "host:node-a.example");
+  assert.equal(peerDiversityBucket("https://node-a.example:9443"), "host:node-a.example");
+  assert.equal(peerDiversityBucket("https://[2001:db8::1]:9137"), "ipv6:2001:db8::1");
+  assert.deepEqual(diversityOrderedPeers(peers), [subnetOne, hostOne, hostTwo, subnetTwo, subnetThree]);
+  assert.deepEqual(diversityOrderedPeers(peers, 1), [hostOne, hostTwo, subnetOne, subnetTwo, subnetThree]);
 });
 
 test("RPC serves a signed peer record that a client verifies against chain identity", async () => {
