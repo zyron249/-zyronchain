@@ -283,7 +283,7 @@ Do not call the network mainnet-ready until all of these are true:
 
 1. Remove full-state clones from public/query/mempool hot paths. **In progress with this audit.**
 2. Normalize every block-size rule to UTF-8 bytes. **In progress with this audit.**
-3. Harden future-nonce mempool semantic admission and pending-balance reservation.
+3. Harden future-nonce mempool semantic admission and pending-balance reservation. **Implemented after the audit; pending CI/merge verification.**
 4. Implement fee-aware RBF/eviction without turning fee policy into an accidental consensus rule.
 5. Execute State v2 design in issue #26 with migration/proof/crash benchmarks.
 
