@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { canonicalJson } from "./codec.js";
+import { canonicalJson, compareCanonicalStrings } from "./codec.js";
 import { LedgerState, type LedgerSnapshot } from "./state.js";
 import { MAX_SUPPLY_ATOMS, type Address, type Transaction, type Validator } from "./types.js";
 
@@ -400,7 +400,7 @@ export function reconstructStateV2PortableView(
   }
   if (seenHashes.size !== leafHashes.size) throw new Error("Incomplete State v2 key preimage set");
 
-  accounts.sort((a, b) => a.address.localeCompare(b.address));
+  accounts.sort((a, b) => compareCanonicalStrings(a.address, b.address));
   epochs.sort((a, b) => a - b);
   validatorSchedule.sort((a, b) => a.activationHeight - b.activationHeight);
   protocolSchedule.sort((a, b) => a.activationHeight - b.activationHeight);
@@ -429,7 +429,7 @@ export function stateV2FromLedgerSnapshot(
   governance?: StateV2GovernanceSnapshot
 ): SparseMerkleState {
   let state = SparseMerkleState.empty();
-  for (const account of [...snapshot.accounts].sort((a, b) => a.address.localeCompare(b.address))) {
+  for (const account of [...snapshot.accounts].sort((a, b) => compareCanonicalStrings(a.address, b.address))) {
     state = state.set(accountKey(account.address), {
       balanceAtoms: account.balanceAtoms,
       nonce: account.nonce
