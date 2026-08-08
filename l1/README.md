@@ -143,6 +143,30 @@ node dist/src/cli.js node --genesis genesis.json --data data-a --validator-key v
 node dist/src/cli.js node --genesis genesis.json --data data-b --validator-key validator-b.json --p2p-listen /ip4/0.0.0.0/tcp/9140 --p2p-peer /dns4/node-a.example/tcp/9140/p2p/<NODE_A_PEER_ID>
 ```
 
+### Remote validator signer boundary
+
+Production validators do not need to load a secp256k1 validator secret into the node process.
+Instead of `--validator-key`, configure a provider-neutral remote signer with both its pinned
+validator public key and endpoint:
+
+```sh
+node dist/src/cli.js node --genesis genesis.json --data data-a \
+  --validator-signer-url https://signer.internal.example/sign \
+  --validator-public-key <validator-public-key>
+```
+
+The node sends only `{version:1,intent,payload}` and accepts exactly `{signature}`. `intent` is
+one of `block-proposal`, `block-attestation`, or `round-skip`. Every returned signature is
+verified locally against the pinned public key and exact canonical payload before use. Redirects,
+URL credentials/query fragments, and remote plaintext HTTP are rejected; HTTP is accepted only
+on loopback for local signer sidecars. Requests have a bounded timeout.
+
+The node fsyncs its anti-double-sign journal before asking the signer to sign. A signer outage
+after reservation can therefore sacrifice one vote (liveness) but cannot make the node sign a
+conflicting vote after restart. A production HSM/KMS/remote-signer adapter must independently
+enforce the same signing intents and anti-double-sign policy; this client boundary is not by
+itself an HSM certification or a key-rotation runbook.
+
 Create another key for a funded wallet and submit a signed transfer:
 
 ```sh
