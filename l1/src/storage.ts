@@ -1,4 +1,5 @@
 import { createReadStream } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -15,6 +16,17 @@ interface StoreMetadata {
   version: number;
   chainId: string;
   genesisHash: string;
+}
+
+interface RecoveryCheckpointV1 {
+  version: 1;
+  chainId: string;
+  genesisHash: string;
+  height: number;
+  tipHash: string;
+  blockFileBytes: number;
+  snapshotSha256: string;
+  snapshot: ReturnType<ZyronChain["snapshot"]>;
 }
 
 export class ChainStore {
@@ -117,6 +129,39 @@ export class ChainStore {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     await writeFile(path, `${canonical}\n`, { flag: "wx", mode: 0o600 });
     return { height: snapshot.height, sha256 };
+  }
+
+  async writeRecoveryCheckpoint(): Promise<{ height: number; tipHash: string; snapshotSha256: string }> {
+    if (this.chain.height !== this.persistedHeight) throw new Error("Cannot checkpoint non-durable chain state");
+    const snapshot = this.chain.snapshot();
+    const snapshotSha256 = sha256Hex(canonicalJson(snapshot));
+    const checkpoint: RecoveryCheckpointV1 = {
+      version: 1,
+      chainId: this.chain.genesis.chainId,
+      genesisHash: this.chain.genesisHash,
+      height: this.persistedHeight,
+      tipHash: this.chain.tip.hash,
+      blockFileBytes: this.persistedBytes,
+      snapshotSha256,
+      snapshot
+    };
+    const path = join(this.dataDir, "recovery-checkpoint.json");
+    const temporary = `${path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
+    const handle = await open(temporary, "wx", 0o600);
+    try {
+      await handle.writeFile(`${canonicalJson(checkpoint)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temporary, path);
+    const directory = await open(this.dataDir, "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+    return { height: checkpoint.height, tipHash: checkpoint.tipHash, snapshotSha256 };
   }
 
   async commitFinalizedBlock(block: Block, nowMs = Date.now()): Promise<void> {

@@ -618,6 +618,36 @@ test("trusted checkpoint restore requires an existing digest/tip anchor and reva
   }
 });
 
+test("recovery checkpoint is published only after durable block state and binds exact snapshot bytes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-recovery-checkpoint-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    let first = store.chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
+    first = store.chain.attestBlock(first, validatorOnePrivate);
+    first = store.chain.attestBlock(first, validatorTwoPrivate);
+    await store.commitFinalizedBlock(first, 1_700_000_000_100);
+
+    const anchor = await store.writeRecoveryCheckpoint();
+    const checkpoint = JSON.parse(await readFile(join(directory, "recovery-checkpoint.json"), "utf8")) as Record<string, unknown>;
+    assert.equal(checkpoint.version, 1);
+    assert.equal(checkpoint.chainId, genesis().chainId);
+    assert.equal(checkpoint.genesisHash, store.chain.genesisHash);
+    assert.equal(checkpoint.height, 1);
+    assert.equal(checkpoint.tipHash, first.hash);
+    assert.equal(checkpoint.snapshotSha256, anchor.snapshotSha256);
+    assert.ok(Number(checkpoint.blockFileBytes) > 0);
+    assert.equal(sha256Hex(canonicalJson(checkpoint.snapshot)), anchor.snapshotSha256);
+
+    let second = store.chain.produceBlock([], validatorTwoPrivate, { timestampMs: 1_700_000_000_200 });
+    second = store.chain.attestBlock(second, validatorOnePrivate);
+    second = store.chain.attestBlock(second, validatorTwoPrivate);
+    store.chain.acceptBlock(second, 1_700_000_000_200);
+    await assert.rejects(() => store.writeRecoveryCheckpoint(), /non-durable chain state/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("repeated crash-style reopen preserves tip and state across a 100-block replay soak", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-replay-soak-"));
   try {
