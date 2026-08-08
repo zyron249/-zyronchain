@@ -118,3 +118,16 @@ Scheduling version 2 does not make a version-1 binary understand version 2. The 
 Fallback rounds require a strictly-greater-than-2/3 signed skip certificate for the preceding round. A validator's fsynced signing journal makes attestation and skip mutually exclusive inside the same `(height, round)`. For round 2 and later, validators require the preceding skip quorum certificate before signing the next skip, so a node cannot jump view-change rounds after an outage. The coordinator progresses missed rounds sequentially.
 
 This removes the earlier single-proposer liveness stop, but it does not replace an independent consensus audit or adversarial soak testing. The implementation is suitable for controlled multi-validator devnet/testnet operation; public-mainnet release remains gated by the evidence in `../docs/STANDALONE_L1_READINESS.md`.
+
+## Release artifacts
+
+Tags matching `l1-v*` run the standalone L1 release workflow. The workflow installs the
+locked dependency graph, repeats typecheck/tests/runtime audit, builds the node, packages
+only the runtime distribution and operator README, writes `SHA256SUMS`, and creates a
+GitHub artifact attestation for both files. The resulting tarball is an operator artifact;
+the package remains `private` and is not published to the npm registry.
+
+Before promoting a release, verify its checksum and GitHub attestation and confirm that
+the tag resolves to the reviewed commit. Release provenance does not replace the
+independent audit, production key custody, genesis freeze, or operational drills listed
+in the readiness gate.
