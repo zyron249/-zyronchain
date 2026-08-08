@@ -561,6 +561,22 @@ test("RPC peer authentication protects consensus writes without hiding public st
   }
 });
 
+test("peer authentication credentials cannot be sent to remote plaintext HTTP peers", () => {
+  const token = "peer-test-token-0123456789abcdef";
+  assert.throws(
+    () => new PeerClient(["http://validator.example:9137"], token),
+    /Authenticated remote peers must use HTTPS/
+  );
+  assert.deepEqual(
+    new PeerClient(["https://validator.example:9137"], token).peers,
+    ["https://validator.example:9137"]
+  );
+  assert.deepEqual(
+    new PeerClient(["http://127.0.0.1:9137"], token).peers,
+    ["http://127.0.0.1:9137"]
+  );
+});
+
 test("peer sync handshakes on chain identity and incrementally replays finalized blocks", async () => {
   const sourceDir = await mkdtemp(join(tmpdir(), "zyron-sync-source-"));
   const targetDir = await mkdtemp(join(tmpdir(), "zyron-sync-target-"));
