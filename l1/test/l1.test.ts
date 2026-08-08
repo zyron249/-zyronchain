@@ -1139,6 +1139,55 @@ test("protocol v2 activation deterministically migrates the finalized v1 ledger 
   assert.equal(chain.balance(bob), 1_000);
 });
 
+test("protocol v2 activation root is reproduced from finalized history after restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-protocol-v2-restart-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    const proposal = {
+      chainId: genesis().chainId,
+      nonce: 1,
+      sender: validatorOne,
+      activationHeight: 101,
+      protocolVersion: 2
+    };
+    const upgrade = createProtocolUpgrade(
+      {
+        ...proposal,
+        approvals: [
+          createProtocolUpgradeApproval(proposal, validatorOnePrivate, validatorOnePublic),
+          createProtocolUpgradeApproval(proposal, validatorTwoPrivate, validatorTwoPublic)
+        ],
+        timestampMs: 1_700_000_000_100
+      },
+      validatorOnePrivate,
+      validatorOnePublic
+    );
+    let first = store.chain.produceBlock([upgrade], validatorOnePrivate, { timestampMs: 1_700_000_000_200 });
+    first = store.chain.attestBlock(first, validatorOnePrivate);
+    first = store.chain.attestBlock(first, validatorTwoPrivate);
+    await store.commitFinalizedBlock(first, 1_700_000_000_200);
+
+    for (let height = 2; height <= 101; height += 1) {
+      const proposerKey = height % 2 === 0 ? validatorTwoPrivate : validatorOnePrivate;
+      let block = store.chain.produceBlock([], proposerKey, { timestampMs: 1_700_000_000_200 + height });
+      block = store.chain.attestBlock(block, validatorOnePrivate);
+      block = store.chain.attestBlock(block, validatorTwoPrivate);
+      await store.commitFinalizedBlock(block, 1_700_000_000_200 + height);
+    }
+    const expectedTip = store.chain.tip.hash;
+    const expectedRoot = store.chain.tip.header.stateRoot;
+    assert.equal(store.chain.tip.header.version, 2);
+
+    const reopened = await ChainStore.open(genesis(), directory);
+    assert.equal(reopened.chain.height, 101);
+    assert.equal(reopened.chain.protocolVersionAt(101), 2);
+    assert.equal(reopened.chain.tip.hash, expectedTip);
+    assert.equal(reopened.chain.tip.header.stateRoot, expectedRoot);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("protocol upgrade requires validator quorum, activates at a delayed height, and fail-stops unsupported binaries", () => {
   const chain = new ZyronChain(genesis());
   const proposal = {
