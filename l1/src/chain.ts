@@ -301,7 +301,7 @@ export class ZyronChain {
     }
     const timestampMs = options.timestampMs ?? Math.max(Date.now(), this.tip.header.timestampMs + 1);
     const next = this.validateAndApply(transactions, this.state, this.height + 1);
-    return createUnsignedBlock({
+    const block = createUnsignedBlock({
       version: protocolVersion,
       chainId: this.genesis.chainId,
       height: this.height + 1,
@@ -313,6 +313,17 @@ export class ZyronChain {
       proposerPublicKey,
       roundCertificate: options.roundCertificate ?? []
     });
+    this.validatePreparedUnsignedBlock(block, timestampMs);
+    return block;
+  }
+
+  validatePreparedUnsignedBlock(block: Block, nowMs = Date.now()): void {
+    const protocolVersion = this.protocolVersionAt(block.header.height);
+    assertSupportedProtocolVersion(protocolVersion);
+    validateBlockEnvelope(block, this.tip, this.validatorsAt(block.header.height), nowMs, false, protocolVersion, false);
+    if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
+    const next = this.validateAndApply(block.transactions, this.state, block.header.height);
+    if (block.header.stateRoot !== stateRootForProtocol(protocolVersion, next)) throw new Error("State root mismatch");
   }
 
   validatePreparedBlock(block: Block, nowMs = Date.now()): void {
