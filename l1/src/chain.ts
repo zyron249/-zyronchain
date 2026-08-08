@@ -10,7 +10,7 @@ import { addressFromPublicKey, publicKeyFromPrivate } from "./crypto.js";
 import { LedgerState } from "./state.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
 import { assertHex } from "./codec.js";
-import type { Block, GenesisConfig, Transaction } from "./types.js";
+import type { Block, GenesisConfig, RoundSkipVote, Transaction } from "./types.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
 
@@ -57,7 +57,7 @@ export class ZyronChain {
   produceBlock(
     transactions: Transaction[],
     proposerPrivateKey: string,
-    options: { round?: number; timestampMs?: number } = {}
+    options: { round?: number; timestampMs?: number; roundCertificate?: RoundSkipVote[] } = {}
   ): Block {
     const round = options.round ?? 0;
     const publicKey = publicKeyFromPrivate(proposerPrivateKey);
@@ -67,7 +67,7 @@ export class ZyronChain {
     }
     const timestampMs = options.timestampMs ?? Math.max(Date.now(), this.tip.header.timestampMs + 1);
     const nextState = this.validateAndApply(transactions, this.state);
-    return createSignedBlock({
+    const block = createSignedBlock({
       chainId: this.genesis.chainId,
       height: this.height + 1,
       round,
@@ -76,8 +76,11 @@ export class ZyronChain {
       transactions,
       stateRoot: nextState.root(),
       proposerPrivateKey,
-      proposerPublicKey: publicKey
+      proposerPublicKey: publicKey,
+      roundCertificate: options.roundCertificate ?? []
     });
+    validateBlockEnvelope(block, this.tip, this.genesis.validators, timestampMs, false);
+    return block;
   }
 
   acceptBlock(block: Block, nowMs = Date.now()): void {
@@ -98,6 +101,38 @@ export class ZyronChain {
 
   validatePending(transactions: Transaction[]): void {
     this.validateAndApply(transactions, this.state);
+  }
+
+  selectValidPending(transactions: Transaction[], limit: number): Transaction[] {
+    if (!Number.isSafeInteger(limit) || limit < 0 || limit > 10_000) {
+      throw new Error("Invalid pending selection limit");
+    }
+    const ordered = transactions
+      .map((tx) => structuredClone(tx))
+      .sort((left, right) =>
+        left.sender.localeCompare(right.sender) ||
+        left.nonce - right.nonce ||
+        right.feeAtoms - left.feeAtoms ||
+        left.timestampMs - right.timestampMs ||
+        left.txid.localeCompare(right.txid)
+      );
+    const next = this.state.clone();
+    const selected: Transaction[] = [];
+    const seen = new Set<string>();
+    for (const tx of ordered) {
+      if (selected.length >= limit) break;
+      try {
+        if (tx.chainId !== this.genesis.chainId || seen.has(tx.txid)) continue;
+        validateTransactionShape(tx);
+        if (tx.kind === "activity_settlement" && !this.genesis.activityOracles.includes(tx.publicKey)) continue;
+        next.apply(tx, this.genesis.activityPool);
+        selected.push(tx);
+        seen.add(tx.txid);
+      } catch {
+        // Invalid or stale mempool entries are omitted; block validation stays authoritative.
+      }
+    }
+    return selected;
   }
 
   private validateAndApply(transactions: Transaction[], startingState: LedgerState): LedgerState {
