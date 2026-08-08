@@ -42,19 +42,21 @@ jobs:
       - name: Audit runtime dependencies
         run: npm audit --omit=dev --audit-level=high
 
-      - name: Build release tarball and checksum
+      - name: Build release tarball, SBOM and checksums
         run: |
           npm run build
           mkdir -p release
           npm pack --ignore-scripts --pack-destination release
+          npm sbom --omit=dev --sbom-format=spdx > release/SBOM.spdx.json
           cd release
-          sha256sum zyronchain-l1-*.tgz > SHA256SUMS
+          sha256sum SBOM.spdx.json zyronchain-l1-*.tgz > SHA256SUMS
 
-      - name: Attest release tarball and checksum
+      - name: Attest release tarball, SBOM and checksum
         uses: actions/attest@v4
         with:
           subject-path: |
             l1/release/zyronchain-l1-*.tgz
+            l1/release/SBOM.spdx.json
             l1/release/SHA256SUMS
 
       - name: Upload release bundle
@@ -63,6 +65,7 @@ jobs:
           name: standalone-l1-${{ github.ref_name }}
           path: |
             l1/release/zyronchain-l1-*.tgz
+            l1/release/SBOM.spdx.json
             l1/release/SHA256SUMS
           if-no-files-found: error
           retention-days: 90
