@@ -39,7 +39,8 @@ export class ChainStore {
     readonly chain: ZyronChain,
     persistedHeight: number,
     persistedBytes: number,
-    blockRanges: Array<{ offset: number; length: number }>
+    blockRanges: Array<{ offset: number; length: number }>,
+    readonly recoveredFromCheckpointHeight = 0
   ) {
     this.persistedHeight = persistedHeight;
     this.persistedBytes = persistedBytes;
@@ -48,47 +49,31 @@ export class ChainStore {
 
   static async open(genesis: GenesisConfig, dataDir: string): Promise<ChainStore> {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
-    const chain = new ZyronChain(genesis);
+    const genesisChain = new ZyronChain(genesis);
     const metadataPath = join(dataDir, "metadata.json");
     const expected: StoreMetadata = {
       version: STORE_VERSION,
       chainId: genesis.chainId,
-      genesisHash: chain.tip.hash
+      genesisHash: genesisChain.tip.hash
     };
     await ensureMetadata(metadataPath, expected);
 
     const blocksPath = join(dataDir, "blocks.ndjson");
-    let count = 0;
-    let offset = 0;
-    const blockRanges: Array<{ offset: number; length: number }> = [];
-    try {
-      for await (const line of readLines(blocksPath)) {
-        const lineBytes = Buffer.byteLength(line, "utf8");
-        if (!line.trim()) {
-          offset += lineBytes + 1;
-          continue;
-        }
-        if (lineBytes > MAX_STORED_BLOCK_LINE_BYTES) {
-          throw new Error("Stored block exceeds line limit");
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(line);
-        } catch {
-          throw new Error(`Corrupt stored block at line ${count + 1}`);
-        }
-        chain.acceptBlock(parsed as Block, Number.MAX_SAFE_INTEGER);
-        blockRanges.push({ offset, length: lineBytes });
-        offset += lineBytes + 1;
-        count += 1;
-        if (chain.height !== count) throw new Error("Stored block height discontinuity");
+    const blocksHandle = await open(blocksPath, "a", 0o600);
+    await blocksHandle.close();
+    const checkpoint = await loadRecoveryCheckpoint(genesis, dataDir);
+    if (checkpoint) {
+      try {
+        const replay = await replayStoredBlocks(genesis, blocksPath, checkpoint);
+        return new ChainStore(dataDir, replay.chain, replay.count, replay.offset, replay.blockRanges, replay.recoveredHeight);
+      } catch {
+        // The finalized block log remains authoritative. A stale, ahead, truncated,
+        // or otherwise inconsistent local checkpoint can only disable the fast path;
+        // it must never prevent a safe full replay.
       }
-    } catch (error) {
-      if (!isMissingFile(error)) throw error;
-      await writeFile(blocksPath, "", { flag: "wx", mode: 0o600 });
-      offset = 0;
     }
-    return new ChainStore(dataDir, chain, count, offset, blockRanges);
+    const replay = await replayStoredBlocks(genesis, blocksPath);
+    return new ChainStore(dataDir, replay.chain, replay.count, replay.offset, replay.blockRanges, replay.recoveredHeight);
   }
 
   async readFinalizedBlocks(from: number, limit: number, maxBytes: number): Promise<Block[]> {
@@ -254,6 +239,105 @@ export class SigningJournal {
     }
     this.reservations.set(key, reservation);
   }
+}
+
+interface LoadedRecoveryCheckpoint {
+  checkpoint: RecoveryCheckpointV1;
+  chain: ZyronChain;
+}
+
+async function loadRecoveryCheckpoint(genesis: GenesisConfig, dataDir: string): Promise<LoadedRecoveryCheckpoint | undefined> {
+  try {
+    const value = JSON.parse(await readFile(join(dataDir, "recovery-checkpoint.json"), "utf8")) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid recovery checkpoint");
+    const record = value as Record<string, unknown>;
+    const expectedKeys = [
+      "version", "chainId", "genesisHash", "height", "tipHash", "blockFileBytes", "snapshotSha256", "snapshot"
+    ].sort().join(",");
+    if (Object.keys(record).sort().join(",") !== expectedKeys || record.version !== 1 ||
+        typeof record.chainId !== "string" || typeof record.genesisHash !== "string" || typeof record.tipHash !== "string" ||
+        typeof record.snapshotSha256 !== "string" || !Number.isSafeInteger(record.height) || Number(record.height) < 0 ||
+        !Number.isSafeInteger(record.blockFileBytes) || Number(record.blockFileBytes) < 0) {
+      throw new Error("Invalid recovery checkpoint");
+    }
+    const checkpoint = record as unknown as RecoveryCheckpointV1;
+    if (checkpoint.chainId !== genesis.chainId || checkpoint.height !== (checkpoint.snapshot as { height?: unknown }).height ||
+        checkpoint.tipHash !== (checkpoint.snapshot as { tip?: { hash?: unknown } }).tip?.hash) {
+      throw new Error("Recovery checkpoint metadata mismatch");
+    }
+    const chain = ZyronChain.fromTrustedSnapshot(genesis, checkpoint.snapshot, {
+      tipHash: checkpoint.tipHash,
+      snapshotSha256: checkpoint.snapshotSha256
+    });
+    if (checkpoint.genesisHash !== chain.genesisHash) throw new Error("Recovery checkpoint genesis mismatch");
+    if (checkpoint.height === 0 && checkpoint.blockFileBytes !== 0) throw new Error("Invalid genesis recovery boundary");
+    return { checkpoint, chain };
+  } catch (error) {
+    if (isMissingFile(error)) return undefined;
+    // Recovery metadata is an optimization, never the authority. Corrupt or
+    // partially published metadata safely disables it and full replay takes over.
+    return undefined;
+  }
+}
+
+async function replayStoredBlocks(
+  genesis: GenesisConfig,
+  blocksPath: string,
+  loaded?: LoadedRecoveryCheckpoint
+): Promise<{
+  chain: ZyronChain;
+  count: number;
+  offset: number;
+  blockRanges: Array<{ offset: number; length: number }>;
+  recoveredHeight: number;
+}> {
+  const chain = loaded?.chain ?? new ZyronChain(genesis);
+  const checkpoint = loaded?.checkpoint;
+  let checkpointVerified = checkpoint?.height === 0;
+  let count = 0;
+  let offset = 0;
+  const blockRanges: Array<{ offset: number; length: number }> = [];
+  for await (const line of readLines(blocksPath)) {
+    const lineBytes = Buffer.byteLength(line, "utf8");
+    if (!line.trim()) {
+      offset += lineBytes + 1;
+      continue;
+    }
+    if (lineBytes > MAX_STORED_BLOCK_LINE_BYTES) throw new Error("Stored block exceeds line limit");
+    const height = count + 1;
+    blockRanges.push({ offset, length: lineBytes });
+
+    if (checkpoint && height < checkpoint.height) {
+      count = height;
+      offset += lineBytes + 1;
+      continue;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      throw new Error(`Corrupt stored block at line ${height}`);
+    }
+    if (checkpoint && height === checkpoint.height) {
+      if (offset + lineBytes + 1 !== checkpoint.blockFileBytes || canonicalJson(parsed) !== canonicalJson(checkpoint.snapshot.tip)) {
+        throw new Error("Recovery checkpoint does not match finalized block log");
+      }
+      checkpointVerified = true;
+    } else {
+      chain.acceptBlock(parsed as Block, Number.MAX_SAFE_INTEGER);
+    }
+    count = height;
+    offset += lineBytes + 1;
+    if ((!checkpoint || height > checkpoint.height) && chain.height !== count) {
+      throw new Error("Stored block height discontinuity");
+    }
+  }
+  if (checkpoint && (!checkpointVerified || checkpoint.height > count || checkpoint.blockFileBytes > offset)) {
+    throw new Error("Recovery checkpoint is ahead of finalized block log");
+  }
+  if (chain.height !== count) throw new Error("Stored block height discontinuity");
+  return { chain, count, offset, blockRanges, recoveredHeight: checkpoint?.height ?? 0 };
 }
 
 async function ensureMetadata(path: string, expected: StoreMetadata): Promise<void> {
