@@ -184,6 +184,19 @@ export class NodeService {
     });
   }
 
+  async signPreparedProposal(block: Block, nowMs = Date.now()): Promise<Block> {
+    return this.exclusive(async () => {
+      if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
+      this.store.chain.validatePreparedUnsignedBlock(block, nowMs);
+      if (block.proposerPublicKey !== this.validatorSigner.publicKey) throw new Error("Configured validator is not the block proposer");
+      await this.signingJournal.reserveAttestation(block.header.height, block.header.round, block.hash);
+      return attachBlockSignature(
+        block,
+        await signWithValidator(this.validatorSigner, block.header, "block-proposal")
+      );
+    });
+  }
+
   async requestSkipVote(
     height: number,
     round: number,
@@ -784,10 +797,7 @@ export async function produceFinalizedBlock(
     timestampMs: nowMs,
     roundCertificate
   });
-  const proposal = attachBlockSignature(
-    unsignedProposal,
-    await signWithValidator(signer, unsignedProposal.header, "block-proposal")
-  );
+  const proposal = await service.signPreparedProposal(unsignedProposal, nowMs);
   chain.validatePreparedBlock(proposal, nowMs);
   const attestations: BlockAttestation[] = [];
   try {
