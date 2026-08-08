@@ -308,7 +308,7 @@ export class ZyronChain {
     const protocolVersion = this.protocolVersionAt(blockHeight);
     const next = protocolVersion === 1 ? startingState.clone() : startingState;
     let sparse = protocolVersion === 2
-      ? (this.stateV2 ?? stateV2FromLedgerSnapshot(startingState.snapshot()))
+      ? (this.stateV2 ?? stateV2FromLedgerSnapshot(startingState.snapshot(), this.governanceSnapshot()))
       : undefined;
     const seen = new Set<string>();
     const currentValidators = this.validatorsAt(blockHeight);
@@ -354,6 +354,17 @@ export class ZyronChain {
 
   private lastProtocolActivationHeight(): number {
     return Math.max(...this.protocolSchedule.keys());
+  }
+
+  private governanceSnapshot(): import("./state-v2.js").StateV2GovernanceSnapshot {
+    return {
+      validatorSchedule: [...this.validatorSchedule.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([activationHeight, validators]) => ({ activationHeight, validators: structuredClone(validators) })),
+      protocolSchedule: [...this.protocolSchedule.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([activationHeight, protocolVersion]) => ({ activationHeight, protocolVersion }))
+    };
   }
 }
 

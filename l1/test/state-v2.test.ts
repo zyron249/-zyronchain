@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SparseMerkleState, verifySparseMerkleProof } from "../src/state-v2.js";
+import { SparseMerkleState, stateV2FromLedgerSnapshot, verifySparseMerkleProof } from "../src/state-v2.js";
 
 test("State v2 root is deterministic regardless of insertion order", () => {
   const entries = [
@@ -14,6 +14,36 @@ test("State v2 root is deterministic regardless of insertion order", () => {
   let reverse = SparseMerkleState.empty();
   for (const [key, value] of [...entries].reverse()) reverse = reverse.set(key, value);
   assert.equal(forward.root(), reverse.root());
+});
+
+test("State v2 migration root commits validator and protocol schedules", () => {
+  const ledger = { accounts: [], settledActivityEpochs: [] };
+  const first = stateV2FromLedgerSnapshot(ledger, {
+    validatorSchedule: [{
+      activationHeight: 0,
+      validators: [{ address: "ZYNvalidator-a", publicKey: `02${"11".repeat(32)}` }]
+    }],
+    protocolSchedule: [{ activationHeight: 0, protocolVersion: 1 }]
+  });
+  const changedValidator = stateV2FromLedgerSnapshot(ledger, {
+    validatorSchedule: [{
+      activationHeight: 0,
+      validators: [{ address: "ZYNvalidator-b", publicKey: `02${"22".repeat(32)}` }]
+    }],
+    protocolSchedule: [{ activationHeight: 0, protocolVersion: 1 }]
+  });
+  const changedProtocol = stateV2FromLedgerSnapshot(ledger, {
+    validatorSchedule: [{
+      activationHeight: 0,
+      validators: [{ address: "ZYNvalidator-a", publicKey: `02${"11".repeat(32)}` }]
+    }],
+    protocolSchedule: [
+      { activationHeight: 0, protocolVersion: 1 },
+      { activationHeight: 101, protocolVersion: 2 }
+    ]
+  });
+  assert.notEqual(first.root(), changedValidator.root());
+  assert.notEqual(first.root(), changedProtocol.root());
 });
 
 test("State v2 updates are copy-on-write and preserve the finalized root", () => {

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { canonicalJson } from "./codec.js";
 import type { LedgerSnapshot, LedgerState } from "./state.js";
-import { MAX_SUPPLY_ATOMS, type Address, type Transaction } from "./types.js";
+import { MAX_SUPPLY_ATOMS, type Address, type Transaction, type Validator } from "./types.js";
 
 const TREE_DEPTH = 256;
 const KEY_DOMAIN = Buffer.from("ZyronChain/state-v2/key\0", "utf8");
@@ -239,7 +239,15 @@ export function verifySparseMerkleProof(
 }
 
 /** Deterministic one-time protocol-v2 migration from the finalized v1 ledger. */
-export function stateV2FromLedgerSnapshot(snapshot: LedgerSnapshot): SparseMerkleState {
+export interface StateV2GovernanceSnapshot {
+  validatorSchedule: Array<{ activationHeight: number; validators: Validator[] }>;
+  protocolSchedule: Array<{ activationHeight: number; protocolVersion: number }>;
+}
+
+export function stateV2FromLedgerSnapshot(
+  snapshot: LedgerSnapshot,
+  governance?: StateV2GovernanceSnapshot
+): SparseMerkleState {
   let state = SparseMerkleState.empty();
   for (const account of [...snapshot.accounts].sort((a, b) => a.address.localeCompare(b.address))) {
     state = state.set(accountKey(account.address), {
@@ -249,6 +257,14 @@ export function stateV2FromLedgerSnapshot(snapshot: LedgerSnapshot): SparseMerkl
   }
   for (const epoch of [...snapshot.settledActivityEpochs].sort((a, b) => a - b)) {
     state = state.set(activityEpochKey(epoch), { settled: true });
+  }
+  if (governance) {
+    for (const entry of [...governance.validatorSchedule].sort((a, b) => a.activationHeight - b.activationHeight)) {
+      state = state.set(validatorScheduleKey(entry.activationHeight), { validators: entry.validators });
+    }
+    for (const entry of [...governance.protocolSchedule].sort((a, b) => a.activationHeight - b.activationHeight)) {
+      state = state.set(protocolScheduleKey(entry.activationHeight), { protocolVersion: entry.protocolVersion });
+    }
   }
   return state;
 }
@@ -307,7 +323,13 @@ export function applyStateV2Transaction(
     return next.set(activityEpochKey(tx.epoch), { settled: true });
   }
   requireStateV2Nonce(state, tx.sender, tx.nonce);
-  return setStateV2Nonce(state, tx.sender, tx.nonce);
+  let next = setStateV2Nonce(state, tx.sender, tx.nonce);
+  if (tx.kind === "validator_update") {
+    next = next.set(validatorScheduleKey(tx.activationHeight), { validators: tx.validators });
+  } else if (tx.kind === "protocol_upgrade") {
+    next = next.set(protocolScheduleKey(tx.activationHeight), { protocolVersion: tx.protocolVersion });
+  }
+  return next;
 }
 
 interface StateV2Account {
@@ -358,6 +380,14 @@ function accountKey(address: Address): string {
 
 function activityEpochKey(epoch: number): string {
   return `activity-epoch:${epoch}`;
+}
+
+function validatorScheduleKey(activationHeight: number): string {
+  return `validator-schedule:${activationHeight}`;
+}
+
+function protocolScheduleKey(activationHeight: number): string {
+  return `protocol-schedule:${activationHeight}`;
 }
 
 function updateNode(

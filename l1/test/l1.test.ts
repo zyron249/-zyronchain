@@ -1109,7 +1109,11 @@ test("protocol v2 activation deterministically migrates the finalized v1 ledger 
   }
 
   const v1Root = chain.getState().root();
-  const migrated = stateV2FromLedgerSnapshot(chain.getState().snapshot());
+  const beforeActivation = chain.snapshot();
+  const migrated = stateV2FromLedgerSnapshot(beforeActivation.state, {
+    validatorSchedule: beforeActivation.validatorSchedule,
+    protocolSchedule: beforeActivation.protocolSchedule
+  });
   let activation = chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_001_000 });
   assert.equal(activation.header.version, 2);
   assert.equal(activation.header.stateRoot, migrated.root());
