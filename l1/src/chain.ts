@@ -17,7 +17,7 @@ import {
   validatorUpdateApprovalPayload
 } from "./transaction.js";
 import { assertHex } from "./codec.js";
-import type { Block, GenesisConfig, ProtocolUpgradeTx, RoundSkipVote, Transaction, Validator, ValidatorSetUpdateTx } from "./types.js";
+import type { Address, Block, GenesisConfig, ProtocolUpgradeTx, RoundSkipVote, Transaction, Validator, ValidatorSetUpdateTx } from "./types.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
 export const MAX_BLOCK_TRANSACTION_BYTES = 1_500_000;
@@ -69,6 +69,14 @@ export class ZyronChain {
 
   getState(): LedgerState {
     return this.state.clone();
+  }
+
+  balance(address: Address): number {
+    return this.state.balance(address);
+  }
+
+  nonce(address: Address): number {
+    return this.state.nonce(address);
   }
 
   snapshot(): ChainSnapshotV1 {
@@ -173,7 +181,7 @@ export class ZyronChain {
     assertSupportedProtocolVersion(protocolVersion);
     const validators = this.validatorsAt(block.header.height);
     validateBlockEnvelope(block, this.tip, validators, nowMs, true, protocolVersion);
-    if (canonicalJson(block).length > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
+    if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
     const nextState = this.validateAndApply(block.transactions, this.state, block.header.height);
     if (block.header.stateRoot !== nextState.root()) throw new Error("State root mismatch");
     return nextState;
@@ -183,7 +191,7 @@ export class ZyronChain {
     const protocolVersion = this.protocolVersionAt(block.header.height);
     assertSupportedProtocolVersion(protocolVersion);
     validateBlockEnvelope(block, this.tip, this.validatorsAt(block.header.height), nowMs, false, protocolVersion);
-    if (canonicalJson(block).length > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
+    if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
     const nextState = this.validateAndApply(block.transactions, this.state, block.header.height);
     if (block.header.stateRoot !== nextState.root()) throw new Error("State root mismatch");
   }
