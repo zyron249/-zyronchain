@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createBlockAttestation, createSignedBlock } from "../src/block.js";
+import { createBlockAttestation, createRoundSkipVote, createSignedBlock } from "../src/block.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import {
   validateLightClientAnchor,
@@ -101,4 +101,45 @@ test("light client verifies State-v2 membership and non-membership only against 
   const missing = state.prove("account:bob");
   assert.equal(verifyLightClientStateProof(finalized, "account:bob", null, missing), true);
   assert.equal(verifyLightClientStateProof({ ...finalized, stateRoot: "55".repeat(32) }, "account:bob", null, missing), false);
+});
+
+test("light-client finality requires the certified predecessor round before accepting a view change", () => {
+  const { anchor, state } = fixture();
+  const roundCertificate = privateKeys.slice(0, 3).map((key, index) => createRoundSkipVote({
+    chainId: anchor.chainId,
+    height: 101,
+    round: 0,
+    previousHash: anchor.blockHash,
+    validatorPrivateKey: key,
+    validatorPublicKey: validators[index]!.publicKey
+  }));
+  let block = createSignedBlock({
+    version: 2,
+    chainId: anchor.chainId,
+    height: 101,
+    round: 1,
+    previousHash: anchor.blockHash,
+    timestampMs: anchor.timestampMs + 1_000,
+    transactions: [],
+    stateRoot: state.root(),
+    proposerPrivateKey: privateKeys[1]!,
+    proposerPublicKey: validators[1]!.publicKey,
+    roundCertificate
+  });
+  block = { ...block, attestations: privateKeys.slice(0, 3).map((key, index) =>
+    createBlockAttestation(block, key, validators[index]!.publicKey)) };
+  const proof: LightFinalityProof = {
+    version: 1,
+    header: block.header,
+    hash: block.hash,
+    proposerPublicKey: block.proposerPublicKey!,
+    signature: block.signature!,
+    roundCertificate: block.roundCertificate,
+    attestations: block.attestations
+  };
+  assert.equal(verifyNextFinalizedHeader(anchor, proof).blockHash, block.hash);
+  assert.throws(() => verifyNextFinalizedHeader(anchor, {
+    ...proof,
+    roundCertificate: roundCertificate.slice(0, 2)
+  }), /Round skip quorum not reached/);
 });
