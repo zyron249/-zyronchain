@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import { sha256Hex } from "../src/codec.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { Mempool } from "../src/mempool.js";
 import { ZyronChain } from "../src/chain.js";
 import { createActivitySettlement, createTransfer } from "../src/transaction.js";
+import { validateBlockShape } from "../src/block.js";
+import { ChainStore, SigningJournal } from "../src/storage.js";
+import { createRpcServer, NodeService, PeerClient } from "../src/node.js";
 import type { GenesisConfig } from "../src/types.js";
 
 const validatorOnePrivate = "01".padStart(64, "0");
@@ -176,6 +182,15 @@ test("block finality requires a greater-than-two-thirds validator quorum", () =>
   assert.equal(chain.height, 1);
 });
 
+test("uncertified nonzero consensus rounds are rejected for safety", () => {
+  const chain = new ZyronChain(genesis());
+  const block = chain.produceBlock([], validatorTwoPrivate, {
+    round: 1,
+    timestampMs: 1_700_000_000_100
+  });
+  assert.throws(() => chain.validateProposal(block, 1_700_000_000_100), /round 0/);
+});
+
 test("mempool blocks duplicate sender nonces and orders by fee", () => {
   const first = createTransfer(
     {
@@ -207,4 +222,179 @@ test("mempool blocks duplicate sender nonces and orders by fee", () => {
   pool.add(first);
   assert.throws(() => pool.add(conflict), /Conflicting sender nonce/);
   assert.equal(pool.select(10)[0]?.txid, first.txid);
+});
+
+test("wire schemas reject unknown transaction and block fields", () => {
+  const tx = createTransfer(
+    {
+      chainId: genesis().chainId,
+      nonce: 1,
+      sender: alice,
+      receiver: bob,
+      amountAtoms: 1,
+      feeAtoms: 1,
+      timestampMs: 100
+    },
+    alicePrivate,
+    alicePublic
+  );
+  const chain = new ZyronChain(genesis());
+  assert.throws(() => chain.validatePending([{ ...tx, injected: true } as never]), /fields/);
+
+  const block = chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
+  assert.throws(() => validateBlockShape({ ...block, debug: "smuggled" }), /fields/);
+  assert.throws(
+    () => validateBlockShape({ ...block, header: { ...block.header, futureRule: 1 } }),
+    /fields/
+  );
+});
+
+test("mempool selection restores sender nonce order even when later nonce pays more", () => {
+  const chain = new ZyronChain(genesis());
+  const nonceOne = createTransfer(
+    { chainId: genesis().chainId, nonce: 1, sender: alice, receiver: bob, amountAtoms: 1, feeAtoms: 1, timestampMs: 100 },
+    alicePrivate,
+    alicePublic
+  );
+  const nonceTwo = createTransfer(
+    { chainId: genesis().chainId, nonce: 2, sender: alice, receiver: bob, amountAtoms: 1, feeAtoms: 100, timestampMs: 101 },
+    alicePrivate,
+    alicePublic
+  );
+  const pool = new Mempool();
+  pool.add(nonceTwo);
+  pool.add(nonceOne);
+  const selected = pool.selectValid(10, (items) => chain.validatePending(items));
+  assert.deepEqual(selected.map((tx) => tx.nonce), [1, 2]);
+});
+
+test("chain store replays finalized blocks and pins the genesis identity", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-store-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    let block = store.chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
+    block = store.chain.attestBlock(block, validatorOnePrivate);
+    block = store.chain.attestBlock(block, validatorTwoPrivate);
+    store.chain.acceptBlock(block, 1_700_000_000_100);
+    await store.appendFinalizedBlock(block);
+
+    const reopened = await ChainStore.open(genesis(), directory);
+    assert.equal(reopened.chain.height, 1);
+    assert.equal(reopened.chain.tip.hash, block.hash);
+    assert.equal(reopened.chain.getState().root(), store.chain.getState().root());
+
+    const different = genesis();
+    different.timestampMs += 1;
+    await assert.rejects(() => ChainStore.open(different, directory), /different or unsupported chain/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("signing journal prevents validator double-sign across restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-signing-"));
+  try {
+    const first = await SigningJournal.open(directory);
+    await first.reserve(8, 0, "a".repeat(64));
+    await first.reserve(8, 0, "a".repeat(64));
+    const reopened = await SigningJournal.open(directory);
+    await assert.rejects(() => reopened.reserve(8, 0, "b".repeat(64)), /Double-sign prevented/);
+    await assert.rejects(() => reopened.reserve(8, 1, "c".repeat(64)), /Double-sign prevented/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("two node services attest a proposal, finalize it, persist it, and converge", async () => {
+  const firstDir = await mkdtemp(join(tmpdir(), "zyron-node-a-"));
+  const secondDir = await mkdtemp(join(tmpdir(), "zyron-node-b-"));
+  try {
+    const firstStore = await ChainStore.open(genesis(), firstDir);
+    const secondStore = await ChainStore.open(genesis(), secondDir);
+    const first = new NodeService(firstStore, await SigningJournal.open(firstDir), validatorOnePrivate);
+    const second = new NodeService(secondStore, await SigningJournal.open(secondDir), validatorTwoPrivate);
+    const proposal = firstStore.chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
+    const attestationOne = await first.attestProposal(proposal);
+    const attestationTwo = await second.attestProposal(proposal);
+    const finalized = { ...proposal, attestations: [attestationOne, attestationTwo] };
+    await first.acceptFinalizedBlock(finalized);
+    await second.acceptFinalizedBlock(finalized);
+    assert.equal(first.status().height, 1);
+    assert.equal(second.status().tipHash, first.status().tipHash);
+
+    const reopened = await ChainStore.open(genesis(), secondDir);
+    assert.equal(reopened.chain.tip.hash, finalized.hash);
+  } finally {
+    await rm(firstDir, { recursive: true, force: true });
+    await rm(secondDir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP RPC exposes status and accepts a strictly validated signed transaction", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-"));
+  const store = await ChainStore.open(genesis(), directory);
+  const service = new NodeService(store);
+  const server = createRpcServer(service);
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("RPC test server has no TCP address");
+    const base = `http://127.0.0.1:${address.port}`;
+    const status = await (await fetch(`${base}/status`)).json() as { chainId: string; height: number };
+    assert.equal(status.chainId, genesis().chainId);
+    assert.equal(status.height, 0);
+
+    const tx = createTransfer(
+      { chainId: genesis().chainId, nonce: 1, sender: alice, receiver: bob, amountAtoms: 1, feeAtoms: 1, timestampMs: 100 },
+      alicePrivate,
+      alicePublic
+    );
+    const response = await fetch(`${base}/tx`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(tx)
+    });
+    assert.equal(response.status, 202);
+    assert.equal(service.mempool.size, 1);
+  } finally {
+    await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("peer sync handshakes on chain identity and incrementally replays finalized blocks", async () => {
+  const sourceDir = await mkdtemp(join(tmpdir(), "zyron-sync-source-"));
+  const targetDir = await mkdtemp(join(tmpdir(), "zyron-sync-target-"));
+  const sourceStore = await ChainStore.open(genesis(), sourceDir);
+  const source = new NodeService(sourceStore);
+  const server = createRpcServer(source);
+  try {
+    let block = sourceStore.chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
+    block = sourceStore.chain.attestBlock(block, validatorOnePrivate);
+    block = sourceStore.chain.attestBlock(block, validatorTwoPrivate);
+    await source.acceptFinalizedBlock(block);
+
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Sync test server has no TCP address");
+    const peerUrl = `http://127.0.0.1:${address.port}`;
+    const targetStore = await ChainStore.open(genesis(), targetDir);
+    const target = new NodeService(targetStore);
+    const accepted = await new PeerClient([peerUrl]).syncFrom(peerUrl, target);
+    assert.equal(accepted, 1);
+    assert.equal(target.status().height, 1);
+    assert.equal(target.status().tipHash, source.status().tipHash);
+  } finally {
+    if (server.listening) {
+      await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+    }
+    await rm(sourceDir, { recursive: true, force: true });
+    await rm(targetDir, { recursive: true, force: true });
+  }
 });
