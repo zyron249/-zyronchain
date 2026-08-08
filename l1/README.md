@@ -281,9 +281,12 @@ download is still reconstructed and checked against the Merkle root, governance/
 external full-snapshot digest before the existing atomic installer can publish the target data
 directory; poisoned completed bundles are discarded. Successful installation removes the staging
 directory. The server also bounds each chunk, authenticates Noise/chain identity, rate-limits each
-PeerId, and keeps at most two finalized portable states. Large-state validation still materializes
-the final portable bundle in memory, and serving old anchored states does not yet survive a source
-node restart/tip-cache loss; those remain scalability/availability work before mainnet state sync.
+PeerId, and keeps at most two finalized portable serving checkpoints as checksummed/fsynced derived
+disk caches. Those caches are not trust roots: clients still require their external anchor and fully
+revalidate the reconstructed checkpoint. Keeping the cache on disk lets a restarted source continue
+serving an older anchored tip after its live chain advances. Large-state client validation still
+materializes the final portable bundle in memory; streaming authenticated installation remains a
+scalability requirement before mainnet state sync is complete.
 
 Local recovery checkpoints are different: they are created only after the finalized block
 log is durable, bind the full chain/genesis/tip/state/governance snapshot, and are revalidated
