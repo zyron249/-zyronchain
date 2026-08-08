@@ -12,6 +12,7 @@ import { NodeService } from "../src/node.js";
 import { readP2PFrame, writeP2PFrame } from "../src/p2p-frame.js";
 import {
   fetchTrustedPortableStateFromPeer,
+  fetchTrustedPortableStateFromAnyPeer,
   fetchTrustedPortableStateResumableFromPeer,
   P2P_STATE_PROTOCOL,
   registerP2PStateProtocol
@@ -257,6 +258,43 @@ test("portable State-v2 client rejects poisoned node chunks under a correct exte
       /portable|root|node|hash|state/i
     );
   } finally {
+    await fixture.close();
+  }
+});
+
+test("portable State-v2 failover recovers from a poisoned pinned peer using an independent peer", async () => {
+  const fixture = await createFixture("multi-peer-poison");
+  const honestIdentity = await loadOrCreateNodeIdentity(join(fixture.root, "honest"));
+  const honestNode = await createP2PNode(honestIdentity, { listen: ["/ip4/127.0.0.1/tcp/0"] });
+  try {
+    await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+      const request = await readRequest(stream);
+      if (request.kind === "keys") {
+        stream.abort(new Error("injected failure after persisting poisoned record range"));
+        return;
+      }
+      if (request.kind !== "records") return writeFixtureResponse(stream, fixture, request);
+      const items = structuredClone(fixture.bundle.records.slice(request.start, request.start + request.limit));
+      const first = items[0];
+      assert.ok(first);
+      first.hash = "00".repeat(32);
+      await writeChunk(stream, fixture, request, items);
+    });
+    await registerP2PStateProtocol(honestNode, honestIdentity, new NodeService(fixture.store));
+    const honestAddress = honestNode.getMultiaddrs()[0];
+    assert.ok(honestAddress);
+    const fetched = await fetchTrustedPortableStateFromAnyPeer(
+      fixture.clientNode,
+      [fixture.address, honestAddress],
+      fixture.clientIdentity,
+      fixture.config,
+      fixture.anchor,
+      join(fixture.root, "multi-peer-resume")
+    );
+    assert.equal(fetched.tip.hash, fixture.anchor.tipHash);
+    assert.equal(fetched.bundle.root, fixture.bundle.root);
+  } finally {
+    await honestNode.stop();
     await fixture.close();
   }
 });
