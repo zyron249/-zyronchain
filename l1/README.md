@@ -224,6 +224,8 @@ This removes the earlier single-proposer liveness stop, but it does not replace 
 
 ## Release artifacts
 
+Production-style monitoring, backup/restore, incident response, key-compromise and upgrade drills are specified in `../docs/L1_OPERATIONS_RUNBOOK.md`. The document is an operational testnet specification; its drills and external gates must be executed with evidence before any mainnet claim.
+
 Tags matching `l1-v*` run the standalone L1 release workflow. The workflow installs the
 locked dependency graph, repeats typecheck/tests/runtime audit, builds the node, packages
 only the runtime distribution and operator README, writes `SHA256SUMS`, and creates a
