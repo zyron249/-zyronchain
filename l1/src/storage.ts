@@ -99,13 +99,15 @@ export class SigningJournal {
         if (Buffer.byteLength(line, "utf8") > MAX_SIGNING_LINE_BYTES) throw new Error("Corrupt signing journal");
         const parsed = JSON.parse(line) as Record<string, unknown>;
         if (!Number.isSafeInteger(parsed.height) || !Number.isSafeInteger(parsed.round) ||
-            typeof parsed.blockHash !== "string" || !/^[0-9a-f]{64}$/.test(parsed.blockHash)) {
+            (parsed.kind !== "attest" && parsed.kind !== "skip") ||
+            typeof parsed.value !== "string" || !/^[0-9a-f]{64}$/.test(parsed.value)) {
           throw new Error("Corrupt signing journal entry");
         }
-        const key = String(parsed.height);
+        const key = `${parsed.height}:${parsed.round}`;
+        const reservation = `${parsed.kind}:${parsed.value}`;
         const previous = journal.reservations.get(key);
-        if (previous && previous !== parsed.blockHash) throw new Error("Conflicting signing journal history");
-        journal.reservations.set(key, parsed.blockHash);
+        if (previous && previous !== reservation) throw new Error("Conflicting signing journal history");
+        journal.reservations.set(key, reservation);
       }
     } catch (error) {
       if (!isMissingFile(error)) throw error;
@@ -114,17 +116,26 @@ export class SigningJournal {
     return journal;
   }
 
-  async reserve(height: number, round: number, blockHash: string): Promise<void> {
+  async reserveAttestation(height: number, round: number, blockHash: string): Promise<void> {
+    return this.reserveChoice(height, round, "attest", blockHash);
+  }
+
+  async reserveSkip(height: number, round: number, previousHash: string): Promise<void> {
+    return this.reserveChoice(height, round, "skip", previousHash);
+  }
+
+  private async reserveChoice(height: number, round: number, kind: "attest" | "skip", value: string): Promise<void> {
     if (!Number.isSafeInteger(height) || height < 1 || !Number.isSafeInteger(round) || round < 0) {
       throw new Error("Invalid signing slot");
     }
-    if (!/^[0-9a-f]{64}$/.test(blockHash)) throw new Error("Invalid signing block hash");
-    const key = String(height);
+    if (!/^[0-9a-f]{64}$/.test(value)) throw new Error("Invalid signing hash");
+    const key = `${height}:${round}`;
+    const reservation = `${kind}:${value}`;
     const existing = this.reservations.get(key);
-    if (existing === blockHash) return;
-    if (existing) throw new Error("Double-sign prevented for validator height");
+    if (existing === reservation) return;
+    if (existing) throw new Error("Conflicting validator action prevented for consensus round");
 
-    const line = `${JSON.stringify({ height, round, blockHash })}\n`;
+    const line = `${JSON.stringify({ height, round, kind, value })}\n`;
     const handle = await open(this.path, "a", 0o600);
     try {
       await handle.writeFile(line, "utf8");
@@ -132,7 +143,7 @@ export class SigningJournal {
     } finally {
       await handle.close();
     }
-    this.reservations.set(key, blockHash);
+    this.reservations.set(key, reservation);
   }
 }
 
