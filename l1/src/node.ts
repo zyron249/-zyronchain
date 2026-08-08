@@ -103,7 +103,11 @@ export class NodeService {
     if (tx.nonce <= stateNonce || tx.nonce > stateNonce + 64) throw new Error("Transaction nonce outside mempool window");
     this.store.chain.validateMempoolAdmission(tx);
     if (tx.kind === "transfer") {
-      const pendingSpend = this.mempool.pendingTransferSpend(tx.sender);
+      const conflicting = this.mempool.conflictingTransaction(tx.sender, tx.nonce);
+      const replacedSpend = conflicting?.kind === "transfer"
+        ? BigInt(conflicting.amountAtoms) + BigInt(conflicting.feeAtoms)
+        : 0n;
+      const pendingSpend = this.mempool.pendingTransferSpend(tx.sender) - replacedSpend;
       const required = pendingSpend + BigInt(tx.amountAtoms) + BigInt(tx.feeAtoms);
       if (required > BigInt(this.store.chain.balance(tx.sender))) {
         throw new Error("Pending transfers exceed confirmed balance");
