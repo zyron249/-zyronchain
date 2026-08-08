@@ -19,6 +19,13 @@ interface StoreMetadata {
   genesisHash: string;
 }
 
+interface HistoryRetentionV1 {
+  version: 1;
+  chainId: string;
+  genesisHash: string;
+  prunedThroughHeight: number;
+}
+
 interface RecoveryCheckpointV1 {
   version: 1;
   chainId: string;
@@ -29,6 +36,25 @@ interface RecoveryCheckpointV1 {
   snapshotSha256: string;
   snapshot: ReturnType<ZyronChain["snapshot"]>;
 }
+
+interface RecoveryCheckpointV2 {
+  version: 2;
+  chainId: string;
+  genesisHash: string;
+  height: number;
+  tipHash: string;
+  stateV2Root: string;
+  retainedFromHeight: number;
+  blockFileBytes: number;
+  transition: null | {
+    fromHeight: number;
+    blockFileBytes: number;
+  };
+  snapshotSha256: string;
+  snapshot: ReturnType<ZyronChain["snapshot"]>;
+}
+
+type RecoveryCheckpoint = RecoveryCheckpointV1 | RecoveryCheckpointV2;
 
 interface StoredBlockRange {
   height: number;
@@ -41,12 +67,19 @@ export interface RecoveryCheckpointFaultHooks {
   afterRename?: () => void | Promise<void>;
 }
 
+export interface PruneFaultHooks {
+  afterPruneCheckpointSync?: () => void | Promise<void>;
+  afterBlockTemporarySync?: () => void | Promise<void>;
+  afterBlockRename?: () => void | Promise<void>;
+}
+
 export class ChainStore {
   private persistedHeight: number;
   private persistedBytes: number;
   private readonly blockRanges: StoredBlockRange[];
   private persistenceFaulted = false;
-  readonly firstStoredHeight: number;
+  private retainedFromHeight: number;
+  private pendingPruneThroughHeight: number | undefined;
 
   private constructor(
     readonly dataDir: string,
@@ -56,12 +89,20 @@ export class ChainStore {
     blockRanges: StoredBlockRange[],
     private readonly stateV2Store: StateV2DiskStore,
     readonly recoveredFromCheckpointHeight = 0,
-    readonly recoveredStateV2FromCorruption = false
+    readonly recoveredStateV2FromCorruption = false,
+    retention?: HistoryRetentionV1
   ) {
     this.persistedHeight = persistedHeight;
     this.persistedBytes = persistedBytes;
     this.blockRanges = blockRanges;
-    this.firstStoredHeight = blockRanges[0]?.height ?? persistedHeight + 1;
+    this.retainedFromHeight = blockRanges[0]?.height ?? persistedHeight + 1;
+    if (retention && this.retainedFromHeight <= retention.prunedThroughHeight) {
+      this.pendingPruneThroughHeight = retention.prunedThroughHeight;
+    }
+  }
+
+  get firstStoredHeight(): number {
+    return this.retainedFromHeight;
   }
 
   static async open(genesis: GenesisConfig, dataDir: string): Promise<ChainStore> {
@@ -78,12 +119,20 @@ export class ChainStore {
     const blocksPath = join(dataDir, "blocks.ndjson");
     const blocksHandle = await open(blocksPath, "a", 0o600);
     await blocksHandle.close();
+    const retention = await loadHistoryRetention(genesis, dataDir);
     const checkpoint = await loadRecoveryCheckpoint(genesis, dataDir);
+    if (retention && (!checkpoint || checkpoint.checkpoint.version !== 2 ||
+        checkpoint.checkpoint.retainedFromHeight < retention.prunedThroughHeight + 1)) {
+      throw new Error("Pruned finalized history requires a valid compatible recovery checkpoint");
+    }
     let replay: Awaited<ReturnType<typeof replayStoredBlocks>> | undefined;
     if (checkpoint) {
       try {
         replay = await replayStoredBlocks(genesis, blocksPath, checkpoint);
-      } catch {
+      } catch (error) {
+        if (retention) {
+          throw new Error("Pruned finalized history cannot fall back to full replay", { cause: error });
+        }
         // The finalized block log remains authoritative. A stale, ahead, truncated,
         // or otherwise inconsistent local checkpoint can only disable the fast path;
         // it must never prevent a safe full replay.
@@ -123,7 +172,8 @@ export class ChainStore {
       replay.blockRanges,
       stateV2Store,
       replay.recoveredHeight,
-      recoveredStateV2FromCorruption
+      recoveredStateV2FromCorruption,
+      retention
     );
   }
 
@@ -176,48 +226,143 @@ export class ChainStore {
   async writeRecoveryCheckpoint(
     faultHooks: RecoveryCheckpointFaultHooks = {}
   ): Promise<{ height: number; tipHash: string; snapshotSha256: string }> {
+    if (this.pendingPruneThroughHeight !== undefined) {
+      throw new Error("Interrupted pruning must be completed before publishing another recovery checkpoint");
+    }
     if (this.chain.height !== this.persistedHeight) throw new Error("Cannot checkpoint non-durable chain state");
     const snapshot = this.chain.snapshot();
     const snapshotSha256 = sha256Hex(canonicalJson(snapshot));
-    const checkpoint: RecoveryCheckpointV1 = {
-      version: 1,
+    let checkpoint: RecoveryCheckpoint;
+    if (this.firstStoredHeight === 1) {
+      checkpoint = {
+        version: 1,
+        chainId: this.chain.genesis.chainId,
+        genesisHash: this.chain.genesisHash,
+        height: this.persistedHeight,
+        tipHash: this.chain.tip.hash,
+        blockFileBytes: this.persistedBytes,
+        snapshotSha256,
+        snapshot
+      };
+    } else {
+      const stateV2 = this.requireDurableStateV2ForPruning();
+      checkpoint = {
+        version: 2,
+        chainId: this.chain.genesis.chainId,
+        genesisHash: this.chain.genesisHash,
+        height: this.persistedHeight,
+        tipHash: this.chain.tip.hash,
+        stateV2Root: stateV2.root(),
+        retainedFromHeight: this.firstStoredHeight,
+        blockFileBytes: this.persistedBytes,
+        transition: null,
+        snapshotSha256,
+        snapshot
+      };
+    }
+    const path = join(this.dataDir, "recovery-checkpoint.json");
+    await writeCheckpointFile(path, checkpoint, faultHooks);
+    return { height: checkpoint.height, tipHash: checkpoint.tipHash, snapshotSha256 };
+  }
+
+  async pruneFinalizedHistory(
+    faultHooks: PruneFaultHooks = {}
+  ): Promise<{ prunedThroughHeight: number; firstStoredHeight: number }> {
+    if (this.persistenceFaulted) throw new Error("Persistence fault requires node restart");
+    if (this.chain.height !== this.persistedHeight) throw new Error("Cannot prune non-durable chain state");
+    if (this.persistedHeight < 1) throw new Error("Cannot prune empty finalized history");
+    const stateV2 = this.requireDurableStateV2ForPruning();
+
+    const blocksPath = join(this.dataDir, "blocks.ndjson");
+    if (this.pendingPruneThroughHeight === undefined) {
+      // First publish and re-read a normal checkpoint against the currently
+      // retained log. Pruning is allowed only after that local finality anchor has
+      // independently survived the same startup verification path.
+      await this.writeRecoveryCheckpoint();
+      const loaded = await loadRecoveryCheckpoint(this.chain.genesis, this.dataDir);
+      if (!loaded) throw new Error("Verified recovery checkpoint unavailable for pruning");
+      const verified = await replayStoredBlocks(this.chain.genesis, blocksPath, loaded);
+      if (verified.count !== this.persistedHeight || verified.chain.tip.hash !== this.chain.tip.hash) {
+        throw new Error("Recovery checkpoint did not reproduce durable finalized tip");
+      }
+    } else if (this.pendingPruneThroughHeight !== this.persistedHeight) {
+      throw new Error("Interrupted prune boundary does not match durable finalized tip");
+    }
+
+    const snapshot = this.chain.snapshot();
+    const snapshotSha256 = sha256Hex(canonicalJson(snapshot));
+    const transition: RecoveryCheckpointV2 = {
+      version: 2,
       chainId: this.chain.genesis.chainId,
       genesisHash: this.chain.genesisHash,
       height: this.persistedHeight,
       tipHash: this.chain.tip.hash,
-      blockFileBytes: this.persistedBytes,
+      stateV2Root: stateV2.root(),
+      retainedFromHeight: this.persistedHeight + 1,
+      blockFileBytes: 0,
+      transition: {
+        fromHeight: this.firstStoredHeight,
+        blockFileBytes: this.persistedBytes
+      },
       snapshotSha256,
       snapshot
     };
-    const path = join(this.dataDir, "recovery-checkpoint.json");
-    const temporary = `${path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
-    let renamed = false;
+    const checkpointPath = join(this.dataDir, "recovery-checkpoint.json");
+    const temporaryBlocks = `${blocksPath}.prune-${process.pid}-${randomBytes(8).toString("hex")}`;
+    let blocksRenamed = false;
     try {
-      const handle = await open(temporary, "wx", 0o600);
+      await writeCheckpointFile(checkpointPath, transition);
+      await faultHooks.afterPruneCheckpointSync?.();
+
+      await writeHistoryRetention(this.dataDir, {
+        version: 1,
+        chainId: this.chain.genesis.chainId,
+        genesisHash: this.chain.genesisHash,
+        prunedThroughHeight: this.persistedHeight
+      });
+
+      const handle = await open(temporaryBlocks, "wx", 0o600);
       try {
-        await handle.writeFile(`${canonicalJson(checkpoint)}\n`, "utf8");
         await handle.sync();
       } finally {
         await handle.close();
       }
-      await faultHooks.afterTemporarySync?.();
-      await rename(temporary, path);
-      renamed = true;
-      await faultHooks.afterRename?.();
-      const directory = await open(this.dataDir, "r");
-      try {
-        await directory.sync();
-      } finally {
-        await directory.close();
-      }
+      await faultHooks.afterBlockTemporarySync?.();
+      await rename(temporaryBlocks, blocksPath);
+      blocksRenamed = true;
+      await faultHooks.afterBlockRename?.();
+      await syncDirectory(this.dataDir);
+
+      this.blockRanges.splice(0, this.blockRanges.length);
+      this.persistedBytes = 0;
+      this.retainedFromHeight = this.persistedHeight + 1;
+      this.pendingPruneThroughHeight = undefined;
+
+      const stable: RecoveryCheckpointV2 = { ...transition, transition: null };
+      await writeCheckpointFile(checkpointPath, stable);
+      return { prunedThroughHeight: this.persistedHeight, firstStoredHeight: this.firstStoredHeight };
+    } catch (error) {
+      this.persistenceFaulted = true;
+      throw new Error("Pruning interrupted; restart required", { cause: error });
     } finally {
-      if (!renamed) await rm(temporary, { force: true });
+      if (!blocksRenamed) await rm(temporaryBlocks, { force: true });
     }
-    return { height: checkpoint.height, tipHash: checkpoint.tipHash, snapshotSha256 };
+  }
+
+  private requireDurableStateV2ForPruning() {
+    const stateV2 = this.chain.stateV2ForPersistence();
+    if (!stateV2) throw new Error("Pruning requires active State v2");
+    if (this.stateV2Store.state().root() !== stateV2.root()) {
+      throw new Error("Pruning requires State v2 root to match durable finalized state");
+    }
+    return stateV2;
   }
 
   async commitFinalizedBlock(block: Block, nowMs = Date.now()): Promise<void> {
     if (this.persistenceFaulted) throw new Error("Persistence fault requires node restart");
+    if (this.pendingPruneThroughHeight !== undefined) {
+      throw new Error("Interrupted pruning must be completed before new finalized writes");
+    }
     if (block.header.height !== this.persistedHeight + 1) {
       throw new Error("Refusing non-sequential block persistence");
     }
@@ -265,7 +410,78 @@ async function quarantineCorruptStateV2(dataDir: string): Promise<void> {
       if (!isMissingFile(error)) throw error;
     }
   }
-  const directory = await open(dataDir, "r");
+  await syncDirectory(dataDir);
+}
+
+async function loadHistoryRetention(genesis: GenesisConfig, dataDir: string): Promise<HistoryRetentionV1 | undefined> {
+  try {
+    const value = JSON.parse(await readFile(join(dataDir, "history-retention.json"), "utf8")) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid history retention marker");
+    const record = value as Record<string, unknown>;
+    if (Object.keys(record).sort().join(",") !== "chainId,genesisHash,prunedThroughHeight,version" ||
+        record.version !== 1 || typeof record.chainId !== "string" || typeof record.genesisHash !== "string" ||
+        !Number.isSafeInteger(record.prunedThroughHeight) || Number(record.prunedThroughHeight) < 1) {
+      throw new Error("Invalid history retention marker");
+    }
+    const marker = record as unknown as HistoryRetentionV1;
+    const genesisHash = new ZyronChain(genesis).genesisHash;
+    if (marker.chainId !== genesis.chainId || marker.genesisHash !== genesisHash) {
+      throw new Error("History retention marker belongs to a different chain");
+    }
+    return marker;
+  } catch (error) {
+    if (isMissingFile(error)) return undefined;
+    throw error;
+  }
+}
+
+async function writeHistoryRetention(dataDir: string, marker: HistoryRetentionV1): Promise<void> {
+  const path = join(dataDir, "history-retention.json");
+  const temporary = `${path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
+  let renamed = false;
+  try {
+    const handle = await open(temporary, "wx", 0o600);
+    try {
+      await handle.writeFile(`${canonicalJson(marker)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temporary, path);
+    renamed = true;
+    await syncDirectory(dataDir);
+  } finally {
+    if (!renamed) await rm(temporary, { force: true });
+  }
+}
+
+async function writeCheckpointFile(
+  path: string,
+  checkpoint: RecoveryCheckpoint,
+  faultHooks: RecoveryCheckpointFaultHooks = {}
+): Promise<void> {
+  const temporary = `${path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
+  let renamed = false;
+  try {
+    const handle = await open(temporary, "wx", 0o600);
+    try {
+      await handle.writeFile(`${canonicalJson(checkpoint)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await faultHooks.afterTemporarySync?.();
+    await rename(temporary, path);
+    renamed = true;
+    await faultHooks.afterRename?.();
+    await syncDirectory(dirname(path));
+  } finally {
+    if (!renamed) await rm(temporary, { force: true });
+  }
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const directory = await open(path, "r");
   try {
     await directory.sync();
   } finally {
@@ -335,7 +551,7 @@ export class SigningJournal {
 }
 
 interface LoadedRecoveryCheckpoint {
-  checkpoint: RecoveryCheckpointV1;
+  checkpoint: RecoveryCheckpoint;
   chain: ZyronChain;
 }
 
@@ -344,16 +560,48 @@ async function loadRecoveryCheckpoint(genesis: GenesisConfig, dataDir: string): 
     const value = JSON.parse(await readFile(join(dataDir, "recovery-checkpoint.json"), "utf8")) as unknown;
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid recovery checkpoint");
     const record = value as Record<string, unknown>;
-    const expectedKeys = [
-      "version", "chainId", "genesisHash", "height", "tipHash", "blockFileBytes", "snapshotSha256", "snapshot"
-    ].sort().join(",");
-    if (Object.keys(record).sort().join(",") !== expectedKeys || record.version !== 1 ||
-        typeof record.chainId !== "string" || typeof record.genesisHash !== "string" || typeof record.tipHash !== "string" ||
-        typeof record.snapshotSha256 !== "string" || !Number.isSafeInteger(record.height) || Number(record.height) < 0 ||
-        !Number.isSafeInteger(record.blockFileBytes) || Number(record.blockFileBytes) < 0) {
+    const commonValid = typeof record.chainId === "string" && typeof record.genesisHash === "string" &&
+      typeof record.tipHash === "string" && typeof record.snapshotSha256 === "string" &&
+      Number.isSafeInteger(record.height) && Number(record.height) >= 0 &&
+      Number.isSafeInteger(record.blockFileBytes) && Number(record.blockFileBytes) >= 0;
+    if (!commonValid) {
       throw new Error("Invalid recovery checkpoint");
     }
-    const checkpoint = record as unknown as RecoveryCheckpointV1;
+    let checkpoint: RecoveryCheckpoint;
+    if (record.version === 1) {
+      const expectedKeys = [
+        "version", "chainId", "genesisHash", "height", "tipHash", "blockFileBytes", "snapshotSha256", "snapshot"
+      ].sort().join(",");
+      if (Object.keys(record).sort().join(",") !== expectedKeys) throw new Error("Invalid recovery checkpoint");
+      checkpoint = record as unknown as RecoveryCheckpointV1;
+    } else if (record.version === 2) {
+      const expectedKeys = [
+        "version", "chainId", "genesisHash", "height", "tipHash", "stateV2Root", "retainedFromHeight",
+        "blockFileBytes", "transition", "snapshotSha256", "snapshot"
+      ].sort().join(",");
+      const transition = record.transition;
+      const transitionValid = transition === null || (
+        typeof transition === "object" && !Array.isArray(transition) && transition !== null &&
+        Object.keys(transition).sort().join(",") === "blockFileBytes,fromHeight" &&
+        Number.isSafeInteger((transition as Record<string, unknown>).fromHeight) &&
+        Number((transition as Record<string, unknown>).fromHeight) >= 1 &&
+        Number.isSafeInteger((transition as Record<string, unknown>).blockFileBytes) &&
+        Number((transition as Record<string, unknown>).blockFileBytes) >= 0
+      );
+      if (Object.keys(record).sort().join(",") !== expectedKeys || typeof record.stateV2Root !== "string" ||
+          !/^[0-9a-f]{64}$/.test(record.stateV2Root) || !Number.isSafeInteger(record.retainedFromHeight) ||
+          Number(record.retainedFromHeight) < 1 || Number(record.retainedFromHeight) > Number(record.height) + 1 ||
+          !transitionValid) {
+        throw new Error("Invalid recovery checkpoint");
+      }
+      checkpoint = record as unknown as RecoveryCheckpointV2;
+      if (checkpoint.transition && (checkpoint.transition.fromHeight >= checkpoint.retainedFromHeight ||
+          checkpoint.transition.fromHeight > checkpoint.height)) {
+        throw new Error("Invalid recovery checkpoint transition");
+      }
+    } else {
+      throw new Error("Invalid recovery checkpoint version");
+    }
     if (checkpoint.chainId !== genesis.chainId || checkpoint.height !== (checkpoint.snapshot as { height?: unknown }).height ||
         checkpoint.tipHash !== (checkpoint.snapshot as { tip?: { hash?: unknown } }).tip?.hash) {
       throw new Error("Recovery checkpoint metadata mismatch");
@@ -364,6 +612,15 @@ async function loadRecoveryCheckpoint(genesis: GenesisConfig, dataDir: string): 
     });
     if (checkpoint.genesisHash !== chain.genesisHash) throw new Error("Recovery checkpoint genesis mismatch");
     if (checkpoint.height === 0 && checkpoint.blockFileBytes !== 0) throw new Error("Invalid genesis recovery boundary");
+    if (checkpoint.version === 2) {
+      const stateV2 = chain.stateV2ForPersistence();
+      if (!stateV2 || checkpoint.stateV2Root !== stateV2.root() || checkpoint.stateV2Root !== chain.tip.header.stateRoot) {
+        throw new Error("Recovery checkpoint State v2 root mismatch");
+      }
+      if (checkpoint.retainedFromHeight === checkpoint.height + 1 && checkpoint.blockFileBytes !== 0) {
+        throw new Error("Invalid empty retained-history boundary");
+      }
+    }
     return { checkpoint, chain };
   } catch (error) {
     if (isMissingFile(error)) return undefined;
@@ -389,6 +646,8 @@ async function replayStoredBlocks(
   let checkpointVerified = checkpoint?.height === 0;
   let count = 0;
   let offset = 0;
+  let layoutDetermined = checkpoint?.version !== 2;
+  let checkpointBoundaryBytes = checkpoint?.blockFileBytes ?? 0;
   const blockRanges: StoredBlockRange[] = [];
   for await (const line of readLines(blocksPath)) {
     const lineBytes = Buffer.byteLength(line, "utf8");
@@ -397,6 +656,26 @@ async function replayStoredBlocks(
       continue;
     }
     if (lineBytes > MAX_STORED_BLOCK_LINE_BYTES) throw new Error("Stored block exceeds line limit");
+    let parsed: unknown;
+    if (checkpoint?.version === 2 && !layoutDetermined) {
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        throw new Error("Corrupt stored block at retained-history boundary");
+      }
+      const firstHeight = (parsed as { header?: { height?: unknown } }).header?.height;
+      if (firstHeight === checkpoint.retainedFromHeight) {
+        count = checkpoint.retainedFromHeight - 1;
+        checkpointBoundaryBytes = checkpoint.blockFileBytes;
+        checkpointVerified = checkpoint.retainedFromHeight === checkpoint.height + 1;
+      } else if (checkpoint.transition && firstHeight === checkpoint.transition.fromHeight) {
+        count = checkpoint.transition.fromHeight - 1;
+        checkpointBoundaryBytes = checkpoint.transition.blockFileBytes;
+      } else {
+        throw new Error("Finalized history does not match checkpoint retention boundary");
+      }
+      layoutDetermined = true;
+    }
     const height = count + 1;
     blockRanges.push({ height, offset, length: lineBytes });
 
@@ -406,14 +685,15 @@ async function replayStoredBlocks(
       continue;
     }
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      throw new Error(`Corrupt stored block at line ${height}`);
+    if (parsed === undefined) {
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        throw new Error(`Corrupt stored block at line ${height}`);
+      }
     }
     if (checkpoint && height === checkpoint.height) {
-      if (offset + lineBytes + 1 !== checkpoint.blockFileBytes || canonicalJson(parsed) !== canonicalJson(checkpoint.snapshot.tip)) {
+      if (offset + lineBytes + 1 !== checkpointBoundaryBytes || canonicalJson(parsed) !== canonicalJson(checkpoint.snapshot.tip)) {
         throw new Error("Recovery checkpoint does not match finalized block log");
       }
       checkpointVerified = true;
@@ -426,7 +706,18 @@ async function replayStoredBlocks(
       throw new Error("Stored block height discontinuity");
     }
   }
-  if (checkpoint && (!checkpointVerified || checkpoint.height > count || checkpoint.blockFileBytes > offset)) {
+  if (checkpoint?.version === 2 && !layoutDetermined) {
+    if (offset !== 0 || checkpoint.retainedFromHeight !== checkpoint.height + 1 || checkpoint.blockFileBytes !== 0) {
+      throw new Error("Recovery checkpoint is ahead of retained finalized block log");
+    }
+    count = checkpoint.height;
+    checkpointVerified = true;
+    layoutDetermined = true;
+  }
+  if (checkpoint && (!checkpointVerified || checkpoint.height > count)) {
+    throw new Error("Recovery checkpoint is ahead of finalized block log");
+  }
+  if (checkpoint?.version === 1 && checkpoint.blockFileBytes > offset) {
     throw new Error("Recovery checkpoint is ahead of finalized block log");
   }
   if (chain.height !== count) throw new Error("Stored block height discontinuity");
