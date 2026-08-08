@@ -68,7 +68,13 @@ export class StateV2DiskStore {
     for (const line of lines) {
       if (!line) continue;
       const envelope = parseNodeEnvelope(line);
-      if (records.has(envelope.record.hash)) throw new Error("Duplicate persisted State v2 node");
+      const existing = records.get(envelope.record.hash);
+      if (existing) {
+        if (canonicalJson(existing) !== canonicalJson(envelope.record)) {
+          throw new Error("Conflicting duplicate persisted State v2 node");
+        }
+        continue;
+      }
       records.set(envelope.record.hash, envelope.record);
     }
 
@@ -81,11 +87,21 @@ export class StateV2DiskStore {
     } catch (error) {
       if (!isMissingFile(error)) throw error;
     }
-    return new StateV2DiskStore(dataDir, state, records, keyPreimages);
+    const reachable = state.reachableNodeHashes();
+    const resident = new Map([...records].filter(([hash]) => reachable.has(hash)));
+    const completeLines = lines.filter(Boolean).length;
+    if (unterminatedTail.length > 0 || completeLines !== resident.size) {
+      await compactNodeLog(dataDir, resident.values());
+    }
+    return new StateV2DiskStore(dataDir, state, resident, keyPreimages);
   }
 
   state(): SparseMerkleState {
     return this.currentState;
+  }
+
+  residentNodeRecordCount(): number {
+    return this.knownRecords.size;
   }
 
   semanticKeyPreimages(state: SparseMerkleState = this.currentState): string[] {
@@ -174,7 +190,29 @@ export class StateV2DiskStore {
       await directoryHandle.close();
     }
     this.currentState = state.persistenceCheckpoint();
+    const reachable = state.reachableNodeHashes();
+    for (const hash of this.knownRecords.keys()) {
+      if (!reachable.has(hash)) this.knownRecords.delete(hash);
+    }
   }
+}
+
+async function compactNodeLog(dataDir: string, records: Iterable<StateV2NodeRecord>): Promise<void> {
+  const path = join(dataDir, "state-v2.nodes.ndjson");
+  const temporary = `${path}.compact-${process.pid}-${Date.now()}.tmp`;
+  const handle = await open(temporary, "wx", 0o600);
+  try {
+    for (const record of records) {
+      const envelope: NodeEnvelope = { record, checksum: sha256Hex(canonicalJson(record)) };
+      await handle.writeFile(`${canonicalJson(envelope)}\n`, "utf8");
+    }
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename(temporary, path);
+  const directory = await open(dataDir, "r");
+  try { await directory.sync(); } finally { await directory.close(); }
 }
 
 async function loadSemanticKeyPreimages(dataDir: string): Promise<Set<string>> {
