@@ -80,10 +80,26 @@ export interface ValidatorSetUpdateTx {
   txid: string;
 }
 
-export type Transaction = TransferTx | ActivitySettlementTx | ValidatorSetUpdateTx;
+export interface ProtocolUpgradeTx {
+  kind: "protocol_upgrade";
+  version: 1;
+  chainId: string;
+  nonce: number;
+  sender: Address;
+  activationHeight: number;
+  protocolVersion: number;
+  approvals: ValidatorApproval[];
+  feeAtoms: 0;
+  timestampMs: number;
+  publicKey: string;
+  signature: string;
+  txid: string;
+}
+
+export type Transaction = TransferTx | ActivitySettlementTx | ValidatorSetUpdateTx | ProtocolUpgradeTx;
 
 export interface BlockHeader {
-  version: 1;
+  version: number;
   chainId: string;
   height: number;
   round: number;

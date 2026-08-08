@@ -40,6 +40,7 @@ export function createGenesisBlock(genesis: GenesisConfig, stateRoot: string): B
 }
 
 export function createSignedBlock(input: {
+  version: number;
   chainId: string;
   height: number;
   round: number;
@@ -52,7 +53,7 @@ export function createSignedBlock(input: {
   roundCertificate?: RoundSkipVote[];
 }): Block {
   const header: BlockHeader = {
-    version: 1,
+    version: input.version,
     chainId: input.chainId,
     height: input.height,
     round: input.round,
@@ -138,10 +139,11 @@ export function validateBlockEnvelope(
   previous: Block,
   validators: Validator[],
   nowMs: number,
-  requireFinality = true
+  requireFinality = true,
+  expectedProtocolVersion = 1
 ): void {
   validateBlockShape(block);
-  if (block.header.version !== 1) throw new Error("Unsupported block version");
+  if (block.header.version !== expectedProtocolVersion) throw new Error("Unexpected protocol version");
   if (block.header.chainId !== previous.header.chainId) throw new Error("Wrong chain ID");
   if (block.header.height !== previous.header.height + 1) throw new Error("Wrong block height");
   if (block.header.previousHash !== previous.hash) throw new Error("Wrong previous hash");
@@ -243,7 +245,8 @@ export function validateBlockShape(value: unknown): asserts value is Block {
     "transactionRoot", "stateRoot", "proposer"
   ], "block header");
   const header = value.header;
-  if (header.version !== 1 || typeof header.chainId !== "string") throw new Error("Invalid block header");
+  if (!Number.isSafeInteger(header.version) || Number(header.version) < 1 || Number(header.version) > 65_535 ||
+      typeof header.chainId !== "string") throw new Error("Invalid block header");
   for (const [name, item] of [["height", header.height], ["round", header.round], ["timestampMs", header.timestampMs]] as const) {
     if (!Number.isSafeInteger(item) || (name !== "timestampMs" && Number(item) < 0)) throw new Error(`Invalid block ${name}`);
   }

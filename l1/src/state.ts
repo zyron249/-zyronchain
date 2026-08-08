@@ -1,6 +1,6 @@
 import { canonicalJson, sha256Hex } from "./codec.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
-import type { ActivitySettlementTx, Address, GenesisConfig, Transaction, TransferTx, ValidatorSetUpdateTx } from "./types.js";
+import type { ActivitySettlementTx, Address, GenesisConfig, ProtocolUpgradeTx, Transaction, TransferTx, ValidatorSetUpdateTx } from "./types.js";
 
 interface AccountState {
   balanceAtoms: number;
@@ -53,7 +53,8 @@ export class LedgerState {
   apply(tx: Transaction, activityPool: Address): void {
     if (tx.kind === "transfer") this.applyTransfer(tx);
     else if (tx.kind === "activity_settlement") this.applyActivity(tx, activityPool);
-    else this.applyValidatorUpdate(tx);
+    else if (tx.kind === "validator_update") this.applyValidatorUpdate(tx);
+    else this.applyProtocolUpgrade(tx);
   }
 
   root(): string {
@@ -92,6 +93,11 @@ export class LedgerState {
   }
 
   private applyValidatorUpdate(tx: ValidatorSetUpdateTx): void {
+    this.requireNonce(tx.sender, tx.nonce);
+    this.setNonce(tx.sender, tx.nonce);
+  }
+
+  private applyProtocolUpgrade(tx: ProtocolUpgradeTx): void {
     this.requireNonce(tx.sender, tx.nonce);
     this.setNonce(tx.sender, tx.nonce);
   }

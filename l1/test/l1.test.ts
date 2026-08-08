@@ -10,6 +10,8 @@ import { Mempool } from "../src/mempool.js";
 import { ZyronChain } from "../src/chain.js";
 import {
   createActivitySettlement,
+  createProtocolUpgrade,
+  createProtocolUpgradeApproval,
   createTransfer,
   createValidatorApproval,
   createValidatorSetUpdate
@@ -711,6 +713,148 @@ test("validator schedule is reconstructed from finalized history after restart",
 
     const reopened = await ChainStore.open(genesis(), directory);
     assert.deepEqual(reopened.chain.validatorsAt(101).map((validator) => validator.address), [newValidatorOne, newValidatorTwo]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("protocol upgrade requires validator quorum, activates at a delayed height, and fail-stops unsupported binaries", () => {
+  const chain = new ZyronChain(genesis());
+  const proposal = {
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: validatorOne,
+    activationHeight: 101,
+    protocolVersion: 2
+  };
+  const upgrade = createProtocolUpgrade(
+    {
+      ...proposal,
+      approvals: [
+        createProtocolUpgradeApproval(proposal, validatorOnePrivate, validatorOnePublic),
+        createProtocolUpgradeApproval(proposal, validatorTwoPrivate, validatorTwoPublic)
+      ],
+      timestampMs: 1_700_000_000_100
+    },
+    validatorOnePrivate,
+    validatorOnePublic
+  );
+  let first = chain.produceBlock([upgrade], validatorOnePrivate, { timestampMs: 1_700_000_000_200 });
+  first = chain.attestBlock(first, validatorOnePrivate);
+  first = chain.attestBlock(first, validatorTwoPrivate);
+  chain.acceptBlock(first, 1_700_000_000_200);
+  assert.equal(chain.protocolVersionAt(100), 1);
+  assert.equal(chain.protocolVersionAt(101), 2);
+
+  for (let height = 2; height <= 100; height += 1) {
+    const proposerKey = height % 2 === 0 ? validatorTwoPrivate : validatorOnePrivate;
+    let block = chain.produceBlock([], proposerKey, { timestampMs: 1_700_000_000_200 + height });
+    block = chain.attestBlock(block, validatorOnePrivate);
+    block = chain.attestBlock(block, validatorTwoPrivate);
+    chain.acceptBlock(block, 1_700_000_000_200 + height);
+  }
+  assert.equal(chain.height, 100);
+  assert.throws(
+    () => chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_001_000 }),
+    /Protocol version 2 is not supported by this binary/
+  );
+});
+
+test("protocol upgrade rejects weak or premature governance approvals", () => {
+  const chain = new ZyronChain(genesis());
+  const base = {
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: validatorOne,
+    activationHeight: 101,
+    protocolVersion: 2
+  };
+  const weak = createProtocolUpgrade(
+    {
+      ...base,
+      approvals: [createProtocolUpgradeApproval(base, validatorOnePrivate, validatorOnePublic)],
+      timestampMs: 1_700_000_000_100
+    },
+    validatorOnePrivate,
+    validatorOnePublic
+  );
+  assert.throws(
+    () => chain.produceBlock([weak], validatorOnePrivate, { timestampMs: 1_700_000_000_200 }),
+    /quorum not reached/
+  );
+
+  const earlyBase = { ...base, activationHeight: 100 };
+  const early = createProtocolUpgrade(
+    {
+      ...earlyBase,
+      approvals: [
+        createProtocolUpgradeApproval(earlyBase, validatorOnePrivate, validatorOnePublic),
+        createProtocolUpgradeApproval(earlyBase, validatorTwoPrivate, validatorTwoPublic)
+      ],
+      timestampMs: 1_700_000_000_100
+    },
+    validatorOnePrivate,
+    validatorOnePublic
+  );
+  assert.throws(
+    () => chain.produceBlock([early], validatorOnePrivate, { timestampMs: 1_700_000_000_200 }),
+    /activation is too soon/
+  );
+});
+
+test("protocol upgrade and rollback schedule is reconstructed from finalized history", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-protocol-store-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    const upgradeBase = {
+      chainId: genesis().chainId,
+      nonce: 1,
+      sender: validatorOne,
+      activationHeight: 101,
+      protocolVersion: 2
+    };
+    const rollbackBase = {
+      ...upgradeBase,
+      nonce: 2,
+      activationHeight: 201,
+      protocolVersion: 1
+    };
+    const upgrade = createProtocolUpgrade(
+      {
+        ...upgradeBase,
+        approvals: [
+          createProtocolUpgradeApproval(upgradeBase, validatorOnePrivate, validatorOnePublic),
+          createProtocolUpgradeApproval(upgradeBase, validatorTwoPrivate, validatorTwoPublic)
+        ],
+        timestampMs: 1_700_000_000_100
+      },
+      validatorOnePrivate,
+      validatorOnePublic
+    );
+    const rollback = createProtocolUpgrade(
+      {
+        ...rollbackBase,
+        approvals: [
+          createProtocolUpgradeApproval(rollbackBase, validatorOnePrivate, validatorOnePublic),
+          createProtocolUpgradeApproval(rollbackBase, validatorTwoPrivate, validatorTwoPublic)
+        ],
+        timestampMs: 1_700_000_000_101
+      },
+      validatorOnePrivate,
+      validatorOnePublic
+    );
+    let block = store.chain.produceBlock([upgrade, rollback], validatorOnePrivate, { timestampMs: 1_700_000_000_200 });
+    block = store.chain.attestBlock(block, validatorOnePrivate);
+    block = store.chain.attestBlock(block, validatorTwoPrivate);
+    store.chain.acceptBlock(block, 1_700_000_000_200);
+    await store.appendFinalizedBlock(block);
+
+    const reopened = await ChainStore.open(genesis(), directory);
+    assert.equal(reopened.chain.protocolVersionAt(100), 1);
+    assert.equal(reopened.chain.protocolVersionAt(101), 2);
+    assert.equal(reopened.chain.protocolVersionAt(200), 2);
+    assert.equal(reopened.chain.protocolVersionAt(201), 1);
+    assert.equal(reopened.chain.getState().nonce(validatorOne), 2);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

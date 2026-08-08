@@ -5,6 +5,7 @@ import type {
   ActivityEntry,
   ActivitySettlementTx,
   Address,
+  ProtocolUpgradeTx,
   Transaction,
   TransferTx,
   Validator,
@@ -15,10 +16,39 @@ import type {
 type UnsignedTransfer = Omit<TransferTx, "signature" | "txid">;
 type UnsignedSettlement = Omit<ActivitySettlementTx, "signature" | "txid">;
 type UnsignedValidatorUpdate = Omit<ValidatorSetUpdateTx, "signature" | "txid">;
+type UnsignedProtocolUpgrade = Omit<ProtocolUpgradeTx, "signature" | "txid">;
 
-function txSigningPayload(tx: Transaction | UnsignedTransfer | UnsignedSettlement | UnsignedValidatorUpdate): unknown {
+function txSigningPayload(tx: Transaction | UnsignedTransfer | UnsignedSettlement | UnsignedValidatorUpdate | UnsignedProtocolUpgrade): unknown {
   const { signature: _signature, txid: _txid, ...payload } = tx as Transaction;
   return payload;
+}
+
+export function protocolUpgradeApprovalPayload(input: {
+  chainId: string;
+  nonce: number;
+  sender: Address;
+  activationHeight: number;
+  protocolVersion: number;
+}): unknown {
+  return {
+    chainId: input.chainId,
+    nonce: input.nonce,
+    sender: input.sender,
+    activationHeight: input.activationHeight,
+    protocolVersion: input.protocolVersion
+  };
+}
+
+export function createProtocolUpgradeApproval(
+  input: Parameters<typeof protocolUpgradeApprovalPayload>[0],
+  validatorPrivateKey: string,
+  validatorPublicKey: string
+): ValidatorApproval {
+  return {
+    validator: addressFromPublicKey(validatorPublicKey),
+    publicKey: validatorPublicKey,
+    signature: signCanonical(protocolUpgradeApprovalPayload(input), validatorPrivateKey)
+  };
 }
 
 export function validatorUpdateApprovalPayload(input: {
@@ -62,6 +92,29 @@ export function createValidatorSetUpdate(
     sender: input.sender,
     activationHeight: input.activationHeight,
     validators: input.validators.map((validator) => ({ ...validator })),
+    approvals: input.approvals.map((approval) => ({ ...approval })),
+    feeAtoms: 0,
+    timestampMs: input.timestampMs,
+    publicKey
+  };
+  const signature = signCanonical(unsigned, privateKeyHex);
+  const withSignature = { ...unsigned, signature };
+  return { ...withSignature, txid: sha256Hex(canonicalJson(withSignature)) };
+}
+
+export function createProtocolUpgrade(
+  input: Omit<UnsignedProtocolUpgrade, "kind" | "version" | "publicKey" | "feeAtoms">,
+  privateKeyHex: string,
+  publicKey: string
+): ProtocolUpgradeTx {
+  const unsigned: UnsignedProtocolUpgrade = {
+    kind: "protocol_upgrade",
+    version: 1,
+    chainId: input.chainId,
+    nonce: input.nonce,
+    sender: input.sender,
+    activationHeight: input.activationHeight,
+    protocolVersion: input.protocolVersion,
     approvals: input.approvals.map((approval) => ({ ...approval })),
     feeAtoms: 0,
     timestampMs: input.timestampMs,
@@ -142,6 +195,11 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
       "kind", "version", "chainId", "nonce", "sender", "activationHeight", "validators", "approvals",
       "feeAtoms", "timestampMs", "publicKey", "signature", "txid"
     ], "validator update");
+  } else if (value.kind === "protocol_upgrade") {
+    assertExactKeys(value, [
+      "kind", "version", "chainId", "nonce", "sender", "activationHeight", "protocolVersion", "approvals",
+      "feeAtoms", "timestampMs", "publicKey", "signature", "txid"
+    ], "protocol upgrade");
   } else {
     throw new Error("Unsupported transaction kind");
   }
@@ -173,7 +231,7 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
       throw new Error("Invalid activity settlement size");
     }
     for (const entry of tx.entries) validateActivityEntry(entry);
-  } else {
+  } else if (tx.kind === "validator_update") {
     if (tx.feeAtoms !== 0) throw new Error("Validator update fee must be zero");
     if (!Number.isSafeInteger(tx.activationHeight) || tx.activationHeight < 1) {
       throw new Error("Invalid validator activation height");
@@ -186,6 +244,19 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
     for (const validator of tx.validators) validateValidator(validator, validatorAddresses);
     if (!Array.isArray(tx.approvals) || tx.approvals.length === 0 || tx.approvals.length > 100) {
       throw new Error("Invalid validator approvals");
+    }
+    for (const approval of tx.approvals) validateValidatorApproval(approval);
+  } else {
+    if (tx.feeAtoms !== 0) throw new Error("Protocol upgrade fee must be zero");
+    if (!Number.isSafeInteger(tx.activationHeight) || tx.activationHeight < 1) {
+      throw new Error("Invalid protocol activation height");
+    }
+    if (!Number.isSafeInteger(tx.protocolVersion) || tx.protocolVersion < 1 || tx.protocolVersion > 65_535) {
+      throw new Error("Invalid protocol version");
+    }
+    if (addressFromPublicKey(tx.publicKey) !== tx.sender) throw new Error("Public key does not match sender");
+    if (!Array.isArray(tx.approvals) || tx.approvals.length === 0 || tx.approvals.length > 100) {
+      throw new Error("Invalid protocol upgrade approvals");
     }
     for (const approval of tx.approvals) validateValidatorApproval(approval);
   }

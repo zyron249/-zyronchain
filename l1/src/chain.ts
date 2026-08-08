@@ -12,19 +12,23 @@ import {
   assertAddress,
   assertExactKeys,
   assertPlainRecord,
+  protocolUpgradeApprovalPayload,
   validateTransactionShape,
   validatorUpdateApprovalPayload
 } from "./transaction.js";
 import { assertHex } from "./codec.js";
-import type { Block, GenesisConfig, RoundSkipVote, Transaction, Validator, ValidatorSetUpdateTx } from "./types.js";
+import type { Block, GenesisConfig, ProtocolUpgradeTx, RoundSkipVote, Transaction, Validator, ValidatorSetUpdateTx } from "./types.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
 export const MIN_VALIDATOR_UPDATE_DELAY = 100;
+export const MIN_PROTOCOL_UPDATE_DELAY = 100;
+export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1]);
 
 export class ZyronChain {
   readonly genesis: GenesisConfig;
   private readonly blocks: Block[];
   private readonly validatorSchedule = new Map<number, Validator[]>();
+  private readonly protocolSchedule = new Map<number, number>();
   private state: LedgerState;
 
   constructor(genesis: GenesisConfig) {
@@ -33,6 +37,7 @@ export class ZyronChain {
     this.state = LedgerState.fromGenesis(genesis);
     this.blocks = [createGenesisBlock(genesis, this.state.root())];
     this.validatorSchedule.set(0, structuredClone(genesis.validators));
+    this.protocolSchedule.set(0, 1);
   }
 
   get height(): number {
@@ -64,6 +69,19 @@ export class ZyronChain {
     return structuredClone(selected);
   }
 
+  protocolVersionAt(height: number): number {
+    if (!Number.isSafeInteger(height) || height < 0) throw new Error("Invalid protocol height");
+    let selectedVersion = 1;
+    let selectedHeight = 0;
+    for (const [activationHeight, version] of this.protocolSchedule) {
+      if (activationHeight <= height && activationHeight >= selectedHeight) {
+        selectedVersion = version;
+        selectedHeight = activationHeight;
+      }
+    }
+    return selectedVersion;
+  }
+
   attestBlock(block: Block, validatorPrivateKey: string): Block {
     const publicKey = publicKeyFromPrivate(validatorPrivateKey);
     const validator = this.validatorsAt(block.header.height).find((item) => item.publicKey === publicKey);
@@ -82,6 +100,8 @@ export class ZyronChain {
     options: { round?: number; timestampMs?: number; roundCertificate?: RoundSkipVote[] } = {}
   ): Block {
     const round = options.round ?? 0;
+    const protocolVersion = this.protocolVersionAt(this.height + 1);
+    assertSupportedProtocolVersion(protocolVersion);
     const publicKey = publicKeyFromPrivate(proposerPrivateKey);
     const validators = this.validatorsAt(this.height + 1);
     const expected = expectedValidator(validators, this.height + 1, round);
@@ -91,6 +111,7 @@ export class ZyronChain {
     const timestampMs = options.timestampMs ?? Math.max(Date.now(), this.tip.header.timestampMs + 1);
     const nextState = this.validateAndApply(transactions, this.state, this.height + 1);
     const block = createSignedBlock({
+      version: protocolVersion,
       chainId: this.genesis.chainId,
       height: this.height + 1,
       round,
@@ -102,23 +123,27 @@ export class ZyronChain {
       proposerPublicKey: publicKey,
       roundCertificate: options.roundCertificate ?? []
     });
-    validateBlockEnvelope(block, this.tip, validators, timestampMs, false);
+    validateBlockEnvelope(block, this.tip, validators, timestampMs, false, protocolVersion);
     return block;
   }
 
   acceptBlock(block: Block, nowMs = Date.now()): void {
+    const protocolVersion = this.protocolVersionAt(block.header.height);
+    assertSupportedProtocolVersion(protocolVersion);
     const validators = this.validatorsAt(block.header.height);
-    validateBlockEnvelope(block, this.tip, validators, nowMs);
+    validateBlockEnvelope(block, this.tip, validators, nowMs, true, protocolVersion);
     if (canonicalJson(block).length > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
     const nextState = this.validateAndApply(block.transactions, this.state, block.header.height);
     if (block.header.stateRoot !== nextState.root()) throw new Error("State root mismatch");
     this.blocks.push(structuredClone(block));
     this.state = nextState;
-    this.recordValidatorUpdates(block.transactions);
+    this.recordGovernanceUpdates(block.transactions);
   }
 
   validateProposal(block: Block, nowMs = Date.now()): void {
-    validateBlockEnvelope(block, this.tip, this.validatorsAt(block.header.height), nowMs, false);
+    const protocolVersion = this.protocolVersionAt(block.header.height);
+    assertSupportedProtocolVersion(protocolVersion);
+    validateBlockEnvelope(block, this.tip, this.validatorsAt(block.header.height), nowMs, false, protocolVersion);
     if (canonicalJson(block).length > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
     const nextState = this.validateAndApply(block.transactions, this.state, block.header.height);
     if (block.header.stateRoot !== nextState.root()) throw new Error("State root mismatch");
@@ -145,6 +170,7 @@ export class ZyronChain {
     const selected: Transaction[] = [];
     const seen = new Set<string>();
     let lastActivation = this.lastValidatorActivationHeight();
+    let lastProtocolActivation = this.lastProtocolActivationHeight();
     const currentValidators = this.validatorsAt(this.height + 1);
     for (const tx of ordered) {
       if (selected.length >= limit) break;
@@ -155,6 +181,9 @@ export class ZyronChain {
         if (tx.kind === "validator_update") {
           validateValidatorUpdateAuthorization(tx, currentValidators, this.height + 1, lastActivation);
           lastActivation = tx.activationHeight;
+        } else if (tx.kind === "protocol_upgrade") {
+          validateProtocolUpgradeAuthorization(tx, currentValidators, this.height + 1, lastProtocolActivation);
+          lastProtocolActivation = tx.activationHeight;
         }
         next.apply(tx, this.genesis.activityPool);
         selected.push(tx);
@@ -171,6 +200,7 @@ export class ZyronChain {
     const seen = new Set<string>();
     const currentValidators = this.validatorsAt(blockHeight);
     let lastActivation = this.lastValidatorActivationHeight();
+    let lastProtocolActivation = this.lastProtocolActivationHeight();
     for (const tx of transactions) {
       if (tx.chainId !== this.genesis.chainId) throw new Error("Wrong transaction chain ID");
       if (seen.has(tx.txid)) throw new Error("Duplicate transaction in block");
@@ -184,22 +214,38 @@ export class ZyronChain {
       if (tx.kind === "validator_update") {
         validateValidatorUpdateAuthorization(tx, currentValidators, blockHeight, lastActivation);
         lastActivation = tx.activationHeight;
+      } else if (tx.kind === "protocol_upgrade") {
+        validateProtocolUpgradeAuthorization(tx, currentValidators, blockHeight, lastProtocolActivation);
+        lastProtocolActivation = tx.activationHeight;
       }
       next.apply(tx, this.genesis.activityPool);
     }
     return next;
   }
 
-  private recordValidatorUpdates(transactions: Transaction[]): void {
+  private recordGovernanceUpdates(transactions: Transaction[]): void {
     for (const tx of transactions) {
       if (tx.kind === "validator_update") {
         this.validatorSchedule.set(tx.activationHeight, structuredClone(tx.validators));
+      } else if (tx.kind === "protocol_upgrade") {
+        this.protocolSchedule.set(tx.activationHeight, tx.protocolVersion);
       }
     }
   }
 
   private lastValidatorActivationHeight(): number {
     return Math.max(...this.validatorSchedule.keys());
+  }
+
+
+  private lastProtocolActivationHeight(): number {
+    return Math.max(...this.protocolSchedule.keys());
+  }
+}
+
+function assertSupportedProtocolVersion(version: number): void {
+  if (!SUPPORTED_PROTOCOL_VERSIONS.has(version)) {
+    throw new Error(`Protocol version ${version} is not supported by this binary`);
   }
 }
 
@@ -229,6 +275,34 @@ function validateValidatorUpdateAuthorization(
   }
   const quorum = Math.floor((currentValidators.length * 2) / 3) + 1;
   if (valid < quorum) throw new Error(`Validator update quorum not reached: ${valid}/${quorum}`);
+}
+
+function validateProtocolUpgradeAuthorization(
+  tx: ProtocolUpgradeTx,
+  currentValidators: Validator[],
+  blockHeight: number,
+  lastActivationHeight: number
+): void {
+  if (tx.activationHeight < blockHeight + MIN_PROTOCOL_UPDATE_DELAY) {
+    throw new Error("Protocol upgrade activation is too soon");
+  }
+  if (tx.activationHeight <= lastActivationHeight) throw new Error("Protocol activation height must increase");
+  const allowed = new Map(currentValidators.map((validator) => [validator.address, validator.publicKey]));
+  if (!allowed.has(tx.sender)) throw new Error("Protocol upgrade initiator is not active");
+  const payload = protocolUpgradeApprovalPayload(tx);
+  const seen = new Set<string>();
+  let valid = 0;
+  for (const approval of tx.approvals) {
+    if (seen.has(approval.validator)) throw new Error("Duplicate protocol upgrade approval");
+    seen.add(approval.validator);
+    if (allowed.get(approval.validator) !== approval.publicKey) throw new Error("Unknown protocol upgrade approver");
+    if (!verifyCanonical(payload, approval.signature, approval.publicKey)) {
+      throw new Error("Invalid protocol upgrade approval");
+    }
+    valid += 1;
+  }
+  const quorum = Math.floor((currentValidators.length * 2) / 3) + 1;
+  if (valid < quorum) throw new Error(`Protocol upgrade quorum not reached: ${valid}/${quorum}`);
 }
 
 function validateGenesis(genesis: GenesisConfig): void {
