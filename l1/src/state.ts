@@ -7,6 +7,11 @@ interface AccountState {
   nonce: number;
 }
 
+export interface LedgerSnapshot {
+  accounts: Array<{ address: Address; balanceAtoms: number; nonce: number }>;
+  settledActivityEpochs: number[];
+}
+
 export class LedgerState {
   private readonly accounts: Map<Address, AccountState>;
   private readonly settledActivityEpochs: Set<number>;
@@ -58,11 +63,16 @@ export class LedgerState {
   }
 
   root(): string {
-    const accounts = [...this.accounts.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([address, state]) => ({ address, ...state }));
-    const epochs = [...this.settledActivityEpochs].sort((a, b) => a - b);
-    return sha256Hex(canonicalJson({ accounts, settledActivityEpochs: epochs }));
+    return sha256Hex(canonicalJson(this.snapshot()));
+  }
+
+  snapshot(): LedgerSnapshot {
+    return {
+      accounts: [...this.accounts.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([address, state]) => ({ address, ...state })),
+      settledActivityEpochs: [...this.settledActivityEpochs].sort((a, b) => a - b)
+    };
   }
 
   private applyTransfer(tx: TransferTx): void {
