@@ -540,7 +540,16 @@ export class ChainStore {
 
 async function quarantineCorruptStateV2(dataDir: string): Promise<void> {
   const suffix = `.corrupt-${Date.now()}-${randomBytes(6).toString("hex")}`;
-  for (const filename of ["state-v2.nodes.ndjson", "state-v2.keys.ndjson", "state-v2.root.json"]) {
+  for (const filename of [
+    "state-v2.nodes.ndjson",
+    "state-v2.nodes.sqlite",
+    "state-v2.nodes.sqlite-journal",
+    "state-v2.nodes.sqlite-wal",
+    "state-v2.nodes.sqlite-shm",
+    "state-v2.backend.json",
+    "state-v2.keys.ndjson",
+    "state-v2.root.json"
+  ]) {
     try {
       await rename(join(dataDir, filename), join(dataDir, `${filename}${suffix}`));
     } catch (error) {
