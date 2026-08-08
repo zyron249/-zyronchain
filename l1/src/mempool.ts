@@ -24,6 +24,17 @@ export class Mempool {
     }
   }
 
+  prune(predicate: (tx: Transaction) => boolean): number {
+    let removed = 0;
+    for (const [txid, tx] of this.byId) {
+      if (!predicate(tx)) continue;
+      this.byId.delete(txid);
+      this.nonceKeys.delete(`${tx.sender}:${tx.nonce}`);
+      removed += 1;
+    }
+    return removed;
+  }
+
   select(limit: number): Transaction[] {
     return [...this.byId.values()]
       .sort((a, b) => {
