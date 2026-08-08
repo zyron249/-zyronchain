@@ -79,7 +79,7 @@ export class StateV2DiskStore {
 
   async commit(state: SparseMerkleState): Promise<void> {
     const nodesPath = join(this.dataDir, "state-v2.nodes.ndjson");
-    const fresh = state.nodeRecords().filter((record) => !this.knownRecords.has(record.hash));
+    const fresh = state.pendingNodeRecords().filter((record) => !this.knownRecords.has(record.hash));
     if (fresh.length) {
       const handle = await open(nodesPath, "a", 0o600);
       try {
@@ -112,7 +112,7 @@ export class StateV2DiskStore {
     } finally {
       await directoryHandle.close();
     }
-    this.currentState = state;
+    this.currentState = state.persistenceCheckpoint();
   }
 }
 
