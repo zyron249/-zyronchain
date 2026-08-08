@@ -25,9 +25,11 @@ import { PeerReputationStore } from "../src/peer-reputation.js";
 import {
   createRpcServer,
   diversityOrderedPeers,
+  MAX_SYNC_PROBE_CONCURRENCY,
   NodeService,
   peerDiversityBucket,
   PeerClient,
+  peerSyncProbeBatches,
   produceFinalizedBlock
 } from "../src/node.js";
 import type { GenesisConfig } from "../src/types.js";
@@ -976,6 +978,17 @@ test("peer sync ordering prevents one host or IPv4 subnet from dominating early 
   assert.equal(peerDiversityBucket("https://[2001:db8::1]:9137"), "ipv6:2001:db8::1");
   assert.deepEqual(diversityOrderedPeers(peers), [subnetOne, hostOne, hostTwo, subnetTwo, subnetThree]);
   assert.deepEqual(diversityOrderedPeers(peers, 1), [hostOne, hostTwo, subnetOne, subnetTwo, subnetThree]);
+});
+
+test("peer sync probes are concurrency-bounded without dropping configured candidates", () => {
+  const peers = Array.from({ length: 29 }, (_, index) =>
+    `https://node-${index}.example:9137`
+  );
+  const batches = peerSyncProbeBatches(peers, 3);
+  assert.ok(batches.length > 1);
+  assert.ok(batches.every((batch) => batch.length > 0 && batch.length <= MAX_SYNC_PROBE_CONCURRENCY));
+  assert.deepEqual(batches.flat(), diversityOrderedPeers(peers, 3));
+  assert.equal(new Set(batches.flat()).size, peers.length);
 });
 
 test("RPC serves a signed peer record that a client verifies against chain identity", async () => {

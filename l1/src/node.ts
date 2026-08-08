@@ -31,6 +31,7 @@ const MAX_SYNC_BLOCKS = 100;
 const MAX_SYNC_RESPONSE_BYTES = 25_000_000;
 const MAX_SYNC_BATCH_PAYLOAD_BYTES = 20_000_000;
 const MAX_CONFIGURED_PEERS = 64;
+export const MAX_SYNC_PROBE_CONCURRENCY = 8;
 const PEER_FAILURE_BACKOFF_MS = 30_000;
 const PEER_TIMEOUT_MS = 8_000;
 const DEFAULT_RPC_WINDOW_MS = 60_000;
@@ -384,32 +385,33 @@ export class PeerClient {
       const nowMs = Date.now();
       const available = this.peers
         .filter((peer) => (this.failureUntil.get(peer) ?? 0) <= nowMs && (this.peerReputation?.isAvailable(peer, nowMs) ?? true));
-      const ordered = diversityOrderedPeers(available, this.syncCursor);
-      if (ordered.length === 0) break;
-      const attempts = await Promise.allSettled(ordered.map(async (peer) => {
-          const status = parseStatus(await getJson(`${peer}/status`, 64_000));
-          const local = service.status();
-          if (status.chainId !== local.chainId || status.genesisHash !== local.genesisHash) {
-            throw new Error("Peer chain identity mismatch");
-          }
-          if (status.height <= startHeight) return null;
-          const payload = await getJson(
-            `${peer}/blocks?from=${startHeight + 1}&limit=${MAX_SYNC_BLOCKS}`,
-            MAX_SYNC_RESPONSE_BYTES
-          );
-          const blocks = parsePeerBlockBatch(payload);
-          service.store.chain.validateFinalizedBlock(blocks[0] as Block);
-          return { peer, height: status.height, blocks };
-      }));
       let candidate: { peer: string; height: number; blocks: unknown[] } | undefined;
-      for (let index = 0; index < attempts.length; index += 1) {
-        const result = attempts[index]!;
-        const peer = ordered[index]!;
-        if (result.status === "rejected") {
-          await this.recordFailure(peer, nowMs);
-          continue;
+      for (const batch of peerSyncProbeBatches(available, this.syncCursor)) {
+        const attempts = await Promise.allSettled(batch.map(async (peer) => {
+            const status = parseStatus(await getJson(`${peer}/status`, 64_000));
+            const local = service.status();
+            if (status.chainId !== local.chainId || status.genesisHash !== local.genesisHash) {
+              throw new Error("Peer chain identity mismatch");
+            }
+            if (status.height <= startHeight) return null;
+            const payload = await getJson(
+              `${peer}/blocks?from=${startHeight + 1}&limit=${MAX_SYNC_BLOCKS}`,
+              MAX_SYNC_RESPONSE_BYTES
+            );
+            const blocks = parsePeerBlockBatch(payload);
+            service.store.chain.validateFinalizedBlock(blocks[0] as Block);
+            return { peer, height: status.height, blocks };
+        }));
+        for (let index = 0; index < attempts.length; index += 1) {
+          const result = attempts[index]!;
+          const peer = batch[index]!;
+          if (result.status === "rejected") {
+            await this.recordFailure(peer, nowMs);
+            continue;
+          }
+          if (!candidate && result.value) candidate = result.value;
         }
-        if (!candidate && result.value) candidate = result.value;
+        if (candidate) break;
       }
       if (!candidate) break;
       const groups = [...new Set(available.map(peerDiversityBucket))];
@@ -520,6 +522,18 @@ export function diversityOrderedPeers(peers: readonly string[], groupOffset = 0)
     }
   }
   return result;
+}
+
+export function peerSyncProbeBatches(
+  peers: readonly string[],
+  groupOffset = 0
+): string[][] {
+  const ordered = diversityOrderedPeers(peers, groupOffset);
+  const batches: string[][] = [];
+  for (let index = 0; index < ordered.length; index += MAX_SYNC_PROBE_CONCURRENCY) {
+    batches.push(ordered.slice(index, index + MAX_SYNC_PROBE_CONCURRENCY));
+  }
+  return batches;
 }
 
 export async function produceFinalizedBlock(
