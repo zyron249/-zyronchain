@@ -44,6 +44,8 @@ interface ChunkEnvelope extends ChunkBody {
   checksum: string;
 }
 
+interface ChunkIndex { start: number; length: number }
+
 /**
  * Crash-safe, untrusted download staging for portable State-v2 chunks. These
  * files are never node state: the complete bundle still has to pass the
@@ -54,7 +56,9 @@ export class PortableStateResumeStore {
     readonly dataDir: string,
     readonly manifest: PortableStateResumeManifestV1,
     private recordProgress: number,
-    private keyProgress: number
+    private keyProgress: number,
+    private readonly recordChunks: ChunkIndex[],
+    private readonly keyChunks: ChunkIndex[]
   ) {}
 
   static async open(dataDir: string, manifest: PortableStateResumeManifestV1): Promise<PortableStateResumeStore> {
@@ -83,9 +87,27 @@ export class PortableStateResumeStore {
       if (!isMissingFile(error)) throw error;
       await atomicWrite(path, manifestEnvelope(manifest), tempDir);
     }
-    const recordProgress = await scanProgress(join(dataDir, RECORDS_DIR), manifest.recordCount, MAX_PORTABLE_STATE_NODES);
-    const keyProgress = await scanProgress(join(dataDir, KEYS_DIR), manifest.keyCount, MAX_PORTABLE_STATE_KEYS);
-    return new PortableStateResumeStore(dataDir, structuredClone(manifest), recordProgress, keyProgress);
+    const records = await scanProgress(join(dataDir, RECORDS_DIR), manifest.recordCount, MAX_PORTABLE_STATE_NODES);
+    const keys = await scanProgress(join(dataDir, KEYS_DIR), manifest.keyCount, MAX_PORTABLE_STATE_KEYS);
+    return new PortableStateResumeStore(
+      dataDir, structuredClone(manifest), records.progress, keys.progress, records.chunks, keys.chunks
+    );
+  }
+
+  static async openExisting(dataDir: string, expected: {
+    chainId: string;
+    genesisHash: string;
+    tipHash: string;
+    snapshotSha256: string;
+  }): Promise<PortableStateResumeStore> {
+    await assertRealDirectory(dataDir);
+    const envelope = parseManifestEnvelope(await readBounded(join(dataDir, MANIFEST_FILE), 3_000_000));
+    const manifest = envelope.manifest;
+    if (manifest.chainId !== expected.chainId || manifest.genesisHash !== expected.genesisHash ||
+        manifest.tipHash !== expected.tipHash || manifest.snapshotSha256 !== expected.snapshotSha256) {
+      throw new Error("Portable state resume manifest does not match requested checkpoint");
+    }
+    return PortableStateResumeStore.open(dataDir, manifest);
   }
 
   nextRecordStart(): number { return this.recordProgress; }
@@ -93,10 +115,20 @@ export class PortableStateResumeStore {
 
   async putRecords(start: number, items: unknown[]): Promise<void> {
     this.recordProgress = await this.put(RECORDS_DIR, this.recordProgress, this.manifest.recordCount, start, items);
+    this.recordChunks.push({ start, length: items.length });
   }
 
   async putKeys(start: number, items: unknown[]): Promise<void> {
     this.keyProgress = await this.put(KEYS_DIR, this.keyProgress, this.manifest.keyCount, start, items);
+    this.keyChunks.push({ start, length: items.length });
+  }
+
+  async records(start: number, limit: number): Promise<unknown[]> {
+    return readRange(join(this.dataDir, RECORDS_DIR), this.recordChunks, this.manifest.recordCount, start, limit);
+  }
+
+  async keys(start: number, limit: number): Promise<unknown[]> {
+    return readRange(join(this.dataDir, KEYS_DIR), this.keyChunks, this.manifest.keyCount, start, limit);
   }
 
   complete(): boolean {
@@ -164,20 +196,50 @@ function validateManifest(value: PortableStateResumeManifestV1): void {
   }
 }
 
-async function scanProgress(directory: string, total: number, absoluteMax: number): Promise<number> {
+async function scanProgress(directory: string, total: number, absoluteMax: number): Promise<{ progress: number; chunks: ChunkIndex[] }> {
   const names = await readdir(directory);
   const starts = names.map(parseChunkFilename).sort((a, b) => a - b);
   if (starts.length > absoluteMax) throw new Error("Portable state resume contains too many chunks");
   let progress = 0;
+  const chunks: ChunkIndex[] = [];
   for (const start of starts) {
     if (start !== progress) throw new Error("Portable state resume chunks contain a gap, overlap, or unexpected file");
     const chunk = parseChunkEnvelope(await readBounded(join(directory, `${start}.json`), MAX_RESUME_CHUNK_FILE_BYTES));
     if (chunk.start !== start || chunk.items.length < 1 || start + chunk.items.length > total) {
       throw new Error("Invalid portable state resume chunk range");
     }
+    chunks.push({ start, length: chunk.items.length });
     progress += chunk.items.length;
   }
-  return progress;
+  return { progress, chunks };
+}
+
+async function readRange(
+  directory: string,
+  chunks: readonly ChunkIndex[],
+  total: number,
+  start: number,
+  limit: number
+): Promise<unknown[]> {
+  if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(limit) || limit < 1 || start + limit > total) {
+    throw new Error("Invalid portable state resume read range");
+  }
+  const result: unknown[] = [];
+  const end = start + limit;
+  for (const index of chunks) {
+    const chunkEnd = index.start + index.length;
+    if (chunkEnd <= start) continue;
+    if (index.start >= end) break;
+    const chunk = parseChunkEnvelope(await readBounded(join(directory, `${index.start}.json`), MAX_RESUME_CHUNK_FILE_BYTES));
+    if (chunk.start !== index.start || chunk.items.length !== index.length) {
+      throw new Error("Portable state resume chunk changed after indexing");
+    }
+    const from = Math.max(start, index.start) - index.start;
+    const to = Math.min(end, chunkEnd) - index.start;
+    result.push(...chunk.items.slice(from, to));
+  }
+  if (result.length !== limit) throw new Error("Portable state resume read range is incomplete");
+  return result;
 }
 
 async function collectItems(directory: string, total: number): Promise<unknown[]> {
