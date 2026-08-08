@@ -148,6 +148,22 @@ def test_protocol_v3_rejects_unknown_consensus_fields():
         Transaction.from_dict(wire)
 
 
+def test_protocol_v3_does_not_recompute_missing_wire_txid():
+    wallet = Wallet()
+    tx = Transaction(
+        sender=wallet.address,
+        receiver="ZYN1234567890abcdef1234567890abcdef123456",
+        amount=1,
+        public_key=wallet.get_public_key()
+    )
+    tx.sign_transaction(wallet.get_private_key())
+    wire = tx.to_dict()
+    wire["txid"] = None
+
+    with pytest.raises(ValueError, match="txid must be a string"):
+        Transaction.from_dict(wire)
+
+
 def test_protocol_v3_signature_is_low_s():
     wallet = Wallet()
     tx = Transaction(
