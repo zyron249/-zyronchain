@@ -8,7 +8,7 @@ import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { NodeService } from "../src/node.js";
 import { loadOrCreateNodeIdentity } from "../src/peer-identity.js";
 import { createP2PNode } from "../src/p2p.js";
-import { registerP2PSyncProtocol, syncP2PFrom } from "../src/p2p-sync.js";
+import { P2P_SYNC_PROTOCOL, registerP2PSyncProtocol, syncP2PFrom } from "../src/p2p-sync.js";
 import { ChainStore } from "../src/storage.js";
 import type { GenesisConfig } from "../src/types.js";
 
@@ -84,3 +84,64 @@ test("native P2P sync fails closed before serving a wrong-chain requester", asyn
     await rm(followerDir, { recursive: true, force: true });
   }
 });
+
+test("native P2P sync detects a peer that lies about its finalized tip", async () => {
+  const sourceDir = await mkdtemp(join(tmpdir(), "zyron-native-sync-tip-source-"));
+  const followerDir = await mkdtemp(join(tmpdir(), "zyron-native-sync-tip-follower-"));
+  let sourceNode: Awaited<ReturnType<typeof createP2PNode>> | undefined;
+  let followerNode: Awaited<ReturnType<typeof createP2PNode>> | undefined;
+  try {
+    const config = genesis();
+    const sourceStore = await ChainStore.open(config, sourceDir);
+    const sourceService = new NodeService(sourceStore);
+    const proposal = sourceStore.chain.produceBlock([], validatorPrivate, { timestampMs: config.timestampMs + 30_000 });
+    const block = sourceStore.chain.attestBlock(proposal, validatorPrivate);
+    await sourceService.acceptFinalizedBlock(block);
+    const followerService = new NodeService(await ChainStore.open(config, followerDir));
+    const sourceIdentity = await loadOrCreateNodeIdentity(sourceDir);
+    const followerIdentity = await loadOrCreateNodeIdentity(followerDir);
+    sourceNode = await createP2PNode(sourceIdentity, { listen: ["/ip4/127.0.0.1/tcp/0"] });
+    followerNode = await createP2PNode(followerIdentity);
+    await sourceNode.handle(P2P_SYNC_PROTOCOL, async (stream) => {
+      await readTestFrame(stream);
+      const response = {
+        version: 1,
+        identity: {
+          version: 1,
+          nodeId: sourceIdentity.nodeId,
+          publicKey: sourceIdentity.publicKey,
+          chainId: sourceService.status().chainId,
+          genesisHash: sourceService.status().genesisHash
+        },
+        status: { ...sourceService.status(), tipHash: "00".repeat(32) },
+        blocks: [block]
+      };
+      const body = Buffer.from(JSON.stringify(response));
+      const header = Buffer.alloc(4);
+      header.writeUInt32BE(body.length);
+      stream.send(header);
+      stream.send(body);
+      await stream.close();
+    });
+    const address = sourceNode.getMultiaddrs()[0];
+    assert.ok(address);
+    await assert.rejects(() => syncP2PFrom(followerNode!, address, followerIdentity, followerService), /false tip/);
+    // Consensus-valid history remains committed; only the lying peer session is rejected.
+    assert.equal(followerService.status().tipHash, block.hash);
+  } finally {
+    await Promise.allSettled([sourceNode?.stop(), followerNode?.stop()]);
+    await rm(sourceDir, { recursive: true, force: true });
+    await rm(followerDir, { recursive: true, force: true });
+  }
+});
+
+async function readTestFrame(stream: AsyncIterable<Uint8Array | { subarray(): Uint8Array }>): Promise<void> {
+  let buffered = Buffer.alloc(0);
+  for await (const chunk of stream) {
+    buffered = Buffer.concat([buffered, Buffer.from(chunk.subarray())]);
+    if (buffered.length < 4) continue;
+    const length = buffered.readUInt32BE(0);
+    if (buffered.length >= length + 4) return;
+  }
+  throw new Error("truncated test request");
+}
