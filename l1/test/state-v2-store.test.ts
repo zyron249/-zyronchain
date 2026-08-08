@@ -84,3 +84,30 @@ test("State v2 disk store fails closed on checksum corruption", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("State v2 disk store fails closed when the committed root references a missing node", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-missing-node-"));
+  try {
+    const store = await StateV2DiskStore.open(directory);
+    const committed = store.state()
+      .set("account:alice", { balanceAtoms: 5, nonce: 1 })
+      .set("account:bob", { balanceAtoms: 7, nonce: 2 });
+    await store.commit(committed);
+
+    const rootMetadata = JSON.parse(await readFile(join(directory, "state-v2.root.json"), "utf8")) as {
+      root: string;
+    };
+    const nodesPath = join(directory, "state-v2.nodes.ndjson");
+    const lines = (await readFile(nodesPath, "utf8")).trimEnd().split("\n");
+    const withoutCommittedRoot = lines.filter((line) => {
+      const envelope = JSON.parse(line) as { record?: { hash?: string } };
+      return envelope.record?.hash !== rootMetadata.root;
+    });
+    assert.equal(withoutCommittedRoot.length, lines.length - 1);
+    await writeFile(nodesPath, `${withoutCommittedRoot.join("\n")}\n`, "utf8");
+
+    await assert.rejects(() => StateV2DiskStore.open(directory), /Missing State v2 node record/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
