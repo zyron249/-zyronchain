@@ -9,6 +9,7 @@ import type { PeerId, Stream } from "@libp2p/interface";
 
 import { publicKeyFromPrivate } from "./crypto.js";
 import { nodeIdFromPublicKey, type NodeIdentity } from "./peer-identity.js";
+import { P2PPeerRateLimiter } from "./p2p-rate.js";
 
 export const DEFAULT_P2P_MAX_CONNECTIONS = 64;
 export const P2P_IDENTITY_PROTOCOL = "/zyronchain/identity/1.0.0";
@@ -77,8 +78,10 @@ export async function registerP2PIdentityProtocol(
 ): Promise<void> {
   assertIdentityBinding(identity);
   const local = createChainIdentity(identity, chain);
+  const rate = new P2PPeerRateLimiter(120, 60_000);
   await node.handle(P2P_IDENTITY_PROTOCOL, async (stream, connection) => {
     try {
+      if (!rate.consume(connection.remotePeer.toString())) throw new Error("P2P identity rate limit exceeded");
       const remote = await exchangeIdentity(stream, local, chain, connection.remotePeer);
       onAuthenticated?.(remote);
     } catch (error) {
