@@ -135,6 +135,74 @@ test("native P2P sync detects a peer that lies about its finalized tip", async (
   }
 });
 
+test("poisoned native sync tail cannot prevent recovery from an independent honest peer", async () => {
+  const sourceDir = await mkdtemp(join(tmpdir(), "zyron-native-sync-poison-source-"));
+  const maliciousDir = await mkdtemp(join(tmpdir(), "zyron-native-sync-poison-malicious-"));
+  const honestDir = await mkdtemp(join(tmpdir(), "zyron-native-sync-poison-honest-"));
+  const followerDir = await mkdtemp(join(tmpdir(), "zyron-native-sync-poison-follower-"));
+  let maliciousNode: Awaited<ReturnType<typeof createP2PNode>> | undefined;
+  let honestNode: Awaited<ReturnType<typeof createP2PNode>> | undefined;
+  let followerNode: Awaited<ReturnType<typeof createP2PNode>> | undefined;
+  try {
+    const config = genesis();
+    const sourceStore = await ChainStore.open(config, sourceDir);
+    const sourceService = new NodeService(sourceStore);
+    const proposalOne = sourceStore.chain.produceBlock([], validatorPrivate, { timestampMs: config.timestampMs + 30_000 });
+    const blockOne = sourceStore.chain.attestBlock(proposalOne, validatorPrivate);
+    await sourceService.acceptFinalizedBlock(blockOne);
+    const proposalTwo = sourceStore.chain.produceBlock([], validatorPrivate, { timestampMs: config.timestampMs + 60_000 });
+    const blockTwo = sourceStore.chain.attestBlock(proposalTwo, validatorPrivate);
+    await sourceService.acceptFinalizedBlock(blockTwo);
+
+    const followerService = new NodeService(await ChainStore.open(config, followerDir));
+    const maliciousIdentity = await loadOrCreateNodeIdentity(maliciousDir);
+    const honestIdentity = await loadOrCreateNodeIdentity(honestDir);
+    const followerIdentity = await loadOrCreateNodeIdentity(followerDir);
+    maliciousNode = await createP2PNode(maliciousIdentity, { listen: ["/ip4/127.0.0.1/tcp/0"] });
+    honestNode = await createP2PNode(honestIdentity, { listen: ["/ip4/127.0.0.1/tcp/0"] });
+    followerNode = await createP2PNode(followerIdentity);
+
+    await maliciousNode.handle(P2P_SYNC_PROTOCOL, async (stream) => {
+      await readTestFrame(stream);
+      const response = {
+        version: 1,
+        identity: {
+          version: 1,
+          nodeId: maliciousIdentity.nodeId,
+          publicKey: maliciousIdentity.publicKey,
+          chainId: sourceService.status().chainId,
+          genesisHash: sourceService.status().genesisHash
+        },
+        status: sourceService.status(),
+        blocks: [blockOne, { ...blockTwo, hash: "11".repeat(32) }]
+      };
+      const body = Buffer.from(JSON.stringify(response));
+      const header = Buffer.alloc(4);
+      header.writeUInt32BE(body.length);
+      stream.send(header);
+      stream.send(body);
+      await stream.close();
+    });
+    await registerP2PSyncProtocol(honestNode, honestIdentity, sourceService);
+
+    const maliciousAddress = maliciousNode.getMultiaddrs()[0];
+    const honestAddress = honestNode.getMultiaddrs()[0];
+    assert.ok(maliciousAddress && honestAddress);
+    await assert.rejects(
+      () => syncP2PFrom(followerNode!, maliciousAddress, followerIdentity, followerService),
+      /hash|block|mismatch|invalid/i
+    );
+    // The valid prefix may commit, but the poisoned block never does.
+    assert.equal(followerService.status().height, 1);
+    assert.equal(followerService.status().tipHash, blockOne.hash);
+    assert.equal(await syncP2PFrom(followerNode, honestAddress, followerIdentity, followerService), 1);
+    assert.deepEqual(followerService.status(), sourceService.status());
+  } finally {
+    await Promise.allSettled([maliciousNode?.stop(), honestNode?.stop(), followerNode?.stop()]);
+    await Promise.all([sourceDir, maliciousDir, honestDir, followerDir].map((directory) => rm(directory, { recursive: true, force: true })));
+  }
+});
+
 async function readTestFrame(stream: AsyncIterable<Uint8Array | { subarray(): Uint8Array }>): Promise<void> {
   let buffered = Buffer.alloc(0);
   for await (const chunk of stream) {
