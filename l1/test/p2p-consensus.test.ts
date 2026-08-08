@@ -11,6 +11,7 @@ import { NativeConsensusPeerClient, registerP2PConsensusProtocol } from "../src/
 import { loadOrCreateNodeIdentity } from "../src/peer-identity.js";
 import { createP2PNode } from "../src/p2p.js";
 import { ChainStore, SigningJournal } from "../src/storage.js";
+import { createTransfer } from "../src/transaction.js";
 import type { GenesisConfig } from "../src/types.js";
 
 const firstPrivate = "01".padStart(64, "0");
@@ -19,6 +20,9 @@ const firstPublic = publicKeyFromPrivate(firstPrivate);
 const secondPublic = publicKeyFromPrivate(secondPrivate);
 const oraclePublic = publicKeyFromPrivate("03".padStart(64, "0"));
 const activityPool = addressFromPublicKey(publicKeyFromPrivate("04".padStart(64, "0")));
+const alicePrivate = "05".padStart(64, "0");
+const alicePublic = publicKeyFromPrivate(alicePrivate);
+const alice = addressFromPublicKey(alicePublic);
 
 function genesis(): GenesisConfig {
   return {
@@ -30,7 +34,10 @@ function genesis(): GenesisConfig {
     ],
     activityOracles: [oraclePublic],
     activityPool,
-    allocations: [{ address: activityPool, amountAtoms: 1_000_000 }]
+    allocations: [
+      { address: activityPool, amountAtoms: 1_000_000 },
+      { address: alice, amountAtoms: 10_000 }
+    ]
   };
 }
 
@@ -72,6 +79,22 @@ test("two validators finalize and converge using native authenticated consensus 
     const skipVotes = await peers.requestRoundSkips(2, 0);
     assert.equal(skipVotes.length, 1);
     assert.equal(skipVotes[0]?.publicKey, publicKeyFromPrivate(remoteKey));
+
+    const transaction = createTransfer({
+      chainId: config.chainId,
+      nonce: 1,
+      sender: alice,
+      receiver: activityPool,
+      amountAtoms: 10,
+      feeAtoms: 1,
+      timestampMs: config.timestampMs + BLOCK_INTERVAL_MS + 1
+    }, alicePrivate, alicePublic);
+    await peers.broadcastTransaction(transaction);
+    assert.equal(remote.mempool.size, 1);
+    // A repeated gossip call is suppressed locally instead of consuming another
+    // remote mempool admission slot.
+    await peers.broadcastTransaction(transaction);
+    assert.equal(remote.mempool.size, 1);
   } finally {
     await Promise.allSettled([sourceNode?.stop(), remoteNode?.stop()]);
     await rm(sourceDir, { recursive: true, force: true });
