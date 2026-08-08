@@ -1,0 +1,68 @@
+name: Standalone L1 Release
+
+on:
+  push:
+    tags:
+      - "l1-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-artifact:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    defaults:
+      run:
+        working-directory: l1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Build release tarball and checksum
+        run: |
+          npm run build
+          mkdir -p release
+          npm pack --ignore-scripts --pack-destination release
+          cd release
+          sha256sum zyronchain-l1-*.tgz > SHA256SUMS
+
+      - name: Attest release tarball and checksum
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            l1/release/zyronchain-l1-*.tgz
+            l1/release/SHA256SUMS
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-l1-${{ github.ref_name }}
+          path: |
+            l1/release/zyronchain-l1-*.tgz
+            l1/release/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
