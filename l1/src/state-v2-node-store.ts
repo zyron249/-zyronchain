@@ -84,6 +84,9 @@ export class StateV2NodeObjectStore {
       // Keep full-tree validation bookkeeping out of the JavaScript heap. This
       // table is connection-local and never becomes consensus-persistent data.
       database.pragma("temp_store = FILE");
+      if (database.pragma("temp_store", { simple: true }) !== 1) {
+        throw new Error("State v2 traversal requires file-backed SQLite temporary storage");
+      }
       database.exec(`
         CREATE TEMP TABLE state_v2_traversal_seen (
           hash TEXT PRIMARY KEY NOT NULL,
