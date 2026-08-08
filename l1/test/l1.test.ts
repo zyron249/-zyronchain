@@ -1336,7 +1336,7 @@ test("remote validator signer is fail-closed on wrong-key signatures and unsafe 
   }
 });
 
-test("signing journal remains authoritative when a remote signer fails after reservation", async () => {
+test("signing journal reserves proposer choice before a remote signer can release a signature", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-remote-signer-journal-"));
   try {
     const store = await ChainStore.open(genesis(), directory);
@@ -1345,10 +1345,13 @@ test("signing journal remains authoritative when a remote signer fails after res
       signCanonical: async () => { throw new Error("injected signer outage"); }
     };
     const service = new NodeService(store, await SigningJournal.open(directory), failingSigner);
-    const first = store.chain.produceBlock([], validatorOnePrivate, { timestampMs: genesis().timestampMs + 100 });
-    await assert.rejects(() => service.attestProposal(first), /injected signer outage/);
-    const conflicting = store.chain.produceBlock([], validatorOnePrivate, { timestampMs: genesis().timestampMs + 101 });
-    await assert.rejects(() => service.attestProposal(conflicting), /Conflicting validator action/);
+    const first = store.chain.prepareBlock([], validatorOnePublic, { timestampMs: genesis().timestampMs + 100 });
+    await assert.rejects(() => service.signPreparedProposal(first, genesis().timestampMs + 100), /injected signer outage/);
+    const conflicting = store.chain.prepareBlock([], validatorOnePublic, { timestampMs: genesis().timestampMs + 101 });
+    await assert.rejects(
+      () => service.signPreparedProposal(conflicting, genesis().timestampMs + 101),
+      /Conflicting validator action/
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
