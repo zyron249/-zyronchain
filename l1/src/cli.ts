@@ -20,7 +20,7 @@ import { PeerDirectory } from "./peer-directory.js";
 import { createP2PNode, registerP2PIdentityProtocol } from "./p2p.js";
 import { registerP2PSyncProtocol, syncP2PFrom } from "./p2p-sync.js";
 import { NativeConsensusPeerClient, registerP2PConsensusProtocol } from "./p2p-consensus.js";
-import { parseNativeListenAddress, parseNativePeerAddress } from "./p2p-address.js";
+import { diversityOrderedNativePeers, parseNativeListenAddress, parseNativePeerAddress } from "./p2p-address.js";
 import { MIN_PROTOCOL_UPDATE_DELAY, MIN_VALIDATOR_UPDATE_DELAY, ZyronChain } from "./chain.js";
 import {
   createProtocolUpgrade,
@@ -183,7 +183,7 @@ async function runNode(args: string[]): Promise<void> {
     await registerP2PIdentityProtocol(nativeNode, identity, service.status());
     await registerP2PSyncProtocol(nativeNode, identity, service);
     await registerP2PConsensusProtocol(nativeNode, identity, service);
-    nativeConsensus = new NativeConsensusPeerClient(nativeNode, nativePeers, identity, service.status());
+    nativeConsensus = new NativeConsensusPeerClient(nativeNode, diversityOrderedNativePeers(nativePeers), identity, service.status());
   }
 
   try {
@@ -198,8 +198,9 @@ async function runNode(args: string[]): Promise<void> {
   } catch (error) {
     console.warn(`Initial peer discovery skipped: ${safeError(error)}`);
   }
+  let nativeSyncCursor = 0;
   if (nativeNode && identity) {
-    await syncNativePeers(nativeNode, nativePeers, identity, service, "Initial native peer sync");
+    await syncNativePeers(nativeNode, nativePeers, identity, service, "Initial native peer sync", nativeSyncCursor++);
   }
 
   const consensusPeers: ConsensusPeerClient = nativeConsensus ? {
@@ -260,7 +261,7 @@ async function runNode(args: string[]): Promise<void> {
 
   if (nativeNode && identity && nativePeers.length) {
     setInterval(() => {
-      void syncNativePeers(nativeNode, nativePeers, identity, service, "Periodic native peer sync");
+      void syncNativePeers(nativeNode, nativePeers, identity, service, "Periodic native peer sync", nativeSyncCursor++);
     }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3))).unref();
   }
 
@@ -482,9 +483,10 @@ async function syncNativePeers(
   peers: readonly Multiaddr[],
   identity: Awaited<ReturnType<typeof loadOrCreateNodeIdentity>>,
   service: NodeService,
-  label: string
+  label: string,
+  groupOffset = 0
 ): Promise<void> {
-  for (const peer of peers) {
+  for (const peer of diversityOrderedNativePeers(peers, groupOffset)) {
     try {
       const accepted = await syncP2PFrom(node, peer, identity, service);
       if (accepted) console.log(`${label}: accepted ${accepted} finalized block(s) from ${peer.toString()}`);
