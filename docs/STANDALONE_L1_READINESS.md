@@ -24,7 +24,7 @@ This document is the release gate for the standalone TypeScript L1. `Implemented
 | R | RPC | Implemented with gate | bounded minimal RPC; reverse-proxy TLS, external rate limiting/auth policy, metrics endpoint and compatibility versioning remain |
 | S | Supply safety | Implemented | genesis total capped at 50M ZYN; settlements cannot mint; transfers/fees cannot increase state supply |
 | T | Transactions | Implemented | canonical signed transfers/activity settlements, txid binding, chain ID, nonce/balance checks |
-| U | Upgrades | Gate | no on-chain protocol/validator-set upgrade mechanism yet; needs delayed activation and rollback/recovery policy |
+| U | Upgrades | Partial gate | on-chain >2/3-authorized validator-set rotation with 100-block delayed activation is implemented and replay-tested; protocol-version activation/rollback policy remains |
 | V | Validation | Implemented | proposal and finalized block re-execution produces deterministic state roots |
 | W | Wallet/operator UX | Implemented with gate | keygen and signed transfer CLI exist; encrypted keystore/hardware-wallet/mobile wallet integration remains |
 | X | eXternal audit | Gate | independent cryptography/consensus/network review and remediation are mandatory before public mainnet |
@@ -35,7 +35,7 @@ This document is the release gate for the standalone TypeScript L1. `Implemented
 
 The following are not paperwork; they are technical or operational safety requirements:
 
-1. Implement validator-set rotation and protocol upgrade activation with deterministic delayed epochs.
+1. Implement protocol-version upgrade activation/rollback policy; validator-set rotation is already quorum-authorized and delayed on-chain.
 2. Run sustained adversarial multi-node tests covering partitions, crash/restart, disk faults, replay, equivocation, malformed RPC traffic, clock skew, sequential view changes and peer eclipse attempts.
 3. Complete an independent security/cryptography/consensus audit—including the skip-certificate view-change—and close all critical/high findings.
 4. Freeze an immutable mainnet chain ID, genesis allocation, activity-oracle governance and reward/fee policy; publish its hash before launch.
