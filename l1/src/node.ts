@@ -75,6 +75,12 @@ export interface PeerRequestCredentials {
   genesisHash: string;
 }
 
+export interface ConsensusPeerClient {
+  requestAttestations(block: Block): Promise<BlockAttestation[]>;
+  requestRoundSkips(height: number, round: number, previousCertificate?: RoundSkipVote[]): Promise<RoundSkipVote[]>;
+  broadcastBlock(block: Block): Promise<void>;
+}
+
 export function assertSafeRpcBinding(host: string, consensusAuthenticationConfigured: boolean): void {
   const normalized = host.toLowerCase().replace(/^\[|\]$/g, "");
   const loopback = normalized === "localhost" || normalized === "::1" ||
@@ -702,7 +708,7 @@ export function peerSyncProbeBatches(
 
 export async function produceFinalizedBlock(
   service: NodeService,
-  peers: PeerClient,
+  peers: ConsensusPeerClient,
   validatorPrivateKey: string,
   nowMs = Date.now()
 ): Promise<Block | null> {
