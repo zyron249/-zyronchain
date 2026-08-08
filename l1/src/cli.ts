@@ -59,6 +59,10 @@ interface ProtocolProposal {
   protocolVersion: number;
 }
 
+const MAX_NATIVE_SYNC_PROBES_PER_CYCLE = 4;
+const MAX_NATIVE_DISCOVERY_SOURCES_PER_CYCLE = 4;
+const MAX_NATIVE_DISCOVERY_CANDIDATES_PER_SOURCE = 4;
+
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (command === "keygen") return keygen(args);
@@ -236,7 +240,7 @@ async function runNode(args: string[]): Promise<void> {
       nativeNode, nativePeerPool, identity, service.status(), nativeSyncCursor, nativePeerReputation
     );
     if (admitted && nativeConsensus) nativeConsensus.replaceTargets(nativePeerPool.snapshot(nativeSyncCursor));
-    await syncNativePeers(nativeNode, nativePeerPool.snapshot(nativeSyncCursor), identity, service, "Initial native peer sync", nativeSyncCursor++, nativePeerGroups, nativePeerReputation);
+    await syncNativePeers(nativeNode, nativePeerPool.snapshot(), identity, service, "Initial native peer sync", nativeSyncCursor++, nativePeerGroups, nativePeerReputation);
   }
 
   const consensusPeers: ConsensusPeerClient = nativeConsensus ? {
@@ -296,20 +300,28 @@ async function runNode(args: string[]): Promise<void> {
   }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3))).unref();
 
   if (nativeNode && identity && nativePeerPool && nativePeerPool.size) {
+    let nativeSyncRunning = false;
     setInterval(() => {
-      void syncNativePeers(nativeNode, nativePeerPool.snapshot(nativeSyncCursor), identity, service, "Periodic native peer sync", nativeSyncCursor++, nativePeerGroups, nativePeerReputation);
+      if (nativeSyncRunning) return;
+      nativeSyncRunning = true;
+      void syncNativePeers(nativeNode, nativePeerPool.snapshot(), identity, service, "Periodic native peer sync", nativeSyncCursor++, nativePeerGroups, nativePeerReputation)
+        .finally(() => { nativeSyncRunning = false; });
     }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3))).unref();
   }
 
   if (nativeNode && identity && nativePeerPool && nativePeerPool.size) {
+    let nativeDiscoveryRunning = false;
     setInterval(() => {
+      if (nativeDiscoveryRunning) return;
+      nativeDiscoveryRunning = true;
       void refreshNativePeerDiscovery(nativeNode, nativePeerPool, identity, service.status(), nativeSyncCursor, nativePeerReputation)
         .then((admitted) => {
           if (!admitted) return;
           nativeConsensus?.replaceTargets(nativePeerPool.snapshot(nativeSyncCursor));
           console.log(`Native peer discovery admitted ${admitted} authenticated peer(s)`);
         })
-        .catch((error) => console.warn(`Periodic native peer discovery skipped: ${safeError(error)}`));
+        .catch((error) => console.warn(`Periodic native peer discovery skipped: ${safeError(error)}`))
+        .finally(() => { nativeDiscoveryRunning = false; });
     }, 60_000).unref();
   }
 
@@ -536,7 +548,7 @@ async function syncNativePeers(
   peerGroups: ReadonlyMap<string, string> = new Map(),
   reputation?: NativePeerReputationStore
 ): Promise<void> {
-  for (const peer of diversityOrderedNativePeers(peers, groupOffset, peerGroups)) {
+  for (const peer of diversityOrderedNativePeers(peers, groupOffset, peerGroups).slice(0, MAX_NATIVE_SYNC_PROBES_PER_CYCLE)) {
     const peerId = nativePeerId(peer);
     if (reputation && !reputation.isAvailable(peerId)) continue;
     try {
@@ -559,7 +571,7 @@ async function refreshNativePeerDiscovery(
   reputation?: NativePeerReputationStore
 ): Promise<number> {
   let admitted = 0;
-  for (const source of pool.snapshot(groupOffset)) {
+  for (const source of pool.snapshot(groupOffset).slice(0, MAX_NATIVE_DISCOVERY_SOURCES_PER_CYCLE)) {
     const sourcePeerId = nativePeerId(source);
     if (reputation && !reputation.isAvailable(sourcePeerId)) continue;
     let candidates: Multiaddr[];
@@ -573,7 +585,9 @@ async function refreshNativePeerDiscovery(
       console.warn(`Native peer discovery skipped ${source.toString()}: ${safeError(error)}`);
       continue;
     }
-    for (const candidate of candidates) {
+    const selected = diversityOrderedNativePeers(candidates, groupOffset).slice(0, MAX_NATIVE_DISCOVERY_CANDIDATES_PER_SOURCE);
+    let unsafeHint = false;
+    for (const candidate of selected) {
       const candidatePeerId = nativePeerId(candidate);
       if (pool.has(candidatePeerId) || (reputation && !reputation.isAvailable(candidatePeerId))) continue;
       try {
@@ -584,14 +598,25 @@ async function refreshNativePeerDiscovery(
       } catch (error) {
         await reputation?.recordFailure(sourcePeerId, "protocol");
         console.warn(`Native peer discovery rejected unsafe hint from ${source.toString()}: ${safeError(error)}`);
+        unsafeHint = true;
         break;
       }
-      try {
-        if (await pool.verifyAndAdmit(node, identity, chain, candidate, sourcePeerId)) admitted += 1;
-      } catch (error) {
-        await reputation?.recordFailure(candidatePeerId, classifyNativePeerFailure(error));
-        console.warn(`Native peer discovery failed candidate ${candidate.toString()}: ${safeError(error)}`);
+    }
+    if (unsafeHint) continue;
+    const verification = await Promise.allSettled(selected.map(async (candidate) => {
+      const candidatePeerId = nativePeerId(candidate);
+      if (pool.has(candidatePeerId) || (reputation && !reputation.isAvailable(candidatePeerId))) return false;
+      return pool.verifyAndAdmit(node, identity, chain, candidate, sourcePeerId);
+    }));
+    for (let index = 0; index < verification.length; index += 1) {
+      const result = verification[index]!;
+      if (result.status === "fulfilled") {
+        if (result.value) admitted += 1;
+        continue;
       }
+      const candidate = selected[index]!;
+      await reputation?.recordFailure(nativePeerId(candidate), classifyNativePeerFailure(result.reason));
+      console.warn(`Native peer discovery failed candidate ${candidate.toString()}: ${safeError(result.reason)}`);
     }
   }
   return admitted;
