@@ -383,6 +383,59 @@ test("node read and mempool hot paths do not clone the full ledger state", async
   }
 });
 
+test("future-nonce mempool admission rejects unaffordable and unauthorized spam", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-mempool-admission-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    const service = new NodeService(store);
+    const bobPrivate = "05".padStart(64, "0");
+    const bobPublic = publicKeyFromPrivate(bobPrivate);
+    const unfunded = createTransfer(
+      { chainId: genesis().chainId, nonce: 2, sender: bob, receiver: alice, amountAtoms: 1, feeAtoms: 0, timestampMs: 100 },
+      bobPrivate,
+      bobPublic
+    );
+    assert.throws(() => service.submitTransaction(unfunded), /Insufficient balance/);
+
+    const firstReserved = createTransfer(
+      { chainId: genesis().chainId, nonce: 2, sender: alice, receiver: bob, amountAtoms: 600_000_000, feeAtoms: 0, timestampMs: 101 },
+      alicePrivate,
+      alicePublic
+    );
+    const oversubscribed = createTransfer(
+      { chainId: genesis().chainId, nonce: 3, sender: alice, receiver: bob, amountAtoms: 600_000_000, feeAtoms: 0, timestampMs: 102 },
+      alicePrivate,
+      alicePublic
+    );
+    service.submitTransaction(firstReserved);
+    assert.throws(() => service.submitTransaction(oversubscribed), /Pending transfers exceed confirmed balance/);
+    assert.equal(service.mempool.pendingTransferSpend(alice), 600_000_000n);
+
+    const validatorProposal = {
+      chainId: genesis().chainId,
+      nonce: 3,
+      sender: alice,
+      activationHeight: 200,
+      validators: genesis().validators
+    };
+    const unauthorizedGovernance = createValidatorSetUpdate(
+      {
+        ...validatorProposal,
+        approvals: [
+          createValidatorApproval(validatorProposal, validatorOnePrivate, validatorOnePublic),
+          createValidatorApproval(validatorProposal, validatorTwoPrivate, validatorTwoPublic)
+        ],
+        timestampMs: 103
+      },
+      alicePrivate,
+      alicePublic
+    );
+    assert.throws(() => service.submitTransaction(unauthorizedGovernance), /initiator is not active/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("chain store replays finalized blocks and pins the genesis identity", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-store-"));
   try {
