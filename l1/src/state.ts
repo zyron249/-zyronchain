@@ -55,6 +55,10 @@ export class LedgerState {
     return this.accounts.get(address)?.nonce ?? 0;
   }
 
+  isActivityEpochSettled(epoch: number): boolean {
+    return this.settledActivityEpochs.has(epoch);
+  }
+
   apply(tx: Transaction, activityPool: Address): void {
     if (tx.kind === "transfer") this.applyTransfer(tx);
     else if (tx.kind === "activity_settlement") this.applyActivity(tx, activityPool);
