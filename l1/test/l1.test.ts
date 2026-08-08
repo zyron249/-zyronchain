@@ -22,6 +22,7 @@ import { stateV2FromLedgerSnapshot } from "../src/state-v2.js";
 import { LedgerState } from "../src/state.js";
 import { createSignedPeerRecord, loadOrCreateNodeIdentity, signPeerRequest } from "../src/peer-identity.js";
 import { PeerReputationStore } from "../src/peer-reputation.js";
+import { PeerDirectory } from "../src/peer-directory.js";
 import {
   createRpcServer,
   diversityOrderedPeers,
@@ -1021,6 +1022,47 @@ test("RPC serves a signed peer record that a client verifies against chain ident
       await new Promise<void>((resolveClose, reject) => server!.close((error) => error ? reject(error) : resolveClose()));
     }
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("peer exchange serves and verifies a strictly bounded signed-record response", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-peer-exchange-"));
+  const identityDirectory = await mkdtemp(join(tmpdir(), "zyron-peer-exchange-id-"));
+  let server: ReturnType<typeof createRpcServer> | undefined;
+  try {
+    const service = new NodeService(await ChainStore.open(genesis(), directory));
+    const identity = await loadOrCreateNodeIdentity(identityDirectory);
+    const issuedAtMs = Date.now();
+    const record = createSignedPeerRecord(identity, {
+      chainId: service.status().chainId,
+      genesisHash: service.status().genesisHash,
+      endpoints: ["https://node.example:9137"],
+      issuedAtMs,
+      expiresAtMs: issuedAtMs + 60_000
+    });
+    const peers = new PeerDirectory(service.status());
+    peers.admit(record, issuedAtMs + 1);
+    server = createRpcServer(service, { peerDirectory: peers });
+    await new Promise<void>((resolveListen, reject) => {
+      server!.once("error", reject);
+      server!.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Peer exchange test server has no TCP address");
+    const base = `http://127.0.0.1:${address.port}`;
+    const discovered = await new PeerClient([base]).fetchPeerRecords(base, service.status(), 1, issuedAtMs + 2);
+    assert.equal(discovered.length, 1);
+    assert.equal(discovered[0]?.nodeId, identity.nodeId);
+    await assert.rejects(
+      () => new PeerClient([base]).fetchPeerRecords(base, service.status(), 33, issuedAtMs + 2),
+      /Invalid peer discovery request limit/
+    );
+  } finally {
+    if (server?.listening) {
+      await new Promise<void>((resolveClose, reject) => server!.close((error) => error ? reject(error) : resolveClose()));
+    }
+    await rm(directory, { recursive: true, force: true });
+    await rm(identityDirectory, { recursive: true, force: true });
   }
 });
 
