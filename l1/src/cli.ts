@@ -3,7 +3,14 @@ import { chmod, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
-import { BLOCK_INTERVAL_MS, createRpcServer, NodeService, PeerClient, produceFinalizedBlock } from "./node.js";
+import {
+  assertSafeRpcBinding,
+  BLOCK_INTERVAL_MS,
+  createRpcServer,
+  NodeService,
+  PeerClient,
+  produceFinalizedBlock
+} from "./node.js";
 import { ChainStore, SigningJournal } from "./storage.js";
 import { createSignedPeerRecord, loadOrCreateNodeIdentity } from "./peer-identity.js";
 import { PeerReputationStore } from "./peer-reputation.js";
@@ -139,6 +146,7 @@ async function runNode(args: string[]): Promise<void> {
   const service = new NodeService(store, journal, privateKey);
   const advertisedPeerUrls = options(args, "--advertise-peer");
   const trustedPeerPublicKeys = options(args, "--trusted-peer-public-key");
+  assertSafeRpcBinding(host, Boolean(peerAuthToken || trustedPeerPublicKeys.length));
   const issuedAtMs = Date.now();
   const identity = (peerUrls.length || advertisedPeerUrls.length || trustedPeerPublicKeys.length)
     ? await loadOrCreateNodeIdentity(resolve(dataDir))
