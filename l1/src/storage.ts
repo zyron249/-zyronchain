@@ -46,6 +46,7 @@ export class ChainStore {
   private persistedBytes: number;
   private readonly blockRanges: StoredBlockRange[];
   private persistenceFaulted = false;
+  readonly firstStoredHeight: number;
 
   private constructor(
     readonly dataDir: string,
@@ -60,6 +61,7 @@ export class ChainStore {
     this.persistedHeight = persistedHeight;
     this.persistedBytes = persistedBytes;
     this.blockRanges = blockRanges;
+    this.firstStoredHeight = blockRanges[0]?.height ?? persistedHeight + 1;
   }
 
   static async open(genesis: GenesisConfig, dataDir: string): Promise<ChainStore> {
@@ -128,6 +130,9 @@ export class ChainStore {
   async readFinalizedBlocks(from: number, limit: number, maxBytes: number): Promise<Block[]> {
     if (!Number.isSafeInteger(from) || from < 1 || !Number.isSafeInteger(limit) || limit < 1) {
       throw new Error("Invalid finalized block range");
+    }
+    if (from < this.firstStoredHeight) {
+      throw new Error(`Finalized history pruned below height ${this.firstStoredHeight}`);
     }
     const result: Block[] = [];
     let responseBytes = Buffer.byteLength('{"blocks":[]}', "utf8");
