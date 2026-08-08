@@ -19,6 +19,7 @@ import {
 import { createRoundSkipVote, validateBlockShape } from "../src/block.js";
 import { ChainStore, SigningJournal } from "../src/storage.js";
 import { stateV2FromLedgerSnapshot } from "../src/state-v2.js";
+import { LedgerState } from "../src/state.js";
 import { createRpcServer, NodeService, PeerClient, produceFinalizedBlock } from "../src/node.js";
 import type { GenesisConfig } from "../src/types.js";
 
@@ -1130,12 +1131,21 @@ test("protocol v2 activation deterministically migrates the finalized v1 ledger 
     alicePrivate,
     alicePublic
   );
-  let next = chain.produceBlock([transfer], validatorTwoPrivate, { timestampMs: 1_700_000_001_002 });
-  assert.equal(next.header.version, 2);
-  assert.notEqual(next.header.stateRoot, activation.header.stateRoot);
-  next = chain.attestBlock(next, validatorOnePrivate);
-  next = chain.attestBlock(next, validatorTwoPrivate);
-  chain.acceptBlock(next, 1_700_000_001_002);
+  const originalClone = LedgerState.prototype.clone;
+  let next;
+  LedgerState.prototype.clone = () => {
+    throw new Error("protocol v2 reached full LedgerState clone");
+  };
+  try {
+    next = chain.produceBlock([transfer], validatorTwoPrivate, { timestampMs: 1_700_000_001_002 });
+    assert.equal(next.header.version, 2);
+    assert.notEqual(next.header.stateRoot, activation.header.stateRoot);
+    next = chain.attestBlock(next, validatorOnePrivate);
+    next = chain.attestBlock(next, validatorTwoPrivate);
+    chain.acceptBlock(next, 1_700_000_001_002);
+  } finally {
+    LedgerState.prototype.clone = originalClone;
+  }
   assert.equal(chain.balance(bob), 1_000);
 });
 

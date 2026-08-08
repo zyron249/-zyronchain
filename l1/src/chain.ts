@@ -10,8 +10,8 @@ import { addressFromPublicKey, publicKeyFromPrivate, verifyCanonical } from "./c
 import { LedgerState, type LedgerSnapshot } from "./state.js";
 import {
   SparseMerkleState,
+  applyStateV2Transaction,
   stateV2FromLedgerSnapshot,
-  updateStateV2FromTransaction
 } from "./state-v2.js";
 import {
   assertAddress,
@@ -183,8 +183,16 @@ export class ZyronChain {
     const next = this.validateFinalizedTransition(block, nowMs);
     this.tipBlock = structuredClone(block);
     this.currentHeight = block.header.height;
-    this.state = next.ledger;
-    this.stateV2 = block.header.version === 2 ? next.sparse?.persistenceCheckpoint() : undefined;
+    if (block.header.version === 1) {
+      this.state = next.ledger;
+      this.stateV2 = undefined;
+    } else {
+      // Protocol v2 validation is performed against immutable sparse state. Keep
+      // the legacy ledger only as a query/snapshot shadow after consensus checks
+      // have succeeded; it is no longer cloned on the validation hot path.
+      for (const tx of block.transactions) this.state.apply(tx, this.genesis.activityPool);
+      this.stateV2 = next.sparse?.persistenceCheckpoint();
+    }
     this.recordGovernanceUpdates(block.transactions);
   }
 
@@ -297,8 +305,8 @@ export class ZyronChain {
   }
 
   private validateAndApply(transactions: Transaction[], startingState: LedgerState, blockHeight: number): AppliedTransition {
-    const next = startingState.clone();
     const protocolVersion = this.protocolVersionAt(blockHeight);
+    const next = protocolVersion === 1 ? startingState.clone() : startingState;
     let sparse = protocolVersion === 2
       ? (this.stateV2 ?? stateV2FromLedgerSnapshot(startingState.snapshot()))
       : undefined;
@@ -323,8 +331,8 @@ export class ZyronChain {
         validateProtocolUpgradeAuthorization(tx, currentValidators, blockHeight, lastProtocolActivation);
         lastProtocolActivation = tx.activationHeight;
       }
-      next.apply(tx, this.genesis.activityPool);
-      if (sparse) sparse = updateStateV2FromTransaction(sparse, next, tx);
+      if (sparse) sparse = applyStateV2Transaction(sparse, tx, this.genesis.activityPool);
+      else next.apply(tx, this.genesis.activityPool);
     }
     return { ledger: next, sparse };
   }

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { canonicalJson } from "./codec.js";
 import type { LedgerSnapshot, LedgerState } from "./state.js";
-import type { Address, Transaction } from "./types.js";
+import { MAX_SUPPLY_ATOMS, type Address, type Transaction } from "./types.js";
 
 const TREE_DEPTH = 256;
 const KEY_DOMAIN = Buffer.from("ZyronChain/state-v2/key\0", "utf8");
@@ -276,6 +276,80 @@ export function updateStateV2FromTransaction(
     next = next.set(activityEpochKey(tx.epoch), { settled: true });
   }
   return next;
+}
+
+/** Apply protocol-v2 ledger semantics directly to authenticated state. */
+export function applyStateV2Transaction(
+  state: SparseMerkleState,
+  tx: Transaction,
+  activityPool: Address
+): SparseMerkleState {
+  if (tx.kind === "transfer") {
+    requireStateV2Nonce(state, tx.sender, tx.nonce);
+    const total = tx.amountAtoms + tx.feeAtoms;
+    if (!Number.isSafeInteger(total)) throw new Error("Insufficient balance");
+    let next = debitStateV2(state, tx.sender, total);
+    next = creditStateV2(next, tx.receiver, tx.amountAtoms);
+    return setStateV2Nonce(next, tx.sender, tx.nonce);
+  }
+  if (tx.kind === "activity_settlement") {
+    if (tx.sender !== activityPool) throw new Error("Invalid activity pool sender");
+    if (state.get(activityEpochKey(tx.epoch)) !== undefined) throw new Error("Activity epoch already settled");
+    requireStateV2Nonce(state, activityPool, tx.nonce);
+    const total = tx.entries.reduce((sum, entry) => {
+      const next = sum + entry.amountAtoms;
+      if (!Number.isSafeInteger(next)) throw new Error("Activity total overflow");
+      return next;
+    }, 0);
+    let next = debitStateV2(state, activityPool, total);
+    for (const entry of tx.entries) next = creditStateV2(next, entry.receiver, entry.amountAtoms);
+    next = setStateV2Nonce(next, activityPool, tx.nonce);
+    return next.set(activityEpochKey(tx.epoch), { settled: true });
+  }
+  requireStateV2Nonce(state, tx.sender, tx.nonce);
+  return setStateV2Nonce(state, tx.sender, tx.nonce);
+}
+
+interface StateV2Account {
+  balanceAtoms: number;
+  nonce: number;
+}
+
+function stateV2Account(state: SparseMerkleState, address: Address): StateV2Account {
+  const value = state.get(accountKey(address));
+  if (value === undefined) return { balanceAtoms: 0, nonce: 0 };
+  if (!value || typeof value !== "object" ||
+      !Number.isSafeInteger((value as Partial<StateV2Account>).balanceAtoms) ||
+      !Number.isSafeInteger((value as Partial<StateV2Account>).nonce)) {
+    throw new Error("Corrupt protocol v2 account state");
+  }
+  const account = value as StateV2Account;
+  if (account.balanceAtoms < 0 || account.balanceAtoms > MAX_SUPPLY_ATOMS || account.nonce < 0) {
+    throw new Error("Corrupt protocol v2 account state");
+  }
+  return account;
+}
+
+function requireStateV2Nonce(state: SparseMerkleState, address: Address, nonce: number): void {
+  if (nonce !== stateV2Account(state, address).nonce + 1) throw new Error("Invalid nonce");
+}
+
+function debitStateV2(state: SparseMerkleState, address: Address, amount: number): SparseMerkleState {
+  const account = stateV2Account(state, address);
+  if (account.balanceAtoms < amount) throw new Error("Insufficient balance");
+  return state.set(accountKey(address), { balanceAtoms: account.balanceAtoms - amount, nonce: account.nonce });
+}
+
+function creditStateV2(state: SparseMerkleState, address: Address, amount: number): SparseMerkleState {
+  const account = stateV2Account(state, address);
+  const balanceAtoms = account.balanceAtoms + amount;
+  if (!Number.isSafeInteger(balanceAtoms) || balanceAtoms > MAX_SUPPLY_ATOMS) throw new Error("Balance overflow");
+  return state.set(accountKey(address), { balanceAtoms, nonce: account.nonce });
+}
+
+function setStateV2Nonce(state: SparseMerkleState, address: Address, nonce: number): SparseMerkleState {
+  const account = stateV2Account(state, address);
+  return state.set(accountKey(address), { balanceAtoms: account.balanceAtoms, nonce });
 }
 
 function accountKey(address: Address): string {
