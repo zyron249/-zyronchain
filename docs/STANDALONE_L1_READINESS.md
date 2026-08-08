@@ -21,7 +21,7 @@ This document is the release gate for the standalone TypeScript L1. `Implemented
 | O | Operations | Gate | multi-region sentry/validator topology, monitoring, alerting, backups, restore drills, incident runbooks |
 | P | Proof of Activity | Implemented with gate | oracle-signed receipt-root batches spend only a pre-funded pool; independent receipt service/oracle governance must be productionized |
 | Q | Quorum safety | Implemented | configured validator uniqueness, signature checks, >2/3 requirement, anti-double-sign journal |
-| R | RPC | Implemented with gate | bounded minimal RPC; reverse-proxy TLS, external rate limiting/auth policy, metrics endpoint and compatibility versioning remain |
+| R | RPC | Implemented with gate | bounded RPC now includes per-client request limiting, connection/time limits, health and metrics endpoints; reverse-proxy TLS, authenticated perimeter and compatibility versioning remain |
 | S | Supply safety | Implemented | genesis total capped at 50M ZYN; settlements cannot mint; transfers/fees cannot increase state supply |
 | T | Transactions | Implemented | canonical signed transfers/activity settlements, txid binding, chain ID, nonce/balance checks |
 | U | Upgrades | Partial gate | on-chain >2/3-authorized validator-set rotation with 100-block delayed activation is implemented and replay-tested; protocol-version activation/rollback policy remains |
