@@ -168,7 +168,7 @@ export class SparseMerkleState {
    * bookkeeping. Disk stores use a SQLite-backed index here so restart memory
    * stays bounded even when the committed state contains millions of nodes.
    */
-  validateReachable(index: StateV2ReachabilityIndex, onLeaf?: (keyHash: string) => void): void {
+  validateReachable(index: StateV2ReachabilityIndex, onLeaf?: (keyHash: string, nodeHash: string) => void): void {
     const visit = (link: NodeLink | undefined, depth: number): void => {
       if (!link) return;
       const previousDepth = index.depth(link.hash);
@@ -182,7 +182,7 @@ export class SparseMerkleState {
         visit(node.left, depth + 1);
         visit(node.right, depth + 1);
       } else {
-        onLeaf?.(node.keyHash);
+        onLeaf?.(node.keyHash, node.hash);
       }
     };
     visit(this.rootNode, 0);

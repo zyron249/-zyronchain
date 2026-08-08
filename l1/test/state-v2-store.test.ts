@@ -143,6 +143,48 @@ test("State v2 store bounds the resolver cache across historical root churn", as
   }
 });
 
+test("State v2 historical object pruning keeps only the authenticated current root", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-gc-"));
+  try {
+    const store = await StateV2DiskStore.open(directory);
+    let state = store.state().set("account:alice", { balanceAtoms: 1, nonce: 0 });
+    await store.commit(state, ["account:alice"]);
+    for (let balance = 2; balance <= 12; balance += 1) {
+      state = state.set("account:alice", { balanceAtoms: balance, nonce: 0 });
+      await store.commit(state);
+    }
+
+    // Persist a crash orphan in both object tables without publishing its root.
+    const orphan = state.set("account:bob", { balanceAtoms: 9, nonce: 0 });
+    await assert.rejects(() => store.commit(orphan, ["account:bob"], {
+      afterSemanticKeysSync: () => { throw new Error("injected pre-root crash"); }
+    }), /injected pre-root crash/);
+
+    const database = new Database(join(directory, "state-v2.nodes.sqlite"));
+    const beforeNodes = (database.prepare("SELECT count(*) AS count FROM nodes").get() as { count: number }).count;
+    const beforeKeys = (database.prepare("SELECT count(*) AS count FROM semantic_keys").get() as { count: number }).count;
+    database.close();
+
+    const result = store.pruneHistoricalObjects();
+    assert.ok(result.removedNodes > 0);
+    assert.equal(result.removedSemanticKeys, 1);
+    assert.deepEqual(store.semanticKeyPreimages(), ["account:alice"]);
+
+    const after = new Database(join(directory, "state-v2.nodes.sqlite"));
+    const afterNodes = (after.prepare("SELECT count(*) AS count FROM nodes").get() as { count: number }).count;
+    const afterKeys = (after.prepare("SELECT count(*) AS count FROM semantic_keys").get() as { count: number }).count;
+    after.close();
+    assert.equal(beforeNodes - afterNodes, result.removedNodes);
+    assert.equal(beforeKeys - afterKeys, result.removedSemanticKeys);
+
+    const reopened = await StateV2DiskStore.open(directory);
+    assert.equal(reopened.state().root(), state.root());
+    assert.deepEqual(reopened.state().get("account:alice"), { balanceAtoms: 12, nonce: 0 });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("State v2 disk store fails closed on checksum corruption", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-corrupt-"));
   try {

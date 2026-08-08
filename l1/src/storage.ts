@@ -473,6 +473,10 @@ export class ChainStore {
 
       const stable: RecoveryCheckpointV2 = { ...transition, transition: null };
       await writeCheckpointFile(checkpointPath, stable);
+      // Only explicit finalized-history pruning physically discards historical
+      // State-v2 objects. The retained current root is fully re-authenticated
+      // before one atomic SQLite GC transaction; archival operation never calls it.
+      this.stateV2Store.pruneHistoricalObjects();
       return { prunedThroughHeight: pruneThroughHeight, firstStoredHeight: this.firstStoredHeight };
     } catch (error) {
       this.persistenceFaulted = true;
