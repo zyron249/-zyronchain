@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -925,5 +925,96 @@ test("four validators converge across 120 blocks with repeated proposer-failure 
   for (const chain of chains.slice(1)) {
     assert.equal(chain.tip.hash, chains[0]!.tip.hash);
     assert.equal(chain.getState().root(), chains[0]!.getState().root());
+  }
+});
+
+test("four-validator network preserves safety across a 2/2 partition and catches up the isolated node after quorum heals", async () => {
+  const fourValidatorGenesis: GenesisConfig = {
+    ...genesis(),
+    validators: [
+      { address: validatorOne, publicKey: validatorOnePublic },
+      { address: validatorTwo, publicKey: validatorTwoPublic },
+      { address: newValidatorOne, publicKey: newValidatorOnePublic },
+      { address: newValidatorTwo, publicKey: newValidatorTwoPublic }
+    ]
+  };
+  const keys = [validatorOnePrivate, validatorTwoPrivate, newValidatorOnePrivate, newValidatorTwoPrivate];
+  const directories = await Promise.all(keys.map(() => mkdtemp(join(tmpdir(), "zyron-partition-"))));
+  const services: NodeService[] = [];
+  const servers: ReturnType<typeof createRpcServer>[] = [];
+  try {
+    for (let index = 0; index < keys.length; index += 1) {
+      const store = await ChainStore.open(fourValidatorGenesis, directories[index]!);
+      services.push(new NodeService(store, await SigningJournal.open(directories[index]!), keys[index]!));
+    }
+    for (const service of services.slice(0, 3)) {
+      const server = createRpcServer(service);
+      await new Promise<void>((resolveListen, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => resolveListen());
+      });
+      servers.push(server);
+    }
+    const urls = servers.map((server) => {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Partition test server has no TCP address");
+      return `http://127.0.0.1:${address.port}`;
+    });
+    const now = fourValidatorGenesis.timestampMs + 30_000;
+
+    const blocked = await produceFinalizedBlock(services[0]!, new PeerClient([urls[1]!]), validatorOnePrivate, now);
+    assert.equal(blocked, null);
+    assert.equal(services[0]!.status().height, 0);
+    assert.equal(services[1]!.status().height, 0);
+    assert.equal(services[2]!.status().height, 0);
+    assert.equal(services[3]!.status().height, 0);
+
+    const finalized = await produceFinalizedBlock(
+      services[0]!,
+      new PeerClient([urls[1]!, urls[2]!]),
+      validatorOnePrivate,
+      now
+    );
+    assert.ok(finalized);
+    assert.equal(finalized.attestations.length, 3);
+    assert.equal(services[0]!.status().height, 1);
+    assert.equal(services[1]!.status().height, 1);
+    assert.equal(services[2]!.status().height, 1);
+    assert.equal(services[3]!.status().height, 0);
+
+    const caughtUp = await new PeerClient([urls[0]!]).syncFrom(urls[0]!, services[3]!);
+    assert.equal(caughtUp, 1);
+    assert.equal(services[3]!.status().tipHash, services[0]!.status().tipHash);
+  } finally {
+    for (const server of servers) {
+      if (server.listening) {
+        await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+      }
+    }
+    await Promise.all(directories.map((directory) => rm(directory, { recursive: true, force: true })));
+  }
+});
+
+test("follower rejects a proposal beyond the allowed future clock skew", () => {
+  const producer = new ZyronChain(genesis());
+  const follower = new ZyronChain(genesis());
+  const future = genesis().timestampMs + 120_001;
+  const proposal = producer.produceBlock([], validatorOnePrivate, { timestampMs: future });
+  assert.throws(() => follower.validateProposal(proposal, genesis().timestampMs), /too far in future/);
+});
+
+test("chain store fails closed on a truncated or corrupt finalized block record", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-corrupt-store-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    let block = store.chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
+    block = store.chain.attestBlock(block, validatorOnePrivate);
+    block = store.chain.attestBlock(block, validatorTwoPrivate);
+    store.chain.acceptBlock(block, 1_700_000_000_100);
+    await store.appendFinalizedBlock(block);
+    await appendFile(join(directory, "blocks.ndjson"), "{\"header\":", "utf8");
+    await assert.rejects(() => ChainStore.open(genesis(), directory), /Corrupt stored block/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
