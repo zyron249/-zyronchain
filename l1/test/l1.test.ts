@@ -487,6 +487,32 @@ test("node read and mempool hot paths do not clone the full ledger state", async
   }
 });
 
+test("protocol v2 pending selection does not clone the full legacy ledger", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-v2-selection-hot-path-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    await advanceStoreToStateV2(store);
+    const pending = createTransfer(
+      {
+        chainId: genesis().chainId,
+        nonce: 1,
+        sender: alice,
+        receiver: bob,
+        amountAtoms: 10,
+        feeAtoms: 1,
+        timestampMs: genesis().timestampMs + 10_200
+      },
+      alicePrivate,
+      alicePublic
+    );
+    const legacy = (store.chain as unknown as { state: { clone: () => unknown } }).state;
+    legacy.clone = () => { throw new Error("full legacy ledger clone reached protocol v2 pending selection"); };
+    assert.deepEqual(store.chain.selectValidPending([pending], 10).map((tx) => tx.txid), [pending.txid]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("future-nonce mempool admission rejects unaffordable and unauthorized spam", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-mempool-admission-"));
   try {
