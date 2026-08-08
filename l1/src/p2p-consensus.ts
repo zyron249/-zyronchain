@@ -81,15 +81,25 @@ export class NativeConsensusPeerClient implements ConsensusPeerClient {
   private gossipCursor = 0;
   private readonly blockSeen = new Set<string>();
   private readonly transactionSeen = new Set<string>();
+  private targets: Array<Parameters<Libp2p["dial"]>[0]>;
 
   constructor(
     private readonly node: Libp2p,
-    private readonly targets: Array<Parameters<Libp2p["dial"]>[0]>,
+    targets: Array<Parameters<Libp2p["dial"]>[0]>,
     private readonly identity: NodeIdentity,
     private readonly chain: { chainId: string; genesisHash: string }
   ) {
-    if (targets.length > MAX_CONFIGURED_NATIVE_PEERS) throw new Error("Too many configured native peers");
+    this.targets = [];
+    this.replaceTargets(targets);
     validateP2PChainIdentity(localIdentity(identity, chain), chain, node.peerId);
+  }
+
+  /** Replaces the verified peer selection without resetting gossip dedup state. */
+  replaceTargets(targets: Array<Parameters<Libp2p["dial"]>[0]>): void {
+    if (targets.length > MAX_CONFIGURED_NATIVE_PEERS) throw new Error("Too many configured native peers");
+    this.targets = [...targets];
+    if (this.targets.length === 0) this.gossipCursor = 0;
+    else this.gossipCursor %= this.targets.length;
   }
 
   async requestAttestations(block: Block): Promise<BlockAttestation[]> {
