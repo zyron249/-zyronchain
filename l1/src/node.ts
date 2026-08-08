@@ -19,6 +19,7 @@ import type { Address, Block, BlockAttestation, RoundSkipVote, Transaction } fro
 const MAX_BODY_BYTES = 2_500_000;
 const MAX_SYNC_BLOCKS = 100;
 const MAX_SYNC_RESPONSE_BYTES = 25_000_000;
+const MAX_SYNC_BATCH_PAYLOAD_BYTES = 20_000_000;
 const PEER_TIMEOUT_MS = 8_000;
 const DEFAULT_RPC_WINDOW_MS = 60_000;
 const DEFAULT_RPC_REQUESTS_PER_WINDOW = 600;
@@ -76,10 +77,24 @@ export class NodeService {
     };
   }
 
-  blocks(from: number, limit: number): Block[] {
+  blocks(from: number, limit: number, maxBytes = MAX_SYNC_BATCH_PAYLOAD_BYTES): Block[] {
     if (!Number.isSafeInteger(from) || from < 1) throw new Error("Invalid block start height");
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SYNC_BLOCKS) throw new Error("Invalid block limit");
-    return this.store.chain.getBlocks().slice(from, from + limit).map((block) => structuredClone(block));
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_SYNC_BATCH_PAYLOAD_BYTES) {
+      throw new Error("Invalid block response byte limit");
+    }
+    const result: Block[] = [];
+    let bytes = Buffer.byteLength('{"blocks":[]}', "utf8");
+    for (const block of this.store.chain.getBlocks().slice(from, from + limit)) {
+      const encodedBytes = Buffer.byteLength(JSON.stringify(block), "utf8") + (result.length ? 1 : 0);
+      if (bytes + encodedBytes > maxBytes) {
+        if (result.length === 0) throw new Error("Finalized block exceeds sync response byte budget");
+        break;
+      }
+      result.push(structuredClone(block));
+      bytes += encodedBytes;
+    }
+    return result;
   }
 
   balance(address: string): number {
