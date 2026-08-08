@@ -126,3 +126,26 @@ test("native P2P fails closed when node identity fields do not bind the transpor
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("native P2P enforces the configured connection cap under inbound churn", async () => {
+  const serverDir = await mkdtemp(join(tmpdir(), "zyron-p2p-cap-server-"));
+  const clientDirs = await Promise.all(Array.from({ length: 4 }, (_, index) =>
+    mkdtemp(join(tmpdir(), `zyron-p2p-cap-client-${index}-`))
+  ));
+  const serverIdentity = await loadOrCreateNodeIdentity(serverDir);
+  const server = await createP2PNode(serverIdentity, { listen: ["/ip4/127.0.0.1/tcp/0"], maxConnections: 2 });
+  const clients = await Promise.all(clientDirs.map(async (directory) =>
+    createP2PNode(await loadOrCreateNodeIdentity(directory))
+  ));
+  try {
+    const address = server.getMultiaddrs()[0];
+    assert.ok(address);
+    await Promise.allSettled(clients.map((client) => client.dial(address, { signal: AbortSignal.timeout(2_000) })));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(server.getConnections().length >= 1);
+    assert.ok(server.getConnections().length <= 2, `connection cap exceeded: ${server.getConnections().length}`);
+  } finally {
+    await Promise.allSettled([server.stop(), ...clients.map((client) => client.stop())]);
+    await Promise.all([serverDir, ...clientDirs].map((directory) => rm(directory, { recursive: true, force: true })));
+  }
+});

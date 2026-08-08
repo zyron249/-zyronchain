@@ -67,7 +67,10 @@ for example `/dns4/node-b.example/tcp/9140/p2p/<PeerId>`; an unpinned TCP endpoi
 The native protocols bind that Noise-authenticated PeerId to the persistent secp256k1 node
 identity and exact chain/genesis before serving sync, validator consensus, block gossip or
 transaction gossip. Payload, connection, stream, fanout, dedup, per-PeerId inflight and request
-rate limits are enforced. Bootstrap peers exchange bounded candidate hints over the authenticated
+rate limits are enforced. The native connection manager is explicitly capped at 64 established
+connections, 8 pending inbound upgrades, 8 new inbound connections per host/second, 8 parallel
+outbound dials and a 64-entry dial queue (smaller configured total connection limits also lower
+the related pending/dial caps). Bootstrap peers exchange bounded candidate hints over the authenticated
 native session. A discovered hint is not usable until the node dials its pinned PeerId, repeats
 the Noise + exact chain/genesis identity binding, and passes the bounded peer-pool policy. The
 pool permits at most 64 peers total, 32 dynamically discovered peers, 8 dynamic peers from one

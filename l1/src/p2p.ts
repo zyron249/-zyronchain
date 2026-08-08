@@ -12,6 +12,8 @@ import { nodeIdFromPublicKey, type NodeIdentity } from "./peer-identity.js";
 import { P2PPeerRateLimiter } from "./p2p-rate.js";
 
 export const DEFAULT_P2P_MAX_CONNECTIONS = 64;
+export const DEFAULT_P2P_MAX_INCOMING_PENDING = 8;
+export const DEFAULT_P2P_MAX_PARALLEL_DIALS = 8;
 export const P2P_IDENTITY_PROTOCOL = "/zyronchain/identity/1.0.0";
 const MAX_IDENTITY_MESSAGE_BYTES = 2_048;
 const IDENTITY_STREAM_TIMEOUT_MS = 5_000;
@@ -60,7 +62,16 @@ export async function createP2PNode(
     streamMuxers: [yamux()],
     connectionEncrypters: [noise()],
     connectionManager: {
-      maxConnections
+      maxConnections,
+      // Bound work on both sides of the connection lifecycle. Application
+      // stream caps do not protect the pre-protocol Noise/yamux upgrade path.
+      maxIncomingPendingConnections: Math.min(DEFAULT_P2P_MAX_INCOMING_PENDING, maxConnections),
+      inboundConnectionThreshold: DEFAULT_P2P_MAX_INCOMING_PENDING,
+      maxParallelDials: Math.min(DEFAULT_P2P_MAX_PARALLEL_DIALS, maxConnections),
+      maxDialQueueLength: maxConnections,
+      maxPeerAddrsToDial: 2,
+      dialTimeout: 8_000,
+      addressDialTimeout: 4_000
     }
   });
 }
