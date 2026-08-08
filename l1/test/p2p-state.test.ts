@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -119,6 +119,48 @@ test("portable State-v2 transfer is Noise-authenticated, externally anchored, an
         tipHash: anchor.tipHash, snapshotSha256: "00".repeat(32)
       }),
       /state|stream|abort|reset/i
+    );
+
+    // The serving checkpoint is derived cache, but it must survive a source
+    // process restart and a live-tip advance so an interrupted client can keep
+    // using the exact old external anchor.
+    await sourceNode.stop();
+    sourceNode = undefined;
+    let next = store.chain.produceBlock([], validatorPrivate, { timestampMs: config.timestampMs + 10_200 });
+    next = store.chain.attestBlock(next, validatorPrivate);
+    await store.commitFinalizedBlock(next, config.timestampMs + 10_200);
+    assert.notEqual(store.chain.tip.hash, anchor.tipHash);
+    sourceNode = await createP2PNode(sourceIdentity, { listen: ["/ip4/127.0.0.1/tcp/0"] });
+    await registerP2PStateProtocol(sourceNode, sourceIdentity, new NodeService(store));
+    const restartedAddress = sourceNode.getMultiaddrs()[0];
+    assert.ok(restartedAddress);
+    const fetchedOldAnchor = await fetchTrustedPortableStateFromPeer(
+      clientNode, restartedAddress, clientIdentity, config, anchor
+    );
+    assert.equal(fetchedOldAnchor.tip.hash, anchor.tipHash);
+    assert.equal(fetchedOldAnchor.bundle.root, fetched.bundle.root);
+
+    const snapshot102 = store.chain.snapshot();
+    const anchor102 = { tipHash: snapshot102.tip.hash, snapshotSha256: sha256Hex(canonicalJson(snapshot102)) };
+    await fetchTrustedPortableStateFromPeer(clientNode, restartedAddress, clientIdentity, config, anchor102);
+    let block103 = store.chain.produceBlock([], validatorPrivate, { timestampMs: config.timestampMs + 10_300 });
+    block103 = store.chain.attestBlock(block103, validatorPrivate);
+    await store.commitFinalizedBlock(block103, config.timestampMs + 10_300);
+    const snapshot103 = store.chain.snapshot();
+    const anchor103 = { tipHash: snapshot103.tip.hash, snapshotSha256: sha256Hex(canonicalJson(snapshot103)) };
+    await fetchTrustedPortableStateFromPeer(clientNode, restartedAddress, clientIdentity, config, anchor103);
+    const cacheNames = await readdir(join(sourceDir, "p2p-state-checkpoints"));
+    assert.equal(cacheNames.length, 2, "source serving cache must remain durably bounded");
+    assert.ok(!cacheNames.some((name) => name.startsWith(`${anchor.tipHash}-`)), "oldest serving checkpoint should be evicted");
+
+    await writeFile(
+      join(sourceDir, "p2p-state-checkpoints", `${anchor102.tipHash}-${anchor102.snapshotSha256}`, "records", "0.json"),
+      "{}\n",
+      "utf8"
+    );
+    await assert.rejects(
+      () => fetchTrustedPortableStateFromPeer(clientNode!, restartedAddress, clientIdentity, config, anchor102),
+      /state|stream|abort|reset|corrupt|checksum/i
     );
   } finally {
     await Promise.allSettled([sourceNode?.stop(), clientNode?.stop()]);
