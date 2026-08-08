@@ -60,6 +60,25 @@ node dist/src/cli.js genesis \
 
 Start validator nodes with distinct data directories and ports. Static peers are deliberate: public, unauthenticated peer admission is not used as a shortcut for mainnet discovery.
 
+The preferred new node-to-node data plane is native TCP/libp2p with Noise and yamux. Enable a
+listener explicitly with `--p2p-listen /ip4/0.0.0.0/tcp/9140` and configure outbound peers
+with repeated `--p2p-peer` multiaddrs. Outbound peer addresses **must pin the expected PeerId**,
+for example `/dns4/node-b.example/tcp/9140/p2p/<PeerId>`; an unpinned TCP endpoint is rejected.
+The native protocols bind that Noise-authenticated PeerId to the persistent secp256k1 node
+identity and exact chain/genesis before serving sync, validator consensus, block gossip or
+transaction gossip. Payload, connection, stream, fanout, dedup, per-PeerId inflight and request
+rate limits are enforced. Automatic admission of peer-exchange records is deliberately still
+disabled until the remaining eclipse/diversity policy is complete.
+
+Keep wallet/public HTTP RPC and validator networking as separate security surfaces. A normal
+validator should leave `--host 127.0.0.1` for RPC and expose only its native P2P TCP port to
+other nodes. If an RPC listener must bind non-loopback, the CLI fails closed unless consensus
+peer authentication is configured; put public wallet RPC behind a separately rate-limited TLS
+reverse proxy rather than exposing validator RPC directly. Native P2P performs no automatic
+UPnP/NAT port mapping: an operator behind NAT must explicitly forward the selected TCP P2P port
+or use a publicly reachable host. Do not forward the loopback validator RPC port merely to make
+P2P reachable.
+
 When `--peer-token-file` is configured, non-loopback peers must use `https://` URLs so
 the Bearer credential is never transmitted over remote plaintext HTTP. Plain HTTP remains
 available for loopback-only local devnets without weakening the authenticated remote path.
@@ -81,6 +100,14 @@ peer scoring are implemented.
 ```sh
 node dist/src/cli.js node --genesis genesis.json --data data-a --validator-key validator-a.json --port 9137 --peer http://127.0.0.1:9138
 node dist/src/cli.js node --genesis genesis.json --data data-b --validator-key validator-b.json --port 9138 --peer http://127.0.0.1:9137
+```
+
+Native configured-peer example (replace each placeholder with the PeerId printed by the remote
+node on startup):
+
+```sh
+node dist/src/cli.js node --genesis genesis.json --data data-a --validator-key validator-a.json --p2p-listen /ip4/0.0.0.0/tcp/9140 --p2p-peer /dns4/node-b.example/tcp/9140/p2p/<NODE_B_PEER_ID>
+node dist/src/cli.js node --genesis genesis.json --data data-b --validator-key validator-b.json --p2p-listen /ip4/0.0.0.0/tcp/9140 --p2p-peer /dns4/node-a.example/tcp/9140/p2p/<NODE_A_PEER_ID>
 ```
 
 Create another key for a funded wallet and submit a signed transfer:
