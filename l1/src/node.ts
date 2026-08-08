@@ -1,16 +1,24 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-import { createBlockAttestation, expectedValidator, validateBlockShape } from "./block.js";
+import {
+  createBlockAttestation,
+  createRoundSkipVote,
+  expectedValidator,
+  validateBlockShape,
+  validateRoundSkipQuorum
+} from "./block.js";
 import { publicKeyFromPrivate } from "./crypto.js";
 import { Mempool } from "./mempool.js";
 import { ChainStore, SigningJournal } from "./storage.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
-import type { Address, Block, BlockAttestation, Transaction } from "./types.js";
+import type { Address, Block, BlockAttestation, RoundSkipVote, Transaction } from "./types.js";
 
 const MAX_BODY_BYTES = 2_500_000;
 const MAX_SYNC_BLOCKS = 100;
 const MAX_SYNC_RESPONSE_BYTES = 25_000_000;
 const PEER_TIMEOUT_MS = 8_000;
+export const BLOCK_INTERVAL_MS = 30_000;
+export const ROUND_WINDOW_MS = 30_000;
 
 export interface NodeStatus {
   chainId: string;
@@ -21,6 +29,7 @@ export interface NodeStatus {
 
 export class NodeService {
   readonly mempool = new Mempool();
+  private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(
     readonly store: ChainStore,
@@ -66,23 +75,82 @@ export class NodeService {
   }
 
   async attestProposal(value: unknown): Promise<BlockAttestation> {
-    if (!this.signingJournal || !this.validatorPrivateKey) throw new Error("Validator signing is disabled");
-    validateBlockShape(value);
-    const block = value as Block;
-    this.store.chain.validateProposal(block);
-    const publicKey = publicKeyFromPrivate(this.validatorPrivateKey);
-    const validator = this.store.chain.genesis.validators.find((item) => item.publicKey === publicKey);
-    if (!validator) throw new Error("Configured validator key is not in genesis");
-    await this.signingJournal.reserve(block.header.height, block.header.round, block.hash);
-    return createBlockAttestation(block, this.validatorPrivateKey, publicKey);
+    return this.exclusive(async () => {
+      if (!this.signingJournal || !this.validatorPrivateKey) throw new Error("Validator signing is disabled");
+      validateBlockShape(value);
+      const block = value as Block;
+      this.store.chain.validateProposal(block);
+      const publicKey = publicKeyFromPrivate(this.validatorPrivateKey);
+      const validator = this.store.chain.genesis.validators.find((item) => item.publicKey === publicKey);
+      if (!validator) throw new Error("Configured validator key is not in genesis");
+      await this.signingJournal.reserveAttestation(block.header.height, block.header.round, block.hash);
+      return createBlockAttestation(block, this.validatorPrivateKey, publicKey);
+    });
+  }
+
+  async requestSkipVote(
+    height: number,
+    round: number,
+    previousCertificate: RoundSkipVote[] = [],
+    nowMs = Date.now()
+  ): Promise<RoundSkipVote> {
+    return this.exclusive(async () => {
+      if (!this.signingJournal || !this.validatorPrivateKey) throw new Error("Validator signing is disabled");
+      const chain = this.store.chain;
+      if (!Number.isSafeInteger(height) || height !== chain.height + 1 || !Number.isSafeInteger(round) || round < 0) {
+        throw new Error("Invalid round skip request");
+      }
+      const deadline = chain.tip.header.timestampMs + BLOCK_INTERVAL_MS + ((round + 1) * ROUND_WINDOW_MS);
+      if (nowMs < deadline) throw new Error("Round skip deadline has not elapsed");
+      if (round === 0 && previousCertificate.length !== 0) {
+        throw new Error("Round 0 skip must not contain a predecessor certificate");
+      }
+      if (round > 0) {
+        validateRoundSkipQuorum(
+          previousCertificate,
+          chain.genesis.validators,
+          chain.genesis.chainId,
+          height,
+          round - 1,
+          chain.tip.hash
+        );
+      }
+      const publicKey = publicKeyFromPrivate(this.validatorPrivateKey);
+      if (!chain.genesis.validators.some((validator) => validator.publicKey === publicKey)) {
+        throw new Error("Configured validator key is not in genesis");
+      }
+      await this.signingJournal.reserveSkip(height, round, chain.tip.hash);
+      return createRoundSkipVote({
+        chainId: chain.genesis.chainId,
+        height,
+        round,
+        previousHash: chain.tip.hash,
+        validatorPrivateKey: this.validatorPrivateKey,
+        validatorPublicKey: publicKey
+      });
+    });
   }
 
   async acceptFinalizedBlock(value: unknown): Promise<void> {
-    validateBlockShape(value);
-    const block = value as Block;
-    this.store.chain.acceptBlock(block);
-    await this.store.appendFinalizedBlock(block);
-    this.mempool.remove(block.transactions.map((tx) => tx.txid));
+    return this.exclusive(async () => {
+      validateBlockShape(value);
+      const block = value as Block;
+      this.store.chain.acceptBlock(block);
+      await this.store.appendFinalizedBlock(block);
+      this.mempool.remove(block.transactions.map((tx) => tx.txid));
+    });
+  }
+
+  private async exclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.mutationTail;
+    let release!: () => void;
+    this.mutationTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 }
 
@@ -116,6 +184,17 @@ async function route(service: NodeService, request: IncomingMessage, response: S
   }
   if (request.method === "POST" && url.pathname === "/proposal/attest") {
     return writeJson(response, 200, { attestation: await service.attestProposal(await readJsonBody(request)) });
+  }
+  if (request.method === "POST" && url.pathname === "/round/skip") {
+    const body = await readJsonBody(request);
+    assertPlainRecord(body, "round skip request");
+    assertExactKeys(body, ["height", "round", "previousCertificate"], "round skip request");
+    if (!Number.isSafeInteger(body.height) || !Number.isSafeInteger(body.round) || !Array.isArray(body.previousCertificate)) {
+      throw new Error("Invalid round skip request");
+    }
+    return writeJson(response, 200, {
+      vote: await service.requestSkipVote(Number(body.height), Number(body.round), body.previousCertificate as RoundSkipVote[])
+    });
   }
   if (request.method === "POST" && url.pathname === "/block") {
     await service.acceptFinalizedBlock(await readJsonBody(request));
@@ -165,18 +244,74 @@ export class PeerClient {
     return results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
   }
 
+  async requestRoundSkips(
+    height: number,
+    round: number,
+    previousCertificate: RoundSkipVote[] = []
+  ): Promise<RoundSkipVote[]> {
+    const results = await Promise.allSettled(this.peers.map(async (peer) => {
+      const payload = await postJson(`${peer}/round/skip`, { height, round, previousCertificate }, 128_000);
+      assertPlainRecord(payload, "round skip response");
+      assertExactKeys(payload, ["vote"], "round skip response");
+      return payload.vote as RoundSkipVote;
+    }));
+    return results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+  }
+
   async broadcastBlock(block: Block): Promise<void> {
     await Promise.allSettled(this.peers.map((peer) => postJson(`${peer}/block`, block, 64_000)));
   }
 }
 
-export async function produceFinalizedBlock(service: NodeService, peers: PeerClient, validatorPrivateKey: string): Promise<Block | null> {
+export async function produceFinalizedBlock(
+  service: NodeService,
+  peers: PeerClient,
+  validatorPrivateKey: string,
+  nowMs = Date.now()
+): Promise<Block | null> {
   const chain = service.store.chain;
+  const elapsed = nowMs - chain.tip.header.timestampMs;
+  if (elapsed < BLOCK_INTERVAL_MS) return null;
+  const round = Math.max(0, Math.floor((elapsed - BLOCK_INTERVAL_MS) / ROUND_WINDOW_MS));
   const publicKey = publicKeyFromPrivate(validatorPrivateKey);
-  const expected = expectedValidator(chain.genesis.validators, chain.height + 1, 0);
+  const expected = expectedValidator(chain.genesis.validators, chain.height + 1, round);
   if (expected.publicKey !== publicKey) return null;
-  const transactions = service.mempool.selectValid(10_000, (items) => chain.validatePending(items));
-  const proposal = chain.produceBlock(transactions, validatorPrivateKey, { round: 0 });
+  let roundCertificate: RoundSkipVote[] = [];
+  if (round > 0) {
+    let previousCertificate: RoundSkipVote[] = [];
+    for (let skippedRound = 0; skippedRound < round; skippedRound += 1) {
+      const votes: RoundSkipVote[] = [];
+      try {
+        votes.push(await service.requestSkipVote(chain.height + 1, skippedRound, previousCertificate, nowMs));
+      } catch {
+        // An honest validator that already attested this round must never also skip it.
+      }
+      votes.push(...await peers.requestRoundSkips(chain.height + 1, skippedRound, previousCertificate));
+      const unique = new Map<Address, RoundSkipVote>();
+      for (const vote of votes) unique.set(vote.validator, vote);
+      const certificate = [...unique.values()];
+      try {
+        validateRoundSkipQuorum(
+          certificate,
+          chain.genesis.validators,
+          chain.genesis.chainId,
+          chain.height + 1,
+          skippedRound,
+          chain.tip.hash
+        );
+      } catch {
+        return null;
+      }
+      roundCertificate = certificate;
+      previousCertificate = certificate;
+    }
+  }
+  const transactions = chain.selectValidPending(service.mempool.values(), 10_000);
+  const proposal = chain.produceBlock(transactions, validatorPrivateKey, {
+    round,
+    timestampMs: nowMs,
+    roundCertificate
+  });
   const attestations: BlockAttestation[] = [];
   try {
     attestations.push(await service.attestProposal(proposal));
