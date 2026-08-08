@@ -19,13 +19,19 @@ interface StoreMetadata {
 
 export class ChainStore {
   private persistedHeight: number;
+  private persistedBytes: number;
+  private readonly blockRanges: Array<{ offset: number; length: number }>;
 
   private constructor(
     readonly dataDir: string,
     readonly chain: ZyronChain,
-    persistedHeight: number
+    persistedHeight: number,
+    persistedBytes: number,
+    blockRanges: Array<{ offset: number; length: number }>
   ) {
     this.persistedHeight = persistedHeight;
+    this.persistedBytes = persistedBytes;
+    this.blockRanges = blockRanges;
   }
 
   static async open(genesis: GenesisConfig, dataDir: string): Promise<ChainStore> {
@@ -41,10 +47,16 @@ export class ChainStore {
 
     const blocksPath = join(dataDir, "blocks.ndjson");
     let count = 0;
+    let offset = 0;
+    const blockRanges: Array<{ offset: number; length: number }> = [];
     try {
       for await (const line of readLines(blocksPath)) {
-        if (!line.trim()) continue;
-        if (Buffer.byteLength(line, "utf8") > MAX_STORED_BLOCK_LINE_BYTES) {
+        const lineBytes = Buffer.byteLength(line, "utf8");
+        if (!line.trim()) {
+          offset += lineBytes + 1;
+          continue;
+        }
+        if (lineBytes > MAX_STORED_BLOCK_LINE_BYTES) {
           throw new Error("Stored block exceeds line limit");
         }
         let parsed: unknown;
@@ -54,14 +66,48 @@ export class ChainStore {
           throw new Error(`Corrupt stored block at line ${count + 1}`);
         }
         chain.acceptBlock(parsed as Block, Number.MAX_SAFE_INTEGER);
+        blockRanges.push({ offset, length: lineBytes });
+        offset += lineBytes + 1;
         count += 1;
         if (chain.height !== count) throw new Error("Stored block height discontinuity");
       }
     } catch (error) {
       if (!isMissingFile(error)) throw error;
       await writeFile(blocksPath, "", { flag: "wx", mode: 0o600 });
+      offset = 0;
     }
-    return new ChainStore(dataDir, chain, count);
+    return new ChainStore(dataDir, chain, count, offset, blockRanges);
+  }
+
+  async readFinalizedBlocks(from: number, limit: number, maxBytes: number): Promise<Block[]> {
+    if (!Number.isSafeInteger(from) || from < 1 || !Number.isSafeInteger(limit) || limit < 1) {
+      throw new Error("Invalid finalized block range");
+    }
+    const result: Block[] = [];
+    let responseBytes = Buffer.byteLength('{"blocks":[]}', "utf8");
+    const handle = await open(join(this.dataDir, "blocks.ndjson"), "r");
+    try {
+      for (const range of this.blockRanges.slice(from - 1, from - 1 + limit)) {
+        if (responseBytes + range.length + (result.length ? 1 : 0) > maxBytes) {
+          if (result.length === 0) throw new Error("Finalized block exceeds sync response byte budget");
+          break;
+        }
+        const buffer = Buffer.alloc(range.length);
+        const { bytesRead } = await handle.read(buffer, 0, range.length, range.offset);
+        if (bytesRead !== range.length) throw new Error("Finalized block storage was truncated after startup");
+        let block: Block;
+        try {
+          block = JSON.parse(buffer.toString("utf8")) as Block;
+        } catch {
+          throw new Error("Finalized block storage changed after startup");
+        }
+        result.push(block);
+        responseBytes += range.length + (result.length > 1 ? 1 : 0);
+      }
+    } finally {
+      await handle.close();
+    }
+    return result;
   }
 
   async commitFinalizedBlock(block: Block, nowMs = Date.now()): Promise<void> {
@@ -77,7 +123,8 @@ export class ChainStore {
     // was never durably committed.
     this.chain.validateFinalizedBlock(block, nowMs);
     const line = `${canonicalJson(block)}\n`;
-    if (Buffer.byteLength(line, "utf8") > MAX_STORED_BLOCK_LINE_BYTES) {
+    const lineBytes = Buffer.byteLength(line, "utf8");
+    if (lineBytes > MAX_STORED_BLOCK_LINE_BYTES) {
       throw new Error("Block exceeds persistence limit");
     }
     const handle = await open(join(this.dataDir, "blocks.ndjson"), "a", 0o600);
@@ -88,6 +135,8 @@ export class ChainStore {
       await handle.close();
     }
     this.chain.acceptBlock(block, nowMs);
+    this.blockRanges.push({ offset: this.persistedBytes, length: lineBytes - 1 });
+    this.persistedBytes += lineBytes;
     this.persistedHeight = block.header.height;
   }
 }

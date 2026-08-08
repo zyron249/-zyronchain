@@ -26,7 +26,9 @@ export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1]);
 
 export class ZyronChain {
   readonly genesis: GenesisConfig;
-  private readonly blocks: Block[];
+  private readonly genesisBlock: Block;
+  private tipBlock: Block;
+  private currentHeight = 0;
   private readonly validatorSchedule = new Map<number, Validator[]>();
   private readonly protocolSchedule = new Map<number, number>();
   private state: LedgerState;
@@ -35,25 +37,26 @@ export class ZyronChain {
     validateGenesis(genesis);
     this.genesis = structuredClone(genesis);
     this.state = LedgerState.fromGenesis(genesis);
-    this.blocks = [createGenesisBlock(genesis, this.state.root())];
+    this.genesisBlock = createGenesisBlock(genesis, this.state.root());
+    this.tipBlock = this.genesisBlock;
     this.validatorSchedule.set(0, structuredClone(genesis.validators));
     this.protocolSchedule.set(0, 1);
   }
 
   get height(): number {
-    return this.blocks.length - 1;
+    return this.currentHeight;
   }
 
   get tip(): Block {
-    return this.blocks[this.blocks.length - 1]!;
+    return this.tipBlock;
+  }
+
+  get genesisHash(): string {
+    return this.genesisBlock.hash;
   }
 
   getState(): LedgerState {
     return this.state.clone();
-  }
-
-  getBlocks(): readonly Block[] {
-    return this.blocks;
   }
 
   validatorsAt(height: number): Validator[] {
@@ -129,7 +132,8 @@ export class ZyronChain {
 
   acceptBlock(block: Block, nowMs = Date.now()): void {
     const nextState = this.validateFinalizedBlock(block, nowMs);
-    this.blocks.push(structuredClone(block));
+    this.tipBlock = structuredClone(block);
+    this.currentHeight = block.header.height;
     this.state = nextState;
     this.recordGovernanceUpdates(block.transactions);
   }

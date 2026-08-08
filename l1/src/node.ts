@@ -59,10 +59,9 @@ export class NodeService {
   ) {}
 
   status(): NodeStatus {
-    const blocks = this.store.chain.getBlocks();
     return {
       chainId: this.store.chain.genesis.chainId,
-      genesisHash: blocks[0]!.hash,
+      genesisHash: this.store.chain.genesisHash,
       height: this.store.chain.height,
       tipHash: this.store.chain.tip.hash
     };
@@ -77,24 +76,13 @@ export class NodeService {
     };
   }
 
-  blocks(from: number, limit: number, maxBytes = MAX_SYNC_BATCH_PAYLOAD_BYTES): Block[] {
+  async blocks(from: number, limit: number, maxBytes = MAX_SYNC_BATCH_PAYLOAD_BYTES): Promise<Block[]> {
     if (!Number.isSafeInteger(from) || from < 1) throw new Error("Invalid block start height");
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SYNC_BLOCKS) throw new Error("Invalid block limit");
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_SYNC_BATCH_PAYLOAD_BYTES) {
       throw new Error("Invalid block response byte limit");
     }
-    const result: Block[] = [];
-    let bytes = Buffer.byteLength('{"blocks":[]}', "utf8");
-    for (const block of this.store.chain.getBlocks().slice(from, from + limit)) {
-      const encodedBytes = Buffer.byteLength(JSON.stringify(block), "utf8") + (result.length ? 1 : 0);
-      if (bytes + encodedBytes > maxBytes) {
-        if (result.length === 0) throw new Error("Finalized block exceeds sync response byte budget");
-        break;
-      }
-      result.push(structuredClone(block));
-      bytes += encodedBytes;
-    }
-    return result;
+    return this.store.readFinalizedBlocks(from, limit, maxBytes);
   }
 
   balance(address: string): number {
@@ -249,7 +237,7 @@ async function route(service: NodeService, request: IncomingMessage, response: S
   if (request.method === "GET" && url.pathname === "/blocks") {
     const from = parseInteger(url.searchParams.get("from"), "from");
     const limit = url.searchParams.has("limit") ? parseInteger(url.searchParams.get("limit"), "limit") : MAX_SYNC_BLOCKS;
-    return writeJson(response, 200, { blocks: service.blocks(from, limit) });
+    return writeJson(response, 200, { blocks: await service.blocks(from, limit) });
   }
   if (request.method === "GET" && (url.pathname.startsWith("/balance/") || url.pathname.startsWith("/nonce/"))) {
     const address = decodeURIComponent(url.pathname.split("/")[2] ?? "");

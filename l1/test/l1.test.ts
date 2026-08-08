@@ -670,10 +670,10 @@ test("sync serving adapts block count to a byte budget instead of emitting an ov
     }
     const oneBlockBudget = Buffer.byteLength('{"blocks":[]}', "utf8") +
       Buffer.byteLength(JSON.stringify(finalized[0]!), "utf8") + 1;
-    const firstBatch = service.blocks(1, 100, oneBlockBudget);
+    const firstBatch = await service.blocks(1, 100, oneBlockBudget);
     assert.equal(firstBatch.length, 1);
     assert.equal(firstBatch[0]!.header.height, 1);
-    const secondBatch = service.blocks(2, 100, oneBlockBudget);
+    const secondBatch = await service.blocks(2, 100, oneBlockBudget);
     assert.equal(secondBatch.length, 1);
     assert.equal(secondBatch[0]!.header.height, 2);
   } finally {
