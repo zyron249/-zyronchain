@@ -72,10 +72,47 @@ let wallet = null;
 let showPrivateKey = false;
 const ec = new elliptic.ec("secp256k1");
 
-function pythonFloatString(value) {
-    const number = Number(value);
-    if (Number.isInteger(number)) return number.toFixed(1);
-    return String(number);
+function decimalToAtoms(value) {
+    const text = String(value).trim();
+    const match = /^(\d+)(?:\.(\d{0,8}))?$/.exec(text);
+    if (!match) throw new Error("Use a positive decimal with at most 8 decimal places");
+
+    const whole = BigInt(match[1]);
+    const fraction = BigInt((match[2] || "").padEnd(8, "0") || "0");
+    const atoms = whole * 100000000n + fraction;
+    if (atoms > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error("Amount exceeds the safe protocol range");
+    }
+    return Number(atoms);
+}
+
+function canonicalV3Unsigned(tx) {
+    return JSON.stringify({
+        amount_atoms: tx.amount_atoms,
+        chain_id: tx.chain_id,
+        fee_atoms: tx.fee_atoms,
+        nonce: tx.nonce,
+        public_key: tx.public_key,
+        receiver: tx.receiver,
+        sender: tx.sender,
+        timestamp_ms: tx.timestamp_ms,
+        version: tx.version
+    });
+}
+
+function canonicalV3Signed(tx) {
+    return JSON.stringify({
+        amount_atoms: tx.amount_atoms,
+        chain_id: tx.chain_id,
+        fee_atoms: tx.fee_atoms,
+        nonce: tx.nonce,
+        public_key: tx.public_key,
+        receiver: tx.receiver,
+        sender: tx.sender,
+        signature: tx.signature,
+        timestamp_ms: tx.timestamp_ms,
+        version: tx.version
+    });
 }
 
 function bytesToHex(bytes) {
@@ -258,33 +295,28 @@ async function sendZyn() {
     }
 
     try {
-        const version = 2;
+        const version = 3;
         const chainId = "zyron-testnet-1";
         const nonce = await getNextNonce();
-        const amount = pythonFloatString(amountInput);
-        const fee = pythonFloatString(feeInput);
-        const timestamp = Date.now() / 1000;
+        const amountAtoms = decimalToAtoms(amountInput);
+        const feeAtoms = decimalToAtoms(feeInput);
+        const timestampMs = Date.now();
 
-        const dataToSign =
-            String(version) +
-            chainId +
-            String(nonce) +
-            wallet.address +
-            receiver +
-            amount +
-            fee +
-            String(timestamp);
+        const signedTx = {
+            version: version,
+            chain_id: chainId,
+            nonce: nonce,
+            sender: wallet.address,
+            receiver: receiver,
+            amount_atoms: amountAtoms,
+            fee_atoms: feeAtoms,
+            timestamp_ms: timestampMs,
+            public_key: wallet.public_key,
+            signature: null,
+            txid: null
+        };
 
-        const txidData =
-            String(version) +
-            chainId +
-            String(nonce) +
-            wallet.address +
-            receiver +
-            amount +
-            fee +
-            String(timestamp) +
-            wallet.public_key;
+        const dataToSign = canonicalV3Unsigned(signedTx);
 
         const key = ec.keyFromPrivate(wallet.private_key, "hex");
         const signingDigest = new Uint8Array(
@@ -293,27 +325,12 @@ async function sendZyn() {
                 new TextEncoder().encode(dataToSign)
             )
         );
-        const signatureObject = key.sign(signingDigest);
+        const signatureObject = key.sign(signingDigest, {canonical: true});
 
         const r = signatureObject.r.toString("hex").padStart(64, "0");
         const s = signatureObject.s.toString("hex").padStart(64, "0");
-        const signature = r + s;
-
-        const txid = await sha256Hex(txidData);
-
-        const signedTx = {
-            version: version,
-            chain_id: chainId,
-            nonce: nonce,
-            sender: wallet.address,
-            receiver: receiver,
-            amount: Number(amount),
-            fee: Number(fee),
-            public_key: wallet.public_key,
-            signature: signature,
-            timestamp: timestamp,
-            txid: txid
-        };
+        signedTx.signature = r + s;
+        signedTx.txid = await sha256Hex(canonicalV3Signed(signedTx));
 
         const res = await fetch("/transaction", {
             method: "POST",
