@@ -7,7 +7,7 @@ import type { Libp2p } from "libp2p";
 
 import { publicKeyFromPrivate } from "../src/crypto.js";
 import { parseNativePeerAddress } from "../src/p2p-address.js";
-import { assertSafeDiscoveredPeer, NativePeerPool } from "../src/p2p-peer-pool.js";
+import { assertSafeDiscoveredPeer, MAX_DYNAMIC_NATIVE_PEERS, NativePeerPool } from "../src/p2p-peer-pool.js";
 import { nodeIdFromPublicKey, type NodeIdentity } from "../src/peer-identity.js";
 
 function peerId(index: number): string {
@@ -119,6 +119,46 @@ test("dynamic admission fails closed when Noise identity does not match the pinn
   const pool = new NativePeerPool([], peerIdFromIdentity(local));
   await assert.rejects(() => pool.verifyAndAdmit(node, local, chain, candidate, peerId(213)), /Noise identity mismatch/);
   assert.equal(pool.size, 0);
+});
+
+test("eclipse-majority churn cannot exceed the dynamic reserve or displace a bootstrap seed", async () => {
+  const chain = { chainId: "zyron-pool-eclipse", genesisHash: "c6".repeat(32) };
+  const local = identity(500);
+  const seed = parseNativePeerAddress(`/ip4/8.8.8.8/tcp/9140/p2p/${peerId(501)}`);
+  const pool = new NativePeerPool([seed], peerIdFromIdentity(local));
+  const admittedPeerIds: string[] = [];
+
+  for (let batch = 0; batch < 4; batch += 1) {
+    const source = peerId(510 + batch);
+    const remotes = new Map<string, NodeIdentity>();
+    const candidates = Array.from({ length: 8 }, (_, offset) => {
+      const remote = identity(520 + (batch * 8) + offset);
+      const id = peerIdFromIdentity(remote);
+      remotes.set(id, remote);
+      admittedPeerIds.push(id);
+      return parseNativePeerAddress(`/ip4/${50 + (batch * 8) + offset}.90.1.1/tcp/9140/p2p/${id}`);
+    });
+    const accepted = await Promise.all(candidates.map((candidate) =>
+      pool.verifyAndAdmit(fakeIdentityNode(remotes, chain), local, chain, candidate, source)
+    ));
+    assert.equal(accepted.filter(Boolean).length, 8);
+  }
+  assert.equal(pool.size, 1 + MAX_DYNAMIC_NATIVE_PEERS);
+  assert.equal(pool.isDynamic(peerId(501)), false);
+
+  // A fifth attacker source cannot exceed the global dynamic reserve.
+  const overflow = identity(600);
+  const overflowId = peerIdFromIdentity(overflow);
+  const overflowAddress = parseNativePeerAddress(`/ip4/90.90.1.1/tcp/9140/p2p/${overflowId}`);
+  assert.equal(
+    await pool.verifyAndAdmit(fakeIdentityNode(new Map([[overflowId, overflow]]), chain), local, chain, overflowAddress, peerId(601)),
+    false
+  );
+
+  // Simulated churn frees capacity without touching the operator bootstrap.
+  for (const id of admittedPeerIds.filter((_, index) => index % 2 === 0)) assert.equal(pool.evictDynamic(id), true);
+  assert.equal(pool.size, 1 + (MAX_DYNAMIC_NATIVE_PEERS / 2));
+  assert.equal(pool.has(peerId(501)), true);
 });
 
 function identity(index: number): NodeIdentity {
