@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import { canonicalJson, sha256Hex } from "./codec.js";
 
 import {
@@ -381,8 +382,9 @@ export class PeerClient {
     while (this.peers.length > 0) {
       const startHeight = service.status().height;
       const nowMs = Date.now();
-      const ordered = rotate(this.peers, this.syncCursor)
+      const available = this.peers
         .filter((peer) => (this.failureUntil.get(peer) ?? 0) <= nowMs && (this.peerReputation?.isAvailable(peer, nowMs) ?? true));
+      const ordered = diversityOrderedPeers(available, this.syncCursor);
       if (ordered.length === 0) break;
       const attempts = await Promise.allSettled(ordered.map(async (peer) => {
           const status = parseStatus(await getJson(`${peer}/status`, 64_000));
@@ -410,8 +412,9 @@ export class PeerClient {
         if (!candidate && result.value) candidate = result.value;
       }
       if (!candidate) break;
-      const selectedIndex = this.peers.indexOf(candidate.peer);
-      this.syncCursor = selectedIndex < 0 ? 0 : (selectedIndex + 1) % this.peers.length;
+      const groups = [...new Set(available.map(peerDiversityBucket))];
+      const selectedGroupIndex = groups.indexOf(peerDiversityBucket(candidate.peer));
+      this.syncCursor = selectedGroupIndex < 0 || groups.length === 0 ? 0 : (selectedGroupIndex + 1) % groups.length;
 
       let progressed = false;
       let poisoned = false;
@@ -481,6 +484,42 @@ function rotate<T>(values: readonly T[], offset: number): T[] {
   if (values.length === 0) return [];
   const start = ((offset % values.length) + values.length) % values.length;
   return [...values.slice(start), ...values.slice(0, start)];
+}
+
+export function peerDiversityBucket(peer: string): string {
+  const url = new URL(normalizePeerUrl(peer));
+  const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (isIP(hostname) === 4) {
+    const octets = hostname.split(".");
+    return `ipv4:${octets.slice(0, 3).join(".")}.0/24`;
+  }
+  if (isIP(hostname) === 6) {
+    // Do not infer a prefix from a compressed textual IPv6 representation.
+    // Exact-address grouping is conservative; explicit subnet/provider/ASN
+    // policy remains required before public mainnet admission.
+    return `ipv6:${hostname}`;
+  }
+  return `host:${hostname}`;
+}
+
+export function diversityOrderedPeers(peers: readonly string[], groupOffset = 0): string[] {
+  const groups = new Map<string, string[]>();
+  for (const peer of peers) {
+    const normalized = normalizePeerUrl(peer);
+    const key = peerDiversityBucket(normalized);
+    const bucket = groups.get(key) ?? [];
+    bucket.push(normalized);
+    groups.set(key, bucket);
+  }
+  const rotatedGroups = rotate([...groups.values()], groupOffset);
+  const result: string[] = [];
+  const rounds = Math.max(0, ...rotatedGroups.map((group) => group.length));
+  for (let index = 0; index < rounds; index += 1) {
+    for (const group of rotatedGroups) {
+      if (group[index]) result.push(group[index]!);
+    }
+  }
+  return result;
 }
 
 export async function produceFinalizedBlock(
