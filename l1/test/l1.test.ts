@@ -18,6 +18,7 @@ import {
 } from "../src/transaction.js";
 import { createRoundSkipVote, validateBlockShape } from "../src/block.js";
 import { ChainStore, SigningJournal } from "../src/storage.js";
+import { stateV2FromLedgerSnapshot } from "../src/state-v2.js";
 import { createRpcServer, NodeService, PeerClient, produceFinalizedBlock } from "../src/node.js";
 import type { GenesisConfig } from "../src/types.js";
 
@@ -1072,7 +1073,7 @@ test("validator schedule is reconstructed from finalized history after restart",
   }
 });
 
-test("protocol upgrade requires validator quorum, activates at a delayed height, and fail-stops unsupported binaries", () => {
+test("protocol v2 activation deterministically migrates the finalized v1 ledger to sparse state", () => {
   const chain = new ZyronChain(genesis());
   const proposal = {
     chainId: genesis().chainId,
@@ -1097,8 +1098,74 @@ test("protocol upgrade requires validator quorum, activates at a delayed height,
   first = chain.attestBlock(first, validatorOnePrivate);
   first = chain.attestBlock(first, validatorTwoPrivate);
   chain.acceptBlock(first, 1_700_000_000_200);
+
+  for (let height = 2; height <= 100; height += 1) {
+    const proposerKey = height % 2 === 0 ? validatorTwoPrivate : validatorOnePrivate;
+    let block = chain.produceBlock([], proposerKey, { timestampMs: 1_700_000_000_200 + height });
+    block = chain.attestBlock(block, validatorOnePrivate);
+    block = chain.attestBlock(block, validatorTwoPrivate);
+    chain.acceptBlock(block, 1_700_000_000_200 + height);
+  }
+
+  const v1Root = chain.getState().root();
+  const migrated = stateV2FromLedgerSnapshot(chain.getState().snapshot());
+  let activation = chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_001_000 });
+  assert.equal(activation.header.version, 2);
+  assert.equal(activation.header.stateRoot, migrated.root());
+  assert.notEqual(activation.header.stateRoot, v1Root);
+  activation = chain.attestBlock(activation, validatorOnePrivate);
+  activation = chain.attestBlock(activation, validatorTwoPrivate);
+  chain.acceptBlock(activation, 1_700_000_001_000);
+
+  const transfer = createTransfer(
+    {
+      chainId: genesis().chainId,
+      nonce: 1,
+      sender: alice,
+      receiver: bob,
+      amountAtoms: 1_000,
+      feeAtoms: 10,
+      timestampMs: 1_700_000_001_001
+    },
+    alicePrivate,
+    alicePublic
+  );
+  let next = chain.produceBlock([transfer], validatorTwoPrivate, { timestampMs: 1_700_000_001_002 });
+  assert.equal(next.header.version, 2);
+  assert.notEqual(next.header.stateRoot, activation.header.stateRoot);
+  next = chain.attestBlock(next, validatorOnePrivate);
+  next = chain.attestBlock(next, validatorTwoPrivate);
+  chain.acceptBlock(next, 1_700_000_001_002);
+  assert.equal(chain.balance(bob), 1_000);
+});
+
+test("protocol upgrade requires validator quorum, activates at a delayed height, and fail-stops unsupported binaries", () => {
+  const chain = new ZyronChain(genesis());
+  const proposal = {
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: validatorOne,
+    activationHeight: 101,
+    protocolVersion: 3
+  };
+  const upgrade = createProtocolUpgrade(
+    {
+      ...proposal,
+      approvals: [
+        createProtocolUpgradeApproval(proposal, validatorOnePrivate, validatorOnePublic),
+        createProtocolUpgradeApproval(proposal, validatorTwoPrivate, validatorTwoPublic)
+      ],
+      timestampMs: 1_700_000_000_100
+    },
+    validatorOnePrivate,
+    validatorOnePublic
+  );
+  let first = chain.produceBlock([upgrade], validatorOnePrivate, { timestampMs: 1_700_000_000_200 });
+  first = chain.attestBlock(first, validatorOnePrivate);
+  first = chain.attestBlock(first, validatorTwoPrivate);
+  chain.acceptBlock(first, 1_700_000_000_200);
   assert.equal(chain.protocolVersionAt(100), 1);
-  assert.equal(chain.protocolVersionAt(101), 2);
+  assert.equal(chain.protocolVersionAt(101), 3);
 
   for (let height = 2; height <= 100; height += 1) {
     const proposerKey = height % 2 === 0 ? validatorTwoPrivate : validatorOnePrivate;
@@ -1110,7 +1177,7 @@ test("protocol upgrade requires validator quorum, activates at a delayed height,
   assert.equal(chain.height, 100);
   assert.throws(
     () => chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_001_000 }),
-    /Protocol version 2 is not supported by this binary/
+    /Protocol version 3 is not supported by this binary/
   );
 });
 
