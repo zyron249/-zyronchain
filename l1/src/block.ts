@@ -197,19 +197,39 @@ export function validateRoundSkipQuorum(
   for (const vote of votes) {
     if (seen.has(vote.validator)) throw new Error("Duplicate round skip vote");
     seen.add(vote.validator);
-    const expectedPublicKey = allowed.get(vote.validator);
-    if (!expectedPublicKey || expectedPublicKey !== vote.publicKey) throw new Error("Unknown round skip voter");
-    if (vote.chainId !== chainId || vote.height !== height || vote.round !== round || vote.previousHash !== previousHash) {
-      throw new Error("Round skip vote does not match proposal");
-    }
-    const { signature: _signature, ...unsigned } = vote;
-    if (!verifyCanonical(roundSkipPayload(unsigned), vote.signature, vote.publicKey)) {
-      throw new Error("Invalid round skip signature");
-    }
+    validateRoundSkipVote(vote, allowed, chainId, height, round, previousHash);
     valid += 1;
   }
   const quorum = Math.floor((validators.length * 2) / 3) + 1;
   if (valid < quorum) throw new Error(`Round skip quorum not reached: ${valid}/${quorum}`);
+}
+
+export function validateRoundSkipVote(
+  vote: unknown,
+  validators: Validator[] | Map<string, string>,
+  chainId: string,
+  height: number,
+  round: number,
+  previousHash: string
+): asserts vote is RoundSkipVote {
+  assertPlainRecord(vote, "round skip vote");
+  assertExactKeys(vote, ["validator", "publicKey", "chainId", "height", "round", "previousHash", "signature"], "round skip vote");
+  if (typeof vote.validator !== "string" || typeof vote.publicKey !== "string" || typeof vote.chainId !== "string" ||
+      typeof vote.previousHash !== "string" || typeof vote.signature !== "string" || !Number.isSafeInteger(vote.height) ||
+      !Number.isSafeInteger(vote.round)) throw new Error("Invalid round skip vote");
+  assertAddress(vote.validator);
+  assertHex(vote.publicKey, 64, "round skip publicKey");
+  assertHex(vote.previousHash, 32, "round skip previousHash");
+  assertHex(vote.signature, 64, "round skip signature");
+  const allowed = validators instanceof Map ? validators : new Map(validators.map((validator) => [validator.address, validator.publicKey]));
+  if (allowed.get(vote.validator) !== vote.publicKey) throw new Error("Unknown round skip voter");
+  if (vote.chainId !== chainId || vote.height !== height || vote.round !== round || vote.previousHash !== previousHash) {
+    throw new Error("Round skip vote does not match proposal");
+  }
+  const { signature: _signature, ...unsigned } = vote;
+  if (!verifyCanonical(roundSkipPayload(unsigned as Omit<RoundSkipVote, "signature">), vote.signature, vote.publicKey)) {
+    throw new Error("Invalid round skip signature");
+  }
 }
 
 export function validateBlockShape(value: unknown): asserts value is Block {
@@ -266,15 +286,29 @@ export function validateAttestationQuorum(block: Block, validators: Validator[])
   for (const attestation of block.attestations) {
     if (seen.has(attestation.validator)) throw new Error("Duplicate validator attestation");
     seen.add(attestation.validator);
-    const expectedPublicKey = allowed.get(attestation.validator);
-    if (!expectedPublicKey || expectedPublicKey !== attestation.publicKey) {
-      throw new Error("Unknown validator attestation");
-    }
-    if (!verifyCanonical(attestationPayload(block), attestation.signature, attestation.publicKey)) {
-      throw new Error("Invalid validator attestation");
-    }
+    validateBlockAttestation(block, attestation, allowed);
     valid += 1;
   }
   const quorum = Math.floor((validators.length * 2) / 3) + 1;
   if (valid < quorum) throw new Error(`Finality quorum not reached: ${valid}/${quorum}`);
+}
+
+export function validateBlockAttestation(
+  block: Block,
+  attestation: unknown,
+  validators: Validator[] | Map<string, string>
+): asserts attestation is BlockAttestation {
+  assertPlainRecord(attestation, "block attestation");
+  assertExactKeys(attestation, ["validator", "publicKey", "signature"], "block attestation");
+  if (typeof attestation.validator !== "string" || typeof attestation.publicKey !== "string" || typeof attestation.signature !== "string") {
+    throw new Error("Invalid block attestation");
+  }
+  assertAddress(attestation.validator);
+  assertHex(attestation.publicKey, 64, "attestation publicKey");
+  assertHex(attestation.signature, 64, "attestation signature");
+  const allowed = validators instanceof Map ? validators : new Map(validators.map((validator) => [validator.address, validator.publicKey]));
+  if (allowed.get(attestation.validator) !== attestation.publicKey) throw new Error("Unknown validator attestation");
+  if (!verifyCanonical(attestationPayload(block), attestation.signature, attestation.publicKey)) {
+    throw new Error("Invalid validator attestation");
+  }
 }
