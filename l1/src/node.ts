@@ -13,6 +13,7 @@ import {
 } from "./block.js";
 import { publicKeyFromPrivate } from "./crypto.js";
 import { Mempool } from "./mempool.js";
+import { PeerReputationStore } from "./peer-reputation.js";
 import {
   PeerRequestAuthenticator,
   signPeerRequest,
@@ -327,7 +328,8 @@ export class PeerClient {
   constructor(
     peers: string[],
     private readonly peerAuthToken?: string,
-    private readonly peerRequestCredentials?: PeerRequestCredentials
+    private readonly peerRequestCredentials?: PeerRequestCredentials,
+    private readonly peerReputation?: PeerReputationStore
   ) {
     if (peerAuthToken !== undefined) validatePeerAuthToken(peerAuthToken);
     this.peers = [...new Set(peers.map(normalizePeerUrl))];
@@ -380,7 +382,7 @@ export class PeerClient {
       const startHeight = service.status().height;
       const nowMs = Date.now();
       const ordered = rotate(this.peers, this.syncCursor)
-        .filter((peer) => (this.failureUntil.get(peer) ?? 0) <= nowMs);
+        .filter((peer) => (this.failureUntil.get(peer) ?? 0) <= nowMs && (this.peerReputation?.isAvailable(peer, nowMs) ?? true));
       if (ordered.length === 0) break;
       const attempts = await Promise.allSettled(ordered.map(async (peer) => {
           const status = parseStatus(await getJson(`${peer}/status`, 64_000));
@@ -402,7 +404,7 @@ export class PeerClient {
         const result = attempts[index]!;
         const peer = ordered[index]!;
         if (result.status === "rejected") {
-          this.failureUntil.set(peer, nowMs + PEER_FAILURE_BACKOFF_MS);
+          await this.recordFailure(peer, nowMs);
           continue;
         }
         if (!candidate && result.value) candidate = result.value;
@@ -426,7 +428,12 @@ export class PeerClient {
           break;
         }
       }
-      if (poisoned) this.failureUntil.set(candidate.peer, Date.now() + PEER_FAILURE_BACKOFF_MS);
+      if (poisoned) {
+        await this.recordFailure(candidate.peer, Date.now());
+      } else if (progressed) {
+        this.failureUntil.delete(candidate.peer);
+        await this.peerReputation?.recordSuccess(candidate.peer, Date.now());
+      }
       if (!progressed || service.status().height <= startHeight) break;
     }
     return accepted;
@@ -460,6 +467,13 @@ export class PeerClient {
     await Promise.allSettled(this.peers.map((peer) => postJson(
       `${peer}/block`, block, 64_000, this.peerAuthToken, this.peerRequestCredentials
     )));
+  }
+
+  private async recordFailure(peer: string, nowMs: number): Promise<void> {
+    const backoffMs = this.peerReputation
+      ? await this.peerReputation.recordFailure(peer, nowMs)
+      : PEER_FAILURE_BACKOFF_MS;
+    this.failureUntil.set(peer, nowMs + backoffMs);
   }
 }
 
