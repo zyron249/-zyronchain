@@ -1,7 +1,7 @@
 import { blockHash, expectedValidator, validateAttestationQuorum, validateBlockShape, validateRoundCertificate } from "./block.js";
 import { assertHex } from "./codec.js";
 import { addressFromPublicKey, verifyCanonical } from "./crypto.js";
-import { verifySparseMerkleProof, type SparseMerkleProof } from "./state-v2.js";
+import { validatorScheduleKey, verifySparseMerkleProof, type SparseMerkleProof } from "./state-v2.js";
 import { assertExactKeys, assertPlainRecord } from "./transaction.js";
 import type { Block, BlockAttestation, BlockHeader, RoundSkipVote, Validator } from "./types.js";
 
@@ -142,6 +142,30 @@ export function verifyLightClientStateProof(
   } catch {
     return false;
   }
+}
+
+/**
+ * Authenticate the validator set that activates at the very next height.
+ * The schedule value is read through a Merkle proof from the current finalized
+ * State-v2 root, so the new set is never accepted merely because a peer supplied it.
+ */
+export function activateNextValidatorSet(
+  anchorValue: unknown,
+  validatorsValue: unknown,
+  proof: SparseMerkleProof
+): LightClientAnchor {
+  const anchor = validateLightClientAnchor(anchorValue);
+  if (anchor.protocolVersion !== 2) throw new Error("Validator transition proof requires protocol v2 state");
+  if (!Array.isArray(validatorsValue)) throw new Error("Invalid light-client validator transition");
+  // Reuse anchor validation for the exact validator identity/cardinality rules.
+  const candidate = validateLightClientAnchor({ ...anchor, validators: validatorsValue });
+  const activationHeight = anchor.height + 1;
+  if (!Number.isSafeInteger(activationHeight)) throw new Error("Invalid light-client validator activation height");
+  const key = validatorScheduleKey(activationHeight);
+  if (!verifySparseMerkleProof(anchor.stateRoot, key, { validators: candidate.validators }, proof)) {
+    throw new Error("Invalid light-client validator transition proof");
+  }
+  return candidate;
 }
 
 function assertHexField(value: unknown, label: string): asserts value is string {
