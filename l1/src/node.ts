@@ -38,6 +38,7 @@ const PEER_TIMEOUT_MS = 8_000;
 const DEFAULT_RPC_WINDOW_MS = 60_000;
 const DEFAULT_RPC_REQUESTS_PER_WINDOW = 600;
 const DEFAULT_RPC_MAX_CONNECTIONS = 256;
+const DEFAULT_CONSENSUS_INFLIGHT_PER_PEER = 4;
 export const BLOCK_INTERVAL_MS = 30_000;
 export const ROUND_WINDOW_MS = 30_000;
 
@@ -56,6 +57,7 @@ export interface NodeMetrics extends NodeStatus {
 
 export interface RpcServerOptions {
   maxConnections?: number;
+  maxConsensusInflightPerPeer?: number;
   peerAuthToken?: string;
   peerRecord?: SignedPeerRecord;
   peerDirectory?: PeerDirectory;
@@ -244,6 +246,12 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
   const peerRequestAuthenticator = options.trustedPeerPublicKeys?.length
     ? new PeerRequestAuthenticator(options.trustedPeerPublicKeys, service.status())
     : undefined;
+  const consensusInflight = new PeerInflightLimiter(
+    boundedPositiveInteger(
+      options.maxConsensusInflightPerPeer ?? DEFAULT_CONSENSUS_INFLIGHT_PER_PEER,
+      "consensus inflight per peer"
+    )
+  );
   const limiter = new FixedWindowLimiter(requestsPerWindow, windowMs);
   const server = createServer(async (request, response) => {
     const rate = limiter.consume(request.socket.remoteAddress ?? "unknown", Date.now());
@@ -255,11 +263,25 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
       return;
     }
     try {
-      await route(service, request, response, peerRecord, options.peerDirectory, peerAuthToken, peerRequestAuthenticator);
+      await route(
+        service,
+        request,
+        response,
+        peerRecord,
+        options.peerDirectory,
+        peerAuthToken,
+        peerRequestAuthenticator,
+        consensusInflight
+      );
     } catch (error) {
       if (error instanceof PeerAuthenticationError) {
         response.setHeader("www-authenticate", peerRequestAuthenticator ? "ZyronSignature" : "Bearer");
         writeJson(response, 401, { error: error.message });
+        return;
+      }
+      if (error instanceof PeerInflightLimitError) {
+        response.setHeader("retry-after", "1");
+        writeJson(response, 429, { error: error.message });
         return;
       }
       writeJson(response, 400, { error: safeError(error) });
@@ -279,7 +301,8 @@ async function route(
   peerRecord?: SignedPeerRecord,
   peerDirectory?: PeerDirectory,
   peerAuthToken?: string,
-  peerRequestAuthenticator?: PeerRequestAuthenticator
+  peerRequestAuthenticator?: PeerRequestAuthenticator,
+  consensusInflight?: PeerInflightLimiter
 ): Promise<void> {
   const url = new URL(request.url ?? "/", "http://node.invalid");
   if (request.method === "GET" && url.pathname === "/status") {
@@ -316,26 +339,44 @@ async function route(
   }
   if (request.method === "POST" && url.pathname === "/proposal/attest") {
     const body = await readJsonBody(request);
-    authorizeConsensusRequest(request, url.pathname, body, peerAuthToken, peerRequestAuthenticator);
-    return writeJson(response, 200, { attestation: await service.attestProposal(body) });
+    const release = enterConsensusRequest(
+      request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
+    );
+    try {
+      return writeJson(response, 200, { attestation: await service.attestProposal(body) });
+    } finally {
+      release();
+    }
   }
   if (request.method === "POST" && url.pathname === "/round/skip") {
     const body = await readJsonBody(request);
-    authorizeConsensusRequest(request, url.pathname, body, peerAuthToken, peerRequestAuthenticator);
-    assertPlainRecord(body, "round skip request");
-    assertExactKeys(body, ["height", "round", "previousCertificate"], "round skip request");
-    if (!Number.isSafeInteger(body.height) || !Number.isSafeInteger(body.round) || !Array.isArray(body.previousCertificate)) {
-      throw new Error("Invalid round skip request");
+    const release = enterConsensusRequest(
+      request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
+    );
+    try {
+      assertPlainRecord(body, "round skip request");
+      assertExactKeys(body, ["height", "round", "previousCertificate"], "round skip request");
+      if (!Number.isSafeInteger(body.height) || !Number.isSafeInteger(body.round) || !Array.isArray(body.previousCertificate)) {
+        throw new Error("Invalid round skip request");
+      }
+      return writeJson(response, 200, {
+        vote: await service.requestSkipVote(Number(body.height), Number(body.round), body.previousCertificate as RoundSkipVote[])
+      });
+    } finally {
+      release();
     }
-    return writeJson(response, 200, {
-      vote: await service.requestSkipVote(Number(body.height), Number(body.round), body.previousCertificate as RoundSkipVote[])
-    });
   }
   if (request.method === "POST" && url.pathname === "/block") {
     const body = await readJsonBody(request);
-    authorizeConsensusRequest(request, url.pathname, body, peerAuthToken, peerRequestAuthenticator);
-    await service.acceptFinalizedBlock(body);
-    return writeJson(response, 202, { accepted: true, height: service.status().height });
+    const release = enterConsensusRequest(
+      request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
+    );
+    try {
+      await service.acceptFinalizedBlock(body);
+      return writeJson(response, 202, { accepted: true, height: service.status().height });
+    } finally {
+      release();
+    }
   }
   writeJson(response, 404, { error: "Not found" });
 }
@@ -848,6 +889,7 @@ function validBearerToken(header: string | undefined, expected: string): boolean
 }
 
 class PeerAuthenticationError extends Error {}
+class PeerInflightLimitError extends Error {}
 
 function authorizeConsensusRequest(
   request: IncomingMessage,
@@ -855,21 +897,55 @@ function authorizeConsensusRequest(
   body: unknown,
   peerAuthToken?: string,
   peerRequestAuthenticator?: PeerRequestAuthenticator
-): void {
+): string {
   if (peerRequestAuthenticator) {
     try {
-      peerRequestAuthenticator.verify(request.headers, {
+      return peerRequestAuthenticator.verify(request.headers, {
         method: request.method ?? "",
         path,
         bodySha256: sha256Hex(Buffer.from(canonicalJson(body), "utf8"))
       });
-      return;
     } catch {
       throw new PeerAuthenticationError("Peer signature authentication required");
     }
   }
   if (peerAuthToken && !validBearerToken(request.headers.authorization, peerAuthToken)) {
     throw new PeerAuthenticationError("Peer authentication required");
+  }
+  return `transport:${request.socket.remoteAddress ?? "unknown"}`;
+}
+
+function enterConsensusRequest(
+  request: IncomingMessage,
+  path: string,
+  body: unknown,
+  peerAuthToken: string | undefined,
+  peerRequestAuthenticator: PeerRequestAuthenticator | undefined,
+  limiter: PeerInflightLimiter | undefined
+): () => void {
+  const identity = authorizeConsensusRequest(request, path, body, peerAuthToken, peerRequestAuthenticator);
+  return limiter?.enter(identity) ?? (() => {});
+}
+
+export class PeerInflightLimiter {
+  private readonly inflight = new Map<string, number>();
+
+  constructor(private readonly limit: number) {
+    boundedPositiveInteger(limit, "consensus inflight per peer");
+  }
+
+  enter(identity: string): () => void {
+    const count = this.inflight.get(identity) ?? 0;
+    if (count >= this.limit) throw new PeerInflightLimitError("Consensus peer concurrency limit exceeded");
+    this.inflight.set(identity, count + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const current = this.inflight.get(identity) ?? 0;
+      if (current <= 1) this.inflight.delete(identity);
+      else this.inflight.set(identity, current - 1);
+    };
   }
 }
 

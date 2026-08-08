@@ -30,6 +30,7 @@ import {
   MAX_SYNC_PROBE_CONCURRENCY,
   NodeService,
   peerDiversityBucket,
+  PeerInflightLimiter,
   PeerClient,
   peerSyncProbeBatches,
   produceFinalizedBlock
@@ -896,6 +897,22 @@ test("public RPC binding fails closed when consensus peer authentication is abse
   assert.throws(() => assertSafeRpcBinding("::", false), /requires consensus peer authentication/);
   assert.throws(() => assertSafeRpcBinding("node.example", false), /requires consensus peer authentication/);
   assert.doesNotThrow(() => assertSafeRpcBinding("0.0.0.0", true));
+});
+
+test("per-peer consensus inflight limiter fails fast and releases capacity exactly once", () => {
+  const limiter = new PeerInflightLimiter(1);
+  const release = limiter.enter("node-a");
+  assert.throws(() => limiter.enter("node-a"), /concurrency limit exceeded/);
+  assert.doesNotThrow(() => {
+    const otherRelease = limiter.enter("node-b");
+    otherRelease();
+  });
+  release();
+  release();
+  assert.doesNotThrow(() => {
+    const nextRelease = limiter.enter("node-a");
+    nextRelease();
+  });
 });
 
 test("RPC trusted peer identities require signed consensus writes and reject replay", async () => {
