@@ -7,6 +7,7 @@ import type {
   BlockAttestation,
   BlockHeader,
   GenesisConfig,
+  RoundSkipVote,
   Transaction,
   Validator
 } from "./types.js";
@@ -33,6 +34,7 @@ export function createGenesisBlock(genesis: GenesisConfig, stateRoot: string): B
     hash: blockHash(header),
     proposerPublicKey: null,
     signature: null,
+    roundCertificate: [],
     attestations: []
   };
 }
@@ -47,6 +49,7 @@ export function createSignedBlock(input: {
   stateRoot: string;
   proposerPrivateKey: string;
   proposerPublicKey: string;
+  roundCertificate?: RoundSkipVote[];
 }): Block {
   const header: BlockHeader = {
     version: 1,
@@ -67,8 +70,39 @@ export function createSignedBlock(input: {
     hash,
     proposerPublicKey: input.proposerPublicKey,
     signature,
+    roundCertificate: structuredClone(input.roundCertificate ?? []),
     attestations: []
   };
+}
+
+export function roundSkipPayload(vote: Omit<RoundSkipVote, "signature">): unknown {
+  return {
+    validator: vote.validator,
+    publicKey: vote.publicKey,
+    chainId: vote.chainId,
+    height: vote.height,
+    round: vote.round,
+    previousHash: vote.previousHash
+  };
+}
+
+export function createRoundSkipVote(input: {
+  chainId: string;
+  height: number;
+  round: number;
+  previousHash: string;
+  validatorPrivateKey: string;
+  validatorPublicKey: string;
+}): RoundSkipVote {
+  const unsigned = {
+    validator: addressFromPublicKey(input.validatorPublicKey),
+    publicKey: input.validatorPublicKey,
+    chainId: input.chainId,
+    height: input.height,
+    round: input.round,
+    previousHash: input.previousHash
+  };
+  return { ...unsigned, signature: signCanonical(roundSkipPayload(unsigned), input.validatorPrivateKey) };
 }
 
 export function createBlockAttestation(
@@ -111,9 +145,7 @@ export function validateBlockEnvelope(
   if (block.header.chainId !== previous.header.chainId) throw new Error("Wrong chain ID");
   if (block.header.height !== previous.header.height + 1) throw new Error("Wrong block height");
   if (block.header.previousHash !== previous.hash) throw new Error("Wrong previous hash");
-  if (block.header.round !== 0) {
-    throw new Error("Only consensus round 0 is enabled until certified view-change is implemented");
-  }
+  if (!Number.isSafeInteger(block.header.round) || block.header.round < 0) throw new Error("Invalid round");
   if (!Number.isSafeInteger(block.header.timestampMs)) throw new Error("Invalid block timestamp");
   if (block.header.timestampMs <= previous.header.timestampMs) throw new Error("Block time must increase");
   if (block.header.timestampMs > nowMs + 120_000) throw new Error("Block time too far in future");
@@ -132,13 +164,58 @@ export function validateBlockEnvelope(
   if (!verifyCanonical(block.header, block.signature, block.proposerPublicKey)) {
     throw new Error("Invalid proposer signature");
   }
+  validateRoundCertificate(block, validators);
   if (requireFinality) validateAttestationQuorum(block, validators);
+}
+
+export function validateRoundCertificate(block: Block, validators: Validator[]): void {
+  if (block.header.round === 0) {
+    if (block.roundCertificate.length !== 0) throw new Error("Round 0 must not contain a skip certificate");
+    return;
+  }
+  validateRoundSkipQuorum(
+    block.roundCertificate,
+    validators,
+    block.header.chainId,
+    block.header.height,
+    block.header.round - 1,
+    block.header.previousHash
+  );
+}
+
+export function validateRoundSkipQuorum(
+  votes: RoundSkipVote[],
+  validators: Validator[],
+  chainId: string,
+  height: number,
+  round: number,
+  previousHash: string
+): void {
+  const allowed = new Map(validators.map((validator) => [validator.address, validator.publicKey]));
+  const seen = new Set<string>();
+  let valid = 0;
+  for (const vote of votes) {
+    if (seen.has(vote.validator)) throw new Error("Duplicate round skip vote");
+    seen.add(vote.validator);
+    const expectedPublicKey = allowed.get(vote.validator);
+    if (!expectedPublicKey || expectedPublicKey !== vote.publicKey) throw new Error("Unknown round skip voter");
+    if (vote.chainId !== chainId || vote.height !== height || vote.round !== round || vote.previousHash !== previousHash) {
+      throw new Error("Round skip vote does not match proposal");
+    }
+    const { signature: _signature, ...unsigned } = vote;
+    if (!verifyCanonical(roundSkipPayload(unsigned), vote.signature, vote.publicKey)) {
+      throw new Error("Invalid round skip signature");
+    }
+    valid += 1;
+  }
+  const quorum = Math.floor((validators.length * 2) / 3) + 1;
+  if (valid < quorum) throw new Error(`Round skip quorum not reached: ${valid}/${quorum}`);
 }
 
 export function validateBlockShape(value: unknown): asserts value is Block {
   assertPlainRecord(value, "block");
   assertExactKeys(value, [
-    "header", "transactions", "hash", "proposerPublicKey", "signature", "attestations"
+    "header", "transactions", "hash", "proposerPublicKey", "signature", "roundCertificate", "attestations"
   ], "block");
   assertPlainRecord(value.header, "block header");
   assertExactKeys(value.header, [
@@ -158,6 +235,7 @@ export function validateBlockShape(value: unknown): asserts value is Block {
   if (!Array.isArray(value.transactions)) throw new Error("Invalid block transactions");
   for (const tx of value.transactions) validateTransactionShape(tx);
   if (!Array.isArray(value.attestations)) throw new Error("Invalid block attestations");
+  if (!Array.isArray(value.roundCertificate)) throw new Error("Invalid round certificate");
   if (value.proposerPublicKey !== null && typeof value.proposerPublicKey !== "string") throw new Error("Invalid proposer public key");
   if (value.signature !== null && typeof value.signature !== "string") throw new Error("Invalid block signature");
   for (const item of value.attestations) {
@@ -167,6 +245,17 @@ export function validateBlockShape(value: unknown): asserts value is Block {
     if (typeof item.publicKey !== "string" || typeof item.signature !== "string") throw new Error("Invalid block attestation");
     assertHex(item.publicKey, 64, "attestation publicKey");
     assertHex(item.signature, 64, "attestation signature");
+  }
+  for (const item of value.roundCertificate) {
+    assertPlainRecord(item, "round skip vote");
+    assertExactKeys(item, ["validator", "publicKey", "chainId", "height", "round", "previousHash", "signature"], "round skip vote");
+    assertAddress(item.validator as string);
+    if (typeof item.publicKey !== "string" || typeof item.chainId !== "string" || typeof item.previousHash !== "string" ||
+        typeof item.signature !== "string" || !Number.isSafeInteger(item.height) || !Number.isSafeInteger(item.round) ||
+        Number(item.height) < 1 || Number(item.round) < 0) throw new Error("Invalid round skip vote");
+    assertHex(item.publicKey, 64, "round skip publicKey");
+    assertHex(item.previousHash, 32, "round skip previousHash");
+    assertHex(item.signature, 64, "round skip signature");
   }
 }
 
