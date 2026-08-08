@@ -8,7 +8,12 @@ import { sha256Hex } from "../src/codec.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { Mempool } from "../src/mempool.js";
 import { ZyronChain } from "../src/chain.js";
-import { createActivitySettlement, createTransfer } from "../src/transaction.js";
+import {
+  createActivitySettlement,
+  createTransfer,
+  createValidatorApproval,
+  createValidatorSetUpdate
+} from "../src/transaction.js";
 import { createRoundSkipVote, validateBlockShape } from "../src/block.js";
 import { ChainStore, SigningJournal } from "../src/storage.js";
 import { createRpcServer, NodeService, PeerClient, produceFinalizedBlock } from "../src/node.js";
@@ -18,16 +23,22 @@ const validatorOnePrivate = "01".padStart(64, "0");
 const validatorTwoPrivate = "02".padStart(64, "0");
 const alicePrivate = "03".padStart(64, "0");
 const oraclePrivate = "04".padStart(64, "0");
+const newValidatorOnePrivate = "07".padStart(64, "0");
+const newValidatorTwoPrivate = "08".padStart(64, "0");
 
 const validatorOnePublic = publicKeyFromPrivate(validatorOnePrivate);
 const validatorTwoPublic = publicKeyFromPrivate(validatorTwoPrivate);
 const alicePublic = publicKeyFromPrivate(alicePrivate);
 const oraclePublic = publicKeyFromPrivate(oraclePrivate);
+const newValidatorOnePublic = publicKeyFromPrivate(newValidatorOnePrivate);
+const newValidatorTwoPublic = publicKeyFromPrivate(newValidatorTwoPrivate);
 const validatorOne = addressFromPublicKey(validatorOnePublic);
 const validatorTwo = addressFromPublicKey(validatorTwoPublic);
 const alice = addressFromPublicKey(alicePublic);
 const bob = addressFromPublicKey(publicKeyFromPrivate("05".padStart(64, "0")));
 const activityPool = addressFromPublicKey(publicKeyFromPrivate("06".padStart(64, "0")));
+const newValidatorOne = addressFromPublicKey(newValidatorOnePublic);
+const newValidatorTwo = addressFromPublicKey(newValidatorTwoPublic);
 
 function genesis(): GenesisConfig {
   return {
@@ -496,5 +507,129 @@ test("validators cannot jump view-change rounds without the predecessor quorum c
   } finally {
     await rm(firstDir, { recursive: true, force: true });
     await rm(secondDir, { recursive: true, force: true });
+  }
+});
+
+test("validator rotation requires current-set quorum and activates after the delay", () => {
+  const chain = new ZyronChain(genesis());
+  const validators = [
+    { address: newValidatorOne, publicKey: newValidatorOnePublic },
+    { address: newValidatorTwo, publicKey: newValidatorTwoPublic }
+  ];
+  const approvalInput = {
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: validatorOne,
+    activationHeight: 101,
+    validators
+  };
+  const approvals = [
+    createValidatorApproval(approvalInput, validatorOnePrivate, validatorOnePublic),
+    createValidatorApproval(approvalInput, validatorTwoPrivate, validatorTwoPublic)
+  ];
+  const update = createValidatorSetUpdate(
+    { ...approvalInput, approvals, timestampMs: 1_700_000_000_100 },
+    validatorOnePrivate,
+    validatorOnePublic
+  );
+  let block = chain.produceBlock([update], validatorOnePrivate, { timestampMs: 1_700_000_000_200 });
+  block = chain.attestBlock(block, validatorOnePrivate);
+  block = chain.attestBlock(block, validatorTwoPrivate);
+  chain.acceptBlock(block, 1_700_000_000_200);
+
+  assert.deepEqual(chain.validatorsAt(100).map((validator) => validator.address), [validatorOne, validatorTwo]);
+  assert.deepEqual(chain.validatorsAt(101).map((validator) => validator.address), [newValidatorOne, newValidatorTwo]);
+  assert.equal(chain.getState().nonce(validatorOne), 1);
+
+  for (let height = 2; height <= 100; height += 1) {
+    const proposerKey = height % 2 === 0 ? validatorTwoPrivate : validatorOnePrivate;
+    let empty = chain.produceBlock([], proposerKey, { timestampMs: 1_700_000_000_200 + height });
+    empty = chain.attestBlock(empty, validatorOnePrivate);
+    empty = chain.attestBlock(empty, validatorTwoPrivate);
+    chain.acceptBlock(empty, 1_700_000_000_200 + height);
+  }
+  assert.equal(chain.height, 100);
+  let activated = chain.produceBlock([], newValidatorOnePrivate, { timestampMs: 1_700_000_000_500 });
+  assert.throws(() => chain.attestBlock(activated, validatorOnePrivate), /not in validator set/);
+  activated = chain.attestBlock(activated, newValidatorOnePrivate);
+  activated = chain.attestBlock(activated, newValidatorTwoPrivate);
+  chain.acceptBlock(activated, 1_700_000_000_500);
+  assert.equal(chain.height, 101);
+});
+
+test("validator rotation rejects insufficient quorum and premature activation", () => {
+  const chain = new ZyronChain(genesis());
+  const validators = [{ address: newValidatorOne, publicKey: newValidatorOnePublic }];
+  const base = {
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: validatorOne,
+    activationHeight: 101,
+    validators
+  };
+  const oneApproval = [createValidatorApproval(base, validatorOnePrivate, validatorOnePublic)];
+  const insufficient = createValidatorSetUpdate(
+    { ...base, approvals: oneApproval, timestampMs: 1_700_000_000_100 },
+    validatorOnePrivate,
+    validatorOnePublic
+  );
+  assert.throws(
+    () => chain.produceBlock([insufficient], validatorOnePrivate, { timestampMs: 1_700_000_000_200 }),
+    /quorum not reached/
+  );
+
+  const earlyBase = { ...base, activationHeight: 100 };
+  const earlyApprovals = [
+    createValidatorApproval(earlyBase, validatorOnePrivate, validatorOnePublic),
+    createValidatorApproval(earlyBase, validatorTwoPrivate, validatorTwoPublic)
+  ];
+  const early = createValidatorSetUpdate(
+    { ...earlyBase, approvals: earlyApprovals, timestampMs: 1_700_000_000_100 },
+    validatorOnePrivate,
+    validatorOnePublic
+  );
+  assert.throws(
+    () => chain.produceBlock([early], validatorOnePrivate, { timestampMs: 1_700_000_000_200 }),
+    /activation is too soon/
+  );
+});
+
+test("validator schedule is reconstructed from finalized history after restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-rotation-store-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    const validators = [
+      { address: newValidatorOne, publicKey: newValidatorOnePublic },
+      { address: newValidatorTwo, publicKey: newValidatorTwoPublic }
+    ];
+    const approvalInput = {
+      chainId: genesis().chainId,
+      nonce: 1,
+      sender: validatorOne,
+      activationHeight: 101,
+      validators
+    };
+    const update = createValidatorSetUpdate(
+      {
+        ...approvalInput,
+        approvals: [
+          createValidatorApproval(approvalInput, validatorOnePrivate, validatorOnePublic),
+          createValidatorApproval(approvalInput, validatorTwoPrivate, validatorTwoPublic)
+        ],
+        timestampMs: 1_700_000_000_100
+      },
+      validatorOnePrivate,
+      validatorOnePublic
+    );
+    let block = store.chain.produceBlock([update], validatorOnePrivate, { timestampMs: 1_700_000_000_200 });
+    block = store.chain.attestBlock(block, validatorOnePrivate);
+    block = store.chain.attestBlock(block, validatorTwoPrivate);
+    store.chain.acceptBlock(block, 1_700_000_000_200);
+    await store.appendFinalizedBlock(block);
+
+    const reopened = await ChainStore.open(genesis(), directory);
+    assert.deepEqual(reopened.chain.validatorsAt(101).map((validator) => validator.address), [newValidatorOne, newValidatorTwo]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
