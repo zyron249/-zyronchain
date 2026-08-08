@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -27,6 +27,11 @@ interface RecoveryCheckpointV1 {
   blockFileBytes: number;
   snapshotSha256: string;
   snapshot: ReturnType<ZyronChain["snapshot"]>;
+}
+
+export interface RecoveryCheckpointFaultHooks {
+  afterTemporarySync?: () => void | Promise<void>;
+  afterRename?: () => void | Promise<void>;
 }
 
 export class ChainStore {
@@ -116,7 +121,9 @@ export class ChainStore {
     return { height: snapshot.height, sha256 };
   }
 
-  async writeRecoveryCheckpoint(): Promise<{ height: number; tipHash: string; snapshotSha256: string }> {
+  async writeRecoveryCheckpoint(
+    faultHooks: RecoveryCheckpointFaultHooks = {}
+  ): Promise<{ height: number; tipHash: string; snapshotSha256: string }> {
     if (this.chain.height !== this.persistedHeight) throw new Error("Cannot checkpoint non-durable chain state");
     const snapshot = this.chain.snapshot();
     const snapshotSha256 = sha256Hex(canonicalJson(snapshot));
@@ -132,19 +139,27 @@ export class ChainStore {
     };
     const path = join(this.dataDir, "recovery-checkpoint.json");
     const temporary = `${path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
-    const handle = await open(temporary, "wx", 0o600);
+    let renamed = false;
     try {
-      await handle.writeFile(`${canonicalJson(checkpoint)}\n`, "utf8");
-      await handle.sync();
+      const handle = await open(temporary, "wx", 0o600);
+      try {
+        await handle.writeFile(`${canonicalJson(checkpoint)}\n`, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await faultHooks.afterTemporarySync?.();
+      await rename(temporary, path);
+      renamed = true;
+      await faultHooks.afterRename?.();
+      const directory = await open(this.dataDir, "r");
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
     } finally {
-      await handle.close();
-    }
-    await rename(temporary, path);
-    const directory = await open(this.dataDir, "r");
-    try {
-      await directory.sync();
-    } finally {
-      await directory.close();
+      if (!renamed) await rm(temporary, { force: true });
     }
     return { height: checkpoint.height, tipHash: checkpoint.tipHash, snapshotSha256 };
   }
