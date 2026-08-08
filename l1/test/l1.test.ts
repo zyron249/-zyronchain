@@ -20,7 +20,7 @@ import { createRoundSkipVote, validateBlockShape } from "../src/block.js";
 import { ChainStore, SigningJournal } from "../src/storage.js";
 import { stateV2FromLedgerSnapshot } from "../src/state-v2.js";
 import { LedgerState } from "../src/state.js";
-import { createSignedPeerRecord, loadOrCreateNodeIdentity } from "../src/peer-identity.js";
+import { createSignedPeerRecord, loadOrCreateNodeIdentity, signPeerRequest } from "../src/peer-identity.js";
 import { createRpcServer, NodeService, PeerClient, produceFinalizedBlock } from "../src/node.js";
 import type { GenesisConfig } from "../src/types.js";
 
@@ -759,6 +759,62 @@ test("RPC peer authentication protects consensus writes without hiding public st
   } finally {
     await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("RPC trusted peer identities require signed consensus writes and reject replay", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-peer-signature-"));
+  const identityDirectory = await mkdtemp(join(tmpdir(), "zyron-rpc-peer-identity-"));
+  const store = await ChainStore.open(genesis(), directory);
+  const service = new NodeService(store);
+  const identity = await loadOrCreateNodeIdentity(identityDirectory);
+  const token = "legacy-peer-token-0123456789abcdef";
+  const server = createRpcServer(service, { peerAuthToken: token, trustedPeerPublicKeys: [identity.publicKey] });
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("RPC signature test server has no TCP address");
+    const base = `http://127.0.0.1:${address.port}`;
+
+    const bearerOnly = await fetch(`${base}/block`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: "{}"
+    });
+    assert.equal(bearerOnly.status, 401);
+    assert.equal(bearerOnly.headers.get("www-authenticate"), "ZyronSignature");
+
+    const now = Date.now();
+    const signedHeaders = signPeerRequest(identity, {
+      chainId: service.status().chainId,
+      genesisHash: service.status().genesisHash,
+      method: "POST",
+      path: "/block",
+      bodySha256: sha256Hex(Buffer.from(canonicalJson({}), "utf8")),
+      timestampMs: now,
+      nonce: "44".repeat(16)
+    });
+    const signed = await fetch(`${base}/block`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...signedHeaders },
+      body: canonicalJson({})
+    });
+    assert.equal(signed.status, 400);
+    assert.notEqual((await signed.json() as { error?: string }).error, "Peer signature authentication required");
+
+    const replay = await fetch(`${base}/block`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...signedHeaders },
+      body: canonicalJson({})
+    });
+    assert.equal(replay.status, 401);
+  } finally {
+    await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+    await rm(directory, { recursive: true, force: true });
+    await rm(identityDirectory, { recursive: true, force: true });
   }
 });
 
