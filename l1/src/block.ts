@@ -52,6 +52,22 @@ export function createSignedBlock(input: {
   proposerPublicKey: string;
   roundCertificate?: RoundSkipVote[];
 }): Block {
+  const unsigned = createUnsignedBlock(input);
+  return attachBlockSignature(unsigned, signCanonical(unsigned.header, input.proposerPrivateKey));
+}
+
+export function createUnsignedBlock(input: {
+  version: number;
+  chainId: string;
+  height: number;
+  round: number;
+  previousHash: string;
+  timestampMs: number;
+  transactions: Transaction[];
+  stateRoot: string;
+  proposerPublicKey: string;
+  roundCertificate?: RoundSkipVote[];
+}): Block {
   const header: BlockHeader = {
     version: input.version,
     chainId: input.chainId,
@@ -64,16 +80,22 @@ export function createSignedBlock(input: {
     proposer: addressFromPublicKey(input.proposerPublicKey)
   };
   const hash = blockHash(header);
-  const signature = signCanonical(header, input.proposerPrivateKey);
   return {
     header,
     transactions: input.transactions,
     hash,
     proposerPublicKey: input.proposerPublicKey,
-    signature,
+    signature: null,
     roundCertificate: structuredClone(input.roundCertificate ?? []),
     attestations: []
   };
+}
+
+export function attachBlockSignature(block: Block, signature: string): Block {
+  if (block.header.height === 0 || !block.proposerPublicKey) throw new Error("Cannot sign genesis block as validator proposal");
+  assertHex(signature, 64, "block signature");
+  if (!verifyCanonical(block.header, signature, block.proposerPublicKey)) throw new Error("Invalid proposer signature");
+  return { ...block, signature };
 }
 
 export function roundSkipPayload(vote: Omit<RoundSkipVote, "signature">): unknown {

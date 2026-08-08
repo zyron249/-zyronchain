@@ -4,6 +4,7 @@ import {
   createGenesisBlock,
   createBlockAttestation,
   createSignedBlock,
+  createUnsignedBlock,
   expectedValidator,
   validateAttestationQuorum,
   validateBlockEnvelope,
@@ -266,18 +267,41 @@ export class ZyronChain {
     proposerPrivateKey: string,
     options: { round?: number; timestampMs?: number; roundCertificate?: RoundSkipVote[] } = {}
   ): Block {
+    const publicKey = publicKeyFromPrivate(proposerPrivateKey);
+    const unsigned = this.prepareBlock(transactions, publicKey, options);
+    const block = createSignedBlock({
+      version: unsigned.header.version,
+      chainId: unsigned.header.chainId,
+      height: unsigned.header.height,
+      round: unsigned.header.round,
+      previousHash: unsigned.header.previousHash,
+      timestampMs: unsigned.header.timestampMs,
+      transactions: unsigned.transactions,
+      stateRoot: unsigned.header.stateRoot,
+      proposerPrivateKey,
+      proposerPublicKey: publicKey,
+      roundCertificate: unsigned.roundCertificate
+    });
+    this.validatePreparedBlock(block, unsigned.header.timestampMs);
+    return block;
+  }
+
+  prepareBlock(
+    transactions: Transaction[],
+    proposerPublicKey: string,
+    options: { round?: number; timestampMs?: number; roundCertificate?: RoundSkipVote[] } = {}
+  ): Block {
     const round = options.round ?? 0;
     const protocolVersion = this.protocolVersionAt(this.height + 1);
     assertSupportedProtocolVersion(protocolVersion);
-    const publicKey = publicKeyFromPrivate(proposerPrivateKey);
     const validators = this.validatorsAt(this.height + 1);
     const expected = expectedValidator(validators, this.height + 1, round);
-    if (publicKey !== expected.publicKey || addressFromPublicKey(publicKey) !== expected.address) {
-      throw new Error("Private key is not the expected proposer");
+    if (proposerPublicKey !== expected.publicKey || addressFromPublicKey(proposerPublicKey) !== expected.address) {
+      throw new Error("Public key is not the expected proposer");
     }
     const timestampMs = options.timestampMs ?? Math.max(Date.now(), this.tip.header.timestampMs + 1);
     const next = this.validateAndApply(transactions, this.state, this.height + 1);
-    const block = createSignedBlock({
+    return createUnsignedBlock({
       version: protocolVersion,
       chainId: this.genesis.chainId,
       height: this.height + 1,
@@ -286,13 +310,16 @@ export class ZyronChain {
       timestampMs,
       transactions,
       stateRoot: stateRootForProtocol(protocolVersion, next),
-      proposerPrivateKey,
-      proposerPublicKey: publicKey,
+      proposerPublicKey,
       roundCertificate: options.roundCertificate ?? []
     });
-    validateBlockEnvelope(block, this.tip, validators, timestampMs, false, protocolVersion);
+  }
+
+  validatePreparedBlock(block: Block, nowMs = Date.now()): void {
+    const protocolVersion = this.protocolVersionAt(block.header.height);
+    const validators = this.validatorsAt(block.header.height);
+    validateBlockEnvelope(block, this.tip, validators, nowMs, false, protocolVersion);
     if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
-    return block;
   }
 
   acceptBlock(block: Block, nowMs = Date.now()): void {

@@ -45,6 +45,7 @@ import {
 } from "./transaction.js";
 import type { GenesisConfig, Validator, ValidatorApproval } from "./types.js";
 import { MAX_SUPPLY_ATOMS, type Address } from "./types.js";
+import { LocalValidatorSigner, RemoteValidatorSigner, type ValidatorSigner } from "./validator-signer.js";
 
 interface ValidatorProposal {
   chainId: string;
@@ -255,7 +256,8 @@ async function createGenesis(args: string[]): Promise<void> {
 async function runNode(args: string[]): Promise<void> {
   assertKnownOptions(args, new Set([
     "--genesis", "--data", "--host", "--port", "--peer", "--advertise-peer", "--validator-key", "--peer-token-file",
-    "--trusted-peer-public-key", "--p2p-listen", "--p2p-peer", "--p2p-peer-group"
+    "--trusted-peer-public-key", "--p2p-listen", "--p2p-peer", "--p2p-peer-group", "--validator-signer-url",
+    "--validator-public-key"
   ]));
   const genesisPath = option(args, "--genesis");
   const dataDir = option(args, "--data");
@@ -279,16 +281,29 @@ async function runNode(args: string[]): Promise<void> {
   const store = await ChainStore.open(genesis, resolve(dataDir));
   const validatorKeyPath = option(args, "--validator-key");
   const privateKey = validatorKeyPath ? await readPrivateKey(resolve(validatorKeyPath)) : undefined;
-  const journal = privateKey ? await SigningJournal.open(resolve(dataDir)) : undefined;
-  if (privateKey) {
-    const publicKey = publicKeyFromPrivate(privateKey);
+  const validatorSignerUrl = option(args, "--validator-signer-url");
+  const validatorPublicKey = option(args, "--validator-public-key");
+  if (validatorKeyPath && (validatorSignerUrl || validatorPublicKey)) {
+    throw new Error("--validator-key cannot be combined with remote validator signer options");
+  }
+  if (Boolean(validatorSignerUrl) !== Boolean(validatorPublicKey)) {
+    throw new Error("Remote validator signing requires both --validator-signer-url and --validator-public-key");
+  }
+  const validatorSigner: ValidatorSigner | undefined = privateKey
+    ? new LocalValidatorSigner(privateKey)
+    : validatorSignerUrl && validatorPublicKey
+      ? new RemoteValidatorSigner(validatorSignerUrl, validatorPublicKey)
+      : undefined;
+  const journal = validatorSigner ? await SigningJournal.open(resolve(dataDir)) : undefined;
+  if (validatorSigner) {
+    const publicKey = validatorSigner.publicKey;
     if (!store.chain.validatorsAt(store.chain.height + 1).some((validator) => validator.publicKey === publicKey)) {
       console.warn("Validator key is not active at the next height; it will not sign until a scheduled set activates it.");
     }
   }
   const peerTokenPath = option(args, "--peer-token-file");
   const peerAuthToken = peerTokenPath ? await readPeerAuthToken(resolve(peerTokenPath)) : undefined;
-  const service = new NodeService(store, journal, privateKey);
+  const service = new NodeService(store, journal, validatorSigner);
   const advertisedPeerUrls = options(args, "--advertise-peer");
   const trustedPeerPublicKeys = options(args, "--trusted-peer-public-key");
   assertSafeRpcBinding(host, Boolean(peerAuthToken || trustedPeerPublicKeys.length));
@@ -397,9 +412,9 @@ async function runNode(args: string[]): Promise<void> {
     for (const address of nativeNode.getMultiaddrs()) console.log(`Native P2P ${address.toString()}`);
   }
 
-  if (privateKey) {
+  if (validatorSigner) {
     setInterval(() => {
-      void produceFinalizedBlock(service, consensusPeers, privateKey)
+      void produceFinalizedBlock(service, consensusPeers, validatorSigner)
         .then((block) => { if (block) console.log(`Finalized block ${block.header.height} ${block.hash}`); })
         .catch((error) => console.warn(`Validator round failed: ${safeError(error)}`));
     }, BLOCK_INTERVAL_MS).unref();
@@ -873,7 +888,7 @@ function usage(): void {
   console.log("Usage:");
   console.log("  zyron-l1 keygen --out validator-key.json");
   console.log("  zyron-l1 genesis --out genesis.json --chain-id zyron-devnet-1 --validator-public-key <hex> --oracle-public-key <hex> --activity-pool <address> --allocation <address:atoms>");
-  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json] [--peer https://node:9137] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>]");
+  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json | --validator-signer-url https://signer/sign --validator-public-key <hex>] [--peer https://node:9137] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>]");
   console.log("  zyron-l1 transfer --key wallet-key.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms <n> [--fee-atoms <n>]");
   console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");
   console.log("  zyron-l1 validator-approve --proposal update.json --key validator.json --out approval.json");

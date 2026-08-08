@@ -8,7 +8,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { canonicalJson, sha256Hex } from "../src/codec.js";
-import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
+import { addressFromPublicKey, publicKeyFromPrivate, signCanonical } from "../src/crypto.js";
 import { Mempool } from "../src/mempool.js";
 import { ZyronChain } from "../src/chain.js";
 import {
@@ -39,9 +39,11 @@ import {
   PeerInflightLimiter,
   PeerClient,
   peerSyncProbeBatches,
-  produceFinalizedBlock
+  produceFinalizedBlock,
+  type ConsensusPeerClient
 } from "../src/node.js";
 import type { GenesisConfig } from "../src/types.js";
+import { RemoteValidatorSigner } from "../src/validator-signer.js";
 
 const validatorOnePrivate = "01".padStart(64, "0");
 const validatorTwoPrivate = "02".padStart(64, "0");
@@ -1264,6 +1266,91 @@ test("two node services attest a proposal, finalize it, persist it, and converge
   } finally {
     await rm(firstDir, { recursive: true, force: true });
     await rm(secondDir, { recursive: true, force: true });
+  }
+});
+
+test("remote validator signer keeps the secret out of the node and signs proposals plus attestations", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-remote-signer-"));
+  const intents: string[] = [];
+  const signerServer = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { intent: string; payload: unknown };
+    intents.push(body.intent);
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ signature: signCanonical(body.payload, validatorOnePrivate) }));
+  });
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      signerServer.once("error", reject);
+      signerServer.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = signerServer.address();
+    if (!address || typeof address === "string") throw new Error("Signer test server has no TCP address");
+    const signer = new RemoteValidatorSigner(`http://127.0.0.1:${address.port}/sign`, validatorOnePublic);
+    const store = await ChainStore.open(genesis(), directory);
+    const service = new NodeService(store, await SigningJournal.open(directory), signer);
+    const peers: ConsensusPeerClient = {
+      requestAttestations: async (block) => [store.chain.attestBlock(block, validatorTwoPrivate).attestations[0]!],
+      requestRoundSkips: async () => [],
+      broadcastBlock: async () => undefined
+    };
+    const block = await produceFinalizedBlock(service, peers, signer, genesis().timestampMs + 30_000);
+    assert.ok(block);
+    assert.equal(block.header.height, 1);
+    assert.deepEqual(intents, ["block-proposal", "block-attestation"]);
+    assert.equal(service.status().height, 1);
+  } finally {
+    if (signerServer.listening) {
+      await new Promise<void>((resolveClose, reject) => signerServer.close((error) => error ? reject(error) : resolveClose()));
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("remote validator signer is fail-closed on wrong-key signatures and unsafe plaintext endpoints", async () => {
+  assert.throws(
+    () => new RemoteValidatorSigner("http://192.0.2.10/sign", validatorOnePublic),
+    /loopback/
+  );
+  const signerServer = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { payload: unknown };
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ signature: signCanonical(body.payload, validatorTwoPrivate) }));
+  });
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      signerServer.once("error", reject);
+      signerServer.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = signerServer.address();
+    if (!address || typeof address === "string") throw new Error("Signer test server has no TCP address");
+    const signer = new RemoteValidatorSigner(`http://127.0.0.1:${address.port}/sign`, validatorOnePublic);
+    await assert.rejects(() => signer.signCanonical({ height: 1 }, "block-proposal"), /wrong key or payload/);
+  } finally {
+    if (signerServer.listening) {
+      await new Promise<void>((resolveClose, reject) => signerServer.close((error) => error ? reject(error) : resolveClose()));
+    }
+  }
+});
+
+test("signing journal remains authoritative when a remote signer fails after reservation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-remote-signer-journal-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    const failingSigner = {
+      publicKey: validatorOnePublic,
+      signCanonical: async () => { throw new Error("injected signer outage"); }
+    };
+    const service = new NodeService(store, await SigningJournal.open(directory), failingSigner);
+    const first = store.chain.produceBlock([], validatorOnePrivate, { timestampMs: genesis().timestampMs + 100 });
+    await assert.rejects(() => service.attestProposal(first), /injected signer outage/);
+    const conflicting = store.chain.produceBlock([], validatorOnePrivate, { timestampMs: genesis().timestampMs + 101 });
+    await assert.rejects(() => service.attestProposal(conflicting), /Conflicting validator action/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
