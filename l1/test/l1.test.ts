@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -1633,6 +1633,60 @@ test("restart catches a valid stale State v2 store up to the authoritative final
     const reopened = await ChainStore.open(genesis(), directory);
     assert.equal(reopened.chain.tip.hash, expectedTip);
     assert.equal((await StateV2DiskStore.open(directory)).state().root(), expectedRoot);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("ChainStore quarantines corrupt State v2 files only after authoritative replay and rebuilds them", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-quarantine-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    const proposal = {
+      chainId: genesis().chainId,
+      nonce: 1,
+      sender: validatorOne,
+      activationHeight: 101,
+      protocolVersion: 2
+    };
+    const upgrade = createProtocolUpgrade(
+      {
+        ...proposal,
+        approvals: [
+          createProtocolUpgradeApproval(proposal, validatorOnePrivate, validatorOnePublic),
+          createProtocolUpgradeApproval(proposal, validatorTwoPrivate, validatorTwoPublic)
+        ],
+        timestampMs: 1_700_000_000_100
+      },
+      validatorOnePrivate,
+      validatorOnePublic
+    );
+    for (let height = 1; height <= 101; height += 1) {
+      const proposerKey = height % 2 === 1 ? validatorOnePrivate : validatorTwoPrivate;
+      let block = store.chain.produceBlock(height === 1 ? [upgrade] : [], proposerKey, {
+        timestampMs: genesis().timestampMs + (height * 100)
+      });
+      block = store.chain.attestBlock(block, validatorOnePrivate);
+      block = store.chain.attestBlock(block, validatorTwoPrivate);
+      await store.commitFinalizedBlock(block, genesis().timestampMs + (height * 100));
+    }
+    const expectedTip = store.chain.tip.hash;
+    const expectedRoot = store.chain.tip.header.stateRoot;
+    const nodesPath = join(directory, "state-v2.nodes.ndjson");
+    const lines = (await readFile(nodesPath, "utf8")).trimEnd().split("\n");
+    const withoutRoot = lines.filter((line) => {
+      const envelope = JSON.parse(line) as { record?: { hash?: string } };
+      return envelope.record?.hash !== expectedRoot;
+    });
+    assert.equal(withoutRoot.length, lines.length - 1);
+    await writeFile(nodesPath, `${withoutRoot.join("\n")}\n`, "utf8");
+
+    const reopened = await ChainStore.open(genesis(), directory);
+    assert.equal(reopened.recoveredStateV2FromCorruption, true);
+    assert.equal(reopened.chain.tip.hash, expectedTip);
+    assert.equal((await StateV2DiskStore.open(directory)).state().root(), expectedRoot);
+    const quarantined = (await readdir(directory)).filter((name) => name.includes(".corrupt-"));
+    assert.equal(quarantined.length, 2);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

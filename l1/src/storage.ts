@@ -48,7 +48,8 @@ export class ChainStore {
     persistedBytes: number,
     blockRanges: Array<{ offset: number; length: number }>,
     private readonly stateV2Store: StateV2DiskStore,
-    readonly recoveredFromCheckpointHeight = 0
+    readonly recoveredFromCheckpointHeight = 0,
+    readonly recoveredStateV2FromCorruption = false
   ) {
     this.persistedHeight = persistedHeight;
     this.persistedBytes = persistedBytes;
@@ -81,7 +82,18 @@ export class ChainStore {
       }
     }
     replay ??= await replayStoredBlocks(genesis, blocksPath);
-    const stateV2Store = await StateV2DiskStore.open(dataDir);
+    let stateV2Store: StateV2DiskStore;
+    let recoveredStateV2FromCorruption = false;
+    try {
+      stateV2Store = await StateV2DiskStore.open(dataDir);
+    } catch {
+      // At this point finalized history/checkpoint replay has already succeeded,
+      // so corrupted derived State-v2 files are never a trust source. Preserve
+      // them for forensics and rebuild only from the authenticated replay state.
+      await quarantineCorruptStateV2(dataDir);
+      stateV2Store = await StateV2DiskStore.open(dataDir);
+      recoveredStateV2FromCorruption = true;
+    }
     const replayedStateV2 = replay.chain.stateV2ForPersistence();
     if (replayedStateV2) {
       const persistedRoot = stateV2Store.state().root();
@@ -102,7 +114,8 @@ export class ChainStore {
       replay.offset,
       replay.blockRanges,
       stateV2Store,
-      replay.recoveredHeight
+      replay.recoveredHeight,
+      recoveredStateV2FromCorruption
     );
   }
 
@@ -226,6 +239,23 @@ export class ChainStore {
     this.blockRanges.push({ offset: this.persistedBytes, length: lineBytes - 1 });
     this.persistedBytes += lineBytes;
     this.persistedHeight = block.header.height;
+  }
+}
+
+async function quarantineCorruptStateV2(dataDir: string): Promise<void> {
+  const suffix = `.corrupt-${Date.now()}-${randomBytes(6).toString("hex")}`;
+  for (const filename of ["state-v2.nodes.ndjson", "state-v2.root.json"]) {
+    try {
+      await rename(join(dataDir, filename), join(dataDir, `${filename}${suffix}`));
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+    }
+  }
+  const directory = await open(dataDir, "r");
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
   }
 }
 
