@@ -224,6 +224,19 @@ pruned recovery layout, then atomically publishes it. It refuses existing target
 Peer discovery or checkpoint-transfer metadata must never be used as that trust anchor.
 There is intentionally no peer-driven TOFU fast-import path.
 
+After obtaining those two anchor values independently, an operator can install the
+snapshot only into a new data directory:
+
+```sh
+node dist/src/cli.js checkpoint-install \
+  --genesis genesis.json --snapshot checkpoint.json --data ./data-from-checkpoint \
+  --tip-hash <independently-trusted-finalized-tip> \
+  --sha256 <independently-trusted-snapshot-digest>
+```
+
+Do not copy the two anchor values from the node or peer that supplied the snapshot.
+An existing target directory is rejected rather than overwritten.
+
 Local recovery checkpoints are different: they are created only after the finalized block
 log is durable, bind the full chain/genesis/tip/state/governance snapshot, and are revalidated
 against their exact finalized-log boundary before suffix replay. To measure the restart
