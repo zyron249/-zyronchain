@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from zyron.wallet import Wallet
 from zyron.transaction import Transaction
 
@@ -52,35 +56,29 @@ def test_invalid_signature_rejected():
 def test_non_finite_transaction_amount_rejected():
     wallet = Wallet()
 
-    tx = Transaction(
-        sender=wallet.address,
-        receiver="ZYN1234567890abcdef1234567890abcdef123456",
-        amount=float("nan"),
-        public_key=wallet.get_public_key()
-    )
-
-    tx.sign_transaction(wallet.get_private_key())
-
-    assert tx.is_valid() is False
+    with pytest.raises(ValueError, match="finite"):
+        Transaction(
+            sender=wallet.address,
+            receiver="ZYN1234567890abcdef1234567890abcdef123456",
+            amount=float("nan"),
+            public_key=wallet.get_public_key()
+        )
 
 
 def test_non_finite_transaction_fee_rejected():
     wallet = Wallet()
 
-    tx = Transaction(
-        sender=wallet.address,
-        receiver="ZYN1234567890abcdef1234567890abcdef123456",
-        amount=1,
-        fee=float("inf"),
-        public_key=wallet.get_public_key()
-    )
-
-    tx.sign_transaction(wallet.get_private_key())
-
-    assert tx.is_valid() is False
+    with pytest.raises(ValueError, match="finite"):
+        Transaction(
+            sender=wallet.address,
+            receiver="ZYN1234567890abcdef1234567890abcdef123456",
+            amount=1,
+            fee=float("inf"),
+            public_key=wallet.get_public_key()
+        )
 
 
-def test_protocol_v2_signature_is_deterministic():
+def test_protocol_v3_signature_is_deterministic():
     wallet = Wallet()
 
     tx = Transaction(
@@ -99,6 +97,111 @@ def test_protocol_v2_signature_is_deterministic():
     assert tx.is_valid() is True
 
 
+def test_protocol_v3_uses_atomic_units_and_canonical_payload():
+    wallet = Wallet()
+    tx = Transaction(
+        sender=wallet.address,
+        receiver="ZYN1234567890abcdef1234567890abcdef123456",
+        amount="1.23456789",
+        fee="0.00000001",
+        public_key=wallet.get_public_key(),
+        nonce=7,
+        timestamp_ms=1_700_000_000_123
+    )
+    tx.sign_transaction(wallet.get_private_key())
+    wire = tx.to_dict()
+
+    assert wire["amount_atoms"] == 123_456_789
+    assert wire["fee_atoms"] == 1
+    assert wire["timestamp_ms"] == 1_700_000_000_123
+    assert "amount" not in wire
+    assert "fee" not in wire
+    assert "timestamp" not in wire
+    assert json.loads(tx.data_to_sign())["amount_atoms"] == 123_456_789
+    assert Transaction.from_dict(wire).is_valid() is True
+
+
+def test_protocol_v3_rejects_sub_atomic_amounts():
+    wallet = Wallet()
+    with pytest.raises(ValueError, match="8 decimal places"):
+        Transaction(
+            sender=wallet.address,
+            receiver="ZYN1234567890abcdef1234567890abcdef123456",
+            amount="0.000000001",
+            public_key=wallet.get_public_key()
+        )
+
+
+def test_protocol_v3_rejects_unknown_consensus_fields():
+    wallet = Wallet()
+    tx = Transaction(
+        sender=wallet.address,
+        receiver="ZYN1234567890abcdef1234567890abcdef123456",
+        amount=1,
+        public_key=wallet.get_public_key()
+    )
+    tx.sign_transaction(wallet.get_private_key())
+    wire = tx.to_dict()
+    wire["ignored_by_parser"] = "but-hashed-by-block"
+
+    with pytest.raises(ValueError, match="Unknown v3 transaction fields"):
+        Transaction.from_dict(wire)
+
+
+def test_protocol_v3_does_not_recompute_missing_wire_txid():
+    wallet = Wallet()
+    tx = Transaction(
+        sender=wallet.address,
+        receiver="ZYN1234567890abcdef1234567890abcdef123456",
+        amount=1,
+        public_key=wallet.get_public_key()
+    )
+    tx.sign_transaction(wallet.get_private_key())
+    wire = tx.to_dict()
+    wire["txid"] = None
+
+    with pytest.raises(ValueError, match="txid must be a string"):
+        Transaction.from_dict(wire)
+
+
+def test_protocol_v3_signature_is_low_s():
+    wallet = Wallet()
+    tx = Transaction(
+        sender=wallet.address,
+        receiver="ZYN1234567890abcdef1234567890abcdef123456",
+        amount=1,
+        public_key=wallet.get_public_key()
+    )
+    tx.sign_transaction(wallet.get_private_key())
+
+    s = int(tx.signature[64:], 16)
+    assert s <= Transaction.SECP256K1_ORDER // 2
+
+
+def test_protocol_v3_cross_language_vector_is_stable():
+    private_key = "01".zfill(64)
+    public_key = (
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"
+    )
+    tx = Transaction(
+        sender="ZYN09c0b2d1a486c439a87bcba6b46a7a1a23f3897c",
+        receiver="ZYN1234567890abcdef1234567890abcdef123456",
+        amount_atoms=123_456_789,
+        fee_atoms=1,
+        public_key=public_key,
+        nonce=7,
+        timestamp_ms=1_700_000_000_123
+    )
+    tx.sign_transaction(private_key)
+
+    assert tx.signature == (
+        "08b35a9e4828ef24942b016332edef1606dde601e564fae34347e98faa4d3692"
+        "6e1dee1631e78858de910ccdc7d1729a09cb25b5fee097a4da539a6adb925ebb"
+    )
+    assert tx.txid == "4101e21a99b1c2622e33d37d1f959969f00d168b7355643d2efdc312e7ed1d63"
+
+
 def test_legacy_v1_signature_remains_valid_for_chain_history():
     wallet = Wallet()
 
@@ -112,6 +215,30 @@ def test_legacy_v1_signature_remains_valid_for_chain_history():
 
     tx.sign_transaction(wallet.get_private_key())
 
+    assert tx.is_valid() is True
+
+
+def test_legacy_high_s_signature_remains_valid_for_chain_history():
+    tx = Transaction(
+        version=Transaction.LEGACY_VERSION,
+        sender="ZYN09c0b2d1a486c439a87bcba6b46a7a1a23f3897c",
+        receiver="ZYN1234567890abcdef1234567890abcdef123456",
+        amount=5,
+        fee=0.01,
+        public_key=(
+            "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+            "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"
+        ),
+        nonce=1,
+        timestamp=1_700_000_000,
+        signature=(
+            "500ccd37f8eaef069cd57445f4b2a7ed4465c2e67260b40555f156218cedb975"
+            "c346a660f45765f6a093d8908cb68cbb6834948a7b0e510b237f1761831744f2"
+        ),
+        txid="7aafff75c188249ce1c27cafc1ff9e836cf0384a224ff2fafeaab47dc43614b8"
+    )
+
+    assert int(tx.signature[64:], 16) > Transaction.SECP256K1_ORDER // 2
     assert tx.is_valid() is True
 
 

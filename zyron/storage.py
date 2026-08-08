@@ -33,6 +33,27 @@ class BlockchainStorage:
                     );
                 """)
 
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS blockchain_peer_reputation (
+                        singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+                        state_data JSONB NOT NULL
+                    );
+                """)
+
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS blockchain_schema_version (
+                        singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+                        version INTEGER NOT NULL
+                    );
+                """)
+
+                cur.execute("""
+                    INSERT INTO blockchain_schema_version (singleton, version)
+                    VALUES (TRUE, 2)
+                    ON CONFLICT (singleton)
+                    DO UPDATE SET version = GREATEST(blockchain_schema_version.version, EXCLUDED.version);
+                """)
+
                 conn.commit()
 
     def save_chain(self, chain_data):
@@ -43,9 +64,29 @@ class BlockchainStorage:
 
         with self.get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM blockchain_blocks;")
+                cur.execute("""
+                    SELECT block_index, block_data->>'hash'
+                    FROM blockchain_blocks
+                    ORDER BY block_index ASC;
+                """)
+                existing = cur.fetchall()
 
-                for block in chain_data:
+                common_prefix = 0
+                for block_index, stored_hash in existing:
+                    if block_index >= len(chain_data):
+                        break
+                    incoming = chain_data[block_index]
+                    if block_index != incoming.get("index") or stored_hash != incoming.get("hash"):
+                        break
+                    common_prefix += 1
+
+                if common_prefix < len(existing):
+                    cur.execute(
+                        "DELETE FROM blockchain_blocks WHERE block_index >= %s;",
+                        (common_prefix,)
+                    )
+
+                for block in chain_data[common_prefix:]:
                     cur.execute(
                         """
                         INSERT INTO blockchain_blocks (block_index, block_data)
@@ -198,3 +239,37 @@ class BlockchainStorage:
             return None
 
         return row[0]
+
+    def save_peer_reputation(self, state):
+        if not self.database_url:
+            return
+
+        self.setup_database()
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO blockchain_peer_reputation (singleton, state_data)
+                    VALUES (TRUE, %s)
+                    ON CONFLICT (singleton)
+                    DO UPDATE SET state_data = EXCLUDED.state_data;
+                    """,
+                    (json.dumps(state),)
+                )
+                conn.commit()
+
+    def load_peer_reputation(self):
+        if not self.database_url:
+            return None
+
+        self.setup_database()
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT state_data
+                    FROM blockchain_peer_reputation
+                    WHERE singleton = TRUE;
+                """)
+                row = cur.fetchone()
+
+        return row[0] if row else None

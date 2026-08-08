@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 import threading
 import time
@@ -43,6 +44,7 @@ ENABLE_TESTNET_FAUCET = os.environ.get("ZYRON_ENABLE_TESTNET_FAUCET", "0") == "1
 
 MAX_PEERS = 50
 PEER_TIMEOUT = 5
+MAX_PEER_JSON_BYTES = 8 * 1024 * 1024
 MAX_PEER_FAILURES = 3
 
 PEER_INITIAL_SCORE = 50
@@ -55,6 +57,38 @@ PEER_MAX_SCORE = 100
 peer_failures = {}
 peer_scores = {}
 peer_blacklist = set()
+
+
+def get_peer_json(url, max_bytes=MAX_PEER_JSON_BYTES):
+    response = requests.get(url, timeout=PEER_TIMEOUT, stream=True)
+
+    content_length = response.headers.get("Content-Length")
+    if content_length:
+        try:
+            if int(content_length) > max_bytes:
+                response.close()
+                raise ValueError("Peer response exceeds size limit")
+        except ValueError as error:
+            if str(error) == "Peer response exceeds size limit":
+                raise
+
+    chunks = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=64 * 1024):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            response.close()
+            raise ValueError("Peer response exceeds size limit")
+        chunks.append(chunk)
+
+    try:
+        data = json.loads(b"".join(chunks).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("Peer returned invalid JSON") from error
+
+    return response, data
 
 
 def admin_required(handler):
@@ -391,13 +425,8 @@ def ping_peer(node):
 
     try:
         start = time.time()
-        response = requests.get(f"{node}/peer/status", timeout=PEER_TIMEOUT)
+        response, data = get_peer_json(f"{node}/peer/status", max_bytes=64 * 1024)
         latency_ms = round((time.time() - start) * 1000, 2)
-
-        try:
-            data = response.json()
-        except Exception:
-            data = {"raw_response": response.text[:500]}
 
         if response.status_code == 200:
             record_peer_success(node)
@@ -449,7 +478,24 @@ def sync_chain_from_node(node):
         return {"node": node, "status": "failed", "reason": reason, "failure": failure}
 
     try:
-        response = requests.get(f"{node}/chain", timeout=PEER_TIMEOUT)
+        status_response, status_data = get_peer_json(
+            f"{node}/peer/status",
+            max_bytes=64 * 1024
+        )
+
+        if status_response.status_code != 200:
+            raise ValueError(f"Peer status HTTP {status_response.status_code}")
+
+        if status_data.get("chain_id") != Transaction.CHAIN_ID:
+            reputation = penalize_peer(node, "Chain ID mismatch", PEER_INVALID_CHAIN_PENALTY)
+            return {
+                "node": node,
+                "status": "failed",
+                "reason": "Chain ID mismatch",
+                "reputation": reputation
+            }
+
+        response, data = get_peer_json(f"{node}/chain")
 
         if response.status_code != 200:
             failure = record_peer_failure(node, f"HTTP {response.status_code}")
@@ -460,7 +506,6 @@ def sync_chain_from_node(node):
                 "failure": failure
             }
 
-        data = response.json()
         result = chain.replace_chain(data.get("chain"))
 
         if result.get("replaced") or result.get("reason") == "Incoming chain does not have more cumulative work":
@@ -497,7 +542,7 @@ def sync_mempool_from_node(node):
         return {"node": node, "status": "failed", "reason": reason, "failure": failure}
 
     try:
-        response = requests.get(f"{node}/mempool", timeout=PEER_TIMEOUT)
+        response, data = get_peer_json(f"{node}/mempool", max_bytes=2 * 1024 * 1024)
 
         if response.status_code != 200:
             failure = record_peer_failure(node, f"HTTP {response.status_code}")
@@ -508,7 +553,6 @@ def sync_mempool_from_node(node):
                 "failure": failure
             }
 
-        data = response.json()
         remote_transactions = data.get("pending_transactions", [])
         result = chain.sync_mempool(remote_transactions)
 
@@ -539,7 +583,7 @@ def discover_peers_from_node(node):
         return {"node": node, "status": "failed", "reason": reason, "failure": failure}
 
     try:
-        response = requests.get(f"{node}/nodes", timeout=PEER_TIMEOUT)
+        response, data = get_peer_json(f"{node}/nodes", max_bytes=256 * 1024)
 
         if response.status_code != 200:
             failure = record_peer_failure(node, f"HTTP {response.status_code}")
@@ -550,7 +594,6 @@ def discover_peers_from_node(node):
                 "failure": failure
             }
 
-        data = response.json()
         remote_nodes = data.get("nodes", [])
 
         added = []
@@ -696,15 +739,7 @@ sync_thread.start()
 
 
 def block_to_dict(block):
-    return {
-        "index": block.index,
-        "timestamp": block.timestamp,
-        "transactions": block.transactions,
-        "previous_hash": block.previous_hash,
-        "difficulty": block.difficulty,
-        "nonce": block.nonce,
-        "hash": block.hash
-    }
+    return chain.block_to_dict(block)
 
 
 @app.route("/")
@@ -753,7 +788,13 @@ def peer_status():
     return {
         "status": "online",
         "name": "ZyronChain",
-        "chain_id": "zyron-testnet-1",
+        "chain_id": Transaction.CHAIN_ID,
+        "transaction_protocol": Transaction.CURRENT_VERSION,
+        "historical_transaction_protocols": [
+            Transaction.LEGACY_VERSION,
+            Transaction.V2_VERSION,
+            Transaction.CURRENT_VERSION
+        ],
         "chain_valid": chain.is_chain_valid(),
         "height": len(chain.chain) - 1,
         "blocks": len(chain.chain),
@@ -1104,38 +1145,8 @@ def transaction_page(txid):
 def transaction():
     data = request.json or {}
 
-    required_fields = [
-        "sender",
-        "receiver",
-        "amount",
-        "public_key",
-        "signature",
-        "timestamp",
-        "txid",
-        "nonce"
-    ]
-
-    for field in required_fields:
-        if field not in data:
-            return {
-                "message": "Transaction rejected",
-                "error": f"Missing field: {field}"
-            }, 400
-
     try:
-        tx = Transaction(
-            version=int(data.get("version", Transaction.CURRENT_VERSION)),
-            chain_id=data.get("chain_id", "zyron-testnet-1"),
-            nonce=int(data["nonce"]),
-            sender=data["sender"],
-            receiver=data["receiver"],
-            amount=float(data["amount"]),
-            fee=float(data.get("fee", 0.01)),
-            public_key=data.get("public_key"),
-            signature=data.get("signature"),
-            timestamp=data.get("timestamp"),
-            txid=data.get("txid")
-        )
+        tx = Transaction.from_dict(data)
 
         txid = chain.add_transaction(tx)
         tx_data = tx.to_dict()

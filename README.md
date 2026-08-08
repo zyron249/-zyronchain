@@ -1,119 +1,102 @@
 # ZyronChain
 
-ZyronChain is a simple blockchain project built with Python and Flask.
+ZyronChain is a Python/Flask proof-of-work blockchain testnet with independently validated
+blocks, signed secp256k1 transactions, cumulative-work fork choice, PostgreSQL persistence,
+a browser wallet and a web explorer.
 
-## Live Explorer
+Live explorer: https://zyronchain.onrender.com
 
-https://zyronchain.onrender.com
+## Current release candidate
 
-## Features
+**v0.3.0 – Protocol v3 hardening**
 
-- Proof-of-Work mining
-- Genesis Block
-- Transactions
-- Wallet address generation
-- Mining rewards
-- Flask REST API
-- Web Blockchain Explorer
-- GitHub Actions CI
-- Render deployment
+- 1 ZYN = 100,000,000 integer atoms for new consensus data
+- canonical transaction-v3 serialization and deterministic low-S secp256k1/SHA-256 signatures
+- transaction IDs commit to the signed canonical transaction
+- block-v2 integer timestamps and Merkle transaction commitments
+- historical v1/v2 transactions and legacy block hashes remain validation-compatible
+- exact block subsidy + fee validation and integer supply accounting
+- cumulative proof-of-work fork choice with reorg mempool recovery
+- strict transaction/block schemas and resource limits
+- browser-only key custody with a locally vendored Noble secp256k1 implementation
+- Python signing/verification backed by libsecp256k1 through coincurve
+- PostgreSQL suffix/reorg persistence and persisted peer reputation
+- admin-token protected node mutation endpoints and shared-Redis rate-limit support
+- Python 3.11/3.12 CI plus dependency vulnerability audit
 
-## Project Structure
+The normative v3 details are in [docs/PROTOCOL_V3.md](docs/PROTOCOL_V3.md).
+The engineering launch gate is [docs/MAINNET_READINESS.md](docs/MAINNET_READINESS.md).
 
-```text
-zyronchain/
-├── app.py
-├── main.py
-├── requirements.txt
-├── templates/
-│   └── index.html
-└── zyron/
-    ├── block.py
-    ├── blockchain.py
-    ├── transaction.py
-    └── wallet.py
-## API Routes
+## Network parameters
 
-```text
-GET /                Explorer page
-GET /api             Blockchain status
-POST /mine/<address> Mine a new block (admin token required)
-GET /balance/<address>  Check wallet balance
-POST /transaction    Add a signed transaction
-```
-
-## Roadmap
-
-- Dark mode explorer
-- Create transaction form
-- Mine block button
-- Wallet generator page
-- Digital signatures
-- P2P node system
-- Testnet
-- Mainnet
-
-## Status
-
-ZyronChain is currently in early development.
-## Current Version
-
-v0.2.0 Testnet Hardening Release
-## Live Demo
-
-https://zyronchain.onrender.com
-
-
-## Security Defaults
-
-ZyronChain is a testnet project and must not be presented as production/mainnet-ready yet.
-
-- Consensus validates the exact mining subsidy plus transaction fees.
-- Transaction amounts, fees, and timestamps must be finite.
-- Duplicate transaction IDs are rejected across the validated chain.
-- Persisted chain data is consensus-validated before startup accepts it.
-- Administrative node operations require `ZYRON_ADMIN_TOKEN` and the `X-Zyron-Admin-Token` request header.
-- Server-side wallet generation and mnemonic recovery endpoints are disabled; wallet secrets stay in the browser.
-- Testnet faucet mining is disabled by default and requires `ZYRON_ENABLE_TESTNET_FAUCET=1`.
-- Private keys must never be submitted to the node API.
-
-### Admin API configuration
-
-Set a strong random token in the node environment:
-
-```text
-ZYRON_ADMIN_TOKEN=<strong-random-secret>
-ZYRON_RATE_LIMIT_STORAGE_URI=redis://<host>:6379/0
-```
-
-Send it only to administrative endpoints over HTTPS:
-
-```text
-X-Zyron-Admin-Token: <strong-random-secret>
-```
-
-For multi-process or multi-instance deployments, set `ZYRON_RATE_LIMIT_STORAGE_URI` to a shared Redis URL (for example `redis://host:6379/0`). The in-memory default is intended only for a single local/test process.
-
+| Parameter | Testnet value |
+|---|---:|
+| Chain ID | `zyron-testnet-1` |
+| Maximum supply | 50,000,000 ZYN |
+| Initial block subsidy | 50 ZYN |
+| Halving interval | 100,000 blocks |
+| Target block time | 30 seconds |
+| Difficulty range | 2–8 leading hex zeroes |
+| Max user transactions/block | 1,000 |
+| Max serialized block | 1,000,000 bytes |
+| Mempool limit | 5,000 transactions |
+| Mempool TTL | 3,600 seconds |
 
 ## Run a persistent testnet node
 
-Use one application worker per node because consensus and mempool state are held in-process and persisted through PostgreSQL.
+One application worker is required because consensus and mempool mutation state are serialized
+inside the node process.
 
 ```bash
 export DATABASE_URL=postgresql://...
 export ZYRON_ADMIN_TOKEN=<strong-random-secret>
 export ZYRON_RATE_LIMIT_STORAGE_URI=redis://127.0.0.1:6379/0
+
 gunicorn --workers 1 --bind 0.0.0.0:5000 app:app
 ```
 
-Run tests before deploying:
+Do not expose the admin token to browser clients. Server-side wallet creation/recovery is disabled;
+mnemonic phrases and private keys must never be sent to a node.
+
+The testnet faucet is disabled by default. Enable it only on an isolated testnet node with
+`ZYRON_ENABLE_TESTNET_FAUCET=1`.
+
+## Verification
 
 ```bash
-pytest -q
+pip install -r requirements.txt
+PYTHONPATH=. pytest -q
+python -m compileall -q app.py main.py signed_demo.py zyron tests
 ```
 
-### Node-to-node behavior
+CI runs the suite on Python 3.11 and 3.12 and runs `pip-audit` against runtime dependencies.
 
-Nodes compare valid chains by cumulative proof-of-work. A higher-work chain is accepted only after full consensus validation. Pending and orphaned signed transactions are revalidated against the winning chain before returning to the mempool.
+## Core API
 
-New transactions use protocol v2 (secp256k1 with SHA-256). Legacy v1/SHA-1 signatures remain accepted only when validating historical chain data and are rejected from the live mempool.
+```text
+GET  /                       Explorer
+GET  /health                 Node health
+GET  /peer/status            Network/protocol identity
+GET  /chain                  Validated chain
+GET  /block/<index>          Block lookup
+GET  /tx/<txid>              Transaction lookup
+GET  /address/<address>      Address state/history
+GET  /nonce/<address>        Current/next nonce
+GET  /mempool                Pending transactions
+POST /transaction            Submit a signed protocol-v3 transaction
+POST /mine/<address>         Mine a block (admin token required)
+POST /nodes/sync             Sync peers (admin token required)
+POST /mempool/sync           Sync mempool (admin token required)
+POST /sync/all               Full sync operation (admin token required)
+```
+
+Administrative requests use the `X-Zyron-Admin-Token` header over HTTPS.
+
+## Mainnet status
+
+This repository is a hardened testnet, not a certified public mainnet. Protocol correctness is
+not established by a feature list or by unit tests alone. The remaining P0 gates include a fixed
+upgrade activation/checkpoint or fresh mainnet genesis, production headers-first synchronization,
+indexed/state-committed ledger state, stronger peer Sybil/eclipse resistance, time-warp-resistant
+retarget activation, long-running adversarial multi-node testing, independent security review and
+signed/reproducible operational releases. See the readiness document for the exact launch gate.
