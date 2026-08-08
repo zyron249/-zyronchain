@@ -80,6 +80,7 @@ async function main(): Promise<void> {
   if (command === "snapshot") return createSnapshot(args);
   if (command === "checkpoint-install") return installCheckpoint(args);
   if (command === "checkpoint-fetch-install") return fetchAndInstallCheckpoint(args);
+  if (command === "prune-finalized") return pruneFinalized(args);
   if (command === "node") return runNode(args);
   usage();
   process.exitCode = 2;
@@ -149,6 +150,20 @@ async function fetchAndInstallCheckpoint(args: string[]): Promise<void> {
     }
     await rm(temporaryIdentityDir, { recursive: true, force: true });
   }
+}
+
+async function pruneFinalized(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--genesis", "--data", "--retain-blocks"]));
+  const genesisPath = requiredOption(args, "--genesis");
+  const dataDir = resolve(requiredOption(args, "--data"));
+  const retainBlocks = parseSafeInteger(requiredOption(args, "--retain-blocks"), "retain-blocks");
+  if (retainBlocks < 1) throw new Error("prune-finalized requires --retain-blocks >= 1");
+  const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
+  const store = await ChainStore.open(genesis, dataDir);
+  const result = await store.pruneFinalizedHistory({}, retainBlocks);
+  console.log(`Finalized history pruned through height ${result.prunedThroughHeight}`);
+  console.log(`First retained finalized block: ${result.firstStoredHeight}`);
+  console.log(`Latest ${retainBlocks} finalized block(s) remain available for block sync.`);
 }
 
 async function keygen(args: string[]): Promise<void> {
@@ -827,6 +842,7 @@ function usage(): void {
   console.log("  zyron-l1 snapshot --genesis genesis.json --data ./data --out checkpoint.json");
   console.log("  zyron-l1 checkpoint-install --genesis genesis.json --snapshot checkpoint.json --data ./NEW-data --tip-hash <trusted-hex> --sha256 <trusted-hex>");
   console.log("  zyron-l1 checkpoint-fetch-install --genesis genesis.json --p2p-peer /ip4/203.0.113.10/tcp/9140/p2p/<PeerId> --data ./NEW-data --tip-hash <trusted-hex> --sha256 <trusted-hex>");
+  console.log("  zyron-l1 prune-finalized --genesis genesis.json --data ./data --retain-blocks <n>=1");
   console.log("Checkpoint install anchors must come from an independent trusted channel, never from the snapshot peer.");
   console.log("Validator key files contain secrets. Keep them mode 0600 and never commit them.");
 }
