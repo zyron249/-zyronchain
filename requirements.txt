@@ -1,10 +1,9 @@
 flask
-ecdsa
+coincurve>=21,<22
 requests
 psycopg2-binary
 gunicorn
 mnemonic
 Flask-Limiter
 pytest
-
 redis>=5,<7
