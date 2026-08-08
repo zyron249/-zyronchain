@@ -76,6 +76,37 @@ function genesis(): GenesisConfig {
   };
 }
 
+async function advanceStoreToStateV2(store: ChainStore): Promise<void> {
+  const proposal = {
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: validatorOne,
+    activationHeight: 101,
+    protocolVersion: 2
+  };
+  const upgrade = createProtocolUpgrade(
+    {
+      ...proposal,
+      approvals: [
+        createProtocolUpgradeApproval(proposal, validatorOnePrivate, validatorOnePublic),
+        createProtocolUpgradeApproval(proposal, validatorTwoPrivate, validatorTwoPublic)
+      ],
+      timestampMs: genesis().timestampMs + 50
+    },
+    validatorOnePrivate,
+    validatorOnePublic
+  );
+  for (let height = 1; height <= 101; height += 1) {
+    const proposer = height % 2 === 1 ? validatorOnePrivate : validatorTwoPrivate;
+    let block = store.chain.produceBlock(height === 1 ? [upgrade] : [], proposer, {
+      timestampMs: genesis().timestampMs + (height * 100)
+    });
+    block = store.chain.attestBlock(block, validatorOnePrivate);
+    block = store.chain.attestBlock(block, validatorTwoPrivate);
+    await store.commitFinalizedBlock(block, genesis().timestampMs + (height * 100));
+  }
+}
+
 test("PoA validators rotate and independently reproduce state", () => {
   const producer = new ZyronChain(genesis());
   const follower = new ZyronChain(genesis());
@@ -780,6 +811,152 @@ test("finalized sync fails closed below an explicit retained-history boundary", 
     );
     const retained = await store.readFinalizedBlocks(2, 2, 10_000_000);
     assert.deepEqual(retained.map((block) => block.header.height), [2, 3]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("pruning requires authenticated State v2 and restarts from the pruned checkpoint plus suffix", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-pruned-recovery-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    await assert.rejects(() => store.pruneFinalizedHistory(), /empty finalized history/);
+    await advanceStoreToStateV2(store);
+    const expectedRoot = store.chain.tip.header.stateRoot;
+    const pruned = await store.pruneFinalizedHistory();
+    assert.deepEqual(pruned, { prunedThroughHeight: 101, firstStoredHeight: 102 });
+    assert.equal(await readFile(join(directory, "blocks.ndjson"), "utf8"), "");
+    await assert.rejects(
+      () => store.readFinalizedBlocks(101, 1, 10_000_000),
+      /Finalized history pruned below height 102/
+    );
+
+    let reopened = await ChainStore.open(genesis(), directory);
+    assert.equal(reopened.recoveredFromCheckpointHeight, 101);
+    assert.equal(reopened.firstStoredHeight, 102);
+    assert.equal(reopened.chain.tip.header.stateRoot, expectedRoot);
+
+    const checkpointPath = join(directory, "recovery-checkpoint.json");
+    const checkpointBytes = await readFile(checkpointPath, "utf8");
+    const tamperedCheckpoint = JSON.parse(checkpointBytes) as Record<string, unknown>;
+    tamperedCheckpoint.stateV2Root = "00".repeat(32);
+    await writeFile(checkpointPath, `${JSON.stringify(tamperedCheckpoint)}\n`, "utf8");
+    await assert.rejects(
+      () => ChainStore.open(genesis(), directory),
+      /Pruned finalized history requires a valid compatible recovery checkpoint/
+    );
+    await writeFile(checkpointPath, checkpointBytes, "utf8");
+
+    const retentionPath = join(directory, "history-retention.json");
+    const retentionBytes = await readFile(retentionPath, "utf8");
+    await writeFile(retentionPath, "{\"version\":99}\n", "utf8");
+    await assert.rejects(() => ChainStore.open(genesis(), directory), /Invalid history retention marker/);
+    await writeFile(retentionPath, retentionBytes, "utf8");
+
+    let suffix = reopened.chain.produceBlock([], validatorTwoPrivate, {
+      timestampMs: genesis().timestampMs + 10_200
+    });
+    suffix = reopened.chain.attestBlock(suffix, validatorOnePrivate);
+    suffix = reopened.chain.attestBlock(suffix, validatorTwoPrivate);
+    await reopened.commitFinalizedBlock(suffix, genesis().timestampMs + 10_200);
+    await reopened.writeRecoveryCheckpoint();
+
+    reopened = await ChainStore.open(genesis(), directory);
+    assert.equal(reopened.chain.height, 102);
+    assert.equal(reopened.firstStoredHeight, 102);
+    const retained = await reopened.readFinalizedBlocks(102, 1, 10_000_000);
+    assert.equal(retained[0]?.hash, suffix.hash);
+
+    const repruned = await reopened.pruneFinalizedHistory();
+    assert.deepEqual(repruned, { prunedThroughHeight: 102, firstStoredHeight: 103 });
+    reopened = await ChainStore.open(genesis(), directory);
+    assert.equal(reopened.chain.height, 102);
+    assert.equal(reopened.chain.tip.hash, suffix.hash);
+    assert.equal(reopened.firstStoredHeight, 103);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("prune checkpoint crash before block replacement preserves the full finalized log", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-prune-before-replace-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    await advanceStoreToStateV2(store);
+    const expectedTip = store.chain.tip.hash;
+    await assert.rejects(
+      () => store.pruneFinalizedHistory({
+        afterPruneCheckpointSync: () => { throw new Error("injected before block replacement"); }
+      }),
+      /Pruning interrupted; restart required/
+    );
+    assert.ok((await readFile(join(directory, "blocks.ndjson"), "utf8")).length > 0);
+
+    const reopened = await ChainStore.open(genesis(), directory);
+    assert.equal(reopened.chain.tip.hash, expectedTip);
+    assert.equal(reopened.recoveredFromCheckpointHeight, 101);
+    assert.equal(reopened.firstStoredHeight, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("durable prune intent blocks new finalized writes until an interrupted prune is completed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-prune-intent-recovery-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    await advanceStoreToStateV2(store);
+    await assert.rejects(
+      () => store.pruneFinalizedHistory({
+        afterBlockTemporarySync: () => { throw new Error("injected after durable prune intent"); }
+      }),
+      /Pruning interrupted; restart required/
+    );
+
+    const reopened = await ChainStore.open(genesis(), directory);
+    assert.equal(reopened.firstStoredHeight, 1);
+    let next = reopened.chain.produceBlock([], validatorTwoPrivate, {
+      timestampMs: genesis().timestampMs + 10_200
+    });
+    next = reopened.chain.attestBlock(next, validatorOnePrivate);
+    next = reopened.chain.attestBlock(next, validatorTwoPrivate);
+    await assert.rejects(
+      () => reopened.commitFinalizedBlock(next, genesis().timestampMs + 10_200),
+      /Interrupted pruning must be completed/
+    );
+
+    const completed = await reopened.pruneFinalizedHistory();
+    assert.deepEqual(completed, { prunedThroughHeight: 101, firstStoredHeight: 102 });
+    const recovered = await ChainStore.open(genesis(), directory);
+    assert.equal(recovered.chain.height, 101);
+    assert.equal(recovered.firstStoredHeight, 102);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("prune crash after block rename recovers from the authenticated suffix-only checkpoint", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-prune-after-replace-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    await advanceStoreToStateV2(store);
+    const expectedTip = store.chain.tip.hash;
+    await assert.rejects(
+      () => store.pruneFinalizedHistory({
+        afterBlockRename: () => { throw new Error("injected after block replacement"); }
+      }),
+      /Pruning interrupted; restart required/
+    );
+    assert.equal(await readFile(join(directory, "blocks.ndjson"), "utf8"), "");
+
+    const reopened = await ChainStore.open(genesis(), directory);
+    assert.equal(reopened.chain.tip.hash, expectedTip);
+    assert.equal(reopened.recoveredFromCheckpointHeight, 101);
+    assert.equal(reopened.firstStoredHeight, 102);
+    await assert.rejects(
+      () => reopened.readFinalizedBlocks(1, 1, 10_000_000),
+      /Finalized history pruned below height 102/
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
