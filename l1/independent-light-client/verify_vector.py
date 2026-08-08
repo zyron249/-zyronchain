@@ -72,11 +72,31 @@ def _validate_json_value(value: Any) -> None:
     raise VerificationError("unsupported canonical JSON value")
 
 
+def _utf16_key(value: str) -> bytes:
+    # Mirrors ECMAScript relational string ordering: lexicographic UTF-16 code
+    # units. It is explicit and therefore independent of Python's locale.
+    return value.encode("utf-16-be", errors="surrogatepass")
+
+
+def _normalize_key_order(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_normalize_key_order(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _normalize_key_order(value[key])
+            for key in sorted(value, key=_utf16_key)
+        }
+    return value
+
+
 def canonical_json(value: Any) -> bytes:
-    """Canonical encoding for protocol objects (integer-only JSON values)."""
+    """Canonical encoding using locale-independent UTF-16 object-key order."""
     _validate_json_value(value)
     return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        _normalize_key_order(value),
+        sort_keys=False,
+        separators=(",", ":"),
+        ensure_ascii=False,
     ).encode("utf-8")
 
 

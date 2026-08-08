@@ -5,7 +5,7 @@ import json
 import unittest
 from pathlib import Path
 
-from verify_vector import VerificationError, verify_next_finalized, verify_state_proof, verify_vector
+from verify_vector import canonical_json, VerificationError, verify_next_finalized, verify_state_proof, verify_vector
 
 
 VECTOR_PATH = Path(__file__).parents[1] / "test-vectors" / "light-client-v1.json"
@@ -21,6 +21,13 @@ def load_round_one_vector():
 
 
 class IndependentLightClientTests(unittest.TestCase):
+    def test_canonical_key_order_matches_utf16_protocol_rule(self):
+        value = {"é": 6, "z": 4, "_": 2, "😀": 7, "a": 3, "ä": 5, "A": 1}
+        self.assertEqual(
+            canonical_json(value),
+            '{"A":1,"_":2,"a":3,"z":4,"ä":5,"é":6,"😀":7}'.encode(),
+        )
+
     def test_public_vector_verifies(self):
         verify_vector(load_vector())
 
