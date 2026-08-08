@@ -12,6 +12,7 @@ import {
 } from "./block.js";
 import { publicKeyFromPrivate } from "./crypto.js";
 import { Mempool } from "./mempool.js";
+import { validateSignedPeerRecord, type SignedPeerRecord } from "./peer-identity.js";
 import { ChainStore, SigningJournal } from "./storage.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
 import type { Address, Block, BlockAttestation, RoundSkipVote, Transaction } from "./types.js";
@@ -45,6 +46,7 @@ export interface NodeMetrics extends NodeStatus {
 export interface RpcServerOptions {
   maxConnections?: number;
   peerAuthToken?: string;
+  peerRecord?: SignedPeerRecord;
   requestsPerWindow?: number;
   windowMs?: number;
 }
@@ -208,6 +210,9 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
   );
   const windowMs = boundedPositiveInteger(options.windowMs ?? DEFAULT_RPC_WINDOW_MS, "RPC rate-limit window");
   const peerAuthToken = options.peerAuthToken === undefined ? undefined : validatePeerAuthToken(options.peerAuthToken);
+  const peerRecord = options.peerRecord === undefined
+    ? undefined
+    : validateSignedPeerRecord(options.peerRecord, service.status());
   const limiter = new FixedWindowLimiter(requestsPerWindow, windowMs);
   const server = createServer(async (request, response) => {
     const rate = limiter.consume(request.socket.remoteAddress ?? "unknown", Date.now());
@@ -224,7 +229,7 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
       return;
     }
     try {
-      await route(service, request, response);
+      await route(service, request, response, peerRecord);
     } catch (error) {
       writeJson(response, 400, { error: safeError(error) });
     }
@@ -236,10 +241,19 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
   return server;
 }
 
-async function route(service: NodeService, request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function route(
+  service: NodeService,
+  request: IncomingMessage,
+  response: ServerResponse,
+  peerRecord?: SignedPeerRecord
+): Promise<void> {
   const url = new URL(request.url ?? "/", "http://node.invalid");
   if (request.method === "GET" && url.pathname === "/status") {
     return writeJson(response, 200, service.status());
+  }
+  if (request.method === "GET" && url.pathname === "/peer-record" && peerRecord) {
+    validateSignedPeerRecord(peerRecord, service.status());
+    return writeJson(response, 200, peerRecord);
   }
   if (request.method === "GET" && url.pathname === "/healthz") {
     return writeJson(response, 200, { ok: true, height: service.status().height });
@@ -321,6 +335,15 @@ export class PeerClient {
       }
     }
     return accepted;
+  }
+
+  async fetchPeerRecord(
+    peer: string,
+    expected: { chainId: string; genesisHash: string },
+    nowMs = Date.now()
+  ): Promise<SignedPeerRecord> {
+    const base = normalizePeerUrl(peer);
+    return validateSignedPeerRecord(await getJson(`${base}/peer-record`, 64_000), expected, nowMs);
   }
 
   async syncAny(service: NodeService): Promise<number> {
