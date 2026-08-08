@@ -101,6 +101,14 @@ export class NodeService {
     if (tx.chainId !== this.store.chain.genesis.chainId) throw new Error("Wrong transaction chain ID");
     const stateNonce = this.store.chain.nonce(tx.sender);
     if (tx.nonce <= stateNonce || tx.nonce > stateNonce + 64) throw new Error("Transaction nonce outside mempool window");
+    this.store.chain.validateMempoolAdmission(tx);
+    if (tx.kind === "transfer") {
+      const pendingSpend = this.mempool.pendingTransferSpend(tx.sender);
+      const required = pendingSpend + BigInt(tx.amountAtoms) + BigInt(tx.feeAtoms);
+      if (required > BigInt(this.store.chain.balance(tx.sender))) {
+        throw new Error("Pending transfers exceed confirmed balance");
+      }
+    }
     if (tx.nonce === stateNonce + 1) this.store.chain.validatePending([tx]);
     this.mempool.add(tx);
     return tx.txid;
