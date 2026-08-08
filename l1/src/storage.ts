@@ -64,13 +64,18 @@ export class ChainStore {
     return new ChainStore(dataDir, chain, count);
   }
 
-  async appendFinalizedBlock(block: Block): Promise<void> {
+  async commitFinalizedBlock(block: Block, nowMs = Date.now()): Promise<void> {
     if (block.header.height !== this.persistedHeight + 1) {
       throw new Error("Refusing non-sequential block persistence");
     }
-    if (this.chain.height !== block.header.height || this.chain.tip.hash !== block.hash) {
-      throw new Error("Block must be accepted by the chain before persistence");
+    if (this.chain.height !== this.persistedHeight) {
+      throw new Error("In-memory chain and durable height diverged");
     }
+    // Validate against the current durable tip before writing. The fsync deliberately
+    // happens before mutating in-memory state: a crash after fsync is recovered by
+    // replay, while a failed disk write cannot make the live node advertise a tip that
+    // was never durably committed.
+    this.chain.validateFinalizedBlock(block, nowMs);
     const line = `${canonicalJson(block)}\n`;
     if (Buffer.byteLength(line, "utf8") > MAX_STORED_BLOCK_LINE_BYTES) {
       throw new Error("Block exceeds persistence limit");
@@ -82,6 +87,7 @@ export class ChainStore {
     } finally {
       await handle.close();
     }
+    this.chain.acceptBlock(block, nowMs);
     this.persistedHeight = block.header.height;
   }
 }
