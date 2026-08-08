@@ -62,6 +62,7 @@ interface ProtocolProposal {
 const MAX_NATIVE_SYNC_PROBES_PER_CYCLE = 4;
 const MAX_NATIVE_DISCOVERY_SOURCES_PER_CYCLE = 4;
 const MAX_NATIVE_DISCOVERY_CANDIDATES_PER_SOURCE = 4;
+const NATIVE_DYNAMIC_EVICT_TRANSIENT_FAILURES = 3;
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
@@ -240,7 +241,8 @@ async function runNode(args: string[]): Promise<void> {
       nativeNode, nativePeerPool, identity, service.status(), nativeSyncCursor, nativePeerReputation
     );
     if (admitted && nativeConsensus) nativeConsensus.replaceTargets(nativePeerPool.snapshot(nativeSyncCursor));
-    await syncNativePeers(nativeNode, nativePeerPool.snapshot(), identity, service, "Initial native peer sync", nativeSyncCursor++, nativePeerGroups, nativePeerReputation);
+    await syncNativePeers(nativeNode, nativePeerPool.snapshot(), identity, service, "Initial native peer sync", nativeSyncCursor++, nativePeerGroups, nativePeerReputation, nativePeerPool);
+    nativeConsensus?.replaceTargets(nativePeerPool.snapshot(nativeSyncCursor));
   }
 
   const consensusPeers: ConsensusPeerClient = nativeConsensus ? {
@@ -304,7 +306,8 @@ async function runNode(args: string[]): Promise<void> {
     setInterval(() => {
       if (nativeSyncRunning) return;
       nativeSyncRunning = true;
-      void syncNativePeers(nativeNode, nativePeerPool.snapshot(), identity, service, "Periodic native peer sync", nativeSyncCursor++, nativePeerGroups, nativePeerReputation)
+      void syncNativePeers(nativeNode, nativePeerPool.snapshot(), identity, service, "Periodic native peer sync", nativeSyncCursor++, nativePeerGroups, nativePeerReputation, nativePeerPool)
+        .then(() => nativeConsensus?.replaceTargets(nativePeerPool.snapshot(nativeSyncCursor)))
         .finally(() => { nativeSyncRunning = false; });
     }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3))).unref();
   }
@@ -546,7 +549,8 @@ async function syncNativePeers(
   label: string,
   groupOffset = 0,
   peerGroups: ReadonlyMap<string, string> = new Map(),
-  reputation?: NativePeerReputationStore
+  reputation?: NativePeerReputationStore,
+  pool?: NativePeerPool
 ): Promise<void> {
   for (const peer of diversityOrderedNativePeers(peers, groupOffset, peerGroups).slice(0, MAX_NATIVE_SYNC_PROBES_PER_CYCLE)) {
     const peerId = nativePeerId(peer);
@@ -556,7 +560,11 @@ async function syncNativePeers(
       await reputation?.recordSuccess(peerId);
       if (accepted) console.log(`${label}: accepted ${accepted} finalized block(s) from ${peer.toString()}`);
     } catch (error) {
-      await reputation?.recordFailure(peerId, classifyNativePeerFailure(error));
+      const failure = classifyNativePeerFailure(error);
+      await reputation?.recordFailure(peerId, failure);
+      if (pool?.isDynamic(peerId) && (failure === "protocol" || (reputation?.failureCount(peerId) ?? 0) >= NATIVE_DYNAMIC_EVICT_TRANSIENT_FAILURES)) {
+        pool.evictDynamic(peerId);
+      }
       console.warn(`${label} skipped ${peer.toString()}: ${safeError(error)}`);
     }
   }
@@ -581,7 +589,10 @@ async function refreshNativePeerDiscovery(
       const failure = classifyNativePeerFailure(error);
       // A transient discovery-stream problem must not suppress an otherwise
       // healthy configured peer from the independent finalized-sync path.
-      if (failure === "protocol") await reputation?.recordFailure(sourcePeerId, failure);
+      if (failure === "protocol") {
+        await reputation?.recordFailure(sourcePeerId, failure);
+        pool.evictDynamic(sourcePeerId);
+      }
       console.warn(`Native peer discovery skipped ${source.toString()}: ${safeError(error)}`);
       continue;
     }
@@ -597,6 +608,7 @@ async function refreshNativePeerDiscovery(
         assertSafeDiscoveredPeer(candidate);
       } catch (error) {
         await reputation?.recordFailure(sourcePeerId, "protocol");
+        pool.evictDynamic(sourcePeerId);
         console.warn(`Native peer discovery rejected unsafe hint from ${source.toString()}: ${safeError(error)}`);
         unsafeHint = true;
         break;
