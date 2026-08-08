@@ -26,6 +26,7 @@
     "@libp2p/interface": "3.2.5",
     "@libp2p/peer-id": "6.0.14",
     "@libp2p/tcp": "11.0.26",
+    "@multiformats/multiaddr": "13.0.3",
     "@noble/curves": "2.3.0",
     "libp2p": "3.3.8"
   },
