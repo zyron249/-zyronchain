@@ -1,5 +1,5 @@
 import hashlib
-import ecdsa
+from coincurve import PrivateKey
 from mnemonic import Mnemonic
 
 
@@ -21,7 +21,7 @@ class Wallet:
             self.mnemonic = self.generate_mnemonic()
 
         self.private_key = self.private_key_from_mnemonic(self.mnemonic)
-        self.public_key = self.private_key.get_verifying_key()
+        self.public_key = self.private_key.public_key
         self.address = self.create_address()
 
     def generate_mnemonic(self):
@@ -31,19 +31,16 @@ class Wallet:
         seed = self.mnemo.to_seed(mnemonic, passphrase="")
         private_key_bytes = hashlib.sha256(seed).digest()
 
-        return ecdsa.SigningKey.from_string(
-            private_key_bytes,
-            curve=ecdsa.SECP256k1
-        )
+        return PrivateKey(private_key_bytes)
 
     def create_address(self):
         return address_from_public_key(self.get_public_key())
 
     def get_private_key(self):
-        return self.private_key.to_string().hex()
+        return self.private_key.secret.hex()
 
     def get_public_key(self):
-        return self.public_key.to_string().hex()
+        return self.public_key.format(compressed=False)[1:].hex()
 
     def to_dict(self):
         return {
