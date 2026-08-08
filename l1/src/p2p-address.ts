@@ -29,7 +29,7 @@ export function nativePeerDiversityBucket(peer: Multiaddr): string {
     const octets = value.split(".");
     return `ipv4:${octets.slice(0, 3).join(".")}.0/24`;
   }
-  if (host.name === "ip6") return `ipv6:${value}`;
+  if (host.name === "ip6") return `ipv6:${ipv6Prefix64(value)}/64`;
   return `host:${value}`;
 }
 
@@ -121,4 +121,30 @@ function parseNativeTcpAddress(value: string, peer: boolean): Multiaddr {
     throw new Error(`Native P2P ${peer ? "peer" : "listen"} must be one host + TCP multiaddr`);
   }
   return address;
+}
+
+function ipv6Prefix64(value: string): string {
+  const halves = value.split("::");
+  if (halves.length > 2) throw new Error("Invalid native peer IPv6 host");
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const expandIpv4 = (parts: string[]): string[] => parts.flatMap((part) => {
+    if (!part.includes(".")) return [part];
+    const octets = part.split(".").map(Number);
+    if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+      throw new Error("Invalid native peer IPv6 host");
+    }
+    return [((octets[0]! << 8) | octets[1]!).toString(16), ((octets[2]! << 8) | octets[3]!).toString(16)];
+  });
+  const expandedLeft = expandIpv4(left);
+  const expandedRight = expandIpv4(right);
+  const missing = 8 - expandedLeft.length - expandedRight.length;
+  if (missing < 0 || (halves.length === 1 && missing !== 0) || (halves.length === 2 && missing < 1)) {
+    throw new Error("Invalid native peer IPv6 host");
+  }
+  const hextets = [...expandedLeft, ...Array.from({ length: missing }, () => "0"), ...expandedRight];
+  if (hextets.length !== 8 || hextets.some((part) => !/^[0-9a-f]{1,4}$/.test(part))) {
+    throw new Error("Invalid native peer IPv6 host");
+  }
+  return hextets.slice(0, 4).map((part) => part.padStart(4, "0")).join(":");
 }

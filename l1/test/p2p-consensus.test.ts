@@ -76,6 +76,9 @@ test("two validators finalize and converge using native authenticated consensus 
     assert.deepEqual(source.status(), remote.status());
     assert.equal(source.status().height, 1);
 
+    peers.replaceTargets([]);
+    assert.deepEqual(await peers.requestRoundSkips(2, 0), []);
+    peers.replaceTargets([remoteAddress]);
     const skipVotes = await peers.requestRoundSkips(2, 0);
     assert.equal(skipVotes.length, 1);
     assert.equal(skipVotes[0]?.publicKey, publicKeyFromPrivate(remoteKey));

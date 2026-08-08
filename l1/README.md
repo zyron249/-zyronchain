@@ -58,7 +58,7 @@ node dist/src/cli.js genesis \
   --allocation <pool-address:atoms>
 ```
 
-Start validator nodes with distinct data directories and ports. Static peers are deliberate: public, unauthenticated peer admission is not used as a shortcut for mainnet discovery.
+Start validator nodes with distinct data directories and ports. Configure at least one explicit bootstrap peer; dynamic discovery never bypasses authenticated admission.
 
 The preferred new node-to-node data plane is native TCP/libp2p with Noise and yamux. Enable a
 listener explicitly with `--p2p-listen /ip4/0.0.0.0/tcp/9140` and configure outbound peers
@@ -67,8 +67,23 @@ for example `/dns4/node-b.example/tcp/9140/p2p/<PeerId>`; an unpinned TCP endpoi
 The native protocols bind that Noise-authenticated PeerId to the persistent secp256k1 node
 identity and exact chain/genesis before serving sync, validator consensus, block gossip or
 transaction gossip. Payload, connection, stream, fanout, dedup, per-PeerId inflight and request
-rate limits are enforced. Automatic admission of peer-exchange records is deliberately still
-disabled until the remaining eclipse/diversity policy is complete.
+rate limits are enforced. Bootstrap peers exchange bounded candidate hints over the authenticated
+native session. A discovered hint is not usable until the node dials its pinned PeerId, repeats
+the Noise + exact chain/genesis identity binding, and passes the bounded peer-pool policy. The
+pool permits at most 64 peers total, 32 dynamically discovered peers, 8 dynamic peers from one
+discovery source, and 2 dynamic peers from one topology bucket. Periodic native sync probes at
+most four diversity-rotated peers per cycle and never overlaps its own previous cycle; discovery
+likewise bounds each cycle to four sources and four candidate verifications per source. These
+work caps prevent a full pool of slow but authenticated peers from multiplying one timer tick
+into unbounded concurrent dial/sync work.
+
+Automatic discovery dialing is intentionally stricter than explicit operator configuration:
+only literal public IP multiaddrs are eligible. Private, loopback, link-local, reserved and
+documentation ranges are rejected, and remotely supplied DNS names are not auto-dialed (to
+avoid DNS rebinding into internal services). DNS remains valid for an explicitly configured
+`--p2p-peer` bootstrap, but such a DNS seed is not re-advertised as a dynamic hint. Use at least
+one independently sourced public-IP seed in a bootstrap set when peer-exchange expansion is
+required; discovery is an availability aid, not a replacement for diverse bootstrap policy.
 
 For known infrastructure failure domains, add `--p2p-peer-group <PeerId>=<label>` next to the
 configured peer. The label is operator metadata (for example `asn-64500`, `provider-a` or an
