@@ -20,6 +20,7 @@ import { PeerDirectory } from "./peer-directory.js";
 import { createP2PNode, registerP2PIdentityProtocol } from "./p2p.js";
 import { registerP2PSyncProtocol, syncP2PFrom } from "./p2p-sync.js";
 import { NativeConsensusPeerClient, registerP2PConsensusProtocol } from "./p2p-consensus.js";
+import { classifyNativePeerFailure, NativePeerReputationStore } from "./p2p-reputation.js";
 import {
   diversityOrderedNativePeers,
   nativePeerId,
@@ -176,6 +177,7 @@ async function runNode(args: string[]): Promise<void> {
     ? await loadOrCreateNodeIdentity(resolve(dataDir))
     : undefined;
   const peerReputation = peerUrls.length ? await PeerReputationStore.open(resolve(dataDir)) : undefined;
+  const nativePeerReputation = nativePeers.length ? await NativePeerReputationStore.open(resolve(dataDir)) : undefined;
   const peers = new PeerClient(peerUrls, peerAuthToken, identity ? {
     identity,
     chainId: service.status().chainId,
@@ -220,7 +222,7 @@ async function runNode(args: string[]): Promise<void> {
   }
   let nativeSyncCursor = 0;
   if (nativeNode && identity) {
-    await syncNativePeers(nativeNode, nativePeers, identity, service, "Initial native peer sync", nativeSyncCursor++, nativePeerGroups);
+    await syncNativePeers(nativeNode, nativePeers, identity, service, "Initial native peer sync", nativeSyncCursor++, nativePeerGroups, nativePeerReputation);
   }
 
   const consensusPeers: ConsensusPeerClient = nativeConsensus ? {
@@ -281,7 +283,7 @@ async function runNode(args: string[]): Promise<void> {
 
   if (nativeNode && identity && nativePeers.length) {
     setInterval(() => {
-      void syncNativePeers(nativeNode, nativePeers, identity, service, "Periodic native peer sync", nativeSyncCursor++, nativePeerGroups);
+      void syncNativePeers(nativeNode, nativePeers, identity, service, "Periodic native peer sync", nativeSyncCursor++, nativePeerGroups, nativePeerReputation);
     }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3))).unref();
   }
 
@@ -505,13 +507,18 @@ async function syncNativePeers(
   service: NodeService,
   label: string,
   groupOffset = 0,
-  peerGroups: ReadonlyMap<string, string> = new Map()
+  peerGroups: ReadonlyMap<string, string> = new Map(),
+  reputation?: NativePeerReputationStore
 ): Promise<void> {
   for (const peer of diversityOrderedNativePeers(peers, groupOffset, peerGroups)) {
+    const peerId = nativePeerId(peer);
+    if (reputation && !reputation.isAvailable(peerId)) continue;
     try {
       const accepted = await syncP2PFrom(node, peer, identity, service);
+      await reputation?.recordSuccess(peerId);
       if (accepted) console.log(`${label}: accepted ${accepted} finalized block(s) from ${peer.toString()}`);
     } catch (error) {
+      await reputation?.recordFailure(peerId, classifyNativePeerFailure(error));
       console.warn(`${label} skipped ${peer.toString()}: ${safeError(error)}`);
     }
   }
