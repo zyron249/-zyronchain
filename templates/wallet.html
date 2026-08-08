@@ -2,7 +2,7 @@
 <html>
 <head>
     <title>Zyron Web Wallet</title>
-    <script src="https://cdn.jsdelivr.net/npm/elliptic@6.5.7/dist/elliptic.min.js"></script>
+    <script src="/static/vendor/noble-secp256k1-2.3.0.min.js"></script>
 
     <style>
         body { background:#0f172a; color:#e5e7eb; font-family:Arial; padding:20px; }
@@ -70,7 +70,6 @@
 <script>
 let wallet = null;
 let showPrivateKey = false;
-const ec = new elliptic.ec("secp256k1");
 
 function decimalToAtoms(value) {
     const text = String(value).trim();
@@ -146,9 +145,9 @@ async function sha256Hex(text) {
 }
 
 async function walletFromPrivateKey(privateKeyHex) {
-    const key = ec.keyFromPrivate(privateKeyHex, "hex");
-    const uncompressedPublicKey = key.getPublic().encode("hex", false);
-    const publicKey = uncompressedPublicKey.slice(2);
+    const privateKey = hexToBytes(privateKeyHex);
+    const uncompressedPublicKey = zyronSecp256k1.getPublicKey(privateKey, false);
+    const publicKey = bytesToHex(uncompressedPublicKey.slice(1));
     const addressHash = await digestHex(
         "SHA-256",
         hexToBytes(publicKey)
@@ -318,18 +317,12 @@ async function sendZyn() {
 
         const dataToSign = canonicalV3Unsigned(signedTx);
 
-        const key = ec.keyFromPrivate(wallet.private_key, "hex");
-        const signingDigest = new Uint8Array(
-            await crypto.subtle.digest(
-                "SHA-256",
-                new TextEncoder().encode(dataToSign)
-            )
+        const signatureBytes = zyronSecp256k1.sign(
+            new TextEncoder().encode(dataToSign),
+            hexToBytes(wallet.private_key),
+            {format: "compact"}
         );
-        const signatureObject = key.sign(signingDigest, {canonical: true});
-
-        const r = signatureObject.r.toString("hex").padStart(64, "0");
-        const s = signatureObject.s.toString("hex").padStart(64, "0");
-        signedTx.signature = r + s;
+        signedTx.signature = bytesToHex(signatureBytes);
         signedTx.txid = await sha256Hex(canonicalV3Signed(signedTx));
 
         const res = await fetch("/transaction", {
