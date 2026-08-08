@@ -26,6 +26,11 @@ interface BranchNode {
 
 type TreeNode = LeafNode | BranchNode;
 
+interface PendingRecordChunk {
+  records: readonly StateV2NodeRecord[];
+  previous: PendingRecordChunk | undefined;
+}
+
 export interface SparseMerkleProof {
   version: 1;
   keyHash: string;
@@ -48,7 +53,10 @@ const EMPTY_HASHES = buildEmptyHashes();
  * validation hold a candidate state without mutating the finalized state.
  */
 export class SparseMerkleState {
-  private constructor(private readonly rootNode?: TreeNode) {}
+  private constructor(
+    private readonly rootNode?: TreeNode,
+    private readonly pendingRecordHead?: PendingRecordChunk
+  ) {}
 
   static empty(): SparseMerkleState {
     return new SparseMerkleState();
@@ -112,7 +120,9 @@ export class SparseMerkleState {
     const valueJson = canonicalJson(value);
     const valueHash = hashWithDomain(VALUE_DOMAIN, Buffer.from(valueJson, "utf8"));
     const keyBytes = Buffer.from(keyHash, "hex");
-    return new SparseMerkleState(updateNode(this.rootNode, 0, keyBytes, keyHash, valueHash, valueJson));
+    const created: StateV2NodeRecord[] = [];
+    const rootNode = updateNode(this.rootNode, 0, keyBytes, keyHash, valueHash, valueJson, created);
+    return new SparseMerkleState(rootNode, { records: created, previous: this.pendingRecordHead });
   }
 
   get(key: string): unknown | undefined {
@@ -144,6 +154,25 @@ export class SparseMerkleState {
     };
     visit(this.rootNode);
     return records;
+  }
+
+  /** Nodes materialized since the last persistence checkpoint. */
+  pendingNodeRecords(): StateV2NodeRecord[] {
+    const unique = new Map<string, StateV2NodeRecord>();
+    for (let chunk = this.pendingRecordHead; chunk; chunk = chunk.previous) {
+      for (const record of chunk.records) {
+        if (!unique.has(record.hash)) unique.set(record.hash, structuredClone(record));
+      }
+    }
+    return [...unique.values()];
+  }
+
+  /**
+   * Return the same authenticated state with an empty persistence delta.
+   * Disk stores call this only after the root and every pending node are durable.
+   */
+  persistenceCheckpoint(): SparseMerkleState {
+    return new SparseMerkleState(this.rootNode);
   }
 
   prove(key: string): SparseMerkleProof {
@@ -213,25 +242,28 @@ function updateNode(
   keyBytes: Buffer,
   keyHash: string,
   valueHash: string,
-  valueJson: string
+  valueJson: string,
+  created: StateV2NodeRecord[]
 ): TreeNode {
-  if (!node) return leafNodeAtDepth(keyBytes, keyHash, valueHash, valueJson, depth);
+  if (!node) return recordCreated(leafNodeAtDepth(keyBytes, keyHash, valueHash, valueJson, depth), created);
   if (node.kind === "leaf") {
-    if (node.keyHash === keyHash) return leafNodeAtDepth(keyBytes, keyHash, valueHash, valueJson, depth);
+    if (node.keyHash === keyHash) {
+      return recordCreated(leafNodeAtDepth(keyBytes, keyHash, valueHash, valueJson, depth), created);
+    }
     if (depth === TREE_DEPTH) throw new Error("State v2 key hash collision");
-    return mergeLeaves(node, keyBytes, keyHash, valueHash, valueJson, depth);
+    return mergeLeaves(node, keyBytes, keyHash, valueHash, valueJson, depth, created);
   }
   if (depth === TREE_DEPTH) throw new Error("Corrupt State v2 branch depth");
   const branch = node?.kind === "branch" ? node : undefined;
   let left = branch?.left;
   let right = branch?.right;
   if (bitAt(keyBytes, depth) === 0) {
-    left = updateNode(left, depth + 1, keyBytes, keyHash, valueHash, valueJson);
+    left = updateNode(left, depth + 1, keyBytes, keyHash, valueHash, valueJson, created);
   } else {
-    right = updateNode(right, depth + 1, keyBytes, keyHash, valueHash, valueJson);
+    right = updateNode(right, depth + 1, keyBytes, keyHash, valueHash, valueJson, created);
   }
   const hash = branchHash(left?.hash ?? EMPTY_HASHES[depth + 1]!, right?.hash ?? EMPTY_HASHES[depth + 1]!);
-  return { kind: "branch", hash, left, right };
+  return recordCreated({ kind: "branch", hash, left, right }, created);
 }
 
 function mergeLeaves(
@@ -240,7 +272,8 @@ function mergeLeaves(
   incomingKeyHash: string,
   incomingValueHash: string,
   incomingValueJson: string,
-  depth: number
+  depth: number,
+  created: StateV2NodeRecord[]
 ): TreeNode {
   if (depth === TREE_DEPTH) throw new Error("State v2 key hash collision");
   const existingKeyBytes = Buffer.from(existing.keyHash, "hex");
@@ -249,21 +282,42 @@ function mergeLeaves(
   let left: TreeNode | undefined;
   let right: TreeNode | undefined;
   if (existingBit !== incomingBit) {
-    const existingLeaf = leafNodeAtDepth(existingKeyBytes, existing.keyHash, existing.valueHash, existing.valueJson, depth + 1);
-    const incomingLeaf = leafNodeAtDepth(incomingKeyBytes, incomingKeyHash, incomingValueHash, incomingValueJson, depth + 1);
+    const existingLeaf = recordCreated(
+      leafNodeAtDepth(existingKeyBytes, existing.keyHash, existing.valueHash, existing.valueJson, depth + 1), created
+    );
+    const incomingLeaf = recordCreated(
+      leafNodeAtDepth(incomingKeyBytes, incomingKeyHash, incomingValueHash, incomingValueJson, depth + 1), created
+    );
     left = existingBit === 0 ? existingLeaf : incomingLeaf;
     right = existingBit === 1 ? existingLeaf : incomingLeaf;
   } else {
-    const child = mergeLeaves(existing, incomingKeyBytes, incomingKeyHash, incomingValueHash, incomingValueJson, depth + 1);
+    const child = mergeLeaves(
+      existing, incomingKeyBytes, incomingKeyHash, incomingValueHash, incomingValueJson, depth + 1, created
+    );
     if (existingBit === 0) left = child;
     else right = child;
   }
-  return {
+  return recordCreated({
     kind: "branch",
     left,
     right,
     hash: branchHash(left?.hash ?? EMPTY_HASHES[depth + 1]!, right?.hash ?? EMPTY_HASHES[depth + 1]!)
-  };
+  }, created);
+}
+
+function recordCreated<T extends TreeNode>(node: T, records: StateV2NodeRecord[]): T {
+  if (node.kind === "leaf") {
+    records.push({
+      kind: "leaf", hash: node.hash, keyHash: node.keyHash,
+      valueHash: node.valueHash, valueJson: node.valueJson
+    });
+  } else {
+    records.push({
+      kind: "branch", hash: node.hash,
+      leftHash: node.left?.hash ?? null, rightHash: node.right?.hash ?? null
+    });
+  }
+  return node;
 }
 
 function leafNodeAtDepth(keyBytes: Buffer, keyHash: string, valueHash: string, valueJson: string, depth: number): LeafNode {
