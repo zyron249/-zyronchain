@@ -136,3 +136,18 @@ Before promoting a release, verify its checksum and GitHub attestation and confi
 the tag resolves to the reviewed commit. Release provenance does not replace the
 independent audit, production key custody, genesis freeze, or operational drills listed
 in the readiness gate.
+
+## Deterministic checkpoint snapshots
+
+An operator can export the fully replay-validated chain state, finalized tip, validator
+schedule and protocol schedule into one deterministic artifact:
+
+```sh
+node dist/src/cli.js snapshot --genesis genesis.json --data ./data --out checkpoint.json
+```
+
+The command prints a SHA-256 digest covering the entire canonical snapshot. Publish/pin
+that digest through an independent trusted channel before treating the file as a checkpoint.
+The node deliberately does **not** fast-import snapshot files yet: a bare state root does
+not commit validator/protocol schedules, so skipping history without an independently
+trusted full-snapshot digest would weaken consensus safety.
