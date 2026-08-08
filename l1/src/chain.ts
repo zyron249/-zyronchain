@@ -200,6 +200,32 @@ export class ZyronChain {
     this.validateAndApply(transactions, this.state, this.height + 1);
   }
 
+  validateMempoolAdmission(tx: Transaction): void {
+    if (tx.chainId !== this.genesis.chainId) throw new Error("Wrong transaction chain ID");
+    validateTransactionShape(tx);
+    if (tx.kind === "transfer") {
+      const total = tx.amountAtoms + tx.feeAtoms;
+      if (!Number.isSafeInteger(total) || this.state.balance(tx.sender) < total) {
+        throw new Error("Insufficient balance");
+      }
+      return;
+    }
+    if (tx.kind === "activity_settlement") {
+      if (!this.genesis.activityOracles.includes(tx.publicKey)) throw new Error("Unauthorized activity oracle");
+      if (tx.sender !== this.genesis.activityPool) throw new Error("Invalid activity pool sender");
+      if (this.state.isActivityEpochSettled(tx.epoch)) throw new Error("Activity epoch already settled");
+      const total = tx.entries.reduce((sum, entry) => sum + BigInt(entry.amountAtoms), 0n);
+      if (total > BigInt(this.state.balance(this.genesis.activityPool))) throw new Error("Activity pool exhausted");
+      return;
+    }
+    const validators = this.validatorsAt(this.height + 1);
+    if (tx.kind === "validator_update") {
+      validateValidatorUpdateAuthorization(tx, validators, this.height + 1, this.lastValidatorActivationHeight());
+      return;
+    }
+    validateProtocolUpgradeAuthorization(tx, validators, this.height + 1, this.lastProtocolActivationHeight());
+  }
+
   selectValidPending(
     transactions: Transaction[],
     limit: number,
