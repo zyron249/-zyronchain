@@ -633,3 +633,71 @@ test("validator schedule is reconstructed from finalized history after restart",
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("four validators converge across 120 blocks with repeated proposer-failure view changes", () => {
+  const fourValidatorGenesis: GenesisConfig = {
+    ...genesis(),
+    validators: [
+      { address: validatorOne, publicKey: validatorOnePublic },
+      { address: validatorTwo, publicKey: validatorTwoPublic },
+      { address: newValidatorOne, publicKey: newValidatorOnePublic },
+      { address: newValidatorTwo, publicKey: newValidatorTwoPublic }
+    ]
+  };
+  const validatorPrivates = [
+    validatorOnePrivate,
+    validatorTwoPrivate,
+    newValidatorOnePrivate,
+    newValidatorTwoPrivate
+  ];
+  const validatorPublics = [
+    validatorOnePublic,
+    validatorTwoPublic,
+    newValidatorOnePublic,
+    newValidatorTwoPublic
+  ];
+  const chains = Array.from({ length: 4 }, () => new ZyronChain(fourValidatorGenesis));
+
+  for (let height = 1; height <= 120; height += 1) {
+    const round = height % 7 === 0 ? 1 : 0;
+    const producer = chains[0]!;
+    const tx = createTransfer(
+      {
+        chainId: fourValidatorGenesis.chainId,
+        nonce: height,
+        sender: alice,
+        receiver: bob,
+        amountAtoms: 1,
+        feeAtoms: 0,
+        timestampMs: fourValidatorGenesis.timestampMs + (height * 100) - 10
+      },
+      alicePrivate,
+      alicePublic
+    );
+    const roundCertificate = round === 0 ? [] : [0, 1, 2].map((index) => createRoundSkipVote({
+      chainId: fourValidatorGenesis.chainId,
+      height,
+      round: 0,
+      previousHash: producer.tip.hash,
+      validatorPrivateKey: validatorPrivates[index]!,
+      validatorPublicKey: validatorPublics[index]!
+    }));
+    const proposerIndex = (height - 1 + round) % validatorPrivates.length;
+    let block = producer.produceBlock([tx], validatorPrivates[proposerIndex]!, {
+      round,
+      roundCertificate,
+      timestampMs: fourValidatorGenesis.timestampMs + (height * 100)
+    });
+    for (const index of [0, 1, 2]) block = producer.attestBlock(block, validatorPrivates[index]!);
+    for (const chain of chains) {
+      chain.acceptBlock(block, fourValidatorGenesis.timestampMs + (height * 100));
+    }
+  }
+
+  assert.equal(chains[0]!.height, 120);
+  assert.equal(chains[0]!.getState().balance(bob), 120);
+  for (const chain of chains.slice(1)) {
+    assert.equal(chain.tip.hash, chains[0]!.tip.hash);
+    assert.equal(chain.getState().root(), chains[0]!.getState().root());
+  }
+});
