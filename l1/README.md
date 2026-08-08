@@ -71,7 +71,11 @@ rate limits are enforced. Bootstrap peers exchange bounded candidate hints over 
 native session. A discovered hint is not usable until the node dials its pinned PeerId, repeats
 the Noise + exact chain/genesis identity binding, and passes the bounded peer-pool policy. The
 pool permits at most 64 peers total, 32 dynamically discovered peers, 8 dynamic peers from one
-discovery source, and 2 dynamic peers from one topology bucket.
+discovery source, and 2 dynamic peers from one topology bucket. Periodic native sync probes at
+most four diversity-rotated peers per cycle and never overlaps its own previous cycle; discovery
+likewise bounds each cycle to four sources and four candidate verifications per source. These
+work caps prevent a full pool of slow but authenticated peers from multiplying one timer tick
+into unbounded concurrent dial/sync work.
 
 Automatic discovery dialing is intentionally stricter than explicit operator configuration:
 only literal public IP multiaddrs are eligible. Private, loopback, link-local, reserved and
