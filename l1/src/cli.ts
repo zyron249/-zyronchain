@@ -7,6 +7,7 @@ import { BLOCK_INTERVAL_MS, createRpcServer, NodeService, PeerClient, produceFin
 import { ChainStore, SigningJournal } from "./storage.js";
 import { createSignedPeerRecord, loadOrCreateNodeIdentity } from "./peer-identity.js";
 import { PeerReputationStore } from "./peer-reputation.js";
+import { PeerDirectory } from "./peer-directory.js";
 import { MIN_PROTOCOL_UPDATE_DELAY, MIN_VALIDATOR_UPDATE_DELAY, ZyronChain } from "./chain.js";
 import {
   createProtocolUpgrade,
@@ -155,6 +156,8 @@ async function runNode(args: string[]): Promise<void> {
     issuedAtMs,
     expiresAtMs: issuedAtMs + (60 * 60 * 1_000)
   }) : undefined;
+  const peerDirectory = new PeerDirectory(service.status());
+  if (peerRecord) peerDirectory.admit(peerRecord, issuedAtMs);
 
   try {
     const accepted = await peers.syncAny(service);
@@ -166,6 +169,7 @@ async function runNode(args: string[]): Promise<void> {
   const server = createRpcServer(service, {
     ...(peerAuthToken ? { peerAuthToken } : {}),
     ...(peerRecord ? { peerRecord } : {}),
+    peerDirectory,
     ...(trustedPeerPublicKeys.length ? { trustedPeerPublicKeys } : {})
   });
   await new Promise<void>((resolveListen, reject) => {

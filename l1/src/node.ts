@@ -15,6 +15,7 @@ import {
 import { publicKeyFromPrivate } from "./crypto.js";
 import { Mempool } from "./mempool.js";
 import { PeerReputationStore } from "./peer-reputation.js";
+import { MAX_DISCOVERY_RESPONSE_RECORDS, PeerDirectory } from "./peer-directory.js";
 import {
   PeerRequestAuthenticator,
   signPeerRequest,
@@ -57,6 +58,7 @@ export interface RpcServerOptions {
   maxConnections?: number;
   peerAuthToken?: string;
   peerRecord?: SignedPeerRecord;
+  peerDirectory?: PeerDirectory;
   trustedPeerPublicKeys?: string[];
   requestsPerWindow?: number;
   windowMs?: number;
@@ -244,7 +246,7 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
       return;
     }
     try {
-      await route(service, request, response, peerRecord, peerAuthToken, peerRequestAuthenticator);
+      await route(service, request, response, peerRecord, options.peerDirectory, peerAuthToken, peerRequestAuthenticator);
     } catch (error) {
       if (error instanceof PeerAuthenticationError) {
         response.setHeader("www-authenticate", peerRequestAuthenticator ? "ZyronSignature" : "Bearer");
@@ -266,6 +268,7 @@ async function route(
   request: IncomingMessage,
   response: ServerResponse,
   peerRecord?: SignedPeerRecord,
+  peerDirectory?: PeerDirectory,
   peerAuthToken?: string,
   peerRequestAuthenticator?: PeerRequestAuthenticator
 ): Promise<void> {
@@ -276,6 +279,12 @@ async function route(
   if (request.method === "GET" && url.pathname === "/peer-record" && peerRecord) {
     validateSignedPeerRecord(peerRecord, service.status());
     return writeJson(response, 200, peerRecord);
+  }
+  if (request.method === "GET" && url.pathname === "/peers" && peerDirectory) {
+    const limit = url.searchParams.has("limit")
+      ? parseInteger(url.searchParams.get("limit"), "limit")
+      : MAX_DISCOVERY_RESPONSE_RECORDS;
+    return writeJson(response, 200, { records: peerDirectory.list(limit) });
   }
   if (request.method === "GET" && url.pathname === "/healthz") {
     return writeJson(response, 200, { ok: true, height: service.status().height });
@@ -376,6 +385,25 @@ export class PeerClient {
   ): Promise<SignedPeerRecord> {
     const base = normalizePeerUrl(peer);
     return validateSignedPeerRecord(await getJson(`${base}/peer-record`, 64_000), expected, nowMs);
+  }
+
+  async fetchPeerRecords(
+    peer: string,
+    expected: { chainId: string; genesisHash: string },
+    limit = MAX_DISCOVERY_RESPONSE_RECORDS,
+    nowMs = Date.now()
+  ): Promise<SignedPeerRecord[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_DISCOVERY_RESPONSE_RECORDS) {
+      throw new Error("Invalid peer discovery request limit");
+    }
+    const base = normalizePeerUrl(peer);
+    const payload = await getJson(`${base}/peers?limit=${limit}`, 256_000);
+    assertPlainRecord(payload, "peer discovery response");
+    assertExactKeys(payload, ["records"], "peer discovery response");
+    if (!Array.isArray(payload.records) || payload.records.length > limit) {
+      throw new Error("Invalid peer discovery response");
+    }
+    return payload.records.map((record) => validateSignedPeerRecord(record, expected, nowMs));
   }
 
   async syncAny(service: NodeService): Promise<number> {
