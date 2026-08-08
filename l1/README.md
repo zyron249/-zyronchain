@@ -353,3 +353,17 @@ The benchmark first reopens with the checkpoint hidden (full replay), then resto
 checkpoint and reopens via verified suffix replay. It fails if either path reaches a different
 tip or if the checkpoint path is not actually used, and prints both timings plus the observed
 speedup. Benchmark timing is evidence for capacity planning, not a consensus correctness rule.
+
+State-v2 cardinality/restart/GC can be exercised in isolated worker processes so
+the restart measurement cannot inherit the setup process's JavaScript heap:
+
+```sh
+npm run bench:state-scale
+ZYRON_SCALE_ACCOUNTS=50000 npm run bench:state-scale
+```
+
+The scale harness defaults to 10,000 accounts, adds historical path churn, restarts
+from a fresh process, compacts unreachable objects, and restarts again. It fails if
+either restart changes the authenticated root, if the resolver cache exceeds 4,096
+records, if GC removes no historical nodes, or if physical deletion counts disagree.
+Heap/RSS/timing values are reported as capacity evidence rather than flaky CI limits.
