@@ -45,9 +45,23 @@ async function main(): Promise<void> {
   if (command === "protocol-proposal") return createProtocolProposalFile(args);
   if (command === "protocol-approve") return approveProtocolProposal(args);
   if (command === "protocol-submit") return submitProtocolProposal(args);
+  if (command === "snapshot") return createSnapshot(args);
   if (command === "node") return runNode(args);
   usage();
   process.exitCode = 2;
+}
+
+async function createSnapshot(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--genesis", "--data", "--out"]));
+  const genesisPath = requiredOption(args, "--genesis");
+  const dataDir = requiredOption(args, "--data");
+  const output = requiredOption(args, "--out");
+  const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
+  const store = await ChainStore.open(genesis, resolve(dataDir));
+  const result = await store.writeSnapshot(resolve(output));
+  console.log(`Snapshot written at height ${result.height}: ${resolve(output)}`);
+  console.log(`Snapshot SHA-256: ${result.sha256}`);
+  console.log("Pin and publish this digest independently before trusting the snapshot as a checkpoint.");
 }
 
 async function keygen(args: string[]): Promise<void> {
@@ -492,6 +506,7 @@ function usage(): void {
   console.log("  zyron-l1 protocol-proposal --out upgrade.json --rpc <url> --key initiator.json --activation-height <n> --protocol-version <n>");
   console.log("  zyron-l1 protocol-approve --proposal upgrade.json --key validator.json --out approval.json");
   console.log("  zyron-l1 protocol-submit --proposal upgrade.json --approval approval-a.json [...] --key initiator.json --rpc <url>");
+  console.log("  zyron-l1 snapshot --genesis genesis.json --data ./data --out checkpoint.json");
   console.log("Validator key files contain secrets. Keep them mode 0600 and never commit them.");
 }
 

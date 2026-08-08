@@ -7,7 +7,7 @@ import {
   validateBlockEnvelope
 } from "./block.js";
 import { addressFromPublicKey, publicKeyFromPrivate, verifyCanonical } from "./crypto.js";
-import { LedgerState } from "./state.js";
+import { LedgerState, type LedgerSnapshot } from "./state.js";
 import {
   assertAddress,
   assertExactKeys,
@@ -23,6 +23,17 @@ const MAX_BLOCK_BYTES = 2_000_000;
 export const MIN_VALIDATOR_UPDATE_DELAY = 100;
 export const MIN_PROTOCOL_UPDATE_DELAY = 100;
 export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1]);
+
+export interface ChainSnapshotV1 {
+  version: 1;
+  chainId: string;
+  genesisHash: string;
+  height: number;
+  tip: Block;
+  state: LedgerSnapshot;
+  validatorSchedule: Array<{ activationHeight: number; validators: Validator[] }>;
+  protocolSchedule: Array<{ activationHeight: number; protocolVersion: number }>;
+}
 
 export class ZyronChain {
   readonly genesis: GenesisConfig;
@@ -57,6 +68,23 @@ export class ZyronChain {
 
   getState(): LedgerState {
     return this.state.clone();
+  }
+
+  snapshot(): ChainSnapshotV1 {
+    return {
+      version: 1,
+      chainId: this.genesis.chainId,
+      genesisHash: this.genesisHash,
+      height: this.height,
+      tip: structuredClone(this.tip),
+      state: this.state.snapshot(),
+      validatorSchedule: [...this.validatorSchedule.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([activationHeight, validators]) => ({ activationHeight, validators: structuredClone(validators) })),
+      protocolSchedule: [...this.protocolSchedule.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([activationHeight, protocolVersion]) => ({ activationHeight, protocolVersion }))
+    };
   }
 
   validatorsAt(height: number): Validator[] {
