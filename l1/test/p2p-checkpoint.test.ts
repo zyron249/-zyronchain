@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { canonicalJson, sha256Hex } from "../src/codec.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
@@ -27,6 +29,7 @@ const validatorPublic = publicKeyFromPrivate(validatorPrivate);
 const validator = addressFromPublicKey(validatorPublic);
 const oraclePublic = publicKeyFromPrivate("12".padStart(64, "0"));
 const activityPool = addressFromPublicKey(publicKeyFromPrivate("13".padStart(64, "0")));
+const execFileAsync = promisify(execFile);
 
 function genesis(chainId = "zyron-checkpoint-p2p-1"): GenesisConfig {
   return {
@@ -67,6 +70,7 @@ test("native checkpoint transfer carries bytes over Noise but requires an extern
   const sourceDir = join(root, "source");
   const clientIdentityDir = join(root, "client-identity");
   const installedDir = join(root, "installed");
+  const cliInstalledDir = join(root, "cli-installed");
   let sourceNode: Awaited<ReturnType<typeof createP2PNode>> | undefined;
   let clientNode: Awaited<ReturnType<typeof createP2PNode>> | undefined;
   try {
@@ -92,6 +96,21 @@ test("native checkpoint transfer carries bytes over Noise but requires an extern
     const installed = await ChainStore.installTrustedSnapshot(config, installedDir, fetched, anchor);
     assert.equal(installed.chain.tip.hash, sourceStore.chain.tip.hash);
     assert.equal(installed.firstStoredHeight, 102);
+
+    const genesisPath = join(root, "genesis.json");
+    await writeFile(genesisPath, `${canonicalJson(config)}\n`, "utf8");
+    const cli = await execFileAsync(process.execPath, [
+      join(process.cwd(), "dist/src/cli.js"), "checkpoint-fetch-install",
+      "--genesis", genesisPath,
+      "--p2p-peer", address.toString(),
+      "--data", cliInstalledDir,
+      "--tip-hash", anchor.tipHash,
+      "--sha256", anchor.snapshotSha256
+    ]);
+    assert.match(cli.stdout, /Trusted checkpoint fetched and installed at height 101/);
+    const cliInstalled = await ChainStore.open(config, cliInstalledDir);
+    assert.equal(cliInstalled.chain.tip.hash, anchor.tipHash);
+    assert.equal(cliInstalled.firstStoredHeight, 102);
 
     // Knowing the correct finalized tip does not let a peer choose a snapshot
     // digest for us. A different externally supplied digest is never served.

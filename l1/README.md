@@ -242,6 +242,20 @@ node dist/src/cli.js checkpoint-install \
 Do not copy the two anchor values from the node or peer that supplied the snapshot.
 An existing target directory is rejected rather than overwritten.
 
+If a native peer serves the exact independently anchored checkpoint, the fetch and
+install can be one operation. The peer address must pin its Noise PeerId; the command
+uses a temporary client identity and still publishes the target data directory only
+after the complete snapshot passes the same validation path:
+
+```sh
+node dist/src/cli.js checkpoint-fetch-install \
+  --genesis genesis.json \
+  --p2p-peer /dns4/checkpoint.example/tcp/9140/p2p/<PINNED_PEER_ID> \
+  --data ./data-from-checkpoint \
+  --tip-hash <independently-trusted-finalized-tip> \
+  --sha256 <independently-trusted-snapshot-digest>
+```
+
 Local recovery checkpoints are different: they are created only after the finalized block
 log is durable, bind the full chain/genesis/tip/state/governance snapshot, and are revalidated
 against their exact finalized-log boundary before suffix replay. To measure the restart

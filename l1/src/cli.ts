@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { chmod, readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import type { Multiaddr } from "@multiformats/multiaddr";
 
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
@@ -19,7 +20,7 @@ import { PeerReputationStore } from "./peer-reputation.js";
 import { PeerDirectory } from "./peer-directory.js";
 import { createP2PNode, registerP2PIdentityProtocol } from "./p2p.js";
 import { registerP2PSyncProtocol, syncP2PFrom } from "./p2p-sync.js";
-import { registerP2PCheckpointProtocol } from "./p2p-checkpoint.js";
+import { fetchTrustedSnapshotFromPeer, registerP2PCheckpointProtocol } from "./p2p-checkpoint.js";
 import { NativeConsensusPeerClient, registerP2PConsensusProtocol } from "./p2p-consensus.js";
 import { discoverNativePeersFrom, registerP2PDiscoveryProtocol } from "./p2p-discovery.js";
 import { assertSafeDiscoveredPeer, NativePeerPool } from "./p2p-peer-pool.js";
@@ -78,6 +79,7 @@ async function main(): Promise<void> {
   if (command === "protocol-submit") return submitProtocolProposal(args);
   if (command === "snapshot") return createSnapshot(args);
   if (command === "checkpoint-install") return installCheckpoint(args);
+  if (command === "checkpoint-fetch-install") return fetchAndInstallCheckpoint(args);
   if (command === "node") return runNode(args);
   usage();
   process.exitCode = 2;
@@ -112,6 +114,41 @@ async function installCheckpoint(args: string[]): Promise<void> {
   console.log(`Trusted checkpoint installed at height ${store.chain.height}: ${dataDir}`);
   console.log(`Finalized tip: ${store.chain.tip.hash}`);
   console.log(`Snapshot SHA-256: ${snapshotSha256}`);
+}
+
+async function fetchAndInstallCheckpoint(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--genesis", "--p2p-peer", "--data", "--tip-hash", "--sha256"]));
+  const genesisPath = requiredOption(args, "--genesis");
+  const peer = parseNativePeerAddress(requiredOption(args, "--p2p-peer"));
+  const dataDir = resolve(requiredOption(args, "--data"));
+  const tipHash = requiredOption(args, "--tip-hash");
+  const snapshotSha256 = requiredOption(args, "--sha256");
+  if (!/^[0-9a-f]{64}$/.test(tipHash) || !/^[0-9a-f]{64}$/.test(snapshotSha256)) {
+    throw new Error("checkpoint-fetch-install requires lowercase 32-byte --tip-hash and --sha256 anchors");
+  }
+  const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
+  // The fetch identity is deliberately ephemeral and separate from the target.
+  // No target data exists until the complete snapshot passes external-anchor,
+  // finality, governance and State-v2 validation.
+  const temporaryIdentityDir = await mkdtemp(join(tmpdir(), "zyron-checkpoint-fetch-"));
+  let client: Awaited<ReturnType<typeof createP2PNode>> | undefined;
+  try {
+    const identity = await loadOrCreateNodeIdentity(temporaryIdentityDir);
+    client = await createP2PNode(identity);
+    const anchor = { tipHash, snapshotSha256 };
+    const snapshot = await fetchTrustedSnapshotFromPeer(client, peer, identity, genesis, anchor);
+    await client.stop();
+    client = undefined;
+    const store = await ChainStore.installTrustedSnapshot(genesis, dataDir, snapshot, anchor);
+    console.log(`Trusted checkpoint fetched and installed at height ${store.chain.height}: ${dataDir}`);
+    console.log(`Finalized tip: ${store.chain.tip.hash}`);
+    console.log(`Snapshot SHA-256: ${snapshotSha256}`);
+  } finally {
+    if (client) {
+      try { await client.stop(); } catch { /* best-effort cleanup after the primary failure */ }
+    }
+    await rm(temporaryIdentityDir, { recursive: true, force: true });
+  }
 }
 
 async function keygen(args: string[]): Promise<void> {
@@ -789,6 +826,7 @@ function usage(): void {
   console.log("  zyron-l1 protocol-submit --proposal upgrade.json --approval approval-a.json [...] --key initiator.json --rpc <url>");
   console.log("  zyron-l1 snapshot --genesis genesis.json --data ./data --out checkpoint.json");
   console.log("  zyron-l1 checkpoint-install --genesis genesis.json --snapshot checkpoint.json --data ./NEW-data --tip-hash <trusted-hex> --sha256 <trusted-hex>");
+  console.log("  zyron-l1 checkpoint-fetch-install --genesis genesis.json --p2p-peer /ip4/203.0.113.10/tcp/9140/p2p/<PeerId> --data ./NEW-data --tip-hash <trusted-hex> --sha256 <trusted-hex>");
   console.log("Checkpoint install anchors must come from an independent trusted channel, never from the snapshot peer.");
   console.log("Validator key files contain secrets. Keep them mode 0600 and never commit them.");
 }
