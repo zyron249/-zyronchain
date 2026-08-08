@@ -64,6 +64,7 @@ export interface RpcServerOptions {
   peerRecord?: SignedPeerRecord;
   peerDirectory?: PeerDirectory;
   trustedPeerPublicKeys?: string[];
+  onTransactionAccepted?: (transaction: Transaction) => void | Promise<void>;
   requestsPerWindow?: number;
   windowMs?: number;
 }
@@ -273,7 +274,8 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
         options.peerDirectory,
         peerAuthToken,
         peerRequestAuthenticator,
-        consensusInflight
+        consensusInflight,
+        options.onTransactionAccepted
       );
     } catch (error) {
       if (error instanceof PeerAuthenticationError) {
@@ -304,7 +306,8 @@ async function route(
   peerDirectory?: PeerDirectory,
   peerAuthToken?: string,
   peerRequestAuthenticator?: PeerRequestAuthenticator,
-  consensusInflight?: PeerInflightLimiter
+  consensusInflight?: PeerInflightLimiter,
+  onTransactionAccepted?: (transaction: Transaction) => void | Promise<void>
 ): Promise<void> {
   const url = new URL(request.url ?? "/", "http://node.invalid");
   if (request.method === "GET" && url.pathname === "/status") {
@@ -337,7 +340,15 @@ async function route(
     return writeJson(response, 200, { address, nonce: service.nonce(address) });
   }
   if (request.method === "POST" && url.pathname === "/tx") {
-    return writeJson(response, 202, { txid: service.submitTransaction(await readJsonBody(request)) });
+    const body = await readJsonBody(request);
+    const txid = service.submitTransaction(body);
+    if (onTransactionAccepted) {
+      const transaction = structuredClone(body as Transaction);
+      // Gossip is best-effort and must not turn a locally accepted transaction
+      // into an RPC failure because a remote peer is slow or unavailable.
+      void Promise.resolve().then(() => onTransactionAccepted(transaction)).catch(() => undefined);
+    }
+    return writeJson(response, 202, { txid });
   }
   if (request.method === "POST" && url.pathname === "/proposal/attest") {
     const body = await readJsonBody(request);
@@ -390,6 +401,7 @@ export class PeerClient {
   private gossipCursor = 0;
   private readonly failureUntil = new Map<string, number>();
   private readonly blockGossipSeen = new Set<string>();
+  private readonly transactionGossipSeen = new Set<string>();
 
   constructor(
     peers: string[],
@@ -593,18 +605,27 @@ export class PeerClient {
   }
 
   async broadcastBlock(block: Block): Promise<void> {
-    if (this.blockGossipSeen.has(block.hash)) return;
-    this.blockGossipSeen.add(block.hash);
-    if (this.blockGossipSeen.size > MAX_GOSSIP_DEDUP_IDS) {
-      const oldest = this.blockGossipSeen.keys().next().value as string | undefined;
-      if (oldest) this.blockGossipSeen.delete(oldest);
-    }
-    const fanout = diversityOrderedPeers(this.peers, this.gossipCursor).slice(0, MAX_GOSSIP_FANOUT);
-    const groupCount = Math.max(1, new Set(this.peers.map(peerDiversityBucket)).size);
-    this.gossipCursor = (this.gossipCursor + 1) % groupCount;
+    if (!rememberGossipId(this.blockGossipSeen, block.hash)) return;
+    const fanout = this.nextGossipFanout();
     await Promise.allSettled(fanout.map((peer) => postJson(
       `${peer}/block`, block, 64_000, this.peerAuthToken, this.peerRequestCredentials
     )));
+  }
+
+  async broadcastTransaction(transaction: Transaction): Promise<void> {
+    validateTransactionShape(transaction);
+    if (!rememberGossipId(this.transactionGossipSeen, transaction.txid)) return;
+    const fanout = this.nextGossipFanout();
+    await Promise.allSettled(fanout.map((peer) => postJson(
+      `${peer}/tx`, transaction, 64_000
+    )));
+  }
+
+  private nextGossipFanout(): string[] {
+    const fanout = diversityOrderedPeers(this.peers, this.gossipCursor).slice(0, MAX_GOSSIP_FANOUT);
+    const groupCount = Math.max(1, new Set(this.peers.map(peerDiversityBucket)).size);
+    this.gossipCursor = (this.gossipCursor + 1) % groupCount;
+    return fanout;
   }
 
   private async recordFailure(peer: string, nowMs: number): Promise<void> {
@@ -613,6 +634,16 @@ export class PeerClient {
       : PEER_FAILURE_BACKOFF_MS;
     this.failureUntil.set(peer, nowMs + backoffMs);
   }
+}
+
+function rememberGossipId(cache: Set<string>, id: string): boolean {
+  if (cache.has(id)) return false;
+  cache.add(id);
+  if (cache.size > MAX_GOSSIP_DEDUP_IDS) {
+    const oldest = cache.keys().next().value as string | undefined;
+    if (oldest) cache.delete(oldest);
+  }
+  return true;
 }
 
 function rotate<T>(values: readonly T[], offset: number): T[] {
