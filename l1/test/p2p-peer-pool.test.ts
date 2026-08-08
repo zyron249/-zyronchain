@@ -65,6 +65,12 @@ test("verified dynamic admission caps one source and one topology failure domain
     assert.equal(await pool.verifyAndAdmit(node, local, chain, candidate, source), true);
   }
   assert.equal(await pool.verifyAndAdmit(node, local, chain, candidates[8]!, source), false);
+  const evictedPeerId = candidates[0]!.getComponents()[2]!.value!;
+  assert.equal(pool.isDynamic(evictedPeerId), true);
+  assert.equal(pool.evictDynamic(evictedPeerId), true);
+  assert.equal(pool.isDynamic(evictedPeerId), false);
+  // Churn must release both total capacity and the per-source slot.
+  assert.equal(await pool.verifyAndAdmit(node, local, chain, candidates[8]!, source), true);
 
   const topologyPool = new NativePeerPool([], peerIdFromIdentity(local));
   const topologyCandidates = Array.from({ length: 3 }, (_, offset) => {
@@ -76,6 +82,28 @@ test("verified dynamic admission caps one source and one topology failure domain
   assert.equal(await topologyPool.verifyAndAdmit(node, local, chain, topologyCandidates[0]!, source), true);
   assert.equal(await topologyPool.verifyAndAdmit(node, local, chain, topologyCandidates[1]!, source), true);
   assert.equal(await topologyPool.verifyAndAdmit(node, local, chain, topologyCandidates[2]!, source), false);
+});
+
+test("concurrent Sybil admission cannot race past one topology cap and seeds cannot be evicted", async () => {
+  const chain = { chainId: "zyron-pool-race", genesisHash: "b5".repeat(32) };
+  const local = identity(220);
+  const source = peerId(221);
+  const remotes = new Map<string, NodeIdentity>();
+  const candidates = Array.from({ length: 8 }, (_, offset) => {
+    const remote = identity(offset + 100);
+    const id = peerIdFromIdentity(remote);
+    remotes.set(id, remote);
+    return parseNativePeerAddress(`/ip4/46.70.80.${20 + offset}/tcp/9140/p2p/${id}`);
+  });
+  const seed = parseNativePeerAddress(`/ip4/8.8.4.4/tcp/9140/p2p/${peerId(222)}`);
+  const pool = new NativePeerPool([seed], peerIdFromIdentity(local));
+  const accepted = await Promise.all(candidates.map((candidate) =>
+    pool.verifyAndAdmit(fakeIdentityNode(remotes, chain), local, chain, candidate, source)
+  ));
+  assert.equal(accepted.filter(Boolean).length, 2);
+  assert.equal(pool.size, 3);
+  assert.equal(pool.evictDynamic(peerId(222)), false);
+  assert.equal(pool.size, 3);
 });
 
 test("dynamic admission fails closed when Noise identity does not match the pinned candidate", async () => {

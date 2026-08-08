@@ -53,6 +53,18 @@ export class NativePeerPool {
     return this.peers.has(peerId);
   }
 
+  isDynamic(peerId: string): boolean {
+    validatePeerId(peerId);
+    return this.peers.get(peerId)?.sourcePeerId !== undefined;
+  }
+
+  /** Removes only discovery-learned peers; configured bootstrap policy is immutable at runtime. */
+  evictDynamic(peerId: string): boolean {
+    validatePeerId(peerId);
+    if (!this.isDynamic(peerId)) return false;
+    return this.peers.delete(peerId);
+  }
+
   snapshot(groupOffset = 0): Multiaddr[] {
     return diversityOrderedNativePeers([...this.peers.values()].map((entry) => entry.address), groupOffset, this.peerGroups);
   }
