@@ -4,7 +4,12 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 
 import { canonicalJson, sha256Hex } from "./codec.js";
-import { stateV2KeyHash, type StateV2NodeRecord, type StateV2NodeResolver } from "./state-v2.js";
+import {
+  stateV2KeyHash,
+  type SparseMerkleState,
+  type StateV2NodeRecord,
+  type StateV2NodeResolver
+} from "./state-v2.js";
 
 interface StoredNodeRow {
   record: string;
@@ -33,6 +38,9 @@ export class StateV2NodeObjectStore {
   private readonly getSemanticKeyStatement: Database.Statement<[string], StoredSemanticKeyRow>;
   private readonly insertSemanticKeyStatement: Database.Statement<[string, string, string]>;
   private readonly allSemanticKeysStatement: Database.Statement<[], StoredSemanticKeyRow>;
+  private readonly traversalDepthStatement: Database.Statement<[string], { depth: number }>;
+  private readonly traversalRememberStatement: Database.Statement<[string, number]>;
+  private readonly traversalClearStatement: Database.Statement<[]>;
   private readonly writeBatch: (records: readonly StateV2NodeRecord[]) => void;
   private readonly writeSemanticKeyBatch: (keys: readonly string[]) => void;
 
@@ -48,6 +56,9 @@ export class StateV2NodeObjectStore {
       "INSERT OR IGNORE INTO semantic_keys(key_hash, key, checksum) VALUES (?, ?, ?)"
     );
     this.allSemanticKeysStatement = database.prepare("SELECT key_hash, key, checksum FROM semantic_keys ORDER BY key_hash");
+    this.traversalDepthStatement = database.prepare("SELECT depth FROM state_v2_traversal_seen WHERE hash = ?");
+    this.traversalRememberStatement = database.prepare("INSERT INTO state_v2_traversal_seen(hash, depth) VALUES (?, ?)");
+    this.traversalClearStatement = database.prepare("DELETE FROM state_v2_traversal_seen");
     const transaction = database.transaction((records: readonly StateV2NodeRecord[]) => {
       for (const record of records) this.putOne(record);
     });
@@ -70,6 +81,15 @@ export class StateV2NodeObjectStore {
       database.pragma("synchronous = FULL");
       database.pragma("foreign_keys = ON");
       database.pragma("trusted_schema = OFF");
+      // Keep full-tree validation bookkeeping out of the JavaScript heap. This
+      // table is connection-local and never becomes consensus-persistent data.
+      database.pragma("temp_store = FILE");
+      database.exec(`
+        CREATE TEMP TABLE state_v2_traversal_seen (
+          hash TEXT PRIMARY KEY NOT NULL,
+          depth INTEGER NOT NULL CHECK(depth >= 0 AND depth <= 256)
+        ) WITHOUT ROWID
+      `);
       database.exec(`
         CREATE TABLE IF NOT EXISTS nodes (
           hash TEXT PRIMARY KEY NOT NULL CHECK(length(hash) = 64),
@@ -137,6 +157,23 @@ export class StateV2NodeObjectStore {
 
   allSemanticKeys(): string[] {
     return this.allSemanticKeysStatement.all().map((row) => parseStoredSemanticKey(row, row.key_hash));
+  }
+
+  /** Authenticate a complete state root with disk-backed traversal metadata. */
+  validateReachable(state: SparseMerkleState, requireSemanticKeys: boolean): void {
+    this.traversalClearStatement.run();
+    try {
+      state.validateReachable({
+        depth: (hash) => this.traversalDepthStatement.get(hash)?.depth,
+        remember: (hash, depth) => { this.traversalRememberStatement.run(hash, depth); }
+      }, requireSemanticKeys ? (keyHash) => {
+        if (this.semanticKey(keyHash) === undefined) {
+          throw new Error("Incomplete persisted State v2 semantic key index");
+        }
+      } : undefined);
+    } finally {
+      this.traversalClearStatement.run();
+    }
   }
 
   close(): void {
