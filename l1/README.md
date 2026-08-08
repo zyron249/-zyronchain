@@ -64,6 +64,20 @@ When `--peer-token-file` is configured, non-loopback peers must use `https://` U
 the Bearer credential is never transmitted over remote plaintext HTTP. Plain HTTP remains
 available for loopback-only local devnets without weakening the authenticated remote path.
 
+For validator deployments, prefer explicit node-identity trust over a shared fleet token.
+Each node persists a separate secp256k1 node identity in its data directory. Configure every
+allowed remote node with repeated `--trusted-peer-public-key <key>` flags. Once at least one
+trusted key is configured, consensus writes (`/proposal/attest`, `/round/skip`, `/block`) require
+a domain-separated node signature binding the chain/genesis, method, path, canonical body hash,
+timestamp and random nonce; a legacy Bearer token cannot bypass that policy. Replays older than
+60 seconds or duplicate nonces are rejected. Remote authenticated peers still require HTTPS:
+application signatures authenticate the node, while TLS protects confidentiality and transport.
+
+`--advertise-peer https://node.example:9137` publishes the separately signed, one-hour peer
+record at `/peer-record`. Treat advertised records as discovery metadata, not automatic trust:
+operators must establish trusted public keys out of band until bounded dynamic admission and
+peer scoring are implemented.
+
 ```sh
 node dist/src/cli.js node --genesis genesis.json --data data-a --validator-key validator-a.json --port 9137 --peer http://127.0.0.1:9138
 node dist/src/cli.js node --genesis genesis.json --data data-b --validator-key validator-b.json --port 9138 --peer http://127.0.0.1:9137

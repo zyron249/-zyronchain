@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 
 import { assertHex, canonicalJson, sha256Hex } from "./codec.js";
 import { generatePrivateKey, publicKeyFromPrivate, signCanonical, verifyCanonical } from "./crypto.js";
@@ -10,6 +11,9 @@ const MAX_PEER_ENDPOINTS = 8;
 const MAX_PEER_RECORD_TTL_MS = 24 * 60 * 60 * 1_000;
 const MAX_PEER_RECORD_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 const PEER_RECORD_DOMAIN = "ZyronChain/peer-record/v1";
+const PEER_REQUEST_DOMAIN = "ZyronChain/peer-request/v1";
+const PEER_REQUEST_MAX_SKEW_MS = 60_000;
+const MAX_PEER_REQUEST_NONCES = 10_000;
 
 export interface NodeIdentity {
   version: 1;
@@ -28,6 +32,27 @@ export interface SignedPeerRecord {
   issuedAtMs: number;
   expiresAtMs: number;
   signature: string;
+}
+
+export interface PeerRequestAuthHeaders extends Record<string, string> {
+  "x-zyron-node-id": string;
+  "x-zyron-peer-public-key": string;
+  "x-zyron-peer-timestamp": string;
+  "x-zyron-peer-nonce": string;
+  "x-zyron-peer-signature": string;
+}
+
+interface PeerRequestPayload {
+  domain: typeof PEER_REQUEST_DOMAIN;
+  nodeId: string;
+  publicKey: string;
+  chainId: string;
+  genesisHash: string;
+  method: string;
+  path: string;
+  bodySha256: string;
+  timestampMs: number;
+  nonce: string;
 }
 
 interface PeerRecordPayload extends Omit<SignedPeerRecord, "signature"> {
@@ -107,6 +132,119 @@ export function validateSignedPeerRecord(
 export function nodeIdFromPublicKey(publicKey: string): string {
   assertHex(publicKey, 64, "node identity public key");
   return sha256Hex(Buffer.from(publicKey, "hex"));
+}
+
+export function signPeerRequest(
+  identity: NodeIdentity,
+  input: {
+    chainId: string;
+    genesisHash: string;
+    method: string;
+    path: string;
+    bodySha256: string;
+    timestampMs?: number;
+    nonce?: string;
+  }
+): PeerRequestAuthHeaders {
+  validateNodeIdentity(identity);
+  const timestampMs = input.timestampMs ?? Date.now();
+  const nonce = input.nonce ?? randomBytes(16).toString("hex");
+  const payload = peerRequestPayload(identity.nodeId, identity.publicKey, { ...input, timestampMs, nonce });
+  const signature = signCanonical(payload, identity.privateKey);
+  return {
+    "x-zyron-node-id": identity.nodeId,
+    "x-zyron-peer-public-key": identity.publicKey,
+    "x-zyron-peer-timestamp": String(timestampMs),
+    "x-zyron-peer-nonce": nonce,
+    "x-zyron-peer-signature": signature
+  };
+}
+
+export class PeerRequestAuthenticator {
+  private readonly trustedPublicKeys: Set<string>;
+  private readonly seenNonces = new Map<string, number>();
+
+  constructor(
+    trustedPublicKeys: readonly string[],
+    private readonly expected: { chainId: string; genesisHash: string }
+  ) {
+    this.trustedPublicKeys = new Set(trustedPublicKeys);
+    if (this.trustedPublicKeys.size === 0) throw new Error("At least one trusted peer identity is required");
+    for (const publicKey of this.trustedPublicKeys) {
+      assertHex(publicKey, 64, "trusted peer public key");
+      nodeIdFromPublicKey(publicKey);
+    }
+  }
+
+  verify(
+    headers: Record<string, string | string[] | undefined>,
+    input: { method: string; path: string; bodySha256: string },
+    nowMs = Date.now()
+  ): string {
+    const nodeId = singleHeader(headers["x-zyron-node-id"], "node ID");
+    const publicKey = singleHeader(headers["x-zyron-peer-public-key"], "public key");
+    const timestampText = singleHeader(headers["x-zyron-peer-timestamp"], "timestamp");
+    const nonce = singleHeader(headers["x-zyron-peer-nonce"], "nonce");
+    const signature = singleHeader(headers["x-zyron-peer-signature"], "signature");
+    assertHex(nodeId, 32, "peer request node ID");
+    assertHex(publicKey, 64, "peer request public key");
+    assertHex(nonce, 16, "peer request nonce");
+    assertHex(signature, 64, "peer request signature");
+    if (!this.trustedPublicKeys.has(publicKey)) throw new Error("Untrusted peer identity");
+    if (nodeIdFromPublicKey(publicKey) !== nodeId) throw new Error("Peer request node ID mismatch");
+    if (!/^(0|[1-9][0-9]*)$/.test(timestampText)) throw new Error("Invalid peer request timestamp");
+    const timestampMs = Number(timestampText);
+    if (!Number.isSafeInteger(timestampMs) || Math.abs(nowMs - timestampMs) > PEER_REQUEST_MAX_SKEW_MS) {
+      throw new Error("Peer request timestamp outside allowed window");
+    }
+    assertHex(input.bodySha256, 32, "peer request body hash");
+
+    this.sweep(nowMs);
+    const replayKey = `${nodeId}:${nonce}`;
+    if (this.seenNonces.has(replayKey)) throw new Error("Replayed peer request");
+    const payload = peerRequestPayload(nodeId, publicKey, {
+      ...input,
+      chainId: this.expected.chainId,
+      genesisHash: this.expected.genesisHash,
+      timestampMs,
+      nonce
+    });
+    if (!verifyCanonical(payload, signature, publicKey)) throw new Error("Invalid peer request signature");
+    this.seenNonces.set(replayKey, timestampMs);
+    if (this.seenNonces.size > MAX_PEER_REQUEST_NONCES) {
+      const oldest = this.seenNonces.keys().next().value as string | undefined;
+      if (oldest) this.seenNonces.delete(oldest);
+    }
+    return nodeId;
+  }
+
+  private sweep(nowMs: number): void {
+    for (const [key, timestampMs] of this.seenNonces) {
+      if (nowMs - timestampMs > PEER_REQUEST_MAX_SKEW_MS) this.seenNonces.delete(key);
+    }
+  }
+}
+
+function peerRequestPayload(
+  nodeId: string,
+  publicKey: string,
+  input: {
+    chainId: string;
+    genesisHash: string;
+    method: string;
+    path: string;
+    bodySha256: string;
+    timestampMs: number;
+    nonce: string;
+  }
+): PeerRequestPayload {
+  if (input.method !== input.method.toUpperCase() || !input.path.startsWith("/")) throw new Error("Invalid peer request target");
+  return { domain: PEER_REQUEST_DOMAIN, nodeId, publicKey, ...input };
+}
+
+function singleHeader(value: string | string[] | undefined, name: string): string {
+  if (typeof value !== "string" || value.length === 0) throw new Error(`Missing peer request ${name}`);
+  return value;
 }
 
 function parseNodeIdentity(text: string): NodeIdentity {

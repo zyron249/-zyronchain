@@ -112,7 +112,8 @@ async function createGenesis(args: string[]): Promise<void> {
 
 async function runNode(args: string[]): Promise<void> {
   assertKnownOptions(args, new Set([
-    "--genesis", "--data", "--host", "--port", "--peer", "--advertise-peer", "--validator-key", "--peer-token-file"
+    "--genesis", "--data", "--host", "--port", "--peer", "--advertise-peer", "--validator-key", "--peer-token-file",
+    "--trusted-peer-public-key"
   ]));
   const genesisPath = option(args, "--genesis");
   const dataDir = option(args, "--data");
@@ -134,10 +135,17 @@ async function runNode(args: string[]): Promise<void> {
   const peerTokenPath = option(args, "--peer-token-file");
   const peerAuthToken = peerTokenPath ? await readPeerAuthToken(resolve(peerTokenPath)) : undefined;
   const service = new NodeService(store, journal, privateKey);
-  const peers = new PeerClient(peerUrls, peerAuthToken);
   const advertisedPeerUrls = options(args, "--advertise-peer");
+  const trustedPeerPublicKeys = options(args, "--trusted-peer-public-key");
   const issuedAtMs = Date.now();
-  const identity = advertisedPeerUrls.length ? await loadOrCreateNodeIdentity(resolve(dataDir)) : undefined;
+  const identity = (peerUrls.length || advertisedPeerUrls.length || trustedPeerPublicKeys.length)
+    ? await loadOrCreateNodeIdentity(resolve(dataDir))
+    : undefined;
+  const peers = new PeerClient(peerUrls, peerAuthToken, identity ? {
+    identity,
+    chainId: service.status().chainId,
+    genesisHash: service.status().genesisHash
+  } : undefined);
   const peerRecord = identity ? createSignedPeerRecord(identity, {
     chainId: service.status().chainId,
     genesisHash: service.status().genesisHash,
@@ -155,7 +163,8 @@ async function runNode(args: string[]): Promise<void> {
 
   const server = createRpcServer(service, {
     ...(peerAuthToken ? { peerAuthToken } : {}),
-    ...(peerRecord ? { peerRecord } : {})
+    ...(peerRecord ? { peerRecord } : {}),
+    ...(trustedPeerPublicKeys.length ? { trustedPeerPublicKeys } : {})
   });
   await new Promise<void>((resolveListen, reject) => {
     server.once("error", reject);
