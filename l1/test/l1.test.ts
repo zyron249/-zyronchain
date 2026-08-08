@@ -567,6 +567,57 @@ test("checkpoint snapshot is deterministic across restart and binds finalized st
   }
 });
 
+test("trusted checkpoint restore requires an existing digest/tip anchor and revalidates state and finality", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-trusted-checkpoint-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    let block = store.chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
+    block = store.chain.attestBlock(block, validatorOnePrivate);
+    block = store.chain.attestBlock(block, validatorTwoPrivate);
+    await store.commitFinalizedBlock(block, 1_700_000_000_100);
+    const snapshot = store.chain.snapshot();
+    const anchor = { tipHash: block.hash, snapshotSha256: sha256Hex(canonicalJson(snapshot)) };
+
+    const restored = ZyronChain.fromTrustedSnapshot(genesis(), snapshot, anchor);
+    assert.equal(restored.height, store.chain.height);
+    assert.equal(restored.tip.hash, store.chain.tip.hash);
+    assert.equal(restored.balance(alice), store.chain.balance(alice));
+    assert.equal(restored.snapshot().state.accounts.length, snapshot.state.accounts.length);
+
+    const alteredSchedule = structuredClone(snapshot);
+    alteredSchedule.validatorSchedule.push({ activationHeight: 10_000, validators: [
+      { address: newValidatorOne, publicKey: newValidatorOnePublic },
+      { address: newValidatorTwo, publicKey: newValidatorTwoPublic }
+    ] });
+    assert.throws(
+      () => ZyronChain.fromTrustedSnapshot(genesis(), alteredSchedule, anchor),
+      /snapshot digest mismatch/
+    );
+
+    const alteredState = structuredClone(snapshot);
+    alteredState.state.accounts[0]!.balanceAtoms += 1;
+    assert.throws(
+      () => ZyronChain.fromTrustedSnapshot(genesis(), alteredState, {
+        tipHash: block.hash,
+        snapshotSha256: sha256Hex(canonicalJson(alteredState))
+      }),
+      /state root mismatch/
+    );
+
+    const weakFinality = structuredClone(snapshot);
+    weakFinality.tip.attestations = [];
+    assert.throws(
+      () => ZyronChain.fromTrustedSnapshot(genesis(), weakFinality, {
+        tipHash: weakFinality.tip.hash,
+        snapshotSha256: sha256Hex(canonicalJson(weakFinality))
+      }),
+      /Finality quorum not reached/
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("repeated crash-style reopen preserves tip and state across a 100-block replay soak", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-replay-soak-"));
   try {
