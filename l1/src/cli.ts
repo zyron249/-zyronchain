@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import type { Multiaddr } from "@multiformats/multiaddr";
 
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
 import {
@@ -9,12 +10,17 @@ import {
   createRpcServer,
   NodeService,
   PeerClient,
-  produceFinalizedBlock
+  produceFinalizedBlock,
+  type ConsensusPeerClient
 } from "./node.js";
 import { ChainStore, SigningJournal } from "./storage.js";
 import { createSignedPeerRecord, loadOrCreateNodeIdentity } from "./peer-identity.js";
 import { PeerReputationStore } from "./peer-reputation.js";
 import { PeerDirectory } from "./peer-directory.js";
+import { createP2PNode, registerP2PIdentityProtocol } from "./p2p.js";
+import { registerP2PSyncProtocol, syncP2PFrom } from "./p2p-sync.js";
+import { NativeConsensusPeerClient, registerP2PConsensusProtocol } from "./p2p-consensus.js";
+import { parseNativeListenAddress, parseNativePeerAddress } from "./p2p-address.js";
 import { MIN_PROTOCOL_UPDATE_DELAY, MIN_VALIDATOR_UPDATE_DELAY, ZyronChain } from "./chain.js";
 import {
   createProtocolUpgrade,
@@ -122,7 +128,7 @@ async function createGenesis(args: string[]): Promise<void> {
 async function runNode(args: string[]): Promise<void> {
   assertKnownOptions(args, new Set([
     "--genesis", "--data", "--host", "--port", "--peer", "--advertise-peer", "--validator-key", "--peer-token-file",
-    "--trusted-peer-public-key"
+    "--trusted-peer-public-key", "--p2p-listen", "--p2p-peer"
   ]));
   const genesisPath = option(args, "--genesis");
   const dataDir = option(args, "--data");
@@ -130,6 +136,9 @@ async function runNode(args: string[]): Promise<void> {
   const host = option(args, "--host") ?? "127.0.0.1";
   const port = parsePort(option(args, "--port") ?? "9137");
   const peerUrls = options(args, "--peer");
+  const nativeListen = options(args, "--p2p-listen").map(parseNativeListenAddress);
+  const nativePeers = options(args, "--p2p-peer").map(parseNativePeerAddress);
+  if (nativePeers.length > 64) throw new Error("Too many configured native peers");
   const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
   const store = await ChainStore.open(genesis, resolve(dataDir));
   const validatorKeyPath = option(args, "--validator-key");
@@ -148,7 +157,7 @@ async function runNode(args: string[]): Promise<void> {
   const trustedPeerPublicKeys = options(args, "--trusted-peer-public-key");
   assertSafeRpcBinding(host, Boolean(peerAuthToken || trustedPeerPublicKeys.length));
   const issuedAtMs = Date.now();
-  const identity = (peerUrls.length || advertisedPeerUrls.length || trustedPeerPublicKeys.length)
+  const identity = (peerUrls.length || advertisedPeerUrls.length || trustedPeerPublicKeys.length || nativeListen.length || nativePeers.length)
     ? await loadOrCreateNodeIdentity(resolve(dataDir))
     : undefined;
   const peerReputation = peerUrls.length ? await PeerReputationStore.open(resolve(dataDir)) : undefined;
@@ -166,6 +175,16 @@ async function runNode(args: string[]): Promise<void> {
   }) : undefined;
   const peerDirectory = new PeerDirectory(service.status());
   if (peerRecord) peerDirectory.admit(peerRecord, issuedAtMs);
+  const nativeNode = identity && (nativeListen.length || nativePeers.length)
+    ? await createP2PNode(identity, { listen: nativeListen })
+    : undefined;
+  let nativeConsensus: NativeConsensusPeerClient | undefined;
+  if (nativeNode && identity) {
+    await registerP2PIdentityProtocol(nativeNode, identity, service.status());
+    await registerP2PSyncProtocol(nativeNode, identity, service);
+    await registerP2PConsensusProtocol(nativeNode, identity, service);
+    nativeConsensus = new NativeConsensusPeerClient(nativeNode, nativePeers, identity, service.status());
+  }
 
   try {
     const accepted = await peers.syncAny(service);
@@ -179,13 +198,35 @@ async function runNode(args: string[]): Promise<void> {
   } catch (error) {
     console.warn(`Initial peer discovery skipped: ${safeError(error)}`);
   }
+  if (nativeNode && identity) {
+    await syncNativePeers(nativeNode, nativePeers, identity, service, "Initial native peer sync");
+  }
+
+  const consensusPeers: ConsensusPeerClient = nativeConsensus ? {
+    requestAttestations: async (block) => [
+      ...await peers.requestAttestations(block),
+      ...await nativeConsensus.requestAttestations(block)
+    ],
+    requestRoundSkips: async (height, round, previousCertificate = []) => [
+      ...await peers.requestRoundSkips(height, round, previousCertificate),
+      ...await nativeConsensus.requestRoundSkips(height, round, previousCertificate)
+    ],
+    broadcastBlock: async (block) => {
+      await Promise.allSettled([peers.broadcastBlock(block), nativeConsensus.broadcastBlock(block)]);
+    }
+  } : peers;
 
   const server = createRpcServer(service, {
     ...(peerAuthToken ? { peerAuthToken } : {}),
     ...(peerRecord ? { peerRecord } : {}),
     peerDirectory,
     ...(trustedPeerPublicKeys.length ? { trustedPeerPublicKeys } : {}),
-    onTransactionAccepted: (transaction) => peers.broadcastTransaction(transaction)
+    onTransactionAccepted: async (transaction) => {
+      await Promise.allSettled([
+        peers.broadcastTransaction(transaction),
+        ...(nativeConsensus ? [nativeConsensus.broadcastTransaction(transaction)] : [])
+      ]);
+    }
   });
   await new Promise<void>((resolveListen, reject) => {
     server.once("error", reject);
@@ -194,10 +235,13 @@ async function runNode(args: string[]): Promise<void> {
   console.log(`ZyronChain ${genesis.chainId} node listening on http://${host}:${port}`);
   console.log(`Genesis ${service.status().genesisHash}, height ${service.status().height}`);
   if (identity) console.log(`Node ID ${identity.nodeId}`);
+  if (nativeNode) {
+    for (const address of nativeNode.getMultiaddrs()) console.log(`Native P2P ${address.toString()}`);
+  }
 
   if (privateKey) {
     setInterval(() => {
-      void produceFinalizedBlock(service, peers, privateKey)
+      void produceFinalizedBlock(service, consensusPeers, privateKey)
         .then((block) => { if (block) console.log(`Finalized block ${block.header.height} ${block.hash}`); })
         .catch((error) => console.warn(`Validator round failed: ${safeError(error)}`));
     }, BLOCK_INTERVAL_MS).unref();
@@ -213,6 +257,12 @@ async function runNode(args: string[]): Promise<void> {
       }
     })();
   }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3))).unref();
+
+  if (nativeNode && identity && nativePeers.length) {
+    setInterval(() => {
+      void syncNativePeers(nativeNode, nativePeers, identity, service, "Periodic native peer sync");
+    }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3))).unref();
+  }
 
   setInterval(() => {
     void peers.refreshPeerDirectory(peerDirectory, service.status())
@@ -427,6 +477,23 @@ function parsePort(value: string): number {
   return port;
 }
 
+async function syncNativePeers(
+  node: Awaited<ReturnType<typeof createP2PNode>>,
+  peers: readonly Multiaddr[],
+  identity: Awaited<ReturnType<typeof loadOrCreateNodeIdentity>>,
+  service: NodeService,
+  label: string
+): Promise<void> {
+  for (const peer of peers) {
+    try {
+      const accepted = await syncP2PFrom(node, peer, identity, service);
+      if (accepted) console.log(`${label}: accepted ${accepted} finalized block(s) from ${peer.toString()}`);
+    } catch (error) {
+      console.warn(`${label} skipped ${peer.toString()}: ${safeError(error)}`);
+    }
+  }
+}
+
 function parseSafeInteger(value: string, name: string): number {
   if (!/^(0|[1-9][0-9]*)$/.test(value)) throw new Error(`Invalid ${name}`);
   const parsed = Number(value);
@@ -551,7 +618,7 @@ function usage(): void {
   console.log("Usage:");
   console.log("  zyron-l1 keygen --out validator-key.json");
   console.log("  zyron-l1 genesis --out genesis.json --chain-id zyron-devnet-1 --validator-public-key <hex> --oracle-public-key <hex> --activity-pool <address> --allocation <address:atoms>");
-  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json] [--peer http://node:9137] [--advertise-peer https://node.example:9137] [--peer-token-file /path/to/token]");
+  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json] [--peer https://node:9137] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>]");
   console.log("  zyron-l1 transfer --key wallet-key.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms <n> [--fee-atoms <n>]");
   console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");
   console.log("  zyron-l1 validator-approve --proposal update.json --key validator.json --out approval.json");
