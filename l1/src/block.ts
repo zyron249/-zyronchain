@@ -156,6 +156,11 @@ export function expectedValidator(validators: Validator[], height: number, round
   return validators[index]!;
 }
 
+export function validatorQuorumSize(validatorCount: number): number {
+  if (!Number.isSafeInteger(validatorCount) || validatorCount < 1) throw new Error("Invalid validator count");
+  return Math.floor((validatorCount * 2) / 3) + 1;
+}
+
 export function validateBlockEnvelope(
   block: Block,
   previous: Block,
@@ -226,7 +231,7 @@ export function validateRoundSkipQuorum(
     validateRoundSkipVote(vote, allowed, chainId, height, round, previousHash);
     valid += 1;
   }
-  const quorum = Math.floor((validators.length * 2) / 3) + 1;
+  const quorum = validatorQuorumSize(validators.length);
   if (valid < quorum) throw new Error(`Round skip quorum not reached: ${valid}/${quorum}`);
 }
 
@@ -316,7 +321,7 @@ export function validateAttestationQuorum(block: Block, validators: Validator[])
     validateBlockAttestation(block, attestation, allowed);
     valid += 1;
   }
-  const quorum = Math.floor((validators.length * 2) / 3) + 1;
+  const quorum = validatorQuorumSize(validators.length);
   if (valid < quorum) throw new Error(`Finality quorum not reached: ${valid}/${quorum}`);
 }
 
