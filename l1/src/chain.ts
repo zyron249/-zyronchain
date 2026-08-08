@@ -9,6 +9,11 @@ import {
 import { addressFromPublicKey, publicKeyFromPrivate, verifyCanonical } from "./crypto.js";
 import { LedgerState, type LedgerSnapshot } from "./state.js";
 import {
+  SparseMerkleState,
+  stateV2FromLedgerSnapshot,
+  updateStateV2FromTransaction
+} from "./state-v2.js";
+import {
   assertAddress,
   assertExactKeys,
   assertPlainRecord,
@@ -23,7 +28,12 @@ const MAX_BLOCK_BYTES = 2_000_000;
 export const MAX_BLOCK_TRANSACTION_BYTES = 1_500_000;
 export const MIN_VALIDATOR_UPDATE_DELAY = 100;
 export const MIN_PROTOCOL_UPDATE_DELAY = 100;
-export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1]);
+export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1, 2]);
+
+interface AppliedTransition {
+  ledger: LedgerState;
+  sparse: SparseMerkleState | undefined;
+}
 
 export interface ChainSnapshotV1 {
   version: 1;
@@ -44,6 +54,7 @@ export class ZyronChain {
   private readonly validatorSchedule = new Map<number, Validator[]>();
   private readonly protocolSchedule = new Map<number, number>();
   private state: LedgerState;
+  private stateV2: SparseMerkleState | undefined;
 
   constructor(genesis: GenesisConfig) {
     validateGenesis(genesis);
@@ -149,7 +160,7 @@ export class ZyronChain {
       throw new Error("Private key is not the expected proposer");
     }
     const timestampMs = options.timestampMs ?? Math.max(Date.now(), this.tip.header.timestampMs + 1);
-    const nextState = this.validateAndApply(transactions, this.state, this.height + 1);
+    const next = this.validateAndApply(transactions, this.state, this.height + 1);
     const block = createSignedBlock({
       version: protocolVersion,
       chainId: this.genesis.chainId,
@@ -158,7 +169,7 @@ export class ZyronChain {
       previousHash: this.tip.hash,
       timestampMs,
       transactions,
-      stateRoot: nextState.root(),
+      stateRoot: stateRootForProtocol(protocolVersion, next),
       proposerPrivateKey,
       proposerPublicKey: publicKey,
       roundCertificate: options.roundCertificate ?? []
@@ -169,22 +180,27 @@ export class ZyronChain {
   }
 
   acceptBlock(block: Block, nowMs = Date.now()): void {
-    const nextState = this.validateFinalizedBlock(block, nowMs);
+    const next = this.validateFinalizedTransition(block, nowMs);
     this.tipBlock = structuredClone(block);
     this.currentHeight = block.header.height;
-    this.state = nextState;
+    this.state = next.ledger;
+    this.stateV2 = block.header.version === 2 ? next.sparse?.persistenceCheckpoint() : undefined;
     this.recordGovernanceUpdates(block.transactions);
   }
 
   validateFinalizedBlock(block: Block, nowMs = Date.now()): LedgerState {
+    return this.validateFinalizedTransition(block, nowMs).ledger;
+  }
+
+  private validateFinalizedTransition(block: Block, nowMs = Date.now()): AppliedTransition {
     const protocolVersion = this.protocolVersionAt(block.header.height);
     assertSupportedProtocolVersion(protocolVersion);
     const validators = this.validatorsAt(block.header.height);
     validateBlockEnvelope(block, this.tip, validators, nowMs, true, protocolVersion);
     if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
-    const nextState = this.validateAndApply(block.transactions, this.state, block.header.height);
-    if (block.header.stateRoot !== nextState.root()) throw new Error("State root mismatch");
-    return nextState;
+    const next = this.validateAndApply(block.transactions, this.state, block.header.height);
+    if (block.header.stateRoot !== stateRootForProtocol(protocolVersion, next)) throw new Error("State root mismatch");
+    return next;
   }
 
   validateProposal(block: Block, nowMs = Date.now()): void {
@@ -192,8 +208,8 @@ export class ZyronChain {
     assertSupportedProtocolVersion(protocolVersion);
     validateBlockEnvelope(block, this.tip, this.validatorsAt(block.header.height), nowMs, false, protocolVersion);
     if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
-    const nextState = this.validateAndApply(block.transactions, this.state, block.header.height);
-    if (block.header.stateRoot !== nextState.root()) throw new Error("State root mismatch");
+    const next = this.validateAndApply(block.transactions, this.state, block.header.height);
+    if (block.header.stateRoot !== stateRootForProtocol(protocolVersion, next)) throw new Error("State root mismatch");
   }
 
   validatePending(transactions: Transaction[]): void {
@@ -280,8 +296,12 @@ export class ZyronChain {
     return selected;
   }
 
-  private validateAndApply(transactions: Transaction[], startingState: LedgerState, blockHeight: number): LedgerState {
+  private validateAndApply(transactions: Transaction[], startingState: LedgerState, blockHeight: number): AppliedTransition {
     const next = startingState.clone();
+    const protocolVersion = this.protocolVersionAt(blockHeight);
+    let sparse = protocolVersion === 2
+      ? (this.stateV2 ?? stateV2FromLedgerSnapshot(startingState.snapshot()))
+      : undefined;
     const seen = new Set<string>();
     const currentValidators = this.validatorsAt(blockHeight);
     let lastActivation = this.lastValidatorActivationHeight();
@@ -304,8 +324,9 @@ export class ZyronChain {
         lastProtocolActivation = tx.activationHeight;
       }
       next.apply(tx, this.genesis.activityPool);
+      if (sparse) sparse = updateStateV2FromTransaction(sparse, next, tx);
     }
-    return next;
+    return { ledger: next, sparse };
   }
 
   private recordGovernanceUpdates(transactions: Transaction[]): void {
@@ -326,6 +347,12 @@ export class ZyronChain {
   private lastProtocolActivationHeight(): number {
     return Math.max(...this.protocolSchedule.keys());
   }
+}
+
+function stateRootForProtocol(protocolVersion: number, state: AppliedTransition): string {
+  if (protocolVersion === 1) return state.ledger.root();
+  if (protocolVersion === 2 && state.sparse) return state.sparse.root();
+  throw new Error(`Missing state implementation for protocol version ${protocolVersion}`);
 }
 
 function assertSupportedProtocolVersion(version: number): void {
@@ -431,15 +458,3 @@ function validateGenesis(genesis: GenesisConfig): void {
   if (!Array.isArray(genesis.allocations) || genesis.allocations.length === 0) {
     throw new Error("Invalid allocations");
   }
-  const allocated = new Set<string>();
-  for (const allocation of genesis.allocations) {
-    assertPlainRecord(allocation, "allocation");
-    assertExactKeys(allocation, ["address", "amountAtoms"], "allocation");
-    assertAddress(allocation.address);
-    if (!Number.isSafeInteger(allocation.amountAtoms) || allocation.amountAtoms < 0) {
-      throw new Error("Invalid genesis allocation");
-    }
-    if (allocated.has(allocation.address)) throw new Error("Duplicate genesis allocation");
-    allocated.add(allocation.address);
-  }
-}
