@@ -1047,7 +1047,10 @@ test("HTTP RPC exposes status and accepts a strictly validated signed transactio
   const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-"));
   const store = await ChainStore.open(genesis(), directory);
   const service = new NodeService(store);
-  const server = createRpcServer(service);
+  let relayedTxid: string | undefined;
+  const server = createRpcServer(service, {
+    onTransactionAccepted: (transaction) => { relayedTxid = transaction.txid; }
+  });
   try {
     await new Promise<void>((resolveListen, reject) => {
       server.once("error", reject);
@@ -1072,6 +1075,8 @@ test("HTTP RPC exposes status and accepts a strictly validated signed transactio
     });
     assert.equal(response.status, 202);
     assert.equal(service.mempool.size, 1);
+    await new Promise<void>((resolveTick) => setImmediate(resolveTick));
+    assert.equal(relayedTxid, tx.txid);
   } finally {
     await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
     await rm(directory, { recursive: true, force: true });
@@ -1290,6 +1295,46 @@ test("block gossip has bounded fanout and suppresses duplicate rebroadcasts", as
     await client.broadcastBlock(block);
     assert.equal(deliveries.reduce((total, count) => total + count, 0), MAX_GOSSIP_FANOUT);
     await client.broadcastBlock(block);
+    assert.equal(deliveries.reduce((total, count) => total + count, 0), MAX_GOSSIP_FANOUT);
+  } finally {
+    await Promise.all(servers.map((server) => new Promise<void>((resolveClose, reject) => {
+      server.close((error) => error ? reject(error) : resolveClose());
+    })));
+  }
+});
+
+test("transaction gossip has bounded fanout and suppresses duplicate rebroadcasts", async () => {
+  const deliveries = Array.from({ length: MAX_GOSSIP_FANOUT + 3 }, () => 0);
+  const servers = deliveries.map((_, index) => createServer((request, response) => {
+    request.resume();
+    if (request.method === "POST" && request.url === "/tx") deliveries[index]! += 1;
+    response.writeHead(202, { "content-type": "application/json" });
+    response.end("{\"accepted\":true}");
+  }));
+  try {
+    await Promise.all(servers.map((server) => new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolveListen());
+    })));
+    const peers = servers.map((server) => {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Transaction gossip test server has no TCP address");
+      return `http://127.0.0.1:${address.port}`;
+    });
+    const client = new PeerClient(peers);
+    const transaction = createTransfer({
+      chainId: genesis().chainId,
+      nonce: 1,
+      sender: alice,
+      receiver: bob,
+      amountAtoms: 1,
+      feeAtoms: 0,
+      timestampMs: genesis().timestampMs + 1
+    }, alicePrivate, alicePublic);
+
+    await client.broadcastTransaction(transaction);
+    assert.equal(deliveries.reduce((total, count) => total + count, 0), MAX_GOSSIP_FANOUT);
+    await client.broadcastTransaction(transaction);
     assert.equal(deliveries.reduce((total, count) => total + count, 0), MAX_GOSSIP_FANOUT);
   } finally {
     await Promise.all(servers.map((server) => new Promise<void>((resolveClose, reject) => {
