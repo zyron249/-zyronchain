@@ -20,6 +20,8 @@ const MAX_BODY_BYTES = 2_500_000;
 const MAX_SYNC_BLOCKS = 100;
 const MAX_SYNC_RESPONSE_BYTES = 25_000_000;
 const MAX_SYNC_BATCH_PAYLOAD_BYTES = 20_000_000;
+const MAX_CONFIGURED_PEERS = 64;
+const PEER_FAILURE_BACKOFF_MS = 30_000;
 const PEER_TIMEOUT_MS = 8_000;
 const DEFAULT_RPC_WINDOW_MS = 60_000;
 const DEFAULT_RPC_REQUESTS_PER_WINDOW = 600;
@@ -281,10 +283,13 @@ async function route(service: NodeService, request: IncomingMessage, response: S
 
 export class PeerClient {
   readonly peers: string[];
+  private syncCursor = 0;
+  private readonly failureUntil = new Map<string, number>();
 
   constructor(peers: string[], private readonly peerAuthToken?: string) {
     if (peerAuthToken !== undefined) validatePeerAuthToken(peerAuthToken);
     this.peers = [...new Set(peers.map(normalizePeerUrl))];
+    if (this.peers.length > MAX_CONFIGURED_PEERS) throw new Error("Too many configured peers");
     if (peerAuthToken !== undefined) {
       for (const peer of this.peers) {
         if (!peerTransportProtectsCredentials(peer)) {
@@ -322,15 +327,17 @@ export class PeerClient {
     let accepted = 0;
     while (this.peers.length > 0) {
       const startHeight = service.status().height;
-      let candidate: { peer: string; height: number; blocks: unknown[] };
-      try {
-        candidate = await Promise.any(this.peers.map(async (peer) => {
+      const nowMs = Date.now();
+      const ordered = rotate(this.peers, this.syncCursor)
+        .filter((peer) => (this.failureUntil.get(peer) ?? 0) <= nowMs);
+      if (ordered.length === 0) break;
+      const attempts = await Promise.allSettled(ordered.map(async (peer) => {
           const status = parseStatus(await getJson(`${peer}/status`, 64_000));
           const local = service.status();
           if (status.chainId !== local.chainId || status.genesisHash !== local.genesisHash) {
             throw new Error("Peer chain identity mismatch");
           }
-          if (status.height <= startHeight) throw new Error("Peer is not ahead");
+          if (status.height <= startHeight) return null;
           const payload = await getJson(
             `${peer}/blocks?from=${startHeight + 1}&limit=${MAX_SYNC_BLOCKS}`,
             MAX_SYNC_RESPONSE_BYTES
@@ -338,13 +345,23 @@ export class PeerClient {
           const blocks = parsePeerBlockBatch(payload);
           service.store.chain.validateFinalizedBlock(blocks[0] as Block);
           return { peer, height: status.height, blocks };
-        }));
-      } catch (error) {
-        if (error instanceof AggregateError) break;
-        throw error;
+      }));
+      let candidate: { peer: string; height: number; blocks: unknown[] } | undefined;
+      for (let index = 0; index < attempts.length; index += 1) {
+        const result = attempts[index]!;
+        const peer = ordered[index]!;
+        if (result.status === "rejected") {
+          this.failureUntil.set(peer, nowMs + PEER_FAILURE_BACKOFF_MS);
+          continue;
+        }
+        if (!candidate && result.value) candidate = result.value;
       }
+      if (!candidate) break;
+      const selectedIndex = this.peers.indexOf(candidate.peer);
+      this.syncCursor = selectedIndex < 0 ? 0 : (selectedIndex + 1) % this.peers.length;
 
       let progressed = false;
+      let poisoned = false;
       for (const block of candidate.blocks) {
         try {
           await service.acceptFinalizedBlock(block);
@@ -352,12 +369,14 @@ export class PeerClient {
           progressed = true;
         } catch {
           // A peer with a valid first block but a poisoned tail cannot stop the next
-          // race from selecting another independently validated peer.
+          // independently selected peer. Back it off so latency cannot let it
+          // immediately monopolize the next batch.
+          poisoned = true;
           break;
         }
       }
+      if (poisoned) this.failureUntil.set(candidate.peer, Date.now() + PEER_FAILURE_BACKOFF_MS);
       if (!progressed || service.status().height <= startHeight) break;
-      if (service.status().height >= candidate.height) return accepted;
     }
     return accepted;
   }
@@ -389,6 +408,12 @@ export class PeerClient {
   async broadcastBlock(block: Block): Promise<void> {
     await Promise.allSettled(this.peers.map((peer) => postJson(`${peer}/block`, block, 64_000, this.peerAuthToken)));
   }
+}
+
+function rotate<T>(values: readonly T[], offset: number): T[] {
+  if (values.length === 0) return [];
+  const start = ((offset % values.length) + values.length) % values.length;
+  return [...values.slice(start), ...values.slice(0, start)];
 }
 
 export async function produceFinalizedBlock(

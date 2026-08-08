@@ -777,6 +777,12 @@ test("peer authentication credentials cannot be sent to remote plaintext HTTP pe
   );
 });
 
+test("peer client bounds configured peer fanout", () => {
+  const peers = Array.from({ length: 65 }, (_, index) => `https://node-${index}.example:9137`);
+  assert.throws(() => new PeerClient(peers), /Too many configured peers/);
+  assert.equal(new PeerClient(peers.slice(0, 64)).peers.length, 64);
+});
+
 test("peer sync handshakes on chain identity and incrementally replays finalized blocks", async () => {
   const sourceDir = await mkdtemp(join(tmpdir(), "zyron-sync-source-"));
   const targetDir = await mkdtemp(join(tmpdir(), "zyron-sync-target-"));
