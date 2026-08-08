@@ -4,8 +4,7 @@ import math
 import time
 from decimal import Decimal, InvalidOperation
 
-import ecdsa
-from ecdsa.util import sigdecode_string, sigencode_string_canonize
+from coincurve import PrivateKey, PublicKey, ecdsa as secp_ecdsa
 
 
 class Transaction:
@@ -16,6 +15,10 @@ class Transaction:
     ATOMS_PER_ZYN = 100_000_000
     DEFAULT_FEE_ATOMS = 1_000_000
     MAX_MONEY_ATOMS = 50_000_000 * ATOMS_PER_ZYN
+    SECP256K1_ORDER = int(
+        "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+        16
+    )
 
     V3_FIELDS = frozenset({
         "version", "chain_id", "nonce", "sender", "receiver",
@@ -199,21 +202,25 @@ class Transaction:
         if self.version not in (self.LEGACY_VERSION, self.V2_VERSION, self.CURRENT_VERSION):
             raise ValueError("Unsupported transaction version")
 
-        private_key = ecdsa.SigningKey.from_string(
-            bytes.fromhex(private_key_hex),
-            curve=ecdsa.SECP256k1
-        )
-        hashfunc = hashlib.sha1 if self.version == self.LEGACY_VERSION else hashlib.sha256
+        private_key = PrivateKey(bytes.fromhex(private_key_hex))
+        if self.version == self.LEGACY_VERSION:
+            hasher = self._sha1_padded
+        else:
+            hasher = lambda message: hashlib.sha256(message).digest()
 
-        kwargs = {"hashfunc": hashfunc}
-        if self.version == self.CURRENT_VERSION:
-            kwargs["sigencode"] = sigencode_string_canonize
-
-        self.signature = private_key.sign_deterministic(
+        der_signature = private_key.sign(
             self.data_to_sign().encode("utf-8"),
-            **kwargs
-        ).hex()
+            hasher=hasher
+        )
+        compact_signature = secp_ecdsa.serialize_compact(
+            secp_ecdsa.der_to_cdata(der_signature)
+        )
+        self.signature = compact_signature.hex()
         self.txid = self.calculate_txid()
+
+    @staticmethod
+    def _sha1_padded(message):
+        return b"\x00" * 12 + hashlib.sha1(message).digest()
 
     def amount_atoms_value(self):
         if self.version == self.CURRENT_VERSION:
@@ -296,26 +303,23 @@ class Transaction:
 
         try:
             signature_bytes = bytes.fromhex(self.signature)
-            public_key = ecdsa.VerifyingKey.from_string(
-                bytes.fromhex(self.public_key),
-                curve=ecdsa.SECP256k1
-            )
+            public_key = PublicKey(b"\x04" + bytes.fromhex(self.public_key))
+            signature_cdata = secp_ecdsa.deserialize_compact(signature_bytes)
             if self.version == self.CURRENT_VERSION:
                 s = int.from_bytes(signature_bytes[32:], "big")
-                if s > ecdsa.SECP256k1.order // 2:
+                if s > self.SECP256K1_ORDER // 2:
                     return False
-                return public_key.verify(
-                    signature_bytes,
-                    self.data_to_sign().encode("utf-8"),
-                    hashfunc=hashlib.sha256,
-                    sigdecode=sigdecode_string
-                )
+            else:
+                _, signature_cdata = secp_ecdsa.signature_normalize(signature_cdata)
 
-            hashfunc = hashlib.sha1 if self.version == self.LEGACY_VERSION else hashlib.sha256
+            der_signature = secp_ecdsa.cdata_to_der(signature_cdata)
+            hasher = self._sha1_padded if self.version == self.LEGACY_VERSION else (
+                lambda message: hashlib.sha256(message).digest()
+            )
             return public_key.verify(
-                signature_bytes,
+                der_signature,
                 self.data_to_sign().encode("utf-8"),
-                hashfunc=hashfunc
+                hasher=hasher
             )
         except Exception:
             return False
