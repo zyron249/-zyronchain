@@ -1,4 +1,4 @@
-import { canonicalJson, sha256Hex } from "./codec.js";
+import { canonicalJson, compareCanonicalStrings, sha256Hex } from "./codec.js";
 import {
   blockHash,
   createGenesisBlock,
@@ -445,11 +445,11 @@ export class ZyronChain {
     const ordered = transactions
       .map((tx) => structuredClone(tx))
       .sort((left, right) =>
-        left.sender.localeCompare(right.sender) ||
+        compareCanonicalStrings(left.sender, right.sender) ||
         left.nonce - right.nonce ||
         right.feeAtoms - left.feeAtoms ||
         left.timestampMs - right.timestampMs ||
-        left.txid.localeCompare(right.txid)
+        compareCanonicalStrings(left.txid, right.txid)
       );
     const protocolVersion = this.protocolVersionAt(this.height + 1);
     assertSupportedProtocolVersion(protocolVersion);

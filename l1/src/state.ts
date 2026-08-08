@@ -1,4 +1,4 @@
-import { canonicalJson, sha256Hex } from "./codec.js";
+import { canonicalJson, compareCanonicalStrings, sha256Hex } from "./codec.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import { assertAddress, assertExactKeys, assertPlainRecord } from "./transaction.js";
 import type { ActivitySettlementTx, Address, GenesisConfig, ProtocolUpgradeTx, Transaction, TransferTx, ValidatorSetUpdateTx } from "./types.js";
@@ -110,7 +110,7 @@ export class LedgerState {
   snapshot(): LedgerSnapshot {
     return {
       accounts: [...this.accounts.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
+        .sort(([a], [b]) => compareCanonicalStrings(a, b))
         .map(([address, state]) => ({ address, ...state })),
       settledActivityEpochs: [...this.settledActivityEpochs].sort((a, b) => a - b)
     };

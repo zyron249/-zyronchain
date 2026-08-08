@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 
+/** Locale-independent lexicographic ordering over ECMAScript UTF-16 strings. */
+export function compareCanonicalStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function normalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(normalize);
   if (value && typeof value === "object") {
@@ -8,7 +13,7 @@ function normalize(value: unknown): unknown {
         // Consensus ordering must not depend on ICU data or the host locale.
         // JavaScript relational string comparison is defined over UTF-16 code
         // units, so this comparator has identical results on every runtime.
-        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+        .sort(([left], [right]) => compareCanonicalStrings(left, right))
         .map(([key, item]) => [key, normalize(item)])
     );
   }
