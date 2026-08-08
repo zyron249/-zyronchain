@@ -1053,6 +1053,10 @@ test("peer exchange serves and verifies a strictly bounded signed-record respons
     const discovered = await new PeerClient([base]).fetchPeerRecords(base, service.status(), 1, issuedAtMs + 2);
     assert.equal(discovered.length, 1);
     assert.equal(discovered[0]?.nodeId, identity.nodeId);
+    const learned = new PeerDirectory(service.status());
+    const admitted = await new PeerClient([base]).refreshPeerDirectory(learned, service.status(), issuedAtMs + 2);
+    assert.equal(admitted, 1);
+    assert.equal(learned.list(1, issuedAtMs + 2)[0]?.nodeId, identity.nodeId);
     await assert.rejects(
       () => new PeerClient([base]).fetchPeerRecords(base, service.status(), 33, issuedAtMs + 2),
       /Invalid peer discovery request limit/
