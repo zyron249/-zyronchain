@@ -444,6 +444,50 @@ test("RPC exposes health and metrics while enforcing per-client request limits",
   }
 });
 
+test("RPC peer authentication protects consensus writes without hiding public status", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-auth-"));
+  const store = await ChainStore.open(genesis(), directory);
+  const service = new NodeService(store);
+  const token = "peer-test-token-0123456789abcdef";
+  const server = createRpcServer(service, { peerAuthToken: token });
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("RPC auth test server has no TCP address");
+    const base = `http://127.0.0.1:${address.port}`;
+
+    assert.equal((await fetch(`${base}/status`)).status, 200);
+    const denied = await fetch(`${base}/block`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}"
+    });
+    assert.equal(denied.status, 401);
+    assert.equal(denied.headers.get("www-authenticate"), "Bearer");
+
+    const wrong = await fetch(`${base}/round/skip`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${"x".repeat(token.length)}` },
+      body: "{}"
+    });
+    assert.equal(wrong.status, 401);
+
+    const authenticated = await fetch(`${base}/block`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: "{}"
+    });
+    assert.equal(authenticated.status, 400);
+    assert.notEqual((await authenticated.json() as { error?: string }).error, "Peer authentication required");
+  } finally {
+    await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("peer sync handshakes on chain identity and incrementally replays finalized blocks", async () => {
   const sourceDir = await mkdtemp(join(tmpdir(), "zyron-sync-source-"));
   const targetDir = await mkdtemp(join(tmpdir(), "zyron-sync-target-"));
