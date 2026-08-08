@@ -1,26 +1,45 @@
+"""Small local ZyronChain protocol demo.
+
+Run the network node with ``gunicorn --workers 1 app:app``. This module is
+intentionally offline and never prints private keys or mnemonic phrases.
+"""
+
 from zyron.blockchain import Blockchain
-from zyron.wallet import create_wallet_address
+from zyron.transaction import Transaction
+from zyron.wallet import Wallet
 
-chain = Blockchain()
 
-alice = create_wallet_address("Alice")
-bob = create_wallet_address("Bob")
-miner = create_wallet_address("Miner")
+def main():
+    chain = Blockchain()
+    alice = Wallet()
+    bob = Wallet()
+    miner = Wallet()
 
-print("Alice:", alice)
-print("Bob:", bob)
-print("Miner:", miner)
+    print("Alice:", alice.address)
+    print("Bob:", bob.address)
+    print("Miner:", miner.address)
 
-chain.add_transaction(alice, bob, 10)
-chain.add_transaction(bob, alice, 3)
+    chain.mine_pending_transactions(alice.address)
 
-print("\nMining block...")
-chain.mine_pending_transactions(miner)
+    transaction = Transaction(
+        sender=alice.address,
+        receiver=bob.address,
+        amount="10",
+        fee="0.01",
+        public_key=alice.get_public_key(),
+        nonce=chain.get_next_nonce(alice.address)
+    )
+    transaction.sign_transaction(alice.get_private_key())
+    chain.add_transaction(transaction)
+    chain.mine_pending_transactions(miner.address)
 
-print("\nBalances")
-print("Alice:", chain.get_balance(alice))
-print("Bob:", chain.get_balance(bob))
-print("Miner:", chain.get_balance(miner))
+    print("\nBalances")
+    print("Alice:", chain.get_balance(alice.address))
+    print("Bob:", chain.get_balance(bob.address))
+    print("Miner:", chain.get_balance(miner.address))
+    print("\nChain valid:", chain.is_chain_valid())
+    print("Total blocks:", len(chain.chain))
 
-print("\nChain Valid:", chain.is_chain_valid())
-print("Total Blocks:", len(chain.chain))
+
+if __name__ == "__main__":
+    main()
