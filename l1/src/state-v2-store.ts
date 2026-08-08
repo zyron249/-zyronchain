@@ -109,6 +109,11 @@ export class StateV2DiskStore {
     return this.nodeObjects.cachedRecordCount();
   }
 
+  /** Physically compact State-v2 objects after an explicit durable history prune. */
+  pruneHistoricalObjects(): { removedNodes: number; removedSemanticKeys: number } {
+    return this.nodeObjects.pruneUnreachable(this.currentState);
+  }
+
   semanticKeyPreimages(state: SparseMerkleState = this.currentState): string[] {
     const leafHashes = state.leafKeyHashes();
     const keys = this.nodeObjects.allSemanticKeys().filter((key) => leafHashes.has(stateV2KeyHash(key))).sort();
