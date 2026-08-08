@@ -611,6 +611,49 @@ test("peer sync handshakes on chain identity and incrementally replays finalized
   }
 });
 
+test("any-peer sync ignores a wrong-chain candidate and converges from an honest peer", async () => {
+  const sourceDir = await mkdtemp(join(tmpdir(), "zyron-any-source-"));
+  const targetDir = await mkdtemp(join(tmpdir(), "zyron-any-target-"));
+  const wrongDir = await mkdtemp(join(tmpdir(), "zyron-any-wrong-"));
+  const servers: ReturnType<typeof createRpcServer>[] = [];
+  try {
+    const sourceStore = await ChainStore.open(genesis(), sourceDir);
+    const source = new NodeService(sourceStore);
+    let block = sourceStore.chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
+    block = sourceStore.chain.attestBlock(block, validatorOnePrivate);
+    block = sourceStore.chain.attestBlock(block, validatorTwoPrivate);
+    await source.acceptFinalizedBlock(block);
+
+    const wrongGenesis = genesis();
+    wrongGenesis.chainId = "zyron-hostile-1";
+    const wrong = new NodeService(await ChainStore.open(wrongGenesis, wrongDir));
+    for (const service of [wrong, source]) {
+      const server = createRpcServer(service);
+      await new Promise<void>((resolveListen, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => resolveListen());
+      });
+      servers.push(server);
+    }
+    const urls = servers.map((server) => {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Any-peer test server has no TCP address");
+      return `http://127.0.0.1:${address.port}`;
+    });
+    const target = new NodeService(await ChainStore.open(genesis(), targetDir));
+    const accepted = await new PeerClient(urls).syncAny(target);
+    assert.equal(accepted, 1);
+    assert.equal(target.status().tipHash, source.status().tipHash);
+  } finally {
+    for (const server of servers) {
+      if (server.listening) {
+        await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+      }
+    }
+    await Promise.all([sourceDir, targetDir, wrongDir].map((directory) => rm(directory, { recursive: true, force: true })));
+  }
+});
+
 test("sync serving adapts block count to a byte budget instead of emitting an oversized batch", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-sync-budget-"));
   try {

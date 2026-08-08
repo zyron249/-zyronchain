@@ -319,6 +319,50 @@ export class PeerClient {
     return accepted;
   }
 
+  async syncAny(service: NodeService): Promise<number> {
+    let accepted = 0;
+    while (this.peers.length > 0) {
+      const startHeight = service.status().height;
+      let candidate: { peer: string; height: number; blocks: unknown[] };
+      try {
+        candidate = await Promise.any(this.peers.map(async (peer) => {
+          const status = parseStatus(await getJson(`${peer}/status`, 64_000));
+          const local = service.status();
+          if (status.chainId !== local.chainId || status.genesisHash !== local.genesisHash) {
+            throw new Error("Peer chain identity mismatch");
+          }
+          if (status.height <= startHeight) throw new Error("Peer is not ahead");
+          const payload = await getJson(
+            `${peer}/blocks?from=${startHeight + 1}&limit=${MAX_SYNC_BLOCKS}`,
+            MAX_SYNC_RESPONSE_BYTES
+          );
+          const blocks = parsePeerBlockBatch(payload);
+          service.store.chain.validateFinalizedBlock(blocks[0] as Block);
+          return { peer, height: status.height, blocks };
+        }));
+      } catch (error) {
+        if (error instanceof AggregateError) break;
+        throw error;
+      }
+
+      let progressed = false;
+      for (const block of candidate.blocks) {
+        try {
+          await service.acceptFinalizedBlock(block);
+          accepted += 1;
+          progressed = true;
+        } catch {
+          // A peer with a valid first block but a poisoned tail cannot stop the next
+          // race from selecting another independently validated peer.
+          break;
+        }
+      }
+      if (!progressed || service.status().height <= startHeight) break;
+      if (service.status().height >= candidate.height) return accepted;
+    }
+    return accepted;
+  }
+
   async requestAttestations(block: Block): Promise<BlockAttestation[]> {
     const results = await Promise.allSettled(this.peers.map(async (peer) => {
       const payload = await postJson(`${peer}/proposal/attest`, block, MAX_BODY_BYTES, this.peerAuthToken);
@@ -446,6 +490,15 @@ function parseStatus(value: unknown): NodeStatus {
       !Number.isSafeInteger(value.height) || Number(value.height) < 0 || !/^[0-9a-f]{64}$/.test(value.genesisHash) ||
       !/^[0-9a-f]{64}$/.test(value.tipHash)) throw new Error("Invalid peer status");
   return value as unknown as NodeStatus;
+}
+
+function parsePeerBlockBatch(value: unknown): unknown[] {
+  assertPlainRecord(value, "peer block response");
+  assertExactKeys(value, ["blocks"], "peer block response");
+  if (!Array.isArray(value.blocks) || value.blocks.length === 0 || value.blocks.length > MAX_SYNC_BLOCKS) {
+    throw new Error("Invalid peer block batch");
+  }
+  return value.blocks;
 }
 
 function normalizePeerUrl(value: string): string {

@@ -13,6 +13,7 @@ This directory contains the standalone TypeScript Layer-1 implementation. It is 
 - bounded mempool with nonce conflict protection and state-aware block selection;
 - bounded JSON RPC with rate limits, health/metrics, optional consensus-write authentication, status, blocks, balances, nonces, transaction submission, proposal attestation, and finalized-block acceptance;
 - static-peer identity handshake and incremental finalized-block synchronization;
+- concurrent any-peer catch-up that rejects wrong-chain/invalid candidates before choosing a sync source;
 - on-chain validator-set rotation authorized by the active set's >2/3 quorum with a 100-block activation delay;
 - on-chain protocol-version upgrade and rollback scheduling authorized by >2/3 active-validator quorum with a 100-block activation delay and fail-stop behavior on unsupported versions;
 - CLI key generation, genesis creation, node execution, and signed transfer submission.
