@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -643,6 +643,38 @@ test("recovery checkpoint is published only after durable block state and binds 
     second = store.chain.attestBlock(second, validatorTwoPrivate);
     store.chain.acceptBlock(second, 1_700_000_000_200);
     await assert.rejects(() => store.writeRecoveryCheckpoint(), /non-durable chain state/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("startup restores a verified local checkpoint and replays only its finalized suffix", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-checkpoint-suffix-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    for (let height = 1; height <= 12; height += 1) {
+      const proposer = height % 2 === 1 ? validatorOnePrivate : validatorTwoPrivate;
+      let block = store.chain.produceBlock([], proposer, { timestampMs: genesis().timestampMs + (height * 100) });
+      block = store.chain.attestBlock(block, validatorOnePrivate);
+      block = store.chain.attestBlock(block, validatorTwoPrivate);
+      await store.commitFinalizedBlock(block, genesis().timestampMs + (height * 100));
+      if (height === 8) await store.writeRecoveryCheckpoint();
+    }
+    const expectedTip = store.chain.tip.hash;
+
+    const recovered = await ChainStore.open(genesis(), directory);
+    assert.equal(recovered.recoveredFromCheckpointHeight, 8);
+    assert.equal(recovered.chain.height, 12);
+    assert.equal(recovered.chain.tip.hash, expectedTip);
+
+    const checkpointPath = join(directory, "recovery-checkpoint.json");
+    const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8")) as Record<string, unknown>;
+    checkpoint.snapshotSha256 = "00".repeat(32);
+    await writeFile(checkpointPath, `${JSON.stringify(checkpoint)}\n`, "utf8");
+    const fallback = await ChainStore.open(genesis(), directory);
+    assert.equal(fallback.recoveredFromCheckpointHeight, 0);
+    assert.equal(fallback.chain.height, 12);
+    assert.equal(fallback.chain.tip.hash, expectedTip);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
