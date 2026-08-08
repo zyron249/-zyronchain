@@ -1,6 +1,7 @@
 import { assertHex, canonicalJson, sha256Hex } from "./codec.js";
 import { addressFromPublicKey, signCanonical, verifyCanonical } from "./crypto.js";
 import { merkleRoot } from "./merkle.js";
+import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
 import type {
   Block,
   BlockAttestation,
@@ -102,13 +103,17 @@ export function validateBlockEnvelope(
   block: Block,
   previous: Block,
   validators: Validator[],
-  nowMs: number
+  nowMs: number,
+  requireFinality = true
 ): void {
+  validateBlockShape(block);
   if (block.header.version !== 1) throw new Error("Unsupported block version");
   if (block.header.chainId !== previous.header.chainId) throw new Error("Wrong chain ID");
   if (block.header.height !== previous.header.height + 1) throw new Error("Wrong block height");
   if (block.header.previousHash !== previous.hash) throw new Error("Wrong previous hash");
-  if (!Number.isSafeInteger(block.header.round) || block.header.round < 0) throw new Error("Invalid round");
+  if (block.header.round !== 0) {
+    throw new Error("Only consensus round 0 is enabled until certified view-change is implemented");
+  }
   if (!Number.isSafeInteger(block.header.timestampMs)) throw new Error("Invalid block timestamp");
   if (block.header.timestampMs <= previous.header.timestampMs) throw new Error("Block time must increase");
   if (block.header.timestampMs > nowMs + 120_000) throw new Error("Block time too far in future");
@@ -127,10 +132,45 @@ export function validateBlockEnvelope(
   if (!verifyCanonical(block.header, block.signature, block.proposerPublicKey)) {
     throw new Error("Invalid proposer signature");
   }
-  validateAttestationQuorum(block, validators);
+  if (requireFinality) validateAttestationQuorum(block, validators);
 }
 
-function validateAttestationQuorum(block: Block, validators: Validator[]): void {
+export function validateBlockShape(value: unknown): asserts value is Block {
+  assertPlainRecord(value, "block");
+  assertExactKeys(value, [
+    "header", "transactions", "hash", "proposerPublicKey", "signature", "attestations"
+  ], "block");
+  assertPlainRecord(value.header, "block header");
+  assertExactKeys(value.header, [
+    "version", "chainId", "height", "round", "previousHash", "timestampMs",
+    "transactionRoot", "stateRoot", "proposer"
+  ], "block header");
+  const header = value.header;
+  if (header.version !== 1 || typeof header.chainId !== "string") throw new Error("Invalid block header");
+  for (const [name, item] of [["height", header.height], ["round", header.round], ["timestampMs", header.timestampMs]] as const) {
+    if (!Number.isSafeInteger(item) || (name !== "timestampMs" && Number(item) < 0)) throw new Error(`Invalid block ${name}`);
+  }
+  for (const [name, item] of [["previousHash", header.previousHash], ["transactionRoot", header.transactionRoot], ["stateRoot", header.stateRoot], ["hash", value.hash]] as const) {
+    if (typeof item !== "string") throw new Error(`Invalid ${name}`);
+    assertHex(item, 32, name);
+  }
+  if (header.proposer !== "GENESIS") assertAddress(header.proposer as string);
+  if (!Array.isArray(value.transactions)) throw new Error("Invalid block transactions");
+  for (const tx of value.transactions) validateTransactionShape(tx);
+  if (!Array.isArray(value.attestations)) throw new Error("Invalid block attestations");
+  if (value.proposerPublicKey !== null && typeof value.proposerPublicKey !== "string") throw new Error("Invalid proposer public key");
+  if (value.signature !== null && typeof value.signature !== "string") throw new Error("Invalid block signature");
+  for (const item of value.attestations) {
+    assertPlainRecord(item, "block attestation");
+    assertExactKeys(item, ["validator", "publicKey", "signature"], "block attestation");
+    assertAddress(item.validator as string);
+    if (typeof item.publicKey !== "string" || typeof item.signature !== "string") throw new Error("Invalid block attestation");
+    assertHex(item.publicKey, 64, "attestation publicKey");
+    assertHex(item.signature, 64, "attestation signature");
+  }
+}
+
+export function validateAttestationQuorum(block: Block, validators: Validator[]): void {
   const allowed = new Map(validators.map((validator) => [validator.address, validator.publicKey]));
   const seen = new Set<string>();
   let valid = 0;
