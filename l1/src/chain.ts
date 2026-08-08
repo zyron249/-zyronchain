@@ -20,6 +20,8 @@ import {
   stateV2Balance,
   stateV2FromLedgerSnapshot,
   stateV2Nonce,
+  stateV2KeyPreimages,
+  stateV2TransactionKeyPreimages,
 } from "./state-v2.js";
 import { validateStateV2PortableBundle, type StateV2PortableBundleV1 } from "./state-v2-portable.js";
 import {
@@ -222,6 +224,19 @@ export class ZyronChain {
         .sort(([a], [b]) => a - b)
         .map(([activationHeight, protocolVersion]) => ({ activationHeight, protocolVersion }))
     };
+  }
+
+  stateV2SemanticKeyPreimages(): string[] | undefined {
+    if (this.protocolVersionAt(this.height) !== 2 || !this.stateV2) return undefined;
+    return stateV2KeyPreimages(this.state.snapshot(), this.governanceSnapshot());
+  }
+
+  stateV2SemanticKeyPreimagesForBlock(block: Block): string[] {
+    const keys = new Set(stateV2KeyPreimages(this.state.snapshot(), this.governanceSnapshot()));
+    for (const tx of block.transactions) {
+      for (const key of stateV2TransactionKeyPreimages(tx)) keys.add(key);
+    }
+    return [...keys].sort();
   }
 
   validatorsAt(height: number): Validator[] {
