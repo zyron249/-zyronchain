@@ -11,9 +11,10 @@ This directory contains the standalone TypeScript Layer-1 implementation. It is 
 - round-robin PoA proposals, strictly-greater-than-2/3 validator attestations, and certified proposer-failure view changes;
 - append-only finalized block storage, replay-on-startup validation, and a persistent anti-double-sign journal;
 - bounded mempool with nonce conflict protection and state-aware block selection;
-- bounded JSON RPC for status, blocks, balances, nonces, transaction submission, proposal attestation, and finalized-block acceptance;
+- bounded JSON RPC with rate limits, health/metrics, optional consensus-write authentication, status, blocks, balances, nonces, transaction submission, proposal attestation, and finalized-block acceptance;
 - static-peer identity handshake and incremental finalized-block synchronization;
 - on-chain validator-set rotation authorized by the active set's >2/3 quorum with a 100-block activation delay;
+- on-chain protocol-version upgrade and rollback scheduling authorized by >2/3 active-validator quorum with a 100-block activation delay and fail-stop behavior on unsupported versions;
 - CLI key generation, genesis creation, node execution, and signed transfer submission.
 
 One ZYN is `100,000,000` atoms. Transaction fees are currently burned: the sender is debited `amount + fee`, the receiver is credited `amount`, and no new balance is created. Proof-of-Activity settlement cannot mint supply; it may only distribute atoms already allocated to the configured activity pool.
@@ -84,11 +85,26 @@ node dist/src/cli.js validator-submit --proposal update.json --approval approval
 
 The chain, not the CLI, is authoritative: the initiator must be active, approval signatures must come from a unique >2/3 quorum of the active set, the initiator nonce must be next, and activation must be at least 100 blocks after the inclusion height.
 
+## Schedule a protocol upgrade or rollback
+
+Protocol changes use the same multi-party safety model. An active validator proposes a target protocol version and activation height, a >2/3 quorum independently approves the exact proposal, and the initiator submits it. Operators can pre-schedule a later rollback version as a separate higher activation height. A binary that does not support the version active at the next height refuses to produce or accept blocks instead of silently forking.
+
+```sh
+node dist/src/cli.js protocol-proposal --out upgrade.json --rpc http://127.0.0.1:9137 --key initiator.json --activation-height 500 --protocol-version 2
+node dist/src/cli.js protocol-approve --proposal upgrade.json --key validator-a.json --out protocol-approval-a.json
+node dist/src/cli.js protocol-approve --proposal upgrade.json --key validator-b.json --out protocol-approval-b.json
+node dist/src/cli.js protocol-submit --proposal upgrade.json --approval protocol-approval-a.json --approval protocol-approval-b.json --key initiator.json --rpc http://127.0.0.1:9137
+```
+
+Scheduling version 2 does not make a version-1 binary understand version 2. The upgraded binary must be deployed and verified before the activation height. This separation is deliberate: governance authorizes when a protocol may activate; node software determines which protocol semantics it actually implements.
+
 ## RPC surface
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/status` | Chain ID, pinned genesis hash, height, tip hash |
+| GET | `/healthz` | Lightweight node health and height |
+| GET | `/metrics` | Structured node height, mempool, validator-count and uptime metrics |
 | GET | `/blocks?from=1&limit=100` | Bounded finalized-block sync |
 | GET | `/balance/<address>` | Exact atom balance |
 | GET | `/nonce/<address>` | Confirmed account nonce |
