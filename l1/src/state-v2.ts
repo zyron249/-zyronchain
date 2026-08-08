@@ -70,7 +70,10 @@ export class SparseMerkleState {
     const byHash = new Map<string, StateV2NodeRecord>();
     for (const record of records) {
       if (byHash.has(record.hash)) throw new Error("Duplicate State v2 node record");
-      byHash.set(record.hash, structuredClone(record));
+      // Hydration is synchronous and constructs independent TreeNode objects.
+      // Holding the caller's immutable scalar fields here avoids a second deep
+      // copy of every (potentially large) leaf value during checkpoint import.
+      byHash.set(record.hash, record);
     }
     const depths = new Map<string, number>();
     const visiting = new Set<string>();
@@ -156,6 +159,39 @@ export class SparseMerkleState {
     };
     visit(this.rootNode);
     return records;
+  }
+
+  /** Reachability metadata without duplicating full leaf payloads. */
+  reachableNodeHashes(): Set<string> {
+    const hashes = new Set<string>();
+    const visit = (node: TreeNode | undefined): void => {
+      if (!node || hashes.has(node.hash)) return;
+      hashes.add(node.hash);
+      if (node.kind === "branch") {
+        visit(node.left);
+        visit(node.right);
+      }
+    };
+    visit(this.rootNode);
+    return hashes;
+  }
+
+  /** Leaf-key commitment set without allocating full node-record snapshots. */
+  leafKeyHashes(): Set<string> {
+    const hashes = new Set<string>();
+    const seenNodes = new Set<string>();
+    const visit = (node: TreeNode | undefined): void => {
+      if (!node || seenNodes.has(node.hash)) return;
+      seenNodes.add(node.hash);
+      if (node.kind === "leaf") {
+        hashes.add(node.keyHash);
+        return;
+      }
+      visit(node.left);
+      visit(node.right);
+    };
+    visit(this.rootNode);
+    return hashes;
   }
 
   /** Nodes materialized since the last persistence checkpoint. */
@@ -276,9 +312,7 @@ export function reconstructStateV2PortableView(
   state: SparseMerkleState,
   keyPreimages: readonly string[]
 ): StateV2PortableView {
-  const leafHashes = new Set(state.nodeRecords()
-    .filter((record): record is Extract<StateV2NodeRecord, { kind: "leaf" }> => record.kind === "leaf")
-    .map((record) => record.keyHash));
+  const leafHashes = state.leafKeyHashes();
   if (keyPreimages.length !== leafHashes.size) throw new Error("State v2 key preimage count mismatch");
 
   const seenHashes = new Set<string>();
