@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import { canonicalJson, sha256Hex } from "./codec.js";
 import { ZyronChain } from "./chain.js";
 import { StateV2DiskStore } from "./state-v2-store.js";
+import type { StateV2PortableBundleV1 } from "./state-v2-portable.js";
 import type { Block, GenesisConfig } from "./types.js";
 
 const STORE_VERSION = 1;
@@ -272,6 +273,23 @@ export class ChainStore {
       if (!published) await rm(staging, { recursive: true, force: true });
     }
     return ChainStore.open(genesis, dataDir);
+  }
+
+  /**
+   * Installs a portable State-v2 node bundle without weakening the checkpoint
+   * trust model. Portable records/preimages are authenticated first, then the
+   * reconstructed canonical snapshot goes through the same atomic installer.
+   */
+  static async installTrustedPortableState(
+    genesis: GenesisConfig,
+    dataDir: string,
+    tip: Block,
+    bundle: StateV2PortableBundleV1,
+    anchor: TrustedSnapshotAnchor,
+    faultHooks: TrustedSnapshotInstallFaultHooks = {}
+  ): Promise<ChainStore> {
+    const chain = ZyronChain.fromTrustedPortableState(genesis, tip, bundle, anchor);
+    return ChainStore.installTrustedSnapshot(genesis, dataDir, chain.snapshot(), anchor, faultHooks);
   }
 
   async readFinalizedBlocks(from: number, limit: number, maxBytes: number): Promise<Block[]> {
