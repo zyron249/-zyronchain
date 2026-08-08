@@ -660,6 +660,46 @@ test("recovery checkpoint is published only after durable block state and binds 
   }
 });
 
+test("checkpoint publication preserves a verified anchor across injected atomic-write failures", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-checkpoint-fault-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    for (let height = 1; height <= 2; height += 1) {
+      const proposerKey = height % 2 === 1 ? validatorOnePrivate : validatorTwoPrivate;
+      let block = store.chain.produceBlock([], proposerKey, { timestampMs: genesis().timestampMs + (height * 100) });
+      block = store.chain.attestBlock(block, validatorOnePrivate);
+      block = store.chain.attestBlock(block, validatorTwoPrivate);
+      await store.commitFinalizedBlock(block, genesis().timestampMs + (height * 100));
+      if (height === 1) await store.writeRecoveryCheckpoint();
+    }
+    const path = join(directory, "recovery-checkpoint.json");
+    const oldCheckpoint = await readFile(path, "utf8");
+
+    await assert.rejects(
+      () => store.writeRecoveryCheckpoint({
+        afterTemporarySync: () => { throw new Error("injected before rename"); }
+      }),
+      /injected before rename/
+    );
+    assert.equal(await readFile(path, "utf8"), oldCheckpoint);
+    const oldAnchorReopen = await ChainStore.open(genesis(), directory);
+    assert.equal(oldAnchorReopen.recoveredFromCheckpointHeight, 1);
+    assert.equal(oldAnchorReopen.chain.height, 2);
+
+    await assert.rejects(
+      () => store.writeRecoveryCheckpoint({
+        afterRename: () => { throw new Error("injected after rename"); }
+      }),
+      /injected after rename/
+    );
+    const newAnchorReopen = await ChainStore.open(genesis(), directory);
+    assert.equal(newAnchorReopen.recoveredFromCheckpointHeight, 2);
+    assert.equal(newAnchorReopen.chain.tip.hash, store.chain.tip.hash);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("startup restores a verified local checkpoint and replays only its finalized suffix", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-checkpoint-suffix-"));
   try {
