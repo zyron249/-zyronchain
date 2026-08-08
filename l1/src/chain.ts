@@ -1,10 +1,14 @@
-import { canonicalJson } from "./codec.js";
+import { canonicalJson, sha256Hex } from "./codec.js";
 import {
+  blockHash,
   createGenesisBlock,
   createBlockAttestation,
   createSignedBlock,
   expectedValidator,
-  validateBlockEnvelope
+  validateAttestationQuorum,
+  validateBlockEnvelope,
+  validateBlockShape,
+  validateRoundCertificate
 } from "./block.js";
 import { addressFromPublicKey, publicKeyFromPrivate, verifyCanonical } from "./crypto.js";
 import { LedgerState, type LedgerSnapshot } from "./state.js";
@@ -64,6 +68,71 @@ export class ZyronChain {
     this.tipBlock = this.genesisBlock;
     this.validatorSchedule.set(0, structuredClone(genesis.validators));
     this.protocolSchedule.set(0, 1);
+  }
+
+  static fromTrustedSnapshot(
+    genesis: GenesisConfig,
+    value: unknown,
+    anchor: { tipHash: string; snapshotSha256: string }
+  ): ZyronChain {
+    assertHex(anchor.tipHash, 32, "trusted checkpoint tip hash");
+    assertHex(anchor.snapshotSha256, 32, "trusted checkpoint snapshot digest");
+    if (sha256Hex(canonicalJson(value)) !== anchor.snapshotSha256) {
+      throw new Error("Trusted checkpoint snapshot digest mismatch");
+    }
+    assertPlainRecord(value, "chain snapshot");
+    assertExactKeys(value, [
+      "version", "chainId", "genesisHash", "height", "tip", "state", "validatorSchedule", "protocolSchedule"
+    ], "chain snapshot");
+    const snapshot = value as unknown as ChainSnapshotV1;
+    const chain = new ZyronChain(genesis);
+    if (snapshot.version !== 1 || snapshot.chainId !== genesis.chainId || snapshot.genesisHash !== chain.genesisHash) {
+      throw new Error("Trusted checkpoint chain identity mismatch");
+    }
+    if (!Number.isSafeInteger(snapshot.height) || snapshot.height < 0) throw new Error("Invalid checkpoint height");
+    validateBlockShape(snapshot.tip);
+    if (snapshot.tip.header.chainId !== snapshot.chainId || snapshot.tip.header.height !== snapshot.height ||
+        snapshot.tip.hash !== anchor.tipHash || blockHash(snapshot.tip.header) !== snapshot.tip.hash) {
+      throw new Error("Trusted checkpoint tip mismatch");
+    }
+
+    const validatorSchedule = validateValidatorSchedule(snapshot.validatorSchedule, genesis.validators);
+    const protocolSchedule = validateProtocolSchedule(snapshot.protocolSchedule);
+    chain.validatorSchedule.clear();
+    for (const [height, validators] of validatorSchedule) chain.validatorSchedule.set(height, validators);
+    chain.protocolSchedule.clear();
+    for (const [height, version] of protocolSchedule) chain.protocolSchedule.set(height, version);
+
+    const state = LedgerState.fromSnapshot(snapshot.state);
+    const governance = {
+      validatorSchedule: [...validatorSchedule].map(([activationHeight, validators]) => ({
+        activationHeight, validators: structuredClone(validators)
+      })),
+      protocolSchedule: [...protocolSchedule].map(([activationHeight, protocolVersion]) => ({ activationHeight, protocolVersion }))
+    };
+    const protocolVersion = chain.protocolVersionAt(snapshot.height);
+    const sparse = protocolVersion === 2 ? stateV2FromLedgerSnapshot(state.snapshot(), governance) : undefined;
+    const stateRoot = protocolVersion === 1 ? state.root() : sparse!.root();
+    if (snapshot.tip.header.stateRoot !== stateRoot) throw new Error("Trusted checkpoint state root mismatch");
+
+    if (snapshot.height === 0) {
+      if (canonicalJson(snapshot.tip) !== canonicalJson(chain.genesisBlock)) throw new Error("Invalid genesis checkpoint tip");
+    } else {
+      const validators = chain.validatorsAt(snapshot.height);
+      const expected = expectedValidator(validators, snapshot.height, snapshot.tip.header.round);
+      if (snapshot.tip.header.proposer !== expected.address || snapshot.tip.proposerPublicKey !== expected.publicKey ||
+          !snapshot.tip.signature || !verifyCanonical(snapshot.tip.header, snapshot.tip.signature, expected.publicKey)) {
+        throw new Error("Invalid checkpoint proposer signature");
+      }
+      validateRoundCertificate(snapshot.tip, validators);
+      validateAttestationQuorum(snapshot.tip, validators);
+    }
+
+    chain.state = state;
+    chain.stateV2 = sparse;
+    chain.tipBlock = structuredClone(snapshot.tip);
+    chain.currentHeight = snapshot.height;
+    return chain;
   }
 
   get height(): number {
@@ -366,6 +435,58 @@ export class ZyronChain {
         .map(([activationHeight, protocolVersion]) => ({ activationHeight, protocolVersion }))
     };
   }
+}
+
+function validateValidatorSchedule(value: unknown, genesisValidators: Validator[]): Map<number, Validator[]> {
+  if (!Array.isArray(value) || value.length < 1) throw new Error("Invalid checkpoint validator schedule");
+  const result = new Map<number, Validator[]>();
+  let previousHeight = -1;
+  for (const candidate of value) {
+    assertPlainRecord(candidate, "checkpoint validator schedule entry");
+    assertExactKeys(candidate, ["activationHeight", "validators"], "checkpoint validator schedule entry");
+    if (!Number.isSafeInteger(candidate.activationHeight) || Number(candidate.activationHeight) <= previousHeight ||
+        !Array.isArray(candidate.validators) || candidate.validators.length < 1 || candidate.validators.length > 100) {
+      throw new Error("Invalid checkpoint validator schedule");
+    }
+    const validators: Validator[] = [];
+    const seen = new Set<string>();
+    for (const item of candidate.validators) {
+      assertPlainRecord(item, "checkpoint validator");
+      assertExactKeys(item, ["address", "publicKey"], "checkpoint validator");
+      if (typeof item.address !== "string" || typeof item.publicKey !== "string") throw new Error("Invalid checkpoint validator");
+      assertAddress(item.address);
+      assertHex(item.publicKey, 64, "checkpoint validator public key");
+      if (addressFromPublicKey(item.publicKey) !== item.address || seen.has(item.address)) throw new Error("Invalid checkpoint validator");
+      seen.add(item.address);
+      validators.push({ address: item.address, publicKey: item.publicKey });
+    }
+    const activationHeight = Number(candidate.activationHeight);
+    result.set(activationHeight, validators);
+    previousHeight = activationHeight;
+  }
+  const first = result.get(0);
+  if (!first || canonicalJson(first) !== canonicalJson(genesisValidators)) {
+    throw new Error("Checkpoint validator schedule does not start at genesis");
+  }
+  return result;
+}
+
+function validateProtocolSchedule(value: unknown): Map<number, number> {
+  if (!Array.isArray(value) || value.length < 1) throw new Error("Invalid checkpoint protocol schedule");
+  const result = new Map<number, number>();
+  let previousHeight = -1;
+  for (const candidate of value) {
+    assertPlainRecord(candidate, "checkpoint protocol schedule entry");
+    assertExactKeys(candidate, ["activationHeight", "protocolVersion"], "checkpoint protocol schedule entry");
+    if (!Number.isSafeInteger(candidate.activationHeight) || Number(candidate.activationHeight) <= previousHeight ||
+        !Number.isSafeInteger(candidate.protocolVersion) || !SUPPORTED_PROTOCOL_VERSIONS.has(Number(candidate.protocolVersion))) {
+      throw new Error("Invalid checkpoint protocol schedule");
+    }
+    result.set(Number(candidate.activationHeight), Number(candidate.protocolVersion));
+    previousHeight = Number(candidate.activationHeight);
+  }
+  if (result.get(0) !== 1) throw new Error("Checkpoint protocol schedule does not start at genesis");
+  return result;
 }
 
 function stateRootForProtocol(protocolVersion: number, state: AppliedTransition): string {
