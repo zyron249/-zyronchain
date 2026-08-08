@@ -2,6 +2,7 @@ import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { canonicalJson, sha256Hex } from "./codec.js";
+import { StateV2NodeObjectStore } from "./state-v2-node-store.js";
 import { SparseMerkleState, stateV2KeyHash, type StateV2NodeRecord } from "./state-v2.js";
 
 interface NodeEnvelope {
@@ -20,6 +21,8 @@ interface RootMetadata extends RootMetadataBody {
 
 interface KeyEnvelopeBody { key: string }
 interface KeyEnvelope extends KeyEnvelopeBody { checksum: string }
+interface BackendMarkerBody { version: 1; backend: "sqlite-v1" }
+interface BackendMarker extends BackendMarkerBody { checksum: string }
 
 export interface StateV2CommitFaultHooks {
   afterSemanticKeysSync?: () => void | Promise<void>;
@@ -33,67 +36,61 @@ export interface StateV2CommitFaultHooks {
  * a committed root can therefore never intentionally point at unwritten data.
  */
 export class StateV2DiskStore {
-  private readonly knownRecords: Map<string, StateV2NodeRecord>;
   private readonly knownKeyPreimages: Set<string>;
   private currentState: SparseMerkleState;
 
   private constructor(
     readonly dataDir: string,
     state: SparseMerkleState,
-    records: Map<string, StateV2NodeRecord>,
+    private readonly nodeObjects: StateV2NodeObjectStore,
     keyPreimages: Set<string>
   ) {
     this.currentState = state;
-    this.knownRecords = records;
     this.knownKeyPreimages = keyPreimages;
   }
 
   static async open(dataDir: string): Promise<StateV2DiskStore> {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
-    const nodesPath = join(dataDir, "state-v2.nodes.ndjson");
-    const records = new Map<string, StateV2NodeRecord>();
-    let text = "";
-    try {
-      text = await readFile(nodesPath, "utf8");
-    } catch (error) {
-      if (!isMissingFile(error)) throw error;
-      await writeFile(nodesPath, "", { flag: "wx", mode: 0o600 });
-    }
-    const lines = text.split("\n");
-    const unterminatedTail = lines.pop() ?? "";
-    // A crash during an append may leave bytes that were never made reachable by
-    // the fsynced+renamed root. Ignore only an unterminated tail; complete corrupt
-    // records fail closed.
-    void unterminatedTail;
-    for (const line of lines) {
-      if (!line) continue;
-      const envelope = parseNodeEnvelope(line);
-      const existing = records.get(envelope.record.hash);
-      if (existing) {
-        if (canonicalJson(existing) !== canonicalJson(envelope.record)) {
-          throw new Error("Conflicting duplicate persisted State v2 node");
-        }
-        continue;
-      }
-      records.set(envelope.record.hash, envelope.record);
-    }
-
     const keyPreimages = await loadSemanticKeyPreimages(dataDir);
+    const nodeObjects = await StateV2NodeObjectStore.open(dataDir);
     const metadataPath = join(dataDir, "state-v2.root.json");
-    let state = SparseMerkleState.empty();
+    let metadata: RootMetadata | undefined;
     try {
-      const metadata = parseRootMetadata(await readFile(metadataPath, "utf8"));
-      state = SparseMerkleState.fromNodeRecords(metadata.root, records.values());
+      metadata = parseRootMetadata(await readFile(metadataPath, "utf8"));
     } catch (error) {
-      if (!isMissingFile(error)) throw error;
+      if (!isMissingFile(error)) { nodeObjects.close(); throw error; }
     }
-    const reachable = state.reachableNodeHashes();
-    const resident = new Map([...records].filter(([hash]) => reachable.has(hash)));
-    const completeLines = lines.filter(Boolean).length;
-    if (unterminatedTail.length > 0 || completeLines !== resident.size) {
-      await compactNodeLog(dataDir, resident.values());
+    try {
+      if (!(await loadBackendMarker(dataDir))) {
+        const legacy = await loadLegacyNodeRecords(dataDir);
+        if (metadata && metadata.root !== SparseMerkleState.empty().root()) {
+          const legacyState = SparseMerkleState.fromNodeRecords(metadata.root, legacy.records.values());
+          const reachable = legacyState.reachableNodeHashes();
+          const records = [...legacy.records].filter(([hash]) => reachable.has(hash)).map(([, record]) => record);
+          await nodeObjects.putMany(records);
+          // Publish the backend marker only after the new database independently
+          // resolves and authenticates the complete committed root.
+          SparseMerkleState.fromNodeResolver(metadata.root, nodeObjects.resolver()).reachableNodeHashes();
+          if (legacy.unterminatedTail.length > 0 || legacy.completeLines !== records.length) {
+            await compactNodeLog(dataDir, records);
+          }
+        }
+        await writeBackendMarker(dataDir);
+      }
+    } catch (error) {
+      nodeObjects.close();
+      throw error;
     }
-    return new StateV2DiskStore(dataDir, state, resident, keyPreimages);
+    try {
+      const state = metadata ? SparseMerkleState.fromNodeResolver(metadata.root, nodeObjects.resolver()) : SparseMerkleState.empty();
+      // Validate durable reachability once at startup without hydrating a second
+      // full object graph; only the bounded resolver cache survives this walk.
+      state.reachableNodeHashes();
+      return new StateV2DiskStore(dataDir, state, nodeObjects, keyPreimages);
+    } catch (error) {
+      nodeObjects.close();
+      throw error;
+    }
   }
 
   state(): SparseMerkleState {
@@ -101,7 +98,7 @@ export class StateV2DiskStore {
   }
 
   residentNodeRecordCount(): number {
-    return this.knownRecords.size;
+    return this.nodeObjects.cachedRecordCount();
   }
 
   semanticKeyPreimages(state: SparseMerkleState = this.currentState): string[] {
@@ -122,28 +119,9 @@ export class StateV2DiskStore {
     keyPreimages: readonly string[] = [],
     faultHooks: StateV2CommitFaultHooks = {}
   ): Promise<void> {
-    const nodesPath = join(this.dataDir, "state-v2.nodes.ndjson");
-    // Existing pre-integration data directories can first reach this store with
-    // a fully replayed state whose incremental delta has already been cleared.
-    // Bootstrap the content-addressed store from the authenticated tree once;
-    // subsequent commits retain the O(changed paths) pending-node fast path.
     const pending = state.pendingNodeRecords();
     const needsReplayCatchup = state.root() !== this.currentState.root() && pending.length === 0;
-    const candidates = this.knownRecords.size === 0 || needsReplayCatchup ? state.nodeRecords() : pending;
-    const fresh = candidates.filter((record) => !this.knownRecords.has(record.hash));
-    if (fresh.length) {
-      const handle = await open(nodesPath, "a", 0o600);
-      try {
-        for (const record of fresh) {
-          const envelope: NodeEnvelope = { record, checksum: sha256Hex(canonicalJson(record)) };
-          await handle.writeFile(`${canonicalJson(envelope)}\n`, "utf8");
-        }
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      for (const record of fresh) this.knownRecords.set(record.hash, structuredClone(record));
-    }
+    await this.nodeObjects.putMany(needsReplayCatchup ? state.nodeRecords() : pending);
 
     const leafHashes = state.leafKeyHashes();
     const freshKeys: string[] = [];
@@ -189,12 +167,66 @@ export class StateV2DiskStore {
     } finally {
       await directoryHandle.close();
     }
-    this.currentState = state.persistenceCheckpoint();
-    const reachable = state.reachableNodeHashes();
-    for (const hash of this.knownRecords.keys()) {
-      if (!reachable.has(hash)) this.knownRecords.delete(hash);
-    }
+    this.currentState = SparseMerkleState.fromNodeResolver(state.root(), this.nodeObjects.resolver());
   }
+}
+
+interface LegacyNodeLoad {
+  records: Map<string, StateV2NodeRecord>;
+  unterminatedTail: string;
+  completeLines: number;
+}
+
+async function loadLegacyNodeRecords(dataDir: string): Promise<LegacyNodeLoad> {
+  let text = "";
+  try { text = await readFile(join(dataDir, "state-v2.nodes.ndjson"), "utf8"); }
+  catch (error) {
+    if (isMissingFile(error)) return { records: new Map(), unterminatedTail: "", completeLines: 0 };
+    throw error;
+  }
+  const lines = text.split("\n");
+  const unterminatedTail = lines.pop() ?? "";
+  const records = new Map<string, StateV2NodeRecord>();
+  let completeLines = 0;
+  for (const line of lines) {
+    if (!line) continue;
+    completeLines += 1;
+    const envelope = parseNodeEnvelope(line);
+    const existing = records.get(envelope.record.hash);
+    if (existing && canonicalJson(existing) !== canonicalJson(envelope.record)) {
+      throw new Error("Conflicting duplicate persisted State v2 node");
+    }
+    records.set(envelope.record.hash, envelope.record);
+  }
+  return { records, unterminatedTail, completeLines };
+}
+
+async function loadBackendMarker(dataDir: string): Promise<BackendMarker | undefined> {
+  try {
+    const value = JSON.parse(await readFile(join(dataDir, "state-v2.backend.json"), "utf8")) as Partial<BackendMarker>;
+    if (value.version !== 1 || value.backend !== "sqlite-v1" || typeof value.checksum !== "string") {
+      throw new Error("Corrupt State v2 backend marker");
+    }
+    const body: BackendMarkerBody = { version: 1, backend: "sqlite-v1" };
+    if (value.checksum !== sha256Hex(canonicalJson(body))) throw new Error("State v2 backend marker checksum mismatch");
+    return value as BackendMarker;
+  } catch (error) {
+    if (isMissingFile(error)) return undefined;
+    throw error;
+  }
+}
+
+async function writeBackendMarker(dataDir: string): Promise<void> {
+  const body: BackendMarkerBody = { version: 1, backend: "sqlite-v1" };
+  const marker: BackendMarker = { ...body, checksum: sha256Hex(canonicalJson(body)) };
+  const path = join(dataDir, "state-v2.backend.json");
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const handle = await open(temporary, "wx", 0o600);
+  try { await handle.writeFile(`${canonicalJson(marker)}\n`, "utf8"); await handle.sync(); }
+  finally { await handle.close(); }
+  await rename(temporary, path);
+  const directory = await open(dataDir, "r");
+  try { await directory.sync(); } finally { await directory.close(); }
 }
 
 async function compactNodeLog(dataDir: string, records: Iterable<StateV2NodeRecord>): Promise<void> {
