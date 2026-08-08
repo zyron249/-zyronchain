@@ -355,6 +355,34 @@ test("finalized conflicting nonce prunes stale mempool entries instead of leakin
   }
 });
 
+test("node read and mempool hot paths do not clone the full ledger state", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-node-hot-path-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    const service = new NodeService(store);
+    store.chain.getState = () => {
+      throw new Error("full state clone reached node hot path");
+    };
+
+    assert.equal(service.balance(alice), 1_000_000_000);
+    assert.equal(service.nonce(alice), 0);
+    const pending = createTransfer(
+      { chainId: genesis().chainId, nonce: 1, sender: alice, receiver: bob, amountAtoms: 1, feeAtoms: 1, timestampMs: 100 },
+      alicePrivate,
+      alicePublic
+    );
+    assert.equal(service.submitTransaction(pending), pending.txid);
+
+    let block = store.chain.produceBlock([pending], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
+    block = store.chain.attestBlock(block, validatorOnePrivate);
+    block = store.chain.attestBlock(block, validatorTwoPrivate);
+    await service.acceptFinalizedBlock(block);
+    assert.equal(service.mempool.size, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("chain store replays finalized blocks and pins the genesis identity", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-store-"));
   try {
