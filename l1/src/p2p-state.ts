@@ -1,5 +1,7 @@
 import type { PeerId } from "@libp2p/interface";
 import type { Libp2p } from "libp2p";
+import { lstat, mkdir, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
 
 import { validateBlockShape } from "./block.js";
 import { canonicalJson, sha256Hex } from "./codec.js";
@@ -15,7 +17,7 @@ import {
   MAX_PORTABLE_STATE_NODES,
   type StateV2PortableBundleV1
 } from "./state-v2-portable.js";
-import { PortableStateResumeStore } from "./state-v2-resume.js";
+import { PortableStateResumeStore, type PortableStateResumeManifestV1 } from "./state-v2-resume.js";
 import type { TrustedSnapshotAnchor } from "./storage.js";
 import type { Block, GenesisConfig } from "./types.js";
 
@@ -68,7 +70,10 @@ interface CachedPortableState {
   snapshotSha256: string;
   height: number;
   tip: Block;
-  bundle: StateV2PortableBundleV1;
+  stateRoot: string;
+  recordCount: number;
+  keyCount: number;
+  store: PortableStateResumeStore;
 }
 
 export interface TrustedPortableStateTransfer {
@@ -90,8 +95,28 @@ export async function registerP2PStateProtocol(
   validateP2PChainIdentity(local, service.status(), node.peerId);
   const rate = new P2PPeerRateLimiter(1_200, 60_000);
   const cache = new Map<string, CachedPortableState>();
+  const durableCacheRoot = join(service.store.dataDir, "p2p-state-checkpoints");
+  await mkdir(durableCacheRoot, { recursive: true, mode: 0o700 });
+  await pruneDurableCache(durableCacheRoot, 2);
+  const activeCounts = new Map<string, number>();
+  let selectionTail: Promise<void> = Promise.resolve();
+
+  const acquirePortableState = async (request: StateRequest): Promise<CachedPortableState> => {
+    const previous = selectionTail;
+    let release!: () => void;
+    selectionTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      const selected = await selectPortableState(cache, durableCacheRoot, new Set(activeCounts.keys()), service, request);
+      activeCounts.set(selected.store.dataDir, (activeCounts.get(selected.store.dataDir) ?? 0) + 1);
+      return selected;
+    } finally {
+      release();
+    }
+  };
 
   await node.handle(P2P_STATE_PROTOCOL, async (stream, connection) => {
+    let selected: CachedPortableState | undefined;
     try {
       if (connection.encryption !== "/noise") throw new Error("State transfer requires authenticated Noise");
       if (!rate.consume(connection.remotePeer.toString())) throw new Error("State transfer rate limit exceeded");
@@ -100,8 +125,8 @@ export async function registerP2PStateProtocol(
         service.status(),
         connection.remotePeer
       );
-      const selected = selectPortableState(cache, service, request);
-      const response = responseForRequest(local, selected, request);
+      selected = await acquirePortableState(request);
+      const response = await responseForRequest(local, selected, request);
       await writeP2PFrame(
         stream,
         response,
@@ -111,6 +136,12 @@ export async function registerP2PStateProtocol(
       await stream.close({ signal: AbortSignal.timeout(P2P_STATE_TIMEOUT_MS) });
     } catch (error) {
       stream.abort(error instanceof Error ? error : new Error("State transfer failed"));
+    } finally {
+      if (selected) {
+        const remaining = (activeCounts.get(selected.store.dataDir) ?? 1) - 1;
+        if (remaining > 0) activeCounts.set(selected.store.dataDir, remaining);
+        else activeCounts.delete(selected.store.dataDir);
+      }
     }
   }, { maxInboundStreams: 1, maxOutboundStreams: 1 });
 }
@@ -247,18 +278,46 @@ async function fetchTrustedPortableState(
   return { tip: structuredClone(manifest.tip), bundle: structuredClone(bundle) };
 }
 
-function selectPortableState(
+async function selectPortableState(
   cache: Map<string, CachedPortableState>,
+  durableCacheRoot: string,
+  activePaths: ReadonlySet<string>,
   service: NodeService,
   request: StateRequest
-): CachedPortableState {
+): Promise<CachedPortableState> {
   const cached = cache.get(request.tipHash);
   if (cached) {
     if (cached.snapshotSha256 !== request.snapshotSha256) throw new Error("Requested State-v2 digest is unavailable");
     return cached;
   }
+  const expected = service.status();
+  const durablePath = portableCachePath(durableCacheRoot, request.tipHash, request.snapshotSha256);
+  let reusableCurrentStore: PortableStateResumeStore | undefined;
+  try {
+    const store = await PortableStateResumeStore.openExisting(durablePath, {
+      chainId: expected.chainId,
+      genesisHash: expected.genesisHash,
+      tipHash: request.tipHash,
+      snapshotSha256: request.snapshotSha256
+    });
+    if (store.complete()) {
+      const selected = cachedStateFromStore(store);
+      rememberPortableState(cache, selected);
+      return selected;
+    }
+    if (request.tipHash !== expected.tipHash) throw new Error("Historical durable State-v2 serving checkpoint is incomplete");
+    reusableCurrentStore = store;
+  } catch (error) {
+    if (!isMissingFile(error) && request.tipHash !== expected.tipHash) throw error;
+    // A corrupt/incomplete derived cache for the current tip is disposable: the
+    // authoritative live chain can rebuild it. Historical cache corruption
+    // fails closed because the live node cannot recreate old state safely.
+    if (request.tipHash === expected.tipHash && !isMissingFile(error)) {
+      await rm(durablePath, { recursive: true, force: true });
+    }
+  }
   const status = service.status();
-  if (request.tipHash !== status.tipHash) throw new Error("Requested State-v2 tip is not locally finalized");
+  if (request.tipHash !== status.tipHash) throw new Error("Requested State-v2 tip is not locally finalized or durably cached");
   const snapshot = service.store.chain.snapshot();
   const snapshotSha256 = sha256Hex(canonicalJson(snapshot));
   if (snapshotSha256 !== request.snapshotSha256) throw new Error("Requested State-v2 digest is unavailable");
@@ -268,36 +327,102 @@ function selectPortableState(
     validatorSchedule: snapshot.validatorSchedule,
     protocolSchedule: snapshot.protocolSchedule
   });
-  const selected = {
-    tipHash: snapshot.tip.hash,
-    snapshotSha256,
-    height: snapshot.height,
-    tip: structuredClone(snapshot.tip),
-    bundle
+  const manifest: PortableStateResumeManifestV1 = {
+    version: 1, chainId: status.chainId, genesisHash: status.genesisHash,
+    tipHash: snapshot.tip.hash, snapshotSha256, height: snapshot.height,
+    stateRoot: bundle.root, recordCount: bundle.records.length,
+    keyCount: bundle.keyPreimages.length, tip: structuredClone(snapshot.tip)
   };
-  if (cache.size >= 2) cache.delete(cache.keys().next().value!);
-  cache.set(selected.tipHash, selected);
+  const store = reusableCurrentStore ?? await PortableStateResumeStore.open(durablePath, manifest);
+  for (let start = store.nextRecordStart(); start < bundle.records.length;) {
+    const items = bundle.records.slice(start, start + MAX_STATE_RECORDS_PER_CHUNK);
+    await store.putRecords(start, items);
+    start += items.length;
+  }
+  for (let start = store.nextKeyStart(); start < bundle.keyPreimages.length;) {
+    const items = bundle.keyPreimages.slice(start, start + MAX_STATE_KEYS_PER_CHUNK);
+    await store.putKeys(start, items);
+    start += items.length;
+  }
+  const selected = cachedStateFromStore(store);
+  rememberPortableState(cache, selected);
+  await pruneDurableCache(durableCacheRoot, 2, new Set([
+    ...activePaths,
+    ...[...cache.values()].map((entry) => entry.store.dataDir)
+  ]));
   return selected;
 }
 
-function responseForRequest(
+async function responseForRequest(
   identity: P2PChainIdentity,
   state: CachedPortableState,
   request: StateRequest
-): StateManifestResponse | StateChunkResponse {
+): Promise<StateManifestResponse | StateChunkResponse> {
   if (request.kind === "manifest") {
     return {
       version: 1, identity, tipHash: state.tipHash, snapshotSha256: state.snapshotSha256,
-      height: state.height, stateRoot: state.bundle.root, recordCount: state.bundle.records.length,
-      keyCount: state.bundle.keyPreimages.length, tip: structuredClone(state.tip)
+      height: state.height, stateRoot: state.stateRoot, recordCount: state.recordCount,
+      keyCount: state.keyCount, tip: structuredClone(state.tip)
     };
   }
-  const source: readonly unknown[] = request.kind === "records" ? state.bundle.records : state.bundle.keyPreimages;
-  if (request.start >= source.length) throw new Error("State chunk start exceeds manifest bounds");
+  const total = request.kind === "records" ? state.recordCount : state.keyCount;
+  if (request.start >= total || request.start + request.limit > total) throw new Error("State chunk range exceeds manifest bounds");
+  const items = request.kind === "records"
+    ? await state.store.records(request.start, request.limit)
+    : await state.store.keys(request.start, request.limit);
   return {
     version: 1, identity, tipHash: state.tipHash, snapshotSha256: state.snapshotSha256,
-    kind: request.kind, start: request.start, items: structuredClone(source.slice(request.start, request.start + request.limit))
+    kind: request.kind, start: request.start, items
   };
+}
+
+function cachedStateFromStore(store: PortableStateResumeStore): CachedPortableState {
+  const manifest = store.manifest;
+  validateBlockShape(manifest.tip);
+  if (manifest.tip.hash !== manifest.tipHash || manifest.tip.header.height !== manifest.height ||
+      manifest.tip.header.stateRoot !== manifest.stateRoot) throw new Error("Durable State-v2 serving manifest is inconsistent");
+  return {
+    tipHash: manifest.tipHash,
+    snapshotSha256: manifest.snapshotSha256,
+    height: manifest.height,
+    tip: structuredClone(manifest.tip),
+    stateRoot: manifest.stateRoot,
+    recordCount: manifest.recordCount,
+    keyCount: manifest.keyCount,
+    store
+  };
+}
+
+function rememberPortableState(cache: Map<string, CachedPortableState>, selected: CachedPortableState): void {
+  if (!cache.has(selected.tipHash) && cache.size >= 2) cache.delete(cache.keys().next().value!);
+  cache.set(selected.tipHash, selected);
+}
+
+function portableCachePath(root: string, tipHash: string, snapshotSha256: string): string {
+  return join(root, `${tipHash}-${snapshotSha256}`);
+}
+
+async function pruneDurableCache(root: string, keep: number, protectedPaths: ReadonlySet<string> = new Set()): Promise<void> {
+  const names = await readdir(root);
+  const candidates: Array<{ path: string; mtimeMs: number }> = [];
+  for (const name of names) {
+    if (!/^[0-9a-f]{64}-[0-9a-f]{64}$/.test(name)) continue;
+    const path = join(root, name);
+    const info = await lstat(path);
+    if (!info.isDirectory() || info.isSymbolicLink()) continue;
+    candidates.push({ path, mtimeMs: info.mtimeMs });
+  }
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || a.path.localeCompare(b.path));
+  let unprotectedBudget = Math.max(0, keep - protectedPaths.size);
+  for (const candidate of candidates) {
+    if (protectedPaths.has(candidate.path)) continue;
+    if (unprotectedBudget > 0) { unprotectedBudget -= 1; continue; }
+    await rm(candidate.path, { recursive: true, force: true });
+  }
+}
+
+function isMissingFile(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "ENOENT");
 }
 
 function parseRequest(value: unknown, expected: { chainId: string; genesisHash: string }, remotePeer: Pick<PeerId, "toString">): StateRequest {
