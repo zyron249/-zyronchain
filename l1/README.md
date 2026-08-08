@@ -256,6 +256,28 @@ node dist/src/cli.js checkpoint-fetch-install \
   --sha256 <independently-trusted-snapshot-digest>
 ```
 
+For active State v2, a peer can instead serve the authenticated Merkle node records and
+semantic key preimages through `/zyronchain/state/1.0.0`. The transfer uses an anchored
+manifest plus absolute record/key chunk indexes, so a transient stream failure retries the
+same chunk without restarting already received work. It does **not** let the peer select the
+checkpoint: the same independently obtained full-snapshot digest and finalized tip are still
+required, and the reconstructed state/governance/finality must reproduce that exact canonical
+snapshot before installation:
+
+```sh
+node dist/src/cli.js state-fetch-install \
+  --genesis genesis.json \
+  --p2p-peer /dns4/checkpoint.example/tcp/9140/p2p/<PINNED_PEER_ID> \
+  --data ./data-from-portable-state \
+  --tip-hash <independently-trusted-finalized-tip> \
+  --sha256 <independently-trusted-snapshot-digest>
+```
+
+The current client retains completed chunks in memory only for the lifetime of this command;
+cross-process resume and streaming materialization to disk are still required before large
+mainnet state sync can be considered complete. The server also bounds each chunk, authenticates
+Noise/chain identity, rate-limits each PeerId, and keeps at most two finalized portable states.
+
 Local recovery checkpoints are different: they are created only after the finalized block
 log is durable, bind the full chain/genesis/tip/state/governance snapshot, and are revalidated
 against their exact finalized-log boundary before suffix replay.
