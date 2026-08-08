@@ -4,15 +4,16 @@ import { isIP } from "node:net";
 import { canonicalJson, sha256Hex } from "./codec.js";
 
 import {
-  createBlockAttestation,
-  createRoundSkipVote,
+  attachBlockSignature,
+  attestationPayload,
   expectedValidator,
+  roundSkipPayload,
   validateBlockAttestation,
   validateBlockShape,
   validateRoundSkipVote,
   validateRoundSkipQuorum
 } from "./block.js";
-import { publicKeyFromPrivate } from "./crypto.js";
+import { addressFromPublicKey } from "./crypto.js";
 import { Mempool } from "./mempool.js";
 import { PeerReputationStore } from "./peer-reputation.js";
 import { MAX_DISCOVERY_RESPONSE_RECORDS, PeerDirectory } from "./peer-directory.js";
@@ -26,6 +27,7 @@ import {
 import { ChainStore, SigningJournal } from "./storage.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
 import type { Address, Block, BlockAttestation, RoundSkipVote, Transaction } from "./types.js";
+import { LocalValidatorSigner, signWithValidator, type ValidatorSigner } from "./validator-signer.js";
 
 const MAX_BODY_BYTES = 2_500_000;
 export const MAX_SYNC_BLOCKS = 100;
@@ -94,12 +96,15 @@ export class NodeService {
   readonly mempool = new Mempool();
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly startedAtMs = Date.now();
+  private readonly validatorSigner: ValidatorSigner | undefined;
 
   constructor(
     readonly store: ChainStore,
     private readonly signingJournal?: SigningJournal,
-    private readonly validatorPrivateKey?: string
-  ) {}
+    validator?: string | ValidatorSigner
+  ) {
+    this.validatorSigner = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
+  }
 
   status(): NodeStatus {
     return {
@@ -163,15 +168,19 @@ export class NodeService {
 
   async attestProposal(value: unknown): Promise<BlockAttestation> {
     return this.exclusive(async () => {
-      if (!this.signingJournal || !this.validatorPrivateKey) throw new Error("Validator signing is disabled");
+      if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
       validateBlockShape(value);
       const block = value as Block;
       this.store.chain.validateProposal(block);
-      const publicKey = publicKeyFromPrivate(this.validatorPrivateKey);
+      const publicKey = this.validatorSigner.publicKey;
       const validator = this.store.chain.validatorsAt(block.header.height).find((item) => item.publicKey === publicKey);
       if (!validator) throw new Error("Configured validator key is not in genesis");
       await this.signingJournal.reserveAttestation(block.header.height, block.header.round, block.hash);
-      return createBlockAttestation(block, this.validatorPrivateKey, publicKey);
+      return {
+        validator: validator.address,
+        publicKey,
+        signature: await signWithValidator(this.validatorSigner, attestationPayload(block), "block-attestation")
+      };
     });
   }
 
@@ -182,7 +191,7 @@ export class NodeService {
     nowMs = Date.now()
   ): Promise<RoundSkipVote> {
     return this.exclusive(async () => {
-      if (!this.signingJournal || !this.validatorPrivateKey) throw new Error("Validator signing is disabled");
+      if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
       const chain = this.store.chain;
       if (!Number.isSafeInteger(height) || height !== chain.height + 1 || !Number.isSafeInteger(round) || round < 0) {
         throw new Error("Invalid round skip request");
@@ -203,19 +212,23 @@ export class NodeService {
           chain.tip.hash
         );
       }
-      const publicKey = publicKeyFromPrivate(this.validatorPrivateKey);
+      const publicKey = this.validatorSigner.publicKey;
       if (!chain.validatorsAt(height).some((validator) => validator.publicKey === publicKey)) {
         throw new Error("Configured validator key is not in genesis");
       }
       await this.signingJournal.reserveSkip(height, round, chain.tip.hash);
-      return createRoundSkipVote({
+      const unsigned = {
+        validator: addressFromPublicKey(publicKey),
+        publicKey,
         chainId: chain.genesis.chainId,
         height,
         round,
         previousHash: chain.tip.hash,
-        validatorPrivateKey: this.validatorPrivateKey,
-        validatorPublicKey: publicKey
-      });
+      };
+      return {
+        ...unsigned,
+        signature: await signWithValidator(this.validatorSigner, roundSkipPayload(unsigned), "round-skip")
+      };
     });
   }
 
@@ -709,14 +722,15 @@ export function peerSyncProbeBatches(
 export async function produceFinalizedBlock(
   service: NodeService,
   peers: ConsensusPeerClient,
-  validatorPrivateKey: string,
+  validator: string | ValidatorSigner,
   nowMs = Date.now()
 ): Promise<Block | null> {
   const chain = service.store.chain;
   const elapsed = nowMs - chain.tip.header.timestampMs;
   if (elapsed < BLOCK_INTERVAL_MS) return null;
   const round = Math.max(0, Math.floor((elapsed - BLOCK_INTERVAL_MS) / ROUND_WINDOW_MS));
-  const publicKey = publicKeyFromPrivate(validatorPrivateKey);
+  const signer = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
+  const publicKey = signer.publicKey;
   const validators = chain.validatorsAt(chain.height + 1);
   const expected = expectedValidator(validators, chain.height + 1, round);
   if (expected.publicKey !== publicKey) return null;
@@ -765,11 +779,16 @@ export async function produceFinalizedBlock(
     }
   }
   const transactions = chain.selectValidPending(service.mempool.values(), 10_000);
-  const proposal = chain.produceBlock(transactions, validatorPrivateKey, {
+  const unsignedProposal = chain.prepareBlock(transactions, publicKey, {
     round,
     timestampMs: nowMs,
     roundCertificate
   });
+  const proposal = attachBlockSignature(
+    unsignedProposal,
+    await signWithValidator(signer, unsignedProposal.header, "block-proposal")
+  );
+  chain.validatePreparedBlock(proposal, nowMs);
   const attestations: BlockAttestation[] = [];
   try {
     attestations.push(await service.attestProposal(proposal));
