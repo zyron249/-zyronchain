@@ -380,7 +380,12 @@ export class ZyronChain {
         left.timestampMs - right.timestampMs ||
         left.txid.localeCompare(right.txid)
       );
-    const next = this.state.clone();
+    const protocolVersion = this.protocolVersionAt(this.height + 1);
+    assertSupportedProtocolVersion(protocolVersion);
+    const next = protocolVersion === 1 ? this.state.clone() : undefined;
+    let sparse = protocolVersion === 2
+      ? (this.stateV2 ?? stateV2FromLedgerSnapshot(this.state.snapshot(), this.governanceSnapshot()))
+      : undefined;
     const selected: Transaction[] = [];
     const seen = new Set<string>();
     let selectedBytes = 0;
@@ -402,7 +407,8 @@ export class ZyronChain {
         }
         const transactionBytes = Buffer.byteLength(canonicalJson(tx), "utf8") + (selected.length ? 1 : 0);
         if (selectedBytes + transactionBytes > maxTransactionBytes) continue;
-        next.apply(tx, this.genesis.activityPool);
+        if (sparse) sparse = applyStateV2Transaction(sparse, tx, this.genesis.activityPool);
+        else next!.apply(tx, this.genesis.activityPool);
         selected.push(tx);
         selectedBytes += transactionBytes;
         seen.add(tx.txid);
