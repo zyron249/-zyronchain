@@ -4,11 +4,13 @@ import {
   MAX_SYNC_BATCH_PAYLOAD_BYTES,
   MAX_SYNC_BLOCKS,
   MAX_SYNC_RESPONSE_BYTES,
+  PeerInflightLimiter,
   type NodeService,
   type NodeStatus
 } from "./node.js";
 import { validateP2PChainIdentity, type P2PChainIdentity } from "./p2p.js";
 import { readP2PFrame, writeP2PFrame } from "./p2p-frame.js";
+import { P2PPeerRateLimiter } from "./p2p-rate.js";
 import type { NodeIdentity } from "./peer-identity.js";
 import type { Block } from "./types.js";
 
@@ -39,9 +41,15 @@ export async function registerP2PSyncProtocol(
 ): Promise<void> {
   const local = localIdentity(identity, service.status());
   validateP2PChainIdentity(local, service.status(), node.peerId);
+  const rate = new P2PPeerRateLimiter(120, 60_000);
+  const inflight = new PeerInflightLimiter(2);
   await node.handle(P2P_SYNC_PROTOCOL, async (stream, connection) => {
+    let release: (() => void) | undefined;
     try {
       if (connection.encryption !== "/noise") throw new Error("Native sync requires authenticated Noise");
+      const peerId = connection.remotePeer.toString();
+      if (!rate.consume(peerId)) throw new Error("Native sync rate limit exceeded");
+      release = inflight.enter(peerId);
       const request = parseSyncRequest(await readP2PFrame(stream, MAX_SYNC_REQUEST_BYTES, P2P_SYNC_TIMEOUT_MS), service.status(), connection.remotePeer);
       const blocks = await service.blocks(request.from, request.limit, MAX_SYNC_BATCH_PAYLOAD_BYTES);
       const response: SyncResponse = {
@@ -54,6 +62,8 @@ export async function registerP2PSyncProtocol(
       await stream.close({ signal: AbortSignal.timeout(P2P_SYNC_TIMEOUT_MS) });
     } catch (error) {
       stream.abort(error instanceof Error ? error : new Error("Native sync protocol failure"));
+    } finally {
+      release?.();
     }
   }, { maxInboundStreams: 2, maxOutboundStreams: 2 });
 }
