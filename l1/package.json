@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "bin": { "zyron-l1": "dist/src/cli.js" },
+  "files": ["dist/src", "README.md"],
   "engines": { "node": ">=22" },
   "scripts": {
     "build": "tsc --outDir dist",

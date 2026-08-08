@@ -22,22 +22,24 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
           cache-dependency-path: l1/package-lock.json
-
       - name: Install locked dependencies
         run: npm ci
-
       - name: Typecheck
         run: npm run typecheck
-
       - name: Test
         run: npm test
-
+      - name: Verify reproducible release package
+        run: |
+          first=$(mktemp -d)
+          second=$(mktemp -d)
+          npm pack --ignore-scripts --pack-destination "$first" >/dev/null
+          npm pack --ignore-scripts --pack-destination "$second" >/dev/null
+          cmp "$first"/zyronchain-l1-*.tgz "$second"/zyronchain-l1-*.tgz
       - name: Audit runtime dependencies
         run: npm audit --omit=dev --audit-level=high
