@@ -3,6 +3,7 @@ import type { Libp2p } from "libp2p";
 import { PeerInflightLimiter, type ConsensusPeerClient, type NodeService, type NodeStatus } from "./node.js";
 import { readP2PFrame, writeP2PFrame } from "./p2p-frame.js";
 import { validateP2PChainIdentity, type P2PChainIdentity } from "./p2p.js";
+import { P2PPeerRateLimiter } from "./p2p-rate.js";
 import type { NodeIdentity } from "./peer-identity.js";
 import { validateTransactionShape } from "./transaction.js";
 import type { Block, BlockAttestation, RoundSkipVote, Transaction } from "./types.js";
@@ -36,6 +37,7 @@ export async function registerP2PConsensusProtocol(
   const local = localIdentity(identity, service.status());
   validateP2PChainIdentity(local, service.status(), node.peerId);
   const inflight = new PeerInflightLimiter(MAX_NATIVE_CONSENSUS_INFLIGHT_PER_PEER);
+  const rate = new P2PPeerRateLimiter(240, 60_000);
   await node.handle(P2P_CONSENSUS_PROTOCOL, async (stream, connection) => {
     let release: (() => void) | undefined;
     try {
@@ -43,7 +45,9 @@ export async function registerP2PConsensusProtocol(
       // Gate before reading a potentially block-sized frame. Noise has already
       // authenticated this PeerId, so repeated connections cannot evade the
       // per-identity memory/CPU concurrency bound.
-      release = inflight.enter(connection.remotePeer.toString());
+      const peerId = connection.remotePeer.toString();
+      if (!rate.consume(peerId)) throw new Error("Native consensus rate limit exceeded");
+      release = inflight.enter(peerId);
       const request = parseConsensusRequest(
         await readP2PFrame(stream, MAX_CONSENSUS_FRAME_BYTES, P2P_CONSENSUS_TIMEOUT_MS),
         service.status(),
