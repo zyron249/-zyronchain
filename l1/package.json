@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": { "zyron-l1": "dist/src/cli.js" },
   "engines": { "node": ">=22" },
   "scripts": {
     "build": "tsc --outDir dist",
