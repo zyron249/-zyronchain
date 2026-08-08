@@ -4,7 +4,9 @@ import {
   createBlockAttestation,
   createRoundSkipVote,
   expectedValidator,
+  validateBlockAttestation,
   validateBlockShape,
+  validateRoundSkipVote,
   validateRoundSkipQuorum
 } from "./block.js";
 import { publicKeyFromPrivate } from "./crypto.js";
@@ -288,7 +290,21 @@ export async function produceFinalizedBlock(
       }
       votes.push(...await peers.requestRoundSkips(chain.height + 1, skippedRound, previousCertificate));
       const unique = new Map<Address, RoundSkipVote>();
-      for (const vote of votes) unique.set(vote.validator, vote);
+      for (const vote of votes) {
+        try {
+          validateRoundSkipVote(
+            vote,
+            chain.genesis.validators,
+            chain.genesis.chainId,
+            chain.height + 1,
+            skippedRound,
+            chain.tip.hash
+          );
+          unique.set(vote.validator, vote);
+        } catch {
+          // A malformed or invalid peer vote cannot poison an otherwise valid quorum.
+        }
+      }
       const certificate = [...unique.values()];
       try {
         validateRoundSkipQuorum(
@@ -320,7 +336,14 @@ export async function produceFinalizedBlock(
   }
   attestations.push(...await peers.requestAttestations(proposal));
   const byValidator = new Map<Address, BlockAttestation>();
-  for (const attestation of attestations) byValidator.set(attestation.validator, attestation);
+  for (const attestation of attestations) {
+    try {
+      validateBlockAttestation(proposal, attestation, chain.genesis.validators);
+      byValidator.set(attestation.validator, attestation);
+    } catch {
+      // Invalid peer attestations are ignored instead of poisoning block assembly.
+    }
+  }
   const withVotes = { ...proposal, attestations: [...byValidator.values()] };
   try {
     await service.acceptFinalizedBlock(withVotes);
