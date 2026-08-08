@@ -162,7 +162,8 @@ export function validateBlockEnvelope(
   validators: Validator[],
   nowMs: number,
   requireFinality = true,
-  expectedProtocolVersion = 1
+  expectedProtocolVersion = 1,
+  requireProposerSignature = true
 ): void {
   validateBlockShape(block);
   if (block.header.version !== expectedProtocolVersion) throw new Error("Unexpected protocol version");
@@ -179,13 +180,14 @@ export function validateBlockEnvelope(
   }
   if (block.hash !== blockHash(block.header)) throw new Error("Block hash mismatch");
   assertHex(block.hash, 32, "block hash");
-  if (!block.proposerPublicKey || !block.signature) throw new Error("Missing proposer signature");
+  if (!block.proposerPublicKey || (requireProposerSignature && !block.signature)) throw new Error("Missing proposer signature");
   assertHex(block.proposerPublicKey, 64, "proposerPublicKey");
-  assertHex(block.signature, 64, "block signature");
+  if (!requireProposerSignature && block.signature !== null) throw new Error("Prepared block must be unsigned");
+  if (block.signature) assertHex(block.signature, 64, "block signature");
   const expected = expectedValidator(validators, block.header.height, block.header.round);
   if (block.header.proposer !== expected.address) throw new Error("Unexpected proposer");
   if (block.proposerPublicKey !== expected.publicKey) throw new Error("Unexpected proposer public key");
-  if (!verifyCanonical(block.header, block.signature, block.proposerPublicKey)) {
+  if (requireProposerSignature && !verifyCanonical(block.header, block.signature!, block.proposerPublicKey)) {
     throw new Error("Invalid proposer signature");
   }
   validateRoundCertificate(block, validators);
