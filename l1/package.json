@@ -16,6 +16,7 @@
   "scripts": {
     "build": "tsc --outDir dist",
     "bench:restart": "npm run build && node dist/bench/restart.js",
+    "bench:state-scale": "npm run build && node dist/bench/state-v2-scale.js",
     "test": "npm run build && node --test dist/test/*.test.js",
     "typecheck": "tsc --noEmit"
   },
