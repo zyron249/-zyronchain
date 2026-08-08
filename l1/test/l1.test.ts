@@ -2309,7 +2309,7 @@ test("ChainStore quarantines corrupt State v2 files only after authoritative rep
     assert.equal(reopened.chain.tip.hash, expectedTip);
     assert.equal((await StateV2DiskStore.open(directory)).state().root(), expectedRoot);
     const quarantined = (await readdir(directory)).filter((name) => name.includes(".corrupt-"));
-    assert.equal(quarantined.length, 2);
+    assert.equal(quarantined.length, 3);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
