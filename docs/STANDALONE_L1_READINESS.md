@@ -17,11 +17,11 @@ This document is the release gate for the standalone TypeScript L1. `Implemented
 | K | Keys | Implemented with gate | local 0600 key files and deterministic signature validation; production HSM/remote signer and key-rotation runbook remain |
 | L | Ledger state | Implemented with gate | deterministic replay/state root; production state indexing/snapshot acceleration remains |
 | M | Mempool | Implemented | duplicate tx/nonce protection, bounded capacity, nonce-aware valid selection, future nonce window |
-| N | Networking | Implemented with gate | static peers, chain/genesis handshake, incremental bounded sync plus periodic catch-up; authenticated peer transport/rate limits and broader eclipse resistance remain |
+| N | Networking | Implemented with gate | static peers, chain/genesis handshake, incremental bounded sync, periodic catch-up, optional shared-token authentication on consensus writes and RPC rate limits; TLS/private-network enforcement and broader eclipse resistance remain |
 | O | Operations | Gate | multi-region sentry/validator topology, monitoring, alerting, backups, restore drills, incident runbooks |
 | P | Proof of Activity | Implemented with gate | oracle-signed receipt-root batches spend only a pre-funded pool; independent receipt service/oracle governance must be productionized |
 | Q | Quorum safety | Implemented | configured validator uniqueness, signature checks, >2/3 requirement, anti-double-sign journal |
-| R | RPC | Implemented with gate | bounded minimal RPC; reverse-proxy TLS, external rate limiting/auth policy, metrics endpoint and compatibility versioning remain |
+| R | RPC | Implemented with gate | bounded RPC includes per-client request limiting, connection/time limits, health/metrics and optional constant-time Bearer authentication for consensus writes; reverse-proxy TLS, deployment-time auth enforcement and compatibility versioning remain |
 | S | Supply safety | Implemented | genesis total capped at 50M ZYN; settlements cannot mint; transfers/fees cannot increase state supply |
 | T | Transactions | Implemented | canonical signed transfers/activity settlements, txid binding, chain ID, nonce/balance checks |
 | U | Upgrades | Partial gate | on-chain >2/3-authorized validator-set rotation with 100-block delayed activation is implemented and replay-tested; protocol-version activation/rollback policy remains |

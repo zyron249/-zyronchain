@@ -406,6 +406,88 @@ test("HTTP RPC exposes status and accepts a strictly validated signed transactio
   }
 });
 
+test("RPC exposes health and metrics while enforcing per-client request limits", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-limit-"));
+  const store = await ChainStore.open(genesis(), directory);
+  const service = new NodeService(store);
+  const server = createRpcServer(service, { requestsPerWindow: 2, windowMs: 60_000, maxConnections: 8 });
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("RPC test server has no TCP address");
+    const base = `http://127.0.0.1:${address.port}`;
+
+    const health = await fetch(`${base}/healthz`);
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { ok: true, height: 0 });
+    assert.equal(health.headers.get("x-ratelimit-limit"), "2");
+
+    const metrics = await fetch(`${base}/metrics`);
+    assert.equal(metrics.status, 200);
+    const payload = await metrics.json() as Record<string, unknown>;
+    assert.equal(payload.chainId, genesis().chainId);
+    assert.equal(payload.height, 0);
+    assert.equal(payload.mempoolSize, 0);
+    assert.equal(payload.validatorCount, 2);
+    assert.equal(typeof payload.uptimeSeconds, "number");
+
+    const limited = await fetch(`${base}/status`);
+    assert.equal(limited.status, 429);
+    assert.equal(limited.headers.get("x-ratelimit-remaining"), "0");
+    assert.ok(Number(limited.headers.get("retry-after")) >= 1);
+  } finally {
+    await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("RPC peer authentication protects consensus writes without hiding public status", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-auth-"));
+  const store = await ChainStore.open(genesis(), directory);
+  const service = new NodeService(store);
+  const token = "peer-test-token-0123456789abcdef";
+  const server = createRpcServer(service, { peerAuthToken: token });
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("RPC auth test server has no TCP address");
+    const base = `http://127.0.0.1:${address.port}`;
+
+    assert.equal((await fetch(`${base}/status`)).status, 200);
+    const denied = await fetch(`${base}/block`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}"
+    });
+    assert.equal(denied.status, 401);
+    assert.equal(denied.headers.get("www-authenticate"), "Bearer");
+
+    const wrong = await fetch(`${base}/round/skip`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${"x".repeat(token.length)}` },
+      body: "{}"
+    });
+    assert.equal(wrong.status, 401);
+
+    const authenticated = await fetch(`${base}/block`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: "{}"
+    });
+    assert.equal(authenticated.status, 400);
+    assert.notEqual((await authenticated.json() as { error?: string }).error, "Peer authentication required");
+  } finally {
+    await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("peer sync handshakes on chain identity and incrementally replays finalized blocks", async () => {
   const sourceDir = await mkdtemp(join(tmpdir(), "zyron-sync-source-"));
   const targetDir = await mkdtemp(join(tmpdir(), "zyron-sync-target-"));

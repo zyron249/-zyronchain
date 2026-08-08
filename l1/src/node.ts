@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import {
@@ -19,6 +20,9 @@ const MAX_BODY_BYTES = 2_500_000;
 const MAX_SYNC_BLOCKS = 100;
 const MAX_SYNC_RESPONSE_BYTES = 25_000_000;
 const PEER_TIMEOUT_MS = 8_000;
+const DEFAULT_RPC_WINDOW_MS = 60_000;
+const DEFAULT_RPC_REQUESTS_PER_WINDOW = 600;
+const DEFAULT_RPC_MAX_CONNECTIONS = 256;
 export const BLOCK_INTERVAL_MS = 30_000;
 export const ROUND_WINDOW_MS = 30_000;
 
@@ -29,9 +33,23 @@ export interface NodeStatus {
   tipHash: string;
 }
 
+export interface NodeMetrics extends NodeStatus {
+  mempoolSize: number;
+  validatorCount: number;
+  uptimeSeconds: number;
+}
+
+export interface RpcServerOptions {
+  maxConnections?: number;
+  peerAuthToken?: string;
+  requestsPerWindow?: number;
+  windowMs?: number;
+}
+
 export class NodeService {
   readonly mempool = new Mempool();
   private mutationTail: Promise<void> = Promise.resolve();
+  private readonly startedAtMs = Date.now();
 
   constructor(
     readonly store: ChainStore,
@@ -46,6 +64,15 @@ export class NodeService {
       genesisHash: blocks[0]!.hash,
       height: this.store.chain.height,
       tipHash: this.store.chain.tip.hash
+    };
+  }
+
+  metrics(nowMs = Date.now()): NodeMetrics {
+    return {
+      ...this.status(),
+      mempoolSize: this.mempool.size,
+      validatorCount: this.store.chain.validatorsAt(this.store.chain.height + 1).length,
+      uptimeSeconds: Math.max(0, Math.floor((nowMs - this.startedAtMs) / 1_000))
     };
   }
 
@@ -157,20 +184,51 @@ export class NodeService {
   }
 }
 
-export function createRpcServer(service: NodeService): Server {
-  return createServer(async (request, response) => {
+export function createRpcServer(service: NodeService, options: RpcServerOptions = {}): Server {
+  const requestsPerWindow = boundedPositiveInteger(
+    options.requestsPerWindow ?? DEFAULT_RPC_REQUESTS_PER_WINDOW,
+    "RPC requests per window"
+  );
+  const windowMs = boundedPositiveInteger(options.windowMs ?? DEFAULT_RPC_WINDOW_MS, "RPC rate-limit window");
+  const peerAuthToken = options.peerAuthToken === undefined ? undefined : validatePeerAuthToken(options.peerAuthToken);
+  const limiter = new FixedWindowLimiter(requestsPerWindow, windowMs);
+  const server = createServer(async (request, response) => {
+    const rate = limiter.consume(request.socket.remoteAddress ?? "unknown", Date.now());
+    response.setHeader("x-ratelimit-limit", String(requestsPerWindow));
+    response.setHeader("x-ratelimit-remaining", String(rate.remaining));
+    if (!rate.allowed) {
+      response.setHeader("retry-after", String(Math.max(1, Math.ceil(rate.retryAfterMs / 1_000))));
+      writeJson(response, 429, { error: "Rate limit exceeded" });
+      return;
+    }
+    if (peerAuthToken && isConsensusRequest(request) && !validBearerToken(request.headers.authorization, peerAuthToken)) {
+      response.setHeader("www-authenticate", "Bearer");
+      writeJson(response, 401, { error: "Peer authentication required" });
+      return;
+    }
     try {
       await route(service, request, response);
     } catch (error) {
       writeJson(response, 400, { error: safeError(error) });
     }
   });
+  server.maxConnections = boundedPositiveInteger(options.maxConnections ?? DEFAULT_RPC_MAX_CONNECTIONS, "RPC max connections");
+  server.headersTimeout = 10_000;
+  server.requestTimeout = 15_000;
+  server.keepAliveTimeout = 5_000;
+  return server;
 }
 
 async function route(service: NodeService, request: IncomingMessage, response: ServerResponse): Promise<void> {
   const url = new URL(request.url ?? "/", "http://node.invalid");
   if (request.method === "GET" && url.pathname === "/status") {
     return writeJson(response, 200, service.status());
+  }
+  if (request.method === "GET" && url.pathname === "/healthz") {
+    return writeJson(response, 200, { ok: true, height: service.status().height });
+  }
+  if (request.method === "GET" && url.pathname === "/metrics") {
+    return writeJson(response, 200, service.metrics());
   }
   if (request.method === "GET" && url.pathname === "/blocks") {
     const from = parseInteger(url.searchParams.get("from"), "from");
@@ -209,8 +267,9 @@ async function route(service: NodeService, request: IncomingMessage, response: S
 export class PeerClient {
   readonly peers: string[];
 
-  constructor(peers: string[]) {
+  constructor(peers: string[], private readonly peerAuthToken?: string) {
     this.peers = [...new Set(peers.map(normalizePeerUrl))];
+    if (peerAuthToken !== undefined) validatePeerAuthToken(peerAuthToken);
   }
 
   async syncFrom(peer: string, service: NodeService): Promise<number> {
@@ -239,7 +298,7 @@ export class PeerClient {
 
   async requestAttestations(block: Block): Promise<BlockAttestation[]> {
     const results = await Promise.allSettled(this.peers.map(async (peer) => {
-      const payload = await postJson(`${peer}/proposal/attest`, block, MAX_BODY_BYTES);
+      const payload = await postJson(`${peer}/proposal/attest`, block, MAX_BODY_BYTES, this.peerAuthToken);
       assertPlainRecord(payload, "attestation response");
       assertExactKeys(payload, ["attestation"], "attestation response");
       return payload.attestation as BlockAttestation;
@@ -253,7 +312,7 @@ export class PeerClient {
     previousCertificate: RoundSkipVote[] = []
   ): Promise<RoundSkipVote[]> {
     const results = await Promise.allSettled(this.peers.map(async (peer) => {
-      const payload = await postJson(`${peer}/round/skip`, { height, round, previousCertificate }, 128_000);
+      const payload = await postJson(`${peer}/round/skip`, { height, round, previousCertificate }, 128_000, this.peerAuthToken);
       assertPlainRecord(payload, "round skip response");
       assertExactKeys(payload, ["vote"], "round skip response");
       return payload.vote as RoundSkipVote;
@@ -262,7 +321,7 @@ export class PeerClient {
   }
 
   async broadcastBlock(block: Block): Promise<void> {
-    await Promise.allSettled(this.peers.map((peer) => postJson(`${peer}/block`, block, 64_000)));
+    await Promise.allSettled(this.peers.map((peer) => postJson(`${peer}/block`, block, 64_000, this.peerAuthToken)));
   }
 }
 
@@ -380,10 +439,12 @@ async function getJson(url: string, maxBytes: number): Promise<unknown> {
   return parseBoundedResponse(response, maxBytes);
 }
 
-async function postJson(url: string, value: unknown, maxResponseBytes: number): Promise<unknown> {
+async function postJson(url: string, value: unknown, maxResponseBytes: number, peerAuthToken?: string): Promise<unknown> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (peerAuthToken) headers.authorization = `Bearer ${peerAuthToken}`;
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers,
     body: JSON.stringify(value),
     signal: AbortSignal.timeout(PEER_TIMEOUT_MS)
   });
@@ -442,6 +503,59 @@ function parseInteger(value: string | null, name: string): number {
   const result = Number(value);
   if (!Number.isSafeInteger(result)) throw new Error(`Invalid ${name}`);
   return result;
+}
+
+function boundedPositiveInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > 1_000_000_000) throw new Error(`Invalid ${name}`);
+  return value;
+}
+
+function validatePeerAuthToken(value: string): string {
+  if (value.length < 32 || value.length > 512 || /[\r\n]/.test(value)) {
+    throw new Error("Peer authentication token must be 32-512 characters without newlines");
+  }
+  return value;
+}
+
+function isConsensusRequest(request: IncomingMessage): boolean {
+  if (request.method !== "POST") return false;
+  const pathname = new URL(request.url ?? "/", "http://node.invalid").pathname;
+  return pathname === "/proposal/attest" || pathname === "/round/skip" || pathname === "/block";
+}
+
+function validBearerToken(header: string | undefined, expected: string): boolean {
+  if (!header?.startsWith("Bearer ")) return false;
+  const provided = Buffer.from(header.slice("Bearer ".length), "utf8");
+  const wanted = Buffer.from(expected, "utf8");
+  return provided.length === wanted.length && timingSafeEqual(provided, wanted);
+}
+
+class FixedWindowLimiter {
+  private readonly clients = new Map<string, { count: number; startedAtMs: number }>();
+  private lastSweepMs = 0;
+
+  constructor(private readonly limit: number, private readonly windowMs: number) {}
+
+  consume(client: string, nowMs: number): { allowed: boolean; remaining: number; retryAfterMs: number } {
+    if (nowMs - this.lastSweepMs >= this.windowMs) {
+      for (const [key, entry] of this.clients) {
+        if (nowMs - entry.startedAtMs >= this.windowMs) this.clients.delete(key);
+      }
+      this.lastSweepMs = nowMs;
+    }
+    let entry = this.clients.get(client);
+    if (!entry || nowMs - entry.startedAtMs >= this.windowMs) {
+      entry = { count: 0, startedAtMs: nowMs };
+      this.clients.set(client, entry);
+    }
+    entry.count += 1;
+    const remaining = Math.max(0, this.limit - entry.count);
+    return {
+      allowed: entry.count <= this.limit,
+      remaining,
+      retryAfterMs: Math.max(0, entry.startedAtMs + this.windowMs - nowMs)
+    };
+  }
 }
 
 function safeError(error: unknown): string {
