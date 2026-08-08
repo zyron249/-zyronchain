@@ -39,6 +39,10 @@ test("portable State v2 bundle reconstructs only the complete root-reachable aut
   assert.deepEqual(validated.view.ledger, ledger);
   assert.deepEqual(validated.view.governance, governance);
   assert.equal(validated.bundle.records.length, state.nodeRecords().length);
+  const validatedFirstHash = validated.bundle.records[0]!.hash;
+  bundle.records[0]!.hash = "ff".repeat(32);
+  assert.equal(validated.bundle.records[0]!.hash, validatedFirstHash, "validated record objects must not alias untrusted input");
+  assert.equal(validated.state.root(), state.root(), "hydrated state must not alias untrusted input records");
 });
 
 test("portable State v2 bundle rejects missing, duplicate, unreachable and corrupt node records", () => {
