@@ -85,6 +85,50 @@ test("State v2 rejects tampered proof paths", () => {
   assert.equal(verifySparseMerkleProof(state.root(), "account:alice", value, tampered), false);
 });
 
+test("State v2 hash resolver materializes only requested paths and preserves proofs plus updates", () => {
+  let original = SparseMerkleState.empty();
+  for (let index = 0; index < 128; index += 1) {
+    original = original.set(`account:${index}`, { balanceAtoms: index + 1, nonce: index % 3 });
+  }
+  const records = new Map(original.nodeRecords().map((record) => [record.hash, record]));
+  const resolved = new Set<string>();
+  const lazy = SparseMerkleState.fromNodeResolver(original.root(), (hash) => {
+    resolved.add(hash);
+    return records.get(hash);
+  });
+
+  assert.equal(resolved.size, 1, "constructor should authenticate only the root record");
+  assert.deepEqual(lazy.get("account:73"), { balanceAtoms: 74, nonce: 1 });
+  assert.ok(resolved.size < records.size, "single lookup must not hydrate the complete tree");
+  const proof = lazy.prove("account:73");
+  assert.equal(verifySparseMerkleProof(lazy.root(), "account:73", { balanceAtoms: 74, nonce: 1 }, proof), true);
+
+  const updated = lazy.set("account:73", { balanceAtoms: 999, nonce: 2 });
+  const eagerUpdated = original.set("account:73", { balanceAtoms: 999, nonce: 2 });
+  assert.equal(updated.root(), eagerUpdated.root());
+  assert.ok(updated.pendingNodeRecords().length > 0);
+});
+
+test("State v2 hash resolver fails closed on missing or substituted records", () => {
+  const original = SparseMerkleState.empty()
+    .set("account:alice", { balanceAtoms: 10, nonce: 0 })
+    .set("account:bob", { balanceAtoms: 20, nonce: 0 });
+  const records = new Map(original.nodeRecords().map((record) => [record.hash, record]));
+  const root = records.get(original.root());
+  assert.ok(root?.kind === "branch");
+  const childHash = root.leftHash ?? root.rightHash;
+  assert.ok(childHash);
+
+  const missing = SparseMerkleState.fromNodeResolver(original.root(), (hash) =>
+    hash === childHash ? undefined : records.get(hash));
+  assert.throws(() => missing.reachableNodeHashes(), /Missing State v2 node record/);
+
+  const substitute = [...records.values()].find((record) => record.hash !== childHash)!;
+  const substituted = SparseMerkleState.fromNodeResolver(original.root(), (hash) =>
+    hash === childHash ? substitute : records.get(hash));
+  assert.throws(() => substituted.reachableNodeHashes(), /wrong node hash/);
+});
+
 test("State v2 semantic-key preimages reconstruct the exact authenticated ledger and governance view", () => {
   const validatorPublic = publicKeyFromPrivate("21".padStart(64, "0"));
   const validator = addressFromPublicKey(validatorPublic);
