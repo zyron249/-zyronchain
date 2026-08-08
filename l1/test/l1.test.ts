@@ -24,6 +24,7 @@ import { createSignedPeerRecord, loadOrCreateNodeIdentity, signPeerRequest } fro
 import { PeerReputationStore } from "../src/peer-reputation.js";
 import { PeerDirectory } from "../src/peer-directory.js";
 import {
+  assertSafeRpcBinding,
   createRpcServer,
   diversityOrderedPeers,
   MAX_SYNC_PROBE_CONCURRENCY,
@@ -884,6 +885,17 @@ test("RPC peer authentication protects consensus writes without hiding public st
     await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("public RPC binding fails closed when consensus peer authentication is absent", () => {
+  assert.doesNotThrow(() => assertSafeRpcBinding("127.0.0.1", false));
+  assert.doesNotThrow(() => assertSafeRpcBinding("127.9.8.7", false));
+  assert.doesNotThrow(() => assertSafeRpcBinding("::1", false));
+  assert.doesNotThrow(() => assertSafeRpcBinding("localhost", false));
+  assert.throws(() => assertSafeRpcBinding("0.0.0.0", false), /requires consensus peer authentication/);
+  assert.throws(() => assertSafeRpcBinding("::", false), /requires consensus peer authentication/);
+  assert.throws(() => assertSafeRpcBinding("node.example", false), /requires consensus peer authentication/);
+  assert.doesNotThrow(() => assertSafeRpcBinding("0.0.0.0", true));
 });
 
 test("RPC trusted peer identities require signed consensus writes and reject replay", async () => {
