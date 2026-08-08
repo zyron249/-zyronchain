@@ -3,9 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "zyron-l1": "dist/src/cli.js" },
-  "files": ["dist/src", "README.md"],
-  "engines": { "node": ">=22" },
+  "bin": {
+    "zyron-l1": "dist/src/cli.js"
+  },
+  "files": [
+    "dist/src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "tsc --outDir dist",
     "bench:restart": "npm run build && node dist/bench/restart.js",
@@ -16,6 +23,8 @@
     "@chainsafe/libp2p-noise": "17.0.0",
     "@chainsafe/libp2p-yamux": "8.0.1",
     "@libp2p/crypto": "5.1.12",
+    "@libp2p/interface": "3.2.5",
+    "@libp2p/peer-id": "6.0.14",
     "@libp2p/tcp": "11.0.26",
     "@noble/curves": "2.3.0",
     "libp2p": "3.3.8"
