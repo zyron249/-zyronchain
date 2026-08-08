@@ -674,6 +674,8 @@ test("externally anchored State v2 snapshot installs atomically into a fresh dat
   const targetDirectory = join(parent, "installed");
   const interruptedDirectory = join(parent, "interrupted");
   const cliDirectory = join(parent, "cli-installed");
+  const portableDirectory = join(parent, "portable-installed");
+  const rejectedPortableDirectory = join(parent, "portable-rejected");
   try {
     const source = await ChainStore.open(genesis(), sourceDirectory);
     await advanceStoreToStateV2(source);
@@ -691,6 +693,20 @@ test("externally anchored State v2 snapshot installs atomically into a fresh dat
     const portableRestored = ZyronChain.fromTrustedPortableState(genesis(), snapshot.tip, portable, anchor);
     assert.equal(portableRestored.tip.hash, anchor.tipHash);
     assert.equal(portableRestored.snapshot().state.accounts.length, snapshot.state.accounts.length);
+    const portableInstalled = await ChainStore.installTrustedPortableState(
+      genesis(), portableDirectory, snapshot.tip, portable, anchor
+    );
+    assert.equal(portableInstalled.chain.tip.hash, anchor.tipHash);
+    assert.equal(portableInstalled.firstStoredHeight, 102);
+    const incompletePortable = structuredClone(portable);
+    incompletePortable.keyPreimages.pop();
+    await assert.rejects(
+      () => ChainStore.installTrustedPortableState(
+        genesis(), rejectedPortableDirectory, snapshot.tip, incompletePortable, anchor
+      ),
+      /key preimage count mismatch/
+    );
+    await assert.rejects(() => readFile(join(rejectedPortableDirectory, "metadata.json")), /ENOENT/);
 
     await assert.rejects(
       () => ChainStore.installTrustedSnapshot(genesis(), targetDirectory, snapshot, {
