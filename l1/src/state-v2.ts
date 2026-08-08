@@ -22,11 +22,14 @@ interface LeafNode {
 interface BranchNode {
   kind: "branch";
   hash: string;
-  left: TreeNode | undefined;
-  right: TreeNode | undefined;
+  left: NodeLink | undefined;
+  right: NodeLink | undefined;
 }
 
 type TreeNode = LeafNode | BranchNode;
+interface NodeRef { kind: "ref"; hash: string }
+type NodeLink = TreeNode | NodeRef;
+export type StateV2NodeResolver = (hash: string) => StateV2NodeRecord | undefined;
 
 interface PendingRecordChunk {
   records: readonly StateV2NodeRecord[];
@@ -56,8 +59,9 @@ const EMPTY_HASHES = buildEmptyHashes();
  */
 export class SparseMerkleState {
   private constructor(
-    private readonly rootNode?: TreeNode,
-    private readonly pendingRecordHead?: PendingRecordChunk
+    private readonly rootNode?: NodeLink,
+    private readonly pendingRecordHead?: PendingRecordChunk,
+    private readonly nodeResolver?: StateV2NodeResolver
   ) {}
 
   static empty(): SparseMerkleState {
@@ -75,44 +79,20 @@ export class SparseMerkleState {
       // copy of every (potentially large) leaf value during checkpoint import.
       byHash.set(record.hash, record);
     }
-    const depths = new Map<string, number>();
-    const visiting = new Set<string>();
-    const hydrate = (hash: string, depth: number): TreeNode => {
-      const previousDepth = depths.get(hash);
-      if (previousDepth !== undefined && previousDepth !== depth) throw new Error("State v2 node reused at inconsistent depth");
-      depths.set(hash, depth);
-      if (visiting.has(hash)) throw new Error("Cyclic State v2 node graph");
-      const record = byHash.get(hash);
-      if (!record) throw new Error("Missing State v2 node record");
-      visiting.add(hash);
-      let node: TreeNode;
-      if (record.kind === "leaf") {
-        if (!/^[0-9a-f]{64}$/.test(record.keyHash) || !/^[0-9a-f]{64}$/.test(record.valueHash)) {
-          throw new Error("Invalid State v2 leaf record");
-        }
-        const parsed = JSON.parse(record.valueJson) as unknown;
-        if (canonicalJson(parsed) !== record.valueJson ||
-            hashWithDomain(VALUE_DOMAIN, Buffer.from(record.valueJson, "utf8")) !== record.valueHash) {
-          throw new Error("Corrupt State v2 leaf value");
-        }
-        node = leafNodeAtDepth(Buffer.from(record.keyHash, "hex"), record.keyHash, record.valueHash, record.valueJson, depth);
-      } else {
-        if (depth >= TREE_DEPTH) throw new Error("State v2 branch below tree depth");
-        const left = record.leftHash === null ? undefined : hydrate(record.leftHash, depth + 1);
-        const right = record.rightHash === null ? undefined : hydrate(record.rightHash, depth + 1);
-        node = {
-          kind: "branch",
-          left,
-          right,
-          hash: branchHash(left?.hash ?? EMPTY_HASHES[depth + 1]!, right?.hash ?? EMPTY_HASHES[depth + 1]!)
-        };
-      }
-      visiting.delete(hash);
-      if (node.hash !== record.hash) throw new Error("State v2 node hash mismatch");
-      return node;
-    };
-    const root = hydrate(rootHash, 0);
-    return new SparseMerkleState(root);
+    const state = SparseMerkleState.fromNodeResolver(rootHash, (hash) => byHash.get(hash));
+    // Preserve the fail-closed constructor contract: every root-reachable record
+    // is resolved and authenticated before imported bytes can become state.
+    state.reachableNodeHashes();
+    return state;
+  }
+
+  /** Build a hash-referenced state without eagerly materializing every child. */
+  static fromNodeResolver(rootHash: string, resolver: StateV2NodeResolver): SparseMerkleState {
+    if (!/^[0-9a-f]{64}$/.test(rootHash)) throw new Error("Invalid State v2 root hash");
+    if (rootHash === EMPTY_HASHES[0]) return SparseMerkleState.empty();
+    const state = new SparseMerkleState({ kind: "ref", hash: rootHash }, undefined, resolver);
+    state.resolveNode(state.rootNode!, 0);
+    return state;
   }
 
   root(): string {
@@ -126,22 +106,25 @@ export class SparseMerkleState {
     const valueHash = hashWithDomain(VALUE_DOMAIN, Buffer.from(valueJson, "utf8"));
     const keyBytes = Buffer.from(keyHash, "hex");
     const created: StateV2NodeRecord[] = [];
-    const rootNode = updateNode(this.rootNode, 0, keyBytes, keyHash, valueHash, valueJson, created);
-    return new SparseMerkleState(rootNode, { records: created, previous: this.pendingRecordHead });
+    const rootNode = updateNode(this.rootNode, 0, keyBytes, keyHash, valueHash, valueJson, created,
+      (link, depth) => this.resolveNode(link, depth));
+    return new SparseMerkleState(rootNode, { records: created, previous: this.pendingRecordHead }, this.nodeResolver);
   }
 
   get(key: string): unknown | undefined {
     if (!key.length) throw new Error("State v2 key must not be empty");
     const keyHash = hashWithDomain(KEY_DOMAIN, Buffer.from(key, "utf8"));
-    const leaf = findLeaf(this.rootNode, Buffer.from(keyHash, "hex"), keyHash);
+    const leaf = findLeaf(this.rootNode, Buffer.from(keyHash, "hex"), keyHash,
+      (link, depth) => this.resolveNode(link, depth));
     return leaf ? JSON.parse(leaf.valueJson) as unknown : undefined;
   }
 
   nodeRecords(): StateV2NodeRecord[] {
     const records: StateV2NodeRecord[] = [];
     const seen = new Set<string>();
-    const visit = (node: TreeNode | undefined): void => {
-      if (!node || seen.has(node.hash)) return;
+    const visit = (link: NodeLink | undefined, depth: number): void => {
+      if (!link || seen.has(link.hash)) return;
+      const node = this.resolveNode(link, depth);
       seen.add(node.hash);
       if (node.kind === "leaf") {
         records.push({
@@ -150,29 +133,41 @@ export class SparseMerkleState {
         });
         return;
       }
-      visit(node.left);
-      visit(node.right);
+      visit(node.left, depth + 1);
+      visit(node.right, depth + 1);
       records.push({
         kind: "branch", hash: node.hash,
-        leftHash: node.left?.hash ?? null, rightHash: node.right?.hash ?? null
+        leftHash: linkHash(node.left) ?? null, rightHash: linkHash(node.right) ?? null
       });
     };
-    visit(this.rootNode);
+    visit(this.rootNode, 0);
     return records;
   }
 
   /** Reachability metadata without duplicating full leaf payloads. */
   reachableNodeHashes(): Set<string> {
     const hashes = new Set<string>();
-    const visit = (node: TreeNode | undefined): void => {
-      if (!node || hashes.has(node.hash)) return;
+    const depths = new Map<string, number>();
+    const visiting = new Set<string>();
+    const visit = (link: NodeLink | undefined, depth: number): void => {
+      if (!link) return;
+      const previousDepth = depths.get(link.hash);
+      if (previousDepth !== undefined && previousDepth !== depth) {
+        throw new Error("State v2 node reused at inconsistent depth");
+      }
+      depths.set(link.hash, depth);
+      if (visiting.has(link.hash)) throw new Error("Cyclic State v2 node graph");
+      if (hashes.has(link.hash)) return;
+      visiting.add(link.hash);
+      const node = this.resolveNode(link, depth);
       hashes.add(node.hash);
       if (node.kind === "branch") {
-        visit(node.left);
-        visit(node.right);
+        visit(node.left, depth + 1);
+        visit(node.right, depth + 1);
       }
+      visiting.delete(link.hash);
     };
-    visit(this.rootNode);
+    visit(this.rootNode, 0);
     return hashes;
   }
 
@@ -180,17 +175,18 @@ export class SparseMerkleState {
   leafKeyHashes(): Set<string> {
     const hashes = new Set<string>();
     const seenNodes = new Set<string>();
-    const visit = (node: TreeNode | undefined): void => {
-      if (!node || seenNodes.has(node.hash)) return;
+    const visit = (link: NodeLink | undefined, depth: number): void => {
+      if (!link || seenNodes.has(link.hash)) return;
+      const node = this.resolveNode(link, depth);
       seenNodes.add(node.hash);
       if (node.kind === "leaf") {
         hashes.add(node.keyHash);
         return;
       }
-      visit(node.left);
-      visit(node.right);
+      visit(node.left, depth + 1);
+      visit(node.right, depth + 1);
     };
-    visit(this.rootNode);
+    visit(this.rootNode, 0);
     return hashes;
   }
 
@@ -210,7 +206,7 @@ export class SparseMerkleState {
    * Disk stores call this only after the root and every pending node are durable.
    */
   persistenceCheckpoint(): SparseMerkleState {
-    return new SparseMerkleState(this.rootNode);
+    return new SparseMerkleState(this.rootNode, undefined, this.nodeResolver);
   }
 
   prove(key: string): SparseMerkleProof {
@@ -218,27 +214,37 @@ export class SparseMerkleState {
     const keyHash = hashWithDomain(KEY_DOMAIN, Buffer.from(key, "utf8"));
     const keyBytes = Buffer.from(keyHash, "hex");
     const siblings: string[] = [];
-    let node = this.rootNode;
+    let link = this.rootNode;
     for (let depth = 0; depth < TREE_DEPTH; depth += 1) {
-      if (!node) {
+      if (!link) {
         for (let rest = depth; rest < TREE_DEPTH; rest += 1) siblings.push(EMPTY_HASHES[rest + 1]!);
         break;
       }
+      const node = this.resolveNode(link, depth);
       if (node.kind === "leaf") {
         appendCompressedLeafProof(siblings, node, keyBytes, depth);
         break;
       }
       const branch = node;
       if (bitAt(keyBytes, depth) === 0) {
-        siblings.push(branch?.right?.hash ?? EMPTY_HASHES[depth + 1]!);
-        node = branch?.left;
+        siblings.push(linkHash(branch?.right) ?? EMPTY_HASHES[depth + 1]!);
+        link = branch?.left;
       } else {
-        siblings.push(branch?.left?.hash ?? EMPTY_HASHES[depth + 1]!);
-        node = branch?.right;
+        siblings.push(linkHash(branch?.left) ?? EMPTY_HASHES[depth + 1]!);
+        link = branch?.right;
       }
     }
-    const valueHash = findLeafValueHash(this.rootNode, keyBytes, keyHash);
+    const valueHash = findLeafValueHash(this.rootNode, keyBytes, keyHash,
+      (nodeLink, depth) => this.resolveNode(nodeLink, depth));
     return { version: 1, keyHash, valueHash, siblings };
+  }
+
+  private resolveNode(link: NodeLink, depth: number): TreeNode {
+    if (link.kind !== "ref") return link;
+    const record = this.nodeResolver?.(link.hash);
+    if (!record) throw new Error("Missing State v2 node record");
+    if (record.hash !== link.hash) throw new Error("State v2 resolver returned wrong node hash");
+    return nodeFromRecord(record, depth);
   }
 }
 
@@ -587,14 +593,16 @@ function assertExactPortableRecord(value: unknown, keys: string[], name: string)
 }
 
 function updateNode(
-  node: TreeNode | undefined,
+  link: NodeLink | undefined,
   depth: number,
   keyBytes: Buffer,
   keyHash: string,
   valueHash: string,
   valueJson: string,
-  created: StateV2NodeRecord[]
+  created: StateV2NodeRecord[],
+  resolve: (link: NodeLink, depth: number) => TreeNode
 ): TreeNode {
+  const node = link ? resolve(link, depth) : undefined;
   if (!node) return recordCreated(leafNodeAtDepth(keyBytes, keyHash, valueHash, valueJson, depth), created);
   if (node.kind === "leaf") {
     if (node.keyHash === keyHash) {
@@ -608,11 +616,11 @@ function updateNode(
   let left = branch?.left;
   let right = branch?.right;
   if (bitAt(keyBytes, depth) === 0) {
-    left = updateNode(left, depth + 1, keyBytes, keyHash, valueHash, valueJson, created);
+    left = updateNode(left, depth + 1, keyBytes, keyHash, valueHash, valueJson, created, resolve);
   } else {
-    right = updateNode(right, depth + 1, keyBytes, keyHash, valueHash, valueJson, created);
+    right = updateNode(right, depth + 1, keyBytes, keyHash, valueHash, valueJson, created, resolve);
   }
-  const hash = branchHash(left?.hash ?? EMPTY_HASHES[depth + 1]!, right?.hash ?? EMPTY_HASHES[depth + 1]!);
+  const hash = branchHash(linkHash(left) ?? EMPTY_HASHES[depth + 1]!, linkHash(right) ?? EMPTY_HASHES[depth + 1]!);
   return recordCreated({ kind: "branch", hash, left, right }, created);
 }
 
@@ -664,7 +672,7 @@ function recordCreated<T extends TreeNode>(node: T, records: StateV2NodeRecord[]
   } else {
     records.push({
       kind: "branch", hash: node.hash,
-      leftHash: node.left?.hash ?? null, rightHash: node.right?.hash ?? null
+      leftHash: linkHash(node.left) ?? null, rightHash: linkHash(node.right) ?? null
     });
   }
   return node;
@@ -703,18 +711,60 @@ function appendCompressedLeafProof(
   }
 }
 
-function findLeafValueHash(node: TreeNode | undefined, keyBytes: Buffer, keyHash: string): string | null {
-  return findLeaf(node, keyBytes, keyHash)?.valueHash ?? null;
+function findLeafValueHash(
+  node: NodeLink | undefined,
+  keyBytes: Buffer,
+  keyHash: string,
+  resolve: (link: NodeLink, depth: number) => TreeNode
+): string | null {
+  return findLeaf(node, keyBytes, keyHash, resolve)?.valueHash ?? null;
 }
 
-function findLeaf(node: TreeNode | undefined, keyBytes: Buffer, keyHash: string): LeafNode | undefined {
+function findLeaf(
+  node: NodeLink | undefined,
+  keyBytes: Buffer,
+  keyHash: string,
+  resolve: (link: NodeLink, depth: number) => TreeNode
+): LeafNode | undefined {
   let current = node;
   for (let depth = 0; current && depth <= TREE_DEPTH; depth += 1) {
-    if (current.kind === "leaf") return current.keyHash === keyHash ? current : undefined;
+    const resolved = resolve(current, depth);
+    if (resolved.kind === "leaf") return resolved.keyHash === keyHash ? resolved : undefined;
     if (depth === TREE_DEPTH) return undefined;
-    current = bitAt(keyBytes, depth) === 0 ? current.left : current.right;
+    current = bitAt(keyBytes, depth) === 0 ? resolved.left : resolved.right;
   }
   return undefined;
+}
+
+function linkHash(link: NodeLink | undefined): string | undefined {
+  return link?.hash;
+}
+
+function nodeFromRecord(record: StateV2NodeRecord, depth: number): TreeNode {
+  let node: TreeNode;
+  if (record.kind === "leaf") {
+    if (!/^[0-9a-f]{64}$/.test(record.keyHash) || !/^[0-9a-f]{64}$/.test(record.valueHash)) {
+      throw new Error("Invalid State v2 leaf record");
+    }
+    const parsed = JSON.parse(record.valueJson) as unknown;
+    if (canonicalJson(parsed) !== record.valueJson ||
+        hashWithDomain(VALUE_DOMAIN, Buffer.from(record.valueJson, "utf8")) !== record.valueHash) {
+      throw new Error("Corrupt State v2 leaf value");
+    }
+    node = leafNodeAtDepth(Buffer.from(record.keyHash, "hex"), record.keyHash, record.valueHash, record.valueJson, depth);
+  } else {
+    if (depth >= TREE_DEPTH) throw new Error("State v2 branch below tree depth");
+    const left = record.leftHash === null ? undefined : { kind: "ref" as const, hash: record.leftHash };
+    const right = record.rightHash === null ? undefined : { kind: "ref" as const, hash: record.rightHash };
+    node = {
+      kind: "branch",
+      left,
+      right,
+      hash: branchHash(linkHash(left) ?? EMPTY_HASHES[depth + 1]!, linkHash(right) ?? EMPTY_HASHES[depth + 1]!)
+    };
+  }
+  if (node.hash !== record.hash) throw new Error("State v2 node hash mismatch");
+  return node;
 }
 
 function buildEmptyHashes(): string[] {
