@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJson } from "./codec.js";
-import type { LedgerSnapshot, LedgerState } from "./state.js";
+import { LedgerState, type LedgerSnapshot } from "./state.js";
 import { MAX_SUPPLY_ATOMS, type Address, type Transaction, type Validator } from "./types.js";
 
 const TREE_DEPTH = 256;
@@ -244,6 +244,113 @@ export interface StateV2GovernanceSnapshot {
   protocolSchedule: Array<{ activationHeight: number; protocolVersion: number }>;
 }
 
+export interface StateV2PortableView {
+  ledger: LedgerSnapshot;
+  governance: StateV2GovernanceSnapshot;
+}
+
+/**
+ * Builds the semantic-key preimage list needed to reconstruct a portable State-v2
+ * snapshot. The preimages are not trusted metadata: each is committed through its
+ * domain-separated key hash in the existing sparse Merkle root.
+ */
+export function stateV2KeyPreimages(
+  snapshot: LedgerSnapshot,
+  governance: StateV2GovernanceSnapshot
+): string[] {
+  return [
+    ...snapshot.accounts.map((account) => accountKey(account.address)),
+    ...snapshot.settledActivityEpochs.map(activityEpochKey),
+    ...governance.validatorSchedule.map((entry) => validatorScheduleKey(entry.activationHeight)),
+    ...governance.protocolSchedule.map((entry) => protocolScheduleKey(entry.activationHeight))
+  ].sort();
+}
+
+/**
+ * Reconstructs the legacy/query ledger and governance schedule from authenticated
+ * State-v2 records plus untrusted semantic-key preimages. Completeness is checked
+ * against every reachable leaf and the reconstructed view must reproduce the exact
+ * Merkle root, so a peer cannot omit or substitute a semantic key.
+ */
+export function reconstructStateV2PortableView(
+  state: SparseMerkleState,
+  keyPreimages: readonly string[]
+): StateV2PortableView {
+  const leafHashes = new Set(state.nodeRecords()
+    .filter((record): record is Extract<StateV2NodeRecord, { kind: "leaf" }> => record.kind === "leaf")
+    .map((record) => record.keyHash));
+  if (keyPreimages.length !== leafHashes.size) throw new Error("State v2 key preimage count mismatch");
+
+  const seenHashes = new Set<string>();
+  const accounts: LedgerSnapshot["accounts"] = [];
+  const epochs: number[] = [];
+  const validatorSchedule: StateV2GovernanceSnapshot["validatorSchedule"] = [];
+  const protocolSchedule: StateV2GovernanceSnapshot["protocolSchedule"] = [];
+
+  for (const key of keyPreimages) {
+    if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new Error("Invalid State v2 key preimage");
+    const keyHash = stateV2KeyHash(key);
+    if (seenHashes.has(keyHash)) throw new Error("Duplicate State v2 key preimage");
+    if (!leafHashes.has(keyHash)) throw new Error("State v2 key preimage is not committed by the root");
+    seenHashes.add(keyHash);
+    const value = state.get(key);
+    if (value === undefined) throw new Error("State v2 key preimage has no committed value");
+
+    if (key.startsWith("account:")) {
+      const address = key.slice("account:".length) as Address;
+      assertExactPortableRecord(value, ["balanceAtoms", "nonce"], "State v2 account value");
+      if (!Number.isSafeInteger(value.balanceAtoms) || Number(value.balanceAtoms) < 0 ||
+          !Number.isSafeInteger(value.nonce) || Number(value.nonce) < 0) {
+        throw new Error("Invalid State v2 account value");
+      }
+      accounts.push({ address, balanceAtoms: Number(value.balanceAtoms), nonce: Number(value.nonce) });
+    } else if (key.startsWith("activity-epoch:")) {
+      const epoch = parseSemanticHeight(key.slice("activity-epoch:".length), "activity epoch");
+      assertExactPortableRecord(value, ["settled"], "State v2 activity value");
+      if (value.settled !== true) throw new Error("Invalid State v2 activity value");
+      epochs.push(epoch);
+    } else if (key.startsWith("validator-schedule:")) {
+      const activationHeight = parseSemanticHeight(key.slice("validator-schedule:".length), "validator activation height");
+      assertExactPortableRecord(value, ["validators"], "State v2 validator schedule value");
+      if (!Array.isArray(value.validators)) throw new Error("Invalid State v2 validator schedule value");
+      validatorSchedule.push({ activationHeight, validators: structuredClone(value.validators) as Validator[] });
+    } else if (key.startsWith("protocol-schedule:")) {
+      const activationHeight = parseSemanticHeight(key.slice("protocol-schedule:".length), "protocol activation height");
+      assertExactPortableRecord(value, ["protocolVersion"], "State v2 protocol schedule value");
+      if (!Number.isSafeInteger(value.protocolVersion) || Number(value.protocolVersion) < 1) {
+        throw new Error("Invalid State v2 protocol schedule value");
+      }
+      protocolSchedule.push({ activationHeight, protocolVersion: Number(value.protocolVersion) });
+    } else {
+      throw new Error("Unknown State v2 semantic key");
+    }
+  }
+  if (seenHashes.size !== leafHashes.size) throw new Error("Incomplete State v2 key preimage set");
+
+  accounts.sort((a, b) => a.address.localeCompare(b.address));
+  epochs.sort((a, b) => a - b);
+  validatorSchedule.sort((a, b) => a.activationHeight - b.activationHeight);
+  protocolSchedule.sort((a, b) => a.activationHeight - b.activationHeight);
+  assertUniqueSemanticNumbers(epochs, "activity epoch");
+  assertUniqueSemanticNumbers(validatorSchedule.map((entry) => entry.activationHeight), "validator activation height");
+  assertUniqueSemanticNumbers(protocolSchedule.map((entry) => entry.activationHeight), "protocol activation height");
+  if (validatorSchedule[0]?.activationHeight !== 0 || protocolSchedule[0]?.activationHeight !== 0) {
+    throw new Error("State v2 governance schedule must start at genesis");
+  }
+
+  const ledger = LedgerState.fromSnapshot({ accounts, settledActivityEpochs: epochs }).snapshot();
+  const governance = { validatorSchedule, protocolSchedule };
+  if (stateV2FromLedgerSnapshot(ledger, governance).root() !== state.root()) {
+    throw new Error("Reconstructed State v2 portable view root mismatch");
+  }
+  return { ledger, governance };
+}
+
+export function stateV2KeyHash(key: string): string {
+  if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new Error("Invalid State v2 key");
+  return hashWithDomain(KEY_DOMAIN, Buffer.from(key, "utf8"));
+}
+
 export function stateV2FromLedgerSnapshot(
   snapshot: LedgerSnapshot,
   governance?: StateV2GovernanceSnapshot
@@ -374,20 +481,42 @@ function setStateV2Nonce(state: SparseMerkleState, address: Address, nonce: numb
   return state.set(accountKey(address), { balanceAtoms: account.balanceAtoms, nonce });
 }
 
-function accountKey(address: Address): string {
+export function accountKey(address: Address): string {
   return `account:${address}`;
 }
 
-function activityEpochKey(epoch: number): string {
+export function activityEpochKey(epoch: number): string {
   return `activity-epoch:${epoch}`;
 }
 
-function validatorScheduleKey(activationHeight: number): string {
+export function validatorScheduleKey(activationHeight: number): string {
   return `validator-schedule:${activationHeight}`;
 }
 
-function protocolScheduleKey(activationHeight: number): string {
+export function protocolScheduleKey(activationHeight: number): string {
   return `protocol-schedule:${activationHeight}`;
+}
+
+function parseSemanticHeight(value: string, name: string): number {
+  if (!/^(0|[1-9][0-9]*)$/.test(value)) throw new Error(`Invalid State v2 ${name}`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`Invalid State v2 ${name}`);
+  return parsed;
+}
+
+function assertUniqueSemanticNumbers(values: readonly number[], name: string): void {
+  for (let index = 1; index < values.length; index += 1) {
+    if (values[index] === values[index - 1]) throw new Error(`Duplicate State v2 ${name}`);
+  }
+}
+
+function assertExactPortableRecord(value: unknown, keys: string[], name: string): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${name}`);
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(`Invalid ${name} fields`);
+  }
 }
 
 function updateNode(
