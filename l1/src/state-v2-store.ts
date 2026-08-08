@@ -68,7 +68,7 @@ export class StateV2DiskStore {
           await nodeObjects.putMany(records);
           // Publish the backend marker only after the new database independently
           // resolves and authenticates the complete committed root.
-          SparseMerkleState.fromNodeResolver(metadata.root, nodeObjects.resolver()).reachableNodeHashes();
+          nodeObjects.validateReachable(SparseMerkleState.fromNodeResolver(metadata.root, nodeObjects.resolver()), false);
           if (legacy.unterminatedTail.length > 0 || legacy.completeLines !== records.length) {
             await compactNodeLog(dataDir, records);
           }
@@ -91,13 +91,9 @@ export class StateV2DiskStore {
     }
     try {
       const state = metadata ? SparseMerkleState.fromNodeResolver(metadata.root, nodeObjects.resolver()) : SparseMerkleState.empty();
-      // Validate durable reachability once at startup without hydrating a second
-      // full object graph; only the bounded resolver cache survives this walk.
-      state.reachableNodeHashes();
-      const leafHashes = state.leafKeyHashes();
-      for (const hash of leafHashes) {
-        if (nodeObjects.semanticKey(hash) === undefined) throw new Error("Incomplete persisted State v2 semantic key index");
-      }
+      // Authenticate every root-reachable node and semantic-key binding. The
+      // visit index lives in SQLite TEMP storage, not an O(n) JavaScript Set.
+      nodeObjects.validateReachable(state, true);
       return new StateV2DiskStore(dataDir, state, nodeObjects);
     } catch (error) {
       nodeObjects.close();
