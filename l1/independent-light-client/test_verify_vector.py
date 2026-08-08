@@ -10,6 +10,7 @@ from verify_vector import canonical_json, VerificationError, verify_next_finaliz
 
 VECTOR_PATH = Path(__file__).parents[1] / "test-vectors" / "light-client-v1.json"
 ROUND_ONE_VECTOR_PATH = Path(__file__).parents[1] / "test-vectors" / "light-client-v1-round1.json"
+NONMEMBERSHIP_VECTOR_PATH = Path(__file__).parents[1] / "test-vectors" / "state-v2-nonmembership-v1.json"
 
 
 def load_vector():
@@ -94,6 +95,19 @@ class IndependentLightClientTests(unittest.TestCase):
         proof = copy.deepcopy(state["proof"])
         proof["siblings"][0] = "66" * 32
         self.assertFalse(verify_state_proof(next_anchor, state["key"], state["value"], proof))
+
+    def test_public_nonmembership_vector_verifies_and_rejects_substitution(self):
+        vector = json.loads(NONMEMBERSHIP_VECTOR_PATH.read_text(encoding="utf-8"))
+        anchor = {
+            **load_vector()["expectedNext"],
+            "stateRoot": vector["root"],
+        }
+        self.assertIsNone(vector["value"])
+        self.assertTrue(verify_state_proof(anchor, vector["key"], None, vector["proof"]))
+        self.assertFalse(verify_state_proof(anchor, "account:mallory", None, vector["proof"]))
+        forged = copy.deepcopy(vector["proof"])
+        forged["siblings"][0] = "66" * 32
+        self.assertFalse(verify_state_proof(anchor, vector["key"], None, forged))
 
 
 if __name__ == "__main__":
