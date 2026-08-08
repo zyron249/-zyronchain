@@ -20,6 +20,7 @@ import { assertHex } from "./codec.js";
 import type { Block, GenesisConfig, ProtocolUpgradeTx, RoundSkipVote, Transaction, Validator, ValidatorSetUpdateTx } from "./types.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
+export const MAX_BLOCK_TRANSACTION_BYTES = 1_500_000;
 export const MIN_VALIDATOR_UPDATE_DELAY = 100;
 export const MIN_PROTOCOL_UPDATE_DELAY = 100;
 export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1]);
@@ -155,6 +156,7 @@ export class ZyronChain {
       roundCertificate: options.roundCertificate ?? []
     });
     validateBlockEnvelope(block, this.tip, validators, timestampMs, false, protocolVersion);
+    if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
     return block;
   }
 
@@ -190,9 +192,17 @@ export class ZyronChain {
     this.validateAndApply(transactions, this.state, this.height + 1);
   }
 
-  selectValidPending(transactions: Transaction[], limit: number): Transaction[] {
+  selectValidPending(
+    transactions: Transaction[],
+    limit: number,
+    maxTransactionBytes = MAX_BLOCK_TRANSACTION_BYTES
+  ): Transaction[] {
     if (!Number.isSafeInteger(limit) || limit < 0 || limit > 10_000) {
       throw new Error("Invalid pending selection limit");
+    }
+    if (!Number.isSafeInteger(maxTransactionBytes) || maxTransactionBytes < 0 ||
+        maxTransactionBytes > MAX_BLOCK_TRANSACTION_BYTES) {
+      throw new Error("Invalid pending byte limit");
     }
     const ordered = transactions
       .map((tx) => structuredClone(tx))
@@ -206,6 +216,7 @@ export class ZyronChain {
     const next = this.state.clone();
     const selected: Transaction[] = [];
     const seen = new Set<string>();
+    let selectedBytes = 0;
     let lastActivation = this.lastValidatorActivationHeight();
     let lastProtocolActivation = this.lastProtocolActivationHeight();
     const currentValidators = this.validatorsAt(this.height + 1);
@@ -222,8 +233,11 @@ export class ZyronChain {
           validateProtocolUpgradeAuthorization(tx, currentValidators, this.height + 1, lastProtocolActivation);
           lastProtocolActivation = tx.activationHeight;
         }
+        const transactionBytes = Buffer.byteLength(canonicalJson(tx), "utf8") + (selected.length ? 1 : 0);
+        if (selectedBytes + transactionBytes > maxTransactionBytes) continue;
         next.apply(tx, this.genesis.activityPool);
         selected.push(tx);
+        selectedBytes += transactionBytes;
         seen.add(tx.txid);
       } catch {
         // Invalid or stale mempool entries are omitted; block validation stays authoritative.
@@ -353,8 +367,8 @@ function validateGenesis(genesis: GenesisConfig): void {
   if (!Number.isSafeInteger(genesis.timestampMs) || genesis.timestampMs < 0) {
     throw new Error("Invalid genesis timestamp");
   }
-  if (!Array.isArray(genesis.validators) || genesis.validators.length === 0) {
-    throw new Error("At least one validator is required");
+  if (!Array.isArray(genesis.validators) || genesis.validators.length === 0 || genesis.validators.length > 100) {
+    throw new Error("Genesis validator count must be between 1 and 100");
   }
   const validators = new Set<string>();
   for (const validator of genesis.validators) {
