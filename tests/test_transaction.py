@@ -158,9 +158,8 @@ def test_protocol_v3_signature_is_low_s():
     )
     tx.sign_transaction(wallet.get_private_key())
 
-    import ecdsa
     s = int(tx.signature[64:], 16)
-    assert s <= ecdsa.SECP256k1.order // 2
+    assert s <= Transaction.SECP256K1_ORDER // 2
 
 
 def test_protocol_v3_cross_language_vector_is_stable():
@@ -200,6 +199,30 @@ def test_legacy_v1_signature_remains_valid_for_chain_history():
 
     tx.sign_transaction(wallet.get_private_key())
 
+    assert tx.is_valid() is True
+
+
+def test_legacy_high_s_signature_remains_valid_for_chain_history():
+    tx = Transaction(
+        version=Transaction.LEGACY_VERSION,
+        sender="ZYN09c0b2d1a486c439a87bcba6b46a7a1a23f3897c",
+        receiver="ZYN1234567890abcdef1234567890abcdef123456",
+        amount=5,
+        fee=0.01,
+        public_key=(
+            "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+            "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"
+        ),
+        nonce=1,
+        timestamp=1_700_000_000,
+        signature=(
+            "500ccd37f8eaef069cd57445f4b2a7ed4465c2e67260b40555f156218cedb975"
+            "c346a660f45765f6a093d8908cb68cbb6834948a7b0e510b237f1761831744f2"
+        ),
+        txid="7aafff75c188249ce1c27cafc1ff9e836cf0384a224ff2fafeaab47dc43614b8"
+    )
+
+    assert int(tx.signature[64:], 16) > Transaction.SECP256K1_ORDER // 2
     assert tx.is_valid() is True
 
 
