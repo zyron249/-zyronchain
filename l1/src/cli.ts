@@ -20,7 +20,13 @@ import { PeerDirectory } from "./peer-directory.js";
 import { createP2PNode, registerP2PIdentityProtocol } from "./p2p.js";
 import { registerP2PSyncProtocol, syncP2PFrom } from "./p2p-sync.js";
 import { NativeConsensusPeerClient, registerP2PConsensusProtocol } from "./p2p-consensus.js";
-import { diversityOrderedNativePeers, parseNativeListenAddress, parseNativePeerAddress } from "./p2p-address.js";
+import {
+  diversityOrderedNativePeers,
+  nativePeerId,
+  parseNativeListenAddress,
+  parseNativePeerAddress,
+  parseNativePeerGroup
+} from "./p2p-address.js";
 import { MIN_PROTOCOL_UPDATE_DELAY, MIN_VALIDATOR_UPDATE_DELAY, ZyronChain } from "./chain.js";
 import {
   createProtocolUpgrade,
@@ -128,7 +134,7 @@ async function createGenesis(args: string[]): Promise<void> {
 async function runNode(args: string[]): Promise<void> {
   assertKnownOptions(args, new Set([
     "--genesis", "--data", "--host", "--port", "--peer", "--advertise-peer", "--validator-key", "--peer-token-file",
-    "--trusted-peer-public-key", "--p2p-listen", "--p2p-peer"
+    "--trusted-peer-public-key", "--p2p-listen", "--p2p-peer", "--p2p-peer-group"
   ]));
   const genesisPath = option(args, "--genesis");
   const dataDir = option(args, "--data");
@@ -139,6 +145,15 @@ async function runNode(args: string[]): Promise<void> {
   const nativeListen = options(args, "--p2p-listen").map(parseNativeListenAddress);
   const nativePeers = options(args, "--p2p-peer").map(parseNativePeerAddress);
   if (nativePeers.length > 64) throw new Error("Too many configured native peers");
+  const nativePeerGroups = new Map<string, string>();
+  const configuredNativePeerIds = new Set(nativePeers.map(nativePeerId));
+  for (const value of options(args, "--p2p-peer-group")) {
+    const assignment = parseNativePeerGroup(value);
+    if (!configuredNativePeerIds.has(assignment.peerId)) throw new Error("Native peer group references an unconfigured PeerId");
+    const existing = nativePeerGroups.get(assignment.peerId);
+    if (existing !== undefined && existing !== assignment.group) throw new Error("Conflicting native peer group assignment");
+    nativePeerGroups.set(assignment.peerId, assignment.group);
+  }
   const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
   const store = await ChainStore.open(genesis, resolve(dataDir));
   const validatorKeyPath = option(args, "--validator-key");
@@ -183,7 +198,12 @@ async function runNode(args: string[]): Promise<void> {
     await registerP2PIdentityProtocol(nativeNode, identity, service.status());
     await registerP2PSyncProtocol(nativeNode, identity, service);
     await registerP2PConsensusProtocol(nativeNode, identity, service);
-    nativeConsensus = new NativeConsensusPeerClient(nativeNode, diversityOrderedNativePeers(nativePeers), identity, service.status());
+    nativeConsensus = new NativeConsensusPeerClient(
+      nativeNode,
+      diversityOrderedNativePeers(nativePeers, 0, nativePeerGroups),
+      identity,
+      service.status()
+    );
   }
 
   try {
@@ -200,7 +220,7 @@ async function runNode(args: string[]): Promise<void> {
   }
   let nativeSyncCursor = 0;
   if (nativeNode && identity) {
-    await syncNativePeers(nativeNode, nativePeers, identity, service, "Initial native peer sync", nativeSyncCursor++);
+    await syncNativePeers(nativeNode, nativePeers, identity, service, "Initial native peer sync", nativeSyncCursor++, nativePeerGroups);
   }
 
   const consensusPeers: ConsensusPeerClient = nativeConsensus ? {
@@ -261,7 +281,7 @@ async function runNode(args: string[]): Promise<void> {
 
   if (nativeNode && identity && nativePeers.length) {
     setInterval(() => {
-      void syncNativePeers(nativeNode, nativePeers, identity, service, "Periodic native peer sync", nativeSyncCursor++);
+      void syncNativePeers(nativeNode, nativePeers, identity, service, "Periodic native peer sync", nativeSyncCursor++, nativePeerGroups);
     }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3))).unref();
   }
 
@@ -484,9 +504,10 @@ async function syncNativePeers(
   identity: Awaited<ReturnType<typeof loadOrCreateNodeIdentity>>,
   service: NodeService,
   label: string,
-  groupOffset = 0
+  groupOffset = 0,
+  peerGroups: ReadonlyMap<string, string> = new Map()
 ): Promise<void> {
-  for (const peer of diversityOrderedNativePeers(peers, groupOffset)) {
+  for (const peer of diversityOrderedNativePeers(peers, groupOffset, peerGroups)) {
     try {
       const accepted = await syncP2PFrom(node, peer, identity, service);
       if (accepted) console.log(`${label}: accepted ${accepted} finalized block(s) from ${peer.toString()}`);
@@ -620,7 +641,7 @@ function usage(): void {
   console.log("Usage:");
   console.log("  zyron-l1 keygen --out validator-key.json");
   console.log("  zyron-l1 genesis --out genesis.json --chain-id zyron-devnet-1 --validator-public-key <hex> --oracle-public-key <hex> --activity-pool <address> --allocation <address:atoms>");
-  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json] [--peer https://node:9137] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>]");
+  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json] [--peer https://node:9137] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>]");
   console.log("  zyron-l1 transfer --key wallet-key.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms <n> [--fee-atoms <n>]");
   console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");
   console.log("  zyron-l1 validator-approve --proposal update.json --key validator.json --out approval.json");
