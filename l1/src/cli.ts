@@ -184,7 +184,8 @@ async function runNode(args: string[]): Promise<void> {
     ...(peerAuthToken ? { peerAuthToken } : {}),
     ...(peerRecord ? { peerRecord } : {}),
     peerDirectory,
-    ...(trustedPeerPublicKeys.length ? { trustedPeerPublicKeys } : {})
+    ...(trustedPeerPublicKeys.length ? { trustedPeerPublicKeys } : {}),
+    onTransactionAccepted: (transaction) => peers.broadcastTransaction(transaction)
   });
   await new Promise<void>((resolveListen, reject) => {
     server.once("error", reject);
