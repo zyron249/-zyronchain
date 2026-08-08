@@ -75,6 +75,9 @@ test("peer discovery records reject plaintext, credentials and excessive lifetim
     const identity = await loadOrCreateNodeIdentity(directory);
     const now = 1_800_000_000_000;
     assert.throws(() => createSignedPeerRecord(identity, {
+      ...chain, endpoints: [], issuedAtMs: now, expiresAtMs: now + 1_000
+    }), /endpoint count/);
+    assert.throws(() => createSignedPeerRecord(identity, {
       ...chain, endpoints: ["http://node.example:9137"], issuedAtMs: now, expiresAtMs: now + 1_000
     }), /HTTPS/);
     assert.throws(() => createSignedPeerRecord(identity, {
