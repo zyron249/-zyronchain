@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SparseMerkleState, stateV2FromLedgerSnapshot, verifySparseMerkleProof } from "../src/state-v2.js";
+import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
+import {
+  accountKey,
+  reconstructStateV2PortableView,
+  SparseMerkleState,
+  stateV2FromLedgerSnapshot,
+  stateV2KeyPreimages,
+  verifySparseMerkleProof
+} from "../src/state-v2.js";
 
 test("State v2 root is deterministic regardless of insertion order", () => {
   const entries = [
@@ -75,4 +83,57 @@ test("State v2 rejects tampered proof paths", () => {
   const tampered = structuredClone(proof);
   tampered.siblings[100] = "00".repeat(32);
   assert.equal(verifySparseMerkleProof(state.root(), "account:alice", value, tampered), false);
+});
+
+test("State v2 semantic-key preimages reconstruct the exact authenticated ledger and governance view", () => {
+  const validatorPublic = publicKeyFromPrivate("21".padStart(64, "0"));
+  const validator = addressFromPublicKey(validatorPublic);
+  const accountPublic = publicKeyFromPrivate("22".padStart(64, "0"));
+  const account = addressFromPublicKey(accountPublic);
+  const ledger = {
+    accounts: [{ address: account, balanceAtoms: 123_456, nonce: 7 }],
+    settledActivityEpochs: [3, 9]
+  };
+  const governance = {
+    validatorSchedule: [{ activationHeight: 0, validators: [{ address: validator, publicKey: validatorPublic }] }],
+    protocolSchedule: [
+      { activationHeight: 0, protocolVersion: 1 },
+      { activationHeight: 101, protocolVersion: 2 }
+    ]
+  };
+  const state = stateV2FromLedgerSnapshot(ledger, governance);
+  const keys = stateV2KeyPreimages(ledger, governance);
+  const reconstructed = reconstructStateV2PortableView(state, keys);
+  assert.deepEqual(reconstructed.ledger, ledger);
+  assert.deepEqual(reconstructed.governance, governance);
+  assert.equal(stateV2FromLedgerSnapshot(reconstructed.ledger, reconstructed.governance).root(), state.root());
+});
+
+test("State v2 portable reconstruction fails closed on missing, substituted, duplicate and unknown key preimages", () => {
+  const validatorPublic = publicKeyFromPrivate("23".padStart(64, "0"));
+  const validator = addressFromPublicKey(validatorPublic);
+  const account = addressFromPublicKey(publicKeyFromPrivate("24".padStart(64, "0")));
+  const ledger = { accounts: [{ address: account, balanceAtoms: 5, nonce: 0 }], settledActivityEpochs: [4] };
+  const governance = {
+    validatorSchedule: [{ activationHeight: 0, validators: [{ address: validator, publicKey: validatorPublic }] }],
+    protocolSchedule: [{ activationHeight: 0, protocolVersion: 1 }]
+  };
+  const state = stateV2FromLedgerSnapshot(ledger, governance);
+  const keys = stateV2KeyPreimages(ledger, governance);
+
+  assert.throws(() => reconstructStateV2PortableView(state, keys.slice(1)), /count mismatch/);
+  const duplicate = [...keys];
+  duplicate[1] = duplicate[0]!;
+  assert.throws(() => reconstructStateV2PortableView(state, duplicate), /Duplicate|not committed/);
+  const substituted = [...keys];
+  substituted[substituted.indexOf(accountKey(account))] = `${accountKey(account)}x`;
+  assert.throws(() => reconstructStateV2PortableView(state, substituted), /not committed/);
+
+  const withUnknown = state.set("unknown:consensus-key", { attacker: true });
+  assert.throws(
+    () => reconstructStateV2PortableView(withUnknown, [...keys, "unknown:consensus-key"]),
+    /Unknown State v2 semantic key/
+  );
+  const malformed = state.set(accountKey(account), { balanceAtoms: -1, nonce: 0 });
+  assert.throws(() => reconstructStateV2PortableView(malformed, keys), /Invalid State v2 account value/);
 });
