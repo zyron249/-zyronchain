@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import Database from "better-sqlite3";
 
 import { canonicalJson, sha256Hex } from "../src/codec.js";
 import { addressFromPublicKey, publicKeyFromPrivate, signCanonical } from "../src/crypto.js";
@@ -2222,7 +2223,6 @@ test("restart catches a valid stale State v2 store up to the authoritative final
       block = store.chain.attestBlock(block, validatorTwoPrivate);
       await store.commitFinalizedBlock(block, genesis().timestampMs + (height * 100));
     }
-    const staleNodes = await readFile(join(directory, "state-v2.nodes.ndjson"), "utf8");
     const staleRoot = await readFile(join(directory, "state-v2.root.json"), "utf8");
 
     const transfer = createTransfer(
@@ -2247,7 +2247,6 @@ test("restart catches a valid stale State v2 store up to the authoritative final
     const expectedTip = store.chain.tip.hash;
     const expectedRoot = store.chain.tip.header.stateRoot;
 
-    await writeFile(join(directory, "state-v2.nodes.ndjson"), staleNodes, "utf8");
     await writeFile(join(directory, "state-v2.root.json"), staleRoot, "utf8");
     const reopened = await ChainStore.open(genesis(), directory);
     assert.equal(reopened.chain.tip.hash, expectedTip);
@@ -2291,21 +2290,20 @@ test("ChainStore quarantines corrupt State v2 files only after authoritative rep
     }
     const expectedTip = store.chain.tip.hash;
     const expectedRoot = store.chain.tip.header.stateRoot;
-    const nodesPath = join(directory, "state-v2.nodes.ndjson");
-    const lines = (await readFile(nodesPath, "utf8")).trimEnd().split("\n");
-    const withoutRoot = lines.filter((line) => {
-      const envelope = JSON.parse(line) as { record?: { hash?: string } };
-      return envelope.record?.hash !== expectedRoot;
-    });
-    assert.equal(withoutRoot.length, lines.length - 1);
-    await writeFile(nodesPath, `${withoutRoot.join("\n")}\n`, "utf8");
+    const database = new Database(join(directory, "state-v2.nodes.sqlite"));
+    const deleted = database.prepare("DELETE FROM nodes WHERE hash = ?").run(expectedRoot);
+    database.close();
+    assert.equal(deleted.changes, 1);
 
     const reopened = await ChainStore.open(genesis(), directory);
     assert.equal(reopened.recoveredStateV2FromCorruption, true);
     assert.equal(reopened.chain.tip.hash, expectedTip);
     assert.equal((await StateV2DiskStore.open(directory)).state().root(), expectedRoot);
     const quarantined = (await readdir(directory)).filter((name) => name.includes(".corrupt-"));
-    assert.equal(quarantined.length, 3);
+    assert.ok(quarantined.some((name) => name.startsWith("state-v2.nodes.sqlite.corrupt-")));
+    assert.ok(quarantined.some((name) => name.startsWith("state-v2.backend.json.corrupt-")));
+    assert.ok(quarantined.some((name) => name.startsWith("state-v2.keys.ndjson.corrupt-")));
+    assert.ok(quarantined.some((name) => name.startsWith("state-v2.root.json.corrupt-")));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
