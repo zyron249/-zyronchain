@@ -20,6 +20,7 @@ import { createRoundSkipVote, validateBlockShape } from "../src/block.js";
 import { ChainStore, SigningJournal } from "../src/storage.js";
 import { stateV2FromLedgerSnapshot } from "../src/state-v2.js";
 import { LedgerState } from "../src/state.js";
+import { createSignedPeerRecord, loadOrCreateNodeIdentity } from "../src/peer-identity.js";
 import { createRpcServer, NodeService, PeerClient, produceFinalizedBlock } from "../src/node.js";
 import type { GenesisConfig } from "../src/types.js";
 
@@ -781,6 +782,39 @@ test("peer client bounds configured peer fanout", () => {
   const peers = Array.from({ length: 65 }, (_, index) => `https://node-${index}.example:9137`);
   assert.throws(() => new PeerClient(peers), /Too many configured peers/);
   assert.equal(new PeerClient(peers.slice(0, 64)).peers.length, 64);
+});
+
+test("RPC serves a signed peer record that a client verifies against chain identity", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-peer-record-rpc-"));
+  let server: ReturnType<typeof createRpcServer> | undefined;
+  try {
+    const service = new NodeService(await ChainStore.open(genesis(), directory));
+    const identity = await loadOrCreateNodeIdentity(directory);
+    const issuedAtMs = Date.now();
+    const peerRecord = createSignedPeerRecord(identity, {
+      chainId: service.status().chainId,
+      genesisHash: service.status().genesisHash,
+      endpoints: ["https://node.example:9137"],
+      issuedAtMs,
+      expiresAtMs: issuedAtMs + 60_000
+    });
+    server = createRpcServer(service, { peerRecord });
+    await new Promise<void>((resolveListen, reject) => {
+      server!.once("error", reject);
+      server!.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Peer record test server has no TCP address");
+    const base = `http://127.0.0.1:${address.port}`;
+    const verified = await new PeerClient([base]).fetchPeerRecord(base, service.status(), issuedAtMs + 1_000);
+    assert.equal(verified.nodeId, identity.nodeId);
+    assert.deepEqual(verified.endpoints, ["https://node.example:9137"]);
+  } finally {
+    if (server?.listening) {
+      await new Promise<void>((resolveClose, reject) => server!.close((error) => error ? reject(error) : resolveClose()));
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("peer sync handshakes on chain identity and incrementally replays finalized blocks", async () => {

@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
 import { BLOCK_INTERVAL_MS, createRpcServer, NodeService, PeerClient, produceFinalizedBlock } from "./node.js";
 import { ChainStore, SigningJournal } from "./storage.js";
+import { createSignedPeerRecord, loadOrCreateNodeIdentity } from "./peer-identity.js";
 import { MIN_PROTOCOL_UPDATE_DELAY, MIN_VALIDATOR_UPDATE_DELAY, ZyronChain } from "./chain.js";
 import {
   createProtocolUpgrade,
@@ -110,7 +111,9 @@ async function createGenesis(args: string[]): Promise<void> {
 }
 
 async function runNode(args: string[]): Promise<void> {
-  assertKnownOptions(args, new Set(["--genesis", "--data", "--host", "--port", "--peer", "--validator-key", "--peer-token-file"]));
+  assertKnownOptions(args, new Set([
+    "--genesis", "--data", "--host", "--port", "--peer", "--advertise-peer", "--validator-key", "--peer-token-file"
+  ]));
   const genesisPath = option(args, "--genesis");
   const dataDir = option(args, "--data");
   if (!genesisPath || !dataDir) throw new Error("node requires --genesis <file> --data <directory>");
@@ -132,6 +135,16 @@ async function runNode(args: string[]): Promise<void> {
   const peerAuthToken = peerTokenPath ? await readPeerAuthToken(resolve(peerTokenPath)) : undefined;
   const service = new NodeService(store, journal, privateKey);
   const peers = new PeerClient(peerUrls, peerAuthToken);
+  const advertisedPeerUrls = options(args, "--advertise-peer");
+  const issuedAtMs = Date.now();
+  const identity = advertisedPeerUrls.length ? await loadOrCreateNodeIdentity(resolve(dataDir)) : undefined;
+  const peerRecord = identity ? createSignedPeerRecord(identity, {
+    chainId: service.status().chainId,
+    genesisHash: service.status().genesisHash,
+    endpoints: advertisedPeerUrls,
+    issuedAtMs,
+    expiresAtMs: issuedAtMs + (60 * 60 * 1_000)
+  }) : undefined;
 
   try {
     const accepted = await peers.syncAny(service);
@@ -140,13 +153,17 @@ async function runNode(args: string[]): Promise<void> {
     console.warn(`Initial peer sync skipped: ${safeError(error)}`);
   }
 
-  const server = createRpcServer(service, peerAuthToken ? { peerAuthToken } : {});
+  const server = createRpcServer(service, {
+    ...(peerAuthToken ? { peerAuthToken } : {}),
+    ...(peerRecord ? { peerRecord } : {})
+  });
   await new Promise<void>((resolveListen, reject) => {
     server.once("error", reject);
     server.listen(port, host, () => resolveListen());
   });
   console.log(`ZyronChain ${genesis.chainId} node listening on http://${host}:${port}`);
   console.log(`Genesis ${service.status().genesisHash}, height ${service.status().height}`);
+  if (identity) console.log(`Node ID ${identity.nodeId}`);
 
   if (privateKey) {
     setInterval(() => {
@@ -498,7 +515,7 @@ function usage(): void {
   console.log("Usage:");
   console.log("  zyron-l1 keygen --out validator-key.json");
   console.log("  zyron-l1 genesis --out genesis.json --chain-id zyron-devnet-1 --validator-public-key <hex> --oracle-public-key <hex> --activity-pool <address> --allocation <address:atoms>");
-  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json] [--peer http://node:9137] [--peer-token-file /path/to/token]");
+  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json] [--peer http://node:9137] [--advertise-peer https://node.example:9137] [--peer-token-file /path/to/token]");
   console.log("  zyron-l1 transfer --key wallet-key.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms <n> [--fee-atoms <n>]");
   console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");
   console.log("  zyron-l1 validator-approve --proposal update.json --key validator.json --out approval.json");
