@@ -28,9 +28,11 @@
     "@libp2p/tcp": "11.0.26",
     "@multiformats/multiaddr": "13.0.3",
     "@noble/curves": "2.3.0",
+    "better-sqlite3": "13.0.3",
     "libp2p": "3.3.8"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.10.13",
     "typescript": "6.0.2"
   }
