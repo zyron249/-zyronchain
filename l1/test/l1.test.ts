@@ -9,9 +9,9 @@ import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { Mempool } from "../src/mempool.js";
 import { ZyronChain } from "../src/chain.js";
 import { createActivitySettlement, createTransfer } from "../src/transaction.js";
-import { validateBlockShape } from "../src/block.js";
+import { createRoundSkipVote, validateBlockShape } from "../src/block.js";
 import { ChainStore, SigningJournal } from "../src/storage.js";
-import { createRpcServer, NodeService, PeerClient } from "../src/node.js";
+import { createRpcServer, NodeService, PeerClient, produceFinalizedBlock } from "../src/node.js";
 import type { GenesisConfig } from "../src/types.js";
 
 const validatorOnePrivate = "01".padStart(64, "0");
@@ -184,11 +184,39 @@ test("block finality requires a greater-than-two-thirds validator quorum", () =>
 
 test("uncertified nonzero consensus rounds are rejected for safety", () => {
   const chain = new ZyronChain(genesis());
-  const block = chain.produceBlock([], validatorTwoPrivate, {
-    round: 1,
-    timestampMs: 1_700_000_000_100
+  assert.throws(
+    () => chain.produceBlock([], validatorTwoPrivate, {
+      round: 1,
+      timestampMs: 1_700_000_000_100
+    }),
+    /skip quorum/
+  );
+});
+
+test("a greater-than-two-thirds skip certificate safely unlocks the next proposer round", () => {
+  const chain = new ZyronChain(genesis());
+  const voteOne = createRoundSkipVote({
+    chainId: genesis().chainId,
+    height: 1,
+    round: 0,
+    previousHash: chain.tip.hash,
+    validatorPrivateKey: validatorOnePrivate,
+    validatorPublicKey: validatorOnePublic
   });
-  assert.throws(() => chain.validateProposal(block, 1_700_000_000_100), /round 0/);
+  const voteTwo = createRoundSkipVote({
+    chainId: genesis().chainId,
+    height: 1,
+    round: 0,
+    previousHash: chain.tip.hash,
+    validatorPrivateKey: validatorTwoPrivate,
+    validatorPublicKey: validatorTwoPublic
+  });
+  const proposal = chain.produceBlock([], validatorTwoPrivate, {
+    round: 1,
+    timestampMs: 1_700_000_000_100,
+    roundCertificate: [voteOne, voteTwo]
+  });
+  assert.doesNotThrow(() => chain.validateProposal(proposal, 1_700_000_000_100));
 });
 
 test("mempool blocks duplicate sender nonces and orders by fee", () => {
@@ -266,6 +294,7 @@ test("mempool selection restores sender nonce order even when later nonce pays m
   pool.add(nonceOne);
   const selected = pool.selectValid(10, (items) => chain.validatePending(items));
   assert.deepEqual(selected.map((tx) => tx.nonce), [1, 2]);
+  assert.deepEqual(chain.selectValidPending(pool.values(), 10).map((tx) => tx.nonce), [1, 2]);
 });
 
 test("chain store replays finalized blocks and pins the genesis identity", async () => {
@@ -295,11 +324,12 @@ test("signing journal prevents validator double-sign across restart", async () =
   const directory = await mkdtemp(join(tmpdir(), "zyron-signing-"));
   try {
     const first = await SigningJournal.open(directory);
-    await first.reserve(8, 0, "a".repeat(64));
-    await first.reserve(8, 0, "a".repeat(64));
+    await first.reserveAttestation(8, 0, "a".repeat(64));
+    await first.reserveAttestation(8, 0, "a".repeat(64));
     const reopened = await SigningJournal.open(directory);
-    await assert.rejects(() => reopened.reserve(8, 0, "b".repeat(64)), /Double-sign prevented/);
-    await assert.rejects(() => reopened.reserve(8, 1, "c".repeat(64)), /Double-sign prevented/);
+    await assert.rejects(() => reopened.reserveAttestation(8, 0, "b".repeat(64)), /Conflicting validator action/);
+    await assert.rejects(() => reopened.reserveSkip(8, 0, "c".repeat(64)), /Conflicting validator action/);
+    await reopened.reserveAttestation(8, 1, "d".repeat(64));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -396,5 +426,75 @@ test("peer sync handshakes on chain identity and incrementally replays finalized
     }
     await rm(sourceDir, { recursive: true, force: true });
     await rm(targetDir, { recursive: true, force: true });
+  }
+});
+
+test("certified view-change recovers liveness after a proposer misses its round", async () => {
+  const firstDir = await mkdtemp(join(tmpdir(), "zyron-view-a-"));
+  const secondDir = await mkdtemp(join(tmpdir(), "zyron-view-b-"));
+  const firstStore = await ChainStore.open(genesis(), firstDir);
+  const secondStore = await ChainStore.open(genesis(), secondDir);
+  const first = new NodeService(firstStore, await SigningJournal.open(firstDir), validatorOnePrivate);
+  const second = new NodeService(secondStore, await SigningJournal.open(secondDir), validatorTwoPrivate);
+  const server = createRpcServer(first);
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("View-change test server has no TCP address");
+    const peers = new PeerClient([`http://127.0.0.1:${address.port}`]);
+    const roundOneTime = genesis().timestampMs + 60_000;
+    const block = await produceFinalizedBlock(second, peers, validatorTwoPrivate, roundOneTime);
+    assert.ok(block);
+    assert.equal(block.header.round, 1);
+    assert.equal(block.roundCertificate.length, 2);
+    assert.equal(block.attestations.length, 2);
+    assert.equal(first.status().height, 1);
+    assert.equal(second.status().tipHash, first.status().tipHash);
+  } finally {
+    if (server.listening) {
+      await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+    }
+    await rm(firstDir, { recursive: true, force: true });
+    await rm(secondDir, { recursive: true, force: true });
+  }
+});
+
+test("validators cannot jump view-change rounds without the predecessor quorum certificate", async () => {
+  const firstDir = await mkdtemp(join(tmpdir(), "zyron-round-a-"));
+  const secondDir = await mkdtemp(join(tmpdir(), "zyron-round-b-"));
+  try {
+    const first = new NodeService(
+      await ChainStore.open(genesis(), firstDir),
+      await SigningJournal.open(firstDir),
+      validatorOnePrivate
+    );
+    const second = new NodeService(
+      await ChainStore.open(genesis(), secondDir),
+      await SigningJournal.open(secondDir),
+      validatorTwoPrivate
+    );
+    const now = genesis().timestampMs + 90_000;
+    await assert.rejects(() => first.requestSkipVote(1, 1, [], now), /skip quorum/);
+    const roundZero = [
+      await first.requestSkipVote(1, 0, [], now),
+      await second.requestSkipVote(1, 0, [], now)
+    ];
+    const roundOne = [
+      await first.requestSkipVote(1, 1, roundZero, now),
+      await second.requestSkipVote(1, 1, roundZero, now)
+    ];
+    const proposal = first.store.chain.produceBlock([], validatorOnePrivate, {
+      round: 2,
+      timestampMs: now,
+      roundCertificate: roundOne
+    });
+    assert.equal(proposal.header.round, 2);
+    assert.doesNotThrow(() => first.store.chain.validateProposal(proposal, now));
+  } finally {
+    await rm(firstDir, { recursive: true, force: true });
+    await rm(secondDir, { recursive: true, force: true });
   }
 });
