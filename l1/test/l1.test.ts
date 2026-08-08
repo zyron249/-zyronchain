@@ -505,8 +505,33 @@ test("protocol v2 pending selection does not clone the full legacy ledger", asyn
       alicePrivate,
       alicePublic
     );
-    const legacy = (store.chain as unknown as { state: { clone: () => unknown } }).state;
+    const legacy = (store.chain as unknown as { state: {
+      clone: () => unknown;
+      balance: () => number;
+      nonce: () => number;
+      isActivityEpochSettled: () => boolean;
+    } }).state;
     legacy.clone = () => { throw new Error("full legacy ledger clone reached protocol v2 pending selection"); };
+    legacy.balance = () => { throw new Error("legacy balance reached protocol v2 hot path"); };
+    legacy.nonce = () => { throw new Error("legacy nonce reached protocol v2 hot path"); };
+    legacy.isActivityEpochSettled = () => { throw new Error("legacy activity set reached protocol v2 hot path"); };
+    assert.equal(store.chain.balance(alice), 1_000_000_000);
+    assert.equal(store.chain.nonce(alice), 0);
+    store.chain.validateMempoolAdmission(pending);
+    const activity = createActivitySettlement(
+      {
+        chainId: genesis().chainId,
+        nonce: 1,
+        sender: activityPool,
+        epoch: 77,
+        entries: [{ receiver: bob, amountAtoms: 1 }],
+        receiptRoot: sha256Hex("v2-hot-path-activity"),
+        timestampMs: genesis().timestampMs + 10_201
+      },
+      oraclePrivate,
+      oraclePublic
+    );
+    store.chain.validateMempoolAdmission(activity);
     assert.deepEqual(store.chain.selectValidPending([pending], 10).map((tx) => tx.txid), [pending.txid]);
   } finally {
     await rm(directory, { recursive: true, force: true });

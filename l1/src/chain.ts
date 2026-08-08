@@ -15,7 +15,10 @@ import { LedgerState, type LedgerSnapshot } from "./state.js";
 import {
   SparseMerkleState,
   applyStateV2Transaction,
+  stateV2ActivityEpochSettled,
+  stateV2Balance,
   stateV2FromLedgerSnapshot,
+  stateV2Nonce,
 } from "./state-v2.js";
 import { validateStateV2PortableBundle, type StateV2PortableBundleV1 } from "./state-v2-portable.js";
 import {
@@ -192,11 +195,15 @@ export class ZyronChain {
   }
 
   balance(address: Address): number {
-    return this.state.balance(address);
+    return this.stateV2 && this.protocolVersionAt(this.height) === 2
+      ? stateV2Balance(this.stateV2, address)
+      : this.state.balance(address);
   }
 
   nonce(address: Address): number {
-    return this.state.nonce(address);
+    return this.stateV2 && this.protocolVersionAt(this.height) === 2
+      ? stateV2Nonce(this.stateV2, address)
+      : this.state.nonce(address);
   }
 
   snapshot(): ChainSnapshotV1 {
@@ -338,7 +345,7 @@ export class ZyronChain {
     validateTransactionShape(tx);
     if (tx.kind === "transfer") {
       const total = tx.amountAtoms + tx.feeAtoms;
-      if (!Number.isSafeInteger(total) || this.state.balance(tx.sender) < total) {
+      if (!Number.isSafeInteger(total) || this.balance(tx.sender) < total) {
         throw new Error("Insufficient balance");
       }
       return;
@@ -346,9 +353,12 @@ export class ZyronChain {
     if (tx.kind === "activity_settlement") {
       if (!this.genesis.activityOracles.includes(tx.publicKey)) throw new Error("Unauthorized activity oracle");
       if (tx.sender !== this.genesis.activityPool) throw new Error("Invalid activity pool sender");
-      if (this.state.isActivityEpochSettled(tx.epoch)) throw new Error("Activity epoch already settled");
+      const settled = this.stateV2 && this.protocolVersionAt(this.height) === 2
+        ? stateV2ActivityEpochSettled(this.stateV2, tx.epoch)
+        : this.state.isActivityEpochSettled(tx.epoch);
+      if (settled) throw new Error("Activity epoch already settled");
       const total = tx.entries.reduce((sum, entry) => sum + BigInt(entry.amountAtoms), 0n);
-      if (total > BigInt(this.state.balance(this.genesis.activityPool))) throw new Error("Activity pool exhausted");
+      if (total > BigInt(this.balance(this.genesis.activityPool))) throw new Error("Activity pool exhausted");
       return;
     }
     const validators = this.validatorsAt(this.height + 1);
