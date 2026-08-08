@@ -66,7 +66,12 @@ with repeated `--p2p-peer` multiaddrs. Outbound peer addresses **must pin the ex
 for example `/dns4/node-b.example/tcp/9140/p2p/<PeerId>`; an unpinned TCP endpoint is rejected.
 The native protocols bind that Noise-authenticated PeerId to the persistent secp256k1 node
 identity and exact chain/genesis before serving sync, validator consensus, block gossip or
-transaction gossip. Payload, connection, stream, fanout, dedup, per-PeerId inflight and request
+transaction gossip. State-v2 nodes also expose a bounded checkpoint-transfer protocol over the
+same authenticated transport. That protocol accepts only a caller-supplied exact tip+digest
+anchor and never advertises an anchor to adopt: discovery cannot turn snapshot transport into
+trust. Transfers are capped at 64 MiB, split into 256 KiB chunks, and the completed canonical
+snapshot is digest-, finality-, governance- and state-root-validated against the external anchor.
+Payload, connection, stream, fanout, dedup, per-PeerId inflight and request
 rate limits are enforced. The native connection manager is explicitly capped at 64 established
 connections, 8 pending inbound upgrades, 8 new inbound connections per host/second, 8 parallel
 outbound dials and a 64-entry dial queue (smaller configured total connection limits also lower
