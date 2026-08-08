@@ -6,11 +6,15 @@ import { peerIdFromPrivateKey } from "@libp2p/peer-id";
 import {
   diversityOrderedNativePeers,
   nativePeerDiversityBucket,
+  parseNativePeerGroup,
   parseNativeListenAddress,
   parseNativePeerAddress
 } from "../src/p2p-address.js";
 
 const peerId = peerIdFromPrivateKey(privateKeyFromRaw(Buffer.from("01".padStart(64, "0"), "hex"))).toString();
+const peerIdTwo = peerIdFromPrivateKey(privateKeyFromRaw(Buffer.from("02".padStart(64, "0"), "hex"))).toString();
+const peerIdThree = peerIdFromPrivateKey(privateKeyFromRaw(Buffer.from("03".padStart(64, "0"), "hex"))).toString();
+const peerIdFour = peerIdFromPrivateKey(privateKeyFromRaw(Buffer.from("04".padStart(64, "0"), "hex"))).toString();
 
 test("native CLI address policy requires TCP and pins outbound PeerId", () => {
   assert.equal(parseNativeListenAddress("/ip4/0.0.0.0/tcp/9140"), "/ip4/0.0.0.0/tcp/9140");
@@ -21,6 +25,23 @@ test("native CLI address policy requires TCP and pins outbound PeerId", () => {
   assert.throws(() => parseNativePeerAddress("/ip4/127.0.0.1/tcp/9140"), /pin exactly one/);
   assert.throws(() => parseNativeListenAddress(`/ip4/0.0.0.0/tcp/9140/p2p/${peerId}`), /must not include/);
   assert.throws(() => parseNativeListenAddress("/ip4/0.0.0.0/udp/9140"), /host \+ TCP/);
+});
+
+test("native peer failure-domain hooks separate same-provider candidates", () => {
+  const first = parseNativePeerAddress(`/ip4/10.0.1.1/tcp/9140/p2p/${peerId}`);
+  const sameProvider = parseNativePeerAddress(`/ip4/10.0.2.1/tcp/9140/p2p/${peerIdTwo}`);
+  const otherProvider = parseNativePeerAddress(`/ip4/10.0.3.1/tcp/9140/p2p/${peerIdThree}`);
+  const otherProviderSecond = parseNativePeerAddress(`/ip4/10.0.4.1/tcp/9140/p2p/${peerIdFour}`);
+  const groups = new Map([
+    [peerId, "provider-a"],
+    [peerIdTwo, "provider-a"],
+    [peerIdThree, "provider-b"],
+    [peerIdFour, "provider-b"]
+  ]);
+  const ordered = diversityOrderedNativePeers([first, sameProvider, otherProvider, otherProviderSecond], 0, groups);
+  assert.deepEqual(ordered.slice(0, 2).map((peer) => groups.get(peer.getComponents()[2]!.value!)), ["provider-a", "provider-b"]);
+  assert.deepEqual(parseNativePeerGroup(`${peerId}=asn-64500`), { peerId, group: "asn-64500" });
+  assert.throws(() => parseNativePeerGroup(`${peerId}=bad group`), /group label/);
 });
 
 test("native peer ordering interleaves subnet/host buckets and rotates the first group", () => {

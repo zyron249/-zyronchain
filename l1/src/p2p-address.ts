@@ -33,7 +33,32 @@ export function nativePeerDiversityBucket(peer: Multiaddr): string {
   return `host:${value}`;
 }
 
-export function diversityOrderedNativePeers(peers: readonly Multiaddr[], groupOffset = 0): Multiaddr[] {
+export function nativePeerId(peer: Multiaddr): string {
+  const component = peer.getComponents().find((item) => item.name === "p2p" && item.value);
+  if (!component?.value) throw new Error("Native peer has no pinned PeerId");
+  return component.value;
+}
+
+export function parseNativePeerGroup(value: string): { peerId: string; group: string } {
+  const separator = value.indexOf("=");
+  if (separator <= 0 || separator === value.length - 1) throw new Error("Native peer group must be <PeerId>=<group>");
+  const peerId = value.slice(0, separator);
+  const group = value.slice(separator + 1);
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(group)) throw new Error("Invalid native peer group label");
+  try {
+    // Reuse multiaddr's reviewed PeerId codec for syntax validation.
+    multiaddr(`/p2p/${peerId}`);
+  } catch {
+    throw new Error("Invalid native peer group PeerId");
+  }
+  return { peerId, group };
+}
+
+export function diversityOrderedNativePeers(
+  peers: readonly Multiaddr[],
+  groupOffset = 0,
+  peerGroups: ReadonlyMap<string, string> = new Map()
+): Multiaddr[] {
   const unique = new Map(peers.map((peer) => [peer.toString(), peer]));
   const groups = new Map<string, Multiaddr[]>();
   for (const peer of unique.values()) {
@@ -51,7 +76,34 @@ export function diversityOrderedNativePeers(peers: readonly Multiaddr[], groupOf
   for (let index = 0; index < rounds; index += 1) {
     for (const group of rotated) if (group[index]) result.push(group[index]!);
   }
-  return result;
+  if (peerGroups.size === 0) return result;
+
+  // Operator-supplied groups represent an independent failure domain such as
+  // ASN, cloud provider or common operator. Preserve topology interleaving and
+  // additionally avoid selecting the same named failure domain twice per round.
+  const remaining = [...result];
+  const groupedResult: Multiaddr[] = [];
+  while (remaining.length) {
+    const usedTopology = new Set<string>();
+    const usedOperatorGroups = new Set<string>();
+    let selectedThisRound = 0;
+    for (let index = 0; index < remaining.length;) {
+      const peer = remaining[index]!;
+      const topology = nativePeerDiversityBucket(peer);
+      const operatorGroup = peerGroups.get(nativePeerId(peer));
+      if (usedTopology.has(topology) || (operatorGroup !== undefined && usedOperatorGroups.has(operatorGroup))) {
+        index += 1;
+        continue;
+      }
+      groupedResult.push(peer);
+      usedTopology.add(topology);
+      if (operatorGroup !== undefined) usedOperatorGroups.add(operatorGroup);
+      remaining.splice(index, 1);
+      selectedThisRound += 1;
+    }
+    if (selectedThisRound === 0) groupedResult.push(remaining.shift()!);
+  }
+  return groupedResult;
 }
 
 function parseNativeTcpAddress(value: string, peer: boolean): Multiaddr {
