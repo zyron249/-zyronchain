@@ -4,13 +4,14 @@ import test from "node:test";
 import { createBlockAttestation, createRoundSkipVote, createSignedBlock } from "../src/block.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import {
+  activateNextValidatorSet,
   validateLightClientAnchor,
   verifyLightClientStateProof,
   verifyNextFinalizedHeader,
   type LightClientAnchor,
   type LightFinalityProof
 } from "../src/light-client.js";
-import { SparseMerkleState } from "../src/state-v2.js";
+import { SparseMerkleState, validatorScheduleKey } from "../src/state-v2.js";
 import type { Block, Validator } from "../src/types.js";
 
 const privateKeys = [1, 2, 3, 4].map((value) => value.toString(16).padStart(64, "0"));
@@ -142,4 +143,58 @@ test("light-client finality requires the certified predecessor round before acce
     ...proof,
     roundCertificate: roundCertificate.slice(0, 2)
   }), /Round skip quorum not reached/);
+});
+
+test("light client rotates validators only through the current finalized State-v2 schedule proof", () => {
+  const fifthPrivate = "05".padStart(64, "0");
+  const fifthPublic = publicKeyFromPrivate(fifthPrivate);
+  const nextValidators: Validator[] = [
+    { address: addressFromPublicKey(fifthPublic), publicKey: fifthPublic },
+    validators[1]!, validators[2]!, validators[3]!
+  ];
+  const activationHeight = 101;
+  const state = SparseMerkleState.empty()
+    .set("account:alice", { balanceAtoms: 7, nonce: 1 })
+    .set(validatorScheduleKey(activationHeight), { validators: nextValidators });
+  const anchor: LightClientAnchor = {
+    version: 1,
+    chainId: "zyron-light-test",
+    genesisHash: "11".repeat(32),
+    height: 100,
+    blockHash: "22".repeat(32),
+    stateRoot: state.root(),
+    timestampMs: 1_700_000_000_000,
+    protocolVersion: 2,
+    validators
+  };
+  const scheduleProof = state.prove(validatorScheduleKey(activationHeight));
+  const transitioned = activateNextValidatorSet(anchor, nextValidators, scheduleProof);
+  assert.deepEqual(transitioned.validators, nextValidators);
+
+  let block = createSignedBlock({
+    version: 2,
+    chainId: anchor.chainId,
+    height: activationHeight,
+    round: 0,
+    previousHash: anchor.blockHash,
+    timestampMs: anchor.timestampMs + 1_000,
+    transactions: [],
+    stateRoot: state.root(),
+    proposerPrivateKey: fifthPrivate,
+    proposerPublicKey: fifthPublic
+  });
+  block = { ...block, attestations: [fifthPrivate, privateKeys[1]!, privateKeys[2]!].map((key, index) =>
+    createBlockAttestation(block, key, nextValidators[index]!.publicKey)) };
+  const finality: LightFinalityProof = {
+    version: 1, header: block.header, hash: block.hash,
+    proposerPublicKey: block.proposerPublicKey!, signature: block.signature!,
+    roundCertificate: [], attestations: block.attestations
+  };
+  assert.throws(() => verifyNextFinalizedHeader(anchor, finality), /Unexpected light-client proposer/);
+  assert.equal(verifyNextFinalizedHeader(transitioned, finality).blockHash, block.hash);
+
+  const substituted = [...nextValidators];
+  substituted[0] = validators[0]!;
+  assert.throws(() => activateNextValidatorSet(anchor, substituted, scheduleProof), /transition proof/);
+  assert.throws(() => activateNextValidatorSet({ ...anchor, height: 99 }, nextValidators, scheduleProof), /transition proof/);
 });
