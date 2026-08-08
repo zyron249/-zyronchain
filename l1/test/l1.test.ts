@@ -592,6 +592,33 @@ test("peer sync handshakes on chain identity and incrementally replays finalized
   }
 });
 
+test("sync serving adapts block count to a byte budget instead of emitting an oversized batch", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-sync-budget-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    const service = new NodeService(store);
+    const finalized: ReturnType<ZyronChain["produceBlock"]>[] = [];
+    for (let height = 1; height <= 3; height += 1) {
+      const proposerKey = height % 2 === 1 ? validatorOnePrivate : validatorTwoPrivate;
+      let block = store.chain.produceBlock([], proposerKey, { timestampMs: genesis().timestampMs + (height * 100) });
+      block = store.chain.attestBlock(block, validatorOnePrivate);
+      block = store.chain.attestBlock(block, validatorTwoPrivate);
+      await service.acceptFinalizedBlock(block);
+      finalized.push(block);
+    }
+    const oneBlockBudget = Buffer.byteLength('{"blocks":[]}', "utf8") +
+      Buffer.byteLength(JSON.stringify(finalized[0]!), "utf8") + 1;
+    const firstBatch = service.blocks(1, 100, oneBlockBudget);
+    assert.equal(firstBatch.length, 1);
+    assert.equal(firstBatch[0]!.header.height, 1);
+    const secondBatch = service.blocks(2, 100, oneBlockBudget);
+    assert.equal(secondBatch.length, 1);
+    assert.equal(secondBatch[0]!.header.height, 2);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("certified view-change recovers liveness after a proposer misses its round", async () => {
   const firstDir = await mkdtemp(join(tmpdir(), "zyron-view-a-"));
   const secondDir = await mkdtemp(join(tmpdir(), "zyron-view-b-"));
