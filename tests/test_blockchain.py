@@ -1,4 +1,5 @@
 import pytest
+from zyron.block import Block
 from zyron.blockchain import Blockchain
 from zyron.wallet import Wallet
 from zyron.transaction import Transaction
@@ -110,7 +111,7 @@ def test_chain_rejects_inflated_mining_reward():
 
     block = chain.get_latest_block()
     reward_data = block.transactions[-1]
-    reward_data["amount"] = float(reward_data["amount"]) + 1_000_000
+    reward_data["amount_atoms"] += 1_000_000 * Transaction.ATOMS_PER_ZYN
 
     forged_reward = Transaction.from_dict(reward_data)
     reward_data["txid"] = forged_reward.calculate_txid()
@@ -265,3 +266,29 @@ def test_stale_transaction_is_rejected_from_mempool():
 
     with pytest.raises(Exception, match="too old"):
         chain.add_transaction(tx)
+
+
+def test_new_blocks_use_integer_timestamp_and_merkle_commitment():
+    chain = Blockchain()
+    miner = Wallet()
+    chain.mine_pending_transactions(miner.address)
+
+    block = chain.get_latest_block()
+    wire = chain.block_to_dict(block)
+
+    assert block.version == Block.CURRENT_VERSION
+    assert isinstance(wire["timestamp_ms"], int)
+    assert len(wire["merkle_root"]) == 64
+    assert "timestamp" not in wire
+    assert chain.is_chain_valid() is True
+
+
+def test_merkle_root_detects_transaction_tampering():
+    chain = Blockchain()
+    miner = Wallet()
+    chain.mine_pending_transactions(miner.address)
+    block = chain.get_latest_block()
+
+    block.transactions[-1]["amount_atoms"] += 1
+
+    assert chain.is_chain_valid() is False
