@@ -17,6 +17,7 @@ import {
   applyStateV2Transaction,
   stateV2FromLedgerSnapshot,
 } from "./state-v2.js";
+import { validateStateV2PortableBundle, type StateV2PortableBundleV1 } from "./state-v2-portable.js";
 import {
   assertAddress,
   assertExactKeys,
@@ -133,6 +134,37 @@ export class ZyronChain {
     chain.tipBlock = structuredClone(snapshot.tip);
     chain.currentHeight = snapshot.height;
     return chain;
+  }
+
+  /**
+   * Reconstructs the canonical full checkpoint from root-authenticated portable
+   * State-v2 records. The same external full-snapshot digest/tip anchor remains
+   * authoritative; portable state does not introduce a weaker trust mode.
+   */
+  static fromTrustedPortableState(
+    genesis: GenesisConfig,
+    tip: Block,
+    bundle: StateV2PortableBundleV1,
+    anchor: { tipHash: string; snapshotSha256: string }
+  ): ZyronChain {
+    validateBlockShape(tip);
+    const validated = validateStateV2PortableBundle(bundle, tip.header.stateRoot);
+    const activeProtocol = [...validated.view.governance.protocolSchedule]
+      .filter((entry) => entry.activationHeight <= tip.header.height)
+      .at(-1)?.protocolVersion;
+    if (activeProtocol !== 2) throw new Error("Portable State v2 checkpoint requires active protocol v2");
+    const base = new ZyronChain(genesis);
+    const snapshot: ChainSnapshotV1 = {
+      version: 1,
+      chainId: genesis.chainId,
+      genesisHash: base.genesisHash,
+      height: tip.header.height,
+      tip: structuredClone(tip),
+      state: validated.view.ledger,
+      validatorSchedule: validated.view.governance.validatorSchedule,
+      protocolSchedule: validated.view.governance.protocolSchedule
+    };
+    return ZyronChain.fromTrustedSnapshot(genesis, snapshot, anchor);
   }
 
   get height(): number {
