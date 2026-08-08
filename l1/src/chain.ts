@@ -8,7 +8,8 @@ import {
 } from "./block.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "./crypto.js";
 import { LedgerState } from "./state.js";
-import { validateTransactionShape } from "./transaction.js";
+import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
+import { assertHex } from "./codec.js";
 import type { Block, GenesisConfig, Transaction } from "./types.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
@@ -88,6 +89,17 @@ export class ZyronChain {
     this.state = nextState;
   }
 
+  validateProposal(block: Block, nowMs = Date.now()): void {
+    validateBlockEnvelope(block, this.tip, this.genesis.validators, nowMs, false);
+    if (canonicalJson(block).length > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
+    const nextState = this.validateAndApply(block.transactions, this.state);
+    if (block.header.stateRoot !== nextState.root()) throw new Error("State root mismatch");
+  }
+
+  validatePending(transactions: Transaction[]): void {
+    this.validateAndApply(transactions, this.state);
+  }
+
   private validateAndApply(transactions: Transaction[], startingState: LedgerState): LedgerState {
     const next = startingState.clone();
     const seen = new Set<string>();
@@ -108,18 +120,55 @@ export class ZyronChain {
 }
 
 function validateGenesis(genesis: GenesisConfig): void {
-  if (!/^[a-z0-9-]{3,64}$/.test(genesis.chainId)) throw new Error("Invalid chain ID");
+  assertPlainRecord(genesis, "genesis");
+  assertExactKeys(genesis, [
+    "chainId", "timestampMs", "validators", "activityOracles", "activityPool", "allocations"
+  ], "genesis");
+  if (typeof genesis.chainId !== "string" || !/^[a-z0-9-]{3,64}$/.test(genesis.chainId)) {
+    throw new Error("Invalid chain ID");
+  }
   if (!Number.isSafeInteger(genesis.timestampMs) || genesis.timestampMs < 0) {
     throw new Error("Invalid genesis timestamp");
   }
-  if (genesis.validators.length === 0) throw new Error("At least one validator is required");
+  if (!Array.isArray(genesis.validators) || genesis.validators.length === 0) {
+    throw new Error("At least one validator is required");
+  }
   const validators = new Set<string>();
   for (const validator of genesis.validators) {
+    assertPlainRecord(validator, "validator");
+    assertExactKeys(validator, ["address", "publicKey"], "validator");
+    assertAddress(validator.address);
+    if (typeof validator.publicKey !== "string") throw new Error("Invalid validator public key");
+    assertHex(validator.publicKey, 64, "validator publicKey");
     if (addressFromPublicKey(validator.publicKey) !== validator.address) {
       throw new Error("Validator address/public key mismatch");
     }
     if (validators.has(validator.address)) throw new Error("Duplicate validator");
     validators.add(validator.address);
   }
-  if (!genesis.activityOracles.length) throw new Error("At least one activity oracle is required");
+  if (!Array.isArray(genesis.activityOracles) || !genesis.activityOracles.length) {
+    throw new Error("At least one activity oracle is required");
+  }
+  const oracles = new Set<string>();
+  for (const oracle of genesis.activityOracles) {
+    if (typeof oracle !== "string") throw new Error("Invalid activity oracle");
+    assertHex(oracle, 64, "activity oracle");
+    if (oracles.has(oracle)) throw new Error("Duplicate activity oracle");
+    oracles.add(oracle);
+  }
+  assertAddress(genesis.activityPool);
+  if (!Array.isArray(genesis.allocations) || genesis.allocations.length === 0) {
+    throw new Error("Invalid allocations");
+  }
+  const allocated = new Set<string>();
+  for (const allocation of genesis.allocations) {
+    assertPlainRecord(allocation, "allocation");
+    assertExactKeys(allocation, ["address", "amountAtoms"], "allocation");
+    assertAddress(allocation.address);
+    if (!Number.isSafeInteger(allocation.amountAtoms) || allocation.amountAtoms < 0) {
+      throw new Error("Invalid genesis allocation");
+    }
+    if (allocated.has(allocation.address)) throw new Error("Duplicate genesis allocation");
+    allocated.add(allocation.address);
+  }
 }
