@@ -5,8 +5,10 @@ import { resolve } from "node:path";
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
 import { BLOCK_INTERVAL_MS, createRpcServer, NodeService, PeerClient, produceFinalizedBlock } from "./node.js";
 import { ChainStore, SigningJournal } from "./storage.js";
-import { MIN_VALIDATOR_UPDATE_DELAY, ZyronChain } from "./chain.js";
+import { MIN_PROTOCOL_UPDATE_DELAY, MIN_VALIDATOR_UPDATE_DELAY, ZyronChain } from "./chain.js";
 import {
+  createProtocolUpgrade,
+  createProtocolUpgradeApproval,
   createTransfer,
   createValidatorApproval,
   createValidatorSetUpdate,
@@ -24,6 +26,14 @@ interface ValidatorProposal {
   validators: Validator[];
 }
 
+interface ProtocolProposal {
+  chainId: string;
+  nonce: number;
+  sender: Address;
+  activationHeight: number;
+  protocolVersion: number;
+}
+
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (command === "keygen") return keygen(args);
@@ -32,6 +42,9 @@ async function main(): Promise<void> {
   if (command === "validator-proposal") return createValidatorProposalFile(args);
   if (command === "validator-approve") return approveValidatorProposal(args);
   if (command === "validator-submit") return submitValidatorProposal(args);
+  if (command === "protocol-proposal") return createProtocolProposalFile(args);
+  if (command === "protocol-approve") return approveProtocolProposal(args);
+  if (command === "protocol-submit") return submitProtocolProposal(args);
   if (command === "node") return runNode(args);
   usage();
   process.exitCode = 2;
@@ -251,6 +264,75 @@ async function submitValidatorProposal(args: string[]): Promise<void> {
   console.log(`Submitted validator update ${tx.txid}`);
 }
 
+async function createProtocolProposalFile(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--out", "--rpc", "--key", "--activation-height", "--protocol-version"]));
+  const output = resolve(requiredOption(args, "--out"));
+  const rpc = normalizeRpcUrl(requiredOption(args, "--rpc"));
+  const privateKey = await readPrivateKey(resolve(requiredOption(args, "--key")));
+  const publicKey = publicKeyFromPrivate(privateKey);
+  const sender = addressFromPublicKey(publicKey);
+  const activationHeight = parseSafeInteger(requiredOption(args, "--activation-height"), "activation-height");
+  const protocolVersion = parseSafeInteger(requiredOption(args, "--protocol-version"), "protocol-version");
+  if (protocolVersion < 1 || protocolVersion > 65_535) throw new Error("Protocol version must be between 1 and 65535");
+  const status = await fetchJson(`${rpc}/status`) as { chainId?: unknown; height?: unknown };
+  const nonceResult = await fetchJson(`${rpc}/nonce/${sender}`) as { nonce?: unknown };
+  if (typeof status.chainId !== "string" || !Number.isSafeInteger(status.height) || !Number.isSafeInteger(nonceResult.nonce)) {
+    throw new Error("RPC returned invalid protocol proposal context");
+  }
+  if (activationHeight < Number(status.height) + 1 + MIN_PROTOCOL_UPDATE_DELAY) {
+    throw new Error(`Activation height must be at least ${Number(status.height) + 1 + MIN_PROTOCOL_UPDATE_DELAY}`);
+  }
+  const proposal: ProtocolProposal = {
+    chainId: status.chainId,
+    nonce: Number(nonceResult.nonce) + 1,
+    sender,
+    activationHeight,
+    protocolVersion
+  };
+  await writeFile(output, `${JSON.stringify(proposal, null, 2)}\n`, { flag: "wx", mode: 0o644 });
+  console.log(`Protocol proposal written: ${output}`);
+}
+
+async function approveProtocolProposal(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--proposal", "--key", "--out"]));
+  const proposal = await readProtocolProposal(resolve(requiredOption(args, "--proposal")));
+  const privateKey = await readPrivateKey(resolve(requiredOption(args, "--key")));
+  const publicKey = publicKeyFromPrivate(privateKey);
+  const approval = createProtocolUpgradeApproval(proposal, privateKey, publicKey);
+  const output = resolve(requiredOption(args, "--out"));
+  await writeFile(output, `${JSON.stringify(approval, null, 2)}\n`, { flag: "wx", mode: 0o644 });
+  console.log(`Protocol approval written: ${output}`);
+}
+
+async function submitProtocolProposal(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--proposal", "--approval", "--key", "--rpc"]));
+  const proposal = await readProtocolProposal(resolve(requiredOption(args, "--proposal")));
+  const privateKey = await readPrivateKey(resolve(requiredOption(args, "--key")));
+  const publicKey = publicKeyFromPrivate(privateKey);
+  if (addressFromPublicKey(publicKey) !== proposal.sender) throw new Error("Initiator key does not match protocol proposal sender");
+  const approvalPaths = options(args, "--approval");
+  if (!approvalPaths.length) throw new Error("At least one --approval is required");
+  const approvals: ValidatorApproval[] = [];
+  for (const path of approvalPaths) approvals.push(await readValidatorApproval(resolve(path)));
+  const tx = createProtocolUpgrade(
+    { ...proposal, approvals, timestampMs: Date.now() },
+    privateKey,
+    publicKey
+  );
+  validateTransactionShape(tx);
+  const rpc = normalizeRpcUrl(requiredOption(args, "--rpc"));
+  const response = await fetch(`${rpc}/tx`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(tx),
+    signal: AbortSignal.timeout(8_000)
+  });
+  if (!response.ok) throw new Error(`RPC rejected protocol update: HTTP ${response.status} ${await response.text()}`);
+  const result = await response.json() as { txid?: unknown };
+  if (result.txid !== tx.txid) throw new Error("RPC protocol update transaction ID mismatch");
+  console.log(`Submitted protocol update ${tx.txid}`);
+}
+
 function option(args: string[], name: string): string | undefined {
   const values = options(args, name);
   if (values.length > 1) throw new Error(`${name} may only be supplied once`);
@@ -367,6 +449,25 @@ async function readValidatorApproval(path: string): Promise<ValidatorApproval> {
   return { validator: value.validator, publicKey: value.publicKey, signature: value.signature };
 }
 
+async function readProtocolProposal(path: string): Promise<ProtocolProposal> {
+  const value = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  assertObjectFields(value, ["chainId", "nonce", "sender", "activationHeight", "protocolVersion"], "protocol proposal");
+  if (typeof value.chainId !== "string" || !Number.isSafeInteger(value.nonce) || !Number.isSafeInteger(value.activationHeight) ||
+      !Number.isSafeInteger(value.protocolVersion) || typeof value.sender !== "string") {
+    throw new Error("Invalid protocol proposal");
+  }
+  assertAddress(value.sender);
+  const protocolVersion = Number(value.protocolVersion);
+  if (protocolVersion < 1 || protocolVersion > 65_535) throw new Error("Invalid protocol proposal version");
+  return {
+    chainId: value.chainId,
+    nonce: Number(value.nonce),
+    sender: value.sender,
+    activationHeight: Number(value.activationHeight),
+    protocolVersion
+  };
+}
+
 function assertObjectFields(value: Record<string, unknown>, expected: string[], name: string): void {
   const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
@@ -392,6 +493,9 @@ function usage(): void {
   console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");
   console.log("  zyron-l1 validator-approve --proposal update.json --key validator.json --out approval.json");
   console.log("  zyron-l1 validator-submit --proposal update.json --approval approval-a.json [...] --key initiator.json --rpc <url>");
+  console.log("  zyron-l1 protocol-proposal --out upgrade.json --rpc <url> --key initiator.json --activation-height <n> --protocol-version <n>");
+  console.log("  zyron-l1 protocol-approve --proposal upgrade.json --key validator.json --out approval.json");
+  console.log("  zyron-l1 protocol-submit --proposal upgrade.json --approval approval-a.json [...] --key initiator.json --rpc <url>");
   console.log("Validator key files contain secrets. Keep them mode 0600 and never commit them.");
 }
 
