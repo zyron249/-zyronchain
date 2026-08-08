@@ -1,5 +1,6 @@
 import { canonicalJson, sha256Hex } from "./codec.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
+import { assertAddress, assertExactKeys, assertPlainRecord } from "./transaction.js";
 import type { ActivitySettlementTx, Address, GenesisConfig, ProtocolUpgradeTx, Transaction, TransferTx, ValidatorSetUpdateTx } from "./types.js";
 
 interface AccountState {
@@ -38,6 +39,42 @@ export class LedgerState {
       state.credit(allocation.address, allocation.amountAtoms);
     }
     return state;
+  }
+
+  static fromSnapshot(value: unknown): LedgerState {
+    assertPlainRecord(value, "ledger snapshot");
+    assertExactKeys(value, ["accounts", "settledActivityEpochs"], "ledger snapshot");
+    if (!Array.isArray(value.accounts) || !Array.isArray(value.settledActivityEpochs)) {
+      throw new Error("Invalid ledger snapshot");
+    }
+    const accounts = new Map<Address, AccountState>();
+    let supply = 0;
+    let previousAddress = "";
+    for (const candidate of value.accounts) {
+      assertPlainRecord(candidate, "ledger snapshot account");
+      assertExactKeys(candidate, ["address", "balanceAtoms", "nonce"], "ledger snapshot account");
+      if (typeof candidate.address !== "string") throw new Error("Invalid ledger snapshot address");
+      assertAddress(candidate.address);
+      if (candidate.address <= previousAddress) throw new Error("Ledger snapshot accounts are not canonical");
+      previousAddress = candidate.address;
+      if (!Number.isSafeInteger(candidate.balanceAtoms) || Number(candidate.balanceAtoms) < 0 ||
+          !Number.isSafeInteger(candidate.nonce) || Number(candidate.nonce) < 0) {
+        throw new Error("Invalid ledger snapshot account state");
+      }
+      supply += Number(candidate.balanceAtoms);
+      if (!Number.isSafeInteger(supply) || supply > MAX_SUPPLY_ATOMS) throw new Error("Ledger snapshot supply exceeds maximum");
+      accounts.set(candidate.address, { balanceAtoms: Number(candidate.balanceAtoms), nonce: Number(candidate.nonce) });
+    }
+    const epochs = new Set<number>();
+    let previousEpoch = -1;
+    for (const candidate of value.settledActivityEpochs) {
+      if (!Number.isSafeInteger(candidate) || Number(candidate) < 0 || Number(candidate) <= previousEpoch) {
+        throw new Error("Ledger snapshot activity epochs are not canonical");
+      }
+      previousEpoch = Number(candidate);
+      epochs.add(Number(candidate));
+    }
+    return new LedgerState(accounts, epochs);
   }
 
   clone(): LedgerState {
