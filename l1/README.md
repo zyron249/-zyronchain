@@ -273,10 +273,17 @@ node dist/src/cli.js state-fetch-install \
   --sha256 <independently-trusted-snapshot-digest>
 ```
 
-The current client retains completed chunks in memory only for the lifetime of this command;
-cross-process resume and streaming materialization to disk are still required before large
-mainnet state sync can be considered complete. The server also bounds each chunk, authenticates
-Noise/chain identity, rate-limits each PeerId, and keeps at most two finalized portable states.
+The CLI stages completed chunks in a sibling directory whose name is bound to the external
+tip+digest anchor. Each chunk is checksummed, fsynced and range-indexed; restarting the command
+revalidates that manifest and continues from the first missing range instead of trusting or
+re-downloading prior bytes. This staging area is deliberately **not** node state. A complete
+download is still reconstructed and checked against the Merkle root, governance/finality and
+external full-snapshot digest before the existing atomic installer can publish the target data
+directory; poisoned completed bundles are discarded. Successful installation removes the staging
+directory. The server also bounds each chunk, authenticates Noise/chain identity, rate-limits each
+PeerId, and keeps at most two finalized portable states. Large-state validation still materializes
+the final portable bundle in memory, and serving old anchored states does not yet survive a source
+node restart/tip-cache loss; those remain scalability/availability work before mainnet state sync.
 
 Local recovery checkpoints are different: they are created only after the finalized block
 log is durable, bind the full chain/genesis/tip/state/governance snapshot, and are revalidated
