@@ -78,11 +78,22 @@ export interface Block {
   hash: string;
   proposerPublicKey: string | null;
   signature: string | null;
+  roundCertificate: RoundSkipVote[];
   attestations: BlockAttestation[];
 }
 
 export interface BlockAttestation {
   validator: Address;
   publicKey: string;
+  signature: string;
+}
+
+export interface RoundSkipVote {
+  validator: Address;
+  publicKey: string;
+  chainId: string;
+  height: number;
+  round: number;
+  previousHash: string;
   signature: string;
 }
