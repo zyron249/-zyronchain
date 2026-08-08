@@ -6,17 +6,25 @@ import {
   expectedValidator,
   validateBlockEnvelope
 } from "./block.js";
-import { addressFromPublicKey, publicKeyFromPrivate } from "./crypto.js";
+import { addressFromPublicKey, publicKeyFromPrivate, verifyCanonical } from "./crypto.js";
 import { LedgerState } from "./state.js";
-import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
+import {
+  assertAddress,
+  assertExactKeys,
+  assertPlainRecord,
+  validateTransactionShape,
+  validatorUpdateApprovalPayload
+} from "./transaction.js";
 import { assertHex } from "./codec.js";
-import type { Block, GenesisConfig, RoundSkipVote, Transaction } from "./types.js";
+import type { Block, GenesisConfig, RoundSkipVote, Transaction, Validator, ValidatorSetUpdateTx } from "./types.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
+export const MIN_VALIDATOR_UPDATE_DELAY = 100;
 
 export class ZyronChain {
   readonly genesis: GenesisConfig;
   private readonly blocks: Block[];
+  private readonly validatorSchedule = new Map<number, Validator[]>();
   private state: LedgerState;
 
   constructor(genesis: GenesisConfig) {
@@ -24,6 +32,7 @@ export class ZyronChain {
     this.genesis = structuredClone(genesis);
     this.state = LedgerState.fromGenesis(genesis);
     this.blocks = [createGenesisBlock(genesis, this.state.root())];
+    this.validatorSchedule.set(0, structuredClone(genesis.validators));
   }
 
   get height(): number {
@@ -42,9 +51,22 @@ export class ZyronChain {
     return this.blocks;
   }
 
+  validatorsAt(height: number): Validator[] {
+    if (!Number.isSafeInteger(height) || height < 0) throw new Error("Invalid validator height");
+    let selected = this.genesis.validators;
+    let selectedHeight = 0;
+    for (const [activationHeight, validators] of this.validatorSchedule) {
+      if (activationHeight <= height && activationHeight >= selectedHeight) {
+        selected = validators;
+        selectedHeight = activationHeight;
+      }
+    }
+    return structuredClone(selected);
+  }
+
   attestBlock(block: Block, validatorPrivateKey: string): Block {
     const publicKey = publicKeyFromPrivate(validatorPrivateKey);
-    const validator = this.genesis.validators.find((item) => item.publicKey === publicKey);
+    const validator = this.validatorsAt(block.header.height).find((item) => item.publicKey === publicKey);
     if (!validator) throw new Error("Attestor is not in validator set");
     if (block.attestations.some((item) => item.validator === validator.address)) {
       throw new Error("Validator already attested block");
@@ -61,12 +83,13 @@ export class ZyronChain {
   ): Block {
     const round = options.round ?? 0;
     const publicKey = publicKeyFromPrivate(proposerPrivateKey);
-    const expected = expectedValidator(this.genesis.validators, this.height + 1, round);
+    const validators = this.validatorsAt(this.height + 1);
+    const expected = expectedValidator(validators, this.height + 1, round);
     if (publicKey !== expected.publicKey || addressFromPublicKey(publicKey) !== expected.address) {
       throw new Error("Private key is not the expected proposer");
     }
     const timestampMs = options.timestampMs ?? Math.max(Date.now(), this.tip.header.timestampMs + 1);
-    const nextState = this.validateAndApply(transactions, this.state);
+    const nextState = this.validateAndApply(transactions, this.state, this.height + 1);
     const block = createSignedBlock({
       chainId: this.genesis.chainId,
       height: this.height + 1,
@@ -79,28 +102,30 @@ export class ZyronChain {
       proposerPublicKey: publicKey,
       roundCertificate: options.roundCertificate ?? []
     });
-    validateBlockEnvelope(block, this.tip, this.genesis.validators, timestampMs, false);
+    validateBlockEnvelope(block, this.tip, validators, timestampMs, false);
     return block;
   }
 
   acceptBlock(block: Block, nowMs = Date.now()): void {
-    validateBlockEnvelope(block, this.tip, this.genesis.validators, nowMs);
+    const validators = this.validatorsAt(block.header.height);
+    validateBlockEnvelope(block, this.tip, validators, nowMs);
     if (canonicalJson(block).length > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
-    const nextState = this.validateAndApply(block.transactions, this.state);
+    const nextState = this.validateAndApply(block.transactions, this.state, block.header.height);
     if (block.header.stateRoot !== nextState.root()) throw new Error("State root mismatch");
     this.blocks.push(structuredClone(block));
     this.state = nextState;
+    this.recordValidatorUpdates(block.transactions);
   }
 
   validateProposal(block: Block, nowMs = Date.now()): void {
-    validateBlockEnvelope(block, this.tip, this.genesis.validators, nowMs, false);
+    validateBlockEnvelope(block, this.tip, this.validatorsAt(block.header.height), nowMs, false);
     if (canonicalJson(block).length > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
-    const nextState = this.validateAndApply(block.transactions, this.state);
+    const nextState = this.validateAndApply(block.transactions, this.state, block.header.height);
     if (block.header.stateRoot !== nextState.root()) throw new Error("State root mismatch");
   }
 
   validatePending(transactions: Transaction[]): void {
-    this.validateAndApply(transactions, this.state);
+    this.validateAndApply(transactions, this.state, this.height + 1);
   }
 
   selectValidPending(transactions: Transaction[], limit: number): Transaction[] {
@@ -119,12 +144,18 @@ export class ZyronChain {
     const next = this.state.clone();
     const selected: Transaction[] = [];
     const seen = new Set<string>();
+    let lastActivation = this.lastValidatorActivationHeight();
+    const currentValidators = this.validatorsAt(this.height + 1);
     for (const tx of ordered) {
       if (selected.length >= limit) break;
       try {
         if (tx.chainId !== this.genesis.chainId || seen.has(tx.txid)) continue;
         validateTransactionShape(tx);
         if (tx.kind === "activity_settlement" && !this.genesis.activityOracles.includes(tx.publicKey)) continue;
+        if (tx.kind === "validator_update") {
+          validateValidatorUpdateAuthorization(tx, currentValidators, this.height + 1, lastActivation);
+          lastActivation = tx.activationHeight;
+        }
         next.apply(tx, this.genesis.activityPool);
         selected.push(tx);
         seen.add(tx.txid);
@@ -135,9 +166,11 @@ export class ZyronChain {
     return selected;
   }
 
-  private validateAndApply(transactions: Transaction[], startingState: LedgerState): LedgerState {
+  private validateAndApply(transactions: Transaction[], startingState: LedgerState, blockHeight: number): LedgerState {
     const next = startingState.clone();
     const seen = new Set<string>();
+    const currentValidators = this.validatorsAt(blockHeight);
+    let lastActivation = this.lastValidatorActivationHeight();
     for (const tx of transactions) {
       if (tx.chainId !== this.genesis.chainId) throw new Error("Wrong transaction chain ID");
       if (seen.has(tx.txid)) throw new Error("Duplicate transaction in block");
@@ -148,10 +181,54 @@ export class ZyronChain {
           throw new Error("Unauthorized activity oracle");
         }
       }
+      if (tx.kind === "validator_update") {
+        validateValidatorUpdateAuthorization(tx, currentValidators, blockHeight, lastActivation);
+        lastActivation = tx.activationHeight;
+      }
       next.apply(tx, this.genesis.activityPool);
     }
     return next;
   }
+
+  private recordValidatorUpdates(transactions: Transaction[]): void {
+    for (const tx of transactions) {
+      if (tx.kind === "validator_update") {
+        this.validatorSchedule.set(tx.activationHeight, structuredClone(tx.validators));
+      }
+    }
+  }
+
+  private lastValidatorActivationHeight(): number {
+    return Math.max(...this.validatorSchedule.keys());
+  }
+}
+
+function validateValidatorUpdateAuthorization(
+  tx: ValidatorSetUpdateTx,
+  currentValidators: Validator[],
+  blockHeight: number,
+  lastActivationHeight: number
+): void {
+  if (tx.activationHeight < blockHeight + MIN_VALIDATOR_UPDATE_DELAY) {
+    throw new Error("Validator update activation is too soon");
+  }
+  if (tx.activationHeight <= lastActivationHeight) throw new Error("Validator activation height must increase");
+  const allowed = new Map(currentValidators.map((validator) => [validator.address, validator.publicKey]));
+  if (!allowed.has(tx.sender)) throw new Error("Validator update initiator is not active");
+  const payload = validatorUpdateApprovalPayload(tx);
+  const seen = new Set<string>();
+  let valid = 0;
+  for (const approval of tx.approvals) {
+    if (seen.has(approval.validator)) throw new Error("Duplicate validator update approval");
+    seen.add(approval.validator);
+    if (allowed.get(approval.validator) !== approval.publicKey) throw new Error("Unknown validator update approver");
+    if (!verifyCanonical(payload, approval.signature, approval.publicKey)) {
+      throw new Error("Invalid validator update approval");
+    }
+    valid += 1;
+  }
+  const quorum = Math.floor((currentValidators.length * 2) / 3) + 1;
+  if (valid < quorum) throw new Error(`Validator update quorum not reached: ${valid}/${quorum}`);
 }
 
 function validateGenesis(genesis: GenesisConfig): void {
