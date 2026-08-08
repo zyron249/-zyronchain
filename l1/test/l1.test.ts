@@ -4,7 +4,7 @@ import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { sha256Hex } from "../src/codec.js";
+import { canonicalJson, sha256Hex } from "../src/codec.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { Mempool } from "../src/mempool.js";
 import { ZyronChain } from "../src/chain.js";
@@ -262,7 +262,7 @@ test("mempool blocks duplicate sender nonces and orders by fee", () => {
   const pool = new Mempool();
   pool.add(first);
   assert.throws(() => pool.add(conflict), /Conflicting sender nonce/);
-  assert.equal(pool.select(10)[0]?.txid, first.txid);
+  assert.equal(pool.values()[0]?.txid, first.txid);
 });
 
 test("wire schemas reject unknown transaction and block fields", () => {
@@ -305,9 +305,26 @@ test("mempool selection restores sender nonce order even when later nonce pays m
   const pool = new Mempool();
   pool.add(nonceTwo);
   pool.add(nonceOne);
-  const selected = pool.selectValid(10, (items) => chain.validatePending(items));
-  assert.deepEqual(selected.map((tx) => tx.nonce), [1, 2]);
   assert.deepEqual(chain.selectValidPending(pool.values(), 10).map((tx) => tx.nonce), [1, 2]);
+});
+
+test("block assembly respects a transaction byte budget without breaking nonce order", () => {
+  const chain = new ZyronChain(genesis());
+  const nonceOne = createTransfer(
+    { chainId: genesis().chainId, nonce: 1, sender: alice, receiver: bob, amountAtoms: 1, feeAtoms: 1, timestampMs: 100 },
+    alicePrivate,
+    alicePublic
+  );
+  const nonceTwo = createTransfer(
+    { chainId: genesis().chainId, nonce: 2, sender: alice, receiver: bob, amountAtoms: 1, feeAtoms: 1, timestampMs: 101 },
+    alicePrivate,
+    alicePublic
+  );
+  const oneTransactionBudget = Buffer.byteLength(canonicalJson(nonceOne), "utf8");
+  const selected = chain.selectValidPending([nonceTwo, nonceOne], 10, oneTransactionBudget);
+  assert.deepEqual(selected.map((tx) => tx.nonce), [1]);
+  const block = chain.produceBlock(selected, validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
+  assert.equal(block.transactions.length, 1);
 });
 
 test("finalized conflicting nonce prunes stale mempool entries instead of leaking capacity", async () => {
