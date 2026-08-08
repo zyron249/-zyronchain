@@ -201,6 +201,26 @@ node dist/src/cli.js protocol-submit --proposal upgrade.json --approval protocol
 
 Scheduling version 2 does not make a version-1 binary understand version 2. The upgraded binary must be deployed and verified before the activation height. This separation is deliberate: governance authorizes when a protocol may activate; node software determines which protocol semantics it actually implements.
 
+## Light-client verification boundary
+
+`src/light-client.ts` provides a storage/network-independent verification core for
+clients that start from an **independently authenticated** anchor. The anchor contains
+chain/genesis identity, finalized height/hash/state root, active protocol version and
+the exact validator set. A peer response is never sufficient to establish this anchor.
+
+`verifyNextFinalizedHeader` checks hash continuity, proposer signature/schedule,
+certified view changes and the unique >2/3 finality quorum before advancing the anchor.
+`verifyLightClientStateProof` then checks State-v2 membership/non-membership against
+that finalized state root. At validator activation height A, call
+`activateNextValidatorSet` at finalized height A-1 with the State-v2 proof for
+`validator-schedule:A`; peer-supplied validator metadata without that proof is rejected.
+
+Protocol-version changes are a stricter compatibility boundary: this verifier does not
+guess future protocol semantics. Before crossing an activation to semantics the client
+does not implement, obtain/review an updated client and independently trusted
+compatibility anchor. The deterministic cross-implementation vector lives at
+`test-vectors/light-client-v1.json` and contains public data/signatures only—no private keys.
+
 ## RPC surface
 
 | Method | Path | Purpose |

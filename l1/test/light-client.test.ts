@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
-import { createBlockAttestation, createRoundSkipVote, createSignedBlock } from "../src/block.js";
+import { createBlockAttestation, createRoundSkipVote, createSignedBlock, validatorQuorumSize } from "../src/block.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import {
   activateNextValidatorSet,
@@ -11,7 +13,7 @@ import {
   type LightClientAnchor,
   type LightFinalityProof
 } from "../src/light-client.js";
-import { SparseMerkleState, validatorScheduleKey } from "../src/state-v2.js";
+import { SparseMerkleState, validatorScheduleKey, type SparseMerkleProof } from "../src/state-v2.js";
 import type { Block, Validator } from "../src/types.js";
 
 const privateKeys = [1, 2, 3, 4].map((value) => value.toString(16).padStart(64, "0"));
@@ -197,4 +199,52 @@ test("light client rotates validators only through the current finalized State-v
   substituted[0] = validators[0]!;
   assert.throws(() => activateNextValidatorSet(anchor, substituted, scheduleProof), /transition proof/);
   assert.throws(() => activateNextValidatorSet({ ...anchor, height: 99 }, nextValidators, scheduleProof), /transition proof/);
+});
+
+test("light-client portable vector reproduces finalized anchor and State-v2 proof", () => {
+  const vector = JSON.parse(readFileSync(join(process.cwd(), "test-vectors/light-client-v1.json"), "utf8")) as {
+    version: number;
+    anchor: unknown;
+    finalityProof: unknown;
+    expectedNext: LightClientAnchor;
+    stateProof: { key: string; value: unknown; proof: SparseMerkleProof };
+  };
+  assert.equal(vector.version, 1);
+  const next = verifyNextFinalizedHeader(vector.anchor, vector.finalityProof);
+  assert.deepEqual(next, vector.expectedNext);
+  assert.equal(verifyLightClientStateProof(next, vector.stateProof.key, vector.stateProof.value, vector.stateProof.proof), true);
+});
+
+test("property: light-client finality accepts exactly the >2/3 quorum boundary", () => {
+  const allPrivate = Array.from({ length: 100 }, (_, index) => (index + 1).toString(16).padStart(64, "0"));
+  const allValidators = allPrivate.map((key) => {
+    const publicKey = publicKeyFromPrivate(key);
+    return { address: addressFromPublicKey(publicKey), publicKey } as Validator;
+  });
+  let seed = 0x5a17c0de;
+  for (let iteration = 0; iteration < 30; iteration += 1) {
+    seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
+    const count = (seed % 100) + 1;
+    const active = allValidators.slice(0, count);
+    const anchor: LightClientAnchor = {
+      version: 1, chainId: "zyron-light-property", genesisHash: "11".repeat(32), height: 0,
+      blockHash: "22".repeat(32), stateRoot: "33".repeat(32), timestampMs: 1_700_000_000_000,
+      protocolVersion: 2, validators: active
+    };
+    let block = createSignedBlock({
+      version: 2, chainId: anchor.chainId, height: 1, round: 0, previousHash: anchor.blockHash,
+      timestampMs: anchor.timestampMs + 1, transactions: [], stateRoot: "44".repeat(32),
+      proposerPrivateKey: allPrivate[0]!, proposerPublicKey: active[0]!.publicKey
+    });
+    const quorum = validatorQuorumSize(count);
+    const attestations = allPrivate.slice(0, quorum).map((key, index) =>
+      createBlockAttestation(block, key, active[index]!.publicKey));
+    block = { ...block, attestations };
+    const proof: LightFinalityProof = {
+      version: 1, header: block.header, hash: block.hash, proposerPublicKey: block.proposerPublicKey!,
+      signature: block.signature!, roundCertificate: [], attestations
+    };
+    assert.equal(verifyNextFinalizedHeader(anchor, proof).blockHash, block.hash);
+    assert.throws(() => verifyNextFinalizedHeader(anchor, { ...proof, attestations: attestations.slice(0, -1) }), /quorum/i);
+  }
 });
