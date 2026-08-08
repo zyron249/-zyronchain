@@ -102,7 +102,10 @@ export async function syncP2PFrom(
         await service.acceptFinalizedBlock(block);
         accepted += 1;
       }
-      if (service.status().height >= response.status.height) return accepted;
+      if (service.status().height >= response.status.height) {
+        if (service.status().tipHash !== response.status.tipHash) throw new Error("Native sync peer advertised a false tip");
+        return accepted;
+      }
     } catch (error) {
       stream.abort(error instanceof Error ? error : new Error("Native sync protocol failure"));
       throw error;
