@@ -21,6 +21,7 @@ import { ChainStore, SigningJournal } from "../src/storage.js";
 import { stateV2FromLedgerSnapshot } from "../src/state-v2.js";
 import { LedgerState } from "../src/state.js";
 import { createSignedPeerRecord, loadOrCreateNodeIdentity, signPeerRequest } from "../src/peer-identity.js";
+import { PeerReputationStore } from "../src/peer-reputation.js";
 import { createRpcServer, NodeService, PeerClient, produceFinalizedBlock } from "../src/node.js";
 import type { GenesisConfig } from "../src/types.js";
 
@@ -937,9 +938,13 @@ test("any-peer sync ignores a wrong-chain candidate and converges from an honest
       return `http://127.0.0.1:${address.port}`;
     });
     const target = new NodeService(await ChainStore.open(genesis(), targetDir));
-    const accepted = await new PeerClient(urls).syncAny(target);
+    const reputation = await PeerReputationStore.open(targetDir);
+    const accepted = await new PeerClient(urls, undefined, undefined, reputation).syncAny(target);
     assert.equal(accepted, 1);
     assert.equal(target.status().tipHash, source.status().tipHash);
+    const reopenedReputation = await PeerReputationStore.open(targetDir);
+    assert.equal(reopenedReputation.failureCount(urls[0]!), 1);
+    assert.equal(reopenedReputation.failureCount(urls[1]!), 0);
   } finally {
     for (const server of servers) {
       if (server.listening) {

@@ -6,6 +6,7 @@ import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "
 import { BLOCK_INTERVAL_MS, createRpcServer, NodeService, PeerClient, produceFinalizedBlock } from "./node.js";
 import { ChainStore, SigningJournal } from "./storage.js";
 import { createSignedPeerRecord, loadOrCreateNodeIdentity } from "./peer-identity.js";
+import { PeerReputationStore } from "./peer-reputation.js";
 import { MIN_PROTOCOL_UPDATE_DELAY, MIN_VALIDATOR_UPDATE_DELAY, ZyronChain } from "./chain.js";
 import {
   createProtocolUpgrade,
@@ -141,11 +142,12 @@ async function runNode(args: string[]): Promise<void> {
   const identity = (peerUrls.length || advertisedPeerUrls.length || trustedPeerPublicKeys.length)
     ? await loadOrCreateNodeIdentity(resolve(dataDir))
     : undefined;
+  const peerReputation = peerUrls.length ? await PeerReputationStore.open(resolve(dataDir)) : undefined;
   const peers = new PeerClient(peerUrls, peerAuthToken, identity ? {
     identity,
     chainId: service.status().chainId,
     genesisHash: service.status().genesisHash
-  } : undefined);
+  } : undefined, peerReputation);
   const peerRecord = identity ? createSignedPeerRecord(identity, {
     chainId: service.status().chainId,
     genesisHash: service.status().genesisHash,
