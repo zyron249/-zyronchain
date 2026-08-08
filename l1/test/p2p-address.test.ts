@@ -59,3 +59,16 @@ test("native peer ordering interleaves subnet/host buckets and rotates the first
     ["ipv4:10.20.31.0/24", "host:node.example", "ipv4:10.20.30.0/24"]
   );
 });
+
+test("native IPv6 diversity groups one /64 instead of treating every address as independent", () => {
+  const same64a = parseNativePeerAddress(`/ip6/2001:4860:4860:0::1/tcp/9140/p2p/${peerId}`);
+  const same64b = parseNativePeerAddress(`/ip6/2001:4860:4860:0::abcd/tcp/9140/p2p/${peerIdTwo}`);
+  const other64 = parseNativePeerAddress(`/ip6/2001:4860:4860:1::1/tcp/9140/p2p/${peerIdThree}`);
+  assert.equal(nativePeerDiversityBucket(same64a), "ipv6:2001:4860:4860:0000/64");
+  assert.equal(nativePeerDiversityBucket(same64b), nativePeerDiversityBucket(same64a));
+  assert.notEqual(nativePeerDiversityBucket(other64), nativePeerDiversityBucket(same64a));
+  assert.deepEqual(
+    diversityOrderedNativePeers([same64a, same64b, other64]).map((peer) => peer.toString()),
+    [same64a, other64, same64b].map((peer) => peer.toString())
+  );
+});
