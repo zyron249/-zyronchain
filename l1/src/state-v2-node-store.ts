@@ -4,10 +4,16 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 
 import { canonicalJson, sha256Hex } from "./codec.js";
-import type { StateV2NodeRecord, StateV2NodeResolver } from "./state-v2.js";
+import { stateV2KeyHash, type StateV2NodeRecord, type StateV2NodeResolver } from "./state-v2.js";
 
 interface StoredNodeRow {
   record: string;
+  checksum: string;
+}
+
+interface StoredSemanticKeyRow {
+  key_hash: string;
+  key: string;
   checksum: string;
 }
 
@@ -24,7 +30,11 @@ export class StateV2NodeObjectStore {
   private readonly cache = new Map<string, StateV2NodeRecord>();
   private readonly getStatement: Database.Statement<[string], StoredNodeRow>;
   private readonly insertStatement: Database.Statement<[string, string, string]>;
+  private readonly getSemanticKeyStatement: Database.Statement<[string], StoredSemanticKeyRow>;
+  private readonly insertSemanticKeyStatement: Database.Statement<[string, string, string]>;
+  private readonly allSemanticKeysStatement: Database.Statement<[], StoredSemanticKeyRow>;
   private readonly writeBatch: (records: readonly StateV2NodeRecord[]) => void;
+  private readonly writeSemanticKeyBatch: (keys: readonly string[]) => void;
 
   private constructor(
     readonly path: string,
@@ -33,10 +43,19 @@ export class StateV2NodeObjectStore {
   ) {
     this.getStatement = database.prepare("SELECT record, checksum FROM nodes WHERE hash = ?");
     this.insertStatement = database.prepare("INSERT OR IGNORE INTO nodes(hash, record, checksum) VALUES (?, ?, ?)");
+    this.getSemanticKeyStatement = database.prepare("SELECT key_hash, key, checksum FROM semantic_keys WHERE key_hash = ?");
+    this.insertSemanticKeyStatement = database.prepare(
+      "INSERT OR IGNORE INTO semantic_keys(key_hash, key, checksum) VALUES (?, ?, ?)"
+    );
+    this.allSemanticKeysStatement = database.prepare("SELECT key_hash, key, checksum FROM semantic_keys ORDER BY key_hash");
     const transaction = database.transaction((records: readonly StateV2NodeRecord[]) => {
       for (const record of records) this.putOne(record);
     });
     this.writeBatch = (records) => transaction.immediate(records);
+    const semanticTransaction = database.transaction((keys: readonly string[]) => {
+      for (const key of keys) this.putSemanticKey(key);
+    });
+    this.writeSemanticKeyBatch = (keys) => semanticTransaction.immediate(keys);
   }
 
   static async open(dataDir: string, cacheLimit = DEFAULT_STATE_V2_NODE_CACHE): Promise<StateV2NodeObjectStore> {
@@ -55,6 +74,13 @@ export class StateV2NodeObjectStore {
         CREATE TABLE IF NOT EXISTS nodes (
           hash TEXT PRIMARY KEY NOT NULL CHECK(length(hash) = 64),
           record TEXT NOT NULL,
+          checksum TEXT NOT NULL CHECK(length(checksum) = 64)
+        ) WITHOUT ROWID
+      `);
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS semantic_keys (
+          key_hash TEXT PRIMARY KEY NOT NULL CHECK(length(key_hash) = 64),
+          key TEXT UNIQUE NOT NULL,
           checksum TEXT NOT NULL CHECK(length(checksum) = 64)
         ) WITHOUT ROWID
       `);
@@ -97,6 +123,22 @@ export class StateV2NodeObjectStore {
     return this.cache.size;
   }
 
+  semanticKey(keyHash: string): string | undefined {
+    assertHash(keyHash);
+    const row = this.getSemanticKeyStatement.get(keyHash);
+    return row ? parseStoredSemanticKey(row, keyHash) : undefined;
+  }
+
+  async putSemanticKeys(keys: Iterable<string>): Promise<void> {
+    const batch = [...new Set(keys)];
+    for (const key of batch) assertSemanticKey(key);
+    this.writeSemanticKeyBatch(batch);
+  }
+
+  allSemanticKeys(): string[] {
+    return this.allSemanticKeysStatement.all().map((row) => parseStoredSemanticKey(row, row.key_hash));
+  }
+
   close(): void {
     this.cache.clear();
     this.database.close();
@@ -111,6 +153,17 @@ export class StateV2NodeObjectStore {
     if (!existing) throw new Error("State v2 node insert conflict without existing record");
     const parsed = parseStoredNode(existing, record.hash);
     if (canonicalJson(parsed) !== recordJson) throw new Error("Conflicting persisted State v2 node object");
+  }
+
+  private putSemanticKey(key: string): void {
+    const keyHash = stateV2KeyHash(key);
+    const checksum = semanticKeyChecksum(keyHash, key);
+    const result = this.insertSemanticKeyStatement.run(keyHash, key, checksum);
+    if (result.changes === 1) return;
+    const existing = this.getSemanticKeyStatement.get(keyHash);
+    if (!existing) throw new Error("State v2 semantic-key insert conflict without existing record");
+    const existingKey = parseStoredSemanticKey(existing, keyHash);
+    if (existingKey !== key) throw new Error("Conflicting persisted State v2 semantic key");
   }
 
   private remember(record: StateV2NodeRecord): void {
@@ -138,7 +191,24 @@ function parseStoredNode(row: StoredNodeRow, expectedHash: string): StateV2NodeR
   return record;
 }
 
+function parseStoredSemanticKey(row: StoredSemanticKeyRow, expectedHash: string): string {
+  if (row.key_hash !== expectedHash) throw new Error("State v2 semantic-key index/hash mismatch");
+  assertSemanticKey(row.key);
+  if (stateV2KeyHash(row.key) !== expectedHash) throw new Error("State v2 semantic-key preimage/hash mismatch");
+  if (row.checksum !== semanticKeyChecksum(row.key_hash, row.key)) {
+    throw new Error("State v2 semantic key checksum mismatch");
+  }
+  return row.key;
+}
+
+function semanticKeyChecksum(keyHash: string, key: string): string {
+  return sha256Hex(canonicalJson({ keyHash, key }));
+}
+
+function assertSemanticKey(key: string): void {
+  if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new Error("Invalid State v2 semantic key preimage");
+}
+
 function assertHash(hash: string): void {
   if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error("Invalid State v2 node hash");
 }
-

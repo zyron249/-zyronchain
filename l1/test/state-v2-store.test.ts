@@ -44,12 +44,20 @@ test("legacy State v2 migration resumes after pre-marker crash and cuts over onl
     const rootBody = { version: 1, root: legacyState.root() } as const;
     await writeFile(join(directory, "state-v2.root.json"),
       `${canonicalJson({ ...rootBody, checksum: sha256Hex(canonicalJson(rootBody)) })}\n`, { mode: 0o600 });
+    const legacyKeys = ["account:alice", "account:bob"];
+    const keyLines = legacyKeys.map((key) => {
+      const body = { key };
+      return canonicalJson({ ...body, checksum: sha256Hex(canonicalJson(body)) });
+    });
+    await writeFile(join(directory, "state-v2.keys.ndjson"), `${keyLines.join("\n")}\n`, { mode: 0o600 });
 
     // Simulate a crash after durable node migration but before the backend marker.
     const partial = await StateV2NodeObjectStore.open(directory, 0);
     await partial.putMany(records);
+    await partial.putSemanticKeys(legacyKeys);
     partial.close();
     await assert.rejects(() => readFile(join(directory, "state-v2.backend.json"), "utf8"), /ENOENT/);
+    await assert.rejects(() => readFile(join(directory, "state-v2.keys.backend.json"), "utf8"), /ENOENT/);
 
     const migrated = await StateV2DiskStore.open(directory);
     assert.equal(migrated.state().root(), legacyState.root());
@@ -59,6 +67,7 @@ test("legacy State v2 migration resumes after pre-marker crash and cuts over onl
 
     // Once the authenticated marker exists, legacy bytes are no longer trusted/read.
     await writeFile(join(directory, "state-v2.nodes.ndjson"), "corrupt legacy bytes\n", "utf8");
+    await writeFile(join(directory, "state-v2.keys.ndjson"), "corrupt legacy keys\n", "utf8");
     const reopened = await StateV2DiskStore.open(directory);
     assert.equal(reopened.state().root(), legacyState.root());
   } finally {
@@ -200,10 +209,11 @@ test("State v2 semantic key index fails closed on checksum corruption", async ()
   try {
     const store = await StateV2DiskStore.open(directory);
     await store.commit(store.state().set("account:alice", { balanceAtoms: 5, nonce: 1 }), ["account:alice"]);
-    const path = join(directory, "state-v2.keys.ndjson");
-    const envelope = JSON.parse((await readFile(path, "utf8")).trim()) as { key: string; checksum: string };
-    envelope.checksum = "00".repeat(32);
-    await writeFile(path, `${JSON.stringify(envelope)}\n`, "utf8");
+    const database = new Database(join(directory, "state-v2.nodes.sqlite"));
+    const updated = database.prepare("UPDATE semantic_keys SET checksum = ? WHERE key = ?")
+      .run("00".repeat(32), "account:alice");
+    database.close();
+    assert.equal(updated.changes, 1);
     await assert.rejects(() => StateV2DiskStore.open(directory), /semantic key checksum mismatch/);
   } finally {
     await rm(directory, { recursive: true, force: true });

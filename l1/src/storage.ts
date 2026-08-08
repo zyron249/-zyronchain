@@ -547,6 +547,7 @@ async function quarantineCorruptStateV2(dataDir: string): Promise<void> {
     "state-v2.nodes.sqlite-wal",
     "state-v2.nodes.sqlite-shm",
     "state-v2.backend.json",
+    "state-v2.keys.backend.json",
     "state-v2.keys.ndjson",
     "state-v2.root.json"
   ]) {

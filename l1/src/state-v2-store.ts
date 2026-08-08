@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 
 import { canonicalJson, sha256Hex } from "./codec.js";
@@ -23,6 +23,8 @@ interface KeyEnvelopeBody { key: string }
 interface KeyEnvelope extends KeyEnvelopeBody { checksum: string }
 interface BackendMarkerBody { version: 1; backend: "sqlite-v1" }
 interface BackendMarker extends BackendMarkerBody { checksum: string }
+interface SemanticBackendMarkerBody { version: 1; backend: "sqlite-semantic-v1" }
+interface SemanticBackendMarker extends SemanticBackendMarkerBody { checksum: string }
 
 export interface StateV2CommitFaultHooks {
   afterSemanticKeysSync?: () => void | Promise<void>;
@@ -36,22 +38,18 @@ export interface StateV2CommitFaultHooks {
  * a committed root can therefore never intentionally point at unwritten data.
  */
 export class StateV2DiskStore {
-  private readonly knownKeyPreimages: Set<string>;
   private currentState: SparseMerkleState;
 
   private constructor(
     readonly dataDir: string,
     state: SparseMerkleState,
-    private readonly nodeObjects: StateV2NodeObjectStore,
-    keyPreimages: Set<string>
+    private readonly nodeObjects: StateV2NodeObjectStore
   ) {
     this.currentState = state;
-    this.knownKeyPreimages = keyPreimages;
   }
 
   static async open(dataDir: string): Promise<StateV2DiskStore> {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
-    const keyPreimages = await loadSemanticKeyPreimages(dataDir);
     const nodeObjects = await StateV2NodeObjectStore.open(dataDir);
     const metadataPath = join(dataDir, "state-v2.root.json");
     let metadata: RootMetadata | undefined;
@@ -77,6 +75,16 @@ export class StateV2DiskStore {
         }
         await writeBackendMarker(dataDir);
       }
+      if (!(await loadSemanticBackendMarker(dataDir))) {
+        const legacyKeys = await loadSemanticKeyPreimages(dataDir);
+        await nodeObjects.putSemanticKeys(legacyKeys);
+        for (const key of legacyKeys) {
+          if (nodeObjects.semanticKey(stateV2KeyHash(key)) !== key) {
+            throw new Error("State v2 semantic-key migration verification failed");
+          }
+        }
+        await writeSemanticBackendMarker(dataDir);
+      }
     } catch (error) {
       nodeObjects.close();
       throw error;
@@ -86,7 +94,11 @@ export class StateV2DiskStore {
       // Validate durable reachability once at startup without hydrating a second
       // full object graph; only the bounded resolver cache survives this walk.
       state.reachableNodeHashes();
-      return new StateV2DiskStore(dataDir, state, nodeObjects, keyPreimages);
+      const leafHashes = state.leafKeyHashes();
+      for (const hash of leafHashes) {
+        if (nodeObjects.semanticKey(hash) === undefined) throw new Error("Incomplete persisted State v2 semantic key index");
+      }
+      return new StateV2DiskStore(dataDir, state, nodeObjects);
     } catch (error) {
       nodeObjects.close();
       throw error;
@@ -103,14 +115,26 @@ export class StateV2DiskStore {
 
   semanticKeyPreimages(state: SparseMerkleState = this.currentState): string[] {
     const leafHashes = state.leafKeyHashes();
-    const keys = [...this.knownKeyPreimages].filter((key) => leafHashes.has(stateV2KeyHash(key))).sort();
+    const keys = this.nodeObjects.allSemanticKeys().filter((key) => leafHashes.has(stateV2KeyHash(key))).sort();
     if (new Set(keys.map(stateV2KeyHash)).size !== leafHashes.size) throw new Error("Incomplete persisted State v2 semantic key index");
     return keys;
   }
 
   semanticIndexWouldBeComplete(state: SparseMerkleState, proposed: readonly string[]): boolean {
-    const available = new Set([...this.knownKeyPreimages, ...proposed].map(stateV2KeyHash));
-    for (const hash of state.leafKeyHashes()) if (!available.has(hash)) return false;
+    const available = new Set(proposed.map(stateV2KeyHash));
+    const pending = state.pendingNodeRecords();
+    if (pending.length > 0) {
+      for (const record of pending) {
+        if (record.kind === "leaf" && !available.has(record.keyHash) && this.nodeObjects.semanticKey(record.keyHash) === undefined) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (state.root() === this.currentState.root()) return true;
+    for (const hash of state.leafKeyHashes()) {
+      if (!available.has(hash) && this.nodeObjects.semanticKey(hash) === undefined) return false;
+    }
     return true;
   }
 
@@ -123,27 +147,11 @@ export class StateV2DiskStore {
     const needsReplayCatchup = state.root() !== this.currentState.root() && pending.length === 0;
     await this.nodeObjects.putMany(needsReplayCatchup ? state.nodeRecords() : pending);
 
-    const leafHashes = state.leafKeyHashes();
-    const freshKeys: string[] = [];
     for (const key of keyPreimages) {
       if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new Error("Invalid State v2 semantic key preimage");
-      if (!leafHashes.has(stateV2KeyHash(key))) throw new Error("State v2 semantic key is not committed by target root");
-      if (!this.knownKeyPreimages.has(key)) freshKeys.push(key);
+      if (state.get(key) === undefined) throw new Error("State v2 semantic key is not committed by target root");
     }
-    if (freshKeys.length) {
-      const handle = await open(join(this.dataDir, "state-v2.keys.ndjson"), "a", 0o600);
-      try {
-        for (const key of freshKeys) {
-          const body: KeyEnvelopeBody = { key };
-          const envelope: KeyEnvelope = { ...body, checksum: sha256Hex(canonicalJson(body)) };
-          await handle.writeFile(`${canonicalJson(envelope)}\n`, "utf8");
-        }
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      for (const key of freshKeys) this.knownKeyPreimages.add(key);
-    }
+    await this.nodeObjects.putSemanticKeys(keyPreimages);
     await faultHooks.afterSemanticKeysSync?.();
     if (!this.semanticIndexWouldBeComplete(state, [])) {
       throw new Error("Refusing State v2 root commit without complete semantic key index");
@@ -254,7 +262,7 @@ async function loadSemanticKeyPreimages(dataDir: string): Promise<Set<string>> {
     text = await readFile(path, "utf8");
   } catch (error) {
     if (!isMissingFile(error)) throw error;
-    await writeFile(path, "", { flag: "wx", mode: 0o600 });
+    return new Set();
   }
   const lines = text.split("\n");
   lines.pop(); // Ignore only an unterminated crash tail, as with node records.
@@ -271,6 +279,34 @@ async function loadSemanticKeyPreimages(dataDir: string): Promise<Set<string>> {
     keys.add(value.key);
   }
   return keys;
+}
+
+async function loadSemanticBackendMarker(dataDir: string): Promise<SemanticBackendMarker | undefined> {
+  try {
+    const value = JSON.parse(await readFile(join(dataDir, "state-v2.keys.backend.json"), "utf8")) as Partial<SemanticBackendMarker>;
+    if (value.version !== 1 || value.backend !== "sqlite-semantic-v1" || typeof value.checksum !== "string") {
+      throw new Error("Corrupt State v2 semantic backend marker");
+    }
+    const body: SemanticBackendMarkerBody = { version: 1, backend: "sqlite-semantic-v1" };
+    if (value.checksum !== sha256Hex(canonicalJson(body))) throw new Error("State v2 semantic backend marker checksum mismatch");
+    return value as SemanticBackendMarker;
+  } catch (error) {
+    if (isMissingFile(error)) return undefined;
+    throw error;
+  }
+}
+
+async function writeSemanticBackendMarker(dataDir: string): Promise<void> {
+  const body: SemanticBackendMarkerBody = { version: 1, backend: "sqlite-semantic-v1" };
+  const marker: SemanticBackendMarker = { ...body, checksum: sha256Hex(canonicalJson(body)) };
+  const path = join(dataDir, "state-v2.keys.backend.json");
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const handle = await open(temporary, "wx", 0o600);
+  try { await handle.writeFile(`${canonicalJson(marker)}\n`, "utf8"); await handle.sync(); }
+  finally { await handle.close(); }
+  await rename(temporary, path);
+  const directory = await open(dataDir, "r");
+  try { await directory.sync(); } finally { await directory.close(); }
 }
 
 function parseNodeEnvelope(line: string): NodeEnvelope {
