@@ -57,6 +57,11 @@ export interface NodeMetrics extends NodeStatus {
   mempoolSize: number;
   validatorCount: number;
   uptimeSeconds: number;
+  finalizedBlockAgeSeconds: number;
+  firstStoredHeight: number;
+  persistenceHealthy: boolean;
+  recoveredFromCheckpointHeight: number;
+  recoveredStateV2FromCorruption: boolean;
 }
 
 export interface RpcServerOptions {
@@ -120,7 +125,12 @@ export class NodeService {
       ...this.status(),
       mempoolSize: this.mempool.size,
       validatorCount: this.store.chain.validatorsAt(this.store.chain.height + 1).length,
-      uptimeSeconds: Math.max(0, Math.floor((nowMs - this.startedAtMs) / 1_000))
+      uptimeSeconds: Math.max(0, Math.floor((nowMs - this.startedAtMs) / 1_000)),
+      finalizedBlockAgeSeconds: Math.max(0, Math.floor((nowMs - this.store.chain.tip.header.timestampMs) / 1_000)),
+      firstStoredHeight: this.store.firstStoredHeight,
+      persistenceHealthy: this.store.persistenceHealthy,
+      recoveredFromCheckpointHeight: this.store.recoveredFromCheckpointHeight,
+      recoveredStateV2FromCorruption: this.store.recoveredStateV2FromCorruption
     };
   }
 
