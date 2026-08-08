@@ -13,6 +13,10 @@ export async function writeP2PFrame(stream: Stream, value: unknown, maxBytes: nu
   for (let offset = 0; offset < body.length; offset += WRITE_CHUNK_BYTES) {
     await sendChunk(stream, body.subarray(offset, Math.min(body.length, offset + WRITE_CHUNK_BYTES)), timeoutMs);
   }
+  // Every native protocol uses one request or response per libp2p stream.
+  // Half-close the writable side so the receiver can authenticate the frame
+  // boundary instead of accepting bytes that arrive in a later transport chunk.
+  await stream.close({ signal: AbortSignal.timeout(timeoutMs) });
 }
 
 export async function readP2PFrame(stream: Stream, maxBytes: number, timeoutMs: number): Promise<unknown> {
@@ -23,11 +27,17 @@ export async function readP2PFrame(stream: Stream, maxBytes: number, timeoutMs: 
   let expectedBytes: number | undefined;
   let body: Buffer | undefined;
   let bodyBytes = 0;
+  let decoded: unknown;
+  let decodedFrame = false;
   const timeout = setTimeout(() => stream.abort(new Error("P2P frame read timeout")), timeoutMs);
   timeout.unref();
   try {
     for await (const chunk of stream) {
       const bytes = Buffer.from(chunk.subarray());
+      if (decodedFrame) {
+        if (bytes.length > 0) throw new Error("Trailing bytes in P2P frame");
+        continue;
+      }
       let offset = 0;
       if (expectedBytes === undefined) {
         const take = Math.min(4 - headerBytes, bytes.length);
@@ -49,13 +59,15 @@ export async function readP2PFrame(stream: Stream, maxBytes: number, timeoutMs: 
         if (bodyBytes === expectedBytes) {
           if (offset !== bytes.length) throw new Error("Trailing bytes in P2P frame");
           try {
-            return JSON.parse(body.toString("utf8")) as unknown;
+            decoded = JSON.parse(body.toString("utf8")) as unknown;
+            decodedFrame = true;
           } catch {
             throw new Error("Invalid P2P frame encoding");
           }
         }
       }
     }
+    if (decodedFrame) return decoded;
     throw new Error("Truncated P2P frame");
   } finally {
     clearTimeout(timeout);
