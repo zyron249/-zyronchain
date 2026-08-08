@@ -40,6 +40,9 @@ The following are not paperwork; they are technical or operational safety requir
 3. Complete an independent security/cryptography/consensus audit—including the skip-certificate view-change—and close all critical/high findings.
 4. Freeze an immutable mainnet chain ID, genesis allocation, activity-oracle governance and reward/fee policy; publish its hash before launch.
 5. Add production key custody (HSM or audited remote signer), authenticated network perimeter, rate limits, metrics/alerts, backups and tested restore/incident procedures.
-6. Produce signed, reproducible release artifacts and enforce protected-branch/review/CI release policy.
+6. Enforce protected-branch/review release policy. Deterministic L1 tarballs, SHA-256
+   checksums, locked-dependency CI and GitHub/Sigstore build-provenance attestations are
+   produced by the tag release workflow; repository branch protection remains an
+   operator/repository-settings gate.
 
 Until every stop-ship gate above is closed with evidence, the honest label is **standalone multi-validator devnet/testnet L1**, not “100% certified mainnet.”
