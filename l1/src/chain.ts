@@ -21,6 +21,7 @@ import {
   stateV2FromLedgerSnapshot,
   stateV2Nonce,
   stateV2KeyPreimages,
+  reconstructStateV2PortableView,
   stateV2TransactionKeyPreimages,
 } from "./state-v2.js";
 import { validateStateV2PortableBundle, type StateV2PortableBundleV1 } from "./state-v2-portable.js";
@@ -42,7 +43,7 @@ export const MIN_PROTOCOL_UPDATE_DELAY = 100;
 export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1, 2]);
 
 interface AppliedTransition {
-  ledger: LedgerState;
+  ledger: LedgerState | undefined;
   sparse: SparseMerkleState | undefined;
 }
 
@@ -64,8 +65,9 @@ export class ZyronChain {
   private currentHeight = 0;
   private readonly validatorSchedule = new Map<number, Validator[]>();
   private readonly protocolSchedule = new Map<number, number>();
-  private state: LedgerState;
+  private state: LedgerState | undefined;
   private stateV2: SparseMerkleState | undefined;
+  private stateV2SemanticKeys: Set<string> | undefined;
 
   constructor(genesis: GenesisConfig) {
     validateGenesis(genesis);
@@ -135,8 +137,9 @@ export class ZyronChain {
       validateAttestationQuorum(snapshot.tip, validators);
     }
 
-    chain.state = state;
+    chain.state = protocolVersion === 2 ? undefined : state;
     chain.stateV2 = sparse;
+    chain.stateV2SemanticKeys = sparse ? new Set(stateV2KeyPreimages(state.snapshot(), governance)) : undefined;
     chain.tipBlock = structuredClone(snapshot.tip);
     chain.currentHeight = snapshot.height;
     return chain;
@@ -186,7 +189,8 @@ export class ZyronChain {
   }
 
   getState(): LedgerState {
-    return this.state.clone();
+    if (this.state) return this.state.clone();
+    return LedgerState.fromSnapshot(this.stateV2PortableView().ledger);
   }
 
   stateV2ForPersistence(): SparseMerkleState | undefined {
@@ -200,23 +204,24 @@ export class ZyronChain {
   balance(address: Address): number {
     return this.stateV2 && this.protocolVersionAt(this.height) === 2
       ? stateV2Balance(this.stateV2, address)
-      : this.state.balance(address);
+      : this.requireLegacyState().balance(address);
   }
 
   nonce(address: Address): number {
     return this.stateV2 && this.protocolVersionAt(this.height) === 2
       ? stateV2Nonce(this.stateV2, address)
-      : this.state.nonce(address);
+      : this.requireLegacyState().nonce(address);
   }
 
   snapshot(): ChainSnapshotV1 {
+    const ledger = this.state ? this.state.snapshot() : this.stateV2PortableView().ledger;
     return {
       version: 1,
       chainId: this.genesis.chainId,
       genesisHash: this.genesisHash,
       height: this.height,
       tip: structuredClone(this.tip),
-      state: this.state.snapshot(),
+      state: ledger,
       validatorSchedule: [...this.validatorSchedule.entries()]
         .sort(([a], [b]) => a - b)
         .map(([activationHeight, validators]) => ({ activationHeight, validators: structuredClone(validators) })),
@@ -227,12 +232,12 @@ export class ZyronChain {
   }
 
   stateV2SemanticKeyPreimages(): string[] | undefined {
-    if (this.protocolVersionAt(this.height) !== 2 || !this.stateV2) return undefined;
-    return stateV2KeyPreimages(this.state.snapshot(), this.governanceSnapshot());
+    if (this.protocolVersionAt(this.height) !== 2 || !this.stateV2 || !this.stateV2SemanticKeys) return undefined;
+    return [...this.stateV2SemanticKeys].sort();
   }
 
   stateV2SemanticKeyPreimagesForBlock(block: Block): string[] {
-    const keys = new Set(stateV2KeyPreimages(this.state.snapshot(), this.governanceSnapshot()));
+    const keys = new Set(this.stateV2SemanticKeys ?? stateV2KeyPreimages(this.requireLegacyState().snapshot(), this.governanceSnapshot()));
     for (const tx of block.transactions) {
       for (const key of stateV2TransactionKeyPreimages(tx)) keys.add(key);
     }
@@ -353,19 +358,22 @@ export class ZyronChain {
     this.tipBlock = structuredClone(block);
     this.currentHeight = block.header.height;
     if (block.header.version === 1) {
-      this.state = next.ledger;
+      this.state = next.ledger!;
       this.stateV2 = undefined;
+      this.stateV2SemanticKeys = undefined;
     } else {
-      // Protocol v2 validation is performed against immutable sparse state. Keep
-      // the legacy ledger only as a query/snapshot shadow after consensus checks
-      // have succeeded; it is no longer cloned on the validation hot path.
-      for (const tx of block.transactions) this.state.apply(tx, this.genesis.activityPool);
+      const keys = new Set(this.stateV2SemanticKeys ?? stateV2KeyPreimages(this.requireLegacyState().snapshot(), this.governanceSnapshot()));
+      for (const tx of block.transactions) {
+        for (const key of stateV2TransactionKeyPreimages(tx)) keys.add(key);
+      }
+      this.state = undefined;
       this.stateV2 = next.sparse?.persistenceCheckpoint();
+      this.stateV2SemanticKeys = keys;
     }
     this.recordGovernanceUpdates(block.transactions);
   }
 
-  validateFinalizedBlock(block: Block, nowMs = Date.now()): LedgerState {
+  validateFinalizedBlock(block: Block, nowMs = Date.now()): LedgerState | undefined {
     return this.validateFinalizedTransition(block, nowMs).ledger;
   }
 
@@ -408,7 +416,7 @@ export class ZyronChain {
       if (tx.sender !== this.genesis.activityPool) throw new Error("Invalid activity pool sender");
       const settled = this.stateV2 && this.protocolVersionAt(this.height) === 2
         ? stateV2ActivityEpochSettled(this.stateV2, tx.epoch)
-        : this.state.isActivityEpochSettled(tx.epoch);
+        : this.requireLegacyState().isActivityEpochSettled(tx.epoch);
       if (settled) throw new Error("Activity epoch already settled");
       const total = tx.entries.reduce((sum, entry) => sum + BigInt(entry.amountAtoms), 0n);
       if (total > BigInt(this.balance(this.genesis.activityPool))) throw new Error("Activity pool exhausted");
@@ -445,9 +453,9 @@ export class ZyronChain {
       );
     const protocolVersion = this.protocolVersionAt(this.height + 1);
     assertSupportedProtocolVersion(protocolVersion);
-    const next = protocolVersion === 1 ? this.state.clone() : undefined;
+    const next = protocolVersion === 1 ? this.requireLegacyState().clone() : undefined;
     let sparse = protocolVersion === 2
-      ? (this.stateV2 ?? stateV2FromLedgerSnapshot(this.state.snapshot(), this.governanceSnapshot()))
+      ? (this.stateV2 ?? stateV2FromLedgerSnapshot(this.requireLegacyState().snapshot(), this.governanceSnapshot()))
       : undefined;
     const selected: Transaction[] = [];
     const seen = new Set<string>();
@@ -482,11 +490,11 @@ export class ZyronChain {
     return selected;
   }
 
-  private validateAndApply(transactions: Transaction[], startingState: LedgerState, blockHeight: number): AppliedTransition {
+  private validateAndApply(transactions: Transaction[], startingState: LedgerState | undefined, blockHeight: number): AppliedTransition {
     const protocolVersion = this.protocolVersionAt(blockHeight);
-    const next = protocolVersion === 1 ? startingState.clone() : startingState;
+    const next = protocolVersion === 1 ? (startingState ?? this.requireLegacyState()).clone() : startingState;
     let sparse = protocolVersion === 2
-      ? (this.stateV2 ?? stateV2FromLedgerSnapshot(startingState.snapshot(), this.governanceSnapshot()))
+      ? (this.stateV2 ?? stateV2FromLedgerSnapshot((startingState ?? this.requireLegacyState()).snapshot(), this.governanceSnapshot()))
       : undefined;
     const seen = new Set<string>();
     const currentValidators = this.validatorsAt(blockHeight);
@@ -510,9 +518,19 @@ export class ZyronChain {
         lastProtocolActivation = tx.activationHeight;
       }
       if (sparse) sparse = applyStateV2Transaction(sparse, tx, this.genesis.activityPool);
-      else next.apply(tx, this.genesis.activityPool);
+      else next!.apply(tx, this.genesis.activityPool);
     }
     return { ledger: next, sparse };
+  }
+
+  private requireLegacyState(): LedgerState {
+    if (!this.state) throw new Error("Legacy ledger is unavailable after State v2 activation");
+    return this.state;
+  }
+
+  private stateV2PortableView(): import("./state-v2.js").StateV2PortableView {
+    if (!this.stateV2 || !this.stateV2SemanticKeys) throw new Error("State v2 semantic view is unavailable");
+    return reconstructStateV2PortableView(this.stateV2, [...this.stateV2SemanticKeys]);
   }
 
   private recordGovernanceUpdates(transactions: Transaction[]): void {
@@ -599,7 +617,7 @@ function validateProtocolSchedule(value: unknown): Map<number, number> {
 }
 
 function stateRootForProtocol(protocolVersion: number, state: AppliedTransition): string {
-  if (protocolVersion === 1) return state.ledger.root();
+  if (protocolVersion === 1 && state.ledger) return state.ledger.root();
   if (protocolVersion === 2 && state.sparse) return state.sparse.root();
   throw new Error(`Missing state implementation for protocol version ${protocolVersion}`);
 }
