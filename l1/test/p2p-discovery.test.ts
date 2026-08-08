@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { multiaddr } from "@multiformats/multiaddr";
 
 import { parseNativePeerAddress } from "../src/p2p-address.js";
-import { discoverNativePeersFrom, registerP2PDiscoveryProtocol } from "../src/p2p-discovery.js";
+import { discoverNativePeersFrom, P2P_DISCOVERY_PROTOCOL, registerP2PDiscoveryProtocol } from "../src/p2p-discovery.js";
 import { createP2PNode } from "../src/p2p.js";
 import { loadOrCreateNodeIdentity } from "../src/peer-identity.js";
 
@@ -84,6 +84,30 @@ test("native peer exchange never emits unpinned or duplicate PeerIds", async () 
       } finally { await other.stop(); }
     } finally { await rm(otherDir, { recursive: true, force: true }); }
     assert.ok(pinned);
+  } finally {
+    await Promise.allSettled([first.stop(), second.stop()]);
+    await Promise.all([firstDir, secondDir].map((directory) => rm(directory, { recursive: true, force: true })));
+  }
+});
+
+test("silent authenticated discovery peer is cut off by the native stream timeout", async () => {
+  const firstDir = await mkdtemp(join(tmpdir(), "zyron-discovery-slow-first-"));
+  const secondDir = await mkdtemp(join(tmpdir(), "zyron-discovery-slow-second-"));
+  const firstIdentity = await loadOrCreateNodeIdentity(firstDir);
+  const secondIdentity = await loadOrCreateNodeIdentity(secondDir);
+  const first = await createP2PNode(firstIdentity, { listen: ["/ip4/127.0.0.1/tcp/0"] });
+  const second = await createP2PNode(secondIdentity);
+  try {
+    await first.handle(P2P_DISCOVERY_PROTOCOL, async () => {
+      // Stay silent longer than the 5s discovery inactivity timeout. This is a
+      // real Noise/libp2p stream, not a mocked AbortSignal.
+      await new Promise((resolve) => setTimeout(resolve, 6_000));
+    });
+    const address = first.getMultiaddrs()[0];
+    assert.ok(address);
+    const started = Date.now();
+    await assert.rejects(() => discoverNativePeersFrom(second, address, secondIdentity, chain));
+    assert.ok(Date.now() - started < 7_000, "silent discovery peer exceeded bounded timeout");
   } finally {
     await Promise.allSettled([first.stop(), second.stop()]);
     await Promise.all([firstDir, secondDir].map((directory) => rm(directory, { recursive: true, force: true })));

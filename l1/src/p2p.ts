@@ -185,18 +185,24 @@ async function exchangeIdentity(
   const chunks: Buffer[] = [];
   let total = 0;
   let framed: Buffer | undefined;
-  for await (const chunk of stream) {
-    const bytes = Buffer.from(chunk.subarray());
-    total += bytes.length;
-    if (total > MAX_IDENTITY_MESSAGE_BYTES) throw new Error("P2P identity message too large");
-    chunks.push(bytes);
-    const accumulated = Buffer.concat(chunks, total);
-    const delimiter = accumulated.indexOf(0x0a);
-    if (delimiter !== -1) {
-      if (delimiter !== accumulated.length - 1) throw new Error("Invalid P2P identity message framing");
-      framed = accumulated.subarray(0, delimiter);
-      break;
+  const readTimeout = setTimeout(() => stream.abort(new Error("P2P identity read timeout")), IDENTITY_STREAM_TIMEOUT_MS);
+  readTimeout.unref();
+  try {
+    for await (const chunk of stream) {
+      const bytes = Buffer.from(chunk.subarray());
+      total += bytes.length;
+      if (total > MAX_IDENTITY_MESSAGE_BYTES) throw new Error("P2P identity message too large");
+      chunks.push(bytes);
+      const accumulated = Buffer.concat(chunks, total);
+      const delimiter = accumulated.indexOf(0x0a);
+      if (delimiter !== -1) {
+        if (delimiter !== accumulated.length - 1) throw new Error("Invalid P2P identity message framing");
+        framed = accumulated.subarray(0, delimiter);
+        break;
+      }
     }
+  } finally {
+    clearTimeout(readTimeout);
   }
   if (!framed || framed.length === 0) throw new Error("Missing P2P identity message");
   let value: unknown;
