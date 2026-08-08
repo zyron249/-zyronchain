@@ -149,7 +149,7 @@ async function runNode(args: string[]): Promise<void> {
     chainId: service.status().chainId,
     genesisHash: service.status().genesisHash
   } : undefined, peerReputation);
-  const peerRecord = identity ? createSignedPeerRecord(identity, {
+  const peerRecord = identity && advertisedPeerUrls.length ? createSignedPeerRecord(identity, {
     chainId: service.status().chainId,
     genesisHash: service.status().genesisHash,
     endpoints: advertisedPeerUrls,
