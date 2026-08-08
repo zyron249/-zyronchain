@@ -1,0 +1,2 @@
+coincurve==21.0.0 \
+    --hash=sha256:1b04778b75339c6e46deb9ae3bcfc2250fbe48d1324153e4310fc4996e135715
