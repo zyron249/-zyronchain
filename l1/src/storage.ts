@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 
-import { canonicalJson } from "./codec.js";
+import { canonicalJson, sha256Hex } from "./codec.js";
 import { ZyronChain } from "./chain.js";
 import type { Block, GenesisConfig } from "./types.js";
 
@@ -108,6 +108,15 @@ export class ChainStore {
       await handle.close();
     }
     return result;
+  }
+
+  async writeSnapshot(path: string): Promise<{ height: number; sha256: string }> {
+    const snapshot = this.chain.snapshot();
+    const canonical = canonicalJson(snapshot);
+    const sha256 = sha256Hex(canonical);
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    await writeFile(path, `${canonical}\n`, { flag: "wx", mode: 0o600 });
+    return { height: snapshot.height, sha256 };
   }
 
   async commitFinalizedBlock(block: Block, nowMs = Date.now()): Promise<void> {
