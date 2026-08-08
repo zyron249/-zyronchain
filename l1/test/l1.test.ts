@@ -343,10 +343,14 @@ test("chain store replays finalized blocks and pins the genesis identity", async
   try {
     const store = await ChainStore.open(genesis(), directory);
     let block = store.chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
+    await assert.rejects(
+      () => store.commitFinalizedBlock(block, 1_700_000_000_100),
+      /Finality quorum not reached/
+    );
+    assert.equal(store.chain.height, 0);
     block = store.chain.attestBlock(block, validatorOnePrivate);
     block = store.chain.attestBlock(block, validatorTwoPrivate);
-    store.chain.acceptBlock(block, 1_700_000_000_100);
-    await store.appendFinalizedBlock(block);
+    await store.commitFinalizedBlock(block, 1_700_000_000_100);
 
     const reopened = await ChainStore.open(genesis(), directory);
     assert.equal(reopened.chain.height, 1);
@@ -383,8 +387,7 @@ test("repeated crash-style reopen preserves tip and state across a 100-block rep
       let block = store.chain.produceBlock([tx], proposerKey, { timestampMs: genesis().timestampMs + (height * 100) });
       block = store.chain.attestBlock(block, validatorOnePrivate);
       block = store.chain.attestBlock(block, validatorTwoPrivate);
-      store.chain.acceptBlock(block, genesis().timestampMs + (height * 100));
-      await store.appendFinalizedBlock(block);
+      await store.commitFinalizedBlock(block, genesis().timestampMs + (height * 100));
       if (height % 10 === 0) {
         const tip = store.chain.tip.hash;
         const root = store.chain.getState().root();
@@ -803,8 +806,7 @@ test("validator schedule is reconstructed from finalized history after restart",
     let block = store.chain.produceBlock([update], validatorOnePrivate, { timestampMs: 1_700_000_000_200 });
     block = store.chain.attestBlock(block, validatorOnePrivate);
     block = store.chain.attestBlock(block, validatorTwoPrivate);
-    store.chain.acceptBlock(block, 1_700_000_000_200);
-    await store.appendFinalizedBlock(block);
+    await store.commitFinalizedBlock(block, 1_700_000_000_200);
 
     const reopened = await ChainStore.open(genesis(), directory);
     assert.deepEqual(reopened.chain.validatorsAt(101).map((validator) => validator.address), [newValidatorOne, newValidatorTwo]);
@@ -941,8 +943,7 @@ test("protocol upgrade and rollback schedule is reconstructed from finalized his
     let block = store.chain.produceBlock([upgrade, rollback], validatorOnePrivate, { timestampMs: 1_700_000_000_200 });
     block = store.chain.attestBlock(block, validatorOnePrivate);
     block = store.chain.attestBlock(block, validatorTwoPrivate);
-    store.chain.acceptBlock(block, 1_700_000_000_200);
-    await store.appendFinalizedBlock(block);
+    await store.commitFinalizedBlock(block, 1_700_000_000_200);
 
     const reopened = await ChainStore.open(genesis(), directory);
     assert.equal(reopened.chain.protocolVersionAt(100), 1);
@@ -1105,8 +1106,7 @@ test("chain store fails closed on a truncated or corrupt finalized block record"
     let block = store.chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
     block = store.chain.attestBlock(block, validatorOnePrivate);
     block = store.chain.attestBlock(block, validatorTwoPrivate);
-    store.chain.acceptBlock(block, 1_700_000_000_100);
-    await store.appendFinalizedBlock(block);
+    await store.commitFinalizedBlock(block, 1_700_000_000_100);
     await appendFile(join(directory, "blocks.ndjson"), "{\"header\":", "utf8");
     await assert.rejects(() => ChainStore.open(genesis(), directory), /Corrupt stored block/);
   } finally {

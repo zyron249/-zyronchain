@@ -128,6 +128,13 @@ export class ZyronChain {
   }
 
   acceptBlock(block: Block, nowMs = Date.now()): void {
+    const nextState = this.validateFinalizedBlock(block, nowMs);
+    this.blocks.push(structuredClone(block));
+    this.state = nextState;
+    this.recordGovernanceUpdates(block.transactions);
+  }
+
+  validateFinalizedBlock(block: Block, nowMs = Date.now()): LedgerState {
     const protocolVersion = this.protocolVersionAt(block.header.height);
     assertSupportedProtocolVersion(protocolVersion);
     const validators = this.validatorsAt(block.header.height);
@@ -135,9 +142,7 @@ export class ZyronChain {
     if (canonicalJson(block).length > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
     const nextState = this.validateAndApply(block.transactions, this.state, block.header.height);
     if (block.header.stateRoot !== nextState.root()) throw new Error("State root mismatch");
-    this.blocks.push(structuredClone(block));
-    this.state = nextState;
-    this.recordGovernanceUpdates(block.transactions);
+    return nextState;
   }
 
   validateProposal(block: Block, nowMs = Date.now()): void {
