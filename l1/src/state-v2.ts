@@ -478,6 +478,23 @@ interface StateV2Account {
   nonce: number;
 }
 
+export function stateV2Balance(state: SparseMerkleState, address: Address): number {
+  return stateV2Account(state, address).balanceAtoms;
+}
+
+export function stateV2Nonce(state: SparseMerkleState, address: Address): number {
+  return stateV2Account(state, address).nonce;
+}
+
+export function stateV2ActivityEpochSettled(state: SparseMerkleState, epoch: number): boolean {
+  if (!Number.isSafeInteger(epoch) || epoch < 0) throw new Error("Invalid activity epoch");
+  const value = state.get(activityEpochKey(epoch));
+  if (value === undefined) return false;
+  assertExactPortableRecord(value, ["settled"], "State v2 activity value");
+  if (value.settled !== true) throw new Error("Corrupt protocol v2 activity state");
+  return true;
+}
+
 function stateV2Account(state: SparseMerkleState, address: Address): StateV2Account {
   const value = state.get(accountKey(address));
   if (value === undefined) return { balanceAtoms: 0, nonce: 0 };
