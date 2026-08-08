@@ -733,6 +733,29 @@ test("startup restores a verified local checkpoint and replays only its finalize
   }
 });
 
+test("finalized block reads use absolute block heights instead of range array positions", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-absolute-block-ranges-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    for (let height = 1; height <= 3; height += 1) {
+      const proposer = height % 2 === 1 ? validatorOnePrivate : validatorTwoPrivate;
+      let block = store.chain.produceBlock([], proposer, {
+        timestampMs: genesis().timestampMs + (height * 100)
+      });
+      block = store.chain.attestBlock(block, validatorOnePrivate);
+      block = store.chain.attestBlock(block, validatorTwoPrivate);
+      await store.commitFinalizedBlock(block, genesis().timestampMs + (height * 100));
+    }
+
+    const fromSecond = await store.readFinalizedBlocks(2, 2, 10_000_000);
+    assert.deepEqual(fromSecond.map((block) => block.header.height), [2, 3]);
+    const beyondTip = await store.readFinalizedBlocks(4, 2, 10_000_000);
+    assert.deepEqual(beyondTip, []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("repeated crash-style reopen preserves tip and state across a 100-block replay soak", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-replay-soak-"));
   try {

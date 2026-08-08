@@ -30,6 +30,12 @@ interface RecoveryCheckpointV1 {
   snapshot: ReturnType<ZyronChain["snapshot"]>;
 }
 
+interface StoredBlockRange {
+  height: number;
+  offset: number;
+  length: number;
+}
+
 export interface RecoveryCheckpointFaultHooks {
   afterTemporarySync?: () => void | Promise<void>;
   afterRename?: () => void | Promise<void>;
@@ -38,7 +44,7 @@ export interface RecoveryCheckpointFaultHooks {
 export class ChainStore {
   private persistedHeight: number;
   private persistedBytes: number;
-  private readonly blockRanges: Array<{ offset: number; length: number }>;
+  private readonly blockRanges: StoredBlockRange[];
   private persistenceFaulted = false;
 
   private constructor(
@@ -46,7 +52,7 @@ export class ChainStore {
     readonly chain: ZyronChain,
     persistedHeight: number,
     persistedBytes: number,
-    blockRanges: Array<{ offset: number; length: number }>,
+    blockRanges: StoredBlockRange[],
     private readonly stateV2Store: StateV2DiskStore,
     readonly recoveredFromCheckpointHeight = 0,
     readonly recoveredStateV2FromCorruption = false
@@ -127,7 +133,10 @@ export class ChainStore {
     let responseBytes = Buffer.byteLength('{"blocks":[]}', "utf8");
     const handle = await open(join(this.dataDir, "blocks.ndjson"), "r");
     try {
-      for (const range of this.blockRanges.slice(from - 1, from - 1 + limit)) {
+      // Ranges carry absolute heights. Do not infer a block's height from its
+      // array index: pruned stores will intentionally start above height 1.
+      const ranges = this.blockRanges.filter((range) => range.height >= from).slice(0, limit);
+      for (const range of ranges) {
         if (responseBytes + range.length + (result.length ? 1 : 0) > maxBytes) {
           if (result.length === 0) throw new Error("Finalized block exceeds sync response byte budget");
           break;
@@ -236,7 +245,7 @@ export class ChainStore {
       }
     }
     this.chain.acceptBlock(block, nowMs);
-    this.blockRanges.push({ offset: this.persistedBytes, length: lineBytes - 1 });
+    this.blockRanges.push({ height: block.header.height, offset: this.persistedBytes, length: lineBytes - 1 });
     this.persistedBytes += lineBytes;
     this.persistedHeight = block.header.height;
   }
@@ -367,7 +376,7 @@ async function replayStoredBlocks(
   chain: ZyronChain;
   count: number;
   offset: number;
-  blockRanges: Array<{ offset: number; length: number }>;
+  blockRanges: StoredBlockRange[];
   recoveredHeight: number;
 }> {
   const chain = loaded?.chain ?? new ZyronChain(genesis);
@@ -375,7 +384,7 @@ async function replayStoredBlocks(
   let checkpointVerified = checkpoint?.height === 0;
   let count = 0;
   let offset = 0;
-  const blockRanges: Array<{ offset: number; length: number }> = [];
+  const blockRanges: StoredBlockRange[] = [];
   for await (const line of readLines(blocksPath)) {
     const lineBytes = Buffer.byteLength(line, "utf8");
     if (!line.trim()) {
@@ -384,7 +393,7 @@ async function replayStoredBlocks(
     }
     if (lineBytes > MAX_STORED_BLOCK_LINE_BYTES) throw new Error("Stored block exceeds line limit");
     const height = count + 1;
-    blockRanges.push({ offset, length: lineBytes });
+    blockRanges.push({ height, offset, length: lineBytes });
 
     if (checkpoint && height < checkpoint.height) {
       count = height;
