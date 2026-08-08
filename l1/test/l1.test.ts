@@ -310,6 +310,34 @@ test("mempool selection restores sender nonce order even when later nonce pays m
   assert.deepEqual(chain.selectValidPending(pool.values(), 10).map((tx) => tx.nonce), [1, 2]);
 });
 
+test("finalized conflicting nonce prunes stale mempool entries instead of leaking capacity", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-mempool-prune-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    const service = new NodeService(store);
+    const pending = createTransfer(
+      { chainId: genesis().chainId, nonce: 1, sender: alice, receiver: bob, amountAtoms: 1, feeAtoms: 10, timestampMs: 100 },
+      alicePrivate,
+      alicePublic
+    );
+    const finalizedTx = createTransfer(
+      { chainId: genesis().chainId, nonce: 1, sender: alice, receiver: bob, amountAtoms: 2, feeAtoms: 1, timestampMs: 101 },
+      alicePrivate,
+      alicePublic
+    );
+    service.submitTransaction(pending);
+    assert.equal(service.mempool.size, 1);
+
+    let block = store.chain.produceBlock([finalizedTx], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
+    block = store.chain.attestBlock(block, validatorOnePrivate);
+    block = store.chain.attestBlock(block, validatorTwoPrivate);
+    await service.acceptFinalizedBlock(block);
+    assert.equal(service.mempool.size, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("chain store replays finalized blocks and pins the genesis identity", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-store-"));
   try {
@@ -328,6 +356,46 @@ test("chain store replays finalized blocks and pins the genesis identity", async
     const different = genesis();
     different.timestampMs += 1;
     await assert.rejects(() => ChainStore.open(different, directory), /different or unsupported chain/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("repeated crash-style reopen preserves tip and state across a 100-block replay soak", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-replay-soak-"));
+  try {
+    let store = await ChainStore.open(genesis(), directory);
+    for (let height = 1; height <= 100; height += 1) {
+      const tx = createTransfer(
+        {
+          chainId: genesis().chainId,
+          nonce: height,
+          sender: alice,
+          receiver: bob,
+          amountAtoms: 1,
+          feeAtoms: 0,
+          timestampMs: genesis().timestampMs + (height * 100) - 1
+        },
+        alicePrivate,
+        alicePublic
+      );
+      const proposerKey = height % 2 === 1 ? validatorOnePrivate : validatorTwoPrivate;
+      let block = store.chain.produceBlock([tx], proposerKey, { timestampMs: genesis().timestampMs + (height * 100) });
+      block = store.chain.attestBlock(block, validatorOnePrivate);
+      block = store.chain.attestBlock(block, validatorTwoPrivate);
+      store.chain.acceptBlock(block, genesis().timestampMs + (height * 100));
+      await store.appendFinalizedBlock(block);
+      if (height % 10 === 0) {
+        const tip = store.chain.tip.hash;
+        const root = store.chain.getState().root();
+        store = await ChainStore.open(genesis(), directory);
+        assert.equal(store.chain.height, height);
+        assert.equal(store.chain.tip.hash, tip);
+        assert.equal(store.chain.getState().root(), root);
+      }
+    }
+    assert.equal(store.chain.getState().balance(bob), 100);
+    assert.equal(store.chain.getState().nonce(alice), 100);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
