@@ -40,6 +40,7 @@ export class StateV2NodeObjectStore {
   private readonly allSemanticKeysStatement: Database.Statement<[], StoredSemanticKeyRow>;
   private readonly traversalDepthStatement: Database.Statement<[string], { depth: number }>;
   private readonly traversalRememberStatement: Database.Statement<[string, number]>;
+  private readonly traversalLeafStatement: Database.Statement<[string, string]>;
   private readonly traversalClearStatement: Database.Statement<[]>;
   private readonly writeBatch: (records: readonly StateV2NodeRecord[]) => void;
   private readonly writeSemanticKeyBatch: (keys: readonly string[]) => void;
@@ -58,6 +59,7 @@ export class StateV2NodeObjectStore {
     this.allSemanticKeysStatement = database.prepare("SELECT key_hash, key, checksum FROM semantic_keys ORDER BY key_hash");
     this.traversalDepthStatement = database.prepare("SELECT depth FROM state_v2_traversal_seen WHERE hash = ?");
     this.traversalRememberStatement = database.prepare("INSERT INTO state_v2_traversal_seen(hash, depth) VALUES (?, ?)");
+    this.traversalLeafStatement = database.prepare("UPDATE state_v2_traversal_seen SET key_hash = ? WHERE hash = ?");
     this.traversalClearStatement = database.prepare("DELETE FROM state_v2_traversal_seen");
     const transaction = database.transaction((records: readonly StateV2NodeRecord[]) => {
       for (const record of records) this.putOne(record);
@@ -90,7 +92,8 @@ export class StateV2NodeObjectStore {
       database.exec(`
         CREATE TEMP TABLE state_v2_traversal_seen (
           hash TEXT PRIMARY KEY NOT NULL,
-          depth INTEGER NOT NULL CHECK(depth >= 0 AND depth <= 256)
+          depth INTEGER NOT NULL CHECK(depth >= 0 AND depth <= 256),
+          key_hash TEXT CHECK(key_hash IS NULL OR length(key_hash) = 64)
         ) WITHOUT ROWID
       `);
       database.exec(`
@@ -166,14 +169,34 @@ export class StateV2NodeObjectStore {
   validateReachable(state: SparseMerkleState, requireSemanticKeys: boolean): void {
     this.traversalClearStatement.run();
     try {
-      state.validateReachable({
-        depth: (hash) => this.traversalDepthStatement.get(hash)?.depth,
-        remember: (hash, depth) => { this.traversalRememberStatement.run(hash, depth); }
-      }, requireSemanticKeys ? (keyHash) => {
-        if (this.semanticKey(keyHash) === undefined) {
-          throw new Error("Incomplete persisted State v2 semantic key index");
-        }
-      } : undefined);
+      this.populateTraversal(state, requireSemanticKeys);
+    } finally {
+      this.traversalClearStatement.run();
+    }
+  }
+
+  /**
+   * Remove immutable objects outside one fully authenticated retained root.
+   * Callers must establish their history-retention boundary before invoking it.
+   */
+  pruneUnreachable(state: SparseMerkleState): { removedNodes: number; removedSemanticKeys: number } {
+    this.traversalClearStatement.run();
+    try {
+      this.populateTraversal(state, true);
+      const transaction = this.database.transaction(() => {
+        const removedNodes = this.database.prepare(
+          "DELETE FROM nodes WHERE hash NOT IN (SELECT hash FROM state_v2_traversal_seen)"
+        ).run().changes;
+        const removedSemanticKeys = this.database.prepare(
+          "DELETE FROM semantic_keys WHERE key_hash NOT IN " +
+          "(SELECT key_hash FROM state_v2_traversal_seen WHERE key_hash IS NOT NULL)"
+        ).run().changes;
+        return { removedNodes, removedSemanticKeys };
+      });
+      const result = transaction.immediate();
+      // Never serve an object from the LRU after its durable row was pruned.
+      this.cache.clear();
+      return result;
     } finally {
       this.traversalClearStatement.run();
     }
@@ -204,6 +227,19 @@ export class StateV2NodeObjectStore {
     if (!existing) throw new Error("State v2 semantic-key insert conflict without existing record");
     const existingKey = parseStoredSemanticKey(existing, keyHash);
     if (existingKey !== key) throw new Error("Conflicting persisted State v2 semantic key");
+  }
+
+  private populateTraversal(state: SparseMerkleState, requireSemanticKeys: boolean): void {
+    state.validateReachable({
+      depth: (hash) => this.traversalDepthStatement.get(hash)?.depth,
+      remember: (hash, depth) => { this.traversalRememberStatement.run(hash, depth); }
+    }, (keyHash, nodeHash) => {
+      const updated = this.traversalLeafStatement.run(keyHash, nodeHash);
+      if (updated.changes !== 1) throw new Error("State v2 traversal lost a reachable leaf");
+      if (requireSemanticKeys && this.semanticKey(keyHash) === undefined) {
+        throw new Error("Incomplete persisted State v2 semantic key index");
+      }
+    });
   }
 
   private remember(record: StateV2NodeRecord): void {
