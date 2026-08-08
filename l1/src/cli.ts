@@ -76,6 +76,7 @@ async function main(): Promise<void> {
   if (command === "protocol-approve") return approveProtocolProposal(args);
   if (command === "protocol-submit") return submitProtocolProposal(args);
   if (command === "snapshot") return createSnapshot(args);
+  if (command === "checkpoint-install") return installCheckpoint(args);
   if (command === "node") return runNode(args);
   usage();
   process.exitCode = 2;
@@ -92,6 +93,24 @@ async function createSnapshot(args: string[]): Promise<void> {
   console.log(`Snapshot written at height ${result.height}: ${resolve(output)}`);
   console.log(`Snapshot SHA-256: ${result.sha256}`);
   console.log("Pin and publish this digest independently before trusting the snapshot as a checkpoint.");
+}
+
+async function installCheckpoint(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--genesis", "--snapshot", "--data", "--tip-hash", "--sha256"]));
+  const genesisPath = requiredOption(args, "--genesis");
+  const snapshotPath = requiredOption(args, "--snapshot");
+  const dataDir = resolve(requiredOption(args, "--data"));
+  const tipHash = requiredOption(args, "--tip-hash");
+  const snapshotSha256 = requiredOption(args, "--sha256");
+  if (!/^[0-9a-f]{64}$/.test(tipHash) || !/^[0-9a-f]{64}$/.test(snapshotSha256)) {
+    throw new Error("checkpoint-install requires lowercase 32-byte --tip-hash and --sha256 anchors");
+  }
+  const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
+  const snapshot = JSON.parse(await readFile(resolve(snapshotPath), "utf8")) as unknown;
+  const store = await ChainStore.installTrustedSnapshot(genesis, dataDir, snapshot, { tipHash, snapshotSha256 });
+  console.log(`Trusted checkpoint installed at height ${store.chain.height}: ${dataDir}`);
+  console.log(`Finalized tip: ${store.chain.tip.hash}`);
+  console.log(`Snapshot SHA-256: ${snapshotSha256}`);
 }
 
 async function keygen(args: string[]): Promise<void> {
@@ -767,6 +786,8 @@ function usage(): void {
   console.log("  zyron-l1 protocol-approve --proposal upgrade.json --key validator.json --out approval.json");
   console.log("  zyron-l1 protocol-submit --proposal upgrade.json --approval approval-a.json [...] --key initiator.json --rpc <url>");
   console.log("  zyron-l1 snapshot --genesis genesis.json --data ./data --out checkpoint.json");
+  console.log("  zyron-l1 checkpoint-install --genesis genesis.json --snapshot checkpoint.json --data ./NEW-data --tip-hash <trusted-hex> --sha256 <trusted-hex>");
+  console.log("Checkpoint install anchors must come from an independent trusted channel, never from the snapshot peer.");
   console.log("Validator key files contain secrets. Keep them mode 0600 and never commit them.");
 }
 

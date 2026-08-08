@@ -4,6 +4,8 @@ import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/p
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import { canonicalJson, sha256Hex } from "../src/codec.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
@@ -60,6 +62,7 @@ const bob = addressFromPublicKey(publicKeyFromPrivate("05".padStart(64, "0")));
 const activityPool = addressFromPublicKey(publicKeyFromPrivate("06".padStart(64, "0")));
 const newValidatorOne = addressFromPublicKey(newValidatorOnePublic);
 const newValidatorTwo = addressFromPublicKey(newValidatorTwoPublic);
+const execFileAsync = promisify(execFile);
 
 function genesis(): GenesisConfig {
   return {
@@ -669,6 +672,7 @@ test("externally anchored State v2 snapshot installs atomically into a fresh dat
   const sourceDirectory = join(parent, "source");
   const targetDirectory = join(parent, "installed");
   const interruptedDirectory = join(parent, "interrupted");
+  const cliDirectory = join(parent, "cli-installed");
   try {
     const source = await ChainStore.open(genesis(), sourceDirectory);
     await advanceStoreToStateV2(source);
@@ -721,6 +725,23 @@ test("externally anchored State v2 snapshot installs atomically into a fresh dat
     const retried = await ChainStore.installTrustedSnapshot(genesis(), interruptedDirectory, snapshot, anchor);
     assert.equal(retried.chain.tip.hash, anchor.tipHash);
     assert.equal(retried.firstStoredHeight, 102);
+
+    const genesisPath = join(parent, "genesis.json");
+    const snapshotPath = join(parent, "checkpoint.json");
+    await writeFile(genesisPath, `${canonicalJson(genesis())}\n`, "utf8");
+    await writeFile(snapshotPath, `${canonicalJson(snapshot)}\n`, "utf8");
+    const cli = await execFileAsync(process.execPath, [
+      join(process.cwd(), "dist/src/cli.js"), "checkpoint-install",
+      "--genesis", genesisPath,
+      "--snapshot", snapshotPath,
+      "--data", cliDirectory,
+      "--tip-hash", anchor.tipHash,
+      "--sha256", anchor.snapshotSha256
+    ]);
+    assert.match(cli.stdout, /Trusted checkpoint installed at height 101/);
+    const cliInstalled = await ChainStore.open(genesis(), cliDirectory);
+    assert.equal(cliInstalled.chain.tip.hash, anchor.tipHash);
+    assert.equal(cliInstalled.firstStoredHeight, 102);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
