@@ -302,6 +302,22 @@ export function stateV2KeyPreimages(
   ].sort();
 }
 
+/** Semantic keys introduced or touched by one already-validated v2 transaction. */
+export function stateV2TransactionKeyPreimages(tx: Transaction): string[] {
+  const keys = new Set<string>([accountKey(tx.sender)]);
+  if (tx.kind === "transfer") {
+    keys.add(accountKey(tx.receiver));
+  } else if (tx.kind === "activity_settlement") {
+    keys.add(activityEpochKey(tx.epoch));
+    for (const entry of tx.entries) keys.add(accountKey(entry.receiver));
+  } else if (tx.kind === "validator_update") {
+    keys.add(validatorScheduleKey(tx.activationHeight));
+  } else {
+    keys.add(protocolScheduleKey(tx.activationHeight));
+  }
+  return [...keys].sort();
+}
+
 /**
  * Reconstructs the legacy/query ledger and governance schedule from authenticated
  * State-v2 records plus untrusted semantic-key preimages. Completeness is checked

@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import { canonicalJson, sha256Hex } from "./codec.js";
 import { ZyronChain } from "./chain.js";
 import { StateV2DiskStore } from "./state-v2-store.js";
+import { stateV2TransactionKeyPreimages } from "./state-v2.js";
 import type { StateV2PortableBundleV1 } from "./state-v2-portable.js";
 import type { Block, GenesisConfig } from "./types.js";
 
@@ -163,15 +164,16 @@ export class ChainStore {
     }
     const replayedStateV2 = replay.chain.stateV2ForPersistence();
     if (replayedStateV2) {
+      const replayedKeys = replay.chain.stateV2SemanticKeyPreimages();
+      if (!replayedKeys) throw new Error("Active State v2 replay is missing semantic keys");
       const persistedRoot = stateV2Store.state().root();
-      if (stateV2Store.state().nodeRecords().length === 0) {
-        await stateV2Store.commit(replayedStateV2);
-      } else if (persistedRoot !== replayedStateV2.root()) {
+      if (stateV2Store.state().nodeRecords().length === 0 || persistedRoot !== replayedStateV2.root() ||
+          !stateV2Store.semanticIndexWouldBeComplete(replayedStateV2, [])) {
         // The finalized block log is authoritative. A crash can occur after the
         // block fsync and before its State-v2 root pointer commit, leaving a
         // valid but stale state store. Replay has already revalidated the full
         // transition, so catch the store up to that authenticated state.
-        await stateV2Store.commit(replayedStateV2);
+        await stateV2Store.commit(replayedStateV2, replayedKeys);
       }
     }
     return new ChainStore(
@@ -205,6 +207,8 @@ export class ChainStore {
     if (chain.height < 1) throw new Error("Trusted snapshot install requires a finalized non-genesis checkpoint");
     const stateV2 = chain.stateV2ForPersistence();
     if (!stateV2) throw new Error("Trusted snapshot install requires active State v2");
+    const stateV2Keys = chain.stateV2SemanticKeyPreimages();
+    if (!stateV2Keys) throw new Error("Trusted snapshot install requires State v2 semantic keys");
     const snapshot = chain.snapshot();
     if (sha256Hex(canonicalJson(snapshot)) !== anchor.snapshotSha256) {
       throw new Error("Trusted snapshot normalization changed the externally anchored digest");
@@ -231,7 +235,7 @@ export class ChainStore {
       }
 
       const stateStore = await StateV2DiskStore.open(staging);
-      await stateStore.commit(stateV2);
+      await stateStore.commit(stateV2, stateV2Keys);
       const checkpoint: RecoveryCheckpointV2 = {
         version: 2,
         chainId: genesis.chainId,
@@ -513,7 +517,11 @@ export class ChainStore {
     }
     if (nextStateV2) {
       try {
-        await this.stateV2Store.commit(nextStateV2);
+        const incrementalKeys = block.transactions.flatMap(stateV2TransactionKeyPreimages);
+        const keyPreimages = this.stateV2Store.semanticIndexWouldBeComplete(nextStateV2, incrementalKeys)
+          ? incrementalKeys
+          : this.chain.stateV2SemanticKeyPreimagesForBlock(block);
+        await this.stateV2Store.commit(nextStateV2, keyPreimages);
       } catch (error) {
         this.persistenceFaulted = true;
         throw new Error("State v2 persistence failed after durable block write; restart required", { cause: error });
@@ -528,7 +536,7 @@ export class ChainStore {
 
 async function quarantineCorruptStateV2(dataDir: string): Promise<void> {
   const suffix = `.corrupt-${Date.now()}-${randomBytes(6).toString("hex")}`;
-  for (const filename of ["state-v2.nodes.ndjson", "state-v2.root.json"]) {
+  for (const filename of ["state-v2.nodes.ndjson", "state-v2.keys.ndjson", "state-v2.root.json"]) {
     try {
       await rename(join(dataDir, filename), join(dataDir, `${filename}${suffix}`));
     } catch (error) {
