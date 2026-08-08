@@ -268,10 +268,17 @@ snapshot before installation:
 node dist/src/cli.js state-fetch-install \
   --genesis genesis.json \
   --p2p-peer /dns4/checkpoint.example/tcp/9140/p2p/<PINNED_PEER_ID> \
+  --p2p-peer /dns4/independent-checkpoint.example/tcp/9140/p2p/<PINNED_PEER_ID_2> \
   --data ./data-from-portable-state \
   --tip-hash <independently-trusted-finalized-tip> \
   --sha256 <independently-trusted-snapshot-digest>
 ```
+
+The command accepts up to eight distinct pinned PeerIds. Every source is constrained by the
+same external anchor and durable progress manifest. If a peer fails mid-transfer, the next peer
+may continue exact indexed ranges; if inherited partial bytes later fail the anchored Merkle/
+finality validation, the poisoned staging is discarded and that peer gets one bounded clean
+retry before failover continues. A peer can therefore waste bounded work but cannot choose state.
 
 The CLI stages completed chunks in a sibling directory whose name is bound to the external
 tip+digest anchor. Each chunk is checksummed, fsynced and range-indexed; restarting the command

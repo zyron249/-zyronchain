@@ -21,7 +21,7 @@ import { PeerDirectory } from "./peer-directory.js";
 import { createP2PNode, registerP2PIdentityProtocol } from "./p2p.js";
 import { registerP2PSyncProtocol, syncP2PFrom } from "./p2p-sync.js";
 import { fetchTrustedSnapshotFromPeer, registerP2PCheckpointProtocol } from "./p2p-checkpoint.js";
-import { fetchTrustedPortableStateResumableFromPeer, registerP2PStateProtocol } from "./p2p-state.js";
+import { fetchTrustedPortableStateFromAnyPeer, MAX_STATE_SYNC_PEERS, registerP2PStateProtocol } from "./p2p-state.js";
 import { NativeConsensusPeerClient, registerP2PConsensusProtocol } from "./p2p-consensus.js";
 import { discoverNativePeersFrom, registerP2PDiscoveryProtocol } from "./p2p-discovery.js";
 import { assertSafeDiscoveredPeer, NativePeerPool } from "./p2p-peer-pool.js";
@@ -157,7 +157,12 @@ async function fetchAndInstallCheckpoint(args: string[]): Promise<void> {
 async function fetchAndInstallPortableState(args: string[]): Promise<void> {
   assertKnownOptions(args, new Set(["--genesis", "--p2p-peer", "--data", "--tip-hash", "--sha256"]));
   const genesisPath = requiredOption(args, "--genesis");
-  const peer = parseNativePeerAddress(requiredOption(args, "--p2p-peer"));
+  const peerValues = options(args, "--p2p-peer");
+  if (peerValues.length < 1 || peerValues.length > MAX_STATE_SYNC_PEERS) {
+    throw new Error(`state-fetch-install requires 1-${MAX_STATE_SYNC_PEERS} --p2p-peer values`);
+  }
+  const peers = peerValues.map(parseNativePeerAddress);
+  if (new Set(peers.map(nativePeerId)).size !== peers.length) throw new Error("state-fetch-install peer IDs must be unique");
   const dataDir = resolve(requiredOption(args, "--data"));
   const tipHash = requiredOption(args, "--tip-hash");
   const snapshotSha256 = requiredOption(args, "--sha256");
@@ -172,7 +177,7 @@ async function fetchAndInstallPortableState(args: string[]): Promise<void> {
     const identity = await loadOrCreateNodeIdentity(temporaryIdentityDir);
     client = await createP2PNode(identity);
     const anchor = { tipHash, snapshotSha256 };
-    const fetched = await fetchTrustedPortableStateResumableFromPeer(client, peer, identity, genesis, anchor, resumeDir);
+    const fetched = await fetchTrustedPortableStateFromAnyPeer(client, peers, identity, genesis, anchor, resumeDir);
     await client.stop();
     client = undefined;
     const store = await ChainStore.installTrustedPortableState(genesis, dataDir, fetched.tip, fetched.bundle, anchor);
@@ -879,7 +884,7 @@ function usage(): void {
   console.log("  zyron-l1 snapshot --genesis genesis.json --data ./data --out checkpoint.json");
   console.log("  zyron-l1 checkpoint-install --genesis genesis.json --snapshot checkpoint.json --data ./NEW-data --tip-hash <trusted-hex> --sha256 <trusted-hex>");
   console.log("  zyron-l1 checkpoint-fetch-install --genesis genesis.json --p2p-peer /ip4/203.0.113.10/tcp/9140/p2p/<PeerId> --data ./NEW-data --tip-hash <trusted-hex> --sha256 <trusted-hex>");
-  console.log("  zyron-l1 state-fetch-install --genesis genesis.json --p2p-peer /ip4/203.0.113.10/tcp/9140/p2p/<PeerId> --data ./NEW-data --tip-hash <trusted-hex> --sha256 <trusted-hex>");
+  console.log("  zyron-l1 state-fetch-install --genesis genesis.json --p2p-peer /ip4/203.0.113.10/tcp/9140/p2p/<PeerId> [--p2p-peer <independent-pinned-peer> ...] --data ./NEW-data --tip-hash <trusted-hex> --sha256 <trusted-hex>");
   console.log("  zyron-l1 prune-finalized --genesis genesis.json --data ./data --retain-blocks <n>=1");
   console.log("Checkpoint install anchors must come from an independent trusted channel, never from the snapshot peer.");
   console.log("Validator key files contain secrets. Keep them mode 0600 and never commit them.");

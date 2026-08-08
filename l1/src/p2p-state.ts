@@ -30,6 +30,7 @@ const MAX_STATE_MANIFEST_BYTES = 2_500_000;
 const P2P_STATE_TIMEOUT_MS = 8_000;
 const P2P_STATE_RETRIES = 2;
 const P2P_STATE_MIN_REQUEST_INTERVAL_MS = 50;
+export const MAX_STATE_SYNC_PEERS = 8;
 
 type StateRequestKind = "manifest" | "records" | "keys";
 
@@ -174,6 +175,38 @@ export async function fetchTrustedPortableStateResumableFromPeer(
   return fetchTrustedPortableState(node, target, identity, genesis, anchor, resumeDir);
 }
 
+/**
+ * Tries a bounded operator-selected peer set under one immutable anchor and
+ * one durable progress directory. A completed poisoned assembly is discarded;
+ * the same peer gets one clean retry before failover so poison inherited from
+ * an earlier partial peer cannot make an honest source fail permanently.
+ */
+export async function fetchTrustedPortableStateFromAnyPeer(
+  node: Libp2p,
+  targets: readonly Parameters<Libp2p["dial"]>[0][],
+  identity: NodeIdentity,
+  genesis: GenesisConfig,
+  anchor: TrustedSnapshotAnchor,
+  resumeDir: string
+): Promise<TrustedPortableStateTransfer> {
+  if (targets.length < 1 || targets.length > MAX_STATE_SYNC_PEERS) throw new Error("Invalid portable state peer count");
+  let lastError: unknown;
+  for (const target of targets) {
+    try {
+      return await fetchTrustedPortableState(node, target, identity, genesis, anchor, resumeDir);
+    } catch (error) {
+      lastError = error;
+      if (!(error instanceof PortableStateAssemblyError)) continue;
+      try {
+        return await fetchTrustedPortableState(node, target, identity, genesis, anchor, resumeDir);
+      } catch (retryError) {
+        lastError = retryError;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("All portable state peers failed");
+}
+
 async function fetchTrustedPortableState(
   node: Libp2p,
   target: Parameters<Libp2p["dial"]>[0],
@@ -273,10 +306,12 @@ async function fetchTrustedPortableState(
     // bundle cannot satisfy the anchor, discard poison rather than pinning a
     // future retry to attacker-supplied bytes.
     await resume?.discard();
-    throw error;
+    throw new PortableStateAssemblyError("Portable state assembly failed anchored validation", { cause: error });
   }
   return { tip: structuredClone(manifest.tip), bundle: structuredClone(bundle) };
 }
+
+class PortableStateAssemblyError extends Error {}
 
 async function selectPortableState(
   cache: Map<string, CachedPortableState>,
