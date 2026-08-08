@@ -151,6 +151,14 @@ export class ZyronChain {
     return this.state.clone();
   }
 
+  stateV2ForPersistence(): SparseMerkleState | undefined {
+    return this.stateV2;
+  }
+
+  validatedStateV2ForBlock(block: Block, nowMs = Date.now()): SparseMerkleState | undefined {
+    return this.validateFinalizedTransition(block, nowMs).sparse;
+  }
+
   balance(address: Address): number {
     return this.state.balance(address);
   }

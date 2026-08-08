@@ -19,6 +19,7 @@ import {
 import { createRoundSkipVote, validateBlockShape } from "../src/block.js";
 import { ChainStore, SigningJournal } from "../src/storage.js";
 import { stateV2FromLedgerSnapshot } from "../src/state-v2.js";
+import { StateV2DiskStore } from "../src/state-v2-store.js";
 import { LedgerState } from "../src/state.js";
 import { createSignedPeerRecord, loadOrCreateNodeIdentity, signPeerRequest } from "../src/peer-identity.js";
 import { PeerReputationStore } from "../src/peer-reputation.js";
@@ -1557,12 +1558,81 @@ test("protocol v2 activation root is reproduced from finalized history after res
     const expectedTip = store.chain.tip.hash;
     const expectedRoot = store.chain.tip.header.stateRoot;
     assert.equal(store.chain.tip.header.version, 2);
+    const persistedStateV2 = await StateV2DiskStore.open(directory);
+    assert.equal(persistedStateV2.state().root(), expectedRoot);
 
     const reopened = await ChainStore.open(genesis(), directory);
     assert.equal(reopened.chain.height, 101);
     assert.equal(reopened.chain.protocolVersionAt(101), 2);
     assert.equal(reopened.chain.tip.hash, expectedTip);
     assert.equal(reopened.chain.tip.header.stateRoot, expectedRoot);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("restart catches a valid stale State v2 store up to the authoritative finalized log", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-stale-recovery-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    const proposal = {
+      chainId: genesis().chainId,
+      nonce: 1,
+      sender: validatorOne,
+      activationHeight: 101,
+      protocolVersion: 2
+    };
+    const upgrade = createProtocolUpgrade(
+      {
+        ...proposal,
+        approvals: [
+          createProtocolUpgradeApproval(proposal, validatorOnePrivate, validatorOnePublic),
+          createProtocolUpgradeApproval(proposal, validatorTwoPrivate, validatorTwoPublic)
+        ],
+        timestampMs: 1_700_000_000_100
+      },
+      validatorOnePrivate,
+      validatorOnePublic
+    );
+    for (let height = 1; height <= 101; height += 1) {
+      const proposerKey = height % 2 === 1 ? validatorOnePrivate : validatorTwoPrivate;
+      let block = store.chain.produceBlock(height === 1 ? [upgrade] : [], proposerKey, {
+        timestampMs: genesis().timestampMs + (height * 100)
+      });
+      block = store.chain.attestBlock(block, validatorOnePrivate);
+      block = store.chain.attestBlock(block, validatorTwoPrivate);
+      await store.commitFinalizedBlock(block, genesis().timestampMs + (height * 100));
+    }
+    const staleNodes = await readFile(join(directory, "state-v2.nodes.ndjson"), "utf8");
+    const staleRoot = await readFile(join(directory, "state-v2.root.json"), "utf8");
+
+    const transfer = createTransfer(
+      {
+        chainId: genesis().chainId,
+        nonce: 1,
+        sender: alice,
+        receiver: bob,
+        amountAtoms: 1_000,
+        feeAtoms: 10,
+        timestampMs: genesis().timestampMs + 20_000
+      },
+      alicePrivate,
+      alicePublic
+    );
+    let next = store.chain.produceBlock([transfer], validatorTwoPrivate, {
+      timestampMs: genesis().timestampMs + 20_001
+    });
+    next = store.chain.attestBlock(next, validatorOnePrivate);
+    next = store.chain.attestBlock(next, validatorTwoPrivate);
+    await store.commitFinalizedBlock(next, genesis().timestampMs + 20_001);
+    const expectedTip = store.chain.tip.hash;
+    const expectedRoot = store.chain.tip.header.stateRoot;
+
+    await writeFile(join(directory, "state-v2.nodes.ndjson"), staleNodes, "utf8");
+    await writeFile(join(directory, "state-v2.root.json"), staleRoot, "utf8");
+    const reopened = await ChainStore.open(genesis(), directory);
+    assert.equal(reopened.chain.tip.hash, expectedTip);
+    assert.equal((await StateV2DiskStore.open(directory)).state().root(), expectedRoot);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -79,7 +79,14 @@ export class StateV2DiskStore {
 
   async commit(state: SparseMerkleState): Promise<void> {
     const nodesPath = join(this.dataDir, "state-v2.nodes.ndjson");
-    const fresh = state.pendingNodeRecords().filter((record) => !this.knownRecords.has(record.hash));
+    // Existing pre-integration data directories can first reach this store with
+    // a fully replayed state whose incremental delta has already been cleared.
+    // Bootstrap the content-addressed store from the authenticated tree once;
+    // subsequent commits retain the O(changed paths) pending-node fast path.
+    const pending = state.pendingNodeRecords();
+    const needsReplayCatchup = state.root() !== this.currentState.root() && pending.length === 0;
+    const candidates = this.knownRecords.size === 0 || needsReplayCatchup ? state.nodeRecords() : pending;
+    const fresh = candidates.filter((record) => !this.knownRecords.has(record.hash));
     if (fresh.length) {
       const handle = await open(nodesPath, "a", 0o600);
       try {

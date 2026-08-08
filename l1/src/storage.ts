@@ -6,6 +6,7 @@ import { createInterface } from "node:readline";
 
 import { canonicalJson, sha256Hex } from "./codec.js";
 import { ZyronChain } from "./chain.js";
+import { StateV2DiskStore } from "./state-v2-store.js";
 import type { Block, GenesisConfig } from "./types.js";
 
 const STORE_VERSION = 1;
@@ -38,6 +39,7 @@ export class ChainStore {
   private persistedHeight: number;
   private persistedBytes: number;
   private readonly blockRanges: Array<{ offset: number; length: number }>;
+  private persistenceFaulted = false;
 
   private constructor(
     readonly dataDir: string,
@@ -45,6 +47,7 @@ export class ChainStore {
     persistedHeight: number,
     persistedBytes: number,
     blockRanges: Array<{ offset: number; length: number }>,
+    private readonly stateV2Store: StateV2DiskStore,
     readonly recoveredFromCheckpointHeight = 0
   ) {
     this.persistedHeight = persistedHeight;
@@ -67,18 +70,40 @@ export class ChainStore {
     const blocksHandle = await open(blocksPath, "a", 0o600);
     await blocksHandle.close();
     const checkpoint = await loadRecoveryCheckpoint(genesis, dataDir);
+    let replay: Awaited<ReturnType<typeof replayStoredBlocks>> | undefined;
     if (checkpoint) {
       try {
-        const replay = await replayStoredBlocks(genesis, blocksPath, checkpoint);
-        return new ChainStore(dataDir, replay.chain, replay.count, replay.offset, replay.blockRanges, replay.recoveredHeight);
+        replay = await replayStoredBlocks(genesis, blocksPath, checkpoint);
       } catch {
         // The finalized block log remains authoritative. A stale, ahead, truncated,
         // or otherwise inconsistent local checkpoint can only disable the fast path;
         // it must never prevent a safe full replay.
       }
     }
-    const replay = await replayStoredBlocks(genesis, blocksPath);
-    return new ChainStore(dataDir, replay.chain, replay.count, replay.offset, replay.blockRanges, replay.recoveredHeight);
+    replay ??= await replayStoredBlocks(genesis, blocksPath);
+    const stateV2Store = await StateV2DiskStore.open(dataDir);
+    const replayedStateV2 = replay.chain.stateV2ForPersistence();
+    if (replayedStateV2) {
+      const persistedRoot = stateV2Store.state().root();
+      if (stateV2Store.state().nodeRecords().length === 0) {
+        await stateV2Store.commit(replayedStateV2);
+      } else if (persistedRoot !== replayedStateV2.root()) {
+        // The finalized block log is authoritative. A crash can occur after the
+        // block fsync and before its State-v2 root pointer commit, leaving a
+        // valid but stale state store. Replay has already revalidated the full
+        // transition, so catch the store up to that authenticated state.
+        await stateV2Store.commit(replayedStateV2);
+      }
+    }
+    return new ChainStore(
+      dataDir,
+      replay.chain,
+      replay.count,
+      replay.offset,
+      replay.blockRanges,
+      stateV2Store,
+      replay.recoveredHeight
+    );
   }
 
   async readFinalizedBlocks(from: number, limit: number, maxBytes: number): Promise<Block[]> {
@@ -165,6 +190,7 @@ export class ChainStore {
   }
 
   async commitFinalizedBlock(block: Block, nowMs = Date.now()): Promise<void> {
+    if (this.persistenceFaulted) throw new Error("Persistence fault requires node restart");
     if (block.header.height !== this.persistedHeight + 1) {
       throw new Error("Refusing non-sequential block persistence");
     }
@@ -175,7 +201,7 @@ export class ChainStore {
     // happens before mutating in-memory state: a crash after fsync is recovered by
     // replay, while a failed disk write cannot make the live node advertise a tip that
     // was never durably committed.
-    this.chain.validateFinalizedBlock(block, nowMs);
+    const nextStateV2 = this.chain.validatedStateV2ForBlock(block, nowMs);
     const line = `${canonicalJson(block)}\n`;
     const lineBytes = Buffer.byteLength(line, "utf8");
     if (lineBytes > MAX_STORED_BLOCK_LINE_BYTES) {
@@ -187,6 +213,14 @@ export class ChainStore {
       await handle.sync();
     } finally {
       await handle.close();
+    }
+    if (nextStateV2) {
+      try {
+        await this.stateV2Store.commit(nextStateV2);
+      } catch (error) {
+        this.persistenceFaulted = true;
+        throw new Error("State v2 persistence failed after durable block write; restart required", { cause: error });
+      }
     }
     this.chain.acceptBlock(block, nowMs);
     this.blockRanges.push({ offset: this.persistedBytes, length: lineBytes - 1 });
