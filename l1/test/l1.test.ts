@@ -3,6 +3,7 @@ import test from "node:test";
 import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
 
 import { canonicalJson, sha256Hex } from "../src/codec.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
@@ -28,6 +29,7 @@ import {
   assertSafeRpcBinding,
   createRpcServer,
   diversityOrderedPeers,
+  MAX_GOSSIP_FANOUT,
   MAX_SYNC_PROBE_CONCURRENCY,
   NodeService,
   peerDiversityBucket,
@@ -1261,6 +1263,39 @@ test("peer client bounds configured peer fanout", () => {
   const peers = Array.from({ length: 65 }, (_, index) => `https://node-${index}.example:9137`);
   assert.throws(() => new PeerClient(peers), /Too many configured peers/);
   assert.equal(new PeerClient(peers.slice(0, 64)).peers.length, 64);
+});
+
+test("block gossip has bounded fanout and suppresses duplicate rebroadcasts", async () => {
+  const deliveries = Array.from({ length: MAX_GOSSIP_FANOUT + 3 }, () => 0);
+  const servers = deliveries.map((_, index) => createServer((request, response) => {
+    request.resume();
+    if (request.method === "POST" && request.url === "/block") deliveries[index]! += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{\"ok\":true}");
+  }));
+  try {
+    await Promise.all(servers.map((server) => new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolveListen());
+    })));
+    const peers = servers.map((server) => {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Gossip test server has no TCP address");
+      return `http://127.0.0.1:${address.port}`;
+    });
+    const client = new PeerClient(peers);
+    const chain = new ZyronChain(genesis());
+    const block = chain.produceBlock([], validatorOnePrivate, { timestampMs: genesis().timestampMs + 100 });
+
+    await client.broadcastBlock(block);
+    assert.equal(deliveries.reduce((total, count) => total + count, 0), MAX_GOSSIP_FANOUT);
+    await client.broadcastBlock(block);
+    assert.equal(deliveries.reduce((total, count) => total + count, 0), MAX_GOSSIP_FANOUT);
+  } finally {
+    await Promise.all(servers.map((server) => new Promise<void>((resolveClose, reject) => {
+      server.close((error) => error ? reject(error) : resolveClose());
+    })));
+  }
 });
 
 test("peer sync ordering prevents one host or IPv4 subnet from dominating early candidates", () => {

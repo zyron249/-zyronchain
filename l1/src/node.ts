@@ -33,6 +33,8 @@ const MAX_SYNC_RESPONSE_BYTES = 25_000_000;
 const MAX_SYNC_BATCH_PAYLOAD_BYTES = 20_000_000;
 const MAX_CONFIGURED_PEERS = 64;
 export const MAX_SYNC_PROBE_CONCURRENCY = 8;
+export const MAX_GOSSIP_FANOUT = 8;
+const MAX_GOSSIP_DEDUP_IDS = 4_096;
 const PEER_FAILURE_BACKOFF_MS = 30_000;
 const PEER_TIMEOUT_MS = 8_000;
 const DEFAULT_RPC_WINDOW_MS = 60_000;
@@ -385,7 +387,9 @@ export class PeerClient {
   readonly peers: string[];
   private syncCursor = 0;
   private discoveryCursor = 0;
+  private gossipCursor = 0;
   private readonly failureUntil = new Map<string, number>();
+  private readonly blockGossipSeen = new Set<string>();
 
   constructor(
     peers: string[],
@@ -589,7 +593,16 @@ export class PeerClient {
   }
 
   async broadcastBlock(block: Block): Promise<void> {
-    await Promise.allSettled(this.peers.map((peer) => postJson(
+    if (this.blockGossipSeen.has(block.hash)) return;
+    this.blockGossipSeen.add(block.hash);
+    if (this.blockGossipSeen.size > MAX_GOSSIP_DEDUP_IDS) {
+      const oldest = this.blockGossipSeen.keys().next().value as string | undefined;
+      if (oldest) this.blockGossipSeen.delete(oldest);
+    }
+    const fanout = diversityOrderedPeers(this.peers, this.gossipCursor).slice(0, MAX_GOSSIP_FANOUT);
+    const groupCount = Math.max(1, new Set(this.peers.map(peerDiversityBucket)).size);
+    this.gossipCursor = (this.gossipCursor + 1) % groupCount;
+    await Promise.allSettled(fanout.map((peer) => postJson(
       `${peer}/block`, block, 64_000, this.peerAuthToken, this.peerRequestCredentials
     )));
   }
