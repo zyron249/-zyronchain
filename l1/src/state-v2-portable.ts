@@ -72,18 +72,25 @@ export function validateStateV2PortableBundle(
     return key;
   });
   const state = SparseMerkleState.fromNodeRecords(expectedRoot, records);
-  const reachable = state.nodeRecords();
-  if (reachable.length !== records.length) throw new Error("Portable State v2 bundle contains unreachable nodes");
-  const reachableHashes = new Set(reachable.map((record) => record.hash));
+  const reachableHashes = state.reachableNodeHashes();
+  if (reachableHashes.size !== records.length) throw new Error("Portable State v2 bundle contains unreachable nodes");
   if (records.some((record) => !reachableHashes.has(record.hash))) {
     throw new Error("Portable State v2 bundle contains uncommitted nodes");
   }
   const view = reconstructStateV2PortableView(state, keyPreimages);
   return {
-    bundle: { version: 1, root: expectedRoot, records: structuredClone(records), keyPreimages: [...keyPreimages] },
+    // Return independent record objects without structured-cloning immutable
+    // strings (especially valueJson) a second time at peak import memory.
+    bundle: { version: 1, root: expectedRoot, records: records.map(copyNodeRecord), keyPreimages: [...keyPreimages] },
     state,
     view
   };
+}
+
+function copyNodeRecord(record: StateV2NodeRecord): StateV2NodeRecord {
+  return record.kind === "leaf"
+    ? { kind: "leaf", hash: record.hash, keyHash: record.keyHash, valueHash: record.valueHash, valueJson: record.valueJson }
+    : { kind: "branch", hash: record.hash, leftHash: record.leftHash, rightHash: record.rightHash };
 }
 
 function parseNodeRecord(value: unknown): StateV2NodeRecord {
