@@ -284,8 +284,15 @@ export class PeerClient {
   readonly peers: string[];
 
   constructor(peers: string[], private readonly peerAuthToken?: string) {
-    this.peers = [...new Set(peers.map(normalizePeerUrl))];
     if (peerAuthToken !== undefined) validatePeerAuthToken(peerAuthToken);
+    this.peers = [...new Set(peers.map(normalizePeerUrl))];
+    if (peerAuthToken !== undefined) {
+      for (const peer of this.peers) {
+        if (!peerTransportProtectsCredentials(peer)) {
+          throw new Error("Authenticated remote peers must use HTTPS");
+        }
+      }
+    }
   }
 
   async syncFrom(peer: string, service: NodeService): Promise<number> {
@@ -447,6 +454,13 @@ function normalizePeerUrl(value: string): string {
   if (url.username || url.password || url.search || url.hash) throw new Error("Peer URL contains forbidden components");
   url.pathname = url.pathname.replace(/\/+$/, "");
   return url.toString().replace(/\/$/, "");
+}
+
+function peerTransportProtectsCredentials(value: string): boolean {
+  const url = new URL(value);
+  if (url.protocol === "https:") return true;
+  return url.hostname === "localhost" || url.hostname === "127.0.0.1" ||
+    url.hostname === "::1" || url.hostname === "[::1]";
 }
 
 async function getJson(url: string, maxBytes: number): Promise<unknown> {
