@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
@@ -74,6 +76,16 @@ test("State v2 membership and non-membership proofs verify against the root", ()
   assert.equal(verifySparseMerkleProof(state.root(), "account:alice", alice, member), true);
   assert.equal(verifySparseMerkleProof(state.root(), "account:carol", null, absent), true);
   assert.equal(verifySparseMerkleProof(state.root(), "account:alice", { balanceAtoms: 101, nonce: 2 }, member), false);
+});
+
+test("public State v2 non-membership vector verifies exactly and rejects substitution", () => {
+  const vector = JSON.parse(readFileSync(
+    join(process.cwd(), "test-vectors/state-v2-nonmembership-v1.json"), "utf8"
+  )) as { version: number; root: string; key: string; value: null; proof: Parameters<typeof verifySparseMerkleProof>[3] };
+  assert.equal(vector.version, 1);
+  assert.equal(vector.value, null);
+  assert.equal(verifySparseMerkleProof(vector.root, vector.key, null, vector.proof), true);
+  assert.equal(verifySparseMerkleProof(vector.root, "account:mallory", null, vector.proof), false);
 });
 
 test("State v2 rejects tampered proof paths", () => {

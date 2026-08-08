@@ -11,7 +11,8 @@ verification uses pinned `coincurve` 21.0.0, backed by libsecp256k1.
 
 The fixtures cover both a round-0 finalization with a State-v2 membership proof
 and a round-1 finalization whose proposer is unlocked only by an authenticated
-round-0 skip quorum. They contain public keys/signatures only, never private keys.
+round-0 skip quorum. A separate State-v2 fixture locks positive non-membership
+verification. They contain public keys/signatures only, never private keys.
 
 Run it from this directory after installing the pinned dependency:
 
