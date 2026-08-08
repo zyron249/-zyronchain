@@ -22,6 +22,7 @@ import {
 import { createRoundSkipVote, validateBlockShape } from "../src/block.js";
 import { ChainStore, SigningJournal } from "../src/storage.js";
 import { stateV2FromLedgerSnapshot } from "../src/state-v2.js";
+import { createStateV2PortableBundle } from "../src/state-v2-portable.js";
 import { StateV2DiskStore } from "../src/state-v2-store.js";
 import { LedgerState } from "../src/state.js";
 import { createSignedPeerRecord, loadOrCreateNodeIdentity, signPeerRequest } from "../src/peer-identity.js";
@@ -681,6 +682,15 @@ test("externally anchored State v2 snapshot installs atomically into a fresh dat
       tipHash: source.chain.tip.hash,
       snapshotSha256: sha256Hex(canonicalJson(snapshot))
     };
+    const portableState = source.chain.stateV2ForPersistence();
+    assert.ok(portableState);
+    const portable = createStateV2PortableBundle(portableState, snapshot.state, {
+      validatorSchedule: snapshot.validatorSchedule,
+      protocolSchedule: snapshot.protocolSchedule
+    });
+    const portableRestored = ZyronChain.fromTrustedPortableState(genesis(), snapshot.tip, portable, anchor);
+    assert.equal(portableRestored.tip.hash, anchor.tipHash);
+    assert.equal(portableRestored.snapshot().state.accounts.length, snapshot.state.accounts.length);
 
     await assert.rejects(
       () => ChainStore.installTrustedSnapshot(genesis(), targetDirectory, snapshot, {
