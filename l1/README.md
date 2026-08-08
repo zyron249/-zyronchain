@@ -248,14 +248,24 @@ Production-style monitoring, backup/restore, incident response, key-compromise a
 
 Tags matching `l1-v*` run the standalone L1 release workflow. The workflow installs the
 locked dependency graph, repeats typecheck/tests/runtime audit, builds the node, packages
-only the runtime distribution and operator README, writes `SHA256SUMS`, and creates a
-GitHub artifact attestation for both files. The resulting tarball is an operator artifact;
-the package remains `private` and is not published to the npm registry.
+only the runtime distribution and operator README, emits an SPDX runtime-dependency SBOM,
+binds the tarball and SBOM into `SHA256SUMS`, and creates GitHub artifact attestations
+covering the tarball, SBOM and checksum manifest. The resulting tarball is an operator
+artifact; the package remains `private` and is not published to the npm registry.
 
 Before promoting a release, verify its checksum and GitHub attestation and confirm that
-the tag resolves to the reviewed commit. Release provenance does not replace the
-independent audit, production key custody, genesis freeze, or operational drills listed
-in the readiness gate.
+the tag resolves to the reviewed commit. From the downloaded release bundle, checksum
+verification is:
+
+```sh
+sha256sum -c SHA256SUMS
+```
+
+`SBOM.spdx.json` inventories the exact runtime dependency graph reported by npm for that
+build; its checksum and attestation bind that evidence to the release. An SBOM is not a
+claim that those dependencies are vulnerability-free. Release provenance likewise does
+not replace the independent audit, production key custody, genesis freeze, or operational
+drills listed in the readiness gate.
 
 ## Deterministic checkpoint snapshots
 
