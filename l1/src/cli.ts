@@ -119,13 +119,11 @@ async function runNode(args: string[]): Promise<void> {
   const service = new NodeService(store, journal, privateKey);
   const peers = new PeerClient(peerUrls, peerAuthToken);
 
-  for (const peer of peers.peers) {
-    try {
-      const accepted = await peers.syncFrom(peer, service);
-      if (accepted) console.log(`Synced ${accepted} finalized block(s) from ${peer}`);
-    } catch (error) {
-      console.warn(`Peer sync skipped for ${peer}: ${safeError(error)}`);
-    }
+  try {
+    const accepted = await peers.syncAny(service);
+    if (accepted) console.log(`Synced ${accepted} finalized block(s) from configured peers`);
+  } catch (error) {
+    console.warn(`Initial peer sync skipped: ${safeError(error)}`);
   }
 
   const server = createRpcServer(service, peerAuthToken ? { peerAuthToken } : {});
@@ -146,13 +144,11 @@ async function runNode(args: string[]): Promise<void> {
 
   setInterval(() => {
     void (async () => {
-      for (const peer of peers.peers) {
-        try {
-          const accepted = await peers.syncFrom(peer, service);
-          if (accepted) console.log(`Caught up ${accepted} finalized block(s) from ${peer}`);
-        } catch (error) {
-          console.warn(`Periodic peer sync skipped for ${peer}: ${safeError(error)}`);
-        }
+      try {
+        const accepted = await peers.syncAny(service);
+        if (accepted) console.log(`Caught up ${accepted} finalized block(s) from configured peers`);
+      } catch (error) {
+        console.warn(`Periodic peer sync skipped: ${safeError(error)}`);
       }
     })();
   }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3))).unref();
