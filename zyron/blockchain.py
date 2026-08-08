@@ -1,6 +1,7 @@
 import re
 import time
 import math
+import json
 import threading
 from functools import wraps
 from zyron.block import Block
@@ -22,9 +23,14 @@ class Blockchain:
     GENESIS_TIMESTAMP = 1704067200
     MAX_FUTURE_BLOCK_TIME = 120
     MAX_BLOCK_TRANSACTIONS = 1000
+    MAX_BLOCK_SERIALIZED_BYTES = 1_000_000
     MAX_MEMPOOL_SIZE = 5000
     MEMPOOL_TX_TTL_SECONDS = 3600
     MAX_TX_FUTURE_SECONDS = 120
+    V2_BLOCK_FIELDS = frozenset({
+        "version", "index", "timestamp_ms", "transactions", "merkle_root",
+        "previous_hash", "difficulty", "nonce", "hash"
+    })
 
     def __init__(self):
         self._lock = threading.RLock()
@@ -40,6 +46,8 @@ class Blockchain:
         self.pending_transactions = []
         self.max_supply = 50_000_000
         self.initial_mining_reward = 50
+        self.max_supply_atoms = self.max_supply * Transaction.ATOMS_PER_ZYN
+        self.initial_mining_reward_atoms = self.initial_mining_reward * Transaction.ATOMS_PER_ZYN
         self.halving_interval = 100_000
         self.mining_reward = self.get_current_reward()
 
@@ -68,7 +76,8 @@ class Blockchain:
             transactions=["Genesis Block"],
             previous_hash="0",
             difficulty=4,
-            timestamp=self.GENESIS_TIMESTAMP
+            timestamp=self.GENESIS_TIMESTAMP,
+            version=Block.LEGACY_VERSION
         )
 
     def get_latest_block(self):
@@ -82,23 +91,44 @@ class Blockchain:
         return sum(self.get_block_work(block) for block in chain_to_measure)
 
     def block_to_dict(self, block):
-        return {
+        data = {
             "index": block.index,
-            "timestamp": block.timestamp,
             "transactions": block.transactions,
             "previous_hash": block.previous_hash,
             "difficulty": block.difficulty,
             "nonce": block.nonce,
             "hash": block.hash
         }
+        if block.version == Block.CURRENT_VERSION:
+            data.update({
+                "version": block.version,
+                "timestamp_ms": block.timestamp_ms,
+                "merkle_root": block.merkle_root
+            })
+        else:
+            data["timestamp"] = block.timestamp
+        return data
 
     def dict_to_block(self, block_data):
+        if not isinstance(block_data, dict):
+            raise ValueError("Block must be an object")
+        version = block_data.get("version", Block.LEGACY_VERSION)
+        if version == Block.CURRENT_VERSION:
+            unknown = set(block_data) - self.V2_BLOCK_FIELDS
+            missing = self.V2_BLOCK_FIELDS - set(block_data)
+            if unknown:
+                raise ValueError(f"Unknown v2 block fields: {', '.join(sorted(unknown))}")
+            if missing:
+                raise ValueError(f"Missing v2 block fields: {', '.join(sorted(missing))}")
         block = Block(
             block_data["index"],
             block_data["transactions"],
             block_data["previous_hash"],
             block_data.get("difficulty", 4),
-            timestamp=block_data.get("timestamp")
+            timestamp=block_data.get("timestamp"),
+            version=version,
+            timestamp_ms=block_data.get("timestamp_ms"),
+            merkle_root=block_data.get("merkle_root")
         )
         block.nonce = block_data["nonce"]
         block.hash = block_data["hash"]
@@ -174,35 +204,68 @@ class Blockchain:
         }
 
     def get_block_subsidy(self, block_index):
-        halvings = int(block_index) // self.halving_interval
-        reward = self.initial_mining_reward / (2 ** halvings)
-        return 0 if reward < 0.00000001 else reward
+        return self.get_block_subsidy_atoms(block_index) / Transaction.ATOMS_PER_ZYN
 
-    def get_total_supply(self):
-        total = 0.0
+    def get_block_subsidy_atoms(self, block_index):
+        halvings = int(block_index) // self.halving_interval
+        if halvings >= self.initial_mining_reward_atoms.bit_length():
+            return 0
+        return self.initial_mining_reward_atoms >> halvings
+
+    @staticmethod
+    def transaction_amount_atoms(tx_data):
+        return Transaction.amount_atoms_from_dict(tx_data)
+
+    @staticmethod
+    def transaction_fee_atoms(tx_data):
+        return Transaction.fee_atoms_from_dict(tx_data)
+
+    @staticmethod
+    def transaction_timestamp(tx_data):
+        return Transaction.timestamp_seconds_from_dict(tx_data)
+
+    @staticmethod
+    def atoms_to_zyn(atoms):
+        return atoms / Transaction.ATOMS_PER_ZYN
+
+    def transaction_display_values(self, tx_data):
+        return {
+            "amount": self.atoms_to_zyn(self.transaction_amount_atoms(tx_data)),
+            "fee": self.atoms_to_zyn(self.transaction_fee_atoms(tx_data)),
+            "timestamp": self.transaction_timestamp(tx_data)
+        }
+
+    def get_total_supply_atoms(self):
+        total = 0
 
         for block in self.chain[1:]:
-            block_fees = 0.0
-            system_amount = 0.0
+            block_fees = 0
+            system_amount = 0
 
             for tx in block.transactions:
                 if not isinstance(tx, dict):
                     continue
 
                 if tx.get("sender") == "SYSTEM":
-                    system_amount += float(tx.get("amount", 0))
+                    system_amount += self.transaction_amount_atoms(tx)
                 else:
-                    block_fees += float(tx.get("fee", 0))
+                    block_fees += self.transaction_fee_atoms(tx)
 
             total += max(system_amount - block_fees, 0)
 
-        return min(total, self.max_supply)
+        return min(total, self.max_supply_atoms)
+
+    def get_total_supply(self):
+        return self.atoms_to_zyn(self.get_total_supply_atoms())
 
     def get_current_reward(self):
         return self.get_block_subsidy(len(self.chain))
 
     def get_remaining_supply(self):
-        return max(self.max_supply - self.get_total_supply(), 0)
+        return self.atoms_to_zyn(self.get_remaining_supply_atoms())
+
+    def get_remaining_supply_atoms(self):
+        return max(self.max_supply_atoms - self.get_total_supply_atoms(), 0)
 
     def get_supply_info(self):
         return {
@@ -282,7 +345,10 @@ class Blockchain:
             if tx.get("sender") == "SYSTEM":
                 continue
 
-            tx_timestamp = float(tx.get("timestamp", now))
+            try:
+                tx_timestamp = self.transaction_timestamp(tx)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
 
             if now - tx_timestamp <= self.MEMPOOL_TX_TTL_SECONDS:
                 cleaned_transactions.append(tx)
@@ -296,7 +362,7 @@ class Blockchain:
             return 0
 
         fees = [
-            float(tx.get("fee", 0))
+            self.transaction_fee_atoms(tx)
             for tx in self.pending_transactions
             if isinstance(tx, dict) and tx.get("sender") != "SYSTEM"
         ]
@@ -304,7 +370,7 @@ class Blockchain:
         if not fees:
             return 0
 
-        return min(fees)
+        return self.atoms_to_zyn(min(fees))
 
     @synchronized
     def enforce_mempool_limit(self):
@@ -317,8 +383,8 @@ class Blockchain:
 
         normal_transactions.sort(
             key=lambda tx: (
-                float(tx.get("fee", 0)),
-                float(tx.get("timestamp", 0))
+                self.transaction_fee_atoms(tx),
+                self.transaction_timestamp(tx)
             ),
             reverse=True
         )
@@ -327,16 +393,27 @@ class Blockchain:
 
     def get_pending_spent_amount(self, address):
         self.cleanup_mempool()
-        total = 0
+        total_atoms = 0
 
         for tx in self.pending_transactions:
             if isinstance(tx, dict) and tx.get("sender") == address:
-                total += float(tx.get("amount", 0)) + float(tx.get("fee", 0))
+                total_atoms += self.transaction_amount_atoms(tx) + self.transaction_fee_atoms(tx)
 
-        return total
+        return self.atoms_to_zyn(total_atoms)
 
     def get_available_balance(self, address):
         return self.get_balance(address) - self.get_pending_spent_amount(address)
+
+    def get_pending_spent_atoms(self, address):
+        self.cleanup_mempool()
+        return sum(
+            self.transaction_amount_atoms(tx) + self.transaction_fee_atoms(tx)
+            for tx in self.pending_transactions
+            if isinstance(tx, dict) and tx.get("sender") == address
+        )
+
+    def get_available_balance_atoms(self, address):
+        return self.get_balance_atoms(address) - self.get_pending_spent_atoms(address)
 
     def get_sorted_pending_transactions(self):
         self.cleanup_mempool()
@@ -375,10 +452,8 @@ class Blockchain:
                 if int(tx.get("nonce", -1)) != expected_nonce:
                     continue
 
-                amount = float(tx.get("amount", 0))
-                fee = float(tx.get("fee", 0))
-                total_cost = amount + fee
-                available_balance = self.get_balance(sender) - working_spent.get(sender, 0)
+                total_cost = self.transaction_amount_atoms(tx) + self.transaction_fee_atoms(tx)
+                available_balance = self.get_balance_atoms(sender) - working_spent.get(sender, 0)
 
                 if available_balance < total_cost:
                     continue
@@ -390,8 +465,8 @@ class Blockchain:
 
             candidates.sort(
                 key=lambda tx: (
-                    float(tx.get("fee", 0)),
-                    float(tx.get("timestamp", 0))
+                    self.transaction_fee_atoms(tx),
+                    self.transaction_timestamp(tx)
                 ),
                 reverse=True
             )
@@ -402,7 +477,11 @@ class Blockchain:
 
             sender = selected_tx.get("sender")
             working_nonces[sender] = int(selected_tx.get("nonce", working_nonces.get(sender, 0) + 1))
-            working_spent[sender] = working_spent.get(sender, 0) + float(selected_tx.get("amount", 0)) + float(selected_tx.get("fee", 0))
+            working_spent[sender] = (
+                working_spent.get(sender, 0)
+                + self.transaction_amount_atoms(selected_tx)
+                + self.transaction_fee_atoms(selected_tx)
+            )
 
         return selected
 
@@ -437,7 +516,7 @@ class Blockchain:
         if not self.is_valid_genesis_block(chain_to_validate[0]):
             return False
 
-        validated_supply = 0.0
+        validated_supply_atoms = 0
         seen_chain_txids = set()
 
         for i in range(1, len(chain_to_validate)):
@@ -445,6 +524,9 @@ class Blockchain:
             previous = chain_to_validate[i - 1]
 
             if not isinstance(current.index, int) or isinstance(current.index, bool):
+                return False
+
+            if current.version not in (Block.LEGACY_VERSION, Block.CURRENT_VERSION):
                 return False
 
             if not isinstance(current.difficulty, int) or isinstance(current.difficulty, bool):
@@ -493,6 +575,25 @@ class Blockchain:
             if len(current.transactions) > self.MAX_BLOCK_TRANSACTIONS + 1:
                 return False
 
+            if current.version == Block.CURRENT_VERSION:
+                if not isinstance(current.timestamp_ms, int) or isinstance(current.timestamp_ms, bool):
+                    return False
+                if current.merkle_root != current.calculate_merkle_root():
+                    return False
+
+            try:
+                serialized_block = json.dumps(
+                    self.block_to_dict(current),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False
+                ).encode("utf-8")
+            except (TypeError, ValueError, OverflowError):
+                return False
+
+            if len(serialized_block) > self.MAX_BLOCK_SERIALIZED_BYTES:
+                return False
+
             if current.hash != current.calculate_hash():
                 return False
 
@@ -504,7 +605,7 @@ class Blockchain:
 
             parsed_transactions = []
             system_transactions = []
-            block_fees = 0.0
+            block_fees_atoms = 0
 
             for tx_data in current.transactions:
                 if not isinstance(tx_data, dict):
@@ -538,11 +639,11 @@ class Blockchain:
                     if not self.transaction_public_key_matches_sender(tx):
                         return False
 
-                    block_fees += tx.fee
+                    block_fees_atoms += tx.fee_atoms_value()
 
                 parsed_transactions.append(tx)
 
-            if not math.isfinite(block_fees) or block_fees < 0:
+            if block_fees_atoms < 0:
                 return False
 
             if len(system_transactions) > 1:
@@ -551,23 +652,18 @@ class Blockchain:
             if system_transactions and parsed_transactions[-1].sender != "SYSTEM":
                 return False
 
-            block_subsidy = self.get_block_subsidy(current.index)
-            remaining_supply = max(self.max_supply - validated_supply, 0)
-            minted_subsidy = min(block_subsidy, remaining_supply)
-            expected_miner_payment = minted_subsidy + block_fees
+            block_subsidy_atoms = self.get_block_subsidy_atoms(current.index)
+            remaining_supply_atoms = max(self.max_supply_atoms - validated_supply_atoms, 0)
+            minted_subsidy_atoms = min(block_subsidy_atoms, remaining_supply_atoms)
+            expected_miner_payment_atoms = minted_subsidy_atoms + block_fees_atoms
 
-            if expected_miner_payment > 0:
+            if expected_miner_payment_atoms > 0:
                 if len(system_transactions) != 1:
                     return False
 
                 reward_tx = system_transactions[0]
 
-                if not math.isclose(
-                    reward_tx.amount,
-                    expected_miner_payment,
-                    rel_tol=0,
-                    abs_tol=0.00000001
-                ):
+                if reward_tx.amount_atoms_value() != expected_miner_payment_atoms:
                     return False
             elif system_transactions:
                 return False
@@ -591,27 +687,32 @@ class Blockchain:
                 if tx.nonce != previous_nonce + 1:
                     return False
 
-                total_cost = tx.amount + tx.fee
-                balance_before_block = self.get_balance_before_block(
+                total_cost_atoms = tx.amount_atoms_value() + tx.fee_atoms_value()
+                balance_before_block_atoms = self.get_balance_atoms_before_block(
                     tx.sender,
                     current.index,
                     chain_to_validate
                 )
 
-                if spent_in_block.get(tx.sender, 0) + total_cost > balance_before_block:
+                if spent_in_block.get(tx.sender, 0) + total_cost_atoms > balance_before_block_atoms:
                     return False
 
                 spent_in_block[tx.sender] = (
-                    spent_in_block.get(tx.sender, 0) + total_cost
+                    spent_in_block.get(tx.sender, 0) + total_cost_atoms
                 )
                 expected_nonces[tx.sender] = tx.nonce
 
-            validated_supply += minted_subsidy
+            validated_supply_atoms += minted_subsidy_atoms
 
         return True
 
     def get_balance_before_block(self, address, block_index, chain_to_search=None):
-        balance = 0
+        return self.atoms_to_zyn(
+            self.get_balance_atoms_before_block(address, block_index, chain_to_search)
+        )
+
+    def get_balance_atoms_before_block(self, address, block_index, chain_to_search=None):
+        balance_atoms = 0
         chain_to_search = chain_to_search if chain_to_search is not None else self.chain
 
         for block in chain_to_search:
@@ -622,24 +723,27 @@ class Blockchain:
                 if not isinstance(tx, dict):
                     continue
 
-                amount = float(tx.get("amount", 0))
-                fee = float(tx.get("fee", 0))
+                amount_atoms = self.transaction_amount_atoms(tx)
+                fee_atoms = self.transaction_fee_atoms(tx)
 
                 if tx.get("sender") == address:
-                    balance -= amount
-                    balance -= fee
+                    balance_atoms -= amount_atoms
+                    balance_atoms -= fee_atoms
 
                 if tx.get("receiver") == address:
-                    balance += amount
+                    balance_atoms += amount_atoms
 
-        return balance
+        return balance_atoms
 
     @synchronized
     def replace_chain(self, new_chain_data):
         if not new_chain_data:
             return {"replaced": False, "reason": "No chain data provided"}
 
-        new_chain = [self.dict_to_block(block_data) for block_data in new_chain_data]
+        try:
+            new_chain = [self.dict_to_block(block_data) for block_data in new_chain_data]
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return {"replaced": False, "reason": "Incoming chain is invalid"}
 
         if not self.is_valid_chain(new_chain):
             return {"replaced": False, "reason": "Incoming chain is invalid"}
@@ -833,9 +937,9 @@ class Blockchain:
         if transaction.nonce != expected_nonce:
             raise Exception(f"Invalid nonce. Expected {expected_nonce}")
 
-        total_cost = transaction.amount + transaction.fee
+        total_cost_atoms = transaction.amount_atoms_value() + transaction.fee_atoms_value()
 
-        if self.get_available_balance(transaction.sender) < total_cost:
+        if self.get_available_balance_atoms(transaction.sender) < total_cost_atoms:
             raise Exception("Double-spend rejected: Insufficient balance after pending transactions")
 
         self.pending_transactions.append(transaction.to_dict())
@@ -850,29 +954,29 @@ class Blockchain:
         self.cleanup_mempool()
         selected_transactions = self.get_sorted_pending_transactions()
 
-        current_reward = self.get_current_reward()
-        remaining_supply = self.get_remaining_supply()
+        current_reward_atoms = self.get_block_subsidy_atoms(len(self.chain))
+        remaining_supply_atoms = self.get_remaining_supply_atoms()
 
-        if remaining_supply <= 0:
-            current_reward = 0
+        if remaining_supply_atoms <= 0:
+            current_reward_atoms = 0
 
-        if current_reward > remaining_supply:
-            current_reward = remaining_supply
+        if current_reward_atoms > remaining_supply_atoms:
+            current_reward_atoms = remaining_supply_atoms
 
-        total_fees = 0
+        total_fees_atoms = 0
 
         for tx in selected_transactions:
-            total_fees += float(tx.get("fee", 0))
+            total_fees_atoms += self.transaction_fee_atoms(tx)
 
         block_transactions = list(selected_transactions)
-        miner_payment = current_reward + total_fees
+        miner_payment_atoms = current_reward_atoms + total_fees_atoms
 
-        if current_reward > 0 or total_fees > 0:
+        if miner_payment_atoms > 0:
             reward_tx = Transaction(
                 "SYSTEM",
                 miner_address,
-                miner_payment,
-                fee=0,
+                amount_atoms=miner_payment_atoms,
+                fee_atoms=0,
                 nonce=0
             )
             block_transactions.append(reward_tx.to_dict())
@@ -881,9 +985,9 @@ class Blockchain:
         self.difficulty = new_difficulty
 
         latest_block = self.get_latest_block()
-        block_timestamp = max(
-            time.time(),
-            float(latest_block.timestamp) + 0.000001
+        block_timestamp_ms = max(
+            time.time_ns() // 1_000_000,
+            int(float(latest_block.timestamp) * 1000) + 1
         )
 
         block = Block(
@@ -891,7 +995,8 @@ class Blockchain:
             block_transactions,
             latest_block.hash,
             new_difficulty,
-            timestamp=block_timestamp
+            timestamp_ms=block_timestamp_ms,
+            version=Block.CURRENT_VERSION
         )
 
         block.mine()
@@ -913,22 +1018,25 @@ class Blockchain:
         self.enforce_mempool_limit()
 
     def get_balance(self, address):
-        balance = 0
+        return self.atoms_to_zyn(self.get_balance_atoms(address))
+
+    def get_balance_atoms(self, address):
+        balance_atoms = 0
 
         for block in self.chain:
             for tx in block.transactions:
                 if isinstance(tx, dict):
-                    amount = float(tx.get("amount", 0))
-                    fee = float(tx.get("fee", 0))
+                    amount_atoms = self.transaction_amount_atoms(tx)
+                    fee_atoms = self.transaction_fee_atoms(tx)
 
                     if tx.get("sender") == address:
-                        balance -= amount
-                        balance -= fee
+                        balance_atoms -= amount_atoms
+                        balance_atoms -= fee_atoms
 
                     if tx.get("receiver") == address:
-                        balance += amount
+                        balance_atoms += amount_atoms
 
-        return balance
+        return balance_atoms
 
     def get_transaction(self, txid):
         self.cleanup_mempool()
@@ -953,15 +1061,16 @@ class Blockchain:
                     continue
 
                 if tx.get("sender") == address or tx.get("receiver") == address:
+                    display = self.transaction_display_values(tx)
                     transactions.append({
                         "block_index": block.index,
                         "txid": tx.get("txid"),
                         "sender": tx.get("sender"),
                         "receiver": tx.get("receiver"),
-                        "amount": tx.get("amount"),
-                        "fee": tx.get("fee", 0),
+                        "amount": display["amount"],
+                        "fee": display["fee"],
                         "nonce": tx.get("nonce", 0),
-                        "timestamp": tx.get("timestamp")
+                        "timestamp": display["timestamp"]
                     })
 
         transactions.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
@@ -1039,15 +1148,16 @@ class Blockchain:
                 if not self.is_valid_address(receiver):
                     continue
 
+                display = self.transaction_display_values(tx)
                 transactions.append({
                     "block_index": block.index,
                     "txid": tx.get("txid"),
                     "sender": sender,
                     "receiver": receiver,
-                    "amount": tx.get("amount"),
-                    "fee": tx.get("fee", 0),
+                    "amount": display["amount"],
+                    "fee": display["fee"],
                     "nonce": tx.get("nonce", 0),
-                    "timestamp": tx.get("timestamp")
+                    "timestamp": display["timestamp"]
                 })
 
         transactions.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
@@ -1074,7 +1184,7 @@ class Blockchain:
 
                 if tx.get("sender") == "SYSTEM":
                     miner = tx.get("receiver")
-                    amount = float(tx.get("amount", 0))
+                    amount = self.atoms_to_zyn(self.transaction_amount_atoms(tx))
 
                     if not self.is_valid_address(miner):
                         continue
