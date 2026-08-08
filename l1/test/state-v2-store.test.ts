@@ -29,6 +29,31 @@ test("State v2 disk store atomically reopens committed node/value state", async 
   }
 });
 
+test("State v2 persistence tracks only changed Merkle paths after a checkpoint", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-delta-"));
+  try {
+    const store = await StateV2DiskStore.open(directory);
+    let state = store.state();
+    for (let index = 0; index < 2_000; index += 1) {
+      state = state.set(`account:${index}`, { balanceAtoms: index, nonce: 0 });
+    }
+    await store.commit(state);
+
+    const checkpoint = store.state();
+    assert.equal(checkpoint.pendingNodeRecords().length, 0);
+    const updated = checkpoint.set("account:1000", { balanceAtoms: 999, nonce: 1 });
+    assert.ok(updated.pendingNodeRecords().length > 0);
+    assert.ok(updated.pendingNodeRecords().length <= 257);
+    await store.commit(updated);
+
+    const reopened = await StateV2DiskStore.open(directory);
+    assert.equal(reopened.state().root(), updated.root());
+    assert.deepEqual(reopened.state().get("account:1000"), { balanceAtoms: 999, nonce: 1 });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("State v2 disk store ignores an unterminated crash tail after a committed root", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-tail-"));
   try {
