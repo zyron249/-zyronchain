@@ -70,6 +70,13 @@ transaction gossip. Payload, connection, stream, fanout, dedup, per-PeerId infli
 rate limits are enforced. Automatic admission of peer-exchange records is deliberately still
 disabled until the remaining eclipse/diversity policy is complete.
 
+For known infrastructure failure domains, add `--p2p-peer-group <PeerId>=<label>` next to the
+configured peer. The label is operator metadata (for example `asn-64500`, `provider-a` or an
+independent operator name), not a trust credential. Native selection will avoid choosing two
+peers from the same IPv4 `/24`/DNS host **or** the same named failure domain in the same
+diversity round. Do not fabricate labels merely to satisfy the selector; source ASN/provider
+ownership independently when preparing a production peer set.
+
 Keep wallet/public HTTP RPC and validator networking as separate security surfaces. A normal
 validator should leave `--host 127.0.0.1` for RPC and expose only its native P2P TCP port to
 other nodes. If an RPC listener must bind non-loopback, the CLI fails closed unless consensus
