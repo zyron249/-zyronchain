@@ -23,38 +23,43 @@ export async function readP2PFrame(stream: Stream, maxBytes: number, timeoutMs: 
   let expectedBytes: number | undefined;
   let body: Buffer | undefined;
   let bodyBytes = 0;
-
-  for await (const chunk of stream) {
-    const bytes = Buffer.from(chunk.subarray());
-    let offset = 0;
-    if (expectedBytes === undefined) {
-      const take = Math.min(4 - headerBytes, bytes.length);
-      bytes.copy(header, headerBytes, 0, take);
-      headerBytes += take;
-      offset += take;
-      if (headerBytes === 4) {
-        expectedBytes = header.readUInt32BE(0);
-        if (expectedBytes < 1 || expectedBytes > maxBytes) throw new Error("Invalid P2P frame length");
-        body = Buffer.allocUnsafe(expectedBytes);
+  const timeout = setTimeout(() => stream.abort(new Error("P2P frame read timeout")), timeoutMs);
+  timeout.unref();
+  try {
+    for await (const chunk of stream) {
+      const bytes = Buffer.from(chunk.subarray());
+      let offset = 0;
+      if (expectedBytes === undefined) {
+        const take = Math.min(4 - headerBytes, bytes.length);
+        bytes.copy(header, headerBytes, 0, take);
+        headerBytes += take;
+        offset += take;
+        if (headerBytes === 4) {
+          expectedBytes = header.readUInt32BE(0);
+          if (expectedBytes < 1 || expectedBytes > maxBytes) throw new Error("Invalid P2P frame length");
+          body = Buffer.allocUnsafe(expectedBytes);
+        }
       }
-    }
-    if (expectedBytes !== undefined && body) {
-      const remaining = expectedBytes - bodyBytes;
-      const take = Math.min(remaining, bytes.length - offset);
-      if (take > 0) bytes.copy(body, bodyBytes, offset, offset + take);
-      bodyBytes += take;
-      offset += take;
-      if (bodyBytes === expectedBytes) {
-        if (offset !== bytes.length) throw new Error("Trailing bytes in P2P frame");
-        try {
-          return JSON.parse(body.toString("utf8")) as unknown;
-        } catch {
-          throw new Error("Invalid P2P frame encoding");
+      if (expectedBytes !== undefined && body) {
+        const remaining = expectedBytes - bodyBytes;
+        const take = Math.min(remaining, bytes.length - offset);
+        if (take > 0) bytes.copy(body, bodyBytes, offset, offset + take);
+        bodyBytes += take;
+        offset += take;
+        if (bodyBytes === expectedBytes) {
+          if (offset !== bytes.length) throw new Error("Trailing bytes in P2P frame");
+          try {
+            return JSON.parse(body.toString("utf8")) as unknown;
+          } catch {
+            throw new Error("Invalid P2P frame encoding");
+          }
         }
       }
     }
+    throw new Error("Truncated P2P frame");
+  } finally {
+    clearTimeout(timeout);
   }
-  throw new Error("Truncated P2P frame");
 }
 
 async function sendChunk(stream: Stream, bytes: Uint8Array, timeoutMs: number): Promise<void> {
