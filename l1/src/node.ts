@@ -87,19 +87,19 @@ export class NodeService {
 
   balance(address: string): number {
     assertAddress(address);
-    return this.store.chain.getState().balance(address);
+    return this.store.chain.balance(address);
   }
 
   nonce(address: string): number {
     assertAddress(address);
-    return this.store.chain.getState().nonce(address);
+    return this.store.chain.nonce(address);
   }
 
   submitTransaction(value: unknown): string {
     validateTransactionShape(value);
     const tx = value as Transaction;
     if (tx.chainId !== this.store.chain.genesis.chainId) throw new Error("Wrong transaction chain ID");
-    const stateNonce = this.store.chain.getState().nonce(tx.sender);
+    const stateNonce = this.store.chain.nonce(tx.sender);
     if (tx.nonce <= stateNonce || tx.nonce > stateNonce + 64) throw new Error("Transaction nonce outside mempool window");
     if (tx.nonce === stateNonce + 1) this.store.chain.validatePending([tx]);
     this.mempool.add(tx);
@@ -170,8 +170,7 @@ export class NodeService {
       const block = value as Block;
       await this.store.commitFinalizedBlock(block);
       this.mempool.remove(block.transactions.map((tx) => tx.txid));
-      const confirmed = this.store.chain.getState();
-      this.mempool.prune((tx) => tx.nonce <= confirmed.nonce(tx.sender));
+      this.mempool.prune((tx) => tx.nonce <= this.store.chain.nonce(tx.sender));
     });
   }
 
