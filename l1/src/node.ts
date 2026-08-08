@@ -83,7 +83,7 @@ export class NodeService {
       const block = value as Block;
       this.store.chain.validateProposal(block);
       const publicKey = publicKeyFromPrivate(this.validatorPrivateKey);
-      const validator = this.store.chain.genesis.validators.find((item) => item.publicKey === publicKey);
+      const validator = this.store.chain.validatorsAt(block.header.height).find((item) => item.publicKey === publicKey);
       if (!validator) throw new Error("Configured validator key is not in genesis");
       await this.signingJournal.reserveAttestation(block.header.height, block.header.round, block.hash);
       return createBlockAttestation(block, this.validatorPrivateKey, publicKey);
@@ -108,9 +108,10 @@ export class NodeService {
         throw new Error("Round 0 skip must not contain a predecessor certificate");
       }
       if (round > 0) {
+        const validators = chain.validatorsAt(height);
         validateRoundSkipQuorum(
           previousCertificate,
-          chain.genesis.validators,
+          validators,
           chain.genesis.chainId,
           height,
           round - 1,
@@ -118,7 +119,7 @@ export class NodeService {
         );
       }
       const publicKey = publicKeyFromPrivate(this.validatorPrivateKey);
-      if (!chain.genesis.validators.some((validator) => validator.publicKey === publicKey)) {
+      if (!chain.validatorsAt(height).some((validator) => validator.publicKey === publicKey)) {
         throw new Error("Configured validator key is not in genesis");
       }
       await this.signingJournal.reserveSkip(height, round, chain.tip.hash);
@@ -276,7 +277,8 @@ export async function produceFinalizedBlock(
   if (elapsed < BLOCK_INTERVAL_MS) return null;
   const round = Math.max(0, Math.floor((elapsed - BLOCK_INTERVAL_MS) / ROUND_WINDOW_MS));
   const publicKey = publicKeyFromPrivate(validatorPrivateKey);
-  const expected = expectedValidator(chain.genesis.validators, chain.height + 1, round);
+  const validators = chain.validatorsAt(chain.height + 1);
+  const expected = expectedValidator(validators, chain.height + 1, round);
   if (expected.publicKey !== publicKey) return null;
   let roundCertificate: RoundSkipVote[] = [];
   if (round > 0) {
@@ -294,7 +296,7 @@ export async function produceFinalizedBlock(
         try {
           validateRoundSkipVote(
             vote,
-            chain.genesis.validators,
+            validators,
             chain.genesis.chainId,
             chain.height + 1,
             skippedRound,
@@ -309,7 +311,7 @@ export async function produceFinalizedBlock(
       try {
         validateRoundSkipQuorum(
           certificate,
-          chain.genesis.validators,
+          validators,
           chain.genesis.chainId,
           chain.height + 1,
           skippedRound,
@@ -338,7 +340,7 @@ export async function produceFinalizedBlock(
   const byValidator = new Map<Address, BlockAttestation>();
   for (const attestation of attestations) {
     try {
-      validateBlockAttestation(proposal, attestation, chain.genesis.validators);
+      validateBlockAttestation(proposal, attestation, validators);
       byValidator.set(attestation.validator, attestation);
     } catch {
       // Invalid peer attestations are ignored instead of poisoning block assembly.
