@@ -756,6 +756,35 @@ test("finalized block reads use absolute block heights instead of range array po
   }
 });
 
+test("finalized sync fails closed below an explicit retained-history boundary", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-retention-boundary-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    for (let height = 1; height <= 3; height += 1) {
+      const proposer = height % 2 === 1 ? validatorOnePrivate : validatorTwoPrivate;
+      let block = store.chain.produceBlock([], proposer, {
+        timestampMs: genesis().timestampMs + (height * 100)
+      });
+      block = store.chain.attestBlock(block, validatorOnePrivate);
+      block = store.chain.attestBlock(block, validatorTwoPrivate);
+      await store.commitFinalizedBlock(block, genesis().timestampMs + (height * 100));
+    }
+
+    // Model the logical boundary independently of physical file deletion. During
+    // two-phase pruning old bytes may still exist, but they must never make an
+    // out-of-retention sync request look valid.
+    Object.defineProperty(store, "firstStoredHeight", { value: 2 });
+    await assert.rejects(
+      () => store.readFinalizedBlocks(1, 1, 10_000_000),
+      /Finalized history pruned below height 2/
+    );
+    const retained = await store.readFinalizedBlocks(2, 2, 10_000_000);
+    assert.deepEqual(retained.map((block) => block.header.height), [2, 3]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("repeated crash-style reopen preserves tip and state across a 100-block replay soak", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-replay-soak-"));
   try {
