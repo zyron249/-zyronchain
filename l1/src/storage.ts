@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -71,6 +71,15 @@ export interface PruneFaultHooks {
   afterPruneCheckpointSync?: () => void | Promise<void>;
   afterBlockTemporarySync?: () => void | Promise<void>;
   afterBlockRename?: () => void | Promise<void>;
+}
+
+export interface TrustedSnapshotAnchor {
+  tipHash: string;
+  snapshotSha256: string;
+}
+
+export interface TrustedSnapshotInstallFaultHooks {
+  afterStagingSync?: () => void | Promise<void>;
 }
 
 export class ChainStore {
@@ -175,6 +184,94 @@ export class ChainStore {
       recoveredStateV2FromCorruption,
       retention
     );
+  }
+
+  /**
+   * Materialize an externally anchored State-v2 snapshot into a brand-new data
+   * directory. The anchor must come from a trusted channel independent of the
+   * snapshot transport; peer-provided metadata is deliberately insufficient.
+   * Existing node data is never replaced by this operation.
+   */
+  static async installTrustedSnapshot(
+    genesis: GenesisConfig,
+    dataDir: string,
+    value: unknown,
+    anchor: TrustedSnapshotAnchor,
+    faultHooks: TrustedSnapshotInstallFaultHooks = {}
+  ): Promise<ChainStore> {
+    // Authenticate every consensus-relevant byte before touching the target.
+    const chain = ZyronChain.fromTrustedSnapshot(genesis, value, anchor);
+    if (chain.height < 1) throw new Error("Trusted snapshot install requires a finalized non-genesis checkpoint");
+    const stateV2 = chain.stateV2ForPersistence();
+    if (!stateV2) throw new Error("Trusted snapshot install requires active State v2");
+    const snapshot = chain.snapshot();
+    if (sha256Hex(canonicalJson(snapshot)) !== anchor.snapshotSha256) {
+      throw new Error("Trusted snapshot normalization changed the externally anchored digest");
+    }
+
+    await mkdir(dirname(dataDir), { recursive: true, mode: 0o700 });
+    await assertPathMissing(dataDir);
+    const staging = `${dataDir}.install-${process.pid}-${randomBytes(8).toString("hex")}`;
+    let published = false;
+    try {
+      await mkdir(staging, { recursive: false, mode: 0o700 });
+      const genesisChain = new ZyronChain(genesis);
+      await ensureMetadata(join(staging, "metadata.json"), {
+        version: STORE_VERSION,
+        chainId: genesis.chainId,
+        genesisHash: genesisChain.genesisHash
+      });
+
+      const blocksHandle = await open(join(staging, "blocks.ndjson"), "wx", 0o600);
+      try {
+        await blocksHandle.sync();
+      } finally {
+        await blocksHandle.close();
+      }
+
+      const stateStore = await StateV2DiskStore.open(staging);
+      await stateStore.commit(stateV2);
+      const checkpoint: RecoveryCheckpointV2 = {
+        version: 2,
+        chainId: genesis.chainId,
+        genesisHash: genesisChain.genesisHash,
+        height: chain.height,
+        tipHash: anchor.tipHash,
+        stateV2Root: stateV2.root(),
+        retainedFromHeight: chain.height + 1,
+        blockFileBytes: 0,
+        transition: null,
+        snapshotSha256: anchor.snapshotSha256,
+        snapshot
+      };
+      await writeCheckpointFile(join(staging, "recovery-checkpoint.json"), checkpoint);
+      await writeHistoryRetention(staging, {
+        version: 1,
+        chainId: genesis.chainId,
+        genesisHash: genesisChain.genesisHash,
+        prunedThroughHeight: chain.height
+      });
+
+      // Re-enter through the normal recovery path before publishing the directory.
+      // This independently validates checkpoint, State-v2 root and pruned boundary.
+      const staged = await ChainStore.open(genesis, staging);
+      if (staged.chain.height !== chain.height || staged.chain.tip.hash !== anchor.tipHash ||
+          staged.chain.tip.header.stateRoot !== stateV2.root() || staged.firstStoredHeight !== chain.height + 1) {
+        throw new Error("Staged trusted snapshot failed recovery verification");
+      }
+      await syncDirectory(staging);
+      await faultHooks.afterStagingSync?.();
+
+      // Recheck immediately before the atomic publish. rename() must not be used
+      // as an overwrite primitive for an existing node data directory.
+      await assertPathMissing(dataDir);
+      await rename(staging, dataDir);
+      published = true;
+      await syncDirectory(dirname(dataDir));
+    } finally {
+      if (!published) await rm(staging, { recursive: true, force: true });
+    }
+    return ChainStore.open(genesis, dataDir);
   }
 
   async readFinalizedBlocks(from: number, limit: number, maxBytes: number): Promise<Block[]> {
@@ -752,4 +849,14 @@ async function* readLines(path: string): AsyncGenerator<string> {
 
 function isMissingFile(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "ENOENT");
+}
+
+async function assertPathMissing(path: string): Promise<void> {
+  try {
+    await lstat(path);
+  } catch (error) {
+    if (isMissingFile(error)) return;
+    throw error;
+  }
+  throw new Error("Trusted snapshot target data directory already exists");
 }

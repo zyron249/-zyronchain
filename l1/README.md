@@ -216,10 +216,13 @@ node dist/src/cli.js snapshot --genesis genesis.json --data ./data --out checkpo
 ```
 
 The command prints a SHA-256 digest covering the entire canonical snapshot. Publish/pin
-that digest through an independent trusted channel before treating the file as a checkpoint.
-The node deliberately does **not** fast-import snapshot files yet: a bare state root does
-not commit validator/protocol schedules, so skipping history without an independently
-trusted full-snapshot digest would weaken consensus safety.
+that digest **and the finalized tip hash** through an independent trusted channel before
+treating the file as a checkpoint. The storage core can install an active-State-v2 snapshot
+into a brand-new data directory only when both values are supplied as an external trust
+anchor; it verifies the full state/governance root and finality, stages and reopens the
+pruned recovery layout, then atomically publishes it. It refuses existing target directories.
+Peer discovery or checkpoint-transfer metadata must never be used as that trust anchor.
+There is intentionally no peer-driven TOFU fast-import path.
 
 Local recovery checkpoints are different: they are created only after the finalized block
 log is durable, bind the full chain/genesis/tip/state/governance snapshot, and are revalidated

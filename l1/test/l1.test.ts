@@ -664,6 +664,68 @@ test("trusted checkpoint restore requires an existing digest/tip anchor and reva
   }
 });
 
+test("externally anchored State v2 snapshot installs atomically into a fresh data directory", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "zyron-trusted-install-"));
+  const sourceDirectory = join(parent, "source");
+  const targetDirectory = join(parent, "installed");
+  const interruptedDirectory = join(parent, "interrupted");
+  try {
+    const source = await ChainStore.open(genesis(), sourceDirectory);
+    await advanceStoreToStateV2(source);
+    const snapshot = source.chain.snapshot();
+    const anchor = {
+      tipHash: source.chain.tip.hash,
+      snapshotSha256: sha256Hex(canonicalJson(snapshot))
+    };
+
+    await assert.rejects(
+      () => ChainStore.installTrustedSnapshot(genesis(), targetDirectory, snapshot, {
+        ...anchor,
+        snapshotSha256: "00".repeat(32)
+      }),
+      /snapshot digest mismatch/
+    );
+    await assert.rejects(() => readFile(join(targetDirectory, "metadata.json")), /ENOENT/);
+
+    const installed = await ChainStore.installTrustedSnapshot(genesis(), targetDirectory, snapshot, anchor);
+    assert.equal(installed.chain.height, 101);
+    assert.equal(installed.chain.tip.hash, source.chain.tip.hash);
+    assert.equal(installed.chain.tip.header.stateRoot, source.chain.tip.header.stateRoot);
+    assert.equal(installed.firstStoredHeight, 102);
+    assert.equal(installed.recoveredFromCheckpointHeight, 101);
+    assert.equal(await readFile(join(targetDirectory, "blocks.ndjson"), "utf8"), "");
+
+    let suffix = installed.chain.produceBlock([], validatorTwoPrivate, {
+      timestampMs: genesis().timestampMs + 10_200
+    });
+    suffix = installed.chain.attestBlock(suffix, validatorOnePrivate);
+    suffix = installed.chain.attestBlock(suffix, validatorTwoPrivate);
+    await installed.commitFinalizedBlock(suffix, genesis().timestampMs + 10_200);
+    const reopened = await ChainStore.open(genesis(), targetDirectory);
+    assert.equal(reopened.chain.height, 102);
+    assert.equal(reopened.chain.tip.hash, suffix.hash);
+    assert.equal(reopened.firstStoredHeight, 102);
+
+    await assert.rejects(
+      () => ChainStore.installTrustedSnapshot(genesis(), targetDirectory, snapshot, anchor),
+      /target data directory already exists/
+    );
+
+    await assert.rejects(
+      () => ChainStore.installTrustedSnapshot(genesis(), interruptedDirectory, snapshot, anchor, {
+        afterStagingSync: () => { throw new Error("injected before trusted snapshot publish"); }
+      }),
+      /injected before trusted snapshot publish/
+    );
+    await assert.rejects(() => readFile(join(interruptedDirectory, "metadata.json")), /ENOENT/);
+    const retried = await ChainStore.installTrustedSnapshot(genesis(), interruptedDirectory, snapshot, anchor);
+    assert.equal(retried.chain.tip.hash, anchor.tipHash);
+    assert.equal(retried.firstStoredHeight, 102);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("recovery checkpoint is published only after durable block state and binds exact snapshot bytes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-recovery-checkpoint-"));
   try {
