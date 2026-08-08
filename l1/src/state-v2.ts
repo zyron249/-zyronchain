@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJson } from "./codec.js";
+import type { LedgerSnapshot, LedgerState } from "./state.js";
+import type { Address, Transaction } from "./types.js";
 
 const TREE_DEPTH = 256;
 const KEY_DOMAIN = Buffer.from("ZyronChain/state-v2/key\0", "utf8");
@@ -234,6 +236,54 @@ export function verifySparseMerkleProof(
   } catch {
     return false;
   }
+}
+
+/** Deterministic one-time protocol-v2 migration from the finalized v1 ledger. */
+export function stateV2FromLedgerSnapshot(snapshot: LedgerSnapshot): SparseMerkleState {
+  let state = SparseMerkleState.empty();
+  for (const account of [...snapshot.accounts].sort((a, b) => a.address.localeCompare(b.address))) {
+    state = state.set(accountKey(account.address), {
+      balanceAtoms: account.balanceAtoms,
+      nonce: account.nonce
+    });
+  }
+  for (const epoch of [...snapshot.settledActivityEpochs].sort((a, b) => a - b)) {
+    state = state.set(activityEpochKey(epoch), { settled: true });
+  }
+  return state;
+}
+
+/** Apply only keys touched by an already-validated transaction to protocol-v2 state. */
+export function updateStateV2FromTransaction(
+  state: SparseMerkleState,
+  ledger: LedgerState,
+  tx: Transaction
+): SparseMerkleState {
+  const addresses = new Set<Address>();
+  addresses.add(tx.sender);
+  if (tx.kind === "transfer") addresses.add(tx.receiver);
+  else if (tx.kind === "activity_settlement") {
+    for (const entry of tx.entries) addresses.add(entry.receiver);
+  }
+  let next = state;
+  for (const address of addresses) {
+    next = next.set(accountKey(address), {
+      balanceAtoms: ledger.balance(address),
+      nonce: ledger.nonce(address)
+    });
+  }
+  if (tx.kind === "activity_settlement") {
+    next = next.set(activityEpochKey(tx.epoch), { settled: true });
+  }
+  return next;
+}
+
+function accountKey(address: Address): string {
+  return `account:${address}`;
+}
+
+function activityEpochKey(epoch: number): string {
+  return `activity-epoch:${epoch}`;
 }
 
 function updateNode(
