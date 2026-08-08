@@ -63,6 +63,40 @@ test("State v2 disk store ignores an unterminated crash tail after a committed r
     await appendFile(join(directory, "state-v2.nodes.ndjson"), "{partial-crash-tail", "utf8");
     const reopened = await StateV2DiskStore.open(directory);
     assert.equal(reopened.state().root(), state.root());
+    const next = reopened.state().set("account:bob", { balanceAtoms: 7, nonce: 0 });
+    await reopened.commit(next, ["account:bob"]);
+    assert.equal((await StateV2DiskStore.open(directory)).state().root(), next.root());
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("State v2 store bounds resident historical records and compacts exact duplicate history on restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-resident-"));
+  try {
+    const store = await StateV2DiskStore.open(directory);
+    let state = store.state().set("account:alice", { balanceAtoms: 1, nonce: 0 });
+    const firstRoot = state.root();
+    await store.commit(state, ["account:alice"]);
+    for (let balance = 2; balance <= 20; balance += 1) {
+      state = state.set("account:alice", { balanceAtoms: balance, nonce: 0 });
+      await store.commit(state);
+      assert.equal(store.residentNodeRecordCount(), state.nodeRecords().length);
+    }
+    // Returning to a historical content hash may append an exact duplicate
+    // after that old record has left the resident set. Duplicate bytes are safe
+    // and are collapsed by verified startup compaction.
+    state = state.set("account:alice", { balanceAtoms: 1, nonce: 0 });
+    assert.equal(state.root(), firstRoot);
+    await store.commit(state);
+    const linesBefore = (await readFile(join(directory, "state-v2.nodes.ndjson"), "utf8")).trim().split("\n").length;
+    assert.ok(linesBefore > state.nodeRecords().length);
+
+    const reopened = await StateV2DiskStore.open(directory);
+    assert.equal(reopened.state().root(), firstRoot);
+    assert.equal(reopened.residentNodeRecordCount(), reopened.state().nodeRecords().length);
+    const linesAfter = (await readFile(join(directory, "state-v2.nodes.ndjson"), "utf8")).trim().split("\n").length;
+    assert.equal(linesAfter, reopened.state().nodeRecords().length);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
