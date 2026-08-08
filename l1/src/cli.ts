@@ -5,16 +5,33 @@ import { resolve } from "node:path";
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
 import { BLOCK_INTERVAL_MS, createRpcServer, NodeService, PeerClient, produceFinalizedBlock } from "./node.js";
 import { ChainStore, SigningJournal } from "./storage.js";
-import { ZyronChain } from "./chain.js";
-import { createTransfer, assertAddress } from "./transaction.js";
-import type { GenesisConfig } from "./types.js";
+import { MIN_VALIDATOR_UPDATE_DELAY, ZyronChain } from "./chain.js";
+import {
+  createTransfer,
+  createValidatorApproval,
+  createValidatorSetUpdate,
+  assertAddress,
+  validateTransactionShape
+} from "./transaction.js";
+import type { GenesisConfig, Validator, ValidatorApproval } from "./types.js";
 import { MAX_SUPPLY_ATOMS, type Address } from "./types.js";
+
+interface ValidatorProposal {
+  chainId: string;
+  nonce: number;
+  sender: Address;
+  activationHeight: number;
+  validators: Validator[];
+}
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (command === "keygen") return keygen(args);
   if (command === "genesis") return createGenesis(args);
   if (command === "transfer") return submitTransfer(args);
+  if (command === "validator-proposal") return createValidatorProposalFile(args);
+  if (command === "validator-approve") return approveValidatorProposal(args);
+  if (command === "validator-submit") return submitValidatorProposal(args);
   if (command === "node") return runNode(args);
   usage();
   process.exitCode = 2;
@@ -80,8 +97,8 @@ async function runNode(args: string[]): Promise<void> {
   const journal = privateKey ? await SigningJournal.open(resolve(dataDir)) : undefined;
   if (privateKey) {
     const publicKey = publicKeyFromPrivate(privateKey);
-    if (!genesis.validators.some((validator) => validator.publicKey === publicKey)) {
-      throw new Error("Validator key is not present in genesis");
+    if (!store.chain.validatorsAt(store.chain.height + 1).some((validator) => validator.publicKey === publicKey)) {
+      console.warn("Validator key is not active at the next height; it will not sign until a scheduled set activates it.");
     }
   }
   const service = new NodeService(store, journal, privateKey);
@@ -159,6 +176,79 @@ async function submitTransfer(args: string[]): Promise<void> {
   console.log(`Submitted transaction ${tx.txid}`);
 }
 
+async function createValidatorProposalFile(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--out", "--rpc", "--key", "--activation-height", "--validator-public-key"]));
+  const output = resolve(requiredOption(args, "--out"));
+  const rpc = normalizeRpcUrl(requiredOption(args, "--rpc"));
+  const privateKey = await readPrivateKey(resolve(requiredOption(args, "--key")));
+  const publicKey = publicKeyFromPrivate(privateKey);
+  const sender = addressFromPublicKey(publicKey);
+  const activationHeight = parseSafeInteger(requiredOption(args, "--activation-height"), "activation-height");
+  const validatorPublicKeys = options(args, "--validator-public-key");
+  if (!validatorPublicKeys.length) throw new Error("At least one --validator-public-key is required");
+  const validators = validatorPublicKeys.map((key) => {
+    if (!/^[0-9a-f]{128}$/.test(key)) throw new Error("Invalid validator public key");
+    return { address: addressFromPublicKey(key), publicKey: key };
+  });
+  const status = await fetchJson(`${rpc}/status`) as { chainId?: unknown; height?: unknown };
+  const nonceResult = await fetchJson(`${rpc}/nonce/${sender}`) as { nonce?: unknown };
+  if (typeof status.chainId !== "string" || !Number.isSafeInteger(status.height) || !Number.isSafeInteger(nonceResult.nonce)) {
+    throw new Error("RPC returned invalid proposal context");
+  }
+  if (activationHeight < Number(status.height) + 1 + MIN_VALIDATOR_UPDATE_DELAY) {
+    throw new Error(`Activation height must be at least ${Number(status.height) + 1 + MIN_VALIDATOR_UPDATE_DELAY}`);
+  }
+  const proposal: ValidatorProposal = {
+    chainId: status.chainId,
+    nonce: Number(nonceResult.nonce) + 1,
+    sender,
+    activationHeight,
+    validators
+  };
+  await writeFile(output, `${JSON.stringify(proposal, null, 2)}\n`, { flag: "wx", mode: 0o644 });
+  console.log(`Validator proposal written: ${output}`);
+}
+
+async function approveValidatorProposal(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--proposal", "--key", "--out"]));
+  const proposal = await readValidatorProposal(resolve(requiredOption(args, "--proposal")));
+  const privateKey = await readPrivateKey(resolve(requiredOption(args, "--key")));
+  const publicKey = publicKeyFromPrivate(privateKey);
+  const approval = createValidatorApproval(proposal, privateKey, publicKey);
+  const output = resolve(requiredOption(args, "--out"));
+  await writeFile(output, `${JSON.stringify(approval, null, 2)}\n`, { flag: "wx", mode: 0o644 });
+  console.log(`Validator approval written: ${output}`);
+}
+
+async function submitValidatorProposal(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--proposal", "--approval", "--key", "--rpc"]));
+  const proposal = await readValidatorProposal(resolve(requiredOption(args, "--proposal")));
+  const privateKey = await readPrivateKey(resolve(requiredOption(args, "--key")));
+  const publicKey = publicKeyFromPrivate(privateKey);
+  if (addressFromPublicKey(publicKey) !== proposal.sender) throw new Error("Initiator key does not match validator proposal sender");
+  const approvalPaths = options(args, "--approval");
+  if (!approvalPaths.length) throw new Error("At least one --approval is required");
+  const approvals: ValidatorApproval[] = [];
+  for (const path of approvalPaths) approvals.push(await readValidatorApproval(resolve(path)));
+  const tx = createValidatorSetUpdate(
+    { ...proposal, approvals, timestampMs: Date.now() },
+    privateKey,
+    publicKey
+  );
+  validateTransactionShape(tx);
+  const rpc = normalizeRpcUrl(requiredOption(args, "--rpc"));
+  const response = await fetch(`${rpc}/tx`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(tx),
+    signal: AbortSignal.timeout(8_000)
+  });
+  if (!response.ok) throw new Error(`RPC rejected validator update: HTTP ${response.status} ${await response.text()}`);
+  const result = await response.json() as { txid?: unknown };
+  if (result.txid !== tx.txid) throw new Error("RPC validator update transaction ID mismatch");
+  console.log(`Submitted validator update ${tx.txid}`);
+}
+
 function option(args: string[], name: string): string | undefined {
   const values = options(args, name);
   if (values.length > 1) throw new Error(`${name} may only be supplied once`);
@@ -229,6 +319,52 @@ async function readPrivateKey(path: string): Promise<string> {
   return parsed.privateKey;
 }
 
+async function readValidatorProposal(path: string): Promise<ValidatorProposal> {
+  const value = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  assertObjectFields(value, ["chainId", "nonce", "sender", "activationHeight", "validators"], "validator proposal");
+  if (typeof value.chainId !== "string" || !Number.isSafeInteger(value.nonce) || !Number.isSafeInteger(value.activationHeight) ||
+      typeof value.sender !== "string" || !Array.isArray(value.validators)) throw new Error("Invalid validator proposal");
+  assertAddress(value.sender);
+  const validators = value.validators.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Invalid proposal validator");
+    const record = item as Record<string, unknown>;
+    assertObjectFields(record, ["address", "publicKey"], "proposal validator");
+    if (typeof record.address !== "string" || typeof record.publicKey !== "string" || !/^[0-9a-f]{128}$/.test(record.publicKey)) {
+      throw new Error("Invalid proposal validator");
+    }
+    assertAddress(record.address);
+    if (addressFromPublicKey(record.publicKey) !== record.address) throw new Error("Proposal validator address mismatch");
+    return { address: record.address, publicKey: record.publicKey };
+  });
+  return {
+    chainId: value.chainId,
+    nonce: Number(value.nonce),
+    sender: value.sender,
+    activationHeight: Number(value.activationHeight),
+    validators
+  };
+}
+
+async function readValidatorApproval(path: string): Promise<ValidatorApproval> {
+  const value = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  assertObjectFields(value, ["validator", "publicKey", "signature"], "validator approval");
+  if (typeof value.validator !== "string" || typeof value.publicKey !== "string" || typeof value.signature !== "string" ||
+      !/^[0-9a-f]{128}$/.test(value.publicKey) || !/^[0-9a-f]{128}$/.test(value.signature)) {
+    throw new Error("Invalid validator approval");
+  }
+  assertAddress(value.validator);
+  if (addressFromPublicKey(value.publicKey) !== value.validator) throw new Error("Validator approval address mismatch");
+  return { validator: value.validator, publicKey: value.publicKey, signature: value.signature };
+}
+
+function assertObjectFields(value: Record<string, unknown>, expected: string[], name: string): void {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
+    throw new Error(`Invalid ${name} fields`);
+  }
+}
+
 function assertKnownOptions(args: string[], allowed: Set<string>): void {
   for (let index = 0; index < args.length; index += 2) {
     const name = args[index];
@@ -243,6 +379,9 @@ function usage(): void {
   console.log("  zyron-l1 genesis --out genesis.json --chain-id zyron-devnet-1 --validator-public-key <hex> --oracle-public-key <hex> --activity-pool <address> --allocation <address:atoms>");
   console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json] [--peer http://node:9137]");
   console.log("  zyron-l1 transfer --key wallet-key.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms <n> [--fee-atoms <n>]");
+  console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");
+  console.log("  zyron-l1 validator-approve --proposal update.json --key validator.json --out approval.json");
+  console.log("  zyron-l1 validator-submit --proposal update.json --approval approval-a.json [...] --key initiator.json --rpc <url>");
   console.log("Validator key files contain secrets. Keep them mode 0600 and never commit them.");
 }
 
