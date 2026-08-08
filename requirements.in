@@ -1,0 +1,8 @@
+Flask
+Flask-Limiter
+coincurve>=21,<22
+gunicorn
+mnemonic
+psycopg2-binary
+redis>=5,<7
+requests
