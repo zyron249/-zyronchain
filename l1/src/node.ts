@@ -28,9 +28,9 @@ import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionS
 import type { Address, Block, BlockAttestation, RoundSkipVote, Transaction } from "./types.js";
 
 const MAX_BODY_BYTES = 2_500_000;
-const MAX_SYNC_BLOCKS = 100;
-const MAX_SYNC_RESPONSE_BYTES = 25_000_000;
-const MAX_SYNC_BATCH_PAYLOAD_BYTES = 20_000_000;
+export const MAX_SYNC_BLOCKS = 100;
+export const MAX_SYNC_RESPONSE_BYTES = 25_000_000;
+export const MAX_SYNC_BATCH_PAYLOAD_BYTES = 20_000_000;
 const MAX_CONFIGURED_PEERS = 64;
 export const MAX_SYNC_PROBE_CONCURRENCY = 8;
 export const MAX_GOSSIP_FANOUT = 8;
