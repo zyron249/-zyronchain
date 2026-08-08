@@ -35,6 +35,33 @@ export class Mempool {
       .map((tx) => structuredClone(tx));
   }
 
+  selectValid(limit: number, validate: (transactions: Transaction[]) => void): Transaction[] {
+    if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("Invalid mempool selection limit");
+    const candidates = this.select(this.byId.size);
+    const selected: Transaction[] = [];
+    const remaining = new Map(candidates.map((tx) => [tx.txid, tx]));
+    let progressed = true;
+    while (progressed && selected.length < limit) {
+      progressed = false;
+      for (const tx of candidates) {
+        if (!remaining.has(tx.txid) || selected.length >= limit) continue;
+        try {
+          validate([...selected, tx]);
+          selected.push(tx);
+          remaining.delete(tx.txid);
+          progressed = true;
+        } catch {
+          // A later pass may make this transaction valid after its lower nonce is selected.
+        }
+      }
+    }
+    return selected.map((tx) => structuredClone(tx));
+  }
+
+  values(): Transaction[] {
+    return [...this.byId.values()].map((tx) => structuredClone(tx));
+  }
+
   get size(): number {
     return this.byId.size;
   }
