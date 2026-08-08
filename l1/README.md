@@ -258,8 +258,26 @@ node dist/src/cli.js checkpoint-fetch-install \
 
 Local recovery checkpoints are different: they are created only after the finalized block
 log is durable, bind the full chain/genesis/tip/state/governance snapshot, and are revalidated
-against their exact finalized-log boundary before suffix replay. To measure the restart
-benefit on synthetic finalized history without making wall-clock timing a flaky CI gate:
+against their exact finalized-log boundary before suffix replay.
+
+### Finalized-history retention mode
+
+The default node mode is archival: finalized block history is never automatically deleted.
+An operator that has active State v2 and intentionally chooses bounded local history can retain
+the latest `N` finalized blocks with:
+
+```sh
+node dist/src/cli.js prune-finalized --genesis genesis.json --data ./data --retain-blocks 10000
+```
+
+The command requires `N >= 1`. Before rewriting history it publishes and reopens the authenticated
+recovery checkpoint, persists the exact prune intent, copies the retained suffix to a separately
+fsynced file, and only then atomically replaces the block log. A crash resumes the durable original
+retention boundary rather than silently changing policy. Requests below `firstStoredHeight` fail
+closed; keep independently operated archival nodes if old block availability matters. Pruning is
+local storage policy and does not change consensus or permit trusting an unauthenticated checkpoint.
+
+To measure the restart benefit on synthetic finalized history without making wall-clock timing a flaky CI gate:
 
 ```sh
 npm run bench:restart
