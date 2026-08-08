@@ -13,9 +13,12 @@ This directory contains the standalone TypeScript Layer-1 implementation. It is 
 - bounded mempool with nonce conflict protection and state-aware block selection;
 - bounded JSON RPC for status, blocks, balances, nonces, transaction submission, proposal attestation, and finalized-block acceptance;
 - static-peer identity handshake and incremental finalized-block synchronization;
+- on-chain validator-set rotation authorized by the active set's >2/3 quorum with a 100-block activation delay;
 - CLI key generation, genesis creation, node execution, and signed transfer submission.
 
 One ZYN is `100,000,000` atoms. Transaction fees are currently burned: the sender is debited `amount + fee`, the receiver is credited `amount`, and no new balance is created. Proof-of-Activity settlement cannot mint supply; it may only distribute atoms already allocated to the configured activity pool.
+
+Validator-set changes are protocol transactions, not single-admin actions. The initiating active validator consumes its account nonce, the update requires a strictly-greater-than-2/3 approval quorum from the current set, and activation must be at least 100 blocks in the future. Finalized history therefore reconstructs the same validator schedule on replay.
 
 ## Build and verify
 
@@ -67,6 +70,19 @@ node dist/src/cli.js transfer --key wallet.json --rpc http://127.0.0.1:9137 --ch
 ```
 
 Never commit generated key files or live genesis operator secrets.
+
+## Rotate the validator set
+
+Validator rotation is intentionally multi-party. The initiator creates a public proposal file from live chain context, each active validator signs that proposal independently, then the initiator assembles and submits the quorum transaction. Private validator keys never need to be collected on one machine.
+
+```sh
+node dist/src/cli.js validator-proposal --out update.json --rpc http://127.0.0.1:9137 --key initiator.json --activation-height 500 --validator-public-key <new-validator-a-public> --validator-public-key <new-validator-b-public>
+node dist/src/cli.js validator-approve --proposal update.json --key validator-a.json --out approval-a.json
+node dist/src/cli.js validator-approve --proposal update.json --key validator-b.json --out approval-b.json
+node dist/src/cli.js validator-submit --proposal update.json --approval approval-a.json --approval approval-b.json --key initiator.json --rpc http://127.0.0.1:9137
+```
+
+The chain, not the CLI, is authoritative: the initiator must be active, approval signatures must come from a unique >2/3 quorum of the active set, the initiator nonce must be next, and activation must be at least 100 blocks after the inclusion height.
 
 ## RPC surface
 
