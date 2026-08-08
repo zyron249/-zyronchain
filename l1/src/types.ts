@@ -58,7 +58,29 @@ export interface ActivitySettlementTx {
   txid: string;
 }
 
-export type Transaction = TransferTx | ActivitySettlementTx;
+export interface ValidatorApproval {
+  validator: Address;
+  publicKey: string;
+  signature: string;
+}
+
+export interface ValidatorSetUpdateTx {
+  kind: "validator_update";
+  version: 1;
+  chainId: string;
+  nonce: number;
+  sender: Address;
+  activationHeight: number;
+  validators: Validator[];
+  approvals: ValidatorApproval[];
+  feeAtoms: 0;
+  timestampMs: number;
+  publicKey: string;
+  signature: string;
+  txid: string;
+}
+
+export type Transaction = TransferTx | ActivitySettlementTx | ValidatorSetUpdateTx;
 
 export interface BlockHeader {
   version: 1;
