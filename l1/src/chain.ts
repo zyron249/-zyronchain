@@ -458,3 +458,15 @@ function validateGenesis(genesis: GenesisConfig): void {
   if (!Array.isArray(genesis.allocations) || genesis.allocations.length === 0) {
     throw new Error("Invalid allocations");
   }
+  const allocated = new Set<string>();
+  for (const allocation of genesis.allocations) {
+    assertPlainRecord(allocation, "allocation");
+    assertExactKeys(allocation, ["address", "amountAtoms"], "allocation");
+    assertAddress(allocation.address);
+    if (!Number.isSafeInteger(allocation.amountAtoms) || allocation.amountAtoms < 0) {
+      throw new Error("Invalid genesis allocation");
+    }
+    if (allocated.has(allocation.address)) throw new Error("Duplicate genesis allocation");
+    allocated.add(allocation.address);
+  }
+}
