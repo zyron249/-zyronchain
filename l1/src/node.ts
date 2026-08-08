@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import {
@@ -40,6 +41,7 @@ export interface NodeMetrics extends NodeStatus {
 
 export interface RpcServerOptions {
   maxConnections?: number;
+  peerAuthToken?: string;
   requestsPerWindow?: number;
   windowMs?: number;
 }
@@ -188,6 +190,7 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
     "RPC requests per window"
   );
   const windowMs = boundedPositiveInteger(options.windowMs ?? DEFAULT_RPC_WINDOW_MS, "RPC rate-limit window");
+  const peerAuthToken = options.peerAuthToken === undefined ? undefined : validatePeerAuthToken(options.peerAuthToken);
   const limiter = new FixedWindowLimiter(requestsPerWindow, windowMs);
   const server = createServer(async (request, response) => {
     const rate = limiter.consume(request.socket.remoteAddress ?? "unknown", Date.now());
@@ -196,6 +199,11 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
     if (!rate.allowed) {
       response.setHeader("retry-after", String(Math.max(1, Math.ceil(rate.retryAfterMs / 1_000))));
       writeJson(response, 429, { error: "Rate limit exceeded" });
+      return;
+    }
+    if (peerAuthToken && isConsensusRequest(request) && !validBearerToken(request.headers.authorization, peerAuthToken)) {
+      response.setHeader("www-authenticate", "Bearer");
+      writeJson(response, 401, { error: "Peer authentication required" });
       return;
     }
     try {
@@ -259,8 +267,9 @@ async function route(service: NodeService, request: IncomingMessage, response: S
 export class PeerClient {
   readonly peers: string[];
 
-  constructor(peers: string[]) {
+  constructor(peers: string[], private readonly peerAuthToken?: string) {
     this.peers = [...new Set(peers.map(normalizePeerUrl))];
+    if (peerAuthToken !== undefined) validatePeerAuthToken(peerAuthToken);
   }
 
   async syncFrom(peer: string, service: NodeService): Promise<number> {
@@ -289,7 +298,7 @@ export class PeerClient {
 
   async requestAttestations(block: Block): Promise<BlockAttestation[]> {
     const results = await Promise.allSettled(this.peers.map(async (peer) => {
-      const payload = await postJson(`${peer}/proposal/attest`, block, MAX_BODY_BYTES);
+      const payload = await postJson(`${peer}/proposal/attest`, block, MAX_BODY_BYTES, this.peerAuthToken);
       assertPlainRecord(payload, "attestation response");
       assertExactKeys(payload, ["attestation"], "attestation response");
       return payload.attestation as BlockAttestation;
@@ -303,7 +312,7 @@ export class PeerClient {
     previousCertificate: RoundSkipVote[] = []
   ): Promise<RoundSkipVote[]> {
     const results = await Promise.allSettled(this.peers.map(async (peer) => {
-      const payload = await postJson(`${peer}/round/skip`, { height, round, previousCertificate }, 128_000);
+      const payload = await postJson(`${peer}/round/skip`, { height, round, previousCertificate }, 128_000, this.peerAuthToken);
       assertPlainRecord(payload, "round skip response");
       assertExactKeys(payload, ["vote"], "round skip response");
       return payload.vote as RoundSkipVote;
@@ -312,7 +321,7 @@ export class PeerClient {
   }
 
   async broadcastBlock(block: Block): Promise<void> {
-    await Promise.allSettled(this.peers.map((peer) => postJson(`${peer}/block`, block, 64_000)));
+    await Promise.allSettled(this.peers.map((peer) => postJson(`${peer}/block`, block, 64_000, this.peerAuthToken)));
   }
 }
 
@@ -430,10 +439,12 @@ async function getJson(url: string, maxBytes: number): Promise<unknown> {
   return parseBoundedResponse(response, maxBytes);
 }
 
-async function postJson(url: string, value: unknown, maxResponseBytes: number): Promise<unknown> {
+async function postJson(url: string, value: unknown, maxResponseBytes: number, peerAuthToken?: string): Promise<unknown> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (peerAuthToken) headers.authorization = `Bearer ${peerAuthToken}`;
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers,
     body: JSON.stringify(value),
     signal: AbortSignal.timeout(PEER_TIMEOUT_MS)
   });
@@ -497,6 +508,26 @@ function parseInteger(value: string | null, name: string): number {
 function boundedPositiveInteger(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > 1_000_000_000) throw new Error(`Invalid ${name}`);
   return value;
+}
+
+function validatePeerAuthToken(value: string): string {
+  if (value.length < 32 || value.length > 512 || /[\r\n]/.test(value)) {
+    throw new Error("Peer authentication token must be 32-512 characters without newlines");
+  }
+  return value;
+}
+
+function isConsensusRequest(request: IncomingMessage): boolean {
+  if (request.method !== "POST") return false;
+  const pathname = new URL(request.url ?? "/", "http://node.invalid").pathname;
+  return pathname === "/proposal/attest" || pathname === "/round/skip" || pathname === "/block";
+}
+
+function validBearerToken(header: string | undefined, expected: string): boolean {
+  if (!header?.startsWith("Bearer ")) return false;
+  const provided = Buffer.from(header.slice("Bearer ".length), "utf8");
+  const wanted = Buffer.from(expected, "utf8");
+  return provided.length === wanted.length && timingSafeEqual(provided, wanted);
 }
 
 class FixedWindowLimiter {
