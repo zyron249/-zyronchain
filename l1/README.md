@@ -59,6 +59,10 @@ node dist/src/cli.js genesis \
 
 Start validator nodes with distinct data directories and ports. Static peers are deliberate: public, unauthenticated peer admission is not used as a shortcut for mainnet discovery.
 
+When `--peer-token-file` is configured, non-loopback peers must use `https://` URLs so
+the Bearer credential is never transmitted over remote plaintext HTTP. Plain HTTP remains
+available for loopback-only local devnets without weakening the authenticated remote path.
+
 ```sh
 node dist/src/cli.js node --genesis genesis.json --data data-a --validator-key validator-a.json --port 9137 --peer http://127.0.0.1:9138
 node dist/src/cli.js node --genesis genesis.json --data data-b --validator-key validator-b.json --port 9138 --peer http://127.0.0.1:9137
