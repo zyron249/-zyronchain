@@ -2302,7 +2302,7 @@ test("ChainStore quarantines corrupt State v2 files only after authoritative rep
     const quarantined = (await readdir(directory)).filter((name) => name.includes(".corrupt-"));
     assert.ok(quarantined.some((name) => name.startsWith("state-v2.nodes.sqlite.corrupt-")));
     assert.ok(quarantined.some((name) => name.startsWith("state-v2.backend.json.corrupt-")));
-    assert.ok(quarantined.some((name) => name.startsWith("state-v2.keys.ndjson.corrupt-")));
+    assert.ok(quarantined.some((name) => name.startsWith("state-v2.keys.backend.json.corrupt-")));
     assert.ok(quarantined.some((name) => name.startsWith("state-v2.root.json.corrupt-")));
   } finally {
     await rm(directory, { recursive: true, force: true });
