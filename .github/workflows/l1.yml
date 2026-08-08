@@ -43,3 +43,24 @@ jobs:
           cmp "$first"/zyronchain-l1-*.tgz "$second"/zyronchain-l1-*.tgz
       - name: Audit runtime dependencies
         run: npm audit --omit=dev --audit-level=high
+
+  independent-light-client:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: l1/independent-light-client
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: l1/independent-light-client/requirements.txt
+      - name: Install pinned verifier dependency
+        run: python -m pip install --require-hashes -r requirements.txt
+      - name: Run independent negative and vector tests
+        run: python -m unittest -v test_verify_vector.py
+      - name: Verify the public interoperability vector
+        run: python verify_vector.py ../test-vectors/light-client-v1.json
