@@ -168,6 +168,8 @@ export class NodeService {
       this.store.chain.acceptBlock(block);
       await this.store.appendFinalizedBlock(block);
       this.mempool.remove(block.transactions.map((tx) => tx.txid));
+      const confirmed = this.store.chain.getState();
+      this.mempool.prune((tx) => tx.nonce <= confirmed.nonce(tx.sender));
     });
   }
 
