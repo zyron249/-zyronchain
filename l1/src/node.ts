@@ -70,6 +70,15 @@ export interface PeerRequestCredentials {
   genesisHash: string;
 }
 
+export function assertSafeRpcBinding(host: string, consensusAuthenticationConfigured: boolean): void {
+  const normalized = host.toLowerCase().replace(/^\[|\]$/g, "");
+  const loopback = normalized === "localhost" || normalized === "::1" ||
+    (isIP(normalized) === 4 && normalized.startsWith("127."));
+  if (!loopback && !consensusAuthenticationConfigured) {
+    throw new Error("Non-loopback RPC binding requires consensus peer authentication");
+  }
+}
+
 export class NodeService {
   readonly mempool = new Mempool();
   private mutationTail: Promise<void> = Promise.resolve();
