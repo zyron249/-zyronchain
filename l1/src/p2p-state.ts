@@ -15,6 +15,7 @@ import {
   MAX_PORTABLE_STATE_NODES,
   type StateV2PortableBundleV1
 } from "./state-v2-portable.js";
+import { PortableStateResumeStore } from "./state-v2-resume.js";
 import type { TrustedSnapshotAnchor } from "./storage.js";
 import type { Block, GenesisConfig } from "./types.js";
 
@@ -126,6 +127,30 @@ export async function fetchTrustedPortableStateFromPeer(
   genesis: GenesisConfig,
   anchor: TrustedSnapshotAnchor
 ): Promise<TrustedPortableStateTransfer> {
+  return fetchTrustedPortableState(node, target, identity, genesis, anchor);
+}
+
+/** Same trust model as the in-memory fetch, with crash-safe untrusted chunk staging. */
+export async function fetchTrustedPortableStateResumableFromPeer(
+  node: Libp2p,
+  target: Parameters<Libp2p["dial"]>[0],
+  identity: NodeIdentity,
+  genesis: GenesisConfig,
+  anchor: TrustedSnapshotAnchor,
+  resumeDir: string
+): Promise<TrustedPortableStateTransfer> {
+  if (resumeDir.length < 1) throw new Error("Portable state resume directory is required");
+  return fetchTrustedPortableState(node, target, identity, genesis, anchor, resumeDir);
+}
+
+async function fetchTrustedPortableState(
+  node: Libp2p,
+  target: Parameters<Libp2p["dial"]>[0],
+  identity: NodeIdentity,
+  genesis: GenesisConfig,
+  anchor: TrustedSnapshotAnchor,
+  resumeDir?: string
+): Promise<TrustedPortableStateTransfer> {
   assertAnchor(anchor);
   const expectedChain = new ZyronChain(genesis);
   const expected = { chainId: genesis.chainId, genesisHash: expectedChain.genesisHash };
@@ -169,24 +194,40 @@ export async function fetchTrustedPortableStateFromPeer(
 
   const manifestReply = await request("manifest", 0, 1);
   const manifest = parseManifest(manifestReply.value, expected, manifestReply.remotePeer, anchor);
+  const resume = resumeDir ? await PortableStateResumeStore.open(resumeDir, {
+    version: 1,
+    chainId: expected.chainId,
+    genesisHash: expected.genesisHash,
+    tipHash: anchor.tipHash,
+    snapshotSha256: anchor.snapshotSha256,
+    height: manifest.height,
+    stateRoot: manifest.stateRoot,
+    recordCount: manifest.recordCount,
+    keyCount: manifest.keyCount,
+    tip: manifest.tip
+  }) : undefined;
   const records: unknown[] = [];
-  for (let start = 0; start < manifest.recordCount; start += MAX_STATE_RECORDS_PER_CHUNK) {
+  for (let start = resume?.nextRecordStart() ?? 0; start < manifest.recordCount;) {
     const limit = Math.min(MAX_STATE_RECORDS_PER_CHUNK, manifest.recordCount - start);
     const reply = await request("records", start, limit);
     const chunk = parseChunk(reply.value, expected, reply.remotePeer, anchor, "records", start, limit);
-    records.push(...chunk.items);
+    if (resume) await resume.putRecords(start, chunk.items);
+    else records.push(...chunk.items);
+    start += chunk.items.length;
   }
   const keys: unknown[] = [];
-  for (let start = 0; start < manifest.keyCount; start += MAX_STATE_KEYS_PER_CHUNK) {
+  for (let start = resume?.nextKeyStart() ?? 0; start < manifest.keyCount;) {
     const limit = Math.min(MAX_STATE_KEYS_PER_CHUNK, manifest.keyCount - start);
     const reply = await request("keys", start, limit);
     const chunk = parseChunk(reply.value, expected, reply.remotePeer, anchor, "keys", start, limit);
-    keys.push(...chunk.items);
+    if (resume) await resume.putKeys(start, chunk.items);
+    else keys.push(...chunk.items);
+    start += chunk.items.length;
   }
-  if (records.length !== manifest.recordCount || keys.length !== manifest.keyCount) {
+  if (!resume && (records.length !== manifest.recordCount || keys.length !== manifest.keyCount)) {
     throw new Error("State transfer chunk counts changed during transfer");
   }
-  const bundle = {
+  const bundle = resume ? await resume.bundle() : {
     version: 1 as const,
     root: manifest.stateRoot,
     records,
@@ -194,7 +235,15 @@ export async function fetchTrustedPortableStateFromPeer(
   } as unknown as StateV2PortableBundleV1;
   // This is the security boundary: root graph, semantic key preimages,
   // governance/finality and the original full-snapshot digest all revalidate.
-  ZyronChain.fromTrustedPortableState(genesis, manifest.tip, bundle, anchor);
+  try {
+    ZyronChain.fromTrustedPortableState(genesis, manifest.tip, bundle, anchor);
+  } catch (error) {
+    // Persisted chunks are untrusted cache only. If the complete assembled
+    // bundle cannot satisfy the anchor, discard poison rather than pinning a
+    // future retry to attacker-supplied bytes.
+    await resume?.discard();
+    throw error;
+  }
   return { tip: structuredClone(manifest.tip), bundle: structuredClone(bundle) };
 }
 

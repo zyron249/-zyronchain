@@ -10,7 +10,12 @@ import { canonicalJson, sha256Hex } from "../src/codec.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { NodeService } from "../src/node.js";
 import { readP2PFrame, writeP2PFrame } from "../src/p2p-frame.js";
-import { fetchTrustedPortableStateFromPeer, P2P_STATE_PROTOCOL, registerP2PStateProtocol } from "../src/p2p-state.js";
+import {
+  fetchTrustedPortableStateFromPeer,
+  fetchTrustedPortableStateResumableFromPeer,
+  P2P_STATE_PROTOCOL,
+  registerP2PStateProtocol
+} from "../src/p2p-state.js";
 import { createP2PNode } from "../src/p2p.js";
 import { loadOrCreateNodeIdentity } from "../src/peer-identity.js";
 import { createStateV2PortableBundle, type StateV2PortableBundleV1 } from "../src/state-v2-portable.js";
@@ -143,6 +148,49 @@ test("portable State-v2 client retries the same indexed chunk after an interrupt
     );
     assert.equal(fetched.tip.hash, fixture.anchor.tipHash);
     assert.ok(recordRequests >= 2, "the interrupted absolute record index must be requested again");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("portable State-v2 download resumes from fsynced chunk staging across client invocations", async () => {
+  const fixture = await createFixture("durable-resume");
+  const resumeDir = join(fixture.root, "resume");
+  let recordRequests = 0;
+  let keyFailuresRemaining = 3;
+  try {
+    await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+      const request = await readRequest(stream);
+      if (request.kind === "records") recordRequests += 1;
+      if (request.kind === "keys" && keyFailuresRemaining > 0) {
+        keyFailuresRemaining -= 1;
+        stream.abort(new Error("injected process-boundary interruption"));
+        return;
+      }
+      await writeFixtureResponse(stream, fixture, request);
+    });
+    await assert.rejects(
+      () => fetchTrustedPortableStateResumableFromPeer(
+        fixture.clientNode, fixture.address, fixture.clientIdentity, fixture.config, fixture.anchor, resumeDir
+      ),
+      /stream|reset|abort|closed/i
+    );
+    assert.equal(recordRequests, 1, "the completed record chunk should be durable before interruption");
+    await writeFile(join(resumeDir, ".tmp", "crash-orphan.tmp"), "uncommitted", "utf8");
+
+    const fetched = await fetchTrustedPortableStateResumableFromPeer(
+      fixture.clientNode, fixture.address, fixture.clientIdentity, fixture.config, fixture.anchor, resumeDir
+    );
+    assert.equal(fetched.tip.hash, fixture.anchor.tipHash);
+    assert.equal(recordRequests, 1, "restart must skip the already fsynced record range");
+
+    await writeFile(join(resumeDir, "records", "0.json"), "{}\n", "utf8");
+    await assert.rejects(
+      () => fetchTrustedPortableStateResumableFromPeer(
+        fixture.clientNode, fixture.address, fixture.clientIdentity, fixture.config, fixture.anchor, resumeDir
+      ),
+      /resume|corrupt|checksum/i
+    );
   } finally {
     await fixture.close();
   }

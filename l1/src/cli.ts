@@ -21,7 +21,7 @@ import { PeerDirectory } from "./peer-directory.js";
 import { createP2PNode, registerP2PIdentityProtocol } from "./p2p.js";
 import { registerP2PSyncProtocol, syncP2PFrom } from "./p2p-sync.js";
 import { fetchTrustedSnapshotFromPeer, registerP2PCheckpointProtocol } from "./p2p-checkpoint.js";
-import { fetchTrustedPortableStateFromPeer, registerP2PStateProtocol } from "./p2p-state.js";
+import { fetchTrustedPortableStateResumableFromPeer, registerP2PStateProtocol } from "./p2p-state.js";
 import { NativeConsensusPeerClient, registerP2PConsensusProtocol } from "./p2p-consensus.js";
 import { discoverNativePeersFrom, registerP2PDiscoveryProtocol } from "./p2p-discovery.js";
 import { assertSafeDiscoveredPeer, NativePeerPool } from "./p2p-peer-pool.js";
@@ -165,16 +165,18 @@ async function fetchAndInstallPortableState(args: string[]): Promise<void> {
     throw new Error("state-fetch-install requires lowercase 32-byte --tip-hash and --sha256 anchors");
   }
   const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
+  const resumeDir = `${dataDir}.state-sync-${tipHash.slice(0, 16)}-${snapshotSha256.slice(0, 16)}`;
   const temporaryIdentityDir = await mkdtemp(join(tmpdir(), "zyron-state-fetch-"));
   let client: Awaited<ReturnType<typeof createP2PNode>> | undefined;
   try {
     const identity = await loadOrCreateNodeIdentity(temporaryIdentityDir);
     client = await createP2PNode(identity);
     const anchor = { tipHash, snapshotSha256 };
-    const fetched = await fetchTrustedPortableStateFromPeer(client, peer, identity, genesis, anchor);
+    const fetched = await fetchTrustedPortableStateResumableFromPeer(client, peer, identity, genesis, anchor, resumeDir);
     await client.stop();
     client = undefined;
     const store = await ChainStore.installTrustedPortableState(genesis, dataDir, fetched.tip, fetched.bundle, anchor);
+    await rm(resumeDir, { recursive: true, force: true });
     console.log(`Trusted portable State-v2 fetched and installed at height ${store.chain.height}: ${dataDir}`);
     console.log(`Finalized tip: ${store.chain.tip.hash}`);
     console.log(`Snapshot SHA-256: ${snapshotSha256}`);
