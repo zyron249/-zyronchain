@@ -7,7 +7,7 @@ This document is the release gate for the standalone TypeScript L1. `Implemented
 | A | Addresses & accounts | Implemented | secp256k1-derived `ZYN` addresses, exact atom balances, sequential nonces |
 | B | Blocks | Implemented | versioned signed headers, previous hash, Merkle tx root, state root, size/count caps |
 | C | Consensus | Implemented with audit gate | >2/3 PoA attestations plus deadline-gated >2/3 skip certificates; missed rounds progress sequentially and cannot be jumped without predecessor quorum evidence |
-| D | Data durability | Implemented | append-only finalized blocks, fsync, pinned metadata, full replay validation, corrupt-record fail-stop and repeated 100-block crash/reopen replay soak |
+| D | Data durability | Implemented | finalized blocks are validated before durable fsync and only then applied to live state; append-only storage, pinned metadata, full replay validation, corrupt-record fail-stop and repeated 100-block crash/reopen replay soak |
 | E | Economics | Implemented with gate | hard 50M ZYN cap, 1e8 atoms/ZYN, finite activity pool, explicit fee burn; final public allocation requires immutable mainnet genesis review |
 | F | Finality | Implemented | unique configured validator signatures; quorum = `floor(2N/3)+1` |
 | G | Genesis | Implemented with gate | deterministic chain identity/genesis hash; public mainnet chain ID and allocation are intentionally not invented here |
