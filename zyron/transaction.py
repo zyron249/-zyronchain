@@ -340,6 +340,8 @@ class Transaction:
                 raise ValueError(f"Unknown v3 transaction fields: {', '.join(sorted(unknown))}")
             if missing:
                 raise ValueError(f"Missing v3 transaction fields: {', '.join(sorted(missing))}")
+            if not isinstance(data["txid"], str):
+                raise ValueError("txid must be a string")
             return cls(
                 version=version,
                 chain_id=data["chain_id"],
