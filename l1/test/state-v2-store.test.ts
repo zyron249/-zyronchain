@@ -3,7 +3,10 @@ import test from "node:test";
 import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import Database from "better-sqlite3";
 
+import { canonicalJson, sha256Hex } from "../src/codec.js";
+import { StateV2NodeObjectStore } from "../src/state-v2-node-store.js";
 import { SparseMerkleState } from "../src/state-v2.js";
 import { StateV2DiskStore } from "../src/state-v2-store.js";
 
@@ -24,6 +27,40 @@ test("State v2 disk store atomically reopens committed node/value state", async 
     const reopenedAgain = await StateV2DiskStore.open(directory);
     assert.equal(reopenedAgain.state().root(), second.root());
     assert.deepEqual(reopenedAgain.state().get("account:alice"), { balanceAtoms: 75, nonce: 2 });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy State v2 migration resumes after pre-marker crash and cuts over only after verification", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-migrate-"));
+  try {
+    const legacyState = SparseMerkleState.empty()
+      .set("account:alice", { balanceAtoms: 100, nonce: 1 })
+      .set("account:bob", { balanceAtoms: 50, nonce: 0 });
+    const records = legacyState.nodeRecords();
+    const lines = records.map((record) => canonicalJson({ record, checksum: sha256Hex(canonicalJson(record)) }));
+    await writeFile(join(directory, "state-v2.nodes.ndjson"), `${lines.join("\n")}\n`, { mode: 0o600 });
+    const rootBody = { version: 1, root: legacyState.root() } as const;
+    await writeFile(join(directory, "state-v2.root.json"),
+      `${canonicalJson({ ...rootBody, checksum: sha256Hex(canonicalJson(rootBody)) })}\n`, { mode: 0o600 });
+
+    // Simulate a crash after durable node migration but before the backend marker.
+    const partial = await StateV2NodeObjectStore.open(directory, 0);
+    await partial.putMany(records);
+    partial.close();
+    await assert.rejects(() => readFile(join(directory, "state-v2.backend.json"), "utf8"), /ENOENT/);
+
+    const migrated = await StateV2DiskStore.open(directory);
+    assert.equal(migrated.state().root(), legacyState.root());
+    assert.deepEqual(migrated.state().get("account:bob"), { balanceAtoms: 50, nonce: 0 });
+    const marker = JSON.parse(await readFile(join(directory, "state-v2.backend.json"), "utf8")) as { backend: string };
+    assert.equal(marker.backend, "sqlite-v1");
+
+    // Once the authenticated marker exists, legacy bytes are no longer trusted/read.
+    await writeFile(join(directory, "state-v2.nodes.ndjson"), "corrupt legacy bytes\n", "utf8");
+    const reopened = await StateV2DiskStore.open(directory);
+    assert.equal(reopened.state().root(), legacyState.root());
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -71,7 +108,7 @@ test("State v2 disk store ignores an unterminated crash tail after a committed r
   }
 });
 
-test("State v2 store bounds resident historical records and compacts exact duplicate history on restart", async () => {
+test("State v2 store bounds the resolver cache across historical root churn", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-resident-"));
   try {
     const store = await StateV2DiskStore.open(directory);
@@ -81,22 +118,17 @@ test("State v2 store bounds resident historical records and compacts exact dupli
     for (let balance = 2; balance <= 20; balance += 1) {
       state = state.set("account:alice", { balanceAtoms: balance, nonce: 0 });
       await store.commit(state);
-      assert.equal(store.residentNodeRecordCount(), state.nodeRecords().length);
+      assert.ok(store.residentNodeRecordCount() <= 4_096);
     }
-    // Returning to a historical content hash may append an exact duplicate
-    // after that old record has left the resident set. Duplicate bytes are safe
-    // and are collapsed by verified startup compaction.
+    // Returning to a historical content hash reuses the immutable indexed row;
+    // it must not require a full RAM-resident record map.
     state = state.set("account:alice", { balanceAtoms: 1, nonce: 0 });
     assert.equal(state.root(), firstRoot);
     await store.commit(state);
-    const linesBefore = (await readFile(join(directory, "state-v2.nodes.ndjson"), "utf8")).trim().split("\n").length;
-    assert.ok(linesBefore > state.nodeRecords().length);
 
     const reopened = await StateV2DiskStore.open(directory);
     assert.equal(reopened.state().root(), firstRoot);
-    assert.equal(reopened.residentNodeRecordCount(), reopened.state().nodeRecords().length);
-    const linesAfter = (await readFile(join(directory, "state-v2.nodes.ndjson"), "utf8")).trim().split("\n").length;
-    assert.equal(linesAfter, reopened.state().nodeRecords().length);
+    assert.ok(reopened.residentNodeRecordCount() <= 4_096);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -106,13 +138,11 @@ test("State v2 disk store fails closed on checksum corruption", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-corrupt-"));
   try {
     const store = await StateV2DiskStore.open(directory);
-    await store.commit(store.state().set("account:alice", { balanceAtoms: 5, nonce: 1 }), ["account:alice"]);
-    const path = join(directory, "state-v2.nodes.ndjson");
-    const lines = (await readFile(path, "utf8")).trimEnd().split("\n");
-    const envelope = JSON.parse(lines[0]!) as { checksum: string };
-    envelope.checksum = "00".repeat(32);
-    lines[0] = JSON.stringify(envelope);
-    await writeFile(path, `${lines.join("\n")}\n`, "utf8");
+    const committed = store.state().set("account:alice", { balanceAtoms: 5, nonce: 1 });
+    await store.commit(committed, ["account:alice"]);
+    const database = new Database(join(directory, "state-v2.nodes.sqlite"));
+    database.prepare("UPDATE nodes SET checksum = ? WHERE hash = ?").run("00".repeat(32), committed.root());
+    database.close();
     await assert.rejects(() => StateV2DiskStore.open(directory), /checksum mismatch/);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -128,17 +158,11 @@ test("State v2 disk store fails closed when the committed root references a miss
       .set("account:bob", { balanceAtoms: 7, nonce: 2 });
     await store.commit(committed, ["account:alice", "account:bob"]);
 
-    const rootMetadata = JSON.parse(await readFile(join(directory, "state-v2.root.json"), "utf8")) as {
-      root: string;
-    };
-    const nodesPath = join(directory, "state-v2.nodes.ndjson");
-    const lines = (await readFile(nodesPath, "utf8")).trimEnd().split("\n");
-    const withoutCommittedRoot = lines.filter((line) => {
-      const envelope = JSON.parse(line) as { record?: { hash?: string } };
-      return envelope.record?.hash !== rootMetadata.root;
-    });
-    assert.equal(withoutCommittedRoot.length, lines.length - 1);
-    await writeFile(nodesPath, `${withoutCommittedRoot.join("\n")}\n`, "utf8");
+    const rootMetadata = JSON.parse(await readFile(join(directory, "state-v2.root.json"), "utf8")) as { root: string };
+    const database = new Database(join(directory, "state-v2.nodes.sqlite"));
+    const deleted = database.prepare("DELETE FROM nodes WHERE hash = ?").run(rootMetadata.root);
+    database.close();
+    assert.equal(deleted.changes, 1);
 
     await assert.rejects(() => StateV2DiskStore.open(directory), /Missing State v2 node record/);
   } finally {
