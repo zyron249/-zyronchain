@@ -8,7 +8,7 @@ This directory contains the standalone TypeScript Layer-1 implementation. It is 
 - secp256k1 signed transfers and signed Proof-of-Activity settlement batches;
 - SHA-256 transaction/block IDs, transaction Merkle roots, and deterministic state roots;
 - genesis-pinned chain identity and a hard 50,000,000 ZYN supply ceiling;
-- round-robin PoA proposals plus strictly-greater-than-2/3 validator attestations;
+- round-robin PoA proposals, strictly-greater-than-2/3 validator attestations, and certified proposer-failure view changes;
 - append-only finalized block storage, replay-on-startup validation, and a persistent anti-double-sign journal;
 - bounded mempool with nonce conflict protection and state-aware block selection;
 - bounded JSON RPC for status, blocks, balances, nonces, transaction submission, proposal attestation, and finalized-block acceptance;
@@ -78,10 +78,11 @@ Never commit generated key files or live genesis operator secrets.
 | GET | `/nonce/<address>` | Confirmed account nonce |
 | POST | `/tx` | Strictly parsed signed transaction submission |
 | POST | `/proposal/attest` | Validator-only proposal validation and attestation |
+| POST | `/round/skip` | Validator-only, deadline-gated signed skip vote for certified view change |
 | POST | `/block` | Validate and persist a finalized quorum block |
 
 ## Consensus safety boundary
 
-Only consensus `round=0` is accepted today. This is deliberate. Enabling fallback rounds without a certified view-change/locking protocol can create two quorum-certified blocks at the same height. Until a tested view-change protocol is implemented, an offline scheduled proposer stops progress rather than weakening safety.
+Fallback rounds require a strictly-greater-than-2/3 signed skip certificate for the preceding round. A validator's fsynced signing journal makes attestation and skip mutually exclusive inside the same `(height, round)`. For round 2 and later, validators require the preceding skip quorum certificate before signing the next skip, so a node cannot jump view-change rounds after an outage. The coordinator progresses missed rounds sequentially.
 
-This implementation is therefore suitable for controlled multi-validator devnet/testnet operation, not an unaudited public mainnet. See `../docs/STANDALONE_L1_READINESS.md` for the remaining mainnet gates.
+This removes the earlier single-proposer liveness stop, but it does not replace an independent consensus audit or adversarial soak testing. The implementation is suitable for controlled multi-validator devnet/testnet operation; public-mainnet release remains gated by the evidence in `../docs/STANDALONE_L1_READINESS.md`.
