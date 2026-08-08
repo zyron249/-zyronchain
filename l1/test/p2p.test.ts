@@ -5,7 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { loadOrCreateNodeIdentity } from "../src/peer-identity.js";
-import { createP2PNode } from "../src/p2p.js";
+import {
+  authenticateP2PPeer,
+  createP2PNode,
+  registerP2PIdentityProtocol,
+  validateP2PChainIdentity
+} from "../src/p2p.js";
+
+const chain = { chainId: "zyron-test", genesisHash: "ab".repeat(32) };
 
 test("native P2P reuses the persistent node identity over authenticated Noise", async () => {
   const firstDir = await mkdtemp(join(tmpdir(), "zyron-p2p-first-"));
@@ -29,6 +36,83 @@ test("native P2P reuses the persistent node identity over authenticated Noise", 
     await Promise.allSettled([first.stop(), second.stop()]);
     await rm(firstDir, { recursive: true, force: true });
     await rm(secondDir, { recursive: true, force: true });
+  }
+});
+
+test("native P2P authenticates Noise peer identity and exact chain genesis", async () => {
+  const firstDir = await mkdtemp(join(tmpdir(), "zyron-p2p-auth-first-"));
+  const secondDir = await mkdtemp(join(tmpdir(), "zyron-p2p-auth-second-"));
+  const firstIdentity = await loadOrCreateNodeIdentity(firstDir);
+  const secondIdentity = await loadOrCreateNodeIdentity(secondDir);
+  const first = await createP2PNode(firstIdentity, { listen: ["/ip4/127.0.0.1/tcp/0"] });
+  const second = await createP2PNode(secondIdentity);
+  const authenticated: string[] = [];
+  try {
+    await registerP2PIdentityProtocol(first, firstIdentity, chain, (remote) => authenticated.push(remote.nodeId));
+    await registerP2PIdentityProtocol(second, secondIdentity, chain);
+    const address = first.getMultiaddrs()[0];
+    assert.ok(address);
+    const remote = await authenticateP2PPeer(second, address, secondIdentity, chain);
+    assert.equal(remote.nodeId, firstIdentity.nodeId);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(authenticated, [secondIdentity.nodeId]);
+  } finally {
+    await Promise.allSettled([first.stop(), second.stop()]);
+    await rm(firstDir, { recursive: true, force: true });
+    await rm(secondDir, { recursive: true, force: true });
+  }
+});
+
+test("native P2P fails closed across different chain genesis", async () => {
+  const firstDir = await mkdtemp(join(tmpdir(), "zyron-p2p-chain-first-"));
+  const secondDir = await mkdtemp(join(tmpdir(), "zyron-p2p-chain-second-"));
+  const firstIdentity = await loadOrCreateNodeIdentity(firstDir);
+  const secondIdentity = await loadOrCreateNodeIdentity(secondDir);
+  const first = await createP2PNode(firstIdentity, { listen: ["/ip4/127.0.0.1/tcp/0"] });
+  const second = await createP2PNode(secondIdentity);
+  try {
+    await registerP2PIdentityProtocol(first, firstIdentity, chain);
+    const address = first.getMultiaddrs()[0];
+    assert.ok(address);
+    await assert.rejects(
+      () => authenticateP2PPeer(second, address, secondIdentity, { ...chain, genesisHash: "cd".repeat(32) }),
+      /chain identity mismatch|stream|abort/i
+    );
+  } finally {
+    await Promise.allSettled([first.stop(), second.stop()]);
+    await rm(firstDir, { recursive: true, force: true });
+    await rm(secondDir, { recursive: true, force: true });
+  }
+});
+
+test("native P2P rejects a claimed node key that is not the authenticated Noise PeerId", async () => {
+  const firstDir = await mkdtemp(join(tmpdir(), "zyron-p2p-bind-first-"));
+  const attackerDir = await mkdtemp(join(tmpdir(), "zyron-p2p-bind-attacker-"));
+  try {
+    const firstIdentity = await loadOrCreateNodeIdentity(firstDir);
+    const attacker = await loadOrCreateNodeIdentity(attackerDir);
+    const first = await createP2PNode(firstIdentity);
+    try {
+      const spoof = {
+        version: 1,
+        nodeId: attacker.nodeId,
+        publicKey: attacker.publicKey,
+        ...chain
+      };
+      assert.throws(
+        () => validateP2PChainIdentity(spoof, chain, first.peerId),
+        /Noise identity mismatch/
+      );
+      assert.throws(
+        () => validateP2PChainIdentity({ ...spoof, extra: true }, chain, first.peerId),
+        /message fields/
+      );
+    } finally {
+      await first.stop();
+    }
+  } finally {
+    await rm(firstDir, { recursive: true, force: true });
+    await rm(attackerDir, { recursive: true, force: true });
   }
 });
 
