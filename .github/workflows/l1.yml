@@ -41,6 +41,8 @@ jobs:
           npm pack --ignore-scripts --pack-destination "$first" >/dev/null
           npm pack --ignore-scripts --pack-destination "$second" >/dev/null
           cmp "$first"/zyronchain-l1-*.tgz "$second"/zyronchain-l1-*.tgz
+      - name: Verify runtime SBOM generation
+        run: npm sbom --omit=dev --sbom-format=spdx > /dev/null
       - name: Audit runtime dependencies
         run: npm audit --omit=dev --audit-level=high
 
