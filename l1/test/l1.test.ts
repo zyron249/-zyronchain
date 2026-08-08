@@ -489,7 +489,7 @@ test("node read and mempool hot paths do not clone the full ledger state", async
   }
 });
 
-test("protocol v2 pending selection does not clone the full legacy ledger", async () => {
+test("protocol v2 drops the legacy ledger shadow and serves pending/query paths from authenticated state", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-v2-selection-hot-path-"));
   try {
     const store = await ChainStore.open(genesis(), directory);
@@ -507,16 +507,7 @@ test("protocol v2 pending selection does not clone the full legacy ledger", asyn
       alicePrivate,
       alicePublic
     );
-    const legacy = (store.chain as unknown as { state: {
-      clone: () => unknown;
-      balance: () => number;
-      nonce: () => number;
-      isActivityEpochSettled: () => boolean;
-    } }).state;
-    legacy.clone = () => { throw new Error("full legacy ledger clone reached protocol v2 pending selection"); };
-    legacy.balance = () => { throw new Error("legacy balance reached protocol v2 hot path"); };
-    legacy.nonce = () => { throw new Error("legacy nonce reached protocol v2 hot path"); };
-    legacy.isActivityEpochSettled = () => { throw new Error("legacy activity set reached protocol v2 hot path"); };
+    assert.equal((store.chain as unknown as { state?: LedgerState }).state, undefined);
     assert.equal(store.chain.balance(alice), 1_000_000_000);
     assert.equal(store.chain.nonce(alice), 0);
     store.chain.validateMempoolAdmission(pending);
