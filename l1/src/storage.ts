@@ -116,6 +116,10 @@ export class ChainStore {
     return this.retainedFromHeight;
   }
 
+  get persistenceHealthy(): boolean {
+    return !this.persistenceFaulted;
+  }
+
   static async open(genesis: GenesisConfig, dataDir: string): Promise<ChainStore> {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     const genesisChain = new ZyronChain(genesis);

@@ -1415,6 +1415,11 @@ test("RPC exposes health and metrics while enforcing per-client request limits",
     assert.equal(payload.mempoolSize, 0);
     assert.equal(payload.validatorCount, 2);
     assert.equal(typeof payload.uptimeSeconds, "number");
+    assert.equal(payload.persistenceHealthy, true);
+    assert.ok(Number(payload.finalizedBlockAgeSeconds) >= 0);
+    assert.equal(payload.firstStoredHeight, 1);
+    assert.equal(payload.recoveredFromCheckpointHeight, 0);
+    assert.equal(payload.recoveredStateV2FromCorruption, false);
 
     const limited = await fetch(`${base}/status`);
     assert.equal(limited.status, 429);
