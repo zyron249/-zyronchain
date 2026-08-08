@@ -5,7 +5,10 @@ function normalize(value: unknown): unknown {
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
+        // Consensus ordering must not depend on ICU data or the host locale.
+        // JavaScript relational string comparison is defined over UTF-16 code
+        // units, so this comparator has identical results on every runtime.
+        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
         .map(([key, item]) => [key, normalize(item)])
     );
   }
