@@ -75,7 +75,10 @@ discovery source, and 2 dynamic peers from one topology bucket. Periodic native 
 most four diversity-rotated peers per cycle and never overlaps its own previous cycle; discovery
 likewise bounds each cycle to four sources and four candidate verifications per source. These
 work caps prevent a full pool of slow but authenticated peers from multiplying one timer tick
-into unbounded concurrent dial/sync work.
+into unbounded concurrent dial/sync work. Configured bootstrap peers are never removed by remote
+behavior. Discovery-learned peers, however, release their pool slot immediately on a protocol
+violation or after three consecutive transient sync failures; their durable reputation/backoff
+entry remains, so eviction cannot be used to reset a failing identity's penalty.
 
 Automatic discovery dialing is intentionally stricter than explicit operator configuration:
 only literal public IP multiaddrs are eligible. Private, loopback, link-local, reserved and
