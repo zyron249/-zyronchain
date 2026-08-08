@@ -19,6 +19,7 @@ import { PeerReputationStore } from "./peer-reputation.js";
 import { PeerDirectory } from "./peer-directory.js";
 import { createP2PNode, registerP2PIdentityProtocol } from "./p2p.js";
 import { registerP2PSyncProtocol, syncP2PFrom } from "./p2p-sync.js";
+import { registerP2PCheckpointProtocol } from "./p2p-checkpoint.js";
 import { NativeConsensusPeerClient, registerP2PConsensusProtocol } from "./p2p-consensus.js";
 import { discoverNativePeersFrom, registerP2PDiscoveryProtocol } from "./p2p-discovery.js";
 import { assertSafeDiscoveredPeer, NativePeerPool } from "./p2p-peer-pool.js";
@@ -228,6 +229,7 @@ async function runNode(args: string[]): Promise<void> {
   if (nativeNode && identity && nativePeerPool) {
     await registerP2PIdentityProtocol(nativeNode, identity, service.status());
     await registerP2PSyncProtocol(nativeNode, identity, service);
+    await registerP2PCheckpointProtocol(nativeNode, identity, service);
     await registerP2PConsensusProtocol(nativeNode, identity, service);
     await registerP2PDiscoveryProtocol(nativeNode, identity, service.status(), () =>
       nativePeerPool.snapshot().filter((peer) => {
