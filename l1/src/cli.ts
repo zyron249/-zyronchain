@@ -3,14 +3,12 @@ import { chmod, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
-import { createRpcServer, NodeService, PeerClient, produceFinalizedBlock } from "./node.js";
+import { BLOCK_INTERVAL_MS, createRpcServer, NodeService, PeerClient, produceFinalizedBlock } from "./node.js";
 import { ChainStore, SigningJournal } from "./storage.js";
 import { ZyronChain } from "./chain.js";
 import { createTransfer, assertAddress } from "./transaction.js";
 import type { GenesisConfig } from "./types.js";
 import { MAX_SUPPLY_ATOMS, type Address } from "./types.js";
-
-const BLOCK_INTERVAL_MS = 30_000;
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
@@ -113,6 +111,19 @@ async function runNode(args: string[]): Promise<void> {
         .catch((error) => console.warn(`Validator round failed: ${safeError(error)}`));
     }, BLOCK_INTERVAL_MS).unref();
   }
+
+  setInterval(() => {
+    void (async () => {
+      for (const peer of peers.peers) {
+        try {
+          const accepted = await peers.syncFrom(peer, service);
+          if (accepted) console.log(`Caught up ${accepted} finalized block(s) from ${peer}`);
+        } catch (error) {
+          console.warn(`Periodic peer sync skipped for ${peer}: ${safeError(error)}`);
+        }
+      }
+    })();
+  }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3))).unref();
 }
 
 async function submitTransfer(args: string[]): Promise<void> {
