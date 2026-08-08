@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendFile, mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -360,6 +360,32 @@ test("chain store replays finalized blocks and pins the genesis identity", async
     const different = genesis();
     different.timestampMs += 1;
     await assert.rejects(() => ChainStore.open(different, directory), /different or unsupported chain/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("checkpoint snapshot is deterministic across restart and binds finalized state schedules", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-snapshot-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    let block = store.chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
+    block = store.chain.attestBlock(block, validatorOnePrivate);
+    block = store.chain.attestBlock(block, validatorTwoPrivate);
+    await store.commitFinalizedBlock(block, 1_700_000_000_100);
+    const first = await store.writeSnapshot(join(directory, "checkpoint-a.json"));
+
+    const reopened = await ChainStore.open(genesis(), directory);
+    const second = await reopened.writeSnapshot(join(directory, "checkpoint-b.json"));
+    assert.equal(second.sha256, first.sha256);
+    assert.equal(second.height, 1);
+
+    const snapshot = JSON.parse(await readFile(join(directory, "checkpoint-b.json"), "utf8")) as Record<string, unknown>;
+    assert.equal(snapshot.genesisHash, reopened.chain.genesisHash);
+    assert.equal(snapshot.height, reopened.chain.height);
+    assert.deepEqual(snapshot.tip, reopened.chain.tip);
+    assert.ok(Array.isArray(snapshot.validatorSchedule));
+    assert.ok(Array.isArray(snapshot.protocolSchedule));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
