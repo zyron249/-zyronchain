@@ -165,6 +165,12 @@ async function runNode(args: string[]): Promise<void> {
   } catch (error) {
     console.warn(`Initial peer sync skipped: ${safeError(error)}`);
   }
+  try {
+    const discovered = await peers.refreshPeerDirectory(peerDirectory, service.status());
+    if (discovered) console.log(`Discovered ${discovered} signed peer record(s) from configured peers`);
+  } catch (error) {
+    console.warn(`Initial peer discovery skipped: ${safeError(error)}`);
+  }
 
   const server = createRpcServer(service, {
     ...(peerAuthToken ? { peerAuthToken } : {}),
@@ -198,6 +204,12 @@ async function runNode(args: string[]): Promise<void> {
       }
     })();
   }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3))).unref();
+
+  setInterval(() => {
+    void peers.refreshPeerDirectory(peerDirectory, service.status())
+      .then((discovered) => { if (discovered) console.log(`Discovered ${discovered} signed peer record(s)`); })
+      .catch((error) => console.warn(`Periodic peer discovery skipped: ${safeError(error)}`));
+  }, 60_000).unref();
 }
 
 async function submitTransfer(args: string[]): Promise<void> {

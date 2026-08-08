@@ -334,6 +334,7 @@ async function route(
 export class PeerClient {
   readonly peers: string[];
   private syncCursor = 0;
+  private discoveryCursor = 0;
   private readonly failureUntil = new Map<string, number>();
 
   constructor(
@@ -404,6 +405,47 @@ export class PeerClient {
       throw new Error("Invalid peer discovery response");
     }
     return payload.records.map((record) => validateSignedPeerRecord(record, expected, nowMs));
+  }
+
+  async refreshPeerDirectory(
+    directory: PeerDirectory,
+    expected: { chainId: string; genesisHash: string },
+    nowMs = Date.now()
+  ): Promise<number> {
+    const ordered = diversityOrderedPeers(this.peers, this.discoveryCursor);
+    if (ordered.length === 0) return 0;
+    const seenGroups = new Set<string>();
+    const sources = ordered.filter((peer) => {
+      const group = peerDiversityBucket(peer);
+      if (seenGroups.has(group)) return false;
+      seenGroups.add(group);
+      return true;
+    }).slice(0, MAX_SYNC_PROBE_CONCURRENCY);
+    const groupCount = Math.max(1, new Set(this.peers.map(peerDiversityBucket)).size);
+    this.discoveryCursor = (this.discoveryCursor + sources.length) % groupCount;
+    const results = await Promise.allSettled(
+      sources.map((peer) => this.fetchPeerRecords(peer, expected, MAX_DISCOVERY_RESPONSE_RECORDS, nowMs))
+    );
+    let admitted = 0;
+    for (let index = 0; index < results.length; index += 1) {
+      const result = results[index]!;
+      if (result.status === "rejected") {
+        // Discovery is optional metadata. A node that is otherwise a valid sync
+        // peer may not support this endpoint yet; do not poison sync reputation.
+        continue;
+      }
+      for (const record of result.value) {
+        try {
+          if (directory.admit(record, nowMs)) admitted += 1;
+        } catch (error) {
+          // Local capacity is not evidence of remote misbehavior. Stop accepting
+          // metadata without allowing discovery to evict already-admitted peers.
+          if (/Peer directory capacity reached/.test(safeError(error))) break;
+          throw error;
+        }
+      }
+    }
+    return admitted;
   }
 
   async syncAny(service: NodeService): Promise<number> {
