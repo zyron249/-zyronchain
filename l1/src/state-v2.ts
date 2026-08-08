@@ -47,6 +47,11 @@ export type StateV2NodeRecord =
   | { kind: "leaf"; hash: string; keyHash: string; valueHash: string; valueJson: string }
   | { kind: "branch"; hash: string; leftHash: string | null; rightHash: string | null };
 
+export interface StateV2ReachabilityIndex {
+  depth(hash: string): number | undefined;
+  remember(hash: string, depth: number): void;
+}
+
 const EMPTY_HASHES = buildEmptyHashes();
 
 /**
@@ -148,27 +153,39 @@ export class SparseMerkleState {
   reachableNodeHashes(): Set<string> {
     const hashes = new Set<string>();
     const depths = new Map<string, number>();
-    const visiting = new Set<string>();
+    this.validateReachable({
+      depth: (hash) => depths.get(hash),
+      remember: (hash, depth) => {
+        depths.set(hash, depth);
+        hashes.add(hash);
+      }
+    });
+    return hashes;
+  }
+
+  /**
+   * Authenticate the complete root-reachable graph using caller-owned visit
+   * bookkeeping. Disk stores use a SQLite-backed index here so restart memory
+   * stays bounded even when the committed state contains millions of nodes.
+   */
+  validateReachable(index: StateV2ReachabilityIndex, onLeaf?: (keyHash: string) => void): void {
     const visit = (link: NodeLink | undefined, depth: number): void => {
       if (!link) return;
-      const previousDepth = depths.get(link.hash);
+      const previousDepth = index.depth(link.hash);
       if (previousDepth !== undefined && previousDepth !== depth) {
         throw new Error("State v2 node reused at inconsistent depth");
       }
-      depths.set(link.hash, depth);
-      if (visiting.has(link.hash)) throw new Error("Cyclic State v2 node graph");
-      if (hashes.has(link.hash)) return;
-      visiting.add(link.hash);
+      if (previousDepth !== undefined) return;
+      index.remember(link.hash, depth);
       const node = this.resolveNode(link, depth);
-      hashes.add(node.hash);
       if (node.kind === "branch") {
         visit(node.left, depth + 1);
         visit(node.right, depth + 1);
+      } else {
+        onLeaf?.(node.keyHash);
       }
-      visiting.delete(link.hash);
     };
     visit(this.rootNode, 0);
-    return hashes;
   }
 
   /** Leaf-key commitment set without allocating full node-record snapshots. */
