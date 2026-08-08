@@ -363,14 +363,26 @@ export class ChainStore {
   }
 
   async pruneFinalizedHistory(
-    faultHooks: PruneFaultHooks = {}
+    faultHooks: PruneFaultHooks = {},
+    retainBlocks = 0
   ): Promise<{ prunedThroughHeight: number; firstStoredHeight: number }> {
     if (this.persistenceFaulted) throw new Error("Persistence fault requires node restart");
     if (this.chain.height !== this.persistedHeight) throw new Error("Cannot prune non-durable chain state");
     if (this.persistedHeight < 1) throw new Error("Cannot prune empty finalized history");
+    if (!Number.isSafeInteger(retainBlocks) || retainBlocks < 0 || retainBlocks > this.persistedHeight) {
+      throw new Error("Invalid finalized-history retention count");
+    }
     const stateV2 = this.requireDurableStateV2ForPruning();
 
     const blocksPath = join(this.dataDir, "blocks.ndjson");
+    const pruneThroughHeight = this.pendingPruneThroughHeight ?? (this.persistedHeight - retainBlocks);
+    if (pruneThroughHeight < this.firstStoredHeight) {
+      throw new Error("No finalized history eligible for pruning under retention policy");
+    }
+    const targetRetainedFromHeight = pruneThroughHeight + 1;
+    const firstRetained = this.blockRanges.find((range) => range.height >= targetRetainedFromHeight);
+    const retainedStartOffset = firstRetained?.offset ?? this.persistedBytes;
+    const targetBlockFileBytes = this.persistedBytes - retainedStartOffset;
     if (this.pendingPruneThroughHeight === undefined) {
       // First publish and re-read a normal checkpoint against the currently
       // retained log. Pruning is allowed only after that local finality anchor has
@@ -382,8 +394,8 @@ export class ChainStore {
       if (verified.count !== this.persistedHeight || verified.chain.tip.hash !== this.chain.tip.hash) {
         throw new Error("Recovery checkpoint did not reproduce durable finalized tip");
       }
-    } else if (this.pendingPruneThroughHeight !== this.persistedHeight) {
-      throw new Error("Interrupted prune boundary does not match durable finalized tip");
+    } else if (this.pendingPruneThroughHeight > this.persistedHeight) {
+      throw new Error("Interrupted prune boundary is invalid for durable finalized tip");
     }
 
     const snapshot = this.chain.snapshot();
@@ -395,8 +407,8 @@ export class ChainStore {
       height: this.persistedHeight,
       tipHash: this.chain.tip.hash,
       stateV2Root: stateV2.root(),
-      retainedFromHeight: this.persistedHeight + 1,
-      blockFileBytes: 0,
+      retainedFromHeight: targetRetainedFromHeight,
+      blockFileBytes: targetBlockFileBytes,
       transition: {
         fromHeight: this.firstStoredHeight,
         blockFileBytes: this.persistedBytes
@@ -415,29 +427,27 @@ export class ChainStore {
         version: 1,
         chainId: this.chain.genesis.chainId,
         genesisHash: this.chain.genesisHash,
-        prunedThroughHeight: this.persistedHeight
+        prunedThroughHeight: pruneThroughHeight
       });
 
-      const handle = await open(temporaryBlocks, "wx", 0o600);
-      try {
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
+      await copyFileRangeDurably(blocksPath, temporaryBlocks, retainedStartOffset, this.persistedBytes);
       await faultHooks.afterBlockTemporarySync?.();
       await rename(temporaryBlocks, blocksPath);
       blocksRenamed = true;
       await faultHooks.afterBlockRename?.();
       await syncDirectory(this.dataDir);
 
-      this.blockRanges.splice(0, this.blockRanges.length);
-      this.persistedBytes = 0;
-      this.retainedFromHeight = this.persistedHeight + 1;
+      const retainedRanges = this.blockRanges
+        .filter((range) => range.height >= targetRetainedFromHeight)
+        .map((range) => ({ ...range, offset: range.offset - retainedStartOffset }));
+      this.blockRanges.splice(0, this.blockRanges.length, ...retainedRanges);
+      this.persistedBytes = targetBlockFileBytes;
+      this.retainedFromHeight = targetRetainedFromHeight;
       this.pendingPruneThroughHeight = undefined;
 
       const stable: RecoveryCheckpointV2 = { ...transition, transition: null };
       await writeCheckpointFile(checkpointPath, stable);
-      return { prunedThroughHeight: this.persistedHeight, firstStoredHeight: this.firstStoredHeight };
+      return { prunedThroughHeight: pruneThroughHeight, firstStoredHeight: this.firstStoredHeight };
     } catch (error) {
       this.persistenceFaulted = true;
       throw new Error("Pruning interrupted; restart required", { cause: error });
@@ -574,6 +584,30 @@ async function writeCheckpointFile(
     await syncDirectory(dirname(path));
   } finally {
     if (!renamed) await rm(temporary, { force: true });
+  }
+}
+
+async function copyFileRangeDurably(sourcePath: string, targetPath: string, start: number, end: number): Promise<void> {
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start) {
+    throw new Error("Invalid finalized-history copy range");
+  }
+  const source = await open(sourcePath, "r");
+  let target: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    target = await open(targetPath, "wx", 0o600);
+    const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, end - start)));
+    let position = start;
+    while (position < end) {
+      const requested = Math.min(buffer.length, end - position);
+      const { bytesRead } = await source.read(buffer, 0, requested, position);
+      if (bytesRead !== requested) throw new Error("Finalized block storage changed during pruning");
+      await target.write(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    await target.sync();
+  } finally {
+    await source.close();
+    await target?.close();
   }
 }
 

@@ -963,6 +963,70 @@ test("pruning requires authenticated State v2 and restarts from the pruned check
   }
 });
 
+test("pruning can retain a bounded finalized suffix and crash-resume the exact retention intent", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-retained-prune-"));
+  try {
+    let store = await ChainStore.open(genesis(), directory);
+    await advanceStoreToStateV2(store);
+    const partial = await store.pruneFinalizedHistory({}, 20);
+    assert.deepEqual(partial, { prunedThroughHeight: 81, firstStoredHeight: 82 });
+    const retained = await store.readFinalizedBlocks(82, 100, 10_000_000);
+    assert.deepEqual(retained.map((block) => block.header.height), Array.from({ length: 20 }, (_, index) => 82 + index));
+    await assert.rejects(() => store.readFinalizedBlocks(81, 1, 10_000_000), /pruned below height 82/);
+
+    store = await ChainStore.open(genesis(), directory);
+    assert.equal(store.chain.height, 101);
+    assert.equal(store.firstStoredHeight, 82);
+    let suffix = store.chain.produceBlock([], validatorTwoPrivate, { timestampMs: genesis().timestampMs + 10_200 });
+    suffix = store.chain.attestBlock(suffix, validatorOnePrivate);
+    suffix = store.chain.attestBlock(suffix, validatorTwoPrivate);
+    await store.commitFinalizedBlock(suffix, genesis().timestampMs + 10_200);
+    const repruned = await store.pruneFinalizedHistory({}, 10);
+    assert.deepEqual(repruned, { prunedThroughHeight: 92, firstStoredHeight: 93 });
+    assert.deepEqual((await store.readFinalizedBlocks(93, 20, 10_000_000)).map((block) => block.header.height),
+      Array.from({ length: 10 }, (_, index) => 93 + index));
+
+    const genesisPath = join(directory, "prune-test-genesis.json");
+    await writeFile(genesisPath, `${canonicalJson(genesis())}\n`, "utf8");
+    const cli = await execFileAsync(process.execPath, [
+      join(process.cwd(), "dist/src/cli.js"), "prune-finalized",
+      "--genesis", genesisPath,
+      "--data", directory,
+      "--retain-blocks", "5"
+    ]);
+    assert.match(cli.stdout, /Finalized history pruned through height 97/);
+    const cliPruned = await ChainStore.open(genesis(), directory);
+    assert.equal(cliPruned.firstStoredHeight, 98);
+    assert.deepEqual((await cliPruned.readFinalizedBlocks(98, 10, 10_000_000)).map((block) => block.header.height),
+      [98, 99, 100, 101, 102]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+
+  const interruptedDirectory = await mkdtemp(join(tmpdir(), "zyron-retained-prune-crash-"));
+  try {
+    const store = await ChainStore.open(genesis(), interruptedDirectory);
+    await advanceStoreToStateV2(store);
+    await assert.rejects(
+      () => store.pruneFinalizedHistory({
+        afterBlockTemporarySync: () => { throw new Error("injected retained-prune crash"); }
+      }, 20),
+      /Pruning interrupted; restart required/
+    );
+    const reopened = await ChainStore.open(genesis(), interruptedDirectory);
+    assert.equal(reopened.firstStoredHeight, 1);
+    // Recovery follows the durable retention intent (through 81), even though
+    // the caller does not need to repeat the original retainBlocks argument.
+    const completed = await reopened.pruneFinalizedHistory();
+    assert.deepEqual(completed, { prunedThroughHeight: 81, firstStoredHeight: 82 });
+    const recovered = await ChainStore.open(genesis(), interruptedDirectory);
+    assert.equal(recovered.firstStoredHeight, 82);
+    assert.equal(recovered.chain.height, 101);
+  } finally {
+    await rm(interruptedDirectory, { recursive: true, force: true });
+  }
+});
+
 test("prune checkpoint crash before block replacement preserves the full finalized log", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-prune-before-replace-"));
   try {
