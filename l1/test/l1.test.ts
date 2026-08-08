@@ -232,7 +232,7 @@ test("a greater-than-two-thirds skip certificate safely unlocks the next propose
   assert.doesNotThrow(() => chain.validateProposal(proposal, 1_700_000_000_100));
 });
 
-test("mempool blocks duplicate sender nonces and orders by fee", () => {
+test("mempool blocks same-nonce replacements without a material fee-rate bump", () => {
   const first = createTransfer(
     {
       chainId: genesis().chainId,
@@ -253,7 +253,7 @@ test("mempool blocks duplicate sender nonces and orders by fee", () => {
       sender: alice,
       receiver: validatorOne,
       amountAtoms: 1,
-      feeAtoms: 20,
+      feeAtoms: 10,
       timestampMs: 101
     },
     alicePrivate,
@@ -263,6 +263,56 @@ test("mempool blocks duplicate sender nonces and orders by fee", () => {
   pool.add(first);
   assert.throws(() => pool.add(conflict), /Conflicting sender nonce/);
   assert.equal(pool.values()[0]?.txid, first.txid);
+});
+
+test("mempool replaces same-nonce transfers after a material fee-rate bump", () => {
+  const first = createTransfer(
+    { chainId: genesis().chainId, nonce: 1, sender: alice, receiver: bob, amountAtoms: 1, feeAtoms: 10, timestampMs: 100 },
+    alicePrivate,
+    alicePublic
+  );
+  const replacement = createTransfer(
+    { chainId: genesis().chainId, nonce: 1, sender: alice, receiver: bob, amountAtoms: 1, feeAtoms: 20, timestampMs: 101 },
+    alicePrivate,
+    alicePublic
+  );
+  const pool = new Mempool();
+  pool.add(first);
+  pool.add(replacement);
+  assert.equal(pool.size, 1);
+  assert.equal(pool.values()[0]?.txid, replacement.txid);
+  assert.equal(pool.pendingTransferSpend(alice), 21n);
+});
+
+test("full mempool evicts only a sender tail for a materially better fee rate", () => {
+  const bobPrivate = "05".padStart(64, "0");
+  const bobPublic = publicKeyFromPrivate(bobPrivate);
+  const activityPrivate = "06".padStart(64, "0");
+  const activityPublic = publicKeyFromPrivate(activityPrivate);
+  const low = createTransfer(
+    { chainId: genesis().chainId, nonce: 1, sender: alice, receiver: bob, amountAtoms: 1, feeAtoms: 10, timestampMs: 100 },
+    alicePrivate,
+    alicePublic
+  );
+  const medium = createTransfer(
+    { chainId: genesis().chainId, nonce: 1, sender: bob, receiver: alice, amountAtoms: 1, feeAtoms: 20, timestampMs: 101 },
+    bobPrivate,
+    bobPublic
+  );
+  const high = createTransfer(
+    { chainId: genesis().chainId, nonce: 1, sender: activityPool, receiver: alice, amountAtoms: 1, feeAtoms: 100, timestampMs: 102 },
+    activityPrivate,
+    activityPublic
+  );
+  const pool = new Mempool(2);
+  pool.add(low);
+  pool.add(medium);
+  pool.add(high);
+  const txids = new Set(pool.values().map((tx) => tx.txid));
+  assert.equal(pool.size, 2);
+  assert.equal(txids.has(low.txid), false);
+  assert.equal(txids.has(medium.txid), true);
+  assert.equal(txids.has(high.txid), true);
 });
 
 test("wire schemas reject unknown transaction and block fields", () => {
@@ -431,6 +481,30 @@ test("future-nonce mempool admission rejects unaffordable and unauthorized spam"
       alicePublic
     );
     assert.throws(() => service.submitTransaction(unauthorizedGovernance), /initiator is not active/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("node replacement accounting releases the replaced transfer obligation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-mempool-rbf-"));
+  try {
+    const service = new NodeService(await ChainStore.open(genesis(), directory));
+    const first = createTransfer(
+      { chainId: genesis().chainId, nonce: 1, sender: alice, receiver: bob, amountAtoms: 900_000_000, feeAtoms: 10, timestampMs: 100 },
+      alicePrivate,
+      alicePublic
+    );
+    const replacement = createTransfer(
+      { chainId: genesis().chainId, nonce: 1, sender: alice, receiver: bob, amountAtoms: 900_000_000, feeAtoms: 20, timestampMs: 101 },
+      alicePrivate,
+      alicePublic
+    );
+    service.submitTransaction(first);
+    assert.doesNotThrow(() => service.submitTransaction(replacement));
+    assert.equal(service.mempool.size, 1);
+    assert.equal(service.mempool.values()[0]?.txid, replacement.txid);
+    assert.equal(service.mempool.pendingTransferSpend(alice), 900_000_020n);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
