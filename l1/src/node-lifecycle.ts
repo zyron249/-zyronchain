@@ -31,3 +31,34 @@ export async function drainHttpServer(
   });
   return forced ? "forced" : "drained";
 }
+
+export class BackgroundTaskTracker {
+  private accepting = true;
+  private readonly pending = new Set<Promise<unknown>>();
+
+  run(operation: () => Promise<unknown>): boolean {
+    if (!this.accepting) return false;
+    const task = operation();
+    this.pending.add(task);
+    void task.then(
+      () => this.pending.delete(task),
+      () => this.pending.delete(task)
+    );
+    return true;
+  }
+
+  stopAccepting(): void {
+    this.accepting = false;
+  }
+
+  async drain(): Promise<void> {
+    this.stopAccepting();
+    while (this.pending.size > 0) {
+      await Promise.allSettled([...this.pending]);
+    }
+  }
+
+  get pendingCount(): number {
+    return this.pending.size;
+  }
+}

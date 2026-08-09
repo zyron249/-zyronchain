@@ -25,7 +25,7 @@ import { registerP2PSyncProtocol, syncP2PFrom } from "./p2p-sync.js";
 import { fetchTrustedSnapshotFromPeer, registerP2PCheckpointProtocol } from "./p2p-checkpoint.js";
 import { fetchTrustedPortableStateFromAnyPeer, MAX_STATE_SYNC_PEERS, registerP2PStateProtocol } from "./p2p-state.js";
 import { NativeConsensusPeerClient, registerP2PConsensusProtocol } from "./p2p-consensus.js";
-import { drainHttpServer } from "./node-lifecycle.js";
+import { BackgroundTaskTracker, drainHttpServer } from "./node-lifecycle.js";
 import { discoverNativePeersFrom, registerP2PDiscoveryProtocol } from "./p2p-discovery.js";
 import { assertSafeDiscoveredPeer, NativePeerPool } from "./p2p-peer-pool.js";
 import { classifyNativePeerFailure, NativePeerReputationStore } from "./p2p-reputation.js";
@@ -435,6 +435,7 @@ async function runNode(args: string[]): Promise<void> {
     server.listen(port, host, () => resolveListen());
   });
   const timers = new Set<NodeJS.Timeout>();
+  const backgroundTasks = new BackgroundTaskTracker();
   const schedule = (callback: () => void, delayMs: number): void => {
     const timer = setInterval(callback, delayMs);
     timer.unref();
@@ -445,12 +446,14 @@ async function runNode(args: string[]): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`Received ${signal}; draining node services`);
+    backgroundTasks.stopAccepting();
     for (const timer of timers) clearInterval(timer);
     timers.clear();
     const rpcDrain = await drainHttpServer(server);
     if (rpcDrain === "forced") {
       console.warn("RPC drain deadline exceeded; remaining connections were closed");
     }
+    await backgroundTasks.drain();
     if (nativeNode) await nativeNode.stop();
     dataLease.close();
     console.log("ZyronChain node shutdown complete");
@@ -474,21 +477,21 @@ async function runNode(args: string[]): Promise<void> {
 
   if (validatorSigner) {
     schedule(() => {
-      void produceFinalizedBlock(service, consensusPeers, validatorSigner)
+      backgroundTasks.run(() => produceFinalizedBlock(service, consensusPeers, validatorSigner)
         .then((block) => { if (block) console.log(`Finalized block ${block.header.height} ${block.hash}`); })
-        .catch((error) => console.warn(`Validator round failed: ${safeError(error)}`));
+        .catch((error) => console.warn(`Validator round failed: ${safeError(error)}`)));
     }, BLOCK_INTERVAL_MS);
   }
 
   schedule(() => {
-    void (async () => {
+    backgroundTasks.run(async () => {
       try {
         const accepted = await peers.syncAny(service);
         if (accepted) console.log(`Caught up ${accepted} finalized block(s) from configured peers`);
       } catch (error) {
         console.warn(`Periodic peer sync skipped: ${safeError(error)}`);
       }
-    })();
+    });
   }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3)));
 
   if (nativeNode && identity && nativePeerPool && nativePeerPool.size) {
@@ -496,9 +499,9 @@ async function runNode(args: string[]): Promise<void> {
     schedule(() => {
       if (nativeSyncRunning) return;
       nativeSyncRunning = true;
-      void syncNativePeers(nativeNode, nativePeerPool.snapshot(), identity, service, "Periodic native peer sync", nativeSyncCursor++, nativePeerGroups, nativePeerReputation, nativePeerPool)
+      backgroundTasks.run(() => syncNativePeers(nativeNode, nativePeerPool.snapshot(), identity, service, "Periodic native peer sync", nativeSyncCursor++, nativePeerGroups, nativePeerReputation, nativePeerPool)
         .then(() => nativeConsensus?.replaceTargets(nativePeerPool.snapshot(nativeSyncCursor)))
-        .finally(() => { nativeSyncRunning = false; });
+        .finally(() => { nativeSyncRunning = false; }));
     }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3)));
   }
 
@@ -507,21 +510,21 @@ async function runNode(args: string[]): Promise<void> {
     schedule(() => {
       if (nativeDiscoveryRunning) return;
       nativeDiscoveryRunning = true;
-      void refreshNativePeerDiscovery(nativeNode, nativePeerPool, identity, service.status(), nativeSyncCursor, nativePeerReputation)
+      backgroundTasks.run(() => refreshNativePeerDiscovery(nativeNode, nativePeerPool, identity, service.status(), nativeSyncCursor, nativePeerReputation)
         .then((admitted) => {
           if (!admitted) return;
           nativeConsensus?.replaceTargets(nativePeerPool.snapshot(nativeSyncCursor));
           console.log(`Native peer discovery admitted ${admitted} authenticated peer(s)`);
         })
         .catch((error) => console.warn(`Periodic native peer discovery skipped: ${safeError(error)}`))
-        .finally(() => { nativeDiscoveryRunning = false; });
+        .finally(() => { nativeDiscoveryRunning = false; }));
     }, 60_000);
   }
 
   schedule(() => {
-    void peers.refreshPeerDirectory(peerDirectory, service.status())
+    backgroundTasks.run(() => peers.refreshPeerDirectory(peerDirectory, service.status())
       .then((discovered) => { if (discovered) console.log(`Discovered ${discovered} signed peer record(s)`); })
-      .catch((error) => console.warn(`Periodic peer discovery skipped: ${safeError(error)}`));
+      .catch((error) => console.warn(`Periodic peer discovery skipped: ${safeError(error)}`)));
   }, 60_000);
 }
 

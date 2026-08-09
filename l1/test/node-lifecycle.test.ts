@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { connect } from "node:net";
 import test from "node:test";
 
-import { drainHttpServer } from "../src/node-lifecycle.js";
+import { BackgroundTaskTracker, drainHttpServer } from "../src/node-lifecycle.js";
 
 test("HTTP shutdown drain completes normally when no requests are active", async () => {
   const server = createServer((_request, response) => response.end("ok"));
@@ -55,3 +55,31 @@ async function listen(server: ReturnType<typeof createServer>): Promise<void> {
     server.listen(0, "127.0.0.1", resolveListen);
   });
 }
+
+test("background task tracker blocks shutdown until started work settles", async () => {
+  const tracker = new BackgroundTaskTracker();
+  let releaseTask: (() => void) | undefined;
+  const blocked = new Promise<void>((resolveTask) => {
+    releaseTask = resolveTask;
+  });
+  assert.equal(tracker.run(() => blocked), true);
+  assert.equal(tracker.pendingCount, 1);
+
+  let drained = false;
+  const drain = tracker.drain().then(() => { drained = true; });
+  await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+  assert.equal(drained, false);
+  assert.equal(tracker.run(async () => undefined), false);
+
+  releaseTask?.();
+  await drain;
+  assert.equal(drained, true);
+  assert.equal(tracker.pendingCount, 0);
+});
+
+test("background task tracker drains rejected work without leaking rejection", async () => {
+  const tracker = new BackgroundTaskTracker();
+  assert.equal(tracker.run(async () => { throw new Error("expected test failure"); }), true);
+  await tracker.drain();
+  assert.equal(tracker.pendingCount, 0);
+});
