@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import type { Multiaddr } from "@multiformats/multiaddr";
 
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
+import { decryptPrivateKey, encryptPrivateKey, isEncryptedKeystore, normalizePasswordFile } from "./keystore.js";
 import {
   assertSafeRpcBinding,
   BLOCK_INTERVAL_MS,
@@ -224,19 +225,27 @@ async function pruneFinalized(args: string[]): Promise<void> {
 }
 
 async function keygen(args: string[]): Promise<void> {
-  assertKnownOptions(args, new Set(["--out"]));
+  assertKnownOptions(args, new Set(["--out", "--password-file"]));
   const output = option(args, "--out");
   if (!output) throw new Error("keygen requires --out <file>");
+  const passwordFile = option(args, "--password-file");
+  const password = passwordFile
+    ? normalizePasswordFile(await readFile(resolve(passwordFile), "utf8"))
+    : undefined;
   const privateKey = generatePrivateKey();
   const publicKey = publicKeyFromPrivate(privateKey);
+  const address = addressFromPublicKey(publicKey);
+  const stored = password
+    ? encryptPrivateKey(privateKey, password)
+    : { privateKey, publicKey, address };
   const path = resolve(output);
-  await writeFile(path, `${JSON.stringify({ privateKey, publicKey, address: addressFromPublicKey(publicKey) }, null, 2)}\n`, {
+  await writeFile(path, `${JSON.stringify(stored, null, 2)}\n`, {
     flag: "wx",
     mode: 0o600
   });
   await chmod(path, 0o600);
-  console.log(`ZyronChain key written with mode 0600: ${path}`);
-  console.log(`Address: ${addressFromPublicKey(publicKey)}`);
+  console.log(`ZyronChain ${password ? "encrypted " : ""}key written with mode 0600: ${path}`);
+  console.log(`Address: ${address}`);
   console.log(`Public key: ${publicKey}`);
 }
 
@@ -854,6 +863,14 @@ function assertCompatibleRpcResponse(response: Response): void {
 
 async function readPrivateKey(path: string): Promise<string> {
   const parsed = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  if (isEncryptedKeystore(parsed)) {
+    const passwordPath = process.env.ZYRON_KEYSTORE_PASSWORD_FILE;
+    if (!passwordPath) {
+      throw new Error("Encrypted keystore requires ZYRON_KEYSTORE_PASSWORD_FILE");
+    }
+    const password = normalizePasswordFile(await readFile(resolve(passwordPath), "utf8"));
+    return decryptPrivateKey(parsed, password);
+  }
   if (typeof parsed.privateKey !== "string" || !/^[0-9a-f]{64}$/.test(parsed.privateKey)) {
     throw new Error("Validator key file is invalid");
   }
@@ -956,7 +973,7 @@ function assertKnownOptions(args: string[], allowed: Set<string>): void {
 
 function usage(): void {
   console.log("Usage:");
-  console.log("  zyron-l1 keygen --out validator-key.json");
+  console.log("  zyron-l1 keygen --out validator-key.json [--password-file password.txt]");
   console.log("  zyron-l1 genesis --out genesis.json --chain-id zyron-devnet-1 --validator-public-key <hex> --oracle-public-key <hex> --activity-pool <address> --allocation <address:atoms>");
   console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json | --validator-signer-url https://signer/sign --validator-public-key <hex>] [--peer https://node:9137] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>]");
   console.log("  zyron-l1 transfer --key wallet-key.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms <n> [--fee-atoms <n>]");
