@@ -116,8 +116,12 @@ ownership independently when preparing a production peer set.
 Keep wallet/public HTTP RPC and validator networking as separate security surfaces. A normal
 validator should leave `--host 127.0.0.1` for RPC and expose only its native P2P TCP port to
 other nodes. If an RPC listener must bind non-loopback, the CLI fails closed unless consensus
-peer authentication is configured; put public wallet RPC behind a separately rate-limited TLS
-reverse proxy rather than exposing validator RPC directly. Native P2P performs no automatic
+peer authentication and at least one exact `--rpc-trusted-proxy <ip>` are configured. In that
+mode every request must originate from a configured proxy socket address and carry the exact
+`x-forwarded-proto: https` assertion; direct, plaintext and spoofed-proxy requests are rejected.
+Put public wallet RPC behind that separately rate-limited TLS reverse proxy rather than exposing
+validator RPC directly. Prefer binding RPC to loopback and proxying locally whenever deployment
+topology permits. Native P2P performs no automatic
 UPnP/NAT port mapping: an operator behind NAT must explicitly forward the selected TCP P2P port
 or use a publicly reachable host. Do not forward the loopback validator RPC port merely to make
 P2P reachable.

@@ -55,6 +55,7 @@ import { PeerDirectory } from "../src/peer-directory.js";
 import {
   assertSafeRpcBinding,
   createRpcServer,
+  isTrustedHttpsProxyRequest,
   diversityOrderedPeers,
   MAX_GOSSIP_FANOUT,
   MAX_PEER_RESPONSE_BYTES_INFLIGHT,
@@ -2088,7 +2089,7 @@ test("RPC peer authentication protects consensus writes without hiding public st
   }
 });
 
-test("public RPC binding fails closed when consensus peer authentication is absent", () => {
+test("public RPC binding requires consensus authentication and an HTTPS-enforcing trusted proxy", () => {
   assert.doesNotThrow(() => assertSafeRpcBinding("127.0.0.1", false));
   assert.doesNotThrow(() => assertSafeRpcBinding("127.9.8.7", false));
   assert.doesNotThrow(() => assertSafeRpcBinding("::1", false));
@@ -2096,7 +2097,18 @@ test("public RPC binding fails closed when consensus peer authentication is abse
   assert.throws(() => assertSafeRpcBinding("0.0.0.0", false), /requires consensus peer authentication/);
   assert.throws(() => assertSafeRpcBinding("::", false), /requires consensus peer authentication/);
   assert.throws(() => assertSafeRpcBinding("node.example", false), /requires consensus peer authentication/);
-  assert.doesNotThrow(() => assertSafeRpcBinding("0.0.0.0", true));
+  assert.throws(() => assertSafeRpcBinding("0.0.0.0", true), /requires an HTTPS-enforcing trusted proxy/);
+  assert.doesNotThrow(() => assertSafeRpcBinding("0.0.0.0", true, true));
+});
+
+test("trusted proxy admission binds the socket peer to an exact HTTPS assertion", () => {
+  assert.equal(isTrustedHttpsProxyRequest("10.0.0.8", "https", ["10.0.0.8"]), true);
+  assert.equal(isTrustedHttpsProxyRequest("::ffff:10.0.0.8", "https", ["10.0.0.8"]), true);
+  assert.equal(isTrustedHttpsProxyRequest("10.0.0.9", "https", ["10.0.0.8"]), false);
+  assert.equal(isTrustedHttpsProxyRequest("10.0.0.8", "http", ["10.0.0.8"]), false);
+  assert.equal(isTrustedHttpsProxyRequest("10.0.0.8", ["https"], ["10.0.0.8"]), false);
+  assert.equal(isTrustedHttpsProxyRequest(undefined, "https", ["10.0.0.8"]), false);
+  assert.equal(isTrustedHttpsProxyRequest("203.0.113.9", undefined, []), true);
 });
 
 test("per-peer consensus inflight limiter fails fast and releases capacity exactly once", () => {

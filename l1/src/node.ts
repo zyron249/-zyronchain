@@ -110,6 +110,7 @@ export interface RpcServerOptions {
   peerRecord?: SignedPeerRecord;
   peerDirectory?: PeerDirectory;
   trustedPeerPublicKeys?: string[];
+  trustedProxyAddresses?: string[];
   onTransactionAccepted?: (transaction: Transaction) => void | Promise<void>;
   requestsPerWindow?: number;
   windowMs?: number;
@@ -127,12 +128,42 @@ export interface ConsensusPeerClient {
   broadcastBlock(block: Block): Promise<void>;
 }
 
-export function assertSafeRpcBinding(host: string, consensusAuthenticationConfigured: boolean): void {
+export function assertSafeRpcBinding(
+  host: string,
+  consensusAuthenticationConfigured: boolean,
+  trustedHttpsProxyConfigured = false
+): void {
   const normalized = host.toLowerCase().replace(/^\[|\]$/g, "");
   const loopback = normalized === "localhost" || normalized === "::1" ||
     (isIP(normalized) === 4 && normalized.startsWith("127."));
   if (!loopback && !consensusAuthenticationConfigured) {
     throw new Error("Non-loopback RPC binding requires consensus peer authentication");
+  }
+  if (!loopback && !trustedHttpsProxyConfigured) {
+    throw new Error("Non-loopback RPC binding requires an HTTPS-enforcing trusted proxy");
+  }
+}
+
+function normalizeProxyAddress(address: string): string {
+  const normalized = address.toLowerCase().replace(/^\[|\]$/g, "");
+  const ipv4Mapped = normalized.startsWith("::ffff:") ? normalized.slice(7) : normalized;
+  const candidate = isIP(ipv4Mapped) === 4 ? ipv4Mapped : normalized;
+  if (isIP(candidate) === 0) throw new Error("Trusted RPC proxy must be an IP address");
+  return candidate;
+}
+
+export function isTrustedHttpsProxyRequest(
+  remoteAddress: string | undefined,
+  forwardedProto: string | string[] | undefined,
+  trustedProxyAddresses: readonly string[]
+): boolean {
+  if (trustedProxyAddresses.length === 0) return true;
+  if (forwardedProto !== "https" || remoteAddress === undefined) return false;
+  try {
+    const trusted = new Set(trustedProxyAddresses.map(normalizeProxyAddress));
+    return trusted.has(normalizeProxyAddress(remoteAddress));
+  } catch {
+    return false;
   }
 }
 
@@ -393,10 +424,20 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
     options.maxInflightResponseBytes ?? DEFAULT_RPC_MAX_INFLIGHT_RESPONSE_BYTES
   );
   const limiter = new FixedWindowLimiter(requestsPerWindow, windowMs);
+  const trustedProxyAddresses = [...new Set((options.trustedProxyAddresses ?? []).map(normalizeProxyAddress))];
   const handleRequest = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const bodyReservation = new RpcRequestBodyReservation(rpcBodyBudget);
-    const rate = limiter.consume(request.socket.remoteAddress ?? "unknown", Date.now());
     response.setHeader("x-zyron-rpc-version", String(RPC_API_VERSION));
+    if (!isTrustedHttpsProxyRequest(
+      request.socket.remoteAddress,
+      request.headers["x-forwarded-proto"],
+      trustedProxyAddresses
+    )) {
+      response.setHeader("connection", "close");
+      writeJson(response, 403, { error: "RPC request did not arrive through the configured HTTPS proxy" });
+      return;
+    }
+    const rate = limiter.consume(request.socket.remoteAddress ?? "unknown", Date.now());
     response.setHeader("x-ratelimit-limit", String(requestsPerWindow));
     response.setHeader("x-ratelimit-remaining", String(rate.remaining));
     if (!rate.allowed) {
