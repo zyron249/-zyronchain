@@ -35,7 +35,7 @@ node dist/src/cli.js node --genesis genesis.json --data ./data \
   --p2p-peer-group <PINNED_PEER_ID>=<INDEPENDENT_FAILURE_DOMAIN>
 ```
 
-Use multiple bootstrap peers sourced from independent operators/failure domains. Do not invent failure-domain labels to satisfy diversity selection.
+Provision the remote-signer token out of band as a regular `0600` secret file, rotate it under the signer provider's audited procedure, and never place it in command-line values, environment variables, logs, images or repository content. Use multiple bootstrap peers sourced from independent operators/failure domains. Do not invent failure-domain labels to satisfy diversity selection.
 
 ## 3. Required health telemetry
 

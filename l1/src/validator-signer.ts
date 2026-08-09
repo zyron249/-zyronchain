@@ -40,10 +40,19 @@ export class RemoteValidatorSigner implements ValidatorSigner {
   readonly publicKey: string;
   private readonly endpoint: URL;
 
-  constructor(endpoint: string, publicKey: string, private readonly timeoutMs = 3_000) {
+  constructor(
+    endpoint: string,
+    publicKey: string,
+    private readonly bearerToken?: string,
+    private readonly timeoutMs = 3_000
+  ) {
     assertHex(publicKey, 64, "validator signer public key");
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) {
       throw new Error("Invalid validator signer timeout");
+    }
+    if (bearerToken !== undefined &&
+        (bearerToken.length < 32 || bearerToken.length > 512 || !/^[\x21-\x7e]+$/.test(bearerToken))) {
+      throw new Error("Invalid validator signer bearer token");
     }
     this.endpoint = validateRemoteSignerEndpoint(endpoint);
     this.publicKey = publicKey;
@@ -53,7 +62,10 @@ export class RemoteValidatorSigner implements ValidatorSigner {
     const domain = protocolVersion >= 3 ? validatorSigningDomain(intent) : undefined;
     const response = await fetch(this.endpoint, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(this.bearerToken ? { authorization: `Bearer ${this.bearerToken}` } : {})
+      },
       body: JSON.stringify(domain
         ? { version: 2, intent, domain, payload }
         : { version: 1, intent, payload }),

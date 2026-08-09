@@ -165,7 +165,7 @@ node dist/src/cli.js node --genesis genesis.json --data data-a \
   --validator-public-key <validator-public-key>
 ```
 
-The node sends only `{version:1,intent,payload}` and accepts exactly `{signature}`. `intent` is
+The signer token file is mandatory in remote-signer mode, must contain one 32–512 character token and must have mode `0600`. The node sends it only as an HTTPS `Authorization: Bearer` header; it is never placed in the signing payload or logs. The node sends only `{version:1,intent,payload}` (or the domain-bound version 2 request under protocol v3) and accepts exactly `{signature}`. `intent` is
 one of `block-proposal`, `block-attestation`, or `round-skip`. Every returned signature is
 verified locally against the pinned public key and exact canonical payload before use. Redirects,
 URL credentials/query fragments, and remote plaintext HTTP are rejected; HTTP is accepted only
