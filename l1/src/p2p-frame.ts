@@ -6,11 +6,13 @@ export const DEFAULT_P2P_INBOUND_FRAME_BUDGET_BYTES = 64 * 1_024 * 1_024;
 export interface P2PFrameByteBudgetMetrics {
   bytesInUse: number;
   maxBytes: number;
+  peakBytesInUse: number;
   rejectedFrames: number;
 }
 
 export class P2PFrameByteBudget {
   private bytesInUse = 0;
+  private peakBytesInUse = 0;
   private rejectedFrames = 0;
 
   constructor(readonly maxBytes: number = DEFAULT_P2P_INBOUND_FRAME_BUDGET_BYTES) {
@@ -26,6 +28,7 @@ export class P2PFrameByteBudget {
       throw new Error("P2P frame byte budget exceeded");
     }
     this.bytesInUse += bytes;
+    this.peakBytesInUse = Math.max(this.peakBytesInUse, this.bytesInUse);
     let released = false;
     return () => {
       if (released) return;
@@ -38,6 +41,7 @@ export class P2PFrameByteBudget {
     return {
       bytesInUse: this.bytesInUse,
       maxBytes: this.maxBytes,
+      peakBytesInUse: this.peakBytesInUse,
       rejectedFrames: this.rejectedFrames
     };
   }
