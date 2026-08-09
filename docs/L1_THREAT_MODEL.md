@@ -154,6 +154,15 @@ In addition to public-testnet evidence:
 - protected release and maintainer-succession policy is active;
 - third parties independently reproduce release artifacts and replay long histories.
 
-## 11. Incident posture
+## 11. Process-crash evidence
+
+The persistence suite starts a separate Node.js process, commits a finalized transfer and sends SIGKILL at two exact fault hooks:
+
+- after the finalized record write but before fsync, where restart may accept either the old prefix or the complete new record;
+- after finalized-record fsync but before live-state publication, where restart must recover the new block exactly.
+
+Both paths must reopen without a corrupt intermediate history; any recovered block must reproduce the exact tip, balance and nonce. This evidence covers operating-system process death, while filesystem/power-loss behavior still requires deployment-hardware fault injection.
+
+## 12. Incident posture
 
 Safety outranks liveness. Operators must not lower quorum, delete journals, patch hashes, accept peer-provided trust anchors or improvise emergency mint/admin authority. Conflicting finalized tips, equivocation, supply divergence or unexplained state-root disagreement are critical incidents requiring signing freeze and evidence preservation.
