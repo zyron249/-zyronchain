@@ -56,6 +56,8 @@ import {
   createRpcServer,
   diversityOrderedPeers,
   MAX_GOSSIP_FANOUT,
+  RPC_MAX_HEADERS,
+  RPC_MAX_REQUESTS_PER_SOCKET,
   MAX_SYNC_PROBE_CONCURRENCY,
   NodeService,
   peerDiversityBucket,
@@ -1942,6 +1944,12 @@ test("RPC exposes health and metrics while enforcing per-client request limits",
   const store = await ChainStore.open(genesis(), directory);
   const service = new NodeService(store);
   const server = createRpcServer(service, { requestsPerWindow: 2, windowMs: 60_000, maxConnections: 8 });
+  assert.equal(server.maxConnections, 8);
+  assert.equal(server.maxHeadersCount, RPC_MAX_HEADERS);
+  assert.equal(server.maxRequestsPerSocket, RPC_MAX_REQUESTS_PER_SOCKET);
+  assert.equal(server.headersTimeout, 10_000);
+  assert.equal(server.requestTimeout, 15_000);
+  assert.equal(server.keepAliveTimeout, 5_000);
   try {
     await new Promise<void>((resolveListen, reject) => {
       server.once("error", reject);
