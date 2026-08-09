@@ -57,12 +57,15 @@ import {
   createRpcServer,
   diversityOrderedPeers,
   MAX_GOSSIP_FANOUT,
+  MAX_PEER_RESPONSE_BYTES_INFLIGHT,
+  MAX_SYNC_RESPONSE_BYTES,
   RPC_MAX_HEADERS,
   RPC_MAX_REQUESTS_PER_SOCKET,
   MAX_SYNC_PROBE_CONCURRENCY,
   NodeService,
   peerDiversityBucket,
   PeerInflightLimiter,
+  PeerResponseByteBudget,
   PeerClient,
   peerSyncProbeBatches,
   produceFinalizedBlock,
@@ -2100,6 +2103,28 @@ test("per-peer consensus inflight limiter fails fast and releases capacity exact
     const nextRelease = limiter.enter("node-a");
     nextRelease();
   });
+});
+
+test("aggregate peer response byte budget fails fast and releases exactly once", () => {
+  assert.equal(MAX_PEER_RESPONSE_BYTES_INFLIGHT, 2 * MAX_SYNC_RESPONSE_BYTES);
+  const budget = new PeerResponseByteBudget(10);
+  assert.equal(budget.inUseBytes, 0);
+
+  const releaseSix = budget.reserve(6);
+  const releaseFour = budget.reserve(4);
+  assert.equal(budget.inUseBytes, 10);
+  assert.throws(() => budget.reserve(1), /Aggregate peer response byte budget exceeded/);
+  assert.throws(() => budget.reserve(0), /Invalid peer response byte reservation/);
+
+  releaseSix();
+  releaseSix();
+  assert.equal(budget.inUseBytes, 4);
+  const releaseReplacement = budget.reserve(6);
+  assert.equal(budget.inUseBytes, 10);
+
+  releaseFour();
+  releaseReplacement();
+  assert.equal(budget.inUseBytes, 0);
 });
 
 test("RPC trusted peer identities require signed consensus writes and reject replay", async () => {
