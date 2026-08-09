@@ -3561,6 +3561,75 @@ test("chain store fails closed on a truncated or corrupt finalized block record"
   }
 });
 
+test("RPC response budget sheds slow-reader queue amplification and recovers on close", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-response-budget-"));
+  const store = await ChainStore.open(genesis(), directory);
+  const service = new NodeService(store);
+  const largeBlocks = [{ padding: "x".repeat(12_000_000) }];
+  const responseBytes = Buffer.byteLength(JSON.stringify({ blocks: largeBlocks }));
+  service.blocks = async () => largeBlocks as never;
+  const server = createRpcServer(service, {
+    maxInflightRequests: 2,
+    maxInflightResponseBytes: responseBytes
+  });
+  let socket: ReturnType<typeof connect> | undefined;
+
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolveListen);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("RPC response-budget server has no TCP address");
+
+    socket = connect(address.port, "127.0.0.1");
+    await new Promise<void>((resolveConnect, reject) => {
+      socket!.once("connect", resolveConnect);
+      socket!.once("error", reject);
+    });
+    const firstChunk = new Promise<void>((resolveChunk) => {
+      socket!.once("data", () => {
+        socket!.pause();
+        resolveChunk();
+      });
+    });
+    socket.write([
+      "GET /blocks?from=1&limit=1 HTTP/1.1",
+      "Host: localhost",
+      "",
+      ""
+    ].join("\r\n"));
+    await firstChunk;
+
+    const overloaded = await fetch(`http://127.0.0.1:${address.port}/status`);
+    assert.equal(overloaded.status, 503);
+    assert.equal(overloaded.headers.get("retry-after"), "1");
+    assert.equal(overloaded.headers.get("connection"), "close");
+    assert.deepEqual(await overloaded.json(), {
+      error: "Aggregate RPC response byte budget exceeded"
+    });
+
+    const socketClosed = new Promise<void>((resolveSocket) => socket!.once("close", resolveSocket));
+    socket.destroy();
+    await socketClosed;
+
+    let recoveredStatus = 503;
+    for (let attempt = 0; attempt < 20 && recoveredStatus !== 200; attempt += 1) {
+      const recovered = await fetch(`http://127.0.0.1:${address.port}/status`);
+      recoveredStatus = recovered.status;
+      await recovered.arrayBuffer();
+      if (recoveredStatus !== 200) await new Promise<void>((resolveTurn) => setTimeout(resolveTurn, 10));
+    }
+    assert.equal(recoveredStatus, 200);
+  } finally {
+    socket?.destroy();
+    await new Promise<void>((resolveClose, reject) =>
+      server.close((error) => error ? reject(error) : resolveClose())
+    );
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("RPC body reservation remains held after parsing until handler completion", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-body-handler-budget-"));
   const store = await ChainStore.open(genesis(), directory);
