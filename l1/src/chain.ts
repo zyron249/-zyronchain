@@ -42,7 +42,7 @@ const MAX_BLOCK_BYTES = 2_000_000;
 export const MAX_BLOCK_TRANSACTION_BYTES = 1_500_000;
 export const MIN_VALIDATOR_UPDATE_DELAY = 100;
 export const MIN_PROTOCOL_UPDATE_DELAY = 100;
-export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1, 2]);
+export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1, 2, 3]);
 
 export function protocolUsesStateV2(protocolVersion: number): boolean {
   return protocolVersion === 2 || protocolVersion === 3;
