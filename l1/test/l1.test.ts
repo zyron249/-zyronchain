@@ -28,7 +28,17 @@ import {
   createValidatorApproval,
   createValidatorSetUpdate
 } from "../src/transaction.js";
-import { createRoundSkipVote, validateBlockShape } from "../src/block.js";
+import {
+  attachBlockSignature,
+  createBlockAttestation,
+  createGenesisBlock,
+  createRoundSkipVote,
+  createSignedBlock,
+  createUnsignedBlock,
+  validateBlockEnvelope,
+  validateBlockShape,
+  validateRoundSkipQuorum
+} from "../src/block.js";
 import { ChainStore, NodeDataDirectoryLease, SigningJournal } from "../src/storage.js";
 import { stateV2FromLedgerSnapshot } from "../src/state-v2.js";
 import { createStateV2PortableBundle } from "../src/state-v2-portable.js";
@@ -76,7 +86,6 @@ const newValidatorOne = addressFromPublicKey(newValidatorOnePublic);
 const newValidatorTwo = addressFromPublicKey(newValidatorTwoPublic);
 const execFileAsync = promisify(execFile);
 
-
 test("canonical signing domains prevent cross-context and legacy signature replay", () => {
   const payload = { chainId: "zyron-devnet-1", height: 42, blockHash: "a".repeat(64) };
   const domain = "zyronchain/finality-attestation/v1";
@@ -94,6 +103,79 @@ test("canonical signing domains prevent cross-context and legacy signature repla
   assert.throws(
     () => signCanonicalDomain("FINALITY", payload, validatorOnePrivate),
     /Invalid canonical signing domain/
+  );
+});
+
+test("protocol v3 consensus signatures are domain-separated while v2 stays legacy-compatible", () => {
+  const previous = createGenesisBlock(genesis(), "0".repeat(64));
+  const timestampMs = genesis().timestampMs + 1;
+  const input = {
+    version: 3,
+    chainId: genesis().chainId,
+    height: 1,
+    round: 0,
+    previousHash: previous.hash,
+    timestampMs,
+    transactions: [],
+    stateRoot: "1".repeat(64),
+    proposerPublicKey: validatorOnePublic
+  };
+  let block = createSignedBlock({
+    ...input,
+    proposerPrivateKey: validatorOnePrivate
+  });
+  block = {
+    ...block,
+    attestations: [
+      createBlockAttestation(block, validatorOnePrivate, validatorOnePublic),
+      createBlockAttestation(block, validatorTwoPrivate, validatorTwoPublic)
+    ]
+  };
+  assert.doesNotThrow(() => validateBlockEnvelope(block, previous, genesis().validators, timestampMs, true, 3));
+  assert.equal(verifyCanonical(block.header, block.signature!, validatorOnePublic), false);
+
+  const unsigned = createUnsignedBlock(input);
+  const legacyProposalSignature = signCanonical(unsigned.header, validatorOnePrivate);
+  assert.throws(
+    () => attachBlockSignature(unsigned, legacyProposalSignature),
+    /Invalid proposer signature/
+  );
+
+  const v2 = createSignedBlock({ ...input, version: 2, proposerPrivateKey: validatorOnePrivate });
+  assert.equal(verifyCanonical(v2.header, v2.signature!, validatorOnePublic), true);
+
+  const v3SkipVotes = [
+    createRoundSkipVote({
+      chainId: genesis().chainId,
+      height: 1,
+      round: 0,
+      previousHash: previous.hash,
+      validatorPrivateKey: validatorOnePrivate,
+      validatorPublicKey: validatorOnePublic,
+      protocolVersion: 3
+    }),
+    createRoundSkipVote({
+      chainId: genesis().chainId,
+      height: 1,
+      round: 0,
+      previousHash: previous.hash,
+      validatorPrivateKey: validatorTwoPrivate,
+      validatorPublicKey: validatorTwoPublic,
+      protocolVersion: 3
+    })
+  ];
+  assert.doesNotThrow(() => validateRoundSkipQuorum(
+    v3SkipVotes,
+    genesis().validators,
+    genesis().chainId,
+    1,
+    0,
+    previous.hash,
+    3
+  ));
+  assert.throws(
+    () => validateRoundSkipQuorum(v3SkipVotes, genesis().validators, genesis().chainId, 1, 0, previous.hash, 2),
+    /Invalid round skip signature/
   );
 });
 
