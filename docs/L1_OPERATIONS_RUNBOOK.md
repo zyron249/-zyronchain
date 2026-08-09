@@ -48,6 +48,8 @@ Provision the remote-signer token out of band as a regular `0600` secret file, r
 | `mempoolSize` | pending transaction pressure | saturation/spam signal |
 | `rpc.inflightRequests`, `rpc.maxInflightRequests` | current node-wide RPC occupancy and configured capacity | sustained saturation / capacity exhaustion |
 | `rpc.rejectedRequests` | cumulative requests shed before routing or body work | alert on increase; correlate with perimeter traffic and latency |
+| `rpc.requestBodyBytesInUse`, `rpc.maxRequestBodyBytes`, `rpc.rejectedRequestBodies` | retained inbound-body pressure and cumulative body-budget shedding | alert on sustained occupancy or any rejection increase |
+| `rpc.responseBytesInUse`, `rpc.maxResponseBytes`, `rpc.rejectedResponses` | queued outbound-response pressure and cumulative slow-reader shedding | alert on sustained occupancy or any rejection increase |
 | `validatorCount` | active/next validator-set size | topology/config sanity |
 | `persistenceHealthy` | process may continue durable commits | **page immediately if false** |
 | `validatorClockHealthy` | validator signing clock has not moved backward beyond tolerance | **page immediately if false; restart only after clock repair** |
