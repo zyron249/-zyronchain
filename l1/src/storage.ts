@@ -84,6 +84,11 @@ export interface TrustedSnapshotInstallFaultHooks {
   afterStagingSync?: () => void | Promise<void>;
 }
 
+export interface FinalizedBlockFaultHooks {
+  afterBlockWrite?: () => void | Promise<void>;
+  afterBlockSync?: () => void | Promise<void>;
+}
+
 export class ChainStore {
   private persistedHeight: number;
   private persistedBytes: number;
@@ -495,7 +500,11 @@ export class ChainStore {
     return stateV2;
   }
 
-  async commitFinalizedBlock(block: Block, nowMs = Date.now()): Promise<void> {
+  async commitFinalizedBlock(
+    block: Block,
+    nowMs = Date.now(),
+    faultHooks: FinalizedBlockFaultHooks = {}
+  ): Promise<void> {
     if (this.persistenceFaulted) throw new Error("Persistence fault requires node restart");
     if (this.pendingPruneThroughHeight !== undefined) {
       throw new Error("Interrupted pruning must be completed before new finalized writes");
@@ -516,12 +525,22 @@ export class ChainStore {
     if (lineBytes > MAX_STORED_BLOCK_LINE_BYTES) {
       throw new Error("Block exceeds persistence limit");
     }
-    const handle = await open(join(this.dataDir, "blocks.ndjson"), "a", 0o600);
     try {
-      await handle.writeFile(line, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
+      const handle = await open(join(this.dataDir, "blocks.ndjson"), "a", 0o600);
+      try {
+        await handle.writeFile(line, "utf8");
+        await faultHooks.afterBlockWrite?.();
+        await handle.sync();
+        await faultHooks.afterBlockSync?.();
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      // Once append/fsync/close has failed, the process cannot know whether a
+      // complete record is durable. Never attempt a second finalized append on
+      // that uncertain boundary; startup replay is the recovery authority.
+      this.persistenceFaulted = true;
+      throw new Error("Finalized block persistence failed; restart required", { cause: error });
     }
     if (nextStateV2) {
       try {
