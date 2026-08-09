@@ -13,7 +13,7 @@ This directory contains the **canonical** ZyronChain TypeScript Layer-1 implemen
 - round-robin PoA proposals, strictly-greater-than-2/3 validator attestations, and certified proposer-failure view changes;
 - append-only finalized block storage, replay-on-startup validation, and a persistent anti-double-sign journal;
 - bounded mempool with nonce conflict protection and state-aware block selection;
-- bounded JSON RPC with rate limits, health/metrics, optional consensus-write authentication, status, blocks, balances, nonces, transaction submission, proposal attestation, and finalized-block acceptance;
+- bounded JSON RPC with per-client rate limits, global connection/time limits, 64 headers and 100 requests per persistent socket, health/metrics, optional consensus-write authentication, status, blocks, balances, nonces, transaction submission, proposal attestation, and finalized-block acceptance;
 - static-peer identity handshake and incremental finalized-block synchronization;
 - concurrent any-peer catch-up that rejects wrong-chain/invalid candidates before choosing a sync source;
 - on-chain validator-set rotation authorized by the active set's >2/3 quorum with a 100-block activation delay;
