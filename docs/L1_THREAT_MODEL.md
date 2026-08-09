@@ -79,6 +79,8 @@ The implementation must expect:
 
 ## 5. Consensus safety invariants
 
+The certificate-level quorum/view-change argument is exhaustively checked for practical validator counts by [`CONSENSUS_CERTIFICATE_MODEL.md`](CONSENSUS_CERTIFICATE_MODEL.md) and its executable test. This is bounded evidence, not a substitute for implementation review or real-network fault injection.
+
 The following are stop-ship invariants:
 
 - two conflicting blocks cannot both satisfy finality at one height under the fault assumption;
