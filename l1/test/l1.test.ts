@@ -3491,10 +3491,16 @@ test("RPC global inflight budget rejects excess concurrent work", async () => {
     assert.equal(overloaded.headers.get("retry-after"), "1");
     assert.deepEqual(await overloaded.json(), { error: "RPC concurrency limit exceeded" });
 
+    const socketClosed = new Promise<void>((resolveSocket) => socket!.once("close", () => resolveSocket()));
     socket.destroy();
-    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
-    const recovered = await fetch(`${base}/status`);
-    assert.equal(recovered.status, 200);
+    await socketClosed;
+    let recoveredStatus = 503;
+    for (let attempt = 0; attempt < 20 && recoveredStatus !== 200; attempt += 1) {
+      const recovered = await fetch(`${base}/status`);
+      recoveredStatus = recovered.status;
+      if (recoveredStatus !== 200) await new Promise<void>((resolveTurn) => setTimeout(resolveTurn, 10));
+    }
+    assert.equal(recoveredStatus, 200);
   } finally {
     socket?.destroy();
     await new Promise<void>((resolveClose, reject) =>
