@@ -2,13 +2,19 @@ import { isIP } from "node:net";
 
 import { assertExactKeys, assertPlainRecord } from "./transaction.js";
 import { assertHex } from "./codec.js";
-import { publicKeyFromPrivate, signCanonical, verifyCanonical } from "./crypto.js";
+import {
+  publicKeyFromPrivate,
+  signCanonical,
+  signCanonicalDomain,
+  verifyCanonical,
+  verifyCanonicalDomain
+} from "./crypto.js";
 
 export type ValidatorSigningIntent = "block-proposal" | "block-attestation" | "round-skip";
 
 export interface ValidatorSigner {
   readonly publicKey: string;
-  signCanonical(payload: unknown, intent: ValidatorSigningIntent): Promise<string>;
+  signCanonical(payload: unknown, intent: ValidatorSigningIntent, protocolVersion?: number): Promise<string>;
 }
 
 export class LocalValidatorSigner implements ValidatorSigner {
@@ -18,8 +24,10 @@ export class LocalValidatorSigner implements ValidatorSigner {
     this.publicKey = publicKeyFromPrivate(privateKey);
   }
 
-  async signCanonical(payload: unknown, _intent: ValidatorSigningIntent): Promise<string> {
-    return signCanonical(payload, this.privateKey);
+  async signCanonical(payload: unknown, intent: ValidatorSigningIntent, protocolVersion = 1): Promise<string> {
+    return protocolVersion >= 3
+      ? signCanonicalDomain(validatorSigningDomain(intent), payload, this.privateKey)
+      : signCanonical(payload, this.privateKey);
   }
 }
 
@@ -41,11 +49,14 @@ export class RemoteValidatorSigner implements ValidatorSigner {
     this.publicKey = publicKey;
   }
 
-  async signCanonical(payload: unknown, intent: ValidatorSigningIntent): Promise<string> {
+  async signCanonical(payload: unknown, intent: ValidatorSigningIntent, protocolVersion = 1): Promise<string> {
+    const domain = protocolVersion >= 3 ? validatorSigningDomain(intent) : undefined;
     const response = await fetch(this.endpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ version: 1, intent, payload }),
+      body: JSON.stringify(domain
+        ? { version: 2, intent, domain, payload }
+        : { version: 1, intent, payload }),
       signal: AbortSignal.timeout(this.timeoutMs),
       redirect: "error"
     });
@@ -60,7 +71,10 @@ export class RemoteValidatorSigner implements ValidatorSigner {
     assertExactKeys(value, ["signature"], "validator signer response");
     if (typeof value.signature !== "string") throw new Error("Remote validator signer returned invalid signature");
     assertHex(value.signature, 64, "validator signer signature");
-    if (!verifyCanonical(payload, value.signature, this.publicKey)) {
+    const valid = domain
+      ? verifyCanonicalDomain(domain, payload, value.signature, this.publicKey)
+      : verifyCanonical(payload, value.signature, this.publicKey);
+    if (!valid) {
       throw new Error("Remote validator signer returned a signature for the wrong key or payload");
     }
     return value.signature;
@@ -70,14 +84,26 @@ export class RemoteValidatorSigner implements ValidatorSigner {
 export async function signWithValidator(
   signer: ValidatorSigner,
   payload: unknown,
-  intent: ValidatorSigningIntent
+  intent: ValidatorSigningIntent,
+  protocolVersion = 1
 ): Promise<string> {
-  const signature = await signer.signCanonical(payload, intent);
+  const signature = await signer.signCanonical(payload, intent, protocolVersion);
   assertHex(signature, 64, "validator signature");
-  if (!verifyCanonical(payload, signature, signer.publicKey)) {
+  const valid = protocolVersion >= 3
+    ? verifyCanonicalDomain(validatorSigningDomain(intent), payload, signature, signer.publicKey)
+    : verifyCanonical(payload, signature, signer.publicKey);
+  if (!valid) {
     throw new Error("Validator signer returned a signature for the wrong key or payload");
   }
   return signature;
+}
+
+export function validatorSigningDomain(intent: ValidatorSigningIntent): string {
+  switch (intent) {
+    case "block-proposal": return "zyronchain/block-proposal/v1";
+    case "block-attestation": return "zyronchain/finality-attestation/v1";
+    case "round-skip": return "zyronchain/round-skip/v1";
+  }
 }
 
 function validateRemoteSignerEndpoint(value: string): URL {
