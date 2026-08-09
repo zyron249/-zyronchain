@@ -636,6 +636,60 @@ test("chain store replays finalized blocks and pins the genesis identity", async
   }
 });
 
+test("finalized block write uncertainty fail-stops before live state advances", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-block-write-fault-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    let block = store.chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
+    block = store.chain.attestBlock(block, validatorOnePrivate);
+    block = store.chain.attestBlock(block, validatorTwoPrivate);
+    await assert.rejects(
+      () => store.commitFinalizedBlock(block, 1_700_000_000_100, {
+        afterBlockWrite: () => { throw new Error("injected write uncertainty"); }
+      }),
+      /persistence failed; restart required/
+    );
+    assert.equal(store.persistenceHealthy, false);
+    assert.equal(store.chain.height, 0);
+    assert.equal(store.chain.tip.header.height, 0);
+    await assert.rejects(
+      () => store.commitFinalizedBlock(block, 1_700_000_000_100),
+      /Persistence fault requires node restart/
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("post-fsync uncertainty fail-stops and startup replay recovers the durable block", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-block-sync-fault-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    let block = store.chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
+    block = store.chain.attestBlock(block, validatorOnePrivate);
+    block = store.chain.attestBlock(block, validatorTwoPrivate);
+    await assert.rejects(
+      () => store.commitFinalizedBlock(block, 1_700_000_000_100, {
+        afterBlockSync: () => { throw new Error("injected post-fsync uncertainty"); }
+      }),
+      /persistence failed; restart required/
+    );
+    assert.equal(store.persistenceHealthy, false);
+    assert.equal(store.chain.height, 0);
+    await assert.rejects(
+      () => store.commitFinalizedBlock(block, 1_700_000_000_100),
+      /Persistence fault requires node restart/
+    );
+
+    const reopened = await ChainStore.open(genesis(), directory);
+    assert.equal(reopened.persistenceHealthy, true);
+    assert.equal(reopened.chain.height, 1);
+    assert.equal(reopened.chain.tip.hash, block.hash);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("checkpoint snapshot is deterministic across restart and binds finalized state schedules", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-snapshot-"));
   try {
