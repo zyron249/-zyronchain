@@ -39,6 +39,7 @@ export interface PeerRequestAuthHeaders extends Record<string, string> {
   "x-zyron-peer-public-key": string;
   "x-zyron-peer-timestamp": string;
   "x-zyron-peer-nonce": string;
+  "x-zyron-body-sha256": string;
   "x-zyron-peer-signature": string;
 }
 
@@ -156,6 +157,7 @@ export function signPeerRequest(
     "x-zyron-peer-public-key": identity.publicKey,
     "x-zyron-peer-timestamp": String(timestampMs),
     "x-zyron-peer-nonce": nonce,
+    "x-zyron-body-sha256": input.bodySha256,
     "x-zyron-peer-signature": signature
   };
 }
@@ -176,8 +178,27 @@ export class PeerRequestAuthenticator {
     }
   }
 
-  preflight(headers: Record<string, string | string[] | undefined>, nowMs = Date.now()): void {
-    this.validateHeaders(headers, nowMs);
+  preflight(
+    headers: Record<string, string | string[] | undefined>,
+    input: { method: string; path: string },
+    nowMs = Date.now()
+  ): void {
+    const fields = this.validateHeaders(headers, nowMs);
+    this.sweep(nowMs);
+    if (this.seenNonces.has(`${fields.nodeId}:${fields.nonce}`)) {
+      throw new Error("Replayed peer request");
+    }
+    const payload = peerRequestPayload(fields.nodeId, fields.publicKey, {
+      ...input,
+      chainId: this.expected.chainId,
+      genesisHash: this.expected.genesisHash,
+      bodySha256: fields.bodySha256,
+      timestampMs: fields.timestampMs,
+      nonce: fields.nonce
+    });
+    if (!verifyCanonical(payload, fields.signature, fields.publicKey)) {
+      throw new Error("Invalid peer request signature");
+    }
   }
 
   verify(
@@ -185,40 +206,52 @@ export class PeerRequestAuthenticator {
     input: { method: string; path: string; bodySha256: string },
     nowMs = Date.now()
   ): string {
-    const { nodeId, publicKey, timestampMs, nonce, signature } = this.validateHeaders(headers, nowMs);
+    const fields = this.validateHeaders(headers, nowMs);
     assertHex(input.bodySha256, 32, "peer request body hash");
+    if (input.bodySha256 !== fields.bodySha256) throw new Error("Peer request body hash mismatch");
 
     this.sweep(nowMs);
-    const replayKey = `${nodeId}:${nonce}`;
+    const replayKey = `${fields.nodeId}:${fields.nonce}`;
     if (this.seenNonces.has(replayKey)) throw new Error("Replayed peer request");
-    const payload = peerRequestPayload(nodeId, publicKey, {
+    const payload = peerRequestPayload(fields.nodeId, fields.publicKey, {
       ...input,
       chainId: this.expected.chainId,
       genesisHash: this.expected.genesisHash,
-      timestampMs,
-      nonce
+      timestampMs: fields.timestampMs,
+      nonce: fields.nonce
     });
-    if (!verifyCanonical(payload, signature, publicKey)) throw new Error("Invalid peer request signature");
-    this.seenNonces.set(replayKey, timestampMs);
+    if (!verifyCanonical(payload, fields.signature, fields.publicKey)) {
+      throw new Error("Invalid peer request signature");
+    }
+    this.seenNonces.set(replayKey, fields.timestampMs);
     if (this.seenNonces.size > MAX_PEER_REQUEST_NONCES) {
       const oldest = this.seenNonces.keys().next().value as string | undefined;
       if (oldest) this.seenNonces.delete(oldest);
     }
-    return nodeId;
+    return fields.nodeId;
   }
 
   private validateHeaders(
     headers: Record<string, string | string[] | undefined>,
     nowMs: number
-  ): { nodeId: string; publicKey: string; timestampMs: number; nonce: string; signature: string } {
+  ): {
+    nodeId: string;
+    publicKey: string;
+    timestampMs: number;
+    nonce: string;
+    bodySha256: string;
+    signature: string;
+  } {
     const nodeId = singleHeader(headers["x-zyron-node-id"], "node ID");
     const publicKey = singleHeader(headers["x-zyron-peer-public-key"], "public key");
     const timestampText = singleHeader(headers["x-zyron-peer-timestamp"], "timestamp");
     const nonce = singleHeader(headers["x-zyron-peer-nonce"], "nonce");
+    const bodySha256 = singleHeader(headers["x-zyron-body-sha256"], "body hash");
     const signature = singleHeader(headers["x-zyron-peer-signature"], "signature");
     assertHex(nodeId, 32, "peer request node ID");
     assertHex(publicKey, 64, "peer request public key");
     assertHex(nonce, 16, "peer request nonce");
+    assertHex(bodySha256, 32, "peer request body hash");
     assertHex(signature, 64, "peer request signature");
     if (!this.trustedPublicKeys.has(publicKey)) throw new Error("Untrusted peer identity");
     if (nodeIdFromPublicKey(publicKey) !== nodeId) throw new Error("Peer request node ID mismatch");
@@ -227,7 +260,7 @@ export class PeerRequestAuthenticator {
     if (!Number.isSafeInteger(timestampMs) || Math.abs(nowMs - timestampMs) > PEER_REQUEST_MAX_SKEW_MS) {
       throw new Error("Peer request timestamp outside allowed window");
     }
-    return { nodeId, publicKey, timestampMs, nonce, signature };
+    return { nodeId, publicKey, timestampMs, nonce, bodySha256, signature };
   }
 
   private sweep(nowMs: number): void {
