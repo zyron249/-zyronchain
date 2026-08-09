@@ -644,6 +644,20 @@ test("node data directory lease permits exactly one live chain writer", async ()
       () => NodeDataDirectoryLease.acquire(directory),
       /already has an active writer/
     );
+    const genesisPath = join(directory, "lease-genesis.json");
+    await writeFile(genesisPath, `${canonicalJson(genesis())}\n`, "utf8");
+    for (const command of [
+      ["snapshot", "--genesis", genesisPath, "--data", directory, "--out", join(directory, "blocked-snapshot.json")],
+      ["prune-finalized", "--genesis", genesisPath, "--data", directory, "--retain-blocks", "1"]
+    ]) {
+      await assert.rejects(
+        execFileAsync(process.execPath, [join(process.cwd(), "dist/src/cli.js"), ...command]),
+        (error: unknown) => Boolean(
+          error && typeof error === "object" && "stderr" in error &&
+          /Node data directory already has an active writer/.test(String((error as { stderr?: unknown }).stderr))
+        )
+      );
+    }
     first.close();
 
     const reopened = await NodeDataDirectoryLease.acquire(directory);
