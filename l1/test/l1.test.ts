@@ -3452,3 +3452,61 @@ test("chain store fails closed on a truncated or corrupt finalized block record"
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("RPC global inflight budget rejects excess concurrent work", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-global-inflight-"));
+  const store = await ChainStore.open(genesis(), directory);
+  const service = new NodeService(store);
+  let releaseRelay!: () => void;
+  let markRelayStarted!: () => void;
+  const relayStarted = new Promise<void>((resolveStarted) => { markRelayStarted = resolveStarted; });
+  const relayGate = new Promise<void>((resolveRelay) => { releaseRelay = resolveRelay; });
+  const server = createRpcServer(service, {
+    maxInflightRequests: 1,
+    onTransactionAccepted: async () => {
+      markRelayStarted();
+      await relayGate;
+    }
+  });
+
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolveListen);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("RPC inflight test server has no TCP address");
+    const base = `http://127.0.0.1:${address.port}`;
+    const tx = createTransfer({
+      chainId: genesis().chainId,
+      nonce: 1,
+      sender: alice,
+      receiver: bob,
+      amountAtoms: 1,
+      feeAtoms: 1,
+      timestampMs: genesis().timestampMs + 1
+    }, alicePrivate, alicePublic);
+
+    const first = fetch(`${base}/tx`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(tx)
+    });
+    await relayStarted;
+
+    const overloaded = await fetch(`${base}/status`);
+    assert.equal(overloaded.status, 503);
+    assert.equal(overloaded.headers.get("connection"), "close");
+    assert.equal(overloaded.headers.get("retry-after"), "1");
+    assert.deepEqual(await overloaded.json(), { error: "RPC concurrency limit exceeded" });
+
+    releaseRelay();
+    assert.equal((await first).status, 202);
+  } finally {
+    releaseRelay();
+    await new Promise<void>((resolveClose, reject) =>
+      server.close((error) => error ? reject(error) : resolveClose())
+    );
+    await rm(directory, { recursive: true, force: true });
+  }
+});
