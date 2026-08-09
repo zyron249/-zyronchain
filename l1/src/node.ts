@@ -43,6 +43,7 @@ const PEER_TIMEOUT_MS = 8_000;
 const DEFAULT_RPC_WINDOW_MS = 60_000;
 const DEFAULT_RPC_REQUESTS_PER_WINDOW = 600;
 const DEFAULT_RPC_MAX_CONNECTIONS = 256;
+const DEFAULT_RPC_MAX_INFLIGHT_REQUESTS = 128;
 export const RPC_MAX_HEADERS = 64;
 export const RPC_MAX_REQUESTS_PER_SOCKET = 100;
 const DEFAULT_CONSENSUS_INFLIGHT_PER_PEER = 4;
@@ -76,6 +77,7 @@ export interface NodeMetrics extends NodeStatus {
 
 export interface RpcServerOptions {
   maxConnections?: number;
+  maxInflightRequests?: number;
   maxConsensusInflightPerPeer?: number;
   peerAuthToken?: string;
   peerRecord?: SignedPeerRecord;
@@ -343,8 +345,14 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
       "consensus inflight per peer"
     )
   );
+  const globalInflight = new PeerInflightLimiter(
+    boundedPositiveInteger(
+      options.maxInflightRequests ?? DEFAULT_RPC_MAX_INFLIGHT_REQUESTS,
+      "global RPC inflight requests"
+    )
+  );
   const limiter = new FixedWindowLimiter(requestsPerWindow, windowMs);
-  const server = createServer(async (request, response) => {
+  const handleRequest = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const rate = limiter.consume(request.socket.remoteAddress ?? "unknown", Date.now());
     response.setHeader("x-zyron-rpc-version", String(RPC_API_VERSION));
     response.setHeader("x-ratelimit-limit", String(requestsPerWindow));
@@ -388,6 +396,20 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
       }
       writeJson(response, 400, { error: safeError(error) });
     }
+  };
+  const server = createServer((request, response) => {
+    let release: () => void;
+    try {
+      release = globalInflight.enter("rpc-global");
+    } catch {
+      response.setHeader("retry-after", "1");
+      response.setHeader("connection", "close");
+      writeJson(response, 503, { error: "RPC concurrency limit exceeded" });
+      return;
+    }
+    void handleRequest(request, response)
+      .catch((error) => writeJson(response, 500, { error: safeError(error) }))
+      .finally(release);
   });
   server.maxConnections = boundedPositiveInteger(options.maxConnections ?? DEFAULT_RPC_MAX_CONNECTIONS, "RPC max connections");
   server.headersTimeout = 10_000;
