@@ -51,7 +51,7 @@ export class RemoteValidatorSigner implements ValidatorSigner {
       throw new Error("Invalid validator signer timeout");
     }
     if (bearerToken !== undefined &&
-        (bearerToken.length < 32 || bearerToken.length > 512 || !/^[\\x21-\\x7e]+$/.test(bearerToken))) {
+        (bearerToken.length < 32 || bearerToken.length > 512 || !/^[\x21-\x7e]+$/.test(bearerToken))) {
       throw new Error("Invalid validator signer bearer token");
     }
     this.endpoint = validateRemoteSignerEndpoint(endpoint);
