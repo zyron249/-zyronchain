@@ -1,5 +1,11 @@
 import { assertHex, canonicalJson, sha256Hex } from "./codec.js";
-import { addressFromPublicKey, signCanonical, verifyCanonical } from "./crypto.js";
+import {
+  addressFromPublicKey,
+  signCanonical,
+  signCanonicalDomain,
+  verifyCanonical,
+  verifyCanonicalDomain
+} from "./crypto.js";
 import { merkleRoot } from "./merkle.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
 import type {
@@ -53,7 +59,13 @@ export function createSignedBlock(input: {
   roundCertificate?: RoundSkipVote[];
 }): Block {
   const unsigned = createUnsignedBlock(input);
-  return attachBlockSignature(unsigned, signCanonical(unsigned.header, input.proposerPrivateKey));
+  const signature = signForProtocol(
+    input.version,
+    "zyronchain/block-proposal/v1",
+    unsigned.header,
+    input.proposerPrivateKey
+  );
+  return attachBlockSignature(unsigned, signature);
 }
 
 export function createUnsignedBlock(input: {
@@ -94,7 +106,9 @@ export function createUnsignedBlock(input: {
 export function attachBlockSignature(block: Block, signature: string): Block {
   if (block.header.height === 0 || !block.proposerPublicKey) throw new Error("Cannot sign genesis block as validator proposal");
   assertHex(signature, 64, "block signature");
-  if (!verifyCanonical(block.header, signature, block.proposerPublicKey)) throw new Error("Invalid proposer signature");
+  if (!verifyForProtocol(block.header.version, "zyronchain/block-proposal/v1", block.header, signature, block.proposerPublicKey)) {
+    throw new Error("Invalid proposer signature");
+  }
   return { ...block, signature };
 }
 
@@ -116,6 +130,7 @@ export function createRoundSkipVote(input: {
   previousHash: string;
   validatorPrivateKey: string;
   validatorPublicKey: string;
+  protocolVersion?: number;
 }): RoundSkipVote {
   const unsigned = {
     validator: addressFromPublicKey(input.validatorPublicKey),
@@ -125,7 +140,15 @@ export function createRoundSkipVote(input: {
     round: input.round,
     previousHash: input.previousHash
   };
-  return { ...unsigned, signature: signCanonical(roundSkipPayload(unsigned), input.validatorPrivateKey) };
+  return {
+    ...unsigned,
+    signature: signForProtocol(
+      input.protocolVersion ?? 1,
+      "zyronchain/round-skip/v1",
+      roundSkipPayload(unsigned),
+      input.validatorPrivateKey
+    )
+  };
 }
 
 export function createBlockAttestation(
@@ -138,7 +161,12 @@ export function createBlockAttestation(
   return {
     validator,
     publicKey: validatorPublicKey,
-    signature: signCanonical(payload, validatorPrivateKey)
+    signature: signForProtocol(
+      block.header.version,
+      "zyronchain/finality-attestation/v1",
+      payload,
+      validatorPrivateKey
+    )
   };
 }
 
@@ -192,7 +220,13 @@ export function validateBlockEnvelope(
   const expected = expectedValidator(validators, block.header.height, block.header.round);
   if (block.header.proposer !== expected.address) throw new Error("Unexpected proposer");
   if (block.proposerPublicKey !== expected.publicKey) throw new Error("Unexpected proposer public key");
-  if (requireProposerSignature && !verifyCanonical(block.header, block.signature!, block.proposerPublicKey)) {
+  if (requireProposerSignature && !verifyForProtocol(
+    block.header.version,
+    "zyronchain/block-proposal/v1",
+    block.header,
+    block.signature!,
+    block.proposerPublicKey
+  )) {
     throw new Error("Invalid proposer signature");
   }
   validateRoundCertificate(block, validators);
@@ -210,7 +244,8 @@ export function validateRoundCertificate(block: Block, validators: Validator[]):
     block.header.chainId,
     block.header.height,
     block.header.round - 1,
-    block.header.previousHash
+    block.header.previousHash,
+    block.header.version
   );
 }
 
@@ -220,7 +255,8 @@ export function validateRoundSkipQuorum(
   chainId: string,
   height: number,
   round: number,
-  previousHash: string
+  previousHash: string,
+  protocolVersion = 1
 ): void {
   const allowed = new Map(validators.map((validator) => [validator.address, validator.publicKey]));
   const seen = new Set<string>();
@@ -228,7 +264,7 @@ export function validateRoundSkipQuorum(
   for (const vote of votes) {
     if (seen.has(vote.validator)) throw new Error("Duplicate round skip vote");
     seen.add(vote.validator);
-    validateRoundSkipVote(vote, allowed, chainId, height, round, previousHash);
+    validateRoundSkipVote(vote, allowed, chainId, height, round, previousHash, protocolVersion);
     valid += 1;
   }
   const quorum = validatorQuorumSize(validators.length);
@@ -241,7 +277,8 @@ export function validateRoundSkipVote(
   chainId: string,
   height: number,
   round: number,
-  previousHash: string
+  previousHash: string,
+  protocolVersion = 1
 ): asserts vote is RoundSkipVote {
   assertPlainRecord(vote, "round skip vote");
   assertExactKeys(vote, ["validator", "publicKey", "chainId", "height", "round", "previousHash", "signature"], "round skip vote");
@@ -258,7 +295,13 @@ export function validateRoundSkipVote(
     throw new Error("Round skip vote does not match proposal");
   }
   const { signature: _signature, ...unsigned } = vote;
-  if (!verifyCanonical(roundSkipPayload(unsigned as Omit<RoundSkipVote, "signature">), vote.signature, vote.publicKey)) {
+  if (!verifyForProtocol(
+    protocolVersion,
+    "zyronchain/round-skip/v1",
+    roundSkipPayload(unsigned as Omit<RoundSkipVote, "signature">),
+    vote.signature,
+    vote.publicKey
+  )) {
     throw new Error("Invalid round skip signature");
   }
 }
@@ -340,7 +383,36 @@ export function validateBlockAttestation(
   assertHex(attestation.signature, 64, "attestation signature");
   const allowed = validators instanceof Map ? validators : new Map(validators.map((validator) => [validator.address, validator.publicKey]));
   if (allowed.get(attestation.validator) !== attestation.publicKey) throw new Error("Unknown validator attestation");
-  if (!verifyCanonical(attestationPayload(block), attestation.signature, attestation.publicKey)) {
+  if (!verifyForProtocol(
+    block.header.version,
+    "zyronchain/finality-attestation/v1",
+    attestationPayload(block),
+    attestation.signature,
+    attestation.publicKey
+  )) {
     throw new Error("Invalid validator attestation");
   }
+}
+
+function signForProtocol(
+  protocolVersion: number,
+  domain: string,
+  payload: unknown,
+  privateKeyHex: string
+): string {
+  return protocolVersion >= 3
+    ? signCanonicalDomain(domain, payload, privateKeyHex)
+    : signCanonical(payload, privateKeyHex);
+}
+
+function verifyForProtocol(
+  protocolVersion: number,
+  domain: string,
+  payload: unknown,
+  signatureHex: string,
+  publicKeyHex: string
+): boolean {
+  return protocolVersion >= 3
+    ? verifyCanonicalDomain(domain, payload, signatureHex, publicKeyHex)
+    : verifyCanonical(payload, signatureHex, publicKeyHex);
 }
