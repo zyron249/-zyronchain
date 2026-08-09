@@ -3561,6 +3561,93 @@ test("chain store fails closed on a truncated or corrupt finalized block record"
   }
 });
 
+test("RPC aggregate request-body budget sheds concurrent body memory pressure", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-body-budget-"));
+  const store = await ChainStore.open(genesis(), directory);
+  const service = new NodeService(store);
+  const server = createRpcServer(service, {
+    maxInflightRequests: 2,
+    maxInflightRequestBodyBytes: 1_000
+  });
+  let socket: ReturnType<typeof connect> | undefined;
+
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolveListen);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("RPC body-budget server has no TCP address");
+    const base = `http://127.0.0.1:${address.port}`;
+
+    socket = connect(address.port, "127.0.0.1");
+    await new Promise<void>((resolveConnect, reject) => {
+      socket!.once("connect", resolveConnect);
+      socket!.once("error", reject);
+    });
+    const requestEntered = new Promise<void>((resolveRequest) => server.once("request", () => resolveRequest()));
+    socket.write([
+      "POST /tx HTTP/1.1",
+      "Host: localhost",
+      "Content-Type: application/json",
+      "Content-Length: 1000",
+      "",
+      "{"
+    ].join("\r\n"));
+    await requestEntered;
+
+    const tx = createTransfer(
+      {
+        chainId: genesis().chainId,
+        nonce: 1,
+        sender: alice,
+        receiver: bob,
+        amountAtoms: 1,
+        feeAtoms: 1,
+        timestampMs: genesis().timestampMs + 1
+      },
+      alicePrivate,
+      alicePublic
+    );
+    const overloaded = await fetch(`${base}/tx`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(tx)
+    });
+    assert.equal(overloaded.status, 503);
+    assert.equal(overloaded.headers.get("retry-after"), "1");
+    assert.equal(overloaded.headers.get("connection"), "close");
+    assert.deepEqual(await overloaded.json(), {
+      error: "Aggregate RPC request body byte budget exceeded"
+    });
+    assert.equal(service.mempool.size, 0);
+
+    const socketClosed = new Promise<void>((resolveSocket) => socket!.once("close", resolveSocket));
+    socket.destroy();
+    await socketClosed;
+
+    let recoveredStatus = 503;
+    for (let attempt = 0; attempt < 20 && recoveredStatus !== 202; attempt += 1) {
+      const recovered = await fetch(`${base}/tx`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(tx)
+      });
+      recoveredStatus = recovered.status;
+      await recovered.arrayBuffer();
+      if (recoveredStatus !== 202) await new Promise<void>((resolveTurn) => setTimeout(resolveTurn, 10));
+    }
+    assert.equal(recoveredStatus, 202);
+    assert.equal(service.mempool.size, 1);
+  } finally {
+    socket?.destroy();
+    await new Promise<void>((resolveClose, reject) =>
+      server.close((error) => error ? reject(error) : resolveClose())
+    );
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("RPC global inflight budget rejects excess concurrent work", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-global-inflight-"));
   const store = await ChainStore.open(genesis(), directory);
