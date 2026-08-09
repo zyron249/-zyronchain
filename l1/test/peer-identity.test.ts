@@ -124,7 +124,7 @@ test("peer request signatures bind identity, chain, method, path and body while 
     assert.throws(
       () => new PeerRequestAuthenticator([identity.publicKey], chain)
         .verify(fresh, { method: "POST", path: "/round/skip", bodySha256: "00".repeat(32) }, now),
-      /Invalid peer request signature/
+      /Peer request body hash mismatch/
     );
     assert.throws(
       () => new PeerRequestAuthenticator([identity.publicKey], chain)
