@@ -19,7 +19,7 @@ import {
   verifyCanonicalDomain
 } from "../src/crypto.js";
 import { Mempool } from "../src/mempool.js";
-import { ZyronChain } from "../src/chain.js";
+import { protocolUsesStateV2, SUPPORTED_PROTOCOL_VERSIONS, ZyronChain } from "../src/chain.js";
 import {
   createActivitySettlement,
   createProtocolUpgrade,
@@ -108,6 +108,14 @@ test("canonical signing domains prevent cross-context and legacy signature repla
     () => signCanonicalDomain("FINALITY", payload, validatorOnePrivate),
     /Invalid canonical signing domain/
   );
+});
+
+test("protocol v3 is explicitly mapped to State-v2 before binary activation", () => {
+  assert.equal(protocolUsesStateV2(1), false);
+  assert.equal(protocolUsesStateV2(2), true);
+  assert.equal(protocolUsesStateV2(3), true);
+  assert.equal(protocolUsesStateV2(4), false);
+  assert.equal(SUPPORTED_PROTOCOL_VERSIONS.has(3), false);
 });
 
 test("transaction v2 signatures are domain-separated and cannot enter legacy protocol mempools", () => {
@@ -2944,6 +2952,72 @@ test("protocol upgrade and rollback schedule is reconstructed from finalized his
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("authorized v2-to-v1 rollback reconstructs authenticated ledger state at activation", () => {
+  const chain = new ZyronChain(genesis());
+  const upgradeBase = {
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: validatorOne,
+    activationHeight: 101,
+    protocolVersion: 2
+  };
+  const rollbackBase = {
+    ...upgradeBase,
+    nonce: 2,
+    activationHeight: 201,
+    protocolVersion: 1
+  };
+  const upgrade = createProtocolUpgrade({
+    ...upgradeBase,
+    approvals: [
+      createProtocolUpgradeApproval(upgradeBase, validatorOnePrivate, validatorOnePublic),
+      createProtocolUpgradeApproval(upgradeBase, validatorTwoPrivate, validatorTwoPublic)
+    ],
+    timestampMs: genesis().timestampMs + 1
+  }, validatorOnePrivate, validatorOnePublic);
+  const rollback = createProtocolUpgrade({
+    ...rollbackBase,
+    approvals: [
+      createProtocolUpgradeApproval(rollbackBase, validatorOnePrivate, validatorOnePublic),
+      createProtocolUpgradeApproval(rollbackBase, validatorTwoPrivate, validatorTwoPublic)
+    ],
+    timestampMs: genesis().timestampMs + 2
+  }, validatorOnePrivate, validatorOnePublic);
+
+  for (let height = 1; height <= 201; height += 1) {
+    const proposerKey = height % 2 === 1 ? validatorOnePrivate : validatorTwoPrivate;
+    let block = chain.produceBlock(height === 1 ? [upgrade, rollback] : [], proposerKey, {
+      timestampMs: genesis().timestampMs + (height * 10)
+    });
+    if (height === 100) assert.equal(block.header.version, 1);
+    if (height === 101) assert.equal(block.header.version, 2);
+    if (height === 200) assert.equal(block.header.version, 2);
+    if (height === 201) assert.equal(block.header.version, 1);
+    block = chain.attestBlock(block, validatorOnePrivate);
+    block = chain.attestBlock(block, validatorTwoPrivate);
+    chain.acceptBlock(block, genesis().timestampMs + (height * 10));
+  }
+
+  assert.equal(chain.protocolVersionAt(201), 1);
+  assert.equal(chain.getState().nonce(validatorOne), 2);
+  const transfer = createTransfer({
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: alice,
+    receiver: bob,
+    amountAtoms: 123,
+    feeAtoms: 0,
+    timestampMs: genesis().timestampMs + 2_020
+  }, alicePrivate, alicePublic);
+  let afterRollback = chain.produceBlock([transfer], validatorTwoPrivate, {
+    timestampMs: genesis().timestampMs + 2_021
+  });
+  afterRollback = chain.attestBlock(afterRollback, validatorOnePrivate);
+  afterRollback = chain.attestBlock(afterRollback, validatorTwoPrivate);
+  chain.acceptBlock(afterRollback, genesis().timestampMs + 2_021);
+  assert.equal(chain.balance(bob), 123);
 });
 
 test("four validators converge across 120 blocks with repeated proposer-failure view changes", () => {
