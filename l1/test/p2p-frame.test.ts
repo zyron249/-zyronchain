@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Stream } from "@libp2p/interface";
 
-import { readP2PFrame } from "../src/p2p-frame.js";
+import { P2PFrameByteBudget, readP2PFrame } from "../src/p2p-frame.js";
 
 test("native frame decoder is invariant to adversarial transport fragmentation", async () => {
   const value = {
@@ -45,11 +45,39 @@ test("native frame decoder fails closed on oversized, truncated and trailing dat
   await assert.rejects(() => readP2PFrame(fakeReadableStream([trailing]), 1_024, 1_000), /Trailing bytes/);
 });
 
-function fakeReadableStream(chunks: readonly Uint8Array[]): Stream {
+test("native frame decoder bounds aggregate retained body bytes and recovers capacity", async () => {
+  const budget = new P2PFrameByteBudget(8);
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(8);
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const first = readP2PFrame(fakeReadableStream([header], firstGate), 32, 1_000, budget);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  await assert.rejects(
+    () => readP2PFrame(fakeReadableStream([header]), 32, 1_000, budget),
+    /byte budget exceeded/
+  );
+
+  releaseFirst();
+  await assert.rejects(() => first, /Truncated/);
+
+  const body = Buffer.from("{}");
+  const validHeader = Buffer.alloc(4);
+  validHeader.writeUInt32BE(body.length);
+  assert.deepEqual(
+    await readP2PFrame(fakeReadableStream([validHeader, body]), 32, 1_000, budget),
+    {}
+  );
+});
+
+function fakeReadableStream(chunks: readonly Uint8Array[], gate?: Promise<void>): Stream {
   return {
     inactivityTimeout: 0,
+    abort() {},
     async *[Symbol.asyncIterator]() {
       for (const chunk of chunks) yield chunk;
+      await gate;
     }
   } as unknown as Stream;
 }
