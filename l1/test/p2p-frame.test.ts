@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Stream } from "@libp2p/interface";
 
-import { P2PFrameByteBudget, readP2PFrame } from "../src/p2p-frame.js";
+import { P2PFrameByteBudget, readP2PFrame, writeP2PFrame } from "../src/p2p-frame.js";
 
 test("native frame decoder is invariant to adversarial transport fragmentation", async () => {
   const value = {
@@ -70,6 +70,39 @@ test("native frame decoder bounds aggregate retained body bytes and recovers cap
     {}
   );
 });
+
+test("native frame writer bounds aggregate serialization and slow-reader retention", async () => {
+  const budget = new P2PFrameByteBudget(8);
+  let drainFirst!: () => void;
+  const firstDrain = new Promise<void>((resolve) => { drainFirst = resolve; });
+  const first = writeP2PFrame(fakeWritableStream(firstDrain), {}, 8, 1_000, budget);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  await assert.rejects(
+    () => writeP2PFrame(fakeWritableStream(), {}, 8, 1_000, budget),
+    /byte budget exceeded/
+  );
+
+  drainFirst();
+  await first;
+  await writeP2PFrame(fakeWritableStream(), {}, 8, 1_000, budget);
+});
+
+function fakeWritableStream(drain?: Promise<void>): Stream {
+  let blocked = drain !== undefined;
+  return {
+    inactivityTimeout: 0,
+    send() {
+      if (!blocked) return true;
+      blocked = false;
+      return false;
+    },
+    async onDrain() {
+      await drain;
+    },
+    async close() {}
+  } as unknown as Stream;
+}
 
 function fakeReadableStream(chunks: readonly Uint8Array[], gate?: Promise<void>): Stream {
   return {
