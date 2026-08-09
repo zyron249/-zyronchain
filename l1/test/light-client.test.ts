@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { createBlockAttestation, createRoundSkipVote, createSignedBlock, validatorQuorumSize } from "../src/block.js";
-import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
+import { addressFromPublicKey, publicKeyFromPrivate, signCanonical } from "../src/crypto.js";
 import {
   activateNextValidatorSet,
   validateLightClientAnchor,
@@ -22,7 +22,7 @@ const validators: Validator[] = privateKeys.map((key) => {
   return { address: addressFromPublicKey(publicKey), publicKey };
 });
 
-function fixture(): { anchor: LightClientAnchor; block: Block; proof: LightFinalityProof; state: SparseMerkleState } {
+function fixture(protocolVersion = 2): { anchor: LightClientAnchor; block: Block; proof: LightFinalityProof; state: SparseMerkleState } {
   const state = SparseMerkleState.empty().set("account:alice", { balanceAtoms: 7, nonce: 1 });
   const anchor: LightClientAnchor = {
     version: 1,
@@ -32,11 +32,11 @@ function fixture(): { anchor: LightClientAnchor; block: Block; proof: LightFinal
     blockHash: "22".repeat(32),
     stateRoot: "33".repeat(32),
     timestampMs: 1_700_000_000_000,
-    protocolVersion: 2,
+    protocolVersion,
     validators
   };
   let block = createSignedBlock({
-    version: 2,
+    version: protocolVersion,
     chainId: anchor.chainId,
     height: 101,
     round: 0,
@@ -60,6 +60,45 @@ function fixture(): { anchor: LightClientAnchor; block: Block; proof: LightFinal
   };
   return { anchor, block, proof, state };
 }
+
+test("light client enforces protocol-v3 signing domains while preserving v2 history", () => {
+  const v2 = fixture(2);
+  assert.equal(verifyNextFinalizedHeader(v2.anchor, v2.proof).blockHash, v2.block.hash);
+
+  const v3 = fixture(3);
+  assert.equal(verifyNextFinalizedHeader(v3.anchor, v3.proof).blockHash, v3.block.hash);
+  assert.equal(verifyLightClientStateProof(
+    verifyNextFinalizedHeader(v3.anchor, v3.proof),
+    "account:alice",
+    { balanceAtoms: 7, nonce: 1 },
+    v3.state.prove("account:alice")
+  ), true);
+
+  const legacyProposal = {
+    ...v3.proof,
+    signature: signCanonical(v3.block.header, privateKeys[0]!)
+  };
+  assert.throws(
+    () => verifyNextFinalizedHeader(v3.anchor, legacyProposal),
+    /Invalid light-client proposer signature/
+  );
+
+  const legacyAttestation = {
+    ...v3.proof,
+    attestations: v3.proof.attestations.map((attestation, index) => ({
+      ...attestation,
+      signature: signCanonical({
+        chainId: v3.block.header.chainId,
+        height: v3.block.header.height,
+        blockHash: v3.block.hash
+      }, privateKeys[index]!)
+    }))
+  };
+  assert.throws(
+    () => verifyNextFinalizedHeader(v3.anchor, legacyAttestation),
+    /Invalid validator attestation/
+  );
+});
 
 test("light client extends an anchored validator set with independently verified finality", () => {
   const { anchor, block, proof } = fixture();
@@ -213,6 +252,25 @@ test("light-client portable vector reproduces finalized anchor and State-v2 proo
   const next = verifyNextFinalizedHeader(vector.anchor, vector.finalityProof);
   assert.deepEqual(next, vector.expectedNext);
   assert.equal(verifyLightClientStateProof(next, vector.stateProof.key, vector.stateProof.value, vector.stateProof.proof), true);
+});
+
+test("protocol-v3 public finality vector verifies identically and rejects its legacy signature twin", () => {
+  const vector = JSON.parse(readFileSync(join(process.cwd(), "test-vectors/light-client-v3-finality.json"), "utf8")) as {
+    version: number;
+    anchor: LightClientAnchor;
+    finalityProof: LightFinalityProof;
+    expectedNext: LightClientAnchor;
+    legacyProposerSignature: string;
+  };
+  assert.equal(vector.version, 1);
+  assert.deepEqual(verifyNextFinalizedHeader(vector.anchor, vector.finalityProof), vector.expectedNext);
+  assert.throws(
+    () => verifyNextFinalizedHeader(vector.anchor, {
+      ...vector.finalityProof,
+      signature: vector.legacyProposerSignature
+    }),
+    /Invalid light-client proposer signature/
+  );
 });
 
 test("property: light-client finality accepts exactly the >2/3 quorum boundary", () => {

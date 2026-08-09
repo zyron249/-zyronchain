@@ -28,6 +28,9 @@ VALUE_DOMAIN = b"ZyronChain/state-v2/value\x00"
 LEAF_DOMAIN = b"ZyronChain/state-v2/leaf\x00"
 EMPTY_LEAF_DOMAIN = b"ZyronChain/state-v2/empty-leaf\x00"
 BRANCH_DOMAIN = b"ZyronChain/state-v2/branch\x00"
+BLOCK_PROPOSAL_DOMAIN = "zyronchain/block-proposal/v1"
+FINALITY_ATTESTATION_DOMAIN = "zyronchain/finality-attestation/v1"
+ROUND_SKIP_DOMAIN = "zyronchain/round-skip/v1"
 
 
 class VerificationError(ValueError):
@@ -124,6 +127,13 @@ def verify_signature(payload: Any, signature: str, public_key: str) -> bool:
         )
     except (ValueError, VerificationError):
         return False
+
+
+def verify_protocol_signature(
+    protocol_version: int, domain: str, payload: Any, signature: str, public_key: str
+) -> bool:
+    signed_payload = {"domain": domain, "payload": payload} if protocol_version >= 3 else payload
+    return verify_signature(signed_payload, signature, public_key)
 
 
 def validate_anchor(value: Any) -> dict[str, Any]:
@@ -227,7 +237,7 @@ def _verify_round_certificate(
         ):
             raise VerificationError("round skip vote does not bind proposal")
         payload = {key: value for key, value in vote.items() if key != "signature"}
-        if not verify_signature(payload, vote["signature"], public_key):
+        if not verify_protocol_signature(header["version"], ROUND_SKIP_DOMAIN, payload, vote["signature"], public_key):
             raise VerificationError("invalid round skip signature")
         seen.add(validator)
     if len(seen) < quorum_size(len(validators)):
@@ -249,7 +259,9 @@ def _verify_attestations(
         validator = attestation["validator"]
         if not isinstance(validator, str) or validator in seen or allowed.get(validator) != public_key:
             raise VerificationError("unknown or duplicate attesting validator")
-        if not verify_signature(payload, attestation["signature"], public_key):
+        if not verify_protocol_signature(
+            header["version"], FINALITY_ATTESTATION_DOMAIN, payload, attestation["signature"], public_key
+        ):
             raise VerificationError("invalid attestation signature")
         seen.add(validator)
     if len(seen) < quorum_size(len(validators)):
@@ -282,7 +294,9 @@ def verify_next_finalized(anchor_value: Any, proof_value: Any) -> dict[str, Any]
     expected = validators[(header["height"] - 1 + header["round"]) % len(validators)]
     if header["proposer"] != expected["address"] or proposer_public_key != expected["publicKey"]:
         raise VerificationError("unexpected proposer")
-    if not verify_signature(header, proof["signature"], proposer_public_key):
+    if not verify_protocol_signature(
+        header["version"], BLOCK_PROPOSAL_DOMAIN, header, proof["signature"], proposer_public_key
+    ):
         raise VerificationError("invalid proposer signature")
     _verify_round_certificate(header, proof["roundCertificate"], validators)
     _verify_attestations(header, block_hash, proof["attestations"], validators)
@@ -314,7 +328,7 @@ EMPTY_HASHES = _empty_hashes()
 def verify_state_proof(anchor_value: Any, key: Any, value: Any, proof_value: Any) -> bool:
     try:
         anchor = validate_anchor(anchor_value)
-        if anchor["protocolVersion"] != 2 or not isinstance(key, str) or not key:
+        if anchor["protocolVersion"] not in (2, 3) or not isinstance(key, str) or not key:
             return False
         proof = _exact_keys(proof_value, {"version", "keyHash", "valueHash", "siblings"}, "state proof")
         if proof["version"] != 1 or not isinstance(proof["siblings"], list) or len(proof["siblings"]) != TREE_DEPTH:

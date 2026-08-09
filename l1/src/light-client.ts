@@ -1,6 +1,6 @@
 import { blockHash, expectedValidator, validateAttestationQuorum, validateBlockShape, validateRoundCertificate } from "./block.js";
 import { assertHex } from "./codec.js";
-import { addressFromPublicKey, verifyCanonical } from "./crypto.js";
+import { addressFromPublicKey, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
 import { validatorScheduleKey, verifySparseMerkleProof, type SparseMerkleProof } from "./state-v2.js";
 import { assertExactKeys, assertPlainRecord } from "./transaction.js";
 import type { Block, BlockAttestation, BlockHeader, RoundSkipVote, Validator } from "./types.js";
@@ -113,7 +113,10 @@ export function verifyNextFinalizedHeader(anchorValue: unknown, proofValue: unkn
   if (block.header.proposer !== proposer.address || block.proposerPublicKey !== proposer.publicKey) {
     throw new Error("Unexpected light-client proposer");
   }
-  if (!verifyCanonical(block.header, block.signature!, block.proposerPublicKey!)) {
+  const proposerSignatureValid = block.header.version >= 3
+    ? verifyCanonicalDomain("zyronchain/block-proposal/v1", block.header, block.signature!, block.proposerPublicKey!)
+    : verifyCanonical(block.header, block.signature!, block.proposerPublicKey!);
+  if (!proposerSignatureValid) {
     throw new Error("Invalid light-client proposer signature");
   }
   validateRoundCertificate(block, anchor.validators);
@@ -137,7 +140,7 @@ export function verifyLightClientStateProof(
 ): boolean {
   try {
     const anchor = validateLightClientAnchor(anchorValue);
-    if (anchor.protocolVersion !== 2) return false;
+    if (anchor.protocolVersion !== 2 && anchor.protocolVersion !== 3) return false;
     return verifySparseMerkleProof(anchor.stateRoot, key, value, proof);
   } catch {
     return false;
@@ -155,7 +158,9 @@ export function activateNextValidatorSet(
   proof: SparseMerkleProof
 ): LightClientAnchor {
   const anchor = validateLightClientAnchor(anchorValue);
-  if (anchor.protocolVersion !== 2) throw new Error("Validator transition proof requires protocol v2 state");
+  if (anchor.protocolVersion !== 2 && anchor.protocolVersion !== 3) {
+    throw new Error("Validator transition proof requires authenticated State v2");
+  }
   if (!Array.isArray(validatorsValue)) throw new Error("Invalid light-client validator transition");
   // Reuse anchor validation for the exact validator identity/cardinality rules.
   const candidate = validateLightClientAnchor({ ...anchor, validators: validatorsValue });

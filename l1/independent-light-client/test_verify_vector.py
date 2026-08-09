@@ -11,6 +11,7 @@ from verify_vector import canonical_json, VerificationError, verify_next_finaliz
 VECTOR_PATH = Path(__file__).parents[1] / "test-vectors" / "light-client-v1.json"
 ROUND_ONE_VECTOR_PATH = Path(__file__).parents[1] / "test-vectors" / "light-client-v1-round1.json"
 NONMEMBERSHIP_VECTOR_PATH = Path(__file__).parents[1] / "test-vectors" / "state-v2-nonmembership-v1.json"
+V3_FINALITY_VECTOR_PATH = Path(__file__).parents[1] / "test-vectors" / "light-client-v3-finality.json"
 
 
 def load_vector():
@@ -76,6 +77,16 @@ class IndependentLightClientTests(unittest.TestCase):
         forged["roundCertificate"][0]["signature"] = "00" * 64
         with self.assertRaisesRegex(VerificationError, "skip signature"):
             verify_next_finalized(vector["anchor"], forged)
+
+    def test_protocol_v3_public_vector_enforces_signing_domain_boundary(self):
+        vector = json.loads(V3_FINALITY_VECTOR_PATH.read_text(encoding="utf-8"))
+        next_anchor = verify_next_finalized(vector["anchor"], vector["finalityProof"])
+        self.assertEqual(canonical_json(next_anchor), canonical_json(vector["expectedNext"]))
+
+        legacy = copy.deepcopy(vector["finalityProof"])
+        legacy["signature"] = vector["legacyProposerSignature"]
+        with self.assertRaisesRegex(VerificationError, "proposer signature"):
+            verify_next_finalized(vector["anchor"], legacy)
 
     def test_state_root_key_and_value_substitution_fail(self):
         vector = load_vector()
