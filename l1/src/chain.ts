@@ -31,7 +31,9 @@ import {
   assertPlainRecord,
   protocolUpgradeApprovalPayload,
   validateTransactionShape,
-  validatorUpdateApprovalPayload
+  validatorUpdateApprovalPayload,
+  verifyProtocolUpgradeApprovalSignature,
+  verifyValidatorUpdateApprovalSignature
 } from "./transaction.js";
 import { assertHex } from "./codec.js";
 import type { Address, Block, GenesisConfig, ProtocolUpgradeTx, RoundSkipVote, Transaction, Validator, ValidatorSetUpdateTx } from "./types.js";
@@ -404,6 +406,7 @@ export class ZyronChain {
   validateMempoolAdmission(tx: Transaction): void {
     if (tx.chainId !== this.genesis.chainId) throw new Error("Wrong transaction chain ID");
     validateTransactionShape(tx);
+    assertTransactionVersionForProtocol(tx, this.protocolVersionAt(this.height + 1));
     if (tx.kind === "transfer") {
       const total = tx.amountAtoms + tx.feeAtoms;
       if (!Number.isSafeInteger(total) || this.balance(tx.sender) < total) {
@@ -468,6 +471,7 @@ export class ZyronChain {
       try {
         if (tx.chainId !== this.genesis.chainId || seen.has(tx.txid)) continue;
         validateTransactionShape(tx);
+        assertTransactionVersionForProtocol(tx, protocolVersion);
         if (tx.kind === "activity_settlement" && !this.genesis.activityOracles.includes(tx.publicKey)) continue;
         if (tx.kind === "validator_update") {
           validateValidatorUpdateAuthorization(tx, currentValidators, this.height + 1, lastActivation);
@@ -505,6 +509,7 @@ export class ZyronChain {
       if (seen.has(tx.txid)) throw new Error("Duplicate transaction in block");
       seen.add(tx.txid);
       validateTransactionShape(tx);
+      assertTransactionVersionForProtocol(tx, protocolVersion);
       if (tx.kind === "activity_settlement") {
         if (!this.genesis.activityOracles.includes(tx.publicKey)) {
           throw new Error("Unauthorized activity oracle");
@@ -647,7 +652,7 @@ function validateValidatorUpdateAuthorization(
     if (seen.has(approval.validator)) throw new Error("Duplicate validator update approval");
     seen.add(approval.validator);
     if (allowed.get(approval.validator) !== approval.publicKey) throw new Error("Unknown validator update approver");
-    if (!verifyCanonical(payload, approval.signature, approval.publicKey)) {
+    if (!verifyValidatorUpdateApprovalSignature(tx, approval)) {
       throw new Error("Invalid validator update approval");
     }
     valid += 1;
@@ -675,13 +680,20 @@ function validateProtocolUpgradeAuthorization(
     if (seen.has(approval.validator)) throw new Error("Duplicate protocol upgrade approval");
     seen.add(approval.validator);
     if (allowed.get(approval.validator) !== approval.publicKey) throw new Error("Unknown protocol upgrade approver");
-    if (!verifyCanonical(payload, approval.signature, approval.publicKey)) {
+    if (!verifyProtocolUpgradeApprovalSignature(tx, approval)) {
       throw new Error("Invalid protocol upgrade approval");
     }
     valid += 1;
   }
   const quorum = Math.floor((currentValidators.length * 2) / 3) + 1;
   if (valid < quorum) throw new Error(`Protocol upgrade quorum not reached: ${valid}/${quorum}`);
+}
+
+function assertTransactionVersionForProtocol(tx: Transaction, protocolVersion: number): void {
+  const expected = protocolVersion >= 3 ? 2 : 1;
+  if (tx.version !== expected) {
+    throw new Error(`Transaction version ${tx.version} is not valid under protocol version ${protocolVersion}`);
+  }
 }
 
 function validateGenesis(genesis: GenesisConfig): void {
