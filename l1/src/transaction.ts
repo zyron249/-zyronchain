@@ -1,5 +1,11 @@
 import { assertHex, canonicalJson, sha256Hex } from "./codec.js";
-import { addressFromPublicKey, signCanonical, verifyCanonical } from "./crypto.js";
+import {
+  addressFromPublicKey,
+  signCanonical,
+  signCanonicalDomain,
+  verifyCanonical,
+  verifyCanonicalDomain
+} from "./crypto.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import type {
   ActivityEntry,
@@ -17,6 +23,10 @@ type UnsignedTransfer = Omit<TransferTx, "signature" | "txid">;
 type UnsignedSettlement = Omit<ActivitySettlementTx, "signature" | "txid">;
 type UnsignedValidatorUpdate = Omit<ValidatorSetUpdateTx, "signature" | "txid">;
 type UnsignedProtocolUpgrade = Omit<ProtocolUpgradeTx, "signature" | "txid">;
+export type TransactionVersion = 1 | 2;
+
+const VALIDATOR_SET_APPROVAL_DOMAIN = "zyronchain/validator-set-approval/v1";
+const PROTOCOL_UPGRADE_APPROVAL_DOMAIN = "zyronchain/protocol-upgrade-approval/v1";
 
 function txSigningPayload(tx: Transaction | UnsignedTransfer | UnsignedSettlement | UnsignedValidatorUpdate | UnsignedProtocolUpgrade): unknown {
   const { signature: _signature, txid: _txid, ...payload } = tx as Transaction;
@@ -42,12 +52,19 @@ export function protocolUpgradeApprovalPayload(input: {
 export function createProtocolUpgradeApproval(
   input: Parameters<typeof protocolUpgradeApprovalPayload>[0],
   validatorPrivateKey: string,
-  validatorPublicKey: string
+  validatorPublicKey: string,
+  transactionVersion: TransactionVersion = 1
 ): ValidatorApproval {
+  const payload = governanceApprovalPayload(protocolUpgradeApprovalPayload(input), transactionVersion);
   return {
     validator: addressFromPublicKey(validatorPublicKey),
     publicKey: validatorPublicKey,
-    signature: signCanonical(protocolUpgradeApprovalPayload(input), validatorPrivateKey)
+    signature: signForTransactionVersion(
+      transactionVersion,
+      PROTOCOL_UPGRADE_APPROVAL_DOMAIN,
+      payload,
+      validatorPrivateKey
+    )
   };
 }
 
@@ -70,23 +87,31 @@ export function validatorUpdateApprovalPayload(input: {
 export function createValidatorApproval(
   input: Parameters<typeof validatorUpdateApprovalPayload>[0],
   validatorPrivateKey: string,
-  validatorPublicKey: string
+  validatorPublicKey: string,
+  transactionVersion: TransactionVersion = 1
 ): ValidatorApproval {
+  const payload = governanceApprovalPayload(validatorUpdateApprovalPayload(input), transactionVersion);
   return {
     validator: addressFromPublicKey(validatorPublicKey),
     publicKey: validatorPublicKey,
-    signature: signCanonical(validatorUpdateApprovalPayload(input), validatorPrivateKey)
+    signature: signForTransactionVersion(
+      transactionVersion,
+      VALIDATOR_SET_APPROVAL_DOMAIN,
+      payload,
+      validatorPrivateKey
+    )
   };
 }
 
 export function createValidatorSetUpdate(
   input: Omit<UnsignedValidatorUpdate, "kind" | "version" | "publicKey" | "feeAtoms">,
   privateKeyHex: string,
-  publicKey: string
+  publicKey: string,
+  version: TransactionVersion = 1
 ): ValidatorSetUpdateTx {
   const unsigned: UnsignedValidatorUpdate = {
     kind: "validator_update",
-    version: 1,
+    version,
     chainId: input.chainId,
     nonce: input.nonce,
     sender: input.sender,
@@ -97,7 +122,7 @@ export function createValidatorSetUpdate(
     timestampMs: input.timestampMs,
     publicKey
   };
-  const signature = signCanonical(unsigned, privateKeyHex);
+  const signature = signTransactionPayload(unsigned, privateKeyHex);
   const withSignature = { ...unsigned, signature };
   return { ...withSignature, txid: sha256Hex(canonicalJson(withSignature)) };
 }
@@ -105,11 +130,12 @@ export function createValidatorSetUpdate(
 export function createProtocolUpgrade(
   input: Omit<UnsignedProtocolUpgrade, "kind" | "version" | "publicKey" | "feeAtoms">,
   privateKeyHex: string,
-  publicKey: string
+  publicKey: string,
+  version: TransactionVersion = 1
 ): ProtocolUpgradeTx {
   const unsigned: UnsignedProtocolUpgrade = {
     kind: "protocol_upgrade",
-    version: 1,
+    version,
     chainId: input.chainId,
     nonce: input.nonce,
     sender: input.sender,
@@ -120,7 +146,7 @@ export function createProtocolUpgrade(
     timestampMs: input.timestampMs,
     publicKey
   };
-  const signature = signCanonical(unsigned, privateKeyHex);
+  const signature = signTransactionPayload(unsigned, privateKeyHex);
   const withSignature = { ...unsigned, signature };
   return { ...withSignature, txid: sha256Hex(canonicalJson(withSignature)) };
 }
@@ -133,11 +159,12 @@ function signedPayload(tx: Omit<Transaction, "txid">): unknown {
 export function createTransfer(
   input: Omit<UnsignedTransfer, "kind" | "version" | "publicKey">,
   privateKeyHex: string,
-  publicKey: string
+  publicKey: string,
+  version: TransactionVersion = 1
 ): TransferTx {
   const unsigned: UnsignedTransfer = {
     kind: "transfer",
-    version: 1,
+    version,
     chainId: input.chainId,
     nonce: input.nonce,
     sender: input.sender,
@@ -147,7 +174,7 @@ export function createTransfer(
     timestampMs: input.timestampMs,
     publicKey
   };
-  const signature = signCanonical(unsigned, privateKeyHex);
+  const signature = signTransactionPayload(unsigned, privateKeyHex);
   const withSignature = { ...unsigned, signature };
   return { ...withSignature, txid: sha256Hex(canonicalJson(withSignature)) };
 }
@@ -155,11 +182,12 @@ export function createTransfer(
 export function createActivitySettlement(
   input: Omit<UnsignedSettlement, "kind" | "version" | "publicKey" | "feeAtoms">,
   privateKeyHex: string,
-  publicKey: string
+  publicKey: string,
+  version: TransactionVersion = 1
 ): ActivitySettlementTx {
   const unsigned: UnsignedSettlement = {
     kind: "activity_settlement",
-    version: 1,
+    version,
     chainId: input.chainId,
     nonce: input.nonce,
     sender: input.sender,
@@ -173,7 +201,7 @@ export function createActivitySettlement(
     timestampMs: input.timestampMs,
     publicKey
   };
-  const signature = signCanonical(unsigned, privateKeyHex);
+  const signature = signTransactionPayload(unsigned, privateKeyHex);
   const withSignature = { ...unsigned, signature };
   return { ...withSignature, txid: sha256Hex(canonicalJson(withSignature)) };
 }
@@ -204,7 +232,7 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
     throw new Error("Unsupported transaction kind");
   }
   const tx = value as unknown as Transaction;
-  if (tx.version !== 1) throw new Error("Unsupported transaction version");
+  if (tx.version !== 1 && tx.version !== 2) throw new Error("Unsupported transaction version");
   if (typeof tx.chainId !== "string") throw new Error("Invalid transaction chain ID");
   assertAddress(tx.sender);
   if (!Number.isSafeInteger(tx.nonce) || tx.nonce < 1) throw new Error("Invalid nonce");
@@ -263,9 +291,81 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
 
   const expectedTxid = sha256Hex(canonicalJson(signedPayload(tx)));
   if (tx.txid !== expectedTxid) throw new Error("Transaction ID mismatch");
-  if (!verifyCanonical(txSigningPayload(tx), tx.signature, tx.publicKey)) {
+  if (!verifyTransactionSignature(tx)) {
     throw new Error("Invalid transaction signature");
   }
+}
+
+export function transactionSigningDomain(kind: Transaction["kind"]): string {
+  switch (kind) {
+    case "transfer": return "zyronchain/transaction/transfer/v2";
+    case "activity_settlement": return "zyronchain/transaction/activity-settlement/v2";
+    case "validator_update": return "zyronchain/transaction/validator-update/v2";
+    case "protocol_upgrade": return "zyronchain/transaction/protocol-upgrade/v2";
+  }
+}
+
+export function verifyValidatorUpdateApprovalSignature(tx: ValidatorSetUpdateTx, approval: ValidatorApproval): boolean {
+  const payload = governanceApprovalPayload(validatorUpdateApprovalPayload(tx), tx.version);
+  return verifyForTransactionVersion(
+    tx.version,
+    VALIDATOR_SET_APPROVAL_DOMAIN,
+    payload,
+    approval.signature,
+    approval.publicKey
+  );
+}
+
+export function verifyProtocolUpgradeApprovalSignature(tx: ProtocolUpgradeTx, approval: ValidatorApproval): boolean {
+  const payload = governanceApprovalPayload(protocolUpgradeApprovalPayload(tx), tx.version);
+  return verifyForTransactionVersion(
+    tx.version,
+    PROTOCOL_UPGRADE_APPROVAL_DOMAIN,
+    payload,
+    approval.signature,
+    approval.publicKey
+  );
+}
+
+function governanceApprovalPayload(payload: unknown, version: TransactionVersion): unknown {
+  return version === 2 ? { transactionVersion: 2, payload } : payload;
+}
+
+function signTransactionPayload(tx: UnsignedTransfer | UnsignedSettlement | UnsignedValidatorUpdate | UnsignedProtocolUpgrade, privateKeyHex: string): string {
+  return signForTransactionVersion(tx.version, transactionSigningDomain(tx.kind), tx, privateKeyHex);
+}
+
+function verifyTransactionSignature(tx: Transaction): boolean {
+  return verifyForTransactionVersion(
+    tx.version,
+    transactionSigningDomain(tx.kind),
+    txSigningPayload(tx),
+    tx.signature,
+    tx.publicKey
+  );
+}
+
+function signForTransactionVersion(
+  version: TransactionVersion,
+  domain: string,
+  payload: unknown,
+  privateKeyHex: string
+): string {
+  return version === 2
+    ? signCanonicalDomain(domain, payload, privateKeyHex)
+    : signCanonical(payload, privateKeyHex);
+}
+
+function verifyForTransactionVersion(
+  version: TransactionVersion,
+  domain: string,
+  payload: unknown,
+  signatureHex: string,
+  publicKeyHex: string
+): boolean {
+  return version === 2
+    ? verifyCanonicalDomain(domain, payload, signatureHex, publicKeyHex)
+    : verifyCanonical(payload, signatureHex, publicKeyHex);
 }
 
 function validateValidator(value: Validator, seen: Set<string>): void {
