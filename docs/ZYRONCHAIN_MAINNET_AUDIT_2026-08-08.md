@@ -2,6 +2,8 @@
 
 Date: 2026-08-08
 
+> **Historical evidence snapshot.** Several findings recorded here have since been implemented. Current status is tracked only in [`STANDALONE_L1_READINESS.md`](STANDALONE_L1_READINESS.md), and current security assumptions are defined in [`L1_THREAT_MODEL.md`](L1_THREAT_MODEL.md).
+
 Scope: the standalone TypeScript L1 (`l1/`) and the operational/release surfaces required to run it as an independently verifiable public network. Legacy Python/Flask code is not treated as the target consensus implementation.
 
 ## Executive conclusion
