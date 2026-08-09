@@ -43,7 +43,7 @@ No implementation claim may equate this model with Bitcoin's mining decentraliza
 
 - Finalized history, or an independently authenticated checkpoint plus validated suffix, remains available.
 - SQLite and filesystem locking/fsync semantics match the supported deployment profile.
-- Operators do not bypass persistence-health failures, writer leases or signing journals.
+- Operators do not bypass persistence-health failures, writer leases or signing journals. Readiness fails closed on persistence uncertainty or validator clock faults while liveness remains separately observable.
 - State-v2 reconstruction is accepted only when its root and semantic view match finalized consensus data.
 
 ### Networking
