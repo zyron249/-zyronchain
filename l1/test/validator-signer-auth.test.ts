@@ -63,3 +63,48 @@ test("remote validator signer rejects weak or header-unsafe bearer tokens", () =
     /bearer token/
   );
 });
+
+test("remote validator signer rejects non-JSON and oversized chunked responses", async () => {
+  const server = createServer((request, response) => {
+    if (request.url === "/wrong-type") {
+      response.setHeader("content-type", "text/plain");
+      response.end(JSON.stringify({ signature: "0".repeat(128) }));
+      return;
+    }
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.write(`{"signature":"${"0".repeat(800)}`);
+    response.write(`${"0".repeat(800)}"}`);
+    response.end();
+  });
+
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolveListen);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Signer bounds test server has no TCP address");
+    const base = `http://127.0.0.1:${address.port}`;
+
+    await assert.rejects(
+      () => new RemoteValidatorSigner(`${base}/wrong-type`, publicKey).signCanonical(
+        { height: 1 },
+        "block-proposal"
+      ),
+      /must return application\/json/
+    );
+    await assert.rejects(
+      () => new RemoteValidatorSigner(`${base}/oversized`, publicKey).signCanonical(
+        { height: 1 },
+        "block-proposal"
+      ),
+      /response is too large/
+    );
+  } finally {
+    if (server.listening) {
+      await new Promise<void>((resolveClose, reject) =>
+        server.close((error) => error ? reject(error) : resolveClose())
+      );
+    }
+  }
+});
