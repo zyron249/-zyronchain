@@ -2163,6 +2163,23 @@ test("RPC trusted peer identities require signed consensus writes and reject rep
     assert.equal(bearerOnly.headers.get("www-authenticate"), "ZyronSignature");
 
     const now = Date.now();
+    const forgedHeaders = signPeerRequest(identity, {
+      chainId: service.status().chainId,
+      genesisHash: service.status().genesisHash,
+      method: "POST",
+      path: "/block",
+      bodySha256: sha256Hex(Buffer.from("not-json", "utf8")),
+      timestampMs: now,
+      nonce: "33".repeat(16)
+    });
+    forgedHeaders["x-zyron-peer-signature"] = "00".repeat(64);
+    const forged = await fetch(`${base}/block`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...forgedHeaders },
+      body: "not-json"
+    });
+    assert.equal(forged.status, 401);
+
     const signedHeaders = signPeerRequest(identity, {
       chainId: service.status().chainId,
       genesisHash: service.status().genesisHash,
@@ -2172,6 +2189,17 @@ test("RPC trusted peer identities require signed consensus writes and reject rep
       timestampMs: now,
       nonce: "44".repeat(16)
     });
+    assert.equal(
+      signedHeaders["x-zyron-body-sha256"],
+      sha256Hex(Buffer.from(canonicalJson({}), "utf8"))
+    );
+    const mismatchedBody = await fetch(`${base}/block`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...signedHeaders },
+      body: canonicalJson({ unexpected: true })
+    });
+    assert.equal(mismatchedBody.status, 401);
+
     const signed = await fetch(`${base}/block`, {
       method: "POST",
       headers: { "content-type": "application/json", ...signedHeaders },
