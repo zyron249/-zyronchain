@@ -435,20 +435,54 @@ async function runNode(args: string[]): Promise<void> {
   });
   console.log(`ZyronChain ${genesis.chainId} node listening on http://${host}:${port}`);
   console.log(`Genesis ${service.status().genesisHash}, height ${service.status().height}`);
+  const timers = new Set<NodeJS.Timeout>();
+  const schedule = (callback: () => void, delayMs: number): void => {
+    const timer = schedule(callback, delayMs);
+    timer.unref();
+    timers.add(timer);
+  };
+  let shuttingDown = false;
+  const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`Received ${signal}; draining node services`);
+    for (const timer of timers) clearInterval(timer);
+    timers.clear();
+    await new Promise<void>((resolveClose, rejectClose) => {
+      if (!server.listening) {
+        resolveClose();
+        return;
+      }
+      server.close((error) => error ? rejectClose(error) : resolveClose());
+    });
+    if (nativeNode) await nativeNode.stop();
+    dataLease.close();
+    console.log("ZyronChain node shutdown complete");
+  };
+  const onSignal = (signal: NodeJS.Signals): void => {
+    void shutdown(signal).catch((error) => {
+      console.error(`Graceful shutdown failed: ${safeError(error)}`);
+      process.exitCode = 1;
+      server.closeAllConnections();
+      dataLease.close();
+    });
+  };
+  process.once("SIGTERM", () => onSignal("SIGTERM"));
+  process.once("SIGINT", () => onSignal("SIGINT"));
   if (identity) console.log(`Node ID ${identity.nodeId}`);
   if (nativeNode) {
     for (const address of nativeNode.getMultiaddrs()) console.log(`Native P2P ${address.toString()}`);
   }
 
   if (validatorSigner) {
-    setInterval(() => {
+    schedule(() => {
       void produceFinalizedBlock(service, consensusPeers, validatorSigner)
         .then((block) => { if (block) console.log(`Finalized block ${block.header.height} ${block.hash}`); })
         .catch((error) => console.warn(`Validator round failed: ${safeError(error)}`));
-    }, BLOCK_INTERVAL_MS).unref();
+    }, BLOCK_INTERVAL_MS);
   }
 
-  setInterval(() => {
+  schedule(() => {
     void (async () => {
       try {
         const accepted = await peers.syncAny(service);
@@ -457,22 +491,22 @@ async function runNode(args: string[]): Promise<void> {
         console.warn(`Periodic peer sync skipped: ${safeError(error)}`);
       }
     })();
-  }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3))).unref();
+  }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3)));
 
   if (nativeNode && identity && nativePeerPool && nativePeerPool.size) {
     let nativeSyncRunning = false;
-    setInterval(() => {
+    schedule(() => {
       if (nativeSyncRunning) return;
       nativeSyncRunning = true;
       void syncNativePeers(nativeNode, nativePeerPool.snapshot(), identity, service, "Periodic native peer sync", nativeSyncCursor++, nativePeerGroups, nativePeerReputation, nativePeerPool)
         .then(() => nativeConsensus?.replaceTargets(nativePeerPool.snapshot(nativeSyncCursor)))
         .finally(() => { nativeSyncRunning = false; });
-    }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3))).unref();
+    }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3)));
   }
 
   if (nativeNode && identity && nativePeerPool && nativePeerPool.size) {
     let nativeDiscoveryRunning = false;
-    setInterval(() => {
+    schedule(() => {
       if (nativeDiscoveryRunning) return;
       nativeDiscoveryRunning = true;
       void refreshNativePeerDiscovery(nativeNode, nativePeerPool, identity, service.status(), nativeSyncCursor, nativePeerReputation)
@@ -483,14 +517,14 @@ async function runNode(args: string[]): Promise<void> {
         })
         .catch((error) => console.warn(`Periodic native peer discovery skipped: ${safeError(error)}`))
         .finally(() => { nativeDiscoveryRunning = false; });
-    }, 60_000).unref();
+    }, 60_000);
   }
 
-  setInterval(() => {
+  schedule(() => {
     void peers.refreshPeerDirectory(peerDirectory, service.status())
       .then((discovered) => { if (discovered) console.log(`Discovered ${discovered} signed peer record(s)`); })
       .catch((error) => console.warn(`Periodic peer discovery skipped: ${safeError(error)}`));
-  }, 60_000).unref();
+  }, 60_000);
 }
 
 async function submitTransfer(args: string[]): Promise<void> {
