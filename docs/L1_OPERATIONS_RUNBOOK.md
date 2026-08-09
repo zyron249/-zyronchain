@@ -62,6 +62,7 @@ Infrastructure collectors must also record process RSS/CPU, disk free space/late
 
 These are engineering rehearsal thresholds, not a mainnet governance decision:
 
+- Alert on repeated `Aggregate RPC request body byte budget exceeded` responses; they indicate concurrent inbound body pressure that was shed before parsing.
 - Alert whenever `rpc.rejectedRequests` increases; page on sustained near-capacity RPC occupancy or repeated admission shedding.
 - Page if `persistenceHealthy` or `validatorClockHealthy` is false, the process repeatedly restarts, or derived-state corruption recovery occurs unexpectedly.
 - Page if independently observed finalized tips disagree at the same height.
