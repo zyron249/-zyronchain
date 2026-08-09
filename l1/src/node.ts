@@ -16,6 +16,7 @@ import {
 import { addressFromPublicKey } from "./crypto.js";
 import { Mempool } from "./mempool.js";
 import { PeerReputationStore } from "./peer-reputation.js";
+import { nativeP2PFrameBudgetMetrics } from "./p2p-frame.js";
 import { MAX_DISCOVERY_RESPONSE_RECORDS, PeerDirectory } from "./peer-directory.js";
 import {
   PeerRequestAuthenticator,
@@ -524,7 +525,8 @@ async function route(
         ...rpcAdmission?.metrics(),
         ...bodyReservation?.metrics(),
         ...rpcResponseBudget?.metrics()
-      }
+      },
+      p2pFrames: nativeP2PFrameBudgetMetrics()
     });
   }
   if (request.method === "GET" && url.pathname === "/blocks") {

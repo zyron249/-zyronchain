@@ -58,9 +58,11 @@ test("native frame decoder bounds aggregate retained body bytes and recovers cap
     () => readP2PFrame(fakeReadableStream([header]), 32, 1_000, budget),
     /byte budget exceeded/
   );
+  assert.deepEqual(budget.metrics(), { bytesInUse: 8, maxBytes: 8, rejectedFrames: 1 });
 
   releaseFirst();
   await assert.rejects(() => first, /Truncated/);
+  assert.deepEqual(budget.metrics(), { bytesInUse: 0, maxBytes: 8, rejectedFrames: 1 });
 
   const body = Buffer.from("{}");
   const validHeader = Buffer.alloc(4);
