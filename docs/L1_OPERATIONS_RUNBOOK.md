@@ -10,6 +10,7 @@ Status: **pre-mainnet operational specification**. This runbook does not authori
 4. Never bypass `persistenceHealthy=false`. Restart/recovery is required before the validator may resume signing.
 5. Never roll an unsupported protocol version across its activation height. Old binaries must fail-stop; operators must prove mixed-version readiness before activation.
 6. Keep multiple independently operated archival nodes. Pruning is an explicit local storage policy, not a substitute for network history availability.
+7. One data directory has exactly one live writer. Never delete or bypass the node/signing SQLite lease files to force liveness, and do not place validator data on a filesystem whose SQLite locking/durability semantics have not been validated.
 
 ## 2. Release and node preflight
 
@@ -17,7 +18,8 @@ Before any rollout, archive evidence for the exact reviewed commit and release a
 
 - tag/commit SHA and PR review record;
 - `SHA256SUMS` verification for the L1 tarball;
-- GitHub artifact/provenance attestation verification;
+- checksum verification for the exact release SPDX SBOM and GitHub artifact/provenance attestation verification;
+- immutable-SHA-pinned GitHub Actions and reviewed Dependabot update status;
 - locked dependency install, typecheck, tests, build and high-severity runtime audit all green;
 - supported protocol-version matrix versus the current and next scheduled activation;
 - independent security review status and unresolved findings.
@@ -70,6 +72,11 @@ Mainnet launch must replace provisional thresholds with measured public-testnet 
 
 Do not treat an arbitrary live directory copy as a consistent backup. Export a replay-validated checkpoint:
 
+The snapshot command deliberately takes the same exclusive writer lease as the
+node. Stop the node process cleanly and confirm it has exited before exporting;
+if a node still owns the directory, snapshot fails closed instead of racing live
+State-v2 repair/checkpoint writes.
+
 ```sh
 node dist/src/cli.js snapshot --genesis genesis.json --data ./data --out checkpoint.json
 ```
@@ -77,6 +84,12 @@ node dist/src/cli.js snapshot --genesis genesis.json --data ./data --out checkpo
 Record the printed snapshot SHA-256 together with the exact finalized tip hash in an independent, access-controlled checkpoint registry. Back up the genesis file, checkpoint artifact, both anchors, release identifier, operator configuration and monitoring evidence. Validator signing keys follow the HSM/remote-signer provider's separately audited backup/recovery policy and must not be embedded in the node backup.
 
 For pruned nodes, keep the recovery checkpoint and retention metadata with the node backup; also retain independently operated archival history elsewhere.
+
+`prune-finalized` is also an exclusive offline maintenance operation. It must
+not be run beside a live node; the shared writer lease enforces this fail-closed.
+After snapshot/prune maintenance, restart the reviewed binary and verify
+`height`, `tipHash`, `persistenceHealthy` and peer catch-up before restoring
+validator signing.
 
 ## 5. Restore drill
 
