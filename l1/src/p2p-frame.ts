@@ -15,7 +15,7 @@ export class P2PFrameByteBudget {
   reserve(bytes: number): () => void {
     if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > this.maxBytes ||
         this.bytesInUse > this.maxBytes - bytes) {
-      throw new Error("P2P inbound frame byte budget exceeded");
+      throw new Error("P2P frame byte budget exceeded");
     }
     this.bytesInUse += bytes;
     let released = false;
@@ -28,22 +28,37 @@ export class P2PFrameByteBudget {
 }
 
 const inboundFrameBudget = new P2PFrameByteBudget();
+const outboundFrameBudget = new P2PFrameByteBudget();
 
-export async function writeP2PFrame(stream: Stream, value: unknown, maxBytes: number, timeoutMs: number): Promise<void> {
+export async function writeP2PFrame(
+  stream: Stream,
+  value: unknown,
+  maxBytes: number,
+  timeoutMs: number,
+  budget: P2PFrameByteBudget = outboundFrameBudget
+): Promise<void> {
   assertFrameLimits(maxBytes, timeoutMs);
   stream.inactivityTimeout = timeoutMs;
-  const body = Buffer.from(JSON.stringify(value), "utf8");
-  if (body.length === 0 || body.length > maxBytes) throw new Error("P2P frame too large");
-  const header = Buffer.allocUnsafe(4);
-  header.writeUInt32BE(body.length, 0);
-  await sendChunk(stream, header, timeoutMs);
-  for (let offset = 0; offset < body.length; offset += WRITE_CHUNK_BYTES) {
-    await sendChunk(stream, body.subarray(offset, Math.min(body.length, offset + WRITE_CHUNK_BYTES)), timeoutMs);
+  // Reserve the maximum permitted body before JSON serialization allocates its
+  // string and Buffer. Keep the reservation until the muxer accepts and closes
+  // the stream so slow readers cannot multiply retained outbound frames.
+  const release = budget.reserve(maxBytes);
+  try {
+    const body = Buffer.from(JSON.stringify(value), "utf8");
+    if (body.length === 0 || body.length > maxBytes) throw new Error("P2P frame too large");
+    const header = Buffer.allocUnsafe(4);
+    header.writeUInt32BE(body.length, 0);
+    await sendChunk(stream, header, timeoutMs);
+    for (let offset = 0; offset < body.length; offset += WRITE_CHUNK_BYTES) {
+      await sendChunk(stream, body.subarray(offset, Math.min(body.length, offset + WRITE_CHUNK_BYTES)), timeoutMs);
+    }
+    // Every native protocol uses one request or response per libp2p stream.
+    // Half-close the writable side so the receiver can authenticate the frame
+    // boundary instead of accepting bytes that arrive in a later transport chunk.
+    await stream.close({ signal: AbortSignal.timeout(timeoutMs) });
+  } finally {
+    release();
   }
-  // Every native protocol uses one request or response per libp2p stream.
-  // Half-close the writable side so the receiver can authenticate the frame
-  // boundary instead of accepting bytes that arrive in a later transport chunk.
-  await stream.close({ signal: AbortSignal.timeout(timeoutMs) });
 }
 
 export async function readP2PFrame(
