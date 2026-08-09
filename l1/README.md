@@ -190,7 +190,7 @@ The chain, not the CLI, is authoritative: the initiator must be active, approval
 
 ## Schedule a protocol upgrade or rollback
 
-Protocol changes use the same multi-party safety model. An active validator proposes a target protocol version and activation height, a >2/3 quorum independently approves the exact proposal, and the initiator submits it. Operators can pre-schedule a later rollback version as a separate higher activation height. A binary that does not support the version active at the next height refuses to produce or accept blocks instead of silently forking.
+Protocol changes use the same multi-party safety model. An active validator proposes a target protocol version and activation height, a >2/3 quorum independently approves the exact proposal, and the initiator submits it. Protocol v3 activates domain-separated consensus, transaction and governance signatures while reusing the authenticated State-v2 commitment. Operators may schedule a later rollback at a higher activation height. A State-v2-to-v1 rollback reconstructs the legacy ledger deterministically from the authenticated portable State-v2 view and is covered across durable restart boundaries. A binary that does not support the version active at the next height refuses to produce or accept blocks instead of silently forking.
 
 ```sh
 node dist/src/cli.js protocol-proposal --out upgrade.json --rpc http://127.0.0.1:9137 --key initiator.json --activation-height 500 --protocol-version 2
@@ -200,6 +200,8 @@ node dist/src/cli.js protocol-submit --proposal upgrade.json --approval protocol
 ```
 
 Scheduling version 2 does not make a version-1 binary understand version 2. The upgraded binary must be deployed and verified before the activation height. This separation is deliberate: governance authorizes when a protocol may activate; node software determines which protocol semantics it actually implements.
+
+The RPC `GET /protocol` response exposes the current and next-height protocol versions. The bundled CLI uses the next-height value to create transaction format v1 under protocols 1/2 and domain-separated transaction format v2 under protocol 3. Validator and protocol proposal files record that transaction format so offline approvals cannot silently cross the activation boundary. Regenerate an unsubmitted proposal if its recorded transaction version no longer matches the node's next-height protocol.
 
 ## Light-client verification boundary
 
@@ -218,14 +220,15 @@ that finalized state root. At validator activation height A, call
 Protocol-version changes are a stricter compatibility boundary: this verifier does not
 guess future protocol semantics. Before crossing an activation to semantics the client
 does not implement, obtain/review an updated client and independently trusted
-compatibility anchor. The deterministic cross-implementation vector lives at
-`test-vectors/light-client-v1.json` and contains public data/signatures only—no private keys.
+compatibility anchor. The deterministic cross-implementation vectors live at
+`test-vectors/light-client-v1.json` and `test-vectors/light-client-v3-finality.json`; they contain public data/signatures only—no private keys.
 
 ## RPC surface
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/status` | Chain ID, pinned genesis hash, height, tip hash |
+| GET | `/protocol` | Current and next-height protocol versions for transaction construction |
 | GET | `/healthz` | Lightweight node health and height |
 | GET | `/metrics` | Structured node height, mempool, validator-count and uptime metrics |
 | GET | `/blocks?from=1&limit=100` | Bounded finalized-block sync |
