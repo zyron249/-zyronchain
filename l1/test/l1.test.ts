@@ -938,6 +938,34 @@ test("finalized block write uncertainty fail-stops before live state advances", 
       () => store.commitFinalizedBlock(block, 1_700_000_000_100),
       /Persistence fault requires node restart/
     );
+
+    const service = new NodeService(store);
+    assert.deepEqual(service.readiness(), {
+      ready: false,
+      height: 0,
+      reasons: ["persistence-unhealthy"]
+    });
+    const server = createRpcServer(service);
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolveListen);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Readiness test server has no TCP address");
+    const base = `http://127.0.0.1:${address.port}`;
+    const liveness = await fetch(`${base}/healthz`);
+    assert.equal(liveness.status, 200);
+    assert.deepEqual(await liveness.json(), { ok: true, height: 0 });
+    const readiness = await fetch(`${base}/readyz`);
+    assert.equal(readiness.status, 503);
+    assert.deepEqual(await readiness.json(), {
+      ready: false,
+      height: 0,
+      reasons: ["persistence-unhealthy"]
+    });
+    await new Promise<void>((resolveClose, reject) =>
+      server.close((error) => error ? reject(error) : resolveClose())
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -1871,6 +1899,11 @@ test("validator signing fail-stops after a backward wall-clock jump until proces
       /Validator clock moved backwards beyond the safety tolerance/
     );
     assert.equal(service.metrics(nowMs).validatorClockHealthy, false);
+    assert.deepEqual(service.readiness(), {
+      ready: false,
+      height: 0,
+      reasons: ["validator-clock-unhealthy"]
+    });
 
     await assert.rejects(
       () => service.attestProposal(signed, nowMs + 60_000),
@@ -1940,11 +1973,11 @@ test("HTTP RPC exposes status and accepts a strictly validated signed transactio
   }
 });
 
-test("RPC exposes health and metrics while enforcing per-client request limits", async () => {
+test("RPC exposes liveness, readiness, and metrics while enforcing per-client request limits", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-limit-"));
   const store = await ChainStore.open(genesis(), directory);
   const service = new NodeService(store);
-  const server = createRpcServer(service, { requestsPerWindow: 2, windowMs: 60_000, maxConnections: 8 });
+  const server = createRpcServer(service, { requestsPerWindow: 3, windowMs: 60_000, maxConnections: 8 });
   assert.equal(server.maxConnections, 8);
   assert.equal(server.maxHeadersCount, RPC_MAX_HEADERS);
   assert.equal(server.maxRequestsPerSocket, RPC_MAX_REQUESTS_PER_SOCKET);
@@ -1963,7 +1996,11 @@ test("RPC exposes health and metrics while enforcing per-client request limits",
     const health = await fetch(`${base}/healthz`);
     assert.equal(health.status, 200);
     assert.deepEqual(await health.json(), { ok: true, height: 0 });
-    assert.equal(health.headers.get("x-ratelimit-limit"), "2");
+    assert.equal(health.headers.get("x-ratelimit-limit"), "3");
+
+    const readiness = await fetch(`${base}/readyz`);
+    assert.equal(readiness.status, 200);
+    assert.deepEqual(await readiness.json(), { ready: true, height: 0, reasons: [] });
 
     const metrics = await fetch(`${base}/metrics`);
     assert.equal(metrics.status, 200);
