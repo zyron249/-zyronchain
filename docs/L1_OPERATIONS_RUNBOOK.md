@@ -24,7 +24,7 @@ Before any rollout, archive evidence for the exact reviewed commit and release a
 - supported protocol-version matrix versus the current and next scheduled activation;
 - independent security review status and unresolved findings.
 
-Start a node from the reviewed L1 distribution. Keep public wallet RPC separate from validator RPC. Validator RPC should normally remain on loopback; expose the native Noise/libp2p TCP port instead. During planned restarts and rolling upgrades, send `SIGTERM` (or interactive `SIGINT`) and wait for the `ZyronChain node shutdown complete` log before starting the replacement process against the same data directory. The node stops periodic validator/sync/discovery work, drains RPC, stops native P2P and releases the exclusive writer lease in that order.
+Start a node from the reviewed L1 distribution. Keep public wallet RPC separate from validator RPC. Validator RPC should normally remain on loopback; expose the native Noise/libp2p TCP port instead. During planned restarts and rolling upgrades, send `SIGTERM` (or interactive `SIGINT`) and wait for the `ZyronChain node shutdown complete` log before starting the replacement process against the same data directory. The node stops periodic validator/sync/discovery work, drains RPC, stops native P2P and releases the exclusive writer lease in that order. RPC drain is bounded to 10 seconds; connections still active at the deadline are force-closed so a hostile or stuck client cannot block a rollout indefinitely. Investigate every `RPC drain deadline exceeded` warning before continuing the rollout.
 
 ```sh
 node dist/src/cli.js node --genesis genesis.json --data ./data \

@@ -25,6 +25,7 @@ import { registerP2PSyncProtocol, syncP2PFrom } from "./p2p-sync.js";
 import { fetchTrustedSnapshotFromPeer, registerP2PCheckpointProtocol } from "./p2p-checkpoint.js";
 import { fetchTrustedPortableStateFromAnyPeer, MAX_STATE_SYNC_PEERS, registerP2PStateProtocol } from "./p2p-state.js";
 import { NativeConsensusPeerClient, registerP2PConsensusProtocol } from "./p2p-consensus.js";
+import { drainHttpServer } from "./node-lifecycle.js";
 import { discoverNativePeersFrom, registerP2PDiscoveryProtocol } from "./p2p-discovery.js";
 import { assertSafeDiscoveredPeer, NativePeerPool } from "./p2p-peer-pool.js";
 import { classifyNativePeerFailure, NativePeerReputationStore } from "./p2p-reputation.js";
@@ -446,13 +447,10 @@ async function runNode(args: string[]): Promise<void> {
     console.log(`Received ${signal}; draining node services`);
     for (const timer of timers) clearInterval(timer);
     timers.clear();
-    await new Promise<void>((resolveClose, rejectClose) => {
-      if (!server.listening) {
-        resolveClose();
-        return;
-      }
-      server.close((error) => error ? rejectClose(error) : resolveClose());
-    });
+    const rpcDrain = await drainHttpServer(server);
+    if (rpcDrain === "forced") {
+      console.warn("RPC drain deadline exceeded; remaining connections were closed");
+    }
     if (nativeNode) await nativeNode.stop();
     dataLease.close();
     console.log("ZyronChain node shutdown complete");
