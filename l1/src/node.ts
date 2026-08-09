@@ -30,6 +30,7 @@ import type { Address, Block, BlockAttestation, RoundSkipVote, Transaction } fro
 import { LocalValidatorSigner, signWithValidator, type ValidatorSigner } from "./validator-signer.js";
 
 const MAX_BODY_BYTES = 2_500_000;
+export const RPC_API_VERSION = 1;
 export const MAX_SYNC_BLOCKS = 100;
 export const MAX_SYNC_RESPONSE_BYTES = 25_000_000;
 export const MAX_SYNC_BATCH_PAYLOAD_BYTES = 20_000_000;
@@ -324,11 +325,21 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
   const limiter = new FixedWindowLimiter(requestsPerWindow, windowMs);
   const server = createServer(async (request, response) => {
     const rate = limiter.consume(request.socket.remoteAddress ?? "unknown", Date.now());
+    response.setHeader("x-zyron-rpc-version", String(RPC_API_VERSION));
     response.setHeader("x-ratelimit-limit", String(requestsPerWindow));
     response.setHeader("x-ratelimit-remaining", String(rate.remaining));
     if (!rate.allowed) {
       response.setHeader("retry-after", String(Math.max(1, Math.ceil(rate.retryAfterMs / 1_000))));
       writeJson(response, 429, { error: "Rate limit exceeded" });
+      return;
+    }
+    const requestedRpcVersion = request.headers["x-zyron-rpc-version"];
+    if (requestedRpcVersion !== undefined && requestedRpcVersion !== String(RPC_API_VERSION)) {
+      writeJson(response, 426, {
+        error: "Unsupported RPC API version",
+        rpcVersion: RPC_API_VERSION,
+        supportedRpcVersions: [RPC_API_VERSION]
+      });
       return;
     }
     try {
@@ -376,6 +387,12 @@ async function route(
   onTransactionAccepted?: (transaction: Transaction) => void | Promise<void>
 ): Promise<void> {
   const url = new URL(request.url ?? "/", "http://node.invalid");
+  if (request.method === "GET" && url.pathname === "/rpc-info") {
+    return writeJson(response, 200, {
+      rpcVersion: RPC_API_VERSION,
+      supportedRpcVersions: [RPC_API_VERSION]
+    });
+  }
   if (request.method === "GET" && url.pathname === "/status") {
     return writeJson(response, 200, service.status());
   }
@@ -897,7 +914,11 @@ function peerTransportProtectsCredentials(value: string): boolean {
 }
 
 async function getJson(url: string, maxBytes: number): Promise<unknown> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(PEER_TIMEOUT_MS) });
+  const response = await fetch(url, {
+    headers: { "x-zyron-rpc-version": String(RPC_API_VERSION) },
+    signal: AbortSignal.timeout(PEER_TIMEOUT_MS)
+  });
+  assertCompatibleRpcResponse(response);
   if (!response.ok) throw new Error(`Peer returned HTTP ${response.status}`);
   return parseBoundedResponse(response, maxBytes);
 }
@@ -909,7 +930,7 @@ async function postJson(
   peerAuthToken?: string,
   peerRequestCredentials?: PeerRequestCredentials
 ): Promise<unknown> {
-  const headers: Record<string, string> = { "content-type": "application/json" };
+  const headers: Record<string, string> = { "content-type": "application/json", "x-zyron-rpc-version": String(RPC_API_VERSION) };
   if (peerAuthToken) headers.authorization = `Bearer ${peerAuthToken}`;
   const body = canonicalJson(value);
   if (peerRequestCredentials) {
@@ -928,8 +949,16 @@ async function postJson(
     body,
     signal: AbortSignal.timeout(PEER_TIMEOUT_MS)
   });
+  assertCompatibleRpcResponse(response);
   if (!response.ok) throw new Error(`Peer returned HTTP ${response.status}`);
   return parseBoundedResponse(response, maxResponseBytes);
+}
+
+function assertCompatibleRpcResponse(response: Response): void {
+  const advertised = response.headers.get("x-zyron-rpc-version");
+  if (advertised !== null && advertised !== String(RPC_API_VERSION)) {
+    throw new Error(`Peer uses unsupported RPC API version ${advertised}`);
+  }
 }
 
 async function parseBoundedResponse(response: Response, maxBytes: number): Promise<unknown> {

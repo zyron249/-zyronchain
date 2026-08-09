@@ -12,6 +12,7 @@ import {
   NodeService,
   PeerClient,
   produceFinalizedBlock,
+  RPC_API_VERSION,
   type ConsensusPeerClient
 } from "./node.js";
 import { ChainStore, NodeDataDirectoryLease, SigningJournal } from "./storage.js";
@@ -508,7 +509,7 @@ async function submitTransfer(args: string[]): Promise<void> {
   );
   const response = await fetch(`${rpc}/tx`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-zyron-rpc-version": String(RPC_API_VERSION) },
     body: JSON.stringify(tx),
     signal: AbortSignal.timeout(8_000)
   });
@@ -584,7 +585,7 @@ async function submitValidatorProposal(args: string[]): Promise<void> {
   const rpc = normalizeRpcUrl(requiredOption(args, "--rpc"));
   const response = await fetch(`${rpc}/tx`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-zyron-rpc-version": String(RPC_API_VERSION) },
     body: JSON.stringify(tx),
     signal: AbortSignal.timeout(8_000)
   });
@@ -656,7 +657,7 @@ async function submitProtocolProposal(args: string[]): Promise<void> {
   const rpc = normalizeRpcUrl(requiredOption(args, "--rpc"));
   const response = await fetch(`${rpc}/tx`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-zyron-rpc-version": String(RPC_API_VERSION) },
     body: JSON.stringify(tx),
     signal: AbortSignal.timeout(8_000)
   });
@@ -813,7 +814,11 @@ function normalizeRpcUrl(value: string): string {
 }
 
 async function fetchJson(url: string): Promise<unknown> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+  const response = await fetch(url, {
+    headers: { "x-zyron-rpc-version": String(RPC_API_VERSION) },
+    signal: AbortSignal.timeout(8_000)
+  });
+  assertCompatibleRpcResponse(response);
   if (!response.ok) throw new Error(`RPC returned HTTP ${response.status}`);
   const text = await response.text();
   if (Buffer.byteLength(text, "utf8") > 64_000) throw new Error("RPC response too large");
@@ -821,7 +826,11 @@ async function fetchJson(url: string): Promise<unknown> {
 }
 
 async function transactionVersionForRpc(rpc: string): Promise<TransactionVersion> {
-  const response = await fetch(`${rpc}/protocol`, { signal: AbortSignal.timeout(8_000) });
+  const response = await fetch(`${rpc}/protocol`, {
+    headers: { "x-zyron-rpc-version": String(RPC_API_VERSION) },
+    signal: AbortSignal.timeout(8_000)
+  });
+  assertCompatibleRpcResponse(response);
   if (response.status === 404) return 1;
   if (!response.ok) throw new Error(`RPC protocol status returned HTTP ${response.status}`);
   const text = await response.text();
@@ -834,6 +843,13 @@ async function transactionVersionForRpc(rpc: string): Promise<TransactionVersion
   const nextVersion = Number(value.nextVersion);
   if (nextVersion < 1 || nextVersion > 3) throw new Error("RPC returned unsupported next protocol version");
   return nextVersion >= 3 ? 2 : 1;
+}
+
+function assertCompatibleRpcResponse(response: Response): void {
+  const advertised = response.headers.get("x-zyron-rpc-version");
+  if (advertised !== null && advertised !== String(RPC_API_VERSION)) {
+    throw new Error(`RPC server uses unsupported API version ${advertised}`);
+  }
 }
 
 async function readPrivateKey(path: string): Promise<string> {

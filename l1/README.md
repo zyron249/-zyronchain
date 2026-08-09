@@ -225,8 +225,11 @@ compatibility anchor. The deterministic cross-implementation vectors live at
 
 ## RPC surface
 
+Every response advertises `x-zyron-rpc-version: 1`. Current clients send the same header; a request that explicitly asks for an unsupported version receives `426 Upgrade Required` with the supported-version set. Requests without the header remain accepted during the legacy migration window.
+
 | Method | Path | Purpose |
 |---|---|---|
+| GET | `/rpc-info` | RPC API version and supported-version set |
 | GET | `/status` | Chain ID, pinned genesis hash, height, tip hash |
 | GET | `/protocol` | Current and next-height protocol versions for transaction construction |
 | GET | `/healthz` | Lightweight node health and height |
