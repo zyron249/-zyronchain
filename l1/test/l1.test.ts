@@ -1853,6 +1853,32 @@ test("signing journal reserves proposer choice before a remote signer can releas
   }
 });
 
+test("validator signing fail-stops after a backward wall-clock jump until process restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-validator-clock-"));
+  const store = await ChainStore.open(genesis(), directory);
+  const journal = await SigningJournal.open(directory);
+  const service = new NodeService(store, journal, validatorOnePrivate);
+  const nowMs = genesis().timestampMs + 10_000;
+  try {
+    const unsigned = store.chain.prepareBlock([], validatorOnePublic, { timestampMs: nowMs });
+    const signed = await service.signPreparedProposal(unsigned, nowMs);
+
+    await assert.rejects(
+      () => service.attestProposal(signed, nowMs - 1_001),
+      /Validator clock moved backwards beyond the safety tolerance/
+    );
+    assert.equal(service.metrics(nowMs).validatorClockHealthy, false);
+
+    await assert.rejects(
+      () => service.attestProposal(signed, nowMs + 60_000),
+      /Validator clock fault requires process restart/
+    );
+  } finally {
+    journal.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("HTTP RPC exposes status and accepts a strictly validated signed transaction", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-"));
   const store = await ChainStore.open(genesis(), directory);
