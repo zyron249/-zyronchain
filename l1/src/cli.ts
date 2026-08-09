@@ -281,7 +281,7 @@ async function createGenesis(args: string[]): Promise<void> {
 async function runNode(args: string[]): Promise<void> {
   assertKnownOptions(args, new Set([
     "--genesis", "--data", "--host", "--port", "--peer", "--advertise-peer", "--validator-key", "--peer-token-file",
-    "--trusted-peer-public-key", "--p2p-listen", "--p2p-peer", "--p2p-peer-group", "--validator-signer-url",
+    "--trusted-peer-public-key", "--rpc-trusted-proxy", "--p2p-listen", "--p2p-peer", "--p2p-peer-group", "--validator-signer-url",
     "--validator-public-key", "--validator-signer-token-file"
   ]));
   const genesisPath = option(args, "--genesis");
@@ -291,6 +291,7 @@ async function runNode(args: string[]): Promise<void> {
   const dataLease = await NodeDataDirectoryLease.acquire(resolvedDataDir);
   const host = option(args, "--host") ?? "127.0.0.1";
   const port = parsePort(option(args, "--port") ?? "9137");
+  const trustedProxyAddresses = options(args, "--rpc-trusted-proxy");
   const peerUrls = options(args, "--peer");
   const nativeListen = options(args, "--p2p-listen").map(parseNativeListenAddress);
   const nativePeers = options(args, "--p2p-peer").map(parseNativePeerAddress);
@@ -343,7 +344,11 @@ async function runNode(args: string[]): Promise<void> {
   const service = new NodeService(store, journal, validatorSigner);
   const advertisedPeerUrls = options(args, "--advertise-peer");
   const trustedPeerPublicKeys = options(args, "--trusted-peer-public-key");
-  assertSafeRpcBinding(host, Boolean(peerAuthToken || trustedPeerPublicKeys.length));
+  assertSafeRpcBinding(
+    host,
+    Boolean(peerAuthToken || trustedPeerPublicKeys.length),
+    trustedProxyAddresses.length > 0
+  );
   const issuedAtMs = Date.now();
   const identity = (peerUrls.length || advertisedPeerUrls.length || trustedPeerPublicKeys.length || nativeListen.length || nativePeers.length)
     ? await loadOrCreateNodeIdentity(resolve(dataDir))
@@ -431,6 +436,7 @@ async function runNode(args: string[]): Promise<void> {
     ...(peerRecord ? { peerRecord } : {}),
     peerDirectory,
     ...(trustedPeerPublicKeys.length ? { trustedPeerPublicKeys } : {}),
+    ...(trustedProxyAddresses.length ? { trustedProxyAddresses } : {}),
     onTransactionAccepted: async (transaction) => {
       await Promise.allSettled([
         peers.broadcastTransaction(transaction),
@@ -479,6 +485,7 @@ async function runNode(args: string[]): Promise<void> {
   process.once("SIGTERM", () => onSignal("SIGTERM"));
   process.once("SIGINT", () => onSignal("SIGINT"));
   console.log(`ZyronChain ${genesis.chainId} node listening on http://${host}:${port}`);
+  if (trustedProxyAddresses.length) console.log("RPC accepts requests only from configured proxies asserting x-forwarded-proto: https");
   console.log(`Genesis ${service.status().genesisHash}, height ${service.status().height}`);
   if (identity) console.log(`Node ID ${identity.nodeId}`);
   if (nativeNode) {
@@ -1026,7 +1033,7 @@ function usage(): void {
   console.log("Usage:");
   console.log("  zyron-l1 keygen --out validator-key.json [--password-file password.txt]");
   console.log("  zyron-l1 genesis --out genesis.json --chain-id zyron-devnet-1 --validator-public-key <hex> --oracle-public-key <hex> --activity-pool <address> --allocation <address:atoms>");
-  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json | --validator-signer-url https://signer/sign --validator-public-key <hex> --validator-signer-token-file signer-token.txt] [--peer https://node:9137] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>]");
+  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json | --validator-signer-url https://signer/sign --validator-public-key <hex> --validator-signer-token-file signer-token.txt] [--peer https://node:9137] [--rpc-trusted-proxy <ip> ...] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>]");
   console.log("  zyron-l1 transfer --key wallet-key.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms <n> [--fee-atoms <n>]");
   console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");
   console.log("  zyron-l1 validator-approve --proposal update.json --key validator.json --out approval.json");
