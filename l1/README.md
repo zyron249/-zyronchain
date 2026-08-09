@@ -190,7 +190,7 @@ The chain, not the CLI, is authoritative: the initiator must be active, approval
 
 ## Schedule a protocol upgrade or rollback
 
-Protocol changes use the same multi-party safety model. An active validator proposes a target protocol version and activation height, a >2/3 quorum independently approves the exact proposal, and the initiator submits it. Protocol v3 activates domain-separated consensus, transaction and governance signatures while reusing the authenticated State-v2 commitment. Operators may schedule a later v3-to-v2 rollback at a higher activation height. Protocol v1 cannot be reactivated because the v1-to-State-v2 migration is intentionally irreversible. A binary that does not support the version active at the next height refuses to produce or accept blocks instead of silently forking.
+Protocol changes use the same multi-party safety model. An active validator proposes a target protocol version and activation height, a >2/3 quorum independently approves the exact proposal, and the initiator submits it. Protocol v3 activates domain-separated consensus, transaction and governance signatures while reusing the authenticated State-v2 commitment. Operators may schedule a later rollback at a higher activation height. A State-v2-to-v1 rollback reconstructs the legacy ledger deterministically from the authenticated portable State-v2 view and is covered across durable restart boundaries. A binary that does not support the version active at the next height refuses to produce or accept blocks instead of silently forking.
 
 ```sh
 node dist/src/cli.js protocol-proposal --out upgrade.json --rpc http://127.0.0.1:9137 --key initiator.json --activation-height 500 --protocol-version 2
