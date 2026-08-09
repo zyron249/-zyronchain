@@ -4,6 +4,7 @@ import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/p
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
+import { connect } from "node:net";
 import { execFile, spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -3449,6 +3450,62 @@ test("chain store fails closed on a truncated or corrupt finalized block record"
     await appendFile(join(directory, "blocks.ndjson"), "{\"header\":", "utf8");
     await assert.rejects(() => ChainStore.open(genesis(), directory), /Corrupt stored block/);
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("RPC global inflight budget rejects excess concurrent work", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-global-inflight-"));
+  const store = await ChainStore.open(genesis(), directory);
+  const service = new NodeService(store);
+  const server = createRpcServer(service, { maxInflightRequests: 1 });
+  let socket: ReturnType<typeof connect> | undefined;
+
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolveListen);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("RPC inflight test server has no TCP address");
+    const base = `http://127.0.0.1:${address.port}`;
+    socket = connect(address.port, "127.0.0.1");
+    await new Promise<void>((resolveConnect, reject) => {
+      socket!.once("connect", resolveConnect);
+      socket!.once("error", reject);
+    });
+    const requestEntered = new Promise<void>((resolveRequest) => server.once("request", () => resolveRequest()));
+    socket.write([
+      "POST /tx HTTP/1.1",
+      "Host: localhost",
+      "Content-Type: application/json",
+      "Content-Length: 100",
+      "",
+      "{"
+    ].join("\r\n"));
+    await requestEntered;
+
+    const overloaded = await fetch(`${base}/status`);
+    assert.equal(overloaded.status, 503);
+    assert.equal(overloaded.headers.get("connection"), "close");
+    assert.equal(overloaded.headers.get("retry-after"), "1");
+    assert.deepEqual(await overloaded.json(), { error: "RPC concurrency limit exceeded" });
+
+    const socketClosed = new Promise<void>((resolveSocket) => socket!.once("close", () => resolveSocket()));
+    socket.destroy();
+    await socketClosed;
+    let recoveredStatus = 503;
+    for (let attempt = 0; attempt < 20 && recoveredStatus !== 200; attempt += 1) {
+      const recovered = await fetch(`${base}/status`);
+      recoveredStatus = recovered.status;
+      if (recoveredStatus !== 200) await new Promise<void>((resolveTurn) => setTimeout(resolveTurn, 10));
+    }
+    assert.equal(recoveredStatus, 200);
+  } finally {
+    socket?.destroy();
+    await new Promise<void>((resolveClose, reject) =>
+      server.close((error) => error ? reject(error) : resolveClose())
+    );
     await rm(directory, { recursive: true, force: true });
   }
 });
