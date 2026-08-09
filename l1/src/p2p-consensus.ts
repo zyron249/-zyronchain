@@ -1,7 +1,7 @@
 import type { Libp2p } from "libp2p";
 
 import { PeerInflightLimiter, type ConsensusPeerClient, type NodeService, type NodeStatus } from "./node.js";
-import { readP2PFrame, writeP2PFrame } from "./p2p-frame.js";
+import { readP2PFrameRetained, writeP2PFrame } from "./p2p-frame.js";
 import { validateP2PChainIdentity, type P2PChainIdentity } from "./p2p.js";
 import { P2PPeerRateLimiter } from "./p2p-rate.js";
 import type { NodeIdentity } from "./peer-identity.js";
@@ -40,6 +40,7 @@ export async function registerP2PConsensusProtocol(
   const rate = new P2PPeerRateLimiter(240, 60_000);
   await node.handle(P2P_CONSENSUS_PROTOCOL, async (stream, connection) => {
     let release: (() => void) | undefined;
+    let releaseFrame: (() => void) | undefined;
     try {
       if (connection.encryption !== "/noise") throw new Error("Native consensus requires authenticated Noise");
       // Gate before reading a potentially block-sized frame. Noise has already
@@ -48,11 +49,9 @@ export async function registerP2PConsensusProtocol(
       const peerId = connection.remotePeer.toString();
       if (!rate.consume(peerId)) throw new Error("Native consensus rate limit exceeded");
       release = inflight.enter(peerId);
-      const request = parseConsensusRequest(
-        await readP2PFrame(stream, MAX_CONSENSUS_FRAME_BYTES, P2P_CONSENSUS_TIMEOUT_MS),
-        service.status(),
-        connection.remotePeer
-      );
+      const retained = await readP2PFrameRetained(stream, MAX_CONSENSUS_FRAME_BYTES, P2P_CONSENSUS_TIMEOUT_MS);
+      releaseFrame = retained.release;
+      const request = parseConsensusRequest(retained.value, service.status(), connection.remotePeer);
       let result: unknown;
       if (request.kind === "attest") result = await service.attestProposal(request.block);
       else if (request.kind === "skip") result = await service.requestSkipVote(request.height, request.round, request.previousCertificate);
@@ -72,6 +71,7 @@ export async function registerP2PConsensusProtocol(
     } catch (error) {
       stream.abort(error instanceof Error ? error : new Error("Native consensus protocol failure"));
     } finally {
+      releaseFrame?.();
       release?.();
     }
   }, { maxInboundStreams: 4, maxOutboundStreams: 4 });
@@ -168,19 +168,19 @@ export class NativeConsensusPeerClient implements ConsensusPeerClient {
       throw new Error("Native consensus requires authenticated Noise");
     }
     const stream = await connection.newStream(P2P_CONSENSUS_PROTOCOL, { signal: AbortSignal.timeout(P2P_CONSENSUS_TIMEOUT_MS) });
+    let releaseFrame: (() => void) | undefined;
     try {
       await writeP2PFrame(stream, request, MAX_CONSENSUS_FRAME_BYTES, P2P_CONSENSUS_TIMEOUT_MS);
-      const response = parseConsensusResponse(
-        await readP2PFrame(stream, MAX_CONSENSUS_FRAME_BYTES, P2P_CONSENSUS_TIMEOUT_MS),
-        this.chain,
-        connection.remotePeer,
-        request.kind
-      );
+      const retained = await readP2PFrameRetained(stream, MAX_CONSENSUS_FRAME_BYTES, P2P_CONSENSUS_TIMEOUT_MS);
+      releaseFrame = retained.release;
+      const response = parseConsensusResponse(retained.value, this.chain, connection.remotePeer, request.kind);
       await stream.close({ signal: AbortSignal.timeout(P2P_CONSENSUS_TIMEOUT_MS) });
       return response;
     } catch (error) {
       stream.abort(error instanceof Error ? error : new Error("Native consensus protocol failure"));
       throw error;
+    } finally {
+      releaseFrame?.();
     }
   }
 }

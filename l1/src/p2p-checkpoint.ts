@@ -4,7 +4,7 @@ import type { Libp2p } from "libp2p";
 import { canonicalJson, sha256Hex } from "./codec.js";
 import { ZyronChain } from "./chain.js";
 import type { NodeService } from "./node.js";
-import { readP2PFrame, writeP2PFrame } from "./p2p-frame.js";
+import { readP2PFrameRetained, writeP2PFrame } from "./p2p-frame.js";
 import { P2PPeerRateLimiter } from "./p2p-rate.js";
 import { validateP2PChainIdentity, type P2PChainIdentity } from "./p2p.js";
 import type { NodeIdentity } from "./peer-identity.js";
@@ -64,14 +64,13 @@ export async function registerP2PCheckpointProtocol(
   const cache = new Map<string, CachedSnapshot>();
 
   await node.handle(P2P_CHECKPOINT_PROTOCOL, async (stream, connection) => {
+    let releaseFrame: (() => void) | undefined;
     try {
       if (connection.encryption !== "/noise") throw new Error("Checkpoint transfer requires authenticated Noise");
       if (!rate.consume(connection.remotePeer.toString())) throw new Error("Checkpoint transfer rate limit exceeded");
-      const request = parseRequest(
-        await readP2PFrame(stream, MAX_CHECKPOINT_REQUEST_BYTES, P2P_CHECKPOINT_TIMEOUT_MS),
-        service.status(),
-        connection.remotePeer
-      );
+      const retained = await readP2PFrameRetained(stream, MAX_CHECKPOINT_REQUEST_BYTES, P2P_CHECKPOINT_TIMEOUT_MS);
+      releaseFrame = retained.release;
+      const request = parseRequest(retained.value, service.status(), connection.remotePeer);
       if (!service.store.chain.stateV2ForPersistence()) throw new Error("Checkpoint transfer requires active State v2");
 
       let selected = cache.get(request.tipHash);
@@ -104,6 +103,8 @@ export async function registerP2PCheckpointProtocol(
       await stream.close({ signal: AbortSignal.timeout(P2P_CHECKPOINT_TIMEOUT_MS) });
     } catch (error) {
       stream.abort(error instanceof Error ? error : new Error("Checkpoint transfer failed"));
+    } finally {
+      releaseFrame?.();
     }
   }, { maxInboundStreams: 1, maxOutboundStreams: 1 });
 }
@@ -135,6 +136,7 @@ export async function fetchTrustedSnapshotFromPeer(
     const stream = await connection.newStream(P2P_CHECKPOINT_PROTOCOL, {
       signal: AbortSignal.timeout(P2P_CHECKPOINT_TIMEOUT_MS)
     });
+    let releaseFrame: (() => void) | undefined;
     try {
       const request: CheckpointRequest = {
         version: 1,
@@ -145,13 +147,9 @@ export async function fetchTrustedSnapshotFromPeer(
         maxBytes: MAX_CHECKPOINT_CHUNK_BYTES
       };
       await writeP2PFrame(stream, request, MAX_CHECKPOINT_REQUEST_BYTES, P2P_CHECKPOINT_TIMEOUT_MS);
-      const response = parseResponse(
-        await readP2PFrame(stream, MAX_CHECKPOINT_RESPONSE_BYTES, P2P_CHECKPOINT_TIMEOUT_MS),
-        expected,
-        connection.remotePeer,
-        anchor,
-        offset
-      );
+      const retained = await readP2PFrameRetained(stream, MAX_CHECKPOINT_RESPONSE_BYTES, P2P_CHECKPOINT_TIMEOUT_MS);
+      releaseFrame = retained.release;
+      const response = parseResponse(retained.value, expected, connection.remotePeer, anchor, offset);
       await stream.close({ signal: AbortSignal.timeout(P2P_CHECKPOINT_TIMEOUT_MS) });
       totalBytes ??= response.totalBytes;
       height ??= response.height;
@@ -168,6 +166,8 @@ export async function fetchTrustedSnapshotFromPeer(
     } catch (error) {
       stream.abort(error instanceof Error ? error : new Error("Checkpoint transfer failed"));
       throw error;
+    } finally {
+      releaseFrame?.();
     }
   }
   if (totalBytes === undefined || offset !== totalBytes) throw new Error("Checkpoint transfer exceeded bounded chunk budget");

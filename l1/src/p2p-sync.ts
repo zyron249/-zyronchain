@@ -9,7 +9,7 @@ import {
   type NodeStatus
 } from "./node.js";
 import { validateP2PChainIdentity, type P2PChainIdentity } from "./p2p.js";
-import { readP2PFrame, writeP2PFrame } from "./p2p-frame.js";
+import { readP2PFrameRetained, writeP2PFrame } from "./p2p-frame.js";
 import { P2PPeerRateLimiter } from "./p2p-rate.js";
 import type { NodeIdentity } from "./peer-identity.js";
 import type { Block } from "./types.js";
@@ -45,12 +45,15 @@ export async function registerP2PSyncProtocol(
   const inflight = new PeerInflightLimiter(2);
   await node.handle(P2P_SYNC_PROTOCOL, async (stream, connection) => {
     let release: (() => void) | undefined;
+    let releaseFrame: (() => void) | undefined;
     try {
       if (connection.encryption !== "/noise") throw new Error("Native sync requires authenticated Noise");
       const peerId = connection.remotePeer.toString();
       if (!rate.consume(peerId)) throw new Error("Native sync rate limit exceeded");
       release = inflight.enter(peerId);
-      const request = parseSyncRequest(await readP2PFrame(stream, MAX_SYNC_REQUEST_BYTES, P2P_SYNC_TIMEOUT_MS), service.status(), connection.remotePeer);
+      const retained = await readP2PFrameRetained(stream, MAX_SYNC_REQUEST_BYTES, P2P_SYNC_TIMEOUT_MS);
+      releaseFrame = retained.release;
+      const request = parseSyncRequest(retained.value, service.status(), connection.remotePeer);
       const blocks = await service.blocks(request.from, request.limit, MAX_SYNC_BATCH_PAYLOAD_BYTES);
       const response: SyncResponse = {
         version: 1,
@@ -63,6 +66,7 @@ export async function registerP2PSyncProtocol(
     } catch (error) {
       stream.abort(error instanceof Error ? error : new Error("Native sync protocol failure"));
     } finally {
+      releaseFrame?.();
       release?.();
     }
   }, { maxInboundStreams: 2, maxOutboundStreams: 2 });
@@ -94,9 +98,12 @@ export async function syncP2PFrom(
     const stream = await connection.newStream(P2P_SYNC_PROTOCOL, {
       signal: AbortSignal.timeout(P2P_SYNC_TIMEOUT_MS)
     });
+    let releaseFrame: (() => void) | undefined;
     try {
       await writeP2PFrame(stream, { version: 1, identity: local, from, limit: MAX_SYNC_BLOCKS } satisfies SyncRequest, MAX_SYNC_REQUEST_BYTES, P2P_SYNC_TIMEOUT_MS);
-      const response = parseSyncResponse(await readP2PFrame(stream, MAX_SYNC_RESPONSE_BYTES, P2P_SYNC_TIMEOUT_MS), expected, connection.remotePeer);
+      const retained = await readP2PFrameRetained(stream, MAX_SYNC_RESPONSE_BYTES, P2P_SYNC_TIMEOUT_MS);
+      releaseFrame = retained.release;
+      const response = parseSyncResponse(retained.value, expected, connection.remotePeer);
       await stream.close({ signal: AbortSignal.timeout(P2P_SYNC_TIMEOUT_MS) });
 
       const localHeight = service.status().height;
@@ -118,6 +125,8 @@ export async function syncP2PFrom(
     } catch (error) {
       stream.abort(error instanceof Error ? error : new Error("Native sync protocol failure"));
       throw error;
+    } finally {
+      releaseFrame?.();
     }
   }
   return accepted;

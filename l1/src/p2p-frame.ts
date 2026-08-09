@@ -91,12 +91,31 @@ export async function writeP2PFrame(
   }
 }
 
+export interface RetainedP2PFrame {
+  value: unknown;
+  release: () => void;
+}
+
 export async function readP2PFrame(
   stream: Stream,
   maxBytes: number,
   timeoutMs: number,
   budget: P2PFrameByteBudget = inboundFrameBudget
 ): Promise<unknown> {
+  const retained = await readP2PFrameRetained(stream, maxBytes, timeoutMs, budget);
+  try {
+    return retained.value;
+  } finally {
+    retained.release();
+  }
+}
+
+export async function readP2PFrameRetained(
+  stream: Stream,
+  maxBytes: number,
+  timeoutMs: number,
+  budget: P2PFrameByteBudget = inboundFrameBudget
+): Promise<RetainedP2PFrame> {
   assertFrameLimits(maxBytes, timeoutMs);
   stream.inactivityTimeout = timeoutMs;
   const header = Buffer.alloc(4);
@@ -107,6 +126,7 @@ export async function readP2PFrame(
   let decoded: unknown;
   let decodedFrame = false;
   let release: (() => void) | undefined;
+  let ownershipTransferred = false;
   const timeout = setTimeout(() => stream.abort(new Error("P2P frame read timeout")), timeoutMs);
   timeout.unref();
   try {
@@ -146,11 +166,12 @@ export async function readP2PFrame(
         }
       }
     }
-    if (decodedFrame) return decoded;
-    throw new Error("Truncated P2P frame");
+    if (!decodedFrame || !release) throw new Error("Truncated P2P frame");
+    ownershipTransferred = true;
+    return { value: decoded, release };
   } finally {
     clearTimeout(timeout);
-    release?.();
+    if (!ownershipTransferred) release?.();
   }
 }
 
