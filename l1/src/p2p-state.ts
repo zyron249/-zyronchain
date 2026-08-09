@@ -7,7 +7,7 @@ import { validateBlockShape } from "./block.js";
 import { canonicalJson, sha256Hex } from "./codec.js";
 import { ZyronChain } from "./chain.js";
 import type { NodeService } from "./node.js";
-import { readP2PFrame, writeP2PFrame } from "./p2p-frame.js";
+import { readP2PFrameRetained, writeP2PFrame } from "./p2p-frame.js";
 import { P2PPeerRateLimiter } from "./p2p-rate.js";
 import { validateP2PChainIdentity, type P2PChainIdentity } from "./p2p.js";
 import type { NodeIdentity } from "./peer-identity.js";
@@ -118,14 +118,13 @@ export async function registerP2PStateProtocol(
 
   await node.handle(P2P_STATE_PROTOCOL, async (stream, connection) => {
     let selected: CachedPortableState | undefined;
+    let releaseFrame: (() => void) | undefined;
     try {
       if (connection.encryption !== "/noise") throw new Error("State transfer requires authenticated Noise");
       if (!rate.consume(connection.remotePeer.toString())) throw new Error("State transfer rate limit exceeded");
-      const request = parseRequest(
-        await readP2PFrame(stream, MAX_STATE_REQUEST_BYTES, P2P_STATE_TIMEOUT_MS),
-        service.status(),
-        connection.remotePeer
-      );
+      const retained = await readP2PFrameRetained(stream, MAX_STATE_REQUEST_BYTES, P2P_STATE_TIMEOUT_MS);
+      releaseFrame = retained.release;
+      const request = parseRequest(retained.value, service.status(), connection.remotePeer);
       selected = await acquirePortableState(request);
       const response = await responseForRequest(local, selected, request);
       await writeP2PFrame(
@@ -138,6 +137,7 @@ export async function registerP2PStateProtocol(
     } catch (error) {
       stream.abort(error instanceof Error ? error : new Error("State transfer failed"));
     } finally {
+      releaseFrame?.();
       if (selected) {
         const remaining = (activeCounts.get(selected.store.dataDir) ?? 1) - 1;
         if (remaining > 0) activeCounts.set(selected.store.dataDir, remaining);
@@ -222,13 +222,14 @@ async function fetchTrustedPortableState(
   validateP2PChainIdentity(local, expected, node.peerId);
 
   let lastRequestAt = 0;
-  const request = async (kind: StateRequestKind, start: number, limit: number): Promise<{ value: unknown; remotePeer: PeerId }> => {
+  const request = async (kind: StateRequestKind, start: number, limit: number): Promise<{ value: unknown; remotePeer: PeerId; release: () => void }> => {
     const delay = P2P_STATE_MIN_REQUEST_INTERVAL_MS - (Date.now() - lastRequestAt);
     if (delay > 0) await new Promise<void>((resolve) => setTimeout(resolve, delay));
     lastRequestAt = Date.now();
     let lastError: unknown;
     for (let attempt = 0; attempt <= P2P_STATE_RETRIES; attempt += 1) {
       let stream: Awaited<ReturnType<Awaited<ReturnType<typeof node.dial>>["newStream"]>> | undefined;
+      let releaseFrame: (() => void) | undefined;
       try {
         const connection = await node.dial(target, { signal: AbortSignal.timeout(P2P_STATE_TIMEOUT_MS) });
         if (connection.encryption !== "/noise") {
@@ -241,14 +242,18 @@ async function fetchTrustedPortableState(
           kind, start, limit
         };
         await writeP2PFrame(stream, body, MAX_STATE_REQUEST_BYTES, P2P_STATE_TIMEOUT_MS);
-        const value = await readP2PFrame(
+        const retained = await readP2PFrameRetained(
           stream,
           kind === "manifest" ? MAX_STATE_MANIFEST_BYTES : MAX_STATE_RESPONSE_BYTES,
           P2P_STATE_TIMEOUT_MS
         );
+        releaseFrame = retained.release;
         await stream.close({ signal: AbortSignal.timeout(P2P_STATE_TIMEOUT_MS) });
-        return { value, remotePeer: connection.remotePeer };
+        const reply = { value: retained.value, remotePeer: connection.remotePeer, release: retained.release };
+        releaseFrame = undefined;
+        return reply;
       } catch (error) {
+        releaseFrame?.();
         lastError = error;
         stream?.abort(error instanceof Error ? error : new Error("State transfer failed"));
       }
@@ -257,7 +262,13 @@ async function fetchTrustedPortableState(
   };
 
   const manifestReply = await request("manifest", 0, 1);
-  const manifest = parseManifest(manifestReply.value, expected, manifestReply.remotePeer, anchor);
+  const manifest = (() => {
+    try {
+      return parseManifest(manifestReply.value, expected, manifestReply.remotePeer, anchor);
+    } finally {
+      manifestReply.release();
+    }
+  })();
   const resume = resumeDir ? await PortableStateResumeStore.open(resumeDir, {
     version: 1,
     chainId: expected.chainId,
@@ -274,19 +285,27 @@ async function fetchTrustedPortableState(
   for (let start = resume?.nextRecordStart() ?? 0; start < manifest.recordCount;) {
     const limit = Math.min(MAX_STATE_RECORDS_PER_CHUNK, manifest.recordCount - start);
     const reply = await request("records", start, limit);
-    const chunk = parseChunk(reply.value, expected, reply.remotePeer, anchor, "records", start, limit);
-    if (resume) await resume.putRecords(start, chunk.items);
-    else records.push(...chunk.items);
-    start += chunk.items.length;
+    try {
+      const chunk = parseChunk(reply.value, expected, reply.remotePeer, anchor, "records", start, limit);
+      if (resume) await resume.putRecords(start, chunk.items);
+      else records.push(...chunk.items);
+      start += chunk.items.length;
+    } finally {
+      reply.release();
+    }
   }
   const keys: unknown[] = [];
   for (let start = resume?.nextKeyStart() ?? 0; start < manifest.keyCount;) {
     const limit = Math.min(MAX_STATE_KEYS_PER_CHUNK, manifest.keyCount - start);
     const reply = await request("keys", start, limit);
-    const chunk = parseChunk(reply.value, expected, reply.remotePeer, anchor, "keys", start, limit);
-    if (resume) await resume.putKeys(start, chunk.items);
-    else keys.push(...chunk.items);
-    start += chunk.items.length;
+    try {
+      const chunk = parseChunk(reply.value, expected, reply.remotePeer, anchor, "keys", start, limit);
+      if (resume) await resume.putKeys(start, chunk.items);
+      else keys.push(...chunk.items);
+      start += chunk.items.length;
+    } finally {
+      reply.release();
+    }
   }
   if (!resume && (records.length !== manifest.recordCount || keys.length !== manifest.keyCount)) {
     throw new Error("State transfer chunk counts changed during transfer");
