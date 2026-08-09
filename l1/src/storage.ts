@@ -75,6 +75,11 @@ export interface PruneFaultHooks {
   afterBlockRename?: () => void | Promise<void>;
 }
 
+export interface SigningJournalFaultHooks {
+  afterWrite?: () => void | Promise<void>;
+  afterSync?: () => void | Promise<void>;
+}
+
 export interface TrustedSnapshotAnchor {
   tipHash: string;
   snapshotSha256: string;
@@ -685,6 +690,7 @@ async function syncDirectory(path: string): Promise<void> {
 
 export class SigningJournal {
   private readonly reservations = new Map<string, string>();
+  private persistenceFaulted = false;
   private constructor(readonly path: string) {}
 
   static async open(dataDir: string): Promise<SigningJournal> {
@@ -713,15 +719,32 @@ export class SigningJournal {
     return journal;
   }
 
-  async reserveAttestation(height: number, round: number, blockHash: string): Promise<void> {
-    return this.reserveChoice(height, round, "attest", blockHash);
+  async reserveAttestation(
+    height: number,
+    round: number,
+    blockHash: string,
+    faultHooks: SigningJournalFaultHooks = {}
+  ): Promise<void> {
+    return this.reserveChoice(height, round, "attest", blockHash, faultHooks);
   }
 
-  async reserveSkip(height: number, round: number, previousHash: string): Promise<void> {
-    return this.reserveChoice(height, round, "skip", previousHash);
+  async reserveSkip(
+    height: number,
+    round: number,
+    previousHash: string,
+    faultHooks: SigningJournalFaultHooks = {}
+  ): Promise<void> {
+    return this.reserveChoice(height, round, "skip", previousHash, faultHooks);
   }
 
-  private async reserveChoice(height: number, round: number, kind: "attest" | "skip", value: string): Promise<void> {
+  private async reserveChoice(
+    height: number,
+    round: number,
+    kind: "attest" | "skip",
+    value: string,
+    faultHooks: SigningJournalFaultHooks
+  ): Promise<void> {
+    if (this.persistenceFaulted) throw new Error("Signing journal persistence fault requires validator restart");
     if (!Number.isSafeInteger(height) || height < 1 || !Number.isSafeInteger(round) || round < 0) {
       throw new Error("Invalid signing slot");
     }
@@ -733,12 +756,23 @@ export class SigningJournal {
     if (existing) throw new Error("Conflicting validator action prevented for consensus round");
 
     const line = `${JSON.stringify({ height, round, kind, value })}\n`;
-    const handle = await open(this.path, "a", 0o600);
     try {
-      await handle.writeFile(line, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
+      const handle = await open(this.path, "a", 0o600);
+      try {
+        await handle.writeFile(line, "utf8");
+        await faultHooks.afterWrite?.();
+        await handle.sync();
+        await faultHooks.afterSync?.();
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      // The validator must never guess whether a reservation became durable.
+      // A retry after an ambiguous append/fsync/close could release a signature
+      // for a conflicting choice in the same consensus slot. Fail-stop this
+      // journal instance; startup replay is the only safe recovery boundary.
+      this.persistenceFaulted = true;
+      throw new Error("Signing journal persistence failed; validator restart required", { cause: error });
     }
     this.reservations.set(key, reservation);
   }

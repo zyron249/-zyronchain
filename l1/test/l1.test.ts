@@ -1290,6 +1290,55 @@ test("signing journal prevents validator double-sign across restart", async () =
   }
 });
 
+test("signing journal write uncertainty fail-stops all later validator choices", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-signing-write-fault-"));
+  try {
+    const journal = await SigningJournal.open(directory);
+    await assert.rejects(
+      () => journal.reserveAttestation(8, 0, "a".repeat(64), {
+        afterWrite: () => { throw new Error("injected signing append uncertainty"); }
+      }),
+      /Signing journal persistence failed; validator restart required/
+    );
+    await assert.rejects(
+      () => journal.reserveAttestation(8, 0, "b".repeat(64)),
+      /Signing journal persistence fault requires validator restart/
+    );
+    await assert.rejects(
+      () => journal.reserveSkip(8, 1, "c".repeat(64)),
+      /Signing journal persistence fault requires validator restart/
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("signing journal post-fsync uncertainty requires restart and preserves the durable choice", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-signing-sync-fault-"));
+  try {
+    const journal = await SigningJournal.open(directory);
+    await assert.rejects(
+      () => journal.reserveAttestation(8, 0, "a".repeat(64), {
+        afterSync: () => { throw new Error("injected post-fsync uncertainty"); }
+      }),
+      /Signing journal persistence failed; validator restart required/
+    );
+    await assert.rejects(
+      () => journal.reserveAttestation(8, 0, "b".repeat(64)),
+      /Signing journal persistence fault requires validator restart/
+    );
+
+    const reopened = await SigningJournal.open(directory);
+    await reopened.reserveAttestation(8, 0, "a".repeat(64));
+    await assert.rejects(
+      () => reopened.reserveAttestation(8, 0, "b".repeat(64)),
+      /Conflicting validator action/
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("two node services attest a proposal, finalize it, persist it, and converge", async () => {
   const firstDir = await mkdtemp(join(tmpdir(), "zyron-node-a-"));
   const secondDir = await mkdtemp(join(tmpdir(), "zyron-node-b-"));
