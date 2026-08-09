@@ -46,6 +46,8 @@ Provision the remote-signer token out of band as a regular `0600` secret file, r
 | `height`, `tipHash` | finalized local tip | compare against independent nodes |
 | `finalizedBlockAgeSeconds` | age of latest finalized block | finality-stall detection |
 | `mempoolSize` | pending transaction pressure | saturation/spam signal |
+| `rpc.inflightRequests`, `rpc.maxInflightRequests` | current node-wide RPC occupancy and configured capacity | sustained saturation / capacity exhaustion |
+| `rpc.rejectedRequests` | cumulative requests shed before routing or body work | alert on increase; correlate with perimeter traffic and latency |
 | `validatorCount` | active/next validator-set size | topology/config sanity |
 | `persistenceHealthy` | process may continue durable commits | **page immediately if false** |
 | `validatorClockHealthy` | validator signing clock has not moved backward beyond tolerance | **page immediately if false; restart only after clock repair** |
@@ -60,6 +62,7 @@ Infrastructure collectors must also record process RSS/CPU, disk free space/late
 
 These are engineering rehearsal thresholds, not a mainnet governance decision:
 
+- Alert whenever `rpc.rejectedRequests` increases; page on sustained near-capacity RPC occupancy or repeated admission shedding.
 - Page if `persistenceHealthy` or `validatorClockHealthy` is false, the process repeatedly restarts, or derived-state corruption recovery occurs unexpectedly.
 - Page if independently observed finalized tips disagree at the same height.
 - Warn when finalized block age exceeds two expected block intervals; page when it exceeds four. Diagnose quorum/partition/signer health before taking action.
