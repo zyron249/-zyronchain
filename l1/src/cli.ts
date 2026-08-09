@@ -437,7 +437,7 @@ async function runNode(args: string[]): Promise<void> {
   console.log(`Genesis ${service.status().genesisHash}, height ${service.status().height}`);
   const timers = new Set<NodeJS.Timeout>();
   const schedule = (callback: () => void, delayMs: number): void => {
-    const timer = schedule(callback, delayMs);
+    const timer = setInterval(callback, delayMs);
     timer.unref();
     timers.add(timer);
   };
