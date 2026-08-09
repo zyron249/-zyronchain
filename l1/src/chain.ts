@@ -11,7 +11,7 @@ import {
   validateBlockShape,
   validateRoundCertificate
 } from "./block.js";
-import { addressFromPublicKey, publicKeyFromPrivate, verifyCanonical } from "./crypto.js";
+import { addressFromPublicKey, publicKeyFromPrivate, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
 import { LedgerState, type LedgerSnapshot } from "./state.js";
 import {
   SparseMerkleState,
@@ -43,6 +43,10 @@ export const MAX_BLOCK_TRANSACTION_BYTES = 1_500_000;
 export const MIN_VALIDATOR_UPDATE_DELAY = 100;
 export const MIN_PROTOCOL_UPDATE_DELAY = 100;
 export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1, 2]);
+
+export function protocolUsesStateV2(protocolVersion: number): boolean {
+  return protocolVersion === 2 || protocolVersion === 3;
+}
 
 interface AppliedTransition {
   ledger: LedgerState | undefined;
@@ -122,7 +126,7 @@ export class ZyronChain {
       protocolSchedule: [...protocolSchedule].map(([activationHeight, protocolVersion]) => ({ activationHeight, protocolVersion }))
     };
     const protocolVersion = chain.protocolVersionAt(snapshot.height);
-    const sparse = protocolVersion === 2 ? stateV2FromLedgerSnapshot(state.snapshot(), governance) : undefined;
+    const sparse = protocolUsesStateV2(protocolVersion) ? stateV2FromLedgerSnapshot(state.snapshot(), governance) : undefined;
     const stateRoot = protocolVersion === 1 ? state.root() : sparse!.root();
     if (snapshot.tip.header.stateRoot !== stateRoot) throw new Error("Trusted checkpoint state root mismatch");
 
@@ -131,15 +135,18 @@ export class ZyronChain {
     } else {
       const validators = chain.validatorsAt(snapshot.height);
       const expected = expectedValidator(validators, snapshot.height, snapshot.tip.header.round);
+      const proposerSignatureValid = snapshot.tip.signature && (protocolVersion >= 3
+        ? verifyCanonicalDomain("zyronchain/block-proposal/v1", snapshot.tip.header, snapshot.tip.signature, expected.publicKey)
+        : verifyCanonical(snapshot.tip.header, snapshot.tip.signature, expected.publicKey));
       if (snapshot.tip.header.proposer !== expected.address || snapshot.tip.proposerPublicKey !== expected.publicKey ||
-          !snapshot.tip.signature || !verifyCanonical(snapshot.tip.header, snapshot.tip.signature, expected.publicKey)) {
+          !proposerSignatureValid) {
         throw new Error("Invalid checkpoint proposer signature");
       }
       validateRoundCertificate(snapshot.tip, validators);
       validateAttestationQuorum(snapshot.tip, validators);
     }
 
-    chain.state = protocolVersion === 2 ? undefined : state;
+    chain.state = protocolUsesStateV2(protocolVersion) ? undefined : state;
     chain.stateV2 = sparse;
     chain.stateV2SemanticKeys = sparse ? new Set(stateV2KeyPreimages(state.snapshot(), governance)) : undefined;
     chain.tipBlock = structuredClone(snapshot.tip);
@@ -163,7 +170,9 @@ export class ZyronChain {
     const activeProtocol = [...validated.view.governance.protocolSchedule]
       .filter((entry) => entry.activationHeight <= tip.header.height)
       .at(-1)?.protocolVersion;
-    if (activeProtocol !== 2) throw new Error("Portable State v2 checkpoint requires active protocol v2");
+    if (activeProtocol === undefined || !protocolUsesStateV2(activeProtocol)) {
+      throw new Error("Portable State v2 checkpoint requires an active State-v2 protocol");
+    }
     const base = new ZyronChain(genesis);
     const snapshot: ChainSnapshotV1 = {
       version: 1,
@@ -204,13 +213,13 @@ export class ZyronChain {
   }
 
   balance(address: Address): number {
-    return this.stateV2 && this.protocolVersionAt(this.height) === 2
+    return this.stateV2 && protocolUsesStateV2(this.protocolVersionAt(this.height))
       ? stateV2Balance(this.stateV2, address)
       : this.requireLegacyState().balance(address);
   }
 
   nonce(address: Address): number {
-    return this.stateV2 && this.protocolVersionAt(this.height) === 2
+    return this.stateV2 && protocolUsesStateV2(this.protocolVersionAt(this.height))
       ? stateV2Nonce(this.stateV2, address)
       : this.requireLegacyState().nonce(address);
   }
@@ -234,7 +243,7 @@ export class ZyronChain {
   }
 
   stateV2SemanticKeyPreimages(): string[] | undefined {
-    if (this.protocolVersionAt(this.height) !== 2 || !this.stateV2 || !this.stateV2SemanticKeys) return undefined;
+    if (!protocolUsesStateV2(this.protocolVersionAt(this.height)) || !this.stateV2 || !this.stateV2SemanticKeys) return undefined;
     return [...this.stateV2SemanticKeys].sort();
   }
 
@@ -417,7 +426,7 @@ export class ZyronChain {
     if (tx.kind === "activity_settlement") {
       if (!this.genesis.activityOracles.includes(tx.publicKey)) throw new Error("Unauthorized activity oracle");
       if (tx.sender !== this.genesis.activityPool) throw new Error("Invalid activity pool sender");
-      const settled = this.stateV2 && this.protocolVersionAt(this.height) === 2
+      const settled = this.stateV2 && protocolUsesStateV2(this.protocolVersionAt(this.height))
         ? stateV2ActivityEpochSettled(this.stateV2, tx.epoch)
         : this.requireLegacyState().isActivityEpochSettled(tx.epoch);
       if (settled) throw new Error("Activity epoch already settled");
@@ -456,8 +465,8 @@ export class ZyronChain {
       );
     const protocolVersion = this.protocolVersionAt(this.height + 1);
     assertSupportedProtocolVersion(protocolVersion);
-    const next = protocolVersion === 1 ? this.requireLegacyState().clone() : undefined;
-    let sparse = protocolVersion === 2
+    const next = protocolVersion === 1 ? this.legacyStateForTransition().clone() : undefined;
+    let sparse = protocolUsesStateV2(protocolVersion)
       ? (this.stateV2 ?? stateV2FromLedgerSnapshot(this.requireLegacyState().snapshot(), this.governanceSnapshot()))
       : undefined;
     const selected: Transaction[] = [];
@@ -496,8 +505,8 @@ export class ZyronChain {
 
   private validateAndApply(transactions: Transaction[], startingState: LedgerState | undefined, blockHeight: number): AppliedTransition {
     const protocolVersion = this.protocolVersionAt(blockHeight);
-    const next = protocolVersion === 1 ? (startingState ?? this.requireLegacyState()).clone() : startingState;
-    let sparse = protocolVersion === 2
+    const next = protocolVersion === 1 ? this.legacyStateForTransition(startingState).clone() : startingState;
+    let sparse = protocolUsesStateV2(protocolVersion)
       ? (this.stateV2 ?? stateV2FromLedgerSnapshot((startingState ?? this.requireLegacyState()).snapshot(), this.governanceSnapshot()))
       : undefined;
     const seen = new Set<string>();
@@ -531,6 +540,13 @@ export class ZyronChain {
   private requireLegacyState(): LedgerState {
     if (!this.state) throw new Error("Legacy ledger is unavailable after State v2 activation");
     return this.state;
+  }
+
+  private legacyStateForTransition(preferred?: LedgerState): LedgerState {
+    if (preferred) return preferred;
+    if (this.state) return this.state;
+    if (!this.stateV2) throw new Error("No authenticated state is available for legacy transition");
+    return LedgerState.fromSnapshot(this.stateV2PortableView().ledger);
   }
 
   private stateV2PortableView(): import("./state-v2.js").StateV2PortableView {
@@ -623,7 +639,7 @@ function validateProtocolSchedule(value: unknown): Map<number, number> {
 
 function stateRootForProtocol(protocolVersion: number, state: AppliedTransition): string {
   if (protocolVersion === 1 && state.ledger) return state.ledger.root();
-  if (protocolVersion === 2 && state.sparse) return state.sparse.root();
+  if (protocolUsesStateV2(protocolVersion) && state.sparse) return state.sparse.root();
   throw new Error(`Missing state implementation for protocol version ${protocolVersion}`);
 }
 
