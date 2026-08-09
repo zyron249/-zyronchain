@@ -2030,8 +2030,8 @@ test("RPC exposes liveness, readiness, and metrics while enforcing per-client re
       rejectedResponses: 0
     });
     assert.deepEqual(payload.p2pFrames, {
-      inbound: { bytesInUse: 0, maxBytes: 64 * 1_024 * 1_024, rejectedFrames: 0 },
-      outbound: { bytesInUse: 0, maxBytes: 64 * 1_024 * 1_024, rejectedFrames: 0 }
+      inbound: { bytesInUse: 0, maxBytes: 64 * 1_024 * 1_024, peakBytesInUse: 0, rejectedFrames: 0 },
+      outbound: { bytesInUse: 0, maxBytes: 64 * 1_024 * 1_024, peakBytesInUse: 0, rejectedFrames: 0 }
     });
 
     const limited = await fetch(`${base}/status`);
