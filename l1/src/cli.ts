@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Multiaddr } from "@multiformats/multiaddr";
@@ -324,7 +324,7 @@ async function runNode(args: string[]): Promise<void> {
     throw new Error("--validator-signer-token-file requires --validator-signer-url");
   }
   const validatorSignerToken = validatorSignerTokenPath
-    ? await readAuthToken(resolve(validatorSignerTokenPath), "Validator signer")
+    ? await readAuthToken(resolve(validatorSignerTokenPath), "Validator signer", true)
     : undefined;
   const validatorSigner: ValidatorSigner | undefined = privateKey
     ? new LocalValidatorSigner(privateKey)
@@ -923,7 +923,13 @@ async function readPrivateKey(path: string): Promise<string> {
   return parsed.privateKey;
 }
 
-async function readAuthToken(path: string, label: string): Promise<string> {
+async function readAuthToken(path: string, label: string, requirePrivatePermissions = false): Promise<string> {
+  if (requirePrivatePermissions) {
+    const metadata = await stat(path);
+    if (!metadata.isFile() || (metadata.mode & 0o077) !== 0) {
+      throw new Error(`${label} token file must be a regular file with mode 0600`);
+    }
+  }
   const token = (await readFile(path, "utf8")).trim();
   if (token.length < 32 || token.length > 512 || !/^[\\x21-\\x7e]+$/.test(token)) {
     throw new Error(`${label} token file must contain a single 32-512 character token`);
