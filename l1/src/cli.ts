@@ -14,7 +14,7 @@ import {
   produceFinalizedBlock,
   type ConsensusPeerClient
 } from "./node.js";
-import { ChainStore, SigningJournal } from "./storage.js";
+import { ChainStore, NodeDataDirectoryLease, SigningJournal } from "./storage.js";
 import { createSignedPeerRecord, loadOrCreateNodeIdentity } from "./peer-identity.js";
 import { PeerReputationStore } from "./peer-reputation.js";
 import { PeerDirectory } from "./peer-directory.js";
@@ -262,6 +262,8 @@ async function runNode(args: string[]): Promise<void> {
   const genesisPath = option(args, "--genesis");
   const dataDir = option(args, "--data");
   if (!genesisPath || !dataDir) throw new Error("node requires --genesis <file> --data <directory>");
+  const resolvedDataDir = resolve(dataDir);
+  const dataLease = await NodeDataDirectoryLease.acquire(resolvedDataDir);
   const host = option(args, "--host") ?? "127.0.0.1";
   const port = parsePort(option(args, "--port") ?? "9137");
   const peerUrls = options(args, "--peer");
@@ -278,7 +280,7 @@ async function runNode(args: string[]): Promise<void> {
     nativePeerGroups.set(assignment.peerId, assignment.group);
   }
   const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
-  const store = await ChainStore.open(genesis, resolve(dataDir));
+  const store = await ChainStore.open(genesis, resolvedDataDir);
   const validatorKeyPath = option(args, "--validator-key");
   const privateKey = validatorKeyPath ? await readPrivateKey(resolve(validatorKeyPath)) : undefined;
   const validatorSignerUrl = option(args, "--validator-signer-url");
@@ -294,7 +296,7 @@ async function runNode(args: string[]): Promise<void> {
     : validatorSignerUrl && validatorPublicKey
       ? new RemoteValidatorSigner(validatorSignerUrl, validatorPublicKey)
       : undefined;
-  const journal = validatorSigner ? await SigningJournal.open(resolve(dataDir)) : undefined;
+  const journal = validatorSigner ? await SigningJournal.open(resolvedDataDir) : undefined;
   if (validatorSigner) {
     const publicKey = validatorSigner.publicKey;
     if (!store.chain.validatorsAt(store.chain.height + 1).some((validator) => validator.publicKey === publicKey)) {
@@ -401,6 +403,8 @@ async function runNode(args: string[]): Promise<void> {
       ]);
     }
   });
+  // Retain the OS-backed writer lease for exactly the server lifetime.
+  server.once("close", () => dataLease.close());
   await new Promise<void>((resolveListen, reject) => {
     server.once("error", reject);
     server.listen(port, host, () => resolveListen());

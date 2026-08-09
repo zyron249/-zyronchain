@@ -21,7 +21,7 @@ import {
   createValidatorSetUpdate
 } from "../src/transaction.js";
 import { createRoundSkipVote, validateBlockShape } from "../src/block.js";
-import { ChainStore, SigningJournal } from "../src/storage.js";
+import { ChainStore, NodeDataDirectoryLease, SigningJournal } from "../src/storage.js";
 import { stateV2FromLedgerSnapshot } from "../src/state-v2.js";
 import { createStateV2PortableBundle } from "../src/state-v2-portable.js";
 import { StateV2DiskStore } from "../src/state-v2-store.js";
@@ -631,6 +631,23 @@ test("chain store replays finalized blocks and pins the genesis identity", async
     const different = genesis();
     different.timestampMs += 1;
     await assert.rejects(() => ChainStore.open(different, directory), /different or unsupported chain/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("node data directory lease permits exactly one live chain writer", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-node-writer-lease-"));
+  try {
+    const first = await NodeDataDirectoryLease.acquire(directory);
+    await assert.rejects(
+      () => NodeDataDirectoryLease.acquire(directory),
+      /already has an active writer/
+    );
+    first.close();
+
+    const reopened = await NodeDataDirectoryLease.acquire(directory);
+    reopened.close();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
