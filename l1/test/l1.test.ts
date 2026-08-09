@@ -1688,6 +1688,54 @@ test("remote validator signer is fail-closed on wrong-key signatures and unsafe 
   }
 });
 
+test("remote validator signer binds protocol v3 requests and responses to the exact signing domain", async () => {
+  const requests: Array<{ version: number; intent: string; domain?: string }> = [];
+  const signerServer = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+      version: number;
+      intent: string;
+      domain?: string;
+      payload: unknown;
+    };
+    requests.push({
+      version: body.version,
+      intent: body.intent,
+      ...(body.domain === undefined ? {} : { domain: body.domain })
+    });
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      signature: signCanonicalDomain(body.domain!, body.payload, validatorOnePrivate)
+    }));
+  });
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      signerServer.once("error", reject);
+      signerServer.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = signerServer.address();
+    if (!address || typeof address === "string") throw new Error("Signer test server has no TCP address");
+    const signer = new RemoteValidatorSigner(`http://127.0.0.1:${address.port}/sign`, validatorOnePublic);
+    const payload = { chainId: genesis().chainId, height: 9, blockHash: "a".repeat(64) };
+    const signature = await signer.signCanonical(payload, "block-attestation", 3);
+
+    assert.equal(
+      verifyCanonicalDomain("zyronchain/finality-attestation/v1", payload, signature, validatorOnePublic),
+      true
+    );
+    assert.deepEqual(requests, [{
+      version: 2,
+      intent: "block-attestation",
+      domain: "zyronchain/finality-attestation/v1"
+    }]);
+  } finally {
+    if (signerServer.listening) {
+      await new Promise<void>((resolveClose, reject) => signerServer.close((error) => error ? reject(error) : resolveClose()));
+    }
+  }
+});
+
 test("signing journal reserves proposer choice before a remote signer can release a signature", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-remote-signer-journal-"));
   try {
