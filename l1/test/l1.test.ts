@@ -3020,6 +3020,101 @@ test("authorized v2-to-v1 rollback reconstructs authenticated ledger state at ac
   assert.equal(chain.balance(bob), 123);
 });
 
+test("v2-to-v1 rollback survives State-v2 restart, durable activation, and post-rollback restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-protocol-rollback-restart-"));
+  try {
+    let store = await ChainStore.open(genesis(), directory);
+    const upgradeBase = {
+      chainId: genesis().chainId,
+      nonce: 1,
+      sender: validatorOne,
+      activationHeight: 101,
+      protocolVersion: 2
+    };
+    const rollbackBase = {
+      ...upgradeBase,
+      nonce: 2,
+      activationHeight: 201,
+      protocolVersion: 1
+    };
+    const upgrade = createProtocolUpgrade({
+      ...upgradeBase,
+      approvals: [
+        createProtocolUpgradeApproval(upgradeBase, validatorOnePrivate, validatorOnePublic),
+        createProtocolUpgradeApproval(upgradeBase, validatorTwoPrivate, validatorTwoPublic)
+      ],
+      timestampMs: genesis().timestampMs + 1
+    }, validatorOnePrivate, validatorOnePublic);
+    const rollback = createProtocolUpgrade({
+      ...rollbackBase,
+      approvals: [
+        createProtocolUpgradeApproval(rollbackBase, validatorOnePrivate, validatorOnePublic),
+        createProtocolUpgradeApproval(rollbackBase, validatorTwoPrivate, validatorTwoPublic)
+      ],
+      timestampMs: genesis().timestampMs + 2
+    }, validatorOnePrivate, validatorOnePublic);
+
+    for (let height = 1; height <= 101; height += 1) {
+      const proposerKey = height % 2 === 1 ? validatorOnePrivate : validatorTwoPrivate;
+      let block = store.chain.produceBlock(height === 1 ? [upgrade, rollback] : [], proposerKey, {
+        timestampMs: genesis().timestampMs + (height * 10)
+      });
+      block = store.chain.attestBlock(block, validatorOnePrivate);
+      block = store.chain.attestBlock(block, validatorTwoPrivate);
+      await store.commitFinalizedBlock(block, genesis().timestampMs + (height * 10));
+    }
+    assert.equal(store.chain.tip.header.version, 2);
+    const v2Root = store.chain.tip.header.stateRoot;
+    assert.equal((await StateV2DiskStore.open(directory)).state().root(), v2Root);
+
+    store = await ChainStore.open(genesis(), directory);
+    assert.equal(store.chain.height, 101);
+    assert.equal(store.chain.protocolVersionAt(101), 2);
+    assert.equal(store.chain.tip.header.stateRoot, v2Root);
+
+    for (let height = 102; height <= 201; height += 1) {
+      const proposerKey = height % 2 === 1 ? validatorOnePrivate : validatorTwoPrivate;
+      let block = store.chain.produceBlock([], proposerKey, {
+        timestampMs: genesis().timestampMs + (height * 10)
+      });
+      block = store.chain.attestBlock(block, validatorOnePrivate);
+      block = store.chain.attestBlock(block, validatorTwoPrivate);
+      await store.commitFinalizedBlock(block, genesis().timestampMs + (height * 10));
+    }
+    assert.equal(store.chain.tip.header.version, 1);
+    assert.equal(store.chain.protocolVersionAt(201), 1);
+    assert.equal(store.chain.getState().nonce(validatorOne), 2);
+
+    store = await ChainStore.open(genesis(), directory);
+    assert.equal(store.chain.height, 201);
+    assert.equal(store.chain.tip.header.version, 1);
+    assert.equal(store.chain.getState().nonce(validatorOne), 2);
+
+    const transfer = createTransfer({
+      chainId: genesis().chainId,
+      nonce: 1,
+      sender: alice,
+      receiver: bob,
+      amountAtoms: 321,
+      feeAtoms: 0,
+      timestampMs: genesis().timestampMs + 2_020
+    }, alicePrivate, alicePublic);
+    let afterRollback = store.chain.produceBlock([transfer], validatorTwoPrivate, {
+      timestampMs: genesis().timestampMs + 2_021
+    });
+    afterRollback = store.chain.attestBlock(afterRollback, validatorOnePrivate);
+    afterRollback = store.chain.attestBlock(afterRollback, validatorTwoPrivate);
+    await store.commitFinalizedBlock(afterRollback, genesis().timestampMs + 2_021);
+
+    const final = await ChainStore.open(genesis(), directory);
+    assert.equal(final.chain.height, 202);
+    assert.equal(final.chain.balance(bob), 321);
+    assert.equal(final.chain.nonce(alice), 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("four validators converge across 120 blocks with repeated proposer-failure view changes", () => {
   const fourValidatorGenesis: GenesisConfig = {
     ...genesis(),
