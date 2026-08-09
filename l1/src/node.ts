@@ -189,7 +189,12 @@ export class NodeService {
       return {
         validator: validator.address,
         publicKey,
-        signature: await signWithValidator(this.validatorSigner, attestationPayload(block), "block-attestation")
+        signature: await signWithValidator(
+          this.validatorSigner,
+          attestationPayload(block),
+          "block-attestation",
+          block.header.version
+        )
       };
     });
   }
@@ -202,7 +207,7 @@ export class NodeService {
       await this.signingJournal.reserveAttestation(block.header.height, block.header.round, block.hash);
       return attachBlockSignature(
         block,
-        await signWithValidator(this.validatorSigner, block.header, "block-proposal")
+        await signWithValidator(this.validatorSigner, block.header, "block-proposal", block.header.version)
       );
     });
   }
@@ -251,7 +256,12 @@ export class NodeService {
       };
       return {
         ...unsigned,
-        signature: await signWithValidator(this.validatorSigner, roundSkipPayload(unsigned), "round-skip")
+        signature: await signWithValidator(
+          this.validatorSigner,
+          roundSkipPayload(unsigned),
+          "round-skip",
+          chain.protocolVersionAt(height)
+        )
       };
     });
   }
