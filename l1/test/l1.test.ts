@@ -3016,9 +3016,29 @@ test("protocol upgrade rejects weak or premature governance approvals", () => {
     () => chain.produceBlock([early], validatorOnePrivate, { timestampMs: 1_700_000_000_200 }),
     /activation is too soon/
   );
+
+  const v1Proposal = {
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: validatorOne,
+    activationHeight: 101,
+    protocolVersion: 1
+  };
+  const v1Reactivation = createProtocolUpgrade({
+    ...v1Proposal,
+    approvals: [
+      createProtocolUpgradeApproval(v1Proposal, validatorOnePrivate, validatorOnePublic),
+      createProtocolUpgradeApproval(v1Proposal, validatorTwoPrivate, validatorTwoPublic)
+    ],
+    timestampMs: 1_700_000_000_100
+  }, validatorOnePrivate, validatorOnePublic);
+  assert.throws(
+    () => chain.produceBlock([v1Reactivation], validatorOnePrivate, { timestampMs: 1_700_000_000_200 }),
+    /Protocol v1 cannot be reactivated/
+  );
 });
 
-test("protocol upgrade and rollback schedule is reconstructed from finalized history", async () => {
+test("protocol upgrade schedule is reconstructed from finalized history", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-protocol-store-"));
   try {
     const store = await ChainStore.open(genesis(), directory);
@@ -3033,7 +3053,7 @@ test("protocol upgrade and rollback schedule is reconstructed from finalized his
       ...upgradeBase,
       nonce: 2,
       activationHeight: 201,
-      protocolVersion: 1
+      protocolVersion: 3
     };
     const upgrade = createProtocolUpgrade(
       {
@@ -3068,7 +3088,7 @@ test("protocol upgrade and rollback schedule is reconstructed from finalized his
     assert.equal(reopened.chain.protocolVersionAt(100), 1);
     assert.equal(reopened.chain.protocolVersionAt(101), 2);
     assert.equal(reopened.chain.protocolVersionAt(200), 2);
-    assert.equal(reopened.chain.protocolVersionAt(201), 1);
+    assert.equal(reopened.chain.protocolVersionAt(201), 3);
     assert.equal(reopened.chain.getState().nonce(validatorOne), 2);
   } finally {
     await rm(directory, { recursive: true, force: true });
