@@ -1869,9 +1869,27 @@ test("HTTP RPC exposes status and accepts a strictly validated signed transactio
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("RPC test server has no TCP address");
     const base = `http://127.0.0.1:${address.port}`;
-    const status = await (await fetch(`${base}/status`)).json() as { chainId: string; height: number };
+    const statusResponse = await fetch(`${base}/status`);
+    assert.equal(statusResponse.headers.get("x-zyron-rpc-version"), "1");
+    const status = await statusResponse.json() as { chainId: string; height: number };
     assert.equal(status.chainId, genesis().chainId);
     assert.equal(status.height, 0);
+
+    const rpcInfoResponse = await fetch(`${base}/rpc-info`, {
+      headers: { "x-zyron-rpc-version": "1" }
+    });
+    assert.equal(rpcInfoResponse.status, 200);
+    assert.deepEqual(await rpcInfoResponse.json(), { rpcVersion: 1, supportedRpcVersions: [1] });
+
+    const incompatible = await fetch(`${base}/status`, {
+      headers: { "x-zyron-rpc-version": "2" }
+    });
+    assert.equal(incompatible.status, 426);
+    assert.deepEqual(await incompatible.json(), {
+      error: "Unsupported RPC API version",
+      rpcVersion: 1,
+      supportedRpcVersions: [1]
+    });
 
     const tx = createTransfer(
       { chainId: genesis().chainId, nonce: 1, sender: alice, receiver: bob, amountAtoms: 1, feeAtoms: 1, timestampMs: 100 },
