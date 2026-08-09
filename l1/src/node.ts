@@ -1036,6 +1036,23 @@ function assertCompatibleRpcResponse(response: Response): void {
 }
 
 async function parseBoundedResponse(response: Response, maxBytes: number): Promise<unknown> {
+  const contentType = response.headers.get("content-type");
+  if (!contentType || !/^application\/json(?:\s*;|$)/i.test(contentType)) {
+    await response.body?.cancel();
+    throw new Error("Peer response must use application/json");
+  }
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null) {
+    if (!/^(0|[1-9][0-9]*)$/.test(declaredLength)) {
+      await response.body?.cancel();
+      throw new Error("Peer response has invalid Content-Length");
+    }
+    const declaredBytes = Number(declaredLength);
+    if (!Number.isSafeInteger(declaredBytes) || declaredBytes > maxBytes) {
+      await response.body?.cancel();
+      throw new Error("Peer response too large");
+    }
+  }
   if (!response.body) throw new Error("Peer returned empty body");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];

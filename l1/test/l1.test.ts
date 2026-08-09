@@ -2314,6 +2314,46 @@ test("RPC serves a signed peer record that a client verifies against chain ident
   }
 });
 
+test("peer client rejects unsafe response metadata before JSON parsing", async () => {
+  let requestCount = 0;
+  const server = createServer((_request, response) => {
+    requestCount += 1;
+    if (requestCount === 1) {
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.end("{}");
+      return;
+    }
+    response.writeHead(200, {
+      "content-type": "application/json",
+      "content-length": "64001"
+    });
+    response.end(" ".repeat(64_001));
+  });
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolveListen);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Peer metadata test server has no TCP address");
+    const client = new PeerClient([`http://127.0.0.1:${address.port}`]);
+    const expected = { chainId: genesis().chainId, genesisHash: createGenesisBlock(genesis(), "0".repeat(64)).hash };
+
+    await assert.rejects(
+      () => client.fetchPeerRecord(client.peers[0]!, expected),
+      /Peer response must use application\/json/
+    );
+    await assert.rejects(
+      () => client.fetchPeerRecord(client.peers[0]!, expected),
+      /Peer response too large/
+    );
+  } finally {
+    await new Promise<void>((resolveClose, reject) =>
+      server.close((error) => error ? reject(error) : resolveClose())
+    );
+  }
+});
+
 test("peer exchange serves and verifies a strictly bounded signed-record response", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-peer-exchange-"));
   const identityDirectory = await mkdtemp(join(tmpdir(), "zyron-peer-exchange-id-"));

@@ -48,7 +48,7 @@ No implementation claim may equate this model with Bitcoin's mining decentraliza
 
 ### Networking
 
-- Noise authenticates the connected PeerId, but an authenticated peer may still be malicious.
+- Noise authenticates the connected PeerId, but an authenticated peer may still be malicious. HTTP fallback peer responses require JSON metadata, reject invalid or excessive declared lengths before streaming, and remain byte-bounded while streaming.
 - Bootstrap identities and named failure domains are obtained out of band.
 - Peer discovery is availability metadata, never authority for genesis, validator, checkpoint or protocol trust.
 - Public RPC availability assumes layered perimeter controls; the node additionally bounds bodies, rates, total connections, node-wide in-flight requests, header parsing, request/header/keep-alive time and requests per persistent socket. Overload is shed with `503` before routing or body work begins; current occupancy, configured capacity and cumulative admission rejections are exposed to local monitoring.
