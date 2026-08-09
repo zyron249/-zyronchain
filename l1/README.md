@@ -35,14 +35,22 @@ npm audit --omit=dev
 
 ## Private devnet quick start
 
-Generate one key file for each validator and another for the activity oracle. Key files contain private keys and are created mode `0600`.
+Generate one key file for each validator and another for the activity oracle. Key files are created mode `0600`. Prefer encrypted local keystores for operator-managed development keys; production validators should still use the remote-signer/HSM boundary.
 
 ```sh
 npm run build
-node dist/src/cli.js keygen --out validator-a.json
-node dist/src/cli.js keygen --out validator-b.json
-node dist/src/cli.js keygen --out oracle.json
+node dist/src/cli.js keygen --out validator-a.json --password-file validator-a.password
+node dist/src/cli.js keygen --out validator-b.json --password-file validator-b.password
+node dist/src/cli.js keygen --out oracle.json --password-file oracle.password
 ```
+
+Set `ZYRON_KEYSTORE_PASSWORD_FILE` to the matching password-file path before any command that reads an encrypted key. The password file is bounded to 1 KiB, must contain a single secret of at least 12 characters, and may end with one newline. Keep it outside the repository and separate from the keystore backup.
+
+```sh
+export ZYRON_KEYSTORE_PASSWORD_FILE=/secure/path/validator-a.password
+```
+
+Legacy plaintext key JSON remains readable for existing devnets, but new operator-managed files should use `--password-file`.
 
 Create a genesis file using the printed public keys and addresses. The activity pool must be an address included in the allocations if activity rewards are intended. Repeat `--validator-public-key`, `--oracle-public-key`, and `--allocation` as needed.
 
