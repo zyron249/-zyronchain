@@ -24,7 +24,7 @@ This document is the release gate for the standalone TypeScript L1. `Implemented
 | R | RPC | Implemented with gate | bounded RPC includes per-client request limiting, connection/time limits, health/metrics and optional constant-time Bearer authentication for consensus writes; reverse-proxy TLS, deployment-time auth enforcement and compatibility versioning remain |
 | S | Supply safety | Implemented | genesis total capped at 50M ZYN; settlements cannot mint; transfers/fees cannot increase state supply |
 | T | Transactions | Implemented | canonical signed transfers/activity settlements, txid binding, chain ID, nonce/balance checks |
-| U | Upgrades | Implemented with operational gate | protocol-version upgrade/rollback schedules and validator-set rotation both require >2/3 active-validator approval with 100-block delayed activation; schedules replay after restart and unsupported binaries fail-stop before activation |
+| U | Upgrades | Implemented with operational gate | protocol v3 activates domain-separated signing over State v2; v3-to-v2 rollback schedules and validator-set rotation require >2/3 active-validator approval with 100-block delayed activation; protocol v1 reactivation is rejected, schedules replay after restart, and unsupported binaries fail-stop at activation |
 | V | Validation | Implemented | proposal and finalized block re-execution produces deterministic state roots |
 | W | Wallet/operator UX | Implemented with gate | keygen and signed transfer CLI exist; encrypted keystore/hardware-wallet/mobile wallet integration remains |
 | X | eXternal audit | Gate | independent cryptography/consensus/network review and remediation are mandatory before public mainnet |
