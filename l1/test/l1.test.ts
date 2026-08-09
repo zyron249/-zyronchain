@@ -2063,7 +2063,7 @@ test("RPC peer authentication protects consensus writes without hiding public st
     const denied = await fetch(`${base}/block`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: "{}"
+      body: "not-json"
     });
     assert.equal(denied.status, 401);
     assert.equal(denied.headers.get("www-authenticate"), "Bearer");
@@ -2071,7 +2071,7 @@ test("RPC peer authentication protects consensus writes without hiding public st
     const wrong = await fetch(`${base}/round/skip`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${"x".repeat(token.length)}` },
-      body: "{}"
+      body: "not-json"
     });
     assert.equal(wrong.status, 401);
 
@@ -2157,7 +2157,7 @@ test("RPC trusted peer identities require signed consensus writes and reject rep
     const bearerOnly = await fetch(`${base}/block`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: "{}"
+      body: "not-json"
     });
     assert.equal(bearerOnly.status, 401);
     assert.equal(bearerOnly.headers.get("www-authenticate"), "ZyronSignature");
