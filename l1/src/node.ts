@@ -1063,6 +1063,7 @@ async function parseBoundedResponse(response: Response, maxBytes: number): Promi
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (value.byteLength === 0) continue;
       total += value.byteLength;
       if (total > maxBytes) {
         await reader.cancel();
