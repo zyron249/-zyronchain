@@ -50,6 +50,8 @@ Provision the remote-signer token out of band as a regular `0600` secret file, r
 | `rpc.rejectedRequests` | cumulative requests shed before routing or body work | alert on increase; correlate with perimeter traffic and latency |
 | `rpc.requestBodyBytesInUse`, `rpc.maxRequestBodyBytes`, `rpc.rejectedRequestBodies` | retained inbound-body pressure and cumulative body-budget shedding | alert on sustained occupancy or any rejection increase |
 | `rpc.responseBytesInUse`, `rpc.maxResponseBytes`, `rpc.rejectedResponses` | queued outbound-response pressure and cumulative slow-reader shedding | alert on sustained occupancy or any rejection increase |
+| `p2pFrames.inbound.bytesInUse`, `maxBytes`, `peakBytesInUse`, `rejectedFrames` | native frame bodies retained through validation, consensus handling, sync acceptance and State-v2/checkpoint persistence | alert on sustained occupancy, a high-water increase near capacity or any rejection increase |
+| `p2pFrames.outbound.bytesInUse`, `maxBytes`, `peakBytesInUse`, `rejectedFrames` | native JSON serialization and muxer/slow-reader retention pressure | alert on sustained occupancy, a high-water increase near capacity or any rejection increase |
 | `validatorCount` | active/next validator-set size | topology/config sanity |
 | `persistenceHealthy` | process may continue durable commits | **page immediately if false** |
 | `validatorClockHealthy` | validator signing clock has not moved backward beyond tolerance | **page immediately if false; restart only after clock repair** |
@@ -67,6 +69,10 @@ These are engineering rehearsal thresholds, not a mainnet governance decision:
 - Alert on repeated `Aggregate RPC response byte budget exceeded` responses; they indicate slow-reader or large-response pressure and should be correlated with connection age and `/blocks` traffic.
 - Alert on repeated `Aggregate RPC request body byte budget exceeded` responses; they indicate concurrent inbound body pressure that was shed before parsing.
 - Alert whenever `rpc.rejectedRequests` increases; page on sustained near-capacity RPC occupancy or repeated admission shedding.
+- Alert whenever either `p2pFrames.*.rejectedFrames` counter increases. Treat repeated inbound increases as hostile/buggy frame pressure and repeated outbound increases as slow-reader or concurrent large-response pressure; correlate both with peer identities, stream protocols and process RSS.
+- Warn when either native frame budget remains at or above 50% for two consecutive collection intervals; page at 80%, on any continued rejection burst, or when process RSS keeps rising after `bytesInUse` returns to zero. Frame byte accounting bounds encoded/retained work but is not a complete JavaScript heap measurement.
+- Alert when `peakBytesInUse / maxBytes` first crosses 80%. The peak is process-lifetime evidence and resets only on restart, so do not repeatedly page on an unchanged high-water mark.
+- Never raise the frame budget, stream caps or timeouts during an incident merely to restore liveness. Preserve metrics/logs, isolate abusive peers at the network edge under the reviewed policy, and investigate before a controlled restart.
 - Page if `persistenceHealthy` or `validatorClockHealthy` is false, the process repeatedly restarts, or derived-state corruption recovery occurs unexpectedly.
 - Page if independently observed finalized tips disagree at the same height.
 - Warn when finalized block age exceeds two expected block intervals; page when it exceeds four. Diagnose quorum/partition/signer health before taking action.
