@@ -53,6 +53,11 @@ export interface NodeStatus {
   tipHash: string;
 }
 
+export interface NodeProtocolStatus {
+  currentVersion: number;
+  nextVersion: number;
+}
+
 export interface NodeMetrics extends NodeStatus {
   mempoolSize: number;
   validatorCount: number;
@@ -117,6 +122,14 @@ export class NodeService {
       genesisHash: this.store.chain.genesisHash,
       height: this.store.chain.height,
       tipHash: this.store.chain.tip.hash
+    };
+  }
+
+  protocolStatus(): NodeProtocolStatus {
+    const height = this.store.chain.height;
+    return {
+      currentVersion: this.store.chain.protocolVersionAt(height),
+      nextVersion: this.store.chain.protocolVersionAt(height + 1)
     };
   }
 
@@ -365,6 +378,9 @@ async function route(
   const url = new URL(request.url ?? "/", "http://node.invalid");
   if (request.method === "GET" && url.pathname === "/status") {
     return writeJson(response, 200, service.status());
+  }
+  if (request.method === "GET" && url.pathname === "/protocol") {
+    return writeJson(response, 200, service.protocolStatus());
   }
   if (request.method === "GET" && url.pathname === "/peer-record" && peerRecord) {
     validateSignedPeerRecord(peerRecord, service.status());
