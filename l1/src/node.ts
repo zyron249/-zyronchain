@@ -551,7 +551,7 @@ async function route(
     return writeJson(response, 202, { txid });
   }
   if (request.method === "POST" && url.pathname === "/proposal/attest") {
-    preauthorizeConsensusRequest(request, peerAuthToken, peerRequestAuthenticator);
+    preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
     const body = await readJsonBody(request, bodyReservation);
     const release = enterConsensusRequest(
       request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
@@ -563,7 +563,7 @@ async function route(
     }
   }
   if (request.method === "POST" && url.pathname === "/round/skip") {
-    preauthorizeConsensusRequest(request, peerAuthToken, peerRequestAuthenticator);
+    preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
     const body = await readJsonBody(request, bodyReservation);
     const release = enterConsensusRequest(
       request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
@@ -582,7 +582,7 @@ async function route(
     }
   }
   if (request.method === "POST" && url.pathname === "/block") {
-    preauthorizeConsensusRequest(request, peerAuthToken, peerRequestAuthenticator);
+    preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
     const body = await readJsonBody(request, bodyReservation);
     const release = enterConsensusRequest(
       request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
@@ -1221,12 +1221,16 @@ class RpcBodyBudgetError extends Error {}
 
 function preauthorizeConsensusRequest(
   request: IncomingMessage,
+  path: string,
   peerAuthToken?: string,
   peerRequestAuthenticator?: PeerRequestAuthenticator
 ): void {
   if (peerRequestAuthenticator) {
     try {
-      peerRequestAuthenticator.preflight(request.headers);
+      peerRequestAuthenticator.preflight(request.headers, {
+        method: request.method ?? "",
+        path
+      });
       return;
     } catch {
       throw new PeerAuthenticationError("Peer signature authentication required");
