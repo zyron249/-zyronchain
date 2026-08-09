@@ -3482,7 +3482,7 @@ test("RPC global inflight budget rejects excess concurrent work", async () => {
       "Content-Length: 100",
       "",
       "{"
-    ].join("\\r\\n"));
+    ].join("\r\n"));
     await requestEntered;
 
     const overloaded = await fetch(`${base}/status`);
