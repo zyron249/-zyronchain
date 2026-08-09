@@ -29,7 +29,7 @@ This document is the release gate for the standalone TypeScript L1. **Public tes
 | W | Wallet/operator UX | Implemented with gate | keygen and signed transfer CLI support legacy 0600 development keys and password-file encrypted local keystores; hardware-wallet/mobile wallet integration remains |
 | X | eXternal audit | Gate | independent cryptography/consensus/network review and remediation are mandatory before public mainnet |
 | Y | Yield/rewards | Gate | no invented validator inflation. Any validator/reward economics must be explicitly specified before immutable mainnet genesis |
-| Z | Zero-downtime resilience | Partial gate | certified view-change, 4-validator/120-block repeated-proposer-failure convergence, 2/2 partition safety with 3/1 recovery/catch-up, clock-skew rejection and corrupt-store fail-stop regressions are implemented; sustained real-network soak, rolling-upgrade tests and disaster-recovery drill remain |
+| Z | Zero-downtime resilience | Partial gate | certified view-change, 4-validator/120-block repeated-proposer-failure convergence, 2/2 partition safety with 3/1 recovery/catch-up, future clock-skew rejection, backward-clock validator fail-stop and corrupt-store fail-stop regressions are implemented; sustained real-network soak, rolling-upgrade tests and disaster-recovery drill remain |
 
 ## Mainnet stop-ship gates
 
