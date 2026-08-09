@@ -10,7 +10,14 @@ import { promisify } from "node:util";
 import Database from "better-sqlite3";
 
 import { canonicalJson, sha256Hex } from "../src/codec.js";
-import { addressFromPublicKey, publicKeyFromPrivate, signCanonical } from "../src/crypto.js";
+import {
+  addressFromPublicKey,
+  publicKeyFromPrivate,
+  signCanonical,
+  signCanonicalDomain,
+  verifyCanonical,
+  verifyCanonicalDomain
+} from "../src/crypto.js";
 import { Mempool } from "../src/mempool.js";
 import { ZyronChain } from "../src/chain.js";
 import {
@@ -68,6 +75,27 @@ const activityPool = addressFromPublicKey(publicKeyFromPrivate("06".padStart(64,
 const newValidatorOne = addressFromPublicKey(newValidatorOnePublic);
 const newValidatorTwo = addressFromPublicKey(newValidatorTwoPublic);
 const execFileAsync = promisify(execFile);
+
+
+test("canonical signing domains prevent cross-context and legacy signature replay", () => {
+  const payload = { chainId: "zyron-devnet-1", height: 42, blockHash: "a".repeat(64) };
+  const domain = "zyronchain/finality-attestation/v1";
+  const signature = signCanonicalDomain(domain, payload, validatorOnePrivate);
+
+  assert.equal(verifyCanonicalDomain(domain, payload, signature, validatorOnePublic), true);
+  assert.equal(
+    verifyCanonicalDomain("zyronchain/round-skip/v1", payload, signature, validatorOnePublic),
+    false
+  );
+  assert.equal(verifyCanonical(payload, signature, validatorOnePublic), false);
+
+  const legacySignature = signCanonical(payload, validatorOnePrivate);
+  assert.equal(verifyCanonicalDomain(domain, payload, legacySignature, validatorOnePublic), false);
+  assert.throws(
+    () => signCanonicalDomain("FINALITY", payload, validatorOnePrivate),
+    /Invalid canonical signing domain/
+  );
+});
 
 function genesis(): GenesisConfig {
   return {

@@ -33,6 +33,25 @@ export function signCanonical(payload: unknown, privateKeyHex: string): string {
   return Buffer.from(signature).toString("hex");
 }
 
+export function signCanonicalDomain(domain: string, payload: unknown, privateKeyHex: string): string {
+  assertSigningDomain(domain);
+  return signCanonical({ domain, payload }, privateKeyHex);
+}
+
+export function verifyCanonicalDomain(
+  domain: string,
+  payload: unknown,
+  signatureHex: string,
+  publicKeyHex: string
+): boolean {
+  try {
+    assertSigningDomain(domain);
+  } catch {
+    return false;
+  }
+  return verifyCanonical({ domain, payload }, signatureHex, publicKeyHex);
+}
+
 export function verifyCanonical(
   payload: unknown,
   signatureHex: string,
@@ -49,5 +68,11 @@ export function verifyCanonical(
     );
   } catch {
     return false;
+  }
+}
+
+function assertSigningDomain(domain: string): void {
+  if (!/^zyronchain\/[a-z0-9][a-z0-9._/-]{0,95}$/.test(domain)) {
+    throw new Error("Invalid canonical signing domain");
   }
 }
