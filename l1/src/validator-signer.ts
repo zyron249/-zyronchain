@@ -64,6 +64,7 @@ export class RemoteValidatorSigner implements ValidatorSigner {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        "accept": "application/json",
         ...(this.bearerToken ? { authorization: `Bearer ${this.bearerToken}` } : {})
       },
       body: JSON.stringify(domain
@@ -73,10 +74,13 @@ export class RemoteValidatorSigner implements ValidatorSigner {
       redirect: "error"
     });
     if (!response.ok) throw new Error(`Remote validator signer returned HTTP ${response.status}`);
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!/^application\/json(?:\\s*;|$)/i.test(contentType)) {
+      throw new Error("Remote validator signer must return application/json");
+    }
     const contentLength = Number(response.headers.get("content-length") ?? "0");
     if (Number.isFinite(contentLength) && contentLength > 1_024) throw new Error("Remote validator signer response is too large");
-    const body = await response.text();
-    if (Buffer.byteLength(body, "utf8") > 1_024) throw new Error("Remote validator signer response is too large");
+    const body = await readBoundedResponseBody(response, 1_024);
     let value: unknown;
     try { value = JSON.parse(body); } catch { throw new Error("Remote validator signer returned invalid JSON"); }
     assertPlainRecord(value, "validator signer response");
@@ -128,4 +132,22 @@ function validateRemoteSignerEndpoint(value: string): URL {
     (isIP(hostname) === 4 && hostname.startsWith("127."));
   if (!loopback) throw new Error("Plain HTTP validator signer is allowed only on loopback");
   return url;
+}
+
+async function readBoundedResponseBody(response: Response, maxBytes: number): Promise<string> {
+  if (!response.body) throw new Error("Remote validator signer returned an empty body");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error("Remote validator signer response is too large");
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
