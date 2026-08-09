@@ -232,7 +232,8 @@ export class NodeService {
           chain.genesis.chainId,
           height,
           round - 1,
-          chain.tip.hash
+          chain.tip.hash,
+          chain.protocolVersionAt(height)
         );
       }
       const publicKey = this.validatorSigner.publicKey;
