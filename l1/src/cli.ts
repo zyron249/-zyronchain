@@ -433,8 +433,6 @@ async function runNode(args: string[]): Promise<void> {
     server.once("error", reject);
     server.listen(port, host, () => resolveListen());
   });
-  console.log(`ZyronChain ${genesis.chainId} node listening on http://${host}:${port}`);
-  console.log(`Genesis ${service.status().genesisHash}, height ${service.status().height}`);
   const timers = new Set<NodeJS.Timeout>();
   const schedule = (callback: () => void, delayMs: number): void => {
     const timer = setInterval(callback, delayMs);
@@ -469,6 +467,8 @@ async function runNode(args: string[]): Promise<void> {
   };
   process.once("SIGTERM", () => onSignal("SIGTERM"));
   process.once("SIGINT", () => onSignal("SIGINT"));
+  console.log(`ZyronChain ${genesis.chainId} node listening on http://${host}:${port}`);
+  console.log(`Genesis ${service.status().genesisHash}, height ${service.status().height}`);
   if (identity) console.log(`Node ID ${identity.nodeId}`);
   if (nativeNode) {
     for (const address of nativeNode.getMultiaddrs()) console.log(`Native P2P ${address.toString()}`);
