@@ -41,13 +41,15 @@ import {
   createValidatorApproval,
   createValidatorSetUpdate,
   assertAddress,
-  validateTransactionShape
+  validateTransactionShape,
+  type TransactionVersion
 } from "./transaction.js";
 import type { GenesisConfig, Validator, ValidatorApproval } from "./types.js";
 import { MAX_SUPPLY_ATOMS, type Address } from "./types.js";
 import { LocalValidatorSigner, RemoteValidatorSigner, type ValidatorSigner } from "./validator-signer.js";
 
 interface ValidatorProposal {
+  transactionVersion: TransactionVersion;
   chainId: string;
   nonce: number;
   sender: Address;
@@ -56,6 +58,7 @@ interface ValidatorProposal {
 }
 
 interface ProtocolProposal {
+  transactionVersion: TransactionVersion;
   chainId: string;
   nonce: number;
   sender: Address;
@@ -496,10 +499,12 @@ async function submitTransfer(args: string[]): Promise<void> {
     throw new Error("RPC returned invalid nonce");
   }
   const nonce = Number((nonceResponse as { nonce: number }).nonce) + 1;
+  const transactionVersion = await transactionVersionForRpc(rpc);
   const tx = createTransfer(
     { chainId, nonce, sender, receiver, amountAtoms, feeAtoms, timestampMs: Date.now() },
     key,
-    publicKey
+    publicKey,
+    transactionVersion
   );
   const response = await fetch(`${rpc}/tx`, {
     method: "POST",
@@ -529,6 +534,7 @@ async function createValidatorProposalFile(args: string[]): Promise<void> {
   });
   const status = await fetchJson(`${rpc}/status`) as { chainId?: unknown; height?: unknown };
   const nonceResult = await fetchJson(`${rpc}/nonce/${sender}`) as { nonce?: unknown };
+  const transactionVersion = await transactionVersionForRpc(rpc);
   if (typeof status.chainId !== "string" || !Number.isSafeInteger(status.height) || !Number.isSafeInteger(nonceResult.nonce)) {
     throw new Error("RPC returned invalid proposal context");
   }
@@ -536,6 +542,7 @@ async function createValidatorProposalFile(args: string[]): Promise<void> {
     throw new Error(`Activation height must be at least ${Number(status.height) + 1 + MIN_VALIDATOR_UPDATE_DELAY}`);
   }
   const proposal: ValidatorProposal = {
+    transactionVersion,
     chainId: status.chainId,
     nonce: Number(nonceResult.nonce) + 1,
     sender,
@@ -551,7 +558,7 @@ async function approveValidatorProposal(args: string[]): Promise<void> {
   const proposal = await readValidatorProposal(resolve(requiredOption(args, "--proposal")));
   const privateKey = await readPrivateKey(resolve(requiredOption(args, "--key")));
   const publicKey = publicKeyFromPrivate(privateKey);
-  const approval = createValidatorApproval(proposal, privateKey, publicKey);
+  const approval = createValidatorApproval(proposal, privateKey, publicKey, proposal.transactionVersion);
   const output = resolve(requiredOption(args, "--out"));
   await writeFile(output, `${JSON.stringify(approval, null, 2)}\n`, { flag: "wx", mode: 0o644 });
   console.log(`Validator approval written: ${output}`);
@@ -570,7 +577,8 @@ async function submitValidatorProposal(args: string[]): Promise<void> {
   const tx = createValidatorSetUpdate(
     { ...proposal, approvals, timestampMs: Date.now() },
     privateKey,
-    publicKey
+    publicKey,
+    proposal.transactionVersion
   );
   validateTransactionShape(tx);
   const rpc = normalizeRpcUrl(requiredOption(args, "--rpc"));
@@ -598,6 +606,7 @@ async function createProtocolProposalFile(args: string[]): Promise<void> {
   if (protocolVersion < 1 || protocolVersion > 65_535) throw new Error("Protocol version must be between 1 and 65535");
   const status = await fetchJson(`${rpc}/status`) as { chainId?: unknown; height?: unknown };
   const nonceResult = await fetchJson(`${rpc}/nonce/${sender}`) as { nonce?: unknown };
+  const transactionVersion = await transactionVersionForRpc(rpc);
   if (typeof status.chainId !== "string" || !Number.isSafeInteger(status.height) || !Number.isSafeInteger(nonceResult.nonce)) {
     throw new Error("RPC returned invalid protocol proposal context");
   }
@@ -605,6 +614,7 @@ async function createProtocolProposalFile(args: string[]): Promise<void> {
     throw new Error(`Activation height must be at least ${Number(status.height) + 1 + MIN_PROTOCOL_UPDATE_DELAY}`);
   }
   const proposal: ProtocolProposal = {
+    transactionVersion,
     chainId: status.chainId,
     nonce: Number(nonceResult.nonce) + 1,
     sender,
@@ -620,7 +630,7 @@ async function approveProtocolProposal(args: string[]): Promise<void> {
   const proposal = await readProtocolProposal(resolve(requiredOption(args, "--proposal")));
   const privateKey = await readPrivateKey(resolve(requiredOption(args, "--key")));
   const publicKey = publicKeyFromPrivate(privateKey);
-  const approval = createProtocolUpgradeApproval(proposal, privateKey, publicKey);
+  const approval = createProtocolUpgradeApproval(proposal, privateKey, publicKey, proposal.transactionVersion);
   const output = resolve(requiredOption(args, "--out"));
   await writeFile(output, `${JSON.stringify(approval, null, 2)}\n`, { flag: "wx", mode: 0o644 });
   console.log(`Protocol approval written: ${output}`);
@@ -639,7 +649,8 @@ async function submitProtocolProposal(args: string[]): Promise<void> {
   const tx = createProtocolUpgrade(
     { ...proposal, approvals, timestampMs: Date.now() },
     privateKey,
-    publicKey
+    publicKey,
+    proposal.transactionVersion
   );
   validateTransactionShape(tx);
   const rpc = normalizeRpcUrl(requiredOption(args, "--rpc"));
@@ -809,6 +820,22 @@ async function fetchJson(url: string): Promise<unknown> {
   return JSON.parse(text);
 }
 
+async function transactionVersionForRpc(rpc: string): Promise<TransactionVersion> {
+  const response = await fetch(`${rpc}/protocol`, { signal: AbortSignal.timeout(8_000) });
+  if (response.status === 404) return 1;
+  if (!response.ok) throw new Error(`RPC protocol status returned HTTP ${response.status}`);
+  const text = await response.text();
+  if (Buffer.byteLength(text, "utf8") > 4_096) throw new Error("RPC protocol status response too large");
+  const value = JSON.parse(text) as Record<string, unknown>;
+  assertObjectFields(value, ["currentVersion", "nextVersion"], "protocol status");
+  if (!Number.isSafeInteger(value.currentVersion) || !Number.isSafeInteger(value.nextVersion)) {
+    throw new Error("RPC returned invalid protocol status");
+  }
+  const nextVersion = Number(value.nextVersion);
+  if (nextVersion < 1 || nextVersion > 3) throw new Error("RPC returned unsupported next protocol version");
+  return nextVersion >= 3 ? 2 : 1;
+}
+
 async function readPrivateKey(path: string): Promise<string> {
   const parsed = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
   if (typeof parsed.privateKey !== "string" || !/^[0-9a-f]{64}$/.test(parsed.privateKey)) {
@@ -828,8 +855,13 @@ async function readPeerAuthToken(path: string): Promise<string> {
 
 async function readValidatorProposal(path: string): Promise<ValidatorProposal> {
   const value = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
-  assertObjectFields(value, ["chainId", "nonce", "sender", "activationHeight", "validators"], "validator proposal");
-  if (typeof value.chainId !== "string" || !Number.isSafeInteger(value.nonce) || !Number.isSafeInteger(value.activationHeight) ||
+  const hasTransactionVersion = Object.hasOwn(value, "transactionVersion");
+  assertObjectFields(value, hasTransactionVersion
+    ? ["transactionVersion", "chainId", "nonce", "sender", "activationHeight", "validators"]
+    : ["chainId", "nonce", "sender", "activationHeight", "validators"], "validator proposal");
+  const transactionVersion = hasTransactionVersion ? Number(value.transactionVersion) : 1;
+  if ((transactionVersion !== 1 && transactionVersion !== 2) || typeof value.chainId !== "string" ||
+      !Number.isSafeInteger(value.nonce) || !Number.isSafeInteger(value.activationHeight) ||
       typeof value.sender !== "string" || !Array.isArray(value.validators)) throw new Error("Invalid validator proposal");
   assertAddress(value.sender);
   const validators = value.validators.map((item) => {
@@ -844,6 +876,7 @@ async function readValidatorProposal(path: string): Promise<ValidatorProposal> {
     return { address: record.address, publicKey: record.publicKey };
   });
   return {
+    transactionVersion,
     chainId: value.chainId,
     nonce: Number(value.nonce),
     sender: value.sender,
@@ -866,8 +899,13 @@ async function readValidatorApproval(path: string): Promise<ValidatorApproval> {
 
 async function readProtocolProposal(path: string): Promise<ProtocolProposal> {
   const value = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
-  assertObjectFields(value, ["chainId", "nonce", "sender", "activationHeight", "protocolVersion"], "protocol proposal");
-  if (typeof value.chainId !== "string" || !Number.isSafeInteger(value.nonce) || !Number.isSafeInteger(value.activationHeight) ||
+  const hasTransactionVersion = Object.hasOwn(value, "transactionVersion");
+  assertObjectFields(value, hasTransactionVersion
+    ? ["transactionVersion", "chainId", "nonce", "sender", "activationHeight", "protocolVersion"]
+    : ["chainId", "nonce", "sender", "activationHeight", "protocolVersion"], "protocol proposal");
+  const transactionVersion = hasTransactionVersion ? Number(value.transactionVersion) : 1;
+  if ((transactionVersion !== 1 && transactionVersion !== 2) || typeof value.chainId !== "string" ||
+      !Number.isSafeInteger(value.nonce) || !Number.isSafeInteger(value.activationHeight) ||
       !Number.isSafeInteger(value.protocolVersion) || typeof value.sender !== "string") {
     throw new Error("Invalid protocol proposal");
   }
@@ -875,6 +913,7 @@ async function readProtocolProposal(path: string): Promise<ProtocolProposal> {
   const protocolVersion = Number(value.protocolVersion);
   if (protocolVersion < 1 || protocolVersion > 65_535) throw new Error("Invalid protocol proposal version");
   return {
+    transactionVersion,
     chainId: value.chainId,
     nonce: Number(value.nonce),
     sender: value.sender,
