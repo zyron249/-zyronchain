@@ -131,7 +131,7 @@ Each node persists a separate secp256k1 node identity in its data directory. Con
 allowed remote node with repeated `--trusted-peer-public-key <key>` flags. Once at least one
 trusted key is configured, consensus writes (`/proposal/attest`, `/round/skip`, `/block`) require
 a domain-separated node signature binding the chain/genesis, method, path, canonical body hash,
-timestamp and random nonce; a legacy Bearer token cannot bypass that policy. Missing, malformed, untrusted, or stale authentication headers are rejected before request-body parsing; the body-bound signature is then verified before consensus work. Replays older than
+timestamp and random nonce; a legacy Bearer token cannot bypass that policy. The signed headers carry the claimed body SHA-256, allowing the body-bound signature to be verified before request-body parsing. After parsing, the claimed hash must equal the exact canonical body hash before the nonce is consumed or consensus work begins. Replays older than
 60 seconds or duplicate nonces are rejected. Remote authenticated peers still require HTTPS:
 application signatures authenticate the node, while TLS protects confidentiality and transport.
 
