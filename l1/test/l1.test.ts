@@ -1281,10 +1281,35 @@ test("signing journal prevents validator double-sign across restart", async () =
     const first = await SigningJournal.open(directory);
     await first.reserveAttestation(8, 0, "a".repeat(64));
     await first.reserveAttestation(8, 0, "a".repeat(64));
+    first.close();
     const reopened = await SigningJournal.open(directory);
     await assert.rejects(() => reopened.reserveAttestation(8, 0, "b".repeat(64)), /Conflicting validator action/);
     await assert.rejects(() => reopened.reserveSkip(8, 0, "c".repeat(64)), /Conflicting validator action/);
     await reopened.reserveAttestation(8, 1, "d".repeat(64));
+    reopened.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("signing journal permits only one live validator writer per data directory", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-signing-lease-"));
+  try {
+    const first = await SigningJournal.open(directory);
+    await assert.rejects(
+      () => SigningJournal.open(directory),
+      /already has an active validator writer/
+    );
+    await first.reserveAttestation(8, 0, "a".repeat(64));
+    first.close();
+
+    const reopened = await SigningJournal.open(directory);
+    await reopened.reserveAttestation(8, 0, "a".repeat(64));
+    await assert.rejects(
+      () => reopened.reserveAttestation(8, 0, "b".repeat(64)),
+      /Conflicting validator action/
+    );
+    reopened.close();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -1327,6 +1352,7 @@ test("signing journal post-fsync uncertainty requires restart and preserves the 
       () => journal.reserveAttestation(8, 0, "b".repeat(64)),
       /Signing journal persistence fault requires validator restart/
     );
+    journal.close();
 
     const reopened = await SigningJournal.open(directory);
     await reopened.reserveAttestation(8, 0, "a".repeat(64));
@@ -1334,6 +1360,7 @@ test("signing journal post-fsync uncertainty requires restart and preserves the 
       () => reopened.reserveAttestation(8, 0, "b".repeat(64)),
       /Conflicting validator action/
     );
+    reopened.close();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
