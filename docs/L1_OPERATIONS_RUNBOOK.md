@@ -39,7 +39,7 @@ Provision the remote-signer token out of band as a regular `0600` secret file, r
 
 ## 3. Required health telemetry
 
-`GET /metrics` is bounded structured JSON intended for a local collector. At minimum collect:
+`GET /healthz` is process liveness only. `GET /readyz` returns `503` and machine-readable reasons when persistence is unhealthy or validator signing has fail-stopped after a clock rollback; remove an unready node from service and investigate rather than restarting blindly. `GET /metrics` is bounded structured JSON intended for a local collector. At minimum collect:
 
 | Field | Meaning | Alert use |
 |---|---|---|
