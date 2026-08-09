@@ -176,27 +176,16 @@ export class PeerRequestAuthenticator {
     }
   }
 
+  preflight(headers: Record<string, string | string[] | undefined>, nowMs = Date.now()): void {
+    this.validateHeaders(headers, nowMs);
+  }
+
   verify(
     headers: Record<string, string | string[] | undefined>,
     input: { method: string; path: string; bodySha256: string },
     nowMs = Date.now()
   ): string {
-    const nodeId = singleHeader(headers["x-zyron-node-id"], "node ID");
-    const publicKey = singleHeader(headers["x-zyron-peer-public-key"], "public key");
-    const timestampText = singleHeader(headers["x-zyron-peer-timestamp"], "timestamp");
-    const nonce = singleHeader(headers["x-zyron-peer-nonce"], "nonce");
-    const signature = singleHeader(headers["x-zyron-peer-signature"], "signature");
-    assertHex(nodeId, 32, "peer request node ID");
-    assertHex(publicKey, 64, "peer request public key");
-    assertHex(nonce, 16, "peer request nonce");
-    assertHex(signature, 64, "peer request signature");
-    if (!this.trustedPublicKeys.has(publicKey)) throw new Error("Untrusted peer identity");
-    if (nodeIdFromPublicKey(publicKey) !== nodeId) throw new Error("Peer request node ID mismatch");
-    if (!/^(0|[1-9][0-9]*)$/.test(timestampText)) throw new Error("Invalid peer request timestamp");
-    const timestampMs = Number(timestampText);
-    if (!Number.isSafeInteger(timestampMs) || Math.abs(nowMs - timestampMs) > PEER_REQUEST_MAX_SKEW_MS) {
-      throw new Error("Peer request timestamp outside allowed window");
-    }
+    const { nodeId, publicKey, timestampMs, nonce, signature } = this.validateHeaders(headers, nowMs);
     assertHex(input.bodySha256, 32, "peer request body hash");
 
     this.sweep(nowMs);
@@ -216,6 +205,29 @@ export class PeerRequestAuthenticator {
       if (oldest) this.seenNonces.delete(oldest);
     }
     return nodeId;
+  }
+
+  private validateHeaders(
+    headers: Record<string, string | string[] | undefined>,
+    nowMs: number
+  ): { nodeId: string; publicKey: string; timestampMs: number; nonce: string; signature: string } {
+    const nodeId = singleHeader(headers["x-zyron-node-id"], "node ID");
+    const publicKey = singleHeader(headers["x-zyron-peer-public-key"], "public key");
+    const timestampText = singleHeader(headers["x-zyron-peer-timestamp"], "timestamp");
+    const nonce = singleHeader(headers["x-zyron-peer-nonce"], "nonce");
+    const signature = singleHeader(headers["x-zyron-peer-signature"], "signature");
+    assertHex(nodeId, 32, "peer request node ID");
+    assertHex(publicKey, 64, "peer request public key");
+    assertHex(nonce, 16, "peer request nonce");
+    assertHex(signature, 64, "peer request signature");
+    if (!this.trustedPublicKeys.has(publicKey)) throw new Error("Untrusted peer identity");
+    if (nodeIdFromPublicKey(publicKey) !== nodeId) throw new Error("Peer request node ID mismatch");
+    if (!/^(0|[1-9][0-9]*)$/.test(timestampText)) throw new Error("Invalid peer request timestamp");
+    const timestampMs = Number(timestampText);
+    if (!Number.isSafeInteger(timestampMs) || Math.abs(nowMs - timestampMs) > PEER_REQUEST_MAX_SKEW_MS) {
+      throw new Error("Peer request timestamp outside allowed window");
+    }
+    return { nodeId, publicKey, timestampMs, nonce, signature };
   }
 
   private sweep(nowMs: number): void {

@@ -551,6 +551,7 @@ async function route(
     return writeJson(response, 202, { txid });
   }
   if (request.method === "POST" && url.pathname === "/proposal/attest") {
+    preauthorizeConsensusRequest(request, peerAuthToken, peerRequestAuthenticator);
     const body = await readJsonBody(request, bodyReservation);
     const release = enterConsensusRequest(
       request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
@@ -562,6 +563,7 @@ async function route(
     }
   }
   if (request.method === "POST" && url.pathname === "/round/skip") {
+    preauthorizeConsensusRequest(request, peerAuthToken, peerRequestAuthenticator);
     const body = await readJsonBody(request, bodyReservation);
     const release = enterConsensusRequest(
       request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
@@ -580,6 +582,7 @@ async function route(
     }
   }
   if (request.method === "POST" && url.pathname === "/block") {
+    preauthorizeConsensusRequest(request, peerAuthToken, peerRequestAuthenticator);
     const body = await readJsonBody(request, bodyReservation);
     const release = enterConsensusRequest(
       request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
@@ -1215,6 +1218,24 @@ function validBearerToken(header: string | undefined, expected: string): boolean
 class PeerAuthenticationError extends Error {}
 class PeerInflightLimitError extends Error {}
 class RpcBodyBudgetError extends Error {}
+
+function preauthorizeConsensusRequest(
+  request: IncomingMessage,
+  peerAuthToken?: string,
+  peerRequestAuthenticator?: PeerRequestAuthenticator
+): void {
+  if (peerRequestAuthenticator) {
+    try {
+      peerRequestAuthenticator.preflight(request.headers);
+      return;
+    } catch {
+      throw new PeerAuthenticationError("Peer signature authentication required");
+    }
+  }
+  if (peerAuthToken && !validBearerToken(request.headers.authorization, peerAuthToken)) {
+    throw new PeerAuthenticationError("Peer authentication required");
+  }
+}
 
 function authorizeConsensusRequest(
   request: IncomingMessage,
