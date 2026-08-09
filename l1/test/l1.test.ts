@@ -1978,6 +1978,11 @@ test("RPC exposes health and metrics while enforcing per-client request limits",
     assert.equal(payload.firstStoredHeight, 1);
     assert.equal(payload.recoveredFromCheckpointHeight, 0);
     assert.equal(payload.recoveredStateV2FromCorruption, false);
+    assert.deepEqual(payload.rpc, {
+      inflightRequests: 1,
+      maxInflightRequests: 128,
+      rejectedRequests: 0
+    });
 
     const limited = await fetch(`${base}/status`);
     assert.equal(limited.status, 429);
@@ -3501,6 +3506,17 @@ test("RPC global inflight budget rejects excess concurrent work", async () => {
       if (recoveredStatus !== 200) await new Promise<void>((resolveTurn) => setTimeout(resolveTurn, 10));
     }
     assert.equal(recoveredStatus, 200);
+
+    const metrics = await fetch(`${base}/metrics`);
+    assert.equal(metrics.status, 200);
+    const metricsPayload = await metrics.json() as {
+      rpc: { inflightRequests: number; maxInflightRequests: number; rejectedRequests: number };
+    };
+    assert.deepEqual(metricsPayload.rpc, {
+      inflightRequests: 1,
+      maxInflightRequests: 1,
+      rejectedRequests: 1
+    });
   } finally {
     socket?.destroy();
     await new Promise<void>((resolveClose, reject) =>
