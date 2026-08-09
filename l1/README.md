@@ -169,7 +169,7 @@ The signer token file is mandatory in remote-signer mode, must contain one 32–
 one of `block-proposal`, `block-attestation`, or `round-skip`. Every returned signature is
 verified locally against the pinned public key and exact canonical payload before use. Redirects,
 URL credentials/query fragments, and remote plaintext HTTP are rejected; HTTP is accepted only
-on loopback for local signer sidecars. Requests have a bounded timeout.
+on loopback for local signer sidecars. Requests have a bounded timeout. Signer responses must use `application/json` and are stream-limited to 1 KiB before parsing, including chunked responses whose declared length is absent or false.
 
 The node fsyncs its anti-double-sign journal before asking the signer to sign. A signer outage
 after reservation can therefore sacrifice one vote (liveness) but cannot make the node sign a
