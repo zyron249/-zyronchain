@@ -3869,11 +3869,9 @@ test("RPC global inflight budget rejects excess concurrent work", async () => {
     const metricsPayload = await metrics.json() as {
       rpc: { inflightRequests: number; maxInflightRequests: number; rejectedRequests: number };
     };
-    assert.deepEqual(metricsPayload.rpc, {
-      inflightRequests: 1,
-      maxInflightRequests: 1,
-      rejectedRequests: 1
-    });
+    assert.equal(metricsPayload.rpc.inflightRequests, 1);
+    assert.equal(metricsPayload.rpc.maxInflightRequests, 1);
+    assert.equal(metricsPayload.rpc.rejectedRequests, 1);
   } finally {
     socket?.destroy();
     await new Promise<void>((resolveClose, reject) =>
