@@ -90,6 +90,15 @@ export interface RpcAdmissionMetrics {
   rejectedRequests: number;
 }
 
+export interface RpcByteBudgetMetrics {
+  requestBodyBytesInUse: number;
+  maxRequestBodyBytes: number;
+  rejectedRequestBodies: number;
+  responseBytesInUse: number;
+  maxResponseBytes: number;
+  rejectedResponses: number;
+}
+
 export interface RpcServerOptions {
   maxConnections?: number;
   maxInflightRequests?: number;
@@ -415,6 +424,7 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
         consensusInflight,
         bodyReservation,
         rpcAdmission,
+        rpcResponseBudget,
         options.onTransactionAccepted
       );
     } catch (error) {
@@ -474,6 +484,7 @@ async function route(
   consensusInflight?: PeerInflightLimiter,
   bodyReservation?: RpcRequestBodyReservation,
   rpcAdmission?: RpcAdmissionController,
+  rpcResponseBudget?: RpcResponseByteBudget,
   onTransactionAccepted?: (transaction: Transaction) => void | Promise<void>
 ): Promise<void> {
   const url = new URL(request.url ?? "/", "http://node.invalid");
@@ -509,7 +520,11 @@ async function route(
   if (request.method === "GET" && url.pathname === "/metrics") {
     return writeJson(response, 200, {
       ...service.metrics(),
-      rpc: rpcAdmission?.metrics()
+      rpc: {
+        ...rpcAdmission?.metrics(),
+        ...bodyReservation?.metrics(),
+        ...rpcResponseBudget?.metrics()
+      }
     });
   }
   if (request.method === "GET" && url.pathname === "/blocks") {
@@ -1290,6 +1305,7 @@ class RpcAdmissionController {
 
 class RpcRequestBodyByteBudget {
   private reservedBytes = 0;
+  private rejectedReservations = 0;
 
   constructor(readonly maxBytes: number) {
     boundedPositiveInteger(maxBytes, "RPC in-flight request body bytes");
@@ -1298,6 +1314,7 @@ class RpcRequestBodyByteBudget {
   reserve(bytes: number): () => void {
     if (!Number.isSafeInteger(bytes) || bytes < 1) throw new Error("Invalid RPC request body reservation");
     if (bytes > this.maxBytes - this.reservedBytes) {
+      this.rejectedReservations += 1;
       throw new RpcBodyBudgetError("Aggregate RPC request body byte budget exceeded");
     }
     this.reservedBytes += bytes;
@@ -1308,10 +1325,19 @@ class RpcRequestBodyByteBudget {
       this.reservedBytes -= bytes;
     };
   }
+
+  metrics(): Pick<RpcByteBudgetMetrics, "requestBodyBytesInUse" | "maxRequestBodyBytes" | "rejectedRequestBodies"> {
+    return {
+      requestBodyBytesInUse: this.reservedBytes,
+      maxRequestBodyBytes: this.maxBytes,
+      rejectedRequestBodies: this.rejectedReservations
+    };
+  }
 }
 
 class RpcResponseByteBudget {
   private reservedBytes = 0;
+  private rejectedReservations = 0;
 
   constructor(readonly maxBytes: number) {
     boundedPositiveInteger(maxBytes, "RPC in-flight response bytes");
@@ -1319,6 +1345,7 @@ class RpcResponseByteBudget {
 
   reserve(bytes: number): () => void {
     if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > this.maxBytes - this.reservedBytes) {
+      this.rejectedReservations += 1;
       throw new Error("Aggregate RPC response byte budget exceeded");
     }
     this.reservedBytes += bytes;
@@ -1327,6 +1354,14 @@ class RpcResponseByteBudget {
       if (released) return;
       released = true;
       this.reservedBytes -= bytes;
+    };
+  }
+
+  metrics(): Pick<RpcByteBudgetMetrics, "responseBytesInUse" | "maxResponseBytes" | "rejectedResponses"> {
+    return {
+      responseBytesInUse: this.reservedBytes,
+      maxResponseBytes: this.maxBytes,
+      rejectedResponses: this.rejectedReservations
     };
   }
 }
@@ -1348,6 +1383,10 @@ class RpcRequestBodyReservation {
     if (this.released) return;
     this.released = true;
     for (const release of this.releases) release();
+  }
+
+  metrics(): Pick<RpcByteBudgetMetrics, "requestBodyBytesInUse" | "maxRequestBodyBytes" | "rejectedRequestBodies"> {
+    return this.budget.metrics();
   }
 }
 
