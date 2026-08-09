@@ -33,6 +33,7 @@ const MAX_BODY_BYTES = 2_500_000;
 export const RPC_API_VERSION = 1;
 export const MAX_SYNC_BLOCKS = 100;
 export const MAX_SYNC_RESPONSE_BYTES = 25_000_000;
+export const MAX_PEER_RESPONSE_BYTES_INFLIGHT = 50_000_000;
 export const MAX_SYNC_BATCH_PAYLOAD_BYTES = 20_000_000;
 const MAX_CONFIGURED_PEERS = 64;
 export const MAX_SYNC_PROBE_CONCURRENCY = 8;
@@ -1056,18 +1057,29 @@ async function parseBoundedResponse(response: Response, maxBytes: number): Promi
   if (!response.body) throw new Error("Peer returned empty body");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
+  const releases: Array<() => void> = [];
   let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      throw new Error("Peer response too large");
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new Error("Peer response too large");
+      }
+      try {
+        releases.push(peerResponseByteBudget.reserve(value.byteLength));
+      } catch (error) {
+        await reader.cancel();
+        throw error;
+      }
+      chunks.push(value);
     }
-    chunks.push(value);
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } finally {
+    for (const release of releases) release();
   }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -1215,6 +1227,32 @@ class RpcAdmissionController {
     };
   }
 }
+
+export class PeerResponseByteBudget {
+  private reservedBytes = 0;
+
+  constructor(readonly maxBytes: number) {
+    boundedPositiveInteger(maxBytes, "peer response in-flight bytes");
+  }
+
+  get inUseBytes(): number {
+    return this.reservedBytes;
+  }
+
+  reserve(bytes: number): () => void {
+    if (!Number.isSafeInteger(bytes) || bytes < 1) throw new Error("Invalid peer response byte reservation");
+    if (bytes > this.maxBytes - this.reservedBytes) throw new Error("Aggregate peer response byte budget exceeded");
+    this.reservedBytes += bytes;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.reservedBytes -= bytes;
+    };
+  }
+}
+
+const peerResponseByteBudget = new PeerResponseByteBudget(MAX_PEER_RESPONSE_BYTES_INFLIGHT);
 
 class FixedWindowLimiter {
   private readonly clients = new Map<string, { count: number; startedAtMs: number }>();
