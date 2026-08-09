@@ -110,12 +110,12 @@ test("canonical signing domains prevent cross-context and legacy signature repla
   );
 });
 
-test("protocol v3 is explicitly mapped to State-v2 before binary activation", () => {
+test("protocol v3 is explicitly mapped to State-v2 and activated by this binary", () => {
   assert.equal(protocolUsesStateV2(1), false);
   assert.equal(protocolUsesStateV2(2), true);
   assert.equal(protocolUsesStateV2(3), true);
   assert.equal(protocolUsesStateV2(4), false);
-  assert.equal(SUPPORTED_PROTOCOL_VERSIONS.has(3), false);
+  assert.equal(SUPPORTED_PROTOCOL_VERSIONS.has(3), true);
 });
 
 test("transaction v2 signatures are domain-separated and cannot enter legacy protocol mempools", () => {
