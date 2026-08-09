@@ -63,6 +63,12 @@ export interface NodeProtocolStatus {
   nextVersion: number;
 }
 
+export interface NodeReadiness {
+  ready: boolean;
+  height: number;
+  reasons: string[];
+}
+
 export interface NodeMetrics extends NodeStatus {
   mempoolSize: number;
   validatorCount: number;
@@ -145,6 +151,17 @@ export class NodeService {
     return {
       currentVersion: this.store.chain.protocolVersionAt(height),
       nextVersion: this.store.chain.protocolVersionAt(height + 1)
+    };
+  }
+
+  readiness(): NodeReadiness {
+    const reasons: string[] = [];
+    if (!this.store.persistenceHealthy) reasons.push("persistence-unhealthy");
+    if (this.validatorClockFaulted) reasons.push("validator-clock-unhealthy");
+    return {
+      ready: reasons.length === 0,
+      height: this.store.chain.height,
+      reasons
     };
   }
 
@@ -461,6 +478,10 @@ async function route(
   }
   if (request.method === "GET" && url.pathname === "/healthz") {
     return writeJson(response, 200, { ok: true, height: service.status().height });
+  }
+  if (request.method === "GET" && url.pathname === "/readyz") {
+    const readiness = service.readiness();
+    return writeJson(response, readiness.ready ? 200 : 503, readiness);
   }
   if (request.method === "GET" && url.pathname === "/metrics") {
     return writeJson(response, 200, {
