@@ -75,7 +75,7 @@ export class RemoteValidatorSigner implements ValidatorSigner {
     });
     if (!response.ok) throw new Error(`Remote validator signer returned HTTP ${response.status}`);
     const contentType = response.headers.get("content-type") ?? "";
-    if (!/^application\/json(?:\\s*;|$)/i.test(contentType)) {
+    if (!/^application\/json(?:\s*;|$)/i.test(contentType)) {
       throw new Error("Remote validator signer must return application/json");
     }
     const contentLength = Number(response.headers.get("content-length") ?? "0");
