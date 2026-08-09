@@ -2021,7 +2021,13 @@ test("RPC exposes liveness, readiness, and metrics while enforcing per-client re
     assert.deepEqual(payload.rpc, {
       inflightRequests: 1,
       maxInflightRequests: 128,
-      rejectedRequests: 0
+      rejectedRequests: 0,
+      requestBodyBytesInUse: 0,
+      maxRequestBodyBytes: 25_000_000,
+      rejectedRequestBodies: 0,
+      responseBytesInUse: 0,
+      maxResponseBytes: 25_000_000,
+      rejectedResponses: 0
     });
 
     const limited = await fetch(`${base}/status`);
@@ -3621,6 +3627,14 @@ test("RPC response budget sheds slow-reader queue amplification and recovers on 
       if (recoveredStatus !== 200) await new Promise<void>((resolveTurn) => setTimeout(resolveTurn, 10));
     }
     assert.equal(recoveredStatus, 200);
+
+    const metrics = await fetch(`http://127.0.0.1:${address.port}/metrics`);
+    const metricsPayload = await metrics.json() as {
+      rpc: { responseBytesInUse: number; maxResponseBytes: number; rejectedResponses: number };
+    };
+    assert.equal(metricsPayload.rpc.responseBytesInUse, 0);
+    assert.equal(metricsPayload.rpc.maxResponseBytes, responseBytes);
+    assert.equal(metricsPayload.rpc.rejectedResponses, 1);
   } finally {
     socket?.destroy();
     await new Promise<void>((resolveClose, reject) =>
@@ -3785,6 +3799,14 @@ test("RPC aggregate request-body budget sheds concurrent body memory pressure", 
     }
     assert.equal(recoveredStatus, 202);
     assert.equal(service.mempool.size, 1);
+
+    const metrics = await fetch(`${base}/metrics`);
+    const metricsPayload = await metrics.json() as {
+      rpc: { requestBodyBytesInUse: number; maxRequestBodyBytes: number; rejectedRequestBodies: number };
+    };
+    assert.equal(metricsPayload.rpc.requestBodyBytesInUse, 0);
+    assert.equal(metricsPayload.rpc.maxRequestBodyBytes, 1_000);
+    assert.equal(metricsPayload.rpc.rejectedRequestBodies, 1);
   } finally {
     socket?.destroy();
     await new Promise<void>((resolveClose, reject) =>
@@ -3847,11 +3869,9 @@ test("RPC global inflight budget rejects excess concurrent work", async () => {
     const metricsPayload = await metrics.json() as {
       rpc: { inflightRequests: number; maxInflightRequests: number; rejectedRequests: number };
     };
-    assert.deepEqual(metricsPayload.rpc, {
-      inflightRequests: 1,
-      maxInflightRequests: 1,
-      rejectedRequests: 1
-    });
+    assert.equal(metricsPayload.rpc.inflightRequests, 1);
+    assert.equal(metricsPayload.rpc.maxInflightRequests, 1);
+    assert.equal(metricsPayload.rpc.rejectedRequests, 1);
   } finally {
     socket?.destroy();
     await new Promise<void>((resolveClose, reject) =>
