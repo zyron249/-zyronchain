@@ -43,6 +43,8 @@ const PEER_TIMEOUT_MS = 8_000;
 const DEFAULT_RPC_WINDOW_MS = 60_000;
 const DEFAULT_RPC_REQUESTS_PER_WINDOW = 600;
 const DEFAULT_RPC_MAX_CONNECTIONS = 256;
+export const RPC_MAX_HEADERS = 64;
+export const RPC_MAX_REQUESTS_PER_SOCKET = 100;
 const DEFAULT_CONSENSUS_INFLIGHT_PER_PEER = 4;
 export const BLOCK_INTERVAL_MS = 30_000;
 export const ROUND_WINDOW_MS = 30_000;
@@ -391,6 +393,8 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
   server.headersTimeout = 10_000;
   server.requestTimeout = 15_000;
   server.keepAliveTimeout = 5_000;
+  server.maxHeadersCount = RPC_MAX_HEADERS;
+  server.maxRequestsPerSocket = RPC_MAX_REQUESTS_PER_SOCKET;
   return server;
 }
 

@@ -51,6 +51,7 @@ No implementation claim may equate this model with Bitcoin's mining decentraliza
 - Noise authenticates the connected PeerId, but an authenticated peer may still be malicious.
 - Bootstrap identities and named failure domains are obtained out of band.
 - Peer discovery is availability metadata, never authority for genesis, validator, checkpoint or protocol trust.
+- Public RPC availability assumes layered perimeter controls; the node additionally bounds bodies, rates, total connections, header parsing, request/header/keep-alive time and requests per persistent socket.
 - Operators deploy enough independent bootstrap/archive nodes to survive the loss of any founder-operated infrastructure.
 
 ### Cryptography and keys
