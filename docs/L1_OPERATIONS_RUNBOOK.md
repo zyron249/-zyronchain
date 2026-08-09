@@ -48,6 +48,7 @@ Use multiple bootstrap peers sourced from independent operators/failure domains.
 | `mempoolSize` | pending transaction pressure | saturation/spam signal |
 | `validatorCount` | active/next validator-set size | topology/config sanity |
 | `persistenceHealthy` | process may continue durable commits | **page immediately if false** |
+| `validatorClockHealthy` | validator signing clock has not moved backward beyond tolerance | **page immediately if false; restart only after clock repair** |
 | `firstStoredHeight` | local history-retention boundary | archival/pruning verification |
 | `recoveredFromCheckpointHeight` | startup recovery fast-path evidence | recovery audit |
 | `recoveredStateV2FromCorruption` | derived state was quarantined/rebuilt | investigate disk/state integrity |
@@ -59,7 +60,7 @@ Infrastructure collectors must also record process RSS/CPU, disk free space/late
 
 These are engineering rehearsal thresholds, not a mainnet governance decision:
 
-- Page if `persistenceHealthy` is false, the process repeatedly restarts, or derived-state corruption recovery occurs unexpectedly.
+- Page if `persistenceHealthy` or `validatorClockHealthy` is false, the process repeatedly restarts, or derived-state corruption recovery occurs unexpectedly.
 - Page if independently observed finalized tips disagree at the same height.
 - Warn when finalized block age exceeds two expected block intervals; page when it exceeds four. Diagnose quorum/partition/signer health before taking action.
 - Warn before disk capacity can reach exhaustion within the operator's measured growth window; page on filesystem I/O/fsync errors.
