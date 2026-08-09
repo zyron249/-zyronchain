@@ -75,6 +75,12 @@ export interface NodeMetrics extends NodeStatus {
   validatorClockHealthy: boolean;
 }
 
+export interface RpcAdmissionMetrics {
+  inflightRequests: number;
+  maxInflightRequests: number;
+  rejectedRequests: number;
+}
+
 export interface RpcServerOptions {
   maxConnections?: number;
   maxInflightRequests?: number;
@@ -345,11 +351,8 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
       "consensus inflight per peer"
     )
   );
-  const globalInflight = new PeerInflightLimiter(
-    boundedPositiveInteger(
-      options.maxInflightRequests ?? DEFAULT_RPC_MAX_INFLIGHT_REQUESTS,
-      "global RPC inflight requests"
-    )
+  const rpcAdmission = new RpcAdmissionController(
+    options.maxInflightRequests ?? DEFAULT_RPC_MAX_INFLIGHT_REQUESTS
   );
   const limiter = new FixedWindowLimiter(requestsPerWindow, windowMs);
   const handleRequest = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
@@ -381,6 +384,7 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
         peerAuthToken,
         peerRequestAuthenticator,
         consensusInflight,
+        rpcAdmission,
         options.onTransactionAccepted
       );
     } catch (error) {
@@ -400,7 +404,7 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
   const server = createServer((request, response) => {
     let release: () => void;
     try {
-      release = globalInflight.enter("rpc-global");
+      release = rpcAdmission.enter();
     } catch {
       response.setHeader("retry-after", "1");
       response.setHeader("connection", "close");
@@ -429,6 +433,7 @@ async function route(
   peerAuthToken?: string,
   peerRequestAuthenticator?: PeerRequestAuthenticator,
   consensusInflight?: PeerInflightLimiter,
+  rpcAdmission?: RpcAdmissionController,
   onTransactionAccepted?: (transaction: Transaction) => void | Promise<void>
 ): Promise<void> {
   const url = new URL(request.url ?? "/", "http://node.invalid");
@@ -458,7 +463,10 @@ async function route(
     return writeJson(response, 200, { ok: true, height: service.status().height });
   }
   if (request.method === "GET" && url.pathname === "/metrics") {
-    return writeJson(response, 200, service.metrics());
+    return writeJson(response, 200, {
+      ...service.metrics(),
+      rpc: rpcAdmission?.metrics()
+    });
   }
   if (request.method === "GET" && url.pathname === "/blocks") {
     const from = parseInteger(url.searchParams.get("from"), "from");
@@ -1135,6 +1143,37 @@ export class PeerInflightLimiter {
       const current = this.inflight.get(identity) ?? 0;
       if (current <= 1) this.inflight.delete(identity);
       else this.inflight.set(identity, current - 1);
+    };
+  }
+}
+
+class RpcAdmissionController {
+  private inflightRequests = 0;
+  private rejectedRequests = 0;
+
+  constructor(private readonly maxInflightRequests: number) {
+    boundedPositiveInteger(maxInflightRequests, "global RPC inflight requests");
+  }
+
+  enter(): () => void {
+    if (this.inflightRequests >= this.maxInflightRequests) {
+      this.rejectedRequests += 1;
+      throw new PeerInflightLimitError("RPC concurrency limit exceeded");
+    }
+    this.inflightRequests += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.inflightRequests -= 1;
+    };
+  }
+
+  metrics(): RpcAdmissionMetrics {
+    return {
+      inflightRequests: this.inflightRequests,
+      maxInflightRequests: this.maxInflightRequests,
+      rejectedRequests: this.rejectedRequests
     };
   }
 }
