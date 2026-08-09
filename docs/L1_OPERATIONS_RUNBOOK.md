@@ -149,7 +149,7 @@ Before a protocol activation:
 2. run old/new binaries together on a multi-operator testnet through pre-activation blocks;
 3. prove old unsupported binaries fail-stop at activation instead of following a different state machine;
 4. prove upgraded validators converge after sequential view changes, crash/restart and partition recovery;
-5. rehearse the separately quorum-authorized rollback schedule at a later activation height;
+5. rehearse the separately quorum-authorized v3-to-v2 rollback schedule at a later activation height; never schedule protocol v1, because the State-v2 migration is irreversible;
 6. perform a checkpoint restore using both pre- and post-activation history.
 
 No production activation is considered ready from CI alone; the sustained rehearsal evidence is a mainnet stop-ship artifact.
