@@ -931,7 +931,7 @@ async function readAuthToken(path: string, label: string, requirePrivatePermissi
     }
   }
   const token = (await readFile(path, "utf8")).trim();
-  if (token.length < 32 || token.length > 512 || !/^[\\x21-\\x7e]+$/.test(token)) {
+  if (token.length < 32 || token.length > 512 || !/^[\x21-\x7e]+$/.test(token)) {
     throw new Error(`${label} token file must contain a single 32-512 character token`);
   }
   return token;
