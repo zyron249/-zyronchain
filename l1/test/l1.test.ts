@@ -26,7 +26,11 @@ import {
   createProtocolUpgradeApproval,
   createTransfer,
   createValidatorApproval,
-  createValidatorSetUpdate
+  createValidatorSetUpdate,
+  transactionSigningDomain,
+  validateTransactionShape,
+  verifyProtocolUpgradeApprovalSignature,
+  verifyValidatorUpdateApprovalSignature
 } from "../src/transaction.js";
 import {
   attachBlockSignature,
@@ -104,6 +108,90 @@ test("canonical signing domains prevent cross-context and legacy signature repla
     () => signCanonicalDomain("FINALITY", payload, validatorOnePrivate),
     /Invalid canonical signing domain/
   );
+});
+
+test("transaction v2 signatures are domain-separated and cannot enter legacy protocol mempools", () => {
+  const transferInput = {
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: alice,
+    receiver: bob,
+    amountAtoms: 10,
+    feeAtoms: 1,
+    timestampMs: genesis().timestampMs + 1
+  };
+  const legacy = createTransfer(transferInput, alicePrivate, alicePublic);
+  const v2 = createTransfer(transferInput, alicePrivate, alicePublic, 2);
+
+  assert.equal(legacy.version, 1);
+  assert.equal(v2.version, 2);
+  assert.doesNotThrow(() => validateTransactionShape(legacy));
+  assert.doesNotThrow(() => validateTransactionShape(v2));
+  assert.equal(verifyCanonical({
+    kind: v2.kind,
+    version: v2.version,
+    chainId: v2.chainId,
+    nonce: v2.nonce,
+    sender: v2.sender,
+    receiver: v2.receiver,
+    amountAtoms: v2.amountAtoms,
+    feeAtoms: v2.feeAtoms,
+    timestampMs: v2.timestampMs,
+    publicKey: v2.publicKey
+  }, v2.signature, v2.publicKey), false);
+  assert.equal(transactionSigningDomain("transfer"), "zyronchain/transaction/transfer/v2");
+
+  const chain = new ZyronChain(genesis());
+  assert.throws(
+    () => chain.validateMempoolAdmission(v2),
+    /Transaction version 2 is not valid under protocol version 1/
+  );
+  assert.throws(
+    () => chain.validatePending([v2]),
+    /Transaction version 2 is not valid under protocol version 1/
+  );
+});
+
+test("transaction v2 governance approvals reject legacy and cross-purpose signatures", () => {
+  const validatorInput = {
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: validatorOne,
+    activationHeight: 101,
+    validators: genesis().validators
+  };
+  const v2Approval = createValidatorApproval(validatorInput, validatorOnePrivate, validatorOnePublic, 2);
+  const legacyApproval = createValidatorApproval(validatorInput, validatorOnePrivate, validatorOnePublic);
+  const validatorTx = createValidatorSetUpdate({
+    ...validatorInput,
+    approvals: [v2Approval],
+    timestampMs: genesis().timestampMs + 1
+  }, validatorOnePrivate, validatorOnePublic, 2);
+  assert.equal(verifyValidatorUpdateApprovalSignature(validatorTx, v2Approval), true);
+  assert.equal(verifyValidatorUpdateApprovalSignature(validatorTx, legacyApproval), false);
+
+  const upgradeInput = {
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: validatorOne,
+    activationHeight: 101,
+    protocolVersion: 2
+  };
+  const v2UpgradeApproval = createProtocolUpgradeApproval(
+    upgradeInput,
+    validatorOnePrivate,
+    validatorOnePublic,
+    2
+  );
+  const legacyUpgradeApproval = createProtocolUpgradeApproval(upgradeInput, validatorOnePrivate, validatorOnePublic);
+  const upgradeTx = createProtocolUpgrade({
+    ...upgradeInput,
+    approvals: [v2UpgradeApproval],
+    timestampMs: genesis().timestampMs + 1
+  }, validatorOnePrivate, validatorOnePublic, 2);
+  assert.equal(verifyProtocolUpgradeApprovalSignature(upgradeTx, v2UpgradeApproval), true);
+  assert.equal(verifyProtocolUpgradeApprovalSignature(upgradeTx, legacyUpgradeApproval), false);
+  assert.equal(verifyValidatorUpdateApprovalSignature(validatorTx, v2UpgradeApproval), false);
 });
 
 test("protocol v3 consensus signatures are domain-separated while v2 stays legacy-compatible", () => {
