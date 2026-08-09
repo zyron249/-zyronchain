@@ -3,8 +3,15 @@ import type { Stream } from "@libp2p/interface";
 const WRITE_CHUNK_BYTES = 64 * 1_024;
 export const DEFAULT_P2P_INBOUND_FRAME_BUDGET_BYTES = 64 * 1_024 * 1_024;
 
+export interface P2PFrameByteBudgetMetrics {
+  bytesInUse: number;
+  maxBytes: number;
+  rejectedFrames: number;
+}
+
 export class P2PFrameByteBudget {
   private bytesInUse = 0;
+  private rejectedFrames = 0;
 
   constructor(readonly maxBytes: number = DEFAULT_P2P_INBOUND_FRAME_BUDGET_BYTES) {
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 512 * 1_024 * 1_024) {
@@ -15,6 +22,7 @@ export class P2PFrameByteBudget {
   reserve(bytes: number): () => void {
     if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > this.maxBytes ||
         this.bytesInUse > this.maxBytes - bytes) {
+      this.rejectedFrames += 1;
       throw new Error("P2P frame byte budget exceeded");
     }
     this.bytesInUse += bytes;
@@ -25,10 +33,28 @@ export class P2PFrameByteBudget {
       this.bytesInUse -= bytes;
     };
   }
+
+  metrics(): P2PFrameByteBudgetMetrics {
+    return {
+      bytesInUse: this.bytesInUse,
+      maxBytes: this.maxBytes,
+      rejectedFrames: this.rejectedFrames
+    };
+  }
 }
 
 const inboundFrameBudget = new P2PFrameByteBudget();
 const outboundFrameBudget = new P2PFrameByteBudget();
+
+export function nativeP2PFrameBudgetMetrics(): {
+  inbound: P2PFrameByteBudgetMetrics;
+  outbound: P2PFrameByteBudgetMetrics;
+} {
+  return {
+    inbound: inboundFrameBudget.metrics(),
+    outbound: outboundFrameBudget.metrics()
+  };
+}
 
 export async function writeP2PFrame(
   stream: Stream,
