@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Stream } from "@libp2p/interface";
 
-import { P2PFrameByteBudget, readP2PFrame, writeP2PFrame } from "../src/p2p-frame.js";
+import { P2PFrameByteBudget, readP2PFrame, readP2PFrameRetained, writeP2PFrame } from "../src/p2p-frame.js";
 
 test("native frame decoder is invariant to adversarial transport fragmentation", async () => {
   const value = {
@@ -71,6 +71,28 @@ test("native frame decoder bounds aggregate retained body bytes and recovers cap
     await readP2PFrame(fakeReadableStream([validHeader, body]), 32, 1_000, budget),
     {}
   );
+});
+
+test("retained native frame capacity stays held through caller processing", async () => {
+  const budget = new P2PFrameByteBudget(8);
+  const body = Buffer.from("{}");
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(body.length);
+  const retained = await readP2PFrameRetained(fakeReadableStream([header, body]), 8, 1_000, budget);
+  assert.deepEqual(retained.value, {});
+  assert.equal(budget.metrics().bytesInUse, body.length);
+
+  const competing = Buffer.alloc(4);
+  competing.writeUInt32BE(8);
+  await assert.rejects(
+    () => readP2PFrameRetained(fakeReadableStream([competing]), 8, 1_000, budget),
+    /byte budget exceeded/
+  );
+
+  retained.release();
+  assert.equal(budget.metrics().bytesInUse, 0);
+  retained.release();
+  assert.equal(budget.metrics().bytesInUse, 0);
 });
 
 test("native frame writer bounds aggregate serialization and slow-reader retention", async () => {
