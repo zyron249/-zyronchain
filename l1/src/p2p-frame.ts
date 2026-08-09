@@ -1,6 +1,33 @@
 import type { Stream } from "@libp2p/interface";
 
 const WRITE_CHUNK_BYTES = 64 * 1_024;
+export const DEFAULT_P2P_INBOUND_FRAME_BUDGET_BYTES = 64 * 1_024 * 1_024;
+
+export class P2PFrameByteBudget {
+  private bytesInUse = 0;
+
+  constructor(readonly maxBytes: number = DEFAULT_P2P_INBOUND_FRAME_BUDGET_BYTES) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 512 * 1_024 * 1_024) {
+      throw new Error("Invalid P2P frame byte budget");
+    }
+  }
+
+  reserve(bytes: number): () => void {
+    if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > this.maxBytes ||
+        this.bytesInUse > this.maxBytes - bytes) {
+      throw new Error("P2P inbound frame byte budget exceeded");
+    }
+    this.bytesInUse += bytes;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.bytesInUse -= bytes;
+    };
+  }
+}
+
+const inboundFrameBudget = new P2PFrameByteBudget();
 
 export async function writeP2PFrame(stream: Stream, value: unknown, maxBytes: number, timeoutMs: number): Promise<void> {
   assertFrameLimits(maxBytes, timeoutMs);
@@ -19,7 +46,12 @@ export async function writeP2PFrame(stream: Stream, value: unknown, maxBytes: nu
   await stream.close({ signal: AbortSignal.timeout(timeoutMs) });
 }
 
-export async function readP2PFrame(stream: Stream, maxBytes: number, timeoutMs: number): Promise<unknown> {
+export async function readP2PFrame(
+  stream: Stream,
+  maxBytes: number,
+  timeoutMs: number,
+  budget: P2PFrameByteBudget = inboundFrameBudget
+): Promise<unknown> {
   assertFrameLimits(maxBytes, timeoutMs);
   stream.inactivityTimeout = timeoutMs;
   const header = Buffer.alloc(4);
@@ -29,6 +61,7 @@ export async function readP2PFrame(stream: Stream, maxBytes: number, timeoutMs: 
   let bodyBytes = 0;
   let decoded: unknown;
   let decodedFrame = false;
+  let release: (() => void) | undefined;
   const timeout = setTimeout(() => stream.abort(new Error("P2P frame read timeout")), timeoutMs);
   timeout.unref();
   try {
@@ -47,6 +80,7 @@ export async function readP2PFrame(stream: Stream, maxBytes: number, timeoutMs: 
         if (headerBytes === 4) {
           expectedBytes = header.readUInt32BE(0);
           if (expectedBytes < 1 || expectedBytes > maxBytes) throw new Error("Invalid P2P frame length");
+          release = budget.reserve(expectedBytes);
           body = Buffer.allocUnsafe(expectedBytes);
         }
       }
@@ -71,6 +105,7 @@ export async function readP2PFrame(stream: Stream, maxBytes: number, timeoutMs: 
     throw new Error("Truncated P2P frame");
   } finally {
     clearTimeout(timeout);
+    release?.();
   }
 }
 
