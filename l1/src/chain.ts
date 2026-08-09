@@ -678,6 +678,12 @@ function validateProtocolUpgradeAuthorization(
   blockHeight: number,
   lastActivationHeight: number
 ): void {
+  // Protocol v2 irreversibly migrated consensus state to the sparse State-v2
+  // commitment. Re-activating v1 would require a reverse migration that does
+  // not exist and would intentionally fail-stop the chain.
+  if (tx.protocolVersion === 1) {
+    throw new Error("Protocol v1 cannot be reactivated after the State-v2 migration boundary");
+  }
   if (tx.activationHeight < blockHeight + MIN_PROTOCOL_UPDATE_DELAY) {
     throw new Error("Protocol upgrade activation is too soon");
   }
