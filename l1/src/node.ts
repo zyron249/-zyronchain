@@ -46,6 +46,7 @@ const DEFAULT_RPC_MAX_CONNECTIONS = 256;
 const DEFAULT_CONSENSUS_INFLIGHT_PER_PEER = 4;
 export const BLOCK_INTERVAL_MS = 30_000;
 export const ROUND_WINDOW_MS = 30_000;
+export const MAX_VALIDATOR_CLOCK_ROLLBACK_MS = 1_000;
 
 export interface NodeStatus {
   chainId: string;
@@ -68,6 +69,7 @@ export interface NodeMetrics extends NodeStatus {
   persistenceHealthy: boolean;
   recoveredFromCheckpointHeight: number;
   recoveredStateV2FromCorruption: boolean;
+  validatorClockHealthy: boolean;
 }
 
 export interface RpcServerOptions {
@@ -108,6 +110,8 @@ export class NodeService {
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly startedAtMs = Date.now();
   private readonly validatorSigner: ValidatorSigner | undefined;
+  private lastValidatorClockMs: number | undefined;
+  private validatorClockFaulted = false;
 
   constructor(
     readonly store: ChainStore,
@@ -144,7 +148,8 @@ export class NodeService {
       firstStoredHeight: this.store.firstStoredHeight,
       persistenceHealthy: this.store.persistenceHealthy,
       recoveredFromCheckpointHeight: this.store.recoveredFromCheckpointHeight,
-      recoveredStateV2FromCorruption: this.store.recoveredStateV2FromCorruption
+      recoveredStateV2FromCorruption: this.store.recoveredStateV2FromCorruption,
+      validatorClockHealthy: !this.validatorClockFaulted
     };
   }
 
@@ -190,12 +195,13 @@ export class NodeService {
     return tx.txid;
   }
 
-  async attestProposal(value: unknown): Promise<BlockAttestation> {
+  async attestProposal(value: unknown, nowMs = Date.now()): Promise<BlockAttestation> {
     return this.exclusive(async () => {
       if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
+      this.assertValidatorClock(nowMs);
       validateBlockShape(value);
       const block = value as Block;
-      this.store.chain.validateProposal(block);
+      this.store.chain.validateProposal(block, nowMs);
       const publicKey = this.validatorSigner.publicKey;
       const validator = this.store.chain.validatorsAt(block.header.height).find((item) => item.publicKey === publicKey);
       if (!validator) throw new Error("Configured validator key is not in genesis");
@@ -216,6 +222,7 @@ export class NodeService {
   async signPreparedProposal(block: Block, nowMs = Date.now()): Promise<Block> {
     return this.exclusive(async () => {
       if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
+      this.assertValidatorClock(nowMs);
       this.store.chain.validatePreparedUnsignedBlock(block, nowMs);
       if (block.proposerPublicKey !== this.validatorSigner.publicKey) throw new Error("Configured validator is not the block proposer");
       await this.signingJournal.reserveAttestation(block.header.height, block.header.round, block.hash);
@@ -234,6 +241,7 @@ export class NodeService {
   ): Promise<RoundSkipVote> {
     return this.exclusive(async () => {
       if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
+      this.assertValidatorClock(nowMs);
       const chain = this.store.chain;
       if (!Number.isSafeInteger(height) || height !== chain.height + 1 || !Number.isSafeInteger(round) || round < 0) {
         throw new Error("Invalid round skip request");
@@ -288,6 +296,17 @@ export class NodeService {
       this.mempool.remove(block.transactions.map((tx) => tx.txid));
       this.mempool.prune((tx) => tx.nonce <= this.store.chain.nonce(tx.sender));
     });
+  }
+
+  private assertValidatorClock(nowMs: number): void {
+    if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new Error("Invalid validator clock");
+    if (this.validatorClockFaulted) throw new Error("Validator clock fault requires process restart");
+    if (this.lastValidatorClockMs !== undefined &&
+        nowMs + MAX_VALIDATOR_CLOCK_ROLLBACK_MS < this.lastValidatorClockMs) {
+      this.validatorClockFaulted = true;
+      throw new Error("Validator clock moved backwards beyond the safety tolerance");
+    }
+    this.lastValidatorClockMs = Math.max(this.lastValidatorClockMs ?? nowMs, nowMs);
   }
 
   private async exclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -855,7 +874,7 @@ export async function produceFinalizedBlock(
   chain.validatePreparedBlock(proposal, nowMs);
   const attestations: BlockAttestation[] = [];
   try {
-    attestations.push(await service.attestProposal(proposal));
+    attestations.push(await service.attestProposal(proposal, nowMs));
   } catch (error) {
     if (!/Validator signing is disabled/.test(safeError(error))) throw error;
   }

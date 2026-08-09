@@ -36,7 +36,7 @@ No implementation claim may equate this model with Bitcoin's mining decentraliza
 - At most the tolerated Byzantine fraction signs conflicting or invalid actions.
 - Honest validators run compatible binaries for the active protocol.
 - Validator hosts preserve signing-journal and remote-signer anti-equivocation state.
-- Clocks remain within the monitored future-skew and round-timing assumptions.
+- Clocks remain within the monitored future-skew and round-timing assumptions. A backward jump beyond one second fail-stops validator signing for the lifetime of the process.
 - Validator-set and protocol changes receive genuine current-set quorum approval.
 
 ### State and storage
