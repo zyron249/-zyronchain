@@ -95,11 +95,17 @@ async function createSnapshot(args: string[]): Promise<void> {
   const dataDir = requiredOption(args, "--data");
   const output = requiredOption(args, "--out");
   const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
-  const store = await ChainStore.open(genesis, resolve(dataDir));
-  const result = await store.writeSnapshot(resolve(output));
-  console.log(`Snapshot written at height ${result.height}: ${resolve(output)}`);
-  console.log(`Snapshot SHA-256: ${result.sha256}`);
-  console.log("Pin and publish this digest independently before trusting the snapshot as a checkpoint.");
+  const resolvedDataDir = resolve(dataDir);
+  const lease = await NodeDataDirectoryLease.acquire(resolvedDataDir);
+  try {
+    const store = await ChainStore.open(genesis, resolvedDataDir);
+    const result = await store.writeSnapshot(resolve(output));
+    console.log(`Snapshot written at height ${result.height}: ${resolve(output)}`);
+    console.log(`Snapshot SHA-256: ${result.sha256}`);
+    console.log("Pin and publish this digest independently before trusting the snapshot as a checkpoint.");
+  } finally {
+    lease.close();
+  }
 }
 
 async function installCheckpoint(args: string[]): Promise<void> {
@@ -201,11 +207,16 @@ async function pruneFinalized(args: string[]): Promise<void> {
   const retainBlocks = parseSafeInteger(requiredOption(args, "--retain-blocks"), "retain-blocks");
   if (retainBlocks < 1) throw new Error("prune-finalized requires --retain-blocks >= 1");
   const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
-  const store = await ChainStore.open(genesis, dataDir);
-  const result = await store.pruneFinalizedHistory({}, retainBlocks);
-  console.log(`Finalized history pruned through height ${result.prunedThroughHeight}`);
-  console.log(`First retained finalized block: ${result.firstStoredHeight}`);
-  console.log(`Latest ${retainBlocks} finalized block(s) remain available for block sync.`);
+  const lease = await NodeDataDirectoryLease.acquire(dataDir);
+  try {
+    const store = await ChainStore.open(genesis, dataDir);
+    const result = await store.pruneFinalizedHistory({}, retainBlocks);
+    console.log(`Finalized history pruned through height ${result.prunedThroughHeight}`);
+    console.log(`First retained finalized block: ${result.firstStoredHeight}`);
+    console.log(`Latest ${retainBlocks} finalized block(s) remain available for block sync.`);
+  } finally {
+    lease.close();
+  }
 }
 
 async function keygen(args: string[]): Promise<void> {
