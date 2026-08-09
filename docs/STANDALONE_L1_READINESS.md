@@ -7,14 +7,14 @@ This document is the release gate for the standalone TypeScript L1. `Implemented
 | A | Addresses & accounts | Implemented | secp256k1-derived `ZYN` addresses, exact atom balances, sequential nonces |
 | B | Blocks | Implemented | versioned signed headers, previous hash, Merkle tx root, state root, size/count caps |
 | C | Consensus | Implemented with audit gate | >2/3 PoA attestations plus deadline-gated >2/3 skip certificates; missed rounds progress sequentially and cannot be jumped without predecessor quorum evidence |
-| D | Data durability | Implemented | finalized blocks are validated before durable fsync and only then applied to live state; append-only storage, pinned metadata, full replay validation, corrupt-record fail-stop and repeated 100-block crash/reopen replay soak |
+| D | Data durability | Implemented | finalized blocks are validated before durable fsync and only then applied to live state; ambiguous append/fsync outcomes fail-stop until restart; node/snapshot/prune writers are serialized by an OS-backed SQLite lease; append-only storage, pinned metadata, full replay validation, corrupt-record fail-stop and repeated 100-block crash/reopen replay soak |
 | E | Economics | Implemented with gate | hard 50M ZYN cap, 1e8 atoms/ZYN, finite activity pool, explicit fee burn; final public allocation requires immutable mainnet genesis review |
 | F | Finality | Implemented | unique configured validator signatures; quorum = `floor(2N/3)+1` |
 | G | Genesis | Implemented with gate | deterministic chain identity/genesis hash; public mainnet chain ID and allocation are intentionally not invented here |
 | H | Hashing | Implemented | SHA-256 canonical payloads and deterministic Merkle/state commitments |
 | I | Input validation | Implemented | exact wire schemas, unknown-field rejection, integer bounds, lowercase-hex validation, bounded bodies |
-| J | Journaling | Implemented | persistent `(height, round)` journal makes block attestation and round-skip mutually exclusive across restart |
-| K | Keys | Implemented with gate | local 0600 keys remain for devnet; validator proposal/attestation/skip signing also supports a pinned provider-neutral remote-signer boundary with signature re-verification and fsynced anti-equivocation reservation before signing; production HSM policy, custody audit and rotation/recovery drill remain |
+| J | Journaling | Implemented | persistent `(height, round)` journal makes block attestation and round-skip mutually exclusive across restart; write/fsync/close uncertainty fail-stops the live journal and a separate SQLite lease rejects a second validator writer for the same data directory |
+| K | Keys | Implemented with gate | local 0600 keys remain for devnet; validator proposal/attestation/skip signing also supports a pinned provider-neutral remote-signer boundary with signature re-verification and fsynced anti-equivocation reservation before signing; local concurrent-validator reuse of one data directory is rejected; production HSM policy, custody audit and cross-host rotation/recovery drill remain |
 | L | Ledger state | Implemented with scale gate | authenticated State v2 uses SQLite-indexed immutable nodes and semantic-key preimages, a bounded resolver cache, file-backed startup traversal metadata, externally anchored portable state sync, checkpoint recovery and explicit-pruning GC; current state is no longer fully hydrated in RAM. Repeat large-cardinality restart/GC measurements on release hardware before mainnet capacity freeze |
 | M | Mempool | Implemented | duplicate tx/nonce protection, bounded capacity, single-pass nonce-aware chain selection, future nonce window, stale-conflict pruning and a 1.5 MB transaction payload budget that prevents oversized proposals from stalling finality |
 | N | Networking | Implemented with gate | Noise-authenticated native P2P binds PeerId+node key+chain/genesis; pinned bootstrap, bounded signed discovery, topology/failure-domain diversity, scoring/backoff, gossip, state/checkpoint/suffix sync, stream/rate/work caps and eclipse/Sybil regressions are implemented; sustained independent-operator public-network evidence remains |
@@ -41,8 +41,10 @@ The following are not paperwork; they are technical or operational safety requir
 4. Freeze an immutable mainnet chain ID, genesis allocation, activity-oracle governance and reward/fee policy; publish its hash before launch.
 5. Add production key custody (HSM or audited remote signer), authenticated network perimeter, rate limits, metrics/alerts, backups and tested restore/incident procedures.
 6. Enforce protected-branch/review release policy. Deterministic L1 tarballs, SHA-256
-   checksums, locked-dependency CI and GitHub/Sigstore build-provenance attestations are
-   produced by the tag release workflow; repository branch protection remains an
-   operator/repository-settings gate.
+   checksums, a checksummed SPDX release SBOM, locked-dependency CI and
+   GitHub/Sigstore build-provenance attestations are produced by the tag release
+   workflow. CI Actions are immutable-SHA pinned and Dependabot monitors Actions,
+   npm and the independent verifier dependency without auto-merge; repository
+   branch protection remains an operator/repository-settings gate.
 
 Until every stop-ship gate above is closed with evidence, the honest label is **standalone multi-validator devnet/testnet L1**, not “100% certified mainnet.”
