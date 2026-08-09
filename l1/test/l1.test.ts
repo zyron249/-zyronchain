@@ -4,6 +4,7 @@ import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/p
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
+import { connect } from "node:net";
 import { execFile, spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -3457,17 +3458,8 @@ test("RPC global inflight budget rejects excess concurrent work", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-global-inflight-"));
   const store = await ChainStore.open(genesis(), directory);
   const service = new NodeService(store);
-  let releaseRelay!: () => void;
-  let markRelayStarted!: () => void;
-  const relayStarted = new Promise<void>((resolveStarted) => { markRelayStarted = resolveStarted; });
-  const relayGate = new Promise<void>((resolveRelay) => { releaseRelay = resolveRelay; });
-  const server = createRpcServer(service, {
-    maxInflightRequests: 1,
-    onTransactionAccepted: async () => {
-      markRelayStarted();
-      await relayGate;
-    }
-  });
+  const server = createRpcServer(service, { maxInflightRequests: 1 });
+  let socket: ReturnType<typeof connect> | undefined;
 
   try {
     await new Promise<void>((resolveListen, reject) => {
@@ -3477,22 +3469,21 @@ test("RPC global inflight budget rejects excess concurrent work", async () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("RPC inflight test server has no TCP address");
     const base = `http://127.0.0.1:${address.port}`;
-    const tx = createTransfer({
-      chainId: genesis().chainId,
-      nonce: 1,
-      sender: alice,
-      receiver: bob,
-      amountAtoms: 1,
-      feeAtoms: 1,
-      timestampMs: genesis().timestampMs + 1
-    }, alicePrivate, alicePublic);
-
-    const first = fetch(`${base}/tx`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(tx)
+    socket = connect(address.port, "127.0.0.1");
+    await new Promise<void>((resolveConnect, reject) => {
+      socket!.once("connect", resolveConnect);
+      socket!.once("error", reject);
     });
-    await relayStarted;
+    const requestEntered = new Promise<void>((resolveRequest) => server.once("request", () => resolveRequest()));
+    socket.write([
+      "POST /tx HTTP/1.1",
+      "Host: localhost",
+      "Content-Type: application/json",
+      "Content-Length: 100",
+      "",
+      "{"
+    ].join("\\r\\n"));
+    await requestEntered;
 
     const overloaded = await fetch(`${base}/status`);
     assert.equal(overloaded.status, 503);
@@ -3500,10 +3491,12 @@ test("RPC global inflight budget rejects excess concurrent work", async () => {
     assert.equal(overloaded.headers.get("retry-after"), "1");
     assert.deepEqual(await overloaded.json(), { error: "RPC concurrency limit exceeded" });
 
-    releaseRelay();
-    assert.equal((await first).status, 202);
+    socket.destroy();
+    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+    const recovered = await fetch(`${base}/status`);
+    assert.equal(recovered.status, 200);
   } finally {
-    releaseRelay();
+    socket?.destroy();
     await new Promise<void>((resolveClose, reject) =>
       server.close((error) => error ? reject(error) : resolveClose())
     );
