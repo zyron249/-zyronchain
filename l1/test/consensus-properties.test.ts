@@ -65,11 +65,15 @@ test("model: signing journal matches fail-closed first-choice semantics across r
       } else {
         await assert.rejects(operation, /Conflicting validator action/);
       }
-      if (step % 23 === 22) journal = await SigningJournal.open(directory);
+      if (step % 23 === 22) {
+        journal.close();
+        journal = await SigningJournal.open(directory);
+      }
     }
 
     // Reopen once more and prove every persisted first choice remains
     // idempotent while an alternate choice is rejected.
+    journal.close();
     journal = await SigningJournal.open(directory);
     for (const [slot, choice] of model) {
       const [heightText, roundText] = slot.split(":");
@@ -89,6 +93,7 @@ test("model: signing journal matches fail-closed first-choice semantics across r
       );
     }
   } finally {
+    journal.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

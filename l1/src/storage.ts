@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { lstat, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import Database from "better-sqlite3";
 
 import { canonicalJson, sha256Hex } from "./codec.js";
 import { ZyronChain } from "./chain.js";
@@ -691,11 +692,16 @@ async function syncDirectory(path: string): Promise<void> {
 export class SigningJournal {
   private readonly reservations = new Map<string, string>();
   private persistenceFaulted = false;
-  private constructor(readonly path: string) {}
+  private closed = false;
+  private constructor(
+    readonly path: string,
+    private readonly leaseDatabase: Database.Database
+  ) {}
 
   static async open(dataDir: string): Promise<SigningJournal> {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
-    const journal = new SigningJournal(join(dataDir, "signing-journal.ndjson"));
+    const leaseDatabase = acquireSigningJournalLease(join(dataDir, "signing-journal.lock.sqlite"));
+    const journal = new SigningJournal(join(dataDir, "signing-journal.ndjson"), leaseDatabase);
     try {
       for await (const line of readLines(journal.path)) {
         if (!line.trim()) continue;
@@ -713,10 +719,28 @@ export class SigningJournal {
         journal.reservations.set(key, reservation);
       }
     } catch (error) {
-      if (!isMissingFile(error)) throw error;
-      await writeFile(journal.path, "", { flag: "wx", mode: 0o600 });
+      if (!isMissingFile(error)) {
+        journal.close();
+        throw error;
+      }
+      try {
+        await writeFile(journal.path, "", { flag: "wx", mode: 0o600 });
+      } catch (createError) {
+        journal.close();
+        throw createError;
+      }
     }
     return journal;
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      this.leaseDatabase.exec("ROLLBACK");
+    } finally {
+      this.leaseDatabase.close();
+    }
   }
 
   async reserveAttestation(
@@ -744,6 +768,7 @@ export class SigningJournal {
     value: string,
     faultHooks: SigningJournalFaultHooks
   ): Promise<void> {
+    if (this.closed) throw new Error("Signing journal is closed");
     if (this.persistenceFaulted) throw new Error("Signing journal persistence fault requires validator restart");
     if (!Number.isSafeInteger(height) || height < 1 || !Number.isSafeInteger(round) || round < 0) {
       throw new Error("Invalid signing slot");
@@ -775,6 +800,21 @@ export class SigningJournal {
       throw new Error("Signing journal persistence failed; validator restart required", { cause: error });
     }
     this.reservations.set(key, reservation);
+  }
+}
+
+function acquireSigningJournalLease(path: string): Database.Database {
+  const database = new Database(path, { timeout: 0 });
+  try {
+    // Hold an OS-backed SQLite exclusive transaction for the complete journal
+    // lifetime. A process crash releases the filesystem lock automatically, so
+    // there is no stale PID/lockfile that an operator might incorrectly clear.
+    database.pragma("journal_mode = DELETE");
+    database.exec("BEGIN EXCLUSIVE");
+    return database;
+  } catch (error) {
+    database.close();
+    throw new Error("Signing journal data directory already has an active validator writer", { cause: error });
   }
 }
 
