@@ -24,7 +24,7 @@ export interface GenesisConfig {
 
 export interface TransferTx {
   kind: "transfer";
-  version: 1;
+  version: 1 | 2;
   chainId: string;
   nonce: number;
   sender: Address;
@@ -44,7 +44,7 @@ export interface ActivityEntry {
 
 export interface ActivitySettlementTx {
   kind: "activity_settlement";
-  version: 1;
+  version: 1 | 2;
   chainId: string;
   nonce: number;
   sender: Address;
@@ -66,7 +66,7 @@ export interface ValidatorApproval {
 
 export interface ValidatorSetUpdateTx {
   kind: "validator_update";
-  version: 1;
+  version: 1 | 2;
   chainId: string;
   nonce: number;
   sender: Address;
@@ -82,7 +82,7 @@ export interface ValidatorSetUpdateTx {
 
 export interface ProtocolUpgradeTx {
   kind: "protocol_upgrade";
-  version: 1;
+  version: 1 | 2;
   chainId: string;
   nonce: number;
   sender: Address;
