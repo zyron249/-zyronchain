@@ -379,6 +379,7 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
   );
   const limiter = new FixedWindowLimiter(requestsPerWindow, windowMs);
   const handleRequest = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    const bodyReservation = new RpcRequestBodyReservation(rpcBodyBudget);
     const rate = limiter.consume(request.socket.remoteAddress ?? "unknown", Date.now());
     response.setHeader("x-zyron-rpc-version", String(RPC_API_VERSION));
     response.setHeader("x-ratelimit-limit", String(requestsPerWindow));
@@ -407,7 +408,7 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
         peerAuthToken,
         peerRequestAuthenticator,
         consensusInflight,
-        rpcBodyBudget,
+        bodyReservation,
         rpcAdmission,
         options.onTransactionAccepted
       );
@@ -429,6 +430,8 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
         return;
       }
       writeJson(response, 400, { error: safeError(error) });
+    } finally {
+      bodyReservation.release();
     }
   };
   const server = createServer((request, response) => {
@@ -463,7 +466,7 @@ async function route(
   peerAuthToken?: string,
   peerRequestAuthenticator?: PeerRequestAuthenticator,
   consensusInflight?: PeerInflightLimiter,
-  rpcBodyBudget?: RpcRequestBodyByteBudget,
+  bodyReservation?: RpcRequestBodyReservation,
   rpcAdmission?: RpcAdmissionController,
   onTransactionAccepted?: (transaction: Transaction) => void | Promise<void>
 ): Promise<void> {
@@ -514,7 +517,7 @@ async function route(
     return writeJson(response, 200, { address, nonce: service.nonce(address) });
   }
   if (request.method === "POST" && url.pathname === "/tx") {
-    const body = await readJsonBody(request, rpcBodyBudget);
+    const body = await readJsonBody(request, bodyReservation);
     const txid = service.submitTransaction(body);
     if (onTransactionAccepted) {
       const transaction = structuredClone(body as Transaction);
@@ -525,7 +528,7 @@ async function route(
     return writeJson(response, 202, { txid });
   }
   if (request.method === "POST" && url.pathname === "/proposal/attest") {
-    const body = await readJsonBody(request, rpcBodyBudget);
+    const body = await readJsonBody(request, bodyReservation);
     const release = enterConsensusRequest(
       request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
     );
@@ -536,7 +539,7 @@ async function route(
     }
   }
   if (request.method === "POST" && url.pathname === "/round/skip") {
-    const body = await readJsonBody(request, rpcBodyBudget);
+    const body = await readJsonBody(request, bodyReservation);
     const release = enterConsensusRequest(
       request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
     );
@@ -554,7 +557,7 @@ async function route(
     }
   }
   if (request.method === "POST" && url.pathname === "/block") {
-    const body = await readJsonBody(request, rpcBodyBudget);
+    const body = await readJsonBody(request, bodyReservation);
     const release = enterConsensusRequest(
       request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
     );
@@ -1096,41 +1099,35 @@ async function parseBoundedResponse(response: Response, maxBytes: number): Promi
   }
 }
 
-async function readJsonBody(request: IncomingMessage, rpcBodyBudget?: RpcRequestBodyByteBudget): Promise<unknown> {
+async function readJsonBody(
+  request: IncomingMessage,
+  bodyReservation?: RpcRequestBodyReservation
+): Promise<unknown> {
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] ?? "")) {
     throw new Error("Content-Type must be application/json");
   }
   const declaredLength = request.headers["content-length"];
-  let declaredRelease: (() => void) | undefined;
   if (declaredLength !== undefined) {
     if (!/^(0|[1-9][0-9]*)$/.test(declaredLength)) throw new Error("Invalid Content-Length");
     const declaredBytes = Number(declaredLength);
     if (!Number.isSafeInteger(declaredBytes) || declaredBytes > MAX_BODY_BYTES) {
       throw new Error("Request body too large");
     }
-    if (declaredBytes > 0) declaredRelease = rpcBodyBudget?.reserve(declaredBytes);
+    if (declaredBytes > 0) bodyReservation?.reserve(declaredBytes);
   }
 
   const chunks: Buffer[] = [];
-  const chunkReleases: Array<() => void> = [];
   let total = 0;
-  try {
-    for await (const chunk of request) {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      if (buffer.length === 0) continue;
-      total += buffer.length;
-      if (total > MAX_BODY_BYTES) throw new Error("Request body too large");
-      if (declaredLength === undefined) {
-        chunkReleases.push(rpcBodyBudget?.reserve(buffer.length) ?? (() => {}));
-      }
-      chunks.push(buffer);
-    }
-    if (total === 0) throw new Error("Request body is empty");
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } finally {
-    declaredRelease?.();
-    for (const release of chunkReleases) release();
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    if (buffer.length === 0) continue;
+    total += buffer.length;
+    if (total > MAX_BODY_BYTES) throw new Error("Request body too large");
+    if (declaredLength === undefined) bodyReservation?.reserve(buffer.length);
+    chunks.push(buffer);
   }
+  if (total === 0) throw new Error("Request body is empty");
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
 function writeJson(response: ServerResponse, status: number, value: unknown): void {
@@ -1283,6 +1280,24 @@ class RpcRequestBodyByteBudget {
       released = true;
       this.reservedBytes -= bytes;
     };
+  }
+}
+
+class RpcRequestBodyReservation {
+  private readonly releases: Array<() => void> = [];
+  private released = false;
+
+  constructor(private readonly budget: RpcRequestBodyByteBudget) {}
+
+  reserve(bytes: number): void {
+    if (this.released) throw new Error("RPC request body reservation already released");
+    this.releases.push(this.budget.reserve(bytes));
+  }
+
+  release(): void {
+    if (this.released) return;
+    this.released = true;
+    for (const release of this.releases) release();
   }
 }
 

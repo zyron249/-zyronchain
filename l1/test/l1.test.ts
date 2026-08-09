@@ -3561,6 +3561,83 @@ test("chain store fails closed on a truncated or corrupt finalized block record"
   }
 });
 
+test("RPC body reservation remains held after parsing until handler completion", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-body-handler-budget-"));
+  const store = await ChainStore.open(genesis(), directory);
+  const service = new NodeService(store);
+  let signalHandlerEntered!: () => void;
+  let releaseHandler!: () => void;
+  const handlerEntered = new Promise<void>((resolve) => { signalHandlerEntered = resolve; });
+  const handlerGate = new Promise<void>((resolve) => { releaseHandler = resolve; });
+  service.acceptFinalizedBlock = async () => {
+    signalHandlerEntered();
+    await handlerGate;
+  };
+  const heldBody = JSON.stringify({ padding: "x".repeat(800) });
+  const server = createRpcServer(service, {
+    maxInflightRequests: 2,
+    maxInflightRequestBodyBytes: Buffer.byteLength(heldBody)
+  });
+
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolveListen);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("RPC handler-budget server has no TCP address");
+    const base = `http://127.0.0.1:${address.port}`;
+    const heldResponsePromise = fetch(`${base}/block`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: heldBody
+    });
+    await handlerEntered;
+
+    const tx = createTransfer(
+      {
+        chainId: genesis().chainId,
+        nonce: 1,
+        sender: alice,
+        receiver: bob,
+        amountAtoms: 1,
+        feeAtoms: 1,
+        timestampMs: genesis().timestampMs + 1
+      },
+      alicePrivate,
+      alicePublic
+    );
+    const overloaded = await fetch(`${base}/tx`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(tx)
+    });
+    assert.equal(overloaded.status, 503);
+    assert.deepEqual(await overloaded.json(), {
+      error: "Aggregate RPC request body byte budget exceeded"
+    });
+
+    releaseHandler();
+    const heldResponse = await heldResponsePromise;
+    assert.equal(heldResponse.status, 202);
+    await heldResponse.arrayBuffer();
+
+    const recovered = await fetch(`${base}/tx`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(tx)
+    });
+    assert.equal(recovered.status, 202);
+    assert.equal(service.mempool.size, 1);
+  } finally {
+    releaseHandler();
+    await new Promise<void>((resolveClose, reject) =>
+      server.close((error) => error ? reject(error) : resolveClose())
+    );
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("RPC aggregate request-body budget sheds concurrent body memory pressure", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-rpc-body-budget-"));
   const store = await ChainStore.open(genesis(), directory);
