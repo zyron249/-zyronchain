@@ -1388,6 +1388,53 @@ test("signing journal permits only one live validator writer per data directory"
   }
 });
 
+test("signing journal releases its writer lease after hard crash without losing the reserved choice", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-signing-crash-"));
+  const storageUrl = pathToFileURL(join(process.cwd(), "dist/src/storage.js")).href;
+  const childScript = [
+    "const { SigningJournal } = await import(process.argv[1]);",
+    "const journal = await SigningJournal.open(process.argv[2]);",
+    "await journal.reserveAttestation(8, 0, 'a'.repeat(64));",
+    "process.stdout.write('reserved\\n');",
+    "setInterval(() => {}, 1000);"
+  ].join("\n");
+  const child = spawn(process.execPath, ["--input-type=module", "--eval", childScript, storageUrl, directory], {
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  try {
+    await new Promise<void>((resolveReady, rejectReady) => {
+      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+        rejectReady(new Error(`Signing-journal holder exited before reservation: code=${code} signal=${signal}`));
+      };
+      child.once("exit", onExit);
+      child.stdout.once("data", (chunk) => {
+        child.off("exit", onExit);
+        assert.match(String(chunk), /reserved/);
+        resolveReady();
+      });
+    });
+
+    await assert.rejects(
+      () => SigningJournal.open(directory),
+      /already has an active validator writer/
+    );
+
+    child.kill("SIGKILL");
+    await new Promise<void>((resolveExit) => child.once("exit", () => resolveExit()));
+
+    const recovered = await SigningJournal.open(directory);
+    await recovered.reserveAttestation(8, 0, "a".repeat(64));
+    await assert.rejects(
+      () => recovered.reserveAttestation(8, 0, "b".repeat(64)),
+      /Conflicting validator action/
+    );
+    recovered.close();
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("signing journal write uncertainty fail-stops all later validator choices", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-signing-write-fault-"));
   try {
