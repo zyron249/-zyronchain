@@ -4,7 +4,8 @@ import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/p
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
 
@@ -663,6 +664,47 @@ test("node data directory lease permits exactly one live chain writer", async ()
     const reopened = await NodeDataDirectoryLease.acquire(directory);
     reopened.close();
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("node data directory lease is released when the writer process is killed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-node-writer-crash-"));
+  const storageUrl = pathToFileURL(join(process.cwd(), "dist/src/storage.js")).href;
+  const childScript = [
+    "const { NodeDataDirectoryLease } = await import(process.argv[1]);",
+    "await NodeDataDirectoryLease.acquire(process.argv[2]);",
+    "process.stdout.write('locked\\n');",
+    "setInterval(() => {}, 1000);"
+  ].join("\n");
+  const child = spawn(process.execPath, ["--input-type=module", "--eval", childScript, storageUrl, directory], {
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  try {
+    await new Promise<void>((resolveReady, rejectReady) => {
+      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+        rejectReady(new Error(`Lease holder exited before acquiring the lock: code=${code} signal=${signal}`));
+      };
+      child.once("exit", onExit);
+      child.stdout.once("data", (chunk) => {
+        child.off("exit", onExit);
+        assert.match(String(chunk), /locked/);
+        resolveReady();
+      });
+    });
+
+    await assert.rejects(
+      () => NodeDataDirectoryLease.acquire(directory),
+      /already has an active writer/
+    );
+
+    child.kill("SIGKILL");
+    await new Promise<void>((resolveExit) => child.once("exit", () => resolveExit()));
+
+    const recovered = await NodeDataDirectoryLease.acquire(directory);
+    recovered.close();
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     await rm(directory, { recursive: true, force: true });
   }
 });
