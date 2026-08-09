@@ -81,6 +81,34 @@ export interface SigningJournalFaultHooks {
   afterSync?: () => void | Promise<void>;
 }
 
+export class NodeDataDirectoryLease {
+  private closed = false;
+  private constructor(private readonly database: Database.Database) {}
+
+  static async acquire(dataDir: string): Promise<NodeDataDirectoryLease> {
+    await mkdir(dataDir, { recursive: true, mode: 0o700 });
+    const database = new Database(join(dataDir, "node-writer.lock.sqlite"), { timeout: 0 });
+    try {
+      database.pragma("journal_mode = DELETE");
+      database.exec("BEGIN EXCLUSIVE");
+      return new NodeDataDirectoryLease(database);
+    } catch (error) {
+      database.close();
+      throw new Error("Node data directory already has an active writer", { cause: error });
+    }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      this.database.exec("ROLLBACK");
+    } finally {
+      this.database.close();
+    }
+  }
+}
+
 export interface TrustedSnapshotAnchor {
   tipHash: string;
   snapshotSha256: string;
