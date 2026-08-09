@@ -2820,7 +2820,7 @@ test("protocol upgrade requires validator quorum, activates at a delayed height,
     nonce: 1,
     sender: validatorOne,
     activationHeight: 101,
-    protocolVersion: 3
+    protocolVersion: 4
   };
   const upgrade = createProtocolUpgrade(
     {
@@ -2839,7 +2839,7 @@ test("protocol upgrade requires validator quorum, activates at a delayed height,
   first = chain.attestBlock(first, validatorTwoPrivate);
   chain.acceptBlock(first, 1_700_000_000_200);
   assert.equal(chain.protocolVersionAt(100), 1);
-  assert.equal(chain.protocolVersionAt(101), 3);
+  assert.equal(chain.protocolVersionAt(101), 4);
 
   for (let height = 2; height <= 100; height += 1) {
     const proposerKey = height % 2 === 0 ? validatorTwoPrivate : validatorOnePrivate;
@@ -2851,8 +2851,136 @@ test("protocol upgrade requires validator quorum, activates at a delayed height,
   assert.equal(chain.height, 100);
   assert.throws(
     () => chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_001_000 }),
-    /Protocol version 3 is not supported by this binary/
+    /Protocol version 4 is not supported by this binary/
   );
+});
+
+test("protocol v3 reuses State v2, enforces transaction v2, survives trusted checkpoint restore, and rolls back to v2", () => {
+  const chain = new ZyronChain(genesis());
+  const v2Proposal = {
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: validatorOne,
+    activationHeight: 101,
+    protocolVersion: 2
+  };
+  const v3Proposal = {
+    ...v2Proposal,
+    nonce: 2,
+    activationHeight: 201,
+    protocolVersion: 3
+  };
+  const scheduleV2 = createProtocolUpgrade({
+    ...v2Proposal,
+    approvals: [
+      createProtocolUpgradeApproval(v2Proposal, validatorOnePrivate, validatorOnePublic),
+      createProtocolUpgradeApproval(v2Proposal, validatorTwoPrivate, validatorTwoPublic)
+    ],
+    timestampMs: genesis().timestampMs + 10
+  }, validatorOnePrivate, validatorOnePublic);
+  const scheduleV3 = createProtocolUpgrade({
+    ...v3Proposal,
+    approvals: [
+      createProtocolUpgradeApproval(v3Proposal, validatorOnePrivate, validatorOnePublic),
+      createProtocolUpgradeApproval(v3Proposal, validatorTwoPrivate, validatorTwoPublic)
+    ],
+    timestampMs: genesis().timestampMs + 11
+  }, validatorOnePrivate, validatorOnePublic);
+
+  for (let height = 1; height <= 200; height += 1) {
+    const proposer = height % 2 === 1 ? validatorOnePrivate : validatorTwoPrivate;
+    let block = chain.produceBlock(height === 1 ? [scheduleV2, scheduleV3] : [], proposer, {
+      timestampMs: genesis().timestampMs + (height * 100)
+    });
+    block = chain.attestBlock(block, validatorOnePrivate);
+    block = chain.attestBlock(block, validatorTwoPrivate);
+    chain.acceptBlock(block, genesis().timestampMs + (height * 100));
+  }
+  assert.equal(chain.protocolVersionAt(100), 1);
+  assert.equal(chain.protocolVersionAt(101), 2);
+  assert.equal(chain.protocolVersionAt(201), 3);
+
+  const rollbackProposal = {
+    chainId: genesis().chainId,
+    nonce: 3,
+    sender: validatorOne,
+    activationHeight: 301,
+    protocolVersion: 2
+  };
+  const rollback = createProtocolUpgrade({
+    ...rollbackProposal,
+    approvals: [
+      createProtocolUpgradeApproval(rollbackProposal, validatorOnePrivate, validatorOnePublic, 2),
+      createProtocolUpgradeApproval(rollbackProposal, validatorTwoPrivate, validatorTwoPublic, 2)
+    ],
+    timestampMs: genesis().timestampMs + 20_099
+  }, validatorOnePrivate, validatorOnePublic, 2);
+  const v3Transfer = createTransfer({
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: alice,
+    receiver: bob,
+    amountAtoms: 123,
+    feeAtoms: 1,
+    timestampMs: genesis().timestampMs + 20_098
+  }, alicePrivate, alicePublic, 2);
+  assert.throws(
+    () => chain.validateMempoolAdmission(createTransfer({
+      chainId: genesis().chainId,
+      nonce: 1,
+      sender: alice,
+      receiver: bob,
+      amountAtoms: 123,
+      feeAtoms: 1,
+      timestampMs: genesis().timestampMs + 20_098
+    }, alicePrivate, alicePublic)),
+    /Transaction version 1 is not valid under protocol version 3/
+  );
+
+  let activation = chain.produceBlock([v3Transfer, rollback], validatorOnePrivate, {
+    timestampMs: genesis().timestampMs + 20_100
+  });
+  assert.equal(activation.header.version, 3);
+  activation = chain.attestBlock(activation, validatorOnePrivate);
+  activation = chain.attestBlock(activation, validatorTwoPrivate);
+  chain.acceptBlock(activation, genesis().timestampMs + 20_100);
+  assert.equal(chain.balance(bob), 123);
+
+  const snapshot = chain.snapshot();
+  const restored = ZyronChain.fromTrustedSnapshot(genesis(), snapshot, {
+    tipHash: chain.tip.hash,
+    snapshotSha256: sha256Hex(canonicalJson(snapshot))
+  });
+  assert.equal(restored.tip.hash, chain.tip.hash);
+  assert.equal(restored.balance(bob), 123);
+  assert.equal(restored.protocolVersionAt(301), 2);
+
+  for (let height = 202; height <= 300; height += 1) {
+    const proposer = height % 2 === 1 ? validatorOnePrivate : validatorTwoPrivate;
+    let block = chain.produceBlock([], proposer, { timestampMs: genesis().timestampMs + (height * 100) });
+    block = chain.attestBlock(block, validatorOnePrivate);
+    block = chain.attestBlock(block, validatorTwoPrivate);
+    chain.acceptBlock(block, genesis().timestampMs + (height * 100));
+  }
+
+  const v2Transfer = createTransfer({
+    chainId: genesis().chainId,
+    nonce: 2,
+    sender: alice,
+    receiver: bob,
+    amountAtoms: 77,
+    feeAtoms: 1,
+    timestampMs: genesis().timestampMs + 30_099
+  }, alicePrivate, alicePublic);
+  let rolledBack = chain.produceBlock([v2Transfer], validatorOnePrivate, {
+    timestampMs: genesis().timestampMs + 30_100
+  });
+  assert.equal(rolledBack.header.version, 2);
+  rolledBack = chain.attestBlock(rolledBack, validatorOnePrivate);
+  rolledBack = chain.attestBlock(rolledBack, validatorTwoPrivate);
+  chain.acceptBlock(rolledBack, genesis().timestampMs + 30_100);
+  assert.equal(chain.protocolVersionAt(301), 2);
+  assert.equal(chain.balance(bob), 200);
 });
 
 test("protocol upgrade rejects weak or premature governance approvals", () => {
