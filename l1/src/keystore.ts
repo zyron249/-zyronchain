@@ -98,7 +98,7 @@ function parseEncryptedKeystore(value: unknown): EncryptedKeystoreV1 {
   assertHex(record.iv, 24, "iv");
   assertHex(record.tag, 32, "tag");
   assertHex(record.ciphertext, 128, "ciphertext");
-  if (typeof record.publicKey !== "string" || !/^(02|03)[0-9a-f]{64}$/.test(record.publicKey)) {
+  if (typeof record.publicKey !== "string" || !/^[0-9a-f]{128}$/.test(record.publicKey)) {
     throw new Error("Encrypted keystore public key is invalid");
   }
   if (typeof record.address !== "string" || !/^ZYN[0-9a-f]{40}$/.test(record.address)) {
