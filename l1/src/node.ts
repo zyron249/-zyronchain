@@ -46,6 +46,7 @@ const DEFAULT_RPC_REQUESTS_PER_WINDOW = 600;
 const DEFAULT_RPC_MAX_CONNECTIONS = 256;
 const DEFAULT_RPC_MAX_INFLIGHT_REQUESTS = 128;
 export const DEFAULT_RPC_MAX_INFLIGHT_BODY_BYTES = 25_000_000;
+export const DEFAULT_RPC_MAX_INFLIGHT_RESPONSE_BYTES = 25_000_000;
 export const RPC_MAX_HEADERS = 64;
 export const RPC_MAX_REQUESTS_PER_SOCKET = 100;
 const DEFAULT_CONSENSUS_INFLIGHT_PER_PEER = 4;
@@ -93,6 +94,7 @@ export interface RpcServerOptions {
   maxConnections?: number;
   maxInflightRequests?: number;
   maxInflightRequestBodyBytes?: number;
+  maxInflightResponseBytes?: number;
   maxConsensusInflightPerPeer?: number;
   peerAuthToken?: string;
   peerRecord?: SignedPeerRecord;
@@ -377,6 +379,9 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
   const rpcBodyBudget = new RpcRequestBodyByteBudget(
     options.maxInflightRequestBodyBytes ?? DEFAULT_RPC_MAX_INFLIGHT_BODY_BYTES
   );
+  const rpcResponseBudget = new RpcResponseByteBudget(
+    options.maxInflightResponseBytes ?? DEFAULT_RPC_MAX_INFLIGHT_RESPONSE_BYTES
+  );
   const limiter = new FixedWindowLimiter(requestsPerWindow, windowMs);
   const handleRequest = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const bodyReservation = new RpcRequestBodyReservation(rpcBodyBudget);
@@ -435,6 +440,7 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
     }
   };
   const server = createServer((request, response) => {
+    rpcResponseBudgets.set(response, rpcResponseBudget);
     let release: () => void;
     try {
       release = rpcAdmission.enter();
@@ -1133,9 +1139,30 @@ async function readJsonBody(
 function writeJson(response: ServerResponse, status: number, value: unknown): void {
   if (response.headersSent) return;
   const body = JSON.stringify(value);
+  const bodyBytes = Buffer.byteLength(body);
+  let release: (() => void) | undefined;
+  try {
+    release = rpcResponseBudgets.get(response)?.reserve(bodyBytes);
+  } catch {
+    const overload = JSON.stringify({ error: "Aggregate RPC response byte budget exceeded" });
+    response.setHeader("retry-after", "1");
+    response.setHeader("connection", "close");
+    response.writeHead(503, {
+      "content-type": "application/json; charset=utf-8",
+      "content-length": Buffer.byteLength(overload),
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff"
+    });
+    response.end(overload);
+    return;
+  }
+  if (release) {
+    response.once("finish", release);
+    response.once("close", release);
+  }
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
-    "content-length": Buffer.byteLength(body),
+    "content-length": bodyBytes,
     "cache-control": "no-store",
     "x-content-type-options": "nosniff"
   });
@@ -1282,6 +1309,29 @@ class RpcRequestBodyByteBudget {
     };
   }
 }
+
+class RpcResponseByteBudget {
+  private reservedBytes = 0;
+
+  constructor(readonly maxBytes: number) {
+    boundedPositiveInteger(maxBytes, "RPC in-flight response bytes");
+  }
+
+  reserve(bytes: number): () => void {
+    if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > this.maxBytes - this.reservedBytes) {
+      throw new Error("Aggregate RPC response byte budget exceeded");
+    }
+    this.reservedBytes += bytes;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.reservedBytes -= bytes;
+    };
+  }
+}
+
+const rpcResponseBudgets = new WeakMap<ServerResponse, RpcResponseByteBudget>();
 
 class RpcRequestBodyReservation {
   private readonly releases: Array<() => void> = [];
