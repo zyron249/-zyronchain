@@ -1,6 +1,8 @@
 # ZyronChain standalone Layer 1
 
-This directory contains the standalone TypeScript Layer-1 implementation. It is intentionally separate from the historical Python/Flask `zyron-testnet-1` node so the existing testnet remains recoverable while the new consensus core matures.
+This directory contains the **canonical** ZyronChain TypeScript Layer-1 implementation. It is intentionally separate from the historical Python/Flask `zyron-testnet-1` node so the legacy testnet remains recoverable.
+
+**Network status:** private/adversarial development only. No public testnet or value-bearing mainnet is authorized until the gates in [`STANDALONE_L1_READINESS.md`](../docs/STANDALONE_L1_READINESS.md) are closed. Security assumptions and founder-exit risks are defined in [`L1_THREAT_MODEL.md`](../docs/L1_THREAT_MODEL.md).
 
 ## What exists now
 

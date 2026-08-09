@@ -1,4 +1,6 @@
-# ZyronChain Mainnet Readiness
+# Legacy Python/Flask testnet readiness
+
+> **Historical document.** This review applies to the legacy Python/Flask Proof-of-Work testnet, not the canonical standalone L1. Current launch gates are maintained in [`STANDALONE_L1_READINESS.md`](STANDALONE_L1_READINESS.md).
 
 This document is the engineering gate, not a marketing claim. "Real blockchain" means nodes
 independently validate the same deterministic ledger, invalid value creation is impossible
