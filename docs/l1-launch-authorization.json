@@ -1,0 +1,29 @@
+{
+  "authorizationVersion": 1,
+  "status": "governance-authorization-granted-activation-gated",
+  "canonicalImplementation": "l1/",
+  "publicTestnetAuthorized": true,
+  "mainnetAuthorized": true,
+  "publicTestnetActivationAllowed": false,
+  "mainnetActivationAllowed": false,
+  "authorizationDoesNotWaiveReadinessGates": true,
+  "publicTestnetActivationRequirements": [
+    "independent-operators-deploy-from-release-artifacts-without-founder-assistance",
+    "bootstrap-archive-monitoring-across-independent-failure-domains",
+    "independent-consensus-cryptography-network-audit-and-retest",
+    "sustained-independent-operator-internet-adversarial-soak",
+    "production-hsm-or-audited-signer-custody-and-cross-host-rotation",
+    "protected-branch-independent-review-repository-policy"
+  ],
+  "mainnetActivationRequirements": [
+    "all-public-testnet-activation-requirements-closed-with-evidence",
+    "immutable-mainnet-chain-id",
+    "immutable-mainnet-genesis-allocation",
+    "validator-reward-inflation-and-fee-policy",
+    "activity-oracle-production-governance",
+    "validator-admission-removal-governance",
+    "target-hardware-state-v2-scale-and-recovery-measurements",
+    "multi-region-disaster-recovery-and-incident-drills",
+    "independent-maintainer-and-security-custody-succession-evidence"
+  ]
+}
