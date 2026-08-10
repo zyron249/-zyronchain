@@ -1,7 +1,9 @@
 name: Standalone L1 Stale Clock Reproduction CI
 
 on:
-  pull_request:
+  push:
+    branches:
+      - agent/clock-stale-now-repro
 
 permissions:
   contents: read
