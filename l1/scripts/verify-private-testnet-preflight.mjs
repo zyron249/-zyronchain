@@ -105,6 +105,7 @@ const filesToRead = [
   "docs/L1_CI_EVIDENCE.md",
   "docs/L1_KEY_ROTATION_REHEARSAL.md",
   "docs/L1_EXTERNAL_AUDIT_PACKAGE.md",
+  "docs/L1_PRIVATE_TESTNET_PREFLIGHT.md",
   "docs/l1-audit-scope.json",
   configPath,
   "l1/scripts/verify-private-testnet-preflight.mjs"
@@ -168,7 +169,11 @@ for (const scenario of [
 
 requireText(contents.get("docs/L1_KEY_ROTATION_REHEARSAL.md"), "retired key", "key-rotation rehearsal documentation");
 requireText(contents.get("docs/L1_EXTERNAL_AUDIT_PACKAGE.md"), "audit preparation only", "external audit documentation");
-requireText(contents.get("docs/L1_OPERATIONS_RUNBOOK.md"), "Disaster recovery", "operations runbook");
+requireText(contents.get("docs/L1_PRIVATE_TESTNET_PREFLIGHT.md"), "internal engineering preflight only", "private-testnet preflight documentation");
+const operationsRunbook = contents.get("docs/L1_OPERATIONS_RUNBOOK.md");
+requireText(operationsRunbook, "## 4. Backup and checkpoint procedure", "operations runbook");
+requireText(operationsRunbook, "## 5. Restore drill", "operations runbook");
+requireText(operationsRunbook, "## 8. Disaster-recovery evidence checklist", "operations runbook");
 
 const auditScope = JSON.parse(contents.get("docs/l1-audit-scope.json"));
 assert.equal(auditScope.status, "pre-public-testnet-external-audit-preparation");
