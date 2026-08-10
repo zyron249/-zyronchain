@@ -51,6 +51,12 @@ Then inspect `evidence.json` and confirm that `repository`, `commitSha`, `scenar
 
 The `validator-key-rotation` rehearsal uses deterministic non-production keys. It quorum-authorizes a delayed validator-set replacement, proves the retired key cannot attest once the new set activates, proves the replacement key is immediately eligible to propose/finalize according to the rotation schedule, and proves the activated set survives authenticated snapshot restart. It does not create or certify a production HSM key, signer provider, custody ceremony or cross-host recovery procedure.
 
+## Maintainer succession policy evidence
+
+`Standalone L1 Maintainer Succession Policy CI` is intentionally separate from the runtime rehearsal envelope. It validates `SECURITY.md`, `L1_MAINTAINER_SUCCESSION.md` and `l1-maintainer-succession.json`, requires a minimum of two independent maintainers/custodians before public-testnet authorization, forbids a unique founder authority, preserves independent branch/release/security/domain custody as external evidence, runs twice for deterministic output and uploads the result plus policy and `SHA256SUMS` for 90 days.
+
+A green succession-policy artifact proves only that the repository's public handoff contract is internally coherent and has not silently weakened. It does **not** prove that two independent people or organizations actually hold the required credentials/capabilities; that transfer remains an external founder-independence gate.
+
 ## Security boundary
 
-CI evidence proves only the deterministic or loopback-process rehearsal that actually ran on GitHub-hosted infrastructure. It does not prove independent-operator behavior, Internet routing conditions, production HSM custody, physical-disk/power-loss semantics, multi-region disaster recovery, external audit results or public-testnet soak duration. Those remain separate release gates.
+CI evidence proves only the deterministic or loopback-process rehearsal/policy check that actually ran on GitHub-hosted infrastructure. It does not prove independent-operator behavior, Internet routing conditions, production HSM custody, physical-disk/power-loss semantics, multi-region disaster recovery, real independent maintainer custody, external audit results or public-testnet soak duration. Those remain separate release gates.
