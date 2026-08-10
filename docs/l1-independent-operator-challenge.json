@@ -1,0 +1,14 @@
+{
+  "challengeVersion": 1,
+  "status": "prepared-external-operator-evidence-required",
+  "publicTestnetAuthorized": false,
+  "mainnetAuthorized": false,
+  "minimumBootstrapPeers": 2,
+  "minimumFailureDomains": 2,
+  "releaseSourceRequired": "published-release-artifact",
+  "sourceCheckoutForbiddenForChallenge": true,
+  "founderPrivateAssistanceForbidden": true,
+  "operatorKeysMustBeGeneratedLocally": true,
+  "privateKeyDisclosureForbidden": true,
+  "externalReviewRequired": true
+}
