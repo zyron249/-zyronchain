@@ -11,7 +11,7 @@ const repoRoot = resolve(new URL("../..", import.meta.url).pathname);
 const launcher = resolve(repoRoot, "l1/scripts/render-private-testnet.mjs");
 const HARD_PSS_BYTES = 430 * 1024 * 1024;
 const MAX_GROWTH_BYTES = 128 * 1024 * 1024;
-const EXPECTED_PROCESS_COUNT = 5; // launcher/gateway + four validator children
+const EXPECTED_PROCESS_COUNT = 6; // supervisor + launcher/gateway + four validator children
 
 async function freePort() {
   const server = createServer();
@@ -48,7 +48,8 @@ async function waitHeight(base, height, timeoutMs = 180_000) {
 }
 
 function roleForProcess(pid, rootPid, args) {
-  if (pid === rootPid) return "gateway";
+  if (pid === rootPid) return "supervisor";
+  if (args.includes("render-private-testnet-base.mjs")) return "gateway";
   for (let index = 0; index < 4; index += 1) {
     if (args.includes(`--port ${9137 + index}`)) return `validator-${index + 1}`;
   }
@@ -103,10 +104,10 @@ async function treeMemory(rootPid) {
     });
   }
   processes.sort((left, right) => left.role.localeCompare(right.role));
-  assert.equal(processes.length, EXPECTED_PROCESS_COUNT, `Expected ${EXPECTED_PROCESS_COUNT} launcher/validator processes: ${JSON.stringify(processes)}`);
+  assert.equal(processes.length, EXPECTED_PROCESS_COUNT, `Expected ${EXPECTED_PROCESS_COUNT} supervised launcher/validator processes: ${JSON.stringify(processes)}`);
   assert.deepEqual(
     processes.map((entry) => entry.role),
-    ["gateway", "validator-1", "validator-2", "validator-3", "validator-4"],
+    ["gateway", "supervisor", "validator-1", "validator-2", "validator-3", "validator-4"],
     `Unexpected process roles: ${JSON.stringify(processes)}`
   );
   return {
@@ -167,7 +168,7 @@ try {
 
   console.log(JSON.stringify({
     status: "ok",
-    scenario: "render-four-validator-memory-soak",
+    scenario: "render-supervised-four-validator-memory-soak",
     measurement: "linux-smaps-rollup-pss",
     rationale: "PSS proportionally accounts shared pages; summed RSS is retained only as diagnostic evidence",
     samples,
