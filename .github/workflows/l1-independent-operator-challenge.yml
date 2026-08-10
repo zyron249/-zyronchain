@@ -1,0 +1,61 @@
+name: Standalone L1 Independent Operator Challenge CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  independent-operator-challenge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+      - name: Verify synthetic positive vector
+        run: |
+          evidence="${RUNNER_TEMP}/zyron-independent-operator"
+          mkdir -p "$evidence"
+          node l1/scripts/verify-independent-operator-evidence.mjs \
+            --policy docs/l1-independent-operator-challenge.json \
+            --evidence l1/test-vectors/independent-operator-evidence-v1.json \
+            --out "$evidence/verified-test-vector.json" \
+            --test-vector
+          node -e 'const x=require(process.argv[1]); if (x.status!=="ok" || x.independenceProven!==false || x.externalReviewRequired!==true) process.exit(1)' \
+            "$evidence/verified-test-vector.json"
+      - name: Prove contradictory founder-assistance evidence is rejected
+        run: |
+          evidence="${RUNNER_TEMP}/zyron-independent-operator"
+          node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); x.founderPrivateAssistanceUsed=true; fs.writeFileSync(process.argv[2],JSON.stringify(x,null,2)+"\n")' \
+            l1/test-vectors/independent-operator-evidence-v1.json "$evidence/invalid-founder-assisted.json"
+          if node l1/scripts/verify-independent-operator-evidence.mjs \
+            --policy docs/l1-independent-operator-challenge.json \
+            --evidence "$evidence/invalid-founder-assisted.json" \
+            --out "$evidence/should-not-exist.json" \
+            --test-vector; then
+            echo "Verifier incorrectly accepted founder-assisted evidence" >&2
+            exit 1
+          fi
+      - name: Archive challenge verifier evidence
+        run: |
+          evidence="${RUNNER_TEMP}/zyron-independent-operator"
+          cp docs/l1-independent-operator-challenge.json "$evidence/challenge-policy.json"
+          cd "$evidence"
+          sha256sum verified-test-vector.json challenge-policy.json > SHA256SUMS
+      - name: Upload challenge verifier evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-independent-operator-challenge-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/zyron-independent-operator/verified-test-vector.json
+            ${{ runner.temp }}/zyron-independent-operator/challenge-policy.json
+            ${{ runner.temp }}/zyron-independent-operator/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
