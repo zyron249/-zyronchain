@@ -1,0 +1,17 @@
+{
+  "policyVersion": 1,
+  "status": "prepared-real-always-on-evidence-required",
+  "minimumRealDurationSeconds": 21600,
+  "maximumFinalityGapSeconds": 180,
+  "maximumMemoryUtilizationPercent": 80,
+  "minimumReadyValidators": 3,
+  "minimumTotalValidators": 4,
+  "sameGenesisRequired": true,
+  "monotonicHeightRequired": true,
+  "unaccountedRestartsForbidden": true,
+  "clockFaultsForbidden": true,
+  "persistenceFaultsForbidden": true,
+  "syntheticVectorsCannotProveSoak": true,
+  "independentOperatorEvidenceSeparate": true,
+  "mainnetCertificationForbidden": true
+}

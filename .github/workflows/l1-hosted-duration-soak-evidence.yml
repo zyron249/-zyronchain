@@ -1,0 +1,64 @@
+name: Standalone L1 Hosted Duration Soak Evidence CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hosted-duration-soak-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+      - name: Verify positive synthetic hosted-soak vector
+        run: |
+          evidence="${RUNNER_TEMP}/zyron-hosted-soak"
+          mkdir -p "$evidence"
+          node l1/scripts/verify-hosted-duration-soak-evidence.mjs \
+            --policy docs/l1-hosted-duration-soak-policy.json \
+            --evidence l1/test-vectors/hosted-duration-soak-valid.json \
+            --out "$evidence/verified.json" \
+            --test-vector
+          node -e '
+            const fs = require("node:fs");
+            const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (value.status !== "ok" || value.syntheticValidationOnly !== true || value.sustainedUptimeEvidenceValidated !== false || value.publicTestnetActivationEvidence !== false || value.independentOperatorEvidenceProven !== false || value.mainnetCertified !== false) process.exit(1);
+          ' "$evidence/verified.json"
+          cp docs/l1-hosted-duration-soak-policy.json "$evidence/"
+          cp l1/test-vectors/hosted-duration-soak-valid.json "$evidence/"
+          cp l1/test-vectors/hosted-duration-soak-invalid.json "$evidence/"
+          cd "$evidence"
+          sha256sum verified.json l1-hosted-duration-soak-policy.json hosted-duration-soak-valid.json hosted-duration-soak-invalid.json > SHA256SUMS
+          cat verified.json
+      - name: Require invalid height-regression vector to fail closed
+        run: |
+          rejected="${RUNNER_TEMP}/invalid-hosted-soak.json"
+          if node l1/scripts/verify-hosted-duration-soak-evidence.mjs \
+            --policy docs/l1-hosted-duration-soak-policy.json \
+            --evidence l1/test-vectors/hosted-duration-soak-invalid.json \
+            --out "$rejected" \
+            --test-vector; then
+            echo "Invalid hosted-soak vector unexpectedly passed verification" >&2
+            exit 1
+          fi
+      - name: Upload synthetic verifier evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-hosted-duration-soak-verifier-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/zyron-hosted-soak/verified.json
+            ${{ runner.temp }}/zyron-hosted-soak/l1-hosted-duration-soak-policy.json
+            ${{ runner.temp }}/zyron-hosted-soak/hosted-duration-soak-valid.json
+            ${{ runner.temp }}/zyron-hosted-soak/hosted-duration-soak-invalid.json
+            ${{ runner.temp }}/zyron-hosted-soak/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90

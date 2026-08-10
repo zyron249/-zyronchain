@@ -83,6 +83,7 @@ const requiredEvidence = new Set([
   "independent-operator-challenge",
   "state-v2-scale-100k",
   "render-hosting-profile",
+  "hosted-duration-soak-evidence",
   "launch-authorization"
 ]);
 assert.deepEqual(new Set(scope.evidenceScenarios), requiredEvidence, "High-risk evidence scenario inventory is stale");
@@ -106,7 +107,10 @@ const requiredControlFiles = [
   "l1/scripts/verify-independent-operator-evidence.mjs",
   "l1/scripts/normalize-state-v2-scale-evidence.mjs",
   "l1/scripts/verify-render-hosting-profile.mjs",
+  "l1/scripts/verify-hosted-duration-soak-evidence.mjs",
   "l1/scripts/verify-launch-authorization.mjs",
+  "l1/test-vectors/hosted-duration-soak-valid.json",
+  "l1/test-vectors/hosted-duration-soak-invalid.json",
   ".github/workflows/l1-audit-pack.yml",
   ".github/workflows/l1-succession-policy.yml",
   ".github/workflows/l1-private-testnet-preflight.yml",
@@ -114,6 +118,7 @@ const requiredControlFiles = [
   ".github/workflows/l1-independent-operator-challenge.yml",
   ".github/workflows/l1-state-v2-scale.yml",
   ".github/workflows/l1-render-hosting-profile.yml",
+  ".github/workflows/l1-hosted-duration-soak-evidence.yml",
   ".github/workflows/l1-launch-authorization.yml"
 ];
 

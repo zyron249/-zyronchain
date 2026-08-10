@@ -1,0 +1,53 @@
+{
+  "evidenceVersion": 1,
+  "evidenceMode": "synthetic-test-vector",
+  "testedCommitSha": "1111111111111111111111111111111111111111",
+  "releaseArtifactSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "chainId": "zyron-hosted-soak-test",
+  "genesisHash": "3333333333333333333333333333333333333333333333333333333333333333",
+  "provider": "synthetic-provider",
+  "region": "synthetic-region",
+  "failureDomains": ["synthetic-single-domain"],
+  "startedAtUtc": "2026-08-10T00:00:00Z",
+  "completedAtUtc": "2026-08-10T06:00:00Z",
+  "samples": [
+    {
+      "observedAtUtc": "2026-08-10T00:00:00Z",
+      "height": 100,
+      "tipHash": "4444444444444444444444444444444444444444444444444444444444444444",
+      "readyValidators": 4,
+      "totalValidators": 4,
+      "finalityGapSeconds": 30,
+      "memoryUsedBytes": 250000000,
+      "memoryLimitBytes": 536870912,
+      "clockFaultCount": 0,
+      "persistenceFaultCount": 0
+    },
+    {
+      "observedAtUtc": "2026-08-10T03:00:00Z",
+      "height": 220,
+      "tipHash": "5555555555555555555555555555555555555555555555555555555555555555",
+      "readyValidators": 4,
+      "totalValidators": 4,
+      "finalityGapSeconds": 40,
+      "memoryUsedBytes": 260000000,
+      "memoryLimitBytes": 536870912,
+      "clockFaultCount": 0,
+      "persistenceFaultCount": 0
+    },
+    {
+      "observedAtUtc": "2026-08-10T06:00:00Z",
+      "height": 210,
+      "tipHash": "6666666666666666666666666666666666666666666666666666666666666666",
+      "readyValidators": 4,
+      "totalValidators": 4,
+      "finalityGapSeconds": 45,
+      "memoryUsedBytes": 270000000,
+      "memoryLimitBytes": 536870912,
+      "clockFaultCount": 0,
+      "persistenceFaultCount": 0
+    }
+  ],
+  "restartEvents": [],
+  "notes": "Synthetic negative vector with a finalized-height regression; verifier must reject it."
+}

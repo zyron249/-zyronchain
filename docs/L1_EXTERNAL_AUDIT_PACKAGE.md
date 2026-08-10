@@ -24,8 +24,9 @@ At minimum, an external review should independently analyze:
 10. release dependency/SBOM/provenance workflow, clean release-artifact third-party operation and all production-operation assumptions described by the threat model/runbook;
 11. independent-operator challenge/evidence semantics, including the explicit boundary that project CI cannot prove operator independence;
 12. Render/hosting-profile assumptions, including why the Free profile is smoke-only and why sustained uptime evidence requires reviewed always-on infrastructure;
-13. security disclosure, maintainer/release/domain/checkpoint succession and founder-exit assumptions, including whether any unique personal credential or founder-only private context remains operationally necessary;
-14. launch authorization versus activation gating, including verification that governance authorization does not waive independent audit, operator, custody, genesis/economics or infrastructure requirements.
+13. hosted duration-soak evidence semantics, including monotonic finality, memory/readiness/fault bounds and the rule that synthetic vectors cannot prove real uptime;
+14. security disclosure, maintainer/release/domain/checkpoint succession and founder-exit assumptions, including whether any unique personal credential or founder-only private context remains operationally necessary;
+15. launch authorization versus activation gating, including verification that governance authorization does not waive independent audit, operator, custody, genesis/economics or infrastructure requirements.
 
 ## Reproduction baseline
 
@@ -49,7 +50,7 @@ The exact Node.js policy comes from `l1/package.json`; project CI exercises the 
 - audit-scope SHA-256;
 - path, byte count and SHA-256 for each critical source/specification/verifier/control file;
 - public security/succession, launch-authorization and hosting-policy files;
-- release-artifact operator rehearsal, independent-operator challenge and State-v2 scale evidence tooling/workflows;
+- release-artifact operator rehearsal, independent-operator challenge, State-v2 scale evidence and hosted duration-soak tooling/workflows/test vectors;
 - L1 package name/version and Node engine policy;
 - invariant/evidence/external-gate inventory;
 - runtime SPDX SBOM;
@@ -70,10 +71,11 @@ Current project CI or policy artifacts cover:
 - an independent-operator challenge whose verifier deliberately keeps `independenceProven=false` until genuine external evidence is reviewed;
 - 100,000-account State-v2 restart/GC/root/cache regression evidence, which does **not** replace release-hardware capacity evidence;
 - the connected Render Free profile's smoke-only hosting classification;
+- a hosted duration-soak evidence verifier with synthetic positive/negative CI vectors; synthetic output deliberately keeps real uptime evidence false;
 - governance authorization for public testnet/mainnet with separate activation gates;
 - deterministic maintainer/security succession policy evidence.
 
-These are regression/policy evidence, not a substitute for an external audit, actual independent custody, or sustained independent-operator Internet testnet evidence.
+These are regression/policy evidence, not a substitute for an external audit, actual independent custody, real always-on hosted evidence, or sustained independent-operator Internet testnet evidence.
 
 ## Finding handling
 
