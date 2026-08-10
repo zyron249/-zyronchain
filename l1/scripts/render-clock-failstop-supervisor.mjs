@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const l1Root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -145,13 +145,16 @@ async function waitForHealthyRestart(url, previousHeight, previousGenesisHash) {
       if (body?.genesisHash && previousGenesisHash && body.genesisHash !== previousGenesisHash) {
         throw new Error(`Supervised restart changed genesis: ${previousGenesisHash} -> ${body.genesisHash}`);
       }
+      if (body?.genesisHash && body.materialReused !== true) {
+        throw new Error("Supervised restart did not reuse existing genesis/validator material");
+      }
       const faults = validatorClockFaults(body);
       if (faults.length) throw new Error(`Clock fault repeated after supervised restart: ${faults.join(",")}`);
       if (last.status === 200 && body?.ready === true && body?.minHeight >= previousHeight + 1 && body?.nodes?.every((node) => node.processAlive)) {
         return body;
       }
     } catch (error) {
-      if (/changed genesis|Clock fault repeated/.test(error instanceof Error ? error.message : String(error))) throw error;
+      if (/changed genesis|did not reuse|Clock fault repeated/.test(error instanceof Error ? error.message : String(error))) throw error;
     }
     await sleep(pollIntervalMs);
   }
@@ -249,7 +252,6 @@ async function shutdown(signal) {
   shuttingDown = true;
   console.log(`Render clock supervisor received ${signal}`);
   await stopChild(signal);
-  if (!configuredRoot && supervisorRoot) await rm(supervisorRoot, { recursive: true, force: true });
 }
 
 if (!monitorOnly) spawnLauncher();
@@ -263,6 +265,6 @@ await monitor(readyUrl);
 if (monitorOnly && process.exitCode === undefined) {
   throw new Error("Clock supervisor monitor-only rehearsal ended without detecting a clock fault");
 }
-if (!configuredRoot && supervisorRoot && shuttingDown) {
+if (!configuredRoot && supervisorRoot && (shuttingDown || childExit)) {
   await rm(supervisorRoot, { recursive: true, force: true });
 }
