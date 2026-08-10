@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadOrCreateRenderTestnetMaterial } from "./render-testnet-material.mjs";
@@ -24,7 +24,7 @@ const GATEWAY_MAX_HEADER_BYTES = 16_384;
 const chainId = process.env.ZYRON_TESTNET_CHAIN_ID ?? "zyron-render-private-testnet-1";
 const smokeMode = process.argv.includes("--smoke");
 const l1Root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const cliPath = join(l1Root, "dist", "src", "cli.js");
+const cliPath = resolve(l1Root, "dist/src/cli.js");
 const rpcBasePort = Number(process.env.ZYRON_TESTNET_RPC_BASE_PORT ?? DEFAULT_RPC_BASE_PORT);
 const gatewayPort = smokeMode ? 0 : Number(process.env.PORT ?? 10000);
 
@@ -38,11 +38,11 @@ if (!smokeMode && (!Number.isSafeInteger(gatewayPort) || gatewayPort < 1 || gate
 const explicitRoot = process.env.ZYRON_TESTNET_DATA_ROOT;
 const root = explicitRoot
   ? resolve(explicitRoot)
-  : await mkdtemp(join(tmpdir(), "zyron-render-private-testnet-"));
+  : await mkdtemp(resolve(tmpdir(), "zyron-render-private-testnet-XXXXXX"));
 if (explicitRoot) await mkdir(root, { recursive: true });
 
 const material = await loadOrCreateRenderTestnetMaterial(root, chainId, rpcBasePort);
-const { genesis, genesisPath, validators, validatedGenesis } = material;
+const { genesisPath, validators, validatedGenesis } = material;
 
 const children = [];
 let shuttingDown = false;
@@ -269,7 +269,7 @@ const gateway = createServer({
       const summary = await cachedPublicSummary();
       if (url.pathname === "/readyz") {
         const readyCount = summary.nodes.filter((node) => node.ready).length;
-        const ready = readyCount >= 3 && summary.sameGenesis && summary.maxHeight >= 1;
+        const ready = readyCount === VALIDATOR_COUNT && summary.sameGenesis && summary.converged && summary.minHeight >= 1;
         return sendJson(response, ready ? 200 : 503, { ready, readyCount, ...summary });
       }
       return sendJson(response, 200, summary);
