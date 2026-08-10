@@ -72,7 +72,7 @@ A hosted duration-soak policy/verifier is now prepared for reviewed always-on co
 
 ## Public-testnet activation gates
 
-Public-testnet governance authorization exists, but activation remains blocked until all of the following are closed with evidence:
+Public-testnet governance authorization exists, but activation remains blocked until all of the following are closed with evidence. The **protected-branch/review release policy** remains an explicit hosting-platform gate and cannot be satisfied by documentation alone.
 
 1. **Independent operators:** non-founder operators deploy from published release artifacts without private assistance and pass the public independent-operator challenge.
 2. **Independent failure domains:** bootstrap/archive/monitoring/checkpoint infrastructure spans genuinely independent operators/providers/networks rather than labels invented to satisfy a selector.
