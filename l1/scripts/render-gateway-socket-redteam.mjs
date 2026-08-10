@@ -49,6 +49,13 @@ function openSlowHeader(port) {
     socket.once("error", reject);
     socket.once("connect", () => {
       socket.write("GET /status HTTP/1.1\r\nHost: localhost\r\nX-Slow: ");
+      const interval = setInterval(() => {
+        if (!socket.destroyed) socket.write("a");
+      }, 1_000);
+      interval.unref();
+      socket.once("close", () => clearInterval(interval));
+      socket.once("end", () => clearInterval(interval));
+      socket.once("error", () => clearInterval(interval));
       resolveSocket(socket);
     });
   });
@@ -59,7 +66,7 @@ function waitForSocketClose(socket, timeoutMs) {
     if (socket.destroyed) return resolveClosed();
     const timer = setTimeout(() => {
       cleanup();
-      reject(new Error("Slow-header socket outlived configured headers timeout"));
+      reject(new Error("Slow-header socket outlived absolute header deadline"));
     }, timeoutMs);
     const closed = () => { cleanup(); resolveClosed(); };
     const cleanup = () => {
@@ -79,7 +86,7 @@ function oversizedHeaderRequest(port) {
     const socket = connect(port, "127.0.0.1");
     let data = "";
     socket.setEncoding("utf8");
-    socket.once("error", reject);
+    socket.once("error", (error) => data ? resolveResult(data) : reject(error));
     socket.on("data", (chunk) => { data += chunk; });
     socket.once("close", () => resolveResult(data));
     socket.once("connect", () => {
@@ -113,10 +120,10 @@ try {
   await waitFor(`${baseUrl}/healthz`, (result) => result.status === 200 && result.body?.alive === true, 30_000);
   const before = await waitFor(`${baseUrl}/status`, (result) => result.status === 200 && result.body?.minHeight >= 1, 90_000);
   const startHeight = before.body.minHeight;
-  assert.match(output, /Gateway socket budgets: maxConnections=128, maxHeaders=64, maxRequestsPerSocket=100, headersTimeoutMs=5000, requestTimeoutMs=10000, keepAliveTimeoutMs=5000, maxHeaderBytes=16384/);
+  assert.match(output, /Gateway socket budgets: maxConnections=256, maxActiveRequests=64, maxHeaders=64, maxRequestsPerSocket=100, headerDeadlineMs=5000, headersTimeoutMs=5000, requestTimeoutMs=10000, keepAliveTimeoutMs=5000, maxHeaderBytes=16384/);
 
-  const slowSockets = await Promise.all(Array.from({ length: 24 }, () => openSlowHeader(port)));
-  await Promise.all(slowSockets.map((socket) => waitForSocketClose(socket, 8_000)));
+  const slowSockets = await Promise.all(Array.from({ length: 48 }, () => openSlowHeader(port)));
+  await Promise.all(slowSockets.map((socket) => waitForSocketClose(socket, 7_000)));
 
   const oversized = await oversizedHeaderRequest(port);
   assert.match(oversized, /HTTP\/1\.1 431 /, `Oversized header was not rejected with 431: ${oversized.slice(0, 200)}`);
@@ -136,9 +143,11 @@ try {
 
   console.log(JSON.stringify({
     status: "ok",
-    scenario: "render-gateway-slow-header-bounds",
+    scenario: "render-gateway-absolute-slow-header-bounds",
     slowHeaderSockets: slowSockets.length,
-    slowHeadersClosedWithinMs: 8_000,
+    trickleIntervalMs: 1_000,
+    absoluteHeaderDeadlineMs: 5_000,
+    slowHeadersClosedWithinMs: 7_000,
     oversizedHeaderRejected431: true,
     startHeight,
     finalMinHeight: recovered.body.minHeight,
