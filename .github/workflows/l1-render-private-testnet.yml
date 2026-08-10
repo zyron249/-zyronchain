@@ -1,0 +1,43 @@
+name: Standalone L1 Render Private Testnet Smoke CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  render-private-testnet-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+      - name: Install locked dependencies
+        working-directory: l1
+        run: npm ci
+      - name: Build canonical L1
+        working-directory: l1
+        run: npm run build
+      - name: Rehearse four-validator Render private testnet
+        shell: bash
+        run: |
+          set -o pipefail
+          node l1/scripts/render-private-testnet.mjs --smoke | tee "${RUNNER_TEMP}/render-private-testnet-smoke.log"
+      - name: Upload smoke log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-render-private-testnet-smoke-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/render-private-testnet-smoke.log
+          if-no-files-found: warn
+          retention-days: 90
