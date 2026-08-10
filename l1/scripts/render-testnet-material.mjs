@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, lstat, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { ZyronChain } from "../dist/src/chain.js";
@@ -15,6 +15,12 @@ async function exists(path) {
   } catch {
     return false;
   }
+}
+
+async function assertSafePersistedKey(path, index) {
+  const metadata = await lstat(path);
+  assert.ok(metadata.isFile() && !metadata.isSymbolicLink(), `validator-${index + 1} key must be a regular non-symlink file`);
+  assert.equal(metadata.mode & 0o077, 0, `validator-${index + 1} key permissions must be 0600-compatible`);
 }
 
 function parseValidatorKey(value, index, keyPath, dataDir, rpcBasePort) {
@@ -46,9 +52,12 @@ export async function loadOrCreateRenderTestnetMaterial(root, chainId, rpcBasePo
   const keyExistence = await Promise.all(keyPaths.map(exists));
 
   if (genesisExists) {
+    const genesisMetadata = await lstat(genesisPath);
+    assert.ok(genesisMetadata.isFile() && !genesisMetadata.isSymbolicLink(), "Existing Render genesis must be a regular non-symlink file");
     assert.ok(keyExistence.every(Boolean), "Existing Render testnet root is missing one or more validator key files");
     const validators = [];
     for (let index = 0; index < VALIDATOR_COUNT; index += 1) {
+      await assertSafePersistedKey(keyPaths[index], index);
       const value = JSON.parse(await readFile(keyPaths[index], "utf8"));
       validators.push(parseValidatorKey(value, index, keyPaths[index], dataDirs[index], rpcBasePort));
     }
