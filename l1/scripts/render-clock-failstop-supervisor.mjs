@@ -9,6 +9,7 @@ const pollIntervalMs = 2_000;
 const readyTimeoutMs = 1_500;
 const childStopTimeoutMs = 8_000;
 const monitorOnly = process.argv.includes("--test-monitor-only");
+const smokeMode = process.argv.includes("--smoke");
 const testUrl = process.env.ZYRON_SUPERVISOR_TEST_URL;
 const gatewayPort = Number(process.env.PORT ?? 10000);
 
@@ -88,7 +89,7 @@ async function shutdown(signal) {
 }
 
 if (!monitorOnly) {
-  child = spawn(process.execPath, [launcherPath], {
+  child = spawn(process.execPath, [launcherPath, ...(smokeMode ? ["--smoke"] : [])], {
     cwd: l1Root,
     env: process.env,
     stdio: ["ignore", "inherit", "inherit"]
@@ -96,6 +97,10 @@ if (!monitorOnly) {
   child.once("exit", (code, signal) => {
     childExit = { code, signal };
     if (shuttingDown) return;
+    if (smokeMode && code === 0) {
+      process.exitCode = 0;
+      return;
+    }
     console.error(`Render private-testnet launcher exited: code=${code} signal=${signal}`);
     process.exitCode = typeof code === "number" && code !== 0 ? code : 1;
   });
