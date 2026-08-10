@@ -1,0 +1,51 @@
+name: Standalone L1 Private Testnet Preflight CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  private-testnet-preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+      - name: Verify internal private-testnet preflight twice
+        run: |
+          evidence="${RUNNER_TEMP}/zyron-private-testnet-preflight"
+          mkdir -p "$evidence"
+          node l1/scripts/verify-private-testnet-preflight.mjs \
+            --config docs/l1-private-testnet-preflight.json \
+            --out "$evidence/preflight-a.json" \
+            --commit-sha "$GITHUB_SHA"
+          node l1/scripts/verify-private-testnet-preflight.mjs \
+            --config docs/l1-private-testnet-preflight.json \
+            --out "$evidence/preflight-b.json" \
+            --commit-sha "$GITHUB_SHA"
+          cmp "$evidence/preflight-a.json" "$evidence/preflight-b.json"
+          mv "$evidence/preflight-a.json" "$evidence/private-testnet-preflight.json"
+          rm "$evidence/preflight-b.json"
+          cp docs/l1-private-testnet-preflight.json "$evidence/l1-private-testnet-preflight.json"
+          cd "$evidence"
+          sha256sum private-testnet-preflight.json l1-private-testnet-preflight.json > SHA256SUMS
+          cat private-testnet-preflight.json
+          cat SHA256SUMS
+      - name: Upload private-testnet preflight evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-private-testnet-preflight-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/zyron-private-testnet-preflight/private-testnet-preflight.json
+            ${{ runner.temp }}/zyron-private-testnet-preflight/l1-private-testnet-preflight.json
+            ${{ runner.temp }}/zyron-private-testnet-preflight/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
