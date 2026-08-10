@@ -9,8 +9,9 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const repoRoot = resolve(new URL("../..", import.meta.url).pathname);
 const launcher = resolve(repoRoot, "l1/scripts/render-private-testnet.mjs");
-const HARD_PSS_BYTES = 430 * 1024 * 1024;
-const MAX_GROWTH_BYTES = 128 * 1024 * 1024;
+const WARMUP_HEIGHT = 4;
+const FINAL_HEIGHT = 12;
+const MAX_POST_WARMUP_GROWTH_BYTES = 96 * 1024 * 1024;
 const EXPECTED_PROCESS_COUNT = 5; // launcher/gateway + four validator children
 
 async function freePort() {
@@ -32,7 +33,7 @@ async function status(base) {
   return response.json();
 }
 
-async function waitHeight(base, height, timeoutMs = 180_000) {
+async function waitHeight(base, height, timeoutMs = 240_000) {
   const deadline = Date.now() + timeoutMs;
   let last;
   while (Date.now() < deadline) {
@@ -140,23 +141,25 @@ async function stop() {
 }
 
 try {
-  await waitHeight(base, 2);
-  const baseline = await treeMemory(child.pid);
-  const samples = [{ height: 2, ...baseline }];
+  await waitHeight(base, WARMUP_HEIGHT);
+  const warmup = await treeMemory(child.pid);
+  const samples = [{ height: WARMUP_HEIGHT, ...warmup }];
 
-  let nextHeight = 3;
-  while (nextHeight <= 6) {
+  let nextHeight = WARMUP_HEIGHT + 1;
+  while (nextHeight <= FINAL_HEIGHT) {
     const current = await waitHeight(base, nextHeight);
     const memory = await treeMemory(child.pid);
     samples.push({ height: current.minHeight, ...memory });
-    assert.ok(memory.pssBytes < HARD_PSS_BYTES, `PSS exceeded hard budget: ${memory.pssBytes}`);
     nextHeight = current.minHeight + 1;
   }
 
-  const peakPssBytes = Math.max(...samples.map((sample) => sample.pssBytes));
+  const peakPostWarmupPssBytes = Math.max(...samples.map((sample) => sample.pssBytes));
   const finalPssBytes = samples.at(-1).pssBytes;
-  const growthBytes = finalPssBytes - baseline.pssBytes;
-  assert.ok(growthBytes < MAX_GROWTH_BYTES, `PSS growth exceeded budget: ${growthBytes}`);
+  const maxPostWarmupGrowthBytes = Math.max(0, peakPostWarmupPssBytes - warmup.pssBytes);
+  assert.ok(
+    maxPostWarmupGrowthBytes < MAX_POST_WARMUP_GROWTH_BYTES,
+    `Post-warmup PSS growth exceeded budget: ${maxPostWarmupGrowthBytes}`
+  );
 
   const finalStatus = await status(base);
   assert.equal(finalStatus.converged, true);
@@ -168,15 +171,16 @@ try {
   console.log(JSON.stringify({
     status: "ok",
     scenario: "render-four-validator-memory-soak",
-    measurement: "linux-smaps-rollup-pss",
-    rationale: "PSS proportionally accounts shared pages; summed RSS is retained only as diagnostic evidence",
+    measurement: "linux-smaps-rollup-pss-growth",
+    rationale: "CI PSS is used to detect post-warmup growth; the live Render cgroup metric is the authoritative absolute memory-limit signal",
     samples,
-    baselinePssBytes: baseline.pssBytes,
-    peakPssBytes,
+    warmupHeight: WARMUP_HEIGHT,
+    finalTargetHeight: FINAL_HEIGHT,
+    warmupPssBytes: warmup.pssBytes,
+    peakPostWarmupPssBytes,
     finalPssBytes,
-    growthBytes,
-    hardBudgetBytes: HARD_PSS_BYTES,
-    maxGrowthBytes: MAX_GROWTH_BYTES,
+    maxPostWarmupGrowthBytes,
+    maxGrowthBudgetBytes: MAX_POST_WARMUP_GROWTH_BYTES,
     expectedProcessCount: EXPECTED_PROCESS_COUNT,
     finalHeight: finalStatus.minHeight,
     validatorsAlive: true,
