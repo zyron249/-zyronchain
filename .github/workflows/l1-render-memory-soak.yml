@@ -11,7 +11,7 @@ permissions:
 jobs:
   render-memory-soak:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
@@ -21,7 +21,7 @@ jobs:
           cache-dependency-path: l1/package-lock.json
       - working-directory: l1
         run: npm ci && npm run build
-      - name: Measure process-tree PSS through finalized height 6
+      - name: Measure post-warmup process-tree PSS growth through finalized height 12
         run: |
           set -o pipefail
           node l1/scripts/render-memory-soak.mjs | tee "${RUNNER_TEMP}/render-memory-soak.json"
