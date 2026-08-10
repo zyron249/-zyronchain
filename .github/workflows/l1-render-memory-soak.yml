@@ -37,7 +37,7 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then target=12; fi
           ZYRON_MEMORY_SOAK_WARMUP_HEIGHT=2 \
           ZYRON_MEMORY_SOAK_TARGET_HEIGHT="$target" \
-          ZYRON_MEMORY_SOAK_MAX_TOTAL_RSS_BYTES=$((440 * 1024 * 1024)) \
+          ZYRON_MEMORY_SOAK_MAX_TOTAL_PSS_BYTES=$((440 * 1024 * 1024)) \
           ZYRON_MEMORY_SOAK_MAX_GROWTH_BYTES=$((96 * 1024 * 1024)) \
           node l1/scripts/render-memory-soak.mjs | tee "${RUNNER_TEMP}/render-memory-soak.log"
       - name: Upload memory soak evidence
