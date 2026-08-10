@@ -95,12 +95,17 @@ const paths = [...new Set([
   ...scope.securitySpecifications,
   ...scope.independentVerification,
   "l1/package.json",
-  "l1/package-lock.json"
+  "l1/package-lock.json",
+  "l1/scripts/archive-ci-evidence.mjs",
+  "l1/scripts/build-external-audit-pack.mjs",
+  ".github/workflows/l1-audit-pack.yml"
 ])].sort();
 
 const files = [];
 for (const path of paths) {
-  if (!/^(l1\/|docs\/)[A-Za-z0-9_./-]+$/.test(path) || path.includes("..")) throw new Error(`Unsafe audit path: ${path}`);
+  if (!/^(l1\/|docs\/|\.github\/workflows\/)[A-Za-z0-9_./-]+$/.test(path) || path.includes("..")) {
+    throw new Error(`Unsafe audit path: ${path}`);
+  }
   const metadata = await stat(path);
   assert.ok(metadata.isFile(), `Audit path is not a regular file: ${path}`);
   const bytes = await readFile(path);
