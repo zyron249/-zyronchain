@@ -21,7 +21,7 @@ jobs:
           cache-dependency-path: l1/package-lock.json
       - working-directory: l1
         run: npm ci && npm run build
-      - name: Measure process-tree RSS through finalized height 6
+      - name: Measure process-tree PSS through finalized height 6
         run: |
           set -o pipefail
           node l1/scripts/render-memory-soak.mjs | tee "${RUNNER_TEMP}/render-memory-soak.json"
