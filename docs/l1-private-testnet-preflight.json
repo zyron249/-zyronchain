@@ -17,7 +17,8 @@
     "machine-readable-ci-evidence",
     "external-audit-handoff-prepared",
     "operations-runbook-and-threat-model",
-    "founder-independent-security-and-succession-policy"
+    "founder-independent-security-and-succession-policy",
+    "render-free-smoke-only-hosting-policy"
   ],
   "remainingExternalGates": [
     "independent-operators-deploy-from-release-artifacts-without-founder-assistance",
@@ -28,7 +29,8 @@
     "production-hsm-or-audited-signer-custody-and-cross-host-rotation",
     "multi-region-disaster-recovery-and-incident-drills",
     "protected-branch-independent-review-repository-policy",
-    "independent-maintainer-and-security-custody-succession-evidence"
+    "independent-maintainer-and-security-custody-succession-evidence",
+    "always-on-hosted-testnet-compute-and-duration-soak-evidence"
   ],
   "mainnetOnlyUnresolvedDecisions": [
     "immutable-mainnet-chain-id",
