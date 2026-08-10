@@ -19,6 +19,8 @@ The historical Python/Flask Proof-of-Work network and its explorer are a **legac
 - Readiness gate: [`docs/STANDALONE_L1_READINESS.md`](docs/STANDALONE_L1_READINESS.md)
 - Operations and disaster recovery: [`docs/L1_OPERATIONS_RUNBOOK.md`](docs/L1_OPERATIONS_RUNBOOK.md)
 - Threat model: [`docs/L1_THREAT_MODEL.md`](docs/L1_THREAT_MODEL.md)
+- Security disclosure: [`SECURITY.md`](SECURITY.md)
+- Maintainer and security succession: [`docs/L1_MAINTAINER_SUCCESSION.md`](docs/L1_MAINTAINER_SUCCESSION.md)
 - Technical paper: [`WHITEPAPER.md`](WHITEPAPER.md)
 - Historical audit: [`docs/ZYRONCHAIN_MAINNET_AUDIT_2026-08-08.md`](docs/ZYRONCHAIN_MAINNET_AUDIT_2026-08-08.md)
 
@@ -42,6 +44,8 @@ ZyronChain currently uses an explicitly permissioned validator set. It must not 
 
 No hidden administrator, recovery or minting authority should be introduced. Genesis allocation, validator admission, activity-oracle governance and reward policy are public launch decisions and will not be silently invented in code.
 
+Maintainer succession likewise cannot be satisfied by naming placeholder accounts. Before public-testnet authorization, independent custodians must demonstrate the repository/release/security/domain continuity evidence defined by the public succession policy; repository maintainership never bypasses validator or protocol quorum rules.
+
 ## Repository layout
 
 | Path | Status |
@@ -54,4 +58,4 @@ No hidden administrator, recovery or minting authority should be introduced. Gen
 
 ## Contributions and launch discipline
 
-Security and consensus changes must preserve deterministic replay and include regression evidence. Do not deploy generated keys, genesis files or operator secrets from this repository. Do not call any network “mainnet” until every stop-ship gate is independently closed.
+Security and consensus changes must preserve deterministic replay and include regression evidence. Security reports follow [`SECURITY.md`](SECURITY.md); maintainer/release continuity follows [`docs/L1_MAINTAINER_SUCCESSION.md`](docs/L1_MAINTAINER_SUCCESSION.md). Do not deploy generated keys, genesis files or operator secrets from this repository. Do not call any network “mainnet” until every stop-ship gate is independently closed.
