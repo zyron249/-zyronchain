@@ -19,6 +19,7 @@
   "criticalModules": [
     "l1/src/block.ts",
     "l1/src/chain.ts",
+    "l1/src/cli.ts",
     "l1/src/codec.ts",
     "l1/src/crypto.ts",
     "l1/src/light-client.ts",
