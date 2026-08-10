@@ -12,6 +12,7 @@ The archived scenarios are:
 - `disaster-recovery`
 - `composite-adversarial-soak`
 - `multiprocess-native-recovery`
+- `validator-key-rotation`
 
 ## Evidence envelope
 
@@ -45,6 +46,10 @@ sha256sum -c SHA256SUMS
 ```
 
 Then inspect `evidence.json` and confirm that `repository`, `commitSha`, `scenario`, `runId`, `runAttempt` and the scenario-specific `result` match the CI run being reviewed.
+
+## Validator-key rotation evidence
+
+The `validator-key-rotation` rehearsal uses deterministic non-production keys. It quorum-authorizes a delayed validator-set replacement, proves the retired key cannot attest once the new set activates, proves the replacement key is immediately eligible to propose/finalize according to the rotation schedule, and proves the activated set survives authenticated snapshot restart. It does not create or certify a production HSM key, signer provider, custody ceremony or cross-host recovery procedure.
 
 ## Security boundary
 
