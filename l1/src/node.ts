@@ -585,8 +585,6 @@ async function route(
     const txid = service.submitTransaction(body);
     if (onTransactionAccepted) {
       const transaction = structuredClone(body as Transaction);
-      // Gossip is best-effort and must not turn a locally accepted transaction
-      // into an RPC failure because a remote peer is slow or unavailable.
       void Promise.resolve().then(() => onTransactionAccepted(transaction)).catch(() => undefined);
     }
     return writeJson(response, 202, { txid });
@@ -740,16 +738,12 @@ export class PeerClient {
     for (let index = 0; index < results.length; index += 1) {
       const result = results[index]!;
       if (result.status === "rejected") {
-        // Discovery is optional metadata. A node that is otherwise a valid sync
-        // peer may not support this endpoint yet; do not poison sync reputation.
         continue;
       }
       for (const record of result.value) {
         try {
           if (directory.admit(record, nowMs)) admitted += 1;
         } catch (error) {
-          // Local capacity is not evidence of remote misbehavior. Stop accepting
-          // metadata without allowing discovery to evict already-admitted peers.
           if (/Peer directory capacity reached/.test(safeError(error))) break;
           throw error;
         }
@@ -806,9 +800,6 @@ export class PeerClient {
           accepted += 1;
           progressed = true;
         } catch {
-          // A peer with a valid first block but a poisoned tail cannot stop the next
-          // independently selected peer. Back it off so latency cannot let it
-          // immediately monopolize the next batch.
           poisoned = true;
           break;
         }
@@ -904,9 +895,6 @@ export function peerDiversityBucket(peer: string): string {
     return `ipv4:${octets.slice(0, 3).join(".")}.0/24`;
   }
   if (isIP(hostname) === 6) {
-    // Do not infer a prefix from a compressed textual IPv6 representation.
-    // Exact-address grouping is conservative; explicit subnet/provider/ASN
-    // policy remains required before public mainnet admission.
     return `ipv6:${hostname}`;
   }
   return `host:${hostname}`;
@@ -965,7 +953,11 @@ export async function produceFinalizedBlock(
     for (let skippedRound = 0; skippedRound < round; skippedRound += 1) {
       const votes: RoundSkipVote[] = [];
       try {
-        votes.push(await service.requestSkipVote(chain.height + 1, skippedRound, previousCertificate, nowMs));
+        // `nowMs` determines this production attempt's round and block timestamp, but it must not
+        // become the validator signing-clock sample after asynchronous peer work. Direct signing
+        // methods retain explicit time injection for deterministic rollback tests; the producer
+        // uses their default local clock at the actual signing boundary.
+        votes.push(await service.requestSkipVote(chain.height + 1, skippedRound, previousCertificate));
       } catch {
         // An honest validator that already attested this round must never also skip it.
       }
@@ -983,7 +975,6 @@ export async function produceFinalizedBlock(
           );
           unique.set(vote.validator, vote);
         } catch {
-          // A malformed or invalid peer vote cannot poison an otherwise valid quorum.
         }
       }
       const certificate = [...unique.values()];
@@ -1009,11 +1000,11 @@ export async function produceFinalizedBlock(
     timestampMs: nowMs,
     roundCertificate
   });
-  const proposal = await service.signPreparedProposal(unsignedProposal, nowMs);
+  const proposal = await service.signPreparedProposal(unsignedProposal);
   chain.validatePreparedBlock(proposal, nowMs);
   const attestations: BlockAttestation[] = [];
   try {
-    attestations.push(await service.attestProposal(proposal, nowMs));
+    attestations.push(await service.attestProposal(proposal));
   } catch (error) {
     if (!/Validator signing is disabled/.test(safeError(error))) throw error;
   }
@@ -1024,7 +1015,6 @@ export async function produceFinalizedBlock(
       validateBlockAttestation(proposal, attestation, validators);
       byValidator.set(attestation.validator, attestation);
     } catch {
-      // Invalid peer attestations are ignored instead of poisoning block assembly.
     }
   }
   const withVotes = { ...proposal, attestations: [...byValidator.values()] };
