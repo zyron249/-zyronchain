@@ -39,6 +39,17 @@ jobs:
           sha256sum private-testnet-preflight.json l1-private-testnet-preflight.json > SHA256SUMS
           cat private-testnet-preflight.json
           cat SHA256SUMS
+      - name: Verify connected Render Free profile remains smoke-only
+        run: |
+          evidence="${RUNNER_TEMP}/zyron-private-testnet-preflight"
+          node l1/scripts/verify-render-hosting-profile.mjs \
+            --policy docs/l1-render-hosting-profile.json \
+            --docs docs/RENDER_PRIVATE_TESTNET.md \
+            --out "$evidence/render-hosting-profile.json" \
+            --commit-sha "$GITHUB_SHA"
+          cd "$evidence"
+          sha256sum render-hosting-profile.json >> SHA256SUMS
+          cat render-hosting-profile.json
       - name: Upload private-testnet preflight evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -46,6 +57,7 @@ jobs:
           path: |
             ${{ runner.temp }}/zyron-private-testnet-preflight/private-testnet-preflight.json
             ${{ runner.temp }}/zyron-private-testnet-preflight/l1-private-testnet-preflight.json
+            ${{ runner.temp }}/zyron-private-testnet-preflight/render-hosting-profile.json
             ${{ runner.temp }}/zyron-private-testnet-preflight/SHA256SUMS
           if-no-files-found: error
           retention-days: 90
