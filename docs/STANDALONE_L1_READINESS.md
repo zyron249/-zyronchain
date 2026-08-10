@@ -1,6 +1,6 @@
 # ZyronChain standalone L1 — A–Z readiness review
 
-This document is the release/activation gate for the standalone TypeScript L1. **Governance authorization has been granted for both the public-testnet and mainnet network classes.** Public testnet launch is currently blocked at the activation gate; value-bearing mainnet activation is also blocked. Green CI, a release artifact or governance authorization does not waive the evidence requirements below. The historical Python/Flask `zyron-testnet-1` remains a compatibility/testnet system and is not silently rebranded as the canonical chain.
+This document is the release/activation gate for the standalone TypeScript L1. **Governance authorization has been granted for both the public-testnet and mainnet network classes.** **Public testnet launch is currently blocked** at the activation gate; value-bearing mainnet activation is also blocked. Green CI, a release artifact or governance authorization does not waive the evidence requirements below. The historical Python/Flask `zyron-testnet-1` remains a compatibility/testnet system and is not silently rebranded as the canonical chain.
 
 The machine-readable authority is `docs/l1-launch-authorization.json`: `publicTestnetAuthorized=true` and `mainnetAuthorized=true`, while `publicTestnetActivationAllowed=false` and `mainnetActivationAllowed=false`.
 
