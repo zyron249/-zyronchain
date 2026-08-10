@@ -70,7 +70,23 @@ jobs:
       - name: Rehearse mixed-version activation and rollback
         env:
           ZYRON_OLD_L1_DIST: ${{ github.workspace }}/historical-pre-v3/l1/dist
-        run: node l1/scripts/mixed-version-rehearsal.mjs
+        run: |
+          evidence="${RUNNER_TEMP}/zyron-evidence"
+          mkdir -p "$evidence"
+          node l1/scripts/mixed-version-rehearsal.mjs > "$evidence/result.json"
+          node l1/scripts/archive-ci-evidence.mjs --scenario mixed-version-upgrade-rollback --result "$evidence/result.json" --out "$evidence/evidence.json"
+          cd "$evidence"
+          sha256sum evidence.json > SHA256SUMS
+          cat evidence.json
+      - name: Upload mixed-version evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-evidence-mixed-version-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/zyron-evidence/evidence.json
+            ${{ runner.temp }}/zyron-evidence/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
 
   disaster-recovery-rehearsal:
     runs-on: ubuntu-latest
@@ -90,7 +106,23 @@ jobs:
         working-directory: l1
         run: npm run build
       - name: Rehearse checkpoint restore, catch-up, and restart
-        run: node l1/scripts/disaster-recovery-rehearsal.mjs
+        run: |
+          evidence="${RUNNER_TEMP}/zyron-evidence"
+          mkdir -p "$evidence"
+          node l1/scripts/disaster-recovery-rehearsal.mjs > "$evidence/result.json"
+          node l1/scripts/archive-ci-evidence.mjs --scenario disaster-recovery --result "$evidence/result.json" --out "$evidence/evidence.json"
+          cd "$evidence"
+          sha256sum evidence.json > SHA256SUMS
+          cat evidence.json
+      - name: Upload disaster-recovery evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-evidence-disaster-recovery-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/zyron-evidence/evidence.json
+            ${{ runner.temp }}/zyron-evidence/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
 
   composite-adversarial-soak:
     runs-on: ubuntu-latest
@@ -110,7 +142,23 @@ jobs:
         working-directory: l1
         run: npm run build
       - name: Run composite adversarial consensus soak
-        run: node l1/scripts/composite-adversarial-soak.mjs
+        run: |
+          evidence="${RUNNER_TEMP}/zyron-evidence"
+          mkdir -p "$evidence"
+          node l1/scripts/composite-adversarial-soak.mjs > "$evidence/result.json"
+          node l1/scripts/archive-ci-evidence.mjs --scenario composite-adversarial-soak --result "$evidence/result.json" --out "$evidence/evidence.json"
+          cd "$evidence"
+          sha256sum evidence.json > SHA256SUMS
+          cat evidence.json
+      - name: Upload adversarial soak evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-evidence-adversarial-soak-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/zyron-evidence/evidence.json
+            ${{ runner.temp }}/zyron-evidence/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
 
   multiprocess-native-recovery:
     runs-on: ubuntu-latest
@@ -130,7 +178,23 @@ jobs:
         working-directory: l1
         run: npm run build
       - name: Rehearse native P2P catch-up across a hard process crash
-        run: node l1/scripts/multiprocess-native-recovery.mjs
+        run: |
+          evidence="${RUNNER_TEMP}/zyron-evidence"
+          mkdir -p "$evidence"
+          node l1/scripts/multiprocess-native-recovery.mjs > "$evidence/result.json"
+          node l1/scripts/archive-ci-evidence.mjs --scenario multiprocess-native-recovery --result "$evidence/result.json" --out "$evidence/evidence.json"
+          cd "$evidence"
+          sha256sum evidence.json > SHA256SUMS
+          cat evidence.json
+      - name: Upload multi-process recovery evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-evidence-multiprocess-recovery-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/zyron-evidence/evidence.json
+            ${{ runner.temp }}/zyron-evidence/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
 
   independent-light-client:
     runs-on: ubuntu-latest
