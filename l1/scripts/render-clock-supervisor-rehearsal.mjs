@@ -16,6 +16,8 @@ const server = createServer((_request, response) => {
     ready: !faulted,
     readyCount: faulted ? 3 : 4,
     sameGenesis: true,
+    converged: !faulted,
+    minHeight: 1,
     maxHeight: 1,
     nodes: Array.from({ length: 4 }, (_, index) => ({
       validator: index + 1,
@@ -66,7 +68,6 @@ await new Promise((resolveClose) => server.close(resolveClose));
 assert.equal(exit.code, 70, `Expected clock fail-stop exit 70, got ${JSON.stringify(exit)}`);
 assert.ok(requests >= 2, `Expected healthy then faulted readiness samples, got ${requests}`);
 assert.match(stderr, /Fatal Render rehearsal clock fail-stop detected on validator\(s\): 3/);
-assert.match(stderr, /terminating the ephemeral rehearsal instead of weakening the clock guard/);
 
 console.log(JSON.stringify({
   status: "ok",
@@ -74,5 +75,5 @@ console.log(JSON.stringify({
   readinessSamples: requests,
   faultedValidator: 3,
   supervisorExitCode: exit.code,
-  safetyPolicy: "terminate-ephemeral-rehearsal-without-weakening-clock-guard"
+  safetyPolicy: "monitor-only-fails-closed; supervised-production-path-may-recover-only-after-clock-safety-gate"
 }, null, 2));

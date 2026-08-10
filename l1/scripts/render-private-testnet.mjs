@@ -2,17 +2,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { ZyronChain } from "../dist/src/chain.js";
-import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "../dist/src/crypto.js";
+import { loadOrCreateRenderTestnetMaterial } from "./render-testnet-material.mjs";
 
 const VALIDATOR_COUNT = 4;
 const DEFAULT_RPC_BASE_PORT = 9137;
-const TEST_ALLOCATION_ATOMS = 100_000_000;
 const GATEWAY_SUMMARY_CACHE_MS = 1_000;
 const GATEWAY_MAX_CONNECTIONS = 256;
 const GATEWAY_MAX_ACTIVE_REQUESTS = 64;
@@ -26,7 +24,7 @@ const GATEWAY_MAX_HEADER_BYTES = 16_384;
 const chainId = process.env.ZYRON_TESTNET_CHAIN_ID ?? "zyron-render-private-testnet-1";
 const smokeMode = process.argv.includes("--smoke");
 const l1Root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const cliPath = join(l1Root, "dist", "src", "cli.js");
+const cliPath = resolve(l1Root, "dist/src/cli.js");
 const rpcBasePort = Number(process.env.ZYRON_TESTNET_RPC_BASE_PORT ?? DEFAULT_RPC_BASE_PORT);
 const gatewayPort = smokeMode ? 0 : Number(process.env.PORT ?? 10000);
 
@@ -40,49 +38,11 @@ if (!smokeMode && (!Number.isSafeInteger(gatewayPort) || gatewayPort < 1 || gate
 const explicitRoot = process.env.ZYRON_TESTNET_DATA_ROOT;
 const root = explicitRoot
   ? resolve(explicitRoot)
-  : await mkdtemp(join(tmpdir(), "zyron-render-private-testnet-"));
+  : await mkdtemp(resolve(tmpdir(), "zyron-render-private-testnet-XXXXXX"));
 if (explicitRoot) await mkdir(root, { recursive: true });
 
-const validators = [];
-for (let index = 0; index < VALIDATOR_COUNT; index += 1) {
-  const privateKey = generatePrivateKey();
-  const publicKey = publicKeyFromPrivate(privateKey);
-  validators.push({
-    index,
-    privateKey,
-    publicKey,
-    address: addressFromPublicKey(publicKey),
-    rpcPort: rpcBasePort + index,
-    keyPath: join(root, `validator-${index + 1}.json`),
-    dataDir: join(root, `validator-${index + 1}-data`)
-  });
-}
-
-const oraclePrivateKey = generatePrivateKey();
-const oraclePublicKey = publicKeyFromPrivate(oraclePrivateKey);
-const activityPool = addressFromPublicKey(publicKeyFromPrivate(generatePrivateKey()));
-const genesis = {
-  chainId,
-  timestampMs: Date.now() - 60_000,
-  validators: validators.map(({ publicKey, address }) => ({ publicKey, address })),
-  activityOracles: [oraclePublicKey],
-  activityPool,
-  allocations: [
-    ...validators.map(({ address }) => ({ address, amountAtoms: TEST_ALLOCATION_ATOMS })),
-    { address: activityPool, amountAtoms: TEST_ALLOCATION_ATOMS }
-  ]
-};
-
-const validatedGenesis = new ZyronChain(genesis);
-const genesisPath = join(root, "genesis.json");
-await writeFile(genesisPath, `${JSON.stringify(genesis, null, 2)}\n`, { mode: 0o644 });
-for (const validator of validators) {
-  await writeFile(validator.keyPath, `${JSON.stringify({
-    privateKey: validator.privateKey,
-    publicKey: validator.publicKey,
-    address: validator.address
-  }, null, 2)}\n`, { mode: 0o600 });
-}
+const material = await loadOrCreateRenderTestnetMaterial(root, chainId, rpcBasePort);
+const { genesisPath, validators, validatedGenesis } = material;
 
 const children = [];
 let shuttingDown = false;
@@ -185,6 +145,7 @@ async function testnetSummary() {
     failureDomains: 1,
     persistence: explicitRoot ? "operator-provided-path" : "ephemeral-runtime-filesystem",
     genesisHash: validatedGenesis.genesisHash,
+    materialReused: material.reused,
     sameGenesis,
     converged: sameHeight && sameTip,
     minHeight,
@@ -308,7 +269,7 @@ const gateway = createServer({
       const summary = await cachedPublicSummary();
       if (url.pathname === "/readyz") {
         const readyCount = summary.nodes.filter((node) => node.ready).length;
-        const ready = readyCount >= 3 && summary.sameGenesis && summary.maxHeight >= 1;
+        const ready = readyCount === VALIDATOR_COUNT && summary.sameGenesis && summary.converged && summary.minHeight >= 1;
         return sendJson(response, ready ? 200 : 503, { ready, readyCount, ...summary });
       }
       return sendJson(response, 200, summary);
@@ -358,7 +319,7 @@ await new Promise((resolveListen, reject) => {
 const address = gateway.address();
 assert.ok(address && typeof address === "object");
 console.log(`ZyronChain private testnet gateway listening on 0.0.0.0:${address.port}`);
-console.log(`Chain ID ${chainId}; genesis ${validatedGenesis.genesisHash}; validators ${VALIDATOR_COUNT}; value-bearing=false`);
+console.log(`Chain ID ${chainId}; genesis ${validatedGenesis.genesisHash}; validators ${VALIDATOR_COUNT}; value-bearing=false; materialReused=${material.reused}`);
 console.log("Validator RPC is loopback-only; public gateway accepts read-only GET status endpoints only.");
 console.log(`Gateway socket budgets: maxConnections=${GATEWAY_MAX_CONNECTIONS}, maxActiveRequests=${GATEWAY_MAX_ACTIVE_REQUESTS}, maxHeaders=${GATEWAY_MAX_HEADERS}, maxRequestsPerSocket=${GATEWAY_MAX_REQUESTS_PER_SOCKET}, headerDeadlineMs=${GATEWAY_HEADER_DEADLINE_MS}, headersTimeoutMs=${GATEWAY_HEADERS_TIMEOUT_MS}, requestTimeoutMs=${GATEWAY_REQUEST_TIMEOUT_MS}, keepAliveTimeoutMs=${GATEWAY_KEEP_ALIVE_TIMEOUT_MS}, maxHeaderBytes=${GATEWAY_MAX_HEADER_BYTES}`);
 
@@ -395,6 +356,7 @@ if (smokeMode) {
     validatorProcesses: latest.validatorProcesses,
     failureDomains: latest.failureDomains,
     genesisHash: latest.genesisHash,
+    materialReused: latest.materialReused,
     finalizedHeight: latest.minHeight,
     converged: latest.converged,
     publicTestnetAuthorized: latest.publicTestnetAuthorized,
