@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -8,7 +9,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const repoRoot = resolve(new URL("../..", import.meta.url).pathname);
 const launcher = resolve(repoRoot, "l1/scripts/render-private-testnet.mjs");
-const HARD_RSS_BYTES = 430 * 1024 * 1024;
+const HARD_PSS_BYTES = 430 * 1024 * 1024;
 const MAX_GROWTH_BYTES = 128 * 1024 * 1024;
 const EXPECTED_PROCESS_COUNT = 5; // launcher/gateway + four validator children
 
@@ -54,17 +55,22 @@ function roleForProcess(pid, rootPid, args) {
   return "unexpected-child";
 }
 
-async function treeRss(rootPid) {
-  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,ppid=,rss=,args="]);
+async function linuxMemory(pid) {
+  const rollup = await readFile(`/proc/${pid}/smaps_rollup`, "utf8");
+  const pssKb = Number(rollup.match(/^Pss:\s+(\d+)\s+kB$/m)?.[1]);
+  const rssKb = Number(rollup.match(/^Rss:\s+(\d+)\s+kB$/m)?.[1]);
+  if (!Number.isSafeInteger(pssKb) || !Number.isSafeInteger(rssKb)) {
+    throw new Error(`Unable to parse smaps_rollup for pid ${pid}`);
+  }
+  return { pssBytes: pssKb * 1024, rssBytes: rssKb * 1024 };
+}
+
+async function treeMemory(rootPid) {
+  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,ppid=,args="]);
   const rows = stdout.trim().split(/\n+/).map((line) => {
-    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/);
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
     if (!match) throw new Error(`Unable to parse ps row: ${line}`);
-    return {
-      pid: Number(match[1]),
-      ppid: Number(match[2]),
-      rssBytes: Number(match[3]) * 1024,
-      args: match[4]
-    };
+    return { pid: Number(match[1]), ppid: Number(match[2]), args: match[3] };
   });
   const rowByPid = new Map(rows.map((row) => [row.pid, row]));
   const children = new Map();
@@ -76,23 +82,26 @@ async function treeRss(rootPid) {
 
   const stack = [rootPid];
   const seen = new Set();
-  const processes = [];
+  const processRows = [];
   while (stack.length) {
     const pid = stack.pop();
     if (seen.has(pid)) continue;
     seen.add(pid);
     const row = rowByPid.get(pid);
-    if (row) {
-      processes.push({
-        role: roleForProcess(row.pid, rootPid, row.args),
-        pid: row.pid,
-        ppid: row.ppid,
-        rssBytes: row.rssBytes
-      });
-    }
+    if (row) processRows.push(row);
     for (const childPid of children.get(pid) ?? []) stack.push(childPid);
   }
 
+  const processes = [];
+  for (const row of processRows) {
+    const memory = await linuxMemory(row.pid);
+    processes.push({
+      role: roleForProcess(row.pid, rootPid, row.args),
+      pid: row.pid,
+      ppid: row.ppid,
+      ...memory
+    });
+  }
   processes.sort((left, right) => left.role.localeCompare(right.role));
   assert.equal(processes.length, EXPECTED_PROCESS_COUNT, `Expected ${EXPECTED_PROCESS_COUNT} launcher/validator processes: ${JSON.stringify(processes)}`);
   assert.deepEqual(
@@ -101,7 +110,8 @@ async function treeRss(rootPid) {
     `Unexpected process roles: ${JSON.stringify(processes)}`
   );
   return {
-    bytes: processes.reduce((sum, process) => sum + process.rssBytes, 0),
+    pssBytes: processes.reduce((sum, process) => sum + process.pssBytes, 0),
+    summedRssBytes: processes.reduce((sum, process) => sum + process.rssBytes, 0),
     processCount: processes.length,
     processes
   };
@@ -131,22 +141,22 @@ async function stop() {
 
 try {
   await waitHeight(base, 2);
-  const baseline = await treeRss(child.pid);
+  const baseline = await treeMemory(child.pid);
   const samples = [{ height: 2, ...baseline }];
 
   let nextHeight = 3;
   while (nextHeight <= 6) {
     const current = await waitHeight(base, nextHeight);
-    const rss = await treeRss(child.pid);
-    samples.push({ height: current.minHeight, ...rss });
-    assert.ok(rss.bytes < HARD_RSS_BYTES, `RSS exceeded hard budget: ${rss.bytes}`);
+    const memory = await treeMemory(child.pid);
+    samples.push({ height: current.minHeight, ...memory });
+    assert.ok(memory.pssBytes < HARD_PSS_BYTES, `PSS exceeded hard budget: ${memory.pssBytes}`);
     nextHeight = current.minHeight + 1;
   }
 
-  const peakBytes = Math.max(...samples.map((sample) => sample.bytes));
-  const finalBytes = samples.at(-1).bytes;
-  const growthBytes = finalBytes - baseline.bytes;
-  assert.ok(growthBytes < MAX_GROWTH_BYTES, `RSS growth exceeded budget: ${growthBytes}`);
+  const peakPssBytes = Math.max(...samples.map((sample) => sample.pssBytes));
+  const finalPssBytes = samples.at(-1).pssBytes;
+  const growthBytes = finalPssBytes - baseline.pssBytes;
+  assert.ok(growthBytes < MAX_GROWTH_BYTES, `PSS growth exceeded budget: ${growthBytes}`);
 
   const finalStatus = await status(base);
   assert.equal(finalStatus.converged, true);
@@ -158,12 +168,14 @@ try {
   console.log(JSON.stringify({
     status: "ok",
     scenario: "render-four-validator-memory-soak",
+    measurement: "linux-smaps-rollup-pss",
+    rationale: "PSS proportionally accounts shared pages; summed RSS is retained only as diagnostic evidence",
     samples,
-    baselineBytes: baseline.bytes,
-    peakBytes,
-    finalBytes,
+    baselinePssBytes: baseline.pssBytes,
+    peakPssBytes,
+    finalPssBytes,
     growthBytes,
-    hardBudgetBytes: HARD_RSS_BYTES,
+    hardBudgetBytes: HARD_PSS_BYTES,
     maxGrowthBytes: MAX_GROWTH_BYTES,
     expectedProcessCount: EXPECTED_PROCESS_COUNT,
     finalHeight: finalStatus.minHeight,
