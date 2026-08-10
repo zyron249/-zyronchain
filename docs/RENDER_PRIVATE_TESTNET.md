@@ -10,11 +10,11 @@ The gateway is hardened with request-target validation, internal-RPC redaction, 
 
 ## Memory evidence
 
-The four-validator launcher intentionally uses several Node.js processes. Summing per-process RSS is not an appropriate physical-memory estimate because shared executable/library/file-backed pages are counted once in every process RSS. On Linux CI, `render-memory-soak.mjs` therefore reads `/proc/<pid>/smaps_rollup` and aggregates **PSS (Proportional Set Size)** across the gateway plus four validators. PSS proportionally charges shared pages and is materially closer to the process group's physical-memory pressure. Summed RSS is retained in evidence only for diagnostics.
+The four-validator launcher intentionally uses several Node.js processes. Summing per-process RSS is not an appropriate physical-memory estimate because shared executable/library/file-backed pages are counted once in every process RSS. On Linux CI, `render-memory-soak.mjs` therefore reads `/proc/<pid>/smaps_rollup` and aggregates **PSS (Proportional Set Size)** across the gateway plus four validators. Summed RSS is retained in evidence only for diagnostics.
 
-The memory soak waits for organic finality, samples the five-process tree through finalized height 6, requires all validators to remain alive/converged, enforces a 430 MiB aggregate-PSS hard ceiling and less than 128 MiB post-warmup PSS growth. These are conservative engineering gates for the current 512 MiB Render profile, not production capacity guarantees.
+CI PSS is used as a **growth detector**, not as a byte-for-byte substitute for Render's cgroup accounting. The calibrated soak waits through warm-up to finalized height 4, then samples the exact five-process tree through height 12. It requires all validators to remain alive/converged and fails if peak aggregate PSS grows by 96 MiB or more above the warm-up sample. A large startup PSS value by itself does not fail this cross-environment CI gate because GitHub-hosted process accounting and Render cgroup charging are not identical.
 
-Render's own service-level memory metric remains authoritative for the live deployment because it reflects the platform/cgroup accounting used for enforcement. CI PSS and live Render metrics should be compared directionally rather than treated as byte-identical measurements.
+Render's own service-level memory metric is the authoritative absolute-limit signal for the live deployment. The current free service limit is 512 MiB. Treat sustained 80% usage as a warning and sustained 90% usage as a stop-ship condition for this four-validator profile. Investigate or move the rehearsal to a larger reviewed instance before relying on OOM behavior. The bounded CI growth test does not replace a multi-hour live soak or target-hardware State-v2 capacity measurements.
 
 ## Remaining limits
 
