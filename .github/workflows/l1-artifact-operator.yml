@@ -1,0 +1,41 @@
+name: Standalone L1 Release Artifact Operator CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  artifact-operator-rehearsal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+      - name: Install locked source dependencies
+        working-directory: l1
+        run: npm ci
+      - name: Build canonical release files
+        working-directory: l1
+        run: npm run build
+      - name: Rehearse a clean operator install from the packed artifact
+        run: |
+          set -o pipefail
+          node l1/scripts/artifact-operator-rehearsal.mjs | tee "${RUNNER_TEMP}/artifact-operator-rehearsal.json"
+      - name: Upload operator rehearsal evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-artifact-operator-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/artifact-operator-rehearsal.json
+          if-no-files-found: error
+          retention-days: 90
