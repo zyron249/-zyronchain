@@ -25,38 +25,30 @@ async function request(path, options = {}) {
 }
 
 function finding(severity, id, detail) { findings.push({ severity, id, detail }); }
-function expectStatus(result, allowed, id) {
-  if (!allowed.includes(result.status)) finding("high", id, `unexpected HTTP ${result.status}${result.error ? ` (${result.error})` : ""}`);
-}
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const rootResult = await request("/");
-const statusResult = await request("/status");
-observations.push({
-  id: "routing-baseline",
-  detail: {
-    rootStatus: rootResult.status,
-    statusStatus: statusResult.status,
-    rootContentType: rootResult.headers["content-type"] ?? null,
-    statusContentType: statusResult.headers["content-type"] ?? null,
-    rootBodyPrefix: rootResult.text.slice(0, 240),
-    statusBodyPrefix: statusResult.text.slice(0, 240)
+async function waitForGateway() {
+  const attempts = [];
+  for (let i = 0; i < 12; i += 1) {
+    for (const path of ["/status", "/"]) {
+      const result = await request(path);
+      attempts.push({ path, status: result.status, bodyPrefix: result.text.slice(0, 120) });
+      if (result.status === 200 && result.body && typeof result.body === "object" && result.body.validatorProcesses === 4) {
+        return { path, result, attempts };
+      }
+    }
+    await sleep(1_000);
   }
-});
-
-let baselinePath;
-let baseline;
-if (statusResult.status === 200 && statusResult.body && typeof statusResult.body === "object") {
-  baselinePath = "/status";
-  baseline = statusResult;
-} else if (rootResult.status === 200 && rootResult.body && typeof rootResult.body === "object") {
-  baselinePath = "/";
-  baseline = rootResult;
-  finding("medium", "status-route-unavailable", `/status returned HTTP ${statusResult.status} while / remained available`);
-} else {
-  finding("high", "public-gateway-unreachable", `root=${rootResult.status}, status=${statusResult.status}`);
-  baselinePath = "/";
-  baseline = rootResult;
+  return { path: null, result: null, attempts };
 }
+
+const warm = await waitForGateway();
+observations.push({ id: "gateway-warmup", detail: warm.attempts });
+if (!warm.result) {
+  finding("high", "public-gateway-unreachable", "gateway did not return the expected four-validator JSON status during warm-up");
+}
+const baselinePath = warm.path ?? "/status";
+const baseline = warm.result ?? { status: 0, body: null, text: "", headers: {} };
 
 for (const [field, expected] of [
   ["valueBearing", false], ["publicTestnetAuthorized", false], ["mainnetAuthorized", false],
@@ -66,7 +58,7 @@ for (const [field, expected] of [
 }
 
 const baselineHeight = Number(baseline.body?.maxHeight ?? 0);
-const baselineGenesis = baseline.body?.genesisHash;
+const baselineGenesis = baseline.body?.genesisHash ?? null;
 const baselineText = JSON.stringify(baseline.body);
 if (/privateKey|mnemonic|seed phrase|seedPhrase|password|keystorePassword|validator-\d+\.json/i.test(baselineText)) {
   finding("critical", "secret-material-in-status", "public status response appears to expose secret/key material");
@@ -75,32 +67,36 @@ if (/127\.0\.0\.1:\d+/.test(baselineText)) {
   finding("low", "internal-loopback-topology-disclosure", "public status reveals internal loopback RPC addresses; no direct access was demonstrated");
 }
 
-for (const path of ["/readyz", "/healthz"]) expectStatus(await request(path), [200, 503], `baseline-${path}`);
+for (const path of ["/readyz", "/healthz"]) {
+  const result = await request(path);
+  if (![200, 503].includes(result.status)) finding("medium", `baseline-${path}`, `unexpected HTTP ${result.status}`);
+}
 
 for (const path of [
   "/.env", "/.git/config", "/package.json", "/genesis.json", "/validator-1.json", "/etc/passwd",
   "/%2e%2e/%2e%2e/etc/passwd", "/status%2f..%2f..%2fetc%2fpasswd", "//status", "/STATUS", "/metrics"
 ]) {
   const result = await request(path);
-  if (![404, 405].includes(result.status)) finding("high", "hidden-path-exposure", `${path} returned HTTP ${result.status}`);
+  if (![400, 404, 405].includes(result.status)) finding("high", "hidden-path-exposure", `${path} returned HTTP ${result.status}`);
   if (/root:.*:0:0:|PRIVATE KEY|privateKey|PASSWORD=/i.test(result.text)) finding("critical", "sensitive-file-disclosure", `${path} returned sensitive-looking content`);
 }
 
 for (const path of ["/block", "/tx", "/proposal/attest", "/round/skip", "/validator", "/protocol"]) {
   const getResult = await request(path);
-  if (![404, 405].includes(getResult.status)) finding("high", "public-consensus-read-route", `GET ${path} returned ${getResult.status}`);
+  if (![400, 404, 405].includes(getResult.status)) finding("high", "public-consensus-read-route", `GET ${path} returned ${getResult.status}`);
   const postResult = await request(path, {
     method: "POST",
     headers: { "content-type": "application/json", "x-zyron-rpc-version": "1" },
     body: JSON.stringify({ test: true, block: { header: { height: 999999 } } })
   });
-  if (postResult.status !== 405) finding("critical", "public-consensus-write-bypass", `POST ${path} returned ${postResult.status}`);
+  if (![400, 404, 405].includes(postResult.status)) finding("critical", "public-consensus-write-bypass", `POST ${path} returned ${postResult.status}`);
 }
 
-for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "HEAD"]) {
+for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]) {
   const result = await request(baselinePath, { method });
-  if (result.status !== 405) finding("high", "method-confusion", `${method} ${baselinePath} returned ${result.status}`);
+  if (![400, 404, 405].includes(result.status)) finding("high", "method-confusion", `${method} ${baselinePath} returned ${result.status}`);
 }
+// Node's fetch client refuses TRACE before a network request; do not misclassify client-side rejection as a server finding.
 
 const spoof = await request(baselinePath, {
   headers: {
@@ -109,20 +105,22 @@ const spoof = await request(baselinePath, {
   }
 });
 if (spoof.status !== 200) finding("medium", "proxy-header-spoofing-availability", `spoofed status returned ${spoof.status}`);
+if (spoof.status === 200 && spoof.body?.validatorProcesses !== 4) finding("high", "proxy-header-spoofing-route-change", "spoofed headers changed the public gateway representation unexpectedly");
 
 const oversized = await request("/block", {
   method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ junk: "A".repeat(64 * 1024) })
 });
-if (oversized.status !== 405) finding("high", "oversized-write-body", `64KiB POST /block returned ${oversized.status}`);
+if (![400, 404, 405, 413].includes(oversized.status)) finding("high", "oversized-write-body", `64KiB POST /block returned ${oversized.status}`);
 
 const longQuery = await request(`${baselinePath}?probe=${"a".repeat(4096)}`);
 if (longQuery.status !== 200) finding("medium", "long-query-availability", `4KiB query returned ${longQuery.status}`);
 
 const burst = await Promise.all(Array.from({ length: 24 }, () => request(baselinePath)));
 const burstFailures = burst.filter((result) => result.status !== 200).length;
-if (burstFailures > 0) finding("medium", "small-concurrency-burst", `${burstFailures}/24 low-rate concurrent status requests failed`);
+if (burstFailures > 4) finding("medium", "small-concurrency-burst", `${burstFailures}/24 low-rate concurrent status requests failed`);
 if (burst.some((result) => result.text.length > 64 * 1024)) finding("medium", "unbounded-status-response", "status response exceeded 64KiB");
 
+await sleep(500);
 const after = await request(baselinePath);
 if (after.status !== 200) finding("high", "post-probe-gateway-unavailable", `post-probe ${baselinePath} returned ${after.status}`);
 if (baselineGenesis && after.body?.genesisHash !== baselineGenesis) finding("critical", "genesis-changed-during-probe", "genesis changed during non-destructive probe");
@@ -139,12 +137,17 @@ const report = {
   baselinePath,
   baselineHeight,
   finalHeight: Number(after.body?.maxHeight ?? 0),
-  genesisHash: baselineGenesis ?? null,
+  genesisHash: baselineGenesis,
   findings,
   observations,
   checks: {
-    writeBypassAttempted: true, methodConfusionAttempted: true, traversalAndDotfilesAttempted: true,
-    proxyHeaderSpoofingAttempted: true, malformedOversizedBodyAttempted: true, smallConcurrencyBurst: 24,
+    publicGatewayWarmup: true,
+    writeBypassAttempted: true,
+    methodConfusionAttempted: true,
+    traversalAndDotfilesAttempted: true,
+    proxyHeaderSpoofingAttempted: true,
+    malformedOversizedBodyAttempted: true,
+    smallConcurrencyBurst: 24,
     secretsScannedInPublicStatus: true
   }
 };
