@@ -86,7 +86,8 @@ const requiredExternalGates = [
   "independent-consensus-cryptography-network-audit",
   "independent-operator-public-network-soak",
   "production-hsm-or-audited-signer-custody",
-  "immutable-mainnet-genesis-economics-and-oracle-governance"
+  "immutable-mainnet-genesis-economics-and-oracle-governance",
+  "independent-maintainer-security-release-custody-succession"
 ];
 for (const gate of requiredExternalGates) assert.ok(scope.externalGates.includes(gate), `Missing external gate: ${gate}`);
 
@@ -98,14 +99,15 @@ const paths = [...new Set([
   "l1/package-lock.json",
   "l1/scripts/archive-ci-evidence.mjs",
   "l1/scripts/build-external-audit-pack.mjs",
-  ".github/workflows/l1-audit-pack.yml"
+  "l1/scripts/verify-maintainer-succession.mjs",
+  ".github/workflows/l1-audit-pack.yml",
+  ".github/workflows/l1-succession-policy.yml"
 ])].sort();
 
 const files = [];
 for (const path of paths) {
-  if (!/^(l1\/|docs\/|\.github\/workflows\/)[A-Za-z0-9_./-]+$/.test(path) || path.includes("..")) {
-    throw new Error(`Unsafe audit path: ${path}`);
-  }
+  const allowed = path === "SECURITY.md" || /^(l1\/|docs\/|\.github\/workflows\/)[A-Za-z0-9_./-]+$/.test(path);
+  if (!allowed || path.includes("..")) throw new Error(`Unsafe audit path: ${path}`);
   const metadata = await stat(path);
   assert.ok(metadata.isFile(), `Audit path is not a regular file: ${path}`);
   const bytes = await readFile(path);
