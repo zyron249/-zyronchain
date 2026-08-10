@@ -1,0 +1,33 @@
+name: Standalone L1 Render Memory Soak CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  render-memory-soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+      - working-directory: l1
+        run: npm ci && npm run build
+      - name: Measure process-tree PSS through finalized height 6
+        run: |
+          set -o pipefail
+          node l1/scripts/render-memory-soak.mjs | tee "${RUNNER_TEMP}/render-memory-soak.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: l1-render-memory-soak-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/render-memory-soak.json
+          if-no-files-found: error
+          retention-days: 90
