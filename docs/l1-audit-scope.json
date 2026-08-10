@@ -14,7 +14,8 @@
     "validator-signer-anti-equivocation-and-key-rotation",
     "protocol-upgrade-and-rollback",
     "light-client-and-independent-verification",
-    "release-and-dependency-supply-chain"
+    "release-and-dependency-supply-chain",
+    "maintainer-security-succession-and-founder-exit"
   ],
   "criticalModules": [
     "l1/src/block.ts",
@@ -41,13 +42,16 @@
     "l1/src/validator-signer.ts"
   ],
   "securitySpecifications": [
+    "SECURITY.md",
     "docs/L1_THREAT_MODEL.md",
     "docs/CONSENSUS_CERTIFICATE_MODEL.md",
     "docs/L1_OPERATIONS_RUNBOOK.md",
     "docs/STANDALONE_L1_READINESS.md",
     "docs/L1_CI_EVIDENCE.md",
     "docs/L1_KEY_ROTATION_REHEARSAL.md",
-    "docs/L1_EXTERNAL_AUDIT_PACKAGE.md"
+    "docs/L1_EXTERNAL_AUDIT_PACKAGE.md",
+    "docs/L1_MAINTAINER_SUCCESSION.md",
+    "docs/l1-maintainer-succession.json"
   ],
   "independentVerification": [
     "l1/independent-light-client/verify_vector.py",
@@ -131,7 +135,8 @@
     "production-hsm-or-audited-signer-custody",
     "multi-region-disaster-recovery-and-key-rotation",
     "release-hardware-large-cardinality-state-measurements",
-    "immutable-mainnet-genesis-economics-and-oracle-governance"
+    "immutable-mainnet-genesis-economics-and-oracle-governance",
+    "independent-maintainer-security-release-custody-succession"
   ],
   "deliberatelyExcludedDecisions": [
     "mainnet-chain-id",

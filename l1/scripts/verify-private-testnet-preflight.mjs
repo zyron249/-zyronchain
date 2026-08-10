@@ -64,7 +64,8 @@ const requiredControls = new Set([
   "validator-key-rotation",
   "machine-readable-ci-evidence",
   "external-audit-handoff-prepared",
-  "operations-runbook-and-threat-model"
+  "operations-runbook-and-threat-model",
+  "founder-independent-security-and-succession-policy"
 ]);
 assert.deepEqual(new Set(config.requiredInternalControls), requiredControls, "Internal control inventory is stale");
 
@@ -75,7 +76,8 @@ const mandatoryExternalGates = [
   "independent-consensus-cryptography-network-audit-and-retest",
   "sustained-independent-operator-internet-adversarial-soak",
   "production-hsm-or-audited-signer-custody-and-cross-host-rotation",
-  "protected-branch-independent-review-repository-policy"
+  "protected-branch-independent-review-repository-policy",
+  "independent-maintainer-and-security-custody-succession-evidence"
 ];
 for (const gate of mandatoryExternalGates) {
   assert.ok(config.remainingExternalGates.includes(gate), `External gate was silently removed: ${gate}`);
@@ -94,11 +96,13 @@ assert.ok(config.architectureDecisionsNotImplicitlyChanged.includes("no-autonomo
 
 const filesToRead = [
   "README.md",
+  "SECURITY.md",
   "l1/package.json",
   ".github/workflows/l1.yml",
   ".github/workflows/l1-key-rotation.yml",
   ".github/workflows/l1-audit-pack.yml",
   ".github/workflows/l1-private-testnet-preflight.yml",
+  ".github/workflows/l1-succession-policy.yml",
   "docs/STANDALONE_L1_READINESS.md",
   "docs/L1_THREAT_MODEL.md",
   "docs/L1_OPERATIONS_RUNBOOK.md",
@@ -106,15 +110,18 @@ const filesToRead = [
   "docs/L1_KEY_ROTATION_REHEARSAL.md",
   "docs/L1_EXTERNAL_AUDIT_PACKAGE.md",
   "docs/L1_PRIVATE_TESTNET_PREFLIGHT.md",
+  "docs/L1_MAINTAINER_SUCCESSION.md",
   "docs/l1-audit-scope.json",
+  "docs/l1-maintainer-succession.json",
   configPath,
+  "l1/scripts/verify-maintainer-succession.mjs",
   "l1/scripts/verify-private-testnet-preflight.mjs"
 ];
 
 const contents = new Map();
 const files = [];
 for (const path of [...new Set(filesToRead)].sort()) {
-  const allowed = path === "README.md" || /^(l1\/|docs\/|\.github\/workflows\/)[A-Za-z0-9_./-]+$/.test(path);
+  const allowed = path === "README.md" || path === "SECURITY.md" || /^(l1\/|docs\/|\.github\/workflows\/)[A-Za-z0-9_./-]+$/.test(path);
   if (!allowed || path.includes("..")) throw new Error(`Unsafe preflight path: ${path}`);
   const metadata = await stat(path);
   assert.ok(metadata.isFile(), `Required preflight path is not a regular file: ${path}`);
@@ -128,6 +135,33 @@ requireText(rootReadme, "The **canonical consensus implementation** is the stand
 requireText(rootReadme, "No ZyronChain public testnet or value-bearing mainnet is authorized by this repository", "README");
 requireText(rootReadme, "private/adversarial-development network", "README");
 requireText(rootReadme, "legacy compatibility testnet", "README");
+requireText(rootReadme, "Security disclosure", "README");
+requireText(rootReadme, "Maintainer and security succession", "README");
+
+const securityPolicy = contents.get("SECURITY.md");
+requireText(securityPolicy, "without publishing exploit details", "SECURITY.md");
+requireText(securityPolicy, "must not need founder-only private context", "SECURITY.md");
+requireText(securityPolicy, "No personal mailbox or founder-only credential may be the sole security channel", "SECURITY.md");
+
+const successionPolicy = JSON.parse(contents.get("docs/l1-maintainer-succession.json"));
+assert.equal(successionPolicy.status, "prepared-requires-independent-custodians");
+assert.equal(successionPolicy.publicTestnetAuthorized, false);
+assert.equal(successionPolicy.mainnetAuthorized, false);
+assert.ok(Number.isSafeInteger(successionPolicy.minimumIndependentMaintainersBeforePublicTestnet));
+assert.ok(successionPolicy.minimumIndependentMaintainersBeforePublicTestnet >= 2);
+assert.equal(successionPolicy.uniqueFounderAuthorityForbidden, true);
+for (const gate of [
+  "two-independent-maintainers-or-custodians",
+  "protected-branch-review-policy-active",
+  "release-credentials-not-single-founder-controlled",
+  "security-reporting-channel-controlled-by-multiple-maintainers",
+  "domain-checkpoint-channel-succession-rehearsed"
+]) assert.ok(successionPolicy.externalEvidenceRequired?.includes(gate), `Succession external gate missing: ${gate}`);
+
+const successionDoc = contents.get("docs/L1_MAINTAINER_SUCCESSION.md");
+requireText(successionDoc, "at least two independent custodians", "maintainer succession documentation");
+requireText(successionDoc, "Repository maintainership is not validator voting power", "maintainer succession documentation");
+requireText(successionDoc, "Actual identities, credentials, domains and custody assignments", "maintainer succession documentation");
 
 const readiness = contents.get("docs/STANDALONE_L1_READINESS.md");
 requireText(readiness, "**Public testnet launch is currently blocked**", "readiness");
@@ -139,6 +173,7 @@ requireText(threatModel, "pre-public-testnet security specification", "threat mo
 requireText(threatModel, "A public testnet remains blocked until", "threat model");
 requireText(threatModel, "independent operators can deploy from release artifacts without founder assistance", "threat model");
 requireText(threatModel, "State-v2 scale and recovery limits are measured on target hardware", "threat model");
+requireText(threatModel, "source, domains, release credentials or security contact have no succession", "threat model");
 
 const packageJson = JSON.parse(contents.get("l1/package.json"));
 assert.equal(packageJson.name, "@zyronchain/l1");
@@ -157,6 +192,7 @@ for (const job of [
 requireText(contents.get(".github/workflows/l1-key-rotation.yml"), "validator-key-rotation-rehearsal:", "key-rotation CI");
 requireText(contents.get(".github/workflows/l1-audit-pack.yml"), "external-audit-pack:", "audit-pack CI");
 requireText(contents.get(".github/workflows/l1-private-testnet-preflight.yml"), "private-testnet-preflight:", "private-testnet preflight CI");
+requireText(contents.get(".github/workflows/l1-succession-policy.yml"), "maintainer-succession-policy:", "succession-policy CI");
 
 const evidenceDoc = contents.get("docs/L1_CI_EVIDENCE.md");
 for (const scenario of [

@@ -21,7 +21,8 @@ At minimum, an external review should independently analyze:
 7. RPC consensus authentication, signed-body preflight, exact trusted-proxy enforcement, concurrency/body/response resource budgets and malformed-input behavior;
 8. validator-set/protocol upgrade authorization, delayed activation, unsupported-version fail-stop and rollback semantics;
 9. independent light-client verification and validator-transition proof assumptions;
-10. release dependency/SBOM/provenance workflow and all production-operation assumptions described by the threat model/runbook.
+10. release dependency/SBOM/provenance workflow and all production-operation assumptions described by the threat model/runbook;
+11. security disclosure, maintainer/release/domain/checkpoint succession and founder-exit assumptions, including whether any unique personal credential or founder-only private context remains operationally necessary.
 
 ## Reproduction baseline
 
@@ -43,7 +44,7 @@ The exact Node.js policy comes from `l1/package.json`; project CI exercises the 
 
 - exact GitHub commit checked out by the job;
 - audit-scope SHA-256;
-- path, byte count and SHA-256 for each critical source/specification/verifier file;
+- path, byte count and SHA-256 for each critical source/specification/verifier file, including the public security/succession policy and its verifier;
 - L1 package name/version and Node engine policy;
 - invariant/evidence/external-gate inventory;
 - runtime SPDX SBOM;
@@ -61,7 +62,9 @@ Current CI archives machine-readable evidence for:
 - separate-process native P2P SIGKILL/recovery;
 - quorum-authorized validator signing-key replacement.
 
-These are regression evidence, not a substitute for an external audit or sustained independent-operator Internet testnet.
+A separate deterministic succession-policy artifact verifies that public founder-exit/security-response rules have not silently weakened. It does not prove that independent humans or organizations actually hold the required repository/release/security/domain capabilities.
+
+These are regression/policy evidence, not a substitute for an external audit or sustained independent-operator Internet testnet.
 
 ## Finding handling
 
@@ -76,6 +79,7 @@ This audit package deliberately does not choose or freeze:
 - production activity-oracle governance;
 - production HSM/signer provider and custody ceremony;
 - validator admission/decentralization policy;
+- real successor identities, private contact addresses, repository/release/domain credentials or custody assignments;
 - any redesign from the current PoA/BFT architecture to PoW/mining.
 
 Those require separate human/governance, operational or architectural decisions.
