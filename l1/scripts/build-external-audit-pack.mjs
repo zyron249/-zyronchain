@@ -78,18 +78,44 @@ const requiredEvidence = new Set([
   "disaster-recovery",
   "composite-adversarial-soak",
   "multiprocess-native-recovery",
-  "validator-key-rotation"
+  "validator-key-rotation",
+  "release-artifact-operator",
+  "independent-operator-challenge",
+  "state-v2-scale-100k",
+  "render-hosting-profile",
+  "launch-authorization"
 ]);
-assert.deepEqual(new Set(scope.evidenceScenarios), requiredEvidence, "High-risk CI evidence scenario inventory is stale");
+assert.deepEqual(new Set(scope.evidenceScenarios), requiredEvidence, "High-risk evidence scenario inventory is stale");
 
 const requiredExternalGates = [
   "independent-consensus-cryptography-network-audit",
   "independent-operator-public-network-soak",
   "production-hsm-or-audited-signer-custody",
   "immutable-mainnet-genesis-economics-and-oracle-governance",
-  "independent-maintainer-security-release-custody-succession"
+  "independent-maintainer-security-release-custody-succession",
+  "always-on-duration-soak-evidence"
 ];
 for (const gate of requiredExternalGates) assert.ok(scope.externalGates.includes(gate), `Missing external gate: ${gate}`);
+
+const requiredControlFiles = [
+  "l1/scripts/archive-ci-evidence.mjs",
+  "l1/scripts/build-external-audit-pack.mjs",
+  "l1/scripts/verify-maintainer-succession.mjs",
+  "l1/scripts/verify-private-testnet-preflight.mjs",
+  "l1/scripts/artifact-operator-rehearsal.mjs",
+  "l1/scripts/verify-independent-operator-evidence.mjs",
+  "l1/scripts/normalize-state-v2-scale-evidence.mjs",
+  "l1/scripts/verify-render-hosting-profile.mjs",
+  "l1/scripts/verify-launch-authorization.mjs",
+  ".github/workflows/l1-audit-pack.yml",
+  ".github/workflows/l1-succession-policy.yml",
+  ".github/workflows/l1-private-testnet-preflight.yml",
+  ".github/workflows/l1-artifact-operator.yml",
+  ".github/workflows/l1-independent-operator-challenge.yml",
+  ".github/workflows/l1-state-v2-scale.yml",
+  ".github/workflows/l1-render-hosting-profile.yml",
+  ".github/workflows/l1-launch-authorization.yml"
+];
 
 const paths = [...new Set([
   ...scope.criticalModules,
@@ -97,11 +123,7 @@ const paths = [...new Set([
   ...scope.independentVerification,
   "l1/package.json",
   "l1/package-lock.json",
-  "l1/scripts/archive-ci-evidence.mjs",
-  "l1/scripts/build-external-audit-pack.mjs",
-  "l1/scripts/verify-maintainer-succession.mjs",
-  ".github/workflows/l1-audit-pack.yml",
-  ".github/workflows/l1-succession-policy.yml"
+  ...requiredControlFiles
 ])].sort();
 
 const files = [];
