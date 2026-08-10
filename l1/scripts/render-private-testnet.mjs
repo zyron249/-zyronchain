@@ -14,6 +14,15 @@ const VALIDATOR_COUNT = 4;
 const DEFAULT_RPC_BASE_PORT = 9137;
 const TEST_ALLOCATION_ATOMS = 100_000_000;
 const GATEWAY_SUMMARY_CACHE_MS = 1_000;
+const GATEWAY_MAX_CONNECTIONS = 256;
+const GATEWAY_MAX_ACTIVE_REQUESTS = 64;
+const GATEWAY_MAX_HEADERS = 64;
+const GATEWAY_MAX_REQUESTS_PER_SOCKET = 100;
+const GATEWAY_HEADER_DEADLINE_MS = 5_000;
+const GATEWAY_HEADERS_TIMEOUT_MS = 5_000;
+const GATEWAY_REQUEST_TIMEOUT_MS = 10_000;
+const GATEWAY_KEEP_ALIVE_TIMEOUT_MS = 5_000;
+const GATEWAY_MAX_HEADER_BYTES = 16_384;
 const chainId = process.env.ZYRON_TESTNET_CHAIN_ID ?? "zyron-render-private-testnet-1";
 const smokeMode = process.argv.includes("--smoke");
 const l1Root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -78,6 +87,9 @@ for (const validator of validators) {
 const children = [];
 let shuttingDown = false;
 let fatalError;
+let activeGatewayRequests = 0;
+const headerDeadlineTimers = new WeakMap();
+const socketActiveRequests = new WeakMap();
 
 function pipeLines(stream, label, errorStream = false) {
   let buffered = "";
@@ -220,7 +232,68 @@ function safeOriginForm(rawUrl) {
   return rawUrl.startsWith("/") && !rawUrl.startsWith("//") && !rawUrl.includes("\\") && !/[\u0000-\u001f\u007f]/.test(rawUrl);
 }
 
-const gateway = createServer(async (request, response) => {
+function clearHeaderDeadline(socket) {
+  const timer = headerDeadlineTimers.get(socket);
+  if (timer) clearTimeout(timer);
+  headerDeadlineTimers.delete(socket);
+}
+
+function armHeaderDeadline(socket) {
+  clearHeaderDeadline(socket);
+  if (socket.destroyed) return;
+  const timer = setTimeout(() => {
+    headerDeadlineTimers.delete(socket);
+    socket.destroy();
+  }, GATEWAY_HEADER_DEADLINE_MS);
+  timer.unref();
+  headerDeadlineTimers.set(socket, timer);
+}
+
+function trackRequestLifetime(request, response) {
+  const socket = request.socket;
+  clearHeaderDeadline(socket);
+  socketActiveRequests.set(socket, (socketActiveRequests.get(socket) ?? 0) + 1);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    const remaining = Math.max(0, (socketActiveRequests.get(socket) ?? 1) - 1);
+    if (remaining === 0) {
+      socketActiveRequests.delete(socket);
+      armHeaderDeadline(socket);
+    } else {
+      socketActiveRequests.set(socket, remaining);
+    }
+  };
+  response.once("finish", release);
+  response.once("close", release);
+}
+
+function enterGatewayRequest(response) {
+  if (activeGatewayRequests >= GATEWAY_MAX_ACTIVE_REQUESTS) {
+    sendJson(response, 503, { error: "gateway concurrency limit exceeded" });
+    return false;
+  }
+  activeGatewayRequests += 1;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    activeGatewayRequests -= 1;
+  };
+  response.once("finish", release);
+  response.once("close", release);
+  return true;
+}
+
+const gateway = createServer({
+  maxHeaderSize: GATEWAY_MAX_HEADER_BYTES,
+  headersTimeout: GATEWAY_HEADERS_TIMEOUT_MS,
+  requestTimeout: GATEWAY_REQUEST_TIMEOUT_MS,
+  keepAliveTimeout: GATEWAY_KEEP_ALIVE_TIMEOUT_MS
+}, async (request, response) => {
+  trackRequestLifetime(request, response);
+  if (!enterGatewayRequest(response)) return;
   try {
     if (request.method !== "GET") return sendJson(response, 405, { error: "read-only testnet gateway" });
     const rawUrl = request.url ?? "/";
@@ -244,6 +317,16 @@ const gateway = createServer(async (request, response) => {
   } catch (error) {
     return sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
   }
+});
+gateway.maxConnections = GATEWAY_MAX_CONNECTIONS;
+gateway.maxHeadersCount = GATEWAY_MAX_HEADERS;
+gateway.maxRequestsPerSocket = GATEWAY_MAX_REQUESTS_PER_SOCKET;
+gateway.on("connection", (socket) => {
+  armHeaderDeadline(socket);
+  socket.once("close", () => {
+    clearHeaderDeadline(socket);
+    socketActiveRequests.delete(socket);
+  });
 });
 
 async function stopChild(child) {
@@ -277,6 +360,7 @@ assert.ok(address && typeof address === "object");
 console.log(`ZyronChain private testnet gateway listening on 0.0.0.0:${address.port}`);
 console.log(`Chain ID ${chainId}; genesis ${validatedGenesis.genesisHash}; validators ${VALIDATOR_COUNT}; value-bearing=false`);
 console.log("Validator RPC is loopback-only; public gateway accepts read-only GET status endpoints only.");
+console.log(`Gateway socket budgets: maxConnections=${GATEWAY_MAX_CONNECTIONS}, maxActiveRequests=${GATEWAY_MAX_ACTIVE_REQUESTS}, maxHeaders=${GATEWAY_MAX_HEADERS}, maxRequestsPerSocket=${GATEWAY_MAX_REQUESTS_PER_SOCKET}, headerDeadlineMs=${GATEWAY_HEADER_DEADLINE_MS}, headersTimeoutMs=${GATEWAY_HEADERS_TIMEOUT_MS}, requestTimeoutMs=${GATEWAY_REQUEST_TIMEOUT_MS}, keepAliveTimeoutMs=${GATEWAY_KEEP_ALIVE_TIMEOUT_MS}, maxHeaderBytes=${GATEWAY_MAX_HEADER_BYTES}`);
 
 process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
 process.once("SIGINT", () => { void shutdown("SIGINT"); });
@@ -319,7 +403,16 @@ if (smokeMode) {
     gatewayHardening: {
       internalRpcHidden: true,
       doubleSlashRejected: true,
-      coalescedBurstRequests: 24
+      coalescedBurstRequests: 24,
+      maxConnections: GATEWAY_MAX_CONNECTIONS,
+      maxActiveRequests: GATEWAY_MAX_ACTIVE_REQUESTS,
+      maxHeaders: GATEWAY_MAX_HEADERS,
+      maxRequestsPerSocket: GATEWAY_MAX_REQUESTS_PER_SOCKET,
+      headerDeadlineMs: GATEWAY_HEADER_DEADLINE_MS,
+      headersTimeoutMs: GATEWAY_HEADERS_TIMEOUT_MS,
+      requestTimeoutMs: GATEWAY_REQUEST_TIMEOUT_MS,
+      keepAliveTimeoutMs: GATEWAY_KEEP_ALIVE_TIMEOUT_MS,
+      maxHeaderBytes: GATEWAY_MAX_HEADER_BYTES
     }
   }, null, 2));
   await shutdown("smoke-complete");
