@@ -46,6 +46,32 @@ jobs:
       - name: Audit runtime dependencies
         run: npm audit --omit=dev --audit-level=high
 
+  mixed-version-rehearsal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Checkout fixed pre-v3 binary source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: 35349589c12a0882d7c2c034cfee520ea9efb3bb
+          path: historical-pre-v3
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Build current binary
+        working-directory: l1
+        run: npm ci && npm run build
+      - name: Build historical pre-v3 binary
+        working-directory: historical-pre-v3/l1
+        run: npm ci && npm run build
+      - name: Rehearse mixed-version activation and rollback
+        env:
+          ZYRON_OLD_L1_DIST: ${{ github.workspace }}/historical-pre-v3/l1/dist
+        run: node l1/scripts/mixed-version-rehearsal.mjs
+
   independent-light-client:
     runs-on: ubuntu-latest
     defaults:
