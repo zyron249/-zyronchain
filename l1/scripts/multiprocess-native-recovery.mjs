@@ -108,8 +108,9 @@ async function stopNode(processInfo, signal = "SIGTERM") {
 
 async function fetchJson(port, path) {
   const response = await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(5_000) });
-  assert.equal(response.ok, true, `${path} returned HTTP ${response.status}: ${await response.text()}`);
-  return response.json();
+  const body = await response.text();
+  assert.equal(response.ok, true, `${path} returned HTTP ${response.status}: ${body}`);
+  return JSON.parse(body);
 }
 
 async function waitForHeight(port, expected, timeoutMs = 25_000) {
@@ -137,11 +138,12 @@ async function postFinalizedBlock(port, block) {
     body: JSON.stringify(block),
     signal: AbortSignal.timeout(5_000)
   });
-  if (!response.ok) throw new Error(`Finalized block ${block.header.height} rejected: HTTP ${response.status} ${await response.text()}`);
+  const body = await response.text();
+  if (!response.ok) throw new Error(`Finalized block ${block.header.height} rejected: HTTP ${response.status} ${body}`);
 }
 
 async function postMalformedBlock(port) {
-  return fetch(`http://127.0.0.1:${port}/block`, {
+  const response = await fetch(`http://127.0.0.1:${port}/block`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -150,6 +152,8 @@ async function postMalformedBlock(port) {
     body: '{"truncated":',
     signal: AbortSignal.timeout(5_000)
   });
+  const body = await response.text();
+  return { ok: response.ok, status: response.status, body };
 }
 
 function finalizedBlock(chain, height) {
@@ -248,7 +252,8 @@ try {
     body: JSON.stringify(history[19]),
     signal: AbortSignal.timeout(5_000)
   });
-  assert.equal(replay.ok, false, "Finalized replay unexpectedly succeeded over RPC");
+  const replayBody = await replay.text();
+  assert.equal(replay.ok, false, `Finalized replay unexpectedly succeeded over RPC: ${replayBody}`);
   assert.equal((await fetchJson(seedRpc, "/status")).height, 20, "Replay changed finalized height");
 
   const restartedB = startNode("replica-b-restarted", [
