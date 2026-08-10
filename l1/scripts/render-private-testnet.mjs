@@ -13,6 +13,7 @@ import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "
 const VALIDATOR_COUNT = 4;
 const DEFAULT_RPC_BASE_PORT = 9137;
 const TEST_ALLOCATION_ATOMS = 100_000_000;
+const GATEWAY_SUMMARY_CACHE_MS = 1_000;
 const chainId = process.env.ZYRON_TESTNET_CHAIN_ID ?? "zyron-render-private-testnet-1";
 const smokeMode = process.argv.includes("--smoke");
 const l1Root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -63,7 +64,6 @@ const genesis = {
   ]
 };
 
-// Canonical constructor validates validator keys, addresses, allocation bounds and supply invariants.
 const validatedGenesis = new ZyronChain(genesis);
 const genesisPath = join(root, "genesis.json");
 await writeFile(genesisPath, `${JSON.stringify(genesis, null, 2)}\n`, { mode: 0o644 });
@@ -181,6 +181,30 @@ async function testnetSummary() {
   };
 }
 
+function publicSummary(summary) {
+  return {
+    ...summary,
+    nodes: summary.nodes.map(({ rpc: _rpc, ...node }) => node)
+  };
+}
+
+let cachedSummary;
+let cachedSummaryExpiresAt = 0;
+let summaryInFlight;
+async function cachedPublicSummary() {
+  const now = Date.now();
+  if (cachedSummary && now < cachedSummaryExpiresAt) return cachedSummary;
+  if (summaryInFlight) return summaryInFlight;
+  summaryInFlight = testnetSummary()
+    .then((summary) => {
+      cachedSummary = publicSummary(summary);
+      cachedSummaryExpiresAt = Date.now() + GATEWAY_SUMMARY_CACHE_MS;
+      return cachedSummary;
+    })
+    .finally(() => { summaryInFlight = undefined; });
+  return summaryInFlight;
+}
+
 function sendJson(response, statusCode, body) {
   const payload = `${JSON.stringify(body, null, 2)}\n`;
   response.writeHead(statusCode, {
@@ -192,16 +216,23 @@ function sendJson(response, statusCode, body) {
   response.end(payload);
 }
 
+function safeOriginForm(rawUrl) {
+  return rawUrl.startsWith("/") && !rawUrl.startsWith("//") && !rawUrl.includes("\\") && !/[\u0000-\u001f\u007f]/.test(rawUrl);
+}
+
 const gateway = createServer(async (request, response) => {
   try {
     if (request.method !== "GET") return sendJson(response, 405, { error: "read-only testnet gateway" });
-    const url = new URL(request.url ?? "/", "http://localhost");
+    const rawUrl = request.url ?? "/";
+    if (!safeOriginForm(rawUrl)) return sendJson(response, 400, { error: "invalid request target" });
+    const url = new URL(rawUrl, "http://localhost");
+    if (url.origin !== "http://localhost") return sendJson(response, 400, { error: "invalid request target" });
     if (url.pathname === "/healthz") {
       const alive = children.length === VALIDATOR_COUNT && children.every((child) => child.exitCode === null && child.signalCode === null);
       return sendJson(response, alive ? 200 : 503, { alive, validatorProcesses: children.length });
     }
     if (url.pathname === "/" || url.pathname === "/status" || url.pathname === "/readyz") {
-      const summary = await testnetSummary();
+      const summary = await cachedPublicSummary();
       if (url.pathname === "/readyz") {
         const readyCount = summary.nodes.filter((node) => node.ready).length;
         const ready = readyCount >= 3 && summary.sameGenesis && summary.maxHeight >= 1;
@@ -262,6 +293,18 @@ if (smokeMode) {
   assert.ok(latest?.converged, `Smoke test did not converge: ${JSON.stringify(latest)}`);
   assert.ok(latest.minHeight >= 2, `Smoke test did not finalize two blocks: ${JSON.stringify(latest)}`);
   assert.ok(latest.nodes.every((node) => node.ready), `Smoke test had unready validators: ${JSON.stringify(latest)}`);
+
+  const localBase = `http://127.0.0.1:${address.port}`;
+  const statusResponse = await fetch(`${localBase}/status`);
+  assert.equal(statusResponse.status, 200, "public status gateway should be available in smoke mode");
+  const statusText = await statusResponse.text();
+  assert.equal(statusText.includes("127.0.0.1:"), false, "public status must not disclose loopback validator RPC addresses");
+  const confusedTarget = await fetch(`${localBase}//status`, { redirect: "manual" });
+  assert.equal(confusedTarget.status, 400, "double-slash request target must fail closed");
+  const burst = await Promise.all(Array.from({ length: 24 }, () => fetch(`${localBase}/status`)));
+  assert.equal(burst.filter((response) => response.status !== 200).length, 0, "coalesced status burst must remain available");
+  await Promise.all(burst.map((response) => response.body?.cancel().catch(() => undefined)));
+
   console.log(JSON.stringify({
     status: "ok",
     mode: latest.mode,
@@ -272,7 +315,12 @@ if (smokeMode) {
     converged: latest.converged,
     publicTestnetAuthorized: latest.publicTestnetAuthorized,
     mainnetAuthorized: latest.mainnetAuthorized,
-    valueBearing: latest.valueBearing
+    valueBearing: latest.valueBearing,
+    gatewayHardening: {
+      internalRpcHidden: true,
+      doubleSlashRejected: true,
+      coalescedBurstRequests: 24
+    }
   }, null, 2));
   await shutdown("smoke-complete");
 }
