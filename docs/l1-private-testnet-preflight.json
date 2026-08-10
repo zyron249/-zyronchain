@@ -1,0 +1,42 @@
+{
+  "preflightVersion": 1,
+  "status": "internal-private-adversarial-preflight",
+  "canonicalImplementation": "l1/",
+  "publicTestnetAuthorized": false,
+  "mainnetAuthorized": false,
+  "requiredInternalControls": [
+    "canonical-l1-and-legacy-separation",
+    "public-launch-explicitly-blocked",
+    "node-22-and-24-ci",
+    "independent-light-client-verification",
+    "composite-adversarial-soak",
+    "multiprocess-native-p2p-crash-recovery",
+    "mixed-version-upgrade-rollback",
+    "disaster-recovery-restore-catchup-restart",
+    "validator-key-rotation",
+    "machine-readable-ci-evidence",
+    "external-audit-handoff-prepared",
+    "operations-runbook-and-threat-model"
+  ],
+  "remainingExternalGates": [
+    "independent-operators-deploy-from-release-artifacts-without-founder-assistance",
+    "bootstrap-archive-monitoring-across-independent-failure-domains",
+    "target-hardware-state-v2-scale-and-recovery-measurements",
+    "independent-consensus-cryptography-network-audit-and-retest",
+    "sustained-independent-operator-internet-adversarial-soak",
+    "production-hsm-or-audited-signer-custody-and-cross-host-rotation",
+    "multi-region-disaster-recovery-and-incident-drills",
+    "protected-branch-independent-review-repository-policy"
+  ],
+  "mainnetOnlyUnresolvedDecisions": [
+    "immutable-mainnet-chain-id",
+    "immutable-mainnet-genesis-allocation",
+    "validator-reward-inflation-and-fee-policy",
+    "activity-oracle-production-governance",
+    "validator-admission-removal-governance"
+  ],
+  "architectureDecisionsNotImplicitlyChanged": [
+    "current-permissioned-poa-bft-consensus",
+    "no-autonomous-pow-mining-redesign"
+  ]
+}
