@@ -1,0 +1,32 @@
+name: One-Shot Live Render Surface Probe
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  live-render-surface-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ZYRON_LIVE_TESTNET_URL: https://zyronchain-private-testnet.onrender.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+      - name: Probe external ports and parser boundaries
+        run: |
+          set -o pipefail
+          node l1/scripts/live-render-surface-probe.mjs | tee "${RUNNER_TEMP}/live-render-surface-probe.log"
+      - name: Upload one-shot surface evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-live-render-surface-probe-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/live-render-surface-probe.log
+          if-no-files-found: error
+          retention-days: 30
