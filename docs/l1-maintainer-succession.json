@@ -1,0 +1,28 @@
+{
+  "policyVersion": 1,
+  "status": "prepared-requires-independent-custodians",
+  "publicTestnetAuthorized": false,
+  "mainnetAuthorized": false,
+  "minimumIndependentMaintainersBeforePublicTestnet": 2,
+  "uniqueFounderAuthorityForbidden": true,
+  "requiredContinuityDomains": [
+    "repository-administration",
+    "release-and-tagging",
+    "security-response",
+    "domain-and-checkpoint-publication",
+    "operator-documentation"
+  ],
+  "requiredPublicArtifacts": [
+    "SECURITY.md",
+    "docs/L1_MAINTAINER_SUCCESSION.md",
+    "docs/L1_THREAT_MODEL.md",
+    "docs/STANDALONE_L1_READINESS.md"
+  ],
+  "externalEvidenceRequired": [
+    "two-independent-maintainers-or-custodians",
+    "protected-branch-review-policy-active",
+    "release-credentials-not-single-founder-controlled",
+    "security-reporting-channel-controlled-by-multiple-maintainers",
+    "domain-checkpoint-channel-succession-rehearsed"
+  ]
+}
