@@ -1,0 +1,39 @@
+name: Standalone L1 Render Clock Fail-Stop Supervisor CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  render-clock-supervisor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+      - working-directory: l1
+        run: npm ci && npm run build
+      - name: Rehearse fail-closed clock-fault detection
+        run: |
+          set -o pipefail
+          node l1/scripts/render-clock-supervisor-rehearsal.mjs | tee "${RUNNER_TEMP}/render-clock-supervisor.json"
+      - name: Rehearse supervised canonical launcher smoke
+        run: |
+          set -o pipefail
+          node l1/scripts/render-clock-failstop-supervisor.mjs --smoke | tee "${RUNNER_TEMP}/render-clock-supervisor-smoke.log"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: l1-render-clock-supervisor-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/render-clock-supervisor.json
+            ${{ runner.temp }}/render-clock-supervisor-smoke.log
+          if-no-files-found: error
+          retention-days: 90
