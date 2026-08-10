@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const l1Root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const launcherPath = resolve(l1Root, "scripts/render-private-testnet.mjs");
+const launcherPath = resolve(l1Root, "scripts/render-private-testnet-base.mjs");
 const pollIntervalMs = 2_000;
 const readyTimeoutMs = 1_500;
 const childStopTimeoutMs = 8_000;
