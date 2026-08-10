@@ -11,14 +11,14 @@ const launcher = resolve(repoRoot, "l1/scripts/render-private-testnet.mjs");
 const warmupHeight = Number(process.env.ZYRON_MEMORY_SOAK_WARMUP_HEIGHT ?? 2);
 const targetHeight = Number(process.env.ZYRON_MEMORY_SOAK_TARGET_HEIGHT ?? 6);
 const sampleIntervalMs = Number(process.env.ZYRON_MEMORY_SOAK_SAMPLE_INTERVAL_MS ?? 5_000);
-const maxTotalRssBytes = Number(process.env.ZYRON_MEMORY_SOAK_MAX_TOTAL_RSS_BYTES ?? 440 * 1024 * 1024);
+const maxTotalPssBytes = Number(process.env.ZYRON_MEMORY_SOAK_MAX_TOTAL_PSS_BYTES ?? 440 * 1024 * 1024);
 const maxPostWarmupGrowthBytes = Number(process.env.ZYRON_MEMORY_SOAK_MAX_GROWTH_BYTES ?? 96 * 1024 * 1024);
 
 for (const [value, label] of [
   [warmupHeight, "warmup height"],
   [targetHeight, "target height"],
   [sampleIntervalMs, "sample interval"],
-  [maxTotalRssBytes, "max total RSS"],
+  [maxTotalPssBytes, "max total PSS"],
   [maxPostWarmupGrowthBytes, "max growth"]
 ]) {
   assert.ok(Number.isSafeInteger(value) && value > 0, `Invalid ${label}`);
@@ -47,11 +47,19 @@ async function fetchJson(url, timeoutMs = 3_000) {
   return { status: response.status, body, text };
 }
 
-async function readRssBytes(pid) {
-  const status = await readFile(`/proc/${pid}/status`, "utf8");
-  const match = status.match(/^VmRSS:\s+(\d+)\s+kB$/m);
-  if (!match) throw new Error(`VmRSS is unavailable for pid ${pid}`);
-  return Number(match[1]) * 1024;
+async function readProcessMemory(pid) {
+  const [status, rollup] = await Promise.all([
+    readFile(`/proc/${pid}/status`, "utf8"),
+    readFile(`/proc/${pid}/smaps_rollup`, "utf8")
+  ]);
+  const rss = status.match(/^VmRSS:\s+(\d+)\s+kB$/m);
+  const pss = rollup.match(/^Pss:\s+(\d+)\s+kB$/m);
+  if (!rss) throw new Error(`VmRSS is unavailable for pid ${pid}`);
+  if (!pss) throw new Error(`Pss is unavailable for pid ${pid}`);
+  return {
+    rssBytes: Number(rss[1]) * 1024,
+    pssBytes: Number(pss[1]) * 1024
+  };
 }
 
 async function directChildren(pid) {
@@ -66,16 +74,18 @@ async function processMemorySnapshot(launcherPid) {
   if (children.length !== 4) {
     throw new Error(`Expected four validator child processes, found ${children.length}: ${children.join(",")}`);
   }
-  const gatewayRssBytes = await readRssBytes(launcherPid);
+  const gatewayMemory = await readProcessMemory(launcherPid);
   const validators = [];
   for (const pid of [...children].sort((a, b) => a - b)) {
-    validators.push({ pid, rssBytes: await readRssBytes(pid) });
+    validators.push({ pid, ...await readProcessMemory(pid) });
   }
   return {
     gatewayPid: launcherPid,
-    gatewayRssBytes,
+    gatewayRssBytes: gatewayMemory.rssBytes,
+    gatewayPssBytes: gatewayMemory.pssBytes,
     validators,
-    totalRssBytes: gatewayRssBytes + validators.reduce((sum, item) => sum + item.rssBytes, 0)
+    totalRssBytes: gatewayMemory.rssBytes + validators.reduce((sum, item) => sum + item.rssBytes, 0),
+    totalPssBytes: gatewayMemory.pssBytes + validators.reduce((sum, item) => sum + item.pssBytes, 0)
   };
 }
 
@@ -171,30 +181,37 @@ try {
   assert.ok(postWarmup.length >= 3, `Insufficient post-warmup memory samples: ${postWarmup.length}`);
   const first = postWarmup[0];
   const last = postWarmup.at(-1);
-  const peak = Math.max(...postWarmup.map((sample) => sample.totalRssBytes));
-  const growth = last.totalRssBytes - first.totalRssBytes;
+  const peakPss = Math.max(...postWarmup.map((sample) => sample.totalPssBytes));
+  const peakRss = Math.max(...postWarmup.map((sample) => sample.totalRssBytes));
+  const pssGrowth = last.totalPssBytes - first.totalPssBytes;
+  const rssGrowth = last.totalRssBytes - first.totalRssBytes;
 
   assert.ok(
-    peak <= maxTotalRssBytes,
-    `Four-validator process RSS exceeded headroom budget: peak=${peak} limit=${maxTotalRssBytes}`
+    peakPss <= maxTotalPssBytes,
+    `Four-validator proportional memory exceeded headroom budget: peakPss=${peakPss} limit=${maxTotalPssBytes}`
   );
   assert.ok(
-    growth <= maxPostWarmupGrowthBytes,
-    `Post-warmup RSS growth exceeded budget: growth=${growth} limit=${maxPostWarmupGrowthBytes}`
+    pssGrowth <= maxPostWarmupGrowthBytes,
+    `Post-warmup PSS growth exceeded budget: growth=${pssGrowth} limit=${maxPostWarmupGrowthBytes}`
   );
 
   console.log(JSON.stringify({
     status: "ok",
     scenario: "render-four-validator-memory-soak",
+    measurement: "linux-proc-pss-with-rss-diagnostics",
     warmupHeight,
     targetHeight,
     sampleCount: samples.length,
     postWarmupSampleCount: postWarmup.length,
+    firstPostWarmupTotalPssBytes: first.totalPssBytes,
+    finalTotalPssBytes: last.totalPssBytes,
+    peakPostWarmupTotalPssBytes: peakPss,
+    postWarmupPssGrowthBytes: pssGrowth,
     firstPostWarmupTotalRssBytes: first.totalRssBytes,
     finalTotalRssBytes: last.totalRssBytes,
-    peakPostWarmupTotalRssBytes: peak,
-    postWarmupGrowthBytes: growth,
-    maxTotalRssBytes,
+    peakPostWarmupTotalRssBytes: peakRss,
+    postWarmupRssGrowthBytes: rssGrowth,
+    maxTotalPssBytes,
     maxPostWarmupGrowthBytes,
     finalHeight: finalStatus.minHeight,
     validatorsAlive: finalStatus.nodes.every((node) => node.processAlive),
@@ -202,7 +219,7 @@ try {
     publicTestnetAuthorized: false,
     mainnetAuthorized: false,
     valueBearing: false,
-    note: "Summed per-process RSS is a conservative process-level regression metric and may double-count shared pages."
+    note: "PSS apportions shared pages and is the capacity gate; summed RSS is retained only as a conservative per-process diagnostic because it double-counts shared pages."
   }, null, 2));
 } finally {
   await stop();
