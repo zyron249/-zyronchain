@@ -1,0 +1,38 @@
+name: Standalone L1 Launch Authorization CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  launch-authorization:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+      - name: Verify governance authorization and activation gates
+        run: |
+          evidence="${RUNNER_TEMP}/zyron-launch-authorization"
+          mkdir -p "$evidence"
+          node l1/scripts/verify-launch-authorization.mjs \
+            --policy docs/l1-launch-authorization.json \
+            --out "$evidence/result.json"
+          sha256sum docs/l1-launch-authorization.json "$evidence/result.json" > "$evidence/SHA256SUMS"
+          cat "$evidence/result.json"
+      - name: Upload launch authorization evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-launch-authorization-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/zyron-launch-authorization/result.json
+            ${{ runner.temp }}/zyron-launch-authorization/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
