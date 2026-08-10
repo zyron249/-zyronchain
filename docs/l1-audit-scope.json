@@ -19,6 +19,7 @@
     "release-artifact-operator-reproducibility",
     "independent-operator-challenge-and-evidence-boundary",
     "state-v2-scale-regression-and-hosting-evidence",
+    "hosted-duration-soak-evidence",
     "launch-authorization-and-activation-gates"
   ],
   "criticalModules": [
@@ -63,6 +64,8 @@
     "docs/STATE_V2_SCALE_EVIDENCE.md",
     "docs/RENDER_PRIVATE_TESTNET.md",
     "docs/l1-render-hosting-profile.json",
+    "docs/HOSTED_DURATION_SOAK_EVIDENCE.md",
+    "docs/l1-hosted-duration-soak-policy.json",
     "docs/L1_LAUNCH_AUTHORIZATION.md",
     "docs/l1-launch-authorization.json"
   ],
@@ -145,6 +148,7 @@
     "independent-operator-challenge",
     "state-v2-scale-100k",
     "render-hosting-profile",
+    "hosted-duration-soak-evidence",
     "launch-authorization"
   ],
   "externalGates": [
