@@ -1,0 +1,47 @@
+name: Standalone L1 Key Rotation CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validator-key-rotation-rehearsal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+      - name: Install locked dependencies
+        working-directory: l1
+        run: npm ci
+      - name: Build current binary
+        working-directory: l1
+        run: npm run build
+      - name: Rehearse quorum-authorized validator key rotation
+        run: |
+          evidence="${RUNNER_TEMP}/zyron-evidence"
+          mkdir -p "$evidence"
+          node l1/scripts/validator-key-rotation-rehearsal.mjs > "$evidence/result.json"
+          node l1/scripts/archive-ci-evidence.mjs --scenario validator-key-rotation --result "$evidence/result.json" --out "$evidence/evidence.json"
+          cd "$evidence"
+          sha256sum evidence.json > SHA256SUMS
+          cat evidence.json
+      - name: Upload validator key rotation evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-evidence-validator-key-rotation-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/zyron-evidence/evidence.json
+            ${{ runner.temp }}/zyron-evidence/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
