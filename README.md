@@ -10,7 +10,7 @@ The **canonical consensus implementation** is the standalone TypeScript L1 in [`
 
 Authorization is not the same as activation or certification. The authorization policy currently records `publicTestnetAuthorized=true` and `mainnetAuthorized=true`, while keeping `publicTestnetActivationAllowed=false` and `mainnetActivationAllowed=false` until the corresponding readiness evidence is independently closed.
 
-The existing Render Free/private-adversarial profile remains smoke-only and non-value-bearing. It is not automatically promoted into the canonical public testnet or mainnet by this authorization.
+The currently deployed internal profile remains a **private/adversarial-development network**. The existing Render Free/private-adversarial profile remains smoke-only and non-value-bearing; it is not automatically promoted into the canonical public testnet or mainnet by this authorization.
 
 Historical policy note: the former repository statement `No ZyronChain public testnet or value-bearing mainnet is authorized by this repository` is obsolete and retained here only so older audit/preflight tooling can detect the policy transition explicitly rather than silently losing the previous safety language.
 
