@@ -21,7 +21,11 @@ jobs:
           cache-dependency-path: l1/package-lock.json
       - working-directory: l1
         run: npm ci && npm run build
-      - name: Rehearse fail-closed clock-fault detection
+      - name: Rehearse same-process clock-fault monitor
+        run: |
+          set -o pipefail
+          node l1/scripts/render-inline-clock-monitor-rehearsal.mjs | tee "${RUNNER_TEMP}/render-inline-clock-monitor.json"
+      - name: Rehearse fail-closed standalone supervisor
         run: |
           set -o pipefail
           node l1/scripts/render-clock-supervisor-rehearsal.mjs | tee "${RUNNER_TEMP}/render-clock-supervisor.json"
@@ -33,6 +37,7 @@ jobs:
         with:
           name: l1-render-clock-supervisor-${{ github.sha }}-${{ github.run_attempt }}
           path: |
+            ${{ runner.temp }}/render-inline-clock-monitor.json
             ${{ runner.temp }}/render-clock-supervisor.json
             ${{ runner.temp }}/render-clock-supervisor-smoke.log
           if-no-files-found: error
