@@ -11,7 +11,7 @@ permissions:
 jobs:
   render-clock-supervisor:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
@@ -28,12 +28,17 @@ jobs:
       - name: Rehearse supervised canonical launcher smoke
         run: |
           set -o pipefail
-          node l1/scripts/render-clock-failstop-supervisor.mjs --smoke | tee "${RUNNER_TEMP}/render-clock-supervisor-smoke.log"
+          PORT=10000 node l1/scripts/render-clock-failstop-supervisor.mjs --smoke | tee "${RUNNER_TEMP}/render-clock-supervisor-smoke.log"
+      - name: Rehearse same-data supervised restart and resumed finality
+        run: |
+          set -o pipefail
+          PORT=10001 node l1/scripts/render-clock-failstop-supervisor.mjs --test-recovery-once | tee "${RUNNER_TEMP}/render-clock-supervisor-recovery.log"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: l1-render-clock-supervisor-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/render-clock-supervisor.json
             ${{ runner.temp }}/render-clock-supervisor-smoke.log
+            ${{ runner.temp }}/render-clock-supervisor-recovery.log
           if-no-files-found: error
           retention-days: 90
