@@ -113,9 +113,8 @@ const filesToRead = [
 const contents = new Map();
 const files = [];
 for (const path of [...new Set(filesToRead)].sort()) {
-  if (!/^(README\.md|l1\/|docs\/|\.github\/workflows\/)[A-Za-z0-9_./-]+$/.test(path) || path.includes("..")) {
-    throw new Error(`Unsafe preflight path: ${path}`);
-  }
+  const allowed = path === "README.md" || /^(l1\/|docs\/|\.github\/workflows\/)[A-Za-z0-9_./-]+$/.test(path);
+  if (!allowed || path.includes("..")) throw new Error(`Unsafe preflight path: ${path}`);
   const metadata = await stat(path);
   assert.ok(metadata.isFile(), `Required preflight path is not a regular file: ${path}`);
   const bytes = await readFile(path);
