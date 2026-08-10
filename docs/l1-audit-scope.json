@@ -26,6 +26,7 @@
     "l1/src/mempool.ts",
     "l1/src/merkle.ts",
     "l1/src/node.ts",
+    "l1/src/node-base.ts",
     "l1/src/p2p.ts",
     "l1/src/p2p-checkpoint.ts",
     "l1/src/p2p-consensus.ts",
@@ -62,12 +63,12 @@
     {
       "id": "CONS-002",
       "statement": "A non-zero consensus round requires sequential predecessor skip-quorum evidence; rounds cannot be jumped without certified evidence.",
-      "primaryModules": ["l1/src/block.ts", "l1/src/node.ts"]
+      "primaryModules": ["l1/src/block.ts", "l1/src/node.ts", "l1/src/node-base.ts"]
     },
     {
       "id": "SIGN-001",
       "statement": "Validator signing reserves durable anti-equivocation state before local or remote signing output is requested.",
-      "primaryModules": ["l1/src/storage.ts", "l1/src/node.ts", "l1/src/validator-signer.ts"]
+      "primaryModules": ["l1/src/storage.ts", "l1/src/node.ts", "l1/src/node-base.ts", "l1/src/validator-signer.ts"]
     },
     {
       "id": "CHAIN-001",
@@ -97,7 +98,7 @@
     {
       "id": "RPC-001",
       "statement": "Non-loopback RPC is fail-closed unless consensus authentication and an exact HTTPS-enforcing trusted proxy are configured.",
-      "primaryModules": ["l1/src/node.ts", "l1/src/cli.ts"]
+      "primaryModules": ["l1/src/node.ts", "l1/src/node-base.ts", "l1/src/cli.ts"]
     },
     {
       "id": "GOV-001",
