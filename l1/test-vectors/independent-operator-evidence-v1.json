@@ -1,0 +1,33 @@
+{
+  "evidenceVersion": 1,
+  "evidenceMode": "synthetic-test-vector",
+  "operatorPseudonymHash": "1111111111111111111111111111111111111111111111111111111111111111",
+  "testedCommitSha": "2222222222222222222222222222222222222222",
+  "releaseArtifactSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+  "releaseChecksumsVerified": true,
+  "sbomVerified": true,
+  "provenanceVerified": true,
+  "sourceCheckoutUsed": false,
+  "founderPrivateAssistanceUsed": false,
+  "keysGeneratedLocally": true,
+  "privateKeysDisclosed": false,
+  "chainId": "zyron-operator-challenge-test",
+  "genesisHash": "4444444444444444444444444444444444444444444444444444444444444444",
+  "checkpointTipHash": "5555555555555555555555555555555555555555555555555555555555555555",
+  "checkpointSnapshotSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+  "bootstrapPeerIds": [
+    "12D3KooWOperatorVectorPeerA",
+    "12D3KooWOperatorVectorPeerB"
+  ],
+  "failureDomains": [
+    "synthetic-provider-a",
+    "synthetic-provider-b"
+  ],
+  "synchronizedHeight": 123,
+  "synchronizedTipHash": "7777777777777777777777777777777777777777777777777777777777777777",
+  "restartRecovered": true,
+  "restoreRehearsed": true,
+  "startedAtUtc": "2026-01-01T00:00:00Z",
+  "completedAtUtc": "2026-01-01T01:00:00Z",
+  "notes": "Synthetic CI vector only; this is not independent-operator evidence."
+}
