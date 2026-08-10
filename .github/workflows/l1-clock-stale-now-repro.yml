@@ -1,0 +1,31 @@
+name: Standalone L1 Stale Clock Reproduction CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  stale-clock-repro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+      - working-directory: l1
+        run: npm ci && npm run build
+      - name: Reproduce stale proposal clock false-positive
+        run: |
+          set -o pipefail
+          node l1/scripts/clock-stale-now-repro.mjs | tee "${RUNNER_TEMP}/clock-stale-now-repro.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: l1-clock-stale-now-repro-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/clock-stale-now-repro.json
+          if-no-files-found: error
+          retention-days: 30
