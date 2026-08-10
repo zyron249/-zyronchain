@@ -1,0 +1,50 @@
+name: Standalone L1 Maintainer Succession Policy CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  maintainer-succession-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+      - name: Verify succession policy twice
+        run: |
+          evidence="${RUNNER_TEMP}/zyron-succession-policy"
+          mkdir -p "$evidence"
+          node l1/scripts/verify-maintainer-succession.mjs \
+            --policy docs/l1-maintainer-succession.json \
+            --out "$evidence/succession-a.json" \
+            --commit-sha "$GITHUB_SHA"
+          node l1/scripts/verify-maintainer-succession.mjs \
+            --policy docs/l1-maintainer-succession.json \
+            --out "$evidence/succession-b.json" \
+            --commit-sha "$GITHUB_SHA"
+          cmp "$evidence/succession-a.json" "$evidence/succession-b.json"
+          mv "$evidence/succession-a.json" "$evidence/maintainer-succession.json"
+          rm "$evidence/succession-b.json"
+          cp docs/l1-maintainer-succession.json "$evidence/l1-maintainer-succession.json"
+          cd "$evidence"
+          sha256sum maintainer-succession.json l1-maintainer-succession.json > SHA256SUMS
+          cat maintainer-succession.json
+      - name: Upload succession-policy evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-maintainer-succession-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/zyron-succession-policy/maintainer-succession.json
+            ${{ runner.temp }}/zyron-succession-policy/l1-maintainer-succession.json
+            ${{ runner.temp }}/zyron-succession-policy/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
