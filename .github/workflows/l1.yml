@@ -23,7 +23,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
@@ -58,7 +58,7 @@ jobs:
           path: historical-pre-v3
           persist-credentials: false
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
       - name: Build current binary
@@ -71,6 +71,26 @@ jobs:
         env:
           ZYRON_OLD_L1_DIST: ${{ github.workspace }}/historical-pre-v3/l1/dist
         run: node l1/scripts/mixed-version-rehearsal.mjs
+
+  disaster-recovery-rehearsal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+      - name: Install locked dependencies
+        working-directory: l1
+        run: npm ci
+      - name: Build current binary
+        working-directory: l1
+        run: npm run build
+      - name: Rehearse checkpoint restore, catch-up, and restart
+        run: node l1/scripts/disaster-recovery-rehearsal.mjs
 
   independent-light-client:
     runs-on: ubuntu-latest
