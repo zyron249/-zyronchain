@@ -2,7 +2,7 @@
 
 This directory contains the **canonical** ZyronChain TypeScript Layer-1 implementation. It is intentionally separate from the historical Python/Flask `zyron-testnet-1` node so the legacy testnet remains recoverable.
 
-**Network status:** private/adversarial development only. No public testnet or value-bearing mainnet is authorized until the gates in [`STANDALONE_L1_READINESS.md`](../docs/STANDALONE_L1_READINESS.md) are closed. Security assumptions and founder-exit risks are defined in [`L1_THREAT_MODEL.md`](../docs/L1_THREAT_MODEL.md).
+**Network status:** governance authorization has been granted for both the public-testnet and mainnet network classes, but activation remains evidence-gated. The currently deployed rehearsal profile remains private/adversarial and non-value-bearing. `docs/l1-launch-authorization.json` is the global authorization record; [`STANDALONE_L1_READINESS.md`](../docs/STANDALONE_L1_READINESS.md) defines the activation gates. Security assumptions and founder-exit risks are defined in [`L1_THREAT_MODEL.md`](../docs/L1_THREAT_MODEL.md).
 
 ## What exists now
 

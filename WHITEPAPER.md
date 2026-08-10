@@ -1,6 +1,6 @@
 # ZyronChain technical paper
 
-Version: pre-public-testnet draft  
+Version: governance-authorized, activation-gated pre-public-testnet draft  
 Canonical implementation: standalone TypeScript L1 in `l1/`
 
 ## 1. Status and purpose
@@ -9,7 +9,7 @@ ZyronChain is an account-based Layer-1 blockchain designed around deterministic 
 
 This paper describes the canonical TypeScript implementation. The historical Python/Flask Proof-of-Work testnet is retained only for compatibility and is not the target consensus network.
 
-No public testnet or value-bearing mainnet is authorized by this paper. Genesis allocation, validator admission, activity-oracle governance and validator economics remain launch decisions.
+Public-testnet and mainnet **governance authorization has been granted** by the repository owner and is recorded in `docs/l1-launch-authorization.json`. Authorization is not activation: public-testnet activation and value-bearing mainnet activation remain evidence-gated. This paper does not waive those gates. Genesis allocation, validator admission, activity-oracle governance and validator economics remain explicit launch decisions.
 
 ## 2. Design goals
 
@@ -98,7 +98,7 @@ Properties include:
 - explicit authenticated pruning;
 - deterministic State-v2-to-legacy reconstruction at authorized rollback boundaries.
 
-Scale and recovery performance still require release-hardware evidence before public launch.
+Required CI now archives a 100,000-account restart/GC/root/cache regression baseline. That is useful regression evidence, but target/release-hardware scale and recovery measurements are still required before public-testnet activation and mainnet capacity freeze.
 
 ## 8. Validator and protocol governance
 
@@ -108,13 +108,13 @@ They require delayed activation of at least 100 blocks. Finalized history recons
 
 Protocol v3 activates domain-separated consensus, transaction and governance signatures while retaining State-v2. Unsupported active versions fail closed. Authorized rollback schedules are executable and tested across durable restart.
 
-This cryptographic mechanism does not decide who should be a validator. Admission, independence requirements and emergency governance must be specified publicly before mainnet.
+This cryptographic mechanism does not decide who should be a validator. Admission, independence requirements and emergency governance must be specified publicly before mainnet activation.
 
 ## 9. Proof of Activity
 
 Activity settlement uses oracle-signed receipt-root batches. A settlement can spend only the prefunded activity pool and cannot increase total supply.
 
-Before public launch, either:
+Before public-testnet activation, either:
 
 - the feature remains disabled/unfunded; or
 - independent receipt services and oracle governance are deployed and audited.
@@ -188,7 +188,7 @@ Tags matching `l1-v*` produce:
 - SHA-256 manifest;
 - GitHub artifact attestations.
 
-Release provenance proves what CI built from a commit. It does not prove consensus correctness or authorize a network launch.
+A clean external-directory rehearsal installs only the packaged tarball, proves organic two-validator finality and proves restart/recovery without source-tree runtime files. Release provenance and artifact rehearsals prove what was built and that it can be operated; they do not prove consensus correctness or independently close activation gates.
 
 ## 16. Founder independence
 
@@ -201,12 +201,16 @@ The network is not founder-independent until:
 - third parties can build, restore, rotate, upgrade and release without private assistance;
 - genesis and economics are immutable and publicly reproducible.
 
+The repository includes a public independent-operator challenge and maintainer/security succession policy. Their CI verifies policy/evidence shape, but deliberately does not claim that real independent custody or operator independence has already been achieved.
+
 Founder withdrawal must preserve public history and audit evidence.
 
 ## 17. Launch gates
 
-A public testnet requires canonical documentation, adversarial fault-injection tooling, independent operator deployment, multi-domain bootstrap/archive infrastructure, validator rotation/recovery rehearsal and measured State-v2 limits.
+Governance authorization for both the public-testnet and mainnet network classes is recorded in `docs/l1-launch-authorization.json`. The same policy currently keeps both activation flags false.
 
-A value-bearing mainnet additionally requires immutable genesis/economics/governance, production key custody, sustained adversarial testnet evidence, a public bounty, independent consensus/cryptography/network audits and no unresolved critical/high findings.
+Public-testnet activation still requires independent operator deployment, multi-domain bootstrap/archive infrastructure, independent security review/retest, sustained adversarial Internet evidence, production signer custody and protected release/review policy. The connected Render Free profile is smoke-only; a separate hosted-duration evidence verifier is prepared for reviewed always-on infrastructure, but synthetic CI cannot satisfy the real uptime gate.
 
-The authoritative checklist is [`docs/STANDALONE_L1_READINESS.md`](docs/STANDALONE_L1_READINESS.md); the threat assumptions are [`docs/L1_THREAT_MODEL.md`](docs/L1_THREAT_MODEL.md).
+A value-bearing mainnet additionally requires all public-testnet activation requirements plus immutable chain ID/genesis allocation/economics/oracle/validator-governance specifications, target-hardware State-v2 evidence, multi-region recovery/incident evidence and independent maintainer/security custody succession.
+
+The authoritative checklist is [`docs/STANDALONE_L1_READINESS.md`](docs/STANDALONE_L1_READINESS.md); launch authorization is [`docs/L1_LAUNCH_AUTHORIZATION.md`](docs/L1_LAUNCH_AUTHORIZATION.md); the threat assumptions are [`docs/L1_THREAT_MODEL.md`](docs/L1_THREAT_MODEL.md).
