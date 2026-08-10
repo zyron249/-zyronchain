@@ -16,7 +16,8 @@
     "validator-key-rotation",
     "machine-readable-ci-evidence",
     "external-audit-handoff-prepared",
-    "operations-runbook-and-threat-model"
+    "operations-runbook-and-threat-model",
+    "founder-independent-security-and-succession-policy"
   ],
   "remainingExternalGates": [
     "independent-operators-deploy-from-release-artifacts-without-founder-assistance",
@@ -26,7 +27,8 @@
     "sustained-independent-operator-internet-adversarial-soak",
     "production-hsm-or-audited-signer-custody-and-cross-host-rotation",
     "multi-region-disaster-recovery-and-incident-drills",
-    "protected-branch-independent-review-repository-policy"
+    "protected-branch-independent-review-repository-policy",
+    "independent-maintainer-and-security-custody-succession-evidence"
   ],
   "mainnetOnlyUnresolvedDecisions": [
     "immutable-mainnet-chain-id",
