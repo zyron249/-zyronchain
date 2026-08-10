@@ -1,0 +1,68 @@
+name: Standalone L1 External Audit Pack CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  external-audit-pack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+      - name: Install locked dependencies
+        working-directory: l1
+        run: npm ci
+      - name: Typecheck canonical L1
+        working-directory: l1
+        run: npm run typecheck
+      - name: Build deterministic commit-bound audit manifest
+        run: |
+          audit="${RUNNER_TEMP}/zyron-audit-pack"
+          mkdir -p "$audit"
+          node l1/scripts/build-external-audit-pack.mjs \
+            --scope docs/l1-audit-scope.json \
+            --out "$audit/audit-pack-a.json" \
+            --commit-sha "$GITHUB_SHA"
+          node l1/scripts/build-external-audit-pack.mjs \
+            --scope docs/l1-audit-scope.json \
+            --out "$audit/audit-pack-b.json" \
+            --commit-sha "$GITHUB_SHA"
+          cmp "$audit/audit-pack-a.json" "$audit/audit-pack-b.json"
+          mv "$audit/audit-pack-a.json" "$audit/audit-pack.json"
+          rm "$audit/audit-pack-b.json"
+          cp docs/l1-audit-scope.json "$audit/l1-audit-scope.json"
+      - name: Generate runtime SPDX SBOM
+        working-directory: l1
+        run: npm sbom --omit=dev --sbom-format=spdx > "${RUNNER_TEMP}/zyron-audit-pack/runtime-sbom.spdx.json"
+      - name: Audit runtime dependencies
+        working-directory: l1
+        run: npm audit --omit=dev --audit-level=high
+      - name: Checksum audit handoff files
+        run: |
+          cd "${RUNNER_TEMP}/zyron-audit-pack"
+          sha256sum audit-pack.json l1-audit-scope.json runtime-sbom.spdx.json > SHA256SUMS
+          cat audit-pack.json
+          cat SHA256SUMS
+      - name: Upload external audit handoff pack
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-external-audit-pack-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/zyron-audit-pack/audit-pack.json
+            ${{ runner.temp }}/zyron-audit-pack/l1-audit-scope.json
+            ${{ runner.temp }}/zyron-audit-pack/runtime-sbom.spdx.json
+            ${{ runner.temp }}/zyron-audit-pack/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
