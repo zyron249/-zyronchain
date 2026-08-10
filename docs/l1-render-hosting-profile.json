@@ -1,0 +1,30 @@
+{
+  "policyVersion": 1,
+  "status": "free-profile-smoke-only",
+  "provider": "render",
+  "serviceClass": "free-web-service",
+  "valueBearing": false,
+  "publicTestnetAuthorized": false,
+  "mainnetAuthorized": false,
+  "sustainedUptimeEvidence": false,
+  "multiHourSoakEvidence": false,
+  "independentFailureDomainEvidence": false,
+  "artificialKeepaliveForbidden": true,
+  "alwaysOnComputeRequiredForSustainedSoak": true,
+  "observedPlatformShutdowns": [
+    "2026-08-10T14:05:16Z",
+    "2026-08-10T16:42:16Z"
+  ],
+  "permittedClaims": [
+    "bounded-smoke-rehearsal",
+    "bounded-adversarial-rehearsal",
+    "ephemeral-non-value-bearing-private-testnet-profile"
+  ],
+  "forbiddenClaims": [
+    "sustained-testnet-uptime",
+    "multi-hour-live-soak",
+    "independent-operator-availability",
+    "production-infrastructure",
+    "public-testnet-readiness-from-render-free"
+  ]
+}
