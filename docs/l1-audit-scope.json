@@ -1,0 +1,140 @@
+{
+  "scopeVersion": 1,
+  "status": "pre-public-testnet-external-audit-preparation",
+  "canonicalImplementation": "l1/",
+  "supportedProtocolVersions": [1, 2, 3],
+  "reviewAreas": [
+    "consensus-finality-view-change",
+    "transaction-governance-signing-domains",
+    "cryptographic-primitives-and-key-boundaries",
+    "durable-storage-replay-and-checkpoint-trust",
+    "authenticated-state-v2",
+    "native-p2p-identity-sync-discovery-and-resource-bounds",
+    "rpc-authentication-proxy-and-resource-bounds",
+    "validator-signer-anti-equivocation-and-key-rotation",
+    "protocol-upgrade-and-rollback",
+    "light-client-and-independent-verification",
+    "release-and-dependency-supply-chain"
+  ],
+  "criticalModules": [
+    "l1/src/block.ts",
+    "l1/src/chain.ts",
+    "l1/src/codec.ts",
+    "l1/src/crypto.ts",
+    "l1/src/light-client.ts",
+    "l1/src/mempool.ts",
+    "l1/src/merkle.ts",
+    "l1/src/node.ts",
+    "l1/src/p2p.ts",
+    "l1/src/p2p-checkpoint.ts",
+    "l1/src/p2p-consensus.ts",
+    "l1/src/p2p-discovery.ts",
+    "l1/src/p2p-state.ts",
+    "l1/src/p2p-sync.ts",
+    "l1/src/peer-identity.ts",
+    "l1/src/state-v2.ts",
+    "l1/src/storage.ts",
+    "l1/src/transaction.ts",
+    "l1/src/types.ts",
+    "l1/src/validator-signer.ts"
+  ],
+  "securitySpecifications": [
+    "docs/L1_THREAT_MODEL.md",
+    "docs/CONSENSUS_CERTIFICATE_MODEL.md",
+    "docs/L1_OPERATIONS_RUNBOOK.md",
+    "docs/STANDALONE_L1_READINESS.md",
+    "docs/L1_CI_EVIDENCE.md",
+    "docs/L1_KEY_ROTATION_REHEARSAL.md"
+  ],
+  "independentVerification": [
+    "l1/independent-light-client/verify_vector.py",
+    "l1/independent-light-client/test_verify_vector.py",
+    "l1/test-vectors/light-client-v1.json"
+  ],
+  "securityInvariants": [
+    {
+      "id": "CONS-001",
+      "statement": "Finalized non-genesis blocks require unique configured-validator attestations at floor(2N/3)+1 quorum.",
+      "primaryModules": ["l1/src/block.ts", "l1/src/chain.ts"]
+    },
+    {
+      "id": "CONS-002",
+      "statement": "A non-zero consensus round requires sequential predecessor skip-quorum evidence; rounds cannot be jumped without certified evidence.",
+      "primaryModules": ["l1/src/block.ts", "l1/src/node.ts"]
+    },
+    {
+      "id": "SIGN-001",
+      "statement": "Validator signing reserves durable anti-equivocation state before local or remote signing output is requested.",
+      "primaryModules": ["l1/src/storage.ts", "l1/src/node.ts", "l1/src/validator-signer.ts"]
+    },
+    {
+      "id": "CHAIN-001",
+      "statement": "Chain ID, genesis identity, protocol version and active validator schedule are validated before accepting consensus history.",
+      "primaryModules": ["l1/src/chain.ts", "l1/src/storage.ts"]
+    },
+    {
+      "id": "STATE-001",
+      "statement": "Block validation re-executes transactions and requires the deterministic authenticated state root committed by the block.",
+      "primaryModules": ["l1/src/chain.ts", "l1/src/state-v2.ts"]
+    },
+    {
+      "id": "SUPPLY-001",
+      "statement": "Genesis allocation is capped at 50M ZYN and normal execution cannot increase total state supply.",
+      "primaryModules": ["l1/src/chain.ts", "l1/src/types.ts"]
+    },
+    {
+      "id": "RECOVERY-001",
+      "statement": "Checkpoint/state installation requires independently supplied finalized-tip and snapshot-digest anchors and validates the restored chain through the normal recovery path.",
+      "primaryModules": ["l1/src/storage.ts", "l1/src/p2p-checkpoint.ts", "l1/src/p2p-state.ts"]
+    },
+    {
+      "id": "NET-001",
+      "statement": "Native P2P authenticates node identity and binds peers to chain/genesis while enforcing bounded streams, frames, work and sync responses.",
+      "primaryModules": ["l1/src/p2p.ts", "l1/src/peer-identity.ts", "l1/src/p2p-sync.ts"]
+    },
+    {
+      "id": "RPC-001",
+      "statement": "Non-loopback RPC is fail-closed unless consensus authentication and an exact HTTPS-enforcing trusted proxy are configured.",
+      "primaryModules": ["l1/src/node.ts", "l1/src/cli.ts"]
+    },
+    {
+      "id": "GOV-001",
+      "statement": "Validator-set and protocol updates require current-set quorum authorization and delayed activation; unsupported activated protocol versions fail closed.",
+      "primaryModules": ["l1/src/transaction.ts", "l1/src/chain.ts"]
+    },
+    {
+      "id": "KEY-001",
+      "statement": "After quorum-authorized validator-key replacement activates, the retired key is no longer an active consensus signer and the replacement set persists across restart.",
+      "primaryModules": ["l1/src/chain.ts", "l1/src/block.ts"]
+    }
+  ],
+  "requiredCommands": [
+    "npm ci",
+    "npm run typecheck",
+    "npm test",
+    "npm audit --omit=dev --audit-level=high",
+    "npm sbom --omit=dev --sbom-format=spdx"
+  ],
+  "evidenceScenarios": [
+    "mixed-version-upgrade-rollback",
+    "disaster-recovery",
+    "composite-adversarial-soak",
+    "multiprocess-native-recovery",
+    "validator-key-rotation"
+  ],
+  "externalGates": [
+    "independent-consensus-cryptography-network-audit",
+    "independent-operator-public-network-soak",
+    "production-hsm-or-audited-signer-custody",
+    "multi-region-disaster-recovery-and-key-rotation",
+    "release-hardware-large-cardinality-state-measurements",
+    "immutable-mainnet-genesis-economics-and-oracle-governance"
+  ],
+  "deliberatelyExcludedDecisions": [
+    "mainnet-chain-id",
+    "mainnet-genesis-allocation",
+    "validator-reward-or-inflation-policy",
+    "activity-oracle-production-governance",
+    "conversion-from-current-poa-bft-design-to-pow-mining"
+  ]
+}
