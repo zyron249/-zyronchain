@@ -1,12 +1,12 @@
 # ZyronChain standalone L1 external-audit package
 
-Status: **audit preparation only**. This package does not claim that an independent security audit has occurred and does not authorize a public testnet or mainnet launch.
+Status: **audit preparation only**. This package does not claim that an independent security audit has occurred and does not itself activate public testnet or mainnet.
 
 ## Audit target
 
 The canonical consensus implementation is the standalone TypeScript L1 under `l1/`. The historical Python/Flask network is not part of the consensus audit target except where an auditor explicitly chooses to examine migration or operator-confusion risk.
 
-The machine-readable scope is `docs/l1-audit-scope.json`. CI validates that every security invariant points only to an explicitly listed critical module and produces a commit-bound manifest containing SHA-256 digests for every critical module, security specification, independent verifier input, `package.json`, and `package-lock.json`.
+The machine-readable scope is `docs/l1-audit-scope.json`. CI validates that every security invariant points only to an explicitly listed critical module and produces a commit-bound manifest containing SHA-256 digests for every critical module, security specification, independent verifier input and required evidence/control workflow.
 
 ## Required independent review
 
@@ -16,13 +16,16 @@ At minimum, an external review should independently analyze:
 2. validator anti-equivocation journal ordering, crash ambiguity and local/remote signer behavior;
 3. transaction, governance, block, attestation and round-skip signing/replay domains across protocol versions;
 4. secp256k1 usage, canonical encoding, hashing/Merkle construction and key/address binding;
-5. State-v2 authenticated persistence, membership/non-membership semantics, checkpoint/state-sync trust anchors and pruning/recovery boundaries;
+5. State-v2 authenticated persistence, membership/non-membership semantics, checkpoint/state-sync trust anchors, pruning/recovery boundaries and the 100k-account scale evidence limits;
 6. native libp2p Noise identity binding, discovery/admission, peer diversity/scoring, sync protocols, frame/work/byte limits and eclipse/Sybil assumptions;
 7. RPC consensus authentication, signed-body preflight, exact trusted-proxy enforcement, concurrency/body/response resource budgets and malformed-input behavior;
 8. validator-set/protocol upgrade authorization, delayed activation, unsupported-version fail-stop and rollback semantics;
 9. independent light-client verification and validator-transition proof assumptions;
-10. release dependency/SBOM/provenance workflow and all production-operation assumptions described by the threat model/runbook;
-11. security disclosure, maintainer/release/domain/checkpoint succession and founder-exit assumptions, including whether any unique personal credential or founder-only private context remains operationally necessary.
+10. release dependency/SBOM/provenance workflow, clean release-artifact third-party operation and all production-operation assumptions described by the threat model/runbook;
+11. independent-operator challenge/evidence semantics, including the explicit boundary that project CI cannot prove operator independence;
+12. Render/hosting-profile assumptions, including why the Free profile is smoke-only and why sustained uptime evidence requires reviewed always-on infrastructure;
+13. security disclosure, maintainer/release/domain/checkpoint succession and founder-exit assumptions, including whether any unique personal credential or founder-only private context remains operationally necessary;
+14. launch authorization versus activation gating, including verification that governance authorization does not waive independent audit, operator, custody, genesis/economics or infrastructure requirements.
 
 ## Reproduction baseline
 
@@ -44,27 +47,33 @@ The exact Node.js policy comes from `l1/package.json`; project CI exercises the 
 
 - exact GitHub commit checked out by the job;
 - audit-scope SHA-256;
-- path, byte count and SHA-256 for each critical source/specification/verifier file, including the public security/succession policy and its verifier;
+- path, byte count and SHA-256 for each critical source/specification/verifier/control file;
+- public security/succession, launch-authorization and hosting-policy files;
+- release-artifact operator rehearsal, independent-operator challenge and State-v2 scale evidence tooling/workflows;
 - L1 package name/version and Node engine policy;
 - invariant/evidence/external-gate inventory;
 - runtime SPDX SBOM;
 - `SHA256SUMS` over the audit package, scope and SBOM.
 
-The pack is deterministic for the same checkout/runtime metadata and is retained as a GitHub Actions artifact. An auditor must still independently obtain/verify the repository commit and should not treat a project-produced artifact as an independent attestation.
+The generator fail-closes if the required evidence inventory or any required verifier/workflow path disappears. The pack is deterministic for the same checkout/runtime metadata and is retained as a GitHub Actions artifact. An auditor must still independently obtain/verify the repository commit and should not treat a project-produced artifact as an independent attestation.
 
-## Existing adversarial evidence to inspect
+## Existing evidence to inspect
 
-Current CI archives machine-readable evidence for:
+Current project CI or policy artifacts cover:
 
 - historical mixed-version upgrade/rollback;
 - checkpoint disaster recovery;
 - 600-height composite adversarial consensus soak;
 - separate-process native P2P SIGKILL/recovery;
-- quorum-authorized validator signing-key replacement.
+- quorum-authorized validator signing-key replacement;
+- clean installation and operation from the packaged release artifact without source-tree runtime files;
+- an independent-operator challenge whose verifier deliberately keeps `independenceProven=false` until genuine external evidence is reviewed;
+- 100,000-account State-v2 restart/GC/root/cache regression evidence, which does **not** replace release-hardware capacity evidence;
+- the connected Render Free profile's smoke-only hosting classification;
+- governance authorization for public testnet/mainnet with separate activation gates;
+- deterministic maintainer/security succession policy evidence.
 
-A separate deterministic succession-policy artifact verifies that public founder-exit/security-response rules have not silently weakened. It does not prove that independent humans or organizations actually hold the required repository/release/security/domain capabilities.
-
-These are regression/policy evidence, not a substitute for an external audit or sustained independent-operator Internet testnet.
+These are regression/policy evidence, not a substitute for an external audit, actual independent custody, or sustained independent-operator Internet testnet evidence.
 
 ## Finding handling
 
@@ -82,4 +91,4 @@ This audit package deliberately does not choose or freeze:
 - real successor identities, private contact addresses, repository/release/domain credentials or custody assignments;
 - any redesign from the current PoA/BFT architecture to PoW/mining.
 
-Those require separate human/governance, operational or architectural decisions.
+Governance authorization may exist for a network class while these activation requirements remain open. Those items require separate human/governance, operational or architectural evidence before value-bearing activation.
