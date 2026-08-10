@@ -15,7 +15,11 @@
     "protocol-upgrade-and-rollback",
     "light-client-and-independent-verification",
     "release-and-dependency-supply-chain",
-    "maintainer-security-succession-and-founder-exit"
+    "maintainer-security-succession-and-founder-exit",
+    "release-artifact-operator-reproducibility",
+    "independent-operator-challenge-and-evidence-boundary",
+    "state-v2-scale-regression-and-hosting-evidence",
+    "launch-authorization-and-activation-gates"
   ],
   "criticalModules": [
     "l1/src/block.ts",
@@ -50,8 +54,17 @@
     "docs/L1_CI_EVIDENCE.md",
     "docs/L1_KEY_ROTATION_REHEARSAL.md",
     "docs/L1_EXTERNAL_AUDIT_PACKAGE.md",
+    "docs/L1_PRIVATE_TESTNET_PREFLIGHT.md",
     "docs/L1_MAINTAINER_SUCCESSION.md",
-    "docs/l1-maintainer-succession.json"
+    "docs/l1-maintainer-succession.json",
+    "docs/THIRD_PARTY_ARTIFACT_REHEARSAL.md",
+    "docs/INDEPENDENT_OPERATOR_CHALLENGE.md",
+    "docs/l1-independent-operator-challenge.json",
+    "docs/STATE_V2_SCALE_EVIDENCE.md",
+    "docs/RENDER_PRIVATE_TESTNET.md",
+    "docs/l1-render-hosting-profile.json",
+    "docs/L1_LAUNCH_AUTHORIZATION.md",
+    "docs/l1-launch-authorization.json"
   ],
   "independentVerification": [
     "l1/independent-light-client/verify_vector.py",
@@ -127,7 +140,12 @@
     "disaster-recovery",
     "composite-adversarial-soak",
     "multiprocess-native-recovery",
-    "validator-key-rotation"
+    "validator-key-rotation",
+    "release-artifact-operator",
+    "independent-operator-challenge",
+    "state-v2-scale-100k",
+    "render-hosting-profile",
+    "launch-authorization"
   ],
   "externalGates": [
     "independent-consensus-cryptography-network-audit",
@@ -136,7 +154,8 @@
     "multi-region-disaster-recovery-and-key-rotation",
     "release-hardware-large-cardinality-state-measurements",
     "immutable-mainnet-genesis-economics-and-oracle-governance",
-    "independent-maintainer-security-release-custody-succession"
+    "independent-maintainer-security-release-custody-succession",
+    "always-on-duration-soak-evidence"
   ],
   "deliberatelyExcludedDecisions": [
     "mainnet-chain-id",
