@@ -1,0 +1,61 @@
+name: Standalone L1 Release Rehearsal CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-rehearsal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: l1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=high
+      - name: Verify deterministic release tarball
+        run: |
+          first=$(mktemp -d)
+          second=$(mktemp -d)
+          npm run build
+          npm pack --ignore-scripts --pack-destination "$first" >/dev/null
+          npm pack --ignore-scripts --pack-destination "$second" >/dev/null
+          cmp "$first"/zyronchain-l1-*.tgz "$second"/zyronchain-l1-*.tgz
+          mkdir -p rehearsal-release
+          cp "$first"/zyronchain-l1-*.tgz rehearsal-release/
+      - name: Generate runtime SPDX SBOM and checksums
+        run: |
+          npm sbom --omit=dev --sbom-format=spdx > rehearsal-release/SBOM.spdx.json
+          cd rehearsal-release
+          sha256sum SBOM.spdx.json zyronchain-l1-*.tgz > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Upload non-publishing release rehearsal
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-release-rehearsal-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            l1/rehearsal-release/zyronchain-l1-*.tgz
+            l1/rehearsal-release/SBOM.spdx.json
+            l1/rehearsal-release/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
