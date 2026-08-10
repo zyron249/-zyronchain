@@ -45,7 +45,8 @@
     "docs/L1_OPERATIONS_RUNBOOK.md",
     "docs/STANDALONE_L1_READINESS.md",
     "docs/L1_CI_EVIDENCE.md",
-    "docs/L1_KEY_ROTATION_REHEARSAL.md"
+    "docs/L1_KEY_ROTATION_REHEARSAL.md",
+    "docs/L1_EXTERNAL_AUDIT_PACKAGE.md"
   ],
   "independentVerification": [
     "l1/independent-light-client/verify_vector.py",
