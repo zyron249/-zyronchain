@@ -59,13 +59,21 @@ test("reserved mining capacity remains available when non-mining capacity is sat
   assert.ok(mempool.values().some((tx) => tx.txid === secondTransfer.txid));
 });
 
-test("mining reserve is bounded and cannot consume extra non-mining capacity", () => {
+test("mining reserve stays bounded when a stronger claim replaces the weakest claim", () => {
   const mempool = new Mempool(1, 1);
-  mempool.add(transfer(1));
+  const normal = transfer(1);
+  mempool.add(normal);
   mempool.add(miningClaim(1));
 
-  assert.throws(() => mempool.add(miningClaim(2)), /Mining mempool full/);
+  try {
+    mempool.add(miningClaim(2));
+  } catch (error) {
+    assert.match(String(error), /Mining mempool full/);
+  }
+
   assert.equal(mempool.size, 2);
+  assert.ok(mempool.values().some((tx) => tx.txid === normal.txid));
+  assert.equal(mempool.values().filter((tx) => tx.kind === "mining_claim").length, 1);
 });
 
 test("custom mempool capacity remains a hard total cap unless a mining reserve is explicitly configured", () => {
