@@ -50,15 +50,15 @@ jobs:
             if (!html.includes(marker)) throw new Error(`Website HTML missing required marker: ${marker}`);
           }
           for (const marker of [
-            '<link rel="canonical" href="https://zyronchain.org/"',
-            '<meta property="og:url" content="https://zyronchain.org/"'
+            '<link rel="canonical" href="https://zyronchain.com/"',
+            '<meta property="og:url" content="https://zyronchain.com/"'
           ]) {
             if (!html.includes(marker)) throw new Error(`Production domain metadata missing: ${marker}`);
           }
-          if (!robots.includes('Sitemap: https://zyronchain.org/sitemap.xml')) {
+          if (!robots.includes('Sitemap: https://zyronchain.com/sitemap.xml')) {
             throw new Error('robots.txt is not bound to the production sitemap');
           }
-          if (!sitemap.includes('<loc>https://zyronchain.org/</loc>')) {
+          if (!sitemap.includes('<loc>https://zyronchain.com/</loc>')) {
             throw new Error('sitemap.xml is not bound to the production origin');
           }
           if (!css.includes('@media (max-width: 640px)')) throw new Error('Website responsive mobile boundary is missing');
