@@ -29,13 +29,14 @@ test("expectedValidator stays exact when height plus round exceeds Number.MAX_SA
 
 test("expectedValidator validates its direct height and round inputs", () => {
   const set = validators(2);
-  for (const [height, round] of [
+  const invalidPairs: Array<readonly [number, number]> = [
     [0, 0],
     [-1, 0],
     [1, -1],
     [Number.MAX_SAFE_INTEGER + 1, 0],
     [1, Number.MAX_SAFE_INTEGER + 1]
-  ]) {
+  ];
+  for (const [height, round] of invalidPairs) {
     assert.throws(() => expectedValidator(set, height, round), /Invalid proposer height or round/);
   }
   assert.throws(() => expectedValidator([], 1, 0), /Validator set is empty/);
