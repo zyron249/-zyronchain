@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Independent verifier for ZyronChain public light-client test vectors.
 
-This intentionally does not import the TypeScript L1 implementation.  Curve
+This intentionally does not import the TypeScript L1 implementation. Curve
 arithmetic and ECDSA verification are delegated to libsecp256k1 via coincurve.
 """
 
@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 from coincurve import PublicKey, ecdsa
-
 
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
 HEX_32 = re.compile(r"^[0-9a-f]{64}$")
@@ -31,11 +30,11 @@ BRANCH_DOMAIN = b"ZyronChain/state-v2/branch\x00"
 BLOCK_PROPOSAL_DOMAIN = "zyronchain/block-proposal/v1"
 FINALITY_ATTESTATION_DOMAIN = "zyronchain/finality-attestation/v1"
 ROUND_SKIP_DOMAIN = "zyronchain/round-skip/v1"
-
+SUPPORTED_PROTOCOL_VERSIONS = frozenset((1, 2, 3, 5))
+STATE_V2_PROTOCOL_VERSIONS = frozenset((2, 3, 5))
 
 class VerificationError(ValueError):
     pass
-
 
 def _safe_int(value: Any, label: str, minimum: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
@@ -44,18 +43,15 @@ def _safe_int(value: Any, label: str, minimum: int = 0) -> int:
         raise VerificationError(f"{label} is outside the safe integer range")
     return value
 
-
 def _exact_keys(value: Any, keys: set[str], label: str) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != keys:
         raise VerificationError(f"invalid {label} schema")
     return value
 
-
 def _hex(value: Any, pattern: re.Pattern[str], label: str) -> str:
     if not isinstance(value, str) or pattern.fullmatch(value) is None:
         raise VerificationError(f"invalid {label}")
     return value
-
 
 def _validate_json_value(value: Any) -> None:
     if value is None or isinstance(value, (str, bool)):
@@ -74,34 +70,19 @@ def _validate_json_value(value: Any) -> None:
         return
     raise VerificationError("unsupported canonical JSON value")
 
-
 def _utf16_key(value: str) -> bytes:
-    # Mirrors ECMAScript relational string ordering: lexicographic UTF-16 code
-    # units. It is explicit and therefore independent of Python's locale.
     return value.encode("utf-16-be", errors="surrogatepass")
-
 
 def _normalize_key_order(value: Any) -> Any:
     if isinstance(value, list):
         return [_normalize_key_order(item) for item in value]
     if isinstance(value, dict):
-        return {
-            key: _normalize_key_order(value[key])
-            for key in sorted(value, key=_utf16_key)
-        }
+        return {key: _normalize_key_order(value[key]) for key in sorted(value, key=_utf16_key)}
     return value
 
-
 def canonical_json(value: Any) -> bytes:
-    """Canonical encoding using locale-independent UTF-16 object-key order."""
     _validate_json_value(value)
-    return json.dumps(
-        _normalize_key_order(value),
-        sort_keys=False,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-
+    return json.dumps(_normalize_key_order(value), sort_keys=False, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 def sha256(*parts: bytes) -> bytes:
     digest = hashlib.sha256()
@@ -109,47 +90,32 @@ def sha256(*parts: bytes) -> bytes:
         digest.update(part)
     return digest.digest()
 
-
 def address_from_public_key(public_key: str) -> str:
     _hex(public_key, HEX_64, "validator public key")
     return "ZYN" + sha256(bytes.fromhex(public_key)).hex()[:40]
-
 
 def verify_signature(payload: Any, signature: str, public_key: str) -> bool:
     try:
         raw_signature = bytes.fromhex(_hex(signature, HEX_64, "signature"))
         raw_public_key = bytes.fromhex(_hex(public_key, HEX_64, "public key"))
         der_signature = ecdsa.cdata_to_der(ecdsa.deserialize_compact(raw_signature))
-        return PublicKey(b"\x04" + raw_public_key).verify(
-            der_signature,
-            canonical_json(payload),
-            hasher=lambda message: sha256(message),
-        )
+        return PublicKey(b"\x04" + raw_public_key).verify(der_signature, canonical_json(payload), hasher=lambda message: sha256(message))
     except (ValueError, VerificationError):
         return False
 
-
-def verify_protocol_signature(
-    protocol_version: int, domain: str, payload: Any, signature: str, public_key: str
-) -> bool:
+def verify_protocol_signature(protocol_version: int, domain: str, payload: Any, signature: str, public_key: str) -> bool:
     signed_payload = {"domain": domain, "payload": payload} if protocol_version >= 3 else payload
     return verify_signature(signed_payload, signature, public_key)
 
-
 def validate_anchor(value: Any) -> dict[str, Any]:
-    anchor = _exact_keys(
-        value,
-        {
-            "version", "chainId", "genesisHash", "height", "blockHash",
-            "stateRoot", "timestampMs", "protocolVersion", "validators",
-        },
-        "anchor",
-    )
+    anchor = _exact_keys(value, {"version", "chainId", "genesisHash", "height", "blockHash", "stateRoot", "timestampMs", "protocolVersion", "validators"}, "anchor")
     if anchor["version"] != 1 or not isinstance(anchor["chainId"], str) or not CHAIN_ID.fullmatch(anchor["chainId"]):
         raise VerificationError("invalid anchor identity")
     _safe_int(anchor["height"], "anchor height")
     _safe_int(anchor["timestampMs"], "anchor timestamp")
-    _safe_int(anchor["protocolVersion"], "anchor protocol version", 1)
+    protocol_version = _safe_int(anchor["protocolVersion"], "anchor protocol version", 1)
+    if protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
+        raise VerificationError("unsupported anchor protocol version")
     _hex(anchor["genesisHash"], HEX_32, "genesis hash")
     _hex(anchor["blockHash"], HEX_32, "block hash")
     _hex(anchor["stateRoot"], HEX_32, "state root")
@@ -164,7 +130,6 @@ def validate_anchor(value: Any) -> dict[str, Any]:
             raise VerificationError("invalid validator address")
         if validator["address"] != address_from_public_key(public_key) or validator["address"] in seen:
             raise VerificationError("validator address binding or uniqueness failed")
-        # Parse the curve point here, not only when a particular validator signs.
         try:
             PublicKey(b"\x04" + bytes.fromhex(public_key))
         except ValueError as exc:
@@ -172,16 +137,8 @@ def validate_anchor(value: Any) -> dict[str, Any]:
         seen.add(validator["address"])
     return anchor
 
-
 def _validate_header(value: Any) -> dict[str, Any]:
-    header = _exact_keys(
-        value,
-        {
-            "version", "chainId", "height", "round", "previousHash",
-            "timestampMs", "transactionRoot", "stateRoot", "proposer",
-        },
-        "header",
-    )
+    header = _exact_keys(value, {"version", "chainId", "height", "round", "previousHash", "timestampMs", "transactionRoot", "stateRoot", "proposer"}, "header")
     _safe_int(header["version"], "header version", 1)
     _safe_int(header["height"], "header height")
     _safe_int(header["round"], "header round")
@@ -195,18 +152,13 @@ def _validate_header(value: Any) -> dict[str, Any]:
         raise VerificationError("invalid proposer address")
     return header
 
-
 def quorum_size(validator_count: int) -> int:
     return validator_count * 2 // 3 + 1
-
 
 def _validator_map(validators: list[dict[str, str]]) -> dict[str, str]:
     return {item["address"]: item["publicKey"] for item in validators}
 
-
-def _verify_round_certificate(
-    header: dict[str, Any], votes: Any, validators: list[dict[str, str]]
-) -> None:
+def _verify_round_certificate(header: dict[str, Any], votes: Any, validators: list[dict[str, str]]) -> None:
     if not isinstance(votes, list) or len(votes) > len(validators):
         raise VerificationError("invalid round certificate cardinality")
     if header["round"] == 0:
@@ -216,11 +168,7 @@ def _verify_round_certificate(
     allowed = _validator_map(validators)
     seen: set[str] = set()
     for raw_vote in votes:
-        vote = _exact_keys(
-            raw_vote,
-            {"validator", "publicKey", "chainId", "height", "round", "previousHash", "signature"},
-            "round skip vote",
-        )
+        vote = _exact_keys(raw_vote, {"validator", "publicKey", "chainId", "height", "round", "previousHash", "signature"}, "round skip vote")
         public_key = _hex(vote["publicKey"], HEX_64, "round skip public key")
         _hex(vote["previousHash"], HEX_32, "round skip previous hash")
         _hex(vote["signature"], HEX_64, "round skip signature")
@@ -229,12 +177,7 @@ def _verify_round_certificate(
         validator = vote["validator"]
         if not isinstance(validator, str) or validator in seen or allowed.get(validator) != public_key:
             raise VerificationError("unknown or duplicate round skip voter")
-        if (
-            vote["chainId"] != header["chainId"]
-            or vote["height"] != header["height"]
-            or vote["round"] != header["round"] - 1
-            or vote["previousHash"] != header["previousHash"]
-        ):
+        if vote["chainId"] != header["chainId"] or vote["height"] != header["height"] or vote["round"] != header["round"] - 1 or vote["previousHash"] != header["previousHash"]:
             raise VerificationError("round skip vote does not bind proposal")
         payload = {key: value for key, value in vote.items() if key != "signature"}
         if not verify_protocol_signature(header["version"], ROUND_SKIP_DOMAIN, payload, vote["signature"], public_key):
@@ -243,10 +186,7 @@ def _verify_round_certificate(
     if len(seen) < quorum_size(len(validators)):
         raise VerificationError("round skip quorum not reached")
 
-
-def _verify_attestations(
-    header: dict[str, Any], block_hash: str, attestations: Any, validators: list[dict[str, str]]
-) -> None:
+def _verify_attestations(header: dict[str, Any], block_hash: str, attestations: Any, validators: list[dict[str, str]]) -> None:
     if not isinstance(attestations, list) or len(attestations) > len(validators):
         raise VerificationError("invalid attestation cardinality")
     allowed = _validator_map(validators)
@@ -259,22 +199,15 @@ def _verify_attestations(
         validator = attestation["validator"]
         if not isinstance(validator, str) or validator in seen or allowed.get(validator) != public_key:
             raise VerificationError("unknown or duplicate attesting validator")
-        if not verify_protocol_signature(
-            header["version"], FINALITY_ATTESTATION_DOMAIN, payload, attestation["signature"], public_key
-        ):
+        if not verify_protocol_signature(header["version"], FINALITY_ATTESTATION_DOMAIN, payload, attestation["signature"], public_key):
             raise VerificationError("invalid attestation signature")
         seen.add(validator)
     if len(seen) < quorum_size(len(validators)):
         raise VerificationError("finality quorum not reached")
 
-
 def verify_next_finalized(anchor_value: Any, proof_value: Any) -> dict[str, Any]:
     anchor = validate_anchor(anchor_value)
-    proof = _exact_keys(
-        proof_value,
-        {"version", "header", "hash", "proposerPublicKey", "signature", "roundCertificate", "attestations"},
-        "finality proof",
-    )
+    proof = _exact_keys(proof_value, {"version", "header", "hash", "proposerPublicKey", "signature", "roundCertificate", "attestations"}, "finality proof")
     if proof["version"] != 1:
         raise VerificationError("unsupported finality proof version")
     header = _validate_header(proof["header"])
@@ -294,24 +227,14 @@ def verify_next_finalized(anchor_value: Any, proof_value: Any) -> dict[str, Any]
     expected = validators[(header["height"] - 1 + header["round"]) % len(validators)]
     if header["proposer"] != expected["address"] or proposer_public_key != expected["publicKey"]:
         raise VerificationError("unexpected proposer")
-    if not verify_protocol_signature(
-        header["version"], BLOCK_PROPOSAL_DOMAIN, header, proof["signature"], proposer_public_key
-    ):
+    if not verify_protocol_signature(header["version"], BLOCK_PROPOSAL_DOMAIN, header, proof["signature"], proposer_public_key):
         raise VerificationError("invalid proposer signature")
     _verify_round_certificate(header, proof["roundCertificate"], validators)
     _verify_attestations(header, block_hash, proof["attestations"], validators)
-    return {
-        **anchor,
-        "height": header["height"],
-        "blockHash": block_hash,
-        "stateRoot": header["stateRoot"],
-        "timestampMs": header["timestampMs"],
-    }
-
+    return {**anchor, "height": header["height"], "blockHash": block_hash, "stateRoot": header["stateRoot"], "timestampMs": header["timestampMs"]}
 
 def _domain_hash(domain: bytes, *parts: bytes) -> str:
     return sha256(domain, *parts).hex()
-
 
 def _empty_hashes() -> list[str]:
     hashes = [""] * (TREE_DEPTH + 1)
@@ -321,14 +244,12 @@ def _empty_hashes() -> list[str]:
         hashes[depth] = _domain_hash(BRANCH_DOMAIN, child, child)
     return hashes
 
-
 EMPTY_HASHES = _empty_hashes()
-
 
 def verify_state_proof(anchor_value: Any, key: Any, value: Any, proof_value: Any) -> bool:
     try:
         anchor = validate_anchor(anchor_value)
-        if anchor["protocolVersion"] not in (2, 3) or not isinstance(key, str) or not key:
+        if anchor["protocolVersion"] not in STATE_V2_PROTOCOL_VERSIONS or not isinstance(key, str) or not key:
             return False
         proof = _exact_keys(proof_value, {"version", "keyHash", "valueHash", "siblings"}, "state proof")
         if proof["version"] != 1 or not isinstance(proof["siblings"], list) or len(proof["siblings"]) != TREE_DEPTH:
@@ -350,15 +271,23 @@ def verify_state_proof(anchor_value: Any, key: Any, value: Any, proof_value: Any
         for depth in range(TREE_DEPTH - 1, -1, -1):
             sibling = siblings[depth]
             bit = (key_bytes[depth // 8] >> (7 - depth % 8)) & 1
-            current = (
-                _domain_hash(BRANCH_DOMAIN, bytes.fromhex(current), bytes.fromhex(sibling))
-                if bit == 0
-                else _domain_hash(BRANCH_DOMAIN, bytes.fromhex(sibling), bytes.fromhex(current))
-            )
+            current = _domain_hash(BRANCH_DOMAIN, bytes.fromhex(current), bytes.fromhex(sibling)) if bit == 0 else _domain_hash(BRANCH_DOMAIN, bytes.fromhex(sibling), bytes.fromhex(current))
         return current == anchor["stateRoot"]
     except (TypeError, ValueError, VerificationError):
         return False
 
+def activate_next_protocol_version(anchor_value: Any, protocol_version_value: Any, proof_value: Any) -> dict[str, Any]:
+    anchor = validate_anchor(anchor_value)
+    if anchor["protocolVersion"] not in STATE_V2_PROTOCOL_VERSIONS:
+        raise VerificationError("protocol transition proof requires authenticated State v2")
+    protocol_version = _safe_int(protocol_version_value, "protocol transition version", 1)
+    if protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
+        raise VerificationError("unsupported protocol transition version")
+    activation_height = _safe_int(anchor["height"] + 1, "protocol activation height", 1)
+    key = f"protocol-schedule:{activation_height}"
+    if not verify_state_proof(anchor, key, {"protocolVersion": protocol_version}, proof_value):
+        raise VerificationError("invalid protocol transition proof")
+    return {**anchor, "protocolVersion": protocol_version}
 
 def verify_vector(document: Any) -> None:
     vector = _exact_keys(document, {"version", "anchor", "finalityProof", "expectedNext", "stateProof"}, "vector")
@@ -370,7 +299,6 @@ def verify_vector(document: Any) -> None:
     state = _exact_keys(vector["stateProof"], {"key", "value", "proof"}, "state proof vector")
     if not verify_state_proof(next_anchor, state["key"], state["value"], state["proof"]):
         raise VerificationError("State-v2 proof failed")
-
 
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
@@ -384,7 +312,6 @@ def main(argv: list[str]) -> int:
         return 1
     print("independent light-client vector verification: OK")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))
