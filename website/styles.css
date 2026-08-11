@@ -190,11 +190,19 @@ pre {
 .launch-steps strong { font-family: "Space Grotesk", sans-serif; }
 .launch-steps p { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
 
+.reveal-ready { opacity: 0; transform: translateY(14px); }
+.revealed { opacity: 1; transform: translateY(0); transition: opacity .55s ease, transform .55s ease; }
+
 .site-footer { min-height: 160px; padding: 48px 0; display: flex; justify-content: space-between; gap: 30px; align-items: flex-start; border-top: 1px solid var(--border); margin-top: 100px; }
 .site-footer > div:first-child { display: grid; gap: 4px; }
 .site-footer span { color: var(--muted); font-size: 13px; }
 .footer-links { display: flex; flex-wrap: wrap; gap: 22px; color: var(--muted); font-size: 13px; }
 .footer-links a:hover { color: var(--text); }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .reveal-ready, .revealed { opacity: 1; transform: none; transition: none; }
+}
 
 @media (max-width: 980px) {
   .nav { display: none; }
