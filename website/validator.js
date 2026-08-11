@@ -1,7 +1,11 @@
 (() => {
   'use strict';
 
-  const RELEASE_REF = 'a3512f26b32d8d8c71402d0f59c1baeb44a5b3a0';
+  const RELEASE_REF = globalThis.ZYRON_RELEASE_REF;
+  if (typeof RELEASE_REF !== 'string' || !/^[0-9a-f]{40}$/.test(RELEASE_REF)) {
+    throw new Error('ZyronChain canonical release reference is unavailable');
+  }
+
   const REPO_URL = 'https://github.com/zyron249/-zyronchain.git';
   const PUBLIC_KEY_RE = /^[0-9a-f]{128}$/;
   const ADDRESS_RE = /^ZYN[0-9a-f]{40}$/;
@@ -33,17 +37,17 @@
 
   const platformBootstrap = (platform) => {
     if (platform === 'termux') {
-      return `command -v pkg >/dev/null 2>&1 || { echo "Run this script inside Termux." >&2; exit 1; }\npkg update -y\npkg install -y git nodejs-lts`;
+      return `command -v pkg >/dev/null 2>&1 || { echo "Run this script inside Termux." >&2; exit 1; }\npkg update -y\npkg install -y git nodejs-lts\ncommand -v npm >/dev/null 2>&1 || { echo "npm is required." >&2; exit 1; }`;
     }
     if (platform === 'wsl') {
-      return `grep -qi microsoft /proc/version 2>/dev/null || echo "Note: this launcher is intended for Windows via WSL2."\ncommand -v git >/dev/null 2>&1 || { echo "Install git inside WSL2 first." >&2; exit 1; }\ncommand -v node >/dev/null 2>&1 || { echo "Install Node.js 22+ inside WSL2 first." >&2; exit 1; }`;
+      return `grep -qi microsoft /proc/version 2>/dev/null || echo "Note: this launcher is intended for Windows via WSL2."\ncommand -v git >/dev/null 2>&1 || { echo "Install git inside WSL2 first." >&2; exit 1; }\ncommand -v node >/dev/null 2>&1 || { echo "Install Node.js 22+ inside WSL2 first." >&2; exit 1; }\ncommand -v npm >/dev/null 2>&1 || { echo "Install npm inside WSL2 first." >&2; exit 1; }`;
     }
-    return `command -v git >/dev/null 2>&1 || { echo "git is required." >&2; exit 1; }\ncommand -v node >/dev/null 2>&1 || { echo "Node.js 22+ is required." >&2; exit 1; }`;
+    return `command -v git >/dev/null 2>&1 || { echo "git is required." >&2; exit 1; }\ncommand -v node >/dev/null 2>&1 || { echo "Node.js 22+ is required." >&2; exit 1; }\ncommand -v npm >/dev/null 2>&1 || { echo "npm is required." >&2; exit 1; }`;
   };
 
   const nodeVersionCheck = `NODE_MAJOR="$(node -p "process.versions.node.split('.')[0]")"\nif [ "$NODE_MAJOR" -lt 22 ]; then echo "Node.js 22+ is required; found $(node --version)." >&2; exit 1; fi`;
 
-  const repoSetup = `ROOT="$HOME/zyronchain-$VALIDATOR_LABEL"\nREPO="$ROOT/repo"\nmkdir -p "$ROOT"\nif [ ! -d "$REPO/.git" ]; then\n  git clone ${shellQuote(REPO_URL)} "$REPO"\nfi\ncd "$REPO"\ngit fetch --quiet origin\ngit checkout --detach ${shellQuote(RELEASE_REF)}\ncd l1\nnpm ci\nnpm run build`;
+  const repoSetup = `ROOT="$HOME/zyronchain-$VALIDATOR_LABEL"\nREPO="$ROOT/repo"\nmkdir -p "$ROOT"\nif [ ! -d "$REPO/.git" ]; then\n  git clone ${shellQuote(REPO_URL)} "$REPO"\nfi\ncd "$REPO"\ngit remote set-url origin ${shellQuote(REPO_URL)}\ngit fetch --quiet --prune origin\ngit cat-file -e ${shellQuote(`${RELEASE_REF}^{commit}`)} || { echo "Pinned release commit is unavailable." >&2; exit 1; }\ngit checkout --detach ${shellQuote(RELEASE_REF)}\n[ "$(git rev-parse HEAD)" = ${shellQuote(RELEASE_REF)} ] || { echo "Pinned release verification failed." >&2; exit 1; }\ncd l1\nnpm ci\nnpm run build`;
 
   const identityScript = (platform, label) => `#!/usr/bin/env bash
 set -euo pipefail
@@ -61,8 +65,8 @@ umask 077
 PASSWORD_FILE="$ROOT/validator.password"
 KEY_FILE="$ROOT/validator.json"
 
-if [ -e "$KEY_FILE" ]; then
-  echo "Refusing to overwrite existing validator key: $KEY_FILE" >&2
+if [ -e "$KEY_FILE" ] || [ -e "$PASSWORD_FILE" ]; then
+  echo "Refusing to overwrite an existing validator key or password file under $ROOT." >&2
   exit 1
 fi
 
@@ -294,7 +298,8 @@ ${commandArgs}
       const peerNote = peers.length ? `${peers.length} explicit peer(s).` : 'no explicit peers; this node will start isolated.';
       setStatus(status, `Validated ${genesis.chainId}; ${peerNote}`);
     } catch (error) {
-      $('network-output').hidden = true;
+      const output = $('network-output');
+      if (output) output.hidden = true;
       setStatus(status, error instanceof Error ? error.message : 'Unable to build validator script.', true);
     }
   });

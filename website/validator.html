@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#050b11" />
   <meta name="description" content="Configure a ZyronChain validator safely in the browser and run it locally without exposing private keys." />
+  <meta name="referrer" content="no-referrer" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'" />
   <link rel="canonical" href="https://zyronchain.com/validator.html" />
   <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
   <link rel="manifest" href="./site.webmanifest" />
@@ -85,8 +87,8 @@
             </label>
             <label class="full-field">
               <span>Verified L1 release commit</span>
-              <input id="release-ref" name="release" value="a3512f26b32d8d8c71402d0f59c1baeb44a5b3a0" readonly />
-              <small>All validators in one network should run the same reviewed L1 release.</small>
+              <input id="release-ref" name="release" value="loading…" readonly aria-label="Canonical L1 release commit" />
+              <small>Wallet and validator launchers use the same exact reviewed release commit.</small>
             </label>
             <div class="form-actions full-field">
               <button type="submit" class="button button-primary">Build identity script</button>
@@ -195,6 +197,7 @@
   </footer>
 
   <script src="./app.js"></script>
+  <script src="./release.js"></script>
   <script src="./validator.js"></script>
 </body>
 </html>

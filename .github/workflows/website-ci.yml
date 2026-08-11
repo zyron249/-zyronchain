@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -28,6 +30,7 @@ jobs:
       - name: Check browser JavaScript syntax
         run: |
           node --check website/app.js
+          node --check website/release.js
           node --check website/wallet.js
           node --check website/validator.js
       - name: Verify production website, wallet and validator contracts
@@ -36,11 +39,13 @@ jobs:
           node <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
+          const { execFileSync } = require('node:child_process');
 
           const required = [
             'website/index.html',
             'website/styles.css',
             'website/app.js',
+            'website/release.js',
             'website/README.md',
             'website/robots.txt',
             'website/sitemap.xml',
@@ -63,6 +68,7 @@ jobs:
           const html = fs.readFileSync('website/index.html', 'utf8');
           const css = fs.readFileSync('website/styles.css', 'utf8');
           const js = fs.readFileSync('website/app.js', 'utf8');
+          const releaseJs = fs.readFileSync('website/release.js', 'utf8');
           const walletHtml = fs.readFileSync('website/wallet.html', 'utf8');
           const walletCss = fs.readFileSync('website/wallet.css', 'utf8');
           const walletJs = fs.readFileSync('website/wallet.js', 'utf8');
@@ -74,6 +80,16 @@ jobs:
           const favicon = fs.readFileSync('website/favicon.svg', 'utf8');
           const logo = fs.readFileSync('website/logo.svg', 'utf8');
           const manifest = JSON.parse(fs.readFileSync('website/site.webmanifest', 'utf8'));
+
+          const releaseMatch = releaseJs.match(/const RELEASE_REF = '([0-9a-f]{40})';/);
+          if (!releaseMatch) throw new Error('Canonical website release reference is missing or malformed');
+          const releaseRef = releaseMatch[1];
+          const shaLiterals = releaseJs.match(/[0-9a-f]{40}/g) ?? [];
+          if (shaLiterals.length !== 1 || shaLiterals[0] !== releaseRef) {
+            throw new Error('website/release.js must contain exactly one canonical 40-hex release SHA');
+          }
+          execFileSync('git', ['cat-file', '-e', `${releaseRef}^{commit}`], { stdio: 'ignore' });
+          execFileSync('git', ['merge-base', '--is-ancestor', releaseRef, 'HEAD'], { stdio: 'ignore' });
 
           for (const marker of [
             './styles.css',
@@ -91,32 +107,58 @@ jobs:
           ]) {
             if (!html.includes(marker)) throw new Error(`Website HTML missing required marker: ${marker}`);
           }
+          if (/\bV[1-9]\b/.test(html)) {
+            throw new Error('Homepage validator visualization must not look like protocol-version labels');
+          }
 
           for (const marker of [
             './styles.css',
             './wallet.css',
+            './release.js',
             './wallet.js',
             './logo.svg',
             'ZyronChain Wallet Setup',
             'LOCAL-ONLY WALLET SETUP',
             'NO SECRET IN BROWSER',
             'PRIVATE KEY STAYS LOCAL',
-            'PUBLIC_WALLET_RPC_WHEN_PUBLISHED'
+            'PUBLIC_WALLET_RPC_WHEN_PUBLISHED',
+            'data-release-short'
           ]) {
             if (!walletHtml.includes(marker)) throw new Error(`Wallet page missing required marker: ${marker}`);
           }
 
           for (const marker of [
             './validator.css',
+            './release.js',
             './validator.js',
             './logo.svg',
             'Validator Launchpad',
             'Private key stays local',
             'Public validator enrollment not active',
             'NO SECRET IN BROWSER',
-            'PRIVATE / NON-VALUE'
+            'PRIVATE / NON-VALUE',
+            'id="release-ref"'
           ]) {
             if (!validatorHtml.includes(marker)) throw new Error(`Validator launchpad missing required marker: ${marker}`);
+          }
+
+          const walletReleaseIndex = walletHtml.indexOf('<script src="./release.js"></script>');
+          const walletLauncherIndex = walletHtml.indexOf('<script src="./wallet.js"></script>');
+          if (walletReleaseIndex < 0 || walletLauncherIndex < 0 || walletReleaseIndex > walletLauncherIndex) {
+            throw new Error('Wallet must load canonical release metadata before wallet.js');
+          }
+          const validatorReleaseIndex = validatorHtml.indexOf('<script src="./release.js"></script>');
+          const validatorLauncherIndex = validatorHtml.indexOf('<script src="./validator.js"></script>');
+          if (validatorReleaseIndex < 0 || validatorLauncherIndex < 0 || validatorReleaseIndex > validatorLauncherIndex) {
+            throw new Error('Validator must load canonical release metadata before validator.js');
+          }
+          for (const [name, source] of [['wallet.js', walletJs], ['validator.js', validatorJs]]) {
+            if (!source.includes('globalThis.ZYRON_RELEASE_REF')) {
+              throw new Error(`${name} does not consume the canonical release reference`);
+            }
+            if (/[0-9a-f]{40}/.test(source)) {
+              throw new Error(`${name} must not contain its own hard-coded Git commit SHA`);
+            }
           }
 
           for (const marker of [
@@ -182,6 +224,7 @@ jobs:
             ['website/validator.html', validatorHtml]
           ]);
           for (const [file, source] of pages) {
+            if (!/<html\s+lang="en">/i.test(source)) throw new Error(`${file} is missing its language declaration`);
             const ids = [...source.matchAll(/\bid=["']([^"']+)["']/gi)].map((match) => match[1]);
             const duplicateIds = ids.filter((id, index) => ids.indexOf(id) !== index);
             if (duplicateIds.length) throw new Error(`${file} has duplicate id(s): ${[...new Set(duplicateIds)].join(', ')}`);
@@ -220,7 +263,7 @@ jobs:
             throw new Error('Main browser JavaScript must not bind to validator RPC');
           }
 
-          for (const [name, source] of [['wallet', walletJs], ['validator', validatorJs]]) {
+          for (const [name, source] of [['release', releaseJs], ['wallet', walletJs], ['validator', validatorJs]]) {
             if (/fetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(/.test(source)) {
               throw new Error(`${name} browser JavaScript must remain offline-only`);
             }
@@ -237,8 +280,8 @@ jobs:
           }
 
           for (const marker of [
-            "const RELEASE_REF = 'b7e0d37f1471f825f02ac374bafdaf7acb25a990'",
             'git clone https://github.com/zyron249/-zyronchain.git',
+            'checkout --detach',
             'keygen --out wallet.json --password-file wallet.password',
             'chmod 600 wallet.json wallet.password',
             'Read-Host "Choose wallet password (12+ chars)" -AsSecureString',
@@ -249,7 +292,9 @@ jobs:
           }
 
           for (const marker of [
-            "const RELEASE_REF = 'a3512f26b32d8d8c71402d0f59c1baeb44a5b3a0'",
+            'git remote set-url origin',
+            'git cat-file -e',
+            'git rev-parse HEAD',
             'keygen --out',
             'chmod 600',
             '--host 127.0.0.1',
@@ -274,5 +319,5 @@ jobs:
             }
           }
 
-          console.log('website-wallet-validator-contract-ok');
+          console.log(`website-wallet-validator-contract-ok release=${releaseRef}`);
           NODE

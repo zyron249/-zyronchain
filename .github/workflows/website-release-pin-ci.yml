@@ -1,0 +1,103 @@
+name: Website Canonical Release Pin CI
+
+on:
+  pull_request:
+    paths:
+      - 'website/**'
+      - '.github/workflows/website-release-pin-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - '.github/workflows/website-release-pin-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  canonical-release-pin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Verify canonical L1 pin and offline browser boundary
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_REF="$(sed -nE "s/^[[:space:]]*const RELEASE_REF = '([0-9a-f]{40})';$/\1/p" website/release.js)"
+          if [[ ! "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "website/release.js does not contain exactly one valid canonical release SHA" >&2
+            exit 1
+          fi
+
+          git cat-file -e "${RELEASE_REF}^{commit}"
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            if [[ ! "$PR_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Missing pull-request base SHA" >&2
+              exit 1
+            fi
+            if [[ "$RELEASE_REF" != "$PR_BASE_SHA" ]]; then
+              echo "Website release pin is stale: $RELEASE_REF != reviewed base $PR_BASE_SHA" >&2
+              exit 1
+            fi
+          fi
+
+          CHANGED_L1="$(git diff --name-only "$RELEASE_REF"..HEAD -- 'l1/**' 'WHITEPAPER.md' 'docs/L1_THREAT_MODEL.md' 'docs/STANDALONE_L1_READINESS.md' || true)"
+          if [[ -n "$CHANGED_L1" ]]; then
+            echo "Website pin does not cover canonical L1/security changes:" >&2
+            printf '%s\n' "$CHANGED_L1" >&2
+            exit 1
+          fi
+
+          node <<'NODE'
+          const fs = require('node:fs');
+          const pages = ['website/index.html', 'website/wallet.html', 'website/validator.html'];
+          for (const page of pages) {
+            const html = fs.readFileSync(page, 'utf8');
+            for (const marker of [
+              'http-equiv="Content-Security-Policy"',
+              "default-src 'self'",
+              "script-src 'self'",
+              "style-src 'self'",
+              "connect-src 'none'",
+              "object-src 'none'",
+              "base-uri 'none'",
+              "frame-src 'none'",
+              'name="referrer" content="no-referrer"'
+            ]) {
+              if (!html.includes(marker)) throw new Error(`${page} missing browser security marker: ${marker}`);
+            }
+            for (const match of html.matchAll(/<a\b[^>]*target=["']_blank["'][^>]*>/gi)) {
+              const tag = match[0];
+              if (!/\brel=["'][^"']*\bnoopener\b[^"']*["']/i.test(tag) ||
+                  !/\brel=["'][^"']*\bnoreferrer\b[^"']*["']/i.test(tag)) {
+                throw new Error(`${page} has target=_blank without noopener+noreferrer: ${tag}`);
+              }
+            }
+          }
+
+          const index = fs.readFileSync('website/index.html', 'utf8');
+          if (!index.includes('cd ./-zyronchain/l1')) {
+            throw new Error('Homepage quick-start must safely enter the leading-dash repository directory');
+          }
+          for (const marker of [
+            'Protocol-v5 mining',
+            '6.25 ZYN',
+            '4,000,000',
+            '20-bit SHA-256 target',
+            'does not select the canonical chain',
+            'validator quorum finality'
+          ]) {
+            if (!index.includes(marker)) throw new Error(`Homepage mining disclosure missing: ${marker}`);
+          }
+          NODE
+
+          echo "canonical-release-pin-and-browser-policy-ok ${RELEASE_REF}"
