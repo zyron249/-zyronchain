@@ -25,6 +25,10 @@ jobs:
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: '24'
+      - name: Check browser JavaScript syntax
+        run: |
+          node --check website/app.js
+          node --check website/validator.js
       - name: Verify production website and validator launchpad contract
         shell: bash
         run: |
