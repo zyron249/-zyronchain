@@ -50,6 +50,12 @@ import {
 import type { GenesisConfig, Validator, ValidatorApproval } from "./types.js";
 import { MAX_SUPPLY_ATOMS, type Address } from "./types.js";
 import { LocalValidatorSigner, RemoteValidatorSigner, type ValidatorSigner } from "./validator-signer.js";
+import {
+  assertRpcApiVersion,
+  readBoundedJson,
+  readBoundedResponseText,
+  transactionVersionForProtocolVersion
+} from "./rpc-client.js";
 
 interface ValidatorProposal {
   transactionVersion: TransactionVersion;
@@ -143,9 +149,6 @@ async function fetchAndInstallCheckpoint(args: string[]): Promise<void> {
     throw new Error("checkpoint-fetch-install requires lowercase 32-byte --tip-hash and --sha256 anchors");
   }
   const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
-  // The fetch identity is deliberately ephemeral and separate from the target.
-  // No target data exists until the complete snapshot passes external-anchor,
-  // finality, governance and State-v2 validation.
   const temporaryIdentityDir = await mkdtemp(join(tmpdir(), "zyron-checkpoint-fetch-"));
   let client: Awaited<ReturnType<typeof createP2PNode>> | undefined;
   try {
@@ -240,10 +243,7 @@ async function keygen(args: string[]): Promise<void> {
     ? encryptPrivateKey(privateKey, password)
     : { privateKey, publicKey, address };
   const path = resolve(output);
-  await writeFile(path, `${JSON.stringify(stored, null, 2)}\n`, {
-    flag: "wx",
-    mode: 0o600
-  });
+  await writeFile(path, `${JSON.stringify(stored, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   await chmod(path, 0o600);
   console.log(`ZyronChain ${password ? "encrypted " : ""}key written with mode 0600: ${path}`);
   console.log(`Address: ${address}`);
@@ -257,10 +257,7 @@ async function createGenesis(args: string[]): Promise<void> {
   ]));
   const output = requiredOption(args, "--out");
   const chainId = requiredOption(args, "--chain-id");
-  const validators = options(args, "--validator-public-key").map((publicKey) => ({
-    publicKey,
-    address: addressFromPublicKey(publicKey)
-  }));
+  const validators = options(args, "--validator-public-key").map((publicKey) => ({ publicKey, address: addressFromPublicKey(publicKey) }));
   const activityOracles = options(args, "--oracle-public-key");
   const activityPool = requiredOption(args, "--activity-pool") as Address;
   const allocations = options(args, "--allocation").map(parseAllocation);
@@ -270,7 +267,6 @@ async function createGenesis(args: string[]): Promise<void> {
   const timestampText = option(args, "--timestamp-ms");
   const timestampMs = timestampText === undefined ? Date.now() : parseSafeInteger(timestampText, "timestamp-ms");
   const config: GenesisConfig = { chainId, timestampMs, validators, activityOracles, activityPool, allocations };
-  // Construction is the canonical validation pass; invalid public keys, addresses, duplicates, or supply fail here.
   new ZyronChain(config);
   const path = resolve(output);
   await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, { flag: "wx", mode: 0o644 });
@@ -312,21 +308,11 @@ async function runNode(args: string[]): Promise<void> {
   const validatorSignerUrl = option(args, "--validator-signer-url");
   const validatorPublicKey = option(args, "--validator-public-key");
   const validatorSignerTokenPath = option(args, "--validator-signer-token-file");
-  if (validatorKeyPath && (validatorSignerUrl || validatorPublicKey || validatorSignerTokenPath)) {
-    throw new Error("--validator-key cannot be combined with remote validator signer options");
-  }
-  if (Boolean(validatorSignerUrl) !== Boolean(validatorPublicKey)) {
-    throw new Error("Remote validator signing requires both --validator-signer-url and --validator-public-key");
-  }
-  if (validatorSignerUrl && !validatorSignerTokenPath) {
-    throw new Error("Remote validator signing requires --validator-signer-token-file");
-  }
-  if (validatorSignerTokenPath && !validatorSignerUrl) {
-    throw new Error("--validator-signer-token-file requires --validator-signer-url");
-  }
-  const validatorSignerToken = validatorSignerTokenPath
-    ? await readAuthToken(resolve(validatorSignerTokenPath), "Validator signer", true)
-    : undefined;
+  if (validatorKeyPath && (validatorSignerUrl || validatorPublicKey || validatorSignerTokenPath)) throw new Error("--validator-key cannot be combined with remote validator signer options");
+  if (Boolean(validatorSignerUrl) !== Boolean(validatorPublicKey)) throw new Error("Remote validator signing requires both --validator-signer-url and --validator-public-key");
+  if (validatorSignerUrl && !validatorSignerTokenPath) throw new Error("Remote validator signing requires --validator-signer-token-file");
+  if (validatorSignerTokenPath && !validatorSignerUrl) throw new Error("--validator-signer-token-file requires --validator-signer-url");
+  const validatorSignerToken = validatorSignerTokenPath ? await readAuthToken(resolve(validatorSignerTokenPath), "Validator signer", true) : undefined;
   const validatorSigner: ValidatorSigner | undefined = privateKey
     ? new LocalValidatorSigner(privateKey)
     : validatorSignerUrl && validatorPublicKey && validatorSignerToken
@@ -344,11 +330,7 @@ async function runNode(args: string[]): Promise<void> {
   const service = new NodeService(store, journal, validatorSigner);
   const advertisedPeerUrls = options(args, "--advertise-peer");
   const trustedPeerPublicKeys = options(args, "--trusted-peer-public-key");
-  assertSafeRpcBinding(
-    host,
-    Boolean(peerAuthToken || trustedPeerPublicKeys.length),
-    trustedProxyAddresses.length > 0
-  );
+  assertSafeRpcBinding(host, Boolean(peerAuthToken || trustedPeerPublicKeys.length), trustedProxyAddresses.length > 0);
   const issuedAtMs = Date.now();
   const identity = (peerUrls.length || advertisedPeerUrls.length || trustedPeerPublicKeys.length || nativeListen.length || nativePeers.length)
     ? await loadOrCreateNodeIdentity(resolve(dataDir))
@@ -369,12 +351,8 @@ async function runNode(args: string[]): Promise<void> {
   }) : undefined;
   const peerDirectory = new PeerDirectory(service.status());
   if (peerRecord) peerDirectory.admit(peerRecord, issuedAtMs);
-  const nativeNode = identity && (nativeListen.length || nativePeers.length)
-    ? await createP2PNode(identity, { listen: nativeListen })
-    : undefined;
-  const nativePeerPool = nativeNode
-    ? new NativePeerPool(nativePeers, nativeNode.peerId.toString(), nativePeerGroups)
-    : undefined;
+  const nativeNode = identity && (nativeListen.length || nativePeers.length) ? await createP2PNode(identity, { listen: nativeListen }) : undefined;
+  const nativePeerPool = nativeNode ? new NativePeerPool(nativePeers, nativeNode.peerId.toString(), nativePeerGroups) : undefined;
   let nativeConsensus: NativeConsensusPeerClient | undefined;
   if (nativeNode && identity && nativePeerPool) {
     await registerP2PIdentityProtocol(nativeNode, identity, service.status());
@@ -387,12 +365,7 @@ async function runNode(args: string[]): Promise<void> {
         try { assertSafeDiscoveredPeer(peer); return true; } catch { return false; }
       })
     );
-    nativeConsensus = new NativeConsensusPeerClient(
-      nativeNode,
-      nativePeerPool.snapshot(),
-      identity,
-      service.status()
-    );
+    nativeConsensus = new NativeConsensusPeerClient(nativeNode, nativePeerPool.snapshot(), identity, service.status());
   }
 
   try {
@@ -409,26 +382,19 @@ async function runNode(args: string[]): Promise<void> {
   }
   let nativeSyncCursor = 0;
   if (nativeNode && identity && nativePeerPool) {
-    const admitted = await refreshNativePeerDiscovery(
-      nativeNode, nativePeerPool, identity, service.status(), nativeSyncCursor, nativePeerReputation
-    );
+    const admitted = await refreshNativePeerDiscovery(nativeNode, nativePeerPool, identity, service.status(), nativeSyncCursor, nativePeerReputation);
     if (admitted && nativeConsensus) nativeConsensus.replaceTargets(nativePeerPool.snapshot(nativeSyncCursor));
     await syncNativePeers(nativeNode, nativePeerPool.snapshot(), identity, service, "Initial native peer sync", nativeSyncCursor++, nativePeerGroups, nativePeerReputation, nativePeerPool);
     nativeConsensus?.replaceTargets(nativePeerPool.snapshot(nativeSyncCursor));
   }
 
   const consensusPeers: ConsensusPeerClient = nativeConsensus ? {
-    requestAttestations: async (block) => [
-      ...await peers.requestAttestations(block),
-      ...await nativeConsensus.requestAttestations(block)
-    ],
+    requestAttestations: async (block) => [...await peers.requestAttestations(block), ...await nativeConsensus.requestAttestations(block)],
     requestRoundSkips: async (height, round, previousCertificate = []) => [
       ...await peers.requestRoundSkips(height, round, previousCertificate),
       ...await nativeConsensus.requestRoundSkips(height, round, previousCertificate)
     ],
-    broadcastBlock: async (block) => {
-      await Promise.allSettled([peers.broadcastBlock(block), nativeConsensus.broadcastBlock(block)]);
-    }
+    broadcastBlock: async (block) => { await Promise.allSettled([peers.broadcastBlock(block), nativeConsensus.broadcastBlock(block)]); }
   } : peers;
 
   const server = createRpcServer(service, {
@@ -444,7 +410,6 @@ async function runNode(args: string[]): Promise<void> {
       ]);
     }
   });
-  // Retain the OS-backed writer lease for exactly the server lifetime.
   server.once("close", () => dataLease.close());
   await new Promise<void>((resolveListen, reject) => {
     server.once("error", reject);
@@ -466,9 +431,7 @@ async function runNode(args: string[]): Promise<void> {
     for (const timer of timers) clearInterval(timer);
     timers.clear();
     const rpcDrain = await drainHttpServer(server);
-    if (rpcDrain === "forced") {
-      console.warn("RPC drain deadline exceeded; remaining connections were closed");
-    }
+    if (rpcDrain === "forced") console.warn("RPC drain deadline exceeded; remaining connections were closed");
     await backgroundTasks.drain();
     if (nativeNode) await nativeNode.stop();
     dataLease.close();
@@ -488,9 +451,7 @@ async function runNode(args: string[]): Promise<void> {
   if (trustedProxyAddresses.length) console.log("RPC accepts requests only from configured proxies asserting x-forwarded-proto: https");
   console.log(`Genesis ${service.status().genesisHash}, height ${service.status().height}`);
   if (identity) console.log(`Node ID ${identity.nodeId}`);
-  if (nativeNode) {
-    for (const address of nativeNode.getMultiaddrs()) console.log(`Native P2P ${address.toString()}`);
-  }
+  if (nativeNode) for (const address of nativeNode.getMultiaddrs()) console.log(`Native P2P ${address.toString()}`);
 
   if (validatorSigner) {
     schedule(() => {
@@ -499,18 +460,14 @@ async function runNode(args: string[]): Promise<void> {
         .catch((error) => console.warn(`Validator round failed: ${safeError(error)}`)));
     }, BLOCK_INTERVAL_MS);
   }
-
   schedule(() => {
     backgroundTasks.run(async () => {
       try {
         const accepted = await peers.syncAny(service);
         if (accepted) console.log(`Caught up ${accepted} finalized block(s) from configured peers`);
-      } catch (error) {
-        console.warn(`Periodic peer sync skipped: ${safeError(error)}`);
-      }
+      } catch (error) { console.warn(`Periodic peer sync skipped: ${safeError(error)}`); }
     });
   }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3)));
-
   if (nativeNode && identity && nativePeerPool && nativePeerPool.size) {
     let nativeSyncRunning = false;
     schedule(() => {
@@ -521,7 +478,6 @@ async function runNode(args: string[]): Promise<void> {
         .finally(() => { nativeSyncRunning = false; }));
     }, Math.max(5_000, Math.floor(BLOCK_INTERVAL_MS / 3)));
   }
-
   if (nativeNode && identity && nativePeerPool && nativePeerPool.size) {
     let nativeDiscoveryRunning = false;
     schedule(() => {
@@ -537,7 +493,6 @@ async function runNode(args: string[]): Promise<void> {
         .finally(() => { nativeDiscoveryRunning = false; }));
     }, 60_000);
   }
-
   schedule(() => {
     backgroundTasks.run(() => peers.refreshPeerDirectory(peerDirectory, service.status())
       .then((discovered) => { if (discovered) console.log(`Discovered ${discovered} signed peer record(s)`); })
@@ -562,20 +517,18 @@ async function submitTransfer(args: string[]): Promise<void> {
   }
   const nonce = Number((nonceResponse as { nonce: number }).nonce) + 1;
   const transactionVersion = await transactionVersionForRpc(rpc);
-  const tx = createTransfer(
-    { chainId, nonce, sender, receiver, amountAtoms, feeAtoms, timestampMs: Date.now() },
-    key,
-    publicKey,
-    transactionVersion
-  );
+  const tx = createTransfer({ chainId, nonce, sender, receiver, amountAtoms, feeAtoms, timestampMs: Date.now() }, key, publicKey, transactionVersion);
   const response = await fetch(`${rpc}/tx`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-zyron-rpc-version": String(RPC_API_VERSION) },
     body: JSON.stringify(tx),
     signal: AbortSignal.timeout(8_000)
   });
-  if (!response.ok) throw new Error(`RPC rejected transaction: HTTP ${response.status} ${await response.text()}`);
-  const result = await response.json() as { txid?: unknown };
+  assertRpcApiVersion(response, RPC_API_VERSION);
+  if (!response.ok) {
+    throw new Error(`RPC rejected transaction: HTTP ${response.status} ${await readBoundedResponseText(response, 4_096, "RPC transaction error")}`);
+  }
+  const result = await readBoundedJson(response, 4_096, "RPC transaction response") as { txid?: unknown };
   if (result.txid !== tx.txid) throw new Error("RPC transaction ID mismatch");
   console.log(`Submitted transaction ${tx.txid}`);
 }
@@ -597,20 +550,9 @@ async function createValidatorProposalFile(args: string[]): Promise<void> {
   const status = await fetchJson(`${rpc}/status`) as { chainId?: unknown; height?: unknown };
   const nonceResult = await fetchJson(`${rpc}/nonce/${sender}`) as { nonce?: unknown };
   const transactionVersion = await transactionVersionForRpc(rpc);
-  if (typeof status.chainId !== "string" || !Number.isSafeInteger(status.height) || !Number.isSafeInteger(nonceResult.nonce)) {
-    throw new Error("RPC returned invalid proposal context");
-  }
-  if (activationHeight < Number(status.height) + 1 + MIN_VALIDATOR_UPDATE_DELAY) {
-    throw new Error(`Activation height must be at least ${Number(status.height) + 1 + MIN_VALIDATOR_UPDATE_DELAY}`);
-  }
-  const proposal: ValidatorProposal = {
-    transactionVersion,
-    chainId: status.chainId,
-    nonce: Number(nonceResult.nonce) + 1,
-    sender,
-    activationHeight,
-    validators
-  };
+  if (typeof status.chainId !== "string" || !Number.isSafeInteger(status.height) || !Number.isSafeInteger(nonceResult.nonce)) throw new Error("RPC returned invalid proposal context");
+  if (activationHeight < Number(status.height) + 1 + MIN_VALIDATOR_UPDATE_DELAY) throw new Error(`Activation height must be at least ${Number(status.height) + 1 + MIN_VALIDATOR_UPDATE_DELAY}`);
+  const proposal: ValidatorProposal = { transactionVersion, chainId: status.chainId, nonce: Number(nonceResult.nonce) + 1, sender, activationHeight, validators };
   await writeFile(output, `${JSON.stringify(proposal, null, 2)}\n`, { flag: "wx", mode: 0o644 });
   console.log(`Validator proposal written: ${output}`);
 }
@@ -636,12 +578,7 @@ async function submitValidatorProposal(args: string[]): Promise<void> {
   if (!approvalPaths.length) throw new Error("At least one --approval is required");
   const approvals: ValidatorApproval[] = [];
   for (const path of approvalPaths) approvals.push(await readValidatorApproval(resolve(path)));
-  const tx = createValidatorSetUpdate(
-    { ...proposal, approvals, timestampMs: Date.now() },
-    privateKey,
-    publicKey,
-    proposal.transactionVersion
-  );
+  const tx = createValidatorSetUpdate({ ...proposal, approvals, timestampMs: Date.now() }, privateKey, publicKey, proposal.transactionVersion);
   validateTransactionShape(tx);
   const rpc = normalizeRpcUrl(requiredOption(args, "--rpc"));
   const response = await fetch(`${rpc}/tx`, {
@@ -650,8 +587,11 @@ async function submitValidatorProposal(args: string[]): Promise<void> {
     body: JSON.stringify(tx),
     signal: AbortSignal.timeout(8_000)
   });
-  if (!response.ok) throw new Error(`RPC rejected validator update: HTTP ${response.status} ${await response.text()}`);
-  const result = await response.json() as { txid?: unknown };
+  assertRpcApiVersion(response, RPC_API_VERSION);
+  if (!response.ok) {
+    throw new Error(`RPC rejected validator update: HTTP ${response.status} ${await readBoundedResponseText(response, 4_096, "RPC validator update error")}`);
+  }
+  const result = await readBoundedJson(response, 4_096, "RPC validator update response") as { txid?: unknown };
   if (result.txid !== tx.txid) throw new Error("RPC validator update transaction ID mismatch");
   console.log(`Submitted validator update ${tx.txid}`);
 }
@@ -669,20 +609,9 @@ async function createProtocolProposalFile(args: string[]): Promise<void> {
   const status = await fetchJson(`${rpc}/status`) as { chainId?: unknown; height?: unknown };
   const nonceResult = await fetchJson(`${rpc}/nonce/${sender}`) as { nonce?: unknown };
   const transactionVersion = await transactionVersionForRpc(rpc);
-  if (typeof status.chainId !== "string" || !Number.isSafeInteger(status.height) || !Number.isSafeInteger(nonceResult.nonce)) {
-    throw new Error("RPC returned invalid protocol proposal context");
-  }
-  if (activationHeight < Number(status.height) + 1 + MIN_PROTOCOL_UPDATE_DELAY) {
-    throw new Error(`Activation height must be at least ${Number(status.height) + 1 + MIN_PROTOCOL_UPDATE_DELAY}`);
-  }
-  const proposal: ProtocolProposal = {
-    transactionVersion,
-    chainId: status.chainId,
-    nonce: Number(nonceResult.nonce) + 1,
-    sender,
-    activationHeight,
-    protocolVersion
-  };
+  if (typeof status.chainId !== "string" || !Number.isSafeInteger(status.height) || !Number.isSafeInteger(nonceResult.nonce)) throw new Error("RPC returned invalid protocol proposal context");
+  if (activationHeight < Number(status.height) + 1 + MIN_PROTOCOL_UPDATE_DELAY) throw new Error(`Activation height must be at least ${Number(status.height) + 1 + MIN_PROTOCOL_UPDATE_DELAY}`);
+  const proposal: ProtocolProposal = { transactionVersion, chainId: status.chainId, nonce: Number(nonceResult.nonce) + 1, sender, activationHeight, protocolVersion };
   await writeFile(output, `${JSON.stringify(proposal, null, 2)}\n`, { flag: "wx", mode: 0o644 });
   console.log(`Protocol proposal written: ${output}`);
 }
@@ -708,12 +637,7 @@ async function submitProtocolProposal(args: string[]): Promise<void> {
   if (!approvalPaths.length) throw new Error("At least one --approval is required");
   const approvals: ValidatorApproval[] = [];
   for (const path of approvalPaths) approvals.push(await readValidatorApproval(resolve(path)));
-  const tx = createProtocolUpgrade(
-    { ...proposal, approvals, timestampMs: Date.now() },
-    privateKey,
-    publicKey,
-    proposal.transactionVersion
-  );
+  const tx = createProtocolUpgrade({ ...proposal, approvals, timestampMs: Date.now() }, privateKey, publicKey, proposal.transactionVersion);
   validateTransactionShape(tx);
   const rpc = normalizeRpcUrl(requiredOption(args, "--rpc"));
   const response = await fetch(`${rpc}/tx`, {
@@ -722,8 +646,11 @@ async function submitProtocolProposal(args: string[]): Promise<void> {
     body: JSON.stringify(tx),
     signal: AbortSignal.timeout(8_000)
   });
-  if (!response.ok) throw new Error(`RPC rejected protocol update: HTTP ${response.status} ${await response.text()}`);
-  const result = await response.json() as { txid?: unknown };
+  assertRpcApiVersion(response, RPC_API_VERSION);
+  if (!response.ok) {
+    throw new Error(`RPC rejected protocol update: HTTP ${response.status} ${await readBoundedResponseText(response, 4_096, "RPC protocol update error")}`);
+  }
+  const result = await readBoundedJson(response, 4_096, "RPC protocol update response") as { txid?: unknown };
   if (result.txid !== tx.txid) throw new Error("RPC protocol update transaction ID mismatch");
   console.log(`Submitted protocol update ${tx.txid}`);
 }
@@ -780,9 +707,7 @@ async function syncNativePeers(
     } catch (error) {
       const failure = classifyNativePeerFailure(error);
       await reputation?.recordFailure(peerId, failure);
-      if (pool?.isDynamic(peerId) && (failure === "protocol" || (reputation?.failureCount(peerId) ?? 0) >= NATIVE_DYNAMIC_EVICT_TRANSIENT_FAILURES)) {
-        pool.evictDynamic(peerId);
-      }
+      if (pool?.isDynamic(peerId) && (failure === "protocol" || (reputation?.failureCount(peerId) ?? 0) >= NATIVE_DYNAMIC_EVICT_TRANSIENT_FAILURES)) pool.evictDynamic(peerId);
       console.warn(`${label} skipped ${peer.toString()}: ${safeError(error)}`);
     }
   }
@@ -805,8 +730,6 @@ async function refreshNativePeerDiscovery(
       candidates = await discoverNativePeersFrom(node, source, identity, chain);
     } catch (error) {
       const failure = classifyNativePeerFailure(error);
-      // A transient discovery-stream problem must not suppress an otherwise
-      // healthy configured peer from the independent finalized-sync path.
       if (failure === "protocol") {
         await reputation?.recordFailure(sourcePeerId, failure);
         pool.evictDynamic(sourcePeerId);
@@ -819,12 +742,7 @@ async function refreshNativePeerDiscovery(
     for (const candidate of selected) {
       const candidatePeerId = nativePeerId(candidate);
       if (pool.has(candidatePeerId) || (reputation && !reputation.isAvailable(candidatePeerId))) continue;
-      try {
-        // An authenticated source that advertises an unsafe auto-dial address
-        // is itself violating discovery policy; do not attribute that hint to
-        // the uninvolved candidate identity.
-        assertSafeDiscoveredPeer(candidate);
-      } catch (error) {
+      try { assertSafeDiscoveredPeer(candidate); } catch (error) {
         await reputation?.recordFailure(sourcePeerId, "protocol");
         pool.evictDynamic(sourcePeerId);
         console.warn(`Native peer discovery rejected unsafe hint from ${source.toString()}: ${safeError(error)}`);
@@ -879,11 +797,9 @@ async function fetchJson(url: string): Promise<unknown> {
     headers: { "x-zyron-rpc-version": String(RPC_API_VERSION) },
     signal: AbortSignal.timeout(8_000)
   });
-  assertCompatibleRpcResponse(response);
+  assertRpcApiVersion(response, RPC_API_VERSION);
   if (!response.ok) throw new Error(`RPC returned HTTP ${response.status}`);
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > 64_000) throw new Error("RPC response too large");
-  return JSON.parse(text);
+  return readBoundedJson(response, 64_000, "RPC response");
 }
 
 async function transactionVersionForRpc(rpc: string): Promise<TransactionVersion> {
@@ -891,41 +807,25 @@ async function transactionVersionForRpc(rpc: string): Promise<TransactionVersion
     headers: { "x-zyron-rpc-version": String(RPC_API_VERSION) },
     signal: AbortSignal.timeout(8_000)
   });
-  assertCompatibleRpcResponse(response);
+  assertRpcApiVersion(response, RPC_API_VERSION);
   if (response.status === 404) return 1;
   if (!response.ok) throw new Error(`RPC protocol status returned HTTP ${response.status}`);
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > 4_096) throw new Error("RPC protocol status response too large");
-  const value = JSON.parse(text) as Record<string, unknown>;
+  const value = await readBoundedJson(response, 4_096, "RPC protocol status response") as Record<string, unknown>;
   assertObjectFields(value, ["currentVersion", "nextVersion"], "protocol status");
-  if (!Number.isSafeInteger(value.currentVersion) || !Number.isSafeInteger(value.nextVersion)) {
-    throw new Error("RPC returned invalid protocol status");
-  }
-  const nextVersion = Number(value.nextVersion);
-  if (nextVersion < 1 || nextVersion > 3) throw new Error("RPC returned unsupported next protocol version");
-  return nextVersion >= 3 ? 2 : 1;
-}
-
-function assertCompatibleRpcResponse(response: Response): void {
-  const advertised = response.headers.get("x-zyron-rpc-version");
-  if (advertised !== null && advertised !== String(RPC_API_VERSION)) {
-    throw new Error(`RPC server uses unsupported API version ${advertised}`);
-  }
+  if (!Number.isSafeInteger(value.currentVersion) || !Number.isSafeInteger(value.nextVersion)) throw new Error("RPC returned invalid protocol status");
+  transactionVersionForProtocolVersion(Number(value.currentVersion));
+  return transactionVersionForProtocolVersion(Number(value.nextVersion));
 }
 
 async function readPrivateKey(path: string): Promise<string> {
   const parsed = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
   if (isEncryptedKeystore(parsed)) {
     const passwordPath = process.env.ZYRON_KEYSTORE_PASSWORD_FILE;
-    if (!passwordPath) {
-      throw new Error("Encrypted keystore requires ZYRON_KEYSTORE_PASSWORD_FILE");
-    }
+    if (!passwordPath) throw new Error("Encrypted keystore requires ZYRON_KEYSTORE_PASSWORD_FILE");
     const password = normalizePasswordFile(await readFile(resolve(passwordPath), "utf8"));
     return decryptPrivateKey(parsed, password);
   }
-  if (typeof parsed.privateKey !== "string" || !/^[0-9a-f]{64}$/.test(parsed.privateKey)) {
-    throw new Error("Validator key file is invalid");
-  }
+  if (typeof parsed.privateKey !== "string" || !/^[0-9a-f]{64}$/.test(parsed.privateKey)) throw new Error("Validator key file is invalid");
   publicKeyFromPrivate(parsed.privateKey);
   return parsed.privateKey;
 }
@@ -933,56 +833,36 @@ async function readPrivateKey(path: string): Promise<string> {
 async function readAuthToken(path: string, label: string, requirePrivatePermissions = false): Promise<string> {
   if (requirePrivatePermissions) {
     const metadata = await stat(path);
-    if (!metadata.isFile() || (metadata.mode & 0o077) !== 0) {
-      throw new Error(`${label} token file must be a regular file with mode 0600`);
-    }
+    if (!metadata.isFile() || (metadata.mode & 0o077) !== 0) throw new Error(`${label} token file must be a regular file with mode 0600`);
   }
   const token = (await readFile(path, "utf8")).trim();
-  if (token.length < 32 || token.length > 512 || !/^[\x21-\x7e]+$/.test(token)) {
-    throw new Error(`${label} token file must contain a single 32-512 character token`);
-  }
+  if (token.length < 32 || token.length > 512 || !/^[\x21-\x7e]+$/.test(token)) throw new Error(`${label} token file must contain a single 32-512 character token`);
   return token;
 }
 
 async function readValidatorProposal(path: string): Promise<ValidatorProposal> {
   const value = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
   const hasTransactionVersion = Object.hasOwn(value, "transactionVersion");
-  assertObjectFields(value, hasTransactionVersion
-    ? ["transactionVersion", "chainId", "nonce", "sender", "activationHeight", "validators"]
-    : ["chainId", "nonce", "sender", "activationHeight", "validators"], "validator proposal");
+  assertObjectFields(value, hasTransactionVersion ? ["transactionVersion", "chainId", "nonce", "sender", "activationHeight", "validators"] : ["chainId", "nonce", "sender", "activationHeight", "validators"], "validator proposal");
   const transactionVersion = hasTransactionVersion ? Number(value.transactionVersion) : 1;
-  if ((transactionVersion !== 1 && transactionVersion !== 2) || typeof value.chainId !== "string" ||
-      !Number.isSafeInteger(value.nonce) || !Number.isSafeInteger(value.activationHeight) ||
-      typeof value.sender !== "string" || !Array.isArray(value.validators)) throw new Error("Invalid validator proposal");
+  if ((transactionVersion !== 1 && transactionVersion !== 2) || typeof value.chainId !== "string" || !Number.isSafeInteger(value.nonce) || !Number.isSafeInteger(value.activationHeight) || typeof value.sender !== "string" || !Array.isArray(value.validators)) throw new Error("Invalid validator proposal");
   assertAddress(value.sender);
   const validators = value.validators.map((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Invalid proposal validator");
     const record = item as Record<string, unknown>;
     assertObjectFields(record, ["address", "publicKey"], "proposal validator");
-    if (typeof record.address !== "string" || typeof record.publicKey !== "string" || !/^[0-9a-f]{128}$/.test(record.publicKey)) {
-      throw new Error("Invalid proposal validator");
-    }
+    if (typeof record.address !== "string" || typeof record.publicKey !== "string" || !/^[0-9a-f]{128}$/.test(record.publicKey)) throw new Error("Invalid proposal validator");
     assertAddress(record.address);
     if (addressFromPublicKey(record.publicKey) !== record.address) throw new Error("Proposal validator address mismatch");
     return { address: record.address, publicKey: record.publicKey };
   });
-  return {
-    transactionVersion,
-    chainId: value.chainId,
-    nonce: Number(value.nonce),
-    sender: value.sender,
-    activationHeight: Number(value.activationHeight),
-    validators
-  };
+  return { transactionVersion, chainId: value.chainId, nonce: Number(value.nonce), sender: value.sender, activationHeight: Number(value.activationHeight), validators };
 }
 
 async function readValidatorApproval(path: string): Promise<ValidatorApproval> {
   const value = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
   assertObjectFields(value, ["validator", "publicKey", "signature"], "validator approval");
-  if (typeof value.validator !== "string" || typeof value.publicKey !== "string" || typeof value.signature !== "string" ||
-      !/^[0-9a-f]{128}$/.test(value.publicKey) || !/^[0-9a-f]{128}$/.test(value.signature)) {
-    throw new Error("Invalid validator approval");
-  }
+  if (typeof value.validator !== "string" || typeof value.publicKey !== "string" || typeof value.signature !== "string" || !/^[0-9a-f]{128}$/.test(value.publicKey) || !/^[0-9a-f]{128}$/.test(value.signature)) throw new Error("Invalid validator approval");
   assertAddress(value.validator);
   if (addressFromPublicKey(value.publicKey) !== value.validator) throw new Error("Validator approval address mismatch");
   return { validator: value.validator, publicKey: value.publicKey, signature: value.signature };
@@ -991,34 +871,19 @@ async function readValidatorApproval(path: string): Promise<ValidatorApproval> {
 async function readProtocolProposal(path: string): Promise<ProtocolProposal> {
   const value = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
   const hasTransactionVersion = Object.hasOwn(value, "transactionVersion");
-  assertObjectFields(value, hasTransactionVersion
-    ? ["transactionVersion", "chainId", "nonce", "sender", "activationHeight", "protocolVersion"]
-    : ["chainId", "nonce", "sender", "activationHeight", "protocolVersion"], "protocol proposal");
+  assertObjectFields(value, hasTransactionVersion ? ["transactionVersion", "chainId", "nonce", "sender", "activationHeight", "protocolVersion"] : ["chainId", "nonce", "sender", "activationHeight", "protocolVersion"], "protocol proposal");
   const transactionVersion = hasTransactionVersion ? Number(value.transactionVersion) : 1;
-  if ((transactionVersion !== 1 && transactionVersion !== 2) || typeof value.chainId !== "string" ||
-      !Number.isSafeInteger(value.nonce) || !Number.isSafeInteger(value.activationHeight) ||
-      !Number.isSafeInteger(value.protocolVersion) || typeof value.sender !== "string") {
-    throw new Error("Invalid protocol proposal");
-  }
+  if ((transactionVersion !== 1 && transactionVersion !== 2) || typeof value.chainId !== "string" || !Number.isSafeInteger(value.nonce) || !Number.isSafeInteger(value.activationHeight) || !Number.isSafeInteger(value.protocolVersion) || typeof value.sender !== "string") throw new Error("Invalid protocol proposal");
   assertAddress(value.sender);
   const protocolVersion = Number(value.protocolVersion);
   if (protocolVersion < 1 || protocolVersion > 65_535) throw new Error("Invalid protocol proposal version");
-  return {
-    transactionVersion,
-    chainId: value.chainId,
-    nonce: Number(value.nonce),
-    sender: value.sender,
-    activationHeight: Number(value.activationHeight),
-    protocolVersion
-  };
+  return { transactionVersion, chainId: value.chainId, nonce: Number(value.nonce), sender: value.sender, activationHeight: Number(value.activationHeight), protocolVersion };
 }
 
 function assertObjectFields(value: Record<string, unknown>, expected: string[], name: string): void {
   const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
-  if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
-    throw new Error(`Invalid ${name} fields`);
-  }
+  if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) throw new Error(`Invalid ${name} fields`);
 }
 
 function assertKnownOptions(args: string[], allowed: Set<string>): void {
