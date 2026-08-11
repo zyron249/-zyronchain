@@ -8,6 +8,7 @@
   },
   "files": [
     "dist/src",
+    "scripts/mine.mjs",
     "README.md"
   ],
   "engines": {
@@ -15,7 +16,7 @@
   },
   "scripts": {
     "build": "tsc --outDir dist",
-    "mine": "npm run build && node scripts/mine.mjs",
+    "mine": "node scripts/mine.mjs",
     "bench:restart": "npm run build && node dist/bench/restart.js",
     "bench:state-scale": "npm run build && node dist/bench/state-v2-scale.js",
     "test": "npm run build && node --check scripts/mine.mjs && node --test dist/test/*.test.js",
