@@ -1,4 +1,5 @@
 import { canonicalJson, compareCanonicalStrings, sha256Hex } from "./codec.js";
+import { MINING_TRACKER_ADDRESS } from "./mining.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import { assertAddress, assertExactKeys, assertPlainRecord } from "./transaction.js";
 import type { ActivitySettlementTx, Address, GenesisConfig, MiningClaimTx, ProtocolUpgradeTx, Transaction, TransferTx, ValidatorSetUpdateTx } from "./types.js";
@@ -103,6 +104,10 @@ export class LedgerState {
     return supply;
   }
 
+  miningClaimCount(): number {
+    return this.nonce(MINING_TRACKER_ADDRESS);
+  }
+
   isActivityEpochSettled(epoch: number): boolean {
     return this.settledActivityEpochs.has(epoch);
   }
@@ -156,13 +161,17 @@ export class LedgerState {
   }
 
   private applyMining(tx: MiningClaimTx): void {
+    if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     this.requireNonce(tx.sender, tx.nonce);
     const nextSupply = this.totalSupplyAtoms() + tx.rewardAtoms;
     if (!Number.isSafeInteger(nextSupply) || nextSupply > MAX_SUPPLY_ATOMS) {
       throw new Error("Mining reward exceeds maximum supply");
     }
+    const claimCount = this.miningClaimCount();
+    if (claimCount >= Number.MAX_SAFE_INTEGER) throw new Error("Mining claim counter exhausted");
     this.credit(tx.sender, tx.rewardAtoms);
     this.setNonce(tx.sender, tx.nonce);
+    this.setNonce(MINING_TRACKER_ADDRESS, claimCount + 1);
   }
 
   private applyValidatorUpdate(tx: ValidatorSetUpdateTx): void {
