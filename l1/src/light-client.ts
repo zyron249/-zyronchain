@@ -1,9 +1,11 @@
 import { blockHash, expectedValidator, validateAttestationQuorum, validateBlockShape, validateRoundCertificate } from "./block.js";
 import { assertHex } from "./codec.js";
 import { addressFromPublicKey, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
-import { validatorScheduleKey, verifySparseMerkleProof, type SparseMerkleProof } from "./state-v2.js";
+import { protocolScheduleKey, validatorScheduleKey, verifySparseMerkleProof, type SparseMerkleProof } from "./state-v2.js";
 import { assertExactKeys, assertPlainRecord } from "./transaction.js";
 import type { Block, BlockAttestation, BlockHeader, RoundSkipVote, Validator } from "./types.js";
+
+export const LIGHT_CLIENT_SUPPORTED_PROTOCOL_VERSIONS = new Set([1, 2, 3, 5]);
 
 export interface LightClientAnchor {
   version: 1;
@@ -37,7 +39,7 @@ export function validateLightClientAnchor(value: unknown): LightClientAnchor {
   if (value.version !== 1 || typeof value.chainId !== "string" || !/^[a-z0-9-]{3,64}$/.test(value.chainId) ||
       !Number.isSafeInteger(value.height) || Number(value.height) < 0 ||
       !Number.isSafeInteger(value.timestampMs) || Number(value.timestampMs) < 0 ||
-      !Number.isSafeInteger(value.protocolVersion) || Number(value.protocolVersion) < 1 ||
+      !Number.isSafeInteger(value.protocolVersion) || !LIGHT_CLIENT_SUPPORTED_PROTOCOL_VERSIONS.has(Number(value.protocolVersion)) ||
       !Array.isArray(value.validators) || value.validators.length < 1 || value.validators.length > 100) {
     throw new Error("Invalid light-client anchor");
   }
@@ -73,9 +75,9 @@ export function validateLightClientAnchor(value: unknown): LightClientAnchor {
 
 /**
  * Verify one finalized header extending an independently trusted anchor.
- * Validator-set transitions are deliberately not inferred from peer input; the
- * returned anchor keeps the exact trusted set until a separately verified
- * transition proof is introduced.
+ * Validator-set and protocol transitions are deliberately not inferred from peer
+ * input; callers must authenticate any next-height schedule entries against the
+ * current finalized State-v2 root before verifying the activating header.
  */
 export function verifyNextFinalizedHeader(anchorValue: unknown, proofValue: unknown): LightClientAnchor {
   const anchor = validateLightClientAnchor(anchorValue);
@@ -140,7 +142,7 @@ export function verifyLightClientStateProof(
 ): boolean {
   try {
     const anchor = validateLightClientAnchor(anchorValue);
-    if (anchor.protocolVersion !== 2 && anchor.protocolVersion !== 3) return false;
+    if (!lightClientUsesStateV2(anchor.protocolVersion)) return false;
     return verifySparseMerkleProof(anchor.stateRoot, key, value, proof);
   } catch {
     return false;
@@ -158,19 +160,55 @@ export function activateNextValidatorSet(
   proof: SparseMerkleProof
 ): LightClientAnchor {
   const anchor = validateLightClientAnchor(anchorValue);
-  if (anchor.protocolVersion !== 2 && anchor.protocolVersion !== 3) {
+  if (!lightClientUsesStateV2(anchor.protocolVersion)) {
     throw new Error("Validator transition proof requires authenticated State v2");
   }
   if (!Array.isArray(validatorsValue)) throw new Error("Invalid light-client validator transition");
   // Reuse anchor validation for the exact validator identity/cardinality rules.
   const candidate = validateLightClientAnchor({ ...anchor, validators: validatorsValue });
-  const activationHeight = anchor.height + 1;
-  if (!Number.isSafeInteger(activationHeight)) throw new Error("Invalid light-client validator activation height");
+  const activationHeight = nextLightClientHeight(anchor, "validator activation");
   const key = validatorScheduleKey(activationHeight);
   if (!verifySparseMerkleProof(anchor.stateRoot, key, { validators: candidate.validators }, proof)) {
     throw new Error("Invalid light-client validator transition proof");
   }
   return candidate;
+}
+
+/**
+ * Authenticate a protocol version that activates at the very next height.
+ * Unsupported protocol versions fail closed even when a valid schedule proof is
+ * supplied, because this verifier must never guess semantics for an unknown version.
+ */
+export function activateNextProtocolVersion(
+  anchorValue: unknown,
+  protocolVersionValue: unknown,
+  proof: SparseMerkleProof
+): LightClientAnchor {
+  const anchor = validateLightClientAnchor(anchorValue);
+  if (!lightClientUsesStateV2(anchor.protocolVersion)) {
+    throw new Error("Protocol transition proof requires authenticated State v2");
+  }
+  if (!Number.isSafeInteger(protocolVersionValue) ||
+      !LIGHT_CLIENT_SUPPORTED_PROTOCOL_VERSIONS.has(Number(protocolVersionValue))) {
+    throw new Error("Unsupported light-client protocol transition");
+  }
+  const protocolVersion = Number(protocolVersionValue);
+  const activationHeight = nextLightClientHeight(anchor, "protocol activation");
+  const key = protocolScheduleKey(activationHeight);
+  if (!verifySparseMerkleProof(anchor.stateRoot, key, { protocolVersion }, proof)) {
+    throw new Error("Invalid light-client protocol transition proof");
+  }
+  return { ...anchor, protocolVersion };
+}
+
+function lightClientUsesStateV2(protocolVersion: number): boolean {
+  return protocolVersion === 2 || protocolVersion === 3 || protocolVersion === 5;
+}
+
+function nextLightClientHeight(anchor: LightClientAnchor, label: string): number {
+  const height = anchor.height + 1;
+  if (!Number.isSafeInteger(height)) throw new Error(`Invalid light-client ${label} height`);
+  return height;
 }
 
 function assertHexField(value: unknown, label: string): asserts value is string {
