@@ -591,6 +591,8 @@ async function route(
     const txid = service.submitTransaction(body);
     if (onTransactionAccepted) {
       const transaction = structuredClone(body as Transaction);
+      // Gossip is best-effort and must not turn a locally accepted transaction
+      // into an RPC failure because a remote peer is slow or unavailable.
       void Promise.resolve().then(() => onTransactionAccepted(transaction)).catch(() => undefined);
     }
     return writeJson(response, 202, { txid });
@@ -598,7 +600,9 @@ async function route(
   if (request.method === "POST" && url.pathname === "/proposal/attest") {
     preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
     const body = await readJsonBody(request, bodyReservation);
-    const release = enterConsensusRequest(request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight);
+    const release = enterConsensusRequest(
+      request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
+    );
     try {
       return writeJson(response, 200, { attestation: await service.attestProposal(body) });
     } finally {
@@ -608,7 +612,9 @@ async function route(
   if (request.method === "POST" && url.pathname === "/round/skip") {
     preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
     const body = await readJsonBody(request, bodyReservation);
-    const release = enterConsensusRequest(request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight);
+    const release = enterConsensusRequest(
+      request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
+    );
     try {
       assertPlainRecord(body, "round skip request");
       assertExactKeys(body, ["height", "round", "previousCertificate"], "round skip request");
@@ -625,7 +631,9 @@ async function route(
   if (request.method === "POST" && url.pathname === "/block") {
     preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
     const body = await readJsonBody(request, bodyReservation);
-    const release = enterConsensusRequest(request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight);
+    const release = enterConsensusRequest(
+      request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
+    );
     try {
       await service.acceptFinalizedBlock(body);
       return writeJson(response, 202, { accepted: true, height: service.status().height });
@@ -656,7 +664,9 @@ export class PeerClient {
     if (this.peers.length > MAX_CONFIGURED_PEERS) throw new Error("Too many configured peers");
     if (peerAuthToken !== undefined || peerRequestCredentials !== undefined) {
       for (const peer of this.peers) {
-        if (!peerTransportProtectsCredentials(peer)) throw new Error("Authenticated remote peers must use HTTPS");
+        if (!peerTransportProtectsCredentials(peer)) {
+          throw new Error("Authenticated remote peers must use HTTPS");
+        }
       }
     }
   }
@@ -685,20 +695,39 @@ export class PeerClient {
     return accepted;
   }
 
-  async fetchPeerRecord(peer: string, expected: { chainId: string; genesisHash: string }, nowMs = Date.now()): Promise<SignedPeerRecord> {
-    return validateSignedPeerRecord(await getJson(`${normalizePeerUrl(peer)}/peer-record`, 64_000), expected, nowMs);
+  async fetchPeerRecord(
+    peer: string,
+    expected: { chainId: string; genesisHash: string },
+    nowMs = Date.now()
+  ): Promise<SignedPeerRecord> {
+    const base = normalizePeerUrl(peer);
+    return validateSignedPeerRecord(await getJson(`${base}/peer-record`, 64_000), expected, nowMs);
   }
 
-  async fetchPeerRecords(peer: string, expected: { chainId: string; genesisHash: string }, limit = MAX_DISCOVERY_RESPONSE_RECORDS, nowMs = Date.now()): Promise<SignedPeerRecord[]> {
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_DISCOVERY_RESPONSE_RECORDS) throw new Error("Invalid peer discovery request limit");
-    const payload = await getJson(`${normalizePeerUrl(peer)}/peers?limit=${limit}`, 256_000);
+  async fetchPeerRecords(
+    peer: string,
+    expected: { chainId: string; genesisHash: string },
+    limit = MAX_DISCOVERY_RESPONSE_RECORDS,
+    nowMs = Date.now()
+  ): Promise<SignedPeerRecord[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_DISCOVERY_RESPONSE_RECORDS) {
+      throw new Error("Invalid peer discovery request limit");
+    }
+    const base = normalizePeerUrl(peer);
+    const payload = await getJson(`${base}/peers?limit=${limit}`, 256_000);
     assertPlainRecord(payload, "peer discovery response");
     assertExactKeys(payload, ["records"], "peer discovery response");
-    if (!Array.isArray(payload.records) || payload.records.length > limit) throw new Error("Invalid peer discovery response");
+    if (!Array.isArray(payload.records) || payload.records.length > limit) {
+      throw new Error("Invalid peer discovery response");
+    }
     return payload.records.map((record) => validateSignedPeerRecord(record, expected, nowMs));
   }
 
-  async refreshPeerDirectory(directory: PeerDirectory, expected: { chainId: string; genesisHash: string }, nowMs = Date.now()): Promise<number> {
+  async refreshPeerDirectory(
+    directory: PeerDirectory,
+    expected: { chainId: string; genesisHash: string },
+    nowMs = Date.now()
+  ): Promise<number> {
     const ordered = diversityOrderedPeers(this.peers, this.discoveryCursor);
     if (ordered.length === 0) return 0;
     const seenGroups = new Set<string>();
@@ -710,14 +739,23 @@ export class PeerClient {
     }).slice(0, MAX_SYNC_PROBE_CONCURRENCY);
     const groupCount = Math.max(1, new Set(this.peers.map(peerDiversityBucket)).size);
     this.discoveryCursor = (this.discoveryCursor + sources.length) % groupCount;
-    const results = await Promise.allSettled(sources.map((peer) => this.fetchPeerRecords(peer, expected, MAX_DISCOVERY_RESPONSE_RECORDS, nowMs)));
+    const results = await Promise.allSettled(
+      sources.map((peer) => this.fetchPeerRecords(peer, expected, MAX_DISCOVERY_RESPONSE_RECORDS, nowMs))
+    );
     let admitted = 0;
-    for (const result of results) {
-      if (result.status === "rejected") continue;
+    for (let index = 0; index < results.length; index += 1) {
+      const result = results[index]!;
+      if (result.status === "rejected") {
+        // Discovery is optional metadata. A node that is otherwise a valid sync
+        // peer may not support this endpoint yet; do not poison sync reputation.
+        continue;
+      }
       for (const record of result.value) {
         try {
           if (directory.admit(record, nowMs)) admitted += 1;
         } catch (error) {
+          // Local capacity is not evidence of remote misbehavior. Stop accepting
+          // metadata without allowing discovery to evict already-admitted peers.
           if (/Peer directory capacity reached/.test(safeError(error))) break;
           throw error;
         }
@@ -731,17 +769,24 @@ export class PeerClient {
     while (this.peers.length > 0) {
       const startHeight = service.status().height;
       const nowMs = Date.now();
-      const available = this.peers.filter((peer) => (this.failureUntil.get(peer) ?? 0) <= nowMs && (this.peerReputation?.isAvailable(peer, nowMs) ?? true));
+      const available = this.peers
+        .filter((peer) => (this.failureUntil.get(peer) ?? 0) <= nowMs && (this.peerReputation?.isAvailable(peer, nowMs) ?? true));
       let candidate: { peer: string; height: number; blocks: unknown[] } | undefined;
       for (const batch of peerSyncProbeBatches(available, this.syncCursor)) {
         const attempts = await Promise.allSettled(batch.map(async (peer) => {
-          const status = parseStatus(await getJson(`${peer}/status`, 64_000));
-          const local = service.status();
-          if (status.chainId !== local.chainId || status.genesisHash !== local.genesisHash) throw new Error("Peer chain identity mismatch");
-          if (status.height <= startHeight) return null;
-          const blocks = parsePeerBlockBatch(await getJson(`${peer}/blocks?from=${startHeight + 1}&limit=${MAX_SYNC_BLOCKS}`, MAX_SYNC_RESPONSE_BYTES));
-          service.store.chain.validateFinalizedBlock(blocks[0] as Block);
-          return { peer, height: status.height, blocks };
+            const status = parseStatus(await getJson(`${peer}/status`, 64_000));
+            const local = service.status();
+            if (status.chainId !== local.chainId || status.genesisHash !== local.genesisHash) {
+              throw new Error("Peer chain identity mismatch");
+            }
+            if (status.height <= startHeight) return null;
+            const payload = await getJson(
+              `${peer}/blocks?from=${startHeight + 1}&limit=${MAX_SYNC_BLOCKS}`,
+              MAX_SYNC_RESPONSE_BYTES
+            );
+            const blocks = parsePeerBlockBatch(payload);
+            service.store.chain.validateFinalizedBlock(blocks[0] as Block);
+            return { peer, height: status.height, blocks };
         }));
         for (let index = 0; index < attempts.length; index += 1) {
           const result = attempts[index]!;
@@ -758,6 +803,7 @@ export class PeerClient {
       const groups = [...new Set(available.map(peerDiversityBucket))];
       const selectedGroupIndex = groups.indexOf(peerDiversityBucket(candidate.peer));
       this.syncCursor = selectedGroupIndex < 0 || groups.length === 0 ? 0 : (selectedGroupIndex + 1) % groups.length;
+
       let progressed = false;
       let poisoned = false;
       for (const block of candidate.blocks) {
@@ -766,12 +812,16 @@ export class PeerClient {
           accepted += 1;
           progressed = true;
         } catch {
+          // A peer with a valid first block but a poisoned tail cannot stop the next
+          // independently selected peer. Back it off so latency cannot let it
+          // immediately monopolize the next batch.
           poisoned = true;
           break;
         }
       }
-      if (poisoned) await this.recordFailure(candidate.peer, Date.now());
-      else if (progressed) {
+      if (poisoned) {
+        await this.recordFailure(candidate.peer, Date.now());
+      } else if (progressed) {
         this.failureUntil.delete(candidate.peer);
         await this.peerReputation?.recordSuccess(candidate.peer, Date.now());
       }
@@ -790,7 +840,11 @@ export class PeerClient {
     return results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
   }
 
-  async requestRoundSkips(height: number, round: number, previousCertificate: RoundSkipVote[] = []): Promise<RoundSkipVote[]> {
+  async requestRoundSkips(
+    height: number,
+    round: number,
+    previousCertificate: RoundSkipVote[] = []
+  ): Promise<RoundSkipVote[]> {
     const results = await Promise.allSettled(this.peers.map(async (peer) => {
       const payload = await postJson(`${peer}/round/skip`, { height, round, previousCertificate }, 128_000, this.peerAuthToken, this.peerRequestCredentials);
       assertPlainRecord(payload, "round skip response");
@@ -803,14 +857,18 @@ export class PeerClient {
   async broadcastBlock(block: Block): Promise<void> {
     if (!rememberGossipId(this.blockGossipSeen, block.hash)) return;
     const fanout = this.nextGossipFanout();
-    await Promise.allSettled(fanout.map((peer) => postJson(`${peer}/block`, block, 64_000, this.peerAuthToken, this.peerRequestCredentials)));
+    await Promise.allSettled(fanout.map((peer) => postJson(
+      `${peer}/block`, block, 64_000, this.peerAuthToken, this.peerRequestCredentials
+    )));
   }
 
   async broadcastTransaction(transaction: Transaction): Promise<void> {
     validateTransactionShape(transaction);
     if (!rememberGossipId(this.transactionGossipSeen, transaction.txid)) return;
     const fanout = this.nextGossipFanout();
-    await Promise.allSettled(fanout.map((peer) => postJson(`${peer}/tx`, transaction, 64_000)));
+    await Promise.allSettled(fanout.map((peer) => postJson(
+      `${peer}/tx`, transaction, 64_000
+    )));
   }
 
   private nextGossipFanout(): string[] {
@@ -821,7 +879,9 @@ export class PeerClient {
   }
 
   private async recordFailure(peer: string, nowMs: number): Promise<void> {
-    const backoffMs = this.peerReputation ? await this.peerReputation.recordFailure(peer, nowMs) : PEER_FAILURE_BACKOFF_MS;
+    const backoffMs = this.peerReputation
+      ? await this.peerReputation.recordFailure(peer, nowMs)
+      : PEER_FAILURE_BACKOFF_MS;
     this.failureUntil.set(peer, nowMs + backoffMs);
   }
 }
@@ -878,7 +938,10 @@ export function diversityOrderedPeers(peers: readonly string[], groupOffset = 0)
   return result;
 }
 
-export function peerSyncProbeBatches(peers: readonly string[], groupOffset = 0): string[][] {
+export function peerSyncProbeBatches(
+  peers: readonly string[],
+  groupOffset = 0
+): string[][] {
   const ordered = diversityOrderedPeers(peers, groupOffset);
   const batches: string[][] = [];
   for (let index = 0; index < ordered.length; index += MAX_SYNC_PROBE_CONCURRENCY) {
@@ -916,7 +979,14 @@ export async function produceFinalizedBlock(
       const unique = new Map<Address, RoundSkipVote>();
       for (const vote of votes) {
         try {
-          validateRoundSkipVote(vote, validators, chain.genesis.chainId, chain.height + 1, skippedRound, chain.tip.hash);
+          validateRoundSkipVote(
+            vote,
+            validators,
+            chain.genesis.chainId,
+            chain.height + 1,
+            skippedRound,
+            chain.tip.hash
+          );
           unique.set(vote.validator, vote);
         } catch {
           // A malformed or invalid peer vote cannot poison an otherwise valid quorum.
@@ -924,7 +994,14 @@ export async function produceFinalizedBlock(
       }
       const certificate = [...unique.values()];
       try {
-        validateRoundSkipQuorum(certificate, validators, chain.genesis.chainId, chain.height + 1, skippedRound, chain.tip.hash);
+        validateRoundSkipQuorum(
+          certificate,
+          validators,
+          chain.genesis.chainId,
+          chain.height + 1,
+          skippedRound,
+          chain.tip.hash
+        );
       } catch {
         return null;
       }
@@ -933,7 +1010,11 @@ export async function produceFinalizedBlock(
     }
   }
   const transactions = chain.selectValidPending(service.mempool.values(), 10_000);
-  const unsignedProposal = chain.prepareBlock(transactions, publicKey, { round, timestampMs: nowMs, roundCertificate });
+  const unsignedProposal = chain.prepareBlock(transactions, publicKey, {
+    round,
+    timestampMs: nowMs,
+    roundCertificate
+  });
   const proposal = await service.signPreparedProposal(unsignedProposal, nowMs);
   chain.validatePreparedBlock(proposal, nowMs);
   const attestations: BlockAttestation[] = [];
@@ -1091,15 +1172,23 @@ async function parseBoundedResponse(response: Response, maxBytes: number): Promi
   }
 }
 
-async function readJsonBody(request: IncomingMessage, bodyReservation?: RpcRequestBodyReservation): Promise<unknown> {
-  if (!/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] ?? "")) throw new Error("Content-Type must be application/json");
+async function readJsonBody(
+  request: IncomingMessage,
+  bodyReservation?: RpcRequestBodyReservation
+): Promise<unknown> {
+  if (!/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] ?? "")) {
+    throw new Error("Content-Type must be application/json");
+  }
   const declaredLength = request.headers["content-length"];
   if (declaredLength !== undefined) {
     if (!/^(0|[1-9][0-9]*)$/.test(declaredLength)) throw new Error("Invalid Content-Length");
     const declaredBytes = Number(declaredLength);
-    if (!Number.isSafeInteger(declaredBytes) || declaredBytes > MAX_BODY_BYTES) throw new Error("Request body too large");
+    if (!Number.isSafeInteger(declaredBytes) || declaredBytes > MAX_BODY_BYTES) {
+      throw new Error("Request body too large");
+    }
     if (declaredBytes > 0) bodyReservation?.reserve(declaredBytes);
   }
+
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of request) {
@@ -1160,7 +1249,9 @@ function boundedPositiveInteger(value: number, name: string): number {
 }
 
 function validatePeerAuthToken(value: string): string {
-  if (value.length < 32 || value.length > 512 || /[\r\n]/.test(value)) throw new Error("Peer authentication token must be 32-512 characters without newlines");
+  if (value.length < 32 || value.length > 512 || /[\r\n]/.test(value)) {
+    throw new Error("Peer authentication token must be 32-512 characters without newlines");
+  }
   return value;
 }
 
@@ -1175,19 +1266,35 @@ class PeerAuthenticationError extends Error {}
 class PeerInflightLimitError extends Error {}
 class RpcBodyBudgetError extends Error {}
 
-function preauthorizeConsensusRequest(request: IncomingMessage, path: string, peerAuthToken?: string, peerRequestAuthenticator?: PeerRequestAuthenticator): void {
+function preauthorizeConsensusRequest(
+  request: IncomingMessage,
+  path: string,
+  peerAuthToken?: string,
+  peerRequestAuthenticator?: PeerRequestAuthenticator
+): void {
   if (peerRequestAuthenticator) {
     try {
-      peerRequestAuthenticator.preflight(request.headers, { method: request.method ?? "", path });
+      peerRequestAuthenticator.preflight(request.headers, {
+        method: request.method ?? "",
+        path
+      });
       return;
     } catch {
       throw new PeerAuthenticationError("Peer signature authentication required");
     }
   }
-  if (peerAuthToken && !validBearerToken(request.headers.authorization, peerAuthToken)) throw new PeerAuthenticationError("Peer authentication required");
+  if (peerAuthToken && !validBearerToken(request.headers.authorization, peerAuthToken)) {
+    throw new PeerAuthenticationError("Peer authentication required");
+  }
 }
 
-function authorizeConsensusRequest(request: IncomingMessage, path: string, body: unknown, peerAuthToken?: string, peerRequestAuthenticator?: PeerRequestAuthenticator): string {
+function authorizeConsensusRequest(
+  request: IncomingMessage,
+  path: string,
+  body: unknown,
+  peerAuthToken?: string,
+  peerRequestAuthenticator?: PeerRequestAuthenticator
+): string {
   if (peerRequestAuthenticator) {
     try {
       return peerRequestAuthenticator.verify(request.headers, {
@@ -1199,7 +1306,9 @@ function authorizeConsensusRequest(request: IncomingMessage, path: string, body:
       throw new PeerAuthenticationError("Peer signature authentication required");
     }
   }
-  if (peerAuthToken && !validBearerToken(request.headers.authorization, peerAuthToken)) throw new PeerAuthenticationError("Peer authentication required");
+  if (peerAuthToken && !validBearerToken(request.headers.authorization, peerAuthToken)) {
+    throw new PeerAuthenticationError("Peer authentication required");
+  }
   return `transport:${request.socket.remoteAddress ?? "unknown"}`;
 }
 
@@ -1217,7 +1326,11 @@ function enterConsensusRequest(
 
 export class PeerInflightLimiter {
   private readonly inflight = new Map<string, number>();
-  constructor(private readonly limit: number) { boundedPositiveInteger(limit, "consensus inflight per peer"); }
+
+  constructor(private readonly limit: number) {
+    boundedPositiveInteger(limit, "consensus inflight per peer");
+  }
+
   enter(identity: string): () => void {
     const count = this.inflight.get(identity) ?? 0;
     if (count >= this.limit) throw new PeerInflightLimitError("Consensus peer concurrency limit exceeded");
@@ -1236,7 +1349,11 @@ export class PeerInflightLimiter {
 class RpcAdmissionController {
   private inflightRequests = 0;
   private rejectedRequests = 0;
-  constructor(private readonly maxInflightRequests: number) { boundedPositiveInteger(maxInflightRequests, "global RPC inflight requests"); }
+
+  constructor(private readonly maxInflightRequests: number) {
+    boundedPositiveInteger(maxInflightRequests, "global RPC inflight requests");
+  }
+
   enter(): () => void {
     if (this.inflightRequests >= this.maxInflightRequests) {
       this.rejectedRequests += 1;
@@ -1250,15 +1367,24 @@ class RpcAdmissionController {
       this.inflightRequests -= 1;
     };
   }
+
   metrics(): RpcAdmissionMetrics {
-    return { inflightRequests: this.inflightRequests, maxInflightRequests: this.maxInflightRequests, rejectedRequests: this.rejectedRequests };
+    return {
+      inflightRequests: this.inflightRequests,
+      maxInflightRequests: this.maxInflightRequests,
+      rejectedRequests: this.rejectedRequests
+    };
   }
 }
 
 class RpcRequestBodyByteBudget {
   private reservedBytes = 0;
   private rejectedReservations = 0;
-  constructor(readonly maxBytes: number) { boundedPositiveInteger(maxBytes, "RPC in-flight request body bytes"); }
+
+  constructor(readonly maxBytes: number) {
+    boundedPositiveInteger(maxBytes, "RPC in-flight request body bytes");
+  }
+
   reserve(bytes: number): () => void {
     if (!Number.isSafeInteger(bytes) || bytes < 1) throw new Error("Invalid RPC request body reservation");
     if (bytes > this.maxBytes - this.reservedBytes) {
@@ -1273,15 +1399,24 @@ class RpcRequestBodyByteBudget {
       this.reservedBytes -= bytes;
     };
   }
+
   metrics(): Pick<RpcByteBudgetMetrics, "requestBodyBytesInUse" | "maxRequestBodyBytes" | "rejectedRequestBodies"> {
-    return { requestBodyBytesInUse: this.reservedBytes, maxRequestBodyBytes: this.maxBytes, rejectedRequestBodies: this.rejectedReservations };
+    return {
+      requestBodyBytesInUse: this.reservedBytes,
+      maxRequestBodyBytes: this.maxBytes,
+      rejectedRequestBodies: this.rejectedReservations
+    };
   }
 }
 
 class RpcResponseByteBudget {
   private reservedBytes = 0;
   private rejectedReservations = 0;
-  constructor(readonly maxBytes: number) { boundedPositiveInteger(maxBytes, "RPC in-flight response bytes"); }
+
+  constructor(readonly maxBytes: number) {
+    boundedPositiveInteger(maxBytes, "RPC in-flight response bytes");
+  }
+
   reserve(bytes: number): () => void {
     if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > this.maxBytes - this.reservedBytes) {
       this.rejectedReservations += 1;
@@ -1295,8 +1430,13 @@ class RpcResponseByteBudget {
       this.reservedBytes -= bytes;
     };
   }
+
   metrics(): Pick<RpcByteBudgetMetrics, "responseBytesInUse" | "maxResponseBytes" | "rejectedResponses"> {
-    return { responseBytesInUse: this.reservedBytes, maxResponseBytes: this.maxBytes, rejectedResponses: this.rejectedReservations };
+    return {
+      responseBytesInUse: this.reservedBytes,
+      maxResponseBytes: this.maxBytes,
+      rejectedResponses: this.rejectedReservations
+    };
   }
 }
 
@@ -1305,23 +1445,36 @@ const rpcResponseBudgets = new WeakMap<ServerResponse, RpcResponseByteBudget>();
 class RpcRequestBodyReservation {
   private readonly releases: Array<() => void> = [];
   private released = false;
+
   constructor(private readonly budget: RpcRequestBodyByteBudget) {}
+
   reserve(bytes: number): void {
     if (this.released) throw new Error("RPC request body reservation already released");
     this.releases.push(this.budget.reserve(bytes));
   }
+
   release(): void {
     if (this.released) return;
     this.released = true;
     for (const release of this.releases) release();
   }
-  metrics(): Pick<RpcByteBudgetMetrics, "requestBodyBytesInUse" | "maxRequestBodyBytes" | "rejectedRequestBodies"> { return this.budget.metrics(); }
+
+  metrics(): Pick<RpcByteBudgetMetrics, "requestBodyBytesInUse" | "maxRequestBodyBytes" | "rejectedRequestBodies"> {
+    return this.budget.metrics();
+  }
 }
 
 export class PeerResponseByteBudget {
   private reservedBytes = 0;
-  constructor(readonly maxBytes: number) { boundedPositiveInteger(maxBytes, "peer response in-flight bytes"); }
-  get inUseBytes(): number { return this.reservedBytes; }
+
+  constructor(readonly maxBytes: number) {
+    boundedPositiveInteger(maxBytes, "peer response in-flight bytes");
+  }
+
+  get inUseBytes(): number {
+    return this.reservedBytes;
+  }
+
   reserve(bytes: number): () => void {
     if (!Number.isSafeInteger(bytes) || bytes < 1) throw new Error("Invalid peer response byte reservation");
     if (bytes > this.maxBytes - this.reservedBytes) throw new Error("Aggregate peer response byte budget exceeded");
@@ -1340,10 +1493,14 @@ const peerResponseByteBudget = new PeerResponseByteBudget(MAX_PEER_RESPONSE_BYTE
 class FixedWindowLimiter {
   private readonly clients = new Map<string, { count: number; startedAtMs: number }>();
   private lastSweepMs = 0;
+
   constructor(private readonly limit: number, private readonly windowMs: number) {}
+
   consume(client: string, nowMs: number): { allowed: boolean; remaining: number; retryAfterMs: number } {
     if (nowMs - this.lastSweepMs >= this.windowMs) {
-      for (const [key, entry] of this.clients) if (nowMs - entry.startedAtMs >= this.windowMs) this.clients.delete(key);
+      for (const [key, entry] of this.clients) {
+        if (nowMs - entry.startedAtMs >= this.windowMs) this.clients.delete(key);
+      }
       this.lastSweepMs = nowMs;
     }
     let entry = this.clients.get(client);
@@ -1353,7 +1510,11 @@ class FixedWindowLimiter {
     }
     entry.count += 1;
     const remaining = Math.max(0, this.limit - entry.count);
-    return { allowed: entry.count <= this.limit, remaining, retryAfterMs: Math.max(0, entry.startedAtMs + this.windowMs - nowMs) };
+    return {
+      allowed: entry.count <= this.limit,
+      remaining,
+      retryAfterMs: Math.max(0, entry.startedAtMs + this.windowMs - nowMs)
+    };
   }
 }
 
