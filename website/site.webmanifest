@@ -1,7 +1,7 @@
 {
   "name": "ZyronChain",
   "short_name": "ZyronChain",
-  "description": "Verifiable Layer-1 protocol and validator launchpad",
+  "description": "Verifiable Layer-1 protocol, local wallet setup and validator launchpad",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
