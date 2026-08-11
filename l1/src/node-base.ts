@@ -367,7 +367,13 @@ export class NodeService {
       const block = value as Block;
       await this.store.commitFinalizedBlock(block);
       this.mempool.remove(block.transactions.map((tx) => tx.txid));
-      this.mempool.prune((tx) => tx.nonce <= this.store.chain.nonce(tx.sender));
+      const nextMiningHeight = this.store.chain.height + 1;
+      const nextMiningPreviousHash = this.store.chain.tip.hash;
+      this.mempool.prune((tx) =>
+        tx.nonce <= this.store.chain.nonce(tx.sender) ||
+        (tx.kind === "mining_claim" &&
+          (tx.height !== nextMiningHeight || tx.previousHash !== nextMiningPreviousHash))
+      );
     });
   }
 
@@ -904,9 +910,6 @@ export function peerDiversityBucket(peer: string): string {
     return `ipv4:${octets.slice(0, 3).join(".")}.0/24`;
   }
   if (isIP(hostname) === 6) {
-    // Do not infer a prefix from a compressed textual IPv6 representation.
-    // Exact-address grouping is conservative; explicit subnet/provider/ASN
-    // policy remains required before public mainnet admission.
     return `ipv6:${hostname}`;
   }
   return `host:${hostname}`;
@@ -942,100 +945,6 @@ export function peerSyncProbeBatches(
     batches.push(ordered.slice(index, index + MAX_SYNC_PROBE_CONCURRENCY));
   }
   return batches;
-}
-
-export async function produceFinalizedBlock(
-  service: NodeService,
-  peers: ConsensusPeerClient,
-  validator: string | ValidatorSigner,
-  nowMs = Date.now()
-): Promise<Block | null> {
-  const chain = service.store.chain;
-  const elapsed = nowMs - chain.tip.header.timestampMs;
-  if (elapsed < BLOCK_INTERVAL_MS) return null;
-  const round = Math.max(0, Math.floor((elapsed - BLOCK_INTERVAL_MS) / ROUND_WINDOW_MS));
-  const signer = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
-  const publicKey = signer.publicKey;
-  const validators = chain.validatorsAt(chain.height + 1);
-  const expected = expectedValidator(validators, chain.height + 1, round);
-  if (expected.publicKey !== publicKey) return null;
-  let roundCertificate: RoundSkipVote[] = [];
-  if (round > 0) {
-    let previousCertificate: RoundSkipVote[] = [];
-    for (let skippedRound = 0; skippedRound < round; skippedRound += 1) {
-      const votes: RoundSkipVote[] = [];
-      try {
-        votes.push(await service.requestSkipVote(chain.height + 1, skippedRound, previousCertificate, nowMs));
-      } catch {
-        // An honest validator that already attested this round must never also skip it.
-      }
-      votes.push(...await peers.requestRoundSkips(chain.height + 1, skippedRound, previousCertificate));
-      const unique = new Map<Address, RoundSkipVote>();
-      for (const vote of votes) {
-        try {
-          validateRoundSkipVote(
-            vote,
-            validators,
-            chain.genesis.chainId,
-            chain.height + 1,
-            skippedRound,
-            chain.tip.hash
-          );
-          unique.set(vote.validator, vote);
-        } catch {
-          // A malformed or invalid peer vote cannot poison an otherwise valid quorum.
-        }
-      }
-      const certificate = [...unique.values()];
-      try {
-        validateRoundSkipQuorum(
-          certificate,
-          validators,
-          chain.genesis.chainId,
-          chain.height + 1,
-          skippedRound,
-          chain.tip.hash
-        );
-      } catch {
-        return null;
-      }
-      roundCertificate = certificate;
-      previousCertificate = certificate;
-    }
-  }
-  const transactions = chain.selectValidPending(service.mempool.values(), 10_000);
-  const unsignedProposal = chain.prepareBlock(transactions, publicKey, {
-    round,
-    timestampMs: nowMs,
-    roundCertificate
-  });
-  const proposal = await service.signPreparedProposal(unsignedProposal, nowMs);
-  chain.validatePreparedBlock(proposal, nowMs);
-  const attestations: BlockAttestation[] = [];
-  try {
-    attestations.push(await service.attestProposal(proposal, nowMs));
-  } catch (error) {
-    if (!/Validator signing is disabled/.test(safeError(error))) throw error;
-  }
-  attestations.push(...await peers.requestAttestations(proposal));
-  const byValidator = new Map<Address, BlockAttestation>();
-  for (const attestation of attestations) {
-    try {
-      validateBlockAttestation(proposal, attestation, validators);
-      byValidator.set(attestation.validator, attestation);
-    } catch {
-      // Invalid peer attestations are ignored instead of poisoning block assembly.
-    }
-  }
-  const withVotes = { ...proposal, attestations: [...byValidator.values()] };
-  try {
-    await service.acceptFinalizedBlock(withVotes);
-  } catch (error) {
-    if (/Finality quorum not reached/.test(safeError(error))) return null;
-    throw error;
-  }
-  await peers.broadcastBlock(withVotes);
-  return withVotes;
 }
 
 function parseStatus(value: unknown): NodeStatus {
