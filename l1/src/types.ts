@@ -58,6 +58,31 @@ export interface ActivitySettlementTx {
   txid: string;
 }
 
+/**
+ * Permissionless protocol-v4 proof-of-work issuance claim.
+ *
+ * Validators do not choose the reward amount: rewardAtoms is derived from the
+ * canonical supply schedule and rechecked against chain state. previousHash and
+ * height bind the work to one specific next-block challenge, while sender/publicKey
+ * bind a valid solution to the miner that performed the work.
+ */
+export interface MiningClaimTx {
+  kind: "mining_claim";
+  version: 2;
+  chainId: string;
+  nonce: number;
+  sender: Address;
+  height: number;
+  previousHash: string;
+  rewardAtoms: number;
+  workNonce: string;
+  feeAtoms: 0;
+  timestampMs: number;
+  publicKey: string;
+  signature: string;
+  txid: string;
+}
+
 export interface ValidatorApproval {
   validator: Address;
   publicKey: string;
@@ -96,7 +121,7 @@ export interface ProtocolUpgradeTx {
   txid: string;
 }
 
-export type Transaction = TransferTx | ActivitySettlementTx | ValidatorSetUpdateTx | ProtocolUpgradeTx;
+export type Transaction = TransferTx | ActivitySettlementTx | MiningClaimTx | ValidatorSetUpdateTx | ProtocolUpgradeTx;
 
 export interface BlockHeader {
   version: number;
