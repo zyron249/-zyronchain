@@ -28,8 +28,9 @@ jobs:
       - name: Check browser JavaScript syntax
         run: |
           node --check website/app.js
+          node --check website/wallet.js
           node --check website/validator.js
-      - name: Verify production website and validator launchpad contract
+      - name: Verify production website, wallet and validator contracts
         shell: bash
         run: |
           node <<'NODE'
@@ -45,6 +46,9 @@ jobs:
             'website/favicon.svg',
             'website/logo.svg',
             'website/site.webmanifest',
+            'website/wallet.html',
+            'website/wallet.css',
+            'website/wallet.js',
             'website/validator.html',
             'website/validator.css',
             'website/validator.js'
@@ -58,6 +62,9 @@ jobs:
           const html = fs.readFileSync('website/index.html', 'utf8');
           const css = fs.readFileSync('website/styles.css', 'utf8');
           const js = fs.readFileSync('website/app.js', 'utf8');
+          const walletHtml = fs.readFileSync('website/wallet.html', 'utf8');
+          const walletCss = fs.readFileSync('website/wallet.css', 'utf8');
+          const walletJs = fs.readFileSync('website/wallet.js', 'utf8');
           const validatorHtml = fs.readFileSync('website/validator.html', 'utf8');
           const validatorCss = fs.readFileSync('website/validator.css', 'utf8');
           const validatorJs = fs.readFileSync('website/validator.js', 'utf8');
@@ -72,14 +79,30 @@ jobs:
             './app.js',
             './favicon.svg',
             './logo.svg',
+            './wallet.html',
             './validator.html',
             'ZyronChain',
             'Public testnet governance authorized',
             'Authorized does not mean activated',
             '50M ZYN',
+            'Create a wallet',
             'No analytics cookies'
           ]) {
             if (!html.includes(marker)) throw new Error(`Website HTML missing required marker: ${marker}`);
+          }
+
+          for (const marker of [
+            './styles.css',
+            './wallet.css',
+            './wallet.js',
+            './logo.svg',
+            'ZyronChain Wallet Setup',
+            'LOCAL-ONLY WALLET SETUP',
+            'NO SECRET IN BROWSER',
+            'PRIVATE KEY STAYS LOCAL',
+            'PUBLIC_WALLET_RPC_WHEN_PUBLISHED'
+          ]) {
+            if (!walletHtml.includes(marker)) throw new Error(`Wallet page missing required marker: ${marker}`);
           }
 
           for (const marker of [
@@ -101,6 +124,9 @@ jobs:
           ]) {
             if (!html.includes(marker)) throw new Error(`Production domain metadata missing: ${marker}`);
           }
+          if (!walletHtml.includes('<link rel="canonical" href="https://zyronchain.com/wallet.html"')) {
+            throw new Error('Wallet canonical URL is missing');
+          }
           if (!validatorHtml.includes('<link rel="canonical" href="https://zyronchain.com/validator.html"')) {
             throw new Error('Validator launchpad canonical URL is missing');
           }
@@ -108,7 +134,11 @@ jobs:
           if (!robots.includes('Sitemap: https://zyronchain.com/sitemap.xml')) {
             throw new Error('robots.txt is not bound to the production sitemap');
           }
-          for (const loc of ['<loc>https://zyronchain.com/</loc>', '<loc>https://zyronchain.com/validator.html</loc>']) {
+          for (const loc of [
+            '<loc>https://zyronchain.com/</loc>',
+            '<loc>https://zyronchain.com/wallet.html</loc>',
+            '<loc>https://zyronchain.com/validator.html</loc>'
+          ]) {
             if (!sitemap.includes(loc)) throw new Error(`sitemap.xml missing ${loc}`);
           }
 
@@ -125,6 +155,9 @@ jobs:
           if (!css.includes('@media (max-width: 720px)') || !css.includes('@media (prefers-reduced-motion: reduce)')) {
             throw new Error('Website responsive/accessibility boundaries are missing');
           }
+          if (!walletCss.includes('@media (max-width: 720px)') || !walletCss.includes('@media (prefers-reduced-motion: reduce)')) {
+            throw new Error('Wallet responsive/accessibility boundaries are missing');
+          }
           if (!validatorCss.includes('@media (max-width: 640px)')) {
             throw new Error('Validator launchpad mobile boundary is missing');
           }
@@ -132,14 +165,33 @@ jobs:
           if (js.includes('127.0.0.1:9137') || /fetch\s*\(.*9137|WebSocket\s*\(.*9137/.test(js)) {
             throw new Error('Main browser JavaScript must not bind to validator RPC');
           }
-          if (/fetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(/.test(validatorJs)) {
-            throw new Error('Validator launchpad must remain offline-only and must not call remote runtime APIs');
+
+          for (const [name, source] of [['wallet', walletJs], ['validator', validatorJs]]) {
+            if (/fetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(/.test(source)) {
+              throw new Error(`${name} browser JavaScript must remain offline-only`);
+            }
+            if (/localStorage|sessionStorage|indexedDB/.test(source)) {
+              throw new Error(`${name} browser JavaScript must not persist secrets/config in browser storage`);
+            }
           }
-          if (/localStorage|sessionStorage|indexedDB/.test(validatorJs)) {
-            throw new Error('Validator launchpad must not persist operator configuration in browser storage');
+
+          if (/type=["']password["']/i.test(walletHtml) || /type=["']file["']/i.test(walletHtml)) {
+            throw new Error('Wallet page must not request passwords or wallet-file uploads');
           }
           if (/type=["']password["']/i.test(validatorHtml)) {
             throw new Error('Validator passwords must be requested only by the generated local script');
+          }
+
+          for (const marker of [
+            "const RELEASE_REF = 'b7e0d37f1471f825f02ac374bafdaf7acb25a990'",
+            'git clone https://github.com/zyron249/-zyronchain.git',
+            'keygen --out wallet.json --password-file wallet.password',
+            'chmod 600 wallet.json wallet.password',
+            'Read-Host "Choose wallet password (12+ chars)" -AsSecureString',
+            'navigator.clipboard',
+            'new Blob'
+          ]) {
+            if (!walletJs.includes(marker)) throw new Error(`Wallet launcher missing security invariant: ${marker}`);
           }
 
           for (const marker of [
@@ -154,7 +206,7 @@ jobs:
             if (!validatorJs.includes(marker)) throw new Error(`Validator launcher missing security invariant: ${marker}`);
           }
 
-          for (const source of [html, validatorHtml]) {
+          for (const source of [html, walletHtml, validatorHtml]) {
             if (/<script[^>]+src=['"]https?:\/\//i.test(source)) {
               throw new Error('Production website may not execute third-party remote JavaScript');
             }
@@ -163,5 +215,5 @@ jobs:
             }
           }
 
-          console.log('website-validator-launchpad-contract-ok');
+          console.log('website-wallet-validator-contract-ok');
           NODE
