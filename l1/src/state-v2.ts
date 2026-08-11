@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJson, compareCanonicalStrings } from "./codec.js";
+import { MINING_TRACKER_ADDRESS } from "./mining.js";
 import { LedgerState, type LedgerSnapshot } from "./state.js";
 import { MAX_SUPPLY_ATOMS, type Address, type Transaction, type Validator } from "./types.js";
 
@@ -333,6 +334,8 @@ export function stateV2TransactionKeyPreimages(tx: Transaction): string[] {
   } else if (tx.kind === "activity_settlement") {
     keys.add(activityEpochKey(tx.epoch));
     for (const entry of tx.entries) keys.add(accountKey(entry.receiver));
+  } else if (tx.kind === "mining_claim") {
+    keys.add(accountKey(MINING_TRACKER_ADDRESS));
   } else if (tx.kind === "validator_update") {
     keys.add(validatorScheduleKey(tx.activationHeight));
   } else {
@@ -460,6 +463,8 @@ export function updateStateV2FromTransaction(
   if (tx.kind === "transfer") addresses.add(tx.receiver);
   else if (tx.kind === "activity_settlement") {
     for (const entry of tx.entries) addresses.add(entry.receiver);
+  } else if (tx.kind === "mining_claim") {
+    addresses.add(MINING_TRACKER_ADDRESS);
   }
   let next = state;
   for (const address of addresses) {
@@ -502,11 +507,14 @@ export function applyStateV2Transaction(
     next = setStateV2Nonce(next, activityPool, tx.nonce);
     return next.set(activityEpochKey(tx.epoch), { settled: true });
   }
+  if (tx.kind === "mining_claim") {
+    throw new Error("Mining claim requires chain-context State-v2 application");
+  }
   requireStateV2Nonce(state, tx.sender, tx.nonce);
   let next = setStateV2Nonce(state, tx.sender, tx.nonce);
   if (tx.kind === "validator_update") {
     next = next.set(validatorScheduleKey(tx.activationHeight), { validators: tx.validators });
-  } else if (tx.kind === "protocol_upgrade") {
+  } else {
     next = next.set(protocolScheduleKey(tx.activationHeight), { protocolVersion: tx.protocolVersion });
   }
   return next;

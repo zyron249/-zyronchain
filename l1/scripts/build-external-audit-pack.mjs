@@ -41,7 +41,7 @@ exactKeys(scope, [
 assert.equal(scope.scopeVersion, 1, "Unsupported audit scope version");
 assert.equal(scope.status, "pre-public-testnet-external-audit-preparation");
 assert.equal(scope.canonicalImplementation, "l1/");
-assert.deepEqual(scope.supportedProtocolVersions, [1, 2, 3], "Audit scope protocol matrix is stale");
+assert.deepEqual(scope.supportedProtocolVersions, [1, 2, 3, 5], "Audit scope protocol matrix is stale");
 
 for (const [label, values] of [
   ["reviewAreas", scope.reviewAreas],
@@ -54,7 +54,7 @@ for (const [label, values] of [
   ["deliberatelyExcludedDecisions", scope.deliberatelyExcludedDecisions]
 ]) uniqueStrings(values, label);
 
-assert.ok(Array.isArray(scope.securityInvariants) && scope.securityInvariants.length >= 10, "Security invariant inventory is incomplete");
+assert.ok(Array.isArray(scope.securityInvariants) && scope.securityInvariants.length >= 12, "Security invariant inventory is incomplete");
 const invariantIds = new Set();
 const referencedModules = new Set();
 for (const invariant of scope.securityInvariants) {
@@ -75,6 +75,7 @@ for (const path of referencedModules) {
 
 const requiredEvidence = new Set([
   "mixed-version-upgrade-rollback",
+  "protocol-v5-permissionless-mining",
   "disaster-recovery",
   "composite-adversarial-soak",
   "multiprocess-native-recovery",
@@ -90,6 +91,7 @@ assert.deepEqual(new Set(scope.evidenceScenarios), requiredEvidence, "High-risk 
 
 const requiredExternalGates = [
   "independent-consensus-cryptography-network-audit",
+  "independent-mining-contention-target-calibration-review",
   "independent-operator-public-network-soak",
   "production-hsm-or-audited-signer-custody",
   "immutable-mainnet-genesis-economics-and-oracle-governance",

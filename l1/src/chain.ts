@@ -12,9 +12,17 @@ import {
   validateRoundCertificate
 } from "./block.js";
 import { addressFromPublicKey, publicKeyFromPrivate, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
+import {
+  assertMiningClaimContext,
+  MINING_PROTOCOL_VERSION,
+  MINING_TRACKER_ADDRESS,
+  miningRewardAtoms as scheduledMiningRewardAtoms,
+  miningWorkHash
+} from "./mining.js";
 import { LedgerState, type LedgerSnapshot } from "./state.js";
 import {
   SparseMerkleState,
+  accountKey,
   applyStateV2Transaction,
   stateV2ActivityEpochSettled,
   stateV2Balance,
@@ -36,16 +44,27 @@ import {
   verifyValidatorUpdateApprovalSignature
 } from "./transaction.js";
 import { assertHex } from "./codec.js";
-import type { Address, Block, GenesisConfig, ProtocolUpgradeTx, RoundSkipVote, Transaction, Validator, ValidatorSetUpdateTx } from "./types.js";
+import type {
+  Address,
+  Block,
+  GenesisConfig,
+  MiningClaimTx,
+  ProtocolUpgradeTx,
+  RoundSkipVote,
+  Transaction,
+  Validator,
+  ValidatorSetUpdateTx
+} from "./types.js";
+import { MAX_SUPPLY_ATOMS } from "./types.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
 export const MAX_BLOCK_TRANSACTION_BYTES = 1_500_000;
 export const MIN_VALIDATOR_UPDATE_DELAY = 100;
 export const MIN_PROTOCOL_UPDATE_DELAY = 100;
-export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1, 2, 3]);
+export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1, 2, 3, 5]);
 
 export function protocolUsesStateV2(protocolVersion: number): boolean {
-  return protocolVersion === 2 || protocolVersion === 3;
+  return protocolVersion === 2 || protocolVersion === 3 || protocolVersion === 5;
 }
 
 interface AppliedTransition {
@@ -67,6 +86,7 @@ export interface ChainSnapshotV1 {
 export class ZyronChain {
   readonly genesis: GenesisConfig;
   private readonly genesisBlock: Block;
+  private readonly genesisSupplyAtomsValue: number;
   private tipBlock: Block;
   private currentHeight = 0;
   private readonly validatorSchedule = new Map<number, Validator[]>();
@@ -79,6 +99,7 @@ export class ZyronChain {
     validateGenesis(genesis);
     this.genesis = structuredClone(genesis);
     this.state = LedgerState.fromGenesis(genesis);
+    this.genesisSupplyAtomsValue = this.state.totalSupplyAtoms();
     this.genesisBlock = createGenesisBlock(genesis, this.state.root());
     this.tipBlock = this.genesisBlock;
     this.validatorSchedule.set(0, structuredClone(genesis.validators));
@@ -224,6 +245,25 @@ export class ZyronChain {
       : this.requireLegacyState().nonce(address);
   }
 
+  totalSupplyAtoms(): number {
+    if (this.state) return this.state.totalSupplyAtoms();
+    return LedgerState.fromSnapshot(this.stateV2PortableView().ledger).totalSupplyAtoms();
+  }
+
+  genesisSupplyAtoms(): number {
+    return this.genesisSupplyAtomsValue;
+  }
+
+  miningClaimCount(): number {
+    return this.stateV2 && protocolUsesStateV2(this.protocolVersionAt(this.height))
+      ? stateV2Nonce(this.stateV2, MINING_TRACKER_ADDRESS)
+      : this.requireLegacyState().miningClaimCount();
+  }
+
+  nextMiningRewardAtoms(): number {
+    return scheduledMiningRewardAtoms(this.miningClaimCount(), this.genesisSupplyAtomsValue);
+  }
+
   snapshot(): ChainSnapshotV1 {
     const ledger = this.state ? this.state.snapshot() : this.stateV2PortableView().ledger;
     return {
@@ -250,7 +290,7 @@ export class ZyronChain {
   stateV2SemanticKeyPreimagesForBlock(block: Block): string[] {
     const keys = new Set(this.stateV2SemanticKeys ?? stateV2KeyPreimages(this.requireLegacyState().snapshot(), this.governanceSnapshot()));
     for (const tx of block.transactions) {
-      for (const key of stateV2TransactionKeyPreimages(tx)) keys.add(key);
+      for (const key of stateV2KeysForTransaction(tx)) keys.add(key);
     }
     return [...keys].sort();
   }
@@ -375,7 +415,7 @@ export class ZyronChain {
     } else {
       const keys = new Set(this.stateV2SemanticKeys ?? stateV2KeyPreimages(this.requireLegacyState().snapshot(), this.governanceSnapshot()));
       for (const tx of block.transactions) {
-        for (const key of stateV2TransactionKeyPreimages(tx)) keys.add(key);
+        for (const key of stateV2KeysForTransaction(tx)) keys.add(key);
       }
       this.state = undefined;
       this.stateV2 = next.sparse?.persistenceCheckpoint();
@@ -415,7 +455,8 @@ export class ZyronChain {
   validateMempoolAdmission(tx: Transaction): void {
     if (tx.chainId !== this.genesis.chainId) throw new Error("Wrong transaction chain ID");
     validateTransactionShape(tx);
-    assertTransactionVersionForProtocol(tx, this.protocolVersionAt(this.height + 1));
+    const protocolVersion = this.protocolVersionAt(this.height + 1);
+    assertTransactionVersionForProtocol(tx, protocolVersion);
     if (tx.kind === "transfer") {
       const total = tx.amountAtoms + tx.feeAtoms;
       if (!Number.isSafeInteger(total) || this.balance(tx.sender) < total) {
@@ -432,6 +473,15 @@ export class ZyronChain {
       if (settled) throw new Error("Activity epoch already settled");
       const total = tx.entries.reduce((sum, entry) => sum + BigInt(entry.amountAtoms), 0n);
       if (total > BigInt(this.balance(this.genesis.activityPool))) throw new Error("Activity pool exhausted");
+      return;
+    }
+    if (tx.kind === "mining_claim") {
+      assertMiningClaimContext(tx, {
+        nextHeight: this.height + 1,
+        previousHash: this.tip.hash,
+        claimCount: this.miningClaimCount(),
+        genesisSupplyAtoms: this.genesisSupplyAtomsValue
+      });
       return;
     }
     const validators = this.validatorsAt(this.height + 1);
@@ -455,14 +505,24 @@ export class ZyronChain {
       throw new Error("Invalid pending byte limit");
     }
     const ordered = transactions
-      .map((tx) => structuredClone(tx))
-      .sort((left, right) =>
-        compareCanonicalStrings(left.sender, right.sender) ||
-        left.nonce - right.nonce ||
-        right.feeAtoms - left.feeAtoms ||
-        left.timestampMs - right.timestampMs ||
-        compareCanonicalStrings(left.txid, right.txid)
-      );
+      .map((tx) => ({
+        tx: structuredClone(tx),
+        miningHash: tx.kind === "mining_claim" ? miningWorkHash(tx) : null
+      }))
+      .sort((left, right) => {
+        if (left.miningHash !== null || right.miningHash !== null) {
+          if (left.miningHash === null) return 1;
+          if (right.miningHash === null) return -1;
+          const workOrder = compareCanonicalStrings(left.miningHash, right.miningHash);
+          if (workOrder) return workOrder;
+        }
+        return compareCanonicalStrings(left.tx.sender, right.tx.sender) ||
+          left.tx.nonce - right.tx.nonce ||
+          right.tx.feeAtoms - left.tx.feeAtoms ||
+          left.tx.timestampMs - right.tx.timestampMs ||
+          compareCanonicalStrings(left.tx.txid, right.tx.txid);
+      })
+      .map((entry) => entry.tx);
     const protocolVersion = this.protocolVersionAt(this.height + 1);
     assertSupportedProtocolVersion(protocolVersion);
     const next = protocolVersion === 1 ? this.legacyStateForTransition().clone() : undefined;
@@ -475,6 +535,8 @@ export class ZyronChain {
     let lastActivation = this.lastValidatorActivationHeight();
     let lastProtocolActivation = this.lastProtocolActivationHeight();
     const currentValidators = this.validatorsAt(this.height + 1);
+    let miningClaimSelected = false;
+    let miningClaimCount = this.miningClaimCount();
     for (const tx of ordered) {
       if (selected.length >= limit) break;
       try {
@@ -482,7 +544,15 @@ export class ZyronChain {
         validateTransactionShape(tx);
         assertTransactionVersionForProtocol(tx, protocolVersion);
         if (tx.kind === "activity_settlement" && !this.genesis.activityOracles.includes(tx.publicKey)) continue;
-        if (tx.kind === "validator_update") {
+        if (tx.kind === "mining_claim") {
+          if (miningClaimSelected) continue;
+          assertMiningClaimContext(tx, {
+            nextHeight: this.height + 1,
+            previousHash: this.tip.hash,
+            claimCount: miningClaimCount,
+            genesisSupplyAtoms: this.genesisSupplyAtomsValue
+          });
+        } else if (tx.kind === "validator_update") {
           validateValidatorUpdateAuthorization(tx, currentValidators, this.height + 1, lastActivation);
           lastActivation = tx.activationHeight;
         } else if (tx.kind === "protocol_upgrade") {
@@ -491,8 +561,17 @@ export class ZyronChain {
         }
         const transactionBytes = Buffer.byteLength(canonicalJson(tx), "utf8") + (selected.length ? 1 : 0);
         if (selectedBytes + transactionBytes > maxTransactionBytes) continue;
-        if (sparse) sparse = applyStateV2Transaction(sparse, tx, this.genesis.activityPool);
-        else next!.apply(tx, this.genesis.activityPool);
+        if (sparse) {
+          sparse = tx.kind === "mining_claim"
+            ? applyMiningClaimStateV2(sparse, tx)
+            : applyStateV2Transaction(sparse, tx, this.genesis.activityPool);
+        } else {
+          next!.apply(tx, this.genesis.activityPool);
+        }
+        if (tx.kind === "mining_claim") {
+          miningClaimSelected = true;
+          miningClaimCount += 1;
+        }
         selected.push(tx);
         selectedBytes += transactionBytes;
         seen.add(tx.txid);
@@ -513,6 +592,8 @@ export class ZyronChain {
     const currentValidators = this.validatorsAt(blockHeight);
     let lastActivation = this.lastValidatorActivationHeight();
     let lastProtocolActivation = this.lastProtocolActivationHeight();
+    let miningClaimSeen = false;
+    let miningClaimCount = this.miningClaimCount();
     for (const tx of transactions) {
       if (tx.chainId !== this.genesis.chainId) throw new Error("Wrong transaction chain ID");
       if (seen.has(tx.txid)) throw new Error("Duplicate transaction in block");
@@ -524,15 +605,32 @@ export class ZyronChain {
           throw new Error("Unauthorized activity oracle");
         }
       }
-      if (tx.kind === "validator_update") {
+      if (tx.kind === "mining_claim") {
+        if (miningClaimSeen) throw new Error("Block contains more than one mining claim");
+        assertMiningClaimContext(tx, {
+          nextHeight: blockHeight,
+          previousHash: this.tip.hash,
+          claimCount: miningClaimCount,
+          genesisSupplyAtoms: this.genesisSupplyAtomsValue
+        });
+      } else if (tx.kind === "validator_update") {
         validateValidatorUpdateAuthorization(tx, currentValidators, blockHeight, lastActivation);
         lastActivation = tx.activationHeight;
       } else if (tx.kind === "protocol_upgrade") {
         validateProtocolUpgradeAuthorization(tx, currentValidators, blockHeight, lastProtocolActivation);
         lastProtocolActivation = tx.activationHeight;
       }
-      if (sparse) sparse = applyStateV2Transaction(sparse, tx, this.genesis.activityPool);
-      else next!.apply(tx, this.genesis.activityPool);
+      if (sparse) {
+        sparse = tx.kind === "mining_claim"
+          ? applyMiningClaimStateV2(sparse, tx)
+          : applyStateV2Transaction(sparse, tx, this.genesis.activityPool);
+      } else {
+        next!.apply(tx, this.genesis.activityPool);
+      }
+      if (tx.kind === "mining_claim") {
+        miningClaimSeen = true;
+        miningClaimCount += 1;
+      }
     }
     return { ledger: next, sparse };
   }
@@ -567,7 +665,6 @@ export class ZyronChain {
   private lastValidatorActivationHeight(): number {
     return Math.max(...this.validatorSchedule.keys());
   }
-
 
   private lastProtocolActivationHeight(): number {
     return Math.max(...this.protocolSchedule.keys());
@@ -710,6 +807,9 @@ function assertTransactionVersionForProtocol(tx: Transaction, protocolVersion: n
   if (tx.version !== expected) {
     throw new Error(`Transaction version ${tx.version} is not valid under protocol version ${protocolVersion}`);
   }
+  if (tx.kind === "mining_claim" && protocolVersion < MINING_PROTOCOL_VERSION) {
+    throw new Error(`Mining claims require protocol version ${MINING_PROTOCOL_VERSION}`);
+  }
 }
 
 function validateGenesis(genesis: GenesisConfig): void {
@@ -750,18 +850,49 @@ function validateGenesis(genesis: GenesisConfig): void {
     oracles.add(oracle);
   }
   assertAddress(genesis.activityPool);
+  if (genesis.activityPool === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker cannot be the activity pool");
   if (!Array.isArray(genesis.allocations) || genesis.allocations.length === 0) {
     throw new Error("Invalid allocations");
   }
   const allocated = new Set<string>();
+  let genesisSupply = 0;
   for (const allocation of genesis.allocations) {
     assertPlainRecord(allocation, "allocation");
     assertExactKeys(allocation, ["address", "amountAtoms"], "allocation");
     assertAddress(allocation.address);
+    if (allocation.address === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker cannot receive a genesis allocation");
     if (!Number.isSafeInteger(allocation.amountAtoms) || allocation.amountAtoms < 0) {
       throw new Error("Invalid genesis allocation");
+    }
+    genesisSupply += allocation.amountAtoms;
+    if (!Number.isSafeInteger(genesisSupply) || genesisSupply > MAX_SUPPLY_ATOMS) {
+      throw new Error("Genesis supply exceeds maximum supply");
     }
     if (allocated.has(allocation.address)) throw new Error("Duplicate genesis allocation");
     allocated.add(allocation.address);
   }
+}
+
+function stateV2KeysForTransaction(tx: Transaction): string[] {
+  if (tx.kind === "mining_claim") {
+    return [accountKey(tx.sender), accountKey(MINING_TRACKER_ADDRESS)].sort();
+  }
+  return stateV2TransactionKeyPreimages(tx);
+}
+
+function applyMiningClaimStateV2(state: SparseMerkleState, tx: MiningClaimTx): SparseMerkleState {
+  if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
+  const minerNonce = stateV2Nonce(state, tx.sender);
+  if (tx.nonce !== minerNonce + 1) throw new Error("Invalid nonce");
+  const trackerNonce = stateV2Nonce(state, MINING_TRACKER_ADDRESS);
+  if (trackerNonce >= Number.MAX_SAFE_INTEGER) throw new Error("Mining claim counter exhausted");
+  const balance = stateV2Balance(state, tx.sender);
+  const nextBalance = balance + tx.rewardAtoms;
+  if (!Number.isSafeInteger(nextBalance) || nextBalance > MAX_SUPPLY_ATOMS) throw new Error("Mining balance overflow");
+  let next = state.set(accountKey(tx.sender), { balanceAtoms: nextBalance, nonce: tx.nonce });
+  next = next.set(accountKey(MINING_TRACKER_ADDRESS), {
+    balanceAtoms: stateV2Balance(state, MINING_TRACKER_ADDRESS),
+    nonce: trackerNonce + 1
+  });
+  return next;
 }

@@ -57,6 +57,8 @@ const requiredControls = new Set([
   "public-launch-explicitly-blocked",
   "node-22-and-24-ci",
   "independent-light-client-verification",
+  "protocol-v5-permissionless-mining-tests",
+  "mining-mempool-resource-bound",
   "composite-adversarial-soak",
   "multiprocess-native-p2p-crash-recovery",
   "mixed-version-upgrade-rollback",
@@ -74,6 +76,7 @@ const mandatoryExternalGates = [
   "bootstrap-archive-monitoring-across-independent-failure-domains",
   "target-hardware-state-v2-scale-and-recovery-measurements",
   "independent-consensus-cryptography-network-audit-and-retest",
+  "independent-mining-contention-target-calibration-and-retest",
   "sustained-independent-operator-internet-adversarial-soak",
   "production-hsm-or-audited-signer-custody-and-cross-host-rotation",
   "protected-branch-independent-review-repository-policy",
@@ -86,13 +89,14 @@ for (const gate of mandatoryExternalGates) {
 for (const decision of [
   "immutable-mainnet-chain-id",
   "immutable-mainnet-genesis-allocation",
+  "mining-difficulty-retarget-and-final-mainnet-calibration",
   "validator-reward-inflation-and-fee-policy",
   "activity-oracle-production-governance",
   "validator-admission-removal-governance"
 ]) assert.ok(config.mainnetOnlyUnresolvedDecisions.includes(decision), `Irreversible decision was silently finalized: ${decision}`);
 
 assert.ok(config.architectureDecisionsNotImplicitlyChanged.includes("current-permissioned-poa-bft-consensus"));
-assert.ok(config.architectureDecisionsNotImplicitlyChanged.includes("no-autonomous-pow-mining-redesign"));
+assert.ok(config.architectureDecisionsNotImplicitlyChanged.includes("proof-of-work-is-issuance-only-not-chain-selection"));
 
 const filesToRead = [
   "README.md",
@@ -105,6 +109,7 @@ const filesToRead = [
   ".github/workflows/l1-succession-policy.yml",
   "docs/STANDALONE_L1_READINESS.md",
   "docs/L1_THREAT_MODEL.md",
+  "docs/MINING.md",
   "docs/L1_OPERATIONS_RUNBOOK.md",
   "docs/L1_CI_EVIDENCE.md",
   "docs/L1_KEY_ROTATION_REHEARSAL.md",
@@ -166,7 +171,8 @@ requireText(successionDoc, "Actual identities, credentials, domains and custody 
 const readiness = contents.get("docs/STANDALONE_L1_READINESS.md");
 requireText(readiness, "**Public testnet launch is currently blocked**", "readiness");
 requireText(readiness, "standalone multi-validator devnet/testnet L1", "readiness");
-requireText(readiness, "Independent cryptography/consensus/network review", "readiness");
+requireText(readiness, "Independent cryptography/consensus/network/mining review", "readiness");
+requireText(readiness, "Mining contention/calibration evidence", "readiness");
 
 const threatModel = contents.get("docs/L1_THREAT_MODEL.md");
 requireText(threatModel, "pre-public-testnet security specification", "threat model");
@@ -174,10 +180,18 @@ requireText(threatModel, "A public testnet remains blocked until", "threat model
 requireText(threatModel, "independent operators can deploy from release artifacts without founder assistance", "threat model");
 requireText(threatModel, "State-v2 scale and recovery limits are measured on target hardware", "threat model");
 requireText(threatModel, "source, domains, release credentials or security contact have no succession", "threat model");
+requireText(threatModel, "Permissionless issuance introduces a new competition surface", "threat model");
+
+const miningDoc = contents.get("docs/MINING.md");
+requireText(miningDoc, "Permissionless ZYN issuance is implemented", "mining documentation");
+requireText(miningDoc, "protocol version 5", "mining documentation");
+requireText(miningDoc, "does **not** replace ZyronChain validator finality", "mining documentation");
 
 const packageJson = JSON.parse(contents.get("l1/package.json"));
 assert.equal(packageJson.name, "@zyronchain/l1");
 assert.equal(packageJson.engines?.node, ">=22", "Node engine policy changed without preflight review");
+assert.ok(packageJson.files?.includes("scripts/mine.mjs"), "Packaged L1 release must include the standalone miner");
+assert.ok(packageJson.files?.includes("MINING.md"), "Packaged L1 release must include the mining operator guide");
 
 const l1Workflow = contents.get(".github/workflows/l1.yml");
 requireText(l1Workflow, "node-version: [22, 24]", "Standalone L1 CI");
@@ -213,8 +227,10 @@ requireText(operationsRunbook, "## 8. Disaster-recovery evidence checklist", "op
 
 const auditScope = JSON.parse(contents.get("docs/l1-audit-scope.json"));
 assert.equal(auditScope.status, "pre-public-testnet-external-audit-preparation");
+assert.deepEqual(auditScope.supportedProtocolVersions, [1, 2, 3, 5], "Audit scope protocol matrix is stale");
 for (const gate of [
   "independent-consensus-cryptography-network-audit",
+  "independent-mining-contention-target-calibration-review",
   "independent-operator-public-network-soak",
   "production-hsm-or-audited-signer-custody"
 ]) assert.ok(auditScope.externalGates?.includes(gate), `Audit scope external gate missing: ${gate}`);

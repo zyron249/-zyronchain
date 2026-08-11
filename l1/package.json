@@ -8,16 +8,19 @@
   },
   "files": [
     "dist/src",
-    "README.md"
+    "scripts/mine.mjs",
+    "README.md",
+    "MINING.md"
   ],
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "build": "tsc --outDir dist",
+    "mine": "node scripts/mine.mjs",
     "bench:restart": "npm run build && node dist/bench/restart.js",
     "bench:state-scale": "npm run build && node dist/bench/state-v2-scale.js",
-    "test": "npm run build && node --test dist/test/*.test.js",
+    "test": "npm run build && node --check scripts/mine.mjs && node --test dist/test/*.test.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -28,7 +31,6 @@
     "@libp2p/peer-id": "6.0.14",
     "@libp2p/tcp": "11.0.26",
     "@multiformats/multiaddr": "13.0.3",
-    "@noble/curves": "2.3.0",
     "better-sqlite3": "13.0.3",
     "libp2p": "3.3.8"
   },

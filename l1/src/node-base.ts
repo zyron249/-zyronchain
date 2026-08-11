@@ -367,7 +367,13 @@ export class NodeService {
       const block = value as Block;
       await this.store.commitFinalizedBlock(block);
       this.mempool.remove(block.transactions.map((tx) => tx.txid));
-      this.mempool.prune((tx) => tx.nonce <= this.store.chain.nonce(tx.sender));
+      const nextMiningHeight = this.store.chain.height + 1;
+      const nextMiningPreviousHash = this.store.chain.tip.hash;
+      this.mempool.prune((tx) =>
+        tx.nonce <= this.store.chain.nonce(tx.sender) ||
+        (tx.kind === "mining_claim" &&
+          (tx.height !== nextMiningHeight || tx.previousHash !== nextMiningPreviousHash))
+      );
     });
   }
 

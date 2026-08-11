@@ -1,7 +1,8 @@
 import { canonicalJson, compareCanonicalStrings, sha256Hex } from "./codec.js";
+import { MINING_TRACKER_ADDRESS } from "./mining.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import { assertAddress, assertExactKeys, assertPlainRecord } from "./transaction.js";
-import type { ActivitySettlementTx, Address, GenesisConfig, ProtocolUpgradeTx, Transaction, TransferTx, ValidatorSetUpdateTx } from "./types.js";
+import type { ActivitySettlementTx, Address, GenesisConfig, MiningClaimTx, ProtocolUpgradeTx, Transaction, TransferTx, ValidatorSetUpdateTx } from "./types.js";
 
 interface AccountState {
   balanceAtoms: number;
@@ -69,7 +70,7 @@ export class LedgerState {
     let previousEpoch = -1;
     for (const candidate of value.settledActivityEpochs) {
       if (!Number.isSafeInteger(candidate) || Number(candidate) < 0 || Number(candidate) <= previousEpoch) {
-        throw new Error("Ledger snapshot activity epochs are not canonical");
+        throw new Error("Invalid ledger snapshot activity epochs");
       }
       previousEpoch = Number(candidate);
       epochs.add(Number(candidate));
@@ -92,6 +93,21 @@ export class LedgerState {
     return this.accounts.get(address)?.nonce ?? 0;
   }
 
+  totalSupplyAtoms(): number {
+    let supply = 0;
+    for (const account of this.accounts.values()) {
+      supply += account.balanceAtoms;
+      if (!Number.isSafeInteger(supply) || supply > MAX_SUPPLY_ATOMS) {
+        throw new Error("Ledger supply exceeds maximum");
+      }
+    }
+    return supply;
+  }
+
+  miningClaimCount(): number {
+    return this.nonce(MINING_TRACKER_ADDRESS);
+  }
+
   isActivityEpochSettled(epoch: number): boolean {
     return this.settledActivityEpochs.has(epoch);
   }
@@ -99,6 +115,7 @@ export class LedgerState {
   apply(tx: Transaction, activityPool: Address): void {
     if (tx.kind === "transfer") this.applyTransfer(tx);
     else if (tx.kind === "activity_settlement") this.applyActivity(tx, activityPool);
+    else if (tx.kind === "mining_claim") this.applyMining(tx);
     else if (tx.kind === "validator_update") this.applyValidatorUpdate(tx);
     else this.applyProtocolUpgrade(tx);
   }
@@ -117,6 +134,9 @@ export class LedgerState {
   }
 
   private applyTransfer(tx: TransferTx): void {
+    if (tx.sender === MINING_TRACKER_ADDRESS || tx.receiver === MINING_TRACKER_ADDRESS) {
+      throw new Error("Mining tracker address is protocol-reserved");
+    }
     this.requireNonce(tx.sender, tx.nonce);
     const total = tx.amountAtoms + tx.feeAtoms;
     if (!Number.isSafeInteger(total) || this.balance(tx.sender) < total) {
@@ -129,6 +149,9 @@ export class LedgerState {
 
   private applyActivity(tx: ActivitySettlementTx, activityPool: Address): void {
     if (tx.sender !== activityPool) throw new Error("Invalid activity pool sender");
+    if (tx.entries.some((entry) => entry.receiver === MINING_TRACKER_ADDRESS)) {
+      throw new Error("Mining tracker address is protocol-reserved");
+    }
     if (this.settledActivityEpochs.has(tx.epoch)) throw new Error("Activity epoch already settled");
     this.requireNonce(activityPool, tx.nonce);
     const total = tx.entries.reduce((sum, entry) => {
@@ -143,12 +166,28 @@ export class LedgerState {
     this.settledActivityEpochs.add(tx.epoch);
   }
 
+  private applyMining(tx: MiningClaimTx): void {
+    if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
+    this.requireNonce(tx.sender, tx.nonce);
+    const nextSupply = this.totalSupplyAtoms() + tx.rewardAtoms;
+    if (!Number.isSafeInteger(nextSupply) || nextSupply > MAX_SUPPLY_ATOMS) {
+      throw new Error("Mining reward exceeds maximum supply");
+    }
+    const claimCount = this.miningClaimCount();
+    if (claimCount >= Number.MAX_SAFE_INTEGER) throw new Error("Mining claim counter exhausted");
+    this.credit(tx.sender, tx.rewardAtoms);
+    this.setNonce(tx.sender, tx.nonce);
+    this.setNonce(MINING_TRACKER_ADDRESS, claimCount + 1);
+  }
+
   private applyValidatorUpdate(tx: ValidatorSetUpdateTx): void {
+    if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     this.requireNonce(tx.sender, tx.nonce);
     this.setNonce(tx.sender, tx.nonce);
   }
 
   private applyProtocolUpgrade(tx: ProtocolUpgradeTx): void {
+    if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     this.requireNonce(tx.sender, tx.nonce);
     this.setNonce(tx.sender, tx.nonce);
   }
