@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#050807" />
+  <meta name="description" content="Create a ZyronChain encrypted wallet locally. Private keys and passwords never enter the browser." />
+  <link rel="canonical" href="https://zyronchain.com/wallet.html" />
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="ZyronChain" />
+  <meta property="og:title" content="ZyronChain Wallet Setup" />
+  <meta property="og:description" content="Generate a canonical encrypted ZyronChain keystore on your own machine." />
+  <meta property="og:url" content="https://zyronchain.com/wallet.html" />
+  <title>ZyronChain — Wallet Setup</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./wallet.css" />
+</head>
+<body class="wallet-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="grain" aria-hidden="true"></div>
+
+  <header class="site-header wallet-header">
+    <div class="shell header-inner">
+      <a class="brand" href="./index.html" aria-label="ZyronChain home"><img src="./logo.svg" alt="ZyronChain" /></a>
+      <nav class="wallet-nav" aria-label="Wallet navigation">
+        <a href="#create">Create</a>
+        <a href="#backup">Backup</a>
+        <a href="#use">Use</a>
+        <a href="#safety">Safety</a>
+      </nav>
+      <a class="mini-button" href="./index.html">Back to ZyronChain</a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="wallet-hero shell">
+      <div class="wallet-hero-copy">
+        <div class="wallet-local-badge"><i></i> LOCAL-ONLY WALLET SETUP</div>
+        <h1>Create your<br /><em>ZyronChain wallet.</em></h1>
+        <p>Your wallet is a cryptographic identity, not a website account. This page prepares a local setup script. The private key, wallet password and encrypted keystore are created only on your computer.</p>
+        <div class="wallet-hero-actions">
+          <a class="primary-button" href="#create">Create locally →</a>
+          <a class="secondary-button" href="#safety">Read security rules</a>
+        </div>
+        <div class="wallet-boundary">
+          <span>NO SECRET IN BROWSER</span>
+          <span>NO ACCOUNT REQUIRED</span>
+          <span>NO REMOTE WALLET API</span>
+        </div>
+      </div>
+
+      <div class="wallet-identity-card" aria-label="Example encrypted ZyronChain wallet identity">
+        <div class="identity-head"><span>ZYRON / WALLET IDENTITY</span><i></i></div>
+        <div class="identity-mark"><img src="./favicon.svg" alt="" /></div>
+        <div class="identity-address"><small>PUBLIC ADDRESS</small><code>ZYN••••••••••••••••••••••••••••••••••••••••</code></div>
+        <div class="identity-row"><span>CURVE</span><strong>secp256k1</strong></div>
+        <div class="identity-row"><span>ADDRESS</span><strong>ZYN + 40 hex</strong></div>
+        <div class="identity-row"><span>KDF</span><strong>scrypt</strong></div>
+        <div class="identity-row"><span>CIPHER</span><strong>AES-256-GCM</strong></div>
+        <div class="identity-foot"><i></i> PRIVATE KEY STAYS LOCAL</div>
+      </div>
+    </section>
+
+    <section class="wallet-principles">
+      <div class="shell wallet-principles-grid">
+        <article><span>01</span><strong>Generate</strong><p>The canonical CLI creates a fresh secp256k1 private key using the operating system cryptographic random source.</p></article>
+        <article><span>02</span><strong>Encrypt</strong><p>New keystores use scrypt-derived encryption keys and AES-256-GCM authenticated encryption.</p></article>
+        <article><span>03</span><strong>Derive</strong><p>The public address is derived from the public key and encoded as <code>ZYN</code> plus 40 lowercase hex characters.</p></article>
+        <article><span>04</span><strong>Control</strong><p>The website never receives the password, private key, keystore file or signing request.</p></article>
+      </div>
+    </section>
+
+    <section class="wallet-create section shell" id="create">
+      <div class="wallet-section-heading">
+        <span>01 / CREATE</span>
+        <h2>Generate the wallet<br />on your machine.</h2>
+        <p>Choose your operating system. The script checks out a pinned reviewed repository revision, installs the canonical L1 dependencies, builds the CLI and asks for the wallet password inside your local terminal.</p>
+      </div>
+
+      <div class="wallet-builder" data-wallet-builder>
+        <div class="wallet-builder-tabs" role="tablist" aria-label="Operating system">
+          <button class="active" type="button" data-wallet-os="unix" aria-selected="true">macOS / Linux</button>
+          <button type="button" data-wallet-os="windows" aria-selected="false">Windows PowerShell</button>
+        </div>
+
+        <div class="wallet-builder-body">
+          <div class="wallet-builder-meta">
+            <div><span>OUTPUT</span><strong>wallet.json</strong></div>
+            <div><span>PASSWORD FILE</span><strong>wallet.password</strong></div>
+            <div><span>RELEASE</span><strong data-release-short>b7e0d37f1471</strong></div>
+            <div><span>NETWORK</span><strong>Not required to create</strong></div>
+          </div>
+
+          <div class="wallet-script-box">
+            <div class="wallet-script-head">
+              <div><span>LOCAL SETUP SCRIPT</span><small data-wallet-script-label>bash</small></div>
+              <div class="wallet-script-actions">
+                <button type="button" data-wallet-copy>Copy</button>
+                <button type="button" data-wallet-download>Download</button>
+              </div>
+            </div>
+            <pre><code data-wallet-script></code></pre>
+          </div>
+
+          <div class="wallet-run-note">
+            <span>HOW TO RUN</span>
+            <p data-wallet-run-note>Save the script, review it, then run it from Terminal. It will request a 12+ character password locally and create files with restrictive permissions.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="wallet-warning">
+        <strong>Review before running.</strong>
+        <p>This website gives you a reproducible local setup path; it does not make terminal commands inherently trusted. Read the generated script, verify the repository URL and pinned revision, and keep your machine clean before creating a wallet.</p>
+      </div>
+    </section>
+
+    <section class="wallet-backup section" id="backup">
+      <div class="shell wallet-backup-layout">
+        <div class="wallet-section-heading">
+          <span>02 / BACKUP</span>
+          <h2>Two files.<br />Two separate backups.</h2>
+          <p>The encrypted keystore and its password are both required for local signing. Keeping them together defeats part of the protection provided by encryption.</p>
+        </div>
+
+        <div class="backup-diagram">
+          <div class="backup-file"><span>ENCRYPTED KEYSTORE</span><strong>wallet.json</strong><small>Contains encrypted key material + public identity</small></div>
+          <div class="backup-separator"><i></i><span>KEEP SEPARATE</span><i></i></div>
+          <div class="backup-file"><span>PASSWORD BACKUP</span><strong>wallet.password</strong><small>Keep offline and away from the keystore copy</small></div>
+          <div class="backup-rules">
+            <p><i>✓</i> Keep at least one offline backup.</p>
+            <p><i>✓</i> Never commit either file to GitHub.</p>
+            <p><i>✓</i> Never paste the password or private key into support chats.</p>
+            <p><i>✓</i> Test recovery before relying on the wallet for value.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="wallet-use section shell" id="use">
+      <div class="wallet-section-heading">
+        <span>03 / USE</span>
+        <h2>Sign locally.<br />Submit deliberately.</h2>
+        <p>The canonical CLI can submit signed transfers to a wallet-facing RPC endpoint. Public wallet RPC is not currently published, so the example stays activation-gated instead of silently pointing users at validator infrastructure.</p>
+      </div>
+
+      <div class="use-grid">
+        <article>
+          <span>ADDRESS</span>
+          <h3>Receive ZYN</h3>
+          <p>Your public <code>ZYN…</code> address can be shared. A private key, encrypted keystore or password must never be shared.</p>
+        </article>
+        <article>
+          <span>BALANCE</span>
+          <h3>Read through a public gateway</h3>
+          <p>When the public network activates, this website will publish the canonical chain ID and separately bounded wallet/read-only endpoint.</p>
+        </article>
+        <article>
+          <span>TRANSFER</span>
+          <h3>Sign on your machine</h3>
+          <p>The CLI reads the encrypted keystore locally, creates the canonical signed transaction and submits only the signed public transaction payload.</p>
+        </article>
+      </div>
+
+      <div class="transfer-example">
+        <div class="transfer-example-head"><span>TRANSFER TEMPLATE · ACTIVATION GATED</span><button type="button" data-copy-transfer>Copy</button></div>
+        <pre><code data-transfer-code>export ZYRON_KEYSTORE_PASSWORD_FILE=/secure/path/wallet.password
+node dist/src/cli.js transfer \
+  --key wallet.json \
+  --rpc &lt;PUBLIC_WALLET_RPC_WHEN_PUBLISHED&gt; \
+  --chain-id &lt;CANONICAL_CHAIN_ID&gt; \
+  --to ZYN&lt;receiver-address&gt; \
+  --amount-atoms 100000000 \
+  --fee-atoms 1000</code></pre>
+      </div>
+    </section>
+
+    <section class="wallet-safety section" id="safety">
+      <div class="shell wallet-safety-layout">
+        <div class="wallet-section-heading">
+          <span>04 / SAFETY</span>
+          <h2>The wallet rule:<br />the secret does not travel.</h2>
+        </div>
+        <div class="wallet-safety-list">
+          <article><span>NEVER</span><strong>Enter a wallet password on zyronchain.com</strong><p>The canonical website intentionally has no password field for wallet creation.</p></article>
+          <article><span>NEVER</span><strong>Upload wallet.json to “verify” a wallet</strong><p>The website has no wallet-upload workflow and should never request one.</p></article>
+          <article><span>CHECK</span><strong>Confirm the address before receiving funds</strong><p>Use the address stored in the authenticated keystore and compare it carefully when copying.</p></article>
+          <article><span>CHECK</span><strong>Confirm chain ID and public endpoint</strong><p>Do not use rehearsal/private endpoints as though they were the activated public network.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="wallet-final shell">
+      <div>
+        <span>READY TO START?</span>
+        <h2>Create locally.<br />Keep control.</h2>
+        <p>No ZyronChain account is required. Your cryptographic identity belongs to the key you generate and protect.</p>
+      </div>
+      <a class="primary-button large" href="#create">Generate setup script ↑</a>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="shell footer-bottom wallet-footer">
+      <span>© <span data-wallet-year></span> ZyronChain · Local-first wallet setup</span>
+      <span>No analytics cookies · No secret collection · No public RPC claim</span>
+    </div>
+  </footer>
+
+  <script src="./wallet.js"></script>
+</body>
+</html>
