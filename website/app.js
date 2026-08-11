@@ -164,6 +164,7 @@ if ('IntersectionObserver' in window && !reduceMotion) {
     .zyron-holo-caption i { width:5px; height:5px; border-radius:50%; background:#8dffb9; box-shadow:0 0 11px #83ffb1; animation:zyronStatus 1.8s ease-in-out infinite; }
     .console-head,.console-grid,.network-orbit { position:relative; z-index:3; }
     .network-orbit { opacity:.74; }
+    .network-orbit .core { display:none; }
     .hero-actions a,.mini-button,.text-button { position:relative; overflow:hidden; }
     .hero-actions a::after,.mini-button::after { content:""; position:absolute; inset:-1px; pointer-events:none; background:linear-gradient(105deg,transparent 15%,rgba(255,255,255,.16) 46%,transparent 70%); transform:translateX(-145%); transition:transform .7s cubic-bezier(.2,.7,.2,1); }
     .hero-actions a:hover::after,.mini-button:hover::after { transform:translateX(145%); }
