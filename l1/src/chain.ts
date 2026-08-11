@@ -477,6 +477,7 @@ export class ZyronChain {
       return;
     }
     if (tx.kind === "mining_claim") {
+      if (tx.nonce !== this.nonce(tx.sender) + 1) throw new Error("Mining claim nonce must be next confirmed nonce");
       assertMiningClaimContext(tx, {
         nextHeight: this.height + 1,
         previousHash: this.tip.hash,
