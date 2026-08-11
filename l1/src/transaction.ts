@@ -6,6 +6,7 @@ import {
   verifyCanonical,
   verifyCanonicalDomain
 } from "./crypto.js";
+import { MINING_TRACKER_ADDRESS } from "./mining.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import type {
   ActivityEntry,
@@ -279,12 +280,16 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
 
   if (tx.kind === "transfer") {
     assertAddress(tx.receiver);
+    if (tx.sender === MINING_TRACKER_ADDRESS || tx.receiver === MINING_TRACKER_ADDRESS) {
+      throw new Error("Mining tracker address is protocol-reserved");
+    }
     assertAmount(tx.amountAtoms, "amountAtoms", false);
     assertAmount(tx.feeAtoms, "feeAtoms", true);
     if (addressFromPublicKey(tx.publicKey) !== tx.sender) {
       throw new Error("Public key does not match sender");
     }
   } else if (tx.kind === "activity_settlement") {
+    if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     if (!Number.isSafeInteger(tx.epoch) || tx.epoch < 0) throw new Error("Invalid activity epoch");
     if (tx.feeAtoms !== 0) throw new Error("Activity settlement fee must be zero");
     assertHex(tx.receiptRoot, 32, "receiptRoot");
@@ -293,6 +298,7 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
     }
     for (const entry of tx.entries) validateActivityEntry(entry);
   } else if (tx.kind === "mining_claim") {
+    if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     if (tx.version !== 2) throw new Error("Mining claim requires transaction version 2");
     if (tx.feeAtoms !== 0) throw new Error("Mining claim fee must be zero");
     if (!Number.isSafeInteger(tx.height) || tx.height < 1) throw new Error("Invalid mining height");
@@ -303,6 +309,7 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
     }
     if (addressFromPublicKey(tx.publicKey) !== tx.sender) throw new Error("Public key does not match sender");
   } else if (tx.kind === "validator_update") {
+    if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     if (tx.feeAtoms !== 0) throw new Error("Validator update fee must be zero");
     if (!Number.isSafeInteger(tx.activationHeight) || tx.activationHeight < 1) {
       throw new Error("Invalid validator activation height");
@@ -318,6 +325,7 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
     }
     for (const approval of tx.approvals) validateValidatorApproval(approval);
   } else {
+    if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     if (tx.feeAtoms !== 0) throw new Error("Protocol upgrade fee must be zero");
     if (!Number.isSafeInteger(tx.activationHeight) || tx.activationHeight < 1) {
       throw new Error("Invalid protocol activation height");
@@ -440,6 +448,7 @@ function validateActivityEntry(entry: ActivityEntry): void {
   assertPlainRecord(entry, "activity entry");
   assertExactKeys(entry, ["receiver", "amountAtoms"], "activity entry");
   assertAddress(entry.receiver);
+  if (entry.receiver === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
   assertAmount(entry.amountAtoms, "activity amount", false);
 }
 
