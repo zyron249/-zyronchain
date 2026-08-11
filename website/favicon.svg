@@ -1,11 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="ZyronChain">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="ZyronChain protocol mark">
   <defs>
-    <linearGradient id="g" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#44e6b2"/>
-      <stop offset="1" stop-color="#9af4d7"/>
+    <linearGradient id="g" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#55f2c2"/>
+      <stop offset=".55" stop-color="#58b8ff"/>
+      <stop offset="1" stop-color="#8e7dff"/>
     </linearGradient>
   </defs>
-  <rect width="64" height="64" rx="18" fill="#071019"/>
-  <rect x="2" y="2" width="60" height="60" rx="16" fill="none" stroke="#244052"/>
-  <path d="M18 18h29L28 46h19" fill="none" stroke="url(#g)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect width="64" height="64" rx="18" fill="#050b11"/>
+  <path d="M32 6 53 18v28L32 58 11 46V18Z" fill="#07111b" stroke="#2a4658" stroke-width="2"/>
+  <path d="M32 12 47 21v22L32 52 17 43V21Z" fill="none" stroke="url(#g)" stroke-width="2"/>
+  <circle cx="32" cy="12" r="3" fill="#55f2c2"/>
+  <circle cx="47" cy="43" r="3" fill="#58b8ff"/>
+  <circle cx="17" cy="43" r="3" fill="#8e7dff"/>
+  <path d="M21 23h24L28 42h17" fill="none" stroke="url(#g)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
