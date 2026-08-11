@@ -147,6 +147,7 @@ export class ZyronChain {
       protocolSchedule: [...protocolSchedule].map(([activationHeight, protocolVersion]) => ({ activationHeight, protocolVersion }))
     };
     const protocolVersion = chain.protocolVersionAt(snapshot.height);
+    assertSupportedProtocolVersion(protocolVersion);
     const sparse = protocolUsesStateV2(protocolVersion) ? stateV2FromLedgerSnapshot(state.snapshot(), governance) : undefined;
     const stateRoot = protocolVersion === 1 ? state.root() : sparse!.root();
     if (snapshot.tip.header.stateRoot !== stateRoot) throw new Error("Trusted checkpoint state root mismatch");
@@ -723,11 +724,12 @@ function validateProtocolSchedule(value: unknown): Map<number, number> {
   for (const candidate of value) {
     assertPlainRecord(candidate, "checkpoint protocol schedule entry");
     assertExactKeys(candidate, ["activationHeight", "protocolVersion"], "checkpoint protocol schedule entry");
+    const protocolVersion = Number(candidate.protocolVersion);
     if (!Number.isSafeInteger(candidate.activationHeight) || Number(candidate.activationHeight) <= previousHeight ||
-        !Number.isSafeInteger(candidate.protocolVersion) || !SUPPORTED_PROTOCOL_VERSIONS.has(Number(candidate.protocolVersion))) {
+        !Number.isSafeInteger(candidate.protocolVersion) || protocolVersion < 1 || protocolVersion > 65_535) {
       throw new Error("Invalid checkpoint protocol schedule");
     }
-    result.set(Number(candidate.activationHeight), Number(candidate.protocolVersion));
+    result.set(Number(candidate.activationHeight), protocolVersion);
     previousHeight = Number(candidate.activationHeight);
   }
   if (result.get(0) !== 1) throw new Error("Checkpoint protocol schedule does not start at genesis");
