@@ -11,17 +11,17 @@ export class Mempool {
   private readonly byId = new Map<string, Transaction>();
   private readonly nonceIds = new Map<string, string>();
   private readonly transferSpendBySender = new Map<string, bigint>();
+  private readonly maxNonMiningSize: number;
+  private readonly miningReserve: number;
 
-  constructor(
-    private readonly maxNonMiningSize = DEFAULT_MEMPOOL_NON_MINING_CAPACITY,
-    private readonly miningReserve = maxNonMiningSize === DEFAULT_MEMPOOL_NON_MINING_CAPACITY
-      ? MAX_MINING_MEMPOOL_CLAIMS
-      : 0
-  ) {
-    if (!Number.isSafeInteger(maxNonMiningSize) || maxNonMiningSize < 1) {
+  constructor(maxNonMiningSize?: number, miningReserve?: number) {
+    this.maxNonMiningSize = maxNonMiningSize ?? DEFAULT_MEMPOOL_NON_MINING_CAPACITY;
+    this.miningReserve = miningReserve ?? (maxNonMiningSize === undefined ? MAX_MINING_MEMPOOL_CLAIMS : 0);
+    if (!Number.isSafeInteger(this.maxNonMiningSize) || this.maxNonMiningSize < 1) {
       throw new Error("Invalid mempool capacity");
     }
-    if (!Number.isSafeInteger(miningReserve) || miningReserve < 0 || miningReserve > MAX_MINING_MEMPOOL_CLAIMS) {
+    if (!Number.isSafeInteger(this.miningReserve) || this.miningReserve < 0 ||
+        this.miningReserve > MAX_MINING_MEMPOOL_CLAIMS) {
       throw new Error("Invalid mining mempool reserve");
     }
   }
