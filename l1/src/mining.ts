@@ -1,8 +1,15 @@
 import { canonicalJson, sha256Hex } from "./codec.js";
-import { ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, type MiningClaimTx } from "./types.js";
+import { ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, type Address, type MiningClaimTx } from "./types.js";
 
 /** Mining is consensus-valid only once protocol v4 is active. */
 export const MINING_PROTOCOL_VERSION = 4;
+
+/**
+ * Consensus-owned zero-balance account used only as a persistent mining-claim
+ * counter. No private key controls this address and ordinary transactions are
+ * never allowed to spend from it.
+ */
+export const MINING_TRACKER_ADDRESS = `ZYN${"0".repeat(40)}` as Address;
 
 /**
  * Issuance-only PoW difficulty. Mining does not select block proposers or replace
@@ -11,7 +18,7 @@ export const MINING_PROTOCOL_VERSION = 4;
  */
 export const MINING_DIFFICULTY_BITS = 20;
 
-/** 6.25 ZYN. At zero premine, each economic era contains ~4,000,000 claims. */
+/** 6.25 ZYN, halving every four million successful finalized claims. */
 export const INITIAL_MINING_REWARD_ATOMS = 6.25 * ATOMS_PER_ZYN;
 export const MINING_ERA_TARGET_CLAIMS = 4_000_000;
 export const MINING_WORK_NONCE_HEX_LENGTH = 16;
@@ -63,62 +70,66 @@ export function validateMiningWork(tx: MiningClaimTx): void {
   }
 }
 
-/**
- * Supply-driven halving schedule.
- *
- * Era 0 issues the first half of the 50M cap at 6.25 ZYN/claim. Every later
- * era issues half of the remaining cap at half the previous reward. Because
- * the era is derived from finalized total supply rather than block height,
- * an empty mining slot never destroys future issuance. The final reward is
- * clipped to the era/cap boundary, making MAX_SUPPLY_ATOMS an exact hard stop.
- */
-export function miningEraForSupply(totalSupplyAtoms: number): number {
-  assertSupply(totalSupplyAtoms);
-  if (totalSupplyAtoms >= MAX_SUPPLY_ATOMS) return Number.MAX_SAFE_INTEGER;
-  let era = 0;
-  let eraSpan = Math.floor(MAX_SUPPLY_ATOMS / 2);
-  let boundary = MAX_SUPPLY_ATOMS - eraSpan;
-  while (eraSpan > 0 && totalSupplyAtoms >= boundary) {
-    era += 1;
-    eraSpan = Math.floor(eraSpan / 2);
-    boundary = MAX_SUPPLY_ATOMS - eraSpan;
-  }
-  return era;
+export function miningEraForClaimCount(claimCount: number): number {
+  assertClaimCount(claimCount);
+  return Math.floor(claimCount / MINING_ERA_TARGET_CLAIMS);
 }
 
-export function miningRewardAtoms(totalSupplyAtoms: number): number {
-  assertSupply(totalSupplyAtoms);
-  const capRemaining = MAX_SUPPLY_ATOMS - totalSupplyAtoms;
-  if (capRemaining <= 0) return 0;
-
-  let era = 0;
-  let eraSpan = Math.floor(MAX_SUPPLY_ATOMS / 2);
-  let boundary = MAX_SUPPLY_ATOMS - eraSpan;
-  while (eraSpan > 0 && totalSupplyAtoms >= boundary) {
-    era += 1;
-    eraSpan = Math.floor(eraSpan / 2);
-    boundary = MAX_SUPPLY_ATOMS - eraSpan;
+/**
+ * Historical mining issuance is derived only from the finalized claim counter,
+ * never from current balances. Therefore transaction-fee burns stay permanently
+ * burned and cannot reopen mining headroom.
+ */
+export function cumulativeMiningIssuanceAtoms(claimCount: number, genesisSupplyAtoms = 0): number {
+  assertClaimCount(claimCount);
+  assertGenesisSupply(genesisSupplyAtoms);
+  const miningBudget = MAX_SUPPLY_ATOMS - genesisSupplyAtoms;
+  let remainingClaims = claimCount;
+  let reward = INITIAL_MINING_REWARD_ATOMS;
+  let issued = 0;
+  while (remainingClaims > 0 && issued < miningBudget) {
+    const claimsInEra = Math.min(remainingClaims, MINING_ERA_TARGET_CLAIMS);
+    const boundedReward = Math.max(1, reward);
+    const eraPotential = claimsInEra * boundedReward;
+    if (!Number.isSafeInteger(eraPotential)) throw new Error("Mining issuance overflow");
+    const accepted = Math.min(eraPotential, miningBudget - issued);
+    issued += accepted;
+    remainingClaims -= claimsInEra;
+    reward = Math.floor(reward / 2);
   }
+  return issued;
+}
 
-  const unclipped = Math.max(1, Math.floor(INITIAL_MINING_REWARD_ATOMS / (2 ** era)));
-  const eraRemaining = Math.max(1, boundary - totalSupplyAtoms);
-  return Math.min(unclipped, eraRemaining, capRemaining);
+/** Reward for the next successful claim under the immutable 50M historical cap. */
+export function miningRewardAtoms(claimCount: number, genesisSupplyAtoms = 0): number {
+  assertClaimCount(claimCount);
+  assertGenesisSupply(genesisSupplyAtoms);
+  const issued = cumulativeMiningIssuanceAtoms(claimCount, genesisSupplyAtoms);
+  const remaining = MAX_SUPPLY_ATOMS - genesisSupplyAtoms - issued;
+  if (remaining <= 0) return 0;
+  const era = miningEraForClaimCount(claimCount);
+  const scheduled = Math.max(1, Math.floor(INITIAL_MINING_REWARD_ATOMS / (2 ** era)));
+  return Math.min(scheduled, remaining);
 }
 
 export function assertMiningClaimContext(
   tx: MiningClaimTx,
-  input: { nextHeight: number; previousHash: string; totalSupplyAtoms: number }
+  input: { nextHeight: number; previousHash: string; claimCount: number; genesisSupplyAtoms: number }
 ): void {
   if (tx.height !== input.nextHeight) throw new Error("Mining claim targets wrong block height");
   if (tx.previousHash !== input.previousHash) throw new Error("Mining claim targets stale previous hash");
-  const expectedReward = miningRewardAtoms(input.totalSupplyAtoms);
-  if (expectedReward <= 0) throw new Error("ZYN maximum supply has been reached");
+  const expectedReward = miningRewardAtoms(input.claimCount, input.genesisSupplyAtoms);
+  if (expectedReward <= 0) throw new Error("ZYN maximum historical issuance has been reached");
   if (tx.rewardAtoms !== expectedReward) throw new Error("Mining claim reward does not match issuance schedule");
   validateMiningWork(tx);
 }
 
-function assertSupply(value: number): void {
+function assertClaimCount(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error("Invalid finalized mining claim count");
+}
+
+function assertGenesisSupply(value: number): void {
   if (!Number.isSafeInteger(value) || value < 0 || value > MAX_SUPPLY_ATOMS) {
-    throw new Error("Invalid finalized ZYN supply");
+    throw new Error("Invalid genesis ZYN supply");
   }
 }
