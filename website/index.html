@@ -4,14 +4,16 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#050807" />
-  <meta name="description" content="ZyronChain is an open-source Layer-1 with deterministic execution, authenticated state, quorum finality, local-first wallets and evidence-gated activation." />
+  <meta name="description" content="ZyronChain is an open-source Layer-1 with deterministic execution, authenticated state, quorum finality, permissionless ZYN issuance and evidence-gated activation." />
+  <meta name="referrer" content="no-referrer" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'" />
   <link rel="canonical" href="https://zyronchain.com/" />
   <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
   <link rel="manifest" href="./site.webmanifest" />
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="ZyronChain" />
   <meta property="og:title" content="ZyronChain — Own your keys. Verify the chain." />
-  <meta property="og:description" content="A verifiable Layer-1 built around local key custody, deterministic execution, authenticated state and quorum finality." />
+  <meta property="og:description" content="A verifiable Layer-1 built around local key custody, deterministic execution, authenticated state, permissionless issuance and quorum finality." />
   <meta property="og:url" content="https://zyronchain.com/" />
   <meta name="twitter:card" content="summary" />
   <title>ZyronChain — Verifiable Layer-1</title>
@@ -44,7 +46,7 @@
       </nav>
 
       <div class="header-actions">
-        <a class="quiet-link" href="https://github.com/zyron249/-zyronchain" target="_blank">Source ↗</a>
+        <a class="quiet-link" href="https://github.com/zyron249/-zyronchain" target="_blank" rel="noopener noreferrer">Source ↗</a>
         <a class="mini-button" href="./wallet.html">Create wallet</a>
       </div>
     </div>
@@ -56,7 +58,7 @@
         <div class="status-pill"><i></i><span>PUBLIC TESTNET AUTHORIZED · ACTIVATION GATED</span></div>
         <p class="hero-kicker">OPEN-SOURCE · SELF-CUSTODIAL · VERIFIABLE</p>
         <h1>Own your keys.<br /><em>Verify the chain.</em></h1>
-        <p class="hero-lede">ZyronChain is a Layer-1 built around deterministic execution, authenticated state and quorum finality. Wallet keys stay on your device, protocol claims stay tied to evidence, and launch status stays explicit.</p>
+        <p class="hero-lede">ZyronChain is a Layer-1 built around deterministic execution, authenticated state, permissionless ZYN issuance and quorum finality. Wallet keys stay on your device, protocol claims stay tied to evidence, and launch status stays explicit.</p>
         <div class="hero-actions">
           <a class="primary-button" href="./wallet.html">Create a wallet <span>→</span></a>
           <a class="secondary-button" href="#start">See how ZyronChain works</a>
@@ -95,7 +97,7 @@
         <div class="console-grid">
           <article><span>EXECUTION</span><strong>DETERMINISTIC</strong><small>exact integer accounting</small></article>
           <article><span>STATE</span><strong>AUTHENTICATED</strong><small>State-v2 commitments</small></article>
-          <article><span>KEYS</span><strong>LOCAL</strong><small>encrypted keystore</small></article>
+          <article><span>ISSUANCE</span><strong>PROOF-OF-WORK</strong><small>protocol-v5 mining claims</small></article>
           <article><span>FAILURE MODE</span><strong>FAIL-CLOSED</strong><small>safety before liveness</small></article>
         </div>
       </div>
@@ -106,7 +108,7 @@
         <div><span>PUBLIC TESTNET</span><strong>Governance authorized</strong><small>Activation evidence still required</small></div>
         <div><span>MAINNET</span><strong>Governance authorized</strong><small>Not value-bearing / not activated</small></div>
         <div><span>PUBLIC WALLET RPC</span><strong>Not published</strong><small>Validator RPC remains private</small></div>
-        <div><span>EXPLORER</span><strong>Gateway pending</strong><small>Read-only boundary planned</small></div>
+        <div><span>PUBLIC MINING</span><strong>Activation gated</strong><small>Protocol v5 code is present; public network is not active</small></div>
       </div>
       <p class="status-legal shell"><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. The current hosted profiles remain rehearsal/private and non-value-bearing.</p>
     </section>
@@ -167,10 +169,10 @@
           <div class="path-copy">
             <span class="path-eyebrow">DEVELOPER PATH</span>
             <h3>Clone, build, test and inspect every protocol boundary.</h3>
-            <p>The canonical TypeScript L1 supports signed transfers, bounded RPC, authenticated native P2P, replayable state, validator-set rotation, protocol upgrades and an independent light-client verification core.</p>
+            <p>The canonical TypeScript L1 supports signed transfers, bounded RPC, authenticated native P2P, replayable state, validator-set rotation, protocol upgrades, protocol-v5 mining claims and an independent light-client verification core.</p>
             <div class="path-actions">
               <a class="primary-button" href="#developers">Developer quick start →</a>
-              <a class="text-button" href="https://github.com/zyron249/-zyronchain/tree/main/l1" target="_blank">Browse L1 source ↗</a>
+              <a class="text-button" href="https://github.com/zyron249/-zyronchain/tree/main/l1" target="_blank" rel="noopener noreferrer">Browse L1 source ↗</a>
             </div>
           </div>
           <ol class="path-steps">
@@ -219,7 +221,7 @@
             <span class="section-index">03 / PROTOCOL</span>
             <h2>Security boundaries<br />are protocol features.</h2>
           </div>
-          <p>ZyronChain is designed so the rules that protect consensus, state, networking and upgrades are visible and testable rather than hidden behind a product claim.</p>
+          <p>ZyronChain is designed so the rules that protect consensus, state, networking, issuance and upgrades are visible and testable rather than hidden behind a product claim.</p>
         </div>
 
         <div class="protocol-grid">
@@ -270,7 +272,7 @@
             <div class="card-copy">
               <small>UPGRADES</small>
               <h3>Quorum-authorized changes.</h3>
-              <p>Validator-set changes and protocol upgrades require active-validator quorum and a minimum 100-block activation delay. Unsupported versions fail-stop instead of silently forking.</p>
+              <p>Validator-set changes and protocol upgrades require active-validator quorum and a minimum 100-block activation delay. Unsupported active versions fail-stop instead of silently forking.</p>
             </div>
           </article>
         </div>
@@ -282,21 +284,21 @@
         <div>
           <span class="section-index">04 / ZYN</span>
           <h2>Finite by protocol.<br />Not by promise.</h2>
-          <p>ZYN accounting is defined in atoms and enforced by the canonical L1. The website does not publish price targets, yield claims or investment promises.</p>
+          <p>ZYN accounting and protocol-v5 mining issuance are enforced by the canonical L1. The website does not publish price targets, yield claims or investment promises.</p>
         </div>
-        <div class="supply-number"><span>HARD SUPPLY CEILING</span><strong>50M ZYN</strong><small>5,000,000,000,000,000 atoms maximum</small></div>
+        <div class="supply-number"><span>HISTORICAL SUPPLY CEILING</span><strong>50M ZYN</strong><small>genesis + mining issuance can never exceed 5,000,000,000,000,000 atoms</small></div>
       </div>
 
       <div class="token-grid">
         <article data-reveal><span>01</span><strong>100,000,000 atoms</strong><p>One ZYN is exactly one hundred million integer atoms.</p></article>
-        <article data-reveal><span>02</span><strong>Fees are burned</strong><p>The sender pays amount + fee; the receiver gets the amount; the fee does not create new supply.</p></article>
+        <article data-reveal><span>02</span><strong>Fees are burned</strong><p>The sender pays amount + fee; the receiver gets the amount; burned fees do not reopen mining headroom.</p></article>
         <article data-reveal><span>03</span><strong>No presale</strong><p>The public website does not offer tokens, allocations, investment contracts or guaranteed returns.</p></article>
-        <article data-reveal><span>04</span><strong>No activity minting</strong><p>Proof-of-Activity settlement can distribute only atoms already allocated to its configured pool.</p></article>
+        <article data-reveal><span>04</span><strong>Protocol-v5 mining</strong><p>The initial issuance reward is 6.25 ZYN and halves every 4,000,000 successfully finalized mining claims.</p></article>
       </div>
 
       <div class="distribution-note" data-reveal>
-        <span>Distribution policy</span>
-        <p>Any value-bearing distribution, public wallet endpoint and network parameters must be published before activation and must match the canonical genesis and launch evidence. A website button cannot activate supply.</p>
+        <span>Mining and finality are separate</span>
+        <p>Proof-of-work determines eligibility for permissionless ZYN issuance; it does not select the canonical chain or replace validator quorum finality. The current implementation uses a 20-bit SHA-256 target as an engineering calibration. Public mining and final mainnet target calibration remain activation/review gates. Proof-of-Activity still cannot mint and may spend only a prefunded pool.</p>
       </div>
     </section>
 
@@ -305,18 +307,18 @@
         <div class="security-intro" data-reveal>
           <span class="section-index">05 / SECURITY</span>
           <h2>Evidence before<br />confidence.</h2>
-          <p>A green build is not the same as a safe network launch. ZyronChain keeps synthetic regression evidence separate from real operator independence, production key custody and external audit evidence.</p>
+          <p>A green build is not the same as a safe network launch. ZyronChain keeps synthetic regression evidence separate from real operator independence, mining contention/calibration evidence, production key custody and external audit evidence.</p>
           <div class="security-links">
-            <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/STANDALONE_L1_READINESS.md" target="_blank">Readiness report ↗</a>
-            <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/L1_THREAT_MODEL.md" target="_blank">Threat model ↗</a>
-            <a href="https://github.com/zyron249/-zyronchain/blob/main/SECURITY.md" target="_blank">Security policy ↗</a>
+            <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/STANDALONE_L1_READINESS.md" target="_blank" rel="noopener noreferrer">Readiness report ↗</a>
+            <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/L1_THREAT_MODEL.md" target="_blank" rel="noopener noreferrer">Threat model ↗</a>
+            <a href="https://github.com/zyron249/-zyronchain/blob/main/SECURITY.md" target="_blank" rel="noopener noreferrer">Security policy ↗</a>
           </div>
         </div>
 
         <div class="security-ledger" data-reveal>
-          <article><span class="ledger-index">01</span><div><strong>Adversarial CI</strong><p>Mixed-version rehearsal, disaster recovery, native P2P recovery, gateway red-team and State-v2 scale evidence.</p></div><b class="state-ok">VERIFIED</b></article>
+          <article><span class="ledger-index">01</span><div><strong>Adversarial CI</strong><p>Mixed-version rehearsal, disaster recovery, native P2P recovery, mining regression coverage, gateway red-team and State-v2 scale evidence.</p></div><b class="state-ok">VERIFIED</b></article>
           <article><span class="ledger-index">02</span><div><strong>Artifact-only operator rehearsal</strong><p>Canonical release artifacts are exercised independently of the repository source tree.</p></div><b class="state-ok">VERIFIED</b></article>
-          <article><span class="ledger-index">03</span><div><strong>Independent operators</strong><p>Genuine non-founder infrastructure evidence remains a launch gate.</p></div><b class="state-gated">GATED</b></article>
+          <article><span class="ledger-index">03</span><div><strong>Independent operators / mining contention</strong><p>Genuine non-founder infrastructure and real multi-miner contention/calibration evidence remain launch gates.</p></div><b class="state-gated">GATED</b></article>
           <article><span class="ledger-index">04</span><div><strong>Production key custody</strong><p>HSM/KMS or audited remote-signer operations remain separate from local development keystores.</p></div><b class="state-gated">GATED</b></article>
           <article><span class="ledger-index">05</span><div><strong>External audit / retest</strong><p>External findings and remediation evidence remain explicit activation evidence.</p></div><b class="state-gated">GATED</b></article>
         </div>
@@ -329,7 +331,7 @@
           <span class="section-index">06 / DEVELOPERS</span>
           <h2>Inspect the chain.<br />Then build.</h2>
         </div>
-        <p>The canonical Layer-1 is TypeScript and targets Node.js 22+. CI covers Node.js 22 and 24 along with protocol-specific recovery and adversarial workflows.</p>
+        <p>The canonical Layer-1 is TypeScript and targets Node.js 22+. CI covers Node.js 22 and 24 along with protocol-specific mining, recovery and adversarial workflows.</p>
       </div>
 
       <div class="dev-grid">
@@ -337,7 +339,7 @@
           <div class="terminal-head"><span>quick-start.sh</span><button type="button" data-copy="quickstart">Copy</button></div>
           <pre id="quickstart"><code><span># clone the canonical source</span>
 git clone https://github.com/zyron249/-zyronchain.git
-cd -zyronchain/l1
+cd ./-zyronchain/l1
 
 <span># install and verify</span>
 npm ci
@@ -352,6 +354,7 @@ npm run build</code></pre>
         <div class="dev-capabilities" data-reveal>
           <article><span>RPC</span><strong>Balances, nonces, blocks, transaction submission</strong></article>
           <article><span>P2P</span><strong>Noise + yamux, PeerId-pinned admission</strong></article>
+          <article><span>MINING</span><strong>Protocol-v5 permissionless ZYN issuance claims</strong></article>
           <article><span>CLIENT</span><strong>Independent light-client verification core</strong></article>
           <article><span>GOVERNANCE</span><strong>Validator rotation + delayed protocol upgrades</strong></article>
           <article><span>STATE</span><strong>Authenticated State-v2 + checkpoint recovery</strong></article>
@@ -359,8 +362,8 @@ npm run build</code></pre>
       </div>
 
       <div class="resource-row" data-reveal>
-        <a href="https://github.com/zyron249/-zyronchain/blob/main/WHITEPAPER.md" target="_blank"><span>Technical paper</span><small>Architecture and protocol model</small><b>↗</b></a>
-        <a href="https://github.com/zyron249/-zyronchain/tree/main/l1" target="_blank"><span>L1 source</span><small>Canonical implementation</small><b>↗</b></a>
+        <a href="https://github.com/zyron249/-zyronchain/blob/main/WHITEPAPER.md" target="_blank" rel="noopener noreferrer"><span>Technical paper</span><small>Architecture and protocol model</small><b>↗</b></a>
+        <a href="https://github.com/zyron249/-zyronchain/tree/main/l1" target="_blank" rel="noopener noreferrer"><span>L1 source</span><small>Canonical implementation</small><b>↗</b></a>
         <a href="./validator.html"><span>Validator Launchpad</span><small>Generate local operator scripts</small><b>→</b></a>
         <a href="./wallet.html"><span>Wallet Setup</span><small>Create a local encrypted keystore</small><b>→</b></a>
       </div>
@@ -371,12 +374,12 @@ npm run build</code></pre>
         <div>
           <span class="section-index">07 / NETWORK</span>
           <h2>Launch status should never be ambiguous.</h2>
-          <p>Governance has authorized public-testnet and mainnet network classes, but activation is still evidence-gated. Until a public wallet gateway and canonical network parameters are explicitly published, do not treat rehearsal endpoints as a public value-bearing network.</p>
+          <p>Governance has authorized public-testnet and mainnet network classes, but activation is still evidence-gated. Protocol-v5 mining is implemented in the canonical binary, but public mining, public wallet access and value-bearing network parameters are not activated by this website.</p>
         </div>
         <div class="network-gates">
           <div><span>Governance authorization</span><b class="state-ok">COMPLETE</b></div>
           <div><span>Public testnet activation</span><b class="state-gated">GATED</b></div>
-          <div><span>Public wallet RPC</span><b class="state-gated">NOT PUBLISHED</b></div>
+          <div><span>Public mining / wallet RPC</span><b class="state-gated">NOT ACTIVE</b></div>
           <div><span>Value-bearing mainnet</span><b class="state-gated">NOT ACTIVE</b></div>
         </div>
       </div>
@@ -400,8 +403,12 @@ npm run build</code></pre>
           <p>No. This site does not sell ZYN, run a presale, promise returns or provide an investment contract. Network distribution must match the canonical activation and genesis process.</p>
         </details>
         <details data-reveal>
-          <summary>Is the public testnet live?</summary>
-          <p>No public value-bearing activation is claimed here. Governance authorization exists, but activation remains gated by the readiness evidence described in the repository.</p>
+          <summary>Does mining replace validator consensus?</summary>
+          <p>No. Protocol-v5 proof-of-work is an issuance mechanism: a valid mining claim can earn the next scheduled ZYN reward. Validators still propose, attest and finalize blocks under the quorum rules.</p>
+        </details>
+        <details data-reveal>
+          <summary>Is public mining or the public testnet live?</summary>
+          <p>No public value-bearing activation is claimed here. Governance authorization exists and protocol-v5 mining code is present, but public activation remains gated by the readiness, audit, operator and mining-calibration evidence described in the repository.</p>
         </details>
         <details data-reveal>
           <summary>Why is validator RPC not exposed directly to browsers?</summary>
@@ -429,8 +436,8 @@ npm run build</code></pre>
       <a class="footer-brand" href="#top"><img src="./logo.svg" alt="ZyronChain" /></a>
       <div class="footer-columns">
         <div><span>USE</span><a href="./wallet.html">Create wallet</a><a href="./validator.html">Run validator</a><a href="#token">ZYN model</a></div>
-        <div><span>BUILD</span><a href="#developers">Developers</a><a href="https://github.com/zyron249/-zyronchain/tree/main/l1" target="_blank">L1 source ↗</a><a href="https://github.com/zyron249/-zyronchain/blob/main/WHITEPAPER.md" target="_blank">Technical paper ↗</a></div>
-        <div><span>VERIFY</span><a href="#security">Security</a><a href="https://github.com/zyron249/-zyronchain/blob/main/docs/STANDALONE_L1_READINESS.md" target="_blank">Readiness ↗</a><a href="https://github.com/zyron249/-zyronchain/blob/main/SECURITY.md" target="_blank">Report issue ↗</a></div>
+        <div><span>BUILD</span><a href="#developers">Developers</a><a href="https://github.com/zyron249/-zyronchain/tree/main/l1" target="_blank" rel="noopener noreferrer">L1 source ↗</a><a href="https://github.com/zyron249/-zyronchain/blob/main/WHITEPAPER.md" target="_blank" rel="noopener noreferrer">Technical paper ↗</a></div>
+        <div><span>VERIFY</span><a href="#security">Security</a><a href="https://github.com/zyron249/-zyronchain/blob/main/docs/STANDALONE_L1_READINESS.md" target="_blank" rel="noopener noreferrer">Readiness ↗</a><a href="https://github.com/zyron249/-zyronchain/blob/main/SECURITY.md" target="_blank" rel="noopener noreferrer">Report issue ↗</a></div>
       </div>
     </div>
     <div class="shell footer-bottom">
