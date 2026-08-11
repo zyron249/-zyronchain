@@ -167,6 +167,36 @@ export function isTrustedHttpsProxyRequest(
   }
 }
 
+export function rpcRateLimitIdentity(
+  remoteAddress: string | undefined,
+  forwardedFor: string | string[] | undefined,
+  trustedProxyAddresses: readonly string[]
+): string {
+  if (remoteAddress === undefined) return "unknown";
+  let remote: string;
+  try {
+    remote = normalizeProxyAddress(remoteAddress);
+  } catch {
+    return "unknown";
+  }
+  if (trustedProxyAddresses.length === 0) return remote;
+  const trusted = new Set(trustedProxyAddresses.map(normalizeProxyAddress));
+  if (!trusted.has(remote)) return remote;
+  if (typeof forwardedFor !== "string" || forwardedFor.length === 0) return `proxy:${remote}`;
+  const chain = forwardedFor.split(",").map((item) => item.trim());
+  if (chain.length === 0 || chain.some((item) => item.length === 0)) return `proxy:${remote}`;
+  for (let index = chain.length - 1; index >= 0; index -= 1) {
+    let hop: string;
+    try {
+      hop = normalizeProxyAddress(chain[index]!);
+    } catch {
+      return `proxy:${remote}`;
+    }
+    if (!trusted.has(hop)) return hop;
+  }
+  return `proxy:${remote}`;
+}
+
 export class NodeService {
   readonly mempool = new Mempool();
   private mutationTail: Promise<void> = Promise.resolve();
@@ -443,7 +473,11 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
       writeJson(response, 403, { error: "RPC request did not arrive through the configured HTTPS proxy" });
       return;
     }
-    const rate = limiter.consume(request.socket.remoteAddress ?? "unknown", Date.now());
+    const rate = limiter.consume(rpcRateLimitIdentity(
+      request.socket.remoteAddress,
+      request.headers["x-forwarded-for"],
+      trustedProxyAddresses
+    ), Date.now());
     response.setHeader("x-ratelimit-limit", String(requestsPerWindow));
     response.setHeader("x-ratelimit-remaining", String(rate.remaining));
     if (!rate.allowed) {
@@ -591,8 +625,6 @@ async function route(
     const txid = service.submitTransaction(body);
     if (onTransactionAccepted) {
       const transaction = structuredClone(body as Transaction);
-      // Gossip is best-effort and must not turn a locally accepted transaction
-      // into an RPC failure because a remote peer is slow or unavailable.
       void Promise.resolve().then(() => onTransactionAccepted(transaction)).catch(() => undefined);
     }
     return writeJson(response, 202, { txid });
@@ -745,17 +777,11 @@ export class PeerClient {
     let admitted = 0;
     for (let index = 0; index < results.length; index += 1) {
       const result = results[index]!;
-      if (result.status === "rejected") {
-        // Discovery is optional metadata. A node that is otherwise a valid sync
-        // peer may not support this endpoint yet; do not poison sync reputation.
-        continue;
-      }
+      if (result.status === "rejected") continue;
       for (const record of result.value) {
         try {
           if (directory.admit(record, nowMs)) admitted += 1;
         } catch (error) {
-          // Local capacity is not evidence of remote misbehavior. Stop accepting
-          // metadata without allowing discovery to evict already-admitted peers.
           if (/Peer directory capacity reached/.test(safeError(error))) break;
           throw error;
         }
@@ -812,9 +838,6 @@ export class PeerClient {
           accepted += 1;
           progressed = true;
         } catch {
-          // A peer with a valid first block but a poisoned tail cannot stop the next
-          // independently selected peer. Back it off so latency cannot let it
-          // immediately monopolize the next batch.
           poisoned = true;
           break;
         }
@@ -909,12 +932,7 @@ export function peerDiversityBucket(peer: string): string {
     const octets = hostname.split(".");
     return `ipv4:${octets.slice(0, 3).join(".")}.0/24`;
   }
-  if (isIP(hostname) === 6) {
-    // Do not infer a prefix from a compressed textual IPv6 representation.
-    // Exact-address grouping is conservative; explicit subnet/provider/ASN
-    // policy remains required before public mainnet admission.
-    return `ipv6:${hostname}`;
-  }
+  if (isIP(hostname) === 6) return `ipv6:${hostname}`;
   return `host:${hostname}`;
 }
 
@@ -938,10 +956,7 @@ export function diversityOrderedPeers(peers: readonly string[], groupOffset = 0)
   return result;
 }
 
-export function peerSyncProbeBatches(
-  peers: readonly string[],
-  groupOffset = 0
-): string[][] {
+export function peerSyncProbeBatches(peers: readonly string[], groupOffset = 0): string[][] {
   const ordered = diversityOrderedPeers(peers, groupOffset);
   const batches: string[][] = [];
   for (let index = 0; index < ordered.length; index += MAX_SYNC_PROBE_CONCURRENCY) {
@@ -972,36 +987,18 @@ export async function produceFinalizedBlock(
       const votes: RoundSkipVote[] = [];
       try {
         votes.push(await service.requestSkipVote(chain.height + 1, skippedRound, previousCertificate, nowMs));
-      } catch {
-        // An honest validator that already attested this round must never also skip it.
-      }
+      } catch {}
       votes.push(...await peers.requestRoundSkips(chain.height + 1, skippedRound, previousCertificate));
       const unique = new Map<Address, RoundSkipVote>();
       for (const vote of votes) {
         try {
-          validateRoundSkipVote(
-            vote,
-            validators,
-            chain.genesis.chainId,
-            chain.height + 1,
-            skippedRound,
-            chain.tip.hash
-          );
+          validateRoundSkipVote(vote, validators, chain.genesis.chainId, chain.height + 1, skippedRound, chain.tip.hash);
           unique.set(vote.validator, vote);
-        } catch {
-          // A malformed or invalid peer vote cannot poison an otherwise valid quorum.
-        }
+        } catch {}
       }
       const certificate = [...unique.values()];
       try {
-        validateRoundSkipQuorum(
-          certificate,
-          validators,
-          chain.genesis.chainId,
-          chain.height + 1,
-          skippedRound,
-          chain.tip.hash
-        );
+        validateRoundSkipQuorum(certificate, validators, chain.genesis.chainId, chain.height + 1, skippedRound, chain.tip.hash);
       } catch {
         return null;
       }
@@ -1010,11 +1007,7 @@ export async function produceFinalizedBlock(
     }
   }
   const transactions = chain.selectValidPending(service.mempool.values(), 10_000);
-  const unsignedProposal = chain.prepareBlock(transactions, publicKey, {
-    round,
-    timestampMs: nowMs,
-    roundCertificate
-  });
+  const unsignedProposal = chain.prepareBlock(transactions, publicKey, { round, timestampMs: nowMs, roundCertificate });
   const proposal = await service.signPreparedProposal(unsignedProposal, nowMs);
   chain.validatePreparedBlock(proposal, nowMs);
   const attestations: BlockAttestation[] = [];
@@ -1029,9 +1022,7 @@ export async function produceFinalizedBlock(
     try {
       validateBlockAttestation(proposal, attestation, validators);
       byValidator.set(attestation.validator, attestation);
-    } catch {
-      // Invalid peer attestations are ignored instead of poisoning block assembly.
-    }
+    } catch {}
   }
   const withVotes = { ...proposal, attestations: [...byValidator.values()] };
   try {
@@ -1073,8 +1064,7 @@ function normalizePeerUrl(value: string): string {
 function peerTransportProtectsCredentials(value: string): boolean {
   const url = new URL(value);
   if (url.protocol === "https:") return true;
-  return url.hostname === "localhost" || url.hostname === "127.0.0.1" ||
-    url.hostname === "::1" || url.hostname === "[::1]";
+  return url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1" || url.hostname === "[::1]";
 }
 
 async function getJson(url: string, maxBytes: number): Promise<unknown> {
@@ -1172,10 +1162,7 @@ async function parseBoundedResponse(response: Response, maxBytes: number): Promi
   }
 }
 
-async function readJsonBody(
-  request: IncomingMessage,
-  bodyReservation?: RpcRequestBodyReservation
-): Promise<unknown> {
+async function readJsonBody(request: IncomingMessage, bodyReservation?: RpcRequestBodyReservation): Promise<unknown> {
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] ?? "")) {
     throw new Error("Content-Type must be application/json");
   }
@@ -1183,12 +1170,9 @@ async function readJsonBody(
   if (declaredLength !== undefined) {
     if (!/^(0|[1-9][0-9]*)$/.test(declaredLength)) throw new Error("Invalid Content-Length");
     const declaredBytes = Number(declaredLength);
-    if (!Number.isSafeInteger(declaredBytes) || declaredBytes > MAX_BODY_BYTES) {
-      throw new Error("Request body too large");
-    }
+    if (!Number.isSafeInteger(declaredBytes) || declaredBytes > MAX_BODY_BYTES) throw new Error("Request body too large");
     if (declaredBytes > 0) bodyReservation?.reserve(declaredBytes);
   }
-
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of request) {
@@ -1274,10 +1258,7 @@ function preauthorizeConsensusRequest(
 ): void {
   if (peerRequestAuthenticator) {
     try {
-      peerRequestAuthenticator.preflight(request.headers, {
-        method: request.method ?? "",
-        path
-      });
+      peerRequestAuthenticator.preflight(request.headers, { method: request.method ?? "", path });
       return;
     } catch {
       throw new PeerAuthenticationError("Peer signature authentication required");
@@ -1369,11 +1350,7 @@ class RpcAdmissionController {
   }
 
   metrics(): RpcAdmissionMetrics {
-    return {
-      inflightRequests: this.inflightRequests,
-      maxInflightRequests: this.maxInflightRequests,
-      rejectedRequests: this.rejectedRequests
-    };
+    return { inflightRequests: this.inflightRequests, maxInflightRequests: this.maxInflightRequests, rejectedRequests: this.rejectedRequests };
   }
 }
 
@@ -1401,11 +1378,7 @@ class RpcRequestBodyByteBudget {
   }
 
   metrics(): Pick<RpcByteBudgetMetrics, "requestBodyBytesInUse" | "maxRequestBodyBytes" | "rejectedRequestBodies"> {
-    return {
-      requestBodyBytesInUse: this.reservedBytes,
-      maxRequestBodyBytes: this.maxBytes,
-      rejectedRequestBodies: this.rejectedReservations
-    };
+    return { requestBodyBytesInUse: this.reservedBytes, maxRequestBodyBytes: this.maxBytes, rejectedRequestBodies: this.rejectedReservations };
   }
 }
 
@@ -1432,11 +1405,7 @@ class RpcResponseByteBudget {
   }
 
   metrics(): Pick<RpcByteBudgetMetrics, "responseBytesInUse" | "maxResponseBytes" | "rejectedResponses"> {
-    return {
-      responseBytesInUse: this.reservedBytes,
-      maxResponseBytes: this.maxBytes,
-      rejectedResponses: this.rejectedReservations
-    };
+    return { responseBytesInUse: this.reservedBytes, maxResponseBytes: this.maxBytes, rejectedResponses: this.rejectedReservations };
   }
 }
 
