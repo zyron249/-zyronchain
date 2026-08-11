@@ -5,7 +5,6 @@
   const REPO_URL = 'https://github.com/zyron249/-zyronchain.git';
 
   const $ = (id) => document.getElementById(id);
-
   const shellQuote = (value) => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 
   const cleanLabel = (value) => {
@@ -65,7 +64,7 @@ fi
 
 read -r -s -p "Create validator password (12+ characters): " ZYRON_PASSWORD
 echo
-if [ "${'#'}ZYRON_PASSWORD" = "" ] || [ "${'#'}{#ZYRON_PASSWORD}" -lt 12 ]; then
+if [ "\${#ZYRON_PASSWORD}" -lt 12 ]; then
   echo "Password must contain at least 12 characters." >&2
   unset ZYRON_PASSWORD
   exit 1
@@ -208,7 +207,7 @@ ${finalPeerArgs}
     event.preventDefault();
     const status = $('network-status');
     try {
-      const label = cleanLabel($('network-label')?.value || $('validator-label')?.value);
+      const label = cleanLabel($('validator-label')?.value);
       const platform = $('network-platform')?.value || 'linux';
       const p2pPort = validPort($('p2p-port')?.value);
       const rpcPort = validPort($('rpc-port')?.value);
