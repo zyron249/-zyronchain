@@ -7,6 +7,7 @@ import {
   INITIAL_MINING_REWARD_ATOMS,
   MINING_DIFFICULTY_BITS,
   MINING_ERA_TARGET_CLAIMS,
+  MINING_PROTOCOL_VERSION,
   MINING_TRACKER_ADDRESS,
   cumulativeMiningIssuanceAtoms,
   meetsMiningDifficulty,
@@ -20,7 +21,13 @@ import {
   applyStateV2Transaction,
   stateV2TransactionKeyPreimages
 } from "../src/state-v2.js";
-import { createMiningClaim, validateTransactionShape } from "../src/transaction.js";
+import {
+  createMiningClaim,
+  createProtocolUpgrade,
+  createProtocolUpgradeApproval,
+  createTransfer,
+  validateTransactionShape
+} from "../src/transaction.js";
 import { ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, type GenesisConfig, type MiningClaimTx } from "../src/types.js";
 
 const validatorPrivate = "11".padStart(64, "0");
@@ -64,6 +71,7 @@ function unsignedContext(overrides: Partial<Parameters<typeof createMiningClaim>
 test("mining issuance starts at 6.25 ZYN and halves every four million finalized claims", () => {
   assert.equal(INITIAL_MINING_REWARD_ATOMS, 6.25 * ATOMS_PER_ZYN);
   assert.equal(MINING_ERA_TARGET_CLAIMS, 4_000_000);
+  assert.equal(MINING_PROTOCOL_VERSION, 5);
   assert.equal(miningEraForClaimCount(0), 0);
   assert.equal(miningEraForClaimCount(3_999_999), 0);
   assert.equal(miningEraForClaimCount(4_000_000), 1);
@@ -124,7 +132,7 @@ test("mining claim is a version-2 signed transaction with fail-closed shape vali
   assert.throws(() => validateTransactionShape(wrongReward), /mining reward must be positive/);
 });
 
-test("mining cannot enter a legacy protocol mempool before protocol v4 activation", () => {
+test("mining cannot enter a legacy protocol mempool before protocol v5 activation", () => {
   const chain = new ZyronChain(genesis());
   const claim = createMiningClaim(unsignedContext({ previousHash: chain.tip.hash }), minerPrivate, minerPublic);
   assert.throws(
@@ -156,7 +164,7 @@ test("State-v2 semantic keys commit both miner account and mining claim counter"
   );
 });
 
-test("reserved mining tracker cannot be preallocated or used as the activity pool", () => {
+test("reserved mining tracker cannot be preallocated, paid, spent, or used as the activity pool", () => {
   assert.throws(
     () => new ZyronChain(genesis([{ address: MINING_TRACKER_ADDRESS, amountAtoms: 0 }])),
     /Mining tracker cannot receive a genesis allocation/
@@ -165,6 +173,17 @@ test("reserved mining tracker cannot be preallocated or used as the activity poo
     () => new ZyronChain({ ...genesis(), activityPool: MINING_TRACKER_ADDRESS }),
     /Mining tracker cannot be the activity pool/
   );
+
+  const toTracker = createTransfer({
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: miner,
+    receiver: MINING_TRACKER_ADDRESS,
+    amountAtoms: 1,
+    feeAtoms: 0,
+    timestampMs: genesis().timestampMs + 1
+  }, minerPrivate, minerPublic);
+  assert.throws(() => validateTransactionShape(toTracker), /protocol-reserved/);
 });
 
 test("tracker address cannot claim mining rewards even with a structurally valid signed object", () => {
@@ -175,4 +194,104 @@ test("tracker address cannot claim mining rewards even with a structurally valid
     sender: MINING_TRACKER_ADDRESS
   } as MiningClaimTx;
   assert.throws(() => state.apply(forgedTracker, pool), /protocol-reserved/);
+});
+
+test("protocol v5 activates, finalizes real proof-of-work issuance, and rejects stale/double claims", { timeout: 120_000 }, () => {
+  const chain = new ZyronChain(genesis());
+  const upgradeInput = {
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: validator,
+    activationHeight: 101,
+    protocolVersion: MINING_PROTOCOL_VERSION
+  };
+  const upgrade = createProtocolUpgrade({
+    ...upgradeInput,
+    approvals: [createProtocolUpgradeApproval(upgradeInput, validatorPrivate, validatorPublic)],
+    timestampMs: genesis().timestampMs + 10
+  }, validatorPrivate, validatorPublic);
+
+  for (let height = 1; height <= 100; height += 1) {
+    const timestampMs = genesis().timestampMs + (height * 1_000);
+    let block = chain.produceBlock(height === 1 ? [upgrade] : [], validatorPrivate, { timestampMs });
+    block = chain.attestBlock(block, validatorPrivate);
+    chain.acceptBlock(block, timestampMs);
+  }
+
+  assert.equal(chain.height, 100);
+  assert.equal(chain.protocolVersionAt(100), 1);
+  assert.equal(chain.protocolVersionAt(101), MINING_PROTOCOL_VERSION);
+  assert.equal(chain.nextMiningRewardAtoms(), INITIAL_MINING_REWARD_ATOMS);
+
+  const work = {
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: miner,
+    height: 101,
+    previousHash: chain.tip.hash,
+    rewardAtoms: chain.nextMiningRewardAtoms(),
+    workNonce: "0000000000000000",
+    publicKey: minerPublic
+  };
+
+  let solvedNonce: string | undefined;
+  for (let counter = 0; counter < 20_000_000; counter += 1) {
+    const workNonce = counter.toString(16).padStart(16, "0");
+    const hash = miningWorkHash({ ...work, workNonce });
+    if (meetsMiningDifficulty(hash)) {
+      solvedNonce = workNonce;
+      break;
+    }
+  }
+  assert.ok(solvedNonce, "deterministic integration challenge must solve within bounded search");
+
+  const claim = createMiningClaim({
+    chainId: work.chainId,
+    nonce: work.nonce,
+    sender: miner,
+    height: work.height,
+    previousHash: work.previousHash,
+    rewardAtoms: work.rewardAtoms,
+    workNonce: solvedNonce,
+    timestampMs: genesis().timestampMs + 101_000
+  }, minerPrivate, minerPublic);
+  assert.doesNotThrow(() => chain.validateMempoolAdmission(claim));
+
+  const secondClaim = createMiningClaim({
+    chainId: work.chainId,
+    nonce: 2,
+    sender: validator,
+    height: work.height,
+    previousHash: work.previousHash,
+    rewardAtoms: work.rewardAtoms,
+    workNonce: "0000000000000000",
+    timestampMs: genesis().timestampMs + 101_001
+  }, validatorPrivate, validatorPublic);
+  assert.throws(
+    () => chain.produceBlock([claim, secondClaim], validatorPrivate, { timestampMs: genesis().timestampMs + 101_100 }),
+    /more than one mining claim/
+  );
+
+  let miningBlock = chain.produceBlock([claim], validatorPrivate, {
+    timestampMs: genesis().timestampMs + 101_100
+  });
+  miningBlock = chain.attestBlock(miningBlock, validatorPrivate);
+  chain.acceptBlock(miningBlock, genesis().timestampMs + 101_100);
+
+  assert.equal(chain.height, 101);
+  assert.equal(chain.balance(miner), INITIAL_MINING_REWARD_ATOMS);
+  assert.equal(chain.miningClaimCount(), 1);
+  assert.equal(chain.balance(MINING_TRACKER_ADDRESS), 0);
+
+  const staleClaim = createMiningClaim({
+    chainId: work.chainId,
+    nonce: 2,
+    sender: miner,
+    height: 102,
+    previousHash: work.previousHash,
+    rewardAtoms: chain.nextMiningRewardAtoms(),
+    workNonce: solvedNonce,
+    timestampMs: genesis().timestampMs + 102_000
+  }, minerPrivate, minerPublic);
+  assert.throws(() => chain.validateMempoolAdmission(staleClaim), /stale previous hash/);
 });
