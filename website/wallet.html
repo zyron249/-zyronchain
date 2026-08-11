@@ -76,20 +76,20 @@
       <div class="wallet-section-heading">
         <span>01 / CREATE</span>
         <h2>Generate the wallet<br />on your machine.</h2>
-        <p>Choose your operating system. The script checks out a pinned reviewed repository revision, installs the canonical L1 dependencies, builds the CLI and asks for the wallet password inside your local terminal.</p>
+        <p>Choose your operating system. The script checks out the exact canonical release revision shown below, installs the locked L1 dependencies, builds the CLI and asks for the wallet password inside your local terminal.</p>
       </div>
 
       <div class="wallet-builder" data-wallet-builder>
         <div class="wallet-builder-tabs" role="tablist" aria-label="Operating system">
-          <button class="active" type="button" data-wallet-os="unix" aria-selected="true">macOS / Linux</button>
-          <button type="button" data-wallet-os="windows" aria-selected="false">Windows PowerShell</button>
+          <button class="active" type="button" role="tab" data-wallet-os="unix" aria-selected="true">macOS / Linux</button>
+          <button type="button" role="tab" data-wallet-os="windows" aria-selected="false" tabindex="-1">Windows PowerShell</button>
         </div>
 
         <div class="wallet-builder-body">
           <div class="wallet-builder-meta">
             <div><span>OUTPUT</span><strong>wallet.json</strong></div>
             <div><span>PASSWORD FILE</span><strong>wallet.password</strong></div>
-            <div><span>RELEASE</span><strong data-release-short>b7e0d37f1471</strong></div>
+            <div><span>RELEASE</span><strong data-release-short title="Canonical release commit">loading…</strong></div>
             <div><span>NETWORK</span><strong>Not required to create</strong></div>
           </div>
 
@@ -209,6 +209,7 @@ node dist/src/cli.js transfer \
     </div>
   </footer>
 
+  <script src="./release.js"></script>
   <script src="./wallet.js"></script>
 </body>
 </html>
