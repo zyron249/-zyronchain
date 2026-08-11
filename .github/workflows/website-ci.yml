@@ -1,0 +1,51 @@
+name: ZyronChain Website CI
+
+on:
+  pull_request:
+    paths:
+      - 'website/**'
+      - '.github/workflows/website-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - '.github/workflows/website-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  static-portal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '24'
+      - name: Verify static portal contract
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const required = ['website/index.html', 'website/styles.css', 'website/app.js', 'website/README.md'];
+          for (const file of required) {
+            if (!fs.existsSync(file) || !fs.statSync(file).isFile()) throw new Error(`Missing website file: ${file}`);
+          }
+          const html = fs.readFileSync('website/index.html', 'utf8');
+          const css = fs.readFileSync('website/styles.css', 'utf8');
+          const js = fs.readFileSync('website/app.js', 'utf8');
+          for (const marker of ['./styles.css', './app.js', 'ZyronChain', 'Activation gated', '50,000,000 ZYN']) {
+            if (!html.includes(marker)) throw new Error(`Website HTML missing required marker: ${marker}`);
+          }
+          if (!css.includes('@media (max-width: 640px)')) throw new Error('Website responsive mobile boundary is missing');
+          if (html.includes('127.0.0.1:9137') || js.includes('127.0.0.1:9137')) {
+            throw new Error('Browser portal must not directly bind to validator RPC');
+          }
+          if (/fetch\s*\(\s*['\"]https?:\/\//.test(js)) {
+            throw new Error('Static portal may not acquire remote trust dependencies in client JavaScript');
+          }
+          console.log('website-static-contract-ok');
+          NODE
