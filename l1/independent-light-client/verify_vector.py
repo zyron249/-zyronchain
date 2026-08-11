@@ -31,6 +31,8 @@ BRANCH_DOMAIN = b"ZyronChain/state-v2/branch\x00"
 BLOCK_PROPOSAL_DOMAIN = "zyronchain/block-proposal/v1"
 FINALITY_ATTESTATION_DOMAIN = "zyronchain/finality-attestation/v1"
 ROUND_SKIP_DOMAIN = "zyronchain/round-skip/v1"
+SUPPORTED_PROTOCOL_VERSIONS = frozenset((1, 2, 3, 5))
+STATE_V2_PROTOCOL_VERSIONS = frozenset((2, 3, 5))
 
 
 class VerificationError(ValueError):
@@ -149,7 +151,9 @@ def validate_anchor(value: Any) -> dict[str, Any]:
         raise VerificationError("invalid anchor identity")
     _safe_int(anchor["height"], "anchor height")
     _safe_int(anchor["timestampMs"], "anchor timestamp")
-    _safe_int(anchor["protocolVersion"], "anchor protocol version", 1)
+    protocol_version = _safe_int(anchor["protocolVersion"], "anchor protocol version", 1)
+    if protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
+        raise VerificationError("unsupported anchor protocol version")
     _hex(anchor["genesisHash"], HEX_32, "genesis hash")
     _hex(anchor["blockHash"], HEX_32, "block hash")
     _hex(anchor["stateRoot"], HEX_32, "state root")
@@ -328,7 +332,7 @@ EMPTY_HASHES = _empty_hashes()
 def verify_state_proof(anchor_value: Any, key: Any, value: Any, proof_value: Any) -> bool:
     try:
         anchor = validate_anchor(anchor_value)
-        if anchor["protocolVersion"] not in (2, 3) or not isinstance(key, str) or not key:
+        if anchor["protocolVersion"] not in STATE_V2_PROTOCOL_VERSIONS or not isinstance(key, str) or not key:
             return False
         proof = _exact_keys(proof_value, {"version", "keyHash", "valueHash", "siblings"}, "state proof")
         if proof["version"] != 1 or not isinstance(proof["siblings"], list) or len(proof["siblings"]) != TREE_DEPTH:
@@ -358,6 +362,20 @@ def verify_state_proof(anchor_value: Any, key: Any, value: Any, proof_value: Any
         return current == anchor["stateRoot"]
     except (TypeError, ValueError, VerificationError):
         return False
+
+
+def activate_next_protocol_version(anchor_value: Any, protocol_version_value: Any, proof_value: Any) -> dict[str, Any]:
+    anchor = validate_anchor(anchor_value)
+    if anchor["protocolVersion"] not in STATE_V2_PROTOCOL_VERSIONS:
+        raise VerificationError("protocol transition proof requires authenticated State v2")
+    protocol_version = _safe_int(protocol_version_value, "protocol transition version", 1)
+    if protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
+        raise VerificationError("unsupported protocol transition version")
+    activation_height = _safe_int(anchor["height"] + 1, "protocol activation height", 1)
+    key = f"protocol-schedule:{activation_height}"
+    if not verify_state_proof(anchor, key, {"protocolVersion": protocol_version}, proof_value):
+        raise VerificationError("invalid protocol transition proof")
+    return {**anchor, "protocolVersion": protocol_version}
 
 
 def verify_vector(document: Any) -> None:
