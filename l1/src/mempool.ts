@@ -141,15 +141,18 @@ function isBetterMiningClaim(existing: MiningClaimTx, incoming: MiningClaimTx): 
   return compareMiningPriority(incoming, existing) > 0;
 }
 
-/** Positive means left has higher mining-mempool priority. */
+/**
+ * Positive means left has higher mining-mempool priority.
+ * A later finalized-tip height replaces stale work. At the same height only a
+ * strictly lower work hash is better. Timestamp/txid are deliberately ignored
+ * so the same PoW solution cannot be churned through replacement by re-signing.
+ */
 function compareMiningPriority(left: MiningClaimTx, right: MiningClaimTx): number {
   if (left.height !== right.height) return left.height > right.height ? 1 : -1;
   const leftHash = miningWorkHash(left);
   const rightHash = miningWorkHash(right);
   if (leftHash !== rightHash) return leftHash < rightHash ? 1 : -1;
-  if (left.timestampMs !== right.timestampMs) return left.timestampMs > right.timestampMs ? 1 : -1;
-  if (left.txid === right.txid) return 0;
-  return left.txid < right.txid ? 1 : -1;
+  return 0;
 }
 
 function hasRequiredFeeRateBump(existing: Transaction, incoming: Transaction): boolean {
