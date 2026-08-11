@@ -784,9 +784,6 @@ function validateProtocolUpgradeAuthorization(
     throw new Error("Protocol upgrade activation is too soon");
   }
   if (tx.activationHeight <= lastActivationHeight) throw new Error("Protocol activation height must increase");
-  if (!SUPPORTED_PROTOCOL_VERSIONS.has(tx.protocolVersion)) {
-    throw new Error(`Protocol version ${tx.protocolVersion} is not supported by this binary`);
-  }
   const allowed = new Map(currentValidators.map((validator) => [validator.address, validator.publicKey]));
   if (!allowed.has(tx.sender)) throw new Error("Protocol upgrade initiator is not active");
   const payload = protocolUpgradeApprovalPayload(tx);
