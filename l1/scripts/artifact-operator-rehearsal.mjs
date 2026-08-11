@@ -133,7 +133,12 @@ try {
   for (const value of [validatorOne, validatorTwo, oracle]) {
     assert.equal(value.version, 1);
     assert.equal(Object.hasOwn(value, "privateKey"), false, "Release rehearsal must not create plaintext private-key JSON");
-    assert.ok(value.crypto && typeof value.crypto === "object", "Release rehearsal must create encrypted keystore metadata");
+    assert.equal(value.kdf, "scrypt", "Release rehearsal keystore must use scrypt");
+    assert.equal(value.cipher, "aes-256-gcm", "Release rehearsal keystore must use AES-256-GCM");
+    assert.match(value.salt, /^[0-9a-f]{64}$/);
+    assert.match(value.iv, /^[0-9a-f]{24}$/);
+    assert.match(value.tag, /^[0-9a-f]{32}$/);
+    assert.match(value.ciphertext, /^[0-9a-f]{128}$/);
     assert.match(value.publicKey, /^[0-9a-f]{128}$/);
     assert.match(value.address, /^ZYN[0-9a-f]{40}$/);
   }
