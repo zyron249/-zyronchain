@@ -30,15 +30,36 @@ jobs:
         run: |
           node <<'NODE'
           const fs = require('node:fs');
-          const required = ['website/index.html', 'website/styles.css', 'website/app.js', 'website/README.md'];
+          const required = [
+            'website/index.html',
+            'website/styles.css',
+            'website/app.js',
+            'website/README.md',
+            'website/robots.txt',
+            'website/sitemap.xml'
+          ];
           for (const file of required) {
             if (!fs.existsSync(file) || !fs.statSync(file).isFile()) throw new Error(`Missing website file: ${file}`);
           }
           const html = fs.readFileSync('website/index.html', 'utf8');
           const css = fs.readFileSync('website/styles.css', 'utf8');
           const js = fs.readFileSync('website/app.js', 'utf8');
+          const robots = fs.readFileSync('website/robots.txt', 'utf8');
+          const sitemap = fs.readFileSync('website/sitemap.xml', 'utf8');
           for (const marker of ['./styles.css', './app.js', 'ZyronChain', 'Activation gated', '50,000,000 ZYN']) {
             if (!html.includes(marker)) throw new Error(`Website HTML missing required marker: ${marker}`);
+          }
+          for (const marker of [
+            '<link rel="canonical" href="https://zyronchain.com/"',
+            '<meta property="og:url" content="https://zyronchain.com/"'
+          ]) {
+            if (!html.includes(marker)) throw new Error(`Production domain metadata missing: ${marker}`);
+          }
+          if (!robots.includes('Sitemap: https://zyronchain.com/sitemap.xml')) {
+            throw new Error('robots.txt is not bound to the production sitemap');
+          }
+          if (!sitemap.includes('<loc>https://zyronchain.com/</loc>')) {
+            throw new Error('sitemap.xml is not bound to the production origin');
           }
           if (!css.includes('@media (max-width: 640px)')) throw new Error('Website responsive mobile boundary is missing');
           if (html.includes('127.0.0.1:9137') || js.includes('127.0.0.1:9137')) {
