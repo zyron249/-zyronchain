@@ -39,7 +39,10 @@ export class Mempool {
     if (tx.kind === "mining_claim") {
       const miningCount = this.miningClaimCount();
       const totalCapacity = this.maxNonMiningSize + this.miningReserve;
-      if (miningCount >= MAX_MINING_MEMPOOL_CLAIMS || this.byId.size >= totalCapacity) {
+      const configuredMiningCapacity = this.miningReserve > 0
+        ? this.miningReserve
+        : MAX_MINING_MEMPOOL_CLAIMS;
+      if (miningCount >= configuredMiningCapacity || this.byId.size >= totalCapacity) {
         const weakest = this.weakestMiningClaim();
         if (!weakest || !isBetterMiningClaim(weakest.tx, tx)) {
           throw new Error("Mining mempool full");
