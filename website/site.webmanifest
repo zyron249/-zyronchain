@@ -1,0 +1,16 @@
+{
+  "name": "ZyronChain",
+  "short_name": "ZyronChain",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050b11",
+  "theme_color": "#050b11",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
