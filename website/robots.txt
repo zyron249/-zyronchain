@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://zyronchain.org/sitemap.xml
+Sitemap: https://zyronchain.com/sitemap.xml
