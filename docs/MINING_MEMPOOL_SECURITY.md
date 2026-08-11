@@ -8,7 +8,7 @@ The production/default mempool keeps the ordinary non-mining capacity bounded at
 
 Mining traffic remains independently bounded by `MAX_MINING_MEMPOOL_CLAIMS = 256`. Once that subpool is full, a new claim can enter only by replacing the weakest mining claim under the deterministic mining-work priority rule. Mining traffic therefore does not evict ordinary transfers merely to consume its reserve.
 
-Custom `Mempool(maxNonMiningSize)` instances retain a hard total cap unless an explicit mining reserve is supplied as the second constructor argument. The standalone node uses the default production policy, which enables the 256-entry reserve.
+Custom `Mempool(maxNonMiningSize)` instances retain a hard total cap unless an explicit mining reserve is supplied as the second constructor argument. When a nonzero reserve is supplied explicitly, that reserve is also the mining subpool cap for that instance, up to the protocol-policy maximum of 256 claims. The standalone node uses the default production policy, which enables the full 256-entry reserve.
 
 ## Admission and stale-work controls
 
