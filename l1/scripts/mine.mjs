@@ -15,7 +15,15 @@ import {
 import { createMiningClaim } from "../dist/src/transaction.js";
 import { MAX_SUPPLY_ATOMS } from "../dist/src/types.js";
 
+const MAX_RPC_RESPONSE_BYTES = 64 * 1024;
 const args = process.argv.slice(2);
+
+if (args.includes("--help") || args.includes("-h")) {
+  usage();
+  process.exit(0);
+}
+assertKnownArgs();
+
 const keyPath = requiredOption("--key");
 const genesisPath = requiredOption("--genesis");
 const rpc = normalizeRpcUrl(requiredOption("--rpc"));
@@ -58,7 +66,8 @@ while (!stopped) {
 
   const minerNonceResult = await fetchJson(`${rpc}/nonce/${sender}`);
   const trackerNonceResult = await fetchJson(`${rpc}/nonce/${MINING_TRACKER_ADDRESS}`);
-  if (!Number.isSafeInteger(minerNonceResult.nonce) || !Number.isSafeInteger(trackerNonceResult.nonce)) {
+  if (!Number.isSafeInteger(minerNonceResult.nonce) || !Number.isSafeInteger(trackerNonceResult.nonce) ||
+      minerNonceResult.nonce < 0 || trackerNonceResult.nonce < 0) {
     throw new Error("RPC returned invalid mining nonce state");
   }
   const nonce = Number(minerNonceResult.nonce) + 1;
@@ -117,7 +126,7 @@ while (!stopped) {
   const tx = createMiningClaim({
     chainId: challenge.chainId,
     nonce: challenge.nonce,
-    sender: sender,
+    sender,
     height: challenge.height,
     previousHash: challenge.previousHash,
     rewardAtoms: challenge.rewardAtoms,
@@ -125,24 +134,19 @@ while (!stopped) {
     timestampMs: Date.now()
   }, privateKey, publicKey);
 
-  const response = await fetch(`${rpc}/tx`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-zyron-rpc-version": "1"
-    },
-    body: JSON.stringify(tx),
-    signal: AbortSignal.timeout(10_000)
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    console.log(`Claim became stale or was rejected: HTTP ${response.status} ${text.slice(0, 300)}`);
+  try {
+    const result = await fetchJson(`${rpc}/tx`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(tx)
+    }, 10_000);
+    if (result.txid !== tx.txid) throw new Error("RPC mining transaction ID mismatch");
+    console.log(`Submitted mining claim ${tx.txid}`);
+  } catch (error) {
+    console.log(`Claim became stale or was rejected: ${error instanceof Error ? error.message : String(error)}`);
     if (once) process.exit(3);
     continue;
   }
-  const result = await response.json();
-  if (result.txid !== tx.txid) throw new Error("RPC mining transaction ID mismatch");
-  console.log(`Submitted mining claim ${tx.txid}`);
   if (once) break;
 
   // Avoid repeatedly mining the same tip while this claim waits for finalization.
@@ -154,6 +158,35 @@ while (!stopped) {
 }
 
 console.log("Miner stopped cleanly.");
+
+function usage() {
+  console.log(`Usage:
+  npm run mine -- --genesis <genesis.json> --key <wallet.json> --password-file <wallet.password> --rpc <url> [options]
+
+Options:
+  --once                Stop after one accepted claim submission
+  --batch-size <n>      Hashes between finalized-tip refreshes (1-1000000; default 65536)
+  --password-file <p>   Required for encrypted ZyronChain keystores
+  --help, -h            Show this help
+
+Remote RPC must use HTTPS. Plain HTTP is accepted only for loopback.`);
+}
+
+function assertKnownArgs() {
+  const valued = new Set(["--key", "--genesis", "--rpc", "--password-file", "--batch-size"]);
+  const flags = new Set(["--once"]);
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (flags.has(token)) continue;
+    if (valued.has(token)) {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error(`${token} requires a value`);
+      index += 1;
+      continue;
+    }
+    throw new Error(`Unknown mining option: ${token}`);
+  }
+}
 
 function option(name) {
   const index = args.indexOf(name);
@@ -179,6 +212,7 @@ function parsePositiveInteger(value, name, max) {
 function normalizeRpcUrl(value) {
   const url = new URL(value);
   if (url.username || url.password || url.search || url.hash) throw new Error("RPC URL must not contain credentials, query, or fragment");
+  if (url.pathname !== "/") throw new Error("RPC URL must be an origin without a path");
   const local = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1" || url.hostname === "[::1]";
   if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) {
     throw new Error("Remote mining RPC must use HTTPS; HTTP is allowed only for loopback");
@@ -212,13 +246,57 @@ function genesisSupply(value) {
   return total;
 }
 
-async function fetchJson(url) {
+async function fetchJson(url, init = {}, timeoutMs = 8_000) {
+  const headers = {
+    ...(init.headers ?? {}),
+    "x-zyron-rpc-version": "1"
+  };
   const response = await fetch(url, {
-    headers: { "x-zyron-rpc-version": "1" },
-    signal: AbortSignal.timeout(8_000)
+    ...init,
+    headers,
+    redirect: "error",
+    signal: AbortSignal.timeout(timeoutMs)
   });
-  if (!response.ok) throw new Error(`RPC request failed: HTTP ${response.status} ${await response.text()}`);
-  return response.json();
+  const text = await readBoundedBody(response);
+  if (!response.ok) {
+    throw new Error(`RPC HTTP ${response.status}: ${text.slice(0, 300)}`);
+  }
+  const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+  if (!contentType.startsWith("application/json")) {
+    throw new Error(`RPC returned unsupported content type: ${contentType || "missing"}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error("RPC returned invalid JSON");
+  }
+}
+
+async function readBoundedBody(response) {
+  const declared = response.headers.get("content-length");
+  if (declared !== null) {
+    if (!/^[0-9]+$/.test(declared)) throw new Error("RPC returned invalid Content-Length");
+    if (Number(declared) > MAX_RPC_RESPONSE_BYTES) throw new Error("RPC response exceeds 64 KiB limit");
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_RPC_RESPONSE_BYTES) {
+        await reader.cancel("response-too-large");
+        throw new Error("RPC response exceeds 64 KiB limit");
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total).toString("utf8");
 }
 
 function formatZyn(atoms) {
