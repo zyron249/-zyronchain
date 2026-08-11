@@ -2,10 +2,12 @@
   "scopeVersion": 1,
   "status": "pre-public-testnet-external-audit-preparation",
   "canonicalImplementation": "l1/",
-  "supportedProtocolVersions": [1, 2, 3],
+  "supportedProtocolVersions": [1, 2, 3, 5],
   "reviewAreas": [
     "consensus-finality-view-change",
     "transaction-governance-signing-domains",
+    "permissionless-mining-issuance-and-supply-cap",
+    "mining-mempool-contention-and-censorship-boundary",
     "cryptographic-primitives-and-key-boundaries",
     "durable-storage-replay-and-checkpoint-trust",
     "authenticated-state-v2",
@@ -31,6 +33,7 @@
     "l1/src/light-client.ts",
     "l1/src/mempool.ts",
     "l1/src/merkle.ts",
+    "l1/src/mining.ts",
     "l1/src/node.ts",
     "l1/src/node-base.ts",
     "l1/src/p2p.ts",
@@ -40,15 +43,19 @@
     "l1/src/p2p-state.ts",
     "l1/src/p2p-sync.ts",
     "l1/src/peer-identity.ts",
+    "l1/src/state.ts",
     "l1/src/state-v2.ts",
     "l1/src/storage.ts",
     "l1/src/transaction.ts",
     "l1/src/types.ts",
-    "l1/src/validator-signer.ts"
+    "l1/src/validator-signer.ts",
+    "l1/scripts/mine.mjs"
   ],
   "securitySpecifications": [
     "SECURITY.md",
     "docs/L1_THREAT_MODEL.md",
+    "docs/MINING.md",
+    "l1/MINING.md",
     "docs/CONSENSUS_CERTIFICATE_MODEL.md",
     "docs/L1_OPERATIONS_RUNBOOK.md",
     "docs/STANDALONE_L1_READINESS.md",
@@ -98,12 +105,22 @@
     {
       "id": "STATE-001",
       "statement": "Block validation re-executes transactions and requires the deterministic authenticated state root committed by the block.",
-      "primaryModules": ["l1/src/chain.ts", "l1/src/state-v2.ts"]
+      "primaryModules": ["l1/src/chain.ts", "l1/src/state.ts", "l1/src/state-v2.ts"]
     },
     {
       "id": "SUPPLY-001",
-      "statement": "Genesis allocation is capped at 50M ZYN and normal execution cannot increase total state supply.",
-      "primaryModules": ["l1/src/chain.ts", "l1/src/types.ts"]
+      "statement": "Historical genesis-plus-mining issuance cannot exceed 50M ZYN, and transaction-fee burns never reopen mining headroom.",
+      "primaryModules": ["l1/src/chain.ts", "l1/src/mining.ts", "l1/src/state.ts", "l1/src/state-v2.ts", "l1/src/types.ts"]
+    },
+    {
+      "id": "MINING-001",
+      "statement": "Protocol-v5 mining claims bind proof of work to chain identity, exact next height, current finalized tip, miner identity and account nonce, and the deterministic scheduled reward.",
+      "primaryModules": ["l1/src/mining.ts", "l1/src/transaction.ts", "l1/src/chain.ts"]
+    },
+    {
+      "id": "MINING-002",
+      "statement": "At most one mining claim can finalize per block, the reserved mining tracker remains zero-balance and non-spendable, and public mining claims cannot consume an unbounded mempool share.",
+      "primaryModules": ["l1/src/chain.ts", "l1/src/mempool.ts", "l1/src/mining.ts", "l1/src/state.ts", "l1/src/state-v2.ts"]
     },
     {
       "id": "RECOVERY-001",
@@ -140,6 +157,7 @@
   ],
   "evidenceScenarios": [
     "mixed-version-upgrade-rollback",
+    "protocol-v5-permissionless-mining",
     "disaster-recovery",
     "composite-adversarial-soak",
     "multiprocess-native-recovery",
@@ -153,6 +171,7 @@
   ],
   "externalGates": [
     "independent-consensus-cryptography-network-audit",
+    "independent-mining-contention-target-calibration-review",
     "independent-operator-public-network-soak",
     "production-hsm-or-audited-signer-custody",
     "multi-region-disaster-recovery-and-key-rotation",
@@ -166,6 +185,6 @@
     "mainnet-genesis-allocation",
     "validator-reward-or-inflation-policy",
     "activity-oracle-production-governance",
-    "conversion-from-current-poa-bft-design-to-pow-mining"
+    "conversion-from-validator-finality-to-nakamoto-chain-selection-mining"
   ]
 }
