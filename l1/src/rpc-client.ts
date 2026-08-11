@@ -1,4 +1,7 @@
 import type { TransactionVersion } from "./transaction.js";
+import { enforceCanonicalCliSecurityPolicy } from "./cli-policy.js";
+
+enforceCanonicalCliSecurityPolicy(process.argv.slice(2));
 
 export function transactionVersionForProtocolVersion(protocolVersion: number): TransactionVersion {
   if (!Number.isSafeInteger(protocolVersion)) throw new Error("RPC returned invalid protocol status");
