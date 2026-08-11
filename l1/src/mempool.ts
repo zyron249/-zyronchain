@@ -5,13 +5,26 @@ import type { MiningClaimTx, Transaction } from "./types.js";
 const REPLACEMENT_BUMP_NUMERATOR = 11n;
 const REPLACEMENT_BUMP_DENOMINATOR = 10n;
 export const MAX_MINING_MEMPOOL_CLAIMS = 256;
+export const DEFAULT_MEMPOOL_NON_MINING_CAPACITY = 10_000;
 
 export class Mempool {
   private readonly byId = new Map<string, Transaction>();
   private readonly nonceIds = new Map<string, string>();
   private readonly transferSpendBySender = new Map<string, bigint>();
+  private readonly maxNonMiningSize: number;
+  private readonly miningReserve: number;
 
-  constructor(private readonly maxSize = 10_000) {}
+  constructor(maxNonMiningSize?: number, miningReserve?: number) {
+    this.maxNonMiningSize = maxNonMiningSize ?? DEFAULT_MEMPOOL_NON_MINING_CAPACITY;
+    this.miningReserve = miningReserve ?? (maxNonMiningSize === undefined ? MAX_MINING_MEMPOOL_CLAIMS : 0);
+    if (!Number.isSafeInteger(this.maxNonMiningSize) || this.maxNonMiningSize < 1) {
+      throw new Error("Invalid mempool capacity");
+    }
+    if (!Number.isSafeInteger(this.miningReserve) || this.miningReserve < 0 ||
+        this.miningReserve > MAX_MINING_MEMPOOL_CLAIMS) {
+      throw new Error("Invalid mining mempool reserve");
+    }
+  }
 
   add(tx: Transaction): void {
     if (this.byId.has(tx.txid)) throw new Error("Transaction already in mempool");
@@ -25,14 +38,18 @@ export class Mempool {
 
     if (tx.kind === "mining_claim") {
       const miningCount = this.miningClaimCount();
-      if (miningCount >= MAX_MINING_MEMPOOL_CLAIMS || this.byId.size >= this.maxSize) {
+      const totalCapacity = this.maxNonMiningSize + this.miningReserve;
+      const configuredMiningCapacity = this.miningReserve > 0
+        ? this.miningReserve
+        : MAX_MINING_MEMPOOL_CLAIMS;
+      if (miningCount >= configuredMiningCapacity || this.byId.size >= totalCapacity) {
         const weakest = this.weakestMiningClaim();
         if (!weakest || !isBetterMiningClaim(weakest.tx, tx)) {
           throw new Error("Mining mempool full");
         }
         this.deleteTransaction(weakest.txid, weakest.tx);
       }
-    } else if (this.byId.size >= this.maxSize) {
+    } else if (this.nonMiningCount() >= this.maxNonMiningSize) {
       const eviction = this.lowestPriorityEvictableTransfer();
       if (!eviction || (tx.kind === "transfer" && !hasRequiredFeeRateBump(eviction.tx, tx))) {
         throw new Error("Mempool full");
@@ -84,6 +101,12 @@ export class Mempool {
   private miningClaimCount(): number {
     let count = 0;
     for (const tx of this.byId.values()) if (tx.kind === "mining_claim") count += 1;
+    return count;
+  }
+
+  private nonMiningCount(): number {
+    let count = 0;
+    for (const tx of this.byId.values()) if (tx.kind !== "mining_claim") count += 1;
     return count;
   }
 
