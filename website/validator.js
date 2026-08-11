@@ -114,8 +114,15 @@ EOF
 
   const networkScript = ({ platform, label, genesis, peers, p2pPort, rpcPort, dataDir }) => {
     const genesisB64 = encodeBase64Utf8(genesis.raw);
-    const peerArgs = peers.map((peer) => `  --p2p-peer ${shellQuote(peer)} \\`).join('\n');
-    const finalPeerArgs = peerArgs ? `${peerArgs}\n` : '';
+    const commandArgs = [
+      '  --genesis "$GENESIS_FILE"',
+      '  --data "$DATA_DIR"',
+      '  --host 127.0.0.1',
+      '  --port "$RPC_PORT"',
+      '  --validator-key "$KEY_FILE"',
+      '  --p2p-listen "/ip4/0.0.0.0/tcp/$P2P_PORT"',
+      ...peers.map((peer) => `  --p2p-peer ${shellQuote(peer)}`)
+    ].join(' \\\n');
 
     return `#!/usr/bin/env bash
 set -euo pipefail
@@ -170,13 +177,7 @@ Press Ctrl+C for a clean shutdown.
 EOF
 
 exec node dist/src/cli.js node \\
-  --genesis "$GENESIS_FILE" \\
-  --data "$DATA_DIR" \\
-  --host 127.0.0.1 \\
-  --port "$RPC_PORT" \\
-  --validator-key "$KEY_FILE" \\
-  --p2p-listen "/ip4/0.0.0.0/tcp/$P2P_PORT" \\
-${finalPeerArgs}  
+${commandArgs}
 `;
   };
 
