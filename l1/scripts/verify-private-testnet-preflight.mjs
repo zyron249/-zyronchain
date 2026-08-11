@@ -171,7 +171,7 @@ requireText(successionDoc, "Actual identities, credentials, domains and custody 
 const readiness = contents.get("docs/STANDALONE_L1_READINESS.md");
 requireText(readiness, "**Public testnet launch is currently blocked**", "readiness");
 requireText(readiness, "standalone multi-validator devnet/testnet L1", "readiness");
-requireText(readiness, "Independent cryptography/consensus/network review", "readiness");
+requireText(readiness, "Independent cryptography/consensus/network/mining review", "readiness");
 requireText(readiness, "Mining contention/calibration evidence", "readiness");
 
 const threatModel = contents.get("docs/L1_THREAT_MODEL.md");
