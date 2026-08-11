@@ -4,8 +4,8 @@
   "description": "Verifiable Layer-1 protocol and validator launchpad",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#04090f",
-  "theme_color": "#04090f",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
   "icons": [
     {
       "src": "/favicon.svg",
