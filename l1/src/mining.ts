@@ -1,8 +1,8 @@
 import { canonicalJson, sha256Hex } from "./codec.js";
 import { ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, type Address, type MiningClaimTx } from "./types.js";
 
-/** Mining is consensus-valid only once protocol v4 is active. */
-export const MINING_PROTOCOL_VERSION = 4;
+/** Protocol v4 remains intentionally unsupported; mining activates in protocol v5. */
+export const MINING_PROTOCOL_VERSION = 5;
 
 /**
  * Consensus-owned zero-balance account used only as a persistent mining-claim
