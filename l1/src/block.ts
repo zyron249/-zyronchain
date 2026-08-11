@@ -180,7 +180,11 @@ export function attestationPayload(block: Block): unknown {
 
 export function expectedValidator(validators: Validator[], height: number, round: number): Validator {
   if (validators.length === 0) throw new Error("Validator set is empty");
-  const index = (height - 1 + round) % validators.length;
+  if (!Number.isSafeInteger(height) || height < 1 || !Number.isSafeInteger(round) || round < 0) {
+    throw new Error("Invalid proposer height or round");
+  }
+  const validatorCount = validators.length;
+  const index = (((height - 1) % validatorCount) + (round % validatorCount)) % validatorCount;
   return validators[index]!;
 }
 
