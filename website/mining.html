@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#ffffff" />
+  <meta name="description" content="ZyronChain Mining Launchpad: understand protocol-v5 Proof-of-Work issuance, local encrypted miner custody, activation gates and the canonical miner workflow." />
+  <meta name="referrer" content="no-referrer" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'" />
+  <link rel="canonical" href="https://zyronchain.com/mining.html" />
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="ZyronChain" />
+  <meta property="og:title" content="ZyronChain Mining Launchpad" />
+  <meta property="og:description" content="Permissionless Proof-of-Work issuance with local encrypted key custody and explicit network activation gates." />
+  <meta property="og:url" content="https://zyronchain.com/mining.html" />
+  <title>ZyronChain Mining Launchpad</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./mining.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <aside class="network-notice" aria-label="Mining activation notice"><div class="shell notice-inner"><p><strong>Mining code exists; public mining is not activated by that fact.</strong> The target network must schedule and activate protocol v5 before claims can finalize.</p><a href="#activation">Check activation boundary →</a></div></aside>
+  <header class="site-header" data-header><div class="shell header-inner"><a class="brand" href="./index.html" aria-label="ZyronChain home"><img src="./logo.svg" alt="ZyronChain" /></a><nav class="nav mining-nav" aria-label="Mining navigation"><a href="#model">Model</a><a href="#economics">Economics</a><a href="#start">Run miner</a><a href="#security">Security</a><a href="#activation">Activation</a></nav><div class="header-actions"><a class="quiet-link" href="./index.html">Home</a><a class="mini-button" href="./wallet.html">Create wallet</a></div></div></header>
+  <main id="main">
+    <section class="mining-hero"><div class="shell mining-hero-grid"><div><p class="eyebrow">PROTOCOL V5 · PROOF OF WORK ISSUANCE</p><h1>Mine issuance.<br><span>Keep finality separate.</span></h1><p class="hero-lede">ZyronChain miners compete for permissionless ZYN issuance with tip-bound SHA-256 work. Validators still provide canonical block finality. The miner decrypts and signs locally; your private key and password are never submitted to RPC.</p><div class="hero-actions"><a class="primary-button" href="#start">Prepare a miner</a><a class="secondary-button" href="https://github.com/zyron249/-zyronchain/blob/main/l1/MINING.md" target="_blank" rel="noopener noreferrer">Read canonical mining docs ↗</a></div></div><div class="mining-console" aria-label="Mining protocol summary"><p>MINING MODEL</p><dl><div><dt>Work</dt><dd>SHA-256</dd></div><div><dt>Initial target</dt><dd>20 bits</dd></div><div><dt>Initial reward</dt><dd>6.25 ZYN</dd></div><div><dt>Claims / block</dt><dd>1 max</dd></div><div><dt>Finality</dt><dd>&gt;2/3 validator quorum</dd></div></dl><span class="console-state">ACTIVATION GATED</span></div></div></section>
+    <section class="section" id="model"><div class="content-shell"><p class="section-label">Mining model</p><h2>Proof of Work issues ZYN. It does not choose the chain.</h2><p class="section-intro">Mining work is committed to the chain ID, miner account, exact next confirmed nonce, next height, previous finalized block hash and deterministic reward. When the finalized tip changes, old work becomes stale. A successful claim still has to be included and finalized by validator quorum.</p></div><div class="shell mining-steps"><article><span>01</span><h3>Read finalized tip</h3><p>The miner derives work from the current canonical state rather than mining an unbounded independent chain candidate.</p></article><article><span>02</span><h3>Search locally</h3><p>SHA-256 work runs on the miner machine. Private signing material remains local and encrypted at rest.</p></article><article><span>03</span><h3>Sign the claim</h3><p>The successful public mining claim is signed with the miner key after the local keystore is decrypted.</p></article><article><span>04</span><h3>Submit and finalize</h3><p>The claim enters bounded mempool admission and only earns issuance if it is included in a finalized block.</p></article></div></section>
+    <section class="section mining-economics" id="economics"><div class="content-shell"><p class="section-label">Economics</p><h2>Finite issuance with deterministic halving.</h2></div><div class="shell metric-grid"><div><strong>50,000,000</strong><span>ZYN historical genesis + mining cap</span></div><div><strong>6.25 ZYN</strong><span>initial finalized claim reward</span></div><div><strong>4,000,000</strong><span>successful claims per halving</span></div><div><strong>100,000,000</strong><span>atoms per ZYN</span></div></div><p class="shell mining-note">Genesis allocations reduce the available mining budget atom-for-atom. Burned transaction fees remain burned and do not reopen mining supply.</p></section>
+    <section class="section" id="start"><div class="content-shell"><p class="section-label">Canonical miner workflow</p><h2>Encrypted key custody is mandatory.</h2><p class="section-intro">Use the packaged Node.js miner with a ZyronChain encrypted wallet and either loopback HTTP or a remote HTTPS RPC endpoint. Legacy plaintext private-key JSON is intentionally rejected.</p></div><div class="shell command-card"><div class="command-head"><span>POSIX / NODE.JS 22+</span><button type="button" data-copy="miner-command">Copy</button></div><pre id="miner-command"><code>cd ./-zyronchain/l1
+npm ci
+npm run build
+chmod 600 /path/to/wallet.json /path/to/wallet.password
+npm run mine -- \
+  --genesis /path/to/genesis.json \
+  --key /path/to/wallet.json \
+  --password-file /path/to/wallet.password \
+  --rpc http://127.0.0.1:9137</code></pre><div class="command-options"><span><code>--once</code> stop after one accepted claim submission</span><span><code>--batch-size &lt;n&gt;</code> hashes between finalized-tip refreshes</span></div></div></section>
+    <section class="section" id="security"><div class="content-shell"><p class="section-label">Security boundaries</p><h2>The miner is deliberately local-first.</h2></div><div class="shell security-grid"><article><h3>Encrypted keystore only</h3><p>The packaged miner rejects legacy plaintext private-key JSON. On POSIX systems wallet and password files must be owner-only before they are read.</p></article><article><h3>Remote RPC requires HTTPS</h3><p>Plain HTTP is accepted only for loopback. Remote transport must protect the public claim submission path from interception or tampering.</p></article><article><h3>Bounded mining admission</h3><p>Mining claims must use the exact next confirmed miner nonce, and the mining subpool is bounded so future-nonce or volume flooding cannot consume unbounded claim capacity.</p></article><article><h3>No browser custody</h3><p>This page never requests, stores or transmits a private key, seed phrase or wallet password. It is documentation, not a browser miner or custody service.</p></article></div></section>
+    <section class="section activation" id="activation"><div class="content-shell"><p class="section-label">Activation boundary</p><h2>Code availability is not network readiness.</h2><p class="section-intro">Public mining remains evidence-gated. Before mainnet economics are frozen, the project still needs real multi-operator evidence for inclusion fairness, stale-work behavior, heterogeneous hardware skew, pool concentration, target calibration and Internet-facing RPC abuse resistance.</p><div class="activation-box"><strong>Current website policy</strong><p>Do not treat this launchpad as a statement that public mining, public testnet value transfer or mainnet is live. Verify the repository readiness report and target network protocol schedule first.</p><a href="https://github.com/zyron249/-zyronchain/blob/main/docs/STANDALONE_L1_READINESS.md" target="_blank" rel="noopener noreferrer">Open readiness evidence ↗</a></div></div></section>
+  </main>
+  <footer class="site-footer"><div class="shell"><a class="brand" href="./index.html"><img src="./logo.svg" alt="ZyronChain" /></a><p>Open-source protocol software. Verify code, releases and activation evidence independently.</p><p>© <span data-year></span> ZyronChain</p></div></footer>
+  <script src="./app.js" defer></script>
+</body>
+</html>
