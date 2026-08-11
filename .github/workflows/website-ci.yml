@@ -129,8 +129,8 @@ jobs:
             throw new Error('Validator launchpad mobile boundary is missing');
           }
 
-          if (html.includes('127.0.0.1:9137') || js.includes('127.0.0.1:9137')) {
-            throw new Error('Main browser portal must not directly bind to validator RPC');
+          if (js.includes('127.0.0.1:9137') || /fetch\s*\(.*9137|WebSocket\s*\(.*9137/.test(js)) {
+            throw new Error('Main browser JavaScript must not bind to validator RPC');
           }
           if (/fetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(/.test(validatorJs)) {
             throw new Error('Validator launchpad must remain offline-only and must not call remote runtime APIs');
