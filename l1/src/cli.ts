@@ -50,6 +50,12 @@ import {
 import type { GenesisConfig, Validator, ValidatorApproval } from "./types.js";
 import { MAX_SUPPLY_ATOMS, type Address } from "./types.js";
 import { LocalValidatorSigner, RemoteValidatorSigner, type ValidatorSigner } from "./validator-signer.js";
+import {
+  assertRpcApiVersion,
+  readBoundedJson,
+  readBoundedResponseText,
+  transactionVersionForProtocolVersion
+} from "./rpc-client.js";
 
 interface ValidatorProposal {
   transactionVersion: TransactionVersion;
@@ -574,8 +580,11 @@ async function submitTransfer(args: string[]): Promise<void> {
     body: JSON.stringify(tx),
     signal: AbortSignal.timeout(8_000)
   });
-  if (!response.ok) throw new Error(`RPC rejected transaction: HTTP ${response.status} ${await response.text()}`);
-  const result = await response.json() as { txid?: unknown };
+  assertRpcApiVersion(response, RPC_API_VERSION);
+  if (!response.ok) {
+    throw new Error(`RPC rejected transaction: HTTP ${response.status} ${await readBoundedResponseText(response, 4_096, "RPC transaction error")}`);
+  }
+  const result = await readBoundedJson(response, 4_096, "RPC transaction response") as { txid?: unknown };
   if (result.txid !== tx.txid) throw new Error("RPC transaction ID mismatch");
   console.log(`Submitted transaction ${tx.txid}`);
 }
@@ -650,8 +659,11 @@ async function submitValidatorProposal(args: string[]): Promise<void> {
     body: JSON.stringify(tx),
     signal: AbortSignal.timeout(8_000)
   });
-  if (!response.ok) throw new Error(`RPC rejected validator update: HTTP ${response.status} ${await response.text()}`);
-  const result = await response.json() as { txid?: unknown };
+  assertRpcApiVersion(response, RPC_API_VERSION);
+  if (!response.ok) {
+    throw new Error(`RPC rejected validator update: HTTP ${response.status} ${await readBoundedResponseText(response, 4_096, "RPC validator update error")}`);
+  }
+  const result = await readBoundedJson(response, 4_096, "RPC validator update response") as { txid?: unknown };
   if (result.txid !== tx.txid) throw new Error("RPC validator update transaction ID mismatch");
   console.log(`Submitted validator update ${tx.txid}`);
 }
@@ -722,8 +734,11 @@ async function submitProtocolProposal(args: string[]): Promise<void> {
     body: JSON.stringify(tx),
     signal: AbortSignal.timeout(8_000)
   });
-  if (!response.ok) throw new Error(`RPC rejected protocol update: HTTP ${response.status} ${await response.text()}`);
-  const result = await response.json() as { txid?: unknown };
+  assertRpcApiVersion(response, RPC_API_VERSION);
+  if (!response.ok) {
+    throw new Error(`RPC rejected protocol update: HTTP ${response.status} ${await readBoundedResponseText(response, 4_096, "RPC protocol update error")}`);
+  }
+  const result = await readBoundedJson(response, 4_096, "RPC protocol update response") as { txid?: unknown };
   if (result.txid !== tx.txid) throw new Error("RPC protocol update transaction ID mismatch");
   console.log(`Submitted protocol update ${tx.txid}`);
 }
@@ -879,11 +894,9 @@ async function fetchJson(url: string): Promise<unknown> {
     headers: { "x-zyron-rpc-version": String(RPC_API_VERSION) },
     signal: AbortSignal.timeout(8_000)
   });
-  assertCompatibleRpcResponse(response);
+  assertRpcApiVersion(response, RPC_API_VERSION);
   if (!response.ok) throw new Error(`RPC returned HTTP ${response.status}`);
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > 64_000) throw new Error("RPC response too large");
-  return JSON.parse(text);
+  return readBoundedJson(response, 64_000, "RPC response");
 }
 
 async function transactionVersionForRpc(rpc: string): Promise<TransactionVersion> {
@@ -891,26 +904,16 @@ async function transactionVersionForRpc(rpc: string): Promise<TransactionVersion
     headers: { "x-zyron-rpc-version": String(RPC_API_VERSION) },
     signal: AbortSignal.timeout(8_000)
   });
-  assertCompatibleRpcResponse(response);
+  assertRpcApiVersion(response, RPC_API_VERSION);
   if (response.status === 404) return 1;
   if (!response.ok) throw new Error(`RPC protocol status returned HTTP ${response.status}`);
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > 4_096) throw new Error("RPC protocol status response too large");
-  const value = JSON.parse(text) as Record<string, unknown>;
+  const value = await readBoundedJson(response, 4_096, "RPC protocol status response") as Record<string, unknown>;
   assertObjectFields(value, ["currentVersion", "nextVersion"], "protocol status");
   if (!Number.isSafeInteger(value.currentVersion) || !Number.isSafeInteger(value.nextVersion)) {
     throw new Error("RPC returned invalid protocol status");
   }
-  const nextVersion = Number(value.nextVersion);
-  if (nextVersion < 1 || nextVersion > 3) throw new Error("RPC returned unsupported next protocol version");
-  return nextVersion >= 3 ? 2 : 1;
-}
-
-function assertCompatibleRpcResponse(response: Response): void {
-  const advertised = response.headers.get("x-zyron-rpc-version");
-  if (advertised !== null && advertised !== String(RPC_API_VERSION)) {
-    throw new Error(`RPC server uses unsupported API version ${advertised}`);
-  }
+  transactionVersionForProtocolVersion(Number(value.currentVersion));
+  return transactionVersionForProtocolVersion(Number(value.nextVersion));
 }
 
 async function readPrivateKey(path: string): Promise<string> {
