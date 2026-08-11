@@ -1,5 +1,10 @@
 .validator-page {
   min-height: 100vh;
+  --border: var(--line);
+  --accent: var(--green-strong);
+  --accent-2: #7fd2ff;
+  --muted-strong: #b8c6be;
+  --shadow-soft: 0 24px 70px rgba(0,0,0,.26);
 }
 
 .launchpad-header {
@@ -173,6 +178,13 @@
   line-height: 1.45;
 }
 
+.launchpad-workspace,
+.launcher-panel,
+.launcher-form,
+.launcher-form label {
+  min-width: 0;
+}
+
 .launchpad-workspace {
   display: grid;
   gap: 20px;
@@ -256,6 +268,7 @@
 .launcher-form textarea,
 .launcher-form select {
   width: 100%;
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: 13px;
   outline: none;
@@ -307,6 +320,7 @@
 }
 
 .generated-output {
+  min-width: 0;
   margin-top: 24px;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -327,7 +341,13 @@
 
 .output-toolbar > div:first-child {
   display: grid;
+  min-width: 0;
   gap: 2px;
+}
+
+.output-toolbar strong,
+.output-toolbar small {
+  overflow-wrap: anywhere;
 }
 
 .output-toolbar small {
@@ -371,6 +391,7 @@
   color: #b9d9cc;
   background: rgba(82,236,190,.045);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .next-callout.warning {
@@ -432,6 +453,59 @@
   font-size: 13px;
 }
 
+.validator-page > .site-footer.shell {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) auto;
+  gap: 26px 42px;
+  width: min(1220px, calc(100% - 48px));
+  margin-inline: auto;
+  padding-top: 42px;
+  padding-bottom: 30px;
+  background: transparent;
+}
+
+.validator-page > .site-footer.shell .footer-brand {
+  width: auto;
+  max-width: 420px;
+}
+
+.validator-page > .site-footer.shell .footer-brand img {
+  width: 220px;
+  height: auto;
+}
+
+.validator-page > .site-footer.shell .footer-brand p {
+  margin: 13px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.validator-page .footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 10px 18px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.validator-page .footer-links a:hover {
+  color: var(--text);
+}
+
+.validator-page .footer-meta {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  color: var(--muted-2);
+  font-size: 9px;
+}
+
 @media (max-width: 980px) {
   .launchpad-nav { display: none; }
   .launchpad-hero { grid-template-columns: 1fr; }
@@ -442,15 +516,24 @@
 
 @media (max-width: 640px) {
   .launchpad-header .button { display: none; }
-  .brand-logo { width: 184px; }
+  .brand-logo-link { min-width: 0; }
+  .brand-logo { width: min(184px, 62vw); }
   .launchpad-hero { padding-top: 60px; }
   .launchpad-hero h1 { font-size: clamp(43px, 13vw, 64px); }
+  .launchpad-state-card { padding: 18px; }
+  .state-row { align-items: flex-start; flex-direction: column; gap: 4px; }
   .launcher-panel { padding: 22px 16px; }
   .panel-heading { display: grid; }
-  .safe-chip, .gate-chip { justify-self: start; }
+  .safe-chip, .gate-chip { justify-self: start; white-space: normal; }
   .launcher-form { grid-template-columns: 1fr; }
   .full-field { grid-column: auto; }
   .launchpad-steps { grid-template-columns: 1fr; }
   .output-toolbar { align-items: flex-start; flex-direction: column; }
+  .output-toolbar > div:last-child { width: 100%; }
+  .output-toolbar button { flex: 1; }
+  .generated-output pre { padding: 16px; font-size: 10px; }
   .safety-grid { grid-template-columns: 1fr; }
+  .validator-page > .site-footer.shell { grid-template-columns: 1fr; width: min(100% - 26px, 1220px); gap: 22px; }
+  .validator-page .footer-links { justify-content: flex-start; }
+  .validator-page .footer-meta { flex-direction: column; }
 }

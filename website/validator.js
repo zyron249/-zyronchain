@@ -3,9 +3,13 @@
 
   const RELEASE_REF = 'a3512f26b32d8d8c71402d0f59c1baeb44a5b3a0';
   const REPO_URL = 'https://github.com/zyron249/-zyronchain.git';
+  const PUBLIC_KEY_RE = /^[0-9a-f]{128}$/;
+  const ADDRESS_RE = /^ZYN[0-9a-f]{40}$/;
+  const MAX_SUPPLY_ATOMS = 5_000_000_000_000_000;
 
   const $ = (id) => document.getElementById(id);
   const shellQuote = (value) => `'${String(value).replace(/'/g, `'"'"'`)}'`;
+  const isRecord = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
   const cleanLabel = (value) => {
     const cleaned = String(value || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -94,9 +98,13 @@ EOF
   const parsePeers = (text) => {
     const peers = String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     for (const peer of peers) {
-      if (!/^\/(ip4|ip6|dns4|dns6)\/.+\/tcp\/\d+\/p2p\/[A-Za-z0-9]+$/.test(peer)) {
-        throw new Error(`Invalid PeerId-pinned multiaddr: ${peer}`);
+      const match = peer.match(/^\/(ip4|ip6|dns4|dns6)\/([^/]+)\/tcp\/(\d+)\/p2p\/([A-Za-z0-9]+)$/);
+      if (!match) throw new Error(`Invalid PeerId-pinned multiaddr: ${peer}`);
+      const port = Number.parseInt(match[3], 10);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error(`Invalid P2P peer TCP port: ${peer}`);
       }
+      if (match[4].length < 20) throw new Error(`PeerId looks incomplete: ${peer}`);
     }
     return [...new Set(peers)];
   };
@@ -105,10 +113,74 @@ EOF
     const raw = String(text || '').trim();
     if (!raw) throw new Error('Paste the common genesis.json first.');
     if (raw.length > 2_000_000) throw new Error('Genesis JSON is unexpectedly large.');
+    if (raw.includes('"..."') || raw.includes('ZYN...')) {
+      throw new Error('Genesis contains placeholder values. Use the exact coordinator-generated genesis.json.');
+    }
+
     let parsed;
     try { parsed = JSON.parse(raw); } catch { throw new Error('Genesis is not valid JSON.'); }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Genesis must be a JSON object.');
+    if (!isRecord(parsed)) throw new Error('Genesis must be a JSON object.');
     if (typeof parsed.chainId !== 'string' || !parsed.chainId.trim()) throw new Error('Genesis is missing chainId.');
+    if (parsed.chainId.length > 128) throw new Error('Genesis chainId is unexpectedly long.');
+    if (!Number.isSafeInteger(parsed.timestampMs) || parsed.timestampMs < 0) throw new Error('Genesis timestampMs is invalid.');
+
+    if (!Array.isArray(parsed.validators) || parsed.validators.length < 1) {
+      throw new Error('Genesis must contain at least one validator.');
+    }
+    const validatorKeys = new Set();
+    const validatorAddresses = new Set();
+    for (const [index, validator] of parsed.validators.entries()) {
+      if (!isRecord(validator)) throw new Error(`Genesis validator ${index + 1} is invalid.`);
+      if (typeof validator.publicKey !== 'string' || !PUBLIC_KEY_RE.test(validator.publicKey)) {
+        throw new Error(`Genesis validator ${index + 1} publicKey is invalid.`);
+      }
+      if (typeof validator.address !== 'string' || !ADDRESS_RE.test(validator.address)) {
+        throw new Error(`Genesis validator ${index + 1} address is invalid.`);
+      }
+      if (validatorKeys.has(validator.publicKey) || validatorAddresses.has(validator.address)) {
+        throw new Error('Genesis contains duplicate validators.');
+      }
+      validatorKeys.add(validator.publicKey);
+      validatorAddresses.add(validator.address);
+    }
+
+    if (!Array.isArray(parsed.activityOracles) || parsed.activityOracles.length < 1) {
+      throw new Error('Genesis must contain at least one activity oracle.');
+    }
+    const oracleKeys = new Set();
+    for (const [index, publicKey] of parsed.activityOracles.entries()) {
+      if (typeof publicKey !== 'string' || !PUBLIC_KEY_RE.test(publicKey)) {
+        throw new Error(`Genesis activity oracle ${index + 1} public key is invalid.`);
+      }
+      if (oracleKeys.has(publicKey)) throw new Error('Genesis contains duplicate activity oracles.');
+      oracleKeys.add(publicKey);
+    }
+
+    if (typeof parsed.activityPool !== 'string' || !ADDRESS_RE.test(parsed.activityPool)) {
+      throw new Error('Genesis activityPool address is invalid.');
+    }
+    if (!Array.isArray(parsed.allocations) || parsed.allocations.length < 1) {
+      throw new Error('Genesis must contain at least one allocation.');
+    }
+
+    const allocationAddresses = new Set();
+    let totalAtoms = 0;
+    for (const [index, allocation] of parsed.allocations.entries()) {
+      if (!isRecord(allocation)) throw new Error(`Genesis allocation ${index + 1} is invalid.`);
+      if (typeof allocation.address !== 'string' || !ADDRESS_RE.test(allocation.address)) {
+        throw new Error(`Genesis allocation ${index + 1} address is invalid.`);
+      }
+      if (!Number.isSafeInteger(allocation.amountAtoms) || allocation.amountAtoms < 0) {
+        throw new Error(`Genesis allocation ${index + 1} amountAtoms is invalid.`);
+      }
+      if (allocationAddresses.has(allocation.address)) throw new Error('Genesis contains duplicate allocation addresses.');
+      allocationAddresses.add(allocation.address);
+      totalAtoms += allocation.amountAtoms;
+      if (!Number.isSafeInteger(totalAtoms) || totalAtoms > MAX_SUPPLY_ATOMS) {
+        throw new Error('Genesis allocations exceed the 50,000,000 ZYN supply ceiling.');
+      }
+    }
+
     return { raw: JSON.stringify(parsed, null, 2), chainId: parsed.chainId };
   };
 
@@ -219,7 +291,8 @@ ${commandArgs}
       const peers = parsePeers($('peer-list')?.value);
       const script = networkScript({ platform, label, genesis, peers, p2pPort, rpcPort, dataDir });
       showOutput($('network-output'), $('network-script'), script);
-      setStatus(status, `Validated ${genesis.chainId}; ${peers.length} explicit peer(s).`);
+      const peerNote = peers.length ? `${peers.length} explicit peer(s).` : 'no explicit peers; this node will start isolated.';
+      setStatus(status, `Validated ${genesis.chainId}; ${peerNote}`);
     } catch (error) {
       $('network-output').hidden = true;
       setStatus(status, error instanceof Error ? error.message : 'Unable to build validator script.', true);
