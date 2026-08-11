@@ -1,1 +1,135 @@
-TEMP
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#071019" />
+  <meta name="description" content="ZyronChain — canonical standalone Layer-1 network portal." />
+  <title>ZyronChain</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="background-grid" aria-hidden="true"></div>
+  <header class="site-header shell">
+    <a class="brand" href="#top" aria-label="ZyronChain home">
+      <span class="brand-mark">Z</span>
+      <span>ZyronChain</span>
+    </a>
+    <nav class="nav" aria-label="Primary navigation">
+      <a href="#network">Network</a>
+      <a href="#technology">Technology</a>
+      <a href="#developers">Developers</a>
+      <a href="#launch">Launch status</a>
+    </nav>
+    <a class="button ghost" href="https://github.com/zyron249/-zyronchain" target="_blank" rel="noreferrer">GitHub</a>
+  </header>
+
+  <main id="top">
+    <section class="hero shell">
+      <div class="eyebrow"><span class="dot"></span> Canonical TypeScript Layer-1</div>
+      <h1>Verifiable finality.<br /><span>Built to survive its founders.</span></h1>
+      <p class="hero-copy">ZyronChain is an account-based Layer-1 focused on deterministic execution, authenticated state, explicit upgrades and quorum finality. The project is open source and progresses through evidence-gated public-testnet and mainnet activation.</p>
+      <div class="hero-actions">
+        <a class="button primary" href="#developers">Run a node</a>
+        <a class="button secondary" href="https://github.com/zyron249/-zyronchain/blob/main/WHITEPAPER.md" target="_blank" rel="noreferrer">Read technical paper</a>
+      </div>
+      <div class="hero-meta">
+        <div><span>Consensus</span><strong>&gt;2/3 validator quorum</strong></div>
+        <div><span>Supply ceiling</span><strong>50,000,000 ZYN</strong></div>
+        <div><span>State</span><strong>Authenticated State-v2</strong></div>
+      </div>
+    </section>
+
+    <section id="network" class="shell section">
+      <div class="section-heading">
+        <span class="kicker">Network</span>
+        <h2>Live status without marketing noise.</h2>
+        <p>The portal treats network status as engineering evidence, not an investment claim.</p>
+      </div>
+      <div class="status-grid">
+        <article class="status-card featured">
+          <div class="card-label">Current profile</div>
+          <div class="status-line"><span class="status-indicator"></span><strong>Private / adversarial rehearsal</strong></div>
+          <p>Current rehearsal infrastructure is intentionally classified as smoke-only and non-value-bearing.</p>
+        </article>
+        <article class="status-card">
+          <div class="card-label">Public testnet</div>
+          <strong>Governance authorized</strong>
+          <span class="badge amber">Activation gated</span>
+        </article>
+        <article class="status-card">
+          <div class="card-label">Mainnet</div>
+          <strong>Governance authorized</strong>
+          <span class="badge amber">Activation gated</span>
+        </article>
+        <article class="status-card">
+          <div class="card-label">Release model</div>
+          <strong>Reproducible artifacts</strong>
+          <span class="muted">SBOM · checksums · attestations</span>
+        </article>
+      </div>
+    </section>
+
+    <section id="technology" class="shell section">
+      <div class="section-heading narrow">
+        <span class="kicker">Technology</span>
+        <h2>Security boundaries are part of the protocol.</h2>
+      </div>
+      <div class="feature-grid">
+        <article><span>01</span><h3>Deterministic execution</h3><p>Exact integer accounting, replayable state transitions and canonical transaction/block identities.</p></article>
+        <article><span>02</span><h3>Authenticated state</h3><p>State-v2 uses content-addressed authenticated state with checkpoint, pruning and corruption-recovery controls.</p></article>
+        <article><span>03</span><h3>Quorum finality</h3><p>Finality requires a strictly greater-than-two-thirds validator quorum with certified proposer-failure view changes.</p></article>
+        <article><span>04</span><h3>Fail-closed upgrades</h3><p>Protocol upgrades, rollback and validator-set changes are delayed and quorum authorized.</p></article>
+        <article><span>05</span><h3>Native P2P</h3><p>Noise-authenticated libp2p sessions bind PeerId, node identity, chain ID and genesis before sync or consensus traffic.</p></article>
+        <article><span>06</span><h3>Founder-exit discipline</h3><p>Succession, operator challenge and external evidence gates prevent fake decentralization claims.</p></article>
+      </div>
+    </section>
+
+    <section id="developers" class="shell section developer-panel">
+      <div>
+        <span class="kicker">Developers</span>
+        <h2>Start from the canonical repository.</h2>
+        <p>Node.js 22+ is required. Node.js 24 is the preferred test runtime.</p>
+      </div>
+      <pre><code>git clone https://github.com/zyron249/-zyronchain.git
+cd -zyronchain/l1
+npm ci
+npm run build
+npm test</code></pre>
+      <div class="link-row">
+        <a href="https://github.com/zyron249/-zyronchain/tree/main/l1" target="_blank" rel="noreferrer">Operator guide →</a>
+        <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/STANDALONE_L1_READINESS.md" target="_blank" rel="noreferrer">Readiness →</a>
+        <a href="https://github.com/zyron249/-zyronchain/blob/main/SECURITY.md" target="_blank" rel="noreferrer">Security →</a>
+      </div>
+    </section>
+
+    <section id="launch" class="shell section launch-panel">
+      <div class="section-heading narrow">
+        <span class="kicker">Launch discipline</span>
+        <h2>Authorized does not mean activated.</h2>
+        <p>Public-testnet and mainnet network classes have governance authorization, while activation remains blocked until independently reviewable safety and operational gates are closed.</p>
+      </div>
+      <div class="launch-steps">
+        <div><span>01</span><strong>Independent operators</strong><p>Real non-founder operators and independent failure domains.</p></div>
+        <div><span>02</span><strong>External review</strong><p>Consensus, cryptography and network audit with retest.</p></div>
+        <div><span>03</span><strong>Always-on soak</strong><p>Real Internet duration evidence on reviewed continuously running infrastructure.</p></div>
+        <div><span>04</span><strong>Mainnet freeze</strong><p>Immutable genesis, economics, custody and validator-governance specifications.</p></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer shell">
+    <div><strong>ZyronChain</strong><span>Open-source Layer-1 engineering project.</span></div>
+    <div class="footer-links">
+      <a href="https://github.com/zyron249/-zyronchain" target="_blank" rel="noreferrer">GitHub</a>
+      <a href="https://github.com/zyron249/-zyronchain/blob/main/WHITEPAPER.md" target="_blank" rel="noreferrer">Technical paper</a>
+      <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/L1_LAUNCH_AUTHORIZATION.md" target="_blank" rel="noreferrer">Launch policy</a>
+    </div>
+  </footer>
+
+  <script src="./app.js"></script>
+</body>
+</html>
