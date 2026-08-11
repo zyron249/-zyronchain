@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -42,9 +42,10 @@ async function runCli(args) {
   });
 }
 
-function startNode(label, args) {
+function startNode(label, args, env = {}) {
   const child = spawn(process.execPath, [cliPath, "node", ...args], {
     cwd: operatorDir,
+    env: { ...process.env, ...env },
     stdio: ["ignore", "pipe", "pipe"]
   });
   let output = "";
@@ -117,13 +118,22 @@ try {
   const validatorOnePath = join(operatorDir, "validator-one.json");
   const validatorTwoPath = join(operatorDir, "validator-two.json");
   const oraclePath = join(operatorDir, "oracle.json");
-  await runCli(["keygen", "--out", validatorOnePath]);
-  await runCli(["keygen", "--out", validatorTwoPath]);
-  await runCli(["keygen", "--out", oraclePath]);
+  const validatorOnePasswordPath = join(operatorDir, "validator-one.password");
+  const validatorTwoPasswordPath = join(operatorDir, "validator-two.password");
+  const oraclePasswordPath = join(operatorDir, "oracle.password");
+  for (const passwordPath of [validatorOnePasswordPath, validatorTwoPasswordPath, oraclePasswordPath]) {
+    await writeFile(passwordPath, `${randomBytes(32).toString("hex")}\n`, { flag: "wx", mode: 0o600 });
+  }
+  await runCli(["keygen", "--out", validatorOnePath, "--password-file", validatorOnePasswordPath]);
+  await runCli(["keygen", "--out", validatorTwoPath, "--password-file", validatorTwoPasswordPath]);
+  await runCli(["keygen", "--out", oraclePath, "--password-file", oraclePasswordPath]);
   const validatorOne = JSON.parse(await readFile(validatorOnePath, "utf8"));
   const validatorTwo = JSON.parse(await readFile(validatorTwoPath, "utf8"));
   const oracle = JSON.parse(await readFile(oraclePath, "utf8"));
   for (const value of [validatorOne, validatorTwo, oracle]) {
+    assert.equal(value.version, 1);
+    assert.equal(Object.hasOwn(value, "privateKey"), false, "Release rehearsal must not create plaintext private-key JSON");
+    assert.ok(value.crypto && typeof value.crypto === "object", "Release rehearsal must create encrypted keystore metadata");
     assert.match(value.publicKey, /^[0-9a-f]{128}$/);
     assert.match(value.address, /^ZYN[0-9a-f]{40}$/);
   }
@@ -149,8 +159,8 @@ try {
   const nodeOneArgs = ["--genesis", genesisPath, "--data", dataOne, "--host", "127.0.0.1", "--port", String(portOne), "--validator-key", validatorOnePath, "--peer", `http://127.0.0.1:${portTwo}`];
   const nodeTwoArgs = ["--genesis", genesisPath, "--data", dataTwo, "--host", "127.0.0.1", "--port", String(portTwo), "--validator-key", validatorTwoPath, "--peer", `http://127.0.0.1:${portOne}`];
 
-  const nodeOne = startNode("artifact-validator-one", nodeOneArgs);
-  let nodeTwo = startNode("artifact-validator-two", nodeTwoArgs);
+  const nodeOne = startNode("artifact-validator-one", nodeOneArgs, { ZYRON_KEYSTORE_PASSWORD_FILE: validatorOnePasswordPath });
+  let nodeTwo = startNode("artifact-validator-two", nodeTwoArgs, { ZYRON_KEYSTORE_PASSWORD_FILE: validatorTwoPasswordPath });
   processes.push(nodeOne, nodeTwo);
   const beforeRestart = await waitForConvergence([portOne, portTwo], 2);
   const preRestartHeight = beforeRestart[0].height;
@@ -158,7 +168,7 @@ try {
   const genesisHash = beforeRestart[0].genesisHash;
 
   await stopNode(nodeTwo);
-  nodeTwo = startNode("artifact-validator-two-restarted", nodeTwoArgs);
+  nodeTwo = startNode("artifact-validator-two-restarted", nodeTwoArgs, { ZYRON_KEYSTORE_PASSWORD_FILE: validatorTwoPasswordPath });
   processes.push(nodeTwo);
   const afterRestart = await waitForConvergence([portOne, portTwo], preRestartHeight);
   assert.equal(afterRestart[0].tipHash, afterRestart[1].tipHash);
@@ -173,6 +183,7 @@ try {
     tarballSha256,
     cleanInstallDirectory: true,
     runtimeUsesInstalledArtifactOnly: true,
+    encryptedKeystoresOnly: true,
     validatorProcesses: 2,
     genesisHash,
     preRestartHeight,
