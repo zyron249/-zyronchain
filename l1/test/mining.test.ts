@@ -167,6 +167,18 @@ test("public mining claims are bounded to a 256-entry mempool subpool", () => {
   assert.ok(mempool.values().some((tx) => tx.txid === newerTipClaim.txid));
 });
 
+test("same proof cannot churn a mining nonce conflict by changing only timestamp and txid", () => {
+  const mempool = new Mempool();
+  const first = createMiningClaim(unsignedContext({ timestampMs: genesis().timestampMs + 10 }), minerPrivate, minerPublic);
+  const replay = createMiningClaim(unsignedContext({ timestampMs: genesis().timestampMs + 20 }), minerPrivate, minerPublic);
+  assert.equal(miningWorkHash(first), miningWorkHash(replay));
+  assert.notEqual(first.txid, replay.txid);
+  mempool.add(first);
+  assert.throws(() => mempool.add(replay), /Conflicting sender nonce/);
+  assert.equal(mempool.size, 1);
+  assert.equal(mempool.values()[0]?.txid, first.txid);
+});
+
 test("mining traffic cannot evict a normal transfer from an otherwise full mempool", () => {
   const mempool = new Mempool(1);
   const transfer = createTransfer({
