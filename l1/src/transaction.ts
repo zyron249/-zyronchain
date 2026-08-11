@@ -11,6 +11,7 @@ import type {
   ActivityEntry,
   ActivitySettlementTx,
   Address,
+  MiningClaimTx,
   ProtocolUpgradeTx,
   Transaction,
   TransferTx,
@@ -21,6 +22,7 @@ import type {
 
 type UnsignedTransfer = Omit<TransferTx, "signature" | "txid">;
 type UnsignedSettlement = Omit<ActivitySettlementTx, "signature" | "txid">;
+type UnsignedMiningClaim = Omit<MiningClaimTx, "signature" | "txid">;
 type UnsignedValidatorUpdate = Omit<ValidatorSetUpdateTx, "signature" | "txid">;
 type UnsignedProtocolUpgrade = Omit<ProtocolUpgradeTx, "signature" | "txid">;
 export type TransactionVersion = 1 | 2;
@@ -28,7 +30,9 @@ export type TransactionVersion = 1 | 2;
 const VALIDATOR_SET_APPROVAL_DOMAIN = "zyronchain/validator-set-approval/v1";
 const PROTOCOL_UPGRADE_APPROVAL_DOMAIN = "zyronchain/protocol-upgrade-approval/v1";
 
-function txSigningPayload(tx: Transaction | UnsignedTransfer | UnsignedSettlement | UnsignedValidatorUpdate | UnsignedProtocolUpgrade): unknown {
+function txSigningPayload(
+  tx: Transaction | UnsignedTransfer | UnsignedSettlement | UnsignedMiningClaim | UnsignedValidatorUpdate | UnsignedProtocolUpgrade
+): unknown {
   const { signature: _signature, txid: _txid, ...payload } = tx as Transaction;
   return payload;
 }
@@ -206,6 +210,30 @@ export function createActivitySettlement(
   return { ...withSignature, txid: sha256Hex(canonicalJson(withSignature)) };
 }
 
+export function createMiningClaim(
+  input: Omit<UnsignedMiningClaim, "kind" | "version" | "publicKey" | "feeAtoms">,
+  privateKeyHex: string,
+  publicKey: string
+): MiningClaimTx {
+  const unsigned: UnsignedMiningClaim = {
+    kind: "mining_claim",
+    version: 2,
+    chainId: input.chainId,
+    nonce: input.nonce,
+    sender: input.sender,
+    height: input.height,
+    previousHash: input.previousHash,
+    rewardAtoms: input.rewardAtoms,
+    workNonce: input.workNonce,
+    feeAtoms: 0,
+    timestampMs: input.timestampMs,
+    publicKey
+  };
+  const signature = signTransactionPayload(unsigned, privateKeyHex);
+  const withSignature = { ...unsigned, signature };
+  return { ...withSignature, txid: sha256Hex(canonicalJson(withSignature)) };
+}
+
 export function validateTransactionShape(value: unknown): asserts value is Transaction {
   assertPlainRecord(value, "transaction");
   if (value.kind === "transfer") {
@@ -218,6 +246,11 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
       "kind", "version", "chainId", "nonce", "sender", "epoch", "entries", "receiptRoot",
       "feeAtoms", "timestampMs", "publicKey", "signature", "txid"
     ], "activity settlement");
+  } else if (value.kind === "mining_claim") {
+    assertExactKeys(value, [
+      "kind", "version", "chainId", "nonce", "sender", "height", "previousHash", "rewardAtoms",
+      "workNonce", "feeAtoms", "timestampMs", "publicKey", "signature", "txid"
+    ], "mining claim");
   } else if (value.kind === "validator_update") {
     assertExactKeys(value, [
       "kind", "version", "chainId", "nonce", "sender", "activationHeight", "validators", "approvals",
@@ -259,6 +292,16 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
       throw new Error("Invalid activity settlement size");
     }
     for (const entry of tx.entries) validateActivityEntry(entry);
+  } else if (tx.kind === "mining_claim") {
+    if (tx.version !== 2) throw new Error("Mining claim requires transaction version 2");
+    if (tx.feeAtoms !== 0) throw new Error("Mining claim fee must be zero");
+    if (!Number.isSafeInteger(tx.height) || tx.height < 1) throw new Error("Invalid mining height");
+    assertHex(tx.previousHash, 32, "mining previousHash");
+    assertAmount(tx.rewardAtoms, "mining reward", false);
+    if (typeof tx.workNonce !== "string" || !/^[0-9a-f]{16}$/.test(tx.workNonce)) {
+      throw new Error("Invalid mining work nonce");
+    }
+    if (addressFromPublicKey(tx.publicKey) !== tx.sender) throw new Error("Public key does not match sender");
   } else if (tx.kind === "validator_update") {
     if (tx.feeAtoms !== 0) throw new Error("Validator update fee must be zero");
     if (!Number.isSafeInteger(tx.activationHeight) || tx.activationHeight < 1) {
@@ -300,6 +343,7 @@ export function transactionSigningDomain(kind: Transaction["kind"]): string {
   switch (kind) {
     case "transfer": return "zyronchain/transaction/transfer/v2";
     case "activity_settlement": return "zyronchain/transaction/activity-settlement/v2";
+    case "mining_claim": return "zyronchain/transaction/mining-claim/v2";
     case "validator_update": return "zyronchain/transaction/validator-update/v2";
     case "protocol_upgrade": return "zyronchain/transaction/protocol-upgrade/v2";
   }
@@ -331,7 +375,10 @@ function governanceApprovalPayload(payload: unknown, version: TransactionVersion
   return version === 2 ? { transactionVersion: 2, payload } : payload;
 }
 
-function signTransactionPayload(tx: UnsignedTransfer | UnsignedSettlement | UnsignedValidatorUpdate | UnsignedProtocolUpgrade, privateKeyHex: string): string {
+function signTransactionPayload(
+  tx: UnsignedTransfer | UnsignedSettlement | UnsignedMiningClaim | UnsignedValidatorUpdate | UnsignedProtocolUpgrade,
+  privateKeyHex: string
+): string {
   return signForTransactionVersion(tx.version, transactionSigningDomain(tx.kind), tx, privateKeyHex);
 }
 
