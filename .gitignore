@@ -1,0 +1,46 @@
+# Dependency/build artifacts
+node_modules/
+l1/node_modules/
+l1/dist/
+coverage/
+.nyc_output/
+
+# Local environment and secret files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# ZyronChain local wallet/operator secrets
+wallet.json
+wallet.password
+wallet-*.json
+validator-key.json
+validator-key-*.json
+oracle-key.json
+oracle-key-*.json
+peer-token.txt
+signer-token.txt
+validator-signer-token.txt
+
+# Node runtime state and databases
+data/
+l1/data/
+*-data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db-wal
+*.db-shm
+
+# Local logs, temporary files and editor/OS metadata
+*.log
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
