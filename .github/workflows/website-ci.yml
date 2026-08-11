@@ -35,6 +35,7 @@ jobs:
         run: |
           node <<'NODE'
           const fs = require('node:fs');
+          const path = require('node:path');
 
           const required = [
             'website/index.html',
@@ -162,6 +163,59 @@ jobs:
             throw new Error('Validator launchpad mobile boundary is missing');
           }
 
+          const allStaticCss = [css, walletCss, validatorCss].join('\n');
+          const definedCssVars = new Set([...allStaticCss.matchAll(/--([a-z0-9-]+)\s*:/gi)].map((match) => match[1]));
+          const usedCssVars = new Set([...allStaticCss.matchAll(/var\(--([a-z0-9-]+)/gi)].map((match) => match[1]));
+          const missingCssVars = [...usedCssVars].filter((name) => !definedCssVars.has(name));
+          if (missingCssVars.length) {
+            throw new Error(`Undefined static CSS variables: ${missingCssVars.sort().join(', ')}`);
+          }
+
+          const walletMarkRule = walletCss.match(/\.identity-mark img\s*\{([^}]*)\}/s)?.[1] || '';
+          if (/clip-path\s*:\s*(?!none)/i.test(walletMarkRule) || /translateX\s*\(/i.test(walletMarkRule)) {
+            throw new Error('Wallet identity mark must render as a complete, centered protocol mark');
+          }
+
+          const pages = new Map([
+            ['website/index.html', html],
+            ['website/wallet.html', walletHtml],
+            ['website/validator.html', validatorHtml]
+          ]);
+          for (const [file, source] of pages) {
+            const ids = [...source.matchAll(/\bid=["']([^"']+)["']/gi)].map((match) => match[1]);
+            const duplicateIds = ids.filter((id, index) => ids.indexOf(id) !== index);
+            if (duplicateIds.length) throw new Error(`${file} has duplicate id(s): ${[...new Set(duplicateIds)].join(', ')}`);
+            const idSet = new Set(ids);
+
+            for (const match of source.matchAll(/\bhref=["']([^"']+)["']/gi)) {
+              const href = match[1];
+              if (href.startsWith('#')) {
+                const target = href.slice(1);
+                if (target && !idSet.has(target)) throw new Error(`${file} has broken fragment link: ${href}`);
+                continue;
+              }
+              if (!href.startsWith('./')) continue;
+              const [relative, fragment] = href.split('#', 2);
+              const targetName = relative === './' || relative === './index.html' ? 'index.html' : relative.slice(2);
+              const targetPath = path.join('website', targetName);
+              if (!fs.existsSync(targetPath)) throw new Error(`${file} has broken local link: ${href}`);
+              if (fragment) {
+                const targetSource = fs.readFileSync(targetPath, 'utf8');
+                const escaped = fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                if (!new RegExp(`\\bid=["']${escaped}["']`).test(targetSource)) {
+                  throw new Error(`${file} has broken cross-page fragment: ${href}`);
+                }
+              }
+            }
+
+            for (const match of source.matchAll(/\bsrc=["']([^"']+)["']/gi)) {
+              const src = match[1];
+              if (!src.startsWith('./')) continue;
+              const targetPath = path.join('website', src.slice(2));
+              if (!fs.existsSync(targetPath)) throw new Error(`${file} has broken local asset: ${src}`);
+            }
+          }
+
           if (js.includes('127.0.0.1:9137') || /fetch\s*\(.*9137|WebSocket\s*\(.*9137/.test(js)) {
             throw new Error('Main browser JavaScript must not bind to validator RPC');
           }
@@ -201,7 +255,12 @@ jobs:
             '--host 127.0.0.1',
             '--p2p-listen',
             '--p2p-peer',
-            'ZYRON_KEYSTORE_PASSWORD_FILE'
+            'ZYRON_KEYSTORE_PASSWORD_FILE',
+            'Genesis contains placeholder values',
+            'PUBLIC_KEY_RE',
+            'ADDRESS_RE',
+            'MAX_SUPPLY_ATOMS',
+            'PeerId looks incomplete'
           ]) {
             if (!validatorJs.includes(marker)) throw new Error(`Validator launcher missing security invariant: ${marker}`);
           }
