@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#050b11" />
+  <meta name="description" content="Configure a ZyronChain validator safely in the browser and run it locally without exposing private keys." />
+  <link rel="canonical" href="https://zyronchain.com/validator.html" />
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="manifest" href="./site.webmanifest" />
+  <title>ZyronChain Validator Launchpad</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./validator.css" />
+</head>
+<body class="validator-page">
+  <a class="skip-link" href="#main">Skip to validator launchpad</a>
+  <div class="page-noise" aria-hidden="true"></div>
+  <div class="page-glow glow-one" aria-hidden="true"></div>
+
+  <header class="site-header launchpad-header">
+    <div class="shell header-inner">
+      <a class="brand-logo-link" href="./" aria-label="ZyronChain home">
+        <img class="brand-logo" src="./logo.svg" alt="ZyronChain" />
+      </a>
+      <nav class="launchpad-nav" aria-label="Validator navigation">
+        <a href="#identity">Identity</a>
+        <a href="#network">Network</a>
+        <a href="#safety">Safety</a>
+      </nav>
+      <a class="button button-secondary button-small" href="./">Back to site</a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="launchpad-hero shell">
+      <div>
+        <span class="section-kicker">Validator Launchpad</span>
+        <h1>Configure in the browser.<br><span>Run on your own machine.</span></h1>
+        <p>ZyronChain never asks the website to hold a validator secret. This launchpad prepares deterministic operator scripts; your encrypted validator key is created locally on your device and stays there.</p>
+        <div class="launchpad-badges">
+          <span>Private key stays local</span>
+          <span>RPC binds to 127.0.0.1</span>
+          <span>Exact release pinned</span>
+        </div>
+      </div>
+      <aside class="launchpad-state-card">
+        <div class="state-row"><span>Public testnet</span><strong>Authorized</strong></div>
+        <div class="state-row"><span>Activation</span><strong class="amber-text">Gated</strong></div>
+        <div class="state-row"><span>Friends/private validator</span><strong class="green-text">Available</strong></div>
+        <p>Public-network joining stays disabled until the reviewed activation gate changes in the canonical repository.</p>
+      </aside>
+    </section>
+
+    <section class="shell launchpad-grid">
+      <aside class="launchpad-steps" aria-label="Validator workflow">
+        <div class="step active"><b>1</b><span><strong>Create identity</strong><small>Generate your encrypted validator key locally.</small></span></div>
+        <div class="step"><b>2</b><span><strong>Share public data</strong><small>Only address, public key and PeerId are shared.</small></span></div>
+        <div class="step"><b>3</b><span><strong>Import network bundle</strong><small>Use the same genesis and release as every validator.</small></span></div>
+        <div class="step"><b>4</b><span><strong>Start validator</strong><small>Expose P2P only; keep validator RPC local.</small></span></div>
+      </aside>
+
+      <div class="launchpad-workspace">
+        <section class="launcher-panel" id="identity">
+          <div class="panel-heading">
+            <div>
+              <span class="panel-index">01</span>
+              <h2>Create validator identity</h2>
+              <p>Build a one-time setup script. The script creates the encrypted key on the machine where it runs.</p>
+            </div>
+            <span class="safe-chip">NO SECRET IN BROWSER</span>
+          </div>
+
+          <form class="launcher-form" id="identity-form">
+            <label>
+              <span>Platform</span>
+              <select id="identity-platform" name="platform">
+                <option value="linux">Linux / macOS</option>
+                <option value="wsl">Windows via WSL2</option>
+                <option value="termux">Android via Termux</option>
+              </select>
+            </label>
+            <label>
+              <span>Validator label</span>
+              <input id="validator-label" name="label" value="validator-1" maxlength="40" autocomplete="off" />
+            </label>
+            <label class="full-field">
+              <span>Verified L1 release commit</span>
+              <input id="release-ref" name="release" value="a3512f26b32d8d8c71402d0f59c1baeb44a5b3a0" readonly />
+              <small>All validators in one network should run the same reviewed L1 release.</small>
+            </label>
+            <div class="form-actions full-field">
+              <button type="submit" class="button button-primary">Build identity script</button>
+              <span id="identity-status" class="form-status" aria-live="polite"></span>
+            </div>
+          </form>
+
+          <div class="generated-output" id="identity-output" hidden>
+            <div class="output-toolbar">
+              <div><strong>zyron-validator-identity.sh</strong><small>Run locally in a terminal</small></div>
+              <div><button type="button" data-copy="identity-script">Copy</button><button type="button" data-download="identity">Download .sh</button></div>
+            </div>
+            <pre id="identity-script"></pre>
+            <div class="next-callout"><strong>After it runs:</strong> send the coordinator only the printed validator address and public key. Never send <code>validator.json</code> or <code>validator.password</code>.</div>
+          </div>
+        </section>
+
+        <section class="launcher-panel" id="network">
+          <div class="panel-heading">
+            <div>
+              <span class="panel-index">02</span>
+              <h2>Join a friends/private testnet</h2>
+              <p>Paste the coordinator-provided genesis and explicit PeerId-pinned peers. The browser only packages public configuration into a local start script.</p>
+            </div>
+            <span class="safe-chip">PRIVATE / NON-VALUE</span>
+          </div>
+
+          <form class="launcher-form" id="network-form">
+            <label>
+              <span>Platform</span>
+              <select id="network-platform">
+                <option value="linux">Linux / macOS</option>
+                <option value="wsl">Windows via WSL2</option>
+                <option value="termux">Android via Termux</option>
+              </select>
+            </label>
+            <label>
+              <span>P2P TCP port</span>
+              <input id="p2p-port" inputmode="numeric" value="9140" />
+            </label>
+            <label>
+              <span>Local RPC port</span>
+              <input id="rpc-port" inputmode="numeric" value="9137" />
+            </label>
+            <label>
+              <span>Data directory</span>
+              <input id="data-dir" value="data" autocomplete="off" />
+            </label>
+            <label class="full-field">
+              <span>Common genesis.json</span>
+              <textarea id="genesis-json" rows="11" spellcheck="false" placeholder='Paste the exact shared genesis JSON here'></textarea>
+              <small>The launchpad validates JSON locally. It never uploads this data.</small>
+            </label>
+            <label class="full-field">
+              <span>Explicit P2P peers — one multiaddr per line</span>
+              <textarea id="peer-list" rows="6" spellcheck="false" placeholder="/ip4/192.168.1.20/tcp/9140/p2p/12D3KooW...&#10;/dns4/node-b.example/tcp/9140/p2p/12D3KooW..."></textarea>
+              <small>Every configured remote peer must include the expected <code>/p2p/&lt;PeerId&gt;</code> suffix.</small>
+            </label>
+            <div class="form-actions full-field">
+              <button type="submit" class="button button-primary">Build validator start script</button>
+              <span id="network-status" class="form-status" aria-live="polite"></span>
+            </div>
+          </form>
+
+          <div class="generated-output" id="network-output" hidden>
+            <div class="output-toolbar">
+              <div><strong>zyron-validator-start.sh</strong><small>Genesis is embedded as public configuration</small></div>
+              <div><button type="button" data-copy="network-script">Copy</button><button type="button" data-download="network">Download .sh</button></div>
+            </div>
+            <pre id="network-script"></pre>
+            <div class="next-callout warning"><strong>Firewall:</strong> expose only the selected P2P TCP port to other validators. Do not expose the local RPC port to the public Internet.</div>
+          </div>
+        </section>
+
+        <section class="launcher-panel public-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="panel-index">03</span>
+              <h2>Join the public ZyronChain network</h2>
+              <p>The governance class is authorized, but public-testnet activation is still blocked by external evidence gates.</p>
+            </div>
+            <span class="gate-chip">ACTIVATION GATED</span>
+          </div>
+          <button class="button button-disabled" type="button" disabled>Public validator enrollment not active</button>
+          <a class="inline-cta" href="https://github.com/zyron249/-zyronchain/issues/260" target="_blank" rel="noreferrer noopener">View activation requirements ↗</a>
+        </section>
+      </div>
+    </section>
+
+    <section class="shell safety-section" id="safety">
+      <div class="section-kicker">Operator safety</div>
+      <h2>What the website deliberately cannot do.</h2>
+      <div class="safety-grid">
+        <article><b>01</b><strong>No browser validator process</strong><p>Browsers cannot safely provide stable inbound raw TCP, durable background consensus or production key custody. The website launches a local operator workflow instead.</p></article>
+        <article><b>02</b><strong>No private-key upload</strong><p>The launchpad neither requests nor stores validator private keys, passwords or HSM credentials.</p></article>
+        <article><b>03</b><strong>No direct validator RPC</strong><p>Consensus RPC remains loopback-only by default. Public interfaces must use a separately bounded read-only gateway.</p></article>
+        <article><b>04</b><strong>No fake public launch</strong><p>Friends/private testnets are available now; public-network enrollment stays disabled until activation evidence is actually closed.</p></article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer shell">
+    <div class="footer-brand"><img src="./logo.svg" alt="ZyronChain" /><p>Open-source Layer-1 engineering. No presale. No investment promises.</p></div>
+    <div class="footer-links"><a href="./">Home</a><a href="https://github.com/zyron249/-zyronchain" target="_blank" rel="noreferrer noopener">GitHub</a><a href="https://github.com/zyron249/-zyronchain/blob/main/SECURITY.md" target="_blank" rel="noreferrer noopener">Security</a></div>
+    <div class="footer-meta"><span>© <span data-year></span> ZyronChain</span><span>No analytics cookies</span></div>
+  </footer>
+
+  <script src="./app.js"></script>
+  <script src="./validator.js"></script>
+</body>
+</html>

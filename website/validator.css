@@ -1,0 +1,456 @@
+.validator-page {
+  min-height: 100vh;
+}
+
+.launchpad-header {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+
+.launchpad-header .header-inner {
+  min-height: 82px;
+}
+
+.brand-logo-link {
+  display: inline-flex;
+  align-items: center;
+  min-width: 220px;
+}
+
+.brand-logo {
+  display: block;
+  width: 214px;
+  height: auto;
+}
+
+.launchpad-nav {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.launchpad-nav a:hover {
+  color: var(--text);
+}
+
+.launchpad-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(290px, .75fr);
+  gap: 46px;
+  align-items: end;
+  padding-top: 92px;
+  padding-bottom: 72px;
+}
+
+.launchpad-hero h1 {
+  margin: 14px 0 18px;
+  max-width: 900px;
+  font-size: clamp(48px, 7vw, 84px);
+  line-height: .98;
+  letter-spacing: -.06em;
+}
+
+.launchpad-hero h1 span {
+  color: var(--muted-strong);
+}
+
+.launchpad-hero p {
+  max-width: 760px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 18px;
+}
+
+.launchpad-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 28px;
+}
+
+.launchpad-badges span,
+.safe-chip,
+.gate-chip {
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.025);
+  border-radius: 999px;
+  padding: 8px 11px;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.launchpad-badges span {
+  color: #b8ccda;
+}
+
+.launchpad-state-card {
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 22px;
+  background: linear-gradient(180deg, rgba(12,27,39,.94), rgba(7,17,25,.86));
+  box-shadow: var(--shadow);
+}
+
+.state-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.state-row strong {
+  color: var(--text);
+}
+
+.launchpad-state-card p {
+  margin: 16px 0 0;
+  font-size: 13px;
+}
+
+.green-text { color: var(--accent) !important; }
+.amber-text { color: var(--amber) !important; }
+
+.launchpad-grid {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 28px;
+  padding-bottom: 90px;
+}
+
+.launchpad-steps {
+  position: sticky;
+  top: 104px;
+  align-self: start;
+  display: grid;
+  gap: 8px;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid transparent;
+}
+
+.step.active {
+  border-color: var(--border);
+  background: rgba(255,255,255,.026);
+}
+
+.step b {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--accent);
+  background: rgba(82,236,190,.08);
+  border: 1px solid rgba(82,236,190,.16);
+  font-size: 12px;
+}
+
+.step span {
+  display: grid;
+  gap: 3px;
+}
+
+.step strong {
+  font-size: 13px;
+}
+
+.step small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.launchpad-workspace {
+  display: grid;
+  gap: 20px;
+}
+
+.launcher-panel {
+  border: 1px solid var(--border);
+  border-radius: 26px;
+  padding: 28px;
+  background: rgba(8,19,28,.82);
+  box-shadow: var(--shadow-soft);
+}
+
+.panel-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-start;
+  margin-bottom: 26px;
+}
+
+.panel-index {
+  display: inline-flex;
+  margin-bottom: 8px;
+  color: var(--accent-2);
+  font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: .16em;
+}
+
+.panel-heading h2 {
+  margin: 0 0 8px;
+  font-size: clamp(28px, 4vw, 40px);
+  letter-spacing: -.035em;
+}
+
+.panel-heading p {
+  margin: 0;
+  max-width: 690px;
+  color: var(--muted);
+}
+
+.safe-chip {
+  color: var(--accent);
+  border-color: rgba(82,236,190,.18);
+  background: rgba(82,236,190,.05);
+  white-space: nowrap;
+}
+
+.gate-chip {
+  color: var(--amber);
+  border-color: rgba(244,193,102,.2);
+  background: rgba(244,193,102,.05);
+  white-space: nowrap;
+}
+
+.launcher-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.launcher-form label {
+  display: grid;
+  gap: 8px;
+  color: #c7d7e3;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.launcher-form label > small {
+  color: var(--muted);
+  font-weight: 450;
+  line-height: 1.45;
+}
+
+.full-field {
+  grid-column: 1 / -1;
+}
+
+.launcher-form input,
+.launcher-form textarea,
+.launcher-form select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  outline: none;
+  background: #050d14;
+  color: var(--text);
+  font: inherit;
+  font-weight: 500;
+  padding: 12px 13px;
+}
+
+.launcher-form textarea,
+.generated-output pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.launcher-form textarea {
+  resize: vertical;
+  min-height: 110px;
+  line-height: 1.55;
+}
+
+.launcher-form input:focus,
+.launcher-form textarea:focus,
+.launcher-form select:focus {
+  border-color: rgba(82,236,190,.45);
+  box-shadow: 0 0 0 3px rgba(82,236,190,.06);
+}
+
+.launcher-form input[readonly] {
+  color: #8ca6b8;
+  background: #071019;
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.form-status {
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.form-status.error {
+  color: #ff9d9d;
+}
+
+.generated-output {
+  margin-top: 24px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: #03090e;
+}
+
+.output-toolbar {
+  min-height: 64px;
+  padding: 12px 14px 12px 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255,255,255,.025);
+}
+
+.output-toolbar > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.output-toolbar small {
+  color: var(--muted);
+}
+
+.output-toolbar > div:last-child {
+  display: flex;
+  gap: 8px;
+}
+
+.output-toolbar button {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 11px;
+  background: rgba(255,255,255,.03);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.output-toolbar button:hover {
+  border-color: rgba(82,236,190,.28);
+}
+
+.generated-output pre {
+  margin: 0;
+  max-height: 480px;
+  overflow: auto;
+  padding: 22px;
+  color: #c9e5d9;
+  line-height: 1.65;
+  font-size: 12px;
+  white-space: pre;
+}
+
+.next-callout {
+  margin: 0 16px 16px;
+  padding: 13px 14px;
+  border: 1px solid rgba(82,236,190,.16);
+  border-radius: 12px;
+  color: #b9d9cc;
+  background: rgba(82,236,190,.045);
+  font-size: 12px;
+}
+
+.next-callout.warning {
+  border-color: rgba(244,193,102,.18);
+  color: #dbc89d;
+  background: rgba(244,193,102,.045);
+}
+
+.public-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.button-disabled {
+  justify-self: start;
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+.safety-section {
+  padding: 86px 0 110px;
+}
+
+.safety-section h2 {
+  margin: 10px 0 30px;
+  max-width: 760px;
+  font-size: clamp(36px, 5vw, 58px);
+  letter-spacing: -.045em;
+}
+
+.safety-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.safety-grid article {
+  min-height: 230px;
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: rgba(255,255,255,.018);
+}
+
+.safety-grid b {
+  color: var(--accent-2);
+  font-size: 11px;
+}
+
+.safety-grid strong {
+  display: block;
+  margin: 34px 0 9px;
+  font-size: 16px;
+}
+
+.safety-grid p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 980px) {
+  .launchpad-nav { display: none; }
+  .launchpad-hero { grid-template-columns: 1fr; }
+  .launchpad-grid { grid-template-columns: 1fr; }
+  .launchpad-steps { position: static; grid-template-columns: 1fr 1fr; }
+  .safety-grid { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 640px) {
+  .launchpad-header .button { display: none; }
+  .brand-logo { width: 184px; }
+  .launchpad-hero { padding-top: 60px; }
+  .launchpad-hero h1 { font-size: clamp(43px, 13vw, 64px); }
+  .launcher-panel { padding: 22px 16px; }
+  .panel-heading { display: grid; }
+  .safe-chip, .gate-chip { justify-self: start; }
+  .launcher-form { grid-template-columns: 1fr; }
+  .full-field { grid-column: auto; }
+  .launchpad-steps { grid-template-columns: 1fr; }
+  .output-toolbar { align-items: flex-start; flex-direction: column; }
+  .safety-grid { grid-template-columns: 1fr; }
+}
