@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { ZyronChain } from "../src/chain.js";
+import { MAX_MINING_MEMPOOL_CLAIMS, Mempool } from "../src/mempool.js";
 import {
   INITIAL_MINING_REWARD_ATOMS,
   MINING_DIFFICULTY_BITS,
@@ -65,6 +66,18 @@ function unsignedContext(overrides: Partial<Parameters<typeof createMiningClaim>
     workNonce: "0000000000000000",
     timestampMs: genesis().timestampMs + 1,
     ...overrides
+  };
+}
+
+function policyMiningClaim(index: number, height = 1): MiningClaimTx {
+  const base = createMiningClaim(unsignedContext(), minerPrivate, minerPublic);
+  return {
+    ...base,
+    nonce: index + 1,
+    height,
+    workNonce: index.toString(16).padStart(16, "0"),
+    timestampMs: genesis().timestampMs + index + 1,
+    txid: index.toString(16).padStart(64, "0")
   };
 }
 
@@ -139,6 +152,37 @@ test("mining cannot enter a legacy protocol mempool before protocol v5 activatio
     () => chain.validateMempoolAdmission(claim),
     /Transaction version 2 is not valid under protocol version 1/
   );
+});
+
+test("public mining claims are bounded to a 256-entry mempool subpool", () => {
+  const mempool = new Mempool();
+  for (let index = 0; index < MAX_MINING_MEMPOOL_CLAIMS; index += 1) {
+    mempool.add(policyMiningClaim(index));
+  }
+  assert.equal(mempool.size, MAX_MINING_MEMPOOL_CLAIMS);
+
+  const newerTipClaim = policyMiningClaim(MAX_MINING_MEMPOOL_CLAIMS, 2);
+  mempool.add(newerTipClaim);
+  assert.equal(mempool.size, MAX_MINING_MEMPOOL_CLAIMS);
+  assert.ok(mempool.values().some((tx) => tx.txid === newerTipClaim.txid));
+});
+
+test("mining traffic cannot evict a normal transfer from an otherwise full mempool", () => {
+  const mempool = new Mempool(1);
+  const transfer = createTransfer({
+    chainId: genesis().chainId,
+    nonce: 1,
+    sender: miner,
+    receiver: validator,
+    amountAtoms: 1,
+    feeAtoms: 1,
+    timestampMs: genesis().timestampMs + 1
+  }, minerPrivate, minerPublic);
+  mempool.add(transfer);
+
+  assert.throws(() => mempool.add(policyMiningClaim(10)), /Mining mempool full/);
+  assert.equal(mempool.size, 1);
+  assert.equal(mempool.values()[0]?.txid, transfer.txid);
 });
 
 test("ledger mining issuance credits the miner and advances the consensus-owned global claim counter", () => {
