@@ -1,8 +1,10 @@
 import { canonicalJson } from "./codec.js";
-import type { Transaction } from "./types.js";
+import { miningWorkHash } from "./mining.js";
+import type { MiningClaimTx, Transaction } from "./types.js";
 
 const REPLACEMENT_BUMP_NUMERATOR = 11n;
 const REPLACEMENT_BUMP_DENOMINATOR = 10n;
+export const MAX_MINING_MEMPOOL_CLAIMS = 256;
 
 export class Mempool {
   private readonly byId = new Map<string, Transaction>();
@@ -19,6 +21,17 @@ export class Mempool {
       const conflicting = this.byId.get(conflictingId)!;
       if (!isValidReplacement(conflicting, tx)) throw new Error("Conflicting sender nonce");
       this.deleteTransaction(conflictingId, conflicting);
+    }
+
+    if (tx.kind === "mining_claim") {
+      const miningCount = this.miningClaimCount();
+      if (miningCount >= MAX_MINING_MEMPOOL_CLAIMS || this.byId.size >= this.maxSize) {
+        const weakest = this.weakestMiningClaim();
+        if (!weakest || !isBetterMiningClaim(weakest.tx, tx)) {
+          throw new Error("Mining mempool full");
+        }
+        this.deleteTransaction(weakest.txid, weakest.tx);
+      }
     } else if (this.byId.size >= this.maxSize) {
       const eviction = this.lowestPriorityEvictableTransfer();
       if (!eviction || (tx.kind === "transfer" && !hasRequiredFeeRateBump(eviction.tx, tx))) {
@@ -26,6 +39,7 @@ export class Mempool {
       }
       this.deleteTransaction(eviction.txid, eviction.tx);
     }
+
     this.byId.set(tx.txid, structuredClone(tx));
     this.nonceIds.set(nonceKey, tx.txid);
     this.adjustTransferSpend(tx, 1n);
@@ -67,6 +81,12 @@ export class Mempool {
     return this.byId.size;
   }
 
+  private miningClaimCount(): number {
+    let count = 0;
+    for (const tx of this.byId.values()) if (tx.kind === "mining_claim") count += 1;
+    return count;
+  }
+
   private adjustTransferSpend(tx: Transaction, direction: 1n | -1n): void {
     if (tx.kind !== "transfer") return;
     const delta = BigInt(tx.amountAtoms) + BigInt(tx.feeAtoms);
@@ -79,6 +99,15 @@ export class Mempool {
     this.byId.delete(txid);
     this.nonceIds.delete(`${tx.sender}:${tx.nonce}`);
     this.adjustTransferSpend(tx, -1n);
+  }
+
+  private weakestMiningClaim(): { txid: string; tx: MiningClaimTx } | undefined {
+    let selected: { txid: string; tx: MiningClaimTx } | undefined;
+    for (const [txid, tx] of this.byId) {
+      if (tx.kind !== "mining_claim") continue;
+      if (!selected || compareMiningPriority(tx, selected.tx) < 0) selected = { txid, tx };
+    }
+    return selected;
   }
 
   private lowestPriorityEvictableTransfer(): { txid: string; tx: Transaction } | undefined {
@@ -99,8 +128,28 @@ export class Mempool {
 }
 
 function isValidReplacement(existing: Transaction, incoming: Transaction): boolean {
-  return existing.kind === "transfer" && incoming.kind === "transfer" &&
-    hasRequiredFeeRateBump(existing, incoming);
+  if (existing.kind === "transfer" && incoming.kind === "transfer") {
+    return hasRequiredFeeRateBump(existing, incoming);
+  }
+  if (existing.kind === "mining_claim" && incoming.kind === "mining_claim") {
+    return isBetterMiningClaim(existing, incoming);
+  }
+  return false;
+}
+
+function isBetterMiningClaim(existing: MiningClaimTx, incoming: MiningClaimTx): boolean {
+  return compareMiningPriority(incoming, existing) > 0;
+}
+
+/** Positive means left has higher mining-mempool priority. */
+function compareMiningPriority(left: MiningClaimTx, right: MiningClaimTx): number {
+  if (left.height !== right.height) return left.height > right.height ? 1 : -1;
+  const leftHash = miningWorkHash(left);
+  const rightHash = miningWorkHash(right);
+  if (leftHash !== rightHash) return leftHash < rightHash ? 1 : -1;
+  if (left.timestampMs !== right.timestampMs) return left.timestampMs > right.timestampMs ? 1 : -1;
+  if (left.txid === right.txid) return 0;
+  return left.txid < right.txid ? 1 : -1;
 }
 
 function hasRequiredFeeRateBump(existing: Transaction, incoming: Transaction): boolean {
