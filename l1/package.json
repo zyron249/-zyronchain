@@ -9,7 +9,8 @@
   "files": [
     "dist/src",
     "scripts/mine.mjs",
-    "README.md"
+    "README.md",
+    "MINING.md"
   ],
   "engines": {
     "node": ">=22"
