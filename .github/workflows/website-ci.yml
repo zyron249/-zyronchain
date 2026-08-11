@@ -25,7 +25,7 @@ jobs:
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: '24'
-      - name: Verify static portal contract
+      - name: Verify production website contract
         shell: bash
         run: |
           node <<'NODE'
@@ -36,37 +36,71 @@ jobs:
             'website/app.js',
             'website/README.md',
             'website/robots.txt',
-            'website/sitemap.xml'
+            'website/sitemap.xml',
+            'website/favicon.svg',
+            'website/site.webmanifest'
           ];
           for (const file of required) {
             if (!fs.existsSync(file) || !fs.statSync(file).isFile()) throw new Error(`Missing website file: ${file}`);
           }
+
           const html = fs.readFileSync('website/index.html', 'utf8');
           const css = fs.readFileSync('website/styles.css', 'utf8');
           const js = fs.readFileSync('website/app.js', 'utf8');
           const robots = fs.readFileSync('website/robots.txt', 'utf8');
           const sitemap = fs.readFileSync('website/sitemap.xml', 'utf8');
-          for (const marker of ['./styles.css', './app.js', 'ZyronChain', 'Activation gated', '50,000,000 ZYN']) {
+          const favicon = fs.readFileSync('website/favicon.svg', 'utf8');
+          const manifest = JSON.parse(fs.readFileSync('website/site.webmanifest', 'utf8'));
+
+          for (const marker of [
+            './styles.css',
+            './app.js',
+            './favicon.svg',
+            './site.webmanifest',
+            'ZyronChain',
+            'Public testnet governance authorized',
+            'Authorized does not mean activated',
+            '50M ZYN',
+            'No analytics cookies'
+          ]) {
             if (!html.includes(marker)) throw new Error(`Website HTML missing required marker: ${marker}`);
           }
+
           for (const marker of [
             '<link rel="canonical" href="https://zyronchain.com/"',
             '<meta property="og:url" content="https://zyronchain.com/"'
           ]) {
             if (!html.includes(marker)) throw new Error(`Production domain metadata missing: ${marker}`);
           }
+
           if (!robots.includes('Sitemap: https://zyronchain.com/sitemap.xml')) {
             throw new Error('robots.txt is not bound to the production sitemap');
           }
           if (!sitemap.includes('<loc>https://zyronchain.com/</loc>')) {
             throw new Error('sitemap.xml is not bound to the production origin');
           }
-          if (!css.includes('@media (max-width: 640px)')) throw new Error('Website responsive mobile boundary is missing');
+          if (!favicon.includes('<svg') || !favicon.includes('ZyronChain')) {
+            throw new Error('ZyronChain SVG favicon contract is invalid');
+          }
+          if (manifest.name !== 'ZyronChain' || manifest.start_url !== '/' || manifest.display !== 'standalone') {
+            throw new Error('Web manifest contract is invalid');
+          }
+          if (!css.includes('@media (max-width: 640px)') || !css.includes('@media (prefers-reduced-motion: reduce)')) {
+            throw new Error('Website responsive/accessibility boundaries are missing');
+          }
+
           if (html.includes('127.0.0.1:9137') || js.includes('127.0.0.1:9137')) {
             throw new Error('Browser portal must not directly bind to validator RPC');
           }
           if (/fetch\s*\(\s*['\"]https?:\/\//.test(js)) {
-            throw new Error('Static portal may not acquire remote trust dependencies in client JavaScript');
+            throw new Error('Production website may not acquire remote trust dependencies in client JavaScript');
           }
-          console.log('website-static-contract-ok');
+          if (/<script[^>]+src=['\"]https?:\/\//i.test(html)) {
+            throw new Error('Production website may not execute third-party remote JavaScript');
+          }
+          if (/fonts\.googleapis\.com|fonts\.gstatic\.com/i.test(html)) {
+            throw new Error('Production website must remain self-contained and not depend on remote web fonts');
+          }
+
+          console.log('website-production-contract-ok');
           NODE
