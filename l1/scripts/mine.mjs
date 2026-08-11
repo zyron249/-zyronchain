@@ -3,7 +3,6 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { addressFromPublicKey, publicKeyFromPrivate } from "../dist/src/crypto.js";
-import { decryptPrivateKey, isEncryptedKeystore, normalizePasswordFile } from "../dist/src/keystore.js";
 import {
   MINING_DIFFICULTY_BITS,
   MINING_PROTOCOL_VERSION,
@@ -12,6 +11,7 @@ import {
   miningRewardAtoms,
   miningWorkHash
 } from "../dist/src/mining.js";
+import { loadEncryptedMinerPrivateKey } from "../dist/src/miner-security.js";
 import { createMiningClaim } from "../dist/src/transaction.js";
 import { MAX_SUPPLY_ATOMS } from "../dist/src/types.js";
 
@@ -27,13 +27,13 @@ assertKnownArgs();
 const keyPath = requiredOption("--key");
 const genesisPath = requiredOption("--genesis");
 const rpc = normalizeRpcUrl(requiredOption("--rpc"));
-const passwordFile = option("--password-file");
+const passwordFile = requiredOption("--password-file");
 const once = args.includes("--once");
 const batchSize = parsePositiveInteger(option("--batch-size") ?? "65536", "batch-size", 1_000_000);
 
 const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8"));
 const genesisSupplyAtoms = genesisSupply(genesis);
-const privateKey = await readPrivateKey(resolve(keyPath), passwordFile ? resolve(passwordFile) : undefined);
+const privateKey = await loadEncryptedMinerPrivateKey(resolve(keyPath), resolve(passwordFile));
 const publicKey = publicKeyFromPrivate(privateKey);
 const sender = addressFromPublicKey(publicKey);
 
@@ -166,10 +166,10 @@ function usage() {
 Options:
   --once                Stop after one accepted claim submission
   --batch-size <n>      Hashes between finalized-tip refreshes (1-1000000; default 65536)
-  --password-file <p>   Required for encrypted ZyronChain keystores
+  --password-file <p>   Required; password file for the encrypted miner keystore
   --help, -h            Show this help
 
-Remote RPC must use HTTPS. Plain HTTP is accepted only for loopback.`);
+The miner accepts encrypted ZyronChain keystores only. On POSIX systems the keystore and password file must be owner-only (0600 recommended). Remote RPC must use HTTPS. Plain HTTP is accepted only for loopback.`);
 }
 
 function assertKnownArgs() {
@@ -218,19 +218,6 @@ function normalizeRpcUrl(value) {
     throw new Error("Remote mining RPC must use HTTPS; HTTP is allowed only for loopback");
   }
   return url.toString().replace(/\/$/, "");
-}
-
-async function readPrivateKey(path, passwordPath) {
-  const parsed = JSON.parse(await readFile(path, "utf8"));
-  if (isEncryptedKeystore(parsed)) {
-    if (!passwordPath) throw new Error("Encrypted wallet requires --password-file");
-    const password = normalizePasswordFile(await readFile(passwordPath, "utf8"));
-    return decryptPrivateKey(parsed, password);
-  }
-  if (!parsed || typeof parsed.privateKey !== "string" || !/^[0-9a-f]{64}$/.test(parsed.privateKey)) {
-    throw new Error("Wallet file is not a supported ZyronChain key or encrypted keystore");
-  }
-  return parsed.privateKey;
 }
 
 function genesisSupply(value) {
