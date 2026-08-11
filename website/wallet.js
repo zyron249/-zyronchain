@@ -1,4 +1,7 @@
-const RELEASE_REF = 'b7e0d37f1471f825f02ac374bafdaf7acb25a990';
+const RELEASE_REF = globalThis.ZYRON_RELEASE_REF;
+if (typeof RELEASE_REF !== 'string' || !/^[0-9a-f]{40}$/.test(RELEASE_REF)) {
+  throw new Error('ZyronChain canonical release reference is unavailable');
+}
 
 const unixScript = [
   '#!/usr/bin/env bash',
@@ -126,13 +129,28 @@ function renderScript() {
     const selected = tab.getAttribute('data-wallet-os') === activeOs;
     tab.classList.toggle('active', selected);
     tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
   }
+}
+
+for (const target of document.querySelectorAll('[data-release-short]')) {
+  target.textContent = RELEASE_REF.slice(0, 12);
+  target.setAttribute('title', RELEASE_REF);
 }
 
 for (const tab of tabs) {
   tab.addEventListener('click', () => {
     activeOs = tab.getAttribute('data-wallet-os') === 'windows' ? 'windows' : 'unix';
     renderScript();
+  });
+  tab.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    const index = tabs.indexOf(tab);
+    const offset = event.key === 'ArrowRight' ? 1 : -1;
+    const next = tabs[(index + offset + tabs.length) % tabs.length];
+    next?.click();
+    next?.focus();
   });
 }
 
