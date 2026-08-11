@@ -134,6 +134,9 @@ export class LedgerState {
   }
 
   private applyTransfer(tx: TransferTx): void {
+    if (tx.sender === MINING_TRACKER_ADDRESS || tx.receiver === MINING_TRACKER_ADDRESS) {
+      throw new Error("Mining tracker address is protocol-reserved");
+    }
     this.requireNonce(tx.sender, tx.nonce);
     const total = tx.amountAtoms + tx.feeAtoms;
     if (!Number.isSafeInteger(total) || this.balance(tx.sender) < total) {
@@ -146,6 +149,9 @@ export class LedgerState {
 
   private applyActivity(tx: ActivitySettlementTx, activityPool: Address): void {
     if (tx.sender !== activityPool) throw new Error("Invalid activity pool sender");
+    if (tx.entries.some((entry) => entry.receiver === MINING_TRACKER_ADDRESS)) {
+      throw new Error("Mining tracker address is protocol-reserved");
+    }
     if (this.settledActivityEpochs.has(tx.epoch)) throw new Error("Activity epoch already settled");
     this.requireNonce(activityPool, tx.nonce);
     const total = tx.entries.reduce((sum, entry) => {
@@ -175,11 +181,13 @@ export class LedgerState {
   }
 
   private applyValidatorUpdate(tx: ValidatorSetUpdateTx): void {
+    if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     this.requireNonce(tx.sender, tx.nonce);
     this.setNonce(tx.sender, tx.nonce);
   }
 
   private applyProtocolUpgrade(tx: ProtocolUpgradeTx): void {
+    if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     this.requireNonce(tx.sender, tx.nonce);
     this.setNonce(tx.sender, tx.nonce);
   }
