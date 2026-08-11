@@ -9,6 +9,8 @@
     "public-launch-explicitly-blocked",
     "node-22-and-24-ci",
     "independent-light-client-verification",
+    "protocol-v5-permissionless-mining-tests",
+    "mining-mempool-resource-bound",
     "composite-adversarial-soak",
     "multiprocess-native-p2p-crash-recovery",
     "mixed-version-upgrade-rollback",
@@ -24,6 +26,7 @@
     "bootstrap-archive-monitoring-across-independent-failure-domains",
     "target-hardware-state-v2-scale-and-recovery-measurements",
     "independent-consensus-cryptography-network-audit-and-retest",
+    "independent-mining-contention-target-calibration-and-retest",
     "sustained-independent-operator-internet-adversarial-soak",
     "production-hsm-or-audited-signer-custody-and-cross-host-rotation",
     "multi-region-disaster-recovery-and-incident-drills",
@@ -33,12 +36,13 @@
   "mainnetOnlyUnresolvedDecisions": [
     "immutable-mainnet-chain-id",
     "immutable-mainnet-genesis-allocation",
+    "mining-difficulty-retarget-and-final-mainnet-calibration",
     "validator-reward-inflation-and-fee-policy",
     "activity-oracle-production-governance",
     "validator-admission-removal-governance"
   ],
   "architectureDecisionsNotImplicitlyChanged": [
     "current-permissioned-poa-bft-consensus",
-    "no-autonomous-pow-mining-redesign"
+    "proof-of-work-is-issuance-only-not-chain-selection"
   ]
 }
