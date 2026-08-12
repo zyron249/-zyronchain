@@ -86,6 +86,11 @@ export interface SigningJournalCompactionFaultHooks {
   afterRename?: () => void | Promise<void>;
 }
 
+export interface SigningJournalOpenFaultHooks {
+  afterFileSync?: () => void | Promise<void>;
+  afterDirectorySync?: () => void | Promise<void>;
+}
+
 export class NodeDataDirectoryLease {
   private closed = false;
   private constructor(private readonly database: Database.Database) {}
@@ -731,39 +736,47 @@ export class SigningJournal {
     private readonly leaseDatabase: Database.Database
   ) {}
 
-  static async open(dataDir: string): Promise<SigningJournal> {
+  static async open(
+    dataDir: string,
+    faultHooks: SigningJournalOpenFaultHooks = {}
+  ): Promise<SigningJournal> {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     const leaseDatabase = acquireSigningJournalLease(join(dataDir, "signing-journal.lock.sqlite"));
     const journal = new SigningJournal(join(dataDir, "signing-journal.ndjson"), leaseDatabase);
     try {
-      for await (const line of readLines(journal.path)) {
-        if (!line.trim()) continue;
-        if (Buffer.byteLength(line, "utf8") > MAX_SIGNING_LINE_BYTES) throw new Error("Corrupt signing journal");
-        const parsed = JSON.parse(line) as Record<string, unknown>;
-        if (!Number.isSafeInteger(parsed.height) || !Number.isSafeInteger(parsed.round) ||
-            (parsed.kind !== "attest" && parsed.kind !== "skip") ||
-            typeof parsed.value !== "string" || !/^[0-9a-f]{64}$/.test(parsed.value)) {
-          throw new Error("Corrupt signing journal entry");
-        }
-        const key = `${parsed.height}:${parsed.round}`;
-        const reservation = `${parsed.kind}:${parsed.value}`;
-        const previous = journal.reservations.get(key);
-        if (previous && previous !== reservation) throw new Error("Conflicting signing journal history");
-        journal.reservations.set(key, reservation);
-      }
-    } catch (error) {
-      if (!isMissingFile(error)) {
-        journal.close();
-        throw error;
-      }
       try {
-        await writeFile(journal.path, "", { flag: "wx", mode: 0o600 });
-      } catch (createError) {
-        journal.close();
-        throw createError;
+        for await (const line of readLines(journal.path)) {
+          if (!line.trim()) continue;
+          if (Buffer.byteLength(line, "utf8") > MAX_SIGNING_LINE_BYTES) throw new Error("Corrupt signing journal");
+          const parsed = JSON.parse(line) as Record<string, unknown>;
+          if (!Number.isSafeInteger(parsed.height) || !Number.isSafeInteger(parsed.round) ||
+              (parsed.kind !== "attest" && parsed.kind !== "skip") ||
+              typeof parsed.value !== "string" || !/^[0-9a-f]{64}$/.test(parsed.value)) {
+            throw new Error("Corrupt signing journal entry");
+          }
+          const key = `${parsed.height}:${parsed.round}`;
+          const reservation = `${parsed.kind}:${parsed.value}`;
+          const previous = journal.reservations.get(key);
+          if (previous && previous !== reservation) throw new Error("Conflicting signing journal history");
+          journal.reservations.set(key, reservation);
+        }
+      } catch (error) {
+        if (!isMissingFile(error)) throw error;
+        const handle = await open(journal.path, "wx", 0o600);
+        try {
+          await handle.sync();
+          await faultHooks.afterFileSync?.();
+        } finally {
+          await handle.close();
+        }
       }
+      await syncDirectory(dirname(journal.path));
+      await faultHooks.afterDirectorySync?.();
+      return journal;
+    } catch (error) {
+      journal.close();
+      throw new Error("Signing journal initialization persistence failed", { cause: error });
     }
-    return journal;
   }
 
   get persistenceHealthy(): boolean {
