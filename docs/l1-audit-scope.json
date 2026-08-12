@@ -61,6 +61,7 @@
     "docs/STANDALONE_L1_READINESS.md",
     "docs/L1_CI_EVIDENCE.md",
     "docs/L1_KEY_ROTATION_REHEARSAL.md",
+    "docs/SIGNING_JOURNAL_COMPACTION.md",
     "docs/L1_EXTERNAL_AUDIT_PACKAGE.md",
     "docs/L1_PRIVATE_TESTNET_PREFLIGHT.md",
     "docs/L1_MAINTAINER_SUCCESSION.md",
@@ -96,6 +97,11 @@
       "id": "SIGN-001",
       "statement": "Validator signing reserves durable anti-equivocation state before local or remote signing output is requested.",
       "primaryModules": ["l1/src/storage.ts", "l1/src/node.ts", "l1/src/node-base.ts", "l1/src/validator-signer.ts"]
+    },
+    {
+      "id": "SIGN-002",
+      "statement": "Signing-journal compaction removes only reservations at or below the durably finalized height and atomically persists retained reservations before reducing in-memory anti-equivocation state; persistence ambiguity fail-stops validator signing.",
+      "primaryModules": ["l1/src/storage.ts", "l1/src/node-base.ts"]
     },
     {
       "id": "CHAIN-001",
