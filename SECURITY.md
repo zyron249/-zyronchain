@@ -24,6 +24,8 @@ Target response times are engineering goals, not guarantees: acknowledge a credi
 
 Authenticated peer-request replay protection is a security boundary, not a best-effort cache. Accepted signed request nonces remain remembered for the allowed replay window. The implementation uses a bounded replay cache and **fails closed for unseen authenticated peer requests if that cache reaches capacity after expiry sweeping**; it must never evict an unexpired accepted nonce merely to admit newer traffic, because eviction would reopen replay acceptance inside the timestamp window. Capacity saturation may therefore sacrifice short-term peer liveness in preference to replay safety.
 
+Replay-cache expiry cleanup is amortized at the authentication boundary. Ordinary authenticated requests arriving before the earliest tracked nonce can expire do not rescan the full replay cache. Once the earliest expiry boundary is reached, expired entries are reclaimed and the next sweep deadline is recomputed. This preserves the full replay window and fail-closed saturation behavior while preventing the bounded cache from becoming a request-amplified O(n) CPU surface.
+
 ## Native P2P admission work
 
 Native P2P peer-rate state is cardinality-bounded and fails closed for unseen identities while capacity is full. Expired entries are reclaimed without evicting unexpired peers. Expiry cleanup on this hot path is also amortized: ordinary requests and rotating identities that arrive before the earliest possible expiry do not trigger a full tracked-peer scan on every admission decision. This prevents bounded memory from becoming an avoidable request-amplified CPU surface while preserving the existing fixed-window quotas and fail-closed capacity behavior.
