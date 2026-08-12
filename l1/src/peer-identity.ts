@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -72,9 +72,21 @@ export async function loadOrCreateNodeIdentity(dataDir: string): Promise<NodeIde
   const privateKey = generatePrivateKey();
   const publicKey = publicKeyFromPrivate(privateKey);
   const identity: NodeIdentity = { version: 1, nodeId: nodeIdFromPublicKey(publicKey), publicKey, privateKey };
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    await writeFile(path, `${canonicalJson(identity)}\n`, { flag: "wx", mode: 0o600 });
+    handle = await open(path, "wx", 0o600);
+    await handle.writeFile(`${canonicalJson(identity)}\n`, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    const directory = await open(dataDir, "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
   } catch (error) {
+    await handle?.close().catch(() => undefined);
     if (!isAlreadyExists(error)) throw error;
     return parseNodeIdentity(await readFile(path, "utf8"));
   }
