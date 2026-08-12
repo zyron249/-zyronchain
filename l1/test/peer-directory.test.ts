@@ -75,3 +75,20 @@ test("peer directory expires records before capacity admission", () => {
   assert.equal(directory.size, 1);
   assert.equal(directory.list(1, now + 60_002)[0]?.nodeId, second.nodeId);
 });
+
+test("peer directory uses the signed-record exact expiry boundary", () => {
+  const now = 1_800_000_300_000;
+  const directory = new PeerDirectory(expected, { maxRecords: 1 });
+  const first = identity();
+  const second = identity();
+  const firstRecord = record(first, now, "https://old.example:9137");
+
+  directory.admit(firstRecord, now + 1);
+  assert.equal(directory.list(1, firstRecord.expiresAtMs - 1)[0]?.nodeId, first.nodeId);
+  assert.equal(directory.list(1, firstRecord.expiresAtMs).length, 0);
+  assert.equal(directory.size, 0);
+
+  const secondRecord = record(second, firstRecord.expiresAtMs, "https://new.example:9137");
+  assert.equal(directory.admit(secondRecord, firstRecord.expiresAtMs + 1), true);
+  assert.equal(directory.list(1, firstRecord.expiresAtMs + 1)[0]?.nodeId, second.nodeId);
+});
