@@ -33,6 +33,8 @@ Useful options:
 
 The miner decrypts and signs locally. It never uploads the private key or password. Remote RPC must use HTTPS; plaintext HTTP is accepted only for loopback.
 
+Before hashing, the miner reconstructs the canonical genesis hash from the supplied genesis file and requires both the RPC chain ID and RPC genesis hash to match exactly. The same identity check is repeated while mining, so an endpoint that switches to a different network fails closed instead of silently wasting work.
+
 Mining work is bound to the chain ID, miner account nonce/address/public key, next block height, previous finalized block hash and deterministic reward. A tip change invalidates old work.
 
 ## Important limitation
