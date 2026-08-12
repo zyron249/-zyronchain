@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { SigningJournal } from "../src/storage.js";
+import { assertSigningJournalDurabilitySupported, SigningJournal } from "../src/storage.js";
 
 const hash = (byte: string) => byte.repeat(64);
 
@@ -17,18 +17,27 @@ async function withDirectory(name: string, run: (directory: string) => Promise<v
   }
 }
 
-test("new signing journal is owner-only and can durably replay a reservation", async () => {
+test("validator journal durability fails closed on platforms without directory fsync", () => {
+  assert.throws(
+    () => assertSigningJournalDurabilitySupported("win32"),
+    /requires POSIX directory fsync/
+  );
+  assert.doesNotThrow(() => assertSigningJournalDurabilitySupported("linux"));
+  assert.doesNotThrow(() => assertSigningJournalDurabilitySupported("darwin"));
+});
+
+test("new signing journal is owner-only and can durably replay a reservation", async (context) => {
+  if (process.platform === "win32") return context.skip("validator journal durability intentionally fails closed on Windows");
   await withDirectory("journal-init", async (directory) => {
-    const journal = await SigningJournal.open(directory);
+    const nested = join(directory, "new", "validator", "data");
+    const journal = await SigningJournal.open(nested);
     await journal.reserveAttestation(1, 0, hash("a"));
     journal.close();
 
-    if (process.platform !== "win32") {
-      const metadata = await stat(join(directory, "signing-journal.ndjson"));
-      assert.equal(metadata.mode & 0o777, 0o600);
-    }
+    const metadata = await stat(join(nested, "signing-journal.ndjson"));
+    assert.equal(metadata.mode & 0o777, 0o600);
 
-    const reopened = await SigningJournal.open(directory);
+    const reopened = await SigningJournal.open(nested);
     try {
       await assert.rejects(
         reopened.reserveSkip(1, 0, hash("b")),
@@ -40,18 +49,20 @@ test("new signing journal is owner-only and can durably replay a reservation", a
   });
 });
 
-test("signing journal open fails closed when initial directory publication is interrupted", async () => {
+test("signing journal open fails closed when initial ancestry publication is interrupted", async (context) => {
+  if (process.platform === "win32") return context.skip("validator journal durability intentionally fails closed on Windows");
   await withDirectory("journal-init-fault", async (directory) => {
+    const nested = join(directory, "new", "validator");
     await assert.rejects(
-      SigningJournal.open(directory, {
+      SigningJournal.open(nested, {
         afterFileSync: () => { throw new Error("inject-after-file-sync"); }
       }),
       /Signing journal initialization persistence failed/
     );
 
-    assert.equal(await readFile(join(directory, "signing-journal.ndjson"), "utf8"), "");
+    assert.equal(await readFile(join(nested, "signing-journal.ndjson"), "utf8"), "");
 
-    const recovered = await SigningJournal.open(directory);
+    const recovered = await SigningJournal.open(nested);
     try {
       await recovered.reserveAttestation(1, 0, hash("c"));
     } finally {
@@ -60,7 +71,8 @@ test("signing journal open fails closed when initial directory publication is in
   });
 });
 
-test("existing signing journal is directory-synced before open returns", async () => {
+test("existing signing journal crosses the full directory durability boundary before open returns", async (context) => {
+  if (process.platform === "win32") return context.skip("validator journal durability intentionally fails closed on Windows");
   await withDirectory("journal-existing-sync", async (directory) => {
     const initial = await SigningJournal.open(directory);
     await initial.reserveAttestation(2, 0, hash("d"));
