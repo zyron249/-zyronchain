@@ -38,27 +38,27 @@ if (heroSymbol && !heroSymbol.querySelector('[data-hologram-stage]')) {
   }
 
   heroSymbol.classList.add('hologram-host');
+
   const stage = document.createElement('div');
   stage.className = 'hologram-stage';
   stage.dataset.hologramStage = '';
   stage.setAttribute('role', 'img');
-  stage.setAttribute('aria-label', 'ZyronChain holographic network artwork');
+  stage.setAttribute('aria-label', 'Rotating Zyron currency symbol');
 
-  const rotor = document.createElement('div');
-  rotor.className = 'hologram-rotor';
+  const coin = document.createElement('div');
+  coin.className = 'zyron-coin';
 
-  const card = document.createElement('div');
-  card.className = 'hologram-card';
+  const makeFace = (className) => {
+    const face = document.createElement('div');
+    face.className = className;
+    const mark = document.createElement('span');
+    mark.className = 'zyron-mark';
+    mark.setAttribute('aria-hidden', 'true');
+    face.appendChild(mark);
+    return face;
+  };
 
-  const image = document.createElement('img');
-  image.src = './zyron-hologram.webp';
-  image.alt = '';
-  image.width = 320;
-  image.height = 320;
-  image.decoding = 'async';
-  image.fetchPriority = 'high';
-  card.appendChild(image);
-  rotor.appendChild(card);
+  coin.append(makeFace('zyron-coin-face'), makeFace('zyron-coin-back'));
 
   const base = document.createElement('div');
   base.className = 'hologram-base';
@@ -68,7 +68,7 @@ if (heroSymbol && !heroSymbol.querySelector('[data-hologram-stage]')) {
   label.className = 'hologram-label';
   label.textContent = 'ZyronChain · Verifiable Layer-1';
 
-  stage.append(rotor, base, label);
+  stage.append(coin, base, label);
   heroSymbol.replaceChildren(stage);
 
   const hologramReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -80,7 +80,7 @@ if (heroSymbol && !heroSymbol.querySelector('[data-hologram-stage]')) {
         const bounds = stage.getBoundingClientRect();
         const x = ((event.clientX - bounds.left) / Math.max(1, bounds.width)) - 0.5;
         const y = ((event.clientY - bounds.top) / Math.max(1, bounds.height)) - 0.5;
-        stage.style.transform = `rotateX(${(-y * 4).toFixed(2)}deg) rotateY(${(x * 4).toFixed(2)}deg)`;
+        stage.style.transform = `rotateX(${(-y * 3).toFixed(2)}deg) rotateY(${(x * 3).toFixed(2)}deg)`;
       });
     }, { passive: true });
     stage.addEventListener('pointerleave', () => {
