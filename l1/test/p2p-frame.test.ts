@@ -45,6 +45,25 @@ test("native frame decoder fails closed on oversized, truncated and trailing dat
   await assert.rejects(() => readP2PFrame(fakeReadableStream([trailing]), 1_024, 1_000), /Trailing bytes/);
 });
 
+test("native frame decoder rejects allocation-amplifying transport chunks before budget reservation", async () => {
+  const maxBytes = 1_024;
+  const budget = new P2PFrameByteBudget(maxBytes);
+  const chunk = Buffer.alloc(maxBytes + 5);
+  chunk.writeUInt32BE(1, 0);
+  chunk[4] = 0x7b;
+
+  await assert.rejects(
+    () => readP2PFrameRetained(fakeReadableStream([chunk]), maxBytes, 1_000, budget),
+    /transport chunk exceeds frame limit/
+  );
+  assert.deepEqual(budget.metrics(), {
+    bytesInUse: 0,
+    maxBytes,
+    peakBytesInUse: 0,
+    rejectedFrames: 0
+  });
+});
+
 test("native frame decoder bounds aggregate retained body bytes and recovers capacity", async () => {
   const budget = new P2PFrameByteBudget(8);
   const header = Buffer.alloc(4);
