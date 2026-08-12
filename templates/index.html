@@ -1,422 +1,151 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ZyronChain Explorer</title>
-
     <style>
-        body {
-            background: #0f172a;
-            color: #e5e7eb;
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 20px;
-        }
-
-        .container {
-            max-width: 1200px;
-            margin: auto;
-        }
-
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-
-        .card {
-            background: #111827;
-            border: 1px solid #334155;
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 16px;
-        }
-
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 14px;
-            margin-bottom: 16px;
-        }
-
-        .stat-card {
-            background: #111827;
-            border: 1px solid #334155;
-            border-radius: 12px;
-            padding: 16px;
-        }
-
-        .stat-card h3 {
-            margin: 0;
-            color: #94a3b8;
-            font-size: 14px;
-        }
-
-        .stat-card p {
-            font-size: 24px;
-            font-weight: bold;
-            margin: 10px 0 0 0;
-        }
-
-        .buttons a {
-            display: inline-block;
-            background: #2563eb;
-            color: white;
-            padding: 10px 14px;
-            border-radius: 8px;
-            text-decoration: none;
-            margin: 5px;
-        }
-
-        .buttons a:hover {
-            background: #1d4ed8;
-        }
-
-        .hash {
-            word-break: break-all;
-            color: #93c5fd;
-        }
-
-        .success {
-            color: #22c55e;
-        }
-
-        .danger {
-            color: #ef4444;
-        }
-
-        pre {
-            white-space: pre-wrap;
-            word-break: break-word;
-        }
-
-        input {
-            width: 75%;
-            padding: 12px;
-            border-radius: 8px;
-            border: none;
-            margin-right: 8px;
-            font-size: 15px;
-        }
-
-        button {
-            padding: 12px 16px;
-            border: none;
-            border-radius: 8px;
-            background: #2563eb;
-            color: white;
-            cursor: pointer;
-            font-size: 15px;
-        }
-
-        button:hover {
-            background: #1d4ed8;
-        }
-
-        a {
-            color: #60a5fa;
-            text-decoration: none;
-        }
-
-        a:hover {
-            text-decoration: underline;
-        }
-
-        .small {
-            color: #94a3b8;
-            font-size: 14px;
-        }
-
-        .table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-        }
-
-        .table th,
-        .table td {
-            border-bottom: 1px solid #334155;
-            padding: 10px;
-            text-align: left;
-            vertical-align: top;
-        }
-
-        .table th {
-            color: #94a3b8;
-        }
-
-        .short {
-            max-width: 180px;
-            word-break: break-all;
-        }
+        :root{color-scheme:dark;--bg:#08111f;--panel:#0f1b2d;--panel2:#132238;--line:#253a56;--text:#e7eef8;--muted:#91a4bd;--accent:#4f9cff;--good:#31d17c;--bad:#ff6b6b}
+        *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#102746 0,#08111f 42%);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.45}.container{width:min(1180px,calc(100% - 32px));margin:0 auto;padding:34px 0 56px}.header{text-align:center;margin-bottom:28px}.header h1{font-size:clamp(2rem,5vw,3.3rem);margin:.15em 0}.header p{color:var(--muted);margin:.2rem 0 1rem}.buttons{display:flex;flex-wrap:wrap;justify-content:center;gap:8px}.buttons a,button{border:1px solid #3b69a3;background:#153c69;color:#fff;padding:10px 14px;border-radius:10px;text-decoration:none;font:inherit;cursor:pointer}.buttons a:hover,button:hover{background:#1d4f86}.card,.stat-card{background:linear-gradient(180deg,rgba(19,34,56,.96),rgba(12,24,41,.96));border:1px solid var(--line);border-radius:16px;box-shadow:0 18px 50px rgba(0,0,0,.2)}.card{padding:18px;margin-bottom:16px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:16px}.stat-card{padding:16px}.stat-card h3{margin:0;color:var(--muted);font-size:.78rem;letter-spacing:.08em;text-transform:uppercase}.stat-card p{font-size:1.55rem;font-weight:750;margin:8px 0 0}.hash,.short{word-break:break-all}.hash,a{color:#82baff}.success{color:var(--good)}.danger{color:var(--bad)}.small{color:var(--muted);font-size:.88rem}.search-form{display:flex;gap:8px}.search-form input{flex:1;min-width:0;background:#081525;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:12px;font:inherit}.table-wrap{overflow-x:auto}.table{width:100%;border-collapse:collapse;font-size:.9rem}.table th,.table td{border-bottom:1px solid var(--line);padding:10px;text-align:left;vertical-align:top}.table th{color:var(--muted);font-size:.76rem;text-transform:uppercase;letter-spacing:.06em}.short{max-width:190px}pre{white-space:pre-wrap;word-break:break-word;color:#cbd9ea}@media(max-width:640px){.container{width:min(100% - 20px,1180px);padding-top:22px}.search-form{flex-direction:column}.buttons a{flex:1 1 120px}.card{padding:14px}}
     </style>
 </head>
-
 <body>
-
 <div class="container">
+    <header class="header">
+        <h1>ZyronChain Explorer</h1>
+        <p>Historical Python testnet explorer</p>
+        <nav class="buttons" aria-label="Explorer navigation">
+            <a href="/wallet">Web Wallet</a><a href="/stats">Stats</a><a href="/richlist">Rich List</a><a href="/latest-transactions">Latest TX</a><a href="/miners">Miners</a><a href="/network">Network</a><a href="/health">Health</a><a href="/mempool">Mempool</a><a href="/nodes">Nodes</a><a href="/api">API</a>
+        </nav>
+    </header>
 
-    <div class="header">
-        <h1>🚀 ZyronChain Explorer</h1>
-        <p>Live Blockchain Explorer for ZyronChain</p>
-
-        <div class="buttons">
-            <a href="/wallet">Web Wallet</a>
-            <a href="/stats">Stats</a>
-            <a href="/richlist">Rich List</a>
-            <a href="/latest-transactions">Latest TX</a>
-            <a href="/miners">Miners</a>
-            <a href="/network">Network</a>
-            <a href="/health">Health</a>
-            <a href="/mempool">Mempool</a>
-            <a href="/nodes">Nodes</a>
-            <a href="/api">API</a>
-        </div>
-    </div>
-
-    <div class="card">
-        <h2>🔍 Search Blockchain</h2>
-
-        <form onsubmit="searchExplorer(); return false;">
-            <input
-                id="searchInput"
-                type="text"
-                placeholder="Search block number, TXID, or ZYN address..."
-            >
+    <section class="card">
+        <h2>Search Blockchain</h2>
+        <form class="search-form" id="explorerSearch">
+            <input id="searchInput" type="text" autocomplete="off" placeholder="Search block number, TXID, or ZYN address..." aria-label="Blockchain search">
             <button type="submit">Search</button>
         </form>
+        <p class="small">Examples: block <b>15</b>, <b>ZYN...</b>, or a transaction hash.</p>
+    </section>
 
-        <p class="small">
-            Examples: <b>15</b>, <b>ZYN...</b>, or transaction hash
-        </p>
-    </div>
+    <section class="grid" aria-label="Explorer statistics">
+        <div class="stat-card"><h3>Total Blocks</h3><p>{{ total_blocks }}</p></div>
+        <div class="stat-card"><h3>Pending TX</h3><p>{{ pending_transactions }}</p></div>
+        <div class="stat-card"><h3>Difficulty</h3><p>{{ difficulty }}</p></div>
+        <div class="stat-card"><h3>Peers</h3><p>{{ peers }}</p></div>
+        <div class="stat-card"><h3>Mining Reward</h3><p>{{ mining_reward }} ZYN</p></div>
+        <div class="stat-card"><h3>Chain Valid</h3><p class="success">{{ valid }}</p></div>
+    </section>
 
-    <div class="grid">
-        <div class="stat-card">
-            <h3>Total Blocks</h3>
-            <p id="statBlocks">{{ total_blocks }}</p>
-        </div>
+    <section class="grid">
+        <div class="card"><h2>Supply</h2><p>Total Supply: <b id="totalSupply">Loading...</b></p><p>Remaining Supply: <b id="remainingSupply">Loading...</b></p><p>Max Supply: <b id="maxSupply">50,000,000</b></p><p>Next Halving Block: <b id="nextHalving">Loading...</b></p></div>
+        <div class="card"><h2>Network</h2><p>Height: <b id="networkHeight">Loading...</b></p><p>Average Block Time: <b id="avgBlockTime">Loading...</b></p><p>Total Transactions: <b id="totalTx">Loading...</b></p><p>Total Addresses: <b id="totalAddresses">Loading...</b></p></div>
+    </section>
 
-        <div class="stat-card">
-            <h3>Pending TX</h3>
-            <p id="statPending">{{ pending_transactions }}</p>
-        </div>
+    <section class="card"><h2>Latest Transactions</h2><div class="table-wrap"><table class="table"><thead><tr><th>TXID</th><th>Block</th><th>From</th><th>To</th><th>Amount</th></tr></thead><tbody id="latestTxBody"><tr><td colspan="5">Loading...</td></tr></tbody></table></div></section>
 
-        <div class="stat-card">
-            <h3>Difficulty</h3>
-            <p id="statDifficulty">{{ difficulty }}</p>
-        </div>
+    <section class="grid">
+        <div class="card"><h2>Rich List</h2><div class="table-wrap"><table class="table"><thead><tr><th>Address</th><th>Balance</th></tr></thead><tbody id="richListBody"><tr><td colspan="2">Loading...</td></tr></tbody></table></div></div>
+        <div class="card"><h2>Mining Leaderboard</h2><div class="table-wrap"><table class="table"><thead><tr><th>Miner</th><th>Blocks</th><th>Rewards</th></tr></thead><tbody id="minersBody"><tr><td colspan="3">Loading...</td></tr></tbody></table></div></div>
+    </section>
 
-        <div class="stat-card">
-            <h3>Peers</h3>
-            <p id="statPeers">{{ peers }}</p>
-        </div>
-
-        <div class="stat-card">
-            <h3>Mining Reward</h3>
-            <p id="statReward">{{ mining_reward }} ZYN</p>
-        </div>
-
-        <div class="stat-card">
-            <h3>Chain Valid</h3>
-            <p id="statValid" class="success">{{ valid }}</p>
-        </div>
-    </div>
-
-    <div class="grid">
-        <div class="card">
-            <h2>📊 Supply</h2>
-            <p>Total Supply: <b id="totalSupply">Loading...</b></p>
-            <p>Remaining Supply: <b id="remainingSupply">Loading...</b></p>
-            <p>Max Supply: <b id="maxSupply">50,000,000</b></p>
-            <p>Next Halving Block: <b id="nextHalving">Loading...</b></p>
-        </div>
-
-        <div class="card">
-            <h2>🌐 Network</h2>
-            <p>Height: <b id="networkHeight">Loading...</b></p>
-            <p>Average Block Time: <b id="avgBlockTime">Loading...</b></p>
-            <p>Total Transactions: <b id="totalTx">Loading...</b></p>
-            <p>Total Addresses: <b id="totalAddresses">Loading...</b></p>
-        </div>
-    </div>
-
-    <div class="card">
-        <h2>🧾 Latest Transactions</h2>
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>TXID</th>
-                    <th>Block</th>
-                    <th>From</th>
-                    <th>To</th>
-                    <th>Amount</th>
-                </tr>
-            </thead>
-            <tbody id="latestTxBody">
-                <tr><td colspan="5">Loading...</td></tr>
-            </tbody>
-        </table>
-    </div>
-
-    <div class="grid">
-        <div class="card">
-            <h2>🏆 Rich List</h2>
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th>Address</th>
-                        <th>Balance</th>
-                    </tr>
-                </thead>
-                <tbody id="richListBody">
-                    <tr><td colspan="2">Loading...</td></tr>
-                </tbody>
-            </table>
-        </div>
-
-        <div class="card">
-            <h2>⛏ Mining Leaderboard</h2>
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th>Miner</th>
-                        <th>Blocks</th>
-                        <th>Rewards</th>
-                    </tr>
-                </thead>
-                <tbody id="minersBody">
-                    <tr><td colspan="3">Loading...</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <h2>⛓ Latest Blocks</h2>
-
+    <h2>Latest Blocks</h2>
     {% for block in blocks|reverse %}
-
-    <div class="card">
-        <h3>
-            <a href="/block/{{ block.index }}">
-                Block #{{ block.index }}
-            </a>
-        </h3>
-
-        <p><b>Hash:</b></p>
-        <p class="hash">{{ block.hash }}</p>
-
-        <p><b>Previous Hash:</b></p>
-        <p class="hash">{{ block.previous_hash }}</p>
-
-        <p><b>Transactions:</b></p>
-        <pre>{{ block.transactions }}</pre>
-    </div>
-
+    <article class="card">
+        <h3><a href="/block/{{ block.index }}">Block #{{ block.index }}</a></h3>
+        <p><b>Hash:</b></p><p class="hash">{{ block.hash }}</p>
+        <p><b>Previous Hash:</b></p><p class="hash">{{ block.previous_hash }}</p>
+        <p><b>Transactions:</b></p><pre>{{ block.transactions }}</pre>
+    </article>
     {% endfor %}
-
 </div>
-
 <script>
-function searchExplorer() {
-    const value = document.getElementById("searchInput").value.trim();
+const byId = (id) => document.getElementById(id);
+const safeText = (value) => value == null ? '' : String(value);
+const shortText = (value, length = 12) => {
+    const text = safeText(value);
+    return text.length <= length ? text : `${text.slice(0, length)}...`;
+};
+const route = (prefix, value) => `${prefix}${encodeURIComponent(safeText(value))}`;
+const clear = (node) => node.replaceChildren();
+const cell = (text, className = '') => {
+    const td = document.createElement('td');
+    if (className) td.className = className;
+    td.textContent = safeText(text);
+    return td;
+};
+const linkCell = (text, href, className = '') => {
+    const td = document.createElement('td');
+    if (className) td.className = className;
+    const link = document.createElement('a');
+    link.href = href;
+    link.textContent = safeText(text);
+    td.appendChild(link);
+    return td;
+};
+const emptyRow = (tbody, columns, message) => {
+    const tr = document.createElement('tr');
+    const td = cell(message);
+    td.colSpan = columns;
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+};
 
-    if (!value) {
-        alert("Please enter block number, TXID, or address");
-        return;
-    }
-
-    if (/^\d+$/.test(value)) {
-        window.location.href = "/block/" + value;
-        return;
-    }
-
-    if (value.startsWith("ZYN")) {
-        window.location.href = "/address/" + value;
-        return;
-    }
-
-    window.location.href = "/tx/" + value;
-}
-
-function shortText(value, length = 12) {
-    if (!value) return "";
-    if (value.length <= length) return value;
-    return value.slice(0, length) + "...";
-}
+byId('explorerSearch').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const value = byId('searchInput').value.trim();
+    if (!value) return;
+    if (/^\d+$/.test(value)) window.location.assign(route('/block/', value));
+    else if (value.startsWith('ZYN')) window.location.assign(route('/address/', value));
+    else window.location.assign(route('/tx/', value));
+});
 
 async function loadExplorerSummary() {
     try {
-        const res = await fetch("/explorer-summary");
-        const data = await res.json();
+        const response = await fetch('/explorer-summary', {headers: {'Accept': 'application/json'}});
+        if (!response.ok) throw new Error(`Explorer summary HTTP ${response.status}`);
+        const data = await response.json();
+        const supply = data.supply || {};
+        byId('totalSupply').textContent = `${safeText(supply.total_supply)} ZYN`;
+        byId('remainingSupply').textContent = `${safeText(supply.remaining_supply)} ZYN`;
+        byId('maxSupply').textContent = `${safeText(supply.max_supply)} ZYN`;
+        byId('nextHalving').textContent = safeText(supply.next_halving_block);
+        byId('networkHeight').textContent = safeText(data.current_block_height);
+        byId('avgBlockTime').textContent = `${safeText(data.average_block_time_seconds)} sec`;
+        byId('totalTx').textContent = safeText(data.total_transactions);
+        byId('totalAddresses').textContent = safeText(data.total_addresses);
 
-        document.getElementById("totalSupply").textContent = data.supply.total_supply + " ZYN";
-        document.getElementById("remainingSupply").textContent = data.supply.remaining_supply + " ZYN";
-        document.getElementById("maxSupply").textContent = data.supply.max_supply + " ZYN";
-        document.getElementById("nextHalving").textContent = data.supply.next_halving_block;
-
-        document.getElementById("networkHeight").textContent = data.current_block_height;
-        document.getElementById("avgBlockTime").textContent = data.average_block_time_seconds + " sec";
-        document.getElementById("totalTx").textContent = data.total_transactions;
-        document.getElementById("totalAddresses").textContent = data.total_addresses;
-
-        const latestTxBody = document.getElementById("latestTxBody");
-        latestTxBody.innerHTML = "";
-
-        if (!data.latest_transactions || data.latest_transactions.length === 0) {
-            latestTxBody.innerHTML = "<tr><td colspan='5'>No transactions yet.</td></tr>";
-        } else {
-            data.latest_transactions.forEach(tx => {
-                latestTxBody.innerHTML += `
-                    <tr>
-                        <td class="short"><a href="/tx/${tx.txid}">${shortText(tx.txid)}</a></td>
-                        <td><a href="/block/${tx.block_index}">${tx.block_index}</a></td>
-                        <td class="short">${shortText(tx.sender)}</td>
-                        <td class="short">${shortText(tx.receiver)}</td>
-                        <td>${tx.amount}</td>
-                    </tr>
-                `;
-            });
+        const latest = byId('latestTxBody');
+        clear(latest);
+        if (!Array.isArray(data.latest_transactions) || data.latest_transactions.length === 0) emptyRow(latest, 5, 'No transactions yet.');
+        else for (const tx of data.latest_transactions) {
+            const tr = document.createElement('tr');
+            tr.append(linkCell(shortText(tx.txid), route('/tx/', tx.txid), 'short'), linkCell(safeText(tx.block_index), route('/block/', tx.block_index)), cell(shortText(tx.sender), 'short'), cell(shortText(tx.receiver), 'short'), cell(tx.amount));
+            latest.appendChild(tr);
         }
 
-        const richListBody = document.getElementById("richListBody");
-        richListBody.innerHTML = "";
-
-        if (!data.rich_list || data.rich_list.length === 0) {
-            richListBody.innerHTML = "<tr><td colspan='2'>No addresses yet.</td></tr>";
-        } else {
-            data.rich_list.forEach(item => {
-                richListBody.innerHTML += `
-                    <tr>
-                        <td class="short"><a href="/address/${item.address}">${shortText(item.address, 18)}</a></td>
-                        <td>${item.balance} ZYN</td>
-                    </tr>
-                `;
-            });
+        const rich = byId('richListBody');
+        clear(rich);
+        if (!Array.isArray(data.rich_list) || data.rich_list.length === 0) emptyRow(rich, 2, 'No addresses yet.');
+        else for (const item of data.rich_list) {
+            const tr = document.createElement('tr');
+            tr.append(linkCell(shortText(item.address, 18), route('/address/', item.address), 'short'), cell(`${safeText(item.balance)} ZYN`));
+            rich.appendChild(tr);
         }
 
-        const minersBody = document.getElementById("minersBody");
-        minersBody.innerHTML = "";
-
-        if (!data.mining_leaderboard || data.mining_leaderboard.length === 0) {
-            minersBody.innerHTML = "<tr><td colspan='3'>No miners yet.</td></tr>";
-        } else {
-            data.mining_leaderboard.forEach(miner => {
-                minersBody.innerHTML += `
-                    <tr>
-                        <td class="short"><a href="/address/${miner.address}">${shortText(miner.address, 18)}</a></td>
-                        <td>${miner.blocks_mined}</td>
-                        <td>${miner.total_rewards} ZYN</td>
-                    </tr>
-                `;
-            });
+        const miners = byId('minersBody');
+        clear(miners);
+        if (!Array.isArray(data.mining_leaderboard) || data.mining_leaderboard.length === 0) emptyRow(miners, 3, 'No miners yet.');
+        else for (const miner of data.mining_leaderboard) {
+            const tr = document.createElement('tr');
+            tr.append(linkCell(shortText(miner.address, 18), route('/address/', miner.address), 'short'), cell(miner.blocks_mined), cell(`${safeText(miner.total_rewards)} ZYN`));
+            miners.appendChild(tr);
         }
-
     } catch (error) {
-        console.error(error);
+        console.error('Explorer summary unavailable', error);
     }
 }
-
 loadExplorerSummary();
 </script>
-
 </body>
 </html>
