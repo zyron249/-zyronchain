@@ -43,7 +43,12 @@ export class PeerReputationStore {
   }
 
   isAvailable(endpoint: string, nowMs = Date.now()): boolean {
-    return (this.entries.get(normalizeEndpoint(endpoint))?.backoffUntilMs ?? 0) <= nowMs;
+    assertTimestamp(nowMs);
+    const normalized = normalizeEndpoint(endpoint);
+    const tracked = this.entries.get(normalized);
+    if (tracked) return tracked.backoffUntilMs <= nowMs;
+    if (this.entries.size < MAX_STORED_PEERS) return true;
+    return this.reclaimableEntry(nowMs) !== undefined;
   }
 
   failureCount(endpoint: string): number {
@@ -51,11 +56,13 @@ export class PeerReputationStore {
   }
 
   async recordFailure(endpoint: string, nowMs = Date.now()): Promise<number> {
+    assertTimestamp(nowMs);
     const normalized = normalizeEndpoint(endpoint);
     return this.exclusive(async () => {
       const previous = this.entries.get(normalized);
       const consecutiveFailures = Math.min(MAX_FAILURE_COUNT, (previous?.consecutiveFailures ?? 0) + 1);
       const backoffMs = failureBackoffMs(consecutiveFailures);
+      if (!previous && !this.ensureSlot(nowMs)) return backoffMs;
       this.entries.set(normalized, {
         endpoint: normalized,
         consecutiveFailures,
@@ -63,16 +70,17 @@ export class PeerReputationStore {
         lastFailureMs: nowMs,
         lastSuccessMs: previous?.lastSuccessMs ?? 0
       });
-      this.prune();
       await this.persist();
       return backoffMs;
     });
   }
 
   async recordSuccess(endpoint: string, nowMs = Date.now()): Promise<void> {
+    assertTimestamp(nowMs);
     const normalized = normalizeEndpoint(endpoint);
     await this.exclusive(async () => {
       const previous = this.entries.get(normalized);
+      if (!previous && !this.ensureSlot(nowMs)) return;
       this.entries.set(normalized, {
         endpoint: normalized,
         consecutiveFailures: 0,
@@ -80,7 +88,6 @@ export class PeerReputationStore {
         lastFailureMs: previous?.lastFailureMs ?? 0,
         lastSuccessMs: nowMs
       });
-      this.prune();
       await this.persist();
     });
   }
@@ -97,11 +104,21 @@ export class PeerReputationStore {
     }
   }
 
-  private prune(): void {
-    if (this.entries.size <= MAX_STORED_PEERS) return;
-    const oldest = [...this.entries.values()]
-      .sort((a, b) => Math.max(a.lastFailureMs, a.lastSuccessMs) - Math.max(b.lastFailureMs, b.lastSuccessMs));
-    for (const entry of oldest.slice(0, this.entries.size - MAX_STORED_PEERS)) this.entries.delete(entry.endpoint);
+  private ensureSlot(nowMs: number): boolean {
+    if (this.entries.size < MAX_STORED_PEERS) return true;
+    const reclaimable = this.reclaimableEntry(nowMs);
+    if (!reclaimable) return false;
+    this.entries.delete(reclaimable.endpoint);
+    return true;
+  }
+
+  private reclaimableEntry(nowMs: number): PeerReputationEntry | undefined {
+    let selected: PeerReputationEntry | undefined;
+    for (const entry of this.entries.values()) {
+      if (entry.backoffUntilMs > nowMs) continue;
+      if (!selected || compareEntryAge(entry, selected) < 0) selected = entry;
+    }
+    return selected;
   }
 
   private async persist(): Promise<void> {
@@ -124,6 +141,11 @@ export class PeerReputationStore {
 export function failureBackoffMs(consecutiveFailures: number): number {
   if (!Number.isSafeInteger(consecutiveFailures) || consecutiveFailures < 1) throw new Error("Invalid peer failure count");
   return Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * (2 ** Math.min(20, consecutiveFailures - 1)));
+}
+
+function compareEntryAge(a: PeerReputationEntry, b: PeerReputationEntry): number {
+  const byActivity = Math.max(a.lastFailureMs, a.lastSuccessMs) - Math.max(b.lastFailureMs, b.lastSuccessMs);
+  return byActivity !== 0 ? byActivity : a.endpoint.localeCompare(b.endpoint);
 }
 
 function validateSnapshot(value: unknown): PeerReputationSnapshot {
@@ -160,6 +182,10 @@ function normalizeEndpoint(value: string): string {
   }
   url.pathname = url.pathname.replace(/\/+$/, "");
   return url.toString().replace(/\/$/, "");
+}
+
+function assertTimestamp(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error("Invalid peer reputation timestamp");
 }
 
 function isMissingFile(error: unknown): boolean {
