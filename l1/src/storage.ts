@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { lstat, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import Database from "better-sqlite3";
 
@@ -89,6 +89,12 @@ export interface SigningJournalCompactionFaultHooks {
 export interface SigningJournalOpenFaultHooks {
   afterFileSync?: () => void | Promise<void>;
   afterDirectorySync?: () => void | Promise<void>;
+}
+
+export function assertSigningJournalDurabilitySupported(platform = process.platform): void {
+  if (platform === "win32") {
+    throw new Error("Crash-durable validator signing journal requires POSIX directory fsync");
+  }
 }
 
 export class NodeDataDirectoryLease {
@@ -727,6 +733,18 @@ async function syncDirectory(path: string): Promise<void> {
   }
 }
 
+async function syncDirectoryTree(path: string): Promise<void> {
+  const directories: string[] = [];
+  let current = resolve(path);
+  while (true) {
+    directories.push(current);
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  for (const directory of directories.reverse()) await syncDirectory(directory);
+}
+
 export class SigningJournal {
   private readonly reservations = new Map<string, string>();
   private persistenceFaulted = false;
@@ -740,28 +758,32 @@ export class SigningJournal {
     dataDir: string,
     faultHooks: SigningJournalOpenFaultHooks = {}
   ): Promise<SigningJournal> {
+    assertSigningJournalDurabilitySupported();
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     const leaseDatabase = acquireSigningJournalLease(join(dataDir, "signing-journal.lock.sqlite"));
     const journal = new SigningJournal(join(dataDir, "signing-journal.ndjson"), leaseDatabase);
     try {
-      try {
-        for await (const line of readLines(journal.path)) {
-          if (!line.trim()) continue;
-          if (Buffer.byteLength(line, "utf8") > MAX_SIGNING_LINE_BYTES) throw new Error("Corrupt signing journal");
-          const parsed = JSON.parse(line) as Record<string, unknown>;
-          if (!Number.isSafeInteger(parsed.height) || !Number.isSafeInteger(parsed.round) ||
-              (parsed.kind !== "attest" && parsed.kind !== "skip") ||
-              typeof parsed.value !== "string" || !/^[0-9a-f]{64}$/.test(parsed.value)) {
-            throw new Error("Corrupt signing journal entry");
-          }
-          const key = `${parsed.height}:${parsed.round}`;
-          const reservation = `${parsed.kind}:${parsed.value}`;
-          const previous = journal.reservations.get(key);
-          if (previous && previous !== reservation) throw new Error("Conflicting signing journal history");
-          journal.reservations.set(key, reservation);
+      for await (const line of readLines(journal.path)) {
+        if (!line.trim()) continue;
+        if (Buffer.byteLength(line, "utf8") > MAX_SIGNING_LINE_BYTES) throw new Error("Corrupt signing journal");
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        if (!Number.isSafeInteger(parsed.height) || !Number.isSafeInteger(parsed.round) ||
+            (parsed.kind !== "attest" && parsed.kind !== "skip") ||
+            typeof parsed.value !== "string" || !/^[0-9a-f]{64}$/.test(parsed.value)) {
+          throw new Error("Corrupt signing journal entry");
         }
-      } catch (error) {
-        if (!isMissingFile(error)) throw error;
+        const key = `${parsed.height}:${parsed.round}`;
+        const reservation = `${parsed.kind}:${parsed.value}`;
+        const previous = journal.reservations.get(key);
+        if (previous && previous !== reservation) throw new Error("Conflicting signing journal history");
+        journal.reservations.set(key, reservation);
+      }
+    } catch (error) {
+      if (!isMissingFile(error)) {
+        journal.close();
+        throw error;
+      }
+      try {
         const handle = await open(journal.path, "wx", 0o600);
         try {
           await handle.sync();
@@ -769,14 +791,19 @@ export class SigningJournal {
         } finally {
           await handle.close();
         }
+      } catch (createError) {
+        journal.close();
+        throw new Error("Signing journal initialization persistence failed", { cause: createError });
       }
-      await syncDirectory(dirname(journal.path));
-      await faultHooks.afterDirectorySync?.();
-      return journal;
-    } catch (error) {
-      journal.close();
-      throw new Error("Signing journal initialization persistence failed", { cause: error });
     }
+    try {
+      await syncDirectoryTree(dirname(journal.path));
+      await faultHooks.afterDirectorySync?.();
+    } catch (syncError) {
+      journal.close();
+      throw new Error("Signing journal initialization persistence failed", { cause: syncError });
+    }
+    return journal;
   }
 
   get persistenceHealthy(): boolean {
