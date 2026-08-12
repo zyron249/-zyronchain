@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
+import { canonicalJson, sha256Hex } from "../src/codec.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { ZyronChain } from "../src/chain.js";
 import { MAX_MINING_MEMPOOL_CLAIMS, Mempool } from "../src/mempool.js";
@@ -22,6 +26,7 @@ import {
   applyStateV2Transaction,
   stateV2TransactionKeyPreimages
 } from "../src/state-v2.js";
+import { ChainStore } from "../src/storage.js";
 import {
   createMiningClaim,
   createProtocolUpgrade,
@@ -252,7 +257,7 @@ test("tracker address cannot claim mining rewards even with a structurally valid
   assert.throws(() => state.apply(forgedTracker, pool), /protocol-reserved/);
 });
 
-test("protocol v5 activates, finalizes real proof-of-work issuance, and rejects stale/double claims", { timeout: 120_000 }, () => {
+test("protocol v5 activates, finalizes real proof-of-work issuance, and survives trusted-snapshot disk restart", { timeout: 120_000 }, async () => {
   const chain = new ZyronChain(genesis());
   const upgradeInput = {
     chainId: genesis().chainId,
@@ -350,4 +355,25 @@ test("protocol v5 activates, finalizes real proof-of-work issuance, and rejects 
     timestampMs: genesis().timestampMs + 102_000
   }, minerPrivate, minerPublic);
   assert.throws(() => chain.validateMempoolAdmission(staleClaim), /stale previous hash/);
+
+  const snapshot = chain.snapshot();
+  const anchor = {
+    tipHash: chain.tip.hash,
+    snapshotSha256: sha256Hex(canonicalJson(snapshot))
+  };
+  const parentDir = await mkdtemp(join(tmpdir(), "zyron-mining-restart-"));
+  const dataDir = join(parentDir, "node");
+  try {
+    await ChainStore.installTrustedSnapshot(genesis(), dataDir, snapshot, anchor);
+    const reopened = await ChainStore.open(genesis(), dataDir);
+    assert.equal(reopened.chain.height, 101);
+    assert.equal(reopened.chain.tip.hash, chain.tip.hash);
+    assert.equal(reopened.chain.balance(miner), INITIAL_MINING_REWARD_ATOMS);
+    assert.equal(reopened.chain.miningClaimCount(), 1);
+    assert.equal(reopened.chain.protocolVersionAt(reopened.chain.height), MINING_PROTOCOL_VERSION);
+    assert.equal(reopened.chain.nextMiningRewardAtoms(), chain.nextMiningRewardAtoms());
+    assert.throws(() => reopened.chain.validateMempoolAdmission(staleClaim), /stale previous hash/);
+  } finally {
+    await rm(parentDir, { recursive: true, force: true });
+  }
 });
