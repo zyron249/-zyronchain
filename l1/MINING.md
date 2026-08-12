@@ -35,6 +35,8 @@ The miner decrypts and signs locally. It never uploads the private key or passwo
 
 Before hashing, the miner reconstructs the canonical genesis hash from the supplied genesis file and requires both the RPC chain ID and RPC genesis hash to match exactly. The same identity check is repeated while mining, so an endpoint that switches to a different network fails closed instead of silently wasting work.
 
+Protocol and nonce state are sampled between two validated finalized-status reads. If the finalized height or tip hash changes while those RPC reads are in flight, the sampled state is discarded before any hashing begins. This prevents a mixed old-tip/new-state challenge from consuming a hash batch.
+
 Mining work is bound to the chain ID, miner account nonce/address/public key, next block height, previous finalized block hash and deterministic reward. A tip change invalidates old work.
 
 ## Important limitation
