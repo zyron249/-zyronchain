@@ -2,6 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
+import { ZyronChain } from "../dist/src/chain.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../dist/src/crypto.js";
 import {
   MINING_DIFFICULTY_BITS,
@@ -11,6 +12,7 @@ import {
   miningRewardAtoms,
   miningWorkHash
 } from "../dist/src/mining.js";
+import { assertMiningNetworkIdentity } from "../dist/src/miner-network.js";
 import { loadEncryptedMinerPrivateKey } from "../dist/src/miner-security.js";
 import { createMiningClaim } from "../dist/src/transaction.js";
 import { MAX_SUPPLY_ATOMS } from "../dist/src/types.js";
@@ -32,6 +34,9 @@ const once = args.includes("--once");
 const batchSize = parsePositiveInteger(option("--batch-size") ?? "65536", "batch-size", 1_000_000);
 
 const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8"));
+const localChain = new ZyronChain(genesis);
+const expectedChainId = localChain.genesis.chainId;
+const expectedGenesisHash = localChain.genesisHash;
 const genesisSupplyAtoms = genesisSupply(genesis);
 const privateKey = await loadEncryptedMinerPrivateKey(resolve(keyPath), resolve(passwordFile));
 const publicKey = publicKeyFromPrivate(privateKey);
@@ -40,6 +45,8 @@ const sender = addressFromPublicKey(publicKey);
 console.log("ZyronChain permissionless miner");
 console.log(`Address:      ${sender}`);
 console.log(`RPC:          ${rpc}`);
+console.log(`Chain:        ${expectedChainId}`);
+console.log(`Genesis:      ${expectedGenesisHash}`);
 console.log(`Difficulty:   ${MINING_DIFFICULTY_BITS} bits`);
 console.log(`Protocol:     v${MINING_PROTOCOL_VERSION}+ required`);
 console.log(`Genesis ZYN:  ${formatZyn(genesisSupplyAtoms)}`);
@@ -50,19 +57,14 @@ process.once("SIGINT", () => { stopped = true; });
 process.once("SIGTERM", () => { stopped = true; });
 
 while (!stopped) {
-  const status = await fetchJson(`${rpc}/status`);
+  const status = await fetchAndValidateStatus();
   const protocol = await fetchJson(`${rpc}/protocol`);
-  if (typeof status.chainId !== "string" || !Number.isSafeInteger(status.height) ||
-      typeof status.tipHash !== "string" || !/^[0-9a-f]{64}$/.test(status.tipHash)) {
-    throw new Error("RPC returned invalid chain status");
-  }
   if (!Number.isSafeInteger(protocol.nextVersion) || protocol.nextVersion < MINING_PROTOCOL_VERSION) {
     console.log(`Mining is gated: next protocol is v${String(protocol.nextVersion ?? "?")}; waiting for v${MINING_PROTOCOL_VERSION}.`);
     if (once) process.exit(2);
     await sleep(10_000);
     continue;
   }
-  if (genesis.chainId !== status.chainId) throw new Error("Genesis chain ID does not match RPC chain ID");
 
   const minerNonceResult = await fetchJson(`${rpc}/nonce/${sender}`);
   const trackerNonceResult = await fetchJson(`${rpc}/nonce/${MINING_TRACKER_ADDRESS}`);
@@ -108,8 +110,8 @@ while (!stopped) {
     }
     if (solution || stopped) break;
 
-    // A solution is useful only for the exact finalized tip it was built on.
-    const latest = await fetchJson(`${rpc}/status`);
+    // A solution is useful only for the exact finalized tip and network identity it was built on.
+    const latest = await fetchAndValidateStatus();
     if (latest.tipHash !== challenge.previousHash || Number(latest.height) + 1 !== challenge.height) {
       console.log("Finalized tip changed; abandoning stale work and rebuilding challenge.");
       break;
@@ -152,7 +154,7 @@ while (!stopped) {
   // Avoid repeatedly mining the same tip while this claim waits for finalization.
   while (!stopped) {
     await sleep(1_000);
-    const latest = await fetchJson(`${rpc}/status`);
+    const latest = await fetchAndValidateStatus();
     if (latest.tipHash !== challenge.previousHash) break;
   }
 }
@@ -169,7 +171,7 @@ Options:
   --password-file <p>   Required; password file for the encrypted miner keystore
   --help, -h            Show this help
 
-The miner accepts encrypted ZyronChain keystores only. On POSIX systems the keystore and password file must be owner-only (0600 recommended). Remote RPC must use HTTPS. Plain HTTP is accepted only for loopback.`);
+The miner accepts encrypted ZyronChain keystores only. It derives the canonical genesis hash from the supplied genesis and refuses an RPC whose chain ID or genesis hash differs. On POSIX systems the keystore and password file must be owner-only (0600 recommended). Remote RPC must use HTTPS. Plain HTTP is accepted only for loopback.`);
 }
 
 function assertKnownArgs() {
@@ -231,6 +233,12 @@ function genesisSupply(value) {
     if (!Number.isSafeInteger(total) || total > MAX_SUPPLY_ATOMS) throw new Error("Genesis supply exceeds 50M ZYN cap");
   }
   return total;
+}
+
+async function fetchAndValidateStatus() {
+  const status = await fetchJson(`${rpc}/status`);
+  assertMiningNetworkIdentity(status, expectedChainId, expectedGenesisHash);
+  return status;
 }
 
 async function fetchJson(url, init = {}, timeoutMs = 8_000) {
