@@ -12,7 +12,7 @@ import {
   miningRewardAtoms,
   miningWorkHash
 } from "../dist/src/mining.js";
-import { assertMiningNetworkIdentity } from "../dist/src/miner-network.js";
+import { assertMiningNetworkIdentity, miningChallengeMatchesFinalizedTip } from "../dist/src/miner-network.js";
 import { loadEncryptedMinerPrivateKey } from "../dist/src/miner-security.js";
 import { createMiningClaim } from "../dist/src/transaction.js";
 import { MAX_SUPPLY_ATOMS } from "../dist/src/types.js";
@@ -112,7 +112,7 @@ while (!stopped) {
 
     // A solution is useful only for the exact finalized tip and network identity it was built on.
     const latest = await fetchAndValidateStatus();
-    if (latest.tipHash !== challenge.previousHash || Number(latest.height) + 1 !== challenge.height) {
+    if (!miningChallengeMatchesFinalizedTip(latest, challenge)) {
       console.log("Finalized tip changed; abandoning stale work and rebuilding challenge.");
       break;
     }
@@ -123,6 +123,15 @@ while (!stopped) {
   process.stdout.write("\n");
   if (stopped) break;
   if (!solution) continue;
+
+  // Close the race between the last batch refresh and submission. The RPC may
+  // have switched network identity or finalized a new tip while the solution
+  // was found inside the batch; never sign/submit until both are revalidated.
+  const beforeSubmit = await fetchAndValidateStatus();
+  if (!miningChallengeMatchesFinalizedTip(beforeSubmit, challenge)) {
+    console.log("Solved work became stale before submission; rebuilding challenge.");
+    continue;
+  }
 
   console.log(`Solved: ${solution.hash} after ${attempts.toLocaleString()} hashes`);
   const tx = createMiningClaim({
