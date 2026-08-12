@@ -131,7 +131,11 @@ export async function readP2PFrameRetained(
   timeout.unref();
   try {
     for await (const chunk of stream) {
-      const bytes = Buffer.from(chunk.subarray());
+      // Inspect the transport-owned view before any user-space copy. A valid
+      // single chunk can never exceed the complete 4-byte header + max body
+      // envelope, so reject allocation-amplifying chunks before parsing.
+      const bytes = chunk.subarray();
+      if (bytes.byteLength > maxBytes + 4) throw new Error("P2P transport chunk exceeds frame limit");
       if (decodedFrame) {
         if (bytes.length > 0) throw new Error("Trailing bytes in P2P frame");
         continue;
@@ -139,7 +143,7 @@ export async function readP2PFrameRetained(
       let offset = 0;
       if (expectedBytes === undefined) {
         const take = Math.min(4 - headerBytes, bytes.length);
-        bytes.copy(header, headerBytes, 0, take);
+        header.set(bytes.subarray(0, take), headerBytes);
         headerBytes += take;
         offset += take;
         if (headerBytes === 4) {
@@ -152,7 +156,7 @@ export async function readP2PFrameRetained(
       if (expectedBytes !== undefined && body) {
         const remaining = expectedBytes - bodyBytes;
         const take = Math.min(remaining, bytes.length - offset);
-        if (take > 0) bytes.copy(body, bodyBytes, offset, offset + take);
+        if (take > 0) body.set(bytes.subarray(offset, offset + take), bodyBytes);
         bodyBytes += take;
         offset += take;
         if (bodyBytes === expectedBytes) {
