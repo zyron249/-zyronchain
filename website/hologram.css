@@ -1,0 +1,175 @@
+.hero-symbol.hologram-host {
+  position: relative;
+  isolation: isolate;
+  min-height: 520px;
+  display: grid;
+  place-items: center;
+  perspective: 1400px;
+  overflow: visible;
+}
+
+.hologram-stage {
+  position: relative;
+  width: min(440px, 82vw);
+  aspect-ratio: 1 / 1;
+  display: grid;
+  place-items: center;
+  transform-style: preserve-3d;
+  filter: drop-shadow(0 0 24px rgba(65, 224, 255, .38));
+}
+
+.hologram-stage::before,
+.hologram-stage::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  border-radius: 50%;
+  pointer-events: none;
+  transform: translate(-50%, -50%) rotateX(72deg);
+}
+
+.hologram-stage::before {
+  width: 106%;
+  height: 106%;
+  border: 1px solid rgba(87, 226, 255, .44);
+  box-shadow: 0 0 34px rgba(48, 217, 255, .3), inset 0 0 28px rgba(48, 217, 255, .12);
+  animation: hologram-ring 9s linear infinite;
+}
+
+.hologram-stage::after {
+  width: 82%;
+  height: 82%;
+  border: 1px dashed rgba(139, 239, 255, .32);
+  animation: hologram-ring-reverse 7s linear infinite;
+}
+
+.hologram-rotor {
+  position: relative;
+  width: 78%;
+  aspect-ratio: 1 / 1;
+  transform-style: preserve-3d;
+  animation: hologram-spin 18s linear infinite;
+  will-change: transform;
+}
+
+.hologram-card {
+  position: absolute;
+  inset: 0;
+  border-radius: 26px;
+  overflow: hidden;
+  transform: translateZ(1px);
+  background: rgba(2, 13, 24, .72);
+  border: 1px solid rgba(132, 239, 255, .58);
+  box-shadow:
+    0 0 20px rgba(76, 224, 255, .35),
+    0 0 70px rgba(56, 185, 255, .18),
+    inset 0 0 28px rgba(62, 218, 255, .14);
+}
+
+.hologram-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: .94;
+  filter: saturate(1.14) contrast(1.07) brightness(1.04);
+}
+
+.hologram-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(118, 244, 255, .08) 0,
+      rgba(118, 244, 255, .08) 1px,
+      transparent 1px,
+      transparent 5px
+    ),
+    linear-gradient(110deg, transparent 24%, rgba(159, 249, 255, .2) 46%, transparent 62%);
+  background-size: auto, 220% 100%;
+  mix-blend-mode: screen;
+  animation: hologram-scan 5s linear infinite;
+}
+
+.hologram-card::after {
+  content: "";
+  position: absolute;
+  inset: -8%;
+  z-index: 3;
+  pointer-events: none;
+  background: radial-gradient(circle at 50% 46%, rgba(91, 234, 255, .14), transparent 62%);
+  animation: hologram-pulse 3.8s ease-in-out infinite;
+}
+
+.hologram-base {
+  position: absolute;
+  bottom: 1%;
+  left: 50%;
+  width: 66%;
+  height: 12%;
+  transform: translateX(-50%) rotateX(76deg) translateZ(-36px);
+  border-radius: 50%;
+  background: radial-gradient(ellipse, rgba(89, 229, 255, .4), rgba(46, 176, 255, .12) 42%, transparent 70%);
+  box-shadow: 0 0 38px rgba(58, 207, 255, .32);
+  animation: hologram-pulse 3.8s ease-in-out infinite;
+}
+
+.hologram-label {
+  position: absolute;
+  bottom: -28px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: .72rem;
+  letter-spacing: .2em;
+  text-transform: uppercase;
+  color: rgba(115, 219, 239, .8);
+}
+
+@keyframes hologram-spin {
+  0% { transform: rotateX(-5deg) rotateY(0deg) translateY(0); }
+  25% { transform: rotateX(2deg) rotateY(90deg) translateY(-7px); }
+  50% { transform: rotateX(5deg) rotateY(180deg) translateY(0); }
+  75% { transform: rotateX(-2deg) rotateY(270deg) translateY(-7px); }
+  100% { transform: rotateX(-5deg) rotateY(360deg) translateY(0); }
+}
+
+@keyframes hologram-ring {
+  to { transform: translate(-50%, -50%) rotateX(72deg) rotateZ(360deg); }
+}
+
+@keyframes hologram-ring-reverse {
+  to { transform: translate(-50%, -50%) rotateX(72deg) rotateZ(-360deg); }
+}
+
+@keyframes hologram-scan {
+  from { background-position: 0 0, 130% 0; }
+  to { background-position: 0 0, -130% 0; }
+}
+
+@keyframes hologram-pulse {
+  0%, 100% { opacity: .66; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.025); }
+}
+
+@media (max-width: 820px) {
+  .hero-symbol.hologram-host { min-height: 410px; }
+  .hologram-stage { width: min(360px, 88vw); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hologram-rotor,
+  .hologram-stage::before,
+  .hologram-stage::after,
+  .hologram-card::before,
+  .hologram-card::after,
+  .hologram-base {
+    animation: none !important;
+  }
+  .hologram-rotor { transform: rotateY(-8deg) rotateX(2deg); }
+}
