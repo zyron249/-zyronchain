@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Multiaddr } from "@multiformats/multiaddr";
 
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
-import { decryptPrivateKey, encryptPrivateKey, isEncryptedKeystore, normalizePasswordFile } from "./keystore.js";
+import { encryptPrivateKey, normalizePasswordFile } from "./keystore.js";
+import { readPrivateRegularFile } from "./local-security.js";
+import { readOperatorAuthToken, readOperatorPrivateKey } from "./operator-secrets.js";
 import {
   assertSafeRpcBinding,
   BLOCK_INTERVAL_MS,
@@ -149,9 +151,6 @@ async function fetchAndInstallCheckpoint(args: string[]): Promise<void> {
     throw new Error("checkpoint-fetch-install requires lowercase 32-byte --tip-hash and --sha256 anchors");
   }
   const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
-  // The fetch identity is deliberately ephemeral and separate from the target.
-  // No target data exists until the complete snapshot passes external-anchor,
-  // finality, governance and State-v2 validation.
   const temporaryIdentityDir = await mkdtemp(join(tmpdir(), "zyron-checkpoint-fetch-"));
   let client: Awaited<ReturnType<typeof createP2PNode>> | undefined;
   try {
@@ -167,7 +166,7 @@ async function fetchAndInstallCheckpoint(args: string[]): Promise<void> {
     console.log(`Snapshot SHA-256: ${snapshotSha256}`);
   } finally {
     if (client) {
-      try { await client.stop(); } catch { /* best-effort cleanup after the primary failure */ }
+      try { await client.stop(); } catch { }
     }
     await rm(temporaryIdentityDir, { recursive: true, force: true });
   }
@@ -206,7 +205,7 @@ async function fetchAndInstallPortableState(args: string[]): Promise<void> {
     console.log(`Snapshot SHA-256: ${snapshotSha256}`);
   } finally {
     if (client) {
-      try { await client.stop(); } catch { /* best-effort cleanup after the primary failure */ }
+      try { await client.stop(); } catch { }
     }
     await rm(temporaryIdentityDir, { recursive: true, force: true });
   }
@@ -237,7 +236,7 @@ async function keygen(args: string[]): Promise<void> {
   if (!output) throw new Error("keygen requires --out <file>");
   const passwordFile = option(args, "--password-file");
   const password = passwordFile
-    ? normalizePasswordFile(await readFile(resolve(passwordFile), "utf8"))
+    ? normalizePasswordFile(await readPrivateRegularFile(resolve(passwordFile), "Keygen password file"))
     : undefined;
   const privateKey = generatePrivateKey();
   const publicKey = publicKeyFromPrivate(privateKey);
@@ -276,7 +275,6 @@ async function createGenesis(args: string[]): Promise<void> {
   const timestampText = option(args, "--timestamp-ms");
   const timestampMs = timestampText === undefined ? Date.now() : parseSafeInteger(timestampText, "timestamp-ms");
   const config: GenesisConfig = { chainId, timestampMs, validators, activityOracles, activityPool, allocations };
-  // Construction is the canonical validation pass; invalid public keys, addresses, duplicates, or supply fail here.
   new ZyronChain(config);
   const path = resolve(output);
   await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, { flag: "wx", mode: 0o644 });
@@ -331,7 +329,7 @@ async function runNode(args: string[]): Promise<void> {
     throw new Error("--validator-signer-token-file requires --validator-signer-url");
   }
   const validatorSignerToken = validatorSignerTokenPath
-    ? await readAuthToken(resolve(validatorSignerTokenPath), "Validator signer", true)
+    ? await readAuthToken(resolve(validatorSignerTokenPath), "Validator signer")
     : undefined;
   const validatorSigner: ValidatorSigner | undefined = privateKey
     ? new LocalValidatorSigner(privateKey)
@@ -450,7 +448,6 @@ async function runNode(args: string[]): Promise<void> {
       ]);
     }
   });
-  // Retain the OS-backed writer lease for exactly the server lifetime.
   server.once("close", () => dataLease.close());
   await new Promise<void>((resolveListen, reject) => {
     server.once("error", reject);
@@ -820,8 +817,6 @@ async function refreshNativePeerDiscovery(
       candidates = await discoverNativePeersFrom(node, source, identity, chain);
     } catch (error) {
       const failure = classifyNativePeerFailure(error);
-      // A transient discovery-stream problem must not suppress an otherwise
-      // healthy configured peer from the independent finalized-sync path.
       if (failure === "protocol") {
         await reputation?.recordFailure(sourcePeerId, failure);
         pool.evictDynamic(sourcePeerId);
@@ -835,9 +830,6 @@ async function refreshNativePeerDiscovery(
       const candidatePeerId = nativePeerId(candidate);
       if (pool.has(candidatePeerId) || (reputation && !reputation.isAvailable(candidatePeerId))) continue;
       try {
-        // An authenticated source that advertises an unsafe auto-dial address
-        // is itself violating discovery policy; do not attribute that hint to
-        // the uninvolved candidate identity.
         assertSafeDiscoveredPeer(candidate);
       } catch (error) {
         await reputation?.recordFailure(sourcePeerId, "protocol");
@@ -917,34 +909,11 @@ async function transactionVersionForRpc(rpc: string): Promise<TransactionVersion
 }
 
 async function readPrivateKey(path: string): Promise<string> {
-  const parsed = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
-  if (isEncryptedKeystore(parsed)) {
-    const passwordPath = process.env.ZYRON_KEYSTORE_PASSWORD_FILE;
-    if (!passwordPath) {
-      throw new Error("Encrypted keystore requires ZYRON_KEYSTORE_PASSWORD_FILE");
-    }
-    const password = normalizePasswordFile(await readFile(resolve(passwordPath), "utf8"));
-    return decryptPrivateKey(parsed, password);
-  }
-  if (typeof parsed.privateKey !== "string" || !/^[0-9a-f]{64}$/.test(parsed.privateKey)) {
-    throw new Error("Validator key file is invalid");
-  }
-  publicKeyFromPrivate(parsed.privateKey);
-  return parsed.privateKey;
+  return readOperatorPrivateKey(path, process.env.ZYRON_KEYSTORE_PASSWORD_FILE);
 }
 
-async function readAuthToken(path: string, label: string, requirePrivatePermissions = false): Promise<string> {
-  if (requirePrivatePermissions) {
-    const metadata = await stat(path);
-    if (!metadata.isFile() || (metadata.mode & 0o077) !== 0) {
-      throw new Error(`${label} token file must be a regular file with mode 0600`);
-    }
-  }
-  const token = (await readFile(path, "utf8")).trim();
-  if (token.length < 32 || token.length > 512 || !/^[\x21-\x7e]+$/.test(token)) {
-    throw new Error(`${label} token file must contain a single 32-512 character token`);
-  }
-  return token;
+async function readAuthToken(path: string, label: string): Promise<string> {
+  return readOperatorAuthToken(path, label);
 }
 
 async function readValidatorProposal(path: string): Promise<ValidatorProposal> {
