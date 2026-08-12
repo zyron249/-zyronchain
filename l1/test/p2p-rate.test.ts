@@ -43,8 +43,11 @@ test("native peer rate limiter does not full-sweep before the earliest expiry", 
   assert.equal(limiter.consume("peer-d", 6_000), true);
   assert.equal(sweeps, 1);
 
-  for (let index = 0; index < 100; index += 1) {
+  for (let index = 0; index < 99; index += 1) {
     assert.equal(limiter.consume(`post-sweep-${index}`, 6_001 + index), false);
   }
   assert.equal(sweeps, 1);
+
+  assert.equal(limiter.consume("peer-e", 6_100), true);
+  assert.equal(sweeps, 2);
 });
