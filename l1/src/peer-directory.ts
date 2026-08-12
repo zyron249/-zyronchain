@@ -58,7 +58,7 @@ export class PeerDirectory {
   private pruneExpired(nowMs: number): void {
     if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new Error("Invalid peer directory time");
     for (const [nodeId, record] of this.records) {
-      if (record.expiresAtMs < nowMs) this.records.delete(nodeId);
+      if (record.expiresAtMs <= nowMs) this.records.delete(nodeId);
     }
   }
 }
