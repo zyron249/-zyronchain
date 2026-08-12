@@ -28,6 +28,68 @@ if (tokenSection && !tokenSection.querySelector('a[href="./mining.html"]')) {
   }
 }
 
+const heroSymbol = document.querySelector('.hero-symbol');
+if (heroSymbol && !heroSymbol.querySelector('[data-hologram-stage]')) {
+  if (!document.querySelector('link[href="./hologram.css"]')) {
+    const hologramStyles = document.createElement('link');
+    hologramStyles.rel = 'stylesheet';
+    hologramStyles.href = './hologram.css';
+    document.head.appendChild(hologramStyles);
+  }
+
+  heroSymbol.classList.add('hologram-host');
+  const stage = document.createElement('div');
+  stage.className = 'hologram-stage';
+  stage.dataset.hologramStage = '';
+  stage.setAttribute('role', 'img');
+  stage.setAttribute('aria-label', 'ZyronChain holographic network artwork');
+
+  const rotor = document.createElement('div');
+  rotor.className = 'hologram-rotor';
+
+  const card = document.createElement('div');
+  card.className = 'hologram-card';
+
+  const image = document.createElement('img');
+  image.src = './zyron-hologram.webp';
+  image.alt = '';
+  image.width = 320;
+  image.height = 320;
+  image.decoding = 'async';
+  image.fetchPriority = 'high';
+  card.appendChild(image);
+  rotor.appendChild(card);
+
+  const base = document.createElement('div');
+  base.className = 'hologram-base';
+  base.setAttribute('aria-hidden', 'true');
+
+  const label = document.createElement('span');
+  label.className = 'hologram-label';
+  label.textContent = 'ZyronChain · Verifiable Layer-1';
+
+  stage.append(rotor, base, label);
+  heroSymbol.replaceChildren(stage);
+
+  const hologramReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!hologramReducedMotion) {
+    let frame = 0;
+    stage.addEventListener('pointermove', (event) => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const bounds = stage.getBoundingClientRect();
+        const x = ((event.clientX - bounds.left) / Math.max(1, bounds.width)) - 0.5;
+        const y = ((event.clientY - bounds.top) / Math.max(1, bounds.height)) - 0.5;
+        stage.style.transform = `rotateX(${(-y * 4).toFixed(2)}deg) rotateY(${(x * 4).toFixed(2)}deg)`;
+      });
+    }, { passive: true });
+    stage.addEventListener('pointerleave', () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => { stage.style.transform = ''; });
+    }, { passive: true });
+  }
+}
+
 const header = document.querySelector('[data-header]');
 const progress = document.querySelector('[data-scroll-progress]');
 const navLinks = [...document.querySelectorAll('[data-nav] a[href^="#"]')];
