@@ -1,9 +1,10 @@
-import { mkdir, open, readFile } from "node:fs/promises";
+import { mkdir, open } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 
 import { assertHex, canonicalJson, sha256Hex } from "./codec.js";
 import { generatePrivateKey, publicKeyFromPrivate, signCanonical, verifyCanonical } from "./crypto.js";
+import { readPrivateRegularFile } from "./local-security.js";
 import { assertExactKeys, assertPlainRecord } from "./transaction.js";
 
 const IDENTITY_FILE = "node-identity.json";
@@ -64,7 +65,7 @@ export async function loadOrCreateNodeIdentity(dataDir: string): Promise<NodeIde
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const path = join(dataDir, IDENTITY_FILE);
   try {
-    return parseNodeIdentity(await readFile(path, "utf8"));
+    return parseNodeIdentity(await readPrivateRegularFile(path, "Node identity file"));
   } catch (error) {
     if (!isMissingFile(error)) throw error;
   }
@@ -88,7 +89,7 @@ export async function loadOrCreateNodeIdentity(dataDir: string): Promise<NodeIde
   } catch (error) {
     await handle?.close().catch(() => undefined);
     if (!isAlreadyExists(error)) throw error;
-    return parseNodeIdentity(await readFile(path, "utf8"));
+    return parseNodeIdentity(await readPrivateRegularFile(path, "Node identity file"));
   }
   return identity;
 }
