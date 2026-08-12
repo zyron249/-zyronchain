@@ -44,12 +44,16 @@
   animation: hologram-ring-reverse 7s linear infinite;
 }
 
+/* Keep the artwork front-facing. Full 360deg rotateY causes iOS/WKWebView to
+   repeatedly re-rasterize the image as a 3D texture, which can visibly corrupt
+   the artwork. The holographic rotation is carried by the orbital rings while
+   the artwork uses a small perspective drift and float. */
 .hologram-rotor {
   position: relative;
   width: 78%;
   aspect-ratio: 1 / 1;
   transform-style: preserve-3d;
-  animation: hologram-spin 18s linear infinite;
+  animation: hologram-float 8s ease-in-out infinite;
   will-change: transform;
 }
 
@@ -72,8 +76,10 @@
   height: 100%;
   object-fit: cover;
   display: block;
-  opacity: .94;
-  filter: saturate(1.14) contrast(1.07) brightness(1.04);
+  opacity: .97;
+  filter: saturate(1.08) contrast(1.04) brightness(1.02);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
 
 .hologram-card::before {
@@ -83,14 +89,8 @@
   z-index: 2;
   pointer-events: none;
   background:
-    repeating-linear-gradient(
-      to bottom,
-      rgba(118, 244, 255, .08) 0,
-      rgba(118, 244, 255, .08) 1px,
-      transparent 1px,
-      transparent 5px
-    ),
-    linear-gradient(110deg, transparent 24%, rgba(159, 249, 255, .2) 46%, transparent 62%);
+    repeating-linear-gradient(to bottom, rgba(118, 244, 255, .065) 0, rgba(118, 244, 255, .065) 1px, transparent 1px, transparent 6px),
+    linear-gradient(110deg, transparent 24%, rgba(159, 249, 255, .16) 46%, transparent 62%);
   background-size: auto, 220% 100%;
   mix-blend-mode: screen;
   animation: hologram-scan 5s linear infinite;
@@ -102,8 +102,8 @@
   inset: -8%;
   z-index: 3;
   pointer-events: none;
-  background: radial-gradient(circle at 50% 46%, rgba(91, 234, 255, .14), transparent 62%);
-  animation: hologram-pulse 3.8s ease-in-out infinite;
+  background: radial-gradient(circle at 50% 46%, rgba(91, 234, 255, .11), transparent 62%);
+  animation: hologram-overlay-pulse 3.8s ease-in-out infinite;
 }
 
 .hologram-base {
@@ -116,7 +116,7 @@
   border-radius: 50%;
   background: radial-gradient(ellipse, rgba(89, 229, 255, .4), rgba(46, 176, 255, .12) 42%, transparent 70%);
   box-shadow: 0 0 38px rgba(58, 207, 255, .32);
-  animation: hologram-pulse 3.8s ease-in-out infinite;
+  animation: hologram-base-pulse 3.8s ease-in-out infinite;
 }
 
 .hologram-label {
@@ -131,12 +131,9 @@
   color: rgba(115, 219, 239, .8);
 }
 
-@keyframes hologram-spin {
-  0% { transform: rotateX(-5deg) rotateY(0deg) translateY(0); }
-  25% { transform: rotateX(2deg) rotateY(90deg) translateY(-7px); }
-  50% { transform: rotateX(5deg) rotateY(180deg) translateY(0); }
-  75% { transform: rotateX(-2deg) rotateY(270deg) translateY(-7px); }
-  100% { transform: rotateX(-5deg) rotateY(360deg) translateY(0); }
+@keyframes hologram-float {
+  0%, 100% { transform: translateY(0) rotateX(-1.5deg) rotateY(-3deg); }
+  50% { transform: translateY(-9px) rotateX(1.5deg) rotateY(3deg); }
 }
 
 @keyframes hologram-ring {
@@ -152,14 +149,20 @@
   to { background-position: 0 0, -130% 0; }
 }
 
-@keyframes hologram-pulse {
-  0%, 100% { opacity: .66; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.025); }
+@keyframes hologram-overlay-pulse {
+  0%, 100% { opacity: .55; }
+  50% { opacity: .9; }
+}
+
+@keyframes hologram-base-pulse {
+  0%, 100% { opacity: .66; }
+  50% { opacity: 1; }
 }
 
 @media (max-width: 820px) {
   .hero-symbol.hologram-host { min-height: 410px; }
   .hologram-stage { width: min(360px, 88vw); }
+  .hologram-rotor { width: 82%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -171,5 +174,5 @@
   .hologram-base {
     animation: none !important;
   }
-  .hologram-rotor { transform: rotateY(-8deg) rotateX(2deg); }
+  .hologram-rotor { transform: none; }
 }
