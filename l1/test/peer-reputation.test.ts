@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -33,6 +33,36 @@ test("peer reputation survives restart and successful recovery clears backoff", 
     assert.equal(recovered.failureCount(peer), 0);
     assert.equal(recovered.isAvailable(peer, now + 90_000), true);
     assert.equal(await recovered.recordFailure(peer, now + 90_001), 30_000);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("peer reputation fails closed when active endpoint penalties saturate capacity", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-peer-reputation-cap-"));
+  const now = 1_800_000_000_000;
+  try {
+    const store = await PeerReputationStore.open(directory);
+    const peers = Array.from({ length: 256 }, (_, index) => `https://validator-${index}.example:9137`);
+    for (const peer of peers) await store.recordFailure(peer, now);
+
+    const rotated = "https://rotated-attacker.example:9137";
+    assert.equal(store.isAvailable(rotated, now), false);
+    await store.recordFailure(rotated, now);
+    assert.equal(store.isAvailable(rotated, now), false);
+    assert.equal(store.isAvailable(peers[0]!, now), false);
+
+    const snapshot = JSON.parse(await readFile(join(directory, "peer-reputation.json"), "utf8")) as { peers: unknown[] };
+    assert.equal(snapshot.peers.length, 256);
+
+    const expiry = now + 30_000;
+    assert.equal(store.isAvailable(rotated, expiry), true);
+    await store.recordFailure(rotated, expiry);
+    assert.equal(store.isAvailable(rotated, expiry), false);
+    const reopened = await PeerReputationStore.open(directory);
+    assert.equal(reopened.failureCount(rotated), 1);
+    const reopenedSnapshot = JSON.parse(await readFile(join(directory, "peer-reputation.json"), "utf8")) as { peers: unknown[] };
+    assert.equal(reopenedSnapshot.peers.length, 256);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
