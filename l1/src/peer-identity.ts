@@ -75,8 +75,6 @@ export async function loadOrCreateNodeIdentity(dataDir: string): Promise<NodeIde
   try {
     await writeFile(path, `${canonicalJson(identity)}\n`, { flag: "wx", mode: 0o600 });
   } catch (error) {
-    // Concurrent startup may have won the exclusive create. Never overwrite an
-    // already-established node identity; load and validate the winner instead.
     if (!isAlreadyExists(error)) throw error;
     return parseNodeIdentity(await readFile(path, "utf8"));
   }
@@ -168,10 +166,14 @@ export class PeerRequestAuthenticator {
 
   constructor(
     trustedPublicKeys: readonly string[],
-    private readonly expected: { chainId: string; genesisHash: string }
+    private readonly expected: { chainId: string; genesisHash: string },
+    private readonly maxSeenNonces = MAX_PEER_REQUEST_NONCES
   ) {
     this.trustedPublicKeys = new Set(trustedPublicKeys);
     if (this.trustedPublicKeys.size === 0) throw new Error("At least one trusted peer identity is required");
+    if (!Number.isSafeInteger(this.maxSeenNonces) || this.maxSeenNonces < 1 || this.maxSeenNonces > MAX_PEER_REQUEST_NONCES) {
+      throw new Error("Invalid peer request replay cache capacity");
+    }
     for (const publicKey of this.trustedPublicKeys) {
       assertHex(publicKey, 64, "trusted peer public key");
       nodeIdFromPublicKey(publicKey);
@@ -199,6 +201,7 @@ export class PeerRequestAuthenticator {
     if (!verifyCanonical(payload, fields.signature, fields.publicKey)) {
       throw new Error("Invalid peer request signature");
     }
+    this.assertReplayCapacity();
   }
 
   verify(
@@ -223,12 +226,15 @@ export class PeerRequestAuthenticator {
     if (!verifyCanonical(payload, fields.signature, fields.publicKey)) {
       throw new Error("Invalid peer request signature");
     }
+    this.assertReplayCapacity();
     this.seenNonces.set(replayKey, fields.timestampMs);
-    if (this.seenNonces.size > MAX_PEER_REQUEST_NONCES) {
-      const oldest = this.seenNonces.keys().next().value as string | undefined;
-      if (oldest) this.seenNonces.delete(oldest);
-    }
     return fields.nodeId;
+  }
+
+  private assertReplayCapacity(): void {
+    if (this.seenNonces.size >= this.maxSeenNonces) {
+      throw new Error("Peer request replay cache capacity exceeded");
+    }
   }
 
   private validateHeaders(
