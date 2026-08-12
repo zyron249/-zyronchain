@@ -30,6 +30,27 @@ test("process crash after finalized-block write reopens to an authoritative comp
   await runCrashBoundary("afterBlockWrite", undefined);
 });
 
+test("finalized log initialization fails closed before directory durability and clean restart succeeds", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-finalized-open-"));
+  const config = genesis();
+  try {
+    await assert.rejects(
+      ChainStore.open(config, directory, {
+        afterFileSync: async () => {
+          throw new Error("simulated crash before finalized-log directory fsync");
+        }
+      }),
+      /Finalized block log initialization persistence failed/
+    );
+
+    const reopened = await ChainStore.open(config, directory);
+    assert.equal(reopened.chain.height, 0);
+    assert.equal(reopened.persistenceHealthy, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 async function runCrashBoundary(
   hook: "afterBlockWrite" | "afterBlockSync",
   requiredHeight: number | undefined
