@@ -21,7 +21,7 @@ test("native peer rate limiter fails closed at bounded identity capacity", () =>
 });
 
 test("native peer rate limiter does not full-sweep before the earliest expiry", () => {
-  const limiter = new P2PPeerRateLimiter(100, 5_000, 3);
+  const limiter = new P2PPeerRateLimiter(1_000, 5_000, 3);
   const internals = limiter as unknown as { sweep(nowMs: number): void };
   const originalSweep = internals.sweep.bind(limiter);
   let sweeps = 0;
