@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { assertMiningNetworkIdentity, miningChallengeMatchesFinalizedTip } from "../src/miner-network.js";
+import {
+  assertMiningNetworkIdentity,
+  miningChallengeMatchesFinalizedTip,
+  miningFinalizedSnapshotMatches
+} from "../src/miner-network.js";
 
 const expectedChainId = "zyron-beta-1";
 const expectedGenesisHash = "11".repeat(32);
@@ -42,6 +46,21 @@ test("miner rejects malformed RPC genesis identity before hashing", () => {
       /RPC returned invalid chain status/
     );
   }
+});
+
+test("miner accepts sampled mining state only when the finalized snapshot stays exact", () => {
+  assert.equal(
+    miningFinalizedSnapshotMatches({ height: 42, tipHash }, { height: 42, tipHash }),
+    true
+  );
+  assert.equal(
+    miningFinalizedSnapshotMatches({ height: 42, tipHash }, { height: 43, tipHash: "44".repeat(32) }),
+    false
+  );
+  assert.equal(
+    miningFinalizedSnapshotMatches({ height: 42, tipHash }, { height: 42, tipHash: "55".repeat(32) }),
+    false
+  );
 });
 
 test("miner submits only while the solved challenge still matches the finalized tip", () => {

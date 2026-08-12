@@ -12,7 +12,11 @@ import {
   miningRewardAtoms,
   miningWorkHash
 } from "../dist/src/mining.js";
-import { assertMiningNetworkIdentity, miningChallengeMatchesFinalizedTip } from "../dist/src/miner-network.js";
+import {
+  assertMiningNetworkIdentity,
+  miningChallengeMatchesFinalizedTip,
+  miningFinalizedSnapshotMatches
+} from "../dist/src/miner-network.js";
 import { loadEncryptedMinerPrivateKey } from "../dist/src/miner-security.js";
 import { createMiningClaim } from "../dist/src/transaction.js";
 import { MAX_SUPPLY_ATOMS } from "../dist/src/types.js";
@@ -57,7 +61,7 @@ process.once("SIGINT", () => { stopped = true; });
 process.once("SIGTERM", () => { stopped = true; });
 
 while (!stopped) {
-  const status = await fetchAndValidateStatus();
+  const statusBefore = await fetchAndValidateStatus();
   const protocol = await fetchJson(`${rpc}/protocol`);
   if (!Number.isSafeInteger(protocol.nextVersion) || protocol.nextVersion < MINING_PROTOCOL_VERSION) {
     console.log(`Mining is gated: next protocol is v${String(protocol.nextVersion ?? "?")}; waiting for v${MINING_PROTOCOL_VERSION}.`);
@@ -72,6 +76,12 @@ while (!stopped) {
       minerNonceResult.nonce < 0 || trackerNonceResult.nonce < 0) {
     throw new Error("RPC returned invalid mining nonce state");
   }
+  const status = await fetchAndValidateStatus();
+  if (!miningFinalizedSnapshotMatches(statusBefore, status)) {
+    console.log("Finalized tip changed while sampling mining state; rebuilding challenge before hashing.");
+    continue;
+  }
+
   const nonce = Number(minerNonceResult.nonce) + 1;
   const claimCount = Number(trackerNonceResult.nonce);
   const rewardAtoms = miningRewardAtoms(claimCount, genesisSupplyAtoms);
