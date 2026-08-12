@@ -25,6 +25,7 @@ import {
   type NodeIdentity,
   type SignedPeerRecord
 } from "./peer-identity.js";
+import { FixedWindowLimiter } from "./rpc-rate-limit.js";
 import { ChainStore, SigningJournal } from "./storage.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
 import type { Address, Block, BlockAttestation, RoundSkipVote, Transaction } from "./types.js";
@@ -1458,34 +1459,6 @@ export class PeerResponseByteBudget {
 }
 
 const peerResponseByteBudget = new PeerResponseByteBudget(MAX_PEER_RESPONSE_BYTES_INFLIGHT);
-
-class FixedWindowLimiter {
-  private readonly clients = new Map<string, { count: number; startedAtMs: number }>();
-  private lastSweepMs = 0;
-
-  constructor(private readonly limit: number, private readonly windowMs: number) {}
-
-  consume(client: string, nowMs: number): { allowed: boolean; remaining: number; retryAfterMs: number } {
-    if (nowMs - this.lastSweepMs >= this.windowMs) {
-      for (const [key, entry] of this.clients) {
-        if (nowMs - entry.startedAtMs >= this.windowMs) this.clients.delete(key);
-      }
-      this.lastSweepMs = nowMs;
-    }
-    let entry = this.clients.get(client);
-    if (!entry || nowMs - entry.startedAtMs >= this.windowMs) {
-      entry = { count: 0, startedAtMs: nowMs };
-      this.clients.set(client, entry);
-    }
-    entry.count += 1;
-    const remaining = Math.max(0, this.limit - entry.count);
-    return {
-      allowed: entry.count <= this.limit,
-      remaining,
-      retryAfterMs: Math.max(0, entry.startedAtMs + this.windowMs - nowMs)
-    };
-  }
-}
 
 function safeError(error: unknown): string {
   return error instanceof Error ? error.message : "Request failed";
