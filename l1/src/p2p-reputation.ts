@@ -45,7 +45,11 @@ export class NativePeerReputationStore {
 
   isAvailable(peerId: string, nowMs = Date.now()): boolean {
     validatePeerId(peerId);
-    return (this.entries.get(peerId)?.backoffUntilMs ?? 0) <= nowMs;
+    assertTimestamp(nowMs);
+    const tracked = this.entries.get(peerId);
+    if (tracked) return tracked.backoffUntilMs <= nowMs;
+    if (this.entries.size < MAX_ENTRIES) return true;
+    return this.reclaimableEntry(nowMs) !== undefined;
   }
 
   failureCount(peerId: string): number {
@@ -63,6 +67,7 @@ export class NativePeerReputationStore {
       const penalty = kind === "protocol"
         ? PROTOCOL_BAN_MS
         : Math.min(MAX_TRANSIENT_BACKOFF_MS, BASE_TRANSIENT_BACKOFF_MS * (2 ** Math.min(20, consecutiveFailures - 1)));
+      if (!previous && !this.ensureSlot(nowMs)) return penalty;
       this.entries.set(peerId, {
         peerId,
         consecutiveFailures,
@@ -71,7 +76,6 @@ export class NativePeerReputationStore {
         lastSuccessMs: previous?.lastSuccessMs ?? 0,
         lastFailureKind: kind
       });
-      this.prune();
       await this.persist();
       return penalty;
     });
@@ -82,6 +86,7 @@ export class NativePeerReputationStore {
     assertTimestamp(nowMs);
     await this.exclusive(async () => {
       const previous = this.entries.get(peerId);
+      if (!previous && !this.ensureSlot(nowMs)) return;
       this.entries.set(peerId, {
         peerId,
         consecutiveFailures: 0,
@@ -90,7 +95,6 @@ export class NativePeerReputationStore {
         lastSuccessMs: nowMs,
         lastFailureKind: "none"
       });
-      this.prune();
       await this.persist();
     });
   }
@@ -103,11 +107,21 @@ export class NativePeerReputationStore {
     try { return await operation(); } finally { release(); }
   }
 
-  private prune(): void {
-    if (this.entries.size <= MAX_ENTRIES) return;
-    const oldest = [...this.entries.values()].sort((a, b) =>
-      Math.max(a.lastFailureMs, a.lastSuccessMs) - Math.max(b.lastFailureMs, b.lastSuccessMs));
-    for (const entry of oldest.slice(0, this.entries.size - MAX_ENTRIES)) this.entries.delete(entry.peerId);
+  private ensureSlot(nowMs: number): boolean {
+    if (this.entries.size < MAX_ENTRIES) return true;
+    const reclaimable = this.reclaimableEntry(nowMs);
+    if (!reclaimable) return false;
+    this.entries.delete(reclaimable.peerId);
+    return true;
+  }
+
+  private reclaimableEntry(nowMs: number): Entry | undefined {
+    let selected: Entry | undefined;
+    for (const entry of this.entries.values()) {
+      if (entry.backoffUntilMs > nowMs) continue;
+      if (!selected || compareEntryAge(entry, selected) < 0) selected = entry;
+    }
+    return selected;
   }
 
   private async persist(): Promise<void> {
@@ -135,6 +149,11 @@ export class NativePeerReputationStore {
 export function classifyNativePeerFailure(error: unknown): NativePeerFailureKind {
   const message = error instanceof Error ? `${error.name} ${error.message}` : "";
   return /timeout|abort|ECONN|connect|dial|stream|reset|closed/i.test(message) ? "transient" : "protocol";
+}
+
+function compareEntryAge(a: Entry, b: Entry): number {
+  const byActivity = Math.max(a.lastFailureMs, a.lastSuccessMs) - Math.max(b.lastFailureMs, b.lastSuccessMs);
+  return byActivity !== 0 ? byActivity : a.peerId.localeCompare(b.peerId);
 }
 
 function validateSnapshot(value: unknown): Snapshot {
