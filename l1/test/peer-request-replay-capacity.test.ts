@@ -61,6 +61,56 @@ test("peer request replay cache fails closed at capacity without evicting unexpi
   }
 });
 
+test("peer request replay cache amortizes expiry sweeps until the earliest nonce expires", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-peer-replay-sweep-"));
+  try {
+    const identity = await loadOrCreateNodeIdentity(directory);
+    const now = 1_800_000_000_000;
+    const bodySha256 = sha256Hex(Buffer.from(canonicalJson({ block: 2 }), "utf8"));
+    const authenticator = new PeerRequestAuthenticator([identity.publicKey], chain, 4);
+    const signed = (nonceByte: string, timestampMs: number) => signPeerRequest(identity, {
+      ...chain,
+      ...request,
+      bodySha256,
+      timestampMs,
+      nonce: nonceByte.repeat(16)
+    });
+
+    assert.equal(
+      authenticator.verify(signed("11", now), { ...request, bodySha256 }, now),
+      identity.nodeId
+    );
+    assert.deepEqual(authenticator.replayCacheMetrics(), {
+      entries: 1,
+      sweepCount: 0,
+      nextSweepAtMs: now + 60_001
+    });
+
+    for (let offset = 1; offset <= 20; offset += 1) {
+      const timestampMs = now + offset;
+      assert.doesNotThrow(() => authenticator.preflight(signed("22", timestampMs), request, timestampMs));
+    }
+    assert.equal(authenticator.replayCacheMetrics().sweepCount, 0);
+    assert.equal(authenticator.replayCacheMetrics().entries, 1);
+
+    const expiryBoundary = now + 60_001;
+    assert.doesNotThrow(() => authenticator.preflight(signed("33", expiryBoundary), request, expiryBoundary));
+    assert.deepEqual(authenticator.replayCacheMetrics(), {
+      entries: 0,
+      sweepCount: 1,
+      nextSweepAtMs: null
+    });
+
+    assert.equal(
+      authenticator.verify(signed("44", expiryBoundary), { ...request, bodySha256 }, expiryBoundary),
+      identity.nodeId
+    );
+    assert.equal(authenticator.replayCacheMetrics().entries, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("peer request replay cache test capacity cannot exceed the production bound", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-peer-replay-cap-config-"));
   try {
