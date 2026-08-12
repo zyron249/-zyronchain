@@ -2340,7 +2340,7 @@ test("peer sync ordering prevents one host or IPv4 subnet from dominating early 
   assert.equal(peerDiversityBucket(subnetThree), "ipv4:10.20.30.0/24");
   assert.equal(peerDiversityBucket(hostOne), "host:node-a.example");
   assert.equal(peerDiversityBucket("https://node-a.example:9443"), "host:node-a.example");
-  assert.equal(peerDiversityBucket("https://[2001:db8::1]:9137"), "ipv6:2001:db8::1");
+  assert.equal(peerDiversityBucket("https://[2001:db8::1]:9137"), "ipv6:2001:0db8:0000:0000/64");
   assert.deepEqual(diversityOrderedPeers(peers), [subnetOne, hostOne, hostTwo, subnetTwo, subnetThree]);
   assert.deepEqual(diversityOrderedPeers(peers, 1), [hostOne, hostTwo, subnetOne, subnetTwo, subnetThree]);
 });
