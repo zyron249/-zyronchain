@@ -24,6 +24,10 @@ Target response times are engineering goals, not guarantees: acknowledge a credi
 
 Authenticated peer-request replay protection is a security boundary, not a best-effort cache. Accepted signed request nonces remain remembered for the allowed replay window. The implementation uses a bounded replay cache and **fails closed for unseen authenticated peer requests if that cache reaches capacity after expiry sweeping**; it must never evict an unexpired accepted nonce merely to admit newer traffic, because eviction would reopen replay acceptance inside the timestamp window. Capacity saturation may therefore sacrifice short-term peer liveness in preference to replay safety.
 
+## Native P2P admission work
+
+Native P2P peer-rate state is cardinality-bounded and fails closed for unseen identities while capacity is full. Expired entries are reclaimed without evicting unexpired peers. Expiry cleanup on this hot path is also amortized: ordinary requests and rotating identities that arrive before the earliest possible expiry do not trigger a full tracked-peer scan on every admission decision. This prevents bounded memory from becoming an avoidable request-amplified CPU surface while preserving the existing fixed-window quotas and fail-closed capacity behavior.
+
 ## Maintainer continuity
 
 No personal mailbox or founder-only credential may be the sole security channel for a public ZyronChain network. Before public-testnet authorization, the repository must have the independent maintainer/custodian evidence required by `docs/L1_MAINTAINER_SUCCESSION.md` and `docs/l1-maintainer-succession.json`.

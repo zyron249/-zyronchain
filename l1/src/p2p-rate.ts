@@ -1,5 +1,6 @@
 export class P2PPeerRateLimiter {
   private readonly peers = new Map<string, { startedAtMs: number; count: number }>();
+  private nextSweepAtMs = Number.POSITIVE_INFINITY;
 
   constructor(
     private readonly requestsPerWindow: number,
@@ -17,20 +18,32 @@ export class P2PPeerRateLimiter {
     if (peerId.length < 1 || peerId.length > 256 || !Number.isSafeInteger(nowMs) || nowMs < 0) {
       throw new Error("Invalid P2P peer rate-limit identity");
     }
-    this.sweep(nowMs);
+
     let entry = this.peers.get(peerId);
+    if (entry && nowMs - entry.startedAtMs >= this.windowMs) {
+      this.peers.delete(peerId);
+      entry = undefined;
+    }
+
     if (!entry) {
+      if (this.peers.size >= this.maxTrackedPeers && nowMs >= this.nextSweepAtMs) this.sweep(nowMs);
       if (this.peers.size >= this.maxTrackedPeers) return false;
       entry = { startedAtMs: nowMs, count: 0 };
       this.peers.set(peerId, entry);
+      this.nextSweepAtMs = Math.min(this.nextSweepAtMs, nowMs + this.windowMs);
     }
+
     entry.count += 1;
     return entry.count <= this.requestsPerWindow;
   }
 
   private sweep(nowMs: number): void {
+    let nextSweepAtMs = Number.POSITIVE_INFINITY;
     for (const [peerId, entry] of this.peers) {
-      if (nowMs - entry.startedAtMs >= this.windowMs) this.peers.delete(peerId);
+      const expiresAtMs = entry.startedAtMs + this.windowMs;
+      if (nowMs >= expiresAtMs) this.peers.delete(peerId);
+      else nextSweepAtMs = Math.min(nextSweepAtMs, expiresAtMs);
     }
+    this.nextSweepAtMs = nextSweepAtMs;
   }
 }
