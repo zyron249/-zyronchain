@@ -26,6 +26,11 @@ interface BackendMarker extends BackendMarkerBody { checksum: string }
 interface SemanticBackendMarkerBody { version: 1; backend: "sqlite-semantic-v1" }
 interface SemanticBackendMarker extends SemanticBackendMarkerBody { checksum: string }
 
+const LEGACY_NODE_LINE_MAX_BYTES = 64 * 1024;
+const LEGACY_SEMANTIC_KEY_LINE_MAX_BYTES = 1_024;
+const LEGACY_MIGRATION_BATCH_SIZE = 256;
+const LEGACY_READ_CHUNK_BYTES = 16 * 1024;
+
 export interface StateV2CommitFaultHooks {
   afterSemanticKeysSync?: () => void | Promise<void>;
 }
@@ -60,29 +65,19 @@ export class StateV2DiskStore {
     }
     try {
       if (!(await loadBackendMarker(dataDir))) {
-        const legacy = await loadLegacyNodeRecords(dataDir);
+        await migrateLegacyNodeRecords(dataDir, nodeObjects);
         if (metadata && metadata.root !== SparseMerkleState.empty().root()) {
-          const legacyState = SparseMerkleState.fromNodeRecords(metadata.root, legacy.records.values());
-          const reachable = legacyState.reachableNodeHashes();
-          const records = [...legacy.records].filter(([hash]) => reachable.has(hash)).map(([, record]) => record);
-          await nodeObjects.putMany(records);
-          // Publish the backend marker only after the new database independently
-          // resolves and authenticates the complete committed root.
-          nodeObjects.validateReachable(SparseMerkleState.fromNodeResolver(metadata.root, nodeObjects.resolver()), false);
-          if (legacy.unterminatedTail.length > 0 || legacy.completeLines !== records.length) {
-            await compactNodeLog(dataDir, records);
-          }
+          const migratedState = SparseMerkleState.fromNodeResolver(metadata.root, nodeObjects.resolver());
+          // Publish the backend marker only after SQLite independently resolves
+          // and authenticates the complete committed legacy root. Migration may
+          // leave unreachable immutable rows, which are harmless and removable
+          // by the explicit authenticated history-prune path.
+          nodeObjects.validateReachable(migratedState, false);
         }
         await writeBackendMarker(dataDir);
       }
       if (!(await loadSemanticBackendMarker(dataDir))) {
-        const legacyKeys = await loadSemanticKeyPreimages(dataDir);
-        await nodeObjects.putSemanticKeys(legacyKeys);
-        for (const key of legacyKeys) {
-          if (nodeObjects.semanticKey(stateV2KeyHash(key)) !== key) {
-            throw new Error("State v2 semantic-key migration verification failed");
-          }
-        }
+        await migrateSemanticKeyPreimages(dataDir, nodeObjects);
         await writeSemanticBackendMarker(dataDir);
       }
     } catch (error) {
@@ -180,34 +175,24 @@ export class StateV2DiskStore {
   }
 }
 
-interface LegacyNodeLoad {
-  records: Map<string, StateV2NodeRecord>;
-  unterminatedTail: string;
-  completeLines: number;
-}
-
-async function loadLegacyNodeRecords(dataDir: string): Promise<LegacyNodeLoad> {
-  let text = "";
-  try { text = await readFile(join(dataDir, "state-v2.nodes.ndjson"), "utf8"); }
-  catch (error) {
-    if (isMissingFile(error)) return { records: new Map(), unterminatedTail: "", completeLines: 0 };
-    throw error;
-  }
-  const lines = text.split("\n");
-  const unterminatedTail = lines.pop() ?? "";
-  const records = new Map<string, StateV2NodeRecord>();
-  let completeLines = 0;
-  for (const line of lines) {
-    if (!line) continue;
-    completeLines += 1;
-    const envelope = parseNodeEnvelope(line);
-    const existing = records.get(envelope.record.hash);
-    if (existing && canonicalJson(existing) !== canonicalJson(envelope.record)) {
-      throw new Error("Conflicting duplicate persisted State v2 node");
+async function migrateLegacyNodeRecords(dataDir: string, nodeObjects: StateV2NodeObjectStore): Promise<void> {
+  const batch: StateV2NodeRecord[] = [];
+  const flush = async (): Promise<void> => {
+    if (batch.length === 0) return;
+    await nodeObjects.putMany(batch);
+    batch.length = 0;
+  };
+  await forEachCompleteLegacyLine(
+    join(dataDir, "state-v2.nodes.ndjson"),
+    LEGACY_NODE_LINE_MAX_BYTES,
+    "State v2 legacy node",
+    async (line) => {
+      const envelope = parseNodeEnvelope(line);
+      batch.push(envelope.record);
+      if (batch.length >= LEGACY_MIGRATION_BATCH_SIZE) await flush();
     }
-    records.set(envelope.record.hash, envelope.record);
-  }
-  return { records, unterminatedTail, completeLines };
+  );
+  await flush();
 }
 
 async function loadBackendMarker(dataDir: string): Promise<BackendMarker | undefined> {
@@ -238,48 +223,29 @@ async function writeBackendMarker(dataDir: string): Promise<void> {
   try { await directory.sync(); } finally { await directory.close(); }
 }
 
-async function compactNodeLog(dataDir: string, records: Iterable<StateV2NodeRecord>): Promise<void> {
-  const path = join(dataDir, "state-v2.nodes.ndjson");
-  const temporary = `${path}.compact-${process.pid}-${Date.now()}.tmp`;
-  const handle = await open(temporary, "wx", 0o600);
-  try {
-    for (const record of records) {
-      const envelope: NodeEnvelope = { record, checksum: sha256Hex(canonicalJson(record)) };
-      await handle.writeFile(`${canonicalJson(envelope)}\n`, "utf8");
+async function migrateSemanticKeyPreimages(dataDir: string, nodeObjects: StateV2NodeObjectStore): Promise<void> {
+  const batch: string[] = [];
+  const flush = async (): Promise<void> => {
+    if (batch.length === 0) return;
+    await nodeObjects.putSemanticKeys(batch);
+    for (const key of batch) {
+      if (nodeObjects.semanticKey(stateV2KeyHash(key)) !== key) {
+        throw new Error("State v2 semantic-key migration verification failed");
+      }
     }
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  await rename(temporary, path);
-  const directory = await open(dataDir, "r");
-  try { await directory.sync(); } finally { await directory.close(); }
-}
-
-async function loadSemanticKeyPreimages(dataDir: string): Promise<Set<string>> {
-  const path = join(dataDir, "state-v2.keys.ndjson");
-  let text = "";
-  try {
-    text = await readFile(path, "utf8");
-  } catch (error) {
-    if (!isMissingFile(error)) throw error;
-    return new Set();
-  }
-  const lines = text.split("\n");
-  lines.pop(); // Ignore only an unterminated crash tail, as with node records.
-  const keys = new Set<string>();
-  for (const line of lines) {
-    if (!line) continue;
-    if (Buffer.byteLength(line, "utf8") > 1_024) throw new Error("Corrupt persisted State v2 semantic key");
-    const value = JSON.parse(line) as Partial<KeyEnvelope>;
-    if (typeof value.key !== "string" || value.key.length < 1 || value.key.length > 256 || typeof value.checksum !== "string") {
-      throw new Error("Corrupt persisted State v2 semantic key");
+    batch.length = 0;
+  };
+  await forEachCompleteLegacyLine(
+    join(dataDir, "state-v2.keys.ndjson"),
+    LEGACY_SEMANTIC_KEY_LINE_MAX_BYTES,
+    "State v2 legacy semantic key",
+    async (line) => {
+      const key = parseSemanticKeyEnvelope(line);
+      batch.push(key);
+      if (batch.length >= LEGACY_MIGRATION_BATCH_SIZE) await flush();
     }
-    const body: KeyEnvelopeBody = { key: value.key };
-    if (sha256Hex(canonicalJson(body)) !== value.checksum) throw new Error("State v2 semantic key checksum mismatch");
-    keys.add(value.key);
-  }
-  return keys;
+  );
+  await flush();
 }
 
 async function loadSemanticBackendMarker(dataDir: string): Promise<SemanticBackendMarker | undefined> {
@@ -310,8 +276,67 @@ async function writeSemanticBackendMarker(dataDir: string): Promise<void> {
   try { await directory.sync(); } finally { await directory.close(); }
 }
 
+async function forEachCompleteLegacyLine(
+  path: string,
+  maxLineBytes: number,
+  label: string,
+  onLine: (line: string) => void | Promise<void>
+): Promise<void> {
+  let handle;
+  try {
+    handle = await open(path, "r");
+  } catch (error) {
+    if (isMissingFile(error)) return;
+    throw error;
+  }
+  const chunk = Buffer.allocUnsafe(LEGACY_READ_CHUNK_BYTES);
+  let pending = Buffer.alloc(0);
+  let oversizedTail = false;
+  try {
+    while (true) {
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+      if (bytesRead === 0) break;
+      const view = chunk.subarray(0, bytesRead);
+      let start = 0;
+      for (let index = 0; index < view.length; index += 1) {
+        if (view[index] !== 0x0a) continue;
+        const segment = view.subarray(start, index);
+        if (oversizedTail || pending.length + segment.length > maxLineBytes) {
+          throw new Error(`${label} line exceeds ${maxLineBytes} byte limit`);
+        }
+        const lineBytes = pending.length === 0
+          ? Buffer.from(segment)
+          : Buffer.concat([pending, segment], pending.length + segment.length);
+        pending = Buffer.alloc(0);
+        if (lineBytes.length > 0) await onLine(lineBytes.toString("utf8"));
+        start = index + 1;
+      }
+      const remainder = view.subarray(start);
+      if (!oversizedTail) {
+        if (pending.length + remainder.length > maxLineBytes) {
+          // Do not retain an attacker-controlled oversized partial line. If a
+          // newline later terminates it, fail closed; if EOF arrives first it is
+          // the one crash-tail record legacy recovery is allowed to ignore.
+          pending = Buffer.alloc(0);
+          oversizedTail = true;
+        } else if (remainder.length > 0) {
+          pending = pending.length === 0
+            ? Buffer.from(remainder)
+            : Buffer.concat([pending, remainder], pending.length + remainder.length);
+        }
+      }
+    }
+    // Intentionally ignore only the final unterminated record, including an
+    // oversized one. Every newline-terminated record is byte-bounded and parsed.
+  } finally {
+    await handle.close();
+  }
+}
+
 function parseNodeEnvelope(line: string): NodeEnvelope {
-  const value = JSON.parse(line) as Partial<NodeEnvelope>;
+  let parsed: unknown;
+  try { parsed = JSON.parse(line); } catch { throw new Error("Corrupt persisted State v2 node"); }
+  const value = parsed as Partial<NodeEnvelope>;
   if (!value || typeof value !== "object" || typeof value.checksum !== "string" || !value.record ||
       typeof value.record !== "object") throw new Error("Corrupt persisted State v2 node");
   if (sha256Hex(canonicalJson(value.record)) !== value.checksum) throw new Error("State v2 node checksum mismatch");
@@ -321,12 +346,24 @@ function parseNodeEnvelope(line: string): NodeEnvelope {
   return value as NodeEnvelope;
 }
 
+function parseSemanticKeyEnvelope(line: string): string {
+  let parsed: unknown;
+  try { parsed = JSON.parse(line); } catch { throw new Error("Corrupt persisted State v2 semantic key"); }
+  const value = parsed as Partial<KeyEnvelope>;
+  if (typeof value.key !== "string" || value.key.length < 1 || value.key.length > 256 || typeof value.checksum !== "string") {
+    throw new Error("Corrupt persisted State v2 semantic key");
+  }
+  const body: KeyEnvelopeBody = { key: value.key };
+  if (sha256Hex(canonicalJson(body)) !== value.checksum) throw new Error("State v2 semantic key checksum mismatch");
+  return value.key;
+}
+
 function parseRootMetadata(text: string): RootMetadata {
   const value = JSON.parse(text) as Partial<RootMetadata>;
   if (value.version !== 1 || typeof value.root !== "string" || !/^[0-9a-f]{64}$/.test(value.root) ||
       typeof value.checksum !== "string") throw new Error("Corrupt State v2 root metadata");
   const body: RootMetadataBody = { version: 1, root: value.root };
-  if (sha256Hex(canonicalJson(body)) !== value.checksum) throw new Error("State v2 root checksum mismatch");
+  if (value.checksum !== sha256Hex(canonicalJson(body))) throw new Error("State v2 root checksum mismatch");
   return value as RootMetadata;
 }
 
