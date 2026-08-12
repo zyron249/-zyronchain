@@ -29,6 +29,13 @@ export function assertMiningNetworkIdentity(
   }
 }
 
+export function miningFinalizedSnapshotMatches(
+  before: { height: number; tipHash: string },
+  after: { height: number; tipHash: string }
+): boolean {
+  return before.height === after.height && before.tipHash === after.tipHash;
+}
+
 export function miningChallengeMatchesFinalizedTip(
   status: { height: number; tipHash: string },
   challenge: MiningChallengeTip
