@@ -28,6 +28,19 @@ test("node identity is generated once, stored privately, and stable across resta
   }
 });
 
+test("concurrent first node-identity creation converges on one durable identity", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-peer-id-race-"));
+  try {
+    const identities = await Promise.all(Array.from({ length: 8 }, () => loadOrCreateNodeIdentity(directory)));
+    for (const identity of identities.slice(1)) assert.deepEqual(identity, identities[0]);
+    const reopened = await loadOrCreateNodeIdentity(directory);
+    assert.deepEqual(reopened, identities[0]);
+    assert.equal((await stat(join(directory, "node-identity.json"))).mode & 0o777, 0o600);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("node identity fails closed when persisted key material is inconsistent", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-peer-id-corrupt-"));
   try {
