@@ -1,6 +1,8 @@
 import { lstat, open, type FileHandle } from "node:fs/promises";
 import { resolve } from "node:path";
 
+export const MAX_PRIVATE_FILE_BYTES = 64 * 1024;
+
 interface OpenedPrivateFile {
   handle: FileHandle;
   resolved: string;
@@ -16,11 +18,27 @@ export async function assertPrivateRegularFile(path: string, label: string): Pro
  * The path itself must not be a symlink, POSIX group/other permission bits must
  * be clear, and on POSIX the descriptor inode/device must still match the path
  * after open so a path replacement between validation and read fails closed.
+ * Reads are capped so oversized or concurrently growing local secret files cannot
+ * trigger unbounded startup memory allocation.
  */
 export async function readPrivateRegularFile(path: string, label: string): Promise<string> {
   const opened = await openValidatedPrivateFile(path, label);
   try {
-    return await opened.handle.readFile({ encoding: "utf8" });
+    const metadata = await opened.handle.stat();
+    if (metadata.size > MAX_PRIVATE_FILE_BYTES) {
+      throw new Error(`${label} exceeds ${MAX_PRIVATE_FILE_BYTES} byte limit`);
+    }
+    const buffer = Buffer.allocUnsafe(MAX_PRIVATE_FILE_BYTES + 1);
+    let total = 0;
+    while (total <= MAX_PRIVATE_FILE_BYTES) {
+      const { bytesRead } = await opened.handle.read(buffer, total, buffer.length - total, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > MAX_PRIVATE_FILE_BYTES) {
+        throw new Error(`${label} exceeds ${MAX_PRIVATE_FILE_BYTES} byte limit`);
+      }
+    }
+    return buffer.subarray(0, total).toString("utf8");
   } finally {
     await opened.handle.close();
   }
