@@ -16,6 +16,7 @@ import {
 import { addressFromPublicKey } from "./crypto.js";
 import { Mempool } from "./mempool.js";
 import { PeerReputationStore } from "./peer-reputation.js";
+import { ipv6Prefix64 } from "./p2p-address.js";
 import { nativeP2PFrameBudgetMetrics } from "./p2p-frame.js";
 import { MAX_DISCOVERY_RESPONSE_RECORDS, PeerDirectory } from "./peer-directory.js";
 import {
@@ -933,7 +934,7 @@ export function peerDiversityBucket(peer: string): string {
     const octets = hostname.split(".");
     return `ipv4:${octets.slice(0, 3).join(".")}.0/24`;
   }
-  if (isIP(hostname) === 6) return `ipv6:${hostname}`;
+  if (isIP(hostname) === 6) return `ipv6:${ipv6Prefix64(hostname)}/64`;
   return `host:${hostname}`;
 }
 

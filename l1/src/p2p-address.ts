@@ -123,8 +123,9 @@ function parseNativeTcpAddress(value: string, peer: boolean): Multiaddr {
   return address;
 }
 
-function ipv6Prefix64(value: string): string {
-  const halves = value.split("::");
+export function ipv6Prefix64(value: string): string {
+  const normalized = value.toLowerCase();
+  const halves = normalized.split("::");
   if (halves.length > 2) throw new Error("Invalid native peer IPv6 host");
   const left = halves[0] ? halves[0].split(":") : [];
   const right = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
