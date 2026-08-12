@@ -139,6 +139,11 @@ export interface FinalizedBlockFaultHooks {
   afterBlockSync?: () => void | Promise<void>;
 }
 
+export interface FinalizedLogOpenFaultHooks {
+  afterFileSync?: () => void | Promise<void>;
+  afterDirectorySync?: () => void | Promise<void>;
+}
+
 export class ChainStore {
   private persistedHeight: number;
   private persistedBytes: number;
@@ -175,7 +180,11 @@ export class ChainStore {
     return !this.persistenceFaulted;
   }
 
-  static async open(genesis: GenesisConfig, dataDir: string): Promise<ChainStore> {
+  static async open(
+    genesis: GenesisConfig,
+    dataDir: string,
+    faultHooks: FinalizedLogOpenFaultHooks = {}
+  ): Promise<ChainStore> {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     const genesisChain = new ZyronChain(genesis);
     const metadataPath = join(dataDir, "metadata.json");
@@ -187,8 +196,19 @@ export class ChainStore {
     await ensureMetadata(metadataPath, expected);
 
     const blocksPath = join(dataDir, "blocks.ndjson");
-    const blocksHandle = await open(blocksPath, "a", 0o600);
-    await blocksHandle.close();
+    try {
+      const blocksHandle = await open(blocksPath, "a", 0o600);
+      try {
+        await blocksHandle.sync();
+        await faultHooks.afterFileSync?.();
+      } finally {
+        await blocksHandle.close();
+      }
+      await syncDirectory(dataDir);
+      await faultHooks.afterDirectorySync?.();
+    } catch (error) {
+      throw new Error("Finalized block log initialization persistence failed", { cause: error });
+    }
     const retention = await loadHistoryRetention(genesis, dataDir);
     const checkpoint = await loadRecoveryCheckpoint(genesis, dataDir);
     if (retention && (!checkpoint || checkpoint.checkpoint.version !== 2 ||
