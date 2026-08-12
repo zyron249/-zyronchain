@@ -15,7 +15,7 @@ ZyronChain protocol v5 implements permissionless proof-of-work **issuance** whil
 
 ## Run
 
-Use a ZyronChain encrypted wallet and a local or HTTPS RPC endpoint. The packaged miner deliberately refuses legacy plaintext private-key JSON. On POSIX systems both `wallet.json` and `wallet.password` must be owner-only before the miner reads either file (`chmod 600` recommended).
+Use a ZyronChain encrypted wallet and a local or HTTPS RPC endpoint. The packaged miner deliberately refuses legacy plaintext private-key JSON. On POSIX systems both `wallet.json` and `wallet.password` must be owner-only before the miner reads either file (`chmod 600` recommended). Secret paths must be real regular files rather than symbolic links; the miner validates the exact opened file descriptor and reads from that same descriptor so path replacement during validation fails closed.
 
 ```sh
 chmod 600 /path/to/wallet.json /path/to/wallet.password

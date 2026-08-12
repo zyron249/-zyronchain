@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -72,6 +72,27 @@ test("canonical CLI rejects group/other-readable secrets and existing node ident
     assert.throws(
       () => enforceCanonicalCliSecurityPolicy(["node", "--data", root]),
       /node identity.*group\/other users/
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("canonical CLI rejects symbolic-link secret paths", async (t) => {
+  if (process.platform === "win32") return t.skip("symbolic-link creation may require elevated Windows privileges");
+  const root = await mkdtemp(join(tmpdir(), "zyron-cli-secret-link-"));
+  const target = join(root, "wallet.password.real");
+  const link = join(root, "wallet.password");
+  try {
+    await writeFile(target, "a-strong-local-wallet-password\n", { mode: 0o600 });
+    await symlink(target, link);
+    assert.throws(
+      () => enforceCanonicalCliSecurityPolicy(["keygen", "--out", join(root, "wallet.json"), "--password-file", link]),
+      /must not reference a symbolic link/
+    );
+    assert.throws(
+      () => enforceCanonicalCliSecurityPolicy(["node", "--data", root, "--validator-signer-token-file", link, "--validator-signer-url", "https:\/\/signer.example", "--validator-public-key", "11".repeat(64)]),
+      /must not reference a symbolic link/
     );
   } finally {
     await rm(root, { recursive: true, force: true });

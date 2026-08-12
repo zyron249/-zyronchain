@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { normalizeSecureRpcUrl } from "./local-security.js";
@@ -50,7 +50,8 @@ function optionValues(argv: readonly string[], name: string): string[] {
 }
 
 function assertPrivateRegularFileSync(path: string, label: string): void {
-  const metadata = statSync(resolve(path));
+  const metadata = lstatSync(resolve(path));
+  if (metadata.isSymbolicLink()) throw new Error(`${label} must not reference a symbolic link`);
   if (!metadata.isFile()) throw new Error(`${label} must reference a regular file`);
   if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0) {
     throw new Error(`${label} must not be accessible by group/other users (0600 recommended)`);

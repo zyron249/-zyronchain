@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -54,6 +54,26 @@ test("standalone miner rejects group or world-accessible secret files on POSIX",
     await chmod(keyPath, 0o600);
     await chmod(passwordPath, 0o640);
     await assert.rejects(loadEncryptedMinerPrivateKey(keyPath, passwordPath), /Miner password file must not be readable/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("standalone miner rejects symlinked keystore and password paths", async (t) => {
+  if (process.platform === "win32") return t.skip("symbolic-link creation may require elevated Windows privileges");
+  const root = await mkdtemp(join(tmpdir(), "zyron-miner-symlink-"));
+  const realKey = join(root, "real-wallet.json");
+  const realPassword = join(root, "real-wallet.password");
+  const keyLink = join(root, "wallet.json");
+  const passwordLink = join(root, "wallet.password");
+  try {
+    await writeFile(realKey, `${JSON.stringify(encryptPrivateKey(PRIVATE_KEY, PASSWORD))}\n`, { mode: 0o600 });
+    await writeFile(realPassword, `${PASSWORD}\n`, { mode: 0o600 });
+    await symlink(realKey, keyLink);
+    await symlink(realPassword, passwordLink);
+
+    await assert.rejects(loadEncryptedMinerPrivateKey(keyLink, realPassword), /Miner keystore must not be a symbolic link/);
+    await assert.rejects(loadEncryptedMinerPrivateKey(realKey, passwordLink), /Miner password file must not be a symbolic link/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
