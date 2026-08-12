@@ -5,6 +5,11 @@ export interface MiningRpcStatus {
   tipHash: unknown;
 }
 
+export interface MiningChallengeTip {
+  height: number;
+  previousHash: string;
+}
+
 export function assertMiningNetworkIdentity(
   status: MiningRpcStatus,
   expectedChainId: string,
@@ -22,4 +27,11 @@ export function assertMiningNetworkIdentity(
   if (status.genesisHash !== expectedGenesisHash) {
     throw new Error("Genesis hash does not match RPC genesis hash");
   }
+}
+
+export function miningChallengeMatchesFinalizedTip(
+  status: { height: number; tipHash: string },
+  challenge: MiningChallengeTip
+): boolean {
+  return status.tipHash === challenge.previousHash && status.height + 1 === challenge.height;
 }
