@@ -235,6 +235,7 @@ export class NodeService {
   readiness(): NodeReadiness {
     const reasons: string[] = [];
     if (!this.store.persistenceHealthy) reasons.push("persistence-unhealthy");
+    if (this.signingJournal && !this.signingJournal.persistenceHealthy) reasons.push("signing-journal-unhealthy");
     if (this.validatorClockFaulted) reasons.push("validator-clock-unhealthy");
     return {
       ready: reasons.length === 0,
@@ -398,6 +399,7 @@ export class NodeService {
       validateBlockShape(value);
       const block = value as Block;
       await this.store.commitFinalizedBlock(block);
+      await this.signingJournal?.compactThrough(this.store.chain.height);
       this.mempool.remove(block.transactions.map((tx) => tx.txid));
       const nextMiningHeight = this.store.chain.height + 1;
       const nextMiningPreviousHash = this.store.chain.tip.hash;

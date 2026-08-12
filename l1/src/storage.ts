@@ -81,6 +81,11 @@ export interface SigningJournalFaultHooks {
   afterSync?: () => void | Promise<void>;
 }
 
+export interface SigningJournalCompactionFaultHooks {
+  afterTemporarySync?: () => void | Promise<void>;
+  afterRename?: () => void | Promise<void>;
+}
+
 export class NodeDataDirectoryLease {
   private closed = false;
   private constructor(private readonly database: Database.Database) {}
@@ -761,6 +766,10 @@ export class SigningJournal {
     return journal;
   }
 
+  get persistenceHealthy(): boolean {
+    return !this.persistenceFaulted;
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
@@ -787,6 +796,71 @@ export class SigningJournal {
     faultHooks: SigningJournalFaultHooks = {}
   ): Promise<void> {
     return this.reserveChoice(height, round, "skip", previousHash, faultHooks);
+  }
+
+  async compactThrough(
+    finalizedHeight: number,
+    faultHooks: SigningJournalCompactionFaultHooks = {}
+  ): Promise<number> {
+    if (this.closed) throw new Error("Signing journal is closed");
+    if (this.persistenceFaulted) throw new Error("Signing journal persistence fault requires validator restart");
+    if (!Number.isSafeInteger(finalizedHeight) || finalizedHeight < 0) throw new Error("Invalid signing journal compaction height");
+
+    const retained: Array<{ key: string; height: number; round: number; kind: "attest" | "skip"; value: string }> = [];
+    const removedKeys: string[] = [];
+    for (const [key, reservation] of this.reservations) {
+      const separator = key.indexOf(":");
+      const reservationSeparator = reservation.indexOf(":");
+      const height = Number(key.slice(0, separator));
+      const round = Number(key.slice(separator + 1));
+      const kind = reservation.slice(0, reservationSeparator);
+      const value = reservation.slice(reservationSeparator + 1);
+      if (!Number.isSafeInteger(height) || height < 1 || !Number.isSafeInteger(round) || round < 0 ||
+          (kind !== "attest" && kind !== "skip") || !/^[0-9a-f]{64}$/.test(value)) {
+        this.persistenceFaulted = true;
+        throw new Error("Signing journal in-memory state is corrupt; validator restart required");
+      }
+      if (height <= finalizedHeight) removedKeys.push(key);
+      else retained.push({ key, height, round, kind, value });
+    }
+    if (removedKeys.length === 0) return 0;
+
+    retained.sort((left, right) => left.height - right.height || left.round - right.round || left.key.localeCompare(right.key));
+    const temporary = `${this.path}.compact-${process.pid}-${randomBytes(8).toString("hex")}`;
+    let renamed = false;
+    try {
+      const handle = await open(temporary, "wx", 0o600);
+      try {
+        for (const entry of retained) {
+          const line = `${JSON.stringify({
+            height: entry.height,
+            round: entry.round,
+            kind: entry.kind,
+            value: entry.value
+          })}\n`;
+          if (Buffer.byteLength(line, "utf8") > MAX_SIGNING_LINE_BYTES) {
+            throw new Error("Signing journal compaction entry exceeds line limit");
+          }
+          await handle.writeFile(line, "utf8");
+        }
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await faultHooks.afterTemporarySync?.();
+      await rename(temporary, this.path);
+      renamed = true;
+      await faultHooks.afterRename?.();
+      await syncDirectory(dirname(this.path));
+    } catch (error) {
+      this.persistenceFaulted = true;
+      throw new Error("Signing journal compaction failed; validator restart required", { cause: error });
+    } finally {
+      if (!renamed) await rm(temporary, { force: true });
+    }
+
+    for (const key of removedKeys) this.reservations.delete(key);
+    return removedKeys.length;
   }
 
   private async reserveChoice(
