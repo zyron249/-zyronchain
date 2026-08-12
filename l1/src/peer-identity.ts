@@ -163,6 +163,8 @@ export function signPeerRequest(
 export class PeerRequestAuthenticator {
   private readonly trustedPublicKeys: Set<string>;
   private readonly seenNonces = new Map<string, number>();
+  private nextReplaySweepAtMs = Number.POSITIVE_INFINITY;
+  private replaySweepCount = 0;
 
   constructor(
     trustedPublicKeys: readonly string[],
@@ -186,7 +188,7 @@ export class PeerRequestAuthenticator {
     nowMs = Date.now()
   ): void {
     const fields = this.validateHeaders(headers, nowMs);
-    this.sweep(nowMs);
+    this.sweepIfDue(nowMs);
     if (this.seenNonces.has(`${fields.nodeId}:${fields.nonce}`)) {
       throw new Error("Replayed peer request");
     }
@@ -213,7 +215,7 @@ export class PeerRequestAuthenticator {
     assertHex(input.bodySha256, 32, "peer request body hash");
     if (input.bodySha256 !== fields.bodySha256) throw new Error("Peer request body hash mismatch");
 
-    this.sweep(nowMs);
+    this.sweepIfDue(nowMs);
     const replayKey = `${fields.nodeId}:${fields.nonce}`;
     if (this.seenNonces.has(replayKey)) throw new Error("Replayed peer request");
     const payload = peerRequestPayload(fields.nodeId, fields.publicKey, {
@@ -228,7 +230,16 @@ export class PeerRequestAuthenticator {
     }
     this.assertReplayCapacity();
     this.seenNonces.set(replayKey, fields.timestampMs);
+    this.nextReplaySweepAtMs = Math.min(this.nextReplaySweepAtMs, replayExpiryAtMs(fields.timestampMs));
     return fields.nodeId;
+  }
+
+  replayCacheMetrics(): { entries: number; sweepCount: number; nextSweepAtMs: number | null } {
+    return {
+      entries: this.seenNonces.size,
+      sweepCount: this.replaySweepCount,
+      nextSweepAtMs: Number.isFinite(this.nextReplaySweepAtMs) ? this.nextReplaySweepAtMs : null
+    };
   }
 
   private assertReplayCapacity(): void {
@@ -269,11 +280,24 @@ export class PeerRequestAuthenticator {
     return { nodeId, publicKey, timestampMs, nonce, bodySha256, signature };
   }
 
-  private sweep(nowMs: number): void {
+  private sweepIfDue(nowMs: number): void {
+    if (nowMs < this.nextReplaySweepAtMs) return;
+    this.replaySweepCount += 1;
+    let nextSweepAtMs = Number.POSITIVE_INFINITY;
     for (const [key, timestampMs] of this.seenNonces) {
-      if (nowMs - timestampMs > PEER_REQUEST_MAX_SKEW_MS) this.seenNonces.delete(key);
+      const expiresAtMs = replayExpiryAtMs(timestampMs);
+      if (nowMs >= expiresAtMs) this.seenNonces.delete(key);
+      else nextSweepAtMs = Math.min(nextSweepAtMs, expiresAtMs);
     }
+    this.nextReplaySweepAtMs = nextSweepAtMs;
   }
+}
+
+function replayExpiryAtMs(timestampMs: number): number {
+  const delta = PEER_REQUEST_MAX_SKEW_MS + 1;
+  return timestampMs > Number.MAX_SAFE_INTEGER - delta
+    ? Number.POSITIVE_INFINITY
+    : timestampMs + delta;
 }
 
 function peerRequestPayload(
