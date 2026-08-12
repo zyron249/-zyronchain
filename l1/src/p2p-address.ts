@@ -1,106 +1,120 @@
-import { isIP } from "node:net";
 import { multiaddr, type Multiaddr } from "@multiformats/multiaddr";
 
-const MAX_NATIVE_P2P_ADDRESS_LENGTH = 512;
-
-export function parseNativeListenAddress(value: string): Multiaddr {
-  return parseNativeTcpAddress(value, false);
+export function parseNativeListenAddress(value: string): string {
+  const address = parseNativeTcpAddress(value, false);
+  const components = address.getComponents();
+  if (components.some((component) => component.name === "p2p")) {
+    throw new Error("Native P2P listen address must not include a peer ID");
+  }
+  if (components.length !== 2) throw new Error("Native P2P listen address must be host/TCP only");
+  return address.toString();
 }
 
 export function parseNativePeerAddress(value: string): Multiaddr {
-  return parseNativeTcpAddress(value, true);
+  const address = parseNativeTcpAddress(value, true);
+  const components = address.getComponents();
+  const peerIds = components.filter((component) => component.name === "p2p" && component.value);
+  if (peerIds.length !== 1) throw new Error("Configured native peer must pin exactly one /p2p/<PeerId>");
+  if (components.length !== 3 || components[2]?.name !== "p2p") {
+    throw new Error("Configured native peer must be host/TCP/p2p only");
+  }
+  return address;
 }
 
-export function nativePeerAddressHost(value: string): string {
-  const address = parseNativePeerAddress(value);
-  const component = address.getComponents().find((item) => ["ip4", "ip6", "dns", "dns4", "dns6"].includes(item.name));
-  if (!component?.value) throw new Error("Native P2P peer address is missing a host");
-  return component.value.toLowerCase();
-}
-
-export function nativePeerFailureDomain(value: string): string {
-  const address = parseNativePeerAddress(value);
-  const component = address.getComponents().find((item) => ["ip4", "ip6", "dns", "dns4", "dns6"].includes(item.name));
-  if (!component?.value) throw new Error("Native P2P peer address is missing a host");
-  const host = component.value.toLowerCase();
-  if (component.name === "ip4") {
-    const octets = host.split(".");
+export function nativePeerDiversityBucket(peer: Multiaddr): string {
+  const host = peer.getComponents().find((component) => ["ip4", "ip6", "dns", "dns4", "dns6"].includes(component.name));
+  if (!host?.value) throw new Error("Native peer has no diversity host");
+  const value = host.value.toLowerCase();
+  if (host.name === "ip4") {
+    const octets = value.split(".");
     return `ipv4:${octets.slice(0, 3).join(".")}.0/24`;
   }
-  if (component.name === "ip6") return `ipv6:${ipv6Prefix64(host)}/64`;
-  return `host:${host}`;
+  if (host.name === "ip6") return `ipv6:${ipv6Prefix64(value)}/64`;
+  return `host:${value}`;
 }
 
-export function nativePeerPinnedId(value: string): string {
-  const address = parseNativePeerAddress(value);
-  const peer = address.getComponents().find((component) => component.name === "p2p");
-  if (!peer?.value) throw new Error("Native P2P peer address must pin a PeerId");
-  return peer.value;
+export function nativePeerId(peer: Multiaddr): string {
+  const component = peer.getComponents().find((item) => item.name === "p2p" && item.value);
+  if (!component?.value) throw new Error("Native peer has no pinned PeerId");
+  return component.value;
 }
 
-export function nativePeerDialAddress(value: string): Multiaddr {
-  const address = parseNativePeerAddress(value);
-  const components = address.getComponents().filter((component) => component.name !== "p2p");
-  return multiaddr(`/${components.map((component) => `${component.name}/${component.value}`).join("/")}`);
-}
-
-export function nativePeerAddressKey(value: string): string {
-  return parseNativePeerAddress(value).toString();
-}
-
-export function nativePeerTransportAddress(value: string): string {
-  const address = parseNativePeerAddress(value);
-  const components = address.getComponents().filter((component) => component.name !== "p2p");
-  return `/${components.map((component) => `${component.name}/${component.value}`).join("/")}`;
-}
-
-export function assertPublicNativePeerAddress(value: string): void {
-  const host = nativePeerAddressHost(value);
-  if (isIP(host) === 4) {
-    const octets = host.split(".").map(Number);
-    if (
-      octets[0] === 10 || octets[0] === 127 || octets[0] === 0 ||
-      (octets[0] === 169 && octets[1] === 254) ||
-      (octets[0] === 172 && octets[1]! >= 16 && octets[1]! <= 31) ||
-      (octets[0] === 192 && octets[1] === 168) ||
-      (octets[0] === 100 && octets[1]! >= 64 && octets[1]! <= 127) ||
-      (octets[0] === 192 && octets[1] === 0 && octets[2] === 0) ||
-      (octets[0] === 192 && octets[1] === 0 && octets[2] === 2) ||
-      (octets[0] === 198 && octets[1] === 18) ||
-      (octets[0] === 198 && octets[1] === 19) ||
-      (octets[0] === 198 && octets[1] === 51 && octets[2] === 100) ||
-      (octets[0] === 203 && octets[1] === 0 && octets[2] === 113) ||
-      octets[0]! >= 224
-    ) throw new Error("Native P2P peer address must use a public IP");
-    return;
+export function parseNativePeerGroup(value: string): { peerId: string; group: string } {
+  const separator = value.indexOf("=");
+  if (separator <= 0 || separator === value.length - 1) throw new Error("Native peer group must be <PeerId>=<group>");
+  const peerId = value.slice(0, separator);
+  const group = value.slice(separator + 1);
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(group)) throw new Error("Invalid native peer group label");
+  try {
+    // Reuse multiaddr's reviewed PeerId codec for syntax validation.
+    multiaddr(`/p2p/${peerId}`);
+  } catch {
+    throw new Error("Invalid native peer group PeerId");
   }
-  if (isIP(host) === 6) {
-    const normalized = host.toLowerCase();
-    if (
-      normalized === "::" || normalized === "::1" ||
-      /^f[cd]/.test(normalized) || /^fe[89ab]/.test(normalized) ||
-      normalized.startsWith("2001:db8:")
-    ) throw new Error("Native P2P peer address must use a public IP");
-    return;
+  return { peerId, group };
+}
+
+export function diversityOrderedNativePeers(
+  peers: readonly Multiaddr[],
+  groupOffset = 0,
+  peerGroups: ReadonlyMap<string, string> = new Map()
+): Multiaddr[] {
+  const unique = new Map(peers.map((peer) => [peer.toString(), peer]));
+  const groups = new Map<string, Multiaddr[]>();
+  for (const peer of unique.values()) {
+    const key = nativePeerDiversityBucket(peer);
+    const group = groups.get(key) ?? [];
+    group.push(peer);
+    groups.set(key, group);
   }
-  throw new Error("Discovered native P2P peer addresses must use literal public IPs");
+  const values = [...groups.values()];
+  if (values.length === 0) return [];
+  const offset = ((groupOffset % values.length) + values.length) % values.length;
+  const rotated = [...values.slice(offset), ...values.slice(0, offset)];
+  const result: Multiaddr[] = [];
+  const rounds = Math.max(...rotated.map((group) => group.length));
+  for (let index = 0; index < rounds; index += 1) {
+    for (const group of rotated) if (group[index]) result.push(group[index]!);
+  }
+  if (peerGroups.size === 0) return result;
+
+  // Operator-supplied groups represent an independent failure domain such as
+  // ASN, cloud provider or common operator. Preserve topology interleaving and
+  // additionally avoid selecting the same named failure domain twice per round.
+  const remaining = [...result];
+  const groupedResult: Multiaddr[] = [];
+  while (remaining.length) {
+    const usedTopology = new Set<string>();
+    const usedOperatorGroups = new Set<string>();
+    let selectedThisRound = 0;
+    for (let index = 0; index < remaining.length;) {
+      const peer = remaining[index]!;
+      const topology = nativePeerDiversityBucket(peer);
+      const operatorGroup = peerGroups.get(nativePeerId(peer));
+      if (usedTopology.has(topology) || (operatorGroup !== undefined && usedOperatorGroups.has(operatorGroup))) {
+        index += 1;
+        continue;
+      }
+      groupedResult.push(peer);
+      usedTopology.add(topology);
+      if (operatorGroup !== undefined) usedOperatorGroups.add(operatorGroup);
+      remaining.splice(index, 1);
+      selectedThisRound += 1;
+    }
+    if (selectedThisRound === 0) groupedResult.push(remaining.shift()!);
+  }
+  return groupedResult;
 }
 
 function parseNativeTcpAddress(value: string, peer: boolean): Multiaddr {
-  if (typeof value !== "string" || value.length === 0 || value.length > MAX_NATIVE_P2P_ADDRESS_LENGTH) {
-    throw new Error(`Invalid native P2P ${peer ? "peer" : "listen"} address`);
-  }
   let address: Multiaddr;
   try {
     address = multiaddr(value);
   } catch {
-    throw new Error(`Invalid native P2P ${peer ? "peer" : "listen"} address`);
+    throw new Error(`Invalid native P2P ${peer ? "peer" : "listen"} multiaddr`);
   }
   const components = address.getComponents();
-  const allowed = new Set(["ip4", "ip6", "dns", "dns4", "dns6", "tcp", ...(peer ? ["p2p"] : [])]);
-  const peerIds = components.filter((component) => component.name === "p2p");
-  if (peer && peerIds.length !== 1) throw new Error("Native P2P peer address must pin exactly one PeerId");
-  if (!peer && peerIds.length !== 0) throw new Error("Native P2P listen address must not pin a PeerId");
+  const allowed = new Set(["ip4", "ip6", "dns", "dns4", "dns6", "tcp", "p2p"]);
   const hosts = components.filter((component) => ["ip4", "ip6", "dns", "dns4", "dns6"].includes(component.name));
   const tcp = components.filter((component) => component.name === "tcp");
   if (components.some((component) => !allowed.has(component.name)) || hosts.length !== 1 || tcp.length !== 1) {
