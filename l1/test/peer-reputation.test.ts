@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
   failureBackoffMs,
+  httpPeerReputationDirectorySyncSupported,
   MAX_PEER_REPUTATION_ENDPOINT_BYTES,
   MAX_PEER_REPUTATION_SNAPSHOT_BYTES,
   PeerReputationStore
@@ -17,6 +18,13 @@ test("peer failure backoff grows exponentially and is bounded", () => {
   assert.equal(failureBackoffMs(3), 120_000);
   assert.equal(failureBackoffMs(32), 30 * 60_000);
   assert.throws(() => failureBackoffMs(0), /Invalid peer failure count/);
+});
+
+test("HTTP peer reputation directory fsync is required only where Node supports it", () => {
+  assert.equal(httpPeerReputationDirectorySyncSupported("linux"), true);
+  assert.equal(httpPeerReputationDirectorySyncSupported("darwin"), true);
+  assert.equal(httpPeerReputationDirectorySyncSupported("freebsd"), true);
+  assert.equal(httpPeerReputationDirectorySyncSupported("win32"), false);
 });
 
 test("peer reputation survives restart and successful recovery clears backoff", async () => {
@@ -86,14 +94,8 @@ test("peer reputation fails closed on malformed durable state", async () => {
 test("peer reputation rejects oversized snapshot before JSON materialization", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-peer-reputation-oversized-"));
   try {
-    await writeFile(
-      join(directory, "peer-reputation.json"),
-      Buffer.alloc(MAX_PEER_REPUTATION_SNAPSHOT_BYTES + 1, 0x61)
-    );
-    await assert.rejects(
-      () => PeerReputationStore.open(directory),
-      /Corrupt peer reputation store/
-    );
+    await writeFile(join(directory, "peer-reputation.json"), Buffer.alloc(MAX_PEER_REPUTATION_SNAPSHOT_BYTES + 1, 0x61));
+    await assert.rejects(() => PeerReputationStore.open(directory), /Corrupt peer reputation store/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -106,6 +108,62 @@ test("peer reputation bounds normalized endpoint bytes before persistence", asyn
     const oversized = `https://validator.example/${"a".repeat(MAX_PEER_REPUTATION_ENDPOINT_BYTES)}`;
     assert.throws(() => store.isAvailable(oversized), /endpoint exceeds byte limit/);
     await assert.rejects(() => store.recordFailure(oversized), /endpoint exceeds byte limit/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("peer reputation removes unpublished temporary state after a pre-rename persistence failure", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-peer-reputation-temp-fault-"));
+  try {
+    const store = await PeerReputationStore.open(directory);
+    await assert.rejects(
+      () => store.recordFailure("https://fault-before-rename.example", 1_800_000_000_000, {
+        afterTemporarySync: () => { throw new Error("injected-before-rename"); }
+      }),
+      /injected-before-rename/
+    );
+    const names = await readdir(directory);
+    assert.equal(names.some((name) => name.startsWith("peer-reputation.json.tmp-")), false);
+    assert.equal(names.includes("peer-reputation.json"), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("peer reputation surfaces an ambiguous post-rename publication failure", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-peer-reputation-rename-fault-"));
+  const peer = "https://fault-after-rename.example";
+  const now = 1_800_000_000_000;
+  try {
+    const store = await PeerReputationStore.open(directory);
+    await assert.rejects(
+      () => store.recordFailure(peer, now, {
+        afterRename: () => { throw new Error("injected-after-rename"); }
+      }),
+      /injected-after-rename/
+    );
+    const reopened = await PeerReputationStore.open(directory);
+    assert.equal(reopened.failureCount(peer), 1);
+    assert.equal(reopened.isAvailable(peer, now), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("peer reputation completes directory durability before reporting successful publication", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-peer-reputation-dir-sync-"));
+  const peer = "https://directory-sync.example";
+  const now = 1_800_000_000_000;
+  let reachedDirectorySync = false;
+  try {
+    const store = await PeerReputationStore.open(directory);
+    await store.recordFailure(peer, now, {
+      afterDirectorySync: () => { reachedDirectorySync = true; }
+    });
+    assert.equal(reachedDirectorySync, httpPeerReputationDirectorySyncSupported());
+    const reopened = await PeerReputationStore.open(directory);
+    assert.equal(reopened.failureCount(peer), 1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

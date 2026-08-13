@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, open, rename } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, open, rename, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import { readBoundedUtf8File } from "./bounded-file.js";
 import { canonicalJson } from "./codec.js";
@@ -12,6 +12,12 @@ const MAX_FAILURE_COUNT = 32;
 const MAX_STORED_PEERS = 256;
 export const MAX_PEER_REPUTATION_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 export const MAX_PEER_REPUTATION_ENDPOINT_BYTES = 4 * 1024;
+
+export interface PeerReputationPersistenceFaultHooks {
+  afterTemporarySync?: () => void | Promise<void>;
+  afterRename?: () => void | Promise<void>;
+  afterDirectorySync?: () => void | Promise<void>;
+}
 
 interface PeerReputationEntry {
   endpoint: string;
@@ -63,7 +69,11 @@ export class PeerReputationStore {
     return this.entries.get(normalizeEndpoint(endpoint))?.consecutiveFailures ?? 0;
   }
 
-  async recordFailure(endpoint: string, nowMs = Date.now()): Promise<number> {
+  async recordFailure(
+    endpoint: string,
+    nowMs = Date.now(),
+    faultHooks: PeerReputationPersistenceFaultHooks = {}
+  ): Promise<number> {
     assertTimestamp(nowMs);
     const normalized = normalizeEndpoint(endpoint);
     return this.exclusive(async () => {
@@ -78,12 +88,16 @@ export class PeerReputationStore {
         lastFailureMs: nowMs,
         lastSuccessMs: previous?.lastSuccessMs ?? 0
       });
-      await this.persist();
+      await this.persist(faultHooks);
       return backoffMs;
     });
   }
 
-  async recordSuccess(endpoint: string, nowMs = Date.now()): Promise<void> {
+  async recordSuccess(
+    endpoint: string,
+    nowMs = Date.now(),
+    faultHooks: PeerReputationPersistenceFaultHooks = {}
+  ): Promise<void> {
     assertTimestamp(nowMs);
     const normalized = normalizeEndpoint(endpoint);
     await this.exclusive(async () => {
@@ -96,7 +110,7 @@ export class PeerReputationStore {
         lastFailureMs: previous?.lastFailureMs ?? 0,
         lastSuccessMs: nowMs
       });
-      await this.persist();
+      await this.persist(faultHooks);
     });
   }
 
@@ -129,7 +143,7 @@ export class PeerReputationStore {
     return selected;
   }
 
-  private async persist(): Promise<void> {
+  private async persist(faultHooks: PeerReputationPersistenceFaultHooks): Promise<void> {
     const snapshot: PeerReputationSnapshot = {
       version: REPUTATION_VERSION,
       peers: [...this.entries.values()].sort((a, b) => a.endpoint.localeCompare(b.endpoint))
@@ -139,15 +153,36 @@ export class PeerReputationStore {
       throw new Error("Peer reputation snapshot exceeds persistence byte limit");
     }
     const temporary = `${this.path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
-    const handle = await open(temporary, "wx", 0o600);
+    let renamed = false;
     try {
-      await handle.writeFile(serialized, "utf8");
-      await handle.sync();
+      const handle = await open(temporary, "wx", 0o600);
+      try {
+        await handle.writeFile(serialized, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await faultHooks.afterTemporarySync?.();
+      await rename(temporary, this.path);
+      renamed = true;
+      await faultHooks.afterRename?.();
+      if (httpPeerReputationDirectorySyncSupported()) {
+        const directory = await open(dirname(this.path), "r");
+        try {
+          await directory.sync();
+        } finally {
+          await directory.close();
+        }
+        await faultHooks.afterDirectorySync?.();
+      }
     } finally {
-      await handle.close();
+      if (!renamed) await rm(temporary, { force: true });
     }
-    await rename(temporary, this.path);
   }
+}
+
+export function httpPeerReputationDirectorySyncSupported(platform = process.platform): boolean {
+  return platform !== "win32";
 }
 
 export function failureBackoffMs(consecutiveFailures: number): number {
