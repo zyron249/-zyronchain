@@ -1,3 +1,4 @@
+import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 
 /**
@@ -6,7 +7,9 @@ import { open } from "node:fs/promises";
  */
 export async function readBoundedUtf8File(path: string, maxBytes: number, label: string): Promise<string> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("Invalid bounded file byte limit");
-  const handle = await open(path, "r");
+  const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+  const nonBlocking = process.platform === "win32" ? 0 : constants.O_NONBLOCK;
+  const handle = await open(path, constants.O_RDONLY | noFollow | nonBlocking);
   try {
     const metadata = await handle.stat();
     if (!metadata.isFile()) throw new Error(`${label} must be a regular file`);
