@@ -1,0 +1,61 @@
+name: Agent Storage Hardening Apply
+
+on:
+  push:
+    branches:
+      - agent/chain-control-metadata-bounded-read-v1
+    paths:
+      - .github/workflows/agent-storage-hardening-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/chain-control-metadata-bounded-read-v1
+          fetch-depth: 0
+      - name: Apply exact storage wiring
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('l1/src/storage.ts')
+          text = path.read_text()
+          replacements = [
+              (
+                  'import { canonicalJson, sha256Hex } from "./codec.js";\n',
+                  'import { canonicalJson, sha256Hex } from "./codec.js";\nimport { readBoundedRegularControlFile } from "./control-file.js";\n'
+              ),
+              (
+                  'const value = JSON.parse(await readFile(join(dataDir, "history-retention.json"), "utf8")) as unknown;',
+                  'const value = JSON.parse(await readBoundedRegularControlFile(\n      join(dataDir, "history-retention.json"),\n      "History retention marker"\n    )) as unknown;'
+              ),
+              (
+                  'const existing = JSON.parse(await readFile(path, "utf8")) as Partial<StoreMetadata>;',
+                  'const existing = JSON.parse(await readBoundedRegularControlFile(path, "Chain metadata")) as Partial<StoreMetadata>;'
+              ),
+          ]
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one storage anchor, found {count}: {old[:80]}')
+              text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+      - name: Verify only intended storage anchors changed
+        run: |
+          grep -n 'readBoundedRegularControlFile' l1/src/storage.ts
+          git diff --check
+      - name: Remove one-shot workflow and commit
+        run: |
+          rm .github/workflows/agent-storage-hardening-apply.yml
+          git config user.name 'zyron249'
+          git config user.email '208641275+zyron249@users.noreply.github.com'
+          git add l1/src/storage.ts .github/workflows/agent-storage-hardening-apply.yml
+          git diff --cached --check
+          git commit -m 'Bound chain control metadata reads'
+          git push origin HEAD:agent/chain-control-metadata-bounded-read-v1
