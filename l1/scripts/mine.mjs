@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { ZyronChain } from "../dist/src/chain.js";
@@ -12,6 +11,7 @@ import {
   miningRewardAtoms,
   miningWorkHash
 } from "../dist/src/mining.js";
+import { readMinerGenesis } from "../dist/src/miner-genesis.js";
 import {
   assertMiningNetworkIdentity,
   miningChallengeMatchesFinalizedTip,
@@ -37,7 +37,7 @@ const passwordFile = requiredOption("--password-file");
 const once = args.includes("--once");
 const batchSize = parsePositiveInteger(option("--batch-size") ?? "65536", "batch-size", 1_000_000);
 
-const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8"));
+const genesis = await readMinerGenesis(resolve(genesisPath));
 const localChain = new ZyronChain(genesis);
 const expectedChainId = localChain.genesis.chainId;
 const expectedGenesisHash = localChain.genesisHash;
@@ -190,7 +190,7 @@ Options:
   --password-file <p>   Required; password file for the encrypted miner keystore
   --help, -h            Show this help
 
-The miner accepts encrypted ZyronChain keystores only. It derives the canonical genesis hash from the supplied genesis and refuses an RPC whose chain ID or genesis hash differs. On POSIX systems the keystore and password file must be owner-only (0600 recommended). Remote RPC must use HTTPS. Plain HTTP is accepted only for loopback.`);
+The miner accepts encrypted ZyronChain keystores only. It reads genesis through a bounded regular-file descriptor, derives the canonical genesis hash, and refuses an RPC whose chain ID or genesis hash differs. On POSIX systems symlink/non-regular genesis paths are rejected; the keystore and password file must be owner-only (0600 recommended). Remote RPC must use HTTPS. Plain HTTP is accepted only for loopback.`);
 }
 
 function assertKnownArgs() {
