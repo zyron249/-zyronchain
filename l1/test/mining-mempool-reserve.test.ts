@@ -23,6 +23,16 @@ function transfer(index: number): TransferTx {
   };
 }
 
+function transferReplacement(existing: TransferTx): TransferTx {
+  return {
+    ...existing,
+    feeAtoms: existing.feeAtoms + 10,
+    timestampMs: existing.timestampMs + 1,
+    signature: "55".repeat(64),
+    txid: "ef".repeat(32)
+  };
+}
+
 function miningClaim(index: number): MiningClaimTx {
   return {
     kind: "mining_claim",
@@ -39,6 +49,18 @@ function miningClaim(index: number): MiningClaimTx {
     publicKey: "33".repeat(64),
     signature: "44".repeat(64),
     txid: (index + 10_000).toString(16).padStart(64, "0")
+  };
+}
+
+function strongerMiningReplacement(existing: MiningClaimTx): MiningClaimTx {
+  return {
+    ...existing,
+    height: existing.height + 1,
+    previousHash: "cd".repeat(32),
+    workNonce: "ff".repeat(8),
+    timestampMs: existing.timestampMs + 1,
+    signature: "66".repeat(64),
+    txid: "fe".repeat(32)
   };
 }
 
@@ -81,4 +103,44 @@ test("custom mempool capacity remains a hard total cap unless a mining reserve i
   mempool.add(transfer(1));
   assert.throws(() => mempool.add(miningClaim(1)), /Mining mempool full/);
   assert.equal(mempool.size, 1);
+});
+
+test("occupancy accounting stays exact across remove prune and same-nonce replacements", () => {
+  const mempool = new Mempool(2, 1);
+  const first = transfer(1);
+  const second = transfer(2);
+  const initialClaim = miningClaim(1);
+  mempool.add(first);
+  mempool.add(second);
+  mempool.add(initialClaim);
+
+  mempool.remove([first.txid]);
+  const third = transfer(3);
+  mempool.add(third);
+  assert.equal(mempool.prune((tx) => tx.txid === second.txid), 1);
+  const fourth = transfer(4);
+  mempool.add(fourth);
+
+  const replacement = transferReplacement(third);
+  mempool.add(replacement);
+  const claimReplacement = strongerMiningReplacement(initialClaim);
+  mempool.add(claimReplacement);
+
+  assert.equal(mempool.size, 3);
+  const values = mempool.values();
+  assert.deepEqual(
+    new Set(values.filter((tx) => tx.kind !== "mining_claim").map((tx) => tx.txid)),
+    new Set([replacement.txid, fourth.txid])
+  );
+  assert.deepEqual(
+    values.filter((tx) => tx.kind === "mining_claim").map((tx) => tx.txid),
+    [claimReplacement.txid]
+  );
+
+  assert.throws(() => mempool.add(transfer(5)), /Mempool full/);
+  const strongerIndependentClaim = { ...miningClaim(9), height: claimReplacement.height + 1 };
+  mempool.add(strongerIndependentClaim);
+  assert.equal(mempool.size, 3);
+  assert.equal(mempool.values().filter((tx) => tx.kind === "mining_claim").length, 1);
+  assert.ok(mempool.values().some((tx) => tx.txid === strongerIndependentClaim.txid));
 });
