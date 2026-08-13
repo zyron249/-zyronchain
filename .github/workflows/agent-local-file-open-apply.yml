@@ -1,0 +1,53 @@
+name: Agent Local File Open Apply
+
+on:
+  push:
+    branches:
+      - agent/local-file-open-v1
+    paths:
+      - .github/workflows/agent-local-file-open-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/local-file-open-v1
+          fetch-depth: 0
+      - name: Apply exact bounded-file changes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('l1/src/bounded-file.ts')
+          text = path.read_text()
+          replacements = [
+              (
+                  'import { open } from "node:fs/promises";\n',
+                  'import { constants } from "node:fs";\nimport { open } from "node:fs/promises";\n'
+              ),
+              (
+                  '  const handle = await open(path, "r");',
+                  '  const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;\n  const nonBlocking = process.platform === "win32" ? 0 : constants.O_NONBLOCK;\n  const handle = await open(path, constants.O_RDONLY | noFollow | nonBlocking);'
+              ),
+          ]
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one anchor, found {count}: {old}')
+              text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+          git diff --check
+      - name: Remove workflow and commit
+        run: |
+          rm .github/workflows/agent-local-file-open-apply.yml
+          git config user.name 'zyron249'
+          git config user.email '208641275+zyron249@users.noreply.github.com'
+          git add l1/src/bounded-file.ts .github/workflows/agent-local-file-open-apply.yml
+          git diff --cached --check
+          git commit -m 'Harden bounded local file opens'
+          git push origin HEAD:agent/local-file-open-v1
