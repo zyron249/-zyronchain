@@ -79,9 +79,9 @@ export async function registerP2PCheckpointProtocol(
         const status = service.status();
         if (request.tipHash !== status.tipHash) throw new Error("Requested checkpoint tip is not locally finalized");
         const candidate = snapshotForServing(service);
-        // Do not let a caller with only the public tip hash churn the cache by
-        // guessing digests. Cache only a fully matching externally anchored request.
-        if (request.snapshotSha256 !== candidate.snapshotSha256) throw new Error("Requested checkpoint digest is unavailable");
+        // The candidate is canonical local state for this exact finalized tip,
+        // not requester-controlled data. Cache it before comparing the supplied
+        // digest so repeated mismatches cannot force full re-serialization.
         if (cache.size >= 2) cache.delete(cache.keys().next().value!);
         cache.set(candidate.tipHash, candidate);
         selected = candidate;

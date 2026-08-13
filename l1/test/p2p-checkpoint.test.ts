@@ -82,6 +82,12 @@ test("native checkpoint transfer carries bytes over Noise but requires an extern
       tipHash: sourceStore.chain.tip.hash,
       snapshotSha256: sha256Hex(canonicalJson(snapshot))
     };
+    const originalSnapshot = sourceStore.chain.snapshot.bind(sourceStore.chain);
+    let servedSnapshotMaterializations = 0;
+    sourceStore.chain.snapshot = () => {
+      servedSnapshotMaterializations += 1;
+      return originalSnapshot();
+    };
     const sourceIdentity = await loadOrCreateNodeIdentity(sourceDir);
     const clientIdentity = await loadOrCreateNodeIdentity(clientIdentityDir);
     sourceNode = await createP2PNode(sourceIdentity, { listen: ["/ip4/127.0.0.1/tcp/0"] });
@@ -90,7 +96,22 @@ test("native checkpoint transfer carries bytes over Noise but requires an extern
     const address = sourceNode.getMultiaddrs()[0];
     assert.ok(address);
 
+    // A wrong digest for the exact current tip is rejected, but the canonical
+    // local candidate is cached independently of requester input. Repeating the
+    // mismatch must not force another full snapshot serialization.
+    for (const digest of ["00".repeat(32), "01".repeat(32)]) {
+      await assert.rejects(
+        () => fetchTrustedSnapshotFromPeer(clientNode!, address, clientIdentity, config, {
+          tipHash: anchor.tipHash,
+          snapshotSha256: digest
+        }),
+        /stream|checkpoint|abort|reset/i
+      );
+    }
+    assert.equal(servedSnapshotMaterializations, 1);
+
     const fetched = await fetchTrustedSnapshotFromPeer(clientNode, address, clientIdentity, config, anchor);
+    assert.equal(servedSnapshotMaterializations, 1);
     assert.equal(sha256Hex(canonicalJson(fetched)), anchor.snapshotSha256);
     assert.equal(fetched.tip.hash, anchor.tipHash);
     const installed = await ChainStore.installTrustedSnapshot(config, installedDir, fetched, anchor);
@@ -111,16 +132,6 @@ test("native checkpoint transfer carries bytes over Noise but requires an extern
     const cliInstalled = await ChainStore.open(config, cliInstalledDir);
     assert.equal(cliInstalled.chain.tip.hash, anchor.tipHash);
     assert.equal(cliInstalled.firstStoredHeight, 102);
-
-    // Knowing the correct finalized tip does not let a peer choose a snapshot
-    // digest for us. A different externally supplied digest is never served.
-    await assert.rejects(
-      () => fetchTrustedSnapshotFromPeer(clientNode!, address, clientIdentity, config, {
-        tipHash: anchor.tipHash,
-        snapshotSha256: "00".repeat(32)
-      }),
-      /stream|checkpoint|abort|reset/i
-    );
   } finally {
     await Promise.allSettled([sourceNode?.stop(), clientNode?.stop()]);
     await rm(root, { recursive: true, force: true });
