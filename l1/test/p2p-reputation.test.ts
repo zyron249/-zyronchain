@@ -6,7 +6,11 @@ import { join } from "node:path";
 import { privateKeyFromRaw } from "@libp2p/crypto/keys";
 import { peerIdFromPrivateKey } from "@libp2p/peer-id";
 
-import { classifyNativePeerFailure, NativePeerReputationStore } from "../src/p2p-reputation.js";
+import {
+  classifyNativePeerFailure,
+  MAX_NATIVE_REPUTATION_SNAPSHOT_BYTES,
+  NativePeerReputationStore
+} from "../src/p2p-reputation.js";
 
 const peerId = peerIdFromPrivateKey(privateKeyFromRaw(Buffer.from("01".padStart(64, "0"), "hex"))).toString();
 
@@ -71,6 +75,22 @@ test("native reputation classifies transport failure separately and fails closed
   try {
     await writeFile(join(directory, "native-peer-reputation.json"), '{"version":1,"peers":[{"peerId":"bad"}]}\n');
     await assert.rejects(() => NativePeerReputationStore.open(directory), /Corrupt native peer reputation store/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("native reputation rejects oversized snapshot before JSON materialization", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-native-reputation-oversized-"));
+  try {
+    await writeFile(
+      join(directory, "native-peer-reputation.json"),
+      Buffer.alloc(MAX_NATIVE_REPUTATION_SNAPSHOT_BYTES + 1, 0x61)
+    );
+    await assert.rejects(
+      () => NativePeerReputationStore.open(directory),
+      /Corrupt native peer reputation store/
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
