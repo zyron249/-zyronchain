@@ -19,6 +19,7 @@ import type {
 } from "./types.js";
 
 export const MAX_VALIDATOR_COUNT = 100;
+export const MAX_BLOCK_TRANSACTIONS = 10_000;
 
 export function blockHash(header: BlockHeader): string {
   return sha256Hex(canonicalJson(header));
@@ -213,7 +214,7 @@ export function validateBlockEnvelope(
   if (!Number.isSafeInteger(block.header.timestampMs)) throw new Error("Invalid block timestamp");
   if (block.header.timestampMs <= previous.header.timestampMs) throw new Error("Block time must increase");
   if (block.header.timestampMs > nowMs + 120_000) throw new Error("Block time too far in future");
-  if (block.transactions.length > 10_000) throw new Error("Too many transactions");
+  if (block.transactions.length > MAX_BLOCK_TRANSACTIONS) throw new Error("Too many transactions");
   if (block.header.transactionRoot !== merkleRoot(block.transactions)) {
     throw new Error("Transaction Merkle root mismatch");
   }
@@ -335,6 +336,7 @@ export function validateBlockShape(value: unknown): asserts value is Block {
   }
   if (header.proposer !== "GENESIS") assertAddress(header.proposer as string);
   if (!Array.isArray(value.transactions)) throw new Error("Invalid block transactions");
+  if (value.transactions.length > MAX_BLOCK_TRANSACTIONS) throw new Error("Too many transactions");
   for (const tx of value.transactions) validateTransactionShape(tx);
   if (!Array.isArray(value.attestations)) throw new Error("Invalid block attestations");
   if (!Array.isArray(value.roundCertificate)) throw new Error("Invalid round certificate");
