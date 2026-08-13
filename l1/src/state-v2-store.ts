@@ -1,4 +1,5 @@
-import { mkdir, open, readFile, rename } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open, rename } from "node:fs/promises";
 import { join } from "node:path";
 
 import { canonicalJson, sha256Hex } from "./codec.js";
@@ -30,6 +31,7 @@ const LEGACY_NODE_LINE_MAX_BYTES = 64 * 1024;
 const LEGACY_SEMANTIC_KEY_LINE_MAX_BYTES = 1_024;
 const LEGACY_MIGRATION_BATCH_SIZE = 256;
 const LEGACY_READ_CHUNK_BYTES = 16 * 1024;
+export const STATE_V2_METADATA_MAX_BYTES = 4 * 1024;
 
 export interface StateV2CommitFaultHooks {
   afterSemanticKeysSync?: () => void | Promise<void>;
@@ -59,7 +61,7 @@ export class StateV2DiskStore {
     const metadataPath = join(dataDir, "state-v2.root.json");
     let metadata: RootMetadata | undefined;
     try {
-      metadata = parseRootMetadata(await readFile(metadataPath, "utf8"));
+      metadata = parseRootMetadata(await readStateV2MetadataFile(metadataPath));
     } catch (error) {
       if (!isMissingFile(error)) { nodeObjects.close(); throw error; }
     }
@@ -197,7 +199,7 @@ async function migrateLegacyNodeRecords(dataDir: string, nodeObjects: StateV2Nod
 
 async function loadBackendMarker(dataDir: string): Promise<BackendMarker | undefined> {
   try {
-    const value = JSON.parse(await readFile(join(dataDir, "state-v2.backend.json"), "utf8")) as Partial<BackendMarker>;
+    const value = JSON.parse(await readStateV2MetadataFile(join(dataDir, "state-v2.backend.json"))) as Partial<BackendMarker>;
     if (value.version !== 1 || value.backend !== "sqlite-v1" || typeof value.checksum !== "string") {
       throw new Error("Corrupt State v2 backend marker");
     }
@@ -250,7 +252,7 @@ async function migrateSemanticKeyPreimages(dataDir: string, nodeObjects: StateV2
 
 async function loadSemanticBackendMarker(dataDir: string): Promise<SemanticBackendMarker | undefined> {
   try {
-    const value = JSON.parse(await readFile(join(dataDir, "state-v2.keys.backend.json"), "utf8")) as Partial<SemanticBackendMarker>;
+    const value = JSON.parse(await readStateV2MetadataFile(join(dataDir, "state-v2.keys.backend.json"))) as Partial<SemanticBackendMarker>;
     if (value.version !== 1 || value.backend !== "sqlite-semantic-v1" || typeof value.checksum !== "string") {
       throw new Error("Corrupt State v2 semantic backend marker");
     }
@@ -274,6 +276,34 @@ async function writeSemanticBackendMarker(dataDir: string): Promise<void> {
   await rename(temporary, path);
   const directory = await open(dataDir, "r");
   try { await directory.sync(); } finally { await directory.close(); }
+}
+
+export async function readStateV2MetadataFile(
+  path: string,
+  maxBytes = STATE_V2_METADATA_MAX_BYTES
+): Promise<string> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("Invalid State v2 metadata byte limit");
+  const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+  const nonBlocking = process.platform === "win32" ? 0 : constants.O_NONBLOCK;
+  const handle = await open(path, constants.O_RDONLY | noFollow | nonBlocking);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size < 1 || info.size > maxBytes) {
+      throw new Error("State v2 metadata exceeds byte bounds or is not a regular file");
+    }
+    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    let total = 0;
+    while (total <= maxBytes) {
+      const { bytesRead } = await handle.read(buffer, total, buffer.length - total, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > maxBytes) throw new Error("State v2 metadata exceeds byte bounds");
+    }
+    if (total < 1) throw new Error("State v2 metadata exceeds byte bounds or is not a regular file");
+    return buffer.subarray(0, total).toString("utf8");
+  } finally {
+    await handle.close();
+  }
 }
 
 async function forEachCompleteLegacyLine(
