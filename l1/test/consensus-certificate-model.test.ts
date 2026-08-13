@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  MAX_BLOCK_TRANSACTIONS,
   MAX_VALIDATOR_COUNT,
   createBlockAttestation,
   createRoundSkipVote,
@@ -47,6 +48,22 @@ function testValidator(): { privateKey: string; publicKey: string; validator: Va
     validator: { address: addressFromPublicKey(publicKey), publicKey }
   };
 }
+
+test("block shape rejects oversized transactions before per-entry validation", () => {
+  const malformed = Array.from({ length: MAX_BLOCK_TRANSACTIONS + 1 }, () => null) as unknown as Block["transactions"];
+  assert.throws(
+    () => validateBlockShape(minimalBlock({ transactions: malformed })),
+    /Too many transactions/
+  );
+});
+
+test("block transaction count boundary proceeds to normal entry validation", () => {
+  const malformed = Array.from({ length: MAX_BLOCK_TRANSACTIONS }, () => null) as unknown as Block["transactions"];
+  assert.throws(
+    () => validateBlockShape(minimalBlock({ transactions: malformed })),
+    /transaction must be a plain object/
+  );
+});
 
 test("block shape rejects oversized attestations before per-entry validation", () => {
   const malformed = Array.from({ length: MAX_VALIDATOR_COUNT + 1 }, () => null) as unknown as Block["attestations"];
