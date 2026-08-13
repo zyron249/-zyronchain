@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { canonicalJson, sha256Hex } from "./codec.js";
@@ -27,6 +27,10 @@ export interface PortableStateResumeManifestV1 {
   recordCount: number;
   keyCount: number;
   tip: Block;
+}
+
+export interface PortableStateResumeReadFaultHooks {
+  afterOpen?: () => void | Promise<void>;
 }
 
 interface ManifestEnvelope {
@@ -79,7 +83,7 @@ export class PortableStateResumeStore {
     await assertRealDirectory(tempDir);
     const path = join(dataDir, MANIFEST_FILE);
     try {
-      const existing = parseManifestEnvelope(await readBounded(path, 3_000_000));
+      const existing = parseManifestEnvelope(await readPortableStateResumeFile(path, 3_000_000));
       if (canonicalJson(existing.manifest) !== canonicalJson(manifest)) {
         throw new Error("Portable state resume manifest does not match requested checkpoint");
       }
@@ -101,7 +105,7 @@ export class PortableStateResumeStore {
     snapshotSha256: string;
   }): Promise<PortableStateResumeStore> {
     await assertRealDirectory(dataDir);
-    const envelope = parseManifestEnvelope(await readBounded(join(dataDir, MANIFEST_FILE), 3_000_000));
+    const envelope = parseManifestEnvelope(await readPortableStateResumeFile(join(dataDir, MANIFEST_FILE), 3_000_000));
     const manifest = envelope.manifest;
     if (manifest.chainId !== expected.chainId || manifest.genesisHash !== expected.genesisHash ||
         manifest.tipHash !== expected.tipHash || manifest.snapshotSha256 !== expected.snapshotSha256) {
@@ -204,7 +208,7 @@ async function scanProgress(directory: string, total: number, absoluteMax: numbe
   const chunks: ChunkIndex[] = [];
   for (const start of starts) {
     if (start !== progress) throw new Error("Portable state resume chunks contain a gap, overlap, or unexpected file");
-    const chunk = parseChunkEnvelope(await readBounded(join(directory, `${start}.json`), MAX_RESUME_CHUNK_FILE_BYTES));
+    const chunk = parseChunkEnvelope(await readPortableStateResumeFile(join(directory, `${start}.json`), MAX_RESUME_CHUNK_FILE_BYTES));
     if (chunk.start !== start || chunk.items.length < 1 || start + chunk.items.length > total) {
       throw new Error("Invalid portable state resume chunk range");
     }
@@ -230,7 +234,7 @@ async function readRange(
     const chunkEnd = index.start + index.length;
     if (chunkEnd <= start) continue;
     if (index.start >= end) break;
-    const chunk = parseChunkEnvelope(await readBounded(join(directory, `${index.start}.json`), MAX_RESUME_CHUNK_FILE_BYTES));
+    const chunk = parseChunkEnvelope(await readPortableStateResumeFile(join(directory, `${index.start}.json`), MAX_RESUME_CHUNK_FILE_BYTES));
     if (chunk.start !== index.start || chunk.items.length !== index.length) {
       throw new Error("Portable state resume chunk changed after indexing");
     }
@@ -247,7 +251,7 @@ async function collectItems(directory: string, total: number): Promise<unknown[]
   const result: unknown[] = [];
   for (const start of names) {
     if (start !== result.length) throw new Error("Portable state resume chunks changed during validation");
-    const chunk = parseChunkEnvelope(await readBounded(join(directory, `${start}.json`), MAX_RESUME_CHUNK_FILE_BYTES));
+    const chunk = parseChunkEnvelope(await readPortableStateResumeFile(join(directory, `${start}.json`), MAX_RESUME_CHUNK_FILE_BYTES));
     if (chunk.start !== start || start + chunk.items.length > total) throw new Error("Invalid portable state resume chunk range");
     result.push(...chunk.items);
   }
@@ -287,12 +291,49 @@ async function atomicWrite(path: string, text: string, tempDir: string): Promise
   try { await directory.sync(); } finally { await directory.close(); }
 }
 
-async function readBounded(path: string, maxBytes: number): Promise<string> {
-  const info = await lstat(path);
-  if (!info.isFile() || info.isSymbolicLink() || info.size < 1 || info.size > maxBytes) {
+/**
+ * Read one untrusted resume file from exactly one opened object. The path must
+ * remain bound to that same regular file for the duration of the read, and a
+ * concurrently growing file is rejected before allocating beyond maxBytes+1.
+ */
+export async function readPortableStateResumeFile(
+  path: string,
+  maxBytes: number,
+  faultHooks: PortableStateResumeReadFaultHooks = {}
+): Promise<string> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("Invalid portable state resume byte limit");
+  const pathBefore = await lstat(path);
+  if (!pathBefore.isFile() || pathBefore.isSymbolicLink() || pathBefore.size < 1 || pathBefore.size > maxBytes) {
     throw new Error("Portable state resume file exceeds byte bounds or is not a regular file");
   }
-  return readFile(path, "utf8");
+
+  const handle = await open(path, "r");
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.size < 1 || opened.size > maxBytes ||
+        opened.dev !== pathBefore.dev || opened.ino !== pathBefore.ino) {
+      throw new Error("Portable state resume file changed before descriptor binding");
+    }
+    await faultHooks.afterOpen?.();
+
+    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    let total = 0;
+    while (total <= maxBytes) {
+      const { bytesRead } = await handle.read(buffer, total, buffer.length - total, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > maxBytes) throw new Error("Portable state resume file exceeds byte bounds");
+    }
+    if (total < 1) throw new Error("Portable state resume file exceeds byte bounds or is not a regular file");
+
+    const pathAfter = await lstat(path);
+    if (!pathAfter.isFile() || pathAfter.isSymbolicLink() || pathAfter.dev !== opened.dev || pathAfter.ino !== opened.ino) {
+      throw new Error("Portable state resume file changed during bounded read");
+    }
+    return buffer.subarray(0, total).toString("utf8");
+  } finally {
+    await handle.close();
+  }
 }
 
 async function assertRealDirectory(path: string): Promise<void> {
