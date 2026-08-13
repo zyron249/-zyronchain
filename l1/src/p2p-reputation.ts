@@ -1,8 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { peerIdFromString } from "@libp2p/peer-id";
 
+import { readBoundedUtf8File } from "./bounded-file.js";
 import { canonicalJson } from "./codec.js";
 
 const VERSION = 1;
@@ -11,6 +12,7 @@ const MAX_FAILURES = 32;
 const BASE_TRANSIENT_BACKOFF_MS = 30_000;
 const MAX_TRANSIENT_BACKOFF_MS = 30 * 60_000;
 const PROTOCOL_BAN_MS = 30 * 60_000;
+export const MAX_NATIVE_REPUTATION_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 
 export type NativePeerFailureKind = "transient" | "protocol";
 
@@ -35,7 +37,12 @@ export class NativePeerReputationStore {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     const store = new NativePeerReputationStore(join(dataDir, "native-peer-reputation.json"));
     try {
-      const snapshot = validateSnapshot(JSON.parse(await readFile(store.path, "utf8")) as unknown);
+      const text = await readBoundedUtf8File(
+        store.path,
+        MAX_NATIVE_REPUTATION_SNAPSHOT_BYTES,
+        "Native peer reputation snapshot"
+      );
+      const snapshot = validateSnapshot(JSON.parse(text) as unknown);
       for (const entry of snapshot.peers) store.entries.set(entry.peerId, entry);
     } catch (error) {
       if (!isMissingFile(error)) throw new Error("Corrupt native peer reputation store", { cause: error });
@@ -126,12 +133,16 @@ export class NativePeerReputationStore {
 
   private async persist(): Promise<void> {
     const snapshot: Snapshot = { version: 1, peers: [...this.entries.values()].sort((a, b) => a.peerId.localeCompare(b.peerId)) };
+    const serialized = `${canonicalJson(snapshot)}\n`;
+    if (Buffer.byteLength(serialized, "utf8") > MAX_NATIVE_REPUTATION_SNAPSHOT_BYTES) {
+      throw new Error("Native peer reputation snapshot exceeds persistence byte limit");
+    }
     const temporary = `${this.path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
     let renamed = false;
     try {
       const handle = await open(temporary, "wx", 0o600);
       try {
-        await handle.writeFile(`${canonicalJson(snapshot)}\n`, "utf8");
+        await handle.writeFile(serialized, "utf8");
         await handle.sync();
       } finally {
         await handle.close();
