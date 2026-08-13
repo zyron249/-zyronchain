@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, open, readFile, rename } from "node:fs/promises";
+import { mkdir, open, rename } from "node:fs/promises";
 import { join } from "node:path";
 
+import { readBoundedUtf8File } from "./bounded-file.js";
 import { canonicalJson } from "./codec.js";
 
 const REPUTATION_VERSION = 1;
@@ -9,6 +10,8 @@ const BASE_BACKOFF_MS = 30_000;
 const MAX_BACKOFF_MS = 30 * 60_000;
 const MAX_FAILURE_COUNT = 32;
 const MAX_STORED_PEERS = 256;
+export const MAX_PEER_REPUTATION_SNAPSHOT_BYTES = 2 * 1024 * 1024;
+export const MAX_PEER_REPUTATION_ENDPOINT_BYTES = 4 * 1024;
 
 interface PeerReputationEntry {
   endpoint: string;
@@ -33,7 +36,12 @@ export class PeerReputationStore {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     const store = new PeerReputationStore(join(dataDir, "peer-reputation.json"));
     try {
-      const value = JSON.parse(await readFile(store.path, "utf8")) as unknown;
+      const text = await readBoundedUtf8File(
+        store.path,
+        MAX_PEER_REPUTATION_SNAPSHOT_BYTES,
+        "Peer reputation snapshot"
+      );
+      const value = JSON.parse(text) as unknown;
       const snapshot = validateSnapshot(value);
       for (const entry of snapshot.peers) store.entries.set(entry.endpoint, entry);
     } catch (error) {
@@ -126,10 +134,14 @@ export class PeerReputationStore {
       version: REPUTATION_VERSION,
       peers: [...this.entries.values()].sort((a, b) => a.endpoint.localeCompare(b.endpoint))
     };
+    const serialized = `${canonicalJson(snapshot)}\n`;
+    if (Buffer.byteLength(serialized, "utf8") > MAX_PEER_REPUTATION_SNAPSHOT_BYTES) {
+      throw new Error("Peer reputation snapshot exceeds persistence byte limit");
+    }
     const temporary = `${this.path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
     const handle = await open(temporary, "wx", 0o600);
     try {
-      await handle.writeFile(`${canonicalJson(snapshot)}\n`, "utf8");
+      await handle.writeFile(serialized, "utf8");
       await handle.sync();
     } finally {
       await handle.close();
@@ -176,12 +188,19 @@ function validateSnapshot(value: unknown): PeerReputationSnapshot {
 }
 
 function normalizeEndpoint(value: string): string {
+  if (Buffer.byteLength(value, "utf8") > MAX_PEER_REPUTATION_ENDPOINT_BYTES) {
+    throw new Error("Peer reputation endpoint exceeds byte limit");
+  }
   const url = new URL(value);
   if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password || url.search || url.hash) {
     throw new Error("Invalid peer reputation endpoint");
   }
   url.pathname = url.pathname.replace(/\/+$/, "");
-  return url.toString().replace(/\/$/, "");
+  const normalized = url.toString().replace(/\/$/, "");
+  if (Buffer.byteLength(normalized, "utf8") > MAX_PEER_REPUTATION_ENDPOINT_BYTES) {
+    throw new Error("Peer reputation endpoint exceeds byte limit");
+  }
+  return normalized;
 }
 
 function assertTimestamp(value: number): void {
