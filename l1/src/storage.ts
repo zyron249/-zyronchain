@@ -2,7 +2,6 @@ import { createReadStream } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { lstat, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { createInterface } from "node:readline";
 import Database from "better-sqlite3";
 
 import { canonicalJson, sha256Hex } from "./codec.js";
@@ -783,9 +782,8 @@ export class SigningJournal {
     const leaseDatabase = acquireSigningJournalLease(join(dataDir, "signing-journal.lock.sqlite"));
     const journal = new SigningJournal(join(dataDir, "signing-journal.ndjson"), leaseDatabase);
     try {
-      for await (const line of readLines(journal.path)) {
+      for await (const line of readLines(journal.path, MAX_SIGNING_LINE_BYTES, "Corrupt signing journal")) {
         if (!line.trim()) continue;
-        if (Buffer.byteLength(line, "utf8") > MAX_SIGNING_LINE_BYTES) throw new Error("Corrupt signing journal");
         const parsed = JSON.parse(line) as Record<string, unknown>;
         if (!Number.isSafeInteger(parsed.height) || !Number.isSafeInteger(parsed.round) ||
             (parsed.kind !== "attest" && parsed.kind !== "skip") ||
@@ -1079,13 +1077,12 @@ async function replayStoredBlocks(
   let layoutDetermined = checkpoint?.version !== 2;
   let checkpointBoundaryBytes = checkpoint?.blockFileBytes ?? 0;
   const blockRanges: StoredBlockRange[] = [];
-  for await (const line of readLines(blocksPath)) {
+  for await (const line of readLines(blocksPath, MAX_STORED_BLOCK_LINE_BYTES, "Stored block exceeds line limit")) {
     const lineBytes = Buffer.byteLength(line, "utf8");
     if (!line.trim()) {
       offset += lineBytes + 1;
       continue;
     }
-    if (lineBytes > MAX_STORED_BLOCK_LINE_BYTES) throw new Error("Stored block exceeds line limit");
     let parsed: unknown;
     if (checkpoint?.version === 2 && !layoutDetermined) {
       try {
@@ -1169,13 +1166,50 @@ async function ensureMetadata(path: string, expected: StoreMetadata): Promise<vo
   }
 }
 
-async function* readLines(path: string): AsyncGenerator<string> {
-  const input = createReadStream(path, { encoding: "utf8" });
-  const reader = createInterface({ input, crlfDelay: Infinity });
+async function* readLines(path: string, maxLineBytes: number, overflowMessage: string): AsyncGenerator<string> {
+  if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes < 0) throw new Error("Invalid stored-line byte limit");
+  const input = createReadStream(path, { highWaterMark: Math.min(64 * 1024, Math.max(1, maxLineBytes + 1)) });
+  let parts: Buffer[] = [];
+  let bufferedBytes = 0;
+
+  const append = (segment: Buffer, terminated: boolean): void => {
+    if (segment.length === 0) return;
+    const nextBytes = bufferedBytes + segment.length;
+    const allowsTrailingCr = nextBytes === maxLineBytes + 1 && segment[segment.length - 1] === 0x0d;
+    if (nextBytes > maxLineBytes && !(terminated && allowsTrailingCr) && !(!terminated && allowsTrailingCr)) {
+      throw new Error(overflowMessage);
+    }
+    if (nextBytes > maxLineBytes + 1) throw new Error(overflowMessage);
+    parts.push(segment);
+    bufferedBytes = nextBytes;
+  };
+
+  const materialize = (): string => {
+    let line = parts.length === 0 ? Buffer.alloc(0) : parts.length === 1 ? parts[0]! : Buffer.concat(parts, bufferedBytes);
+    if (line.length > 0 && line[line.length - 1] === 0x0d) line = line.subarray(0, -1);
+    if (line.length > maxLineBytes) throw new Error(overflowMessage);
+    parts = [];
+    bufferedBytes = 0;
+    return line.toString("utf8");
+  };
+
   try {
-    for await (const line of reader) yield line;
+    for await (const chunkValue of input) {
+      const chunk = Buffer.isBuffer(chunkValue) ? chunkValue : Buffer.from(chunkValue);
+      let cursor = 0;
+      while (cursor < chunk.length) {
+        const newline = chunk.indexOf(0x0a, cursor);
+        if (newline === -1) {
+          append(chunk.subarray(cursor), false);
+          break;
+        }
+        append(chunk.subarray(cursor, newline), true);
+        yield materialize();
+        cursor = newline + 1;
+      }
+    }
+    if (bufferedBytes > 0) yield materialize();
   } finally {
-    reader.close();
     input.destroy();
   }
 }
