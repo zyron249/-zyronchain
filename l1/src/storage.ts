@@ -64,6 +64,13 @@ interface StoredBlockRange {
   length: number;
 }
 
+interface BoundedLine {
+  text: string;
+  contentBytes: number;
+  serializedBytes: number;
+  terminated: boolean;
+}
+
 export interface RecoveryCheckpointFaultHooks {
   afterTemporarySync?: () => void | Promise<void>;
   afterRename?: () => void | Promise<void>;
@@ -150,6 +157,7 @@ export class ChainStore {
   private persistenceFaulted = false;
   private retainedFromHeight: number;
   private pendingPruneThroughHeight: number | undefined;
+  private appendNeedsDelimiter: boolean;
 
   private constructor(
     readonly dataDir: string,
@@ -157,6 +165,7 @@ export class ChainStore {
     persistedHeight: number,
     persistedBytes: number,
     blockRanges: StoredBlockRange[],
+    appendNeedsDelimiter: boolean,
     private readonly stateV2Store: StateV2DiskStore,
     readonly recoveredFromCheckpointHeight = 0,
     readonly recoveredStateV2FromCorruption = false,
@@ -165,6 +174,7 @@ export class ChainStore {
     this.persistedHeight = persistedHeight;
     this.persistedBytes = persistedBytes;
     this.blockRanges = blockRanges;
+    this.appendNeedsDelimiter = appendNeedsDelimiter;
     this.retainedFromHeight = blockRanges[0]?.height ?? persistedHeight + 1;
     if (retention && this.retainedFromHeight <= retention.prunedThroughHeight) {
       this.pendingPruneThroughHeight = retention.prunedThroughHeight;
@@ -260,6 +270,7 @@ export class ChainStore {
       replay.count,
       replay.offset,
       replay.blockRanges,
+      replay.appendNeedsDelimiter,
       stateV2Store,
       replay.recoveredHeight,
       recoveredStateV2FromCorruption,
@@ -544,6 +555,7 @@ export class ChainStore {
       this.persistedBytes = targetBlockFileBytes;
       this.retainedFromHeight = targetRetainedFromHeight;
       this.pendingPruneThroughHeight = undefined;
+      if (targetBlockFileBytes === 0) this.appendNeedsDelimiter = false;
 
       const stable: RecoveryCheckpointV2 = { ...transition, transition: null };
       await writeCheckpointFile(checkpointPath, stable);
@@ -594,10 +606,12 @@ export class ChainStore {
     if (lineBytes > MAX_STORED_BLOCK_LINE_BYTES) {
       throw new Error("Block exceeds persistence limit");
     }
+    const delimiter = this.appendNeedsDelimiter && this.persistedBytes > 0 ? "\n" : "";
+    const delimiterBytes = Buffer.byteLength(delimiter, "utf8");
     try {
       const handle = await open(join(this.dataDir, "blocks.ndjson"), "a", 0o600);
       try {
-        await handle.writeFile(line, "utf8");
+        await handle.writeFile(`${delimiter}${line}`, "utf8");
         await faultHooks.afterBlockWrite?.();
         await handle.sync();
         await faultHooks.afterBlockSync?.();
@@ -624,9 +638,14 @@ export class ChainStore {
       }
     }
     this.chain.acceptBlock(block, nowMs);
-    this.blockRanges.push({ height: block.header.height, offset: this.persistedBytes, length: lineBytes - 1 });
-    this.persistedBytes += lineBytes;
+    this.blockRanges.push({
+      height: block.header.height,
+      offset: this.persistedBytes + delimiterBytes,
+      length: lineBytes - 1
+    });
+    this.persistedBytes += delimiterBytes + lineBytes;
     this.persistedHeight = block.header.height;
+    this.appendNeedsDelimiter = false;
   }
 }
 
@@ -782,7 +801,8 @@ export class SigningJournal {
     const leaseDatabase = acquireSigningJournalLease(join(dataDir, "signing-journal.lock.sqlite"));
     const journal = new SigningJournal(join(dataDir, "signing-journal.ndjson"), leaseDatabase);
     try {
-      for await (const line of readLines(journal.path, MAX_SIGNING_LINE_BYTES, "Corrupt signing journal")) {
+      for await (const record of readLines(journal.path, MAX_SIGNING_LINE_BYTES, "Corrupt signing journal")) {
+        const line = record.text;
         if (!line.trim()) continue;
         const parsed = JSON.parse(line) as Record<string, unknown>;
         if (!Number.isSafeInteger(parsed.height) || !Number.isSafeInteger(parsed.round) ||
@@ -1068,6 +1088,7 @@ async function replayStoredBlocks(
   offset: number;
   blockRanges: StoredBlockRange[];
   recoveredHeight: number;
+  appendNeedsDelimiter: boolean;
 }> {
   const chain = loaded?.chain ?? new ZyronChain(genesis);
   const checkpoint = loaded?.checkpoint;
@@ -1076,11 +1097,14 @@ async function replayStoredBlocks(
   let offset = 0;
   let layoutDetermined = checkpoint?.version !== 2;
   let checkpointBoundaryBytes = checkpoint?.blockFileBytes ?? 0;
+  let lastLineTerminated = true;
   const blockRanges: StoredBlockRange[] = [];
-  for await (const line of readLines(blocksPath, MAX_STORED_BLOCK_LINE_BYTES, "Stored block exceeds line limit")) {
-    const lineBytes = Buffer.byteLength(line, "utf8");
+  for await (const record of readLines(blocksPath, MAX_STORED_BLOCK_LINE_BYTES, "Stored block exceeds line limit")) {
+    const line = record.text;
+    const lineBytes = record.contentBytes;
+    lastLineTerminated = record.terminated;
     if (!line.trim()) {
-      offset += lineBytes + 1;
+      offset += record.serializedBytes;
       continue;
     }
     let parsed: unknown;
@@ -1108,7 +1132,7 @@ async function replayStoredBlocks(
 
     if (checkpoint && height < checkpoint.height) {
       count = height;
-      offset += lineBytes + 1;
+      offset += record.serializedBytes;
       continue;
     }
 
@@ -1120,7 +1144,8 @@ async function replayStoredBlocks(
       }
     }
     if (checkpoint && height === checkpoint.height) {
-      if (offset + lineBytes + 1 !== checkpointBoundaryBytes || canonicalJson(parsed) !== canonicalJson(checkpoint.snapshot.tip)) {
+      if (offset + record.serializedBytes !== checkpointBoundaryBytes ||
+          canonicalJson(parsed) !== canonicalJson(checkpoint.snapshot.tip)) {
         throw new Error("Recovery checkpoint does not match finalized block log");
       }
       checkpointVerified = true;
@@ -1128,7 +1153,7 @@ async function replayStoredBlocks(
       chain.acceptBlock(parsed as Block, Number.MAX_SAFE_INTEGER);
     }
     count = height;
-    offset += lineBytes + 1;
+    offset += record.serializedBytes;
     if ((!checkpoint || height > checkpoint.height) && chain.height !== count) {
       throw new Error("Stored block height discontinuity");
     }
@@ -1148,7 +1173,14 @@ async function replayStoredBlocks(
     throw new Error("Recovery checkpoint is ahead of finalized block log");
   }
   if (chain.height !== count) throw new Error("Stored block height discontinuity");
-  return { chain, count, offset, blockRanges, recoveredHeight: checkpoint?.height ?? 0 };
+  return {
+    chain,
+    count,
+    offset,
+    blockRanges,
+    recoveredHeight: checkpoint?.height ?? 0,
+    appendNeedsDelimiter: offset > 0 && !lastLineTerminated
+  };
 }
 
 async function ensureMetadata(path: string, expected: StoreMetadata): Promise<void> {
@@ -1166,7 +1198,7 @@ async function ensureMetadata(path: string, expected: StoreMetadata): Promise<vo
   }
 }
 
-async function* readLines(path: string, maxLineBytes: number, overflowMessage: string): AsyncGenerator<string> {
+async function* readLines(path: string, maxLineBytes: number, overflowMessage: string): AsyncGenerator<BoundedLine> {
   if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes < 0) throw new Error("Invalid stored-line byte limit");
   const input = createReadStream(path, { highWaterMark: Math.min(64 * 1024, Math.max(1, maxLineBytes + 1)) });
   let parts: Buffer[] = [];
@@ -1184,13 +1216,20 @@ async function* readLines(path: string, maxLineBytes: number, overflowMessage: s
     bufferedBytes = nextBytes;
   };
 
-  const materialize = (): string => {
+  const materialize = (terminated: boolean): BoundedLine => {
+    const rawBytes = bufferedBytes;
     let line = parts.length === 0 ? Buffer.alloc(0) : parts.length === 1 ? parts[0]! : Buffer.concat(parts, bufferedBytes);
     if (line.length > 0 && line[line.length - 1] === 0x0d) line = line.subarray(0, -1);
     if (line.length > maxLineBytes) throw new Error(overflowMessage);
+    const result: BoundedLine = {
+      text: line.toString("utf8"),
+      contentBytes: line.length,
+      serializedBytes: rawBytes + (terminated ? 1 : 0),
+      terminated
+    };
     parts = [];
     bufferedBytes = 0;
-    return line.toString("utf8");
+    return result;
   };
 
   try {
@@ -1204,11 +1243,11 @@ async function* readLines(path: string, maxLineBytes: number, overflowMessage: s
           break;
         }
         append(chunk.subarray(cursor, newline), true);
-        yield materialize();
+        yield materialize(true);
         cursor = newline + 1;
       }
     }
-    if (bufferedBytes > 0) yield materialize();
+    if (bufferedBytes > 0) yield materialize(false);
   } finally {
     input.destroy();
   }
