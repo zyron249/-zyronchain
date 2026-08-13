@@ -10,6 +10,8 @@ Mining traffic remains independently bounded by `MAX_MINING_MEMPOOL_CLAIMS = 256
 
 Custom `Mempool(maxNonMiningSize)` instances retain a hard total cap unless an explicit mining reserve is supplied as the second constructor argument. When a nonzero reserve is supplied explicitly, that reserve is also the mining subpool cap for that instance, up to the protocol-policy maximum of 256 claims. The standalone node uses the default production policy, which enables the full 256-entry reserve.
 
+Mining and non-mining occupancy are tracked incrementally on insertion, deletion, replacement and pruning. Admission therefore does not rescan every resident transaction merely to determine whether a configured capacity has been reached; full-pool eviction scans occur only when a bounded replacement decision is actually required.
+
 ## Admission and stale-work controls
 
 A mining claim must use exactly the miner account's next confirmed nonce before proof validation. It must also bind to the next height, current finalized tip, deterministic reward schedule, and valid proof target. Finalization removes included transactions and prunes losing claims that no longer match the next height/tip.
