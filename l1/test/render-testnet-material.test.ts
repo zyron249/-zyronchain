@@ -57,7 +57,7 @@ test("Render testnet material rejects oversized persisted genesis before JSON pa
     await writeFile(genesisPath, "{" + " ".repeat(64 * 1024) + "}", { mode: 0o644 });
     await assert.rejects(
       loadOrCreateRenderTestnetMaterial(root, "zyron-render-material-size-test", 19600),
-      /exceeds 65536 byte limit/
+      /Existing Render genesis exceeds byte bounds or is not a regular file/
     );
   } finally {
     await rm(root, { recursive: true, force: true });
