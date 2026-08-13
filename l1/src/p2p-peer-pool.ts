@@ -111,7 +111,8 @@ export class NativePeerPool {
 /**
  * Remote discovery is deliberately stricter than explicit operator config.
  * DNS is excluded to avoid DNS-rebinding to internal services; private,
- * loopback, link-local, documentation and reserved IP ranges are also blocked.
+ * loopback, link-local, documentation and other explicitly non-globally-
+ * reachable IANA special-purpose IP ranges are blocked as well.
  */
 export function assertSafeDiscoveredPeer(candidate: Multiaddr): Multiaddr {
   const address = parseNativePeerAddress(candidate.toString());
@@ -139,8 +140,9 @@ for (const [network, prefix] of [
 ] as const) blockedIpv4.addSubnet(network, prefix, "ipv4");
 const blockedIpv6 = new BlockList();
 for (const [network, prefix] of [
-  ["::", 128], ["::1", 128], ["::ffff:0:0", 96], ["100::", 64], ["2001:db8::", 32],
-  ["fc00::", 7], ["fe80::", 10], ["ff00::", 8]
+  ["::", 128], ["::1", 128], ["::ffff:0:0", 96], ["64:ff9b:1::", 48],
+  ["100::", 64], ["100:0:0:1::", 64], ["2001:2::", 48], ["2001:db8::", 32],
+  ["3fff::", 20], ["5f00::", 16], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8]
 ] as const) blockedIpv6.addSubnet(network, prefix, "ipv6");
 
 function validatePeerId(value: string): void {

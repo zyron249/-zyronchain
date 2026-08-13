@@ -32,6 +32,18 @@ test("discovery dial policy blocks internal, reserved and DNS-rebinding candidat
   );
 });
 
+test("dynamic discovery rejects non-globally-reachable IPv6 special-purpose ranges", () => {
+  const id = peerId(7);
+  for (const host of ["64:ff9b:1::1", "100:0:0:1::1", "2001:2::1", "3fff::1", "5f00::1"]) {
+    assert.throws(
+      () => assertSafeDiscoveredPeer(parseNativePeerAddress(`/ip6/${host}/tcp/9140/p2p/${id}`)),
+      /non-public/
+    );
+  }
+  const publicAddress = parseNativePeerAddress(`/ip6/2606:4700:4700::1111/tcp/9140/p2p/${id}`);
+  assert.equal(assertSafeDiscoveredPeer(publicAddress).toString(), publicAddress.toString());
+});
+
 test("native peer pool rejects duplicate/self seeds and preserves diversity ordering", () => {
   const local = peerId(1);
   const first = parseNativePeerAddress(`/ip4/8.8.8.8/tcp/9140/p2p/${peerId(2)}`);
@@ -55,8 +67,6 @@ test("verified dynamic admission caps one source and one topology failure domain
     const remote = identity(offset + 20);
     const id = peerIdFromIdentity(remote);
     remotes.set(id, remote);
-    // Every candidate is in a different public /24 so the source cap is the
-    // limiting factor rather than the topology cap.
     return parseNativePeerAddress(`/ip4/${30 + offset}.8.8.8/tcp/9140/p2p/${id}`);
   });
   const node = fakeIdentityNode(remotes, chain);
@@ -69,7 +79,6 @@ test("verified dynamic admission caps one source and one topology failure domain
   assert.equal(pool.isDynamic(evictedPeerId), true);
   assert.equal(pool.evictDynamic(evictedPeerId), true);
   assert.equal(pool.isDynamic(evictedPeerId), false);
-  // Churn must release both total capacity and the per-source slot.
   assert.equal(await pool.verifyAndAdmit(node, local, chain, candidates[8]!, source), true);
 
   const topologyPool = new NativePeerPool([], peerIdFromIdentity(local));
@@ -113,8 +122,6 @@ test("dynamic admission fails closed when Noise identity does not match the pinn
   const imposter = identity(212);
   const advertisedPeerId = peerIdFromIdentity(advertised);
   const candidate = parseNativePeerAddress(`/ip4/45.67.89.10/tcp/9140/p2p/${advertisedPeerId}`);
-  // The fake transport reports the pinned PeerId but returns a different
-  // application key. validateP2PChainIdentity must reject the mismatch.
   const node = fakeIdentityNode(new Map([[advertisedPeerId, imposter]]), chain, advertisedPeerId);
   const pool = new NativePeerPool([], peerIdFromIdentity(local));
   await assert.rejects(() => pool.verifyAndAdmit(node, local, chain, candidate, peerId(213)), /Noise identity mismatch/);
@@ -146,7 +153,6 @@ test("eclipse-majority churn cannot exceed the dynamic reserve or displace a boo
   assert.equal(pool.size, 1 + MAX_DYNAMIC_NATIVE_PEERS);
   assert.equal(pool.isDynamic(peerId(501)), false);
 
-  // A fifth attacker source cannot exceed the global dynamic reserve.
   const overflow = identity(600);
   const overflowId = peerIdFromIdentity(overflow);
   const overflowAddress = parseNativePeerAddress(`/ip4/90.90.1.1/tcp/9140/p2p/${overflowId}`);
@@ -155,7 +161,6 @@ test("eclipse-majority churn cannot exceed the dynamic reserve or displace a boo
     false
   );
 
-  // Simulated churn frees capacity without touching the operator bootstrap.
   for (const id of admittedPeerIds.filter((_, index) => index % 2 === 0)) assert.equal(pool.evictDynamic(id), true);
   assert.equal(pool.size, 1 + (MAX_DYNAMIC_NATIVE_PEERS / 2));
   assert.equal(pool.has(peerId(501)), true);
