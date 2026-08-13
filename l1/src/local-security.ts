@@ -1,3 +1,4 @@
+import { constants } from "node:fs";
 import { lstat, open, type FileHandle } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -18,6 +19,8 @@ export async function assertPrivateRegularFile(path: string, label: string): Pro
  * The path itself must not be a symlink, POSIX group/other permission bits must
  * be clear, and on POSIX the descriptor inode/device must still match the path
  * after open so a path replacement between validation and read fails closed.
+ * POSIX opens also use no-follow/non-blocking flags so substitution with a
+ * symlink, FIFO or other special file cannot redirect or block secret loading.
  * Reads are capped so oversized or concurrently growing local secret files cannot
  * trigger unbounded startup memory allocation.
  */
@@ -46,7 +49,14 @@ export async function readPrivateRegularFile(path: string, label: string): Promi
 
 async function openValidatedPrivateFile(path: string, label: string): Promise<OpenedPrivateFile> {
   const resolved = resolve(path);
-  const handle = await open(resolved, "r");
+  const initialPathMetadata = await lstat(resolved);
+  if (initialPathMetadata.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link`);
+  if (!initialPathMetadata.isFile()) throw new Error(`${label} must be a regular file`);
+
+  const flags = process.platform === "win32"
+    ? "r"
+    : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+  const handle = await open(resolved, flags);
   try {
     const descriptorMetadata = await handle.stat();
     const pathMetadata = await lstat(resolved);
