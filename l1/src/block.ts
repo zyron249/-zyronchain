@@ -18,6 +18,8 @@ import type {
   Validator
 } from "./types.js";
 
+export const MAX_VALIDATOR_COUNT = 100;
+
 export function blockHash(header: BlockHeader): string {
   return sha256Hex(canonicalJson(header));
 }
@@ -262,6 +264,7 @@ export function validateRoundSkipQuorum(
   previousHash: string,
   protocolVersion = 1
 ): void {
+  if (votes.length > validators.length) throw new Error("Round skip certificate exceeds active validator set");
   const allowed = new Map(validators.map((validator) => [validator.address, validator.publicKey]));
   const seen = new Set<string>();
   let valid = 0;
@@ -335,6 +338,8 @@ export function validateBlockShape(value: unknown): asserts value is Block {
   for (const tx of value.transactions) validateTransactionShape(tx);
   if (!Array.isArray(value.attestations)) throw new Error("Invalid block attestations");
   if (!Array.isArray(value.roundCertificate)) throw new Error("Invalid round certificate");
+  if (value.attestations.length > MAX_VALIDATOR_COUNT) throw new Error("Too many block attestations");
+  if (value.roundCertificate.length > MAX_VALIDATOR_COUNT) throw new Error("Too many round certificate entries");
   if (value.proposerPublicKey !== null && typeof value.proposerPublicKey !== "string") throw new Error("Invalid proposer public key");
   if (value.signature !== null && typeof value.signature !== "string") throw new Error("Invalid block signature");
   for (const item of value.attestations) {
@@ -359,6 +364,7 @@ export function validateBlockShape(value: unknown): asserts value is Block {
 }
 
 export function validateAttestationQuorum(block: Block, validators: Validator[]): void {
+  if (block.attestations.length > validators.length) throw new Error("Finality certificate exceeds active validator set");
   const allowed = new Map(validators.map((validator) => [validator.address, validator.publicKey]));
   const seen = new Set<string>();
   let valid = 0;
