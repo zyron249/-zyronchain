@@ -4,7 +4,12 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { failureBackoffMs, PeerReputationStore } from "../src/peer-reputation.js";
+import {
+  failureBackoffMs,
+  MAX_PEER_REPUTATION_ENDPOINT_BYTES,
+  MAX_PEER_REPUTATION_SNAPSHOT_BYTES,
+  PeerReputationStore
+} from "../src/peer-reputation.js";
 
 test("peer failure backoff grows exponentially and is bounded", () => {
   assert.equal(failureBackoffMs(1), 30_000);
@@ -73,6 +78,34 @@ test("peer reputation fails closed on malformed durable state", async () => {
   try {
     await writeFile(join(directory, "peer-reputation.json"), '{"version":1,"peers":[{"endpoint":"https://evil.example","consecutiveFailures":-1}]}\n');
     await assert.rejects(() => PeerReputationStore.open(directory), /Corrupt peer reputation store/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("peer reputation rejects oversized snapshot before JSON materialization", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-peer-reputation-oversized-"));
+  try {
+    await writeFile(
+      join(directory, "peer-reputation.json"),
+      Buffer.alloc(MAX_PEER_REPUTATION_SNAPSHOT_BYTES + 1, 0x61)
+    );
+    await assert.rejects(
+      () => PeerReputationStore.open(directory),
+      /Corrupt peer reputation store/
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("peer reputation bounds normalized endpoint bytes before persistence", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-peer-reputation-endpoint-"));
+  try {
+    const store = await PeerReputationStore.open(directory);
+    const oversized = `https://validator.example/${"a".repeat(MAX_PEER_REPUTATION_ENDPOINT_BYTES)}`;
+    assert.throws(() => store.isAvailable(oversized), /endpoint exceeds byte limit/);
+    await assert.rejects(() => store.recordFailure(oversized), /endpoint exceeds byte limit/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
