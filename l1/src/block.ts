@@ -338,14 +338,20 @@ export function validateBlockShape(value: unknown): asserts value is Block {
   }
   if (header.proposer !== "GENESIS") assertAddress(header.proposer as string);
   if (!Array.isArray(value.transactions)) throw new Error("Invalid block transactions");
-  if (value.transactions.length > MAX_BLOCK_TRANSACTIONS) throw new Error("Too many transactions");
-  for (const tx of value.transactions) validateTransactionShape(tx);
   if (!Array.isArray(value.attestations)) throw new Error("Invalid block attestations");
   if (!Array.isArray(value.roundCertificate)) throw new Error("Invalid round certificate");
+  if (value.transactions.length > MAX_BLOCK_TRANSACTIONS) throw new Error("Too many transactions");
   if (value.attestations.length > MAX_VALIDATOR_COUNT) throw new Error("Too many block attestations");
   if (value.roundCertificate.length > MAX_VALIDATOR_COUNT) throw new Error("Too many round certificate entries");
   if (value.proposerPublicKey !== null && typeof value.proposerPublicKey !== "string") throw new Error("Invalid proposer public key");
   if (value.signature !== null && typeof value.signature !== "string") throw new Error("Invalid block signature");
+
+  // Enforce the canonical serialized block limit before any per-transaction
+  // txid/signature verification or certificate-entry validation. This keeps a
+  // count-valid but oversized block from amplifying consensus CPU work.
+  if (Buffer.byteLength(canonicalJson(value), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
+
+  for (const tx of value.transactions) validateTransactionShape(tx);
   for (const item of value.attestations) {
     assertPlainRecord(item, "block attestation");
     assertExactKeys(item, ["validator", "publicKey", "signature"], "block attestation");
