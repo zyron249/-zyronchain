@@ -65,7 +65,7 @@ test("portable State-v2 resume bounded reader rejects path replacement after des
   }
 });
 
-test("portable State-v2 resume bounded reader rejects symlink substitution", { skip: process.platform === "win32" }, async () => {
+test("portable State-v2 resume bounded reader rejects an initial symlink", { skip: process.platform === "win32" }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-resume-symlink-"));
   const target = join(directory, "target.json");
   const path = join(directory, "chunk.json");
@@ -73,6 +73,26 @@ test("portable State-v2 resume bounded reader rejects symlink substitution", { s
     await writeFile(target, "canonical", "utf8");
     await symlink(target, path);
     await assert.rejects(() => readPortableStateResumeFile(path, 64), /not a regular file/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("portable State-v2 resume descriptor open refuses symlink substitution after preflight", { skip: process.platform === "win32" }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-resume-preopen-symlink-"));
+  const path = join(directory, "chunk.json");
+  const displaced = join(directory, "original.json");
+  try {
+    await writeFile(path, "canonical", "utf8");
+    await assert.rejects(
+      () => readPortableStateResumeFile(path, 64, {
+        afterPreflight: async () => {
+          await rename(path, displaced);
+          await symlink(displaced, path);
+        }
+      }),
+      (error: unknown) => Boolean(error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "ELOOP")
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
