@@ -20,6 +20,7 @@ import type {
 
 export const MAX_VALIDATOR_COUNT = 100;
 export const MAX_BLOCK_TRANSACTIONS = 10_000;
+export const MAX_BLOCK_BYTES = 2_000_000;
 
 export function blockHash(header: BlockHeader): string {
   return sha256Hex(canonicalJson(header));
@@ -206,6 +207,7 @@ export function validateBlockEnvelope(
   requireProposerSignature = true
 ): void {
   validateBlockShape(block);
+  if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
   if (block.header.version !== expectedProtocolVersion) throw new Error("Unexpected protocol version");
   if (block.header.chainId !== previous.header.chainId) throw new Error("Wrong chain ID");
   if (block.header.height !== previous.header.height + 1) throw new Error("Wrong block height");
