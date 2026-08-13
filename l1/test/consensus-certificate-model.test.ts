@@ -1,7 +1,124 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { validatorQuorumSize } from "../src/block.js";
+import {
+  MAX_VALIDATOR_COUNT,
+  createBlockAttestation,
+  createRoundSkipVote,
+  validateAttestationQuorum,
+  validateBlockShape,
+  validateRoundSkipQuorum,
+  validatorQuorumSize
+} from "../src/block.js";
+import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "../src/crypto.js";
+import type { Block, Validator } from "../src/types.js";
+
+const TEST_HASH = "11".repeat(32);
+
+function minimalBlock(overrides: Partial<Block> = {}): Block {
+  return {
+    header: {
+      version: 1,
+      chainId: "zyron-certificate-bounds-test",
+      height: 0,
+      round: 0,
+      previousHash: "00".repeat(32),
+      timestampMs: 1,
+      transactionRoot: TEST_HASH,
+      stateRoot: TEST_HASH,
+      proposer: "GENESIS"
+    },
+    transactions: [],
+    hash: TEST_HASH,
+    proposerPublicKey: null,
+    signature: null,
+    roundCertificate: [],
+    attestations: [],
+    ...overrides
+  };
+}
+
+function testValidator(): { privateKey: string; publicKey: string; validator: Validator } {
+  const privateKey = generatePrivateKey();
+  const publicKey = publicKeyFromPrivate(privateKey);
+  return {
+    privateKey,
+    publicKey,
+    validator: { address: addressFromPublicKey(publicKey), publicKey }
+  };
+}
+
+test("block shape rejects oversized attestations before per-entry validation", () => {
+  const malformed = Array.from({ length: MAX_VALIDATOR_COUNT + 1 }, () => null) as unknown as Block["attestations"];
+  assert.throws(
+    () => validateBlockShape(minimalBlock({ attestations: malformed })),
+    /Too many block attestations/
+  );
+});
+
+test("block shape rejects oversized round certificate before per-entry validation", () => {
+  const malformed = Array.from({ length: MAX_VALIDATOR_COUNT + 1 }, () => null) as unknown as Block["roundCertificate"];
+  assert.throws(
+    () => validateBlockShape(minimalBlock({ roundCertificate: malformed })),
+    /Too many round certificate entries/
+  );
+});
+
+test("finality quorum rejects certificates larger than the active validator set before entry validation", () => {
+  const signer = testValidator();
+  const malformed = minimalBlock({ attestations: [null, null] as unknown as Block["attestations"] });
+  assert.throws(
+    () => validateAttestationQuorum(malformed, [signer.validator]),
+    /Finality certificate exceeds active validator set/
+  );
+});
+
+test("round skip quorum rejects certificates larger than the active validator set before entry validation", () => {
+  const signer = testValidator();
+  assert.throws(
+    () => validateRoundSkipQuorum(
+      [null, null] as unknown as Block["roundCertificate"],
+      [signer.validator],
+      "zyron-certificate-bounds-test",
+      1,
+      0,
+      TEST_HASH
+    ),
+    /Round skip certificate exceeds active validator set/
+  );
+});
+
+test("valid one-validator finality and round-skip certificates remain accepted", () => {
+  const signer = testValidator();
+  const base = minimalBlock();
+  const block = minimalBlock({
+    header: {
+      ...base.header,
+      height: 1,
+      proposer: signer.validator.address
+    },
+    proposerPublicKey: signer.publicKey
+  });
+  block.attestations = [createBlockAttestation(block, signer.privateKey, signer.publicKey)];
+  assert.doesNotThrow(() => validateAttestationQuorum(block, [signer.validator]));
+
+  const vote = createRoundSkipVote({
+    chainId: block.header.chainId,
+    height: 1,
+    round: 0,
+    previousHash: block.header.previousHash,
+    validatorPrivateKey: signer.privateKey,
+    validatorPublicKey: signer.publicKey
+  });
+  assert.doesNotThrow(() => validateRoundSkipQuorum(
+    [vote],
+    [signer.validator],
+    block.header.chainId,
+    1,
+    0,
+    block.header.previousHash
+  ));
+});
 
 test("model: finalized value prevents a conflicting value in every later certified round", () => {
   for (let validatorCount = 1; validatorCount <= 10; validatorCount += 1) {
@@ -21,9 +138,6 @@ test("model: finalized value prevents a conflicting value in every later certifi
         );
       }
 
-      // A proposal in any later round needs a skip certificate for the round
-      // where this value finalized. An honest validator's journal cannot both
-      // attest and skip that slot, so the two certificates cannot coexist.
       for (const skip of certificates) {
         assertHasHonestIntersection(
           finalized,
@@ -60,8 +174,6 @@ test("model: sequential skip certificates cannot bypass the first honest locked 
 });
 
 test("model checker detects the known unsafe non-strict two-thirds mutation", () => {
-  // For three validators, ceil(2N/3)=2 permits {A,B} and {B,C}. If B is the
-  // single Byzantine validator, the intersection contains no honest signer.
   const validatorCount = 3;
   const unsafeQuorum = Math.ceil((2 * validatorCount) / 3);
   const certificates = masksAtLeast(validatorCount, unsafeQuorum);
