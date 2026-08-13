@@ -33,6 +33,8 @@ Useful options:
 
 The miner decrypts and signs locally. It never uploads the private key or password. Remote RPC must use HTTPS; plaintext HTTP is accepted only for loopback.
 
+The supplied genesis is also treated as a bounded local control file: the packaged miner accepts at most **256 KiB**, requires a regular-file descriptor, and on POSIX refuses symlink/non-blocking special-file substitution before JSON or canonical chain validation. This cap is intentionally far above the canonical bounded genesis schema while preventing pre-validation memory growth from arbitrary local input.
+
 Before hashing, the miner reconstructs the canonical genesis hash from the supplied genesis file and requires both the RPC chain ID and RPC genesis hash to match exactly. The same identity check is repeated while mining, so an endpoint that switches to a different network fails closed instead of silently wasting work.
 
 Protocol and nonce state are sampled between two validated finalized-status reads. If the finalized height or tip hash changes while those RPC reads are in flight, the sampled state is discarded before any hashing begins. This prevents a mixed old-tip/new-state challenge from consuming a hash batch.
