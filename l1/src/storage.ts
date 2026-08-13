@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3";
 
 import { canonicalJson, sha256Hex } from "./codec.js";
+import { readBoundedRegularControlFile } from "./control-file.js";
 import { ZyronChain } from "./chain.js";
 import { StateV2DiskStore } from "./state-v2-store.js";
 import { stateV2TransactionKeyPreimages } from "./state-v2.js";
@@ -673,7 +674,10 @@ async function quarantineCorruptStateV2(dataDir: string): Promise<void> {
 
 async function loadHistoryRetention(genesis: GenesisConfig, dataDir: string): Promise<HistoryRetentionV1 | undefined> {
   try {
-    const value = JSON.parse(await readFile(join(dataDir, "history-retention.json"), "utf8")) as unknown;
+    const value = JSON.parse(await readBoundedRegularControlFile(
+      join(dataDir, "history-retention.json"),
+      "History retention marker"
+    )) as unknown;
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid history retention marker");
     const record = value as Record<string, unknown>;
     if (Object.keys(record).sort().join(",") !== "chainId,genesisHash,prunedThroughHeight,version" ||
@@ -1185,7 +1189,7 @@ async function replayStoredBlocks(
 
 async function ensureMetadata(path: string, expected: StoreMetadata): Promise<void> {
   try {
-    const existing = JSON.parse(await readFile(path, "utf8")) as Partial<StoreMetadata>;
+    const existing = JSON.parse(await readBoundedRegularControlFile(path, "Chain metadata")) as Partial<StoreMetadata>;
     if (existing.version !== expected.version || existing.chainId !== expected.chainId ||
         existing.genesisHash !== expected.genesisHash) {
       throw new Error("Data directory belongs to a different or unsupported chain");
