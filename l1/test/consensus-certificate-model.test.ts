@@ -61,7 +61,7 @@ test("block transaction count boundary proceeds to normal entry validation", () 
   const malformed = Array.from({ length: MAX_BLOCK_TRANSACTIONS }, () => null) as unknown as Block["transactions"];
   assert.throws(
     () => validateBlockShape(minimalBlock({ transactions: malformed })),
-    /transaction must be a plain object/
+    /Invalid transaction/
   );
 });
 
