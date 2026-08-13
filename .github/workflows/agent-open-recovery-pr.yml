@@ -35,7 +35,6 @@ jobs:
               'X-GitHub-Api-Version': '2022-11-28',
               'Content-Type': 'application/json',
           }
-          q = urllib.parse.quote('head:zyron249:agent/chain-control-metadata-bounded-read-v1 base:main state:open')
           req = urllib.request.Request(f'{api}/pulls?head=zyron249:agent/chain-control-metadata-bounded-read-v1&base=main&state=open', headers=headers)
           with urllib.request.urlopen(req) as response:
               existing = json.load(response)
