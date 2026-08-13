@@ -166,17 +166,23 @@ export class PeerReputationStore {
       await rename(temporary, this.path);
       renamed = true;
       await faultHooks.afterRename?.();
-      const directory = await open(dirname(this.path), "r");
-      try {
-        await directory.sync();
-      } finally {
-        await directory.close();
+      if (httpPeerReputationDirectorySyncSupported()) {
+        const directory = await open(dirname(this.path), "r");
+        try {
+          await directory.sync();
+        } finally {
+          await directory.close();
+        }
+        await faultHooks.afterDirectorySync?.();
       }
-      await faultHooks.afterDirectorySync?.();
     } finally {
       if (!renamed) await rm(temporary, { force: true });
     }
   }
+}
+
+export function httpPeerReputationDirectorySyncSupported(platform = process.platform): boolean {
+  return platform !== "win32";
 }
 
 export function failureBackoffMs(consecutiveFailures: number): number {
