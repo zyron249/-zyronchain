@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 
 import {
   failureBackoffMs,
+  httpPeerReputationDirectorySyncSupported,
   MAX_PEER_REPUTATION_ENDPOINT_BYTES,
   MAX_PEER_REPUTATION_SNAPSHOT_BYTES,
   PeerReputationStore
@@ -17,6 +18,13 @@ test("peer failure backoff grows exponentially and is bounded", () => {
   assert.equal(failureBackoffMs(3), 120_000);
   assert.equal(failureBackoffMs(32), 30 * 60_000);
   assert.throws(() => failureBackoffMs(0), /Invalid peer failure count/);
+});
+
+test("HTTP peer reputation directory fsync is required only where Node supports it", () => {
+  assert.equal(httpPeerReputationDirectorySyncSupported("linux"), true);
+  assert.equal(httpPeerReputationDirectorySyncSupported("darwin"), true);
+  assert.equal(httpPeerReputationDirectorySyncSupported("freebsd"), true);
+  assert.equal(httpPeerReputationDirectorySyncSupported("win32"), false);
 });
 
 test("peer reputation survives restart and successful recovery clears backoff", async () => {
@@ -153,7 +161,7 @@ test("peer reputation completes directory durability before reporting successful
     await store.recordFailure(peer, now, {
       afterDirectorySync: () => { reachedDirectorySync = true; }
     });
-    assert.equal(reachedDirectorySync, true);
+    assert.equal(reachedDirectorySync, httpPeerReputationDirectorySyncSupported());
     const reopened = await PeerReputationStore.open(directory);
     assert.equal(reopened.failureCount(peer), 1);
   } finally {
