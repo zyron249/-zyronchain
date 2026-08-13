@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -30,6 +31,7 @@ export interface PortableStateResumeManifestV1 {
 }
 
 export interface PortableStateResumeReadFaultHooks {
+  afterPreflight?: () => void | Promise<void>;
   afterOpen?: () => void | Promise<void>;
 }
 
@@ -76,8 +78,6 @@ export class PortableStateResumeStore {
     await mkdir(keysDir, { recursive: true, mode: 0o700 });
     await assertRealDirectory(recordsDir);
     await assertRealDirectory(keysDir);
-    // A crash before atomic rename may leave only a fully uncommitted temp
-    // file. Temp artifacts are never progress and are safe to discard.
     await rm(tempDir, { recursive: true, force: true });
     await mkdir(tempDir, { mode: 0o700 });
     await assertRealDirectory(tempDir);
@@ -306,8 +306,11 @@ export async function readPortableStateResumeFile(
   if (!pathBefore.isFile() || pathBefore.isSymbolicLink() || pathBefore.size < 1 || pathBefore.size > maxBytes) {
     throw new Error("Portable state resume file exceeds byte bounds or is not a regular file");
   }
+  await faultHooks.afterPreflight?.();
 
-  const handle = await open(path, "r");
+  const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+  const nonBlocking = process.platform === "win32" ? 0 : constants.O_NONBLOCK;
+  const handle = await open(path, constants.O_RDONLY | noFollow | nonBlocking);
   try {
     const opened = await handle.stat();
     if (!opened.isFile() || opened.size < 1 || opened.size > maxBytes ||
