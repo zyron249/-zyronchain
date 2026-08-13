@@ -13,6 +13,8 @@ export class Mempool {
   private readonly transferSpendBySender = new Map<string, bigint>();
   private readonly maxNonMiningSize: number;
   private readonly miningReserve: number;
+  private miningSize = 0;
+  private nonMiningSize = 0;
 
   constructor(maxNonMiningSize?: number, miningReserve?: number) {
     this.maxNonMiningSize = maxNonMiningSize ?? DEFAULT_MEMPOOL_NON_MINING_CAPACITY;
@@ -37,19 +39,18 @@ export class Mempool {
     }
 
     if (tx.kind === "mining_claim") {
-      const miningCount = this.miningClaimCount();
       const totalCapacity = this.maxNonMiningSize + this.miningReserve;
       const configuredMiningCapacity = this.miningReserve > 0
         ? this.miningReserve
         : MAX_MINING_MEMPOOL_CLAIMS;
-      if (miningCount >= configuredMiningCapacity || this.byId.size >= totalCapacity) {
+      if (this.miningSize >= configuredMiningCapacity || this.byId.size >= totalCapacity) {
         const weakest = this.weakestMiningClaim();
         if (!weakest || !isBetterMiningClaim(weakest.tx, tx)) {
           throw new Error("Mining mempool full");
         }
         this.deleteTransaction(weakest.txid, weakest.tx);
       }
-    } else if (this.nonMiningCount() >= this.maxNonMiningSize) {
+    } else if (this.nonMiningSize >= this.maxNonMiningSize) {
       const eviction = this.lowestPriorityEvictableTransfer();
       if (!eviction || (tx.kind === "transfer" && !hasRequiredFeeRateBump(eviction.tx, tx))) {
         throw new Error("Mempool full");
@@ -57,9 +58,11 @@ export class Mempool {
       this.deleteTransaction(eviction.txid, eviction.tx);
     }
 
-    this.byId.set(tx.txid, structuredClone(tx));
+    const stored = structuredClone(tx);
+    this.byId.set(tx.txid, stored);
     this.nonceIds.set(nonceKey, tx.txid);
-    this.adjustTransferSpend(tx, 1n);
+    this.adjustOccupancy(stored, 1);
+    this.adjustTransferSpend(stored, 1n);
   }
 
   remove(txids: Iterable<string>): void {
@@ -98,16 +101,13 @@ export class Mempool {
     return this.byId.size;
   }
 
-  private miningClaimCount(): number {
-    let count = 0;
-    for (const tx of this.byId.values()) if (tx.kind === "mining_claim") count += 1;
-    return count;
-  }
-
-  private nonMiningCount(): number {
-    let count = 0;
-    for (const tx of this.byId.values()) if (tx.kind !== "mining_claim") count += 1;
-    return count;
+  private adjustOccupancy(tx: Transaction, direction: 1 | -1): void {
+    if (tx.kind === "mining_claim") this.miningSize += direction;
+    else this.nonMiningSize += direction;
+    if (this.miningSize < 0 || this.nonMiningSize < 0 ||
+        this.miningSize + this.nonMiningSize !== this.byId.size) {
+      throw new Error("Mempool occupancy invariant violated");
+    }
   }
 
   private adjustTransferSpend(tx: Transaction, direction: 1n | -1n): void {
@@ -121,6 +121,7 @@ export class Mempool {
   private deleteTransaction(txid: string, tx: Transaction): void {
     this.byId.delete(txid);
     this.nonceIds.delete(`${tx.sender}:${tx.nonce}`);
+    this.adjustOccupancy(tx, -1);
     this.adjustTransferSpend(tx, -1n);
   }
 
