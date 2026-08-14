@@ -22,6 +22,8 @@ interface StoredSemanticKeyRow {
   checksum: string;
 }
 
+interface CountRow { count: number }
+
 export const DEFAULT_STATE_V2_NODE_CACHE = 4_096;
 
 /**
@@ -38,10 +40,12 @@ export class StateV2NodeObjectStore {
   private readonly getSemanticKeyStatement: Database.Statement<[string], StoredSemanticKeyRow>;
   private readonly insertSemanticKeyStatement: Database.Statement<[string, string, string]>;
   private readonly allSemanticKeysStatement: Database.Statement<[], StoredSemanticKeyRow>;
+  private readonly nodeCountStatement: Database.Statement<[], CountRow>;
   private readonly traversalDepthStatement: Database.Statement<[string], { depth: number }>;
   private readonly traversalRememberStatement: Database.Statement<[string, number]>;
   private readonly traversalLeafStatement: Database.Statement<[string, string]>;
   private readonly traversalClearStatement: Database.Statement<[]>;
+  private readonly traversalCountStatement: Database.Statement<[], CountRow>;
   private readonly writeBatch: (records: readonly StateV2NodeRecord[]) => void;
   private readonly writeSemanticKeyBatch: (keys: readonly string[]) => void;
 
@@ -57,10 +61,12 @@ export class StateV2NodeObjectStore {
       "INSERT OR IGNORE INTO semantic_keys(key_hash, key, checksum) VALUES (?, ?, ?)"
     );
     this.allSemanticKeysStatement = database.prepare("SELECT key_hash, key, checksum FROM semantic_keys ORDER BY key_hash");
+    this.nodeCountStatement = database.prepare("SELECT COUNT(*) AS count FROM nodes");
     this.traversalDepthStatement = database.prepare("SELECT depth FROM state_v2_traversal_seen WHERE hash = ?");
     this.traversalRememberStatement = database.prepare("INSERT INTO state_v2_traversal_seen(hash, depth) VALUES (?, ?)");
     this.traversalLeafStatement = database.prepare("UPDATE state_v2_traversal_seen SET key_hash = ? WHERE hash = ?");
     this.traversalClearStatement = database.prepare("DELETE FROM state_v2_traversal_seen");
+    this.traversalCountStatement = database.prepare("SELECT COUNT(*) AS count FROM state_v2_traversal_seen");
     const transaction = database.transaction((records: readonly StateV2NodeRecord[]) => {
       for (const record of records) this.putOne(record);
     });
@@ -149,6 +155,10 @@ export class StateV2NodeObjectStore {
     return this.cache.size;
   }
 
+  storedNodeCount(): number {
+    return this.nodeCountStatement.get()?.count ?? 0;
+  }
+
   semanticKey(keyHash: string): string | undefined {
     assertHash(keyHash);
     const row = this.getSemanticKeyStatement.get(keyHash);
@@ -170,6 +180,17 @@ export class StateV2NodeObjectStore {
     this.traversalClearStatement.run();
     try {
       this.populateTraversal(state, requireSemanticKeys);
+    } finally {
+      this.traversalClearStatement.run();
+    }
+  }
+
+  /** Authenticate one root and return its reachable-node count without an O(n) JS Set. */
+  reachableNodeCount(state: SparseMerkleState, requireSemanticKeys = false): number {
+    this.traversalClearStatement.run();
+    try {
+      this.populateTraversal(state, requireSemanticKeys);
+      return this.traversalCountStatement.get()?.count ?? 0;
     } finally {
       this.traversalClearStatement.run();
     }
