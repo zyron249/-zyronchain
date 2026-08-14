@@ -66,7 +66,7 @@ export function validateStateV2PortableBundle(
       value.keyPreimages.length > MAX_PORTABLE_STATE_KEYS) {
     throw new Error("Invalid portable State v2 bundle");
   }
-  const records = value.records.map(parseNodeRecord);
+  const records = value.records.map(parseStateV2PortableNodeRecord);
   const keyPreimages = value.keyPreimages.map((key) => {
     if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new Error("Invalid portable State v2 key preimage");
     return key;
@@ -93,7 +93,8 @@ function copyNodeRecord(record: StateV2NodeRecord): StateV2NodeRecord {
     : { kind: "branch", hash: record.hash, leftHash: record.leftHash, rightHash: record.rightHash };
 }
 
-function parseNodeRecord(value: unknown): StateV2NodeRecord {
+/** Parse one portable record so streaming import can retain the exact bundle validation rules. */
+export function parseStateV2PortableNodeRecord(value: unknown): StateV2NodeRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid portable State v2 node");
   const record = value as Record<string, unknown>;
   if (record.kind === "leaf") {
