@@ -12,7 +12,10 @@ export function transactionVersionForProtocolVersion(protocolVersion: number): T
 
 export function assertRpcApiVersion(response: Response, expectedVersion: number): void {
   const advertised = response.headers.get("x-zyron-rpc-version");
-  if (advertised !== null && advertised !== String(expectedVersion)) {
+  if (advertised === null) {
+    throw new Error("RPC server did not advertise an API version");
+  }
+  if (advertised !== String(expectedVersion)) {
     throw new Error(`RPC server uses unsupported API version ${advertised}`);
   }
 }
