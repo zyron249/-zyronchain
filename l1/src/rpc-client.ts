@@ -1,5 +1,6 @@
 import type { TransactionVersion } from "./transaction.js";
 import { enforceCanonicalCliSecurityPolicy } from "./cli-policy.js";
+import { assertRpcResponseVersion } from "./rpc-response-version.js";
 
 enforceCanonicalCliSecurityPolicy(process.argv.slice(2));
 
@@ -11,13 +12,7 @@ export function transactionVersionForProtocolVersion(protocolVersion: number): T
 }
 
 export function assertRpcApiVersion(response: Response, expectedVersion: number): void {
-  const advertised = response.headers.get("x-zyron-rpc-version");
-  if (advertised === null) {
-    throw new Error("RPC server did not advertise an API version");
-  }
-  if (advertised !== String(expectedVersion)) {
-    throw new Error(`RPC server uses unsupported API version ${advertised}`);
-  }
+  assertRpcResponseVersion(response, expectedVersion, "RPC server");
 }
 
 export async function readBoundedResponseText(
