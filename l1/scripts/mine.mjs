@@ -18,10 +18,12 @@ import {
   miningFinalizedSnapshotMatches
 } from "../dist/src/miner-network.js";
 import { loadEncryptedMinerPrivateKey } from "../dist/src/miner-security.js";
+import { assertRpcResponseVersion } from "../dist/src/rpc-response-version.js";
 import { createMiningClaim } from "../dist/src/transaction.js";
 import { MAX_SUPPLY_ATOMS } from "../dist/src/types.js";
 
 const MAX_RPC_RESPONSE_BYTES = 64 * 1024;
+const RPC_API_VERSION = 1;
 const args = process.argv.slice(2);
 
 if (args.includes("--help") || args.includes("-h")) {
@@ -190,7 +192,7 @@ Options:
   --password-file <p>   Required; password file for the encrypted miner keystore
   --help, -h            Show this help
 
-The miner accepts encrypted ZyronChain keystores only. It reads genesis through a bounded regular-file descriptor, derives the canonical genesis hash, and refuses an RPC whose chain ID or genesis hash differs. On POSIX systems symlink/non-regular genesis paths are rejected; the keystore and password file must be owner-only (0600 recommended). Remote RPC must use HTTPS. Plain HTTP is accepted only for loopback.`);
+The miner accepts encrypted ZyronChain keystores only. It reads genesis through a bounded regular-file descriptor, derives the canonical genesis hash, and refuses an RPC whose chain ID or genesis hash differs. RPC responses must explicitly advertise API version 1. On POSIX systems symlink/non-regular genesis paths are rejected; the keystore and password file must be owner-only (0600 recommended). Remote RPC must use HTTPS. Plain HTTP is accepted only for loopback.`);
 }
 
 function assertKnownArgs() {
@@ -263,7 +265,7 @@ async function fetchAndValidateStatus() {
 async function fetchJson(url, init = {}, timeoutMs = 8_000) {
   const headers = {
     ...(init.headers ?? {}),
-    "x-zyron-rpc-version": "1"
+    "x-zyron-rpc-version": String(RPC_API_VERSION)
   };
   const response = await fetch(url, {
     ...init,
@@ -271,6 +273,7 @@ async function fetchJson(url, init = {}, timeoutMs = 8_000) {
     redirect: "error",
     signal: AbortSignal.timeout(timeoutMs)
   });
+  assertRpcResponseVersion(response, RPC_API_VERSION, "RPC server");
   const text = await readBoundedBody(response);
   if (!response.ok) {
     throw new Error(`RPC HTTP ${response.status}: ${text.slice(0, 300)}`);
