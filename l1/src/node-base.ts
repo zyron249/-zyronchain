@@ -1114,7 +1114,10 @@ async function postJson(
 
 function assertCompatibleRpcResponse(response: Response): void {
   const advertised = response.headers.get("x-zyron-rpc-version");
-  if (advertised !== null && advertised !== String(RPC_API_VERSION)) {
+  if (advertised === null) {
+    throw new Error("Peer response is missing RPC API version");
+  }
+  if (advertised !== String(RPC_API_VERSION)) {
     throw new Error(`Peer uses unsupported RPC API version ${advertised}`);
   }
 }
@@ -1206,7 +1209,8 @@ function writeJson(response: ServerResponse, status: number, value: unknown): vo
       "content-type": "application/json; charset=utf-8",
       "content-length": Buffer.byteLength(overload),
       "cache-control": "no-store",
-      "x-content-type-options": "nosniff"
+      "x-content-type-options": "nosniff",
+      "x-zyron-rpc-version": String(RPC_API_VERSION)
     });
     response.end(overload);
     return;
@@ -1219,7 +1223,8 @@ function writeJson(response: ServerResponse, status: number, value: unknown): vo
     "content-type": "application/json; charset=utf-8",
     "content-length": bodyBytes,
     "cache-control": "no-store",
-    "x-content-type-options": "nosniff"
+    "x-content-type-options": "nosniff",
+    "x-zyron-rpc-version": String(RPC_API_VERSION)
   });
   response.end(body);
 }
