@@ -1076,7 +1076,6 @@ async function getJson(url: string, maxBytes: number): Promise<unknown> {
     headers: { "x-zyron-rpc-version": String(RPC_API_VERSION) },
     signal: AbortSignal.timeout(PEER_TIMEOUT_MS)
   });
-  assertCompatibleRpcResponse(response);
   if (!response.ok) throw new Error(`Peer returned HTTP ${response.status}`);
   return parseBoundedResponse(response, maxBytes);
 }
@@ -1107,7 +1106,6 @@ async function postJson(
     body,
     signal: AbortSignal.timeout(PEER_TIMEOUT_MS)
   });
-  assertCompatibleRpcResponse(response);
   if (!response.ok) throw new Error(`Peer returned HTTP ${response.status}`);
   return parseBoundedResponse(response, maxResponseBytes);
 }
@@ -1140,6 +1138,7 @@ async function parseBoundedResponse(response: Response, maxBytes: number): Promi
       throw new Error("Peer response too large");
     }
   }
+  assertCompatibleRpcResponse(response);
   if (!response.body) throw new Error("Peer returned empty body");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
