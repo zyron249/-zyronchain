@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { canonicalJson, sha256Hex } from "../src/codec.js";
+import { canonicalJson, MAX_CANONICAL_JSON_DEPTH, sha256Hex } from "../src/codec.js";
 
 
 test("canonical JSON uses locale-independent UTF-16 key ordering", () => {
@@ -38,3 +38,29 @@ test("canonical JSON is invariant to randomized object insertion order", () => {
     assert.equal(canonicalJson(Object.fromEntries(shuffled)), expected);
   }
 });
+
+test("canonical JSON accepts the exact nesting-depth boundary", () => {
+  assert.doesNotThrow(() => canonicalJson(nestedContainerAtDepth(MAX_CANONICAL_JSON_DEPTH)));
+});
+
+test("canonical JSON rejects over-depth input before call-stack exhaustion", () => {
+  assert.throws(
+    () => canonicalJson(nestedContainerAtDepth(MAX_CANONICAL_JSON_DEPTH + 1)),
+    /Canonical JSON nesting depth exceeded/
+  );
+});
+
+test("canonical JSON rejects cycles but permits shared acyclic references", () => {
+  const cyclic: { self?: unknown } = {};
+  cyclic.self = cyclic;
+  assert.throws(() => canonicalJson(cyclic), /Canonical JSON must not contain cycles/);
+
+  const shared = { value: 7 };
+  assert.equal(canonicalJson({ left: shared, right: shared }), '{"left":{"value":7},"right":{"value":7}}');
+});
+
+function nestedContainerAtDepth(depth: number): unknown {
+  let value: unknown = { leaf: true };
+  for (let index = 0; index < depth; index += 1) value = [value];
+  return value;
+}
