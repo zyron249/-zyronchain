@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chmod, mkdtemp, rm, symlink } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -37,15 +37,18 @@ test("persisted node identity rejects POSIX group or other permissions", { skip:
   }
 });
 
-test("concurrent node identity first-create still converges under private descriptor reads", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "zyron-node-id-private-race-"));
-  try {
-    const identities = await Promise.all(
-      Array.from({ length: 12 }, () => loadOrCreateNodeIdentity(directory))
-    );
-    for (const identity of identities.slice(1)) assert.deepEqual(identity, identities[0]);
-    assert.deepEqual(await loadOrCreateNodeIdentity(directory), identities[0]);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
+test("concurrent node identity first-create atomically publishes one durable identity", async () => {
+  for (let round = 0; round < 8; round += 1) {
+    const directory = await mkdtemp(join(tmpdir(), "zyron-node-id-private-race-"));
+    try {
+      const identities = await Promise.all(
+        Array.from({ length: 32 }, () => loadOrCreateNodeIdentity(directory))
+      );
+      for (const identity of identities.slice(1)) assert.deepEqual(identity, identities[0]);
+      assert.deepEqual(await loadOrCreateNodeIdentity(directory), identities[0]);
+      assert.deepEqual(await readdir(directory), ["node-identity.json"]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   }
 });

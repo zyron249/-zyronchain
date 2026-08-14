@@ -1,4 +1,4 @@
-import { open } from "node:fs/promises";
+import { link, open, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -74,25 +74,44 @@ export async function loadOrCreateNodeIdentity(dataDir: string): Promise<NodeIde
   const privateKey = generatePrivateKey();
   const publicKey = publicKeyFromPrivate(privateKey);
   const identity: NodeIdentity = { version: 1, nodeId: nodeIdFromPublicKey(publicKey), publicKey, privateKey };
+  const temporaryPath = join(
+    dataDir,
+    `.${IDENTITY_FILE}.${process.pid}.${randomBytes(16).toString("hex")}.tmp`
+  );
   let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let published = false;
   try {
-    handle = await open(path, "wx", 0o600);
+    handle = await open(temporaryPath, "wx", 0o600);
     await handle.writeFile(`${canonicalJson(identity)}\n`, "utf8");
     await handle.sync();
     await handle.close();
     handle = undefined;
-    const directory = await open(dataDir, "r");
-    try {
-      await directory.sync();
-    } finally {
-      await directory.close();
-    }
+
+    // Publish only fully written and fsynced bytes. Hard-link creation is atomic and
+    // refuses to replace an identity published by a concurrent creator.
+    await link(temporaryPath, path);
+    published = true;
+    await syncDirectory(dataDir);
+    return identity;
   } catch (error) {
     await handle?.close().catch(() => undefined);
     if (!isAlreadyExists(error)) throw error;
     return parseNodeIdentity(await readPrivateRegularFile(path, "Node identity file"));
+  } finally {
+    await unlink(temporaryPath).catch((error) => {
+      if (!isMissingFile(error)) throw error;
+    });
+    if (published) await syncDirectory(dataDir);
   }
-  return identity;
+}
+
+async function syncDirectory(dataDir: string): Promise<void> {
+  const directory = await open(dataDir, "r");
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
 }
 
 export function createSignedPeerRecord(
