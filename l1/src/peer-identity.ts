@@ -1,9 +1,10 @@
-import { mkdir, open } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 
 import { assertHex, canonicalJson, sha256Hex } from "./codec.js";
 import { generatePrivateKey, publicKeyFromPrivate, signCanonical, verifyCanonical } from "./crypto.js";
+import { ensureDurableDirectory } from "./durable-directory.js";
 import { readPrivateRegularFile } from "./local-security.js";
 import { assertExactKeys, assertPlainRecord } from "./transaction.js";
 
@@ -62,7 +63,7 @@ interface PeerRecordPayload extends Omit<SignedPeerRecord, "signature"> {
 }
 
 export async function loadOrCreateNodeIdentity(dataDir: string): Promise<NodeIdentity> {
-  await mkdir(dataDir, { recursive: true, mode: 0o700 });
+  await ensureDurableDirectory(dataDir, 0o700);
   const path = join(dataDir, IDENTITY_FILE);
   try {
     return parseNodeIdentity(await readPrivateRegularFile(path, "Node identity file"));
