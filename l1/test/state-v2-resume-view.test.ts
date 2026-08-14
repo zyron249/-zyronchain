@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { compareCanonicalStrings } from "../src/codec.js";
+import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import {
   stateV2FromLedgerSnapshot,
   stateV2KeyPreimages,
@@ -36,22 +38,31 @@ async function withTempDir(run: (path: string) => Promise<void>): Promise<void> 
   finally { await rm(path, { recursive: true, force: true }); }
 }
 
-test("portable resume view reconstructs canonical ledger and governance through bounded key batches", async () => {
-  const ledger = {
-    accounts: Array.from({ length: 25 }, (_, index) => ({
-      address: `zyn${String(index).padStart(40, "0")}`,
-      balanceAtoms: index + 1,
-      nonce: index
-    })),
-    settledActivityEpochs: [3, 9]
-  };
-  const governance: StateV2GovernanceSnapshot = {
-    validatorSchedule: [{ activationHeight: 0, validators: [] }],
+function governanceFixture(): StateV2GovernanceSnapshot {
+  const validatorPublicKey = publicKeyFromPrivate("31".padStart(64, "0"));
+  return {
+    validatorSchedule: [{
+      activationHeight: 0,
+      validators: [{ address: addressFromPublicKey(validatorPublicKey), publicKey: validatorPublicKey }]
+    }],
     protocolSchedule: [
-      { activationHeight: 0, protocolVersion: 2 },
-      { activationHeight: 100, protocolVersion: 3 }
+      { activationHeight: 0, protocolVersion: 1 },
+      { activationHeight: 100, protocolVersion: 2 }
     ]
   };
+}
+
+test("portable resume view reconstructs canonical ledger and governance through bounded key batches", async () => {
+  const accounts = Array.from({ length: 25 }, (_, index) => {
+    const publicKey = publicKeyFromPrivate(String(index + 50).padStart(64, "0"));
+    return {
+      address: addressFromPublicKey(publicKey),
+      balanceAtoms: index + 1,
+      nonce: index
+    };
+  }).sort((a, b) => compareCanonicalStrings(a.address, b.address));
+  const ledger = { accounts, settledActivityEpochs: [3, 9] };
+  const governance = governanceFixture();
   const state = stateV2FromLedgerSnapshot(ledger, governance);
   const keys = stateV2KeyPreimages(ledger, governance);
   const store = fakeStore(state.root(), state.nodeRecords(), keys);
@@ -72,10 +83,7 @@ test("portable resume view reconstructs canonical ledger and governance through 
 
 test("portable resume view rejects a store/stage semantic-count mismatch before reconstruction", async () => {
   const ledger = { accounts: [], settledActivityEpochs: [] };
-  const governance: StateV2GovernanceSnapshot = {
-    validatorSchedule: [{ activationHeight: 0, validators: [] }],
-    protocolSchedule: [{ activationHeight: 0, protocolVersion: 2 }]
-  };
+  const governance = governanceFixture();
   const state = stateV2FromLedgerSnapshot(ledger, governance);
   const keys = stateV2KeyPreimages(ledger, governance);
   const store = fakeStore(state.root(), state.nodeRecords(), keys);
