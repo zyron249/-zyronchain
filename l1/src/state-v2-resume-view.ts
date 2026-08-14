@@ -5,6 +5,7 @@ import {
   type StateV2GovernanceSnapshot,
   type StateV2PortableView
 } from "./state-v2.js";
+import { parseStateV2PortableKeyPreimage } from "./state-v2-portable.js";
 import { DEFAULT_PORTABLE_KEY_BATCH, streamPortableResumeKeys } from "./state-v2-resume-stream.js";
 import type { CompletedPortableStateStage } from "./state-v2-resume-stage.js";
 import type { PortableStateResumeStore } from "./state-v2-resume.js";
@@ -36,7 +37,8 @@ export async function reconstructPortableResumeView(
   let consumedKeys = 0;
 
   for await (const batch of streamPortableResumeKeys(store, batchSize)) {
-    for (const key of batch) {
+    for (const rawKey of batch) {
+      const key = parseStateV2PortableKeyPreimage(rawKey);
       consumedKeys += 1;
       const value = staged.state.get(key);
       if (value === undefined) throw new Error("Portable state semantic key has no committed value");
