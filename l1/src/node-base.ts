@@ -1076,7 +1076,6 @@ async function getJson(url: string, maxBytes: number): Promise<unknown> {
     headers: { "x-zyron-rpc-version": String(RPC_API_VERSION) },
     signal: AbortSignal.timeout(PEER_TIMEOUT_MS)
   });
-  assertCompatibleRpcResponse(response);
   if (!response.ok) throw new Error(`Peer returned HTTP ${response.status}`);
   return parseBoundedResponse(response, maxBytes);
 }
@@ -1107,14 +1106,16 @@ async function postJson(
     body,
     signal: AbortSignal.timeout(PEER_TIMEOUT_MS)
   });
-  assertCompatibleRpcResponse(response);
   if (!response.ok) throw new Error(`Peer returned HTTP ${response.status}`);
   return parseBoundedResponse(response, maxResponseBytes);
 }
 
 function assertCompatibleRpcResponse(response: Response): void {
   const advertised = response.headers.get("x-zyron-rpc-version");
-  if (advertised !== null && advertised !== String(RPC_API_VERSION)) {
+  if (advertised === null) {
+    throw new Error("Peer response is missing RPC API version");
+  }
+  if (advertised !== String(RPC_API_VERSION)) {
     throw new Error(`Peer uses unsupported RPC API version ${advertised}`);
   }
 }
@@ -1137,6 +1138,7 @@ async function parseBoundedResponse(response: Response, maxBytes: number): Promi
       throw new Error("Peer response too large");
     }
   }
+  assertCompatibleRpcResponse(response);
   if (!response.body) throw new Error("Peer returned empty body");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -1206,7 +1208,8 @@ function writeJson(response: ServerResponse, status: number, value: unknown): vo
       "content-type": "application/json; charset=utf-8",
       "content-length": Buffer.byteLength(overload),
       "cache-control": "no-store",
-      "x-content-type-options": "nosniff"
+      "x-content-type-options": "nosniff",
+      "x-zyron-rpc-version": String(RPC_API_VERSION)
     });
     response.end(overload);
     return;
@@ -1219,7 +1222,8 @@ function writeJson(response: ServerResponse, status: number, value: unknown): vo
     "content-type": "application/json; charset=utf-8",
     "content-length": bodyBytes,
     "cache-control": "no-store",
-    "x-content-type-options": "nosniff"
+    "x-content-type-options": "nosniff",
+    "x-zyron-rpc-version": String(RPC_API_VERSION)
   });
   response.end(body);
 }

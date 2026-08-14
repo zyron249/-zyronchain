@@ -42,6 +42,10 @@ test("bounded RPC JSON validates payload size, syntax and API version", async ()
   assert.deepEqual(await readBoundedJson(response, 64), { ok: true });
 
   assert.throws(
+    () => assertRpcApiVersion(new Response(""), 1),
+    /did not advertise an API version/
+  );
+  assert.throws(
     () => assertRpcApiVersion(new Response("", { headers: { "x-zyron-rpc-version": "2" } }), 1),
     /unsupported API version/
   );
