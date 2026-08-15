@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import test from "node:test";
 
 import {
@@ -9,6 +11,8 @@ import {
   readCliCheckpointSnapshotUtf8,
   readCliGenesisUtf8
 } from "../src/cli-recovery-file.js";
+
+const execFileAsync = promisify(execFile);
 
 test("CLI genesis reader accepts exact byte boundary and rejects oversized input", async () => {
   const dir = await mkdtemp(join(tmpdir(), "zyron-cli-genesis-bound-"));
@@ -36,6 +40,18 @@ test("CLI checkpoint snapshot reader accepts a normal large regular file", async
   }
 });
 
+test("CLI recovery readers reject directories as non-regular inputs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zyron-cli-recovery-directory-"));
+  try {
+    const nested = join(dir, "not-a-file");
+    await mkdir(nested);
+    await assert.rejects(() => readCliGenesisUtf8(nested));
+    await assert.rejects(() => readCliCheckpointSnapshotUtf8(nested));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("CLI recovery readers fail closed on POSIX symlink substitution", { skip: process.platform === "win32" }, async () => {
   const dir = await mkdtemp(join(tmpdir(), "zyron-cli-recovery-symlink-"));
   try {
@@ -45,6 +61,18 @@ test("CLI recovery readers fail closed on POSIX symlink substitution", { skip: p
     await symlink(target, link);
     await assert.rejects(() => readCliGenesisUtf8(link));
     await assert.rejects(() => readCliCheckpointSnapshotUtf8(link));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI recovery readers fail closed on POSIX FIFO substitution without blocking", { skip: process.platform === "win32" }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zyron-cli-recovery-fifo-"));
+  try {
+    const fifo = join(dir, "snapshot.pipe");
+    await execFileAsync("mkfifo", [fifo]);
+    await assert.rejects(() => readCliGenesisUtf8(fifo));
+    await assert.rejects(() => readCliCheckpointSnapshotUtf8(fifo));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
