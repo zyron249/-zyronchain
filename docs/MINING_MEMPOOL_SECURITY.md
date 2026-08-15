@@ -10,7 +10,7 @@ Mining traffic remains independently bounded by `MAX_MINING_MEMPOOL_CLAIMS = 256
 
 Custom `Mempool(maxNonMiningSize)` instances retain a hard total cap unless an explicit mining reserve is supplied as the second constructor argument. When a nonzero reserve is supplied explicitly, that reserve is also the mining subpool cap for that instance, up to the protocol-policy maximum of 256 claims. The standalone node uses the default production policy, which enables the full 256-entry reserve.
 
-Mining and non-mining occupancy are tracked incrementally on insertion, deletion, replacement and pruning. Admission therefore does not rescan every resident transaction merely to determine whether a configured capacity has been reached; ordinary capacity checks remain constant-time, while full-pool eviction scans occur only when a bounded replacement decision is actually required.
+Mining and non-mining occupancy are tracked incrementally on insertion, deletion, replacement and pruning. Admission therefore does not rescan every resident transaction merely to determine whether a configured capacity has been reached. When the ordinary pool is saturated, the deterministic lowest-priority evictable transfer is cached while mempool contents remain unchanged. Repeated rejected submissions therefore reuse the same bounded replacement decision instead of rescanning the 10,000-entry pool on every request. Every successful insert, deletion, replacement, remove or prune invalidates that cache before the next full-pool replacement decision, so fee-rate and highest-nonce eviction semantics remain identical to an uncached scan.
 
 ## Admission and stale-work controls
 

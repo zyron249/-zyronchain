@@ -7,6 +7,8 @@ const REPLACEMENT_BUMP_DENOMINATOR = 10n;
 export const MAX_MINING_MEMPOOL_CLAIMS = 256;
 export const DEFAULT_MEMPOOL_NON_MINING_CAPACITY = 10_000;
 
+type EvictionCandidate = { txid: string; tx: Transaction };
+
 export class Mempool {
   private readonly byId = new Map<string, Transaction>();
   private readonly nonceIds = new Map<string, string>();
@@ -15,6 +17,8 @@ export class Mempool {
   private readonly miningReserve: number;
   private miningSize = 0;
   private nonMiningSize = 0;
+  private nonMiningEvictionCacheValid = false;
+  private nonMiningEvictionCache: EvictionCandidate | undefined;
 
   constructor(maxNonMiningSize?: number, miningReserve?: number) {
     this.maxNonMiningSize = maxNonMiningSize ?? DEFAULT_MEMPOOL_NON_MINING_CAPACITY;
@@ -63,6 +67,7 @@ export class Mempool {
     this.nonceIds.set(nonceKey, tx.txid);
     this.adjustOccupancy(stored, 1);
     this.adjustTransferSpend(stored, 1n);
+    this.invalidateNonMiningEvictionCache();
   }
 
   remove(txids: Iterable<string>): void {
@@ -123,6 +128,12 @@ export class Mempool {
     this.nonceIds.delete(`${tx.sender}:${tx.nonce}`);
     this.adjustOccupancy(tx, -1);
     this.adjustTransferSpend(tx, -1n);
+    this.invalidateNonMiningEvictionCache();
+  }
+
+  private invalidateNonMiningEvictionCache(): void {
+    this.nonMiningEvictionCacheValid = false;
+    this.nonMiningEvictionCache = undefined;
   }
 
   private weakestMiningClaim(): { txid: string; tx: MiningClaimTx } | undefined {
@@ -134,12 +145,20 @@ export class Mempool {
     return selected;
   }
 
-  private lowestPriorityEvictableTransfer(): { txid: string; tx: Transaction } | undefined {
+  private lowestPriorityEvictableTransfer(): EvictionCandidate | undefined {
+    if (this.nonMiningEvictionCacheValid) return this.nonMiningEvictionCache;
+    const selected = this.computeLowestPriorityEvictableTransfer();
+    this.nonMiningEvictionCache = selected;
+    this.nonMiningEvictionCacheValid = true;
+    return selected;
+  }
+
+  private computeLowestPriorityEvictableTransfer(): EvictionCandidate | undefined {
     const highestNonce = new Map<string, number>();
     for (const tx of this.byId.values()) {
       highestNonce.set(tx.sender, Math.max(highestNonce.get(tx.sender) ?? 0, tx.nonce));
     }
-    let selected: { txid: string; tx: Transaction } | undefined;
+    let selected: EvictionCandidate | undefined;
     for (const [txid, tx] of this.byId) {
       if (tx.kind !== "transfer" || tx.nonce !== highestNonce.get(tx.sender)) continue;
       if (!selected || compareFeeRate(tx, selected.tx) < 0 ||
