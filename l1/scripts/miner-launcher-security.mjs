@@ -1,24 +1,61 @@
 import { lstat, mkdir, realpath } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
-function sameResolvedPath(a, b) {
-  const left = resolve(a);
-  const right = resolve(b);
-  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+async function lstatIfPresent(path) {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
+/**
+ * Resolve an existing non-link directory anchor, then create each missing
+ * custody component beneath its canonical path one at a time. This accepts
+ * platform-owned aliases such as macOS /var -> /private/var without treating
+ * them as attacker-controlled custody substitution, while still refusing an
+ * existing symlink/junction at any app-owned missing-path boundary.
+ */
 export async function ensureSafeCustodyDirectory(path) {
-  const resolved = resolve(path);
-  await mkdir(resolved, { recursive: true, mode: 0o700 });
-  const info = await lstat(resolved);
-  if (info.isSymbolicLink() || !info.isDirectory()) {
-    throw new Error('Miner custody path must be a real directory, not a symlink or special file');
+  const requested = resolve(path);
+  let cursor = requested;
+  const missing = [];
+
+  while (true) {
+    const info = await lstatIfPresent(cursor);
+    if (info) {
+      if (info.isSymbolicLink() || !info.isDirectory()) {
+        throw new Error('Miner custody path must not traverse symlinks, junctions, or special files');
+      }
+      break;
+    }
+    const parent = dirname(cursor);
+    if (parent === cursor) throw new Error('Miner custody path has no usable directory anchor');
+    missing.unshift(basename(cursor));
+    cursor = parent;
   }
-  const canonical = await realpath(resolved);
-  if (!sameResolvedPath(canonical, resolved)) {
-    throw new Error('Miner custody path must not traverse symlinks or junctions');
+
+  let canonical = await realpath(cursor);
+  for (const component of missing) {
+    const next = join(canonical, component);
+    try {
+      await mkdir(next, { mode: 0o700 });
+    } catch (error) {
+      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST')) throw error;
+    }
+    const info = await lstat(next);
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw new Error('Miner custody path must not traverse symlinks, junctions, or special files');
+    }
+    const resolvedNext = await realpath(next);
+    if (resolvedNext !== next && process.platform !== 'win32') {
+      throw new Error('Miner custody path component changed during creation');
+    }
+    canonical = resolvedNext;
   }
-  return resolved;
+
+  return canonical;
 }
 
 export async function existingSafeSecret(path, label) {
