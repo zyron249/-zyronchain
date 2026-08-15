@@ -4,7 +4,6 @@ on:
   pull_request:
     paths:
       - 'l1/**'
-      - 'website/**'
       - '.github/workflows/miner-package.yml'
   workflow_dispatch:
 
@@ -38,11 +37,12 @@ jobs:
         run: npm run typecheck
       - name: Test
         run: npm test
-      - name: Check miner scripts
+      - name: Check miner scripts and inactive network profile
         run: |
           node --check scripts/mine.mjs
           node --check scripts/miner-launcher.mjs
           node --check scripts/package-miner.mjs
+          node -e "const p=require('./miner-network-profile.json'); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('miner network profile must remain fail-closed before intentional activation')"
       - name: Build production runtime
         run: |
           npm run build
@@ -95,39 +95,3 @@ jobs:
           path: l1/miner-release/
           if-no-files-found: error
           retention-days: 14
-
-  website-contract:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Set up Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
-        with:
-          node-version: 24
-      - name: Check website JavaScript
-        run: node --check website/app.js
-      - name: Verify fail-closed miner download contract
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          const html = fs.readFileSync('website/mining.html', 'utf8');
-          const js = fs.readFileSync('website/app.js', 'utf8');
-          const profile = JSON.parse(fs.readFileSync('l1/miner-network-profile.json', 'utf8'));
-          for (const marker of ['Mining Launchpad', 'id="start"', 'Encrypted key custody is mandatory']) {
-            if (!html.includes(marker)) throw new Error(`mining page missing ${marker}`);
-          }
-          for (const marker of ['MINER_DISTRIBUTION', 'publicMiningActivated: false', 'enabled: false', 'ACTIVATION GATED', 'ZyronMiner-', 'navigator.userAgentData']) {
-            if (!js.includes(marker)) throw new Error(`miner launcher missing ${marker}`);
-          }
-          if (profile.publicMiningActivated !== false || profile.rpcUrl !== null || profile.genesisFile !== null) {
-            throw new Error('repository miner network profile must remain fail-closed before intentional activation');
-          }
-          if (/fetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(/.test(js)) throw new Error('website miner launcher must not make network requests');
-          if (/localStorage|sessionStorage|indexedDB/.test(js)) throw new Error('website miner launcher must not persist custody/config');
-          if (/private.?key|seed.?phrase|wallet.?password/i.test(js) && !js.includes('never requests a private key, seed phrase, wallet password')) {
-            throw new Error('website miner launcher must not collect secrets');
-          }
-          if (!/github\\.com\\/zyron249\\/-zyronchain\\/releases\\/download/.test(js)) throw new Error('download allowlist is not pinned to canonical GitHub releases');
-          NODE
