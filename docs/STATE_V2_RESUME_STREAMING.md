@@ -12,6 +12,19 @@ Canonical ledger/governance reconstruction consumes the authenticated stage by s
 
 The authenticated resume store can now cross a real install boundary without `bundle()` materialization: `installTrustedPortableResume()` validates the original external tip/digest anchor through the streamed trust bridge and publishes the reconstructed canonical snapshot through `ChainStore.installTrustedSnapshot()`. That installer retains the existing staged-directory fsync, recovery re-open verification, no-overwrite check and atomic directory publication semantics. Disposable validation staging is removed on both success and failure, while the resumable transport store is left intact for the caller's poison/failover policy.
 
+## Reproducible staging-memory measurement
+
+The branch includes a dedicated benchmark that measures the bounded resume staging path in a separate worker process from fixture construction. This separation prevents source-state/bundle generation memory from being counted as staging memory.
+
+```sh
+cd l1
+ZYRON_RESUME_SCALE_ACCOUNTS=10000 npm run bench:state-resume-scale
+```
+
+The benchmark reports the authenticated root, portable record/key counts, staging duration, heap delta, final RSS, and process peak RSS. `ZYRON_RESUME_SCALE_ACCOUNTS` accepts positive values up to 250,000 so larger engineering runs can be collected on reviewed target hardware without changing source. The benchmark verifies that staged counts and the authenticated State-v2 root exactly match the prepared fixture.
+
+This benchmark is **engineering evidence tooling, not public-testnet/mainnet evidence by itself**. CI-scale or developer-laptop results must not close the target-hardware gate. Accepted readiness evidence still requires reviewed runs on the intended deployment class with the exact release commit and environment recorded.
+
 This is **not yet an activation claim and not yet the production fetch boundary**. Before #383 can close, `fetchTrustedPortableState*` / CLI `state-fetch-install` must use the authenticated resume-store install path directly instead of assembling and returning the legacy portable bundle. That final wiring must preserve:
 
 - the externally pinned finalized tip hash and full-snapshot digest;
