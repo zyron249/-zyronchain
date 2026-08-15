@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { chmod, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
+
+import { ensureSafeCustodyDirectory, existingSafeSecret } from './miner-launcher-security.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -20,8 +22,6 @@ if (profile.schemaVersion !== 1 || typeof profile.publicMiningActivated !== 'boo
   throw new Error('Invalid bundled miner network profile version/activation');
 }
 
-// Stop before touching custody unless the release itself carries an explicitly
-// activated, complete canonical network profile.
 if (!profile.publicMiningActivated) {
   console.error('ZyronChain public mining is not activated in this signed release. No wallet or password was created.');
   process.exitCode = 78;
@@ -43,28 +43,31 @@ if (!profile.publicMiningActivated) {
   if (!genesis.startsWith(`${root}/`) && process.platform !== 'win32') throw new Error('Genesis escaped miner package');
   await stat(genesis);
 
-  const stateRoot = process.env.ZYRON_MINER_HOME
+  const requestedStateRoot = process.env.ZYRON_MINER_HOME
     ? resolve(process.env.ZYRON_MINER_HOME)
     : join(homedir(), '.zyronchain', 'miner');
-  await mkdir(stateRoot, { recursive: true, mode: 0o700 });
+  const stateRoot = await ensureSafeCustodyDirectory(requestedStateRoot);
   await chmod(stateRoot, 0o700).catch(() => {});
 
   const passwordPath = join(stateRoot, 'wallet.password');
   const keyPath = join(stateRoot, 'wallet.json');
-  let keyExists = true;
-  try { await stat(keyPath); } catch { keyExists = false; }
+  const keyExists = await existingSafeSecret(keyPath, 'Miner wallet');
+  let passwordExists = await existingSafeSecret(passwordPath, 'Miner password');
 
   if (!keyExists) {
-    let passwordExists = true;
-    try { await stat(passwordPath); } catch { passwordExists = false; }
     if (!passwordExists) {
       const password = randomBytes(32).toString('base64url');
       await writeFile(passwordPath, `${password}\n`, { flag: 'wx', mode: 0o600 });
-      await chmod(passwordPath, 0o600).catch(() => {});
+      passwordExists = true;
     }
     await run(process.execPath, [join(root, 'dist', 'src', 'cli.js'), 'keygen', '--out', keyPath, '--password-file', passwordPath]);
+  } else if (!passwordExists) {
+    throw new Error('Miner wallet exists but its password file is missing; refusing to replace custody material');
   }
 
+  if (!await existingSafeSecret(keyPath, 'Miner wallet') || !await existingSafeSecret(passwordPath, 'Miner password')) {
+    throw new Error('Miner custody material is incomplete');
+  }
   await chmod(keyPath, 0o600).catch(() => {});
   await chmod(passwordPath, 0o600).catch(() => {});
   await run(process.execPath, [
