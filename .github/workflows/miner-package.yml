@@ -1,0 +1,103 @@
+name: Miner Package CI
+
+on:
+  pull_request:
+    paths:
+      - 'l1/**'
+      - '.github/workflows/miner-package.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portable-miner:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-15]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: l1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Check miner scripts and inactive network profile
+        run: |
+          node --check scripts/mine.mjs
+          node --check scripts/miner-launcher.mjs
+          node --check scripts/package-miner.mjs
+          node -e "const p=require('./miner-network-profile.json'); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('miner network profile must remain fail-closed before intentional activation')"
+      - name: Build runtime
+        run: npm run build
+      - name: Run full L1 regression suite on durability-capable runners
+        if: runner.os != 'Windows'
+        run: npm test
+      - name: Run Windows miner-specific regressions
+        if: runner.os == 'Windows'
+        run: node --test dist/test/miner-genesis.test.js dist/test/miner-network.test.js dist/test/miner-security.test.js
+      - name: Generate production SBOM before pruning development dependencies
+        run: |
+          node -e "require('node:fs').mkdirSync('miner-release',{recursive:true})"
+          npm sbom --omit=dev --sbom-format=spdx > miner-release/SBOM.spdx.json
+      - name: Prune to production runtime
+        run: npm prune --omit=dev
+      - name: Package miner runtime
+        run: node scripts/package-miner.mjs
+      - name: Verify inactive package fails closed before custody
+        shell: bash
+        run: |
+          BUNDLE=$(find miner-release -mindepth 1 -maxdepth 1 -type d | head -n 1)
+          if [ -z "$BUNDLE" ]; then echo 'missing miner bundle' >&2; exit 1; fi
+          TEST_HOME="$RUNNER_TEMP/zyron-miner-smoke-${{ matrix.node }}"
+          rm -rf "$TEST_HOME"
+          set +e
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ZYRON_MINER_HOME="$TEST_HOME" "$BUNDLE/node.exe" "$BUNDLE/scripts/miner-launcher.mjs"
+          else
+            ZYRON_MINER_HOME="$TEST_HOME" "$BUNDLE/node" "$BUNDLE/scripts/miner-launcher.mjs"
+          fi
+          STATUS=$?
+          set -e
+          if [ "$STATUS" -ne 78 ]; then echo "expected inactive launcher exit 78, got $STATUS" >&2; exit 1; fi
+          if [ -e "$TEST_HOME" ]; then echo 'inactive launcher touched custody directory' >&2; exit 1; fi
+      - name: Generate SHA-256 manifest
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const path = require('node:path');
+          const root = 'miner-release';
+          const files = [];
+          function walk(dir) {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, entry.name);
+              if (entry.isDirectory()) walk(full);
+              else if (entry.isFile()) files.push(full);
+            }
+          }
+          walk(root);
+          const lines = files.sort().map((file) => `${crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')}  ${file.replaceAll('\\\\','/')}`);
+          fs.writeFileSync(path.join(root, 'SHA256SUMS'), `${lines.join('\n')}\n`);
+          NODE
+      - name: Upload miner bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: zyron-miner-${{ runner.os }}-${{ runner.arch }}-node${{ matrix.node }}
+          path: l1/miner-release/
+          if-no-files-found: error
+          retention-days: 14
