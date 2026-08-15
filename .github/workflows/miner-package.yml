@@ -1,0 +1,117 @@
+name: Miner Package CI
+
+on:
+  pull_request:
+    paths:
+      - 'l1/**'
+      - 'website/**'
+      - '.github/workflows/miner-package.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portable-miner:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: l1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Build production runtime
+        run: |
+          npm run build
+          npm prune --omit=dev
+      - name: Package miner runtime
+        run: node scripts/package-miner.mjs
+      - name: Smoke packaged miner help
+        shell: bash
+        run: |
+          BUNDLE=$(find miner-release -mindepth 1 -maxdepth 1 -type d | head -n 1)
+          if [ -z "$BUNDLE" ]; then echo 'missing miner bundle' >&2; exit 1; fi
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            "$BUNDLE/node.exe" "$BUNDLE/scripts/mine.mjs" --help
+          else
+            "$BUNDLE/node" "$BUNDLE/scripts/mine.mjs" --help
+          fi
+      - name: Generate SBOM
+        run: npm sbom --omit=dev --sbom-format=spdx > miner-release/SBOM.spdx.json
+      - name: Generate SHA-256 manifest
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const path = require('node:path');
+          const root = 'miner-release';
+          const files = [];
+          function walk(dir) {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, entry.name);
+              if (entry.isDirectory()) walk(full);
+              else if (entry.isFile()) files.push(full);
+            }
+          }
+          walk(root);
+          const lines = files.sort().map((file) => `${crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')}  ${file.replaceAll('\\\\','/')}`);
+          fs.writeFileSync(path.join(root, 'SHA256SUMS'), `${lines.join('\n')}\n`);
+          NODE
+      - name: Upload miner bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: zyron-miner-${{ runner.os }}-${{ runner.arch }}-node${{ matrix.node }}
+          path: l1/miner-release/
+          if-no-files-found: error
+          retention-days: 14
+
+  website-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24
+      - name: Check website JavaScript
+        run: node --check website/app.js
+      - name: Verify fail-closed miner download contract
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const html = fs.readFileSync('website/mining.html', 'utf8');
+          const js = fs.readFileSync('website/app.js', 'utf8');
+          for (const marker of ['Mining Launchpad', 'id="start"', 'Encrypted key custody is mandatory']) {
+            if (!html.includes(marker)) throw new Error(`mining page missing ${marker}`);
+          }
+          for (const marker of ['MINER_DISTRIBUTION', 'publicMiningActivated: false', 'enabled: false', 'ACTIVATION GATED', 'ZyronMiner-', 'navigator.userAgentData']) {
+            if (!js.includes(marker)) throw new Error(`miner launcher missing ${marker}`);
+          }
+          if (/fetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(/.test(js)) throw new Error('website miner launcher must not make network requests');
+          if (/localStorage|sessionStorage|indexedDB/.test(js)) throw new Error('website miner launcher must not persist custody/config');
+          if (/private.?key|seed.?phrase|wallet.?password/i.test(js) && !js.includes('never requests a private key, seed phrase, wallet password')) {
+            throw new Error('website miner launcher must not collect secrets');
+          }
+          if (!/github\\.com\\/zyron249\\/-zyronchain\\/releases\\/download/.test(js)) throw new Error('download allowlist is not pinned to canonical GitHub releases');
+          NODE
