@@ -33,6 +33,8 @@ Useful options:
 
 The miner decrypts and signs locally. It never uploads the private key or password. Remote RPC must use HTTPS; plaintext HTTP is accepted only for loopback.
 
+For the self-contained one-click runtime, the first-launch bootstrap additionally requires the custody root to resolve to a real directory without symbolic-link/junction traversal before wallet material is created or chmodded. Existing wallet/password paths are checked with `lstat` and must be regular non-symlink files before any permission mutation. First creation remains exclusive (`wx`), and an existing wallet with a missing password fails closed rather than replacing custody material. An inactive public-mining profile still exits before touching the custody path at all.
+
 The supplied genesis is also treated as a bounded local control file: the packaged miner accepts at most **256 KiB**, requires a regular-file descriptor, and on POSIX refuses symlink/non-blocking special-file substitution before JSON or canonical chain validation. This cap is intentionally far above the canonical bounded genesis schema while preventing pre-validation memory growth from arbitrary local input.
 
 Before hashing, the miner reconstructs the canonical genesis hash from the supplied genesis file and requires both the RPC chain ID and RPC genesis hash to match exactly. The same identity check is repeated while mining, so an endpoint that switches to a different network fails closed instead of silently wasting work.
