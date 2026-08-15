@@ -23,6 +23,8 @@ ZYRON_RESUME_SCALE_ACCOUNTS=10000 npm run bench:state-resume-scale
 
 The benchmark reports the authenticated root, portable record/key counts, staging duration, heap delta, final RSS, and process peak RSS. `ZYRON_RESUME_SCALE_ACCOUNTS` accepts positive values up to 250,000 so larger engineering runs can be collected on reviewed target hardware without changing source. The benchmark verifies that staged counts and the authenticated State-v2 root exactly match the prepared fixture.
 
+`Standalone L1 State-v2 Scale Evidence CI` now runs the bounded resume benchmark at 10,000 accounts in its own job and archives the raw result, SHA-256 manifest, root/count identity checks, and memory measurements. That artifact is explicitly stamped `measurementsAreCiRegressionEvidenceOnly=true` and `targetHardwareGateClosed=false`; a green CI job therefore proves only that the benchmark executes and its authentication/count invariants hold on the GitHub runner. It cannot be cited as intended-deployment capacity evidence.
+
 This benchmark is **engineering evidence tooling, not public-testnet/mainnet evidence by itself**. CI-scale or developer-laptop results must not close the target-hardware gate. Accepted readiness evidence still requires reviewed runs on the intended deployment class with the exact release commit and environment recorded.
 
 This is **not yet an activation claim and not yet the production fetch boundary**. Before #383 can close, `fetchTrustedPortableState*` / CLI `state-fetch-install` must use the authenticated resume-store install path directly instead of assembling and returning the legacy portable bundle. That final wiring must preserve:
@@ -35,4 +37,4 @@ This is **not yet an activation claim and not yet the production fetch boundary*
 - poison discard/peer failover behavior;
 - crash/restart resume behavior and finalized-history authority.
 
-The legacy production fetch path still calls `bundle()` and therefore remains the stop-ship item for #383. Final merge requires that wiring to be removed, fresh fixed-head general ZyronChain CI and Standalone L1 Node 22/24, and target-scale peak-memory evidence. Public-testnet and mainnet activation gates remain unchanged.
+The legacy production fetch path still calls `bundle()` and therefore remains the stop-ship item for #383. Final merge requires that wiring to be removed, fresh fixed-head general ZyronChain CI and Standalone L1 Node 22/24, and reviewed target-hardware peak-memory evidence. Public-testnet and mainnet activation gates remain unchanged.
