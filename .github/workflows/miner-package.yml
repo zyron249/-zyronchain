@@ -39,7 +39,10 @@ jobs:
         run: |
           node --check scripts/mine.mjs
           node --check scripts/miner-launcher.mjs
+          node --check scripts/miner-launcher-security.mjs
+          node --check scripts/test-miner-launcher-security.mjs
           node --check scripts/package-miner.mjs
+          node scripts/test-miner-launcher-security.mjs
           node -e "const p=require('./miner-network-profile.json'); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('miner network profile must remain fail-closed before intentional activation')"
       - name: Build runtime
         run: npm run build

@@ -21,6 +21,7 @@ await cp(process.execPath, join(bundle, nodeName));
 await cp(join(root, 'dist', 'src'), join(bundle, 'dist', 'src'), { recursive: true });
 await cp(join(root, 'scripts', 'mine.mjs'), join(bundle, 'scripts', 'mine.mjs'));
 await cp(join(root, 'scripts', 'miner-launcher.mjs'), join(bundle, 'scripts', 'miner-launcher.mjs'));
+await cp(join(root, 'scripts', 'miner-launcher-security.mjs'), join(bundle, 'scripts', 'miner-launcher-security.mjs'));
 await cp(join(root, 'miner-network-profile.json'), join(bundle, 'miner-network-profile.json'));
 await cp(join(root, 'node_modules'), join(bundle, 'node_modules'), { recursive: true });
 await cp(join(root, 'package.json'), join(bundle, 'package.json'));
@@ -41,7 +42,7 @@ await writeFile(join(bundle, 'README.txt'), [
   'This package includes its own Node.js runtime and platform-native dependencies.',
   'Public mining remains activation-gated. Do not treat package availability as network activation.',
   'The first-launch bootstrap fails closed before creating custody unless the signed bundle contains an explicitly activated canonical network profile.',
-  'Once activated, the bootstrap creates a random local password plus encrypted ZyronChain wallet under the user home directory and starts mining against the bundled genesis/canonical HTTPS RPC.',
+  'Once activated, the bootstrap creates a random local password plus encrypted ZyronChain wallet under a non-symlink custody directory and starts mining against the bundled genesis/canonical HTTPS RPC.',
   'The website and RPC never receive the private key or wallet password.',
   '',
   process.platform === 'win32' ? 'Start: double-click ZyronMiner.cmd' : 'Start: ./ZyronMiner',
