@@ -38,22 +38,34 @@ jobs:
         run: npm run typecheck
       - name: Test
         run: npm test
+      - name: Check miner scripts
+        run: |
+          node --check scripts/mine.mjs
+          node --check scripts/miner-launcher.mjs
+          node --check scripts/package-miner.mjs
       - name: Build production runtime
         run: |
           npm run build
           npm prune --omit=dev
       - name: Package miner runtime
         run: node scripts/package-miner.mjs
-      - name: Smoke packaged miner help
+      - name: Verify inactive package fails closed before custody
         shell: bash
         run: |
           BUNDLE=$(find miner-release -mindepth 1 -maxdepth 1 -type d | head -n 1)
           if [ -z "$BUNDLE" ]; then echo 'missing miner bundle' >&2; exit 1; fi
+          TEST_HOME="$RUNNER_TEMP/zyron-miner-smoke-${{ matrix.node }}"
+          rm -rf "$TEST_HOME"
+          set +e
           if [ "${{ runner.os }}" = "Windows" ]; then
-            "$BUNDLE/node.exe" "$BUNDLE/scripts/mine.mjs" --help
+            ZYRON_MINER_HOME="$TEST_HOME" "$BUNDLE/node.exe" "$BUNDLE/scripts/miner-launcher.mjs"
           else
-            "$BUNDLE/node" "$BUNDLE/scripts/mine.mjs" --help
+            ZYRON_MINER_HOME="$TEST_HOME" "$BUNDLE/node" "$BUNDLE/scripts/miner-launcher.mjs"
           fi
+          STATUS=$?
+          set -e
+          if [ "$STATUS" -ne 78 ]; then echo "expected inactive launcher exit 78, got $STATUS" >&2; exit 1; fi
+          if [ -e "$TEST_HOME" ]; then echo 'inactive launcher touched custody directory' >&2; exit 1; fi
       - name: Generate SBOM
         run: npm sbom --omit=dev --sbom-format=spdx > miner-release/SBOM.spdx.json
       - name: Generate SHA-256 manifest
@@ -102,11 +114,15 @@ jobs:
           const fs = require('node:fs');
           const html = fs.readFileSync('website/mining.html', 'utf8');
           const js = fs.readFileSync('website/app.js', 'utf8');
+          const profile = JSON.parse(fs.readFileSync('l1/miner-network-profile.json', 'utf8'));
           for (const marker of ['Mining Launchpad', 'id="start"', 'Encrypted key custody is mandatory']) {
             if (!html.includes(marker)) throw new Error(`mining page missing ${marker}`);
           }
           for (const marker of ['MINER_DISTRIBUTION', 'publicMiningActivated: false', 'enabled: false', 'ACTIVATION GATED', 'ZyronMiner-', 'navigator.userAgentData']) {
             if (!js.includes(marker)) throw new Error(`miner launcher missing ${marker}`);
+          }
+          if (profile.publicMiningActivated !== false || profile.rpcUrl !== null || profile.genesisFile !== null) {
+            throw new Error('repository miner network profile must remain fail-closed before intentional activation');
           }
           if (/fetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(/.test(js)) throw new Error('website miner launcher must not make network requests');
           if (/localStorage|sessionStorage|indexedDB/.test(js)) throw new Error('website miner launcher must not persist custody/config');
