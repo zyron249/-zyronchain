@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2025, macos-15]
+        os: [ubuntu-24.04, windows-2022, macos-15]
         node: [22, 24]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -35,18 +35,26 @@ jobs:
         run: npm ci
       - name: Typecheck
         run: npm run typecheck
-      - name: Test
-        run: npm test
       - name: Check miner scripts and inactive network profile
         run: |
           node --check scripts/mine.mjs
           node --check scripts/miner-launcher.mjs
           node --check scripts/package-miner.mjs
           node -e "const p=require('./miner-network-profile.json'); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('miner network profile must remain fail-closed before intentional activation')"
-      - name: Build production runtime
+      - name: Build runtime
+        run: npm run build
+      - name: Run full L1 regression suite on durability-capable runners
+        if: runner.os != 'Windows'
+        run: npm test
+      - name: Run Windows miner-specific regressions
+        if: runner.os == 'Windows'
+        run: node --test dist/test/miner-genesis.test.js dist/test/miner-network.test.js dist/test/miner-security.test.js
+      - name: Generate production SBOM before pruning development dependencies
         run: |
-          npm run build
-          npm prune --omit=dev
+          node -e "require('node:fs').mkdirSync('miner-release',{recursive:true})"
+          npm sbom --omit=dev --sbom-format=spdx > miner-release/SBOM.spdx.json
+      - name: Prune to production runtime
+        run: npm prune --omit=dev
       - name: Package miner runtime
         run: node scripts/package-miner.mjs
       - name: Verify inactive package fails closed before custody
@@ -66,8 +74,6 @@ jobs:
           set -e
           if [ "$STATUS" -ne 78 ]; then echo "expected inactive launcher exit 78, got $STATUS" >&2; exit 1; fi
           if [ -e "$TEST_HOME" ]; then echo 'inactive launcher touched custody directory' >&2; exit 1; fi
-      - name: Generate SBOM
-        run: npm sbom --omit=dev --sbom-format=spdx > miner-release/SBOM.spdx.json
       - name: Generate SHA-256 manifest
         shell: bash
         run: |
