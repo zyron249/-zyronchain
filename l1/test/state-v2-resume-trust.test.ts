@@ -7,6 +7,7 @@ import test from "node:test";
 import { canonicalJson, sha256Hex } from "../src/codec.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { createStateV2PortableBundle } from "../src/state-v2-portable.js";
+import { installTrustedPortableResume } from "../src/state-v2-resume-install.js";
 import { PortableStateResumeStore } from "../src/state-v2-resume.js";
 import { validatePortableResumeSnapshot } from "../src/state-v2-resume-trust.js";
 import { ChainStore } from "../src/storage.js";
@@ -47,7 +48,7 @@ async function advanceToStateV2(store: ChainStore): Promise<void> {
   }
 }
 
-test("portable resume crosses the external anchor without calling bundle()", async () => {
+test("portable resume authenticates and atomically installs without calling bundle()", async () => {
   const root = await mkdtemp(join(tmpdir(), "zyron-state-trust-"));
   try {
     const config = genesis();
@@ -80,19 +81,20 @@ test("portable resume crosses the external anchor without calling bundle()", asy
       throw new Error("bundle materialization must not be used");
     };
 
-    const validated = await validatePortableResumeSnapshot(config, resume, anchor, join(root, "stage"));
-    assert.equal(validated.stateRoot, bundle.root);
-    assert.equal(validated.snapshot.tip.hash, anchor.tipHash);
-    assert.equal(sha256Hex(canonicalJson(validated.snapshot)), anchor.snapshotSha256);
-
-    const installed = await ChainStore.installTrustedSnapshot(
+    const installed = await installTrustedPortableResume(
       config,
       join(root, "installed"),
-      validated.snapshot,
-      anchor
+      resume,
+      anchor,
+      join(root, "stage")
     );
     assert.equal(installed.chain.tip.hash, anchor.tipHash);
     assert.equal(installed.chain.tip.header.stateRoot, bundle.root);
+    assert.equal(sha256Hex(canonicalJson(installed.chain.snapshot())), anchor.snapshotSha256);
+
+    const reopened = await ChainStore.open(config, join(root, "installed"));
+    assert.equal(reopened.chain.tip.hash, anchor.tipHash);
+    assert.equal(reopened.chain.tip.header.stateRoot, bundle.root);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
