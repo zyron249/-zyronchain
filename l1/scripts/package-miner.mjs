@@ -20,15 +20,17 @@ const nodeName = process.platform === 'win32' ? 'node.exe' : 'node';
 await cp(process.execPath, join(bundle, nodeName));
 await cp(join(root, 'dist', 'src'), join(bundle, 'dist', 'src'), { recursive: true });
 await cp(join(root, 'scripts', 'mine.mjs'), join(bundle, 'scripts', 'mine.mjs'));
+await cp(join(root, 'scripts', 'miner-launcher.mjs'), join(bundle, 'scripts', 'miner-launcher.mjs'));
+await cp(join(root, 'miner-network-profile.json'), join(bundle, 'miner-network-profile.json'));
 await cp(join(root, 'node_modules'), join(bundle, 'node_modules'), { recursive: true });
 await cp(join(root, 'package.json'), join(bundle, 'package.json'));
 await cp(join(root, 'MINING.md'), join(bundle, 'MINING.md'));
 
 if (process.platform === 'win32') {
-  await writeFile(join(bundle, 'ZyronMiner.cmd'), '@echo off\r\n"%~dp0node.exe" "%~dp0scripts\\mine.mjs" %*\r\n', 'utf8');
+  await writeFile(join(bundle, 'ZyronMiner.cmd'), '@echo off\r\n"%~dp0node.exe" "%~dp0scripts\\miner-launcher.mjs"\r\n', 'utf8');
 } else {
   const launcher = join(bundle, 'ZyronMiner');
-  await writeFile(launcher, '#!/bin/sh\nset -eu\nHERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"\nexec "$HERE/node" "$HERE/scripts/mine.mjs" "$@"\n', 'utf8');
+  await writeFile(launcher, '#!/bin/sh\nset -eu\nHERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"\nexec "$HERE/node" "$HERE/scripts/miner-launcher.mjs"\n', 'utf8');
   await chmod(launcher, 0o755);
   await chmod(join(bundle, nodeName), 0o755);
 }
@@ -38,12 +40,11 @@ await writeFile(join(bundle, 'README.txt'), [
   '',
   'This package includes its own Node.js runtime and platform-native dependencies.',
   'Public mining remains activation-gated. Do not treat package availability as network activation.',
-  'The miner accepts encrypted ZyronChain keystores only and never sends private keys/passwords to RPC.',
+  'The first-launch bootstrap fails closed before creating custody unless the signed bundle contains an explicitly activated canonical network profile.',
+  'Once activated, the bootstrap creates a random local password plus encrypted ZyronChain wallet under the user home directory and starts mining against the bundled genesis/canonical HTTPS RPC.',
+  'The website and RPC never receive the private key or wallet password.',
   '',
-  'Current expert invocation:',
-  process.platform === 'win32'
-    ? 'ZyronMiner.cmd --genesis <genesis.json> --key <wallet.json> --password-file <wallet.password> --rpc <https-url>'
-    : './ZyronMiner --genesis <genesis.json> --key <wallet.json> --password-file <wallet.password> --rpc <https-url>',
+  process.platform === 'win32' ? 'Start: double-click ZyronMiner.cmd' : 'Start: ./ZyronMiner',
   '',
   'The website one-click button stays disabled until a canonical network profile, signed release assets, and public-mining activation are all available.'
 ].join('\n'), 'utf8');
