@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -8,8 +8,9 @@ import { ensureSafeCustodyDirectory, existingSafeSecret } from './miner-launcher
 const root = await mkdtemp(join(tmpdir(), 'zyron-miner-custody-test-'));
 try {
   const safe = join(root, 'safe');
-  assert.equal(await ensureSafeCustodyDirectory(safe), safe);
-  const secret = join(safe, 'wallet.json');
+  const canonicalSafe = await ensureSafeCustodyDirectory(safe);
+  assert.equal(canonicalSafe, await realpath(safe));
+  const secret = join(canonicalSafe, 'wallet.json');
   await writeFile(secret, '{}', { mode: 0o600 });
   assert.equal(await existingSafeSecret(secret, 'wallet'), true);
 
@@ -19,6 +20,7 @@ try {
   try {
     await symlink(target, linked, process.platform === 'win32' ? 'junction' : 'dir');
     await assert.rejects(() => ensureSafeCustodyDirectory(linked), /symlink|junction/i);
+    await assert.rejects(() => ensureSafeCustodyDirectory(join(linked, 'nested')), /symlink|junction/i);
 
     const secretTarget = join(root, 'secret-target');
     const secretLink = join(root, 'secret-link');
