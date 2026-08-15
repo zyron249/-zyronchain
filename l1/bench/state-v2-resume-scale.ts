@@ -11,7 +11,7 @@ import { stagePortableResumeRecords, stagePortableResumeSemanticKeys } from "../
 import { stateV2FromLedgerSnapshot } from "../src/state-v2.js";
 import type { LedgerSnapshot } from "../src/state.js";
 import type { StateV2GovernanceSnapshot } from "../src/state-v2.js";
-import type { Block } from "../src/types.js";
+import type { Address, Block } from "../src/types.js";
 
 const worker = process.argv[2];
 if (worker === "prepare") {
@@ -48,7 +48,7 @@ async function prepare(resumeDir: string, accounts: number): Promise<void> {
   const started = performance.now();
   const ledger: LedgerSnapshot = {
     accounts: Array.from({ length: accounts }, (_, index) => ({
-      address: `ZYN${index.toString(16).padStart(40, "0")}`,
+      address: scaleAddress(index),
       balanceAtoms: 1,
       nonce: 0
     })),
@@ -100,7 +100,7 @@ async function stage(resumeDir: string, stagingDir: string): Promise<void> {
   const records = await stagePortableResumeRecords(resume, stagingDir);
   const completed = await stagePortableResumeSemanticKeys(resume, records);
   const after = process.memoryUsage();
-  const maxRss = process.resourceUsage().maxRSS;
+  const maxRssKiB = process.resourceUsage().maxRSS;
   const result: StageResult = {
     root: completed.state.root(),
     records: completed.importedRecordCount,
@@ -108,7 +108,7 @@ async function stage(resumeDir: string, stagingDir: string): Promise<void> {
     stageMs: rounded(performance.now() - started),
     heapDeltaMiB: rounded((after.heapUsed - before.heapUsed) / (1024 * 1024)),
     rssMiB: rounded(after.rss / (1024 * 1024)),
-    maxRssMiB: rounded((process.platform === "darwin" ? maxRss : maxRss * 1024) / (1024 * 1024))
+    maxRssMiB: rounded(maxRssKiB / 1024)
   };
   completed.nodeObjects.close();
   console.log(JSON.stringify(result));
@@ -119,6 +119,10 @@ function runWorker(self: string, args: string[]): unknown {
     encoding: "utf8",
     maxBuffer: 4 * 1024 * 1024
   }).trim()) as unknown;
+}
+
+function scaleAddress(index: number): Address {
+  return `ZYN${index.toString(16).padStart(40, "0")}`;
 }
 
 function parsePositiveInteger(value: string, label: string): number {
