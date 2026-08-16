@@ -49,6 +49,12 @@ async function run(): Promise<void> {
     await stage(args, "--snapshot", join(dir, "checkpoint.json"), readCliCheckpointSnapshotUtf8);
   }
 
+  if (command === "state-fetch-install") {
+    const { runStateFetchInstall } = await import("./state-v2-fetch-install-command.js");
+    await runStateFetchInstall(args.slice(1));
+    return;
+  }
+
   process.argv = [process.argv[0]!, process.argv[1]!, ...args];
   await import("./cli.js");
 }
