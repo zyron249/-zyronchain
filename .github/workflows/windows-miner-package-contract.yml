@@ -6,6 +6,14 @@ on:
       - 'l1/scripts/package-windows-miner-zip.mjs'
       - 'l1/scripts/test-windows-miner-package-contract.mjs'
       - 'l1/scripts/verify-windows-miner-zip.ps1'
+      - 'l1/scripts/README-windows-miner-package.txt'
+      - 'l1/scripts/copy-windows-miner-readme.mjs'
+      - 'l1/scripts/verify-windows-miner-package-files.mjs'
+      - 'l1/scripts/test-windows-miner-readiness.mjs'
+      - 'l1/scripts/test-windows-package-static.mjs'
+      - 'l1/scripts/run-windows-package-contracts.mjs'
+      - 'docs/WINDOWS_MINER_DISTRIBUTION.md'
+      - 'docs/WINDOWS_MINER_READINESS.md'
       - '.github/workflows/miner-release-candidate.yml'
       - '.github/workflows/windows-miner-package-contract.yml'
 
@@ -23,6 +31,6 @@ jobs:
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 22.23.2
-      - name: Verify package contract
+      - name: Verify package contracts
         working-directory: l1
-        run: node scripts/test-windows-miner-package-contract.mjs
+        run: node scripts/run-windows-package-contracts.mjs
