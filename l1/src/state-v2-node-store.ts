@@ -22,15 +22,11 @@ interface StoredSemanticKeyRow {
   checksum: string;
 }
 
+interface CountRow { count: number }
+interface TraversalCountRow { count: number; leaf_count: number }
+
 export const DEFAULT_STATE_V2_NODE_CACHE = 4_096;
 
-/**
- * Indexed durable storage for immutable content-addressed State-v2 nodes.
- *
- * SQLite provides the on-disk hash index, atomic transactions and crash-safe
- * durability. The synchronous API deliberately matches SparseMerkleState's
- * consensus resolver while a strict JS LRU bounds hydrated node records.
- */
 export class StateV2NodeObjectStore {
   private readonly cache = new Map<string, StateV2NodeRecord>();
   private readonly getStatement: Database.Statement<[string], StoredNodeRow>;
@@ -38,10 +34,13 @@ export class StateV2NodeObjectStore {
   private readonly getSemanticKeyStatement: Database.Statement<[string], StoredSemanticKeyRow>;
   private readonly insertSemanticKeyStatement: Database.Statement<[string, string, string]>;
   private readonly allSemanticKeysStatement: Database.Statement<[], StoredSemanticKeyRow>;
+  private readonly nodeCountStatement: Database.Statement<[], CountRow>;
+  private readonly semanticKeyCountStatement: Database.Statement<[], CountRow>;
   private readonly traversalDepthStatement: Database.Statement<[string], { depth: number }>;
   private readonly traversalRememberStatement: Database.Statement<[string, number]>;
   private readonly traversalLeafStatement: Database.Statement<[string, string]>;
   private readonly traversalClearStatement: Database.Statement<[]>;
+  private readonly traversalCountStatement: Database.Statement<[], TraversalCountRow>;
   private readonly writeBatch: (records: readonly StateV2NodeRecord[]) => void;
   private readonly writeSemanticKeyBatch: (keys: readonly string[]) => void;
 
@@ -53,14 +52,17 @@ export class StateV2NodeObjectStore {
     this.getStatement = database.prepare("SELECT record, checksum FROM nodes WHERE hash = ?");
     this.insertStatement = database.prepare("INSERT OR IGNORE INTO nodes(hash, record, checksum) VALUES (?, ?, ?)");
     this.getSemanticKeyStatement = database.prepare("SELECT key_hash, key, checksum FROM semantic_keys WHERE key_hash = ?");
-    this.insertSemanticKeyStatement = database.prepare(
-      "INSERT OR IGNORE INTO semantic_keys(key_hash, key, checksum) VALUES (?, ?, ?)"
-    );
+    this.insertSemanticKeyStatement = database.prepare("INSERT OR IGNORE INTO semantic_keys(key_hash, key, checksum) VALUES (?, ?, ?)");
     this.allSemanticKeysStatement = database.prepare("SELECT key_hash, key, checksum FROM semantic_keys ORDER BY key_hash");
+    this.nodeCountStatement = database.prepare("SELECT COUNT(*) AS count FROM nodes");
+    this.semanticKeyCountStatement = database.prepare("SELECT COUNT(*) AS count FROM semantic_keys");
     this.traversalDepthStatement = database.prepare("SELECT depth FROM state_v2_traversal_seen WHERE hash = ?");
     this.traversalRememberStatement = database.prepare("INSERT INTO state_v2_traversal_seen(hash, depth) VALUES (?, ?)");
     this.traversalLeafStatement = database.prepare("UPDATE state_v2_traversal_seen SET key_hash = ? WHERE hash = ?");
     this.traversalClearStatement = database.prepare("DELETE FROM state_v2_traversal_seen");
+    this.traversalCountStatement = database.prepare(
+      "SELECT COUNT(*) AS count, COALESCE(SUM(CASE WHEN key_hash IS NOT NULL THEN 1 ELSE 0 END), 0) AS leaf_count FROM state_v2_traversal_seen"
+    );
     const transaction = database.transaction((records: readonly StateV2NodeRecord[]) => {
       for (const record of records) this.putOne(record);
     });
@@ -72,9 +74,7 @@ export class StateV2NodeObjectStore {
   }
 
   static async open(dataDir: string, cacheLimit = DEFAULT_STATE_V2_NODE_CACHE): Promise<StateV2NodeObjectStore> {
-    if (!Number.isSafeInteger(cacheLimit) || cacheLimit < 0 || cacheLimit > 65_536) {
-      throw new Error("Invalid State v2 node cache limit");
-    }
+    if (!Number.isSafeInteger(cacheLimit) || cacheLimit < 0 || cacheLimit > 65_536) throw new Error("Invalid State v2 node cache limit");
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     const path = join(dataDir, "state-v2.nodes.sqlite");
     const database = new Database(path, { timeout: 5_000 });
@@ -83,12 +83,8 @@ export class StateV2NodeObjectStore {
       database.pragma("synchronous = FULL");
       database.pragma("foreign_keys = ON");
       database.pragma("trusted_schema = OFF");
-      // Keep full-tree validation bookkeeping out of the JavaScript heap. This
-      // table is connection-local and never becomes consensus-persistent data.
       database.pragma("temp_store = FILE");
-      if (database.pragma("temp_store", { simple: true }) !== 1) {
-        throw new Error("State v2 traversal requires file-backed SQLite temporary storage");
-      }
+      if (database.pragma("temp_store", { simple: true }) !== 1) throw new Error("State v2 traversal requires file-backed SQLite temporary storage");
       database.exec(`
         CREATE TEMP TABLE state_v2_traversal_seen (
           hash TEXT PRIMARY KEY NOT NULL,
@@ -119,9 +115,7 @@ export class StateV2NodeObjectStore {
     }
   }
 
-  resolver(): StateV2NodeResolver {
-    return (hash) => this.get(hash);
-  }
+  resolver(): StateV2NodeResolver { return (hash) => this.get(hash); }
 
   get(hash: string): StateV2NodeRecord | undefined {
     assertHash(hash);
@@ -145,9 +139,9 @@ export class StateV2NodeObjectStore {
     for (const record of batch) this.remember(record);
   }
 
-  cachedRecordCount(): number {
-    return this.cache.size;
-  }
+  cachedRecordCount(): number { return this.cache.size; }
+  storedNodeCount(): number { return this.nodeCountStatement.get()?.count ?? 0; }
+  storedSemanticKeyCount(): number { return this.semanticKeyCountStatement.get()?.count ?? 0; }
 
   semanticKey(keyHash: string): string | undefined {
     assertHash(keyHash);
@@ -161,40 +155,41 @@ export class StateV2NodeObjectStore {
     this.writeSemanticKeyBatch(batch);
   }
 
-  allSemanticKeys(): string[] {
-    return this.allSemanticKeysStatement.all().map((row) => parseStoredSemanticKey(row, row.key_hash));
+  allSemanticKeys(): string[] { return this.allSemanticKeysStatement.all().map((row) => parseStoredSemanticKey(row, row.key_hash)); }
+
+  validateReachable(state: SparseMerkleState, requireSemanticKeys: boolean): void {
+    this.traversalClearStatement.run();
+    try { this.populateTraversal(state, requireSemanticKeys); }
+    finally { this.traversalClearStatement.run(); }
   }
 
-  /** Authenticate a complete state root with disk-backed traversal metadata. */
-  validateReachable(state: SparseMerkleState, requireSemanticKeys: boolean): void {
+  reachableNodeCount(state: SparseMerkleState, requireSemanticKeys = false): number {
+    return this.reachableCounts(state, requireSemanticKeys).nodes;
+  }
+
+  reachableCounts(state: SparseMerkleState, requireSemanticKeys = false): { nodes: number; leaves: number } {
     this.traversalClearStatement.run();
     try {
       this.populateTraversal(state, requireSemanticKeys);
+      const row = this.traversalCountStatement.get();
+      return { nodes: row?.count ?? 0, leaves: row?.leaf_count ?? 0 };
     } finally {
       this.traversalClearStatement.run();
     }
   }
 
-  /**
-   * Remove immutable objects outside one fully authenticated retained root.
-   * Callers must establish their history-retention boundary before invoking it.
-   */
   pruneUnreachable(state: SparseMerkleState): { removedNodes: number; removedSemanticKeys: number } {
     this.traversalClearStatement.run();
     try {
       this.populateTraversal(state, true);
       const transaction = this.database.transaction(() => {
-        const removedNodes = this.database.prepare(
-          "DELETE FROM nodes WHERE hash NOT IN (SELECT hash FROM state_v2_traversal_seen)"
-        ).run().changes;
+        const removedNodes = this.database.prepare("DELETE FROM nodes WHERE hash NOT IN (SELECT hash FROM state_v2_traversal_seen)").run().changes;
         const removedSemanticKeys = this.database.prepare(
-          "DELETE FROM semantic_keys WHERE key_hash NOT IN " +
-          "(SELECT key_hash FROM state_v2_traversal_seen WHERE key_hash IS NOT NULL)"
+          "DELETE FROM semantic_keys WHERE key_hash NOT IN (SELECT key_hash FROM state_v2_traversal_seen WHERE key_hash IS NOT NULL)"
         ).run().changes;
         return { removedNodes, removedSemanticKeys };
       });
       const result = transaction.immediate();
-      // Never serve an object from the LRU after its durable row was pruned.
       this.cache.clear();
       return result;
     } finally {
@@ -202,10 +197,7 @@ export class StateV2NodeObjectStore {
     }
   }
 
-  close(): void {
-    this.cache.clear();
-    this.database.close();
-  }
+  close(): void { this.cache.clear(); this.database.close(); }
 
   private putOne(record: StateV2NodeRecord): void {
     const recordJson = canonicalJson(record);
@@ -236,9 +228,7 @@ export class StateV2NodeObjectStore {
     }, (keyHash, nodeHash) => {
       const updated = this.traversalLeafStatement.run(keyHash, nodeHash);
       if (updated.changes !== 1) throw new Error("State v2 traversal lost a reachable leaf");
-      if (requireSemanticKeys && this.semanticKey(keyHash) === undefined) {
-        throw new Error("Incomplete persisted State v2 semantic key index");
-      }
+      if (requireSemanticKeys && this.semanticKey(keyHash) === undefined) throw new Error("Incomplete persisted State v2 semantic key index");
     });
   }
 
@@ -258,9 +248,7 @@ function parseStoredNode(row: StoredNodeRow, expectedHash: string): StateV2NodeR
   if (row.checksum !== sha256Hex(row.record)) throw new Error("State v2 node object checksum mismatch");
   let parsed: unknown;
   try { parsed = JSON.parse(row.record); } catch { throw new Error("Invalid persisted State v2 node object"); }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Invalid persisted State v2 node object");
-  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid persisted State v2 node object");
   const record = parsed as StateV2NodeRecord;
   if (record.hash !== expectedHash) throw new Error("State v2 node object key/hash mismatch");
   if (canonicalJson(record) !== row.record) throw new Error("Non-canonical persisted State v2 node object");
@@ -271,20 +259,10 @@ function parseStoredSemanticKey(row: StoredSemanticKeyRow, expectedHash: string)
   if (row.key_hash !== expectedHash) throw new Error("State v2 semantic-key index/hash mismatch");
   assertSemanticKey(row.key);
   if (stateV2KeyHash(row.key) !== expectedHash) throw new Error("State v2 semantic-key preimage/hash mismatch");
-  if (row.checksum !== semanticKeyChecksum(row.key_hash, row.key)) {
-    throw new Error("State v2 semantic key checksum mismatch");
-  }
+  if (row.checksum !== semanticKeyChecksum(row.key_hash, row.key)) throw new Error("State v2 semantic key checksum mismatch");
   return row.key;
 }
 
-function semanticKeyChecksum(keyHash: string, key: string): string {
-  return sha256Hex(canonicalJson({ keyHash, key }));
-}
-
-function assertSemanticKey(key: string): void {
-  if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new Error("Invalid State v2 semantic key preimage");
-}
-
-function assertHash(hash: string): void {
-  if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error("Invalid State v2 node hash");
-}
+function semanticKeyChecksum(keyHash: string, key: string): string { return sha256Hex(canonicalJson({ keyHash, key })); }
+function assertSemanticKey(key: string): void { if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new Error("Invalid State v2 semantic key preimage"); }
+function assertHash(hash: string): void { if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error("Invalid State v2 node hash"); }
