@@ -1,0 +1,26 @@
+name: Miner Website Promotion Binding CI
+
+on:
+  pull_request:
+    paths:
+      - 'website/**'
+      - 'docs/miner-release-promotion.json'
+      - 'scripts/verify-miner-website-promotion-binding.mjs'
+      - '.github/workflows/miner-website-promotion-binding.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  binding:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '24'
+      - name: Verify website is bound to canonical miner promotion policy
+        run: node scripts/verify-miner-website-promotion-binding.mjs
