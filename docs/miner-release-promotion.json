@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "releaseVersion": null,
+  "sourceCommit": null,
+  "publicMiningActivated": false,
+  "releaseEligible": false,
+  "platformSigningVerified": false,
+  "provenanceVerified": false,
+  "checksumsVerified": false,
+  "immutableReleaseVerified": false,
+  "publicationAllowed": false,
+  "assets": {
+    "windows": null,
+    "macos": null,
+    "linux": null
+  },
+  "evidence": {
+    "windowsSigning": null,
+    "macosSigningOrNotarization": null,
+    "provenance": null,
+    "checksums": null,
+    "immutableRelease": null,
+    "publicMiningActivation": null
+  }
+}
