@@ -171,3 +171,76 @@ if ('IntersectionObserver' in window && !reduceMotion) {
 } else {
   for (const target of revealTargets) target.classList.add('revealed');
 }
+
+// One-click distribution is deliberately fail-closed. A future website-only
+// release PR may replace null asset URLs only after independently reviewed,
+// signed/notarized immutable release assets exist and public mining activation
+// is explicitly allowed. The website never handles miner custody or secrets.
+const miningStart = document.getElementById('start');
+if (miningStart && document.title.includes('Mining Launchpad')) {
+  const MINER_DISTRIBUTION = Object.freeze({
+    enabled: false,
+    publicMiningActivated: false,
+    version: null,
+    assets: Object.freeze({ windows: null, macos: null, linux: null })
+  });
+
+  const platformText = `${navigator.userAgentData?.platform || navigator.platform || ''} ${navigator.userAgent || ''}`.toLowerCase();
+  const detectedPlatform = platformText.includes('win')
+    ? 'windows'
+    : platformText.includes('mac') || platformText.includes('darwin')
+      ? 'macos'
+      : platformText.includes('linux')
+        ? 'linux'
+        : 'unknown';
+
+  const platformLabel = detectedPlatform === 'windows'
+    ? 'Windows'
+    : detectedPlatform === 'macos'
+      ? 'macOS'
+      : detectedPlatform === 'linux'
+        ? 'Linux'
+        : 'your operating system';
+
+  const asset = detectedPlatform === 'unknown' ? null : MINER_DISTRIBUTION.assets[detectedPlatform];
+  const trustedReleaseAsset = typeof asset === 'string' && /^https:\/\/github\.com\/zyron249\/-zyronchain\/releases\/download\/[^/]+\/ZyronMiner-[A-Za-z0-9._-]+$/.test(asset);
+  const live = MINER_DISTRIBUTION.enabled === true && MINER_DISTRIBUTION.publicMiningActivated === true && trustedReleaseAsset;
+
+  const shell = document.createElement('div');
+  shell.className = 'shell command-card';
+  shell.setAttribute('aria-label', 'One-click miner download status');
+
+  const head = document.createElement('div');
+  head.className = 'command-head';
+  const title = document.createElement('span');
+  title.textContent = `AUTO-DETECTED · ${platformLabel.toUpperCase()}`;
+  const state = document.createElement('strong');
+  state.textContent = live ? 'READY' : 'ACTIVATION GATED';
+  head.append(title, state);
+
+  const description = document.createElement('p');
+  description.textContent = live
+    ? `Download the reviewed ZyronMiner package for ${platformLabel}. Opening or running downloaded software still requires operating-system/user consent.`
+    : `One-click ${platformLabel} distribution is prepared but remains disabled until immutable signed release assets exist and public mining is explicitly activated.`;
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'primary-button';
+  button.textContent = live ? `Download Zyron Miner for ${platformLabel}` : 'Miner download not yet activated';
+  button.disabled = !live;
+  button.setAttribute('aria-disabled', String(!live));
+  if (live) {
+    button.addEventListener('click', () => {
+      window.location.assign(asset);
+    });
+  }
+
+  const privacy = document.createElement('p');
+  privacy.className = 'mining-note';
+  privacy.textContent = 'This website never requests a private key, seed phrase, wallet password, browser-mining permission, or permission to execute downloaded software.';
+
+  shell.append(head, description, button, privacy);
+  const existingCard = miningStart.querySelector('.command-card');
+  if (existingCard) existingCard.before(shell);
+  else miningStart.appendChild(shell);
+}
