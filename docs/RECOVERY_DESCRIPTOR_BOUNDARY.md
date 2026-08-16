@@ -14,8 +14,10 @@ For recovery files that use the descriptor-bound primitive:
 
 These checks protect the local file boundary only. They do not replace chain identity, genesis, checkpoint tip-hash, snapshot-digest, State-v2 root, or finalized-history validation.
 
-## Current production status
+## Production recovery behavior
 
-The reusable descriptor-bound primitive and direct substitution regressions are present on the #367 hardening branch. Production `loadRecoveryCheckpoint()` is not yet wired to the primitive. Until that call site is converted and its stale/corrupt-checkpoint fallback semantics are regression-tested, issue #367 remains open and the branch must not be treated as recovery-hardening completion.
+`loadRecoveryCheckpoint()` reads `recovery-checkpoint.json` through the descriptor-bound regular-file primitive. A substituted symlink or non-regular object is rejected before checkpoint contents can become a recovery optimization.
 
-Finalized block history remains authoritative. A rejected or inconsistent local checkpoint may disable the fast path where full replay is still available; it must not create a weaker trust source.
+If finalized history is still complete, an unreadable, stale, corrupt, or inconsistent checkpoint only disables the checkpoint fast path and the node replays authoritative finalized history. If finalized history has been pruned, recovery still requires a valid compatible checkpoint and fails closed rather than silently accepting a weaker source.
+
+Regression coverage verifies regular-file reads, non-regular/symlink rejection, production checkpoint substitution fallback, and corrupt-checkpoint full replay. No public-testnet, mainnet, mining, or launch-authorization gate is changed by this boundary hardening.
