@@ -96,7 +96,7 @@ test("hardened production entrypoint rejects a symlink genesis before node start
       () => execFileAsync(process.execPath, [entry, "node", "--genesis", link, "--data", join(dir, "data")], { timeout: 5_000 }),
       (error: unknown) => {
         const record = error as { stderr?: string; killed?: boolean };
-        assert.equal(record.killed, false);
+        assert.notEqual(record.killed, true, "hardened entrypoint must fail before timeout termination");
         assert.match(record.stderr ?? "", /Fatal:/);
         return true;
       }
