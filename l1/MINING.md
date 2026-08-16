@@ -43,6 +43,19 @@ Protocol and nonce state are sampled between two validated finalized-status read
 
 Mining work is bound to the chain ID, miner account nonce/address/public key, next block height, previous finalized block hash and deterministic reward. A tip change invalidates old work.
 
+## Release-candidate boundary
+
+The cross-platform release-candidate workflow is deliberately **not** a public miner release. It uses one exact reviewed Node.js runtime version to build Windows, macOS and Linux candidates, reruns the fail-closed bootstrap smoke, emits a production SBOM and SHA-256 manifest, and records source/runtime metadata. Non-PR candidate evidence may receive GitHub artifact attestations.
+
+Every generated `RELEASE-METADATA.json` must remain explicitly non-publishable while launch gates are closed:
+
+- `publicMiningActivated=false`
+- `releaseEligible=false`
+- `platformSigningVerified=false`
+- `publicationAllowed=false`
+
+A successful candidate workflow therefore proves packaging/provenance mechanics only. It does **not** authorize a GitHub Release, website download CTA, public mining, public testnet, or mainnet. Promotion requires separately reviewed platform signing/notarization where applicable, versioned immutable GitHub Release assets whose checksums/provenance match the reviewed source, and explicit satisfaction of the public-mining activation gates. The website must continue to fail closed until those requirements are evidenced.
+
 ## Important limitation
 
 This is not Nakamoto chain-selection mining. Hash power competes for ZYN issuance, while the configured validator quorum still proposes and finalizes blocks. A validator proposer may censor a mining claim it received; public-testnet evidence must measure inclusion fairness, stale work, hardware skew, mining-pool concentration and target calibration before mainnet economics are frozen.
