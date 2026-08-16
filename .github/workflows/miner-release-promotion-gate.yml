@@ -1,0 +1,32 @@
+name: Miner Release Promotion Gate CI
+
+on:
+  pull_request:
+    paths:
+      - 'docs/miner-release-promotion.json'
+      - 'docs/MINER_RELEASE_PROMOTION.md'
+      - 'l1/scripts/verify-miner-release-promotion.mjs'
+      - 'l1/scripts/test-miner-release-promotion.mjs'
+      - '.github/workflows/miner-release-promotion-gate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  promotion-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Set up canonical Node runtime
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22.23.2
+      - name: Verify canonical policy remains fail-closed
+        working-directory: l1
+        run: node scripts/verify-miner-release-promotion.mjs
+      - name: Run positive and negative promotion vectors
+        working-directory: l1
+        run: node scripts/test-miner-release-promotion.mjs
