@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { readFile, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
@@ -73,6 +74,33 @@ test("CLI recovery readers fail closed on POSIX FIFO substitution without blocki
     await execFileAsync("mkfifo", [fifo]);
     await assert.rejects(() => readCliGenesisUtf8(fifo));
     await assert.rejects(() => readCliCheckpointSnapshotUtf8(fifo));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("published zyron-l1 bin routes through hardened entrypoint", async () => {
+  const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as { bin?: Record<string, string> };
+  assert.equal(packageJson.bin?.["zyron-l1"], "dist/src/secure-cli.js");
+});
+
+test("hardened production entrypoint rejects a symlink genesis before node startup", { skip: process.platform === "win32" }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zyron-cli-entry-symlink-"));
+  try {
+    const target = join(dir, "genesis.json");
+    const link = join(dir, "genesis-link.json");
+    await writeFile(target, "{}\n");
+    await symlink(target, link);
+    const entry = fileURLToPath(new URL("../src/secure-cli.js", import.meta.url));
+    await assert.rejects(
+      () => execFileAsync(process.execPath, [entry, "node", "--genesis", link, "--data", join(dir, "data")], { timeout: 5_000 }),
+      (error: unknown) => {
+        const record = error as { stderr?: string; killed?: boolean };
+        assert.equal(record.killed, false);
+        assert.match(record.stderr ?? "", /Fatal:/);
+        return true;
+      }
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
