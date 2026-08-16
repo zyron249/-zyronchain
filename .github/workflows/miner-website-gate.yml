@@ -1,0 +1,64 @@
+name: Miner Website Fail-Closed Gate CI
+
+on:
+  pull_request:
+    paths:
+      - 'website/**'
+      - '.github/workflows/miner-website-gate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fail-closed-miner-entrypoint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '24'
+      - name: Verify miner website remains fail-closed
+        run: |
+          node --check website/app.js
+          node <<'NODE'
+          const fs = require('node:fs');
+          const html = fs.readFileSync('website/mining.html', 'utf8');
+          const js = fs.readFileSync('website/app.js', 'utf8');
+
+          for (const marker of ['Mining Launchpad', 'id="start"', 'ACTIVATION GATED', 'Encrypted key custody is mandatory']) {
+            if (!html.includes(marker)) throw new Error(`Mining page missing ${marker}`);
+          }
+          if (!html.includes("connect-src 'none'")) throw new Error('Mining CSP must keep connect-src none');
+
+          for (const marker of [
+            'MINER_DISTRIBUTION',
+            'enabled: false',
+            'publicMiningActivated: false',
+            'assets: Object.freeze({ windows: null, macos: null, linux: null })',
+            'Miner download not yet activated',
+            'ACTIVATION GATED',
+            'navigator.userAgentData',
+            'github\\.com\\/zyron249\\/-zyronchain\\/releases\\/download'
+          ]) {
+            if (!js.includes(marker)) throw new Error(`Miner website gate missing ${marker}`);
+          }
+
+          if (/fetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(/.test(js)) {
+            throw new Error('Miner website must not fetch distribution/custody state over the network');
+          }
+          if (/localStorage|sessionStorage|indexedDB/.test(js)) {
+            throw new Error('Miner website must not persist custody/distribution state');
+          }
+          if (!js.includes('never requests a private key, seed phrase, wallet password')) {
+            throw new Error('Miner website must state the no-secret boundary');
+          }
+          if (/enabled:\s*true|publicMiningActivated:\s*true/.test(js)) {
+            throw new Error('Public miner download must remain activation-gated in this preparatory PR');
+          }
+          if (/assets:\s*Object\.freeze\(\{[^}]*https:\/\//s.test(js)) {
+            throw new Error('Preparatory PR must not bind downloadable release assets');
+          }
+          NODE
