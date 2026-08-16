@@ -1,0 +1,29 @@
+name: Standalone L1 External Audit Pack Action Custody Policy CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/l1-audit-pack.yml'
+      - '.github/scripts/verify-l1-audit-pack-action-custody.mjs'
+      - '.github/workflows/l1-audit-pack-action-custody-policy.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/l1-audit-pack.yml'
+      - '.github/scripts/verify-l1-audit-pack-action-custody.mjs'
+      - '.github/workflows/l1-audit-pack-action-custody-policy.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify external audit-pack action custody
+        run: node .github/scripts/verify-l1-audit-pack-action-custody.mjs
