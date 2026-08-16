@@ -1,0 +1,146 @@
+name: Unix Miner Archive Candidate CI
+
+on:
+  pull_request:
+    paths:
+      - 'l1/**'
+      - 'docs/UNIX_MINER_DISTRIBUTION.md'
+      - '.github/workflows/unix-miner-archive-candidate.yml'
+  workflow_dispatch:
+  push:
+    tags:
+      - 'miner-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    defaults:
+      run:
+        working-directory: l1
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Set up canonical miner runtime
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22.23.2
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+
+      - name: Verify runtime pin
+        run: test "$(node -p 'process.version')" = 'v22.23.2'
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Verify fail-closed archive contract
+        run: |
+          node --check scripts/package-unix-miner-tarball.mjs
+          node --check scripts/copy-unix-miner-readme.mjs
+          node scripts/test-unix-miner-package-contract.mjs
+          node scripts/test-miner-launcher-security.mjs
+          node -e "const p=require('./miner-network-profile.json'); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('Unix archive candidate profile must remain fail-closed')"
+
+      - name: Build runtime
+        run: npm run build
+
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Generate production SBOM
+        run: |
+          mkdir -p miner-release
+          npm sbom --omit=dev --sbom-format=spdx > miner-release/SBOM.spdx.json
+
+      - name: Prune to production runtime
+        run: npm prune --omit=dev
+
+      - name: Package self-contained miner
+        run: node scripts/package-miner.mjs
+
+      - name: Add Linux/macOS start instructions
+        run: node scripts/copy-unix-miner-readme.mjs
+
+      - name: Package Linux/macOS end-user archive
+        run: node scripts/package-unix-miner-tarball.mjs
+
+      - name: Verify Linux/macOS archive launcher and runtime
+        run: bash scripts/verify-unix-miner-tarball.sh
+
+      - name: Verify inactive archive fails closed before custody
+        run: |
+          bundle="$(find miner-release -mindepth 1 -maxdepth 1 -type d -name 'ZyronMiner-*' | head -n 1)"
+          test -n "$bundle"
+          test_home="$RUNNER_TEMP/zyron-unix-miner-archive-smoke"
+          rm -rf "$test_home"
+          set +e
+          ZYRON_MINER_HOME="$test_home" "$bundle/node" "$bundle/scripts/miner-launcher.mjs"
+          status=$?
+          set -e
+          test "$status" -eq 78
+          test ! -e "$test_home"
+
+      - name: Write fail-closed archive metadata
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_REF: ${{ github.ref }}
+          RUNNER_OS_VALUE: ${{ runner.os }}
+          RUNNER_ARCH_VALUE: ${{ runner.arch }}
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const profile = JSON.parse(fs.readFileSync('miner-network-profile.json', 'utf8'));
+          if (profile.publicMiningActivated !== false || profile.rpcUrl !== null || profile.genesisFile !== null) throw new Error('archive metadata requires inactive canonical network profile');
+          const metadata = {
+            schemaVersion: 1,
+            sourceSha: process.env.SOURCE_SHA,
+            sourceRef: process.env.SOURCE_REF,
+            runnerOs: process.env.RUNNER_OS_VALUE,
+            runnerArch: process.env.RUNNER_ARCH_VALUE,
+            nodeVersion: process.version,
+            publicMiningActivated: false,
+            releaseEligible: false,
+            platformSigningVerified: false,
+            publicationAllowed: false,
+            note: 'Archive candidate evidence only. Immutable release promotion requires reviewed signing/notarization and explicit public-mining activation.'
+          };
+          fs.writeFileSync('miner-release/UNIX-ARCHIVE-METADATA.json', JSON.stringify(metadata, null, 2) + '\n');
+          NODE
+
+      - name: Generate SHA-256 manifest including archive
+        run: |
+          cd miner-release
+          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+
+      - name: Verify metadata remains non-publishable
+        run: node -e "const m=require('./miner-release/UNIX-ARCHIVE-METADATA.json'); if (m.publicMiningActivated !== false || m.releaseEligible !== false || m.platformSigningVerified !== false || m.publicationAllowed !== false) throw new Error('Unix archive publication gate drift')"
+
+      - name: Attest Unix end-user archive
+        if: github.event_name != 'pull_request'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: l1/miner-release/ZyronMiner-*.tar.gz
+
+      - name: Upload non-publishable Unix archive candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: zyron-miner-unix-archive-candidate-${{ runner.os }}-${{ runner.arch }}
+          path: l1/miner-release/
+          if-no-files-found: error
+          retention-days: 90
