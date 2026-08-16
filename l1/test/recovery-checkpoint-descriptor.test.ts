@@ -12,13 +12,14 @@ const validatorPrivateKey = "01".padStart(64, "0");
 const validatorPublicKey = publicKeyFromPrivate(validatorPrivateKey);
 const validatorAddress = addressFromPublicKey(validatorPublicKey);
 const activityPool = addressFromPublicKey(publicKeyFromPrivate("02".padStart(64, "0")));
+const activityOracle = publicKeyFromPrivate("03".padStart(64, "0"));
 
 function genesis(): GenesisConfig {
   return {
     chainId: "descriptor-recovery-test",
     timestampMs: 1_700_000_000_000,
     validators: [{ address: validatorAddress, publicKey: validatorPublicKey }],
-    activityOracles: [],
+    activityOracles: [activityOracle],
     activityPool,
     allocations: []
   };
