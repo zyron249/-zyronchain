@@ -1,11 +1,12 @@
 import { createReadStream } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { lstat, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3";
 
 import { canonicalJson, sha256Hex } from "./codec.js";
 import { readBoundedRegularControlFile } from "./control-file.js";
+import { readRegularUtf8FileDescriptorBound } from "./descriptor-read.js";
 import { ZyronChain } from "./chain.js";
 import { StateV2DiskStore } from "./state-v2-store.js";
 import { stateV2TransactionKeyPreimages } from "./state-v2.js";
@@ -1009,7 +1010,7 @@ interface LoadedRecoveryCheckpoint {
 
 async function loadRecoveryCheckpoint(genesis: GenesisConfig, dataDir: string): Promise<LoadedRecoveryCheckpoint | undefined> {
   try {
-    const value = JSON.parse(await readFile(join(dataDir, "recovery-checkpoint.json"), "utf8")) as unknown;
+    const value = JSON.parse(await readRegularUtf8FileDescriptorBound(join(dataDir, "recovery-checkpoint.json"))) as unknown;
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid recovery checkpoint");
     const record = value as Record<string, unknown>;
     const commonValid = typeof record.chainId === "string" && typeof record.genesisHash === "string" &&
