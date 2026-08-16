@@ -92,17 +92,10 @@ jobs:
         if: runner.os == 'Windows'
         run: node scripts/package-windows-miner-zip.mjs
 
-      - name: Verify Windows ZIP contains double-click launcher
+      - name: Verify Windows ZIP contains double-click launcher and runtime
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          $zip = Get-ChildItem -LiteralPath miner-release -Filter 'ZyronMiner-windows-*.zip' | Select-Object -First 1
-          if (-not $zip) { throw 'missing Windows miner ZIP' }
-          $extract = Join-Path $env:RUNNER_TEMP 'zyron-miner-zip-smoke'
-          Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue
-          Expand-Archive -LiteralPath $zip.FullName -DestinationPath $extract
-          $launcher = Get-ChildItem -LiteralPath $extract -Filter 'ZyronMiner.cmd' -Recurse | Select-Object -First 1
-          if (-not $launcher) { throw 'Windows miner ZIP missing ZyronMiner.cmd' }
+        run: ./scripts/verify-windows-miner-zip.ps1
 
       - name: Verify inactive candidate fails closed before custody
         shell: bash
