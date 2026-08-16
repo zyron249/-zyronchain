@@ -57,7 +57,9 @@ jobs:
           node --check scripts/miner-launcher-security.mjs
           node --check scripts/test-miner-launcher-security.mjs
           node --check scripts/package-miner.mjs
+          node --check scripts/test-windows-miner-package-contract.mjs
           node scripts/test-miner-launcher-security.mjs
+          node scripts/test-windows-miner-package-contract.mjs
           node -e "const p=require('./miner-network-profile.json'); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('release candidate profile must remain fail-closed')"
 
       - name: Build runtime
@@ -85,6 +87,19 @@ jobs:
 
       - name: Package self-contained miner
         run: node scripts/package-miner.mjs
+
+      - name: Add Windows start instructions
+        if: runner.os == 'Windows'
+        run: node scripts/copy-windows-miner-readme.mjs
+
+      - name: Package Windows end-user ZIP
+        if: runner.os == 'Windows'
+        run: node scripts/package-windows-miner-zip.mjs
+
+      - name: Verify Windows ZIP contains double-click launcher and runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/verify-windows-miner-zip.ps1
 
       - name: Verify inactive candidate fails closed before custody
         shell: bash
@@ -166,6 +181,12 @@ jobs:
             l1/miner-release/SBOM.spdx.json
             l1/miner-release/SHA256SUMS
             l1/miner-release/RELEASE-METADATA.json
+
+      - name: Attest Windows end-user ZIP
+        if: github.event_name != 'pull_request' && runner.os == 'Windows'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: l1/miner-release/ZyronMiner-windows-*.zip
 
       - name: Upload non-publishable release candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

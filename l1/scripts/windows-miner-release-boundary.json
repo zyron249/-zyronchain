@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "artifactPattern": "ZyronMiner-windows-*.zip",
+  "doubleClickLauncher": "ZyronMiner.cmd",
+  "bundledRuntime": "node.exe",
+  "publicMiningActivated": false,
+  "publicationAllowed": false,
+  "requiresImmutableRelease": true,
+  "requiresProvenance": true,
+  "requiresWindowsSigningEvidence": true
+}
