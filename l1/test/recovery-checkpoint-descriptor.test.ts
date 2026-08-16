@@ -21,7 +21,7 @@ function genesis(): GenesisConfig {
     validators: [{ address: validatorAddress, publicKey: validatorPublicKey }],
     activityOracles: [activityOracle],
     activityPool,
-    allocations: []
+    allocations: [{ address: activityPool, amountAtoms: 1_000 }]
   };
 }
 
