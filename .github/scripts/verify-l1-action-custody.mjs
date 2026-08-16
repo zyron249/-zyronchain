@@ -25,10 +25,32 @@ assertRefs('setup-node', SETUP_NODE_SHA, 5);
 assertRefs('setup-python', SETUP_PYTHON_SHA, 1);
 assertRefs('upload-artifact', UPLOAD_ARTIFACT_SHA, 4);
 
-const checkoutSteps = [...workflow.matchAll(/- name: Checkout[^\n]*\n\s*uses: actions\/checkout@[0-9a-f]{40}[^\n]*\n\s*with:\n([\s\S]*?)(?=\n\s*- name:|\n\s*[a-zA-Z0-9_-]+:|$)/g)];
+// Parse checkout steps by their YAML step boundary rather than trying to parse
+// the `with:` map with a generic top-level-key lookahead. The latter can
+// accidentally terminate at the first `with:` child key (for example
+// persist-credentials) and produce a false failure even when credentials are
+// disabled correctly.
+const lines = workflow.split(/\r?\n/);
+const checkoutSteps = [];
+for (let i = 0; i < lines.length; i += 1) {
+  if (!/^\s*- name:\s*Checkout\b/.test(lines[i])) continue;
+  const stepIndent = lines[i].match(/^(\s*)/)?.[1].length ?? 0;
+  const step = [lines[i]];
+  for (let j = i + 1; j < lines.length; j += 1) {
+    const next = lines[j];
+    const nextIndent = next.match(/^(\s*)/)?.[1].length ?? 0;
+    if (/^\s*- name:/.test(next) && nextIndent === stepIndent) break;
+    step.push(next);
+  }
+  checkoutSteps.push(step.join('\n'));
+}
+
 if (checkoutSteps.length < 7) throw new Error('Standalone L1 checkout step count unexpectedly decreased');
-for (const [, withBlock] of checkoutSteps) {
-  if (!/^\s*persist-credentials:\s*false\b/m.test(withBlock)) {
+for (const step of checkoutSteps) {
+  if (!step.includes(`uses: actions/checkout@${CHECKOUT_SHA}`)) {
+    throw new Error('Standalone L1 checkout pin drift');
+  }
+  if (!/^\s*persist-credentials:\s*false\b/m.test(step)) {
     throw new Error('Standalone L1 checkout must disable credential persistence');
   }
 }
