@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "bin": {
-    "zyron-l1": "dist/src/cli.js"
+    "zyron-l1": "dist/src/secure-cli.js"
   },
   "files": [
     "dist/src",
