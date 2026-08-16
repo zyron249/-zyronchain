@@ -88,6 +88,10 @@ jobs:
       - name: Package self-contained miner
         run: node scripts/package-miner.mjs
 
+      - name: Add Windows start instructions
+        if: runner.os == 'Windows'
+        run: node scripts/copy-windows-miner-readme.mjs
+
       - name: Package Windows end-user ZIP
         if: runner.os == 'Windows'
         run: node scripts/package-windows-miner-zip.mjs
