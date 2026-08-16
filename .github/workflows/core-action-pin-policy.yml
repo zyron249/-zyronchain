@@ -1,0 +1,30 @@
+name: Core Action Pin Policy CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/core-action-pin-policy.yml'
+      - '.github/scripts/verify-core-action-pins.mjs'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/core-action-pin-policy.yml'
+      - '.github/scripts/verify-core-action-pins.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify core action pins
+        run: node .github/scripts/verify-core-action-pins.mjs
