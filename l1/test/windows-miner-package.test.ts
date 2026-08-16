@@ -1,9 +1,10 @@
 import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-const workflow = new URL('../../.github/workflows/miner-release-candidate.yml', import.meta.url);
-const packager = new URL('../scripts/package-windows-miner-zip.mjs', import.meta.url);
+const workflow = resolve(process.cwd(), '..', '.github', 'workflows', 'miner-release-candidate.yml');
+const packager = resolve(process.cwd(), 'scripts', 'package-windows-miner-zip.mjs');
 
 describe('Windows end-user miner package contract', () => {
   it('keeps publication and public mining fail closed while producing a ZIP candidate', async () => {
