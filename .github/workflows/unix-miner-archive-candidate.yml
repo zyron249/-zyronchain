@@ -125,8 +125,23 @@ jobs:
 
       - name: Generate SHA-256 manifest including archive
         run: |
-          cd miner-release
-          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const path = require('node:path');
+          const root = 'miner-release';
+          const files = [];
+          function walk(dir) {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, entry.name);
+              if (entry.isDirectory()) walk(full);
+              else if (entry.isFile() && entry.name !== 'SHA256SUMS') files.push(full);
+            }
+          }
+          walk(root);
+          const lines = files.sort().map((file) => `${crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')}  ${file.replaceAll('\\\\','/')}`);
+          fs.writeFileSync(path.join(root, 'SHA256SUMS'), `${lines.join('\n')}\n`);
+          NODE
 
       - name: Verify metadata remains non-publishable
         run: node -e "const m=require('./miner-release/UNIX-ARCHIVE-METADATA.json'); if (m.publicMiningActivated !== false || m.releaseEligible !== false || m.platformSigningVerified !== false || m.publicationAllowed !== false) throw new Error('Unix archive publication gate drift')"
