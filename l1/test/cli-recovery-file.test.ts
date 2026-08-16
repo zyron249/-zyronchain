@@ -80,7 +80,7 @@ test("CLI recovery readers fail closed on POSIX FIFO substitution without blocki
 });
 
 test("published zyron-l1 bin routes through hardened entrypoint", async () => {
-  const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as { bin?: Record<string, string> };
+  const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")) as { bin?: Record<string, string> };
   assert.equal(packageJson.bin?.["zyron-l1"], "dist/src/secure-cli.js");
 });
 
