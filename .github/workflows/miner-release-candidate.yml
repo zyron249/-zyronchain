@@ -86,6 +86,22 @@ jobs:
       - name: Package self-contained miner
         run: node scripts/package-miner.mjs
 
+      - name: Package Windows end-user ZIP
+        if: runner.os == 'Windows'
+        run: node scripts/package-windows-miner-zip.mjs
+
+      - name: Verify Windows ZIP contains double-click launcher
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -LiteralPath miner-release -Filter 'ZyronMiner-windows-*.zip' | Select-Object -First 1
+          if (-not $zip) { throw 'missing Windows miner ZIP' }
+          $extract = Join-Path $env:RUNNER_TEMP 'zyron-miner-zip-smoke'
+          Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath $extract
+          $launcher = Get-ChildItem -LiteralPath $extract -Filter 'ZyronMiner.cmd' -Recurse | Select-Object -First 1
+          if (-not $launcher) { throw 'Windows miner ZIP missing ZyronMiner.cmd' }
+
       - name: Verify inactive candidate fails closed before custody
         shell: bash
         run: |
@@ -166,6 +182,7 @@ jobs:
             l1/miner-release/SBOM.spdx.json
             l1/miner-release/SHA256SUMS
             l1/miner-release/RELEASE-METADATA.json
+            l1/miner-release/ZyronMiner-windows-*.zip
 
       - name: Upload non-publishable release candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
