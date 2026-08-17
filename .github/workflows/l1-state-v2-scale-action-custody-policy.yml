@@ -1,0 +1,34 @@
+name: State-v2 Scale Action Custody Policy CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/l1-state-v2-scale.yml'
+      - '.github/workflows/l1-state-v2-scale-action-custody-policy.yml'
+      - 'l1/scripts/verify-state-v2-scale-action-custody.mjs'
+      - 'docs/L1_STATE_V2_SCALE_EVIDENCE_CUSTODY.md'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/l1-state-v2-scale.yml'
+      - '.github/workflows/l1-state-v2-scale-action-custody-policy.yml'
+      - 'l1/scripts/verify-state-v2-scale-action-custody.mjs'
+      - 'docs/L1_STATE_V2_SCALE_EVIDENCE_CUSTODY.md'
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - name: Verify State-v2 scale evidence custody boundary
+        working-directory: l1
+        run: node scripts/verify-state-v2-scale-action-custody.mjs
