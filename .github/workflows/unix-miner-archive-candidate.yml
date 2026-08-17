@@ -31,7 +31,7 @@ jobs:
         working-directory: l1
     steps:
       - name: Checkout exact source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up canonical miner runtime
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
