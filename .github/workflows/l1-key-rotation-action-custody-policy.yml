@@ -1,0 +1,31 @@
+name: Standalone L1 Key Rotation Action Custody Policy CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/l1-key-rotation.yml'
+      - '.github/workflows/l1-key-rotation-action-custody-policy.yml'
+      - '.github/scripts/verify-l1-key-rotation-action-custody.mjs'
+      - 'docs/L1_KEY_ROTATION_ACTION_CUSTODY.md'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/l1-key-rotation.yml'
+      - '.github/workflows/l1-key-rotation-action-custody-policy.yml'
+      - '.github/scripts/verify-l1-key-rotation-action-custody.mjs'
+      - 'docs/L1_KEY_ROTATION_ACTION_CUSTODY.md'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify key-rotation action custody
+        run: node .github/scripts/verify-l1-key-rotation-action-custody.mjs
