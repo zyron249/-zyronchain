@@ -1,0 +1,32 @@
+name: Canonical Genesis Message Action Custody Policy CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/genesis-message-ci.yml'
+      - '.github/workflows/genesis-message-action-custody-policy.yml'
+      - '.github/scripts/verify-genesis-message-action-custody.mjs'
+      - 'docs/GENESIS_MESSAGE.md'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/genesis-message-ci.yml'
+      - '.github/workflows/genesis-message-action-custody-policy.yml'
+      - '.github/scripts/verify-genesis-message-action-custody.mjs'
+      - 'docs/GENESIS_MESSAGE.md'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify genesis-message action custody
+        run: node .github/scripts/verify-genesis-message-action-custody.mjs
