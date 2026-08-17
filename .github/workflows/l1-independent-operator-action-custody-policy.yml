@@ -1,0 +1,30 @@
+name: Standalone L1 Independent Operator Action Custody Policy CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/l1-independent-operator-challenge.yml'
+      - '.github/workflows/l1-independent-operator-action-custody-policy.yml'
+      - 'l1/scripts/verify-independent-operator-action-custody.mjs'
+      - 'docs/L1_INDEPENDENT_OPERATOR_ACTION_CUSTODY.md'
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Verify independent-operator action custody policy
+        run: node l1/scripts/verify-independent-operator-action-custody.mjs
