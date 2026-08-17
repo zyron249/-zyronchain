@@ -1,0 +1,32 @@
+name: Render Inline Clock Monitor Action Custody Policy CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/l1-render-inline-clock-preload.yml'
+      - '.github/workflows/l1-render-inline-clock-action-custody-policy.yml'
+      - 'l1/scripts/verify-render-inline-clock-action-custody.mjs'
+      - 'docs/RENDER_INLINE_CLOCK_EVIDENCE.md'
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Verify inline clock action custody
+        working-directory: l1
+        run: node scripts/verify-render-inline-clock-action-custody.mjs
