@@ -1,0 +1,29 @@
+name: Website Release Pin Action Custody Policy CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/website-release-pin-ci.yml'
+      - '.github/workflows/website-release-pin-action-custody.yml'
+      - 'scripts/verify-website-release-pin-action-custody.mjs'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/website-release-pin-ci.yml'
+      - '.github/workflows/website-release-pin-action-custody.yml'
+      - 'scripts/verify-website-release-pin-action-custody.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify release-pin action custody
+        run: node scripts/verify-website-release-pin-action-custody.mjs
