@@ -1,0 +1,28 @@
+name: Miner Manual Platform Alternatives CI
+
+on:
+  pull_request:
+    paths:
+      - 'website/mining.html'
+      - 'website/app.js'
+      - 'website/test-miner-platform-alternatives.mjs'
+      - '.github/workflows/miner-manual-platform-alternatives.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  manual-platforms-fail-closed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '24'
+      - name: Verify manual platform alternatives remain fail-closed
+        run: node website/test-miner-platform-alternatives.mjs
