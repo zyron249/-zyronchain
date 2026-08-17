@@ -1,0 +1,24 @@
+name: Standalone L1 Launch Authorization Action Custody Policy CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/l1-launch-authorization.yml'
+      - '.github/scripts/verify-l1-launch-authorization-action-custody.mjs'
+      - '.github/workflows/l1-launch-authorization-action-custody-policy.yml'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify launch authorization action custody
+        run: node .github/scripts/verify-l1-launch-authorization-action-custody.mjs
