@@ -1,0 +1,24 @@
+name: Miner Release Promotion Action Custody Policy CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/miner-release-promotion-gate.yml'
+      - '.github/workflows/miner-release-promotion-action-custody.yml'
+      - 'scripts/verify-miner-release-promotion-action-custody.mjs'
+      - 'docs/MINER_RELEASE_PROMOTION_CUSTODY.md'
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify promotion action custody
+        run: node scripts/verify-miner-release-promotion-action-custody.mjs
