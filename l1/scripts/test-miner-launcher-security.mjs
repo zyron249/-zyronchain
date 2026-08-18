@@ -18,6 +18,18 @@ assert.match(
   'miner launcher must read its network profile through the descriptor-bound package guard'
 );
 
+const securitySource = await readFile(new URL('./miner-launcher-security.mjs', import.meta.url), 'utf8');
+assert.match(
+  securitySource,
+  /requireSameBundledRegularFile\(packageRoot, relativePath, label, canonicalFile, 'after opening'\)/,
+  'bundled control-file reads must revalidate the package-owned path after descriptor open'
+);
+assert.match(
+  securitySource,
+  /requireSameBundledRegularFile\(packageRoot, relativePath, label, canonicalFile, 'during reading'\)/,
+  'bundled control-file reads must revalidate the package-owned path after the bounded descriptor read'
+);
+
 const root = await mkdtemp(join(tmpdir(), 'zyron-miner-custody-test-'));
 try {
   const safe = join(root, 'safe');
