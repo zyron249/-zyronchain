@@ -1,18 +1,19 @@
-name: Miner Manual Platform Alternatives CI
+name: Website CI Action Custody Policy CI
 
 on:
   pull_request:
     paths:
-      - 'website/mining.html'
-      - 'website/app.js'
-      - 'website/test-miner-platform-alternatives.mjs'
+      - '.github/workflows/website-ci.yml'
+      - '.github/workflows/miner-website-promotion-binding.yml'
       - '.github/workflows/miner-manual-platform-alternatives.yml'
+      - '.github/workflows/website-ci-action-custody-policy.yml'
+      - 'scripts/verify-website-ci-action-custody.mjs'
 
 permissions:
   contents: read
 
 jobs:
-  manual-platforms-fail-closed:
+  policy:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -24,5 +25,5 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '24'
-      - name: Verify manual platform alternatives remain fail-closed
-        run: node website/test-miner-platform-alternatives.mjs
+      - name: Verify website workflow action custody
+        run: node scripts/verify-website-ci-action-custody.mjs
