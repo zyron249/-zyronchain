@@ -18,12 +18,17 @@ for (const field of requiredBooleanFields) {
   if (typeof policy[field] !== 'boolean') throw new Error(`${field} must be boolean`);
 }
 if (policy.schemaVersion !== 1) throw new Error('unsupported miner release promotion schema');
-if (!policy.assets || typeof policy.assets !== 'object') throw new Error('assets object required');
-if (!policy.evidence || typeof policy.evidence !== 'object') throw new Error('evidence object required');
+if (!policy.assets || typeof policy.assets !== 'object' || Array.isArray(policy.assets)) throw new Error('assets object required');
+if (!policy.evidence || typeof policy.evidence !== 'object' || Array.isArray(policy.evidence)) throw new Error('evidence object required');
 
-const assetEntries = Object.entries(policy.assets);
+const requiredPlatforms = ['windows', 'macos', 'linux'];
+const assetKeys = Object.keys(policy.assets);
+if (assetKeys.length !== requiredPlatforms.length ||
+    [...assetKeys].sort().join(',') !== [...requiredPlatforms].sort().join(',')) {
+  throw new Error('assets must contain exactly windows, macos and linux');
+}
+const assetEntries = requiredPlatforms.map((platform) => [platform, policy.assets[platform]]);
 for (const [platform, asset] of assetEntries) {
-  if (!['windows', 'macos', 'linux'].includes(platform)) throw new Error(`unexpected platform ${platform}`);
   if (asset !== null && (typeof asset !== 'string' || !/^https:\/\/github\.com\/zyron249\/-zyronchain\/releases\/download\/[^/]+\/ZyronMiner-[A-Za-z0-9._-]+$/.test(asset))) {
     throw new Error(`untrusted ${platform} release asset`);
   }
