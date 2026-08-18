@@ -1,5 +1,8 @@
-import { lstat, mkdir, realpath } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, mkdir, open, realpath } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+
+export const MAX_BUNDLED_CONTROL_FILE_BYTES = 64 * 1024;
 
 async function lstatIfPresent(path) {
   try {
@@ -123,4 +126,58 @@ export async function safeBundledRegularFile(packageRoot, relativePath, label = 
     throw new Error(`${label} canonical path escaped the miner package`);
   }
   return canonicalFile;
+}
+
+/**
+ * Read a package-owned control file from the same descriptor that is validated.
+ * The path boundary is checked first, POSIX opens refuse symlink/special-file
+ * following, descriptor/path identity is rechecked after open, and reads are
+ * bounded so replacement or growth cannot cause an unbounded startup read.
+ */
+export async function readSafeBundledRegularFile(
+  packageRoot,
+  relativePath,
+  label = 'Bundled file',
+  maxBytes = MAX_BUNDLED_CONTROL_FILE_BYTES
+) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new Error(`${label} byte limit is invalid`);
+  }
+
+  const canonicalFile = await safeBundledRegularFile(packageRoot, relativePath, label);
+  const flags = process.platform === 'win32'
+    ? 'r'
+    : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+  const handle = await open(canonicalFile, flags);
+  try {
+    const descriptorMetadata = await handle.stat();
+    const pathMetadata = await lstat(canonicalFile);
+    if (pathMetadata.isSymbolicLink()) {
+      throw new Error(`${label} changed to a symbolic link while being validated`);
+    }
+    if (!descriptorMetadata.isFile() || !pathMetadata.isFile()) {
+      throw new Error(`${label} must be a regular file`);
+    }
+    if (process.platform !== 'win32' &&
+        (descriptorMetadata.dev !== pathMetadata.dev || descriptorMetadata.ino !== pathMetadata.ino)) {
+      throw new Error(`${label} changed while being validated`);
+    }
+    if (descriptorMetadata.size > maxBytes) {
+      throw new Error(`${label} exceeds ${maxBytes} byte limit`);
+    }
+
+    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    let total = 0;
+    while (total <= maxBytes) {
+      const { bytesRead } = await handle.read(buffer, total, buffer.length - total, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > maxBytes) {
+        throw new Error(`${label} exceeds ${maxBytes} byte limit`);
+      }
+    }
+    return buffer.subarray(0, total).toString('utf8');
+  } finally {
+    await handle.close();
+  }
 }

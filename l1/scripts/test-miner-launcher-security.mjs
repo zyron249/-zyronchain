@@ -1,9 +1,22 @@
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 
-import { ensureSafeCustodyDirectory, existingSafeSecret, safeBundledRegularFile } from './miner-launcher-security.mjs';
+import {
+  MAX_BUNDLED_CONTROL_FILE_BYTES,
+  ensureSafeCustodyDirectory,
+  existingSafeSecret,
+  readSafeBundledRegularFile,
+  safeBundledRegularFile
+} from './miner-launcher-security.mjs';
+
+const launcherSource = await readFile(new URL('./miner-launcher.mjs', import.meta.url), 'utf8');
+assert.match(
+  launcherSource,
+  /readSafeBundledRegularFile\(\s*root,\s*['"]miner-network-profile\.json['"],\s*['"]Bundled miner network profile['"]\s*\)/,
+  'miner launcher must read its network profile through the descriptor-bound package guard'
+);
 
 const root = await mkdtemp(join(tmpdir(), 'zyron-miner-custody-test-'));
 try {
@@ -20,6 +33,21 @@ try {
   const genesis = join(configDir, 'genesis.json');
   await writeFile(genesis, '{}');
   assert.equal(await safeBundledRegularFile(packageRoot, 'config/genesis.json', 'genesis'), await realpath(genesis));
+
+  const profileFile = join(packageRoot, 'miner-network-profile.json');
+  await writeFile(profileFile, '{}');
+  assert.equal(
+    await safeBundledRegularFile(packageRoot, 'miner-network-profile.json', 'profile'),
+    await realpath(profileFile)
+  );
+  assert.equal(await readSafeBundledRegularFile(packageRoot, 'miner-network-profile.json', 'profile'), '{}');
+  await writeFile(profileFile, 'x'.repeat(MAX_BUNDLED_CONTROL_FILE_BYTES + 1));
+  await assert.rejects(
+    () => readSafeBundledRegularFile(packageRoot, 'miner-network-profile.json', 'profile'),
+    /byte limit/i
+  );
+  await writeFile(profileFile, '{}');
+
   await assert.rejects(() => safeBundledRegularFile(packageRoot, '../outside.json', 'genesis'), /traverse|escaped/i);
   await assert.rejects(() => safeBundledRegularFile(packageRoot, packageRoot, 'genesis'), /relative|escaped/i);
 
@@ -42,6 +70,13 @@ try {
     const linkedGenesis = join(configDir, 'linked-genesis.json');
     await symlink(outsideGenesis, linkedGenesis, 'file');
     await assert.rejects(() => safeBundledRegularFile(packageRoot, 'config/linked-genesis.json', 'genesis'), /symlink|junction/i);
+
+    const outsideProfile = join(root, 'outside-profile.json');
+    await writeFile(outsideProfile, '{}');
+    const linkedProfile = join(packageRoot, 'linked-profile.json');
+    await symlink(outsideProfile, linkedProfile, 'file');
+    await assert.rejects(() => safeBundledRegularFile(packageRoot, 'linked-profile.json', 'profile'), /symlink|junction/i);
+    await assert.rejects(() => readSafeBundledRegularFile(packageRoot, 'linked-profile.json', 'profile'), /symlink|junction/i);
 
     const outsideDir = join(root, 'outside-dir');
     await mkdir(outsideDir);
