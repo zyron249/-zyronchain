@@ -1,0 +1,117 @@
+name: Temporary peer preflight integration-test fix
+
+on:
+  push:
+    branches:
+      - agent/peer-preflight-nonce-reservation-v1
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+          ref: agent/peer-preflight-nonce-reservation-v1
+
+      - name: Align integration replay test with preflight reservation semantics
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('l1/test/l1.test.ts')
+          text = path.read_text(encoding='utf-8')
+          old = '''    const signedHeaders = signPeerRequest(identity, {
+              chainId: service.status().chainId,
+              genesisHash: service.status().genesisHash,
+              method: "POST",
+              path: "/block",
+              bodySha256: sha256Hex(Buffer.from(canonicalJson({}), "utf8")),
+              timestampMs: now,
+              nonce: "44".repeat(16)
+            });
+            assert.equal(
+              signedHeaders["x-zyron-body-sha256"],
+              sha256Hex(Buffer.from(canonicalJson({}), "utf8"))
+            );
+            const mismatchedBody = await fetch(`${base}/block`, {
+              method: "POST",
+              headers: { "content-type": "application/json", ...signedHeaders },
+              body: canonicalJson({ unexpected: true })
+            });
+            assert.equal(mismatchedBody.status, 401);
+
+            const signed = await fetch(`${base}/block`, {
+              method: "POST",
+              headers: { "content-type": "application/json", ...signedHeaders },
+              body: canonicalJson({})
+            });
+            assert.equal(signed.status, 400);
+            assert.notEqual((await signed.json() as { error?: string }).error, "Peer signature authentication required");
+
+            const replay = await fetch(`${base}/block`, {
+              method: "POST",
+              headers: { "content-type": "application/json", ...signedHeaders },
+              body: canonicalJson({})
+            });
+            assert.equal(replay.status, 401);'''
+          new = '''    const mismatchedHeaders = signPeerRequest(identity, {
+              chainId: service.status().chainId,
+              genesisHash: service.status().genesisHash,
+              method: "POST",
+              path: "/block",
+              bodySha256: sha256Hex(Buffer.from(canonicalJson({}), "utf8")),
+              timestampMs: now,
+              nonce: "44".repeat(16)
+            });
+            assert.equal(
+              mismatchedHeaders["x-zyron-body-sha256"],
+              sha256Hex(Buffer.from(canonicalJson({}), "utf8"))
+            );
+            const mismatchedBody = await fetch(`${base}/block`, {
+              method: "POST",
+              headers: { "content-type": "application/json", ...mismatchedHeaders },
+              body: canonicalJson({ unexpected: true })
+            });
+            assert.equal(mismatchedBody.status, 401);
+
+            const signedHeaders = signPeerRequest(identity, {
+              chainId: service.status().chainId,
+              genesisHash: service.status().genesisHash,
+              method: "POST",
+              path: "/block",
+              bodySha256: sha256Hex(Buffer.from(canonicalJson({}), "utf8")),
+              timestampMs: now,
+              nonce: "45".repeat(16)
+            });
+            const signed = await fetch(`${base}/block`, {
+              method: "POST",
+              headers: { "content-type": "application/json", ...signedHeaders },
+              body: canonicalJson({})
+            });
+            assert.equal(signed.status, 400);
+            assert.notEqual((await signed.json() as { error?: string }).error, "Peer signature authentication required");
+
+            const replay = await fetch(`${base}/block`, {
+              method: "POST",
+              headers: { "content-type": "application/json", ...signedHeaders },
+              body: canonicalJson({})
+            });
+            assert.equal(replay.status, 401);'''
+          if old not in text:
+              raise SystemExit('expected integration-test block not found exactly')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+      - name: Commit test fix to agent branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add l1/test/l1.test.ts
+          git diff --cached --check
+          git commit -m "Align RPC replay integration test with preflight reservations"
+          git push origin HEAD:agent/peer-preflight-nonce-reservation-v1
