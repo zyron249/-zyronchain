@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, open, type FileHandle } from "node:fs/promises";
+import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { resolve } from "node:path";
 
 export const MAX_PRIVATE_FILE_BYTES = 64 * 1024;
@@ -7,6 +7,7 @@ export const MAX_PRIVATE_FILE_BYTES = 64 * 1024;
 interface OpenedPrivateFile {
   handle: FileHandle;
   resolved: string;
+  canonical: string;
 }
 
 export async function assertPrivateRegularFile(path: string, label: string): Promise<void> {
@@ -19,10 +20,12 @@ export async function assertPrivateRegularFile(path: string, label: string): Pro
  * The path itself must not be a symlink, POSIX group/other permission bits must
  * be clear, and on POSIX the descriptor inode/device must still match the path
  * after open so a path replacement between validation and read fails closed.
- * POSIX opens also use no-follow/non-blocking flags so substitution with a
- * symlink, FIFO or other special file cannot redirect or block secret loading.
- * Reads are capped so oversized or concurrently growing local secret files cannot
- * trigger unbounded startup memory allocation.
+ * The canonical path is also re-resolved after open and after the bounded read;
+ * this catches parent junction/reparse substitution on Windows before secret
+ * bytes are returned to a parser or signer. POSIX opens additionally use
+ * no-follow/non-blocking flags so symlink/FIFO substitution cannot redirect or
+ * block secret loading. Reads are capped so oversized or concurrently growing
+ * local secret files cannot trigger unbounded startup memory allocation.
  */
 export async function readPrivateRegularFile(path: string, label: string): Promise<string> {
   const opened = await openValidatedPrivateFile(path, label);
@@ -41,6 +44,7 @@ export async function readPrivateRegularFile(path: string, label: string): Promi
         throw new Error(`${label} exceeds ${MAX_PRIVATE_FILE_BYTES} byte limit`);
       }
     }
+    await requireSamePrivateRegularFile(opened.resolved, label, opened.canonical, opened.handle, "during reading");
     return buffer.subarray(0, total).toString("utf8");
   } finally {
     await opened.handle.close();
@@ -52,30 +56,45 @@ async function openValidatedPrivateFile(path: string, label: string): Promise<Op
   const initialPathMetadata = await lstat(resolved);
   if (initialPathMetadata.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link`);
   if (!initialPathMetadata.isFile()) throw new Error(`${label} must be a regular file`);
+  const canonical = await realpath(resolved);
 
   const flags = process.platform === "win32"
     ? "r"
     : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
   const handle = await open(resolved, flags);
   try {
-    const descriptorMetadata = await handle.stat();
-    const pathMetadata = await lstat(resolved);
-    if (pathMetadata.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link`);
-    if (!descriptorMetadata.isFile() || !pathMetadata.isFile()) {
-      throw new Error(`${label} must be a regular file`);
-    }
-    if (process.platform !== "win32") {
-      if ((descriptorMetadata.mode & 0o077) !== 0) {
-        throw new Error(`${label} must not be readable, writable, or executable by group/other users (0600 recommended)`);
-      }
-      if (descriptorMetadata.dev !== pathMetadata.dev || descriptorMetadata.ino !== pathMetadata.ino) {
-        throw new Error(`${label} changed while being validated`);
-      }
-    }
-    return { handle, resolved };
+    await requireSamePrivateRegularFile(resolved, label, canonical, handle, "after opening");
+    return { handle, resolved, canonical };
   } catch (error) {
     await handle.close();
     throw error;
+  }
+}
+
+async function requireSamePrivateRegularFile(
+  resolved: string,
+  label: string,
+  expectedCanonical: string,
+  handle: FileHandle,
+  phase: string
+): Promise<void> {
+  const descriptorMetadata = await handle.stat();
+  const pathMetadata = await lstat(resolved);
+  if (pathMetadata.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link`);
+  if (!descriptorMetadata.isFile() || !pathMetadata.isFile()) {
+    throw new Error(`${label} must be a regular file`);
+  }
+  const observedCanonical = await realpath(resolved);
+  if (observedCanonical !== expectedCanonical) {
+    throw new Error(`${label} changed ${phase}`);
+  }
+  if (process.platform !== "win32") {
+    if ((descriptorMetadata.mode & 0o077) !== 0) {
+      throw new Error(`${label} must not be readable, writable, or executable by group/other users (0600 recommended)`);
+    }
+    if (descriptorMetadata.dev !== pathMetadata.dev || descriptorMetadata.ino !== pathMetadata.ino) {
+      throw new Error(`${label} changed while being validated`);
+    }
   }
 }
 
