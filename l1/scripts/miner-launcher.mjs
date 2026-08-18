@@ -10,7 +10,7 @@ import { ensureSafeCustodyDirectory, existingSafeSecret, safeBundledRegularFile 
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
-const profilePath = join(root, 'miner-network-profile.json');
+const profilePath = await safeBundledRegularFile(root, 'miner-network-profile.json', 'Bundled miner network profile');
 const profile = JSON.parse(await readFile(profilePath, 'utf8'));
 
 const exactKeys = ['schemaVersion', 'publicMiningActivated', 'chainId', 'genesisFile', 'rpcUrl'];
