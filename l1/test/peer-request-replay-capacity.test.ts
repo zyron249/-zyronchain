@@ -76,7 +76,7 @@ test("peer request replay cache fails closed at capacity without evicting unexpi
   }
 });
 
-test("peer request replay cache amortizes expiry sweeps until the earliest nonce expires", async () => {
+test("peer request replay cache amortizes expiry sweeps across consumed and reserved nonces", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-peer-replay-sweep-"));
   try {
     const identity = await loadOrCreateNodeIdentity(directory);
@@ -95,29 +95,33 @@ test("peer request replay cache amortizes expiry sweeps until the earliest nonce
       authenticator.verify(signed("11", now), { ...request, bodySha256 }, now),
       identity.nodeId
     );
+    const reserved = signed("22", now);
+    assert.doesNotThrow(() => authenticator.preflight(reserved, request, now));
     assert.deepEqual(authenticator.replayCacheMetrics(), {
-      entries: 1,
+      entries: 2,
       sweepCount: 0,
       nextSweepAtMs: now + 60_001
     });
 
     for (let offset = 1; offset <= 20; offset += 1) {
-      const timestampMs = now + offset;
-      assert.doesNotThrow(() => authenticator.preflight(signed("22", timestampMs), request, timestampMs));
+      assert.throws(
+        () => authenticator.preflight(reserved, request, now + offset),
+        /Replayed peer request/
+      );
     }
     assert.equal(authenticator.replayCacheMetrics().sweepCount, 0);
-    assert.equal(authenticator.replayCacheMetrics().entries, 1);
+    assert.equal(authenticator.replayCacheMetrics().entries, 2);
 
     const expiryBoundary = now + 60_001;
     assert.doesNotThrow(() => authenticator.preflight(signed("33", expiryBoundary), request, expiryBoundary));
     assert.deepEqual(authenticator.replayCacheMetrics(), {
-      entries: 0,
+      entries: 1,
       sweepCount: 1,
-      nextSweepAtMs: null
+      nextSweepAtMs: expiryBoundary + 60_001
     });
 
     assert.equal(
-      authenticator.verify(signed("44", expiryBoundary), { ...request, bodySha256 }, expiryBoundary),
+      authenticator.verify(signed("33", expiryBoundary), { ...request, bodySha256 }, expiryBoundary),
       identity.nodeId
     );
     assert.equal(authenticator.replayCacheMetrics().entries, 1);
