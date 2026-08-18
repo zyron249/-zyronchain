@@ -1,17 +1,20 @@
 #!/usr/bin/env node
-import { chmod, readFile, writeFile } from 'node:fs/promises';
+import { chmod, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 
-import { ensureSafeCustodyDirectory, existingSafeSecret, safeBundledRegularFile } from './miner-launcher-security.mjs';
+import { ensureSafeCustodyDirectory, existingSafeSecret, readSafeBundledRegularFile, safeBundledRegularFile } from './miner-launcher-security.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
-const profilePath = await safeBundledRegularFile(root, 'miner-network-profile.json', 'Bundled miner network profile');
-const profile = JSON.parse(await readFile(profilePath, 'utf8'));
+const profile = JSON.parse(await readSafeBundledRegularFile(
+  root,
+  'miner-network-profile.json',
+  'Bundled miner network profile'
+));
 
 const exactKeys = ['schemaVersion', 'publicMiningActivated', 'chainId', 'genesisFile', 'rpcUrl'];
 if (!profile || typeof profile !== 'object' || Array.isArray(profile) ||
