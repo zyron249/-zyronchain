@@ -128,11 +128,21 @@ export async function safeBundledRegularFile(packageRoot, relativePath, label = 
   return canonicalFile;
 }
 
+async function requireSameBundledRegularFile(packageRoot, relativePath, label, expectedCanonicalFile, phase) {
+  const observedCanonicalFile = await safeBundledRegularFile(packageRoot, relativePath, label);
+  if (observedCanonicalFile !== expectedCanonicalFile) {
+    throw new Error(`${label} changed ${phase}`);
+  }
+}
+
 /**
  * Read a package-owned control file from the same descriptor that is validated.
  * The path boundary is checked first, POSIX opens refuse symlink/special-file
  * following, descriptor/path identity is rechecked after open, and reads are
  * bounded so replacement or growth cannot cause an unbounded startup read.
+ * Windows additionally repeats the complete package-component/canonical-path
+ * validation after open and after the bounded descriptor read so a raced
+ * junction/reparse substitution is detected before control bytes are returned.
  */
 export async function readSafeBundledRegularFile(
   packageRoot,
@@ -150,6 +160,8 @@ export async function readSafeBundledRegularFile(
     : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
   const handle = await open(canonicalFile, flags);
   try {
+    await requireSameBundledRegularFile(packageRoot, relativePath, label, canonicalFile, 'after opening');
+
     const descriptorMetadata = await handle.stat();
     const pathMetadata = await lstat(canonicalFile);
     if (pathMetadata.isSymbolicLink()) {
@@ -176,6 +188,8 @@ export async function readSafeBundledRegularFile(
         throw new Error(`${label} exceeds ${maxBytes} byte limit`);
       }
     }
+
+    await requireSameBundledRegularFile(packageRoot, relativePath, label, canonicalFile, 'during reading');
     return buffer.subarray(0, total).toString('utf8');
   } finally {
     await handle.close();
