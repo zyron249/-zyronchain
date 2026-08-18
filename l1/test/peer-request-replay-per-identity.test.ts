@@ -19,7 +19,11 @@ test("one authenticated peer cannot exhaust replay capacity reserved for other p
   try {
     const dirs = [join(directory, "a"), join(directory, "b"), join(directory, "c")];
     await Promise.all(dirs.map((dir) => mkdir(dir, { recursive: true })));
-    const [a, b, c] = await Promise.all(dirs.map((dir) => loadOrCreateNodeIdentity(dir)));
+    const identities = await Promise.all(dirs.map((dir) => loadOrCreateNodeIdentity(dir)));
+    assert.equal(identities.length, 3);
+    const a = identities[0]!;
+    const b = identities[1]!;
+    const c = identities[2]!;
     const now = 1_800_000_000_000;
     const bodySha256 = sha256Hex(Buffer.from(canonicalJson({ block: 3 }), "utf8"));
     const authenticator = new PeerRequestAuthenticator(
