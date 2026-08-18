@@ -16,6 +16,7 @@ const PEER_RECORD_DOMAIN = "ZyronChain/peer-record/v1";
 const PEER_REQUEST_DOMAIN = "ZyronChain/peer-request/v1";
 const PEER_REQUEST_MAX_SKEW_MS = 60_000;
 const MAX_PEER_REQUEST_NONCES = 10_000;
+const MAX_PEER_REQUEST_NONCES_PER_IDENTITY = 2_500;
 
 export interface NodeIdentity {
   version: 1;
@@ -196,18 +197,29 @@ export function signPeerRequest(
 export class PeerRequestAuthenticator {
   private readonly trustedPublicKeys: Set<string>;
   private readonly seenNonces = new Map<string, number>();
+  private readonly seenNonceCountsByNodeId = new Map<string, number>();
+  private readonly maxSeenNoncesPerIdentity: number;
   private nextReplaySweepAtMs = Number.POSITIVE_INFINITY;
   private replaySweepCount = 0;
 
   constructor(
     trustedPublicKeys: readonly string[],
     private readonly expected: { chainId: string; genesisHash: string },
-    private readonly maxSeenNonces = MAX_PEER_REQUEST_NONCES
+    private readonly maxSeenNonces = MAX_PEER_REQUEST_NONCES,
+    maxSeenNoncesPerIdentity?: number
   ) {
     this.trustedPublicKeys = new Set(trustedPublicKeys);
     if (this.trustedPublicKeys.size === 0) throw new Error("At least one trusted peer identity is required");
     if (!Number.isSafeInteger(this.maxSeenNonces) || this.maxSeenNonces < 1 || this.maxSeenNonces > MAX_PEER_REQUEST_NONCES) {
       throw new Error("Invalid peer request replay cache capacity");
+    }
+    this.maxSeenNoncesPerIdentity = maxSeenNoncesPerIdentity
+      ?? Math.min(MAX_PEER_REQUEST_NONCES_PER_IDENTITY, this.maxSeenNonces);
+    if (!Number.isSafeInteger(this.maxSeenNoncesPerIdentity)
+        || this.maxSeenNoncesPerIdentity < 1
+        || this.maxSeenNoncesPerIdentity > this.maxSeenNonces
+        || this.maxSeenNoncesPerIdentity > MAX_PEER_REQUEST_NONCES_PER_IDENTITY) {
+      throw new Error("Invalid peer request per-identity replay cache capacity");
     }
     for (const publicKey of this.trustedPublicKeys) {
       assertHex(publicKey, 64, "trusted peer public key");
@@ -236,7 +248,7 @@ export class PeerRequestAuthenticator {
     if (!verifyCanonical(payload, fields.signature, fields.publicKey)) {
       throw new Error("Invalid peer request signature");
     }
-    this.assertReplayCapacity();
+    this.assertReplayCapacity(fields.nodeId);
   }
 
   verify(
@@ -261,8 +273,9 @@ export class PeerRequestAuthenticator {
     if (!verifyCanonical(payload, fields.signature, fields.publicKey)) {
       throw new Error("Invalid peer request signature");
     }
-    this.assertReplayCapacity();
+    this.assertReplayCapacity(fields.nodeId);
     this.seenNonces.set(replayKey, fields.timestampMs);
+    this.seenNonceCountsByNodeId.set(fields.nodeId, (this.seenNonceCountsByNodeId.get(fields.nodeId) ?? 0) + 1);
     this.nextReplaySweepAtMs = Math.min(this.nextReplaySweepAtMs, replayExpiryAtMs(fields.timestampMs));
     return fields.nodeId;
   }
@@ -275,7 +288,10 @@ export class PeerRequestAuthenticator {
     };
   }
 
-  private assertReplayCapacity(): void {
+  private assertReplayCapacity(nodeId: string): void {
+    if ((this.seenNonceCountsByNodeId.get(nodeId) ?? 0) >= this.maxSeenNoncesPerIdentity) {
+      throw new Error("Peer request replay cache per-identity capacity exceeded");
+    }
     if (this.seenNonces.size >= this.maxSeenNonces) {
       throw new Error("Peer request replay cache capacity exceeded");
     }
@@ -319,8 +335,16 @@ export class PeerRequestAuthenticator {
     let nextSweepAtMs = Number.POSITIVE_INFINITY;
     for (const [key, timestampMs] of this.seenNonces) {
       const expiresAtMs = replayExpiryAtMs(timestampMs);
-      if (nowMs >= expiresAtMs) this.seenNonces.delete(key);
-      else nextSweepAtMs = Math.min(nextSweepAtMs, expiresAtMs);
+      if (nowMs >= expiresAtMs) {
+        this.seenNonces.delete(key);
+        const separator = key.indexOf(":");
+        const nodeId = separator === -1 ? key : key.slice(0, separator);
+        const remaining = (this.seenNonceCountsByNodeId.get(nodeId) ?? 1) - 1;
+        if (remaining <= 0) this.seenNonceCountsByNodeId.delete(nodeId);
+        else this.seenNonceCountsByNodeId.set(nodeId, remaining);
+      } else {
+        nextSweepAtMs = Math.min(nextSweepAtMs, expiresAtMs);
+      }
     }
     this.nextReplaySweepAtMs = nextSweepAtMs;
   }
