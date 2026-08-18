@@ -34,6 +34,21 @@ for (const [platform, asset] of assetEntries) {
   }
 }
 
+const requiredEvidence = [
+  'windowsSigning',
+  'macosSigningOrNotarization',
+  'provenance',
+  'checksums',
+  'immutableRelease',
+  'publicMiningActivation'
+];
+const evidenceKeys = Object.keys(policy.evidence);
+if (evidenceKeys.length !== requiredEvidence.length ||
+    [...evidenceKeys].sort().join(',') !== [...requiredEvidence].sort().join(',')) {
+  throw new Error('evidence must contain exactly the canonical promotion evidence keys');
+}
+const evidenceEntries = requiredEvidence.map((name) => [name, policy.evidence[name]]);
+
 const anyAsset = assetEntries.some(([, asset]) => asset !== null);
 const allAssets = assetEntries.every(([, asset]) => asset !== null);
 const activationRequested = policy.publicMiningActivated || policy.releaseEligible || policy.publicationAllowed || anyAsset;
@@ -42,7 +57,7 @@ if (!activationRequested) {
   if (policy.releaseVersion !== null || policy.sourceCommit !== null) {
     throw new Error('inactive policy must not pin a publishable release identity');
   }
-  for (const [name, value] of Object.entries(policy.evidence)) {
+  for (const [name, value] of evidenceEntries) {
     if (value !== null) throw new Error(`inactive policy must not carry ${name} evidence`);
   }
   console.log('miner release promotion remains fail-closed');
@@ -65,7 +80,7 @@ for (const field of ['releaseEligible','platformSigningVerified','provenanceVeri
 const digestFragment = /#sha256=([0-9a-f]{64})$/;
 const exactBlobPrefix = `https://github.com/zyron249/-zyronchain/blob/${policy.sourceCommit}/`;
 const exactReleaseTag = `https://github.com/zyron249/-zyronchain/releases/tag/${policy.releaseVersion}`;
-for (const [name, value] of Object.entries(policy.evidence)) {
+for (const [name, value] of evidenceEntries) {
   if (typeof value !== 'string') throw new Error(`promotion requires reviewable ${name} evidence`);
   const digestMatch = value.match(digestFragment);
   if (!digestMatch) throw new Error(`${name} evidence must include exact sha256 digest binding`);
