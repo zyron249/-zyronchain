@@ -29,9 +29,10 @@ export class PeerDirectory {
       MAX_DISCOVERY_RESPONSE_RECORDS,
       "peer discovery response"
     );
+    const maxPerSource = Math.min(MAX_DISCOVERY_RECORDS_PER_SOURCE, this.maxResponseRecords, this.maxRecords);
     this.maxRecordsPerSource = boundedLimit(
-      limits.maxRecordsPerSource ?? Math.min(MAX_DISCOVERY_RECORDS_PER_SOURCE, this.maxRecords),
-      Math.min(MAX_DISCOVERY_RECORDS_PER_SOURCE, this.maxRecords),
+      limits.maxRecordsPerSource ?? maxPerSource,
+      maxPerSource,
       "peer discovery source"
     );
   }
