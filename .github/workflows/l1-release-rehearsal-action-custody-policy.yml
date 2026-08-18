@@ -1,0 +1,32 @@
+name: Standalone L1 Release Rehearsal Action Custody Policy CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/l1-release-rehearsal.yml'
+      - '.github/scripts/verify-l1-release-rehearsal-action-custody.mjs'
+      - '.github/workflows/l1-release-rehearsal-action-custody-policy.yml'
+      - 'docs/L1_RELEASE_REHEARSAL_ACTION_CUSTODY.md'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/l1-release-rehearsal.yml'
+      - '.github/scripts/verify-l1-release-rehearsal-action-custody.mjs'
+      - '.github/workflows/l1-release-rehearsal-action-custody-policy.yml'
+      - 'docs/L1_RELEASE_REHEARSAL_ACTION_CUSTODY.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify release rehearsal action custody
+        run: node .github/scripts/verify-l1-release-rehearsal-action-custody.mjs
