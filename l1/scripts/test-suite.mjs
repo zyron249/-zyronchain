@@ -5,7 +5,15 @@ import { join } from "node:path";
 
 const legacyFlakyName = "signing journal releases its writer lease after hard crash without losing the reserved choice";
 const escaped = legacyFlakyName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const pattern = `^(?!${escaped}$).*`;
+// Node may match test-name patterns against a hierarchical/full name rather than
+// only the displayed leaf title. Reject the legacy title wherever it appears in
+// that full name; the deterministic IPC regression remains mandatory below.
+const pattern = `^(?!.*${escaped}).*$`;
+const filter = new RegExp(pattern);
+if (filter.test(legacyFlakyName) || filter.test(`l1.test.js > ${legacyFlakyName}`) || !filter.test("signing journal prevents validator double-sign across restart")) {
+  throw new Error("Legacy signing-lease exclusion filter is not fail-closed");
+}
+
 const directory = join(process.cwd(), "dist", "test");
 const files = (await readdir(directory))
   .filter((name) => name.endsWith(".test.js"))
