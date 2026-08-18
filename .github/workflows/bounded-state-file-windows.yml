@@ -1,0 +1,45 @@
+name: Bounded State File Windows CI
+
+on:
+  pull_request:
+    paths:
+      - 'l1/src/bounded-file.ts'
+      - 'l1/test/bounded-file.test.ts'
+      - 'docs/BOUNDED_STATE_FILE_SECURITY.md'
+      - '.github/workflows/bounded-state-file-windows.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-bounded-file:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.2
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+
+      - name: Install locked dependencies
+        working-directory: l1
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: l1
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: l1
+        run: npm run build
+
+      - name: Run bounded state-file regressions
+        working-directory: l1
+        run: node --test dist/test/bounded-file.test.js
