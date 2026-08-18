@@ -2212,20 +2212,29 @@ test("RPC trusted peer identities require signed consensus writes and reject rep
     });
     assert.equal(mismatchedBody.status, 401);
 
-    const signed = await fetch(`${base}/block`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...signedHeaders },
-      body: canonicalJson({})
-    });
-    assert.equal(signed.status, 400);
-    assert.notEqual((await signed.json() as { error?: string }).error, "Peer signature authentication required");
+    const routeHeaders = signPeerRequest(identity, {
+    chainId: service.status().chainId,
+    genesisHash: service.status().genesisHash,
+    method: "POST",
+    path: "/block",
+    bodySha256: sha256Hex(Buffer.from(canonicalJson({}), "utf8")),
+    timestampMs: now,
+    nonce: "45".repeat(16)
+  });
+  const signed = await fetch(`${base}/block`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...routeHeaders },
+    body: canonicalJson({})
+  });
+  assert.equal(signed.status, 400);
+  assert.notEqual((await signed.json() as { error?: string }).error, "Peer signature authentication required");
 
-    const replay = await fetch(`${base}/block`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...signedHeaders },
-      body: canonicalJson({})
-    });
-    assert.equal(replay.status, 401);
+  const replay = await fetch(`${base}/block`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...routeHeaders },
+    body: canonicalJson({})
+  });
+  assert.equal(replay.status, 401);
   } finally {
     await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
     await rm(directory, { recursive: true, force: true });
