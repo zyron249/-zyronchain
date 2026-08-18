@@ -63,6 +63,12 @@ interface PeerRecordPayload extends Omit<SignedPeerRecord, "signature"> {
   domain: typeof PEER_RECORD_DOMAIN;
 }
 
+interface PeerRequestReplayEntry {
+  timestampMs: number;
+  state: "reserved" | "consumed";
+  requestDigest: string;
+}
+
 export async function loadOrCreateNodeIdentity(dataDir: string): Promise<NodeIdentity> {
   await ensureDurableDirectory(dataDir, 0o700);
   const path = join(dataDir, IDENTITY_FILE);
@@ -196,7 +202,7 @@ export function signPeerRequest(
 
 export class PeerRequestAuthenticator {
   private readonly trustedPublicKeys: Set<string>;
-  private readonly seenNonces = new Map<string, number>();
+  private readonly seenNonces = new Map<string, PeerRequestReplayEntry>();
   private readonly seenNonceCountsByNodeId = new Map<string, number>();
   private readonly maxSeenNoncesPerIdentity: number;
   private nextReplaySweepAtMs = Number.POSITIVE_INFINITY;
@@ -234,7 +240,8 @@ export class PeerRequestAuthenticator {
   ): void {
     const fields = this.validateHeaders(headers, nowMs);
     this.sweepIfDue(nowMs);
-    if (this.seenNonces.has(`${fields.nodeId}:${fields.nonce}`)) {
+    const replayKey = `${fields.nodeId}:${fields.nonce}`;
+    if (this.seenNonces.has(replayKey)) {
       throw new Error("Replayed peer request");
     }
     const payload = peerRequestPayload(fields.nodeId, fields.publicKey, {
@@ -249,6 +256,13 @@ export class PeerRequestAuthenticator {
       throw new Error("Invalid peer request signature");
     }
     this.assertReplayCapacity(fields.nodeId);
+    this.seenNonces.set(replayKey, {
+      timestampMs: fields.timestampMs,
+      state: "reserved",
+      requestDigest: peerRequestDigest(payload)
+    });
+    this.seenNonceCountsByNodeId.set(fields.nodeId, (this.seenNonceCountsByNodeId.get(fields.nodeId) ?? 0) + 1);
+    this.nextReplaySweepAtMs = Math.min(this.nextReplaySweepAtMs, replayExpiryAtMs(fields.timestampMs));
   }
 
   verify(
@@ -262,7 +276,6 @@ export class PeerRequestAuthenticator {
 
     this.sweepIfDue(nowMs);
     const replayKey = `${fields.nodeId}:${fields.nonce}`;
-    if (this.seenNonces.has(replayKey)) throw new Error("Replayed peer request");
     const payload = peerRequestPayload(fields.nodeId, fields.publicKey, {
       ...input,
       chainId: this.expected.chainId,
@@ -273,8 +286,23 @@ export class PeerRequestAuthenticator {
     if (!verifyCanonical(payload, fields.signature, fields.publicKey)) {
       throw new Error("Invalid peer request signature");
     }
+
+    const existing = this.seenNonces.get(replayKey);
+    if (existing) {
+      if (existing.state !== "reserved") throw new Error("Replayed peer request");
+      if (existing.requestDigest !== peerRequestDigest(payload) || existing.timestampMs !== fields.timestampMs) {
+        throw new Error("Peer request nonce reservation mismatch");
+      }
+      existing.state = "consumed";
+      return fields.nodeId;
+    }
+
     this.assertReplayCapacity(fields.nodeId);
-    this.seenNonces.set(replayKey, fields.timestampMs);
+    this.seenNonces.set(replayKey, {
+      timestampMs: fields.timestampMs,
+      state: "consumed",
+      requestDigest: peerRequestDigest(payload)
+    });
     this.seenNonceCountsByNodeId.set(fields.nodeId, (this.seenNonceCountsByNodeId.get(fields.nodeId) ?? 0) + 1);
     this.nextReplaySweepAtMs = Math.min(this.nextReplaySweepAtMs, replayExpiryAtMs(fields.timestampMs));
     return fields.nodeId;
@@ -333,8 +361,8 @@ export class PeerRequestAuthenticator {
     if (nowMs < this.nextReplaySweepAtMs) return;
     this.replaySweepCount += 1;
     let nextSweepAtMs = Number.POSITIVE_INFINITY;
-    for (const [key, timestampMs] of this.seenNonces) {
-      const expiresAtMs = replayExpiryAtMs(timestampMs);
+    for (const [key, entry] of this.seenNonces) {
+      const expiresAtMs = replayExpiryAtMs(entry.timestampMs);
       if (nowMs >= expiresAtMs) {
         this.seenNonces.delete(key);
         const separator = key.indexOf(":");
@@ -355,6 +383,10 @@ function replayExpiryAtMs(timestampMs: number): number {
   return timestampMs > Number.MAX_SAFE_INTEGER - delta
     ? Number.POSITIVE_INFINITY
     : timestampMs + delta;
+}
+
+function peerRequestDigest(payload: PeerRequestPayload): string {
+  return sha256Hex(Buffer.from(canonicalJson(payload), "utf8"));
 }
 
 function peerRequestPayload(
