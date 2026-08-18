@@ -1,5 +1,5 @@
 import { lstat, mkdir, realpath } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 async function lstatIfPresent(path) {
   try {
@@ -8,6 +8,11 @@ async function lstatIfPresent(path) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null;
     throw error;
   }
+}
+
+function escapesRoot(root, candidate) {
+  const rel = relative(root, candidate);
+  return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
 }
 
 /**
@@ -69,4 +74,53 @@ export async function existingSafeSecret(path, label) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return false;
     throw error;
   }
+}
+
+/**
+ * Resolve a package-owned regular file without following app-owned symlink or
+ * junction boundaries. Both the requested and canonicalized paths must remain
+ * beneath the canonical package root on every supported platform.
+ */
+export async function safeBundledRegularFile(packageRoot, relativePath, label = 'Bundled file') {
+  if (typeof relativePath !== 'string' || !relativePath || relativePath.includes('\0')) {
+    throw new Error(`${label} path is invalid`);
+  }
+  if (isAbsolute(relativePath) || /^[A-Za-z]:/.test(relativePath) || relativePath.startsWith('\\\\')) {
+    throw new Error(`${label} path must be relative to the miner package`);
+  }
+  if (relativePath.split(/[\\/]+/).includes('..')) {
+    throw new Error(`${label} path must not traverse outside the miner package`);
+  }
+
+  const requestedRoot = resolve(packageRoot);
+  const rootInfo = await lstat(requestedRoot);
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+    throw new Error('Miner package root must be a real directory');
+  }
+  const canonicalRoot = await realpath(requestedRoot);
+  const requestedFile = resolve(requestedRoot, relativePath);
+  if (requestedFile === requestedRoot || escapesRoot(requestedRoot, requestedFile)) {
+    throw new Error(`${label} escaped the miner package`);
+  }
+
+  const rel = relative(requestedRoot, requestedFile);
+  const components = rel.split(sep).filter(Boolean);
+  let cursor = requestedRoot;
+  for (let index = 0; index < components.length; index += 1) {
+    cursor = join(cursor, components[index]);
+    const info = await lstat(cursor);
+    const final = index === components.length - 1;
+    if (info.isSymbolicLink()) {
+      throw new Error(`${label} path must not traverse symlinks or junctions`);
+    }
+    if (final ? !info.isFile() : !info.isDirectory()) {
+      throw new Error(final ? `${label} must be a regular file` : `${label} parent must be a real directory`);
+    }
+  }
+
+  const canonicalFile = await realpath(requestedFile);
+  if (canonicalFile === canonicalRoot || escapesRoot(canonicalRoot, canonicalFile)) {
+    throw new Error(`${label} canonical path escaped the miner package`);
+  }
+  return canonicalFile;
 }

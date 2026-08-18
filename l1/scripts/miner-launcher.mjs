@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-import { chmod, readFile, stat, writeFile } from 'node:fs/promises';
+import { chmod, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 
-import { ensureSafeCustodyDirectory, existingSafeSecret } from './miner-launcher-security.mjs';
+import { ensureSafeCustodyDirectory, existingSafeSecret, safeBundledRegularFile } from './miner-launcher-security.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -35,13 +35,8 @@ if (!profile.publicMiningActivated) {
   if (rpc.protocol !== 'https:' || rpc.username || rpc.password || rpc.search || rpc.hash) {
     throw new Error('Activated public miner RPC must be canonical HTTPS without credentials/query/fragment');
   }
-  if (isAbsolute(profile.genesisFile) || profile.genesisFile.includes('..')) {
-    throw new Error('Bundled miner genesis path must stay inside the package');
-  }
 
-  const genesis = resolve(root, profile.genesisFile);
-  if (!genesis.startsWith(`${root}/`) && process.platform !== 'win32') throw new Error('Genesis escaped miner package');
-  await stat(genesis);
+  const genesis = await safeBundledRegularFile(root, profile.genesisFile, 'Bundled miner genesis');
 
   const requestedStateRoot = process.env.ZYRON_MINER_HOME
     ? resolve(process.env.ZYRON_MINER_HOME)
