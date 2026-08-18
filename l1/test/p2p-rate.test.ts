@@ -49,10 +49,15 @@ test("native peer overflow quota resets without growing per-untracked-identity s
   assert.equal(limiter.consume("overflow-b", 5_200), false);
   assert.equal(internals.peers.size, 1);
 
-  assert.equal(limiter.consume("overflow-c", 7_100), true);
+  // The original tracked window expires before the overflow window. Fill the
+  // newly available tracked slot first so the next unseen identity is forced
+  // back through the shared overflow path after that path's own boundary.
+  assert.equal(limiter.consume("replacement-tracked", 7_100), true);
+  assert.equal(internals.peers.size, 1);
+  assert.equal(limiter.consume("overflow-c", 7_200), true);
   assert.equal(internals.peers.size, 1);
   assert.equal(internals.overflowCount, 1);
-  assert.equal(internals.overflowStartedAtMs, 7_100);
+  assert.equal(internals.overflowStartedAtMs, 7_200);
 });
 
 test("native peer limiter never evicts live tracked peers to admit rotating overflow identities", () => {
