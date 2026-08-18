@@ -781,12 +781,13 @@ export class PeerClient {
     let admitted = 0;
     for (let index = 0; index < results.length; index += 1) {
       const result = results[index]!;
+      const source = sources[index]!;
       if (result.status === "rejected") continue;
       for (const record of result.value) {
         try {
-          if (directory.admit(record, nowMs)) admitted += 1;
+          if (directory.admit(record, nowMs, source)) admitted += 1;
         } catch (error) {
-          if (/Peer directory capacity reached/.test(safeError(error))) break;
+          if (/Peer directory (?:source )?capacity reached/.test(safeError(error))) break;
           throw error;
         }
       }
