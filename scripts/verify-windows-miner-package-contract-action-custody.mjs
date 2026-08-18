@@ -17,15 +17,20 @@ for (const needle of required) {
 }
 
 for (const line of workflow.split(/\r?\n/)) {
-  const match = line.match(/^\s*uses:\s*([^\s#]+)/);
-  if (!match) continue;
-  const ref = match[1];
-  const at = ref.lastIndexOf('@');
-  const revision = at >= 0 ? ref.slice(at + 1) : '';
-  if (!/^[0-9a-f]{40}$/.test(revision)) throw new Error(`mutable or non-SHA action ref rejected: ${ref}`);
+  const actionMatch = line.match(/^\s*uses:\s*([^\s#]+)/);
+  if (actionMatch) {
+    const ref = actionMatch[1];
+    const at = ref.lastIndexOf('@');
+    const revision = at >= 0 ? ref.slice(at + 1) : '';
+    if (!/^[0-9a-f]{40}$/.test(revision)) throw new Error(`mutable or non-SHA action ref rejected: ${ref}`);
+  }
+
+  const nodeMatch = line.match(/^\s*node-version:\s*['\"]?([^'\"\s#]+)['\"]?/);
+  if (nodeMatch && nodeMatch[1] !== '22.23.2') {
+    throw new Error(`Windows miner package contract runtime drifted from Node 22.23.2: ${nodeMatch[1]}`);
+  }
 }
 
 if (/persist-credentials:\s*true/.test(workflow)) throw new Error('checkout credential persistence must remain disabled');
-if (/node-version:\s*(?!22\.23\.2(?:\s|$))/.test(workflow)) throw new Error('Windows miner package contract runtime drifted from Node 22.23.2');
 
 console.log('Windows miner package contract action custody policy: PASS');
