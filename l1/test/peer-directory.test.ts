@@ -92,3 +92,66 @@ test("peer directory uses the signed-record exact expiry boundary", () => {
   assert.equal(directory.admit(secondRecord, firstRecord.expiresAtMs + 1), true);
   assert.equal(directory.list(1, firstRecord.expiresAtMs + 1)[0]?.nodeId, second.nodeId);
 });
+
+test("remote discovery source quota is persistent, bounded and isolated from other sources", () => {
+  const now = 1_800_000_400_000;
+  const directory = new PeerDirectory(expected, { maxRecords: 6, maxResponseRecords: 2, maxRecordsPerSource: 2 });
+  const nodes = Array.from({ length: 5 }, () => identity());
+  const sourceA = "https://source-a.example:9137";
+  const sourceB = "https://source-b.example:9137";
+
+  assert.equal(directory.admit(record(nodes[0]!, now, "https://a1.example:9137"), now + 10, sourceA), true);
+  assert.equal(directory.admit(record(nodes[1]!, now + 1, "https://a2.example:9137"), now + 10, sourceA), true);
+  assert.throws(
+    () => directory.admit(record(nodes[2]!, now + 2, "https://a3.example:9137"), now + 10, sourceA),
+    /source capacity reached/
+  );
+  assert.equal(directory.size, 2);
+
+  assert.equal(directory.admit(record(nodes[3]!, now + 3, "https://b1.example:9137"), now + 10, sourceB), true);
+  assert.equal(directory.admit(record(nodes[4]!, now + 4, "https://local.example:9137"), now + 10), true);
+  assert.equal(directory.size, 4);
+});
+
+test("refreshing an existing discovered record does not consume extra source capacity", () => {
+  const now = 1_800_000_500_000;
+  const directory = new PeerDirectory(expected, { maxRecords: 4, maxResponseRecords: 1, maxRecordsPerSource: 1 });
+  const first = identity();
+  const second = identity();
+  const source = "https://source.example:9137";
+
+  assert.equal(directory.admit(record(first, now, "https://first.example:9137"), now + 10, source), true);
+  assert.equal(directory.admit(record(first, now + 20, "https://first-new.example:9137"), now + 30, source), true);
+  assert.throws(
+    () => directory.admit(record(second, now + 21, "https://second.example:9137"), now + 30, source),
+    /source capacity reached/
+  );
+  assert.deepEqual(directory.list(1, now + 30)[0]?.endpoints, ["https://first-new.example:9137"]);
+});
+
+test("expired discovered records deterministically release source capacity", () => {
+  const now = 1_800_000_600_000;
+  const directory = new PeerDirectory(expected, { maxRecords: 3, maxResponseRecords: 1, maxRecordsPerSource: 1 });
+  const first = identity();
+  const second = identity();
+  const source = "https://source.example:9137";
+  const firstRecord = record(first, now, "https://old.example:9137");
+
+  assert.equal(directory.admit(firstRecord, now + 1, source), true);
+  assert.throws(
+    () => directory.admit(record(second, now + 1, "https://blocked.example:9137"), now + 2, source),
+    /source capacity reached/
+  );
+
+  const secondRecord = record(second, firstRecord.expiresAtMs, "https://new.example:9137");
+  assert.equal(directory.admit(secondRecord, firstRecord.expiresAtMs + 1, source), true);
+  assert.equal(directory.size, 1);
+  assert.equal(directory.list(1, firstRecord.expiresAtMs + 1)[0]?.nodeId, second.nodeId);
+});
+
+test("per-source quota cannot exceed configured discovery response budget", () => {
+  assert.throws(
+    () => new PeerDirectory(expected, { maxRecords: 10, maxResponseRecords: 2, maxRecordsPerSource: 3 }),
+    /Invalid peer discovery source limit/
+  );
+});
