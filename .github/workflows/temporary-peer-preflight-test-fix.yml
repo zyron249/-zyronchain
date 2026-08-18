@@ -1,19 +1,19 @@
 name: Temporary peer preflight integration-test fix
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/peer-preflight-nonce-reservation-v1
+      - main
 
 permissions:
   contents: write
 
 jobs:
   patch-test:
-    if: github.actor != 'github-actions[bot]'
+    if: github.head_ref == 'agent/peer-preflight-nonce-reservation-v1' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout branch
+      - name: Checkout agent branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: true
@@ -66,8 +66,7 @@ jobs:
     });
     const signed = await fetch(`${base}/block`, {'''
           block = block.replace(insertion_marker, fresh, 1)
-          updated = text[:start] + block + text[end:]
-          path.write_text(updated, encoding='utf-8')
+          path.write_text(text[:start] + block + text[end:], encoding='utf-8')
 
       - name: Commit test fix to agent branch
         run: |
