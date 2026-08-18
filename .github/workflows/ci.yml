@@ -7,76 +7,9 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch-peer-preflight-test:
-    if: github.head_ref == 'agent/peer-preflight-nonce-reservation-v1' && github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout agent branch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: true
-          ref: agent/peer-preflight-nonce-reservation-v1
-
-      - name: Patch integration replay test
-        shell: python
-        run: |
-          from pathlib import Path
-
-          path = Path('l1/test/l1.test.ts')
-          text = path.read_text(encoding='utf-8')
-          start_marker = 'test("RPC trusted peer identities require signed consensus writes and reject replay", async () => {'
-          end_marker = '\ntest("peer authentication credentials cannot be sent to remote plaintext HTTP peers", () => {'
-          start = text.index(start_marker)
-          end = text.index(end_marker, start)
-          block = text[start:end]
-
-          old_decl = '    const signedHeaders = signPeerRequest(identity, {'
-          if block.count(old_decl) != 1:
-              raise SystemExit(f'expected one signedHeaders declaration, found {block.count(old_decl)}')
-          block = block.replace(old_decl, '    const mismatchedHeaders = signPeerRequest(identity, {', 1)
-          block = block.replace(
-              '      signedHeaders["x-zyron-body-sha256"],',
-              '      mismatchedHeaders["x-zyron-body-sha256"],',
-              1
-          )
-          mismatch_spread = '      headers: { "content-type": "application/json", ...signedHeaders },\n      body: canonicalJson({ unexpected: true })'
-          if mismatch_spread not in block:
-              raise SystemExit('expected mismatched-body header spread not found')
-          block = block.replace(
-              mismatch_spread,
-              '      headers: { "content-type": "application/json", ...mismatchedHeaders },\n      body: canonicalJson({ unexpected: true })',
-              1
-          )
-          marker = '    assert.equal(mismatchedBody.status, 401);\n\n    const signed = await fetch(`${base}/block`, {'
-          if marker not in block:
-              raise SystemExit('expected post-mismatch marker not found')
-          fresh = '''    assert.equal(mismatchedBody.status, 401);
-
-    const signedHeaders = signPeerRequest(identity, {
-      chainId: service.status().chainId,
-      genesisHash: service.status().genesisHash,
-      method: "POST",
-      path: "/block",
-      bodySha256: sha256Hex(Buffer.from(canonicalJson({}), "utf8")),
-      timestampMs: now,
-      nonce: "45".repeat(16)
-    });
-    const signed = await fetch(`${base}/block`, {'''
-          block = block.replace(marker, fresh, 1)
-          path.write_text(text[:start] + block + text[end:], encoding='utf-8')
-
-      - name: Commit test fix
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add l1/test/l1.test.ts
-          git diff --cached --check
-          git commit -m "Align RPC replay integration test with preflight reservations"
-          git push origin HEAD:agent/peer-preflight-nonce-reservation-v1
-
   test:
     runs-on: ubuntu-latest
     strategy:
