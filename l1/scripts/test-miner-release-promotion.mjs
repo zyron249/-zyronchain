@@ -21,6 +21,9 @@ function run(policy, shouldPass, label) {
 }
 
 run(base, true, 'canonical fail-closed policy');
+run({ ...base, assets: {} }, false, 'empty platform asset set');
+run({ ...base, assets: { windows: null, macos: null } }, false, 'missing Linux platform key');
+run({ ...base, assets: { ...base.assets, freebsd: null } }, false, 'unexpected platform key');
 run({ ...base, publicationAllowed: true }, false, 'publication without evidence');
 run({ ...base, assets: { ...base.assets, windows: 'https://example.com/ZyronMiner.exe' } }, false, 'untrusted asset origin');
 run({ ...base, assets: { ...base.assets, windows: 'https://github.com/zyron249/-zyronchain/releases/download/miner-v1.0.0/ZyronMiner-windows-x64.zip' } }, false, 'partial asset promotion');
@@ -54,6 +57,8 @@ const fullyEvidenced = {
   }
 };
 run(fullyEvidenced, true, 'fully evidenced promotion vector');
+run({ ...fullyEvidenced, assets: {} }, false, 'activated promotion without platform assets');
+run({ ...fullyEvidenced, assets: { windows: fullyEvidenced.assets.windows, macos: fullyEvidenced.assets.macos } }, false, 'activated promotion missing Linux asset');
 run({ ...fullyEvidenced, immutableReleaseVerified: false }, false, 'mutable release');
 run({ ...fullyEvidenced, sourceCommit: 'main' }, false, 'non-exact source identity');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, provenance: 'trust-me-provenance' } }, false, 'placeholder evidence');
