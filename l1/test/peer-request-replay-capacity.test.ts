@@ -16,12 +16,26 @@ const request = { method: "POST", path: "/block" } as const;
 
 test("peer request replay cache fails closed at capacity without evicting unexpired nonces", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-peer-replay-capacity-"));
+  const secondDirectory = await mkdtemp(join(tmpdir(), "zyron-peer-replay-capacity-second-"));
   try {
     const identity = await loadOrCreateNodeIdentity(directory);
+    const secondIdentity = await loadOrCreateNodeIdentity(secondDirectory);
     const now = 1_800_000_000_000;
     const bodySha256 = sha256Hex(Buffer.from(canonicalJson({ block: 1 }), "utf8"));
-    const authenticator = new PeerRequestAuthenticator([identity.publicKey], chain, 2);
+    const authenticator = new PeerRequestAuthenticator(
+      [identity.publicKey, secondIdentity.publicKey],
+      chain,
+      2,
+      2
+    );
     const signed = (nonceByte: string, timestampMs = now) => signPeerRequest(identity, {
+      ...chain,
+      ...request,
+      bodySha256,
+      timestampMs,
+      nonce: nonceByte.repeat(16)
+    });
+    const signedBySecond = (nonceByte: string, timestampMs = now) => signPeerRequest(secondIdentity, {
       ...chain,
       ...request,
       bodySha256,
@@ -31,7 +45,7 @@ test("peer request replay cache fails closed at capacity without evicting unexpi
 
     const first = signed("11");
     const second = signed("22");
-    const overflow = signed("33");
+    const overflow = signedBySecond("33");
 
     assert.equal(authenticator.verify(first, { ...request, bodySha256 }, now), identity.nodeId);
     assert.equal(authenticator.verify(second, { ...request, bodySha256 }, now), identity.nodeId);
@@ -58,6 +72,7 @@ test("peer request replay cache fails closed at capacity without evicting unexpi
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
+    await rm(secondDirectory, { recursive: true, force: true });
   }
 });
 
