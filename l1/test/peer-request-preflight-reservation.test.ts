@@ -79,3 +79,36 @@ test("abandoned preflight reservation remains fail-closed until replay expiry", 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("body hash mismatch does not release an authenticated preflight reservation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-peer-preflight-body-mismatch-"));
+  try {
+    const identity = await loadOrCreateNodeIdentity(directory);
+    const now = 1_800_000_000_000;
+    const bodySha256 = sha256Hex(Buffer.from(canonicalJson({ block: 9 }), "utf8"));
+    const wrongBodySha256 = sha256Hex(Buffer.from(canonicalJson({ block: 10 }), "utf8"));
+    const headers = signPeerRequest(identity, {
+      ...chain,
+      ...request,
+      bodySha256,
+      timestampMs: now,
+      nonce: "55".repeat(16)
+    });
+    const authenticator = new PeerRequestAuthenticator([identity.publicKey], chain, 1, 1);
+
+    assert.doesNotThrow(() => authenticator.preflight(headers, request, now));
+    assert.throws(
+      () => authenticator.verify(headers, { ...request, bodySha256: wrongBodySha256 }, now),
+      /Peer request body hash mismatch/
+    );
+    assert.equal(authenticator.replayCacheMetrics().entries, 1);
+    assert.throws(() => authenticator.preflight(headers, request, now), /Replayed peer request/);
+
+    assert.equal(
+      authenticator.verify(headers, { ...request, bodySha256 }, now),
+      identity.nodeId
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
