@@ -33,6 +33,8 @@ import type { Address, Block, BlockAttestation, RoundSkipVote, Transaction } fro
 import { LocalValidatorSigner, signWithValidator, type ValidatorSigner } from "./validator-signer.js";
 
 const MAX_BODY_BYTES = 2_500_000;
+export const MAX_RPC_JSON_NESTING_DEPTH = 64;
+export const MAX_RPC_JSON_STRUCTURAL_TOKENS = 250_000;
 export const RPC_API_VERSION = 1;
 export const MAX_SYNC_BLOCKS = 100;
 export const MAX_SYNC_RESPONSE_BYTES = 25_000_000;
@@ -1219,6 +1221,70 @@ async function parseBoundedResponse(response: Response, maxBytes: number): Promi
   }
 }
 
+export function assertBoundedRpcJsonStructure(body: Uint8Array): void {
+  let inString = false;
+  let escaped = false;
+  let depth = 0;
+  let tokens = 0;
+
+  for (const byte of body) {
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (byte === 0x5c) {
+        escaped = true;
+        continue;
+      }
+      if (byte === 0x22) inString = false;
+      continue;
+    }
+
+    if (byte === 0x22) {
+      inString = true;
+      continue;
+    }
+
+    if (byte === 0x7b || byte === 0x5b) {
+      depth += 1;
+      tokens += 1;
+      if (depth > MAX_RPC_JSON_NESTING_DEPTH) throw new Error("RPC request JSON complexity exceeded");
+    } else if (byte === 0x7d || byte === 0x5d) {
+      depth = Math.max(0, depth - 1);
+      tokens += 1;
+    } else if (byte === 0x2c || byte === 0x3a) {
+      tokens += 1;
+    }
+
+    if (tokens > MAX_RPC_JSON_STRUCTURAL_TOKENS) throw new Error("RPC request JSON complexity exceeded");
+  }
+}
+
+export function parseRpcJsonChunks(
+  chunks: readonly Buffer[],
+  totalBytes: number,
+  reservation?: RpcRequestBodyReservation
+): unknown {
+  if (!Number.isSafeInteger(totalBytes) || totalBytes < 1 || totalBytes > MAX_BODY_BYTES) {
+    throw new Error("Invalid RPC JSON parse size");
+  }
+  // The received chunk bytes are already retained by the request lifecycle.
+  // Before allocating another contiguous Buffer plus the transient JavaScript
+  // UTF-8 string, conservatively reserve 1x + 2x the wire bytes from the same
+  // aggregate budget. The decoded graph is separately bounded by the lexical
+  // depth/cardinality scan below.
+  const transientBytes = totalBytes * 3;
+  const releaseTransient = reservation?.reserveTransient(transientBytes);
+  try {
+    const body = Buffer.concat(chunks, totalBytes);
+    assertBoundedRpcJsonStructure(body);
+    return JSON.parse(body.toString("utf8")) as unknown;
+  } finally {
+    releaseTransient?.();
+  }
+}
+
 async function readJsonBody(request: IncomingMessage, bodyReservation?: RpcRequestBodyReservation): Promise<unknown> {
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] ?? "")) {
     throw new Error("Content-Type must be application/json");
@@ -1241,7 +1307,7 @@ async function readJsonBody(request: IncomingMessage, bodyReservation?: RpcReque
     chunks.push(buffer);
   }
   if (total === 0) throw new Error("Request body is empty");
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  return parseRpcJsonChunks(chunks, total, bodyReservation);
 }
 
 function writeJson(response: ServerResponse, status: number, value: unknown): void {
@@ -1413,7 +1479,7 @@ class RpcAdmissionController {
   }
 }
 
-class RpcRequestBodyByteBudget {
+export class RpcRequestBodyByteBudget {
   private reservedBytes = 0;
   private rejectedReservations = 0;
 
@@ -1470,7 +1536,7 @@ class RpcResponseByteBudget {
 
 const rpcResponseBudgets = new WeakMap<ServerResponse, RpcResponseByteBudget>();
 
-class RpcRequestBodyReservation {
+export class RpcRequestBodyReservation {
   private readonly releases: Array<() => void> = [];
   private released = false;
 
@@ -1479,6 +1545,11 @@ class RpcRequestBodyReservation {
   reserve(bytes: number): void {
     if (this.released) throw new Error("RPC request body reservation already released");
     this.releases.push(this.budget.reserve(bytes));
+  }
+
+  reserveTransient(bytes: number): () => void {
+    if (this.released) throw new Error("RPC request body reservation already released");
+    return this.budget.reserve(bytes);
   }
 
   release(): void {
