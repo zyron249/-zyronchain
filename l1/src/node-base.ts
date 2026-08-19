@@ -52,6 +52,8 @@ export const DEFAULT_RPC_MAX_INFLIGHT_BODY_BYTES = 25_000_000;
 export const DEFAULT_RPC_MAX_INFLIGHT_RESPONSE_BYTES = 25_000_000;
 export const RPC_MAX_HEADERS = 64;
 export const RPC_MAX_REQUESTS_PER_SOCKET = 100;
+export const MAX_RPC_TRUSTED_PROXIES = 16;
+export const MAX_RPC_FORWARDED_HOPS = 16;
 const DEFAULT_CONSENSUS_INFLIGHT_PER_PEER = 4;
 export const BLOCK_INTERVAL_MS = 30_000;
 export const ROUND_WINDOW_MS = 30_000;
@@ -154,25 +156,61 @@ function normalizeProxyAddress(address: string): string {
   return candidate;
 }
 
-export function isTrustedHttpsProxyRequest(
+function normalizeTrustedProxyAddresses(addresses: readonly string[]): ReadonlySet<string> {
+  if (addresses.length > MAX_RPC_TRUSTED_PROXIES) {
+    throw new Error("Too many configured trusted RPC proxies");
+  }
+  return new Set(addresses.map(normalizeProxyAddress));
+}
+
+export function assertRpcTrustedProxyConfiguration(addresses: readonly string[]): void {
+  normalizeTrustedProxyAddresses(addresses);
+}
+
+function isTrustedHttpsProxyRequestFromSet(
   remoteAddress: string | undefined,
   forwardedProto: string | string[] | undefined,
-  trustedProxyAddresses: readonly string[]
+  trusted: ReadonlySet<string>
 ): boolean {
-  if (trustedProxyAddresses.length === 0) return true;
+  if (trusted.size === 0) return true;
   if (forwardedProto !== "https" || remoteAddress === undefined) return false;
   try {
-    const trusted = new Set(trustedProxyAddresses.map(normalizeProxyAddress));
     return trusted.has(normalizeProxyAddress(remoteAddress));
   } catch {
     return false;
   }
 }
 
-export function rpcRateLimitIdentity(
+export function isTrustedHttpsProxyRequest(
+  remoteAddress: string | undefined,
+  forwardedProto: string | string[] | undefined,
+  trustedProxyAddresses: readonly string[]
+): boolean {
+  try {
+    return isTrustedHttpsProxyRequestFromSet(
+      remoteAddress,
+      forwardedProto,
+      normalizeTrustedProxyAddresses(trustedProxyAddresses)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function forwardedHopCountWithinBound(value: string): boolean {
+  let hops = 1;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) !== 44) continue;
+    hops += 1;
+    if (hops > MAX_RPC_FORWARDED_HOPS) return false;
+  }
+  return true;
+}
+
+function rpcRateLimitIdentityFromSet(
   remoteAddress: string | undefined,
   forwardedFor: string | string[] | undefined,
-  trustedProxyAddresses: readonly string[]
+  trusted: ReadonlySet<string>
 ): string {
   if (remoteAddress === undefined) return "unknown";
   let remote: string;
@@ -181,10 +219,10 @@ export function rpcRateLimitIdentity(
   } catch {
     return "unknown";
   }
-  if (trustedProxyAddresses.length === 0) return remote;
-  const trusted = new Set(trustedProxyAddresses.map(normalizeProxyAddress));
+  if (trusted.size === 0) return remote;
   if (!trusted.has(remote)) return remote;
   if (typeof forwardedFor !== "string" || forwardedFor.length === 0) return `proxy:${remote}`;
+  if (!forwardedHopCountWithinBound(forwardedFor)) return `proxy:${remote}`;
   const chain = forwardedFor.split(",").map((item) => item.trim());
   if (chain.length === 0 || chain.some((item) => item.length === 0)) return `proxy:${remote}`;
   for (let index = chain.length - 1; index >= 0; index -= 1) {
@@ -197,6 +235,18 @@ export function rpcRateLimitIdentity(
     if (!trusted.has(hop)) return hop;
   }
   return `proxy:${remote}`;
+}
+
+export function rpcRateLimitIdentity(
+  remoteAddress: string | undefined,
+  forwardedFor: string | string[] | undefined,
+  trustedProxyAddresses: readonly string[]
+): string {
+  return rpcRateLimitIdentityFromSet(
+    remoteAddress,
+    forwardedFor,
+    normalizeTrustedProxyAddresses(trustedProxyAddresses)
+  );
 }
 
 export class NodeService {
@@ -464,11 +514,11 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
     options.maxInflightResponseBytes ?? DEFAULT_RPC_MAX_INFLIGHT_RESPONSE_BYTES
   );
   const limiter = new FixedWindowLimiter(requestsPerWindow, windowMs);
-  const trustedProxyAddresses = [...new Set((options.trustedProxyAddresses ?? []).map(normalizeProxyAddress))];
+  const trustedProxyAddresses = normalizeTrustedProxyAddresses(options.trustedProxyAddresses ?? []);
   const handleRequest = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const bodyReservation = new RpcRequestBodyReservation(rpcBodyBudget);
     response.setHeader("x-zyron-rpc-version", String(RPC_API_VERSION));
-    if (!isTrustedHttpsProxyRequest(
+    if (!isTrustedHttpsProxyRequestFromSet(
       request.socket.remoteAddress,
       request.headers["x-forwarded-proto"],
       trustedProxyAddresses
@@ -477,7 +527,7 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
       writeJson(response, 403, { error: "RPC request did not arrive through the configured HTTPS proxy" });
       return;
     }
-    const rate = limiter.consume(rpcRateLimitIdentity(
+    const rate = limiter.consume(rpcRateLimitIdentityFromSet(
       request.socket.remoteAddress,
       request.headers["x-forwarded-for"],
       trustedProxyAddresses
@@ -875,7 +925,7 @@ export class PeerClient {
   ): Promise<RoundSkipVote[]> {
     const results = await Promise.allSettled(this.peers.map(async (peer) => {
       const payload = await postJson(`${peer}/round/skip`, { height, round, previousCertificate }, 128_000, this.peerAuthToken, this.peerRequestCredentials);
-      assertPlainRecord(payload, "round skip response");
+      assertPlainRecord(payload, "attestation response");
       assertExactKeys(payload, ["vote"], "round skip response");
       return payload.vote as RoundSkipVote;
     }));
