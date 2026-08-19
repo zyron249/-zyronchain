@@ -33,7 +33,7 @@ test("RPC JSON complexity bounds structural cardinality without counting punctua
 });
 
 test("RPC JSON parse transient capacity fails closed and is reclaimed", () => {
-  const budget = new RpcRequestBodyByteBudget(1_000);
+  const budget = new RpcRequestBodyByteBudget(700);
   const first = new RpcRequestBodyReservation(budget);
   const second = new RpcRequestBodyReservation(budget);
   const firstBody = Buffer.from(JSON.stringify({ value: "x".repeat(150) }));
