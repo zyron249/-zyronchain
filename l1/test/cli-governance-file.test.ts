@@ -64,7 +64,8 @@ test("published governance entrypoint rejects a symlink proposal before key acce
 });
 
 test("secure CLI stages every repeated governance approval input", async () => {
-  const source = await readFile(new URL("../src/secure-cli.ts", import.meta.url), "utf8");
+  // Tests execute from dist/test after compilation, so walk back to the repository source tree.
+  const source = await readFile(new URL("../../src/secure-cli.ts", import.meta.url), "utf8");
   assert.match(source, /stageRepeated\(args, "--approval"/);
   assert.match(source, /"validator-submit"/);
   assert.match(source, /"protocol-submit"/);
