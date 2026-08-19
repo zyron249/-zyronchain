@@ -541,9 +541,13 @@ function parseChunk(
       value.kind !== kind || value.start !== start || !Array.isArray(value.items) || value.items.length !== limit) {
     throw new Error("Invalid state chunk");
   }
+  // `readP2PFrameRetained()` already owns the decoded graph under the global
+  // frame budget. Keep that exact graph until the caller persists or consumes
+  // the chunk; cloning here would transiently duplicate an attacker-controlled
+  // valid response while only the original decoded graph is budgeted.
   return {
     version: 1, identity: validateP2PChainIdentity(value.identity, expected, remotePeer), tipHash: value.tipHash,
-    snapshotSha256: value.snapshotSha256, kind, start, items: structuredClone(value.items)
+    snapshotSha256: value.snapshotSha256, kind, start, items: value.items
   };
 }
 
