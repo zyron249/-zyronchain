@@ -39,7 +39,11 @@ test("native frame decoder rejects JSON above the nesting-depth boundary before 
 });
 
 test("native frame decoder rejects excessive structural-token cardinality and releases reservations", async () => {
-  const elements = Math.floor(MAX_P2P_JSON_STRUCTURAL_TOKENS / 2) + 2;
+  // A flat array contributes one opening bracket, one closing bracket, and
+  // one comma between adjacent elements. Therefore N elements contribute
+  // N + 1 structural tokens, not roughly 2N. Cross the production boundary
+  // explicitly so this regression cannot silently become an under-bound case.
+  const elements = MAX_P2P_JSON_STRUCTURAL_TOKENS + 1;
   const json = `[${Array.from({ length: elements }, () => "0").join(",")}]`;
   const bodyBytes = Buffer.byteLength(json);
   const budget = new P2PFrameByteBudget(bodyBytes * 2 + 64);
