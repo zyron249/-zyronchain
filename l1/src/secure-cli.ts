@@ -4,9 +4,13 @@ import { chmod, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { readCliGovernanceArtifactUtf8 } from "./cli-governance-file.js";
 import { readCliCheckpointSnapshotUtf8, readCliGenesisUtf8 } from "./cli-recovery-file.js";
 
-const hardenedCommands = new Set(["snapshot", "checkpoint-install", "checkpoint-fetch-install", "state-fetch-install", "prune-finalized", "node"]);
+const hardenedCommands = new Set([
+  "snapshot", "checkpoint-install", "checkpoint-fetch-install", "state-fetch-install", "prune-finalized", "node",
+  "validator-approve", "validator-submit", "protocol-approve", "protocol-submit"
+]);
 
 function optionValueIndex(args: string[], name: string): number {
   let found = -1;
@@ -21,6 +25,18 @@ function optionValueIndex(args: string[], name: string): number {
   return found;
 }
 
+function optionValueIndexes(args: string[], name: string): number[] {
+  const found: number[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== name) continue;
+    const value = args[index + 1];
+    if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
+    found.push(index + 1);
+    index += 1;
+  }
+  return found;
+}
+
 async function stage(args: string[], name: string, destination: string, reader: (path: string) => Promise<string>): Promise<void> {
   const index = optionValueIndex(args, name);
   if (index === -1) return;
@@ -28,6 +44,23 @@ async function stage(args: string[], name: string, destination: string, reader: 
   await writeFile(destination, text, { flag: "wx", mode: 0o600 });
   await chmod(destination, 0o600);
   args[index] = destination;
+}
+
+async function stageRepeated(
+  args: string[],
+  name: string,
+  destinationPrefix: string,
+  reader: (path: string) => Promise<string>
+): Promise<void> {
+  const indexes = optionValueIndexes(args, name);
+  for (let position = 0; position < indexes.length; position += 1) {
+    const index = indexes[position]!;
+    const destination = `${destinationPrefix}-${position}.json`;
+    const text = await reader(resolve(args[index]!));
+    await writeFile(destination, text, { flag: "wx", mode: 0o600 });
+    await chmod(destination, 0o600);
+    args[index] = destination;
+  }
 }
 
 async function run(): Promise<void> {
@@ -47,6 +80,12 @@ async function run(): Promise<void> {
   await stage(args, "--genesis", join(dir, "genesis.json"), readCliGenesisUtf8);
   if (command === "checkpoint-install") {
     await stage(args, "--snapshot", join(dir, "checkpoint.json"), readCliCheckpointSnapshotUtf8);
+  }
+  if (["validator-approve", "validator-submit", "protocol-approve", "protocol-submit"].includes(command)) {
+    await stage(args, "--proposal", join(dir, "governance-proposal.json"), readCliGovernanceArtifactUtf8);
+  }
+  if (command === "validator-submit" || command === "protocol-submit") {
+    await stageRepeated(args, "--approval", join(dir, "governance-approval"), readCliGovernanceArtifactUtf8);
   }
 
   process.argv = [process.argv[0]!, process.argv[1]!, ...args];
