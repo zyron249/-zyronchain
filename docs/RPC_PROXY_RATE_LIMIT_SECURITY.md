@@ -6,7 +6,7 @@ Standalone ZyronChain RPC rate limiting must distinguish public clients even whe
 
 - Direct connections are bucketed only by the transport peer IP. `X-Forwarded-For` is ignored when no trusted proxy list is configured, so a direct client cannot choose its own rate-limit identity.
 - When `trustedProxyAddresses` is configured, forwarded client identity is considered only after the transport peer itself matches that trusted set and the existing HTTPS-proxy admission check succeeds.
-- At most 16 trusted RPC proxy addresses may be configured. The node rejects larger configurations during RPC server startup rather than carrying unbounded proxy-membership state into request processing.
+- At most 16 trusted RPC proxy addresses may be configured. The node rejects larger configurations during RPC server startup, before serving requests, rather than carrying unbounded proxy-membership state into request processing.
 - The normalized trusted-proxy set is built once when the RPC server starts and reused for request admission; the production request path does not rebuild the set for every request.
 - `X-Forwarded-For` is parsed strictly as IP addresses. At most 16 forwarding hops are accepted. The hop count is bounded before the chain is split into an array; over-bound chains fail closed to the shared `proxy:<transport-ip>` bucket.
 - Within the bound, the chain is walked from right to left, dropping trusted proxy hops; the first non-trusted IP becomes the client rate-limit identity.
