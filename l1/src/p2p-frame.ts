@@ -2,6 +2,8 @@ import type { Stream } from "@libp2p/interface";
 
 const WRITE_CHUNK_BYTES = 64 * 1_024;
 export const DEFAULT_P2P_INBOUND_FRAME_BUDGET_BYTES = 64 * 1_024 * 1_024;
+export const MAX_P2P_JSON_NESTING_DEPTH = 64;
+export const MAX_P2P_JSON_STRUCTURAL_TOKENS = 250_000;
 
 export interface P2PFrameByteBudgetMetrics {
   bytesInUse: number;
@@ -166,14 +168,19 @@ export async function readP2PFrameRetained(
         if (bodyBytes === expectedBytes) {
           if (offset !== bytes.length) throw new Error("Trailing bytes in P2P frame");
           try {
-            // Decoding duplicates retained data into a JS string/object graph.
-            // Reserve a second frame-sized allowance before creating that copy
-            // and hold it until the caller releases the decoded value.
+            // Byte length alone does not bound the V8 object graph produced by
+            // JSON.parse. Scan the already-bounded UTF-8 bytes first so a frame
+            // with pathological array/object cardinality or nesting fails before
+            // allocating a decoded object graph.
+            assertBoundedJsonStructure(body);
             decodedRelease = budget.reserve(expectedBytes);
             decoded = JSON.parse(body.toString("utf8")) as unknown;
             decodedFrame = true;
           } catch (error) {
-            if (error instanceof Error && error.message === "P2P frame byte budget exceeded") throw error;
+            if (error instanceof Error && (
+              error.message === "P2P frame byte budget exceeded" ||
+              error.message === "P2P frame JSON complexity exceeded"
+            )) throw error;
             throw new Error("Invalid P2P frame encoding");
           }
         }
@@ -197,6 +204,46 @@ export async function readP2PFrameRetained(
       decodedRelease?.();
       bodyRelease?.();
     }
+  }
+}
+
+function assertBoundedJsonStructure(body: Uint8Array): void {
+  let inString = false;
+  let escaped = false;
+  let depth = 0;
+  let tokens = 0;
+
+  for (const byte of body) {
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (byte === 0x5c) {
+        escaped = true;
+        continue;
+      }
+      if (byte === 0x22) inString = false;
+      continue;
+    }
+
+    if (byte === 0x22) {
+      inString = true;
+      continue;
+    }
+
+    if (byte === 0x7b || byte === 0x5b) {
+      depth += 1;
+      tokens += 1;
+      if (depth > MAX_P2P_JSON_NESTING_DEPTH) throw new Error("P2P frame JSON complexity exceeded");
+    } else if (byte === 0x7d || byte === 0x5d) {
+      depth = Math.max(0, depth - 1);
+      tokens += 1;
+    } else if (byte === 0x2c || byte === 0x3a) {
+      tokens += 1;
+    }
+
+    if (tokens > MAX_P2P_JSON_STRUCTURAL_TOKENS) throw new Error("P2P frame JSON complexity exceeded");
   }
 }
 
