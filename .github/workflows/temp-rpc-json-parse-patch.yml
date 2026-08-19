@@ -1,0 +1,65 @@
+name: Temporary RPC JSON parse patch
+
+on:
+  push:
+    branches:
+      - agent/rpc-json-parse-budget-v1
+    paths:
+      - '.github/workflows/temp-rpc-json-parse-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/rpc-json-parse-budget-v1
+          fetch-depth: 0
+
+      - name: Patch RPC JSON parse boundary
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('l1/src/node-base.ts')
+          s = p.read_text()
+
+          s = s.replace(
+              'const MAX_BODY_BYTES = 2_500_000;\n',
+              'const MAX_BODY_BYTES = 2_500_000;\nexport const MAX_RPC_JSON_NESTING_DEPTH = 64;\nexport const MAX_RPC_JSON_STRUCTURAL_TOKENS = 250_000;\n'
+          )
+          s = s.replace('class RpcRequestBodyByteBudget {', 'export class RpcRequestBodyByteBudget {')
+          s = s.replace('class RpcRequestBodyReservation {', 'export class RpcRequestBodyReservation {')
+
+          old = '''  reserve(bytes: number): void {\n    if (this.released) throw new Error("RPC request body reservation already released");\n    this.releases.push(this.budget.reserve(bytes));\n  }\n\n  release(): void {'''
+          new = '''  reserve(bytes: number): void {\n    if (this.released) throw new Error("RPC request body reservation already released");\n    this.releases.push(this.budget.reserve(bytes));\n  }\n\n  reserveTransient(bytes: number): () => void {\n    if (this.released) throw new Error("RPC request body reservation already released");\n    return this.budget.reserve(bytes);\n  }\n\n  release(): void {'''
+          if old not in s:
+              raise SystemExit('reservation insertion anchor missing')
+          s = s.replace(old, new, 1)
+
+          anchor = 'async function readJsonBody(request: IncomingMessage, bodyReservation?: RpcRequestBodyReservation): Promise<unknown> {'
+          helper = '''export function assertBoundedRpcJsonStructure(body: Uint8Array): void {\n  let inString = false;\n  let escaped = false;\n  let depth = 0;\n  let tokens = 0;\n\n  for (const byte of body) {\n    if (inString) {\n      if (escaped) {\n        escaped = false;\n        continue;\n      }\n      if (byte === 0x5c) {\n        escaped = true;\n        continue;\n      }\n      if (byte === 0x22) inString = false;\n      continue;\n    }\n\n    if (byte === 0x22) {\n      inString = true;\n      continue;\n    }\n\n    if (byte === 0x7b || byte === 0x5b) {\n      depth += 1;\n      tokens += 1;\n      if (depth > MAX_RPC_JSON_NESTING_DEPTH) throw new Error("RPC request JSON complexity exceeded");\n    } else if (byte === 0x7d || byte === 0x5d) {\n      depth = Math.max(0, depth - 1);\n      tokens += 1;\n    } else if (byte === 0x2c || byte === 0x3a) {\n      tokens += 1;\n    }\n\n    if (tokens > MAX_RPC_JSON_STRUCTURAL_TOKENS) throw new Error("RPC request JSON complexity exceeded");\n  }\n}\n\nexport function parseRpcJsonChunks(\n  chunks: readonly Buffer[],\n  totalBytes: number,\n  reservation?: RpcRequestBodyReservation\n): unknown {\n  if (!Number.isSafeInteger(totalBytes) || totalBytes < 1 || totalBytes > MAX_BODY_BYTES) {\n    throw new Error("Invalid RPC JSON parse size");\n  }\n  // The received chunk bytes are already retained by the request lifecycle.\n  // Before allocating another contiguous Buffer plus the transient JavaScript\n  // UTF-8 string, conservatively reserve 1x + 2x the wire bytes from the same\n  // aggregate budget. The decoded graph is separately bounded by the lexical\n  // depth/cardinality scan below.\n  const transientBytes = totalBytes * 3;\n  const releaseTransient = reservation?.reserveTransient(transientBytes);\n  try {\n    const body = Buffer.concat(chunks, totalBytes);\n    assertBoundedRpcJsonStructure(body);\n    return JSON.parse(body.toString("utf8")) as unknown;\n  } finally {\n    releaseTransient?.();\n  }\n}\n\n'''
+          if anchor not in s:
+              raise SystemExit('readJsonBody anchor missing')
+          s = s.replace(anchor, helper + anchor, 1)
+
+          old_return = '  return JSON.parse(Buffer.concat(chunks).toString("utf8"));\n}\n\nfunction writeJson'
+          new_return = '  return parseRpcJsonChunks(chunks, total, bodyReservation);\n}\n\nfunction writeJson'
+          if old_return not in s:
+              raise SystemExit('readJsonBody return anchor missing')
+          s = s.replace(old_return, new_return, 1)
+
+          p.write_text(s)
+          PY
+
+      - name: Remove temporary workflow and commit
+        run: |
+          git config user.name "Zyron Chain"
+          git config user.email "ciyagerkurdi@icloud.com"
+          git rm .github/workflows/temp-rpc-json-parse-patch.yml
+          git add l1/src/node-base.ts
+          git commit -m "Bound RPC JSON parse memory and complexity"
+          git push origin HEAD:agent/rpc-json-parse-budget-v1
