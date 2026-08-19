@@ -1,0 +1,52 @@
+name: Diagnostic RPC JSON Full Suite
+
+on:
+  push:
+    branches:
+      - diag/rpc-json-full-suite-v1
+
+permissions:
+  contents: read
+
+jobs:
+  isolate-test-files:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: l1
+    steps:
+      - name: Checkout exact diagnostic source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+      - name: Install and build
+        run: npm ci && npm run build
+      - name: Run each compiled test file with a hard timeout
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r file; do
+            echo "===== BEGIN ${file} ====="
+            started=$(date +%s)
+            set +e
+            timeout --signal=TERM 120s node --test "$file"
+            status=$?
+            set -e
+            elapsed=$(( $(date +%s) - started ))
+            echo "===== END ${file} status=${status} elapsed=${elapsed}s ====="
+            if [ "$status" -ne 0 ]; then
+              if [ "$status" -eq 124 ]; then
+                echo "::error::Timed out test file: ${file}"
+              else
+                echo "::error::Failed isolated test file: ${file} (status ${status})"
+              fi
+              exit "$status"
+            fi
+          done < <(find dist/test -maxdepth 1 -type f -name '*.test.js' | sort)
