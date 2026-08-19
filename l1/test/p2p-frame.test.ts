@@ -133,7 +133,7 @@ test("decoded-frame allowance rejects concurrent retained parse and releases fai
   assert.equal(budget.metrics().bytesInUse, 0);
 });
 
-test("invalid JSON releases encoded and decoded frame reservations", async () => {
+test("invalid JSON releases encoded decoded and UTF-8 frame reservations", async () => {
   const budget = new P2PFrameByteBudget(8);
   const body = Buffer.from("{");
   const header = Buffer.alloc(4);
@@ -144,7 +144,7 @@ test("invalid JSON releases encoded and decoded frame reservations", async () =>
     /Invalid P2P frame encoding/
   );
   assert.equal(budget.metrics().bytesInUse, 0);
-  assert.equal(budget.metrics().peakBytesInUse, 2);
+  assert.equal(budget.metrics().peakBytesInUse, 3);
 });
 
 test("native frame writer double-accounts serialization and encoded retention", async () => {
