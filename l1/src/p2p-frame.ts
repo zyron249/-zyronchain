@@ -125,7 +125,8 @@ export async function readP2PFrameRetained(
   let bodyBytes = 0;
   let decoded: unknown;
   let decodedFrame = false;
-  let release: (() => void) | undefined;
+  let bodyRelease: (() => void) | undefined;
+  let decodedRelease: (() => void) | undefined;
   let ownershipTransferred = false;
   const timeout = setTimeout(() => stream.abort(new Error("P2P frame read timeout")), timeoutMs);
   timeout.unref();
@@ -149,7 +150,7 @@ export async function readP2PFrameRetained(
         if (headerBytes === 4) {
           expectedBytes = header.readUInt32BE(0);
           if (expectedBytes < 1 || expectedBytes > maxBytes) throw new Error("Invalid P2P frame length");
-          release = budget.reserve(expectedBytes);
+          bodyRelease = budget.reserve(expectedBytes);
           body = Buffer.allocUnsafe(expectedBytes);
         }
       }
@@ -162,20 +163,37 @@ export async function readP2PFrameRetained(
         if (bodyBytes === expectedBytes) {
           if (offset !== bytes.length) throw new Error("Trailing bytes in P2P frame");
           try {
+            // Decoding duplicates retained data into a JS string/object graph.
+            // Reserve a second frame-sized allowance before creating that copy
+            // and hold it until the caller releases the decoded value.
+            decodedRelease = budget.reserve(expectedBytes);
             decoded = JSON.parse(body.toString("utf8")) as unknown;
             decodedFrame = true;
-          } catch {
+          } catch (error) {
+            if (error instanceof Error && error.message === "P2P frame byte budget exceeded") throw error;
             throw new Error("Invalid P2P frame encoding");
           }
         }
       }
     }
-    if (!decodedFrame || !release) throw new Error("Truncated P2P frame");
+    if (!decodedFrame || !bodyRelease || !decodedRelease) throw new Error("Truncated P2P frame");
     ownershipTransferred = true;
-    return { value: decoded, release };
+    let released = false;
+    return {
+      value: decoded,
+      release: () => {
+        if (released) return;
+        released = true;
+        decodedRelease?.();
+        bodyRelease?.();
+      }
+    };
   } finally {
     clearTimeout(timeout);
-    if (!ownershipTransferred) release?.();
+    if (!ownershipTransferred) {
+      decodedRelease?.();
+      bodyRelease?.();
+    }
   }
 }
 
