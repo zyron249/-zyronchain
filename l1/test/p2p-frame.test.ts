@@ -92,14 +92,14 @@ test("native frame decoder bounds aggregate retained body bytes and recovers cap
   );
 });
 
-test("retained native frame capacity stays held through caller processing", async () => {
+test("retained native frame capacity accounts encoded and decoded value until caller release", async () => {
   const budget = new P2PFrameByteBudget(8);
   const body = Buffer.from("{}");
   const header = Buffer.alloc(4);
   header.writeUInt32BE(body.length);
   const retained = await readP2PFrameRetained(fakeReadableStream([header, body]), 8, 1_000, budget);
   assert.deepEqual(retained.value, {});
-  assert.equal(budget.metrics().bytesInUse, body.length);
+  assert.equal(budget.metrics().bytesInUse, body.length * 2);
 
   const competing = Buffer.alloc(4);
   competing.writeUInt32BE(8);
@@ -112,6 +112,39 @@ test("retained native frame capacity stays held through caller processing", asyn
   assert.equal(budget.metrics().bytesInUse, 0);
   retained.release();
   assert.equal(budget.metrics().bytesInUse, 0);
+});
+
+test("decoded-frame allowance rejects concurrent retained parse and releases failed reservation", async () => {
+  const budget = new P2PFrameByteBudget(6);
+  const body = Buffer.from("{}");
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(body.length);
+
+  const first = await readP2PFrameRetained(fakeReadableStream([header, body]), 8, 1_000, budget);
+  assert.equal(budget.metrics().bytesInUse, 4);
+
+  await assert.rejects(
+    () => readP2PFrameRetained(fakeReadableStream([header, body]), 8, 1_000, budget),
+    /byte budget exceeded/
+  );
+  assert.equal(budget.metrics().bytesInUse, 4, "failed decode reservation must release the competing encoded-body reservation");
+
+  first.release();
+  assert.equal(budget.metrics().bytesInUse, 0);
+});
+
+test("invalid JSON releases encoded and decoded frame reservations", async () => {
+  const budget = new P2PFrameByteBudget(8);
+  const body = Buffer.from("{");
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(body.length);
+
+  await assert.rejects(
+    () => readP2PFrameRetained(fakeReadableStream([header, body]), 8, 1_000, budget),
+    /Invalid P2P frame encoding/
+  );
+  assert.equal(budget.metrics().bytesInUse, 0);
+  assert.equal(budget.metrics().peakBytesInUse, 2);
 });
 
 test("native frame writer bounds aggregate serialization and slow-reader retention", async () => {
