@@ -35,6 +35,10 @@ import { LocalValidatorSigner, signWithValidator, type ValidatorSigner } from ".
 const MAX_BODY_BYTES = 2_500_000;
 export const MAX_RPC_JSON_NESTING_DEPTH = 64;
 export const MAX_RPC_JSON_STRUCTURAL_TOKENS = 250_000;
+export const MAX_PEER_RESPONSE_JSON_NESTING_DEPTH = 64;
+export const MAX_PEER_RESPONSE_JSON_STRUCTURAL_TOKENS = 250_000;
+export const MAX_PEER_RESPONSE_PARSE_BYTES_INFLIGHT = 128_000_000;
+const PEER_RESPONSE_JSON_NODE_ESTIMATE_BYTES = 64;
 export const RPC_API_VERSION = 1;
 export const MAX_SYNC_BLOCKS = 100;
 export const MAX_SYNC_RESPONSE_BYTES = 25_000_000;
@@ -761,7 +765,7 @@ export class PeerClient {
 
   async syncFrom(peer: string, service: NodeService): Promise<number> {
     const base = normalizePeerUrl(peer);
-    const remoteStatus = parseStatus(await getJson(`${base}/status`, 64_000));
+    const remoteStatus = await getJson(`${base}/status`, 64_000, parseStatus);
     const local = service.status();
     if (remoteStatus.chainId !== local.chainId || remoteStatus.genesisHash !== local.genesisHash) {
       throw new Error("Peer chain identity mismatch");
@@ -769,13 +773,8 @@ export class PeerClient {
     let accepted = 0;
     while (service.status().height < remoteStatus.height) {
       const from = service.status().height + 1;
-      const payload = await getJson(`${base}/blocks?from=${from}&limit=${MAX_SYNC_BLOCKS}`, MAX_SYNC_RESPONSE_BYTES);
-      assertPlainRecord(payload, "peer block response");
-      assertExactKeys(payload, ["blocks"], "peer block response");
-      if (!Array.isArray(payload.blocks) || payload.blocks.length === 0 || payload.blocks.length > MAX_SYNC_BLOCKS) {
-        throw new Error("Invalid peer block batch");
-      }
-      for (const block of payload.blocks) {
+      const blocks = await getJson(`${base}/blocks?from=${from}&limit=${MAX_SYNC_BLOCKS}`, MAX_SYNC_RESPONSE_BYTES, parsePeerBlockBatch);
+      for (const block of blocks) {
         await service.acceptFinalizedBlock(block);
         accepted += 1;
       }
@@ -789,7 +788,7 @@ export class PeerClient {
     nowMs = Date.now()
   ): Promise<SignedPeerRecord> {
     const base = normalizePeerUrl(peer);
-    return validateSignedPeerRecord(await getJson(`${base}/peer-record`, 64_000), expected, nowMs);
+    return getJson(`${base}/peer-record`, 64_000, (value) => validateSignedPeerRecord(value, expected, nowMs));
   }
 
   async fetchPeerRecords(
@@ -802,13 +801,14 @@ export class PeerClient {
       throw new Error("Invalid peer discovery request limit");
     }
     const base = normalizePeerUrl(peer);
-    const payload = await getJson(`${base}/peers?limit=${limit}`, 256_000);
-    assertPlainRecord(payload, "peer discovery response");
-    assertExactKeys(payload, ["records"], "peer discovery response");
-    if (!Array.isArray(payload.records) || payload.records.length > limit) {
-      throw new Error("Invalid peer discovery response");
-    }
-    return payload.records.map((record) => validateSignedPeerRecord(record, expected, nowMs));
+    return getJson(`${base}/peers?limit=${limit}`, 256_000, (payload) => {
+      assertPlainRecord(payload, "peer discovery response");
+      assertExactKeys(payload, ["records"], "peer discovery response");
+      if (!Array.isArray(payload.records) || payload.records.length > limit) {
+        throw new Error("Invalid peer discovery response");
+      }
+      return payload.records.map((record) => validateSignedPeerRecord(record, expected, nowMs));
+    });
   }
 
   async refreshPeerDirectory(
@@ -857,17 +857,17 @@ export class PeerClient {
       let candidate: { peer: string; height: number; blocks: unknown[] } | undefined;
       for (const batch of peerSyncProbeBatches(available, this.syncCursor)) {
         const attempts = await Promise.allSettled(batch.map(async (peer) => {
-            const status = parseStatus(await getJson(`${peer}/status`, 64_000));
+            const status = await getJson(`${peer}/status`, 64_000, parseStatus);
             const local = service.status();
             if (status.chainId !== local.chainId || status.genesisHash !== local.genesisHash) {
               throw new Error("Peer chain identity mismatch");
             }
             if (status.height <= startHeight) return null;
-            const payload = await getJson(
+            const blocks = await getJson(
               `${peer}/blocks?from=${startHeight + 1}&limit=${MAX_SYNC_BLOCKS}`,
-              MAX_SYNC_RESPONSE_BYTES
+              MAX_SYNC_RESPONSE_BYTES,
+              parsePeerBlockBatch
             );
-            const blocks = parsePeerBlockBatch(payload);
             service.store.chain.validateFinalizedBlock(blocks[0] as Block);
             return { peer, height: status.height, blocks };
         }));
@@ -912,10 +912,18 @@ export class PeerClient {
 
   async requestAttestations(block: Block): Promise<BlockAttestation[]> {
     const results = await Promise.allSettled(this.peers.map(async (peer) => {
-      const payload = await postJson(`${peer}/proposal/attest`, block, MAX_BODY_BYTES, this.peerAuthToken, this.peerRequestCredentials);
-      assertPlainRecord(payload, "attestation response");
-      assertExactKeys(payload, ["attestation"], "attestation response");
-      return payload.attestation as BlockAttestation;
+      return postJson(
+        `${peer}/proposal/attest`,
+        block,
+        MAX_BODY_BYTES,
+        this.peerAuthToken,
+        this.peerRequestCredentials,
+        (payload) => {
+          assertPlainRecord(payload, "attestation response");
+          assertExactKeys(payload, ["attestation"], "attestation response");
+          return payload.attestation as BlockAttestation;
+        }
+      );
     }));
     return results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
   }
@@ -926,10 +934,18 @@ export class PeerClient {
     previousCertificate: RoundSkipVote[] = []
   ): Promise<RoundSkipVote[]> {
     const results = await Promise.allSettled(this.peers.map(async (peer) => {
-      const payload = await postJson(`${peer}/round/skip`, { height, round, previousCertificate }, 128_000, this.peerAuthToken, this.peerRequestCredentials);
-      assertPlainRecord(payload, "round skip response");
-      assertExactKeys(payload, ["vote"], "round skip response");
-      return payload.vote as RoundSkipVote;
+      return postJson(
+        `${peer}/round/skip`,
+        { height, round, previousCertificate },
+        128_000,
+        this.peerAuthToken,
+        this.peerRequestCredentials,
+        (payload) => {
+          assertPlainRecord(payload, "round skip response");
+          assertExactKeys(payload, ["vote"], "round skip response");
+          return payload.vote as RoundSkipVote;
+        }
+      );
     }));
     return results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
   }
@@ -1124,22 +1140,27 @@ function peerTransportProtectsCredentials(value: string): boolean {
   return url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1" || url.hostname === "[::1]";
 }
 
-async function getJson(url: string, maxBytes: number): Promise<unknown> {
+async function getJson<T = unknown>(
+  url: string,
+  maxBytes: number,
+  validate: (value: unknown) => T = (value) => value as T
+): Promise<T> {
   const response = await fetch(url, {
     headers: { "x-zyron-rpc-version": String(RPC_API_VERSION) },
     signal: AbortSignal.timeout(PEER_TIMEOUT_MS)
   });
   if (!response.ok) throw new Error(`Peer returned HTTP ${response.status}`);
-  return parseBoundedResponse(response, maxBytes);
+  return parseBoundedResponse(response, maxBytes, validate);
 }
 
-async function postJson(
+async function postJson<T = unknown>(
   url: string,
   value: unknown,
   maxResponseBytes: number,
   peerAuthToken?: string,
-  peerRequestCredentials?: PeerRequestCredentials
-): Promise<unknown> {
+  peerRequestCredentials?: PeerRequestCredentials,
+  validate: (value: unknown) => T = (responseValue) => responseValue as T
+): Promise<T> {
   const headers: Record<string, string> = { "content-type": "application/json", "x-zyron-rpc-version": String(RPC_API_VERSION) };
   if (peerAuthToken) headers.authorization = `Bearer ${peerAuthToken}`;
   const body = canonicalJson(value);
@@ -1160,7 +1181,7 @@ async function postJson(
     signal: AbortSignal.timeout(PEER_TIMEOUT_MS)
   });
   if (!response.ok) throw new Error(`Peer returned HTTP ${response.status}`);
-  return parseBoundedResponse(response, maxResponseBytes);
+  return parseBoundedResponse(response, maxResponseBytes, validate);
 }
 
 function assertCompatibleRpcResponse(response: Response): void {
@@ -1173,7 +1194,74 @@ function assertCompatibleRpcResponse(response: Response): void {
   }
 }
 
-async function parseBoundedResponse(response: Response, maxBytes: number): Promise<unknown> {
+export function assertBoundedPeerResponseJsonStructure(body: Uint8Array): number {
+  let inString = false;
+  let escaped = false;
+  let depth = 0;
+  let tokens = 0;
+
+  for (const byte of body) {
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (byte === 0x5c) {
+        escaped = true;
+        continue;
+      }
+      if (byte === 0x22) inString = false;
+      continue;
+    }
+    if (byte === 0x22) {
+      inString = true;
+      continue;
+    }
+    if (byte === 0x7b || byte === 0x5b) {
+      depth += 1;
+      tokens += 1;
+      if (depth > MAX_PEER_RESPONSE_JSON_NESTING_DEPTH) throw new Error("Peer response JSON complexity exceeded");
+    } else if (byte === 0x7d || byte === 0x5d) {
+      depth = Math.max(0, depth - 1);
+      tokens += 1;
+    } else if (byte === 0x2c || byte === 0x3a) {
+      tokens += 1;
+    }
+    if (tokens > MAX_PEER_RESPONSE_JSON_STRUCTURAL_TOKENS) {
+      throw new Error("Peer response JSON complexity exceeded");
+    }
+  }
+  return tokens;
+}
+
+export function parsePeerResponseJsonChunks(
+  chunks: readonly Uint8Array[],
+  totalBytes: number,
+  parseBudget: PeerResponseByteBudget
+): { value: unknown; release: () => void } {
+  if (!Number.isSafeInteger(totalBytes) || totalBytes < 1) throw new Error("Invalid peer response JSON parse size");
+  const releaseTransient = parseBudget.reserve(totalBytes * 3);
+  let releaseDecoded: (() => void) | undefined;
+  try {
+    const body = Buffer.concat(chunks, totalBytes);
+    const structuralTokens = assertBoundedPeerResponseJsonStructure(body);
+    const decodedBytes = totalBytes + (structuralTokens * PEER_RESPONSE_JSON_NODE_ESTIMATE_BYTES);
+    releaseDecoded = parseBudget.reserve(decodedBytes);
+    const value = JSON.parse(body.toString("utf8")) as unknown;
+    const retainedRelease = releaseDecoded;
+    releaseDecoded = undefined;
+    return { value, release: retainedRelease };
+  } finally {
+    releaseDecoded?.();
+    releaseTransient();
+  }
+}
+
+async function parseBoundedResponse<T>(
+  response: Response,
+  maxBytes: number,
+  validate: (value: unknown) => T
+): Promise<T> {
   const contentType = response.headers.get("content-type");
   if (!contentType || !/^application\/json(?:\s*;|$)/i.test(contentType)) {
     await response.body?.cancel();
@@ -1196,6 +1284,7 @@ async function parseBoundedResponse(response: Response, maxBytes: number): Promi
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   const releases: Array<() => void> = [];
+  let releaseDecoded: (() => void) | undefined;
   let total = 0;
   try {
     while (true) {
@@ -1215,8 +1304,12 @@ async function parseBoundedResponse(response: Response, maxBytes: number): Promi
       }
       chunks.push(value);
     }
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (total === 0) throw new Error("Peer returned empty body");
+    const parsed = parsePeerResponseJsonChunks(chunks, total, peerResponseParseByteBudget);
+    releaseDecoded = parsed.release;
+    return validate(parsed.value);
   } finally {
+    releaseDecoded?.();
     for (const release of releases) release();
   }
 }
@@ -1588,6 +1681,7 @@ export class PeerResponseByteBudget {
 }
 
 const peerResponseByteBudget = new PeerResponseByteBudget(MAX_PEER_RESPONSE_BYTES_INFLIGHT);
+const peerResponseParseByteBudget = new PeerResponseByteBudget(MAX_PEER_RESPONSE_PARSE_BYTES_INFLIGHT);
 
 function safeError(error: unknown): string {
   return error instanceof Error ? error.message : "Request failed";
