@@ -925,7 +925,7 @@ export class PeerClient {
   ): Promise<RoundSkipVote[]> {
     const results = await Promise.allSettled(this.peers.map(async (peer) => {
       const payload = await postJson(`${peer}/round/skip`, { height, round, previousCertificate }, 128_000, this.peerAuthToken, this.peerRequestCredentials);
-      assertPlainRecord(payload, "attestation response");
+      assertPlainRecord(payload, "round skip response");
       assertExactKeys(payload, ["vote"], "round skip response");
       return payload.vote as RoundSkipVote;
     }));
