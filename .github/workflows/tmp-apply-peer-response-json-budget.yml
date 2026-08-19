@@ -1,0 +1,36 @@
+name: Temporary Peer Response JSON Budget Patcher
+
+on:
+  push:
+    branches:
+      - agent/peer-response-json-parse-budget-v1
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message == 'Add temporary peer response JSON budget patch workflow'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: agent/peer-response-json-parse-budget-v1
+      - name: Apply peer response JSON budget patch
+        run: node l1/scripts/apply-peer-response-json-budget.mjs
+      - name: Verify diff
+        run: git diff --check
+      - name: Remove temporary patch machinery
+        run: git rm l1/scripts/apply-peer-response-json-budget.mjs .github/workflows/tmp-apply-peer-response-json-budget.yml
+      - name: Commit and push final branch changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name 'Zyron Chain'
+          git config user.email 'ciyagerkurdi@icloud.com'
+          git add l1/src/node-base.ts l1/test/peer-response-json-parse-budget.test.ts docs/PEER_HTTP_JSON_PARSE_BUDGET.md
+          git commit -m 'Budget configured-peer JSON parse memory'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:agent/peer-response-json-parse-budget-v1
