@@ -37,7 +37,7 @@ export const MAX_RPC_JSON_NESTING_DEPTH = 64;
 export const MAX_RPC_JSON_STRUCTURAL_TOKENS = 250_000;
 export const MAX_PEER_RESPONSE_JSON_NESTING_DEPTH = 64;
 export const MAX_PEER_RESPONSE_JSON_STRUCTURAL_TOKENS = 250_000;
-export const MAX_PEER_RESPONSE_PARSE_BYTES_INFLIGHT = 128_000_000;
+export const MAX_PEER_RESPONSE_PARSE_BYTES_INFLIGHT = 160_000_000;
 const PEER_RESPONSE_JSON_NODE_ESTIMATE_BYTES = 64;
 export const RPC_API_VERSION = 1;
 export const MAX_SYNC_BLOCKS = 100;
@@ -1245,7 +1245,7 @@ export function parsePeerResponseJsonChunks(
   try {
     const body = Buffer.concat(chunks, totalBytes);
     const structuralTokens = assertBoundedPeerResponseJsonStructure(body);
-    const decodedBytes = totalBytes + (structuralTokens * PEER_RESPONSE_JSON_NODE_ESTIMATE_BYTES);
+    const decodedBytes = (totalBytes * 2) + (structuralTokens * PEER_RESPONSE_JSON_NODE_ESTIMATE_BYTES);
     releaseDecoded = parseBudget.reserve(decodedBytes);
     const value = JSON.parse(body.toString("utf8")) as unknown;
     const retainedRelease = releaseDecoded;
