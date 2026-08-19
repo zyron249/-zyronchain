@@ -1,9 +1,9 @@
 name: RPC Hardening Branch Cleanup
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/rpc-forwarded-hop-cardinality-v1
+      - main
     paths:
       - '.github/workflows/rpc-roundskip-label-fix.yml'
 
