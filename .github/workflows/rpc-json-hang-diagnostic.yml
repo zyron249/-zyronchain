@@ -12,7 +12,7 @@ permissions:
 jobs:
   diagnose:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: l1
@@ -29,12 +29,8 @@ jobs:
           cache-dependency-path: l1/package-lock.json
       - name: Install and build
         run: npm ci && npm run build
-      - name: Run compiled test files one by one with a hard timeout
+      - name: Run the legacy aggregate L1 test file with a bounded diagnostic timeout
         shell: bash
         run: |
           set -euo pipefail
-          for file in $(find dist/test -maxdepth 1 -type f -name '*.test.js' | sort); do
-            echo "::group::$file"
-            timeout --signal=TERM --kill-after=5s 45s node --test "$file"
-            echo "::endgroup::"
-          done
+          timeout --signal=TERM --kill-after=10s 180s node --test dist/test/l1.test.js
