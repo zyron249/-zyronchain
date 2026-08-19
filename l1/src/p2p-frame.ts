@@ -174,8 +174,17 @@ export async function readP2PFrameRetained(
             // allocating a decoded object graph.
             assertBoundedJsonStructure(body);
             decodedRelease = budget.reserve(expectedBytes);
-            decoded = JSON.parse(body.toString("utf8")) as unknown;
-            decodedFrame = true;
+            // `body.toString("utf8")` creates a transient JavaScript string that
+            // coexists with the retained body and the object graph allocated by
+            // JSON.parse. Account for that third frame-sized representation before
+            // allocating it, then release only the transient allowance after parse.
+            const releaseUtf8Decode = budget.reserve(expectedBytes);
+            try {
+              decoded = JSON.parse(body.toString("utf8")) as unknown;
+              decodedFrame = true;
+            } finally {
+              releaseUtf8Decode();
+            }
           } catch (error) {
             if (error instanceof Error && (
               error.message === "P2P frame byte budget exceeded" ||
