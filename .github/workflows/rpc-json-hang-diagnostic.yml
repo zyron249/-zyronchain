@@ -1,0 +1,40 @@
+name: RPC JSON Hang Diagnostic
+
+on:
+  pull_request:
+    paths:
+      - 'l1/**'
+      - '.github/workflows/rpc-json-hang-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: l1
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+      - name: Install and build
+        run: npm ci && npm run build
+      - name: Run compiled test files one by one with a hard timeout
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in $(find dist/test -maxdepth 1 -type f -name '*.test.js' | sort); do
+            echo "::group::$file"
+            timeout --signal=TERM --kill-after=5s 45s node --test "$file"
+            echo "::endgroup::"
+          done
