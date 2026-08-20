@@ -131,7 +131,7 @@ export async function fetchTrustedSnapshotFromPeer(
   let offset = 0;
   let totalBytes: number | undefined;
   let height: number | undefined;
-  const chunks: Buffer[] = [];
+  let snapshotBytes: Buffer | undefined;
   for (let chunkIndex = 0; chunkIndex < MAX_CHECKPOINT_CHUNKS; chunkIndex += 1) {
     const stream = await connection.newStream(P2P_CHECKPOINT_PROTOCOL, {
       signal: AbortSignal.timeout(P2P_CHECKPOINT_TIMEOUT_MS)
@@ -151,16 +151,23 @@ export async function fetchTrustedSnapshotFromPeer(
       releaseFrame = retained.release;
       const response = parseResponse(retained.value, expected, connection.remotePeer, anchor, offset);
       await stream.close({ signal: AbortSignal.timeout(P2P_CHECKPOINT_TIMEOUT_MS) });
-      totalBytes ??= response.totalBytes;
-      height ??= response.height;
-      if (response.totalBytes !== totalBytes || response.height !== height) {
+      if (totalBytes === undefined) {
+        totalBytes = response.totalBytes;
+        height = response.height;
+        // The response parser already bounds totalBytes to <=64 MiB. Allocate
+        // one destination buffer and fill it only at the exact validated offset;
+        // the completion check below prevents any uninitialized bytes from
+        // reaching UTF-8/JSON parsing.
+        snapshotBytes = Buffer.allocUnsafe(totalBytes);
+      } else if (response.totalBytes !== totalBytes || response.height !== height) {
         throw new Error("Checkpoint metadata changed during transfer");
       }
       const bytes = decodeCanonicalBase64(response.data);
       if (bytes.length < 1 || bytes.length > MAX_CHECKPOINT_CHUNK_BYTES || offset + bytes.length > totalBytes) {
         throw new Error("Invalid checkpoint chunk length");
       }
-      chunks.push(bytes);
+      if (!snapshotBytes) throw new Error("Checkpoint transfer buffer is unavailable");
+      bytes.copy(snapshotBytes, offset);
       offset += bytes.length;
       if (offset === totalBytes) break;
     } catch (error) {
@@ -170,9 +177,10 @@ export async function fetchTrustedSnapshotFromPeer(
       releaseFrame?.();
     }
   }
-  if (totalBytes === undefined || offset !== totalBytes) throw new Error("Checkpoint transfer exceeded bounded chunk budget");
-  const bytes = Buffer.concat(chunks, totalBytes);
-  const text = bytes.toString("utf8");
+  if (totalBytes === undefined || !snapshotBytes || offset !== totalBytes) {
+    throw new Error("Checkpoint transfer exceeded bounded chunk budget");
+  }
+  const text = snapshotBytes.toString("utf8");
   if (sha256Hex(text) !== anchor.snapshotSha256) throw new Error("Checkpoint transfer digest mismatch");
   let value: unknown;
   try { value = JSON.parse(text) as unknown; } catch { throw new Error("Checkpoint transfer is not valid JSON"); }
