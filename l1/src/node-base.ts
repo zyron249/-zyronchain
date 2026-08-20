@@ -56,6 +56,7 @@ const DEFAULT_RPC_MAX_CONNECTIONS = 256;
 const DEFAULT_RPC_MAX_INFLIGHT_REQUESTS = 128;
 export const DEFAULT_RPC_MAX_INFLIGHT_BODY_BYTES = 25_000_000;
 export const DEFAULT_RPC_MAX_INFLIGHT_RESPONSE_BYTES = 25_000_000;
+export const MAX_SMALL_RPC_RESPONSE_SERIALIZATION_BYTES = 4_000_000;
 export const RPC_MAX_HEADERS = 64;
 export const RPC_MAX_REQUESTS_PER_SOCKET = 100;
 export const MAX_RPC_TRUSTED_PROXIES = 16;
@@ -673,7 +674,7 @@ async function route(
   if (request.method === "GET" && url.pathname === "/blocks") {
     const from = parseInteger(url.searchParams.get("from"), "from");
     const limit = url.searchParams.has("limit") ? parseInteger(url.searchParams.get("limit"), "limit") : MAX_SYNC_BLOCKS;
-    return writeJson(response, 200, { blocks: await service.blocks(from, limit) });
+    return writeJson(response, 200, { blocks: await service.blocks(from, limit) }, MAX_SYNC_RESPONSE_BYTES);
   }
   if (request.method === "GET" && (url.pathname.startsWith("/balance/") || url.pathname.startsWith("/nonce/"))) {
     const address = decodeURIComponent(url.pathname.split("/")[2] ?? "");
@@ -1457,26 +1458,70 @@ async function readJsonBody(request: IncomingMessage, bodyReservation?: RpcReque
   return parseRpcJsonChunks(chunks, total, bodyReservation);
 }
 
-function writeJson(response: ServerResponse, status: number, value: unknown): void {
+const RPC_RESPONSE_OVERLOAD_BODY = '{"error":"Aggregate RPC response byte budget exceeded"}';
+
+function writeRpcResponseOverload(response: ServerResponse): void {
   if (response.headersSent) return;
-  const body = JSON.stringify(value);
-  const bodyBytes = Buffer.byteLength(body);
+  response.setHeader("retry-after", "1");
+  response.setHeader("connection", "close");
+  response.writeHead(503, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(RPC_RESPONSE_OVERLOAD_BODY),
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    "x-zyron-rpc-version": String(RPC_API_VERSION)
+  });
+  response.end(RPC_RESPONSE_OVERLOAD_BODY);
+}
+
+export function serializeRpcJsonWithBudget(
+  value: unknown,
+  budget: RpcResponseByteBudget,
+  serializationUpperBoundBytes = MAX_SMALL_RPC_RESPONSE_SERIALIZATION_BYTES
+): { body: string; bodyBytes: number; release: () => void } {
+  const allowance = Math.min(serializationUpperBoundBytes, budget.maxBytes);
+  const reservation = budget.reserveForSerialization(allowance);
+  try {
+    const body = JSON.stringify(value);
+    if (body === undefined) throw new Error("RPC response is not JSON serializable");
+    const bodyBytes = Buffer.byteLength(body);
+    if (bodyBytes > allowance) {
+      throw new RpcResponseBudgetError("RPC response exceeded pre-serialization byte allowance");
+    }
+    const release = reservation.commit(bodyBytes);
+    return { body, bodyBytes, release };
+  } catch (error) {
+    reservation.release();
+    throw error;
+  }
+}
+
+function writeJson(
+  response: ServerResponse,
+  status: number,
+  value: unknown,
+  serializationUpperBoundBytes = MAX_SMALL_RPC_RESPONSE_SERIALIZATION_BYTES
+): void {
+  if (response.headersSent) return;
+  const budget = rpcResponseBudgets.get(response);
+  let body: string;
+  let bodyBytes: number;
   let release: (() => void) | undefined;
   try {
-    release = rpcResponseBudgets.get(response)?.reserve(bodyBytes);
-  } catch {
-    const overload = JSON.stringify({ error: "Aggregate RPC response byte budget exceeded" });
-    response.setHeader("retry-after", "1");
-    response.setHeader("connection", "close");
-    response.writeHead(503, {
-      "content-type": "application/json; charset=utf-8",
-      "content-length": Buffer.byteLength(overload),
-      "cache-control": "no-store",
-      "x-content-type-options": "nosniff",
-      "x-zyron-rpc-version": String(RPC_API_VERSION)
-    });
-    response.end(overload);
-    return;
+    if (budget) {
+      ({ body, bodyBytes, release } = serializeRpcJsonWithBudget(value, budget, serializationUpperBoundBytes));
+    } else {
+      const serialized = JSON.stringify(value);
+      if (serialized === undefined) throw new Error("RPC response is not JSON serializable");
+      body = serialized;
+      bodyBytes = Buffer.byteLength(body);
+    }
+  } catch (error) {
+    if (error instanceof RpcResponseBudgetError) {
+      writeRpcResponseOverload(response);
+      return;
+    }
+    throw error;
   }
   if (release) {
     response.once("finish", release);
@@ -1654,7 +1699,14 @@ export class RpcRequestBodyByteBudget {
   }
 }
 
-class RpcResponseByteBudget {
+export class RpcResponseBudgetError extends Error {}
+
+interface RpcResponseSerializationReservation {
+  commit(actualBytes: number): () => void;
+  release(): void;
+}
+
+export class RpcResponseByteBudget {
   private reservedBytes = 0;
   private rejectedReservations = 0;
 
@@ -1665,7 +1717,7 @@ class RpcResponseByteBudget {
   reserve(bytes: number): () => void {
     if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > this.maxBytes - this.reservedBytes) {
       this.rejectedReservations += 1;
-      throw new Error("Aggregate RPC response byte budget exceeded");
+      throw new RpcResponseBudgetError("Aggregate RPC response byte budget exceeded");
     }
     this.reservedBytes += bytes;
     let released = false;
@@ -1673,6 +1725,40 @@ class RpcResponseByteBudget {
       if (released) return;
       released = true;
       this.reservedBytes -= bytes;
+    };
+  }
+
+  reserveForSerialization(maxBytes: number): RpcResponseSerializationReservation {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > this.maxBytes - this.reservedBytes) {
+      this.rejectedReservations += 1;
+      throw new RpcResponseBudgetError("Aggregate RPC response byte budget exceeded");
+    }
+    this.reservedBytes += maxBytes;
+    let heldBytes = maxBytes;
+    let committed = false;
+    return {
+      commit: (actualBytes: number): (() => void) => {
+        if (committed || heldBytes === 0) throw new Error("RPC response serialization reservation already committed");
+        if (!Number.isSafeInteger(actualBytes) || actualBytes < 1 || actualBytes > heldBytes) {
+          this.rejectedReservations += 1;
+          throw new RpcResponseBudgetError("RPC response exceeded pre-serialization byte allowance");
+        }
+        committed = true;
+        this.reservedBytes -= heldBytes - actualBytes;
+        heldBytes = actualBytes;
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          this.reservedBytes -= heldBytes;
+          heldBytes = 0;
+        };
+      },
+      release: (): void => {
+        if (heldBytes === 0) return;
+        this.reservedBytes -= heldBytes;
+        heldBytes = 0;
+      }
     };
   }
 

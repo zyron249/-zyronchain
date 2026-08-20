@@ -217,3 +217,7 @@ Both paths must reopen without a corrupt intermediate history; any recovered blo
 ## 13. Incident posture
 
 Safety outranks liveness. Operators must not lower quorum, delete journals, patch hashes, accept peer-provided trust anchors or improvise emergency mint/admin authority. Conflicting finalized tips, equivocation, historical issuance above 50M ZYN, mining-counter divergence, unexplained miner reward differences or state-root disagreement are critical incidents requiring signing freeze and evidence preservation.
+
+## RPC response serialization memory admission
+
+Large RPC responses must reserve a conservative serialization allowance from the aggregate response-byte budget before `JSON.stringify`. The allowance is shrunk to the actual body reservation and retained through socket finish/close; failed serialization or admission releases transient capacity. Finalized block batches use the 25 MiB sync-response bound, while ordinary responses use a 4 MiB bound. The fixed overload body avoids recursive serialization under memory pressure. See [RPC response serialization memory boundary](./RPC_RESPONSE_SERIALIZATION_BUDGET.md). This control is local DoS hardening only and does not establish deployment readiness.
