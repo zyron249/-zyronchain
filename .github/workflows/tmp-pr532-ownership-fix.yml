@@ -1,19 +1,21 @@
 name: Temporary PR 532 ownership fix
 
-# trigger ownership patch execution
 on:
-  push:
+  pull_request:
     branches:
-      - agent/peer-response-json-parse-budget-v2
+      - main
     paths:
       - 'l1/scripts/tmp-pr532-ownership-fix.mjs'
       - '.github/workflows/tmp-pr532-ownership-fix.yml'
+      - 'l1/src/node-base.ts'
+      - 'docs/PEER_HTTP_JSON_PARSE_BUDGET.md'
 
 permissions:
   contents: write
 
 jobs:
   patch:
+    if: github.head_ref == 'agent/peer-response-json-parse-budget-v2'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
