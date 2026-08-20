@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { readBoundedFileBuffer, readBoundedUtf8File, type BoundedFileFaultHooks } from "./bounded-file.js";
 import { assertBoundedCheckpointJsonStructure } from "./checkpoint-json-complexity.js";
 import { readBoundedRegularControlFile } from "./control-file.js";
@@ -10,6 +12,16 @@ export const CLI_CHECKPOINT_SNAPSHOT_MAX_BYTES = 64 * 1024 * 1024;
 
 export async function readCliGenesisUtf8(path: string): Promise<string> {
   return readBoundedRegularControlFile(path, "CLI genesis file", CLI_GENESIS_MAX_BYTES);
+}
+
+async function readCliCheckpointSnapshotBuffer(
+  path: string,
+  maxBytes: number,
+  faultHooks: BoundedFileFaultHooks
+): Promise<Buffer> {
+  const body = await readBoundedFileBuffer(path, maxBytes, "CLI checkpoint snapshot", faultHooks);
+  if (body.length < 1) throw new Error("CLI checkpoint snapshot must be non-empty");
+  return body;
 }
 
 /**
@@ -25,8 +37,30 @@ export async function readCliCheckpointSnapshotUtf8(
   maxBytes = CLI_CHECKPOINT_SNAPSHOT_MAX_BYTES,
   faultHooks: BoundedFileFaultHooks = {}
 ): Promise<string> {
-  const body = await readBoundedFileBuffer(path, maxBytes, "CLI checkpoint snapshot", faultHooks);
-  if (body.length < 1) throw new Error("CLI checkpoint snapshot must be non-empty");
+  const body = await readCliCheckpointSnapshotBuffer(path, maxBytes, faultHooks);
+  assertBoundedCheckpointJsonStructure(body);
+  return body.toString("utf8");
+}
+
+/**
+ * Published checkpoint-install has an independently trusted SHA-256 anchor.
+ * Verify it on the already bounded descriptor-owned bytes before structural
+ * scanning, UTF-8 materialization or JSON.parse can allocate from untrusted
+ * snapshot content. Hashing streams the existing Buffer into crypto state and
+ * does not allocate another snapshot-sized copy.
+ */
+export async function readCliCheckpointSnapshotAnchoredUtf8(
+  path: string,
+  expectedSha256: string,
+  maxBytes = CLI_CHECKPOINT_SNAPSHOT_MAX_BYTES,
+  faultHooks: BoundedFileFaultHooks = {}
+): Promise<string> {
+  if (!/^[0-9a-f]{64}$/.test(expectedSha256)) {
+    throw new Error("CLI checkpoint snapshot requires a lowercase 32-byte SHA-256 anchor");
+  }
+  const body = await readCliCheckpointSnapshotBuffer(path, maxBytes, faultHooks);
+  const actualSha256 = createHash("sha256").update(body).digest("hex");
+  if (actualSha256 !== expectedSha256) throw new Error("CLI checkpoint snapshot SHA-256 mismatch");
   assertBoundedCheckpointJsonStructure(body);
   return body.toString("utf8");
 }
