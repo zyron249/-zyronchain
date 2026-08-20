@@ -1,0 +1,20 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import test from "node:test";
+
+test("trusted checkpoint fetch assembles into one bounded destination buffer", async () => {
+  const source = await readFile(resolve(process.cwd(), "src", "p2p-checkpoint.ts"), "utf8");
+  const start = source.indexOf("export async function fetchTrustedSnapshotFromPeer");
+  const end = source.indexOf("\nfunction snapshotForServing", start);
+  assert.ok(start >= 0 && end > start, "checkpoint fetch implementation must be present");
+  const fetchSource = source.slice(start, end);
+
+  assert.doesNotMatch(fetchSource, /const\s+chunks\s*:\s*Buffer\[\]/);
+  assert.doesNotMatch(fetchSource, /chunks\.push\s*\(/);
+  assert.doesNotMatch(fetchSource, /Buffer\.concat\s*\(\s*chunks\b/);
+  assert.match(fetchSource, /snapshotBytes\s*=\s*Buffer\.allocUnsafe\(totalBytes\)/);
+  assert.match(fetchSource, /bytes\.copy\(snapshotBytes,\s*offset\)/);
+  assert.match(fetchSource, /offset\s*!==\s*totalBytes/);
+  assert.match(fetchSource, /snapshotBytes\.toString\("utf8"\)/);
+});
