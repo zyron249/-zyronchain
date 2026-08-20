@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 const legacyFlakyName = "signing journal releases its writer lease after hard crash without losing the reserved choice";
 const deterministicName = "signing journal hard-crash lease uses deterministic holder liveness";
+export const L1_TEST_TIMEOUT_MS = 10 * 60 * 1000;
 const directory = join(process.cwd(), "dist", "test");
 const files = (await readdir(directory))
   .filter((name) => name.endsWith(".test.js"))
@@ -26,7 +27,11 @@ if (!deterministicSuite.includes(deterministicName)) {
   throw new Error("Deterministic signing-lease crash regression title changed or disappeared");
 }
 
-const child = spawn(process.execPath, ["--test", ...files], {
+const child = spawn(process.execPath, [
+  "--test",
+  `--test-timeout=${L1_TEST_TIMEOUT_MS}`,
+  ...files
+], {
   stdio: "inherit"
 });
 child.once("error", (error) => {
