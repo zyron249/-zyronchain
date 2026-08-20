@@ -21,6 +21,7 @@ import { loadEncryptedMinerPrivateKey } from "../dist/src/miner-security.js";
 import { assertRpcResponseVersion } from "../dist/src/rpc-response-version.js";
 import { createMiningClaim } from "../dist/src/transaction.js";
 import { MAX_SUPPLY_ATOMS } from "../dist/src/types.js";
+import { readBoundedJsonResponse } from "./miner-rpc-response.mjs";
 
 const MAX_RPC_RESPONSE_BYTES = 64 * 1024;
 const RPC_API_VERSION = 1;
@@ -122,7 +123,6 @@ while (!stopped) {
     }
     if (solution || stopped) break;
 
-    // A solution is useful only for the exact finalized tip and network identity it was built on.
     const latest = await fetchAndValidateStatus();
     if (!miningChallengeMatchesFinalizedTip(latest, challenge)) {
       console.log("Finalized tip changed; abandoning stale work and rebuilding challenge.");
@@ -136,9 +136,6 @@ while (!stopped) {
   if (stopped) break;
   if (!solution) continue;
 
-  // Close the race between the last batch refresh and submission. The RPC may
-  // have switched network identity or finalized a new tip while the solution
-  // was found inside the batch; never sign/submit until both are revalidated.
   const beforeSubmit = await fetchAndValidateStatus();
   if (!miningChallengeMatchesFinalizedTip(beforeSubmit, challenge)) {
     console.log("Solved work became stale before submission; rebuilding challenge.");
@@ -172,7 +169,6 @@ while (!stopped) {
   }
   if (once) break;
 
-  // Avoid repeatedly mining the same tip while this claim waits for finalization.
   while (!stopped) {
     await sleep(1_000);
     const latest = await fetchAndValidateStatus();
@@ -192,7 +188,7 @@ Options:
   --password-file <p>   Required; password file for the encrypted miner keystore
   --help, -h            Show this help
 
-The miner accepts encrypted ZyronChain keystores only. It reads genesis through a bounded regular-file descriptor, derives the canonical genesis hash, and refuses an RPC whose chain ID or genesis hash differs. RPC responses must explicitly advertise API version 1. On POSIX systems symlink/non-regular genesis paths are rejected; the keystore and password file must be owner-only (0600 recommended). Remote RPC must use HTTPS. Plain HTTP is accepted only for loopback.`);
+The miner accepts encrypted ZyronChain keystores only. It reads genesis through a bounded regular-file descriptor, derives the canonical genesis hash, and refuses an RPC whose chain ID or genesis hash differs. RPC responses must explicitly advertise API version 1, stay within 64 KiB, and pass bounded JSON structural checks. On POSIX systems symlink/non-regular genesis paths are rejected; the keystore and password file must be owner-only (0600 recommended). Remote RPC must use HTTPS. Plain HTTP is accepted only for loopback.`);
 }
 
 function assertKnownArgs() {
@@ -274,7 +270,7 @@ async function fetchJson(url, init = {}, timeoutMs = 8_000) {
     signal: AbortSignal.timeout(timeoutMs)
   });
   assertRpcResponseVersion(response, RPC_API_VERSION, "RPC server");
-  const text = await readBoundedBody(response);
+  const { value, text } = await readBoundedJsonResponse(response, MAX_RPC_RESPONSE_BYTES);
   if (!response.ok) {
     throw new Error(`RPC HTTP ${response.status}: ${text.slice(0, 300)}`);
   }
@@ -282,38 +278,7 @@ async function fetchJson(url, init = {}, timeoutMs = 8_000) {
   if (!contentType.startsWith("application/json")) {
     throw new Error(`RPC returned unsupported content type: ${contentType || "missing"}`);
   }
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error("RPC returned invalid JSON");
-  }
-}
-
-async function readBoundedBody(response) {
-  const declared = response.headers.get("content-length");
-  if (declared !== null) {
-    if (!/^[0-9]+$/.test(declared)) throw new Error("RPC returned invalid Content-Length");
-    if (Number(declared) > MAX_RPC_RESPONSE_BYTES) throw new Error("RPC response exceeds 64 KiB limit");
-  }
-  if (!response.body) return "";
-  const reader = response.body.getReader();
-  const chunks = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_RPC_RESPONSE_BYTES) {
-        await reader.cancel("response-too-large");
-        throw new Error("RPC response exceeds 64 KiB limit");
-      }
-      chunks.push(Buffer.from(value));
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  return Buffer.concat(chunks, total).toString("utf8");
+  return value;
 }
 
 function formatZyn(atoms) {
