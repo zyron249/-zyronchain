@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { ReadableStream } from 'node:stream/web';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { assertJsonComplexity, readBoundedJsonResponse } from './miner-rpc-response.mjs';
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 function responseFromChunks(chunks, headers = {}) {
   return new Response(new ReadableStream({
@@ -56,5 +61,13 @@ await assert.rejects(
   readBoundedJsonResponse(responseFromChunks(['{"broken":']), 1024),
   /invalid JSON/
 );
+
+{
+  const minerSource = await readFile(join(here, 'mine.mjs'), 'utf8');
+  const packageSource = await readFile(join(here, 'package-miner.mjs'), 'utf8');
+  assert.match(minerSource, /readBoundedJsonResponse/);
+  assert.doesNotMatch(minerSource, /Buffer\.concat\(chunks/);
+  assert.match(packageSource, /miner-rpc-response\.mjs/);
+}
 
 console.log('miner RPC response parser regressions passed');
