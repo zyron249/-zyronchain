@@ -773,10 +773,14 @@ export class PeerClient {
     let accepted = 0;
     while (service.status().height < remoteStatus.height) {
       const from = service.status().height + 1;
-      const blocks = await getJson(`${base}/blocks?from=${from}&limit=${MAX_SYNC_BLOCKS}`, MAX_SYNC_RESPONSE_BYTES, parsePeerBlockBatch);
-      for (const block of blocks) {
-        await service.acceptFinalizedBlock(block);
-        accepted += 1;
+      const leasedBlocks = await getJsonRetained(`${base}/blocks?from=${from}&limit=${MAX_SYNC_BLOCKS}`, MAX_SYNC_RESPONSE_BYTES, parsePeerBlockBatch);
+      try {
+        for (const block of leasedBlocks.value) {
+          await service.acceptFinalizedBlock(block);
+          accepted += 1;
+        }
+      } finally {
+        leasedBlocks.release();
       }
     }
     return accepted;
@@ -854,7 +858,7 @@ export class PeerClient {
       const nowMs = Date.now();
       const available = this.peers
         .filter((peer) => (this.failureUntil.get(peer) ?? 0) <= nowMs && (this.peerReputation?.isAvailable(peer, nowMs) ?? true));
-      let candidate: { peer: string; height: number; blocks: unknown[] } | undefined;
+      let candidate: { peer: string; height: number; blocks: unknown[]; release: () => void } | undefined;
       for (const batch of peerSyncProbeBatches(available, this.syncCursor)) {
         const attempts = await Promise.allSettled(batch.map(async (peer) => {
             const status = await getJson(`${peer}/status`, 64_000, parseStatus);
@@ -863,13 +867,18 @@ export class PeerClient {
               throw new Error("Peer chain identity mismatch");
             }
             if (status.height <= startHeight) return null;
-            const blocks = await getJson(
+            const leasedBlocks = await getJsonRetained(
               `${peer}/blocks?from=${startHeight + 1}&limit=${MAX_SYNC_BLOCKS}`,
               MAX_SYNC_RESPONSE_BYTES,
               parsePeerBlockBatch
             );
-            service.store.chain.validateFinalizedBlock(blocks[0] as Block);
-            return { peer, height: status.height, blocks };
+            try {
+              service.store.chain.validateFinalizedBlock(leasedBlocks.value[0] as Block);
+              return { peer, height: status.height, blocks: leasedBlocks.value, release: leasedBlocks.release };
+            } catch (error) {
+              leasedBlocks.release();
+              throw error;
+            }
         }));
         for (let index = 0; index < attempts.length; index += 1) {
           const result = attempts[index]!;
@@ -878,7 +887,9 @@ export class PeerClient {
             await this.recordFailure(peer, nowMs);
             continue;
           }
-          if (!candidate && result.value) candidate = result.value;
+          if (!result.value) continue;
+          if (!candidate) candidate = result.value;
+          else result.value.release();
         }
         if (candidate) break;
       }
@@ -888,22 +899,26 @@ export class PeerClient {
       this.syncCursor = selectedGroupIndex < 0 || groups.length === 0 ? 0 : (selectedGroupIndex + 1) % groups.length;
 
       let progressed = false;
-      let poisoned = false;
-      for (const block of candidate.blocks) {
-        try {
-          await service.acceptFinalizedBlock(block);
-          accepted += 1;
-          progressed = true;
-        } catch {
-          poisoned = true;
-          break;
+      try {
+        let poisoned = false;
+        for (const block of candidate.blocks) {
+          try {
+            await service.acceptFinalizedBlock(block);
+            accepted += 1;
+            progressed = true;
+          } catch {
+            poisoned = true;
+            break;
+          }
         }
-      }
-      if (poisoned) {
-        await this.recordFailure(candidate.peer, Date.now());
-      } else if (progressed) {
-        this.failureUntil.delete(candidate.peer);
-        await this.peerReputation?.recordSuccess(candidate.peer, Date.now());
+        if (poisoned) {
+          await this.recordFailure(candidate.peer, Date.now());
+        } else if (progressed) {
+          this.failureUntil.delete(candidate.peer);
+          await this.peerReputation?.recordSuccess(candidate.peer, Date.now());
+        }
+      } finally {
+        candidate.release();
       }
       if (!progressed || service.status().height <= startHeight) break;
     }
@@ -1153,6 +1168,21 @@ async function getJson<T = unknown>(
   return parseBoundedResponse(response, maxBytes, validate);
 }
 
+type RetainedPeerResponse<T> = { value: T; release: () => void };
+
+async function getJsonRetained<T>(
+  url: string,
+  maxBytes: number,
+  validate: (value: unknown) => T
+): Promise<RetainedPeerResponse<T>> {
+  const response = await fetch(url, {
+    headers: { "x-zyron-rpc-version": String(RPC_API_VERSION) },
+    signal: AbortSignal.timeout(PEER_TIMEOUT_MS)
+  });
+  if (!response.ok) throw new Error(`Peer returned HTTP ${response.status}`);
+  return parseBoundedResponseRetained(response, maxBytes, validate);
+}
+
 async function postJson<T = unknown>(
   url: string,
   value: unknown,
@@ -1257,11 +1287,11 @@ export function parsePeerResponseJsonChunks(
   }
 }
 
-async function parseBoundedResponse<T>(
+async function parseBoundedResponseRetained<T>(
   response: Response,
   maxBytes: number,
   validate: (value: unknown) => T
-): Promise<T> {
+): Promise<RetainedPeerResponse<T>> {
   const contentType = response.headers.get("content-type");
   if (!contentType || !/^application\/json(?:\s*;|$)/i.test(contentType)) {
     await response.body?.cancel();
@@ -1307,10 +1337,34 @@ async function parseBoundedResponse<T>(
     if (total === 0) throw new Error("Peer returned empty body");
     const parsed = parsePeerResponseJsonChunks(chunks, total, peerResponseParseByteBudget);
     releaseDecoded = parsed.release;
-    return validate(parsed.value);
+    const value = validate(parsed.value);
+    const retainedRelease = releaseDecoded;
+    releaseDecoded = undefined;
+    let released = false;
+    return {
+      value,
+      release: () => {
+        if (released) return;
+        released = true;
+        retainedRelease();
+      }
+    };
   } finally {
     releaseDecoded?.();
     for (const release of releases) release();
+  }
+}
+
+async function parseBoundedResponse<T>(
+  response: Response,
+  maxBytes: number,
+  validate: (value: unknown) => T
+): Promise<T> {
+  const retained = await parseBoundedResponseRetained(response, maxBytes, validate);
+  try {
+    return retained.value;
+  } finally {
+    retained.release();
   }
 }
 
