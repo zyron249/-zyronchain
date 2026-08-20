@@ -28,14 +28,19 @@ test("peer response JSON structural cardinality is bounded without counting stri
 });
 
 test("peer response parse budget rejects concurrent amplification and retains decoded ownership capacity", () => {
-  const firstBody = Buffer.from(JSON.stringify({ value: "x".repeat(200) }));
-  const secondBody = Buffer.from(JSON.stringify({ value: "y".repeat(200) }));
+  const firstValue = "x".repeat(20);
+  const secondValue = "y".repeat(200);
+  const firstBody = Buffer.from(JSON.stringify({ value: firstValue }));
+  const secondBody = Buffer.from(JSON.stringify({ value: secondValue }));
   const probe = new PeerResponseByteBudget(100_000);
   const first = parsePeerResponseJsonChunks([firstBody], firstBody.length, probe);
-  assert.deepEqual(first.value, { value: "x".repeat(200) });
+  assert.deepEqual(first.value, { value: firstValue });
   const retained = probe.inUseBytes;
   assert.equal(retained > 0, true);
 
+  // The smaller retained response must fit together with its own transient parse
+  // allowance, while a larger concurrent response must fail before allocating its
+  // transient parse representation.
   const constrained = new PeerResponseByteBudget(retained + (secondBody.length * 3) - 1);
   const held = parsePeerResponseJsonChunks([firstBody], firstBody.length, constrained);
   assert.throws(
