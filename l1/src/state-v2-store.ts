@@ -1,7 +1,7 @@
-import { constants } from "node:fs";
 import { mkdir, open, rename } from "node:fs/promises";
 import { join } from "node:path";
 
+import { readBoundedUtf8File, type BoundedFileFaultHooks } from "./bounded-file.js";
 import { canonicalJson, sha256Hex } from "./codec.js";
 import { StateV2NodeObjectStore } from "./state-v2-node-store.js";
 import { SparseMerkleState, stateV2KeyHash, type StateV2NodeRecord } from "./state-v2.js";
@@ -280,30 +280,13 @@ async function writeSemanticBackendMarker(dataDir: string): Promise<void> {
 
 export async function readStateV2MetadataFile(
   path: string,
-  maxBytes = STATE_V2_METADATA_MAX_BYTES
+  maxBytes = STATE_V2_METADATA_MAX_BYTES,
+  faultHooks: BoundedFileFaultHooks = {}
 ): Promise<string> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("Invalid State v2 metadata byte limit");
-  const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
-  const nonBlocking = process.platform === "win32" ? 0 : constants.O_NONBLOCK;
-  const handle = await open(path, constants.O_RDONLY | noFollow | nonBlocking);
-  try {
-    const info = await handle.stat();
-    if (!info.isFile() || info.size < 1 || info.size > maxBytes) {
-      throw new Error("State v2 metadata exceeds byte bounds or is not a regular file");
-    }
-    const buffer = Buffer.allocUnsafe(maxBytes + 1);
-    let total = 0;
-    while (total <= maxBytes) {
-      const { bytesRead } = await handle.read(buffer, total, buffer.length - total, null);
-      if (bytesRead === 0) break;
-      total += bytesRead;
-      if (total > maxBytes) throw new Error("State v2 metadata exceeds byte bounds");
-    }
-    if (total < 1) throw new Error("State v2 metadata exceeds byte bounds or is not a regular file");
-    return buffer.subarray(0, total).toString("utf8");
-  } finally {
-    await handle.close();
-  }
+  const text = await readBoundedUtf8File(path, maxBytes, "State v2 metadata", faultHooks);
+  if (text.length < 1) throw new Error("State v2 metadata exceeds byte bounds or is not a regular file");
+  return text;
 }
 
 async function forEachCompleteLegacyLine(

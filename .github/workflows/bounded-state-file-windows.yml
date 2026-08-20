@@ -5,7 +5,10 @@ on:
     paths:
       - 'l1/src/bounded-file.ts'
       - 'l1/test/bounded-file.test.ts'
+      - 'l1/src/state-v2-store.ts'
+      - 'l1/test/state-v2-metadata-security.test.ts'
       - 'docs/BOUNDED_STATE_FILE_SECURITY.md'
+      - 'docs/STATE_V2_METADATA_CUSTODY.md'
       - '.github/workflows/bounded-state-file-windows.yml'
 
 permissions:
@@ -42,4 +45,4 @@ jobs:
 
       - name: Run bounded state-file regressions
         working-directory: l1
-        run: node --test dist/test/bounded-file.test.js
+        run: node --test dist/test/bounded-file.test.js dist/test/state-v2-metadata-security.test.js
