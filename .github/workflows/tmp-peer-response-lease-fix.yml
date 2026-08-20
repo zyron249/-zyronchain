@@ -1,0 +1,221 @@
+name: Temporary peer response lease patch
+
+on:
+  push:
+    branches:
+      - agent/peer-response-json-parse-budget-v2
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@3d3c42b910ddb2c911901773861b2f7f1238d7f0
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+      - name: Apply ownership-lifetime hardening
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('l1/src/node-base.ts')
+          s = p.read_text()
+
+          old = '''      const blocks = await getJson(`${base}/blocks?from=${from}&limit=${MAX_SYNC_BLOCKS}`, MAX_SYNC_RESPONSE_BYTES, parsePeerBlockBatch);
+      for (const block of blocks) {
+        await service.acceptFinalizedBlock(block);
+        accepted += 1;
+      }
+'''
+          new = '''      const retained = await getJsonRetained(`${base}/blocks?from=${from}&limit=${MAX_SYNC_BLOCKS}`, MAX_SYNC_RESPONSE_BYTES, parsePeerBlockBatch);
+      try {
+        for (const block of retained.value) {
+          await service.acceptFinalizedBlock(block);
+          accepted += 1;
+        }
+      } finally {
+        retained.release();
+      }
+'''
+          if old not in s: raise SystemExit('syncFrom target not found')
+          s = s.replace(old, new, 1)
+
+          old = '''      let candidate: { peer: string; height: number; blocks: unknown[] } | undefined;
+'''
+          new = '''      let candidate: { peer: string; height: number; blocks: unknown[]; release: () => void } | undefined;
+'''
+          if old not in s: raise SystemExit('candidate type target not found')
+          s = s.replace(old, new, 1)
+
+          old = '''            const blocks = await getJson(
+              `${peer}/blocks?from=${startHeight + 1}&limit=${MAX_SYNC_BLOCKS}`,
+              MAX_SYNC_RESPONSE_BYTES,
+              parsePeerBlockBatch
+            );
+            service.store.chain.validateFinalizedBlock(blocks[0] as Block);
+            return { peer, height: status.height, blocks };
+'''
+          new = '''            const retained = await getJsonRetained(
+              `${peer}/blocks?from=${startHeight + 1}&limit=${MAX_SYNC_BLOCKS}`,
+              MAX_SYNC_RESPONSE_BYTES,
+              parsePeerBlockBatch
+            );
+            try {
+              service.store.chain.validateFinalizedBlock(retained.value[0] as Block);
+              return { peer, height: status.height, blocks: retained.value, release: retained.release };
+            } catch (error) {
+              retained.release();
+              throw error;
+            }
+'''
+          if old not in s: raise SystemExit('syncAny fetch target not found')
+          s = s.replace(old, new, 1)
+
+          old = '''          if (!candidate && result.value) candidate = result.value;
+'''
+          new = '''          if (!result.value) continue;
+          if (!candidate) candidate = result.value;
+          else result.value.release();
+'''
+          if old not in s: raise SystemExit('candidate selection target not found')
+          s = s.replace(old, new, 1)
+
+          old = '''      let progressed = false;
+      let poisoned = false;
+      for (const block of candidate.blocks) {
+        try {
+          await service.acceptFinalizedBlock(block);
+          accepted += 1;
+          progressed = true;
+        } catch {
+          poisoned = true;
+          break;
+        }
+      }
+      if (poisoned) {
+        await this.recordFailure(candidate.peer, Date.now());
+      } else if (progressed) {
+        this.failureUntil.delete(candidate.peer);
+        await this.peerReputation?.recordSuccess(candidate.peer, Date.now());
+      }
+'''
+          new = '''      let progressed = false;
+      let poisoned = false;
+      try {
+        for (const block of candidate.blocks) {
+          try {
+            await service.acceptFinalizedBlock(block);
+            accepted += 1;
+            progressed = true;
+          } catch {
+            poisoned = true;
+            break;
+          }
+        }
+        if (poisoned) {
+          await this.recordFailure(candidate.peer, Date.now());
+        } else if (progressed) {
+          this.failureUntil.delete(candidate.peer);
+          await this.peerReputation?.recordSuccess(candidate.peer, Date.now());
+        }
+      } finally {
+        candidate.release();
+      }
+'''
+          if old not in s: raise SystemExit('candidate consume target not found')
+          s = s.replace(old, new, 1)
+
+          marker = '''async function postJson<T = unknown>(
+'''
+          helper = '''async function getJsonRetained<T>(
+  url: string,
+  maxBytes: number,
+  validate: (value: unknown) => T
+): Promise<{ value: T; release: () => void }> {
+  const response = await fetch(url, {
+    headers: { "x-zyron-rpc-version": String(RPC_API_VERSION) },
+    signal: AbortSignal.timeout(PEER_TIMEOUT_MS)
+  });
+  if (!response.ok) throw new Error(`Peer returned HTTP ${response.status}`);
+  return parseBoundedResponseRetained(response, maxBytes, validate);
+}
+
+'''
+          if marker not in s: raise SystemExit('postJson marker not found')
+          s = s.replace(marker, helper + marker, 1)
+
+          old = '''async function parseBoundedResponse<T>(
+  response: Response,
+  maxBytes: number,
+  validate: (value: unknown) => T
+): Promise<T> {
+'''
+          new = '''async function parseBoundedResponse<T>(
+  response: Response,
+  maxBytes: number,
+  validate: (value: unknown) => T
+): Promise<T> {
+  const retained = await parseBoundedResponseRetained(response, maxBytes, validate);
+  try {
+    return retained.value;
+  } finally {
+    retained.release();
+  }
+}
+
+async function parseBoundedResponseRetained<T>(
+  response: Response,
+  maxBytes: number,
+  validate: (value: unknown) => T
+): Promise<{ value: T; release: () => void }> {
+'''
+          if old not in s: raise SystemExit('parseBoundedResponse target not found')
+          s = s.replace(old, new, 1)
+
+          old = '''    const parsed = parsePeerResponseJsonChunks(chunks, total, peerResponseParseByteBudget);
+    releaseDecoded = parsed.release;
+    return validate(parsed.value);
+  } finally {
+    releaseDecoded?.();
+    for (const release of releases) release();
+  }
+}
+'''
+          new = '''    const parsed = parsePeerResponseJsonChunks(chunks, total, peerResponseParseByteBudget);
+    releaseDecoded = parsed.release;
+    const value = validate(parsed.value);
+    const retainedRelease = releaseDecoded;
+    releaseDecoded = undefined;
+    return { value, release: retainedRelease };
+  } finally {
+    releaseDecoded?.();
+    for (const release of releases) release();
+  }
+}
+'''
+          if old not in s: raise SystemExit('retained return target not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          test = Path('l1/test/peer-response-lease-lifetime.test.ts')
+          test.write_text('''import assert from "node:assert/strict";\nimport { readFileSync } from "node:fs";\nimport { dirname, resolve } from "node:path";\nimport test from "node:test";\nimport { fileURLToPath } from "node:url";\n\nconst here = dirname(fileURLToPath(import.meta.url));\nconst source = readFileSync(resolve(here, "../src/node-base.ts"), "utf8");\n\ntest("peer block sync retains decoded-response leases through caller ownership", () => {\n  assert.match(source, /getJsonRetained\\(`\\$\\{base\\}\\/blocks/);\n  assert.match(source, /finally \\{\\s*retained\\.release\\(\\);\\s*\\}/);\n  assert.match(source, /return \\{ peer, height: status\\.height, blocks: retained\\.value, release: retained\\.release \\}/);\n  assert.match(source, /else result\\.value\\.release\\(\\);/);\n  assert.match(source, /finally \\{\\s*candidate\\.release\\(\\);\\s*\\}/);\n});\n\ntest("ordinary peer JSON callers still release decoded leases after validation", () => {\n  assert.match(source, /const retained = await parseBoundedResponseRetained\\(response, maxBytes, validate\\);/);\n  assert.match(source, /return retained\\.value;\\s*\\} finally \\{\\s*retained\\.release\\(\\);/);\n});\n''')
+
+          d = Path('docs/PEER_HTTP_JSON_PARSE_BUDGET.md')
+          text = d.read_text()
+          text = text.replace(
+            'After parsing, a conservative decoded-graph allowance derived from twice the wire bytes plus bounded structural cardinality stays reserved through the route-specific validation callback. The transient allowance is released immediately after parsing, while wire and decoded reservations are released after validation or on every failure path.',
+            'After parsing, a conservative decoded-graph allowance derived from twice the wire bytes plus bounded structural cardinality stays reserved through route-specific validation. For block-sync responses, that decoded lease is transferred with the validated batch and remains held until the caller accepts or discards the batch; concurrent sync probes immediately release every unselected successful candidate. The transient allowance is released immediately after parsing, while wire reservations are released after reading and decoded reservations are released after validation or caller ownership ends.'
+          )
+          d.write_text(text)
+          PY
+          git rm .github/workflows/tmp-peer-response-lease-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add l1/src/node-base.ts l1/test/peer-response-lease-lifetime.test.ts docs/PEER_HTTP_JSON_PARSE_BUDGET.md
+          git commit -m 'Retain peer response leases through block sync ownership'
+          git push origin HEAD:agent/peer-response-json-parse-budget-v2
