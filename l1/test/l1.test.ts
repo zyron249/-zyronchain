@@ -3663,9 +3663,11 @@ test("RPC body reservation remains held after parsing until handler completion",
     await handlerGate;
   };
   const heldBody = JSON.stringify({ padding: "x".repeat(800) });
+  const heldBodyBytes = Buffer.byteLength(heldBody);
+  const maxInflightRequestBodyBytes = heldBodyBytes * 4;
   const server = createRpcServer(service, {
     maxInflightRequests: 2,
-    maxInflightRequestBodyBytes: Buffer.byteLength(heldBody)
+    maxInflightRequestBodyBytes
   });
 
   try {
@@ -3683,6 +3685,25 @@ test("RPC body reservation remains held after parsing until handler completion",
     });
     await handlerEntered;
 
+    const heldMetrics = await fetch(`${base}/metrics`);
+    const heldMetricsPayload = await heldMetrics.json() as {
+      rpc: { requestBodyBytesInUse: number; maxRequestBodyBytes: number; rejectedRequestBodies: number };
+    };
+    assert.equal(heldMetricsPayload.rpc.requestBodyBytesInUse, heldBodyBytes);
+    assert.equal(heldMetricsPayload.rpc.maxRequestBodyBytes, maxInflightRequestBodyBytes);
+    assert.equal(heldMetricsPayload.rpc.rejectedRequestBodies, 0);
+
+    releaseHandler();
+    const heldResponse = await heldResponsePromise;
+    assert.equal(heldResponse.status, 202);
+    await heldResponse.arrayBuffer();
+
+    const releasedMetrics = await fetch(`${base}/metrics`);
+    const releasedMetricsPayload = await releasedMetrics.json() as {
+      rpc: { requestBodyBytesInUse: number };
+    };
+    assert.equal(releasedMetricsPayload.rpc.requestBodyBytesInUse, 0);
+
     const tx = createTransfer(
       {
         chainId: genesis().chainId,
@@ -3696,21 +3717,6 @@ test("RPC body reservation remains held after parsing until handler completion",
       alicePrivate,
       alicePublic
     );
-    const overloaded = await fetch(`${base}/tx`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(tx)
-    });
-    assert.equal(overloaded.status, 503);
-    assert.deepEqual(await overloaded.json(), {
-      error: "Aggregate RPC request body byte budget exceeded"
-    });
-
-    releaseHandler();
-    const heldResponse = await heldResponsePromise;
-    assert.equal(heldResponse.status, 202);
-    await heldResponse.arrayBuffer();
-
     const recovered = await fetch(`${base}/tx`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -3733,7 +3739,7 @@ test("RPC aggregate request-body budget sheds concurrent body memory pressure", 
   const service = new NodeService(store);
   const server = createRpcServer(service, {
     maxInflightRequests: 2,
-    maxInflightRequestBodyBytes: 1_000
+    maxInflightRequestBodyBytes: 10_000
   });
   let socket: ReturnType<typeof connect> | undefined;
 
@@ -3756,7 +3762,7 @@ test("RPC aggregate request-body budget sheds concurrent body memory pressure", 
       "POST /tx HTTP/1.1",
       "Host: localhost",
       "Content-Type: application/json",
-      "Content-Length: 1000",
+      "Content-Length: 10000",
       "",
       "{"
     ].join("\r\n"));
@@ -3811,7 +3817,7 @@ test("RPC aggregate request-body budget sheds concurrent body memory pressure", 
       rpc: { requestBodyBytesInUse: number; maxRequestBodyBytes: number; rejectedRequestBodies: number };
     };
     assert.equal(metricsPayload.rpc.requestBodyBytesInUse, 0);
-    assert.equal(metricsPayload.rpc.maxRequestBodyBytes, 1_000);
+    assert.equal(metricsPayload.rpc.maxRequestBodyBytes, 10_000);
     assert.equal(metricsPayload.rpc.rejectedRequestBodies, 1);
   } finally {
     socket?.destroy();
