@@ -13,6 +13,10 @@ import {
   readCliCheckpointSnapshotUtf8,
   readCliGenesisUtf8
 } from "../src/cli-recovery-file.js";
+import {
+  MAX_CHECKPOINT_JSON_NESTING_DEPTH,
+  MAX_CHECKPOINT_JSON_STRUCTURAL_TOKENS
+} from "../src/checkpoint-json-complexity.js";
 import { MAX_CHECKPOINT_SNAPSHOT_BYTES } from "../src/p2p-checkpoint.js";
 
 const execFileAsync = promisify(execFile);
@@ -54,6 +58,46 @@ test("CLI checkpoint snapshot reader accepts a normal large regular file", async
   try {
     const path = join(dir, "snapshot.json");
     const text = "s".repeat(512 * 1024);
+    await writeFile(path, text);
+    assert.equal(await readCliCheckpointSnapshotUtf8(path), text);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI checkpoint snapshot reader enforces canonical JSON nesting before parse", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zyron-cli-checkpoint-depth-"));
+  try {
+    const exact = join(dir, "exact.json");
+    const over = join(dir, "over.json");
+    const exactText = `${"[".repeat(MAX_CHECKPOINT_JSON_NESTING_DEPTH)}0${"]".repeat(MAX_CHECKPOINT_JSON_NESTING_DEPTH)}`;
+    const overText = `${"[".repeat(MAX_CHECKPOINT_JSON_NESTING_DEPTH + 1)}0${"]".repeat(MAX_CHECKPOINT_JSON_NESTING_DEPTH + 1)}`;
+    await writeFile(exact, exactText);
+    await writeFile(over, overText);
+    assert.equal(await readCliCheckpointSnapshotUtf8(exact), exactText);
+    await assert.rejects(() => readCliCheckpointSnapshotUtf8(over), /Checkpoint JSON complexity exceeded/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI checkpoint snapshot reader rejects excessive structural cardinality before parse", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zyron-cli-checkpoint-cardinality-"));
+  try {
+    const path = join(dir, "snapshot.json");
+    const text = `[${"0,".repeat(MAX_CHECKPOINT_JSON_STRUCTURAL_TOKENS)}0]`;
+    await writeFile(path, text);
+    await assert.rejects(() => readCliCheckpointSnapshotUtf8(path), /Checkpoint JSON complexity exceeded/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI checkpoint complexity scan ignores punctuation and escaped quotes inside strings", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zyron-cli-checkpoint-strings-"));
+  try {
+    const path = join(dir, "snapshot.json");
+    const text = JSON.stringify({ text: "{[,:]}\\\"".repeat(4_096) });
     await writeFile(path, text);
     assert.equal(await readCliCheckpointSnapshotUtf8(path), text);
   } finally {
