@@ -10,7 +10,7 @@ test("canonical L1 test runner bounds each test and preserves the full compiled 
 
   assert.match(source, /L1_TEST_TIMEOUT_MS\s*=\s*10\s*\*\s*60\s*\*\s*1000/);
   assert.match(source, /`--test-timeout=\$\{L1_TEST_TIMEOUT_MS\}`/);
-  assert.match(source, /\.filter\(\(name\) => name\.endsWith\("\\\.test\\\.js"\)\)/);
+  assert.ok(source.includes('.filter((name) => name.endsWith(".test.js"))'));
   assert.match(source, /\.\.\.files/);
   assert.doesNotMatch(source, /--test-name-pattern/);
   assert.doesNotMatch(source, /--test-skip-pattern/);
