@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { readCliGovernanceArtifactUtf8 } from "./cli-governance-file.js";
-import { readCliCheckpointSnapshotUtf8, readCliGenesisUtf8 } from "./cli-recovery-file.js";
+import {
+  readCliCheckpointSnapshotAnchoredUtf8,
+  readCliGenesisUtf8
+} from "./cli-recovery-file.js";
 
 const hardenedCommands = new Set([
   "snapshot", "checkpoint-install", "checkpoint-fetch-install", "state-fetch-install", "prune-finalized", "node",
@@ -79,7 +82,15 @@ async function run(): Promise<void> {
 
   await stage(args, "--genesis", join(dir, "genesis.json"), readCliGenesisUtf8);
   if (command === "checkpoint-install") {
-    await stage(args, "--snapshot", join(dir, "checkpoint.json"), readCliCheckpointSnapshotUtf8);
+    const shaIndex = optionValueIndex(args, "--sha256");
+    if (shaIndex === -1) throw new Error("checkpoint-install requires --sha256 <lowercase-hex>");
+    const expectedSha256 = args[shaIndex]!;
+    await stage(
+      args,
+      "--snapshot",
+      join(dir, "checkpoint.json"),
+      (path) => readCliCheckpointSnapshotAnchoredUtf8(path, expectedSha256)
+    );
   }
   if (["validator-approve", "validator-submit", "protocol-approve", "protocol-submit"].includes(command)) {
     await stage(args, "--proposal", join(dir, "governance-proposal.json"), readCliGovernanceArtifactUtf8);
