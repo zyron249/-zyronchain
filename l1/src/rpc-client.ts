@@ -34,6 +34,10 @@ export async function readBoundedResponseText(
   if (!response.body) return "";
 
   const reader = response.body.getReader();
+  // Keep one bounded destination buffer instead of retaining every transport
+  // chunk and then allocating a second full contiguous copy. When a trustworthy
+  // Content-Length is present allocate exactly that size; otherwise the caller's
+  // existing maxBytes limit is the hard allocation ceiling.
   const capacity = declaredBytes ?? maxBytes;
   const bytes = new Uint8Array(capacity);
   let total = 0;
@@ -63,7 +67,10 @@ export async function readBoundedJson(
   label = "RPC response"
 ): Promise<unknown> {
   const text = await readBoundedResponseText(response, maxBytes, label);
-  assertBoundedJsonStructure(new TextEncoder().encode(text), label);
+  // Scan the already-bounded decoded string without creating another full byte
+  // representation. Structural JSON punctuation is ASCII, so UTF-16 code-unit
+  // inspection preserves the same string/escape boundaries needed for the quota.
+  assertBoundedJsonStructure(text, label);
   try {
     return JSON.parse(text);
   } catch {
@@ -71,39 +78,40 @@ export async function readBoundedJson(
   }
 }
 
-function assertBoundedJsonStructure(body: Uint8Array, label: string): void {
+function assertBoundedJsonStructure(text: string, label: string): void {
   let inString = false;
   let escaped = false;
   let depth = 0;
   let tokens = 0;
 
-  for (const byte of body) {
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
     if (inString) {
       if (escaped) {
         escaped = false;
         continue;
       }
-      if (byte === 0x5c) {
+      if (code === 0x5c) {
         escaped = true;
         continue;
       }
-      if (byte === 0x22) inString = false;
+      if (code === 0x22) inString = false;
       continue;
     }
 
-    if (byte === 0x22) {
+    if (code === 0x22) {
       inString = true;
       continue;
     }
 
-    if (byte === 0x7b || byte === 0x5b) {
+    if (code === 0x7b || code === 0x5b) {
       depth += 1;
       tokens += 1;
       if (depth > MAX_RPC_CLIENT_JSON_NESTING_DEPTH) throw new Error(`${label} JSON complexity exceeded`);
-    } else if (byte === 0x7d || byte === 0x5d) {
+    } else if (code === 0x7d || code === 0x5d) {
       depth = Math.max(0, depth - 1);
       tokens += 1;
-    } else if (byte === 0x2c || byte === 0x3a) {
+    } else if (code === 0x2c || code === 0x3a) {
       tokens += 1;
     }
 
