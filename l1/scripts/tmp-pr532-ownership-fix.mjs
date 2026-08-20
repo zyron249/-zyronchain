@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// trigger: apply finalized PR 532 block-sync ownership lifetime fix
 import { readFile, writeFile, unlink } from 'node:fs/promises';
 
 const sourcePath = 'l1/src/node-base.ts';
@@ -65,7 +66,7 @@ replaceOnce(parserEndNeedle, parserEndReplacement, 'non-retained parser wrapper'
 
 await writeFile(sourcePath, source, 'utf8');
 
-await writeFile(testPath, `import assert from "node:assert/strict";\nimport { readFile } from "node:fs/promises";\nimport test from "node:test";\n\nconst sourceUrl = new URL("../../src/node-base.ts", import.meta.url);\n\ntest("HTTP block sync retains decoded response ownership through accept/discard", async () => {\n  const source = await readFile(sourceUrl, "utf8");\n  assert.match(source, /const leasedBlocks = await getJsonRetained\\(`);\n  assert.match(source, /for \\(const block of leasedBlocks\\.value\\)[\\s\\S]*?finally \\{\\s*leasedBlocks\\.release\\(\\);/);\n});\n\ntest("any-peer sync releases unselected candidates and selected candidate after handling", async () => {\n  const source = await readFile(sourceUrl, "utf8");\n  assert.match(source, /else result\\.value\\.release\\(\\);/);\n  assert.match(source, /finally \\{\\s*candidate\\.release\\(\\);\\s*\\}/);\n});\n\ntest("ordinary peer JSON callers release retained decoded ownership before returning", async () => {\n  const source = await readFile(sourceUrl, "utf8");\n  assert.match(source, /const retained = await parseBoundedResponseRetained\\([\\s\\S]*?finally \\{\\s*retained\\.release\\(\\);/);\n});\n`, 'utf8');
+await writeFile(testPath, `import assert from "node:assert/strict";\nimport { readFile } from "node:fs/promises";\nimport test from "node:test";\n\nconst sourceUrl = new URL("../../src/node-base.ts", import.meta.url);\n\ntest("HTTP block sync retains decoded response ownership through accept/discard", async () => {\n  const source = await readFile(sourceUrl, "utf8");\n  assert.match(source, /const leasedBlocks = await getJsonRetained\\(`/);\n  assert.match(source, /for \\(const block of leasedBlocks\\.value\\)[\\s\\S]*?finally \\{\\s*leasedBlocks\\.release\\(\\);/);\n});\n\ntest("any-peer sync releases unselected candidates and selected candidate after handling", async () => {\n  const source = await readFile(sourceUrl, "utf8");\n  assert.match(source, /else result\\.value\\.release\\(\\);/);\n  assert.match(source, /finally \\{\\s*candidate\\.release\\(\\);\\s*\\}/);\n});\n\ntest("ordinary peer JSON callers release retained decoded ownership before returning", async () => {\n  const source = await readFile(sourceUrl, "utf8");\n  assert.match(source, /const retained = await parseBoundedResponseRetained\\([\\s\\S]*?finally \\{\\s*retained\\.release\\(\\);/);\n});\n`, 'utf8');
 
 let doc = await readFile(docPath, 'utf8');
 doc = doc.replace(
