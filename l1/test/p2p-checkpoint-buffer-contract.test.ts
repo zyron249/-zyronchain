@@ -26,8 +26,10 @@ test("trusted checkpoint fetch assembles into one bounded destination buffer", a
     "checkpoint complexity scan must run before JSON.parse"
   );
   assert.match(fetchSource, /text\s*=\s*""/);
-  assert.match(fetchSource, /const\s+canonical\s*=\s*canonicalJson\(value\)/);
-  assert.match(fetchSource, /sha256Hex\(canonical\)\s*!==\s*anchor\.snapshotSha256/);
+  assert.match(fetchSource, /const\s+canonical\s*=\s*canonicalJsonDigest\(value\)/);
+  assert.match(fetchSource, /canonical\.byteLength\s*!==\s*totalBytes/);
+  assert.match(fetchSource, /canonical\.sha256\s*!==\s*anchor\.snapshotSha256/);
+  assert.doesNotMatch(fetchSource, /const\s+canonical\s*=\s*canonicalJson\(value\)/);
   assert.doesNotMatch(fetchSource, /sha256Hex\(text\)\s*!==\s*anchor\.snapshotSha256/);
   assert.doesNotMatch(fetchSource, /canonicalJson\(value\)\s*!==\s*text/);
 });
