@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   assertRpcApiVersion,
+  MAX_RPC_CLIENT_JSON_NESTING_DEPTH,
+  MAX_RPC_CLIENT_JSON_STRUCTURAL_TOKENS,
   readBoundedJson,
   readBoundedResponseText,
   transactionVersionForProtocolVersion
@@ -34,6 +36,13 @@ test("bounded RPC text rejects oversized declared and streamed bodies before unb
   await assert.rejects(readBoundedResponseText(new Response(body), 64), /too large/);
 });
 
+test("bounded RPC text enforces declared body length exactly", async () => {
+  await assert.rejects(
+    readBoundedResponseText(new Response("short", { headers: { "content-length": "6" } }), 64),
+    /mismatched Content-Length/
+  );
+});
+
 test("bounded RPC JSON validates payload size, syntax and API version", async () => {
   const response = new Response(JSON.stringify({ ok: true }), {
     headers: { "x-zyron-rpc-version": "1" }
@@ -50,4 +59,36 @@ test("bounded RPC JSON validates payload size, syntax and API version", async ()
     /unsupported API version/
   );
   await assert.rejects(readBoundedJson(new Response("not-json"), 64), /not valid JSON/);
+});
+
+test("bounded RPC JSON accepts the exact nesting limit and rejects one level over", async () => {
+  const exact = `${"[".repeat(MAX_RPC_CLIENT_JSON_NESTING_DEPTH)}0${"]".repeat(MAX_RPC_CLIENT_JSON_NESTING_DEPTH)}`;
+  await readBoundedJson(new Response(exact), Buffer.byteLength(exact));
+
+  const over = `[${exact}]`;
+  await assert.rejects(
+    readBoundedJson(new Response(over), Buffer.byteLength(over)),
+    /JSON complexity exceeded/
+  );
+});
+
+test("bounded RPC JSON rejects structural cardinality over the exact token limit", async () => {
+  // A flat array with N elements contains N+1 structural tokens: '[' + ']'
+  // plus N-1 commas. Therefore N=MAX-1 is exact-bound and N=MAX is over.
+  const exact = `[${new Array(MAX_RPC_CLIENT_JSON_STRUCTURAL_TOKENS - 1).fill("0").join(",")}]`;
+  await readBoundedJson(new Response(exact), Buffer.byteLength(exact));
+
+  const over = `[${new Array(MAX_RPC_CLIENT_JSON_STRUCTURAL_TOKENS).fill("0").join(",")}]`;
+  await assert.rejects(
+    readBoundedJson(new Response(over), Buffer.byteLength(over)),
+    /JSON complexity exceeded/
+  );
+});
+
+test("bounded RPC JSON ignores structural punctuation and escaped quotes inside strings", async () => {
+  const payload = JSON.stringify({ text: "{[,:]} \\\" still-string", ok: true });
+  assert.deepEqual(
+    await readBoundedJson(new Response(payload), Buffer.byteLength(payload)),
+    { text: "{[,:]} \\\" still-string", ok: true }
+  );
 });
