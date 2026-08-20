@@ -180,11 +180,26 @@ export async function fetchTrustedSnapshotFromPeer(
   if (totalBytes === undefined || !snapshotBytes || offset !== totalBytes) {
     throw new Error("Checkpoint transfer exceeded bounded chunk budget");
   }
-  const text = snapshotBytes.toString("utf8");
-  if (sha256Hex(text) !== anchor.snapshotSha256) throw new Error("Checkpoint transfer digest mismatch");
+
+  // Authenticate the received bytes before allocating a full UTF-8 string.
+  if (sha256Hex(snapshotBytes) !== anchor.snapshotSha256) throw new Error("Checkpoint transfer digest mismatch");
+
+  let text = snapshotBytes.toString("utf8");
+  snapshotBytes = undefined;
   let value: unknown;
-  try { value = JSON.parse(text) as unknown; } catch { throw new Error("Checkpoint transfer is not valid JSON"); }
-  if (canonicalJson(value) !== text) throw new Error("Checkpoint transfer is not canonical JSON");
+  try {
+    value = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error("Checkpoint transfer is not valid JSON");
+  }
+  // The byte buffer no longer overlaps JSON parsing, and the original full
+  // text no longer overlaps canonical re-serialization. Canonical equivalence
+  // remains bound to the same externally authenticated SHA-256 anchor.
+  text = "";
+  const canonical = canonicalJson(value);
+  if (Buffer.byteLength(canonical, "utf8") !== totalBytes || sha256Hex(canonical) !== anchor.snapshotSha256) {
+    throw new Error("Checkpoint transfer is not canonical JSON");
+  }
   // Revalidate finality, governance schedule and state root before returning bytes
   // to any installer. The external anchor remains the authority.
   return ZyronChain.fromTrustedSnapshot(genesis, value, anchor).snapshot();
