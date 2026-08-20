@@ -149,12 +149,18 @@ export class NativePeerReputationStore {
       }
       await rename(temporary, this.path);
       renamed = true;
-      const directory = await open(dirname(this.path), "r");
-      try { await directory.sync(); } finally { await directory.close(); }
+      if (nativePeerReputationDirectorySyncSupported()) {
+        const directory = await open(dirname(this.path), "r");
+        try { await directory.sync(); } finally { await directory.close(); }
+      }
     } finally {
       if (!renamed) await rm(temporary, { force: true });
     }
   }
+}
+
+export function nativePeerReputationDirectorySyncSupported(platform = process.platform): boolean {
+  return platform !== "win32";
 }
 
 export function classifyNativePeerFailure(error: unknown): NativePeerFailureKind {
