@@ -9,6 +9,7 @@ import { peerIdFromPrivateKey } from "@libp2p/peer-id";
 import {
   classifyNativePeerFailure,
   MAX_NATIVE_REPUTATION_SNAPSHOT_BYTES,
+  nativePeerReputationDirectorySyncSupported,
   NativePeerReputationStore
 } from "../src/p2p-reputation.js";
 
@@ -94,4 +95,10 @@ test("native reputation rejects oversized snapshot before JSON materialization",
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("native reputation directory sync is skipped only on Windows", () => {
+  assert.equal(nativePeerReputationDirectorySyncSupported("win32"), false);
+  assert.equal(nativePeerReputationDirectorySyncSupported("linux"), true);
+  assert.equal(nativePeerReputationDirectorySyncSupported("darwin"), true);
 });
