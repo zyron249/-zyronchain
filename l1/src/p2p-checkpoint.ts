@@ -3,6 +3,7 @@ import type { Libp2p } from "libp2p";
 
 import { canonicalJson, sha256Hex } from "./codec.js";
 import { ZyronChain } from "./chain.js";
+import { assertBoundedCheckpointJsonStructure } from "./checkpoint-json-complexity.js";
 import type { NodeService } from "./node.js";
 import { readP2PFrameRetained, writeP2PFrame } from "./p2p-frame.js";
 import { P2PPeerRateLimiter } from "./p2p-rate.js";
@@ -183,6 +184,8 @@ export async function fetchTrustedSnapshotFromPeer(
 
   // Authenticate the received bytes before allocating a full UTF-8 string.
   if (sha256Hex(snapshotBytes) !== anchor.snapshotSha256) throw new Error("Checkpoint transfer digest mismatch");
+  // Bound parser object-graph amplification before JSON.parse allocates it.
+  assertBoundedCheckpointJsonStructure(snapshotBytes);
 
   let text = snapshotBytes.toString("utf8");
   snapshotBytes = undefined;
