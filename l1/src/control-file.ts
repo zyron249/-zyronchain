@@ -14,7 +14,15 @@ export async function readBoundedRegularControlFile(
   maxBytes = CHAIN_CONTROL_FILE_MAX_BYTES,
   faultHooks: BoundedFileFaultHooks = {}
 ): Promise<string> {
-  const buffer = await readBoundedFileBuffer(path, maxBytes, label, faultHooks);
+  let buffer: Buffer;
+  try {
+    buffer = await readBoundedFileBuffer(path, maxBytes, label, faultHooks);
+  } catch (error) {
+    if (error instanceof Error && error.message === `${label} exceeds ${maxBytes} byte limit`) {
+      throw new Error(`${label} exceeds byte bounds`);
+    }
+    throw error;
+  }
   if (buffer.length < 1) throw new Error(`${label} exceeds byte bounds or is not a regular file`);
   return buffer.toString("utf8");
 }
