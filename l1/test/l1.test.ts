@@ -3739,7 +3739,7 @@ test("RPC aggregate request-body budget sheds concurrent body memory pressure", 
   const service = new NodeService(store);
   const server = createRpcServer(service, {
     maxInflightRequests: 2,
-    maxInflightRequestBodyBytes: 1_000
+    maxInflightRequestBodyBytes: 10_000
   });
   let socket: ReturnType<typeof connect> | undefined;
 
@@ -3762,7 +3762,7 @@ test("RPC aggregate request-body budget sheds concurrent body memory pressure", 
       "POST /tx HTTP/1.1",
       "Host: localhost",
       "Content-Type: application/json",
-      "Content-Length: 1000",
+      "Content-Length: 10000",
       "",
       "{"
     ].join("\r\n"));
@@ -3817,7 +3817,7 @@ test("RPC aggregate request-body budget sheds concurrent body memory pressure", 
       rpc: { requestBodyBytesInUse: number; maxRequestBodyBytes: number; rejectedRequestBodies: number };
     };
     assert.equal(metricsPayload.rpc.requestBodyBytesInUse, 0);
-    assert.equal(metricsPayload.rpc.maxRequestBodyBytes, 1_000);
+    assert.equal(metricsPayload.rpc.maxRequestBodyBytes, 10_000);
     assert.equal(metricsPayload.rpc.rejectedRequestBodies, 1);
   } finally {
     socket?.destroy();
