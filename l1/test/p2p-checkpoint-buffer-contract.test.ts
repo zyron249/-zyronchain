@@ -16,5 +16,13 @@ test("trusted checkpoint fetch assembles into one bounded destination buffer", a
   assert.match(fetchSource, /snapshotBytes\s*=\s*Buffer\.allocUnsafe\(totalBytes\)/);
   assert.match(fetchSource, /bytes\.copy\(snapshotBytes,\s*offset\)/);
   assert.match(fetchSource, /offset\s*!==\s*totalBytes/);
-  assert.match(fetchSource, /snapshotBytes\.toString\("utf8"\)/);
+  assert.match(fetchSource, /sha256Hex\(snapshotBytes\)\s*!==\s*anchor\.snapshotSha256/);
+  assert.match(fetchSource, /let\s+text\s*=\s*snapshotBytes\.toString\("utf8"\)/);
+  assert.match(fetchSource, /snapshotBytes\s*=\s*undefined/);
+  assert.match(fetchSource, /value\s*=\s*JSON\.parse\(text\)/);
+  assert.match(fetchSource, /text\s*=\s*""/);
+  assert.match(fetchSource, /const\s+canonical\s*=\s*canonicalJson\(value\)/);
+  assert.match(fetchSource, /sha256Hex\(canonical\)\s*!==\s*anchor\.snapshotSha256/);
+  assert.doesNotMatch(fetchSource, /sha256Hex\(text\)\s*!==\s*anchor\.snapshotSha256/);
+  assert.doesNotMatch(fetchSource, /canonicalJson\(value\)\s*!==\s*text/);
 });
