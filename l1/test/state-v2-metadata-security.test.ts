@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -23,7 +23,7 @@ test("State-v2 metadata reader rejects an oversized file before unbounded alloca
   const path = join(directory, "metadata.json");
   try {
     await writeFile(path, "a".repeat(65), "utf8");
-    await assert.rejects(() => readStateV2MetadataFile(path, 64), /byte bounds/);
+    await assert.rejects(() => readStateV2MetadataFile(path, 64), /byte limit|byte bounds/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -36,9 +36,40 @@ test("State-v2 metadata reader rejects a symlink instead of following it", { ski
   try {
     await writeFile(target, "canonical", "utf8");
     await symlink(target, path);
+    await assert.rejects(() => readStateV2MetadataFile(path, 64), /symbolic link/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("State-v2 metadata reader rejects parent path substitution after open", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-metadata-substitution-"));
+  const live = join(directory, "live");
+  const moved = join(directory, "moved");
+  const replacement = join(directory, "replacement");
+  const path = join(live, "metadata.json");
+  try {
+    await mkdir(live);
+    await mkdir(replacement);
+    await writeFile(path, "canonical", "utf8");
+    await writeFile(join(replacement, "metadata.json"), "substituted", "utf8");
     await assert.rejects(
-      () => readStateV2MetadataFile(path, 64),
-      (error: unknown) => Boolean(error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "ELOOP")
+      () => readStateV2MetadataFile(path, 64, {
+        afterOpenValidated: async () => {
+          await rename(live, moved);
+          try {
+            await symlink(replacement, live, process.platform === "win32" ? "junction" : "dir");
+          } catch (error) {
+            if (process.platform === "win32" && error && typeof error === "object" && "code" in error &&
+                ["EPERM", "EACCES", "UNKNOWN"].includes(String((error).code))) {
+              t.skip("Windows runner cannot create a junction for substitution regression");
+              return;
+            }
+            throw error;
+          }
+        }
+      }),
+      /changed during reading|regular file|symbolic link/
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
