@@ -20,12 +20,12 @@ interface OpenedBoundedFile {
  * closed before bytes reach a parser. POSIX additionally keeps no-follow,
  * non-blocking and descriptor/path device+inode checks.
  */
-export async function readBoundedUtf8File(
+export async function readBoundedFileBuffer(
   path: string,
   maxBytes: number,
   label: string,
   faultHooks: BoundedFileFaultHooks = {}
-): Promise<string> {
+): Promise<Buffer> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("Invalid bounded file byte limit");
   const opened = await openValidatedBoundedFile(path, label);
   try {
@@ -42,10 +42,19 @@ export async function readBoundedUtf8File(
       if (total > maxBytes) throw new Error(`${label} exceeds ${maxBytes} byte limit`);
     }
     await requireSameBoundedRegularFile(opened, label, "during reading");
-    return buffer.subarray(0, total).toString("utf8");
+    return buffer.subarray(0, total);
   } finally {
     await opened.handle.close();
   }
+}
+
+export async function readBoundedUtf8File(
+  path: string,
+  maxBytes: number,
+  label: string,
+  faultHooks: BoundedFileFaultHooks = {}
+): Promise<string> {
+  return (await readBoundedFileBuffer(path, maxBytes, label, faultHooks)).toString("utf8");
 }
 
 async function openValidatedBoundedFile(path: string, label: string): Promise<OpenedBoundedFile> {
