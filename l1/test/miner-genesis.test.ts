@@ -42,7 +42,10 @@ test("miner genesis rejects POSIX symlink substitution", { skip: process.platfor
     const path = join(directory, "genesis.json");
     await writeFile(target, '{"chainId":"zyron-target"}\n', { mode: 0o600 });
     await symlink(target, path);
-    await assert.rejects(() => readMinerGenesis(path), /ELOOP|too many symbolic links/i);
+    await assert.rejects(
+      () => readMinerGenesis(path),
+      /Miner genesis file must not be a symbolic link|ELOOP|too many symbolic links/i
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

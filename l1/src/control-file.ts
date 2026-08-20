@@ -1,34 +1,28 @@
-import { constants } from "node:fs";
-import { open } from "node:fs/promises";
+import { readBoundedFileBuffer, type BoundedFileFaultHooks } from "./bounded-file.js";
 
 export const CHAIN_CONTROL_FILE_MAX_BYTES = 4 * 1024;
 
+/**
+ * Read a local control file through the same descriptor-bound pathname
+ * custody boundary used by other bounded local state files. This preserves
+ * byte/non-empty/regular-file limits while also freezing the canonical path
+ * before open and revalidating it after open/read on Windows.
+ */
 export async function readBoundedRegularControlFile(
   path: string,
   label: string,
-  maxBytes = CHAIN_CONTROL_FILE_MAX_BYTES
+  maxBytes = CHAIN_CONTROL_FILE_MAX_BYTES,
+  faultHooks: BoundedFileFaultHooks = {}
 ): Promise<string> {
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("Invalid chain control-file byte limit");
-  const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
-  const nonBlocking = process.platform === "win32" ? 0 : constants.O_NONBLOCK;
-  const handle = await open(path, constants.O_RDONLY | noFollow | nonBlocking);
+  let buffer: Buffer;
   try {
-    const info = await handle.stat();
-    if (!info.isFile() || info.size < 1 || info.size > maxBytes) {
-      throw new Error(`${label} exceeds byte bounds or is not a regular file`);
+    buffer = await readBoundedFileBuffer(path, maxBytes, label, faultHooks);
+  } catch (error) {
+    if (error instanceof Error && error.message === `${label} exceeds ${maxBytes} byte limit`) {
+      throw new Error(`${label} exceeds byte bounds`);
     }
-
-    const buffer = Buffer.allocUnsafe(maxBytes + 1);
-    let total = 0;
-    while (total <= maxBytes) {
-      const { bytesRead } = await handle.read(buffer, total, buffer.length - total, null);
-      if (bytesRead === 0) break;
-      total += bytesRead;
-      if (total > maxBytes) throw new Error(`${label} exceeds byte bounds`);
-    }
-    if (total < 1) throw new Error(`${label} exceeds byte bounds or is not a regular file`);
-    return buffer.subarray(0, total).toString("utf8");
-  } finally {
-    await handle.close();
+    throw error;
   }
+  if (buffer.length < 1) throw new Error(`${label} exceeds byte bounds or is not a regular file`);
+  return buffer.toString("utf8");
 }
