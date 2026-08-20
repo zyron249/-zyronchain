@@ -1,7 +1,7 @@
 import type { PeerId } from "@libp2p/interface";
 import type { Libp2p } from "libp2p";
 
-import { canonicalJson, sha256Hex } from "./codec.js";
+import { canonicalJson, canonicalJsonDigest, sha256Hex } from "./codec.js";
 import { ZyronChain } from "./chain.js";
 import { assertBoundedCheckpointJsonStructure } from "./checkpoint-json-complexity.js";
 import type { NodeService } from "./node.js";
@@ -195,12 +195,12 @@ export async function fetchTrustedSnapshotFromPeer(
   } catch {
     throw new Error("Checkpoint transfer is not valid JSON");
   }
-  // The byte buffer no longer overlaps JSON parsing, and the original full
-  // text no longer overlaps canonical re-serialization. Canonical equivalence
-  // remains bound to the same externally authenticated SHA-256 anchor.
+  // Release the original full text before canonical verification. The digest
+  // verifier streams canonical fragments directly into SHA-256 and therefore
+  // does not construct a second normalized object graph or full output string.
   text = "";
-  const canonical = canonicalJson(value);
-  if (Buffer.byteLength(canonical, "utf8") !== totalBytes || sha256Hex(canonical) !== anchor.snapshotSha256) {
+  const canonical = canonicalJsonDigest(value);
+  if (canonical.byteLength !== totalBytes || canonical.sha256 !== anchor.snapshotSha256) {
     throw new Error("Checkpoint transfer is not canonical JSON");
   }
   // Revalidate finality, governance schedule and state root before returning bytes
