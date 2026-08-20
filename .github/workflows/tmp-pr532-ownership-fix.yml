@@ -1,0 +1,33 @@
+name: Temporary PR 532 ownership fix
+
+on:
+  push:
+    branches:
+      - agent/peer-response-json-parse-budget-v2
+    paths:
+      - 'l1/scripts/tmp-pr532-ownership-fix.mjs'
+      - '.github/workflows/tmp-pr532-ownership-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/peer-response-json-parse-budget-v2
+          persist-credentials: true
+      - name: Apply focused ownership patch
+        run: node l1/scripts/tmp-pr532-ownership-fix.mjs
+      - name: Commit focused changes and remove temporary patcher
+        run: |
+          git config user.name 'Zyron Chain'
+          git config user.email 'ciyagerkurdi@icloud.com'
+          git add -A
+          git diff --cached --exit-code && { echo 'patcher made no changes' >&2; exit 1; } || true
+          git commit -m 'Retain peer response leases through block sync ownership'
+          git push origin HEAD:agent/peer-response-json-parse-budget-v2
