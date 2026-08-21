@@ -63,7 +63,7 @@ export async function readCliCheckpointSnapshotAnchoredUtf8(
   const canonicalPayload = body[body.length - 1] === 0x0a ? body.subarray(0, body.length - 1) : body;
   if (canonicalPayload.length < 1) throw new Error("CLI checkpoint snapshot canonical payload must be non-empty");
   const actualSha256 = createHash("sha256").update(canonicalPayload).digest("hex");
-  if (actualSha256 !== expectedSha256) throw new Error("CLI checkpoint snapshot SHA-256 mismatch");
+  if (actualSha256 !== expectedSha256) throw new Error("CLI checkpoint snapshot digest mismatch (SHA-256)");
   assertBoundedCheckpointJsonStructure(body);
   return body.toString("utf8");
 }
