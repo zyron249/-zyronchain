@@ -26,8 +26,8 @@ import type { Address, Block, BlockAttestation, RoundSkipVote } from "./types.js
 import { LocalValidatorSigner, type ValidatorSigner } from "./validator-signer.js";
 
 const HTTP_CONSENSUS_TIMEOUT_MS = 8_000;
-const MAX_HTTP_ATTESTATION_RESPONSE_BYTES = 2_500_000;
-const MAX_HTTP_ROUND_SKIP_RESPONSE_BYTES = 128_000;
+export const MAX_HTTP_ATTESTATION_RESPONSE_BYTES = 8_192;
+export const MAX_HTTP_ROUND_SKIP_RESPONSE_BYTES = 16_384;
 const MAX_HTTP_CONSENSUS_WIRE_BYTES_INFLIGHT = 16_000_000;
 const MAX_HTTP_CONSENSUS_PARSE_BYTES_INFLIGHT = 64_000_000;
 const MAX_HTTP_CONSENSUS_CHAIN_ID_LENGTH = 128;
