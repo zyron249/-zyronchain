@@ -10,125 +10,40 @@ permissions:
   contents: read
 
 jobs:
-  branch-patch:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/http-consensus-response-shape-v1'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout PR head
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          persist-credentials: true
-      - name: Patch HTTP consensus response shape gates
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('l1/src/node-base.ts')
-          text = path.read_text()
-          old_import = 'import { canonicalJson, sha256Hex } from "./codec.js";'
-          new_import = 'import { assertHex, canonicalJson, sha256Hex } from "./codec.js";'
-          if old_import not in text:
-              raise SystemExit('codec import anchor missing')
-          text = text.replace(old_import, new_import, 1)
-
-          marker = '  async requestAttestations(block: Block): Promise<BlockAttestation[]> {'
-          helper = '''export function validateHttpPeerAttestationShape(value: unknown): BlockAttestation {
-  assertPlainRecord(value, "HTTP peer attestation");
-  assertExactKeys(value, ["validator", "publicKey", "signature"], "HTTP peer attestation");
-  if (typeof value.validator !== "string" || typeof value.publicKey !== "string" || typeof value.signature !== "string") {
-    throw new Error("Invalid HTTP peer attestation");
-  }
-  assertHex(value.publicKey, 64, "HTTP peer attestation public key");
-  assertHex(value.signature, 64, "HTTP peer attestation signature");
-  if (value.validator !== addressFromPublicKey(value.publicKey)) throw new Error("Invalid HTTP peer attestation validator");
-  return value as unknown as BlockAttestation;
-}
-
-export function validateHttpPeerRoundSkipVoteShape(value: unknown): RoundSkipVote {
-  assertPlainRecord(value, "HTTP peer round skip vote");
-  assertExactKeys(
-    value,
-    ["validator", "publicKey", "chainId", "height", "round", "previousHash", "signature"],
-    "HTTP peer round skip vote"
-  );
-  if (typeof value.validator !== "string" || typeof value.publicKey !== "string" || typeof value.signature !== "string" ||
-      typeof value.chainId !== "string" || value.chainId.length < 1 || value.chainId.length > 128 ||
-      !Number.isSafeInteger(value.height) || Number(value.height) < 1 ||
-      !Number.isSafeInteger(value.round) || Number(value.round) < 0 || typeof value.previousHash !== "string") {
-    throw new Error("Invalid HTTP peer round skip vote");
-  }
-  assertHex(value.publicKey, 64, "HTTP peer round skip public key");
-  assertHex(value.signature, 64, "HTTP peer round skip signature");
-  assertHex(value.previousHash, 32, "HTTP peer round skip previous hash");
-  if (value.validator !== addressFromPublicKey(value.publicKey)) throw new Error("Invalid HTTP peer round skip validator");
-  return value as unknown as RoundSkipVote;
-}
-
-'''
-          if marker not in text:
-              raise SystemExit('requestAttestations anchor missing')
-          text = text.replace(marker, helper + marker, 1)
-
-          old_att = '''          assertPlainRecord(payload, "attestation response");
-          assertExactKeys(payload, ["attestation"], "attestation response");
-          return payload.attestation as BlockAttestation;'''
-          new_att = '''          assertPlainRecord(payload, "attestation response");
-          assertExactKeys(payload, ["attestation"], "attestation response");
-          return validateHttpPeerAttestationShape(payload.attestation);'''
-          if old_att not in text:
-              raise SystemExit('attestation callback anchor missing')
-          text = text.replace(old_att, new_att, 1)
-
-          old_skip = '''          assertPlainRecord(payload, "round skip response");
-          assertExactKeys(payload, ["vote"], "round skip response");
-          return payload.vote as RoundSkipVote;'''
-          new_skip = '''          assertPlainRecord(payload, "round skip response");
-          assertExactKeys(payload, ["vote"], "round skip response");
-          return validateHttpPeerRoundSkipVoteShape(payload.vote);'''
-          if old_skip not in text:
-              raise SystemExit('round skip callback anchor missing')
-          text = text.replace(old_skip, new_skip, 1)
-          path.write_text(text)
-          PY
-      - name: Commit production patch
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add l1/src/node-base.ts
-          git diff --cached --check
-          git commit -m "Shape-gate HTTP consensus peer results"
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
-
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
+
     env:
       PYTHONPATH: .
+
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --require-hashes -r requirements.txt
           pip install pytest==9.1.1
+
       - name: Verify dependencies
         run: python -m pip check
+
       - name: Compile Python sources
         run: python -m compileall -q app.py main.py signed_demo.py zyron tests
+
       - name: Run tests
         run: pytest -q
 
@@ -139,11 +54,13 @@ export function validateHttpPeerRoundSkipVoteShape(value: unknown): RoundSkipVot
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
+
       - name: Audit runtime dependencies
         run: |
           python -m pip install --upgrade pip
