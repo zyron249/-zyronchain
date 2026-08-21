@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { constants as bufferConstants } from "node:buffer";
+import { appendFile, mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +18,37 @@ test("bounded UTF-8 reader accepts the exact byte boundary and rejects one byte 
     await assert.rejects(
       () => readBoundedUtf8File(path, 1024, "Test state"),
       /Test state exceeds 1024 byte limit/
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("bounded UTF-8 reader does not allocate the configured ceiling for a tiny file", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-bounded-file-proportional-"));
+  const path = join(directory, "state.json");
+  try {
+    await writeFile(path, "x");
+    // A ceiling at Buffer.MAX_LENGTH would make the old implementation attempt
+    // an impossible MAX_LENGTH+1 allocation even though the file is one byte.
+    assert.equal(await readBoundedUtf8File(path, bufferConstants.MAX_LENGTH, "Tiny state"), "x");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("bounded UTF-8 reader rejects file growth after descriptor validation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-bounded-file-growth-"));
+  const path = join(directory, "state.json");
+  try {
+    await writeFile(path, "a");
+    await assert.rejects(
+      () => readBoundedUtf8File(path, 1024, "Growing state", {
+        afterOpenValidated: async () => {
+          await appendFile(path, "b");
+        }
+      }),
+      /Growing state changed during reading/
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
