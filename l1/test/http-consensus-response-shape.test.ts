@@ -3,9 +3,13 @@ import test from "node:test";
 
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import {
+  MAX_HTTP_ATTESTATION_RESPONSE_BYTES,
+  MAX_HTTP_ROUND_SKIP_RESPONSE_BYTES,
+  PeerClient,
   validateHttpPeerAttestationShape,
   validateHttpPeerRoundSkipVoteShape
 } from "../src/node.js";
+import type { Block } from "../src/types.js";
 
 const publicKey = publicKeyFromPrivate("11".repeat(32));
 const validator = addressFromPublicKey(publicKey);
@@ -26,6 +30,16 @@ function skipVote() {
     signature
   };
 }
+
+function jsonHeaders(extra: Record<string, string> = {}): Headers {
+  return new Headers({
+    "content-type": "application/json",
+    "x-zyron-rpc-version": "1",
+    ...extra
+  });
+}
+
+const dummyBlock = {} as Block;
 
 test("HTTP peer attestation shape accepts only canonical fixed fields", () => {
   const value = attestation();
@@ -67,4 +81,78 @@ test("HTTP peer round-skip shape rejects retained nested and malformed primitive
     () => validateHttpPeerRoundSkipVoteShape({ ...value, validator: `ZYN${"f".repeat(40)}` }),
     /validator/i
   );
+});
+
+test("HTTP consensus response ceilings are fixed-shape sized", () => {
+  assert.equal(MAX_HTTP_ATTESTATION_RESPONSE_BYTES, 8_192);
+  assert.equal(MAX_HTTP_ROUND_SKIP_RESPONSE_BYTES, 16_384);
+  const attestationBody = Buffer.byteLength(JSON.stringify({ attestation: attestation() }), "utf8");
+  const skipBody = Buffer.byteLength(JSON.stringify({ vote: skipVote() }), "utf8");
+  assert.ok(attestationBody < MAX_HTTP_ATTESTATION_RESPONSE_BYTES / 4);
+  assert.ok(skipBody < MAX_HTTP_ROUND_SKIP_RESPONSE_BYTES / 4);
+});
+
+test("HTTP attestation rejects oversized declared length before parsing", async () => {
+  const originalFetch = globalThis.fetch;
+  let bodyCancelled = false;
+  globalThis.fetch = async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        bodyCancelled = true;
+      },
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{}"));
+      }
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: jsonHeaders({ "content-length": String(MAX_HTTP_ATTESTATION_RESPONSE_BYTES + 1) })
+    });
+  };
+  try {
+    const client = new PeerClient(["https://peer.example"]);
+    assert.deepEqual(await client.requestAttestations(dummyBlock), []);
+    assert.equal(bodyCancelled, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("HTTP round-skip rejects streamed bytes above its fixed route ceiling", async () => {
+  const originalFetch = globalThis.fetch;
+  let cancelled = false;
+  globalThis.fetch = async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+      start(controller) {
+        controller.enqueue(new Uint8Array(MAX_HTTP_ROUND_SKIP_RESPONSE_BYTES + 1));
+      }
+    });
+    return new Response(stream, { status: 200, headers: jsonHeaders() });
+  };
+  try {
+    const client = new PeerClient(["https://peer.example"]);
+    assert.deepEqual(await client.requestRoundSkips(12, 3), []);
+    assert.equal(cancelled, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("HTTP attestation canonical response remains accepted under tightened ceiling", async () => {
+  const originalFetch = globalThis.fetch;
+  const value = attestation();
+  const body = JSON.stringify({ attestation: value });
+  globalThis.fetch = async () => new Response(body, {
+    status: 200,
+    headers: jsonHeaders({ "content-length": String(Buffer.byteLength(body, "utf8")) })
+  });
+  try {
+    const client = new PeerClient(["https://peer.example"]);
+    assert.deepEqual(await client.requestAttestations(dummyBlock), [value]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
