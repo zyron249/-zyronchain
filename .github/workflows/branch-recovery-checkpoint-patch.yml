@@ -1,0 +1,33 @@
+name: Branch-only recovery checkpoint bounded patch
+
+on:
+  push:
+    branches:
+      - agent/recovery-checkpoint-bounded-json-v1
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout agent branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/recovery-checkpoint-bounded-json-v1
+          fetch-depth: 0
+
+      - name: Apply reviewed bounded recovery patch
+        run: node l1/scripts/apply-recovery-checkpoint-bounded-patch.mjs
+
+      - name: Remove temporary patch machinery and commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm l1/scripts/apply-recovery-checkpoint-bounded-patch.mjs .github/workflows/branch-recovery-checkpoint-patch.yml
+          git add l1/src/storage.ts l1/test/recovery-checkpoint-bounds.test.ts docs/RECOVERY_CHECKPOINT_BOUNDS.md .github/workflows/bounded-state-file-windows.yml
+          git commit -m 'Bound local recovery checkpoint parsing'
+          git push origin HEAD:agent/recovery-checkpoint-bounded-json-v1
