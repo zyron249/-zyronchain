@@ -1,6 +1,7 @@
 import type { Server } from "node:http";
 
 export const NODE_SHUTDOWN_GRACE_MS = 10_000;
+export const MAX_BACKGROUND_TASKS = 32;
 
 export async function drainHttpServer(
   server: Server,
@@ -36,8 +37,14 @@ export class BackgroundTaskTracker {
   private accepting = true;
   private readonly pending = new Set<Promise<unknown>>();
 
+  constructor(private readonly maxPending = MAX_BACKGROUND_TASKS) {
+    if (!Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > 1_024) {
+      throw new Error("Background task limit must be an integer between 1 and 1024");
+    }
+  }
+
   run(operation: () => Promise<unknown>): boolean {
-    if (!this.accepting) return false;
+    if (!this.accepting || this.pending.size >= this.maxPending) return false;
     const task = operation();
     this.pending.add(task);
     void task.then(

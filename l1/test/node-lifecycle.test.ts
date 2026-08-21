@@ -83,3 +83,34 @@ test("background task tracker drains rejected work without leaking rejection", a
   await tracker.drain();
   assert.equal(tracker.pendingCount, 0);
 });
+
+test("background task tracker rejects new work before invoking it when saturated", async () => {
+  const tracker = new BackgroundTaskTracker(2);
+  const releases: Array<() => void> = [];
+  let invoked = 0;
+  const blockedTask = (): Promise<void> => {
+    invoked += 1;
+    return new Promise<void>((resolveTask) => releases.push(resolveTask));
+  };
+
+  assert.equal(tracker.run(blockedTask), true);
+  assert.equal(tracker.run(blockedTask), true);
+  assert.equal(tracker.pendingCount, 2);
+  assert.equal(tracker.run(blockedTask), false);
+  assert.equal(invoked, 2, "saturated tracker must not invoke rejected work");
+
+  releases.shift()?.();
+  await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+  assert.equal(tracker.pendingCount, 1);
+  assert.equal(tracker.run(blockedTask), true, "settled work must reclaim admission capacity");
+  assert.equal(invoked, 3);
+
+  for (const release of releases.splice(0)) release();
+  await tracker.drain();
+  assert.equal(tracker.pendingCount, 0);
+});
+
+test("background task tracker validates its configured capacity", () => {
+  assert.throws(() => new BackgroundTaskTracker(0), /task limit/);
+  assert.throws(() => new BackgroundTaskTracker(1_025), /task limit/);
+});
