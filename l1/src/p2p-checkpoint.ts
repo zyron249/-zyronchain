@@ -15,6 +15,8 @@ import type { GenesisConfig } from "./types.js";
 export const P2P_CHECKPOINT_PROTOCOL = "/zyronchain/checkpoint/1.0.0";
 export const MAX_CHECKPOINT_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 export const MAX_CHECKPOINT_CHUNK_BYTES = 256 * 1024;
+export const MAX_CHECKPOINT_CACHE_BYTES = MAX_CHECKPOINT_SNAPSHOT_BYTES;
+const MAX_CHECKPOINT_CACHE_ENTRIES = 2;
 const MAX_CHECKPOINT_REQUEST_BYTES = 4_096;
 const MAX_CHECKPOINT_RESPONSE_BYTES = 400_000;
 const MAX_CHECKPOINT_CHUNKS = MAX_CHECKPOINT_SNAPSHOT_BYTES / MAX_CHECKPOINT_CHUNK_BYTES;
@@ -47,6 +49,38 @@ interface CachedSnapshot {
   bytes: Buffer;
 }
 
+export function retainCheckpointCacheEntry<T extends { bytes: Uint8Array }>(
+  cache: Map<string, T>,
+  key: string,
+  candidate: T,
+  maxBytes = MAX_CHECKPOINT_CACHE_BYTES,
+  maxEntries = MAX_CHECKPOINT_CACHE_ENTRIES
+): void {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_CHECKPOINT_SNAPSHOT_BYTES ||
+      !Number.isSafeInteger(maxEntries) || maxEntries < 1 || maxEntries > MAX_CHECKPOINT_CACHE_ENTRIES ||
+      candidate.bytes.byteLength < 1 || candidate.bytes.byteLength > maxBytes) {
+    throw new Error("Invalid checkpoint cache bounds");
+  }
+
+  cache.delete(key);
+  cache.set(key, candidate);
+  let totalBytes = 0;
+  for (const value of cache.values()) totalBytes += value.bytes.byteLength;
+
+  while ((cache.size > maxEntries || totalBytes > maxBytes) && cache.size > 1) {
+    const oldestKey = cache.keys().next().value as string | undefined;
+    if (oldestKey === undefined || oldestKey === key) break;
+    const oldest = cache.get(oldestKey);
+    cache.delete(oldestKey);
+    totalBytes -= oldest?.bytes.byteLength ?? 0;
+  }
+
+  if (cache.size > maxEntries || totalBytes > maxBytes) {
+    cache.delete(key);
+    throw new Error("Checkpoint cache byte budget exceeded");
+  }
+}
+
 /**
  * Serves bounded chunks only when the requester already knows the exact
  * finalized tip and snapshot digest. This protocol is transport, not a trust
@@ -60,8 +94,9 @@ export async function registerP2PCheckpointProtocol(
   const local = localIdentity(identity, service.status());
   validateP2PChainIdentity(local, service.status(), node.peerId);
   const rate = new P2PPeerRateLimiter(300, 60_000);
-  // Keep two finalized snapshots so a transfer that spans a block boundary is
-  // not invalidated merely because the live tip advances. Memory stays bounded.
+  // Retain up to two recent finalized snapshots only while their combined
+  // binary footprint fits one canonical snapshot ceiling. Near-limit snapshots
+  // therefore evict older entries instead of doubling retained cache memory.
   const cache = new Map<string, CachedSnapshot>();
 
   await node.handle(P2P_CHECKPOINT_PROTOCOL, async (stream, connection) => {
@@ -83,8 +118,7 @@ export async function registerP2PCheckpointProtocol(
         // The candidate is canonical local state for this exact finalized tip,
         // not requester-controlled data. Cache it before comparing the supplied
         // digest so repeated mismatches cannot force full re-serialization.
-        if (cache.size >= 2) cache.delete(cache.keys().next().value!);
-        cache.set(candidate.tipHash, candidate);
+        retainCheckpointCacheEntry(cache, candidate.tipHash, candidate);
         selected = candidate;
       }
       if (request.snapshotSha256 !== selected.snapshotSha256) throw new Error("Requested checkpoint digest is unavailable");
