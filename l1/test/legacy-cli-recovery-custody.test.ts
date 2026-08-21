@@ -79,7 +79,7 @@ test("direct legacy CLI rejects wrong checkpoint digest before structural parsin
         "checkpoint-install", "--genesis", genesis, "--snapshot", snapshot, "--data", join(dir, "data"),
         "--tip-hash", "0".repeat(64), "--sha256", "0".repeat(64)
       ],
-      /CLI checkpoint snapshot SHA-256 mismatch/
+      /checkpoint snapshot digest mismatch.*SHA-256/i
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
