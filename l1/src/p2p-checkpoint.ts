@@ -42,11 +42,16 @@ interface CheckpointResponse {
   data: string;
 }
 
-interface CachedSnapshot {
+export interface CachedSnapshot {
   tipHash: string;
   snapshotSha256: string;
   height: number;
   bytes: Buffer;
+}
+
+export interface CheckpointMaterializationState {
+  tipHash?: string;
+  promise?: Promise<CachedSnapshot>;
 }
 
 export function retainCheckpointCacheEntry<T extends { bytes: Uint8Array }>(
@@ -81,6 +86,37 @@ export function retainCheckpointCacheEntry<T extends { bytes: Uint8Array }>(
   }
 }
 
+export async function materializeCheckpointSnapshotSingleFlight(
+  cache: Map<string, CachedSnapshot>,
+  state: CheckpointMaterializationState,
+  tipHash: string,
+  materialize: () => CachedSnapshot | Promise<CachedSnapshot>
+): Promise<CachedSnapshot> {
+  const cached = cache.get(tipHash);
+  if (cached) return cached;
+
+  if (state.promise) {
+    if (state.tipHash !== tipHash) throw new Error("Checkpoint materialization already in progress");
+    return state.promise;
+  }
+
+  const promise = Promise.resolve().then(materialize).then((candidate) => {
+    if (candidate.tipHash !== tipHash) throw new Error("Checkpoint tip changed during materialization");
+    retainCheckpointCacheEntry(cache, tipHash, candidate);
+    return candidate;
+  });
+  state.tipHash = tipHash;
+  state.promise = promise;
+  try {
+    return await promise;
+  } finally {
+    if (state.promise === promise) {
+      delete state.promise;
+      delete state.tipHash;
+    }
+  }
+}
+
 /**
  * Serves bounded chunks only when the requester already knows the exact
  * finalized tip and snapshot digest. This protocol is transport, not a trust
@@ -98,6 +134,10 @@ export async function registerP2PCheckpointProtocol(
   // binary footprint fits one canonical snapshot ceiling. Near-limit snapshots
   // therefore evict older entries instead of doubling retained cache memory.
   const cache = new Map<string, CachedSnapshot>();
+  // Snapshot creation can transiently hold the snapshot graph, canonical text
+  // and binary bytes at once. Keep that expensive boundary globally single-flight
+  // across peer connections rather than relying on per-stream concurrency limits.
+  const materialization: CheckpointMaterializationState = {};
 
   await node.handle(P2P_CHECKPOINT_PROTOCOL, async (stream, connection) => {
     let releaseFrame: (() => void) | undefined;
@@ -114,12 +154,15 @@ export async function registerP2PCheckpointProtocol(
         // Reject unknown tips before the potentially expensive serialization.
         const status = service.status();
         if (request.tipHash !== status.tipHash) throw new Error("Requested checkpoint tip is not locally finalized");
-        const candidate = snapshotForServing(service);
-        // The candidate is canonical local state for this exact finalized tip,
-        // not requester-controlled data. Cache it before comparing the supplied
-        // digest so repeated mismatches cannot force full re-serialization.
-        retainCheckpointCacheEntry(cache, candidate.tipHash, candidate);
-        selected = candidate;
+        // Concurrent requests for the same current tip share one materialization.
+        // If finality advances while another tip is materializing, fail closed
+        // instead of allowing two large snapshot builds to overlap.
+        selected = await materializeCheckpointSnapshotSingleFlight(
+          cache,
+          materialization,
+          request.tipHash,
+          () => snapshotForServing(service)
+        );
       }
       if (request.snapshotSha256 !== selected.snapshotSha256) throw new Error("Requested checkpoint digest is unavailable");
       if (request.offset > selected.bytes.length) throw new Error("Checkpoint offset exceeds snapshot length");
