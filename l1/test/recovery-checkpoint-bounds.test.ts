@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,6 +13,9 @@ const validatorPublicKey = publicKeyFromPrivate(validatorPrivateKey);
 const validatorAddress = addressFromPublicKey(validatorPublicKey);
 const activityPool = addressFromPublicKey(publicKeyFromPrivate("02".padStart(64, "0")));
 const activityOracle = publicKeyFromPrivate("03".padStart(64, "0"));
+const chainStoreUnsupportedOnWindows = process.platform === "win32"
+  ? "ChainStore durability initialization intentionally requires POSIX directory fsync; Windows CI verifies the bounded reader primitive and production wiring instead"
+  : false;
 
 function genesis(): GenesisConfig {
   return {
@@ -39,7 +42,15 @@ async function assertAuthoritativeReplay(dataDir: string): Promise<void> {
   assert.equal(reopened.recoveredFromCheckpointHeight, 0);
 }
 
-test("oversized recovery checkpoint is rejected before allocation and finalized history remains authoritative", async () => {
+test("recovery checkpoint loader is wired to the shared bounded reader and pre-parse complexity gate", async () => {
+  const source = await readFile(join(process.cwd(), "src", "storage.ts"), "utf8");
+  assert.match(source, /readBoundedFileBuffer\(/);
+  assert.match(source, /assertBoundedCheckpointJsonStructure\(checkpointBytes\)/);
+  assert.match(source, /MAX_RECOVERY_CHECKPOINT_FILE_BYTES\s*=\s*65\s*\*\s*1024\s*\*\s*1024/);
+  assert.doesNotMatch(source, /readRegularUtf8FileDescriptorBound\(join\(dataDir,\s*"recovery-checkpoint\.json"\)\)/);
+});
+
+test("oversized recovery checkpoint is rejected before allocation and finalized history remains authoritative", { skip: chainStoreUnsupportedOnWindows }, async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "zyron-recovery-bound-"));
   try {
     await createFinalizedCheckpoint(dataDir);
@@ -50,7 +61,7 @@ test("oversized recovery checkpoint is rejected before allocation and finalized 
   }
 });
 
-test("over-deep recovery checkpoint JSON is rejected before JSON.parse and finalized history remains authoritative", async () => {
+test("over-deep recovery checkpoint JSON is rejected before JSON.parse and finalized history remains authoritative", { skip: chainStoreUnsupportedOnWindows }, async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "zyron-recovery-complexity-"));
   try {
     await createFinalizedCheckpoint(dataDir);
