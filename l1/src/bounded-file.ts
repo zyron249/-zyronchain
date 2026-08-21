@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 export interface BoundedFileFaultHooks {
   afterOpenValidated?: () => void | Promise<void>;
+  beforeFinalValidation?: () => void | Promise<void>;
 }
 
 interface OpenedBoundedFile {
@@ -50,7 +51,8 @@ export async function readBoundedFileBuffer(
     const { bytesRead: extraBytes } = await opened.handle.read(sentinel, 0, 1, null);
     if (extraBytes !== 0) throw new Error(`${label} changed during reading`);
 
-    await requireSameBoundedRegularFile(opened, label, "during reading");
+    await faultHooks.beforeFinalValidation?.();
+    await requireSameBoundedRegularFile(opened, label, "during reading", initialSize);
     return buffer;
   } finally {
     await opened.handle.close();
@@ -89,12 +91,16 @@ async function openValidatedBoundedFile(path: string, label: string): Promise<Op
 async function requireSameBoundedRegularFile(
   opened: OpenedBoundedFile,
   label: string,
-  phase: string
+  phase: string,
+  expectedSize?: number
 ): Promise<void> {
   const descriptorMetadata = await opened.handle.stat();
   const pathMetadata = await lstat(opened.resolved);
   if (pathMetadata.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link`);
   if (!descriptorMetadata.isFile() || !pathMetadata.isFile()) throw new Error(`${label} must be a regular file`);
+  if (expectedSize !== undefined && descriptorMetadata.size !== expectedSize) {
+    throw new Error(`${label} changed ${phase}`);
+  }
   const observedCanonical = await realpath(opened.resolved);
   if (observedCanonical !== opened.canonical) throw new Error(`${label} changed ${phase}`);
   if (process.platform !== "win32" &&
