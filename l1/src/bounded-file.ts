@@ -14,7 +14,7 @@ interface OpenedBoundedFile {
 
 /**
  * Read a local non-secret state file from one opened descriptor while keeping
- * memory bounded if the file is oversized initially or grows concurrently.
+ * memory bounded if the file is oversized initially or changes concurrently.
  * The path is frozen canonically before open and revalidated after open and
  * after the bounded read so parent symlink/junction/reparse substitution fails
  * closed before bytes reach a parser. POSIX additionally keeps no-follow,
@@ -31,18 +31,27 @@ export async function readBoundedFileBuffer(
   try {
     const metadata = await opened.handle.stat();
     if (metadata.size > maxBytes) throw new Error(`${label} exceeds ${maxBytes} byte limit`);
+    const initialSize = metadata.size;
     await faultHooks.afterOpenValidated?.();
 
-    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    // Allocate in proportion to the descriptor's validated size, not to the
+    // configured ceiling. A separate one-byte sentinel read detects any growth
+    // without forcing tiny files under a large ceiling to reserve the ceiling.
+    const buffer = Buffer.allocUnsafe(initialSize);
     let total = 0;
-    while (total <= maxBytes) {
-      const { bytesRead } = await opened.handle.read(buffer, total, buffer.length - total, null);
+    while (total < initialSize) {
+      const { bytesRead } = await opened.handle.read(buffer, total, initialSize - total, null);
       if (bytesRead === 0) break;
       total += bytesRead;
-      if (total > maxBytes) throw new Error(`${label} exceeds ${maxBytes} byte limit`);
     }
+    if (total !== initialSize) throw new Error(`${label} changed during reading`);
+
+    const sentinel = Buffer.allocUnsafe(1);
+    const { bytesRead: extraBytes } = await opened.handle.read(sentinel, 0, 1, null);
+    if (extraBytes !== 0) throw new Error(`${label} changed during reading`);
+
     await requireSameBoundedRegularFile(opened, label, "during reading");
-    return buffer.subarray(0, total);
+    return buffer;
   } finally {
     await opened.handle.close();
   }
