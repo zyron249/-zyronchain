@@ -6,4 +6,6 @@ The boundary enforces a 1 MiB maximum per proposal/approval artifact, regular-fi
 
 Direct invocation of the compiled legacy CLI is defense-in-depth hardened to the same per-artifact reader: validator/protocol proposal and approval readers call `readCliGovernanceArtifactUtf8()` before JSON materialization. Therefore both the published staged entrypoint and direct legacy entrypoint enforce the 1 MiB descriptor/path-custody boundary; published 0600 staging remains unchanged and repeated approval ordering is preserved.
 
+The dedicated custody CI exercises both direct legacy invocation and the published path boundary; green CI is evidence of the file-custody implementation only, not governance authorization or launch readiness.
+
 This hardening limits local memory/path-substitution risk. It does not authorize validator-set or protocol changes, does not weaken quorum/signature validation, and does not change public-testnet, mainnet, or mining activation gates.
