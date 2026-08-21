@@ -1,5 +1,7 @@
 import type { Libp2p } from "libp2p";
 
+import { assertHex } from "./codec.js";
+import { addressFromPublicKey } from "./crypto.js";
 import { PeerInflightLimiter, type ConsensusPeerClient, type NodeService, type NodeStatus } from "./node.js";
 import { readP2PFrameRetained, writeP2PFrame } from "./p2p-frame.js";
 import { validateP2PChainIdentity, type P2PChainIdentity } from "./p2p.js";
@@ -15,6 +17,7 @@ const MAX_CONFIGURED_NATIVE_PEERS = 64;
 const MAX_NATIVE_GOSSIP_FANOUT = 8;
 const MAX_NATIVE_GOSSIP_DEDUP = 4_096;
 const MAX_NATIVE_CONSENSUS_INFLIGHT_PER_PEER = 2;
+const MAX_CONSENSUS_CHAIN_ID_LENGTH = 128;
 
 type ConsensusRequest =
   | { version: 1; identity: P2PChainIdentity; kind: "attest"; block: Block }
@@ -229,12 +232,49 @@ function parseConsensusResponse(
   const record = value as Record<string, unknown>;
   assertExactKeys(record, ["version", "identity", "kind", "result"], "native consensus response");
   if (record.version !== 1 || record.kind !== expectedKind) throw new Error("Invalid native consensus response");
-  return {
-    version: 1,
-    identity: validateP2PChainIdentity(record.identity, expected, remotePeer),
-    kind: expectedKind,
-    result: record.result
-  };
+  const identity = validateP2PChainIdentity(record.identity, expected, remotePeer);
+  validateConsensusResponseResultShape(expectedKind, record.result);
+  return { version: 1, identity, kind: expectedKind, result: record.result };
+}
+
+/**
+ * Shape-gates peer-controlled consensus results while the decoded frame lease is
+ * still retained. Cryptographic/quorum checks remain at the consensus caller.
+ */
+export function validateConsensusResponseResultShape(kind: ConsensusResponse["kind"], value: unknown): void {
+  assertRecord(value, `native consensus ${kind} result`);
+  if (kind === "attest") {
+    assertExactKeys(value, ["validator", "publicKey", "signature"], "native consensus attest result");
+    if (typeof value.publicKey !== "string" || typeof value.signature !== "string" || typeof value.validator !== "string") {
+      throw new Error("Invalid native consensus attest result");
+    }
+    assertHex(value.publicKey, 64, "native consensus attestation public key");
+    assertHex(value.signature, 64, "native consensus attestation signature");
+    if (value.validator !== addressFromPublicKey(value.publicKey)) throw new Error("Invalid native consensus attestation validator");
+    return;
+  }
+  if (kind === "skip") {
+    assertExactKeys(value, ["validator", "publicKey", "chainId", "height", "round", "previousHash", "signature"], "native consensus skip result");
+    if (typeof value.publicKey !== "string" || typeof value.signature !== "string" || typeof value.validator !== "string" ||
+        typeof value.chainId !== "string" || value.chainId.length < 1 || value.chainId.length > MAX_CONSENSUS_CHAIN_ID_LENGTH ||
+        !Number.isSafeInteger(value.height) || Number(value.height) < 1 ||
+        !Number.isSafeInteger(value.round) || Number(value.round) < 0 || typeof value.previousHash !== "string") {
+      throw new Error("Invalid native consensus skip result");
+    }
+    assertHex(value.publicKey, 64, "native consensus skip public key");
+    assertHex(value.signature, 64, "native consensus skip signature");
+    assertHex(value.previousHash, 32, "native consensus skip previous hash");
+    if (value.validator !== addressFromPublicKey(value.publicKey)) throw new Error("Invalid native consensus skip validator");
+    return;
+  }
+  if (kind === "block") {
+    assertExactKeys(value, ["accepted"], "native consensus block result");
+    if (value.accepted !== true) throw new Error("Invalid native consensus block result");
+    return;
+  }
+  assertExactKeys(value, ["txid"], "native consensus transaction result");
+  if (typeof value.txid !== "string") throw new Error("Invalid native consensus transaction result");
+  assertHex(value.txid, 32, "native consensus transaction txid");
 }
 
 function localIdentity(identity: NodeIdentity, chain: Pick<NodeStatus, "chainId" | "genesisHash">): P2PChainIdentity {
