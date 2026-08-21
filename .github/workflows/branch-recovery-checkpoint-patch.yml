@@ -4,13 +4,14 @@ on:
   push:
     branches:
       - agent/recovery-checkpoint-bounded-json-v1
+  pull_request:
 
 permissions:
   contents: write
 
 jobs:
   patch:
-    if: github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]' && (github.event_name != 'pull_request' || github.head_ref == 'agent/recovery-checkpoint-bounded-json-v1')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
