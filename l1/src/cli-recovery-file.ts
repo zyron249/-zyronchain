@@ -43,11 +43,12 @@ export async function readCliCheckpointSnapshotUtf8(
 }
 
 /**
- * Published checkpoint-install has an independently trusted SHA-256 anchor.
- * Verify it on the already bounded descriptor-owned bytes before structural
- * scanning, UTF-8 materialization or JSON.parse can allocate from untrusted
- * snapshot content. Hashing streams the existing Buffer into crypto state and
- * does not allocate another snapshot-sized copy.
+ * Published checkpoint-install has an independently trusted snapshot digest.
+ * ZyronChain defines that digest over canonicalJson(snapshot), while snapshot
+ * files emitted by the CLI append one transport LF. Verify the canonical
+ * payload bytes before structural scanning / UTF-8 materialization without
+ * silently redefining --sha256 as a whole-file digest. subarray() is a view,
+ * so stripping the optional writer LF does not allocate another snapshot copy.
  */
 export async function readCliCheckpointSnapshotAnchoredUtf8(
   path: string,
@@ -59,7 +60,9 @@ export async function readCliCheckpointSnapshotAnchoredUtf8(
     throw new Error("CLI checkpoint snapshot requires a lowercase 32-byte SHA-256 anchor");
   }
   const body = await readCliCheckpointSnapshotBuffer(path, maxBytes, faultHooks);
-  const actualSha256 = createHash("sha256").update(body).digest("hex");
+  const canonicalPayload = body[body.length - 1] === 0x0a ? body.subarray(0, body.length - 1) : body;
+  if (canonicalPayload.length < 1) throw new Error("CLI checkpoint snapshot canonical payload must be non-empty");
+  const actualSha256 = createHash("sha256").update(canonicalPayload).digest("hex");
   if (actualSha256 !== expectedSha256) throw new Error("CLI checkpoint snapshot SHA-256 mismatch");
   assertBoundedCheckpointJsonStructure(body);
   return body.toString("utf8");
