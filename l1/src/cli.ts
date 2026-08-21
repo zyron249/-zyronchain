@@ -7,6 +7,7 @@ import type { Multiaddr } from "@multiformats/multiaddr";
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
 import { encryptPrivateKey, normalizePasswordFile } from "./keystore.js";
 import { readPrivateRegularFile } from "./local-security.js";
+import { readCliCheckpointSnapshotAnchoredUtf8, readCliGenesisUtf8 } from "./cli-recovery-file.js";
 import { readOperatorAuthToken, readOperatorPrivateKey } from "./operator-secrets.js";
 import {
   assertSafeRpcBinding,
@@ -108,7 +109,7 @@ async function createSnapshot(args: string[]): Promise<void> {
   const genesisPath = requiredOption(args, "--genesis");
   const dataDir = requiredOption(args, "--data");
   const output = requiredOption(args, "--out");
-  const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
+  const genesis = JSON.parse(await readCliGenesisUtf8(resolve(genesisPath))) as GenesisConfig;
   const resolvedDataDir = resolve(dataDir);
   const lease = await NodeDataDirectoryLease.acquire(resolvedDataDir);
   try {
@@ -132,8 +133,8 @@ async function installCheckpoint(args: string[]): Promise<void> {
   if (!/^[0-9a-f]{64}$/.test(tipHash) || !/^[0-9a-f]{64}$/.test(snapshotSha256)) {
     throw new Error("checkpoint-install requires lowercase 32-byte --tip-hash and --sha256 anchors");
   }
-  const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
-  const snapshot = JSON.parse(await readFile(resolve(snapshotPath), "utf8")) as unknown;
+  const genesis = JSON.parse(await readCliGenesisUtf8(resolve(genesisPath))) as GenesisConfig;
+  const snapshot = JSON.parse(await readCliCheckpointSnapshotAnchoredUtf8(resolve(snapshotPath), snapshotSha256)) as unknown;
   const store = await ChainStore.installTrustedSnapshot(genesis, dataDir, snapshot, { tipHash, snapshotSha256 });
   console.log(`Trusted checkpoint installed at height ${store.chain.height}: ${dataDir}`);
   console.log(`Finalized tip: ${store.chain.tip.hash}`);
@@ -150,7 +151,7 @@ async function fetchAndInstallCheckpoint(args: string[]): Promise<void> {
   if (!/^[0-9a-f]{64}$/.test(tipHash) || !/^[0-9a-f]{64}$/.test(snapshotSha256)) {
     throw new Error("checkpoint-fetch-install requires lowercase 32-byte --tip-hash and --sha256 anchors");
   }
-  const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
+  const genesis = JSON.parse(await readCliGenesisUtf8(resolve(genesisPath))) as GenesisConfig;
   const temporaryIdentityDir = await mkdtemp(join(tmpdir(), "zyron-checkpoint-fetch-"));
   let client: Awaited<ReturnType<typeof createP2PNode>> | undefined;
   try {
@@ -187,7 +188,7 @@ async function fetchAndInstallPortableState(args: string[]): Promise<void> {
   if (!/^[0-9a-f]{64}$/.test(tipHash) || !/^[0-9a-f]{64}$/.test(snapshotSha256)) {
     throw new Error("state-fetch-install requires lowercase 32-byte --tip-hash and --sha256 anchors");
   }
-  const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
+  const genesis = JSON.parse(await readCliGenesisUtf8(resolve(genesisPath))) as GenesisConfig;
   const resumeDir = `${dataDir}.state-sync-${tipHash.slice(0, 16)}-${snapshotSha256.slice(0, 16)}`;
   const temporaryIdentityDir = await mkdtemp(join(tmpdir(), "zyron-state-fetch-"));
   let client: Awaited<ReturnType<typeof createP2PNode>> | undefined;
@@ -217,7 +218,7 @@ async function pruneFinalized(args: string[]): Promise<void> {
   const dataDir = resolve(requiredOption(args, "--data"));
   const retainBlocks = parseSafeInteger(requiredOption(args, "--retain-blocks"), "retain-blocks");
   if (retainBlocks < 1) throw new Error("prune-finalized requires --retain-blocks >= 1");
-  const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
+  const genesis = JSON.parse(await readCliGenesisUtf8(resolve(genesisPath))) as GenesisConfig;
   const lease = await NodeDataDirectoryLease.acquire(dataDir);
   try {
     const store = await ChainStore.open(genesis, dataDir);
@@ -309,7 +310,7 @@ async function runNode(args: string[]): Promise<void> {
     if (existing !== undefined && existing !== assignment.group) throw new Error("Conflicting native peer group assignment");
     nativePeerGroups.set(assignment.peerId, assignment.group);
   }
-  const genesis = JSON.parse(await readFile(resolve(genesisPath), "utf8")) as GenesisConfig;
+  const genesis = JSON.parse(await readCliGenesisUtf8(resolve(genesisPath))) as GenesisConfig;
   const store = await ChainStore.open(genesis, resolvedDataDir);
   const validatorKeyPath = option(args, "--validator-key");
   const privateKey = validatorKeyPath ? await readPrivateKey(resolve(validatorKeyPath)) : undefined;
