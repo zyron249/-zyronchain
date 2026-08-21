@@ -33,6 +33,7 @@ jobs:
           s = p.read_text()
           s = s.replace('    await truncate(genesis, CLI_GENESIS_MAX_BYTES + 1);', '    await writeFile(genesis, "");\n    await truncate(genesis, CLI_GENESIS_MAX_BYTES + 1);')
           s = s.replace('    await truncate(snapshot, CLI_CHECKPOINT_SNAPSHOT_MAX_BYTES + 1);', '    await writeFile(snapshot, "");\n    await truncate(snapshot, CLI_CHECKPOINT_SNAPSHOT_MAX_BYTES + 1);')
+          s = s.replace('/CLI genesis file exceeds .* byte limit/', '/CLI genesis file exceeds (?:.* byte limit|byte bounds)/')
           p.write_text(s)
           PY
       - name: Install locked dependencies
