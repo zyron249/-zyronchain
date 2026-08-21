@@ -25,6 +25,13 @@ async function expectDirectCliFailure(args: string[], pattern: RegExp): Promise<
   );
 }
 
+async function writePrivateKeyFile(path: string): Promise<void> {
+  const privateKey = generatePrivateKey();
+  const publicKey = publicKeyFromPrivate(privateKey);
+  const address = addressFromPublicKey(publicKey);
+  await writeFile(path, JSON.stringify({ privateKey, publicKey, address }), { mode: 0o600 });
+}
+
 test("legacy governance readers all use the bounded governance artifact reader", async () => {
   const source = await readFile(new URL("../../src/cli.ts", import.meta.url), "utf8");
   assert.equal(source.includes('JSON.parse(await readFile(path, "utf8"))'), false);
@@ -35,10 +42,12 @@ test("direct legacy validator-approve rejects oversized proposal before key acce
   const dir = await mkdtemp(join(tmpdir(), "zyron-direct-governance-proposal-"));
   try {
     const proposal = join(dir, "proposal.json");
+    const key = join(dir, "key.json");
+    await writePrivateKeyFile(key);
     await writeFile(proposal, "");
     await truncate(proposal, CLI_GOVERNANCE_ARTIFACT_MAX_BYTES + 1);
     await expectDirectCliFailure(
-      ["validator-approve", "--proposal", proposal, "--key", join(dir, "missing-key.json"), "--out", join(dir, "approval.json")],
+      ["validator-approve", "--proposal", proposal, "--key", key, "--out", join(dir, "approval.json")],
       /CLI governance artifact exceeds .*byte/i
     );
   } finally {
@@ -76,10 +85,12 @@ test("direct legacy governance proposal rejects symlink substitution on POSIX", 
   try {
     const target = join(dir, "target.json");
     const link = join(dir, "proposal.json");
+    const key = join(dir, "key.json");
+    await writePrivateKeyFile(key);
     await writeFile(target, "{}\n");
     await symlink(target, link);
     await expectDirectCliFailure(
-      ["validator-approve", "--proposal", link, "--key", join(dir, "missing-key.json"), "--out", join(dir, "approval.json")],
+      ["validator-approve", "--proposal", link, "--key", key, "--out", join(dir, "approval.json")],
       /symbolic link|path changed|regular file/i
     );
   } finally {
