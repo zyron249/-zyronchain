@@ -14,6 +14,8 @@ function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+const checkpointDigestMismatch = /checkpoint snapshot digest mismatch.*SHA-256/i;
+
 test("anchored CLI checkpoint reader preserves canonical snapshot digest across writer LF", async () => {
   const dir = await mkdtemp(join(tmpdir(), "zyron-cli-checkpoint-digest-valid-"));
   try {
@@ -36,7 +38,7 @@ test("anchored CLI checkpoint reader does not redefine the anchor as a whole-fil
     await writeFile(path, fileBody);
     await assert.rejects(
       () => readCliCheckpointSnapshotAnchoredUtf8(path, sha256(fileBody)),
-      /SHA-256 mismatch/
+      checkpointDigestMismatch
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -52,7 +54,7 @@ test("anchored CLI checkpoint reader rejects alternate formatting before JSON pa
     await writeFile(path, formatted);
     await assert.rejects(
       () => readCliCheckpointSnapshotAnchoredUtf8(path, sha256(canonical)),
-      /SHA-256 mismatch/
+      checkpointDigestMismatch
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -67,7 +69,7 @@ test("anchored CLI checkpoint reader rejects digest mismatch before complexity s
     await writeFile(path, overComplex);
     await assert.rejects(
       () => readCliCheckpointSnapshotAnchoredUtf8(path, "0".repeat(64)),
-      /SHA-256 mismatch/
+      checkpointDigestMismatch
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
