@@ -8,6 +8,7 @@ import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "
 import { encryptPrivateKey, normalizePasswordFile } from "./keystore.js";
 import { readPrivateRegularFile } from "./local-security.js";
 import { readCliCheckpointSnapshotAnchoredUtf8, readCliGenesisUtf8 } from "./cli-recovery-file.js";
+import { readCliGovernanceArtifactUtf8 } from "./cli-governance-file.js";
 import { readOperatorAuthToken, readOperatorPrivateKey } from "./operator-secrets.js";
 import {
   assertSafeRpcBinding,
@@ -918,7 +919,7 @@ async function readAuthToken(path: string, label: string): Promise<string> {
 }
 
 async function readValidatorProposal(path: string): Promise<ValidatorProposal> {
-  const value = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  const value = JSON.parse(await readCliGovernanceArtifactUtf8(path)) as Record<string, unknown>;
   const hasTransactionVersion = Object.hasOwn(value, "transactionVersion");
   assertObjectFields(value, hasTransactionVersion
     ? ["transactionVersion", "chainId", "nonce", "sender", "activationHeight", "validators"]
@@ -950,7 +951,7 @@ async function readValidatorProposal(path: string): Promise<ValidatorProposal> {
 }
 
 async function readValidatorApproval(path: string): Promise<ValidatorApproval> {
-  const value = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  const value = JSON.parse(await readCliGovernanceArtifactUtf8(path)) as Record<string, unknown>;
   assertObjectFields(value, ["validator", "publicKey", "signature"], "validator approval");
   if (typeof value.validator !== "string" || typeof value.publicKey !== "string" || typeof value.signature !== "string" ||
       !/^[0-9a-f]{128}$/.test(value.publicKey) || !/^[0-9a-f]{128}$/.test(value.signature)) {
@@ -962,7 +963,7 @@ async function readValidatorApproval(path: string): Promise<ValidatorApproval> {
 }
 
 async function readProtocolProposal(path: string): Promise<ProtocolProposal> {
-  const value = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  const value = JSON.parse(await readCliGovernanceArtifactUtf8(path)) as Record<string, unknown>;
   const hasTransactionVersion = Object.hasOwn(value, "transactionVersion");
   assertObjectFields(value, hasTransactionVersion
     ? ["transactionVersion", "chainId", "nonce", "sender", "activationHeight", "protocolVersion"]
