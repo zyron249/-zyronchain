@@ -14,13 +14,46 @@ function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-test("anchored CLI checkpoint reader accepts bytes matching the trusted digest", async () => {
+test("anchored CLI checkpoint reader preserves canonical snapshot digest across writer LF", async () => {
   const dir = await mkdtemp(join(tmpdir(), "zyron-cli-checkpoint-digest-valid-"));
   try {
     const path = join(dir, "snapshot.json");
-    const body = JSON.stringify({ version: 1, checkpoint: "trusted" });
-    await writeFile(path, body);
-    assert.equal(await readCliCheckpointSnapshotAnchoredUtf8(path, sha256(body)), body);
+    const canonical = JSON.stringify({ version: 1, checkpoint: "trusted" });
+    const fileBody = `${canonical}\n`;
+    await writeFile(path, fileBody);
+    assert.equal(await readCliCheckpointSnapshotAnchoredUtf8(path, sha256(canonical)), fileBody);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("anchored CLI checkpoint reader does not redefine the anchor as a whole-file digest", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zyron-cli-checkpoint-digest-file-bytes-"));
+  try {
+    const path = join(dir, "snapshot.json");
+    const canonical = JSON.stringify({ version: 1, checkpoint: "trusted" });
+    const fileBody = `${canonical}\n`;
+    await writeFile(path, fileBody);
+    await assert.rejects(
+      () => readCliCheckpointSnapshotAnchoredUtf8(path, sha256(fileBody)),
+      /SHA-256 mismatch/
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("anchored CLI checkpoint reader rejects alternate formatting before JSON parsing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zyron-cli-checkpoint-digest-format-"));
+  try {
+    const path = join(dir, "snapshot.json");
+    const canonical = JSON.stringify({ version: 1, checkpoint: "trusted" });
+    const formatted = '{\n  "version": 1,\n  "checkpoint": "trusted"\n}\n';
+    await writeFile(path, formatted);
+    await assert.rejects(
+      () => readCliCheckpointSnapshotAnchoredUtf8(path, sha256(canonical)),
+      /SHA-256 mismatch/
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
