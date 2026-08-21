@@ -6,7 +6,8 @@ import Database from "better-sqlite3";
 
 import { canonicalJson, sha256Hex } from "./codec.js";
 import { readBoundedRegularControlFile } from "./control-file.js";
-import { readRegularUtf8FileDescriptorBound } from "./descriptor-read.js";
+import { readBoundedFileBuffer } from "./bounded-file.js";
+import { assertBoundedCheckpointJsonStructure } from "./checkpoint-json-complexity.js";
 import { ZyronChain } from "./chain.js";
 import { StateV2DiskStore } from "./state-v2-store.js";
 import { stateV2TransactionKeyPreimages } from "./state-v2.js";
@@ -16,6 +17,7 @@ import type { Block, GenesisConfig } from "./types.js";
 const STORE_VERSION = 1;
 const MAX_STORED_BLOCK_LINE_BYTES = 2_500_000;
 const MAX_SIGNING_LINE_BYTES = 1_024;
+export const MAX_RECOVERY_CHECKPOINT_FILE_BYTES = 65 * 1024 * 1024;
 
 interface StoreMetadata {
   version: number;
@@ -1010,7 +1012,13 @@ interface LoadedRecoveryCheckpoint {
 
 async function loadRecoveryCheckpoint(genesis: GenesisConfig, dataDir: string): Promise<LoadedRecoveryCheckpoint | undefined> {
   try {
-    const value = JSON.parse(await readRegularUtf8FileDescriptorBound(join(dataDir, "recovery-checkpoint.json"))) as unknown;
+    const checkpointBytes = await readBoundedFileBuffer(
+      join(dataDir, "recovery-checkpoint.json"),
+      MAX_RECOVERY_CHECKPOINT_FILE_BYTES,
+      "Recovery checkpoint"
+    );
+    assertBoundedCheckpointJsonStructure(checkpointBytes);
+    const value = JSON.parse(checkpointBytes.toString("utf8")) as unknown;
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid recovery checkpoint");
     const record = value as Record<string, unknown>;
     const commonValid = typeof record.chainId === "string" && typeof record.genesisHash === "string" &&
