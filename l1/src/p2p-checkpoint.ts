@@ -111,8 +111,8 @@ export async function materializeCheckpointSnapshotSingleFlight(
     return await promise;
   } finally {
     if (state.promise === promise) {
-      state.promise = undefined;
-      state.tipHash = undefined;
+      delete state.promise;
+      delete state.tipHash;
     }
   }
 }
