@@ -1,9 +1,9 @@
 name: Branch-only legacy governance custody patcher
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/legacy-governance-file-custody-v1
+      - main
     paths:
       - '.github/scripts/patch-legacy-governance-custody.mjs'
       - '.github/workflows/patch-legacy-governance-custody.yml'
@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   patch:
+    if: github.head_ref == 'agent/legacy-governance-file-custody-v1'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -20,6 +21,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: agent/legacy-governance-file-custody-v1
+          persist-credentials: true
       - name: Apply reviewed branch patch
         run: node .github/scripts/patch-legacy-governance-custody.mjs
       - name: Commit production changes and self-delete patcher
