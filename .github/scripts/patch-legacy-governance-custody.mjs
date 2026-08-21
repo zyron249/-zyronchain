@@ -29,3 +29,5 @@ await writeFile('.github/workflows/legacy-cli-governance-custody.yml', permanent
 
 await rm('.github/scripts/patch-legacy-governance-custody.mjs', { force: true });
 await rm('.github/workflows/patch-legacy-governance-custody.yml', { force: true });
+
+// Trigger the branch-only patch workflow after the workflow file exists on the branch.
