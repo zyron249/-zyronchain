@@ -4,7 +4,7 @@ import { lstat, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { validateBlockShape } from "./block.js";
-import { canonicalJson, sha256Hex } from "./codec.js";
+import { canonicalJsonDigest } from "./codec.js";
 import { ZyronChain } from "./chain.js";
 import type { NodeService } from "./node.js";
 import { readP2PFrameRetained, writeP2PFrame } from "./p2p-frame.js";
@@ -373,7 +373,7 @@ async function selectPortableState(
   const status = service.status();
   if (request.tipHash !== status.tipHash) throw new Error("Requested State-v2 tip is not locally finalized or durably cached");
   const snapshot = service.store.chain.snapshot();
-  const snapshotSha256 = sha256Hex(canonicalJson(snapshot));
+  const snapshotSha256 = canonicalJsonDigest(snapshot).sha256;
   if (snapshotSha256 !== request.snapshotSha256) throw new Error("Requested State-v2 digest is unavailable");
   const state = service.store.chain.stateV2ForPersistence();
   if (!state) throw new Error("State transfer requires active State v2");
