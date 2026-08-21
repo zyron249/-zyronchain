@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { multiaddr } from "@multiformats/multiaddr";
@@ -11,6 +11,13 @@ import { createP2PNode } from "../src/p2p.js";
 import { loadOrCreateNodeIdentity } from "../src/peer-identity.js";
 
 const chain = { chainId: "zyron-discovery-test", genesisHash: "9a".repeat(32) };
+
+test("native discovery retains inbound frame budget through request and response validation", async () => {
+  const source = await readFile(join(process.cwd(), "src", "p2p-discovery.ts"), "utf8");
+  assert.match(source, /readP2PFrameRetained/);
+  assert.doesNotMatch(source, /\breadP2PFrame\(/);
+  assert.equal((source.match(/retained\.release\(\)/g) ?? []).length, 2);
+});
 
 test("native peer exchange returns only bounded pinned hints over Noise", async () => {
   const firstDir = await mkdtemp(join(tmpdir(), "zyron-discovery-first-"));
@@ -78,7 +85,6 @@ test("native peer exchange never emits unpinned or duplicate PeerIds", async () 
         const otherAddress = other.getMultiaddrs()[0];
         assert.ok(otherAddress);
         const duplicatePeerId = parseNativePeerAddress(`/dns4/alternate.example/tcp/9140/p2p/${other.peerId.toString()}`);
-        // Same PeerId at two addresses is rejected rather than amplifying one identity.
         await registerP2PDiscoveryProtocol(other, otherIdentity, chain, () => [otherAddress, duplicatePeerId]);
         await assert.rejects(() => discoverNativePeersFrom(second, otherAddress, secondIdentity, chain), /stream|duplicate|abort/i);
       } finally { await other.stop(); }
@@ -99,8 +105,6 @@ test("silent authenticated discovery peer is cut off by the native stream timeou
   const second = await createP2PNode(secondIdentity);
   try {
     await first.handle(P2P_DISCOVERY_PROTOCOL, async () => {
-      // Stay silent longer than the 5s discovery inactivity timeout. This is a
-      // real Noise/libp2p stream, not a mocked AbortSignal.
       await new Promise((resolve) => setTimeout(resolve, 6_000));
     });
     const address = first.getMultiaddrs()[0];

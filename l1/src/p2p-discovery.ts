@@ -3,7 +3,7 @@ import type { Libp2p } from "libp2p";
 import type { Multiaddr } from "@multiformats/multiaddr";
 
 import { nativePeerId, parseNativePeerAddress } from "./p2p-address.js";
-import { readP2PFrame, writeP2PFrame } from "./p2p-frame.js";
+import { readP2PFrameRetained, writeP2PFrame } from "./p2p-frame.js";
 import { P2PPeerRateLimiter } from "./p2p-rate.js";
 import { validateP2PChainIdentity, type P2PChainIdentity } from "./p2p.js";
 import type { NodeIdentity } from "./peer-identity.js";
@@ -42,7 +42,12 @@ export async function registerP2PDiscoveryProtocol(
     try {
       if (connection.encryption !== "/noise") throw new Error("Native discovery requires authenticated Noise");
       if (!rate.consume(connection.remotePeer.toString())) throw new Error("Native discovery rate limit exceeded");
-      parseRequest(await readP2PFrame(stream, MAX_DISCOVERY_FRAME_BYTES, P2P_DISCOVERY_TIMEOUT_MS), chain, connection.remotePeer);
+      const retained = await readP2PFrameRetained(stream, MAX_DISCOVERY_FRAME_BYTES, P2P_DISCOVERY_TIMEOUT_MS);
+      try {
+        parseRequest(retained.value, chain, connection.remotePeer);
+      } finally {
+        retained.release();
+      }
       const candidates = normalizeCandidates(advertisedPeers());
       await writeP2PFrame(stream, { version: 1, identity: local, candidates } satisfies DiscoveryResponse,
         MAX_DISCOVERY_FRAME_BYTES, P2P_DISCOVERY_TIMEOUT_MS);
@@ -69,11 +74,13 @@ export async function discoverNativePeersFrom(
   try {
     await writeP2PFrame(stream, { version: 1, identity: localIdentity(identity, chain) } satisfies DiscoveryRequest,
       MAX_DISCOVERY_FRAME_BYTES, P2P_DISCOVERY_TIMEOUT_MS);
-    const response = parseResponse(
-      await readP2PFrame(stream, MAX_DISCOVERY_FRAME_BYTES, P2P_DISCOVERY_TIMEOUT_MS),
-      chain,
-      connection.remotePeer
-    );
+    const retained = await readP2PFrameRetained(stream, MAX_DISCOVERY_FRAME_BYTES, P2P_DISCOVERY_TIMEOUT_MS);
+    let response: Multiaddr[];
+    try {
+      response = parseResponse(retained.value, chain, connection.remotePeer);
+    } finally {
+      retained.release();
+    }
     await stream.close({ signal: AbortSignal.timeout(P2P_DISCOVERY_TIMEOUT_MS) });
     return response;
   } catch (error) {
