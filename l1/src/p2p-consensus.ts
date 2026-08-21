@@ -19,6 +19,13 @@ const MAX_NATIVE_GOSSIP_DEDUP = 4_096;
 const MAX_NATIVE_CONSENSUS_INFLIGHT_PER_PEER = 2;
 const MAX_CONSENSUS_CHAIN_ID_LENGTH = 128;
 
+const NATIVE_CONSENSUS_RESPONSE_MAX_BYTES = {
+  attest: 8 * 1024,
+  skip: 16 * 1024,
+  block: 4 * 1024,
+  transaction: 4 * 1024
+} as const;
+
 type ConsensusRequest =
   | { version: 1; identity: P2PChainIdentity; kind: "attest"; block: Block }
   | { version: 1; identity: P2PChainIdentity; kind: "skip"; height: number; round: number; previousCertificate: RoundSkipVote[] }
@@ -30,6 +37,10 @@ interface ConsensusResponse {
   identity: P2PChainIdentity;
   kind: "attest" | "skip" | "block" | "transaction";
   result: unknown;
+}
+
+export function nativeConsensusResponseMaxBytes(kind: ConsensusResponse["kind"]): number {
+  return NATIVE_CONSENSUS_RESPONSE_MAX_BYTES[kind];
 }
 
 export async function registerP2PConsensusProtocol(
@@ -174,7 +185,7 @@ export class NativeConsensusPeerClient implements ConsensusPeerClient {
     let releaseFrame: (() => void) | undefined;
     try {
       await writeP2PFrame(stream, request, MAX_CONSENSUS_FRAME_BYTES, P2P_CONSENSUS_TIMEOUT_MS);
-      const retained = await readP2PFrameRetained(stream, MAX_CONSENSUS_FRAME_BYTES, P2P_CONSENSUS_TIMEOUT_MS);
+      const retained = await readP2PFrameRetained(stream, nativeConsensusResponseMaxBytes(request.kind), P2P_CONSENSUS_TIMEOUT_MS);
       releaseFrame = retained.release;
       const response = parseConsensusResponse(retained.value, this.chain, connection.remotePeer, request.kind);
       await stream.close({ signal: AbortSignal.timeout(P2P_CONSENSUS_TIMEOUT_MS) });
