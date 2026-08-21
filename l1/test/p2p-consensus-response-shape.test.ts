@@ -2,11 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
-import { validateConsensusResponseResultShape } from "../src/p2p-consensus.js";
+import { nativeConsensusResponseMaxBytes, validateConsensusResponseResultShape } from "../src/p2p-consensus.js";
 
 const publicKey = publicKeyFromPrivate("01".padStart(64, "0"));
 const validator = addressFromPublicKey(publicKey);
 const signature = "11".repeat(64);
+
+test("native consensus response byte ceilings match fixed accepted result shapes", () => {
+  assert.equal(nativeConsensusResponseMaxBytes("attest"), 8 * 1024);
+  assert.equal(nativeConsensusResponseMaxBytes("skip"), 16 * 1024);
+  assert.equal(nativeConsensusResponseMaxBytes("block"), 4 * 1024);
+  assert.equal(nativeConsensusResponseMaxBytes("transaction"), 4 * 1024);
+  for (const kind of ["attest", "skip", "block", "transaction"] as const) {
+    assert.ok(nativeConsensusResponseMaxBytes(kind) < 2_500_000, `${kind} response must not use block-sized frame ceiling`);
+  }
+});
 
 test("native consensus response shape gate accepts bounded canonical result shapes", () => {
   assert.doesNotThrow(() => validateConsensusResponseResultShape("attest", {
