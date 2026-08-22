@@ -17,20 +17,32 @@ const requiredBooleanFields = [
 for (const field of requiredBooleanFields) {
   if (typeof policy[field] !== 'boolean') throw new Error(`${field} must be boolean`);
 }
-if (policy.schemaVersion !== 1) throw new Error('unsupported miner release promotion schema');
+if (policy.schemaVersion !== 2) throw new Error('unsupported miner release promotion schema');
 if (!policy.assets || typeof policy.assets !== 'object' || Array.isArray(policy.assets)) throw new Error('assets object required');
+if (!policy.assetSha256 || typeof policy.assetSha256 !== 'object' || Array.isArray(policy.assetSha256)) throw new Error('assetSha256 object required');
 if (!policy.evidence || typeof policy.evidence !== 'object' || Array.isArray(policy.evidence)) throw new Error('evidence object required');
 
 const requiredPlatforms = ['windows', 'macos', 'linux'];
-const assetKeys = Object.keys(policy.assets);
-if (assetKeys.length !== requiredPlatforms.length ||
-    [...assetKeys].sort().join(',') !== [...requiredPlatforms].sort().join(',')) {
-  throw new Error('assets must contain exactly windows, macos and linux');
+function requireExactPlatformKeys(value, label) {
+  const keys = Object.keys(value);
+  if (keys.length !== requiredPlatforms.length ||
+      [...keys].sort().join(',') !== [...requiredPlatforms].sort().join(',')) {
+    throw new Error(`${label} must contain exactly windows, macos and linux`);
+  }
 }
+requireExactPlatformKeys(policy.assets, 'assets');
+requireExactPlatformKeys(policy.assetSha256, 'assetSha256');
+
 const assetEntries = requiredPlatforms.map((platform) => [platform, policy.assets[platform]]);
 for (const [platform, asset] of assetEntries) {
   if (asset !== null && (typeof asset !== 'string' || !/^https:\/\/github\.com\/zyron249\/-zyronchain\/releases\/download\/[^/]+\/ZyronMiner-[A-Za-z0-9._-]+$/.test(asset))) {
     throw new Error(`untrusted ${platform} release asset`);
+  }
+}
+const digestEntries = requiredPlatforms.map((platform) => [platform, policy.assetSha256[platform]]);
+for (const [platform, digest] of digestEntries) {
+  if (digest !== null && (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest))) {
+    throw new Error(`invalid ${platform} asset sha256`);
   }
 }
 
@@ -51,7 +63,9 @@ const evidenceEntries = requiredEvidence.map((name) => [name, policy.evidence[na
 
 const anyAsset = assetEntries.some(([, asset]) => asset !== null);
 const allAssets = assetEntries.every(([, asset]) => asset !== null);
-const activationRequested = policy.publicMiningActivated || policy.releaseEligible || policy.publicationAllowed || anyAsset;
+const anyDigest = digestEntries.some(([, digest]) => digest !== null);
+const allDigests = digestEntries.every(([, digest]) => typeof digest === 'string');
+const activationRequested = policy.publicMiningActivated || policy.releaseEligible || policy.publicationAllowed || anyAsset || anyDigest;
 
 if (!activationRequested) {
   if (policy.releaseVersion !== null || policy.sourceCommit !== null) {
@@ -67,6 +81,7 @@ if (!activationRequested) {
 if (!/^[0-9a-f]{40}$/.test(policy.sourceCommit || '')) throw new Error('promotion requires exact sourceCommit');
 if (!/^miner-v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(policy.releaseVersion || '')) throw new Error('promotion requires versioned miner release tag');
 if (!allAssets) throw new Error('promotion requires Windows, macOS and Linux assets');
+if (!allDigests) throw new Error('promotion requires Windows, macOS and Linux asset sha256 digests');
 
 const releaseAssetPrefix = `https://github.com/zyron249/-zyronchain/releases/download/${policy.releaseVersion}/`;
 for (const [platform, asset] of assetEntries) {
