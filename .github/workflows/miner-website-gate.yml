@@ -40,10 +40,13 @@ jobs:
             'enabled: false',
             'publicMiningActivated: false',
             'assets: Object.freeze({ windows: null, macos: null, linux: null })',
+            'assetSha256: Object.freeze({ windows: null, macos: null, linux: null })',
             'Miner download not yet activated',
+            'Expected SHA-256 will be published only with an activated reviewed release.',
             'ACTIVATION GATED',
             'navigator.userAgentData',
-            'github\\.com\\/zyron249\\/-zyronchain\\/releases\\/download'
+            'github\\.com\\/zyron249\\/-zyronchain\\/releases\\/download',
+            '/^[0-9a-f]{64}$/'
           ]) {
             if (!js.includes(marker)) throw new Error(`Miner website gate missing ${marker}`);
           }
@@ -62,5 +65,8 @@ jobs:
           }
           if (/assets:\s*Object\.freeze\(\{[^}]*https:\/\//s.test(js)) {
             throw new Error('Preparatory PR must not bind downloadable release assets');
+          }
+          if (/assetSha256:\s*Object\.freeze\(\{[^}]*[0-9a-f]{64}/s.test(js)) {
+            throw new Error('Preparatory PR must not bind release digests before activation');
           }
           NODE

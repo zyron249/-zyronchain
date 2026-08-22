@@ -6,6 +6,7 @@ const app = readFileSync('website/app.js', 'utf8');
 
 const requiredPlatforms = ['windows', 'macos', 'linux'];
 const trustedAsset = /^https:\/\/github\.com\/zyron249\/-zyronchain\/releases\/download\/([^/]+)\/ZyronMiner-[A-Za-z0-9._-]+$/;
+const trustedSha256 = /^[0-9a-f]{64}$/;
 
 function extractLiteral(name) {
   const match = app.match(new RegExp(`${name}:\\s*(true|false|null|'[^']*'|\"[^\"]*\")`));
@@ -17,14 +18,14 @@ function extractLiteral(name) {
   return value.slice(1, -1);
 }
 
-function extractAssets() {
-  const match = app.match(/assets:\s*Object\.freeze\(\{\s*windows:\s*([^,]+),\s*macos:\s*([^,]+),\s*linux:\s*([^}]+)\}\)/s);
-  if (!match) throw new Error('website miner distribution assets literal missing');
+function extractPlatformMap(name) {
+  const match = app.match(new RegExp(`${name}:\\s*Object\\.freeze\\(\\{\\s*windows:\\s*([^,]+),\\s*macos:\\s*([^,]+),\\s*linux:\\s*([^}]+)\\}\\)`, 's'));
+  if (!match) throw new Error(`website miner distribution ${name} literal missing`);
   const parse = (raw) => {
     const value = raw.trim();
     if (value === 'null') return null;
     if ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith('"') && value.endsWith('"'))) return value.slice(1, -1);
-    throw new Error(`website miner asset must be a static string/null literal: ${value}`);
+    throw new Error(`website miner ${name} entry must be a static string/null literal: ${value}`);
   };
   return { windows: parse(match[1]), macos: parse(match[2]), linux: parse(match[3]) };
 }
@@ -33,7 +34,8 @@ const website = {
   enabled: extractLiteral('enabled'),
   publicMiningActivated: extractLiteral('publicMiningActivated'),
   version: extractLiteral('version'),
-  assets: extractAssets()
+  assets: extractPlatformMap('assets'),
+  assetSha256: extractPlatformMap('assetSha256')
 };
 
 const promotionLive = promotion.publicationAllowed === true;
@@ -45,8 +47,9 @@ if (!promotionLive || !activationLive) {
   }
   for (const platform of requiredPlatforms) {
     if (website.assets[platform] !== null) throw new Error(`website ${platform} asset must remain null while promotion is gated`);
+    if (website.assetSha256[platform] !== null) throw new Error(`website ${platform} digest must remain null while promotion is gated`);
   }
-  console.log('Miner website promotion binding: fail-closed state verified.');
+  console.log('Miner website promotion binding: fail-closed URL+digest state verified.');
   process.exit(0);
 }
 
@@ -60,11 +63,16 @@ if (website.version !== promotion.releaseVersion) throw new Error('website miner
 
 for (const platform of requiredPlatforms) {
   const canonical = promotion.assets?.[platform];
+  const canonicalDigest = promotion.assetSha256?.[platform];
   const actual = website.assets[platform];
+  const actualDigest = website.assetSha256[platform];
   if (typeof canonical !== 'string' || !trustedAsset.test(canonical)) throw new Error(`canonical ${platform} asset is not a trusted immutable GitHub Release URL`);
+  if (typeof canonicalDigest !== 'string' || !trustedSha256.test(canonicalDigest)) throw new Error(`canonical ${platform} digest is not a lowercase SHA-256`);
   const releaseTag = canonical.match(trustedAsset)?.[1];
   if (releaseTag !== promotion.releaseVersion) throw new Error(`canonical ${platform} asset tag does not match releaseVersion`);
   if (actual !== canonical) throw new Error(`website ${platform} asset does not exactly match canonical promotion policy`);
+  if (actualDigest !== canonicalDigest) throw new Error(`website ${platform} digest does not exactly match canonical promotion policy`);
 }
 
-console.log('Miner website promotion binding: live canonical promotion verified.');
+if (!app.includes('Expected SHA-256: ${assetSha256}')) throw new Error('live website must surface the selected canonical SHA-256');
+console.log('Miner website promotion binding: live canonical URL+digest promotion verified.');
