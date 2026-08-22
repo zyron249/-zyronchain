@@ -119,6 +119,16 @@ const digestFragment = /#sha256=([0-9a-f]{64})$/;
 const exactBlobPrefix = `https://github.com/zyron249/-zyronchain/blob/${policy.sourceCommit}/`;
 const exactReleaseTag = `https://github.com/zyron249/-zyronchain/releases/tag/${policy.releaseVersion}`;
 const evidenceReferences = [];
+function evidenceRoleMatches(name, reference) {
+  const lower = reference.toLowerCase();
+  if (name === 'windowsSigning') return lower.includes('windows') && (lower.includes('sign') || lower.includes('signature'));
+  if (name === 'macosSigningOrNotarization') return lower.includes('macos') && (lower.includes('sign') || lower.includes('notari'));
+  if (name === 'provenance') return lower.includes('provenance') || lower.includes('attestation');
+  if (name === 'checksums') return lower.includes('sha256sums') || lower.includes('checksum');
+  if (name === 'immutableRelease') return reference === exactReleaseTag || lower.includes('immutable-release');
+  if (name === 'publicMiningActivation') return lower.includes('public-mining') && (lower.includes('activation') || lower.includes('authoriz'));
+  return false;
+}
 for (const [name, value] of evidenceEntries) {
   if (typeof value !== 'string') throw new Error(`promotion requires reviewable ${name} evidence`);
   const digestMatch = value.match(digestFragment);
@@ -131,6 +141,7 @@ for (const [name, value] of evidenceEntries) {
     throw new Error(`${name} evidence must bind to exact sourceCommit or releaseVersion`);
   }
   if (/\/blob\/(?:main|master|HEAD)\//.test(reference)) throw new Error(`${name} evidence must not use mutable branch refs`);
+  if (!evidenceRoleMatches(name, reference)) throw new Error(`${name} evidence must identify its canonical security role`);
   evidenceReferences.push([name, reference]);
 }
 
