@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 
 import { canonicalJson, canonicalJsonDigest, sha256Hex } from "../src/codec.js";
 
@@ -26,7 +27,7 @@ test("State-v2 serving digest primitive preserves the canonical snapshot SHA-256
 });
 
 test("State-v2 serving selection does not rematerialize canonical JSON solely for hashing", async () => {
-  const source = await readFile(new URL("../src/p2p-state.ts", import.meta.url), "utf8");
+  const source = await readFile(resolve(process.cwd(), "src/p2p-state.ts"), "utf8");
   const start = source.indexOf("async function selectPortableState(");
   const end = source.indexOf("\nasync function responseForRequest(", start);
   assert.ok(start >= 0 && end > start, "selectPortableState source boundary must remain discoverable");
