@@ -35,6 +35,10 @@ const { publicMiningActivation: _inactiveMissingEvidence, ...inactiveMissingEvid
 run({ ...base, evidence: inactiveMissingEvidence }, false, 'missing inactive promotion evidence key');
 run({ ...base, evidence: { ...base.evidence, operatorNote: null } }, false, 'unexpected inactive promotion evidence key');
 run({ ...base, publicationAllowed: true }, false, 'publication without evidence');
+run({ ...base, platformSigningVerified: true }, false, 'inactive policy with positive signing verification');
+run({ ...base, provenanceVerified: true }, false, 'inactive policy with positive provenance verification');
+run({ ...base, checksumsVerified: true }, false, 'inactive policy with positive checksum verification');
+run({ ...base, immutableReleaseVerified: true }, false, 'inactive policy with positive immutable-release verification');
 run({ ...base, assets: { ...base.assets, windows: 'https://example.com/ZyronMiner.exe' } }, false, 'untrusted asset origin');
 run({ ...base, assets: { ...base.assets, windows: 'https://github.com/zyron249/-zyronchain/releases/download/miner-v1.0.0/ZyronMiner-windows-x64.zip' } }, false, 'partial asset promotion');
 run({ ...base, assetSha256: { ...base.assetSha256, windows: 'a'.repeat(64) } }, false, 'digest-only partial promotion');
