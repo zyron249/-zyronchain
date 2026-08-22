@@ -104,6 +104,7 @@ for (const field of ['releaseEligible','platformSigningVerified','provenanceVeri
 const digestFragment = /#sha256=([0-9a-f]{64})$/;
 const exactBlobPrefix = `https://github.com/zyron249/-zyronchain/blob/${policy.sourceCommit}/`;
 const exactReleaseTag = `https://github.com/zyron249/-zyronchain/releases/tag/${policy.releaseVersion}`;
+const evidenceReferences = [];
 for (const [name, value] of evidenceEntries) {
   if (typeof value !== 'string') throw new Error(`promotion requires reviewable ${name} evidence`);
   const digestMatch = value.match(digestFragment);
@@ -116,6 +117,12 @@ for (const [name, value] of evidenceEntries) {
     throw new Error(`${name} evidence must bind to exact sourceCommit or releaseVersion`);
   }
   if (/\/blob\/(?:main|master|HEAD)\//.test(reference)) throw new Error(`${name} evidence must not use mutable branch refs`);
+  evidenceReferences.push([name, reference]);
+}
+
+const distinctEvidenceReferences = new Set(evidenceReferences.map(([, reference]) => reference));
+if (distinctEvidenceReferences.size !== requiredEvidence.length) {
+  throw new Error('promotion requires distinct underlying references for all canonical evidence roles');
 }
 
 console.log('miner release promotion policy is fully evidenced');
