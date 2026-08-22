@@ -14,6 +14,20 @@ const requiredBooleanFields = [
   'immutableReleaseVerified',
   'publicationAllowed'
 ];
+const requiredTopLevelFields = [
+  'schemaVersion',
+  'releaseVersion',
+  'sourceCommit',
+  ...requiredBooleanFields,
+  'assets',
+  'assetSha256',
+  'evidence'
+];
+const topLevelKeys = Object.keys(policy);
+if (topLevelKeys.length !== requiredTopLevelFields.length ||
+    [...topLevelKeys].sort().join(',') !== [...requiredTopLevelFields].sort().join(',')) {
+  throw new Error('promotion policy must contain exactly the canonical schema-v2 top-level fields');
+}
 for (const field of requiredBooleanFields) {
   if (typeof policy[field] !== 'boolean') throw new Error(`${field} must be boolean`);
 }
