@@ -8,6 +8,7 @@ test("current-tip recovery never removes a durable checkpoint that is active in 
   const recovery = source.match(/if \(request\.tipHash === expected\.tipHash && !isMissingFile\(error\)\) \{([\s\S]*?)\n    \}/);
   assert.ok(recovery, "current-tip durable recovery block must remain explicit");
   const body = recovery[1];
+  assert.ok(body !== undefined, "current-tip durable recovery body must be captured");
   const guard = body.indexOf("if (activePaths.has(durablePath)) throw error;");
   const removal = body.indexOf("await rm(durablePath, { recursive: true, force: true });");
   assert.ok(guard >= 0, "active durable checkpoint must fail closed rather than be removed");
