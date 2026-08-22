@@ -65,7 +65,7 @@ const anyAsset = assetEntries.some(([, asset]) => asset !== null);
 const allAssets = assetEntries.every(([, asset]) => asset !== null);
 const anyDigest = digestEntries.some(([, digest]) => digest !== null);
 const allDigests = digestEntries.every(([, digest]) => typeof digest === 'string');
-const activationRequested = policy.publicMiningActivated || policy.releaseEligible || policy.publicationAllowed || anyAsset || anyDigest;
+const activationRequested = requiredBooleanFields.some((field) => policy[field] === true) || anyAsset || anyDigest;
 
 if (!activationRequested) {
   if (policy.releaseVersion !== null || policy.sourceCommit !== null) {
