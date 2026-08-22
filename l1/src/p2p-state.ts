@@ -369,6 +369,7 @@ async function selectPortableState(
   } catch (error) {
     if (!isMissingFile(error) && request.tipHash !== expected.tipHash) throw error;
     if (request.tipHash === expected.tipHash && !isMissingFile(error)) {
+      if (activePaths.has(durablePath)) throw error;
       await rm(durablePath, { recursive: true, force: true });
     }
   }
