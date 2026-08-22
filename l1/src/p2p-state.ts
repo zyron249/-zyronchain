@@ -7,6 +7,7 @@ import { validateBlockShape } from "./block.js";
 import { canonicalJsonDigest } from "./codec.js";
 import { ZyronChain } from "./chain.js";
 import type { NodeService } from "./node.js";
+import { pruneDurableStateCache } from "./p2p-state-cache.js";
 import { readP2PFrameRetained, writeP2PFrame } from "./p2p-frame.js";
 import { P2PPeerRateLimiter } from "./p2p-rate.js";
 import { validateP2PChainIdentity, type P2PChainIdentity } from "./p2p.js";
@@ -316,14 +317,9 @@ async function fetchTrustedPortableState(
     records,
     keyPreimages: keys
   } as unknown as StateV2PortableBundleV1;
-  // This is the security boundary: root graph, semantic key preimages,
-  // governance/finality and the original full-snapshot digest all revalidate.
   try {
     ZyronChain.fromTrustedPortableState(genesis, manifest.tip, bundle, anchor);
   } catch (error) {
-    // Persisted chunks are untrusted cache only. If the complete assembled
-    // bundle cannot satisfy the anchor, discard poison rather than pinning a
-    // future retry to attacker-supplied bytes.
     await resume?.discard();
     throw new PortableStateAssemblyError("Portable state assembly failed anchored validation", { cause: error });
   }
@@ -357,16 +353,23 @@ async function selectPortableState(
     if (store.complete()) {
       const selected = cachedStateFromStore(store);
       rememberPortableState(cache, selected);
+      try {
+        await pruneDurableCache(durableCacheRoot, 2, new Set([
+          ...activePaths,
+          ...[...cache.values()].map((entry) => entry.store.dataDir)
+        ]));
+      } catch (error) {
+        cache.delete(selected.tipHash);
+        throw error;
+      }
       return selected;
     }
     if (request.tipHash !== expected.tipHash) throw new Error("Historical durable State-v2 serving checkpoint is incomplete");
     reusableCurrentStore = store;
   } catch (error) {
     if (!isMissingFile(error) && request.tipHash !== expected.tipHash) throw error;
-    // A corrupt/incomplete derived cache for the current tip is disposable: the
-    // authoritative live chain can rebuild it. Historical cache corruption
-    // fails closed because the live node cannot recreate old state safely.
     if (request.tipHash === expected.tipHash && !isMissingFile(error)) {
+      if (activePaths.has(durablePath)) throw error;
       await rm(durablePath, { recursive: true, force: true });
     }
   }
@@ -400,10 +403,15 @@ async function selectPortableState(
   }
   const selected = cachedStateFromStore(store);
   rememberPortableState(cache, selected);
-  await pruneDurableCache(durableCacheRoot, 2, new Set([
-    ...activePaths,
-    ...[...cache.values()].map((entry) => entry.store.dataDir)
-  ]));
+  try {
+    await pruneDurableCache(durableCacheRoot, 2, new Set([
+      ...activePaths,
+      ...[...cache.values()].map((entry) => entry.store.dataDir)
+    ]));
+  } catch (error) {
+    cache.delete(selected.tipHash);
+    throw error;
+  }
   return selected;
 }
 
@@ -457,22 +465,7 @@ function portableCachePath(root: string, tipHash: string, snapshotSha256: string
 }
 
 async function pruneDurableCache(root: string, keep: number, protectedPaths: ReadonlySet<string> = new Set()): Promise<void> {
-  const names = await readdir(root);
-  const candidates: Array<{ path: string; mtimeMs: number }> = [];
-  for (const name of names) {
-    if (!/^[0-9a-f]{64}-[0-9a-f]{64}$/.test(name)) continue;
-    const path = join(root, name);
-    const info = await lstat(path);
-    if (!info.isDirectory() || info.isSymbolicLink()) continue;
-    candidates.push({ path, mtimeMs: info.mtimeMs });
-  }
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || a.path.localeCompare(b.path));
-  let unprotectedBudget = Math.max(0, keep - protectedPaths.size);
-  for (const candidate of candidates) {
-    if (protectedPaths.has(candidate.path)) continue;
-    if (unprotectedBudget > 0) { unprotectedBudget -= 1; continue; }
-    await rm(candidate.path, { recursive: true, force: true });
-  }
+  await pruneDurableStateCache(root, keep, protectedPaths);
 }
 
 function isMissingFile(error: unknown): boolean {
@@ -541,10 +534,6 @@ function parseChunk(
       value.kind !== kind || value.start !== start || !Array.isArray(value.items) || value.items.length !== limit) {
     throw new Error("Invalid state chunk");
   }
-  // `readP2PFrameRetained()` already owns the decoded graph under the global
-  // frame budget. Keep that exact graph until the caller persists or consumes
-  // the chunk; cloning here would transiently duplicate an attacker-controlled
-  // valid response while only the original decoded graph is budgeted.
   return {
     version: 1, identity: validateP2PChainIdentity(value.identity, expected, remotePeer), tipHash: value.tipHash,
     snapshotSha256: value.snapshotSha256, kind, start, items: value.items
