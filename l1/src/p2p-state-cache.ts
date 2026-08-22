@@ -9,11 +9,17 @@ interface DurableCacheCandidate {
   bytes: number;
 }
 
+interface StaleCacheEntry {
+  path: string;
+  bytes: number;
+}
+
 /**
- * Prunes canonical durable State-v2 serving checkpoints under both an entry
- * count and aggregate byte ceiling. Protected paths are immutable for this
- * operation: if they alone exceed either ceiling, fail closed rather than
- * deleting material that may be serving an active request.
+ * Prunes the dedicated durable State-v2 serving cache under both an entry
+ * count and aggregate byte ceiling. Canonical protected paths are immutable
+ * for this operation. Non-canonical regular files/directories are treated as
+ * stale cache material and removed only after the complete root is validated;
+ * symlinks and other unsafe filesystem objects fail closed.
  */
 export async function pruneDurableStateCache(
   root: string,
@@ -26,10 +32,21 @@ export async function pruneDurableStateCache(
 
   const names = await readdir(root);
   const candidates: DurableCacheCandidate[] = [];
+  const stale: StaleCacheEntry[] = [];
+  let staleBytes = 0;
   for (const name of names) {
-    if (!/^[0-9a-f]{64}-[0-9a-f]{64}$/.test(name)) continue;
     const path = join(root, name);
     const info = await lstat(path);
+    if (!/^[0-9a-f]{64}-[0-9a-f]{64}$/.test(name)) {
+      if (info.isSymbolicLink()) throw new Error("Durable State-v2 cache contains a non-canonical symbolic link");
+      let bytes: number;
+      if (info.isDirectory()) bytes = await realDirectoryBytes(path);
+      else if (info.isFile()) bytes = info.size;
+      else throw new Error("Durable State-v2 cache contains a non-canonical non-regular entry");
+      staleBytes = checkedAdd(staleBytes, bytes);
+      stale.push({ path, bytes });
+      continue;
+    }
     if (info.isSymbolicLink() || !info.isDirectory()) {
       throw new Error("Durable State-v2 cache checkpoint is not a real directory");
     }
@@ -47,6 +64,14 @@ export async function pruneDurableStateCache(
   const protectedBytes = protectedCandidates.reduce((total, candidate) => checkedAdd(total, candidate.bytes), 0);
   if (protectedCandidates.length > keep || protectedBytes > maxBytes) {
     throw new Error("Protected durable State-v2 cache exceeds configured resource ceiling");
+  }
+
+  // Stale entries are part of the cache-root resource boundary, but are never
+  // preferred over canonical checkpoints. Remove them only after all root
+  // entries and protected paths have been validated so malformed roots fail
+  // closed without partial cleanup.
+  if (staleBytes > 0 || stale.length > 0) {
+    for (const entry of stale) await rm(entry.path, { recursive: true, force: true });
   }
 
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || a.path.localeCompare(b.path));

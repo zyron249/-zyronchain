@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -23,6 +23,10 @@ async function exists(path: string): Promise<boolean> {
   try { await readFile(join(path, "manifest.json")); return true; } catch { return false; }
 }
 
+async function pathExists(path: string): Promise<boolean> {
+  try { await access(path); return true; } catch { return false; }
+}
+
 test("durable State-v2 cache prunes by aggregate bytes while preserving recency", async () => {
   const root = await mkdtemp(join(tmpdir(), "zyron-state-cache-"));
   const first = await checkpoint(root, `${hashA}-${hashA}`, 40);
@@ -41,6 +45,38 @@ test("durable State-v2 cache never evicts protected material to satisfy byte quo
     /Protected durable State-v2 cache exceeds configured resource ceiling/
   );
   assert.equal(await exists(protectedPath), true);
+});
+
+test("durable State-v2 cache removes non-canonical regular stale material", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-state-cache-"));
+  const protectedPath = await checkpoint(root, `${hashA}-${hashB}`, 20);
+  const staleFile = join(root, "stale.tmp");
+  const staleDir = join(root, "partial-checkpoint");
+  await writeFile(staleFile, "x".repeat(80));
+  await mkdir(staleDir);
+  await writeFile(join(staleDir, "chunk.tmp"), "y".repeat(80));
+
+  await pruneDurableStateCache(root, 2, new Set([protectedPath]), 60);
+
+  assert.equal(await exists(protectedPath), true);
+  assert.equal(await pathExists(staleFile), false);
+  assert.equal(await pathExists(staleDir), false);
+});
+
+test("durable State-v2 cache fails closed on non-canonical root symlinks", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-state-cache-"));
+  const protectedPath = await checkpoint(root, `${hashA}-${hashC}`, 1);
+  const outside = join(await mkdtemp(join(tmpdir(), "zyron-state-cache-outside-")), "outside.txt");
+  await writeFile(outside, "outside");
+  const link = join(root, "stale-link");
+  await symlink(outside, link);
+
+  await assert.rejects(
+    pruneDurableStateCache(root, 2, new Set([protectedPath]), 60),
+    /non-canonical symbolic link/
+  );
+  assert.equal(await exists(protectedPath), true);
+  assert.equal(await pathExists(link), true);
 });
 
 test("durable State-v2 cache rejects malformed canonical checkpoint entries", async () => {
