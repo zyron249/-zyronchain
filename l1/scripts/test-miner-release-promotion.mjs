@@ -91,5 +91,7 @@ run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, immutableReleas
 run({ ...fullyEvidenced, assets: { ...fullyEvidenced.assets, windows: fullyEvidenced.assets.linux } }, false, 'windows slot with Linux-named artifact');
 run({ ...fullyEvidenced, assets: { ...fullyEvidenced.assets, macos: fullyEvidenced.assets.windows } }, false, 'macOS slot with Windows-named artifact');
 run({ ...fullyEvidenced, assets: { windows: fullyEvidenced.assets.windows, macos: fullyEvidenced.assets.windows, linux: fullyEvidenced.assets.linux } }, false, 'duplicate platform asset URL');
+run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, provenance: fullyEvidenced.evidence.checksums } }, false, 'duplicate evidence reference');
+run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, provenance: fullyEvidenced.evidence.checksums.replace(digest, 'b'.repeat(64)) } }, false, 'duplicate evidence reference with different digest fragment');
 
 console.log('miner release promotion gate regressions passed');
