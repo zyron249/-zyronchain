@@ -33,6 +33,7 @@ export interface PortableStateResumeManifestV1 {
 export interface PortableStateResumeReadFaultHooks {
   afterPreflight?: () => void | Promise<void>;
   afterOpen?: () => void | Promise<void>;
+  onBufferAllocated?: (bytes: number) => void;
 }
 
 interface ManifestEnvelope {
@@ -293,8 +294,9 @@ async function atomicWrite(path: string, text: string, tempDir: string): Promise
 
 /**
  * Read one untrusted resume file from exactly one opened object. The path must
- * remain bound to that same regular file for the duration of the read, and a
- * concurrently growing file is rejected before allocating beyond maxBytes+1.
+ * remain bound to that same regular file for the duration of the read. The
+ * descriptor-bound size determines the allocation, with one overflow byte to
+ * preserve fail-closed concurrent-growth detection under the hard maxBytes cap.
  */
 export async function readPortableStateResumeFile(
   path: string,
@@ -319,13 +321,15 @@ export async function readPortableStateResumeFile(
     }
     await faultHooks.afterOpen?.();
 
-    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    const bufferLength = opened.size + 1;
+    faultHooks.onBufferAllocated?.(bufferLength);
+    const buffer = Buffer.allocUnsafe(bufferLength);
     let total = 0;
-    while (total <= maxBytes) {
+    while (total < buffer.length) {
       const { bytesRead } = await handle.read(buffer, total, buffer.length - total, null);
       if (bytesRead === 0) break;
       total += bytesRead;
-      if (total > maxBytes) throw new Error("Portable state resume file exceeds byte bounds");
+      if (total > opened.size || total > maxBytes) throw new Error("Portable state resume file exceeds byte bounds");
     }
     if (total < 1) throw new Error("Portable state resume file exceeds byte bounds or is not a regular file");
 
