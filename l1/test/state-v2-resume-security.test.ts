@@ -18,6 +18,22 @@ test("portable State-v2 resume bounded reader accepts the exact byte boundary", 
   }
 });
 
+test("portable State-v2 resume bounded reader sizes allocation to the descriptor-bound file plus overflow byte", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-resume-sized-buffer-"));
+  const path = join(directory, "chunk.json");
+  try {
+    const text = "small-resume";
+    await writeFile(path, text, "utf8");
+    let allocated = 0;
+    assert.equal(await readPortableStateResumeFile(path, 20 * 1024 * 1024, {
+      onBufferAllocated: (bytes) => { allocated = bytes; }
+    }), text);
+    assert.equal(allocated, Buffer.byteLength(text, "utf8") + 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("portable State-v2 resume bounded reader rejects an initially oversized file", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-resume-oversized-"));
   const path = join(directory, "chunk.json");
