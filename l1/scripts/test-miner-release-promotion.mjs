@@ -99,5 +99,11 @@ run({ ...fullyEvidenced, assets: { ...fullyEvidenced.assets, macos: fullyEvidenc
 run({ ...fullyEvidenced, assets: { windows: fullyEvidenced.assets.windows, macos: fullyEvidenced.assets.windows, linux: fullyEvidenced.assets.linux } }, false, 'duplicate platform asset URL');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, provenance: fullyEvidenced.evidence.checksums } }, false, 'duplicate evidence reference');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, provenance: fullyEvidenced.evidence.checksums.replace(digest, 'b'.repeat(64)) } }, false, 'duplicate evidence reference with different digest fragment');
+run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, windowsSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/operator-note.json#sha256=${digest}` } }, false, 'Windows signing evidence with unrelated role');
+run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, macosSigningOrNotarization: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/windows-signing-2.json#sha256=${digest}` } }, false, 'macOS signing evidence with Windows role');
+run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, provenance: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/operator-note.json#sha256=${digest}` } }, false, 'provenance evidence with unrelated role');
+run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, checksums: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/provenance-2.json#sha256=${digest}` } }, false, 'checksum evidence with provenance role');
+run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, immutableRelease: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/operator-note-immutable.json#sha256=${digest}` } }, false, 'immutable release evidence with unrelated role');
+run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, publicMiningActivation: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/operator-approval.json#sha256=${digest}` } }, false, 'public mining activation evidence with unrelated role');
 
 console.log('miner release promotion gate regressions passed');
