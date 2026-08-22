@@ -86,7 +86,7 @@ if (heroSymbol && !heroSymbol.querySelector('[data-hologram-stage]')) {
     stage.addEventListener('pointerleave', () => {
       if (frame) cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => { stage.style.transform = ''; });
-    });
+    }, { passive: true });
   }
 }
 
