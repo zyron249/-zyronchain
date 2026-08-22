@@ -59,3 +59,69 @@ jobs:
             ${{ runner.temp }}/zyron-state-v2-scale/SHA256SUMS
           if-no-files-found: error
           retention-days: 90
+
+  state-v2-resume-scale-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+      - name: Install locked dependencies
+        working-directory: l1
+        run: npm ci
+      - name: Build bounded resume benchmark
+        working-directory: l1
+        run: npm run build
+      - name: Run 10k-account bounded resume staging regression
+        env:
+          ZYRON_RESUME_SCALE_ACCOUNTS: "10000"
+        run: |
+          evidence="${RUNNER_TEMP}/zyron-state-v2-resume-scale"
+          mkdir -p "$evidence"
+          node l1/dist/bench/state-v2-resume-scale.js > "$evidence/raw.json"
+          node - "$evidence/raw.json" "$evidence/evidence.json" <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const [rawPath, outPath] = process.argv.slice(2);
+          const raw = fs.readFileSync(rawPath, 'utf8');
+          const result = JSON.parse(raw);
+          if (result.accounts !== 10000 || !result.prepared || !result.staged) throw new Error('invalid resume-scale result shape');
+          if (result.prepared.root !== result.staged.root || result.prepared.records !== result.staged.records || result.prepared.keys !== result.staged.keys) {
+            throw new Error('resume-scale authenticated identity/count mismatch');
+          }
+          for (const key of ['stageMs', 'heapDeltaMiB', 'rssMiB', 'maxRssMiB']) {
+            if (!Number.isFinite(result.staged[key])) throw new Error(`invalid resume-scale ${key}`);
+          }
+          const evidence = {
+            evidenceVersion: 1,
+            scenario: 'state-v2-resume-staging-10k',
+            repository: process.env.GITHUB_REPOSITORY,
+            commitSha: process.env.GITHUB_SHA,
+            runId: Number(process.env.GITHUB_RUN_ID),
+            runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+            measurementsAreCiRegressionEvidenceOnly: true,
+            targetHardwareGateClosed: false,
+            resultSha256: crypto.createHash('sha256').update(raw).digest('hex'),
+            result
+          };
+          fs.writeFileSync(outPath, `${JSON.stringify(evidence, null, 2)}\n`);
+          console.log(JSON.stringify(evidence, null, 2));
+          NODE
+          cd "$evidence"
+          sha256sum raw.json evidence.json > SHA256SUMS
+      - name: Upload bounded resume staging evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: l1-state-v2-resume-scale-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/zyron-state-v2-resume-scale/raw.json
+            ${{ runner.temp }}/zyron-state-v2-resume-scale/evidence.json
+            ${{ runner.temp }}/zyron-state-v2-resume-scale/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
