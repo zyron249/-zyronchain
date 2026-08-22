@@ -88,5 +88,8 @@ run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, checksums: `htt
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, windowsSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/windows-signing.json` } }, false, 'evidence without digest binding');
 run({ ...fullyEvidenced, assets: { ...fullyEvidenced.assets, linux: 'https://github.com/zyron249/-zyronchain/releases/download/miner-v1.0.1/ZyronMiner-linux-x64.tar.gz' } }, false, 'cross-tag asset');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, immutableRelease: `https://github.com/zyron249/-zyronchain/releases/tag/miner-v1.0.1#sha256=${digest}` } }, false, 'cross-tag release evidence');
+run({ ...fullyEvidenced, assets: { ...fullyEvidenced.assets, windows: fullyEvidenced.assets.linux } }, false, 'windows slot with Linux-named artifact');
+run({ ...fullyEvidenced, assets: { ...fullyEvidenced.assets, macos: fullyEvidenced.assets.windows } }, false, 'macOS slot with Windows-named artifact');
+run({ ...fullyEvidenced, assets: { windows: fullyEvidenced.assets.windows, macos: fullyEvidenced.assets.windows, linux: fullyEvidenced.assets.linux } }, false, 'duplicate platform asset URL');
 
 console.log('miner release promotion gate regressions passed');

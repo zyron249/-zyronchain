@@ -83,6 +83,15 @@ if (!/^miner-v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(policy.releas
 if (!allAssets) throw new Error('promotion requires Windows, macOS and Linux assets');
 if (!allDigests) throw new Error('promotion requires Windows, macOS and Linux asset sha256 digests');
 
+const distinctAssets = new Set(assetEntries.map(([, asset]) => asset));
+if (distinctAssets.size !== requiredPlatforms.length) throw new Error('promotion requires distinct platform asset URLs');
+for (const [platform, asset] of assetEntries) {
+  const basename = asset.slice(asset.lastIndexOf('/') + 1).toLowerCase();
+  if (!basename.includes(`-${platform}-`)) {
+    throw new Error(`${platform} asset filename must contain canonical -${platform}- marker`);
+  }
+}
+
 const releaseAssetPrefix = `https://github.com/zyron249/-zyronchain/releases/download/${policy.releaseVersion}/`;
 for (const [platform, asset] of assetEntries) {
   if (!asset.startsWith(releaseAssetPrefix)) throw new Error(`${platform} asset must be bound to releaseVersion ${policy.releaseVersion}`);
