@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "releaseVersion": null,
   "sourceCommit": null,
   "publicMiningActivated": false,
@@ -10,6 +10,11 @@
   "immutableReleaseVerified": false,
   "publicationAllowed": false,
   "assets": {
+    "windows": null,
+    "macos": null,
+    "linux": null
+  },
+  "assetSha256": {
     "windows": null,
     "macos": null,
     "linux": null
