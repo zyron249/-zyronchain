@@ -21,6 +21,7 @@ function run(policy, shouldPass, label) {
 }
 
 run(base, true, 'canonical fail-closed policy');
+run({ ...base, publicMiningActiviated: false }, false, 'inactive policy with shadow top-level activation field');
 run({ ...base, schemaVersion: 1 }, false, 'legacy promotion schema');
 run({ ...base, assets: {} }, false, 'empty platform asset set');
 run({ ...base, assets: { windows: null, macos: null } }, false, 'missing Linux platform key');
@@ -77,6 +78,7 @@ const fullyEvidenced = {
   }
 };
 run(fullyEvidenced, true, 'fully evidenced promotion vector');
+run({ ...fullyEvidenced, publicationAuthorised: true }, false, 'promoted policy with shadow top-level publication field');
 run({ ...fullyEvidenced, assets: {} }, false, 'activated promotion without platform assets');
 run({ ...fullyEvidenced, assets: { windows: fullyEvidenced.assets.windows, macos: fullyEvidenced.assets.macos } }, false, 'activated promotion missing Linux asset');
 run({ ...fullyEvidenced, assetSha256: {} }, false, 'activated promotion without platform digests');
