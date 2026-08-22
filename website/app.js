@@ -86,7 +86,7 @@ if (heroSymbol && !heroSymbol.querySelector('[data-hologram-stage]')) {
     stage.addEventListener('pointerleave', () => {
       if (frame) cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => { stage.style.transform = ''; });
-    }, { passive: true });
+    });
   }
 }
 
@@ -173,16 +173,17 @@ if ('IntersectionObserver' in window && !reduceMotion) {
 }
 
 // One-click distribution is deliberately fail-closed. A future website-only
-// release PR may replace null asset URLs only after independently reviewed,
-// signed/notarized immutable release assets exist and public mining activation
-// is explicitly allowed. The website never handles miner custody or secrets.
+// release PR may replace null asset URLs/digests only after independently
+// reviewed, signed/notarized immutable release assets exist and public mining
+// activation is explicitly allowed. The website never handles miner custody.
 const miningStart = document.getElementById('start');
 if (miningStart && document.title.includes('Mining Launchpad')) {
   const MINER_DISTRIBUTION = Object.freeze({
     enabled: false,
     publicMiningActivated: false,
     version: null,
-    assets: Object.freeze({ windows: null, macos: null, linux: null })
+    assets: Object.freeze({ windows: null, macos: null, linux: null }),
+    assetSha256: Object.freeze({ windows: null, macos: null, linux: null })
   });
 
   const platformText = `${navigator.userAgentData?.platform || navigator.platform || ''} ${navigator.userAgent || ''}`.toLowerCase();
@@ -203,8 +204,10 @@ if (miningStart && document.title.includes('Mining Launchpad')) {
         : 'your operating system';
 
   const asset = detectedPlatform === 'unknown' ? null : MINER_DISTRIBUTION.assets[detectedPlatform];
+  const assetDigest = detectedPlatform === 'unknown' ? null : MINER_DISTRIBUTION.assetSha256[detectedPlatform];
   const trustedReleaseAsset = typeof asset === 'string' && /^https:\/\/github\.com\/zyron249\/-zyronchain\/releases\/download\/[^/]+\/ZyronMiner-[A-Za-z0-9._-]+$/.test(asset);
-  const live = MINER_DISTRIBUTION.enabled === true && MINER_DISTRIBUTION.publicMiningActivated === true && trustedReleaseAsset;
+  const trustedAssetDigest = typeof assetDigest === 'string' && /^[0-9a-f]{64}$/.test(assetDigest);
+  const live = MINER_DISTRIBUTION.enabled === true && MINER_DISTRIBUTION.publicMiningActivated === true && trustedReleaseAsset && trustedAssetDigest;
 
   const shell = document.createElement('div');
   shell.className = 'shell command-card';
@@ -235,11 +238,17 @@ if (miningStart && document.title.includes('Mining Launchpad')) {
     });
   }
 
+  const checksum = document.createElement('p');
+  checksum.className = 'mining-note';
+  checksum.textContent = live
+    ? `Expected SHA-256: ${assetDigest}`
+    : 'Artifact SHA-256 remains unpublished while miner distribution is activation-gated.';
+
   const privacy = document.createElement('p');
   privacy.className = 'mining-note';
   privacy.textContent = 'This website never requests a private key, seed phrase, wallet password, browser-mining permission, or permission to execute downloaded software.';
 
-  shell.append(head, description, button, privacy);
+  shell.append(head, description, button, checksum, privacy);
   const existingCard = miningStart.querySelector('.command-card');
   if (existingCard) existingCard.before(shell);
   else miningStart.appendChild(shell);
