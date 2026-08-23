@@ -6,17 +6,15 @@ function isWithinRoot(root, candidate) {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
-function canonicalProspectivePath(candidate, fsOps) {
-  let cursor = path.resolve(candidate);
-  const suffix = [];
-  while (!fsOps.existsSync(cursor)) {
-    const parent = path.dirname(cursor);
-    if (parent === cursor) break;
-    suffix.unshift(path.basename(cursor));
-    cursor = parent;
+function canonicalDestinationPath(candidate, fsOps) {
+  const destinationPath = path.resolve(candidate);
+  const parentPath = path.dirname(destinationPath);
+  const parentStat = fsOps.lstatSync(parentPath);
+  if (!parentStat.isDirectory()) {
+    throw new Error('miner runtime destination parent must be a directory');
   }
-  const canonicalBase = fsOps.realpathSync(cursor);
-  return path.join(canonicalBase, ...suffix);
+  const canonicalParent = fsOps.realpathSync(parentPath);
+  return path.join(canonicalParent, path.basename(destinationPath));
 }
 
 export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
@@ -25,7 +23,7 @@ export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
   if (fsOps.existsSync(destinationPath)) {
     throw new Error('miner runtime destination must not already exist');
   }
-  const destinationRoot = canonicalProspectivePath(destinationPath, fsOps);
+  const destinationRoot = canonicalDestinationPath(destinationPath, fsOps);
   if (isWithinRoot(sourceRoot, destinationRoot)) {
     throw new Error('miner runtime destination must remain outside source root');
   }
@@ -61,7 +59,20 @@ export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
     throw new Error(`unsupported miner runtime entry: ${path.relative(sourceRoot, sourcePath)}`);
   }
 
-  fsOps.mkdirSync(destinationRoot, { recursive: true });
+  try {
+    fsOps.mkdirSync(destinationRoot, { recursive: false });
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      throw new Error('miner runtime destination appeared before atomic creation');
+    }
+    throw error;
+  }
+  const createdDestinationRoot = fsOps.realpathSync(destinationRoot);
+  const createdDestinationStat = fsOps.lstatSync(destinationRoot);
+  if (!createdDestinationStat.isDirectory() || createdDestinationRoot !== destinationRoot || isWithinRoot(sourceRoot, createdDestinationRoot)) {
+    throw new Error('miner runtime destination identity changed after creation');
+  }
+
   for (const entry of fsOps.readdirSync(sourceRoot)) {
     copyEntry(path.join(sourceRoot, entry), path.join(destinationRoot, entry));
   }
