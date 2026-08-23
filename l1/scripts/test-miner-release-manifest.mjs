@@ -54,6 +54,26 @@ try {
     assert.equal(fs.lstatSync(path.join(copiedTree, '.bin', 'tool')).isFile(), true, 'internal npm executable shim must be materialized as a regular file');
     assert.doesNotThrow(() => collectReleaseFiles(copiedTree), 'materialized runtime trees must be fully checksum-coverable');
 
+    const existingEmptyDestination = path.join(root, 'runtime-existing-empty');
+    fs.mkdirSync(existingEmptyDestination);
+    assert.throws(
+      () => copyMinerRuntimeTree(sourceTree, existingEmptyDestination),
+      /miner runtime destination must not already exist/,
+      'runtime packaging must reject an already-existing empty destination'
+    );
+    assert.deepEqual(fs.readdirSync(existingEmptyDestination), [], 'existing empty destination rejection must not mutate destination material');
+
+    const existingSeededDestination = path.join(root, 'runtime-existing-seeded');
+    fs.mkdirSync(existingSeededDestination);
+    fs.writeFileSync(path.join(existingSeededDestination, 'stale.txt'), 'stale-release-state');
+    assert.throws(
+      () => copyMinerRuntimeTree(sourceTree, existingSeededDestination),
+      /miner runtime destination must not already exist/,
+      'runtime packaging must reject a pre-seeded destination'
+    );
+    assert.equal(fs.readFileSync(path.join(existingSeededDestination, 'stale.txt'), 'utf8'), 'stale-release-state', 'pre-seeded destination rejection must not mutate prior material');
+    assert.equal(fs.existsSync(path.join(existingSeededDestination, 'tool.js')), false, 'pre-seeded destination rejection must not copy source material');
+
     const nestedDestination = path.join(sourceTree, 'candidate');
     assert.throws(
       () => copyMinerRuntimeTree(sourceTree, nestedDestination),
@@ -63,8 +83,8 @@ try {
     assert.equal(fs.existsSync(nestedDestination), false, 'nested destination rejection must occur before creating destination material');
     assert.throws(
       () => copyMinerRuntimeTree(sourceTree, sourceTree),
-      /miner runtime destination must remain outside source root/,
-      'runtime packaging must reject the source root as its own destination'
+      /miner runtime destination must not already exist/,
+      'runtime packaging must reject the source root as its own destination before mutation'
     );
     assert.equal(fs.readFileSync(path.join(sourceTree, 'tool.js'), 'utf8'), 'runtime-tool', 'same-root rejection must not mutate source material');
 
