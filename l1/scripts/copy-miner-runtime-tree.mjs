@@ -9,6 +9,9 @@ function isWithinRoot(root, candidate) {
 export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
   const sourceRoot = fsOps.realpathSync(source);
   const destinationRoot = path.resolve(destination);
+  if (isWithinRoot(sourceRoot, destinationRoot)) {
+    throw new Error('miner runtime destination must remain outside source root');
+  }
 
   function copyEntry(sourcePath, destinationPath) {
     const stat = fsOps.lstatSync(sourcePath);
