@@ -54,6 +54,20 @@ try {
     assert.equal(fs.lstatSync(path.join(copiedTree, '.bin', 'tool')).isFile(), true, 'internal npm executable shim must be materialized as a regular file');
     assert.doesNotThrow(() => collectReleaseFiles(copiedTree), 'materialized runtime trees must be fully checksum-coverable');
 
+    const nestedDestination = path.join(sourceTree, 'candidate');
+    assert.throws(
+      () => copyMinerRuntimeTree(sourceTree, nestedDestination),
+      /miner runtime destination must remain outside source root/,
+      'runtime packaging must reject a destination nested beneath the source tree'
+    );
+    assert.equal(fs.existsSync(nestedDestination), false, 'nested destination rejection must occur before creating destination material');
+    assert.throws(
+      () => copyMinerRuntimeTree(sourceTree, sourceTree),
+      /miner runtime destination must remain outside source root/,
+      'runtime packaging must reject the source root as its own destination'
+    );
+    assert.equal(fs.readFileSync(path.join(sourceTree, 'tool.js'), 'utf8'), 'runtime-tool', 'same-root rejection must not mutate source material');
+
     const outside = path.join(root, 'outside-secret.txt');
     const escapeTree = path.join(root, 'runtime-escape-source');
     fs.writeFileSync(outside, 'must-not-enter-release');
