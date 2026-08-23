@@ -1,9 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+const COPY_BUFFER_BYTES = 64 * 1024;
+
 function isWithinRoot(root, candidate) {
   const relative = path.relative(root, candidate);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function sameFileIdentity(expected, actual) {
+  return expected.dev === actual.dev && expected.ino === actual.ino;
 }
 
 function canonicalDestinationPath(candidate, fsOps) {
@@ -15,6 +21,33 @@ function canonicalDestinationPath(candidate, fsOps) {
   }
   const canonicalParent = fsOps.realpathSync(parentPath);
   return path.join(canonicalParent, path.basename(destinationPath));
+}
+
+function copyBoundRegularFile(sourcePath, destinationPath, expectedStat, fsOps, displayPath) {
+  let sourceFd;
+  let destinationFd;
+  try {
+    sourceFd = fsOps.openSync(sourcePath, 'r');
+    const openedStat = fsOps.fstatSync(sourceFd);
+    if (!openedStat.isFile() || !sameFileIdentity(expectedStat, openedStat)) {
+      throw new Error(`miner runtime source identity changed before copy: ${displayPath}`);
+    }
+
+    destinationFd = fsOps.openSync(destinationPath, 'wx', expectedStat.mode & 0o777);
+    const buffer = Buffer.allocUnsafe(COPY_BUFFER_BYTES);
+    while (true) {
+      const bytesRead = fsOps.readSync(sourceFd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      let written = 0;
+      while (written < bytesRead) {
+        written += fsOps.writeSync(destinationFd, buffer, written, bytesRead - written, null);
+      }
+    }
+    fsOps.fchmodSync(destinationFd, expectedStat.mode & 0o777);
+  } finally {
+    if (destinationFd !== undefined) fsOps.closeSync(destinationFd);
+    if (sourceFd !== undefined) fsOps.closeSync(sourceFd);
+  }
 }
 
 export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
@@ -30,6 +63,7 @@ export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
 
   function copyEntry(sourcePath, destinationPath) {
     const stat = fsOps.lstatSync(sourcePath);
+    const displayPath = path.relative(sourceRoot, sourcePath);
     if (stat.isDirectory()) {
       fsOps.mkdirSync(destinationPath, { recursive: true });
       for (const entry of fsOps.readdirSync(sourcePath)) {
@@ -38,25 +72,23 @@ export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
       return;
     }
     if (stat.isFile()) {
-      fsOps.copyFileSync(sourcePath, destinationPath);
-      fsOps.chmodSync(destinationPath, stat.mode & 0o777);
+      copyBoundRegularFile(sourcePath, destinationPath, stat, fsOps, displayPath);
       return;
     }
     if (stat.isSymbolicLink()) {
       const resolved = fsOps.realpathSync(sourcePath);
       if (!isWithinRoot(sourceRoot, resolved)) {
-        throw new Error(`miner runtime symlink escapes source root: ${path.relative(sourceRoot, sourcePath)}`);
+        throw new Error(`miner runtime symlink escapes source root: ${displayPath}`);
       }
       const target = fsOps.statSync(sourcePath);
       if (!target.isFile()) {
-        throw new Error(`miner runtime symlink must resolve to a regular file: ${path.relative(sourceRoot, sourcePath)}`);
+        throw new Error(`miner runtime symlink must resolve to a regular file: ${displayPath}`);
       }
       fsOps.mkdirSync(path.dirname(destinationPath), { recursive: true });
-      fsOps.copyFileSync(resolved, destinationPath);
-      fsOps.chmodSync(destinationPath, target.mode & 0o777);
+      copyBoundRegularFile(resolved, destinationPath, target, fsOps, displayPath);
       return;
     }
-    throw new Error(`unsupported miner runtime entry: ${path.relative(sourceRoot, sourcePath)}`);
+    throw new Error(`unsupported miner runtime entry: ${displayPath}`);
   }
 
   try {

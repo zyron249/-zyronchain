@@ -54,6 +54,73 @@ try {
     assert.equal(fs.lstatSync(path.join(copiedTree, '.bin', 'tool')).isFile(), true, 'internal npm executable shim must be materialized as a regular file');
     assert.doesNotThrow(() => collectReleaseFiles(copiedTree), 'materialized runtime trees must be fully checksum-coverable');
 
+    const outside = path.join(root, 'outside-secret.txt');
+    fs.writeFileSync(outside, 'must-not-enter-release');
+
+    const regularRaceTree = path.join(root, 'runtime-regular-race-source');
+    const regularRaceSource = path.join(regularRaceTree, 'tool.js');
+    const regularRaceDestination = path.join(root, 'runtime-regular-race-candidate');
+    fs.mkdirSync(regularRaceTree);
+    fs.writeFileSync(regularRaceSource, 'validated-runtime-tool');
+    const regularRaceCanonicalSource = fs.realpathSync(regularRaceSource);
+    let regularRaceInjected = false;
+    const regularRacingFsOps = new Proxy(fs, {
+      get(target, property) {
+        if (property === 'openSync') {
+          return (candidate, ...args) => {
+            if (!regularRaceInjected && path.resolve(candidate) === path.resolve(regularRaceCanonicalSource)) {
+              regularRaceInjected = true;
+              fs.rmSync(regularRaceSource);
+              fs.symlinkSync(outside, regularRaceSource);
+            }
+            return fs.openSync(candidate, ...args);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+    });
+    assert.throws(
+      () => copyMinerRuntimeTree(regularRaceTree, regularRaceDestination, regularRacingFsOps),
+      /miner runtime source identity changed before copy: tool\.js/,
+      'regular source replacement after lstat must fail closed before candidate bytes are written'
+    );
+    assert.equal(regularRaceInjected, true, 'regular source race regression must exercise the descriptor-open boundary');
+    assert.equal(fs.existsSync(path.join(regularRaceDestination, 'tool.js')), false, 'raced regular source bytes must not enter the candidate');
+
+    const symlinkRaceTree = path.join(root, 'runtime-symlink-race-source');
+    const symlinkTarget = path.join(symlinkRaceTree, 'target.js');
+    const symlinkEntry = path.join(symlinkRaceTree, 'tool');
+    const symlinkRaceDestination = path.join(root, 'runtime-symlink-race-candidate');
+    fs.mkdirSync(symlinkRaceTree);
+    fs.writeFileSync(symlinkTarget, 'validated-symlink-target');
+    fs.symlinkSync('target.js', symlinkEntry);
+    const symlinkCanonicalTarget = fs.realpathSync(symlinkTarget);
+    let symlinkRaceInjected = false;
+    const symlinkRacingFsOps = new Proxy(fs, {
+      get(target, property) {
+        if (property === 'openSync') {
+          return (candidate, ...args) => {
+            if (!symlinkRaceInjected && path.resolve(candidate) === path.resolve(symlinkCanonicalTarget)) {
+              symlinkRaceInjected = true;
+              fs.rmSync(symlinkTarget);
+              fs.symlinkSync(outside, symlinkTarget);
+            }
+            return fs.openSync(candidate, ...args);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+    });
+    assert.throws(
+      () => copyMinerRuntimeTree(symlinkRaceTree, symlinkRaceDestination, symlinkRacingFsOps),
+      /miner runtime source identity changed before copy: (?:tool|target\.js)/,
+      'npm symlink target replacement after validation must fail closed before candidate bytes are written'
+    );
+    assert.equal(symlinkRaceInjected, true, 'symlink target race regression must exercise the descriptor-open boundary');
+    assert.equal(fs.existsSync(path.join(symlinkRaceDestination, 'tool')), false, 'raced symlink target bytes must not enter the candidate');
+
     const existingEmptyDestination = path.join(root, 'runtime-existing-empty');
     fs.mkdirSync(existingEmptyDestination);
     assert.throws(
@@ -115,9 +182,7 @@ try {
     );
     assert.equal(fs.readFileSync(path.join(sourceTree, 'tool.js'), 'utf8'), 'runtime-tool', 'same-root rejection must not mutate source material');
 
-    const outside = path.join(root, 'outside-secret.txt');
     const escapeTree = path.join(root, 'runtime-escape-source');
-    fs.writeFileSync(outside, 'must-not-enter-release');
     fs.mkdirSync(escapeTree);
     fs.symlinkSync(outside, path.join(escapeTree, 'escape'));
     assert.throws(
