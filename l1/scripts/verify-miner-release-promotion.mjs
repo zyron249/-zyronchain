@@ -120,13 +120,33 @@ const exactBlobPrefix = `https://github.com/zyron249/-zyronchain/blob/${policy.s
 const exactReleaseTag = `https://github.com/zyron249/-zyronchain/releases/tag/${policy.releaseVersion}`;
 const evidenceReferences = [];
 function evidenceRoleMatches(name, reference) {
-  const lower = reference.toLowerCase();
-  if (name === 'windowsSigning') return lower.includes('windows') && (lower.includes('sign') || lower.includes('signature'));
-  if (name === 'macosSigningOrNotarization') return lower.includes('macos') && (lower.includes('sign') || lower.includes('notari'));
-  if (name === 'provenance') return lower.includes('provenance') || lower.includes('attestation');
-  if (name === 'checksums') return lower.includes('sha256sums') || lower.includes('checksum');
-  if (name === 'immutableRelease') return reference === exactReleaseTag || lower.includes('immutable-release');
-  if (name === 'publicMiningActivation') return lower.includes('public-mining') && (lower.includes('activation') || lower.includes('authoriz'));
+  const exactCommitPath = reference.startsWith(exactBlobPrefix)
+    ? reference.slice(exactBlobPrefix.length)
+    : null;
+  const exactReleaseAsset = reference.startsWith(releaseAssetPrefix)
+    ? reference.slice(releaseAssetPrefix.length)
+    : null;
+
+  if (name === 'windowsSigning') {
+    return exactCommitPath !== null && /^evidence\/windows-(?:signing|signature)\.json$/.test(exactCommitPath);
+  }
+  if (name === 'macosSigningOrNotarization') {
+    return exactCommitPath !== null && /^evidence\/macos-(?:signing|notarization)\.json$/.test(exactCommitPath);
+  }
+  if (name === 'provenance') {
+    return (exactCommitPath !== null && /^evidence\/(?:provenance|attestation)\.json$/.test(exactCommitPath)) ||
+      (exactReleaseAsset !== null && /^(?:provenance|attestation)\.json$/.test(exactReleaseAsset));
+  }
+  if (name === 'checksums') {
+    return exactReleaseAsset !== null && /^(?:SHA256SUMS|checksums\.txt)$/.test(exactReleaseAsset);
+  }
+  if (name === 'immutableRelease') {
+    return reference === exactReleaseTag ||
+      (exactCommitPath !== null && exactCommitPath === 'evidence/immutable-release.json');
+  }
+  if (name === 'publicMiningActivation') {
+    return exactCommitPath !== null && /^evidence\/public-mining-(?:activation|authorization)\.json$/.test(exactCommitPath);
+  }
   return false;
 }
 for (const [name, value] of evidenceEntries) {
@@ -141,7 +161,7 @@ for (const [name, value] of evidenceEntries) {
     throw new Error(`${name} evidence must bind to exact sourceCommit or releaseVersion`);
   }
   if (/\/blob\/(?:main|master|HEAD)\//.test(reference)) throw new Error(`${name} evidence must not use mutable branch refs`);
-  if (!evidenceRoleMatches(name, reference)) throw new Error(`${name} evidence must identify its canonical security role`);
+  if (!evidenceRoleMatches(name, reference)) throw new Error(`${name} evidence must use its canonical security-role path`);
   evidenceReferences.push([name, reference]);
 }
 
