@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { copyMinerRuntimeTree } from './copy-miner-runtime-tree.mjs';
 import { collectReleaseFiles, generateMinerSha256Sums } from './generate-miner-sha256sums.mjs';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zyron-miner-manifest-'));
@@ -49,16 +50,32 @@ try {
     fs.mkdirSync(path.join(sourceTree, '.bin'), { recursive: true });
     fs.writeFileSync(path.join(sourceTree, 'tool.js'), 'runtime-tool');
     fs.symlinkSync(path.join('..', 'tool.js'), path.join(sourceTree, '.bin', 'tool'));
-    fs.cpSync(sourceTree, copiedTree, { recursive: true, dereference: true });
-    assert.equal(fs.lstatSync(path.join(copiedTree, '.bin', 'tool')).isFile(), true, 'packaging-style dereference must materialize npm executable shims as regular files');
+    copyMinerRuntimeTree(sourceTree, copiedTree);
+    assert.equal(fs.lstatSync(path.join(copiedTree, '.bin', 'tool')).isFile(), true, 'internal npm executable shim must be materialized as a regular file');
     assert.doesNotThrow(() => collectReleaseFiles(copiedTree), 'materialized runtime trees must be fully checksum-coverable');
+
+    const outside = path.join(root, 'outside-secret.txt');
+    const escapeTree = path.join(root, 'runtime-escape-source');
+    fs.writeFileSync(outside, 'must-not-enter-release');
+    fs.mkdirSync(escapeTree);
+    fs.symlinkSync(outside, path.join(escapeTree, 'escape'));
+    assert.throws(
+      () => copyMinerRuntimeTree(escapeTree, path.join(root, 'runtime-escape-candidate')),
+      /miner runtime symlink escapes source root/,
+      'runtime packaging must not dereference a symlink outside node_modules'
+    );
   }
 
   const packageMinerSource = fs.readFileSync(path.resolve(process.cwd(), 'scripts/package-miner.mjs'), 'utf8');
   assert.match(
     packageMinerSource,
-    /cp\(join\(root, 'node_modules'\), join\(bundle, 'node_modules'\), \{ recursive: true, dereference: true \}\)/,
-    'canonical miner packaging must materialize npm runtime symlinks before checksum generation'
+    /copyMinerRuntimeTree\(join\(root, 'node_modules'\), join\(bundle, 'node_modules'\)\)/,
+    'canonical miner packaging must use the bounded runtime-tree materializer'
+  );
+  assert.doesNotMatch(
+    packageMinerSource,
+    /node_modules[^\n]+dereference:\s*true/,
+    'canonical miner packaging must not globally dereference untrusted runtime symlinks'
   );
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
