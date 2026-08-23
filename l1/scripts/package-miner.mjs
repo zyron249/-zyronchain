@@ -24,7 +24,10 @@ await cp(join(root, 'scripts', 'miner-rpc-response.mjs'), join(bundle, 'scripts'
 await cp(join(root, 'scripts', 'miner-launcher.mjs'), join(bundle, 'scripts', 'miner-launcher.mjs'));
 await cp(join(root, 'scripts', 'miner-launcher-security.mjs'), join(bundle, 'scripts', 'miner-launcher-security.mjs'));
 await cp(join(root, 'miner-network-profile.json'), join(bundle, 'miner-network-profile.json'));
-await cp(join(root, 'node_modules'), join(bundle, 'node_modules'), { recursive: true });
+// npm installs executable shims under node_modules/.bin as symlinks on Unix. A release
+// manifest cannot faithfully authenticate symlink identity with an ordinary file digest,
+// so materialize those links as regular files inside the candidate before checksumming.
+await cp(join(root, 'node_modules'), join(bundle, 'node_modules'), { recursive: true, dereference: true });
 await cp(join(root, 'package.json'), join(bundle, 'package.json'));
 await cp(join(root, 'MINING.md'), join(bundle, 'MINING.md'));
 
