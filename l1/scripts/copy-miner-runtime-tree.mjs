@@ -6,9 +6,25 @@ function isWithinRoot(root, candidate) {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
+function canonicalProspectivePath(candidate, fsOps) {
+  let cursor = path.resolve(candidate);
+  const suffix = [];
+  while (!fsOps.existsSync(cursor)) {
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    suffix.unshift(path.basename(cursor));
+    cursor = parent;
+  }
+  const canonicalBase = fsOps.realpathSync(cursor);
+  return path.join(canonicalBase, ...suffix);
+}
+
 export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
   const sourceRoot = fsOps.realpathSync(source);
-  const destinationRoot = path.resolve(destination);
+  const destinationRoot = canonicalProspectivePath(destination, fsOps);
+  if (isWithinRoot(sourceRoot, destinationRoot)) {
+    throw new Error('miner runtime destination must remain outside source root');
+  }
 
   function copyEntry(sourcePath, destinationPath) {
     const stat = fsOps.lstatSync(sourcePath);
