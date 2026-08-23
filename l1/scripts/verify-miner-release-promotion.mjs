@@ -99,6 +99,8 @@ if (!allDigests) throw new Error('promotion requires Windows, macOS and Linux as
 
 const distinctAssets = new Set(assetEntries.map(([, asset]) => asset));
 if (distinctAssets.size !== requiredPlatforms.length) throw new Error('promotion requires distinct platform asset URLs');
+const distinctDigests = new Set(digestEntries.map(([, digest]) => digest));
+if (distinctDigests.size !== requiredPlatforms.length) throw new Error('promotion requires distinct platform asset sha256 digests');
 for (const [platform, asset] of assetEntries) {
   const basename = asset.slice(asset.lastIndexOf('/') + 1).toLowerCase();
   const hyphenTokens = basename.split('-');
