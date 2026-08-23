@@ -42,7 +42,24 @@ try {
       /unsupported non-regular miner release entry: linked-file/,
       'symlinks must not be followed or silently omitted'
     );
+    fs.rmSync(link);
+
+    const sourceTree = path.join(root, 'runtime-source');
+    const copiedTree = path.join(root, 'runtime-candidate');
+    fs.mkdirSync(path.join(sourceTree, '.bin'), { recursive: true });
+    fs.writeFileSync(path.join(sourceTree, 'tool.js'), 'runtime-tool');
+    fs.symlinkSync(path.join('..', 'tool.js'), path.join(sourceTree, '.bin', 'tool'));
+    fs.cpSync(sourceTree, copiedTree, { recursive: true, dereference: true });
+    assert.equal(fs.lstatSync(path.join(copiedTree, '.bin', 'tool')).isFile(), true, 'packaging-style dereference must materialize npm executable shims as regular files');
+    assert.doesNotThrow(() => collectReleaseFiles(copiedTree), 'materialized runtime trees must be fully checksum-coverable');
   }
+
+  const packageMinerSource = fs.readFileSync(path.resolve(process.cwd(), 'scripts/package-miner.mjs'), 'utf8');
+  assert.match(
+    packageMinerSource,
+    /cp\(join\(root, 'node_modules'\), join\(bundle, 'node_modules'\), \{ recursive: true, dereference: true \}\)/,
+    'canonical miner packaging must materialize npm runtime symlinks before checksum generation'
+  );
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }
