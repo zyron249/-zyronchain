@@ -92,9 +92,9 @@ export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
   function copyEntry(sourcePath, destinationPath) {
     const stat = fsOps.lstatSync(sourcePath);
     const displayPath = path.relative(sourceRoot, sourcePath);
-    assertSourceWithinRoot(sourcePath, displayPath);
 
     if (stat.isDirectory()) {
+      assertSourceWithinRoot(sourcePath, displayPath);
       const entries = readBoundDirectory(sourcePath, stat, displayPath);
       fsOps.mkdirSync(destinationPath, { recursive: true });
       for (const entry of entries) {
@@ -105,6 +105,7 @@ export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
       return;
     }
     if (stat.isFile()) {
+      assertSourceWithinRoot(sourcePath, displayPath);
       copyBoundRegularFile(sourcePath, destinationPath, stat, fsOps, displayPath);
       return;
     }
