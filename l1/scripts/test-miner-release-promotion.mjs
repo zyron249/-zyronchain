@@ -84,6 +84,8 @@ run({ ...fullyEvidenced, assets: { windows: fullyEvidenced.assets.windows, macos
 run({ ...fullyEvidenced, assetSha256: {} }, false, 'activated promotion without platform digests');
 run({ ...fullyEvidenced, assetSha256: { windows: fullyEvidenced.assetSha256.windows, macos: fullyEvidenced.assetSha256.macos, linux: null } }, false, 'activated promotion missing Linux digest');
 run({ ...fullyEvidenced, assetSha256: { ...fullyEvidenced.assetSha256, windows: 'not-a-digest' } }, false, 'activated promotion with malformed digest');
+run({ ...fullyEvidenced, assetSha256: { ...fullyEvidenced.assetSha256, macos: fullyEvidenced.assetSha256.windows } }, false, 'duplicate platform asset digest');
+run({ ...fullyEvidenced, assetSha256: { windows: fullyEvidenced.assetSha256.linux, macos: fullyEvidenced.assetSha256.linux, linux: fullyEvidenced.assetSha256.linux } }, false, 'all platform assets reuse one digest');
 const { checksums: _missingPromotedChecksums, ...promotedMissingEvidence } = fullyEvidenced.evidence;
 run({ ...fullyEvidenced, evidence: promotedMissingEvidence }, false, 'activated promotion missing checksums evidence');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, operatorNote: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/operator-note.json#sha256=${digest}` } }, false, 'activated promotion with unexpected evidence key');
