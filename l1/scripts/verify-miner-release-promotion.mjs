@@ -181,5 +181,11 @@ const distinctEvidenceDigests = new Set(evidenceDigests.map(([, digest]) => dige
 if (distinctEvidenceDigests.size !== requiredEvidence.length) {
   throw new Error('promotion requires distinct sha256 byte identities for all canonical evidence roles');
 }
+const platformAssetDigests = new Set(digestEntries.map(([, digest]) => digest));
+for (const [name, digest] of evidenceDigests) {
+  if (platformAssetDigests.has(digest)) {
+    throw new Error(`${name} evidence sha256 must not alias a promoted platform asset byte identity`);
+  }
+}
 
 console.log('miner release promotion policy is fully evidenced');
