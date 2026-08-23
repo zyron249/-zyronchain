@@ -60,8 +60,11 @@ jobs:
           node --check scripts/test-miner-launcher-security.mjs
           node --check scripts/package-miner.mjs
           node --check scripts/test-windows-miner-package-contract.mjs
+          node --check scripts/generate-miner-sha256sums.mjs
+          node --check scripts/test-miner-release-manifest.mjs
           node scripts/test-miner-launcher-security.mjs
           node scripts/test-windows-miner-package-contract.mjs
+          node scripts/test-miner-release-manifest.mjs
           node -e "const p=require('./miner-network-profile.json'); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('release candidate profile must remain fail-closed')"
 
       - name: Build runtime
@@ -152,25 +155,7 @@ jobs:
           NODE
 
       - name: Generate SHA-256 manifest
-        shell: bash
-        run: |
-          node - <<'NODE'
-          const fs = require('node:fs');
-          const crypto = require('node:crypto');
-          const path = require('node:path');
-          const root = 'miner-release';
-          const files = [];
-          function walk(dir) {
-            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-              const full = path.join(dir, entry.name);
-              if (entry.isDirectory()) walk(full);
-              else if (entry.isFile() && entry.name !== 'SHA256SUMS') files.push(full);
-            }
-          }
-          walk(root);
-          const lines = files.sort().map((file) => `${crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')}  ${file.replaceAll('\\\\','/')}`);
-          fs.writeFileSync(path.join(root, 'SHA256SUMS'), `${lines.join('\n')}\n`);
-          NODE
+        run: node scripts/generate-miner-sha256sums.mjs miner-release
 
       - name: Verify release metadata stays non-publishable
         run: node -e "const m=require('./miner-release/RELEASE-METADATA.json'); if (m.nodeVersion !== 'v22.23.2' || m.publicMiningActivated !== false || m.releaseEligible !== false || m.platformSigningVerified !== false || m.publicationAllowed !== false) throw new Error('release-candidate fail-closed metadata drift')"

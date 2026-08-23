@@ -2,6 +2,7 @@
 import { chmod, cp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { copyMinerRuntimeTree } from './copy-miner-runtime-tree.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -24,7 +25,7 @@ await cp(join(root, 'scripts', 'miner-rpc-response.mjs'), join(bundle, 'scripts'
 await cp(join(root, 'scripts', 'miner-launcher.mjs'), join(bundle, 'scripts', 'miner-launcher.mjs'));
 await cp(join(root, 'scripts', 'miner-launcher-security.mjs'), join(bundle, 'scripts', 'miner-launcher-security.mjs'));
 await cp(join(root, 'miner-network-profile.json'), join(bundle, 'miner-network-profile.json'));
-await cp(join(root, 'node_modules'), join(bundle, 'node_modules'), { recursive: true });
+copyMinerRuntimeTree(join(root, 'node_modules'), join(bundle, 'node_modules'));
 await cp(join(root, 'package.json'), join(bundle, 'package.json'));
 await cp(join(root, 'MINING.md'), join(bundle, 'MINING.md'));
 
