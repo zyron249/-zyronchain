@@ -75,12 +75,13 @@ try {
     assert.equal(fs.existsSync(path.join(existingSeededDestination, 'tool.js')), false, 'pre-seeded destination rejection must not copy source material');
 
     const racedDestination = path.join(root, 'runtime-raced-destination');
+    const racedDestinationCanonical = path.join(fs.realpathSync(path.dirname(racedDestination)), path.basename(racedDestination));
     let injectedRace = false;
     const racingFsOps = new Proxy(fs, {
       get(target, property) {
         if (property === 'mkdirSync') {
           return (candidate, options) => {
-            if (!injectedRace && path.resolve(candidate) === path.resolve(racedDestination)) {
+            if (!injectedRace && path.resolve(candidate) === path.resolve(racedDestinationCanonical)) {
               injectedRace = true;
               fs.mkdirSync(racedDestination);
             }
