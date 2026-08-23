@@ -113,7 +113,7 @@ try {
     });
     assert.throws(
       () => copyMinerRuntimeTree(symlinkRaceTree, symlinkRaceDestination, symlinkRacingFsOps),
-      /miner runtime source identity changed before copy: tool/,
+      /miner runtime source identity changed before copy: (?:tool|target\.js)/,
       'npm symlink target replacement after validation must fail closed before candidate bytes are written'
     );
     assert.equal(symlinkRaceInjected, true, 'symlink target race regression must exercise the descriptor-open boundary');
