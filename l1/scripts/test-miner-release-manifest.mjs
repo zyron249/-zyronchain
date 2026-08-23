@@ -121,6 +121,73 @@ try {
     assert.equal(symlinkRaceInjected, true, 'symlink target race regression must exercise the descriptor-open boundary');
     assert.equal(fs.existsSync(path.join(symlinkRaceDestination, 'tool')), false, 'raced symlink target bytes must not enter the candidate');
 
+    const directorySymlinkRaceTree = path.join(root, 'runtime-directory-symlink-race-source');
+    const directorySymlinkNested = path.join(directorySymlinkRaceTree, 'nested');
+    const directorySymlinkDestination = path.join(root, 'runtime-directory-symlink-race-candidate');
+    const directorySymlinkOutside = path.join(root, 'runtime-directory-symlink-outside');
+    fs.mkdirSync(directorySymlinkNested, { recursive: true });
+    fs.writeFileSync(path.join(directorySymlinkNested, 'inside.js'), 'validated-inside-file');
+    fs.mkdirSync(directorySymlinkOutside);
+    fs.writeFileSync(path.join(directorySymlinkOutside, 'secret.js'), 'external-secret');
+    const directorySymlinkCanonicalNested = fs.realpathSync(directorySymlinkNested);
+    let directorySymlinkRaceInjected = false;
+    const directorySymlinkRacingFsOps = new Proxy(fs, {
+      get(target, property) {
+        if (property === 'readdirSync') {
+          return (candidate, ...args) => {
+            if (!directorySymlinkRaceInjected && path.resolve(candidate) === path.resolve(directorySymlinkCanonicalNested)) {
+              directorySymlinkRaceInjected = true;
+              fs.rmSync(directorySymlinkNested, { recursive: true });
+              fs.symlinkSync(directorySymlinkOutside, directorySymlinkNested, 'dir');
+            }
+            return fs.readdirSync(candidate, ...args);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+    });
+    assert.throws(
+      () => copyMinerRuntimeTree(directorySymlinkRaceTree, directorySymlinkDestination, directorySymlinkRacingFsOps),
+      /miner runtime source directory identity changed before traversal: nested/,
+      'directory replacement by an external symlink during traversal must fail closed'
+    );
+    assert.equal(directorySymlinkRaceInjected, true, 'directory symlink race regression must exercise the readdir boundary');
+    assert.equal(fs.existsSync(path.join(directorySymlinkDestination, 'nested', 'secret.js')), false, 'external directory bytes must not enter the candidate');
+
+    const directoryIdentityRaceTree = path.join(root, 'runtime-directory-identity-race-source');
+    const directoryIdentityNested = path.join(directoryIdentityRaceTree, 'nested');
+    const directoryIdentityBackup = path.join(directoryIdentityRaceTree, 'nested-original');
+    const directoryIdentityDestination = path.join(root, 'runtime-directory-identity-race-candidate');
+    fs.mkdirSync(directoryIdentityNested, { recursive: true });
+    fs.writeFileSync(path.join(directoryIdentityNested, 'inside.js'), 'validated-directory-file');
+    const directoryIdentityCanonicalNested = fs.realpathSync(directoryIdentityNested);
+    let directoryIdentityRaceInjected = false;
+    const directoryIdentityRacingFsOps = new Proxy(fs, {
+      get(target, property) {
+        if (property === 'readdirSync') {
+          return (candidate, ...args) => {
+            if (!directoryIdentityRaceInjected && path.resolve(candidate) === path.resolve(directoryIdentityCanonicalNested)) {
+              directoryIdentityRaceInjected = true;
+              fs.renameSync(directoryIdentityNested, directoryIdentityBackup);
+              fs.mkdirSync(directoryIdentityNested);
+              fs.writeFileSync(path.join(directoryIdentityNested, 'replacement.js'), 'replacement-directory-file');
+            }
+            return fs.readdirSync(candidate, ...args);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+    });
+    assert.throws(
+      () => copyMinerRuntimeTree(directoryIdentityRaceTree, directoryIdentityDestination, directoryIdentityRacingFsOps),
+      /miner runtime source directory identity changed before traversal: nested/,
+      'directory inode replacement during traversal must fail closed even without a symlink'
+    );
+    assert.equal(directoryIdentityRaceInjected, true, 'directory identity race regression must exercise the readdir boundary');
+    assert.equal(fs.existsSync(path.join(directoryIdentityDestination, 'nested', 'replacement.js')), false, 'replacement directory bytes must not enter the candidate');
+
     const existingEmptyDestination = path.join(root, 'runtime-existing-empty');
     fs.mkdirSync(existingEmptyDestination);
     assert.throws(

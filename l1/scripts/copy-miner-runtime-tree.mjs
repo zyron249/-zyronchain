@@ -52,6 +52,11 @@ function copyBoundRegularFile(sourcePath, destinationPath, expectedStat, fsOps, 
 
 export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
   const sourceRoot = fsOps.realpathSync(source);
+  const sourceRootStat = fsOps.lstatSync(sourceRoot);
+  if (!sourceRootStat.isDirectory()) {
+    throw new Error('miner runtime source root must be a directory');
+  }
+
   const destinationPath = path.resolve(destination);
   if (fsOps.existsSync(destinationPath)) {
     throw new Error('miner runtime destination must not already exist');
@@ -61,17 +66,46 @@ export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
     throw new Error('miner runtime destination must remain outside source root');
   }
 
+  function assertSourceWithinRoot(sourcePath, displayPath) {
+    const canonical = fsOps.realpathSync(sourcePath);
+    if (!isWithinRoot(sourceRoot, canonical)) {
+      throw new Error(`miner runtime source escapes source root: ${displayPath}`);
+    }
+    return canonical;
+  }
+
+  function assertDirectoryIdentity(sourcePath, expectedStat, displayPath) {
+    const currentStat = fsOps.lstatSync(sourcePath);
+    if (!currentStat.isDirectory() || !sameFileIdentity(expectedStat, currentStat)) {
+      throw new Error(`miner runtime source directory identity changed before traversal: ${displayPath || '.'}`);
+    }
+    assertSourceWithinRoot(sourcePath, displayPath || '.');
+  }
+
+  function readBoundDirectory(sourcePath, expectedStat, displayPath) {
+    assertDirectoryIdentity(sourcePath, expectedStat, displayPath);
+    const entries = fsOps.readdirSync(sourcePath);
+    assertDirectoryIdentity(sourcePath, expectedStat, displayPath);
+    return entries;
+  }
+
   function copyEntry(sourcePath, destinationPath) {
     const stat = fsOps.lstatSync(sourcePath);
     const displayPath = path.relative(sourceRoot, sourcePath);
+
     if (stat.isDirectory()) {
+      assertSourceWithinRoot(sourcePath, displayPath);
+      const entries = readBoundDirectory(sourcePath, stat, displayPath);
       fsOps.mkdirSync(destinationPath, { recursive: true });
-      for (const entry of fsOps.readdirSync(sourcePath)) {
+      for (const entry of entries) {
+        assertDirectoryIdentity(sourcePath, stat, displayPath);
         copyEntry(path.join(sourcePath, entry), path.join(destinationPath, entry));
+        assertDirectoryIdentity(sourcePath, stat, displayPath);
       }
       return;
     }
     if (stat.isFile()) {
+      assertSourceWithinRoot(sourcePath, displayPath);
       copyBoundRegularFile(sourcePath, destinationPath, stat, fsOps, displayPath);
       return;
     }
@@ -105,7 +139,10 @@ export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
     throw new Error('miner runtime destination identity changed after creation');
   }
 
-  for (const entry of fsOps.readdirSync(sourceRoot)) {
+  const rootEntries = readBoundDirectory(sourceRoot, sourceRootStat, '');
+  for (const entry of rootEntries) {
+    assertDirectoryIdentity(sourceRoot, sourceRootStat, '');
     copyEntry(path.join(sourceRoot, entry), path.join(destinationRoot, entry));
+    assertDirectoryIdentity(sourceRoot, sourceRootStat, '');
   }
 }
