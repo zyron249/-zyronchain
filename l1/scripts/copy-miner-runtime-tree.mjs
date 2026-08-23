@@ -21,7 +21,11 @@ function canonicalProspectivePath(candidate, fsOps) {
 
 export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
   const sourceRoot = fsOps.realpathSync(source);
-  const destinationRoot = canonicalProspectivePath(destination, fsOps);
+  const destinationPath = path.resolve(destination);
+  if (fsOps.existsSync(destinationPath)) {
+    throw new Error('miner runtime destination must not already exist');
+  }
+  const destinationRoot = canonicalProspectivePath(destinationPath, fsOps);
   if (isWithinRoot(sourceRoot, destinationRoot)) {
     throw new Error('miner runtime destination must remain outside source root');
   }
