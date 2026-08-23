@@ -74,6 +74,32 @@ try {
     assert.equal(fs.readFileSync(path.join(existingSeededDestination, 'stale.txt'), 'utf8'), 'stale-release-state', 'pre-seeded destination rejection must not mutate prior material');
     assert.equal(fs.existsSync(path.join(existingSeededDestination, 'tool.js')), false, 'pre-seeded destination rejection must not copy source material');
 
+    const racedDestination = path.join(root, 'runtime-raced-destination');
+    let injectedRace = false;
+    const racingFsOps = new Proxy(fs, {
+      get(target, property) {
+        if (property === 'mkdirSync') {
+          return (candidate, options) => {
+            if (!injectedRace && path.resolve(candidate) === path.resolve(racedDestination)) {
+              injectedRace = true;
+              fs.mkdirSync(racedDestination);
+            }
+            return fs.mkdirSync(candidate, options);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+    });
+    assert.throws(
+      () => copyMinerRuntimeTree(sourceTree, racedDestination, racingFsOps),
+      /miner runtime destination appeared before atomic creation/,
+      'runtime packaging must fail closed if the destination appears between preflight and atomic creation'
+    );
+    assert.equal(injectedRace, true, 'destination race regression must exercise the atomic creation boundary');
+    assert.deepEqual(fs.readdirSync(racedDestination), [], 'raced destination must not receive source material');
+    assert.equal(fs.existsSync(path.join(racedDestination, 'tool.js')), false, 'destination race must fail before copying source files');
+
     const nestedDestination = path.join(sourceTree, 'candidate');
     assert.throws(
       () => copyMinerRuntimeTree(sourceTree, nestedDestination),
