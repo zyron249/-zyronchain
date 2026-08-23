@@ -101,8 +101,15 @@ const distinctAssets = new Set(assetEntries.map(([, asset]) => asset));
 if (distinctAssets.size !== requiredPlatforms.length) throw new Error('promotion requires distinct platform asset URLs');
 for (const [platform, asset] of assetEntries) {
   const basename = asset.slice(asset.lastIndexOf('/') + 1).toLowerCase();
-  if (!basename.includes(`-${platform}-`)) {
-    throw new Error(`${platform} asset filename must contain canonical -${platform}- marker`);
+  const hyphenTokens = basename.split('-');
+  const markerCounts = Object.fromEntries(requiredPlatforms.map((candidate) => [candidate, hyphenTokens.filter((token) => token === candidate).length]));
+  if (markerCounts[platform] !== 1) {
+    throw new Error(`${platform} asset filename must contain canonical -${platform}- marker exactly once`);
+  }
+  for (const otherPlatform of requiredPlatforms) {
+    if (otherPlatform !== platform && markerCounts[otherPlatform] !== 0) {
+      throw new Error(`${platform} asset filename must not contain -${otherPlatform}- marker`);
+    }
   }
 }
 

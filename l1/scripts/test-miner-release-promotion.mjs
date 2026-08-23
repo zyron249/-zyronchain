@@ -97,6 +97,9 @@ run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, immutableReleas
 run({ ...fullyEvidenced, assets: { ...fullyEvidenced.assets, windows: fullyEvidenced.assets.linux } }, false, 'windows slot with Linux-named artifact');
 run({ ...fullyEvidenced, assets: { ...fullyEvidenced.assets, macos: fullyEvidenced.assets.windows } }, false, 'macOS slot with Windows-named artifact');
 run({ ...fullyEvidenced, assets: { windows: fullyEvidenced.assets.windows, macos: fullyEvidenced.assets.windows, linux: fullyEvidenced.assets.linux } }, false, 'duplicate platform asset URL');
+run({ ...fullyEvidenced, assets: { ...fullyEvidenced.assets, windows: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/ZyronMiner-linux-windows-x64.zip` } }, false, 'Windows asset with mixed Linux marker');
+run({ ...fullyEvidenced, assets: { ...fullyEvidenced.assets, macos: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/ZyronMiner-windows-macos-arm64.tar.gz` } }, false, 'macOS asset with mixed Windows marker');
+run({ ...fullyEvidenced, assets: { ...fullyEvidenced.assets, linux: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/ZyronMiner-linux-linux-x64.tar.gz` } }, false, 'Linux asset with repeated platform marker');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, provenance: fullyEvidenced.evidence.checksums } }, false, 'duplicate evidence reference');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, provenance: fullyEvidenced.evidence.checksums.replace(digest, 'b'.repeat(64)) } }, false, 'duplicate evidence reference with different digest fragment');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, windowsSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/operator-note.json#sha256=${digest}` } }, false, 'Windows signing evidence with unrelated role');
