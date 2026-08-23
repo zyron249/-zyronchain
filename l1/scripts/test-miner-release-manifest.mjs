@@ -62,12 +62,13 @@ try {
     const regularRaceDestination = path.join(root, 'runtime-regular-race-candidate');
     fs.mkdirSync(regularRaceTree);
     fs.writeFileSync(regularRaceSource, 'validated-runtime-tool');
+    const regularRaceCanonicalSource = fs.realpathSync(regularRaceSource);
     let regularRaceInjected = false;
     const regularRacingFsOps = new Proxy(fs, {
       get(target, property) {
         if (property === 'openSync') {
           return (candidate, ...args) => {
-            if (!regularRaceInjected && path.resolve(candidate) === path.resolve(regularRaceSource)) {
+            if (!regularRaceInjected && path.resolve(candidate) === path.resolve(regularRaceCanonicalSource)) {
               regularRaceInjected = true;
               fs.rmSync(regularRaceSource);
               fs.symlinkSync(outside, regularRaceSource);
@@ -94,12 +95,13 @@ try {
     fs.mkdirSync(symlinkRaceTree);
     fs.writeFileSync(symlinkTarget, 'validated-symlink-target');
     fs.symlinkSync('target.js', symlinkEntry);
+    const symlinkCanonicalTarget = fs.realpathSync(symlinkTarget);
     let symlinkRaceInjected = false;
     const symlinkRacingFsOps = new Proxy(fs, {
       get(target, property) {
         if (property === 'openSync') {
           return (candidate, ...args) => {
-            if (!symlinkRaceInjected && path.resolve(candidate) === path.resolve(symlinkTarget)) {
+            if (!symlinkRaceInjected && path.resolve(candidate) === path.resolve(symlinkCanonicalTarget)) {
               symlinkRaceInjected = true;
               fs.rmSync(symlinkTarget);
               fs.symlinkSync(outside, symlinkTarget);
