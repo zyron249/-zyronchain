@@ -126,7 +126,6 @@ for (const field of ['releaseEligible','platformSigningVerified','provenanceVeri
 
 const digestFragment = /#sha256=([0-9a-f]{64})$/;
 const exactBlobPrefix = `https://github.com/zyron249/-zyronchain/blob/${policy.sourceCommit}/`;
-const exactReleaseTag = `https://github.com/zyron249/-zyronchain/releases/tag/${policy.releaseVersion}`;
 const evidenceReferences = [];
 function evidenceRoleMatches(name, reference) {
   const exactCommitPath = reference.startsWith(exactBlobPrefix)
@@ -150,8 +149,7 @@ function evidenceRoleMatches(name, reference) {
     return exactReleaseAsset !== null && /^(?:SHA256SUMS|checksums\.txt)$/.test(exactReleaseAsset);
   }
   if (name === 'immutableRelease') {
-    return reference === exactReleaseTag ||
-      (exactCommitPath !== null && exactCommitPath === 'evidence/immutable-release.json');
+    return exactCommitPath !== null && exactCommitPath === 'evidence/immutable-release.json';
   }
   if (name === 'publicMiningActivation') {
     return exactCommitPath !== null && /^evidence\/public-mining-(?:activation|authorization)\.json$/.test(exactCommitPath);
@@ -165,8 +163,7 @@ for (const [name, value] of evidenceEntries) {
   const reference = value.slice(0, value.length - digestMatch[0].length);
   const exactCommitEvidence = reference.startsWith(exactBlobPrefix);
   const exactReleaseAssetEvidence = reference.startsWith(releaseAssetPrefix);
-  const exactReleasePageEvidence = reference === exactReleaseTag;
-  if (!exactCommitEvidence && !exactReleaseAssetEvidence && !exactReleasePageEvidence) {
+  if (!exactCommitEvidence && !exactReleaseAssetEvidence) {
     throw new Error(`${name} evidence must bind to exact sourceCommit or releaseVersion`);
   }
   if (/\/blob\/(?:main|master|HEAD)\//.test(reference)) throw new Error(`${name} evidence must not use mutable branch refs`);
