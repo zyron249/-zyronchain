@@ -127,6 +127,7 @@ for (const field of ['releaseEligible','platformSigningVerified','provenanceVeri
 const digestFragment = /#sha256=([0-9a-f]{64})$/;
 const exactBlobPrefix = `https://github.com/zyron249/-zyronchain/blob/${policy.sourceCommit}/`;
 const evidenceReferences = [];
+const evidenceDigests = [];
 function evidenceRoleMatches(name, reference) {
   const exactCommitPath = reference.startsWith(exactBlobPrefix)
     ? reference.slice(exactBlobPrefix.length)
@@ -169,11 +170,16 @@ for (const [name, value] of evidenceEntries) {
   if (/\/blob\/(?:main|master|HEAD)\//.test(reference)) throw new Error(`${name} evidence must not use mutable branch refs`);
   if (!evidenceRoleMatches(name, reference)) throw new Error(`${name} evidence must use its canonical security-role path`);
   evidenceReferences.push([name, reference]);
+  evidenceDigests.push([name, digestMatch[1]]);
 }
 
 const distinctEvidenceReferences = new Set(evidenceReferences.map(([, reference]) => reference));
 if (distinctEvidenceReferences.size !== requiredEvidence.length) {
   throw new Error('promotion requires distinct underlying references for all canonical evidence roles');
+}
+const distinctEvidenceDigests = new Set(evidenceDigests.map(([, digest]) => digest));
+if (distinctEvidenceDigests.size !== requiredEvidence.length) {
+  throw new Error('promotion requires distinct sha256 byte identities for all canonical evidence roles');
 }
 
 console.log('miner release promotion policy is fully evidenced');
