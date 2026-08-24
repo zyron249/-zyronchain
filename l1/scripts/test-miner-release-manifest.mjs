@@ -15,9 +15,10 @@ try {
   fs.writeFileSync(path.join(root, 'SHA256SUMS'), 'stale manifest must be excluded');
 
   const manifest = generateMinerSha256Sums(root);
+  const canonicalRoot = fs.realpathSync(root);
   const expected = [
-    [path.join(root, 'b.txt'), 'bravo'],
-    [path.join(root, 'nested', 'a.txt'), 'alpha']
+    [path.join(canonicalRoot, 'b.txt'), 'bravo'],
+    [path.join(canonicalRoot, 'nested', 'a.txt'), 'alpha']
   ].sort(([a], [b]) => a.localeCompare(b)).map(([file, contents]) => {
     const digest = crypto.createHash('sha256').update(contents).digest('hex');
     return `${digest}  ${path.relative(process.cwd(), file).replaceAll('\\', '/')}`;
