@@ -28,6 +28,23 @@ test("operator secret reader loads plaintext and encrypted owner-only keys", asy
   }
 });
 
+test("plaintext validator key schema rejects extra top-level fields", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-operator-key-schema-"));
+  const key = join(root, "key.json");
+  try {
+    await writeFile(key, `${JSON.stringify({ privateKey: PRIVATE_KEY, publicKey: "shadow" })}\n`, { mode: 0o600 });
+    await assert.rejects(
+      readOperatorPrivateKey(key),
+      /must contain exactly privateKey/
+    );
+
+    await writeFile(key, `${JSON.stringify({ privateKey: PRIVATE_KEY })}\n`, { mode: 0o600 });
+    assert.equal(await readOperatorPrivateKey(key), PRIVATE_KEY);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("operator auth token reader preserves format bounds", async () => {
   const root = await mkdtemp(join(tmpdir(), "zyron-operator-token-"));
   const token = join(root, "token.txt");
