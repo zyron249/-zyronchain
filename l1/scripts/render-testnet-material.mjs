@@ -23,18 +23,15 @@ async function exists(path) {
 function parseValidatorKey(value, index, keyPath, dataDir, rpcBasePort) {
   assert.ok(value && typeof value === "object" && !Array.isArray(value), `validator-${index + 1} key must be an object`);
   const keys = Object.keys(value).sort();
-  assert.deepEqual(keys, ["address", "privateKey", "publicKey"], `validator-${index + 1} key has unexpected fields`);
+  assert.deepEqual(keys, ["privateKey"], `validator-${index + 1} key has unexpected fields`);
   assert.equal(typeof value.privateKey, "string");
-  assert.equal(typeof value.publicKey, "string");
-  assert.equal(typeof value.address, "string");
   const publicKey = publicKeyFromPrivate(value.privateKey);
-  assert.equal(publicKey, value.publicKey, `validator-${index + 1} public key mismatch`);
-  assert.equal(addressFromPublicKey(publicKey), value.address, `validator-${index + 1} address mismatch`);
+  const address = addressFromPublicKey(publicKey);
   return {
     index,
     privateKey: value.privateKey,
     publicKey,
-    address: value.address,
+    address,
     rpcPort: rpcBasePort + index,
     keyPath,
     dataDir
@@ -106,9 +103,7 @@ export async function loadOrCreateRenderTestnetMaterial(root, chainId, rpcBasePo
   await writeFile(genesisPath, `${JSON.stringify(genesis, null, 2)}\n`, { flag: "wx", mode: 0o644 });
   for (const validator of validators) {
     await writeFile(validator.keyPath, `${JSON.stringify({
-      privateKey: validator.privateKey,
-      publicKey: validator.publicKey,
-      address: validator.address
+      privateKey: validator.privateKey
     }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   }
 
