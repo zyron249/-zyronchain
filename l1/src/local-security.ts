@@ -20,6 +20,8 @@ export async function assertPrivateRegularFile(path: string, label: string): Pro
  * The path itself must not be a symlink, POSIX group/other permission bits must
  * be clear, and on POSIX the descriptor inode/device must still match the path
  * after open so a path replacement between validation and read fails closed.
+ * POSIX secret files must also be owned by the node process's effective UID so
+ * a privileged process does not silently expand custody to another local user.
  * The canonical path is also re-resolved after open and after the bounded read;
  * this catches parent junction/reparse substitution on Windows before secret
  * bytes are returned to a parser or signer. The descriptor content snapshot
@@ -99,6 +101,10 @@ async function requireSamePrivateRegularFile(
     throw new Error(`${label} changed ${phase}`);
   }
   if (process.platform !== "win32") {
+    const effectiveUid = typeof process.geteuid === "function" ? process.geteuid() : null;
+    if (effectiveUid !== null && descriptorMetadata.uid !== effectiveUid) {
+      throw new Error(`${label} must be owned by the effective user`);
+    }
     if ((descriptorMetadata.mode & 0o077) !== 0) {
       throw new Error(`${label} must not be readable, writable, or executable by group/other users (0600 recommended)`);
     }
