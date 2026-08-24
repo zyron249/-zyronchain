@@ -22,10 +22,13 @@ export async function assertPrivateRegularFile(path: string, label: string): Pro
  * after open so a path replacement between validation and read fails closed.
  * The canonical path is also re-resolved after open and after the bounded read;
  * this catches parent junction/reparse substitution on Windows before secret
- * bytes are returned to a parser or signer. POSIX opens additionally use
- * no-follow/non-blocking flags so symlink/FIFO substitution cannot redirect or
- * block secret loading. Reads are capped so oversized or concurrently growing
- * local secret files cannot trigger unbounded startup memory allocation.
+ * bytes are returned to a parser or signer. The descriptor content snapshot
+ * (identity, size, mtime and ctime) must remain stable across the read so an
+ * in-place writer cannot make callers consume bytes from a changed secret.
+ * POSIX opens additionally use no-follow/non-blocking flags so symlink/FIFO
+ * substitution cannot redirect or block secret loading. Reads are capped so
+ * oversized or concurrently growing local secret files cannot trigger
+ * unbounded startup memory allocation.
  */
 export async function readPrivateRegularFile(path: string, label: string): Promise<string> {
   const opened = await openValidatedPrivateFile(path, label);
@@ -45,6 +48,10 @@ export async function readPrivateRegularFile(path: string, label: string): Promi
       }
     }
     await requireSamePrivateRegularFile(opened.resolved, label, opened.canonical, opened.handle, "during reading");
+    const completedMetadata = await opened.handle.stat();
+    if (!samePrivateFileSnapshot(metadata, completedMetadata)) {
+      throw new Error(`${label} content changed during reading`);
+    }
     return buffer.subarray(0, total).toString("utf8");
   } finally {
     await opened.handle.close();
@@ -96,6 +103,14 @@ async function requireSamePrivateRegularFile(
       throw new Error(`${label} changed while being validated`);
     }
   }
+}
+
+function samePrivateFileSnapshot(expected: Awaited<ReturnType<FileHandle["stat"]>>, actual: Awaited<ReturnType<FileHandle["stat"]>>): boolean {
+  return expected.dev === actual.dev
+    && expected.ino === actual.ino
+    && expected.size === actual.size
+    && expected.mtimeMs === actual.mtimeMs
+    && expected.ctimeMs === actual.ctimeMs;
 }
 
 export function normalizeSecureRpcUrl(value: string): string {
