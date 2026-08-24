@@ -31,9 +31,10 @@ export async function assertPrivateRegularFile(path: string, label: string): Pro
  * device/inode, byte size and mtime remain exact; this preserves atomic
  * hard-link publication without weakening content-mutation detection.
  * POSIX opens additionally use no-follow/non-blocking flags so symlink/FIFO
- * substitution cannot redirect or block secret loading. Reads are capped so
- * oversized or concurrently growing local secret files cannot trigger
- * unbounded startup memory allocation.
+ * substitution cannot redirect or block secret loading. Reads are capped and
+ * allocate only the bound descriptor size plus one overflow byte, so small
+ * secrets do not pay ceiling-sized transient allocations and concurrent growth
+ * still fails closed before bytes are returned.
  */
 export async function readPrivateRegularFile(path: string, label: string): Promise<string> {
   const opened = await openValidatedPrivateFile(path, label);
@@ -42,14 +43,17 @@ export async function readPrivateRegularFile(path: string, label: string): Promi
     if (metadata.size > MAX_PRIVATE_FILE_BYTES) {
       throw new Error(`${label} exceeds ${MAX_PRIVATE_FILE_BYTES} byte limit`);
     }
-    const buffer = Buffer.allocUnsafe(MAX_PRIVATE_FILE_BYTES + 1);
+    const buffer = Buffer.allocUnsafe(metadata.size + 1);
     let total = 0;
-    while (total <= MAX_PRIVATE_FILE_BYTES) {
+    while (total < buffer.length) {
       const { bytesRead } = await opened.handle.read(buffer, total, buffer.length - total, null);
       if (bytesRead === 0) break;
       total += bytesRead;
       if (total > MAX_PRIVATE_FILE_BYTES) {
         throw new Error(`${label} exceeds ${MAX_PRIVATE_FILE_BYTES} byte limit`);
+      }
+      if (total > metadata.size) {
+        throw new Error(`${label} content changed during reading`);
       }
     }
     await requireSamePrivateRegularFile(opened.resolved, label, opened.canonical, opened.handle, "during reading");
