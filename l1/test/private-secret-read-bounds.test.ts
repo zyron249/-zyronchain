@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, open, rm, truncate, writeFile, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -28,6 +28,43 @@ test("private secret reads fail closed above the shared byte limit", async () =>
       new RegExp(`Secret file exceeds ${MAX_PRIVATE_FILE_BYTES} byte limit`)
     );
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("private secret reads reject in-place content mutation during descriptor read", { concurrency: false }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-private-bound-mutate-"));
+  const path = join(root, "secret.bin");
+  await writeFile(path, Buffer.alloc(4_096, 0x63), { mode: 0o600 });
+
+  const probe = await open(path, "r");
+  const prototype = Object.getPrototypeOf(probe) as { read: FileHandle["read"] };
+  const originalRead = prototype.read;
+  await probe.close();
+  let mutated = false;
+
+  const invokeOriginalRead = originalRead as unknown as (
+    this: FileHandle,
+    ...args: unknown[]
+  ) => Promise<{ bytesRead: number; buffer: Uint8Array }>;
+
+  prototype.read = (async function (this: FileHandle, ...args: unknown[]) {
+    const result = await invokeOriginalRead.apply(this, args);
+    if (!mutated && result.bytesRead > 0) {
+      mutated = true;
+      await truncate(path, 2_048);
+    }
+    return result;
+  }) as FileHandle["read"];
+
+  try {
+    await assert.rejects(
+      () => readPrivateRegularFile(path, "Secret file"),
+      /Secret file content changed during reading/
+    );
+    assert.equal(mutated, true);
+  } finally {
+    prototype.read = originalRead;
     await rm(root, { recursive: true, force: true });
   }
 });
