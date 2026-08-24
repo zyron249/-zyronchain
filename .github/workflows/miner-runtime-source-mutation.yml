@@ -1,0 +1,47 @@
+name: Miner Runtime Source Snapshot CI
+
+on:
+  pull_request:
+    paths:
+      - 'l1/scripts/copy-miner-runtime-tree.mjs'
+      - 'l1/scripts/test-miner-runtime-source-mutation.mjs'
+      - '.github/workflows/miner-runtime-source-mutation.yml'
+      - 'docs/security/MINER_RUNTIME_SOURCE_SNAPSHOT.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-snapshot:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: l1
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up canonical miner runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.2
+
+      - name: Verify runtime pin
+        shell: bash
+        run: test "$(node -p 'process.version')" = 'v22.23.2'
+
+      - name: Syntax check source snapshot boundary
+        run: |
+          node --check scripts/copy-miner-runtime-tree.mjs
+          node --check scripts/test-miner-runtime-source-mutation.mjs
+
+      - name: Run source snapshot regressions
+        run: node scripts/test-miner-runtime-source-mutation.mjs

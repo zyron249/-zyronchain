@@ -82,7 +82,7 @@ try {
     });
     assert.throws(
       () => copyMinerRuntimeTree(regularRaceTree, regularRaceDestination, regularRacingFsOps),
-      /miner runtime source identity changed before copy: tool\.js/,
+      /miner runtime source (?:identity|snapshot) changed before copy: tool\.js/,
       'regular source replacement after lstat must fail closed before candidate bytes are written'
     );
     assert.equal(regularRaceInjected, true, 'regular source race regression must exercise the descriptor-open boundary');
@@ -115,7 +115,7 @@ try {
     });
     assert.throws(
       () => copyMinerRuntimeTree(symlinkRaceTree, symlinkRaceDestination, symlinkRacingFsOps),
-      /miner runtime source identity changed before copy: (?:tool|target\.js)/,
+      /miner runtime source (?:identity|snapshot) changed before copy: (?:tool|target\.js)/,
       'npm symlink target replacement after validation must fail closed before candidate bytes are written'
     );
     assert.equal(symlinkRaceInjected, true, 'symlink target race regression must exercise the descriptor-open boundary');

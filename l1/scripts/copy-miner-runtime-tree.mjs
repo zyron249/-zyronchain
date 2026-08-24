@@ -12,6 +12,13 @@ function sameFileIdentity(expected, actual) {
   return expected.dev === actual.dev && expected.ino === actual.ino;
 }
 
+function sameRegularFileSnapshot(expected, actual) {
+  return sameFileIdentity(expected, actual)
+    && expected.size === actual.size
+    && expected.mtimeMs === actual.mtimeMs
+    && expected.ctimeMs === actual.ctimeMs;
+}
+
 function canonicalDestinationPath(candidate, fsOps) {
   const destinationPath = path.resolve(candidate);
   const parentPath = path.dirname(destinationPath);
@@ -29,8 +36,8 @@ function copyBoundRegularFile(sourcePath, destinationPath, expectedStat, fsOps, 
   try {
     sourceFd = fsOps.openSync(sourcePath, 'r');
     const openedStat = fsOps.fstatSync(sourceFd);
-    if (!openedStat.isFile() || !sameFileIdentity(expectedStat, openedStat)) {
-      throw new Error(`miner runtime source identity changed before copy: ${displayPath}`);
+    if (!openedStat.isFile() || !sameRegularFileSnapshot(expectedStat, openedStat)) {
+      throw new Error(`miner runtime source snapshot changed before copy: ${displayPath}`);
     }
 
     destinationFd = fsOps.openSync(destinationPath, 'wx', expectedStat.mode & 0o777);
@@ -42,6 +49,11 @@ function copyBoundRegularFile(sourcePath, destinationPath, expectedStat, fsOps, 
       while (written < bytesRead) {
         written += fsOps.writeSync(destinationFd, buffer, written, bytesRead - written, null);
       }
+    }
+
+    const completedStat = fsOps.fstatSync(sourceFd);
+    if (!completedStat.isFile() || !sameRegularFileSnapshot(openedStat, completedStat)) {
+      throw new Error(`miner runtime source mutated during copy: ${displayPath}`);
     }
     fsOps.fchmodSync(destinationFd, expectedStat.mode & 0o777);
   } finally {
