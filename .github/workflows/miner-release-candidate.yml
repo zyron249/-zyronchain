@@ -62,9 +62,11 @@ jobs:
           node --check scripts/test-windows-miner-package-contract.mjs
           node --check scripts/generate-miner-sha256sums.mjs
           node --check scripts/test-miner-release-manifest.mjs
+          node --check scripts/test-miner-release-manifest-snapshot.mjs
           node scripts/test-miner-launcher-security.mjs
           node scripts/test-windows-miner-package-contract.mjs
           node scripts/test-miner-release-manifest.mjs
+          node scripts/test-miner-release-manifest-snapshot.mjs
           node -e "const p=require('./miner-network-profile.json'); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('release candidate profile must remain fail-closed')"
 
       - name: Build runtime
