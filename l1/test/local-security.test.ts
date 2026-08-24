@@ -58,9 +58,7 @@ test("private local files require effective-user ownership on POSIX", { concurre
       writable: true,
       value: originalGeteuid
     });
-    if (process.platform !== "win32") {
-      await assertPrivateRegularFile(path, "Secret file");
-    }
+    await assertPrivateRegularFile(path, "Secret file");
     await rm(root, { recursive: true, force: true });
   }
 });
