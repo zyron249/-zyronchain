@@ -59,19 +59,20 @@ export async function assertPrivateRegularFile(path: string, label: string): Pro
  * between validation and read fails closed. POSIX secret files must also be
  * owned by the node process's effective UID so a privileged process does not
  * silently expand custody to another local user. The canonical path is also
- * re-resolved after open and after the bounded read; this catches parent
- * junction/reparse substitution on Windows before secret bytes are returned to
- * a parser or signer. The descriptor content snapshot (identity, size, mtime
- * and ctime) must remain stable across the read so an in-place writer cannot
- * make callers consume bytes from a changed secret. A ctime/link-count-only
- * transition used by atomic hard-link publication is accepted only after a
- * second descriptor-bound bounded read has the same SHA-256 as the bytes about
- * to be returned and the descriptor remains metadata-stable across that
- * revalidation. POSIX opens additionally use no-follow/non-blocking flags so
- * symlink/FIFO substitution cannot redirect or block secret loading. Reads are
- * capped and allocate only the bound descriptor size plus one overflow byte,
- * so small secrets do not pay ceiling-sized transient allocations and
- * concurrent growth still fails closed before bytes are returned.
+ * re-resolved after open and after every bounded descriptor read; this catches
+ * parent junction/reparse substitution before secret bytes are returned. The
+ * descriptor content snapshot (identity, size, mtime and ctime) must remain
+ * stable across the read so an in-place writer cannot make callers consume
+ * bytes from a changed secret. A ctime/link-count-only transition used by
+ * atomic hard-link publication is accepted only after a second descriptor-bound
+ * bounded read has the same SHA-256 as the bytes about to be returned, the
+ * descriptor remains metadata-stable, and the current path/canonical identity
+ * is revalidated again after that reread. POSIX opens additionally use
+ * no-follow/non-blocking flags so symlink/FIFO substitution cannot redirect or
+ * block secret loading. Reads are capped and allocate only the bound descriptor
+ * size plus one overflow byte, so small secrets do not pay ceiling-sized
+ * transient allocations and concurrent growth still fails closed before bytes
+ * are returned.
  */
 export async function readPrivateRegularFile(path: string, label: string): Promise<string> {
   const opened = await openValidatedPrivateFile(path, label);
@@ -109,6 +110,13 @@ export async function readPrivateRegularFile(path: string, label: string): Promi
         secretBytes,
         completedMetadata,
         label
+      );
+      await requireSamePrivateRegularFile(
+        opened.resolved,
+        label,
+        opened.canonical,
+        opened.handle,
+        "after hard-link byte revalidation"
       );
     }
     return secretBytes.toString("utf8");
