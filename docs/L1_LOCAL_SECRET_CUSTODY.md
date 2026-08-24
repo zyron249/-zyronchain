@@ -7,13 +7,13 @@ Canonical local operator-secret reads use the descriptor-bound private-file boun
 Secret inputs that route through `readPrivateRegularFile()` are subject to the same fail-closed controls:
 
 - the path must resolve to a regular file and must not be a symbolic link;
-- on POSIX, the initial pre-open pathname device/inode identity is captured and the opened descriptor must match that exact identity before validation succeeds, so a parent/path replacement between the initial `lstat()` and descriptor open cannot silently substitute another same-user restrictive-permission secret;
+- on every platform, the initial pre-open pathname device/inode identity is captured and the opened descriptor must match that exact identity before validation succeeds, so a same-path replacement between the initial `lstat()` and descriptor open cannot silently substitute another regular-file secret; POSIX ownership/permission rules remain POSIX-only;
 - the canonical secret path is captured before descriptor open and must remain unchanged after open, after the bounded read, and again after any hard-link byte reread, so parent junction/reparse substitution is detected before secret bytes are returned on Windows as well as other platforms;
+- on every platform, the opened descriptor device/inode must still match the current pathname identity after validation, so a later same-path file-object replacement is rejected independently of canonical-path equality;
 - the opened descriptor content snapshot is captured before reading and its device/inode, size, modification time and change time are revalidated after the bounded read, so same-inode mutation, truncation or growth fails closed before secret bytes are returned to a parser, decryptor, token consumer or signer;
 - a ctime/link-count transition used by atomic hard-link publication is not accepted as byte-stability evidence by itself. When device/inode, size and mtime remain exact but ctime/link count changes, the reader performs a second bounded descriptor-positioned read, requires the descriptor metadata to remain exact across that revalidation, requires the SHA-256 of the reread bytes to match the bytes about to be returned, and then revalidates the current path/canonical identity against the same opened descriptor. This preserves legitimate first node-identity hard-link publication without allowing the extended reread window to bypass pathname custody checks;
 - on POSIX, the opened secret descriptor must be owned by the node process's effective UID; a privileged process does not accept a mode-restricted secret owned by another local account;
 - on POSIX, group/other permission bits must be clear (`0600` recommended);
-- on POSIX, the opened descriptor device/inode must still match the current path after validation;
 - on POSIX, secret descriptors are opened with no-follow/non-blocking flags to reject symlink/FIFO substitution;
 - the shared read is capped at **65,536 bytes (64 KiB)**;
 - a file already larger than the cap is rejected from descriptor metadata before its full contents are allocated;
