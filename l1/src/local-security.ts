@@ -72,16 +72,18 @@ export async function assertPrivateRegularFile(path: string, label: string): Pro
  * block secret loading. Reads are capped and allocate only the bound descriptor
  * size plus one overflow byte, so small secrets do not pay ceiling-sized
  * transient allocations and concurrent growth still fails closed before bytes
- * are returned.
+ * are returned. Mutable read buffers are explicitly zeroized before their
+ * operation-scoped lifetime ends; returned JavaScript strings remain GC-managed.
  */
 export async function readPrivateRegularFile(path: string, label: string): Promise<string> {
   const opened = await openValidatedPrivateFile(path, label);
+  let buffer: Buffer | undefined;
   try {
     const metadata = await opened.handle.stat();
     if (metadata.size > MAX_PRIVATE_FILE_BYTES) {
       throw new Error(`${label} exceeds ${MAX_PRIVATE_FILE_BYTES} byte limit`);
     }
-    const buffer = Buffer.allocUnsafe(metadata.size + 1);
+    buffer = Buffer.allocUnsafe(metadata.size + 1);
     let total = 0;
     while (total < buffer.length) {
       const { bytesRead } = await opened.handle.read(buffer, total, buffer.length - total, null);
@@ -121,6 +123,7 @@ export async function readPrivateRegularFile(path: string, label: string): Promi
     }
     return secretBytes.toString("utf8");
   } finally {
+    buffer?.fill(0);
     await opened.handle.close();
   }
 }
@@ -135,21 +138,25 @@ async function revalidatePrivateFileBytesAfterHardlinkTransition(
     throw new Error(`${label} content changed during reading`);
   }
   const reread = Buffer.allocUnsafe(expectedMetadata.size);
-  let total = 0;
-  while (total < reread.length) {
-    const { bytesRead } = await handle.read(reread, total, reread.length - total, total);
-    if (bytesRead === 0) break;
-    total += bytesRead;
-  }
-  if (total !== expectedMetadata.size) {
-    throw new Error(`${label} content changed during reading`);
-  }
-  const afterRereadMetadata = await handle.stat();
-  if (classifyPrivateFileSnapshot(expectedMetadata, afterRereadMetadata) !== "exact") {
-    throw new Error(`${label} content changed during reading`);
-  }
-  if (!samePrivateFileBytes(expectedBytes, reread)) {
-    throw new Error(`${label} content changed during reading`);
+  try {
+    let total = 0;
+    while (total < reread.length) {
+      const { bytesRead } = await handle.read(reread, total, reread.length - total, total);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+    }
+    if (total !== expectedMetadata.size) {
+      throw new Error(`${label} content changed during reading`);
+    }
+    const afterRereadMetadata = await handle.stat();
+    if (classifyPrivateFileSnapshot(expectedMetadata, afterRereadMetadata) !== "exact") {
+      throw new Error(`${label} content changed during reading`);
+    }
+    if (!samePrivateFileBytes(expectedBytes, reread)) {
+      throw new Error(`${label} content changed during reading`);
+    }
+  } finally {
+    reread.fill(0);
   }
 }
 
