@@ -24,6 +24,10 @@ export async function readOperatorPrivateKey(
     return decryptPrivateKey(parsed, password);
   }
 
+  const fields = Object.keys(parsed);
+  if (fields.length !== 1 || fields[0] !== "privateKey") {
+    throw new Error("Plaintext validator key file must contain exactly privateKey");
+  }
   if (typeof parsed.privateKey !== "string" || !/^[0-9a-f]{64}$/.test(parsed.privateKey)) {
     throw new Error("Validator key file is invalid");
   }

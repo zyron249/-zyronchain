@@ -27,9 +27,7 @@ async function expectDirectCliFailure(args: string[], pattern: RegExp): Promise<
 
 async function writePrivateKeyFile(path: string): Promise<void> {
   const privateKey = generatePrivateKey();
-  const publicKey = publicKeyFromPrivate(privateKey);
-  const address = addressFromPublicKey(publicKey);
-  await writeFile(path, JSON.stringify({ privateKey, publicKey, address }), { mode: 0o600 });
+  await writeFile(path, JSON.stringify({ privateKey }), { mode: 0o600 });
 }
 
 test("legacy governance readers all use the bounded governance artifact reader", async () => {
@@ -64,7 +62,7 @@ test("direct legacy validator-submit rejects oversized approval before RPC work"
     const key = join(dir, "key.json");
     const proposal = join(dir, "proposal.json");
     const approval = join(dir, "approval.json");
-    await writeFile(key, JSON.stringify({ privateKey, publicKey, address: sender }), { mode: 0o600 });
+    await writeFile(key, JSON.stringify({ privateKey }), { mode: 0o600 });
     await writeFile(proposal, JSON.stringify({
       transactionVersion: 1, chainId: "custody-test", nonce: 1, sender, activationHeight: 1, validators: []
     }));
