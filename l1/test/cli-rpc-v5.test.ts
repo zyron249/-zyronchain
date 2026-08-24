@@ -34,7 +34,7 @@ test("canonical CLI submits a transaction-v2 transfer when protocol v5 is next",
   const receiverPublicKey = publicKeyFromPrivate("52".padStart(64, "0"));
   const receiver = addressFromPublicKey(receiverPublicKey);
   const keyPath = join(root, "wallet.json");
-  await writeFile(keyPath, `${JSON.stringify({ privateKey, publicKey, address: sender })}\n`, { mode: 0o600 });
+  await writeFile(keyPath, `${JSON.stringify({ privateKey })}\n`, { mode: 0o600 });
 
   let submitted: Record<string, unknown> | undefined;
   const server = createServer((request, response) => {
