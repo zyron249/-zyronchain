@@ -16,8 +16,9 @@ Secret inputs that route through `readPrivateRegularFile()` are subject to the s
 - on POSIX, secret descriptors are opened with no-follow/non-blocking flags to reject symlink/FIFO substitution;
 - the shared read is capped at **65,536 bytes (64 KiB)**;
 - a file already larger than the cap is rejected from descriptor metadata before its full contents are allocated;
-- the actual descriptor read allocates at most the cap plus one sentinel byte, so a file that grows after validation still fails closed instead of causing unbounded startup memory allocation.
+- after the descriptor is bound and its size is validated, the read buffer is sized to the captured byte size plus one overflow byte rather than the global ceiling, so small secrets do not incur ceiling-sized transient allocation;
+- if the reader observes that overflow byte or the post-read descriptor snapshot differs, concurrent growth/mutation fails closed before secret bytes are returned. The absolute 64 KiB ceiling remains authoritative.
 
 This shared boundary covers canonical validator-key, keystore-password, operator authentication-token and persisted node-identity reads. Downstream formats may impose substantially tighter limits; the shared 64 KiB ceiling is an outer memory-safety bound, not a statement that every secret format may legitimately be that large.
 
-These controls reduce local path-replacement, junction/reparse race, same-inode content-mutation, cross-account secret-custody, accidental-permission and oversized-file denial-of-service risk. They do not replace production HSM or independently audited remote-signer custody. Public-testnet and mainnet activation remain governed by the external evidence gates and must not be inferred from these local hardening controls.
+These controls reduce local path-replacement, junction/reparse race, same-inode content-mutation, cross-account secret-custody, accidental-permission and oversized/repeated-read denial-of-service risk. They do not replace production HSM or independently audited remote-signer custody. Public-testnet and mainnet activation remain governed by the external evidence gates and must not be inferred from these local hardening controls.
