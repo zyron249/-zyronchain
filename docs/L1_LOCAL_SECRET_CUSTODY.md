@@ -8,7 +8,8 @@ Secret inputs that route through `readPrivateRegularFile()` are subject to the s
 
 - the path must resolve to a regular file and must not be a symbolic link;
 - the canonical secret path is captured before descriptor open and must remain unchanged after open and again after the bounded read, so parent junction/reparse substitution is detected before secret bytes are returned on Windows as well as other platforms;
-- the opened descriptor content snapshot is captured before reading and its device/inode, size, modification time and change time must remain unchanged after the bounded read, so same-inode mutation, truncation or growth fails closed before secret bytes are returned to a parser, decryptor, token consumer or signer;
+- the opened descriptor content snapshot is captured before reading and its device/inode, size, modification time and change time are revalidated after the bounded read, so same-inode mutation, truncation or growth fails closed before secret bytes are returned to a parser, decryptor, token consumer or signer;
+- a ctime-only transition caused by a hard-link count change is treated as metadata-only when device/inode, byte size and modification time remain exact. This preserves the atomic hard-link publication used by first node-identity creation without treating publication metadata as secret-content mutation; ctime drift with an unchanged link count remains fail closed;
 - on POSIX, group/other permission bits must be clear (`0600` recommended);
 - on POSIX, the opened descriptor device/inode must still match the path after validation;
 - on POSIX, secret descriptors are opened with no-follow/non-blocking flags to reject symlink/FIFO substitution;
