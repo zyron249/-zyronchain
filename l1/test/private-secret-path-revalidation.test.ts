@@ -8,7 +8,7 @@ test("private secret reader revalidates canonical path after open and after read
   assert.match(source, /const canonical = await realpath\(resolved\)/);
   assert.match(
     source,
-    /requireSamePrivateRegularFile\(resolved, label, canonical, handle, "after opening"\)/
+    /requireSamePrivateRegularFile\(\s*resolved,\s*label,\s*canonical,\s*handle,\s*"after opening",\s*initialPathMetadata\s*\)/
   );
   assert.match(
     source,
@@ -21,6 +21,8 @@ test("private secret reader revalidates canonical path after open and after read
 test("private secret reader keeps POSIX no-follow and descriptor identity checks", async () => {
   const source = await readFile(resolve(process.cwd(), "src", "local-security.ts"), "utf8");
   assert.match(source, /constants\.O_RDONLY \| constants\.O_NOFOLLOW \| constants\.O_NONBLOCK/);
-  assert.match(source, /descriptorMetadata\.dev !== pathMetadata\.dev/);
-  assert.match(source, /descriptorMetadata\.ino !== pathMetadata\.ino/);
+  assert.match(
+    source,
+    /samePrivateFileIdentity\(\s*descriptorMetadata\.dev,\s*descriptorMetadata\.ino,\s*pathMetadata\.dev,\s*pathMetadata\.ino\s*\)/
+  );
 });
