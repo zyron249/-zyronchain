@@ -25,6 +25,9 @@ export async function assertPrivateRegularFile(path: string, label: string): Pro
  * bytes are returned to a parser or signer. The descriptor content snapshot
  * (identity, size, mtime and ctime) must remain stable across the read so an
  * in-place writer cannot make callers consume bytes from a changed secret.
+ * A ctime-only change caused by hard-link count metadata is accepted when
+ * device/inode, byte size and mtime remain exact; this preserves atomic
+ * hard-link publication without weakening content-mutation detection.
  * POSIX opens additionally use no-follow/non-blocking flags so symlink/FIFO
  * substitution cannot redirect or block secret loading. Reads are capped so
  * oversized or concurrently growing local secret files cannot trigger
@@ -106,11 +109,19 @@ async function requireSamePrivateRegularFile(
 }
 
 function samePrivateFileSnapshot(expected: Awaited<ReturnType<FileHandle["stat"]>>, actual: Awaited<ReturnType<FileHandle["stat"]>>): boolean {
-  return expected.dev === actual.dev
-    && expected.ino === actual.ino
-    && expected.size === actual.size
-    && expected.mtimeMs === actual.mtimeMs
-    && expected.ctimeMs === actual.ctimeMs;
+  if (expected.dev !== actual.dev
+      || expected.ino !== actual.ino
+      || expected.size !== actual.size
+      || expected.mtimeMs !== actual.mtimeMs) {
+    return false;
+  }
+  if (expected.ctimeMs === actual.ctimeMs) return true;
+
+  // Hard-link creation/removal changes inode ctime/link count without changing
+  // secret bytes. Permit only that narrow metadata-only transition; any ctime
+  // drift with an unchanged link count remains a fail-closed content snapshot
+  // violation.
+  return expected.nlink !== actual.nlink;
 }
 
 export function normalizeSecureRpcUrl(value: string): string {
