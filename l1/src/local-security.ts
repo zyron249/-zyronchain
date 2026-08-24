@@ -54,17 +54,17 @@ export async function assertPrivateRegularFile(path: string, label: string): Pro
 /**
  * Read a local secret only after validating the exact opened file descriptor.
  * The path itself must not be a symlink, POSIX group/other permission bits must
- * be clear, and on POSIX the descriptor inode/device must still match both the
- * initial pre-open path identity and the path after open so a path replacement
- * between validation and read fails closed. POSIX secret files must also be
- * owned by the node process's effective UID so a privileged process does not
- * silently expand custody to another local user. The canonical path is also
- * re-resolved after open and after every bounded descriptor read; this catches
- * parent junction/reparse substitution before secret bytes are returned. The
- * descriptor content snapshot (identity, size, mtime and ctime) must remain
- * stable across the read so an in-place writer cannot make callers consume
- * bytes from a changed secret. A ctime/link-count-only transition used by
- * atomic hard-link publication is accepted only after a second descriptor-bound
+ * be clear, and the descriptor inode/device must still match both the initial
+ * pre-open path identity and the path after open on every platform so a path
+ * replacement between validation and read fails closed. POSIX secret files
+ * must also be owned by the node process's effective UID so a privileged
+ * process does not silently expand custody to another local user. The canonical
+ * path is also re-resolved after open and after every bounded descriptor read;
+ * this catches parent junction/reparse substitution before secret bytes are
+ * returned. The descriptor content snapshot (identity, size, mtime and ctime)
+ * must remain stable across the read so an in-place writer cannot make callers
+ * consume bytes from a changed secret. A ctime/link-count-only transition used
+ * by atomic hard-link publication is accepted only after a second descriptor-bound
  * bounded read has the same SHA-256 as the bytes about to be returned, the
  * descriptor remains metadata-stable, and the current path/canonical identity
  * is revalidated again after that reread. POSIX opens additionally use
@@ -198,30 +198,30 @@ async function requireSamePrivateRegularFile(
   if (observedCanonical !== expectedCanonical) {
     throw new Error(`${label} changed ${phase}`);
   }
+  if (initialPathMetadata
+      && !samePrivateFileIdentity(
+        initialPathMetadata.dev,
+        initialPathMetadata.ino,
+        descriptorMetadata.dev,
+        descriptorMetadata.ino
+      )) {
+    throw new Error(`${label} changed before opening`);
+  }
+  if (!samePrivateFileIdentity(
+    descriptorMetadata.dev,
+    descriptorMetadata.ino,
+    pathMetadata.dev,
+    pathMetadata.ino
+  )) {
+    throw new Error(`${label} changed while being validated`);
+  }
   if (process.platform !== "win32") {
-    if (initialPathMetadata
-        && !samePrivateFileIdentity(
-          initialPathMetadata.dev,
-          initialPathMetadata.ino,
-          descriptorMetadata.dev,
-          descriptorMetadata.ino
-        )) {
-      throw new Error(`${label} changed before opening`);
-    }
     const effectiveUid = typeof process.geteuid === "function" ? process.geteuid() : null;
     if (effectiveUid !== null && descriptorMetadata.uid !== effectiveUid) {
       throw new Error(`${label} must be owned by the effective user`);
     }
     if ((descriptorMetadata.mode & 0o077) !== 0) {
       throw new Error(`${label} must not be readable, writable, or executable by group/other users (0600 recommended)`);
-    }
-    if (!samePrivateFileIdentity(
-      descriptorMetadata.dev,
-      descriptorMetadata.ino,
-      pathMetadata.dev,
-      pathMetadata.ino
-    )) {
-      throw new Error(`${label} changed while being validated`);
     }
   }
 }
