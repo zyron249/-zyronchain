@@ -36,9 +36,14 @@ export async function readOperatorPrivateKey(
 }
 
 export async function readOperatorAuthToken(path: string, label: string): Promise<string> {
-  const token = (await readPrivateRegularFile(resolve(path), `${label} token file`)).trim();
-  if (token.length < 32 || token.length > 512 || !/^[\x21-\x7e]+$/.test(token)) {
-    throw new Error(`${label} token file must contain a single 32-512 character token`);
+  const contents = await readPrivateRegularFile(resolve(path), `${label} token file`);
+  const token = contents.endsWith("\r\n")
+    ? contents.slice(0, -2)
+    : contents.endsWith("\n")
+      ? contents.slice(0, -1)
+      : contents;
+  if (!/^[\x21-\x7e]{32,512}$/.test(token)) {
+    throw new Error(`${label} token file must contain a single canonical 32-512 character token`);
   }
   return token;
 }
