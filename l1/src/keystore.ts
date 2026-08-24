@@ -20,6 +20,11 @@ export interface EncryptedKeystoreV1 {
   address: string;
 }
 
+/** @internal Zeroize mutable secret bytes once their operation-scoped lifetime ends. */
+export function zeroizeSecretBuffer(buffer: Buffer): void {
+  buffer.fill(0);
+}
+
 export function encryptPrivateKey(privateKey: string, password: string): EncryptedKeystoreV1 {
   assertPrivateKey(privateKey);
   assertPassword(password);
@@ -28,20 +33,26 @@ export function encryptPrivateKey(privateKey: string, password: string): Encrypt
   const salt = randomBytes(32);
   const iv = randomBytes(12);
   const key = deriveKey(password, salt);
-  const cipher = createCipheriv("aes-256-gcm", key, iv);
-  cipher.setAAD(aad(publicKey, address));
-  const ciphertext = Buffer.concat([cipher.update(Buffer.from(privateKey, "utf8")), cipher.final()]);
-  return {
-    version: 1,
-    kdf: "scrypt",
-    cipher: "aes-256-gcm",
-    salt: salt.toString("hex"),
-    iv: iv.toString("hex"),
-    tag: cipher.getAuthTag().toString("hex"),
-    ciphertext: ciphertext.toString("hex"),
-    publicKey,
-    address
-  };
+  const privateKeyBytes = Buffer.from(privateKey, "utf8");
+  try {
+    const cipher = createCipheriv("aes-256-gcm", key, iv);
+    cipher.setAAD(aad(publicKey, address));
+    const ciphertext = Buffer.concat([cipher.update(privateKeyBytes), cipher.final()]);
+    return {
+      version: 1,
+      kdf: "scrypt",
+      cipher: "aes-256-gcm",
+      salt: salt.toString("hex"),
+      iv: iv.toString("hex"),
+      tag: cipher.getAuthTag().toString("hex"),
+      ciphertext: ciphertext.toString("hex"),
+      publicKey,
+      address
+    };
+  } finally {
+    zeroizeSecretBuffer(privateKeyBytes);
+    zeroizeSecretBuffer(key);
+  }
 }
 
 export function decryptPrivateKey(value: unknown, password: string): string {
@@ -49,21 +60,30 @@ export function decryptPrivateKey(value: unknown, password: string): string {
   const keystore = parseEncryptedKeystore(value);
   const key = deriveKey(password, Buffer.from(keystore.salt, "hex"));
   try {
-    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(keystore.iv, "hex"));
-    decipher.setAAD(aad(keystore.publicKey, keystore.address));
-    decipher.setAuthTag(Buffer.from(keystore.tag, "hex"));
-    const privateKey = Buffer.concat([
-      decipher.update(Buffer.from(keystore.ciphertext, "hex")),
-      decipher.final()
-    ]).toString("utf8");
-    assertPrivateKey(privateKey);
-    const publicKey = publicKeyFromPrivate(privateKey);
-    if (publicKey !== keystore.publicKey || addressFromPublicKey(publicKey) !== keystore.address) {
-      throw new Error("Encrypted keystore identity mismatch");
+    try {
+      const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(keystore.iv, "hex"));
+      decipher.setAAD(aad(keystore.publicKey, keystore.address));
+      decipher.setAuthTag(Buffer.from(keystore.tag, "hex"));
+      const privateKeyBytes = Buffer.concat([
+        decipher.update(Buffer.from(keystore.ciphertext, "hex")),
+        decipher.final()
+      ]);
+      try {
+        const privateKey = privateKeyBytes.toString("utf8");
+        assertPrivateKey(privateKey);
+        const publicKey = publicKeyFromPrivate(privateKey);
+        if (publicKey !== keystore.publicKey || addressFromPublicKey(publicKey) !== keystore.address) {
+          throw new Error("Encrypted keystore identity mismatch");
+        }
+        return privateKey;
+      } finally {
+        zeroizeSecretBuffer(privateKeyBytes);
+      }
+    } catch {
+      throw new Error("Encrypted keystore authentication failed");
     }
-    return privateKey;
-  } catch {
-    throw new Error("Encrypted keystore authentication failed");
+  } finally {
+    zeroizeSecretBuffer(key);
   }
 }
 
