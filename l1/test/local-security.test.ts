@@ -77,3 +77,31 @@ test("private local files reject symbolic-link paths before secret reads", async
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("private local reads allocate only the bound descriptor size plus one overflow byte", { concurrency: false }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-private-sized-read-"));
+  const path = join(root, "secret.txt");
+  const originalAllocUnsafe = Buffer.allocUnsafe;
+  const allocations: number[] = [];
+  try {
+    const secret = "tiny-secret\n";
+    await writeFile(path, secret, { mode: 0o600 });
+    Object.defineProperty(Buffer, "allocUnsafe", {
+      configurable: true,
+      writable: true,
+      value: (size: number) => {
+        allocations.push(size);
+        return originalAllocUnsafe(size);
+      }
+    });
+    assert.equal(await readPrivateRegularFile(path, "Secret file"), secret);
+    assert.deepEqual(allocations, [Buffer.byteLength(secret) + 1]);
+  } finally {
+    Object.defineProperty(Buffer, "allocUnsafe", {
+      configurable: true,
+      writable: true,
+      value: originalAllocUnsafe
+    });
+    await rm(root, { recursive: true, force: true });
+  }
+});
