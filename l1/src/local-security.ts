@@ -1,8 +1,12 @@
 import { constants } from "node:fs";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { resolve } from "node:path";
 
 export const MAX_PRIVATE_FILE_BYTES = 64 * 1024;
+
+type PrivateFileStat = Awaited<ReturnType<FileHandle["stat"]>>;
+export type PrivateFileSnapshotDisposition = "exact" | "hardlink-metadata" | "changed";
 
 interface OpenedPrivateFile {
   handle: FileHandle;
@@ -18,6 +22,28 @@ export function samePrivateFileIdentity(
   actualIno: number
 ): boolean {
   return expectedDev === actualDev && expectedIno === actualIno;
+}
+
+/** @internal Classify post-read descriptor metadata without trusting hard-link metadata as byte evidence. */
+export function classifyPrivateFileSnapshot(
+  expected: Pick<PrivateFileStat, "dev" | "ino" | "size" | "mtimeMs" | "ctimeMs" | "nlink">,
+  actual: Pick<PrivateFileStat, "dev" | "ino" | "size" | "mtimeMs" | "ctimeMs" | "nlink">
+): PrivateFileSnapshotDisposition {
+  if (expected.dev !== actual.dev
+      || expected.ino !== actual.ino
+      || expected.size !== actual.size
+      || expected.mtimeMs !== actual.mtimeMs) {
+    return "changed";
+  }
+  if (expected.ctimeMs === actual.ctimeMs) return "exact";
+  return expected.nlink !== actual.nlink ? "hardlink-metadata" : "changed";
+}
+
+/** @internal Compare bounded secret bytes by SHA-256 without exposing either value. */
+export function samePrivateFileBytes(expected: Uint8Array, actual: Uint8Array): boolean {
+  const expectedDigest = createHash("sha256").update(expected).digest();
+  const actualDigest = createHash("sha256").update(actual).digest();
+  return timingSafeEqual(expectedDigest, actualDigest);
 }
 
 export async function assertPrivateRegularFile(path: string, label: string): Promise<void> {
@@ -37,15 +63,15 @@ export async function assertPrivateRegularFile(path: string, label: string): Pro
  * junction/reparse substitution on Windows before secret bytes are returned to
  * a parser or signer. The descriptor content snapshot (identity, size, mtime
  * and ctime) must remain stable across the read so an in-place writer cannot
- * make callers consume bytes from a changed secret. A ctime-only change caused
- * by hard-link count metadata is accepted when device/inode, byte size and
- * mtime remain exact; this preserves atomic hard-link publication without
- * weakening content-mutation detection. POSIX opens additionally use
- * no-follow/non-blocking flags so symlink/FIFO substitution cannot redirect or
- * block secret loading. Reads are capped and allocate only the bound descriptor
- * size plus one overflow byte, so small secrets do not pay ceiling-sized
- * transient allocations and concurrent growth still fails closed before bytes
- * are returned.
+ * make callers consume bytes from a changed secret. A ctime/link-count-only
+ * transition used by atomic hard-link publication is accepted only after a
+ * second descriptor-bound bounded read has the same SHA-256 as the bytes about
+ * to be returned and the descriptor remains metadata-stable across that
+ * revalidation. POSIX opens additionally use no-follow/non-blocking flags so
+ * symlink/FIFO substitution cannot redirect or block secret loading. Reads are
+ * capped and allocate only the bound descriptor size plus one overflow byte,
+ * so small secrets do not pay ceiling-sized transient allocations and
+ * concurrent growth still fails closed before bytes are returned.
  */
 export async function readPrivateRegularFile(path: string, label: string): Promise<string> {
   const opened = await openValidatedPrivateFile(path, label);
@@ -67,14 +93,55 @@ export async function readPrivateRegularFile(path: string, label: string): Promi
         throw new Error(`${label} content changed during reading`);
       }
     }
-    await requireSamePrivateRegularFile(opened.resolved, label, opened.canonical, opened.handle, "during reading");
-    const completedMetadata = await opened.handle.stat();
-    if (!samePrivateFileSnapshot(metadata, completedMetadata)) {
+    if (total !== metadata.size) {
       throw new Error(`${label} content changed during reading`);
     }
-    return buffer.subarray(0, total).toString("utf8");
+    await requireSamePrivateRegularFile(opened.resolved, label, opened.canonical, opened.handle, "during reading");
+    const completedMetadata = await opened.handle.stat();
+    const disposition = classifyPrivateFileSnapshot(metadata, completedMetadata);
+    if (disposition === "changed") {
+      throw new Error(`${label} content changed during reading`);
+    }
+    const secretBytes = buffer.subarray(0, total);
+    if (disposition === "hardlink-metadata") {
+      await revalidatePrivateFileBytesAfterHardlinkTransition(
+        opened.handle,
+        secretBytes,
+        completedMetadata,
+        label
+      );
+    }
+    return secretBytes.toString("utf8");
   } finally {
     await opened.handle.close();
+  }
+}
+
+async function revalidatePrivateFileBytesAfterHardlinkTransition(
+  handle: FileHandle,
+  expectedBytes: Uint8Array,
+  expectedMetadata: PrivateFileStat,
+  label: string
+): Promise<void> {
+  if (expectedMetadata.size > MAX_PRIVATE_FILE_BYTES || expectedMetadata.size !== expectedBytes.byteLength) {
+    throw new Error(`${label} content changed during reading`);
+  }
+  const reread = Buffer.allocUnsafe(expectedMetadata.size);
+  let total = 0;
+  while (total < reread.length) {
+    const { bytesRead } = await handle.read(reread, total, reread.length - total, total);
+    if (bytesRead === 0) break;
+    total += bytesRead;
+  }
+  if (total !== expectedMetadata.size) {
+    throw new Error(`${label} content changed during reading`);
+  }
+  const afterRereadMetadata = await handle.stat();
+  if (classifyPrivateFileSnapshot(expectedMetadata, afterRereadMetadata) !== "exact") {
+    throw new Error(`${label} content changed during reading`);
+  }
+  if (!samePrivateFileBytes(expectedBytes, reread)) {
+    throw new Error(`${label} content changed during reading`);
   }
 }
 
@@ -149,22 +216,6 @@ async function requireSamePrivateRegularFile(
       throw new Error(`${label} changed while being validated`);
     }
   }
-}
-
-function samePrivateFileSnapshot(expected: Awaited<ReturnType<FileHandle["stat"]>>, actual: Awaited<ReturnType<FileHandle["stat"]>>): boolean {
-  if (expected.dev !== actual.dev
-      || expected.ino !== actual.ino
-      || expected.size !== actual.size
-      || expected.mtimeMs !== actual.mtimeMs) {
-    return false;
-  }
-  if (expected.ctimeMs === actual.ctimeMs) return true;
-
-  // Hard-link creation/removal changes inode ctime/link count without changing
-  // secret bytes. Permit only that narrow metadata-only transition; any ctime
-  // drift with an unchanged link count remains a fail-closed content snapshot
-  // violation.
-  return expected.nlink !== actual.nlink;
 }
 
 export function normalizeSecureRpcUrl(value: string): string {
