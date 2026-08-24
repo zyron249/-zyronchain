@@ -18,9 +18,17 @@ test("local-secret open validation wires initial pathname identity into the desc
     /requireSamePrivateRegularFile\([\s\S]*?"after opening",\s*initialPathMetadata\s*\)/,
     "the initial lstat identity must be carried across descriptor open"
   );
+  const initialIdentityGate = source.indexOf("initialPathMetadata\n      && !samePrivateFileIdentity");
+  const posixOnlyGate = source.indexOf('if (process.platform !== "win32")');
+  assert.notEqual(initialIdentityGate, -1, "the opened descriptor must be compared with the exact initial device/inode identity");
+  assert.notEqual(posixOnlyGate, -1, "POSIX-only ownership/permission gate must remain present");
+  assert.ok(
+    initialIdentityGate < posixOnlyGate,
+    "initial pathname identity must be enforced before the POSIX-only ownership/permission branch so Windows cannot bypass it"
+  );
   assert.match(
     source,
-    /initialPathMetadata[\s\S]*?samePrivateFileIdentity\(\s*initialPathMetadata\.dev,\s*initialPathMetadata\.ino,\s*descriptorMetadata\.dev,\s*descriptorMetadata\.ino\s*\)/,
-    "the opened descriptor must be compared with the exact initial POSIX device/inode identity"
+    /descriptorMetadata\.dev,\s*descriptorMetadata\.ino,\s*pathMetadata\.dev,\s*pathMetadata\.ino/,
+    "current pathname identity must remain bound to the opened descriptor"
   );
 });
