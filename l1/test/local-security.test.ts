@@ -32,6 +32,37 @@ test("private local files reject group/other access on POSIX", async (t) => {
   }
 });
 
+test("private local files require effective-user ownership on POSIX", { concurrency: false }, async (t) => {
+  if (process.platform === "win32" || typeof process.geteuid !== "function") {
+    return t.skip("POSIX effective UID semantics are unavailable");
+  }
+
+  const root = await mkdtemp(join(tmpdir(), "zyron-private-owner-"));
+  const path = join(root, "secret.txt");
+  const originalGeteuid = process.geteuid;
+  try {
+    await writeFile(path, "secret\n", { mode: 0o600 });
+    await assertPrivateRegularFile(path, "Secret file");
+    assert.equal(await readPrivateRegularFile(path, "Secret file"), "secret\n");
+
+    Object.defineProperty(process, "geteuid", {
+      configurable: true,
+      writable: true,
+      value: () => originalGeteuid() + 1
+    });
+    await assert.rejects(assertPrivateRegularFile(path, "Secret file"), /must be owned by the effective user/);
+    await assert.rejects(readPrivateRegularFile(path, "Secret file"), /must be owned by the effective user/);
+  } finally {
+    Object.defineProperty(process, "geteuid", {
+      configurable: true,
+      writable: true,
+      value: originalGeteuid
+    });
+    await assertPrivateRegularFile(path, "Secret file");
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("private local files reject symbolic-link paths before secret reads", async (t) => {
   if (process.platform === "win32") return t.skip("symbolic-link creation may require elevated Windows privileges");
   const root = await mkdtemp(join(tmpdir(), "zyron-private-symlink-"));
