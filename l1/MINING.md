@@ -49,6 +49,8 @@ Mining work is bound to the chain ID, miner account nonce/address/public key, ne
 
 The cross-platform release-candidate workflow is deliberately **not** a public miner release. It uses one exact reviewed Node.js runtime version to build Windows, macOS and Linux candidates, reruns the fail-closed bootstrap smoke, emits a production SBOM and SHA-256 manifest, and records source/runtime metadata. Non-PR candidate evidence may receive GitHub artifact attestations.
 
+`SHA256SUMS` is part of the reviewed release identity. Its entries are serialized only as deterministic forward-slash paths relative to the canonical release root, never relative to the runner working directory. That keeps checksum evidence independent of CI checkout/cwd layout and prevents parent-directory or host-specific prefixes from entering the manifest. The underlying files remain descriptor-bound during hashing and non-regular/symlink entries continue to fail closed.
+
 Every generated `RELEASE-METADATA.json` must remain explicitly non-publishable while launch gates are closed:
 
 - `publicMiningActivated=false`
