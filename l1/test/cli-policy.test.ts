@@ -11,6 +11,7 @@ import { isEncryptedKeystore } from "../src/keystore.js";
 
 const execFileAsync = promisify(execFile);
 const cliPath = new URL("../src/cli.js", import.meta.url).pathname;
+const secureCliPath = new URL("../src/secure-cli.js", import.meta.url).pathname;
 
 async function runCli(args: string[], env: NodeJS.ProcessEnv = process.env) {
   return execFileAsync(process.execPath, [cliPath, ...args], {
@@ -18,6 +19,24 @@ async function runCli(args: string[], env: NodeJS.ProcessEnv = process.env) {
     maxBuffer: 1024 * 1024
   });
 }
+
+async function runSecureCli(args: string[], env: NodeJS.ProcessEnv = process.env) {
+  return execFileAsync(process.execPath, [secureCliPath, ...args], {
+    env,
+    maxBuffer: 1024 * 1024
+  });
+}
+
+test("published secure CLI refuses new plaintext private-key generation before output creation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-secure-keygen-policy-"));
+  const output = join(root, "wallet.json");
+  try {
+    await assert.rejects(runSecureCli(["keygen", "--out", output]), /requires --password-file/);
+    await assert.rejects(readFile(output, "utf8"), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("canonical CLI refuses new plaintext private-key generation", async () => {
   const root = await mkdtemp(join(tmpdir(), "zyron-keygen-policy-"));
