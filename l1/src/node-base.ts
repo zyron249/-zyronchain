@@ -1417,6 +1417,11 @@ export function parseRpcJsonChunks(
   if (!Number.isSafeInteger(totalBytes) || totalBytes < 1 || totalBytes > MAX_BODY_BYTES) {
     throw new Error("Invalid RPC JSON parse size");
   }
+  // The received chunk bytes are already retained by the request lifecycle.
+  // Before allocating another contiguous Buffer plus the transient JavaScript
+  // UTF-8 string, conservatively reserve 1x + 2x the wire bytes from the same
+  // aggregate budget. The decoded graph is separately bounded by the lexical
+  // depth/cardinality scan below.
   const transientBytes = totalBytes * 3;
   const releaseTransient = reservation?.reserveTransient(transientBytes);
   try {
