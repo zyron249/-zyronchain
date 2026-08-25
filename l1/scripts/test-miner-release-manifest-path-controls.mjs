@@ -25,4 +25,13 @@ for (const [label, name] of [
   );
 }
 
+if (path.sep === '/') {
+  const literalBackslashPath = `${root}/bad\\name.bin`;
+  assert.throws(
+    () => releaseManifestPath(root, literalBackslashPath),
+    /miner release manifest path contains ambiguous backslash characters/,
+    'a POSIX literal backslash must fail closed instead of being rewritten as a path separator'
+  );
+}
+
 console.log('miner release manifest path-control regressions passed');
