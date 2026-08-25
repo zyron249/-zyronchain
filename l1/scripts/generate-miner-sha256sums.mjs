@@ -28,7 +28,10 @@ export function releaseManifestPath(canonicalRoot, file) {
   if (MANIFEST_PATH_CONTROL_BYTES.test(relative)) {
     throw new Error('miner release manifest path contains non-canonical control characters');
   }
-  return relative.replaceAll('\\', '/');
+  if (path.sep !== '\\' && relative.includes('\\')) {
+    throw new Error('miner release manifest path contains ambiguous backslash characters');
+  }
+  return relative.split(path.sep).join('/');
 }
 
 export function collectReleaseFiles(root, fsOps = fs) {
