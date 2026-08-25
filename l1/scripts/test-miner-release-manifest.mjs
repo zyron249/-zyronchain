@@ -15,15 +15,14 @@ try {
   fs.writeFileSync(path.join(root, 'SHA256SUMS'), 'stale manifest must be excluded');
 
   const manifest = generateMinerSha256Sums(root);
-  const canonicalRoot = fs.realpathSync(root);
   const expected = [
-    [path.join(canonicalRoot, 'b.txt'), 'bravo'],
-    [path.join(canonicalRoot, 'nested', 'a.txt'), 'alpha']
-  ].sort(([a], [b]) => a.localeCompare(b)).map(([file, contents]) => {
+    ['b.txt', 'bravo'],
+    ['nested/a.txt', 'alpha']
+  ].sort(([a], [b]) => a.localeCompare(b)).map(([relative, contents]) => {
     const digest = crypto.createHash('sha256').update(contents).digest('hex');
-    return `${digest}  ${path.relative(process.cwd(), file).replaceAll('\\', '/')}`;
+    return `${digest}  ${relative}`;
   }).join('\n') + '\n';
-  assert.equal(manifest, expected, 'manifest must deterministically hash every regular file except itself');
+  assert.equal(manifest, expected, 'manifest must deterministically hash every regular file except itself using release-root-relative paths');
 
   const fakeDirent = {
     name: 'unsupported-entry',
