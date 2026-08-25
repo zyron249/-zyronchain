@@ -43,7 +43,12 @@ export function classifyPrivateFileSnapshot(
 export function samePrivateFileBytes(expected: Uint8Array, actual: Uint8Array): boolean {
   const expectedDigest = createHash("sha256").update(expected).digest();
   const actualDigest = createHash("sha256").update(actual).digest();
-  return timingSafeEqual(expectedDigest, actualDigest);
+  try {
+    return timingSafeEqual(expectedDigest, actualDigest);
+  } finally {
+    expectedDigest.fill(0);
+    actualDigest.fill(0);
+  }
 }
 
 export async function assertPrivateRegularFile(path: string, label: string): Promise<void> {
