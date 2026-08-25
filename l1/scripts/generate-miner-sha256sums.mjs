@@ -92,35 +92,45 @@ function hashBoundReleaseFile(file, canonicalRoot, fsOps) {
   }
 }
 
-function publishManifestExclusive(canonicalRoot, manifest, fsOps) {
+function publishManifestAtomic(canonicalRoot, manifest, fsOps) {
   const manifestPath = path.join(canonicalRoot, 'SHA256SUMS');
   const constants = fsOps.constants ?? fs.constants;
   const noFollow = constants.O_NOFOLLOW ?? 0;
   const flags = constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow;
+  const tempPath = path.join(canonicalRoot, `.SHA256SUMS.${process.pid}.${crypto.randomBytes(12).toString('hex')}.tmp`);
   let fd;
+  let renamed = false;
   try {
-    fd = fsOps.openSync(manifestPath, flags, 0o600);
+    fd = fsOps.openSync(tempPath, flags, 0o600);
     const openedStat = fsOps.fstatSync(fd);
     if (!openedStat.isFile()) {
-      throw new Error('miner release SHA256SUMS publication target must be a regular file');
+      throw new Error('miner release SHA256SUMS temporary publication target must be a regular file');
     }
     fsOps.writeFileSync(fd, manifest, { encoding: 'utf8' });
     if (typeof fsOps.fsyncSync === 'function') fsOps.fsyncSync(fd);
     const completedStat = fsOps.fstatSync(fd);
     if (!completedStat.isFile() || openedStat.dev !== completedStat.dev || openedStat.ino !== completedStat.ino) {
-      throw new Error('miner release SHA256SUMS publication target identity changed');
+      throw new Error('miner release SHA256SUMS temporary publication target identity changed');
+    }
+    fsOps.closeSync(fd);
+    fd = undefined;
+
+    fsOps.renameSync(tempPath, manifestPath);
+    renamed = true;
+
+    const pathStat = fsOps.lstatSync(manifestPath);
+    if (!pathStat.isFile()) {
+      throw new Error('miner release SHA256SUMS publication path became non-regular');
+    }
+    const canonicalManifest = fsOps.realpathSync(manifestPath);
+    if (!isWithinRoot(canonicalRoot, canonicalManifest)) {
+      throw new Error('miner release SHA256SUMS publication path escapes release root');
     }
   } finally {
     if (fd !== undefined) fsOps.closeSync(fd);
-  }
-
-  const pathStat = fsOps.lstatSync(manifestPath);
-  if (!pathStat.isFile()) {
-    throw new Error('miner release SHA256SUMS publication path became non-regular');
-  }
-  const canonicalManifest = fsOps.realpathSync(manifestPath);
-  if (!isWithinRoot(canonicalRoot, canonicalManifest)) {
-    throw new Error('miner release SHA256SUMS publication path escapes release root');
+    if (!renamed) {
+      try { fsOps.rmSync(tempPath, { force: true }); } catch {}
+    }
   }
 }
 
@@ -137,7 +147,7 @@ export function generateMinerSha256Sums(root, fsOps = fs) {
     return `${digest}  ${releaseManifestPath(canonicalRoot, file)}`;
   });
   const manifest = `${lines.join('\n')}\n`;
-  publishManifestExclusive(canonicalRoot, manifest, fsOps);
+  publishManifestAtomic(canonicalRoot, manifest, fsOps);
   return manifest;
 }
 
