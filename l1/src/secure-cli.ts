@@ -69,14 +69,11 @@ async function stageRepeated(
 
 async function run(): Promise<void> {
   const args = process.argv.slice(2);
-  // Enforce the public CLI's canonical custody/network policy at the actual
-  // published entrypoint before staging or delegating any command. cli.ts also
-  // reaches the same policy through rpc-client.ts; retaining that second check
-  // is deliberate defense in depth rather than an implicit dependency.
-  enforceCanonicalCliSecurityPolicy(args);
-
   const command = args[0];
   if (!command || !hardenedCommands.has(command)) {
+    // Commands without hardened file staging enforce the canonical custody/network
+    // policy immediately at the published entrypoint, before cli.ts is loaded.
+    enforceCanonicalCliSecurityPolicy(args);
     await import("./cli.js");
     return;
   }
@@ -87,6 +84,8 @@ async function run(): Promise<void> {
     try { rmSync(dir, { recursive: true, force: true }); } catch { }
   });
 
+  // Preserve the hardened-entrypoint ordering: untrusted recovery/governance
+  // artifacts are bounded, validated and staged before any private-key preflight.
   await stage(args, "--genesis", join(dir, "genesis.json"), readCliGenesisUtf8);
   if (command === "checkpoint-install") {
     const shaIndex = optionValueIndex(args, "--sha256");
@@ -106,6 +105,10 @@ async function run(): Promise<void> {
     await stageRepeated(args, "--approval", join(dir, "governance-approval"), readCliGovernanceArtifactUtf8);
   }
 
+  // Apply the same canonical policy explicitly at the public entrypoint after
+  // hardened artifacts have crossed their safer staging boundary, but before
+  // delegating to cli.ts. rpc-client.ts retains its second defense-in-depth check.
+  enforceCanonicalCliSecurityPolicy(args);
   process.argv = [process.argv[0]!, process.argv[1]!, ...args];
   await import("./cli.js");
 }
