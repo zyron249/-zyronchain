@@ -1417,11 +1417,6 @@ export function parseRpcJsonChunks(
   if (!Number.isSafeInteger(totalBytes) || totalBytes < 1 || totalBytes > MAX_BODY_BYTES) {
     throw new Error("Invalid RPC JSON parse size");
   }
-  // The received chunk bytes are already retained by the request lifecycle.
-  // Before allocating another contiguous Buffer plus the transient JavaScript
-  // UTF-8 string, conservatively reserve 1x + 2x the wire bytes from the same
-  // aggregate budget. The decoded graph is separately bounded by the lexical
-  // depth/cardinality scan below.
   const transientBytes = totalBytes * 3;
   const releaseTransient = reservation?.reserveTransient(transientBytes);
   try {
@@ -1560,7 +1555,12 @@ function validBearerToken(header: string | undefined, expected: string): boolean
   if (!header?.startsWith("Bearer ")) return false;
   const provided = Buffer.from(header.slice("Bearer ".length), "utf8");
   const wanted = Buffer.from(expected, "utf8");
-  return provided.length === wanted.length && timingSafeEqual(provided, wanted);
+  try {
+    return provided.length === wanted.length && timingSafeEqual(provided, wanted);
+  } finally {
+    provided.fill(0);
+    wanted.fill(0);
+  }
 }
 
 class PeerAuthenticationError extends Error {}
