@@ -1560,7 +1560,12 @@ function validBearerToken(header: string | undefined, expected: string): boolean
   if (!header?.startsWith("Bearer ")) return false;
   const provided = Buffer.from(header.slice("Bearer ".length), "utf8");
   const wanted = Buffer.from(expected, "utf8");
-  return provided.length === wanted.length && timingSafeEqual(provided, wanted);
+  try {
+    return provided.length === wanted.length && timingSafeEqual(provided, wanted);
+  } finally {
+    provided.fill(0);
+    wanted.fill(0);
+  }
 }
 
 class PeerAuthenticationError extends Error {}
