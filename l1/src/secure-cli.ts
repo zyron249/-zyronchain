@@ -4,6 +4,7 @@ import { chmod, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { enforceCanonicalCliSecurityPolicy } from "./cli-policy.js";
 import { readCliGovernanceArtifactUtf8 } from "./cli-governance-file.js";
 import {
   readCliCheckpointSnapshotAnchoredUtf8,
@@ -68,6 +69,12 @@ async function stageRepeated(
 
 async function run(): Promise<void> {
   const args = process.argv.slice(2);
+  // Enforce the public CLI's canonical custody/network policy at the actual
+  // published entrypoint before staging or delegating any command. cli.ts also
+  // reaches the same policy through rpc-client.ts; retaining that second check
+  // is deliberate defense in depth rather than an implicit dependency.
+  enforceCanonicalCliSecurityPolicy(args);
+
   const command = args[0];
   if (!command || !hardenedCommands.has(command)) {
     await import("./cli.js");
