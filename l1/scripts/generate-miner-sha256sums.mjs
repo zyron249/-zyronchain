@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HASH_BUFFER_BYTES = 64 * 1024;
+const MANIFEST_PATH_CONTROL_BYTES = /[\u0000-\u001f\u007f]/;
 
 function isWithinRoot(root, candidate) {
   const relative = path.relative(root, candidate);
@@ -19,10 +20,13 @@ function sameFileSnapshot(expected, actual) {
     && expected.ctimeMs === actual.ctimeMs;
 }
 
-function releaseManifestPath(canonicalRoot, file) {
+export function releaseManifestPath(canonicalRoot, file) {
   const relative = path.relative(canonicalRoot, file);
   if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new Error(`miner release manifest path escapes release root: ${relative || '<root>'}`);
+  }
+  if (MANIFEST_PATH_CONTROL_BYTES.test(relative)) {
+    throw new Error('miner release manifest path contains non-canonical control characters');
   }
   return relative.replaceAll('\\', '/');
 }
