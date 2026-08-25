@@ -19,6 +19,14 @@ function sameFileSnapshot(expected, actual) {
     && expected.ctimeMs === actual.ctimeMs;
 }
 
+function releaseManifestPath(canonicalRoot, file) {
+  const relative = path.relative(canonicalRoot, file);
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`miner release manifest path escapes release root: ${relative || '<root>'}`);
+  }
+  return relative.replaceAll('\\', '/');
+}
+
 export function collectReleaseFiles(root, fsOps = fs) {
   const absoluteRoot = path.resolve(root);
   const manifestPath = path.join(absoluteRoot, 'SHA256SUMS');
@@ -44,7 +52,7 @@ export function collectReleaseFiles(root, fsOps = fs) {
 }
 
 function hashBoundReleaseFile(file, canonicalRoot, fsOps) {
-  const displayPath = path.relative(canonicalRoot, file).replaceAll('\\', '/');
+  const displayPath = releaseManifestPath(canonicalRoot, file);
   const expectedStat = fsOps.lstatSync(file);
   if (!expectedStat.isFile()) {
     throw new Error(`miner release manifest input must remain a regular file: ${displayPath}`);
@@ -90,8 +98,7 @@ export function generateMinerSha256Sums(root, fsOps = fs) {
   const files = collectReleaseFiles(canonicalRoot, fsOps);
   const lines = files.map((file) => {
     const digest = hashBoundReleaseFile(file, canonicalRoot, fsOps);
-    const relative = path.relative(process.cwd(), file).replaceAll('\\', '/');
-    return `${digest}  ${relative}`;
+    return `${digest}  ${releaseManifestPath(canonicalRoot, file)}`;
   });
   const manifest = `${lines.join('\n')}\n`;
   fsOps.writeFileSync(path.join(canonicalRoot, 'SHA256SUMS'), manifest);
