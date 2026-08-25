@@ -45,14 +45,32 @@ test("plaintext validator key schema rejects extra top-level fields", async () =
   }
 });
 
-test("operator auth token reader preserves format bounds", async () => {
+test("operator auth token reader accepts only canonical token-file serialization", async () => {
   const root = await mkdtemp(join(tmpdir(), "zyron-operator-token-"));
   const token = join(root, "token.txt");
   try {
-    await writeFile(token, `${TOKEN}\n`, { mode: 0o600 });
-    assert.equal(await readOperatorAuthToken(token, "Peer"), TOKEN);
-    await writeFile(token, "short\n", { mode: 0o600 });
-    await assert.rejects(readOperatorAuthToken(token, "Peer"), /32-512 character token/);
+    for (const canonical of [TOKEN, `${TOKEN}\n`, `${TOKEN}\r\n`]) {
+      await writeFile(token, canonical, { mode: 0o600 });
+      assert.equal(await readOperatorAuthToken(token, "Peer"), TOKEN);
+    }
+
+    const invalid = [
+      "short\n",
+      ` ${TOKEN}\n`,
+      `${TOKEN} \n`,
+      `\t${TOKEN}\n`,
+      `${TOKEN}\t\n`,
+      `${TOKEN}\n\n`,
+      `${TOKEN}\r\n\r\n`,
+      `${TOKEN.slice(0, 24)}\n${TOKEN.slice(24)}`
+    ];
+    for (const contents of invalid) {
+      await writeFile(token, contents, { mode: 0o600 });
+      await assert.rejects(
+        readOperatorAuthToken(token, "Peer"),
+        /single canonical 32-512 character token/
+      );
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
