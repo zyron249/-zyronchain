@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 const HASH_BUFFER_BYTES = 64 * 1024;
 const MANIFEST_PATH_CONTROL_BYTES = /[\u0000-\u001f\u007f]/;
+const MANIFEST_TEMP_PREFIX = '.SHA256SUMS.';
+const MANIFEST_TEMP_SUFFIX = '.tmp';
 
 function isWithinRoot(root, candidate) {
   const relative = path.relative(root, candidate);
@@ -18,6 +20,10 @@ function sameFileSnapshot(expected, actual) {
     && expected.size === actual.size
     && expected.mtimeMs === actual.mtimeMs
     && expected.ctimeMs === actual.ctimeMs;
+}
+
+function isManifestPublicationTempName(name) {
+  return name.startsWith(MANIFEST_TEMP_PREFIX) && name.endsWith(MANIFEST_TEMP_SUFFIX);
 }
 
 export function releaseManifestPath(canonicalRoot, file) {
@@ -42,6 +48,9 @@ export function collectReleaseFiles(root, fsOps = fs) {
   function walk(dir) {
     for (const entry of fsOps.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
+      if (isManifestPublicationTempName(entry.name)) {
+        throw new Error(`stale miner release SHA256SUMS publication temporary entry: ${path.relative(absoluteRoot, full) || entry.name}`);
+      }
       if (entry.isDirectory()) {
         walk(full);
         continue;
