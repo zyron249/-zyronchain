@@ -44,7 +44,16 @@ jobs:
           node --check scripts/miner-launcher-security.mjs
           node --check scripts/test-miner-launcher-security.mjs
           node --check scripts/package-miner.mjs
+          node --check scripts/generate-miner-sha256sums.mjs
+          node --check scripts/test-miner-release-manifest.mjs
+          node --check scripts/test-miner-release-manifest-snapshot.mjs
+          node --check scripts/test-miner-release-manifest-root-relative.mjs
+          node --check scripts/test-miner-release-manifest-path-controls.mjs
           node scripts/test-miner-launcher-security.mjs
+          node scripts/test-miner-release-manifest.mjs
+          node scripts/test-miner-release-manifest-snapshot.mjs
+          node scripts/test-miner-release-manifest-root-relative.mjs
+          node scripts/test-miner-release-manifest-path-controls.mjs
           node -e "const p=require('./miner-network-profile.json'); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('miner network profile must remain fail-closed before intentional activation')"
       - name: Build runtime
         run: npm run build
@@ -80,25 +89,7 @@ jobs:
           if [ "$STATUS" -ne 78 ]; then echo "expected inactive launcher exit 78, got $STATUS" >&2; exit 1; fi
           if [ -e "$TEST_HOME" ]; then echo 'inactive launcher touched custody directory' >&2; exit 1; fi
       - name: Generate SHA-256 manifest
-        shell: bash
-        run: |
-          node - <<'NODE'
-          const fs = require('node:fs');
-          const crypto = require('node:crypto');
-          const path = require('node:path');
-          const root = 'miner-release';
-          const files = [];
-          function walk(dir) {
-            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-              const full = path.join(dir, entry.name);
-              if (entry.isDirectory()) walk(full);
-              else if (entry.isFile()) files.push(full);
-            }
-          }
-          walk(root);
-          const lines = files.sort().map((file) => `${crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')}  ${file.replaceAll('\\\\','/')}`);
-          fs.writeFileSync(path.join(root, 'SHA256SUMS'), `${lines.join('\n')}\n`);
-          NODE
+        run: node scripts/generate-miner-sha256sums.mjs miner-release
       - name: Upload miner bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
