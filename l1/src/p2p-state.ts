@@ -26,14 +26,20 @@ export const P2P_STATE_PROTOCOL = "/zyronchain/state/1.0.0";
 export const MAX_STATE_RECORDS_PER_CHUNK = 128;
 export const MAX_STATE_KEYS_PER_CHUNK = 1_024;
 const MAX_STATE_REQUEST_BYTES = 4_096;
-const MAX_STATE_RESPONSE_BYTES = 20 * 1024 * 1024;
-const MAX_STATE_MANIFEST_BYTES = 2_500_000;
+export const MAX_STATE_RECORD_RESPONSE_BYTES = 20 * 1024 * 1024;
+export const MAX_STATE_KEY_RESPONSE_BYTES = 2 * 1024 * 1024;
+export const MAX_STATE_MANIFEST_BYTES = 2_500_000;
 const P2P_STATE_TIMEOUT_MS = 8_000;
 const P2P_STATE_RETRIES = 2;
 const P2P_STATE_MIN_REQUEST_INTERVAL_MS = 50;
 export const MAX_STATE_SYNC_PEERS = 8;
 
-type StateRequestKind = "manifest" | "records" | "keys";
+export type StateRequestKind = "manifest" | "records" | "keys";
+
+export function stateResponseMaxBytes(kind: StateRequestKind): number {
+  if (kind === "manifest") return MAX_STATE_MANIFEST_BYTES;
+  return kind === "records" ? MAX_STATE_RECORD_RESPONSE_BYTES : MAX_STATE_KEY_RESPONSE_BYTES;
+}
 
 interface StateRequest {
   version: 1;
@@ -131,7 +137,7 @@ export async function registerP2PStateProtocol(
       await writeP2PFrame(
         stream,
         response,
-        request.kind === "manifest" ? MAX_STATE_MANIFEST_BYTES : MAX_STATE_RESPONSE_BYTES,
+        stateResponseMaxBytes(request.kind),
         P2P_STATE_TIMEOUT_MS
       );
       await stream.close({ signal: AbortSignal.timeout(P2P_STATE_TIMEOUT_MS) });
@@ -245,7 +251,7 @@ async function fetchTrustedPortableState(
         await writeP2PFrame(stream, body, MAX_STATE_REQUEST_BYTES, P2P_STATE_TIMEOUT_MS);
         const retained = await readP2PFrameRetained(
           stream,
-          kind === "manifest" ? MAX_STATE_MANIFEST_BYTES : MAX_STATE_RESPONSE_BYTES,
+          stateResponseMaxBytes(kind),
           P2P_STATE_TIMEOUT_MS
         );
         releaseFrame = retained.release;
