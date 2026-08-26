@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
@@ -16,6 +18,12 @@ test("native consensus response byte ceilings match fixed accepted result shapes
   for (const kind of ["attest", "skip", "block", "transaction"] as const) {
     assert.ok(nativeConsensusResponseMaxBytes(kind) < 2_500_000, `${kind} response must not use block-sized frame ceiling`);
   }
+});
+
+test("native consensus server writes responses with the fixed-shape response ceiling", () => {
+  const source = readFileSync(resolve(process.cwd(), "src/p2p-consensus.ts"), "utf8");
+  assert.match(source, /satisfies ConsensusResponse, nativeConsensusResponseMaxBytes\(request\.kind\), P2P_CONSENSUS_TIMEOUT_MS\)/);
+  assert.doesNotMatch(source, /satisfies ConsensusResponse, MAX_CONSENSUS_FRAME_BYTES, P2P_CONSENSUS_TIMEOUT_MS\)/);
 });
 
 test("native consensus response shape gate accepts bounded canonical result shapes", () => {
