@@ -10,7 +10,8 @@ import type { NodeIdentity } from "./peer-identity.js";
 
 export const P2P_DISCOVERY_PROTOCOL = "/zyronchain/discovery/1.0.0";
 export const MAX_DISCOVERY_CANDIDATES = 32;
-const MAX_DISCOVERY_FRAME_BYTES = 20_000;
+const MAX_DISCOVERY_REQUEST_BYTES = 2_048;
+const MAX_DISCOVERY_RESPONSE_BYTES = 20_000;
 const P2P_DISCOVERY_TIMEOUT_MS = 5_000;
 
 interface DiscoveryRequest {
@@ -42,7 +43,7 @@ export async function registerP2PDiscoveryProtocol(
     try {
       if (connection.encryption !== "/noise") throw new Error("Native discovery requires authenticated Noise");
       if (!rate.consume(connection.remotePeer.toString())) throw new Error("Native discovery rate limit exceeded");
-      const retained = await readP2PFrameRetained(stream, MAX_DISCOVERY_FRAME_BYTES, P2P_DISCOVERY_TIMEOUT_MS);
+      const retained = await readP2PFrameRetained(stream, MAX_DISCOVERY_REQUEST_BYTES, P2P_DISCOVERY_TIMEOUT_MS);
       try {
         parseRequest(retained.value, chain, connection.remotePeer);
       } finally {
@@ -50,7 +51,7 @@ export async function registerP2PDiscoveryProtocol(
       }
       const candidates = normalizeCandidates(advertisedPeers());
       await writeP2PFrame(stream, { version: 1, identity: local, candidates } satisfies DiscoveryResponse,
-        MAX_DISCOVERY_FRAME_BYTES, P2P_DISCOVERY_TIMEOUT_MS);
+        MAX_DISCOVERY_RESPONSE_BYTES, P2P_DISCOVERY_TIMEOUT_MS);
       await stream.close({ signal: AbortSignal.timeout(P2P_DISCOVERY_TIMEOUT_MS) });
     } catch (error) {
       stream.abort(error instanceof Error ? error : new Error("Native discovery protocol failure"));
@@ -73,8 +74,8 @@ export async function discoverNativePeersFrom(
   const stream = await connection.newStream(P2P_DISCOVERY_PROTOCOL, { signal: AbortSignal.timeout(P2P_DISCOVERY_TIMEOUT_MS) });
   try {
     await writeP2PFrame(stream, { version: 1, identity: localIdentity(identity, chain) } satisfies DiscoveryRequest,
-      MAX_DISCOVERY_FRAME_BYTES, P2P_DISCOVERY_TIMEOUT_MS);
-    const retained = await readP2PFrameRetained(stream, MAX_DISCOVERY_FRAME_BYTES, P2P_DISCOVERY_TIMEOUT_MS);
+      MAX_DISCOVERY_REQUEST_BYTES, P2P_DISCOVERY_TIMEOUT_MS);
+    const retained = await readP2PFrameRetained(stream, MAX_DISCOVERY_RESPONSE_BYTES, P2P_DISCOVERY_TIMEOUT_MS);
     let response: Multiaddr[];
     try {
       response = parseResponse(retained.value, chain, connection.remotePeer);
