@@ -71,15 +71,23 @@ export async function writeP2PFrame(
 ): Promise<void> {
   assertFrameLimits(maxBytes, timeoutMs);
   stream.inactivityTimeout = timeoutMs;
-  // Serialization transiently retains both the JSON string and its encoded
-  // Buffer. Reserve both frame-sized copies before either allocation and keep
-  // them held through the slow-reader/stream-close boundary.
-  const releaseSerialization = budget.reserve(maxBytes);
+  // Keep the conservative two-max-frame admission gate across JSON
+  // serialization and UTF-8 Buffer creation. Once the Buffer exists, the
+  // transient serialized string is no longer retained, so release that
+  // allowance and shrink encoded retention to the actual body bytes before
+  // any asynchronous slow-reader/drain boundary.
+  let releaseSerialization: (() => void) | undefined = budget.reserve(maxBytes);
   let releaseEncoded: (() => void) | undefined;
   try {
     releaseEncoded = budget.reserve(maxBytes);
     const body = Buffer.from(JSON.stringify(value), "utf8");
     if (body.length === 0 || body.length > maxBytes) throw new Error("P2P frame too large");
+
+    releaseSerialization();
+    releaseSerialization = undefined;
+    releaseEncoded();
+    releaseEncoded = budget.reserve(body.length);
+
     const header = Buffer.allocUnsafe(4);
     header.writeUInt32BE(body.length, 0);
     await sendChunk(stream, header, timeoutMs);
@@ -92,7 +100,7 @@ export async function writeP2PFrame(
     await stream.close({ signal: AbortSignal.timeout(timeoutMs) });
   } finally {
     releaseEncoded?.();
-    releaseSerialization();
+    releaseSerialization?.();
   }
 }
 
