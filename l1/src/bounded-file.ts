@@ -20,6 +20,8 @@ interface BoundedFileSnapshot {
   ctimeMs: number;
 }
 
+const BYTE_REVALIDATION_CHUNK_BYTES = 64 * 1024;
+
 /**
  * Read a local non-secret state file from one opened descriptor while keeping
  * memory bounded if the file is oversized initially or changes concurrently.
@@ -65,6 +67,8 @@ export async function readBoundedFileBuffer(
 
     await faultHooks.beforeFinalValidation?.();
     await requireSameBoundedRegularFile(opened, label, "during reading", initialSnapshot);
+    await requireSameBoundedFileBytes(opened.handle, buffer, label);
+    await requireSameBoundedRegularFile(opened, label, "during reading", initialSnapshot);
     return buffer;
   } finally {
     await opened.handle.close();
@@ -109,6 +113,26 @@ async function openValidatedBoundedFile(
     await handle.close();
     throw error;
   }
+}
+
+async function requireSameBoundedFileBytes(
+  handle: FileHandle,
+  expected: Buffer,
+  label: string
+): Promise<void> {
+  const scratch = Buffer.allocUnsafe(Math.min(BYTE_REVALIDATION_CHUNK_BYTES, Math.max(1, expected.length)));
+  let offset = 0;
+  while (offset < expected.length) {
+    const length = Math.min(scratch.length, expected.length - offset);
+    const { bytesRead } = await handle.read(scratch, 0, length, offset);
+    if (bytesRead !== length || !scratch.subarray(0, length).equals(expected.subarray(offset, offset + length))) {
+      throw new Error(`${label} changed during reading`);
+    }
+    offset += length;
+  }
+  const sentinel = Buffer.allocUnsafe(1);
+  const { bytesRead: extraBytes } = await handle.read(sentinel, 0, 1, expected.length);
+  if (extraBytes !== 0) throw new Error(`${label} changed during reading`);
 }
 
 async function requireSameBoundedRegularFile(
