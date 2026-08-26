@@ -1,5 +1,6 @@
 const DEFAULT_MAX_JSON_DEPTH = 64;
 const DEFAULT_MAX_STRUCTURAL_TOKENS = 250_000;
+const DEFAULT_UNDECLARED_INITIAL_BYTES = 4 * 1024;
 
 export async function readBoundedJsonResponse(response, maxBytes, options = {}) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("Invalid RPC response byte limit");
@@ -23,20 +24,27 @@ export async function readBoundedJsonResponse(response, maxBytes, options = {}) 
     throw new Error("RPC returned an empty body");
   }
 
-  const capacity = declaredBytes ?? maxBytes;
-  const bytes = Buffer.allocUnsafe(capacity);
+  let capacity = declaredBytes ?? Math.min(maxBytes, DEFAULT_UNDECLARED_INITIAL_BYTES);
+  let bytes = Buffer.allocUnsafe(capacity);
   const reader = response.body.getReader();
   let total = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (total + value.byteLength > maxBytes || total + value.byteLength > capacity) {
+      const required = total + value.byteLength;
+      if (required > maxBytes || (declaredBytes !== null && required > declaredBytes)) {
         await reader.cancel("response-too-large");
         throw new Error(`RPC response exceeds ${formatByteLimit(maxBytes)} limit`);
       }
+      if (required > capacity) {
+        capacity = Math.min(maxBytes, Math.max(required, Math.max(1, capacity) * 2));
+        const grown = Buffer.allocUnsafe(capacity);
+        bytes.copy(grown, 0, 0, total);
+        bytes = grown;
+      }
       bytes.set(value, total);
-      total += value.byteLength;
+      total = required;
     }
   } finally {
     reader.releaseLock();
