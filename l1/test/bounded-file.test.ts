@@ -73,6 +73,24 @@ test("bounded UTF-8 reader rejects size changes after the sentinel read", async 
   }
 });
 
+test("bounded UTF-8 reader rejects same-size in-place mutation after the sentinel read", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-bounded-file-same-size-"));
+  const path = join(directory, "state.json");
+  try {
+    await writeFile(path, "abcd");
+    await assert.rejects(
+      () => readBoundedUtf8File(path, 1024, "Mutating state", {
+        beforeFinalValidation: async () => {
+          await writeFile(path, "wxyz");
+        }
+      }),
+      /Mutating state changed during reading/
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("bounded UTF-8 reader rejects direct symbolic-link paths", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-bounded-file-link-"));
   const target = join(directory, "target.json");
