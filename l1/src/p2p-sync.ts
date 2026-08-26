@@ -160,7 +160,7 @@ function parseSyncRequest(
 function parseSyncResponse(
   value: unknown,
   expected: NodeStatus,
-  remotePeer: Parameters<typeof validateP2PChainIdentity>[2],
+  remotePeer: Parameters<typeof validateP2PChainIdentity>[2]
 ): SyncResponse {
   assertRecordWithKeys(value, ["version", "identity", "status", "blocks"], "native sync response");
   const record = value as Record<string, unknown>;
