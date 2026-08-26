@@ -3,7 +3,6 @@ import type { Libp2p } from "libp2p";
 import {
   MAX_SYNC_BATCH_PAYLOAD_BYTES,
   MAX_SYNC_BLOCKS,
-  MAX_SYNC_RESPONSE_BYTES,
   PeerInflightLimiter,
   type NodeService,
   type NodeStatus
@@ -16,6 +15,7 @@ import type { Block } from "./types.js";
 
 export const P2P_SYNC_PROTOCOL = "/zyronchain/sync/1.0.0";
 const MAX_SYNC_REQUEST_BYTES = 2_048;
+export const NATIVE_SYNC_RESPONSE_MAX_BYTES = 21_000_000;
 const P2P_SYNC_TIMEOUT_MS = 8_000;
 const MAX_SYNC_BATCHES_PER_CALL = 32;
 
@@ -61,7 +61,7 @@ export async function registerP2PSyncProtocol(
         status: service.status(),
         blocks
       };
-      await writeP2PFrame(stream, response, MAX_SYNC_RESPONSE_BYTES, P2P_SYNC_TIMEOUT_MS);
+      await writeP2PFrame(stream, response, NATIVE_SYNC_RESPONSE_MAX_BYTES, P2P_SYNC_TIMEOUT_MS);
       await stream.close({ signal: AbortSignal.timeout(P2P_SYNC_TIMEOUT_MS) });
     } catch (error) {
       stream.abort(error instanceof Error ? error : new Error("Native sync protocol failure"));
@@ -101,7 +101,7 @@ export async function syncP2PFrom(
     let releaseFrame: (() => void) | undefined;
     try {
       await writeP2PFrame(stream, { version: 1, identity: local, from, limit: MAX_SYNC_BLOCKS } satisfies SyncRequest, MAX_SYNC_REQUEST_BYTES, P2P_SYNC_TIMEOUT_MS);
-      const retained = await readP2PFrameRetained(stream, MAX_SYNC_RESPONSE_BYTES, P2P_SYNC_TIMEOUT_MS);
+      const retained = await readP2PFrameRetained(stream, NATIVE_SYNC_RESPONSE_MAX_BYTES, P2P_SYNC_TIMEOUT_MS);
       releaseFrame = retained.release;
       const response = parseSyncResponse(retained.value, expected, connection.remotePeer);
       await stream.close({ signal: AbortSignal.timeout(P2P_SYNC_TIMEOUT_MS) });
@@ -160,7 +160,7 @@ function parseSyncRequest(
 function parseSyncResponse(
   value: unknown,
   expected: NodeStatus,
-  remotePeer: Parameters<typeof validateP2PChainIdentity>[2]
+  remotePeer: Parameters<typeof validateP2PChainIdentity>[2],
 ): SyncResponse {
   assertRecordWithKeys(value, ["version", "identity", "status", "blocks"], "native sync response");
   const record = value as Record<string, unknown>;
