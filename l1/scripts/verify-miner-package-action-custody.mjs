@@ -13,6 +13,10 @@ const required = [
   'npm ci',
   'npm run typecheck',
   'node scripts/test-miner-launcher-security.mjs',
+  'node scripts/test-miner-release-manifest.mjs',
+  'node scripts/test-miner-release-manifest-snapshot.mjs',
+  'node scripts/test-miner-release-manifest-root-relative.mjs',
+  'node scripts/test-miner-release-manifest-path-controls.mjs',
   'p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null',
   "if: runner.os != 'Windows'",
   'run: npm test',
@@ -23,7 +27,7 @@ const required = [
   'node scripts/package-miner.mjs',
   'if [ "$STATUS" -ne 78 ]',
   "if [ -e \"$TEST_HOME\" ]; then echo 'inactive launcher touched custody directory'",
-  'SHA256SUMS',
+  'node scripts/generate-miner-sha256sums.mjs miner-release',
   'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
   'if-no-files-found: error',
   'retention-days: 14'
@@ -35,6 +39,10 @@ for (const needle of required) {
 
 if (/uses:\s+[^\n]+@(v\d+|main|master)\b/.test(workflow)) {
   throw new Error('mutable GitHub Action reference is forbidden in Miner Package CI');
+}
+
+if (workflow.includes("crypto.createHash('sha256')") || workflow.includes('fs.readFileSync(file)')) {
+  throw new Error('Miner Package CI must not bypass the canonical checksum publisher with inline pathname hashing');
 }
 
 const checkoutSteps = workflow.split(/\n(?=\s*- name: )/).filter((block) => block.includes('actions/checkout@'));
