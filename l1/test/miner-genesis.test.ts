@@ -4,7 +4,12 @@ import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { MINER_GENESIS_MAX_BYTES, readMinerGenesis } from "../src/miner-genesis.js";
+import {
+  MAX_MINER_GENESIS_JSON_NESTING_DEPTH,
+  MAX_MINER_GENESIS_JSON_STRUCTURAL_TOKENS,
+  MINER_GENESIS_MAX_BYTES,
+  readMinerGenesis
+} from "../src/miner-genesis.js";
 
 function exactBoundaryJson(): string {
   const prefix = '{"chainId":"zyron-miner-boundary"}';
@@ -30,6 +35,34 @@ test("miner genesis rejects oversized input before JSON validation", async () =>
     const path = join(directory, "genesis.json");
     await writeFile(path, " ".repeat(MINER_GENESIS_MAX_BYTES + 1), { mode: 0o600 });
     await assert.rejects(() => readMinerGenesis(path), /Miner genesis file exceeds byte bounds/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("miner genesis rejects excessive JSON nesting before parse", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-miner-genesis-depth-"));
+  try {
+    const path = join(directory, "genesis.json");
+    const depth = MAX_MINER_GENESIS_JSON_NESTING_DEPTH + 1;
+    const payload = "[".repeat(depth) + "0" + "]".repeat(depth);
+    assert.ok(Buffer.byteLength(payload, "utf8") < MINER_GENESIS_MAX_BYTES);
+    await writeFile(path, payload, { mode: 0o600 });
+    await assert.rejects(() => readMinerGenesis(path), /Miner genesis JSON complexity exceeded/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("miner genesis rejects excessive structural-token density before parse", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-miner-genesis-tokens-"));
+  try {
+    const path = join(directory, "genesis.json");
+    const commas = MAX_MINER_GENESIS_JSON_STRUCTURAL_TOKENS + 1;
+    const payload = `[${"0,".repeat(commas)}0]`;
+    assert.ok(Buffer.byteLength(payload, "utf8") < MINER_GENESIS_MAX_BYTES);
+    await writeFile(path, payload, { mode: 0o600 });
+    await assert.rejects(() => readMinerGenesis(path), /Miner genesis JSON complexity exceeded/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
