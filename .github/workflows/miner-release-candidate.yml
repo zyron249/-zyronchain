@@ -59,6 +59,8 @@ jobs:
           node --check scripts/miner-launcher-security.mjs
           node --check scripts/test-miner-launcher-security.mjs
           node --check scripts/package-miner.mjs
+          node --check scripts/miner-release-root.mjs
+          node --check scripts/test-miner-release-root.mjs
           node --check scripts/test-windows-miner-package-contract.mjs
           node --check scripts/generate-miner-sha256sums.mjs
           node --check scripts/test-miner-release-manifest.mjs
@@ -66,6 +68,7 @@ jobs:
           node --check scripts/test-miner-release-manifest-root-relative.mjs
           node --check scripts/test-miner-release-manifest-path-controls.mjs
           node scripts/test-miner-launcher-security.mjs
+          node scripts/test-miner-release-root.mjs
           node scripts/test-windows-miner-package-contract.mjs
           node scripts/test-miner-release-manifest.mjs
           node scripts/test-miner-release-manifest-snapshot.mjs
