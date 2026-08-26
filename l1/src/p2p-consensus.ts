@@ -80,7 +80,7 @@ export async function registerP2PConsensusProtocol(
         identity: local,
         kind: request.kind,
         result
-      } satisfies ConsensusResponse, MAX_CONSENSUS_FRAME_BYTES, P2P_CONSENSUS_TIMEOUT_MS);
+      } satisfies ConsensusResponse, nativeConsensusResponseMaxBytes(request.kind), P2P_CONSENSUS_TIMEOUT_MS);
       await stream.close({ signal: AbortSignal.timeout(P2P_CONSENSUS_TIMEOUT_MS) });
     } catch (error) {
       stream.abort(error instanceof Error ? error : new Error("Native consensus protocol failure"));
