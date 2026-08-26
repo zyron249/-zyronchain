@@ -3,6 +3,7 @@ import { lstat, mkdir, open, realpath } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 export const MAX_BUNDLED_CONTROL_FILE_BYTES = 64 * 1024;
+const BUNDLED_CONTROL_REREAD_CHUNK_BYTES = 64 * 1024;
 
 async function lstatIfPresent(path) {
   try {
@@ -135,11 +136,62 @@ async function requireSameBundledRegularFile(packageRoot, relativePath, label, e
   }
 }
 
+function sameDescriptorSnapshot(expected, observed) {
+  return expected.dev === observed.dev &&
+    expected.ino === observed.ino &&
+    expected.size === observed.size &&
+    expected.mtimeMs === observed.mtimeMs &&
+    expected.ctimeMs === observed.ctimeMs;
+}
+
+function assertDescriptorSnapshot(expected, observed, label, phase) {
+  if (!observed.isFile() || !sameDescriptorSnapshot(expected, observed)) {
+    throw new Error(`${label} content changed ${phase}`);
+  }
+}
+
+/** @internal Read and byte-revalidate one already-opened bundled control file. */
+export async function readStableBundledDescriptor(handle, descriptorMetadata, label, maxBytes) {
+  if (!descriptorMetadata.isFile()) throw new Error(`${label} must be a regular file`);
+  if (descriptorMetadata.size > maxBytes) throw new Error(`${label} exceeds ${maxBytes} byte limit`);
+
+  const expectedSize = descriptorMetadata.size;
+  const primary = Buffer.allocUnsafe(expectedSize + 1);
+  let total = 0;
+  while (total < primary.length) {
+    const { bytesRead } = await handle.read(primary, total, primary.length - total, total);
+    if (bytesRead === 0) break;
+    total += bytesRead;
+  }
+  if (total !== expectedSize) {
+    throw new Error(`${label} content changed during reading`);
+  }
+  assertDescriptorSnapshot(descriptorMetadata, await handle.stat(), label, 'during reading');
+
+  const scratch = Buffer.allocUnsafe(Math.max(1, Math.min(BUNDLED_CONTROL_REREAD_CHUNK_BYTES, expectedSize)));
+  let offset = 0;
+  while (offset < expectedSize) {
+    const wanted = Math.min(scratch.length, expectedSize - offset);
+    const { bytesRead } = await handle.read(scratch, 0, wanted, offset);
+    if (bytesRead !== wanted || !scratch.subarray(0, bytesRead).equals(primary.subarray(offset, offset + bytesRead))) {
+      throw new Error(`${label} content changed during reading`);
+    }
+    offset += bytesRead;
+  }
+  const sentinel = Buffer.allocUnsafe(1);
+  const { bytesRead: trailingBytes } = await handle.read(sentinel, 0, 1, expectedSize);
+  if (trailingBytes !== 0) throw new Error(`${label} content changed during reading`);
+  assertDescriptorSnapshot(descriptorMetadata, await handle.stat(), label, 'during reading');
+  return primary.subarray(0, expectedSize).toString('utf8');
+}
+
 /**
  * Read a package-owned control file from the same descriptor that is validated.
  * The path boundary is checked first, POSIX opens refuse symlink/special-file
  * following, descriptor/path identity is rechecked after open, and reads are
  * bounded so replacement or growth cannot cause an unbounded startup read.
+ * The opened descriptor snapshot is byte-revalidated with a bounded second
+ * read so same-inode same-size content mutation cannot reach the launcher.
  * Windows additionally repeats the complete package-component/canonical-path
  * validation after open and after the bounded descriptor read so a raced
  * junction/reparse substitution is detected before control bytes are returned.
@@ -174,23 +226,10 @@ export async function readSafeBundledRegularFile(
         (descriptorMetadata.dev !== pathMetadata.dev || descriptorMetadata.ino !== pathMetadata.ino)) {
       throw new Error(`${label} changed while being validated`);
     }
-    if (descriptorMetadata.size > maxBytes) {
-      throw new Error(`${label} exceeds ${maxBytes} byte limit`);
-    }
 
-    const buffer = Buffer.allocUnsafe(maxBytes + 1);
-    let total = 0;
-    while (total <= maxBytes) {
-      const { bytesRead } = await handle.read(buffer, total, buffer.length - total, null);
-      if (bytesRead === 0) break;
-      total += bytesRead;
-      if (total > maxBytes) {
-        throw new Error(`${label} exceeds ${maxBytes} byte limit`);
-      }
-    }
-
+    const contents = await readStableBundledDescriptor(handle, descriptorMetadata, label, maxBytes);
     await requireSameBundledRegularFile(packageRoot, relativePath, label, canonicalFile, 'during reading');
-    return buffer.subarray(0, total).toString('utf8');
+    return contents;
   } finally {
     await handle.close();
   }
