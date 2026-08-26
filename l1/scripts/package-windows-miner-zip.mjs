@@ -4,12 +4,13 @@ import { readdir, stat } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { bindMinerReleaseRoot } from './miner-release-root.mjs';
 
 if (process.platform !== 'win32') throw new Error('Windows miner ZIP packaging must run on Windows');
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
-const releaseRoot = join(root, 'miner-release');
+const releaseRoot = bindMinerReleaseRoot(root, resolve(root, 'miner-release'));
 const bundles = (await readdir(releaseRoot, { withFileTypes: true }))
   .filter((entry) => entry.isDirectory() && entry.name.startsWith('ZyronMiner-windows-'));
 if (bundles.length !== 1) throw new Error(`Expected exactly one Windows miner bundle, found ${bundles.length}`);
