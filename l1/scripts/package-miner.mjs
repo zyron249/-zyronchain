@@ -3,10 +3,11 @@ import { chmod, cp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { copyMinerRuntimeTree } from './copy-miner-runtime-tree.mjs';
+import { bindMinerReleaseRoot } from './miner-release-root.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
-const outRoot = resolve(root, 'miner-release');
+const outRoot = bindMinerReleaseRoot(root, resolve(root, 'miner-release'));
 const platform = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : process.platform === 'linux' ? 'linux' : null;
 if (!platform) throw new Error(`Unsupported miner package platform: ${process.platform}`);
 
