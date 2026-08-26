@@ -8,6 +8,7 @@ import {
   ensureSafeCustodyDirectory,
   existingSafeSecret,
   readSafeBundledRegularFile,
+  readStableBundledDescriptor,
   safeBundledRegularFile
 } from './miner-launcher-security.mjs';
 
@@ -26,8 +27,40 @@ assert.match(
 );
 assert.match(
   securitySource,
+  /readStableBundledDescriptor\(handle, descriptorMetadata, label, maxBytes\)/,
+  'bundled control-file reads must bind bytes to the opened descriptor snapshot'
+);
+assert.match(
+  securitySource,
   /requireSameBundledRegularFile\(packageRoot, relativePath, label, canonicalFile, 'during reading'\)/,
   'bundled control-file reads must revalidate the package-owned path after the bounded descriptor read'
+);
+
+const stableMetadata = {
+  dev: 1,
+  ino: 2,
+  size: 4,
+  mtimeMs: 10,
+  ctimeMs: 20,
+  isFile: () => true
+};
+let zeroPositionReads = 0;
+const mutatingHandle = {
+  async stat() { return stableMetadata; },
+  async read(buffer, offset, length, position) {
+    if (position === 4) return { bytesRead: 0, buffer };
+    if (position !== 0) throw new Error(`unexpected test read position ${position}`);
+    zeroPositionReads += 1;
+    const bytes = Buffer.from(zeroPositionReads === 1 ? 'abcd' : 'wxyz');
+    const copied = Math.min(length, bytes.length);
+    bytes.copy(buffer, offset, 0, copied);
+    return { bytesRead: copied, buffer };
+  }
+};
+await assert.rejects(
+  () => readStableBundledDescriptor(mutatingHandle, stableMetadata, 'profile', MAX_BUNDLED_CONTROL_FILE_BYTES),
+  /content changed during reading/i,
+  'same-size same-inode control-file mutation must fail closed even with stable metadata'
 );
 
 const root = await mkdtemp(join(tmpdir(), 'zyron-miner-custody-test-'));
@@ -52,7 +85,20 @@ try {
     await safeBundledRegularFile(packageRoot, 'miner-network-profile.json', 'profile'),
     await realpath(profileFile)
   );
-  assert.equal(await readSafeBundledRegularFile(packageRoot, 'miner-network-profile.json', 'profile'), '{}');
+  const originalAllocUnsafe = Buffer.allocUnsafe;
+  const allocationSizes = [];
+  Buffer.allocUnsafe = function trackedAllocUnsafe(size) {
+    allocationSizes.push(size);
+    return originalAllocUnsafe(size);
+  };
+  try {
+    assert.equal(await readSafeBundledRegularFile(packageRoot, 'miner-network-profile.json', 'profile'), '{}');
+  } finally {
+    Buffer.allocUnsafe = originalAllocUnsafe;
+  }
+  assert.ok(allocationSizes.length >= 3, 'stable descriptor read must allocate primary, reread, and sentinel buffers');
+  assert.ok(Math.max(...allocationSizes) <= 3, 'small control files must not allocate the full 64 KiB ceiling');
+
   await writeFile(profileFile, 'x'.repeat(MAX_BUNDLED_CONTROL_FILE_BYTES + 1));
   await assert.rejects(
     () => readSafeBundledRegularFile(packageRoot, 'miner-network-profile.json', 'profile'),
