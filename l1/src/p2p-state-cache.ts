@@ -1,4 +1,5 @@
-import { lstat, readdir, rm } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { lstat, open, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 export const MAX_DURABLE_STATE_CACHE_BYTES = 512 * 1024 * 1024;
@@ -41,7 +42,7 @@ export async function pruneDurableStateCache(
       if (info.isSymbolicLink()) throw new Error("Durable State-v2 cache contains a non-canonical symbolic link");
       let bytes: number;
       if (info.isDirectory()) bytes = await realDirectoryBytes(path);
-      else if (info.isFile()) bytes = info.size;
+      else if (info.isFile()) bytes = await stableRegularFileBytes(path, info);
       else throw new Error("Durable State-v2 cache contains a non-canonical non-regular entry");
       staleBytes = checkedAdd(staleBytes, bytes);
       stale.push({ path, bytes });
@@ -89,6 +90,33 @@ export async function pruneDurableStateCache(
   }
 }
 
+/**
+ * Returns the descriptor-bound byte size of a regular cache file. The caller's
+ * initial lstat snapshot is part of the identity contract so pathname
+ * replacement or same-inode metadata mutation cannot silently change the byte
+ * accounting source between discovery and measurement.
+ */
+export async function stableRegularFileBytes(path: string, initial: Stats): Promise<number> {
+  if (initial.isSymbolicLink() || !initial.isFile()) {
+    throw new Error("Durable State-v2 cache file is not a real regular file");
+  }
+  const flags = process.platform === "win32"
+    ? constants.O_RDONLY
+    : constants.O_RDONLY | constants.O_NOFOLLOW;
+  const handle = await open(path, flags);
+  try {
+    const opened = await handle.stat();
+    assertSameRegularFileSnapshot(initial, opened);
+    const afterPath = await lstat(path);
+    assertSameRegularFileSnapshot(opened, afterPath);
+    const afterDescriptor = await handle.stat();
+    assertSameRegularFileSnapshot(opened, afterDescriptor);
+    return opened.size;
+  } finally {
+    await handle.close();
+  }
+}
+
 async function realDirectoryBytes(directory: string): Promise<number> {
   const before = await lstat(directory);
   if (before.isSymbolicLink() || !before.isDirectory()) {
@@ -105,7 +133,7 @@ async function realDirectoryBytes(directory: string): Promise<number> {
       continue;
     }
     if (!info.isFile()) throw new Error("Durable State-v2 cache contains a non-regular entry");
-    total = checkedAdd(total, info.size);
+    total = checkedAdd(total, await stableRegularFileBytes(path, info));
   }
 
   const after = await lstat(directory);
@@ -113,6 +141,14 @@ async function realDirectoryBytes(directory: string): Promise<number> {
     throw new Error("Durable State-v2 cache directory changed during accounting");
   }
   return total;
+}
+
+function assertSameRegularFileSnapshot(expected: Stats, actual: Stats): void {
+  if (actual.isSymbolicLink() || !actual.isFile() ||
+      expected.dev !== actual.dev || expected.ino !== actual.ino ||
+      expected.size !== actual.size || expected.mtimeMs !== actual.mtimeMs || expected.ctimeMs !== actual.ctimeMs) {
+    throw new Error("Durable State-v2 cache file changed during accounting");
+  }
 }
 
 function checkedAdd(left: number, right: number): number {
