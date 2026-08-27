@@ -65,6 +65,14 @@ export class Mempool {
     if (conflictingId) {
       const conflicting = this.byId.get(conflictingId)!;
       if (!isValidReplacement(conflicting, tx)) throw new Error("Conflicting sender nonce");
+      const conflictingBytes = transactionBytes(conflicting);
+      if (tx.kind === "mining_claim") {
+        if (this.miningBytes - conflictingBytes + txBytes > this.maxMiningBytes) {
+          throw new Error("Mining mempool full");
+        }
+      } else if (this.nonMiningBytes - conflictingBytes + txBytes > this.maxNonMiningBytes) {
+        throw new Error("Mempool full");
+      }
       this.deleteTransaction(conflictingId, conflicting);
     }
 
