@@ -147,33 +147,36 @@ test("invalid JSON releases encoded decoded and UTF-8 frame reservations", async
   assert.equal(budget.metrics().peakBytesInUse, 3);
 });
 
-test("native frame writer double-accounts serialization and encoded retention", async () => {
-  const budget = new P2PFrameByteBudget(16);
+test("native frame writer releases transient max reservations before slow-reader retention", async () => {
+  const budget = new P2PFrameByteBudget(18);
   let drainFirst!: () => void;
   const firstDrain = new Promise<void>((resolve) => { drainFirst = resolve; });
   const first = writeP2PFrame(fakeWritableStream(firstDrain), {}, 8, 1_000, budget);
   await new Promise<void>((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(budget.metrics(), { bytesInUse: 16, maxBytes: 16, peakBytesInUse: 16, rejectedFrames: 0 });
-  await assert.rejects(
-    () => writeP2PFrame(fakeWritableStream(), {}, 8, 1_000, budget),
-    /byte budget exceeded/
-  );
+  assert.deepEqual(budget.metrics(), { bytesInUse: 2, maxBytes: 18, peakBytesInUse: 16, rejectedFrames: 0 });
+  await writeP2PFrame(fakeWritableStream(), {}, 8, 1_000, budget);
+  assert.deepEqual(budget.metrics(), { bytesInUse: 2, maxBytes: 18, peakBytesInUse: 18, rejectedFrames: 0 });
 
   drainFirst();
   await first;
   assert.equal(budget.metrics().bytesInUse, 0);
-  await writeP2PFrame(fakeWritableStream(), {}, 8, 1_000, budget);
-  assert.equal(budget.metrics().bytesInUse, 0);
 });
 
-test("native frame writer releases both reservations when serialization fails", async () => {
-  const budget = new P2PFrameByteBudget(16);
+test("native frame writer releases all reservations on serialization and oversize failures", async () => {
+  const serializationBudget = new P2PFrameByteBudget(16);
   await assert.rejects(
-    () => writeP2PFrame(fakeWritableStream(), { value: 1n }, 8, 1_000, budget),
+    () => writeP2PFrame(fakeWritableStream(), { value: 1n }, 8, 1_000, serializationBudget),
     TypeError
   );
-  assert.deepEqual(budget.metrics(), { bytesInUse: 0, maxBytes: 16, peakBytesInUse: 16, rejectedFrames: 0 });
+  assert.deepEqual(serializationBudget.metrics(), { bytesInUse: 0, maxBytes: 16, peakBytesInUse: 16, rejectedFrames: 0 });
+
+  const oversizeBudget = new P2PFrameByteBudget(16);
+  await assert.rejects(
+    () => writeP2PFrame(fakeWritableStream(), "123456789", 8, 1_000, oversizeBudget),
+    /P2P frame too large/
+  );
+  assert.deepEqual(oversizeBudget.metrics(), { bytesInUse: 0, maxBytes: 16, peakBytesInUse: 16, rejectedFrames: 0 });
 });
 
 function fakeWritableStream(drain?: Promise<void>): Stream {
