@@ -6,6 +6,11 @@ enforceCanonicalCliSecurityPolicy(process.argv.slice(2));
 
 export const MAX_RPC_CLIENT_JSON_NESTING_DEPTH = 64;
 export const MAX_RPC_CLIENT_JSON_STRUCTURAL_TOKENS = 250_000;
+const RPC_CLIENT_INITIAL_RESPONSE_BYTES = 4 * 1024;
+
+export interface RpcResponseReadHooks {
+  onAllocate?: (bytes: number) => void;
+}
 
 export function transactionVersionForProtocolVersion(protocolVersion: number): TransactionVersion {
   if (!Number.isSafeInteger(protocolVersion)) throw new Error("RPC returned invalid protocol status");
@@ -21,7 +26,8 @@ export function assertRpcApiVersion(response: Response, expectedVersion: number)
 export async function readBoundedResponseText(
   response: Response,
   maxBytes: number,
-  label = "RPC response"
+  label = "RPC response",
+  hooks: RpcResponseReadHooks = {}
 ): Promise<string> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("Invalid RPC response byte limit");
   const declared = response.headers.get("content-length");
@@ -34,21 +40,31 @@ export async function readBoundedResponseText(
   if (!response.body) return "";
 
   const reader = response.body.getReader();
-  // Keep one bounded destination buffer instead of retaining every transport
-  // chunk and then allocating a second full contiguous copy. When a trustworthy
-  // Content-Length is present allocate exactly that size; otherwise the caller's
-  // existing maxBytes limit is the hard allocation ceiling.
-  const capacity = declaredBytes ?? maxBytes;
-  const bytes = new Uint8Array(capacity);
+  // A trustworthy Content-Length can be allocated exactly. Chunked/unknown-length
+  // responses start small and grow only with observed body bytes, while maxBytes
+  // remains the absolute allocation and wire-byte ceiling.
+  let capacity = declaredBytes ?? Math.min(maxBytes, RPC_CLIENT_INITIAL_RESPONSE_BYTES);
+  let bytes = allocateResponseBytes(capacity, hooks);
   let total = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       if (!value) continue;
-      if (value.byteLength > maxBytes - total || value.byteLength > bytes.byteLength - total) {
+      if (value.byteLength > maxBytes - total) {
         try { await reader.cancel("RPC response byte limit exceeded"); } catch { /* best effort */ }
         throw new Error(`${label} too large`);
+      }
+      const required = total + value.byteLength;
+      if (required > bytes.byteLength) {
+        let nextCapacity = Math.max(1, bytes.byteLength);
+        while (nextCapacity < required) {
+          nextCapacity = Math.min(maxBytes, Math.max(required, nextCapacity * 2));
+        }
+        const grown = allocateResponseBytes(nextCapacity, hooks);
+        grown.set(bytes.subarray(0, total));
+        bytes = grown;
+        capacity = nextCapacity;
       }
       bytes.set(value, total);
       total += value.byteLength;
@@ -76,6 +92,11 @@ export async function readBoundedJson(
   } catch {
     throw new Error(`${label} is not valid JSON`);
   }
+}
+
+function allocateResponseBytes(bytes: number, hooks: RpcResponseReadHooks): Uint8Array {
+  hooks.onAllocate?.(bytes);
+  return new Uint8Array(bytes);
 }
 
 function assertBoundedJsonStructure(text: string, label: string): void {
