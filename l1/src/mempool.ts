@@ -6,6 +6,8 @@ const REPLACEMENT_BUMP_NUMERATOR = 11n;
 const REPLACEMENT_BUMP_DENOMINATOR = 10n;
 export const MAX_MINING_MEMPOOL_CLAIMS = 256;
 export const DEFAULT_MEMPOOL_NON_MINING_CAPACITY = 10_000;
+export const DEFAULT_MEMPOOL_NON_MINING_MAX_BYTES = 64 * 1024 * 1024;
+export const DEFAULT_MINING_MEMPOOL_MAX_BYTES = 4 * 1024 * 1024;
 
 type EvictionCandidate = { txid: string; tx: Transaction };
 
@@ -15,14 +17,25 @@ export class Mempool {
   private readonly transferSpendBySender = new Map<string, bigint>();
   private readonly maxNonMiningSize: number;
   private readonly miningReserve: number;
+  private readonly maxNonMiningBytes: number;
+  private readonly maxMiningBytes: number;
   private miningSize = 0;
   private nonMiningSize = 0;
+  private miningBytes = 0;
+  private nonMiningBytes = 0;
   private nonMiningEvictionCacheValid = false;
   private nonMiningEvictionCache: EvictionCandidate | undefined;
 
-  constructor(maxNonMiningSize?: number, miningReserve?: number) {
+  constructor(
+    maxNonMiningSize?: number,
+    miningReserve?: number,
+    maxNonMiningBytes = DEFAULT_MEMPOOL_NON_MINING_MAX_BYTES,
+    maxMiningBytes = DEFAULT_MINING_MEMPOOL_MAX_BYTES
+  ) {
     this.maxNonMiningSize = maxNonMiningSize ?? DEFAULT_MEMPOOL_NON_MINING_CAPACITY;
     this.miningReserve = miningReserve ?? (maxNonMiningSize === undefined ? MAX_MINING_MEMPOOL_CLAIMS : 0);
+    this.maxNonMiningBytes = maxNonMiningBytes;
+    this.maxMiningBytes = maxMiningBytes;
     if (!Number.isSafeInteger(this.maxNonMiningSize) || this.maxNonMiningSize < 1) {
       throw new Error("Invalid mempool capacity");
     }
@@ -30,10 +43,23 @@ export class Mempool {
         this.miningReserve > MAX_MINING_MEMPOOL_CLAIMS) {
       throw new Error("Invalid mining mempool reserve");
     }
+    if (!Number.isSafeInteger(this.maxNonMiningBytes) || this.maxNonMiningBytes < 1) {
+      throw new Error("Invalid non-mining mempool byte capacity");
+    }
+    if (!Number.isSafeInteger(this.maxMiningBytes) || this.maxMiningBytes < 1) {
+      throw new Error("Invalid mining mempool byte capacity");
+    }
   }
 
   add(tx: Transaction): void {
     if (this.byId.has(tx.txid)) throw new Error("Transaction already in mempool");
+    const txBytes = transactionBytes(tx);
+    if (tx.kind === "mining_claim") {
+      if (txBytes > this.maxMiningBytes) throw new Error("Mining mempool full");
+    } else if (txBytes > this.maxNonMiningBytes) {
+      throw new Error("Mempool full");
+    }
+
     const nonceKey = `${tx.sender}:${tx.nonce}`;
     const conflictingId = this.nonceIds.get(nonceKey);
     if (conflictingId) {
@@ -47,25 +73,29 @@ export class Mempool {
       const configuredMiningCapacity = this.miningReserve > 0
         ? this.miningReserve
         : MAX_MINING_MEMPOOL_CLAIMS;
-      if (this.miningSize >= configuredMiningCapacity || this.byId.size >= totalCapacity) {
+      while (this.miningSize >= configuredMiningCapacity || this.byId.size >= totalCapacity ||
+          this.miningBytes + txBytes > this.maxMiningBytes) {
         const weakest = this.weakestMiningClaim();
         if (!weakest || !isBetterMiningClaim(weakest.tx, tx)) {
           throw new Error("Mining mempool full");
         }
         this.deleteTransaction(weakest.txid, weakest.tx);
       }
-    } else if (this.nonMiningSize >= this.maxNonMiningSize) {
-      const eviction = this.lowestPriorityEvictableTransfer();
-      if (!eviction || (tx.kind === "transfer" && !hasRequiredFeeRateBump(eviction.tx, tx))) {
-        throw new Error("Mempool full");
+    } else {
+      while (this.nonMiningSize >= this.maxNonMiningSize ||
+          this.nonMiningBytes + txBytes > this.maxNonMiningBytes) {
+        const eviction = this.lowestPriorityEvictableTransfer();
+        if (!eviction || (tx.kind === "transfer" && !hasRequiredFeeRateBump(eviction.tx, tx))) {
+          throw new Error("Mempool full");
+        }
+        this.deleteTransaction(eviction.txid, eviction.tx);
       }
-      this.deleteTransaction(eviction.txid, eviction.tx);
     }
 
     const stored = structuredClone(tx);
     this.byId.set(tx.txid, stored);
     this.nonceIds.set(nonceKey, tx.txid);
-    this.adjustOccupancy(stored, 1);
+    this.adjustOccupancy(stored, 1, txBytes);
     this.adjustTransferSpend(stored, 1n);
     this.invalidateNonMiningEvictionCache();
   }
@@ -106,10 +136,16 @@ export class Mempool {
     return this.byId.size;
   }
 
-  private adjustOccupancy(tx: Transaction, direction: 1 | -1): void {
-    if (tx.kind === "mining_claim") this.miningSize += direction;
-    else this.nonMiningSize += direction;
-    if (this.miningSize < 0 || this.nonMiningSize < 0 ||
+  private adjustOccupancy(tx: Transaction, direction: 1 | -1, bytes = transactionBytes(tx)): void {
+    if (tx.kind === "mining_claim") {
+      this.miningSize += direction;
+      this.miningBytes += direction * bytes;
+    } else {
+      this.nonMiningSize += direction;
+      this.nonMiningBytes += direction * bytes;
+    }
+    if (this.miningSize < 0 || this.nonMiningSize < 0 || this.miningBytes < 0 || this.nonMiningBytes < 0 ||
+        this.miningBytes > this.maxMiningBytes || this.nonMiningBytes > this.maxNonMiningBytes ||
         this.miningSize + this.nonMiningSize !== this.byId.size) {
       throw new Error("Mempool occupancy invariant violated");
     }
@@ -170,6 +206,12 @@ export class Mempool {
   }
 }
 
+function transactionBytes(tx: Transaction): number {
+  const bytes = Buffer.byteLength(canonicalJson(tx), "utf8");
+  if (!Number.isSafeInteger(bytes) || bytes < 1) throw new Error("Invalid mempool transaction byte size");
+  return bytes;
+}
+
 function isValidReplacement(existing: Transaction, incoming: Transaction): boolean {
   if (existing.kind === "transfer" && incoming.kind === "transfer") {
     return hasRequiredFeeRateBump(existing, incoming);
@@ -200,8 +242,8 @@ function compareMiningPriority(left: MiningClaimTx, right: MiningClaimTx): numbe
 
 function hasRequiredFeeRateBump(existing: Transaction, incoming: Transaction): boolean {
   if (existing.kind !== "transfer" || incoming.kind !== "transfer") return false;
-  const existingBytes = BigInt(Buffer.byteLength(canonicalJson(existing), "utf8"));
-  const incomingBytes = BigInt(Buffer.byteLength(canonicalJson(incoming), "utf8"));
+  const existingBytes = BigInt(transactionBytes(existing));
+  const incomingBytes = BigInt(transactionBytes(incoming));
   const incomingWeighted = BigInt(incoming.feeAtoms) * existingBytes * REPLACEMENT_BUMP_DENOMINATOR;
   const existingWeighted = BigInt(existing.feeAtoms) * incomingBytes * REPLACEMENT_BUMP_NUMERATOR;
   return incoming.feeAtoms > existing.feeAtoms && incomingWeighted >= existingWeighted;
@@ -209,8 +251,8 @@ function hasRequiredFeeRateBump(existing: Transaction, incoming: Transaction): b
 
 function compareFeeRate(left: Transaction, right: Transaction): number {
   if (left.kind !== "transfer" || right.kind !== "transfer") return 0;
-  const leftBytes = BigInt(Buffer.byteLength(canonicalJson(left), "utf8"));
-  const rightBytes = BigInt(Buffer.byteLength(canonicalJson(right), "utf8"));
+  const leftBytes = BigInt(transactionBytes(left));
+  const rightBytes = BigInt(transactionBytes(right));
   const difference = (BigInt(left.feeAtoms) * rightBytes) - (BigInt(right.feeAtoms) * leftBytes);
   return difference < 0n ? -1 : difference > 0n ? 1 : 0;
 }
