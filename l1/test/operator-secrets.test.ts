@@ -45,6 +45,26 @@ test("plaintext validator key schema rejects extra top-level fields", async () =
   }
 });
 
+test("validator key JSON complexity fails closed before parse", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-operator-key-complexity-"));
+  const key = join(root, "key.json");
+  try {
+    const excessiveDepth = `${"[".repeat(33)}0${"]".repeat(33)}`;
+    await writeFile(key, excessiveDepth, { mode: 0o600 });
+    await assert.rejects(readOperatorPrivateKey(key), /JSON complexity exceeded/);
+
+    const dense = `[${Array.from({ length: 4_100 }, () => "0").join(",")}]`;
+    await writeFile(key, dense, { mode: 0o600 });
+    await assert.rejects(readOperatorPrivateKey(key), /JSON complexity exceeded/);
+
+    const punctuationInString = JSON.stringify({ privateKey: PRIVATE_KEY, note: "[{,:]}".repeat(1_000) });
+    await writeFile(key, punctuationInString, { mode: 0o600 });
+    await assert.rejects(readOperatorPrivateKey(key), /must contain exactly privateKey/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("operator auth token reader accepts only canonical token-file serialization", async () => {
   const root = await mkdtemp(join(tmpdir(), "zyron-operator-token-"));
   const token = join(root, "token.txt");
