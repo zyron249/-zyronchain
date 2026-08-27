@@ -4,13 +4,18 @@ import { publicKeyFromPrivate } from "./crypto.js";
 import { decryptPrivateKey, isEncryptedKeystore, normalizePasswordFile } from "./keystore.js";
 import { readPrivateRegularFile } from "./local-security.js";
 
+const MAX_VALIDATOR_KEY_JSON_NESTING_DEPTH = 32;
+const MAX_VALIDATOR_KEY_JSON_STRUCTURAL_TOKENS = 4_096;
+
 export async function readOperatorPrivateKey(
   path: string,
   passwordPath?: string
 ): Promise<string> {
   let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(await readPrivateRegularFile(resolve(path), "Validator key file")) as Record<string, unknown>;
+    const contents = await readPrivateRegularFile(resolve(path), "Validator key file");
+    assertValidatorKeyJsonComplexity(contents);
+    parsed = JSON.parse(contents) as Record<string, unknown>;
   } catch (error) {
     if (error instanceof SyntaxError) throw new Error("Validator key file is invalid JSON");
     throw error;
@@ -46,4 +51,47 @@ export async function readOperatorAuthToken(path: string, label: string): Promis
     throw new Error(`${label} token file must contain a single canonical 32-512 character token`);
   }
   return token;
+}
+
+function assertValidatorKeyJsonComplexity(contents: string): void {
+  let inString = false;
+  let escaped = false;
+  let depth = 0;
+  let tokens = 0;
+
+  for (let index = 0; index < contents.length; index += 1) {
+    const code = contents.charCodeAt(index);
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (code === 0x5c) {
+        escaped = true;
+        continue;
+      }
+      if (code === 0x22) inString = false;
+      continue;
+    }
+
+    if (code === 0x22) {
+      inString = true;
+      continue;
+    }
+    if (code === 0x7b || code === 0x5b) {
+      depth += 1;
+      tokens += 1;
+      if (depth > MAX_VALIDATOR_KEY_JSON_NESTING_DEPTH) {
+        throw new Error("Validator key file JSON complexity exceeded");
+      }
+    } else if (code === 0x7d || code === 0x5d) {
+      depth = Math.max(0, depth - 1);
+      tokens += 1;
+    } else if (code === 0x2c || code === 0x3a) {
+      tokens += 1;
+    }
+    if (tokens > MAX_VALIDATOR_KEY_JSON_STRUCTURAL_TOKENS) {
+      throw new Error("Validator key file JSON complexity exceeded");
+    }
+  }
 }
