@@ -14,6 +14,8 @@ Custom `Mempool(maxNonMiningSize)` instances retain a hard total count cap unles
 
 Mining and non-mining entry counts and retained canonical bytes are tracked incrementally on insertion, deletion, replacement and pruning. Admission therefore does not rescan every resident transaction merely to determine whether a configured capacity has been reached. Byte-accounting invariants fail closed if either subpool would become negative or exceed its configured budget.
 
+Byte pressure does not introduce cascading eviction semantics. One incoming transaction may trigger at most the same single deterministic policy replacement already permitted by the count-based mempool rules. If the projected subpool would still exceed its byte ceiling after that one replacement, admission fails closed instead of deleting additional resident transactions.
+
 When the ordinary pool is saturated by count or retained bytes, the deterministic lowest-priority evictable transfer is cached while mempool contents remain unchanged. Repeated rejected submissions therefore reuse the same bounded replacement decision instead of rescanning the 10,000-entry pool on every request. Every successful insert, deletion, replacement, remove or prune invalidates that cache before the next full-pool replacement decision, so fee-rate and highest-nonce eviction semantics remain identical to an uncached scan.
 
 ## Admission and stale-work controls
