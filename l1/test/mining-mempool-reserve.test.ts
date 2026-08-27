@@ -162,6 +162,20 @@ test("non-mining retained bytes fail closed before the entry-count cap", () => {
   assert.equal(mempool.values()[0]?.txid, first.txid);
 });
 
+test("byte pressure never cascades through multiple ordinary evictions for one incoming transaction", () => {
+  const first = transfer(1);
+  const second = transfer(2);
+  const incoming = { ...transfer(3), feeAtoms: 1_000_000_000_000 };
+  const byteBudget = txBytes(first) + txBytes(second);
+  const mempool = new Mempool(10, 0, byteBudget, 1024 * 1024);
+
+  mempool.add(first);
+  mempool.add(second);
+  assert.ok(txBytes(second) + txBytes(incoming) > byteBudget);
+  assert.throws(() => mempool.add(incoming), /Mempool full/);
+  assert.deepEqual(new Set(mempool.values().map((tx) => tx.txid)), new Set([first.txid, second.txid]));
+});
+
 test("non-mining byte accounting is released by removal and stays exact across replacement", () => {
   const first = transfer(1);
   const second = transfer(2);
