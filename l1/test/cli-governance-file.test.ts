@@ -28,6 +28,43 @@ test("CLI governance artifact reader accepts exact byte boundary and rejects ove
   }
 });
 
+test("CLI governance artifact reader rejects excessive JSON nesting before downstream parse", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zyron-cli-governance-depth-"));
+  try {
+    const path = join(dir, "deep.json");
+    await writeFile(path, `${"[".repeat(65)}0${"]".repeat(65)}\n`);
+    await assert.rejects(() => readCliGovernanceArtifactUtf8(path), /JSON complexity exceeded/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI governance artifact reader rejects excessive structural density", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zyron-cli-governance-density-"));
+  try {
+    const path = join(dir, "dense.json");
+    const fields = Array.from({ length: 50_001 }, (_, index) => `"k${index}":0`).join(",");
+    const contents = `{${fields}}`;
+    assert.ok(Buffer.byteLength(contents, "utf8") < CLI_GOVERNANCE_ARTIFACT_MAX_BYTES);
+    await writeFile(path, contents);
+    await assert.rejects(() => readCliGovernanceArtifactUtf8(path), /JSON complexity exceeded/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI governance artifact complexity scan ignores quoted and escaped punctuation", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zyron-cli-governance-quoted-"));
+  try {
+    const path = join(dir, "quoted.json");
+    const contents = JSON.stringify({ note: "[[[{,,,:::}]]] \\\"still-string\\\"" });
+    await writeFile(path, contents);
+    assert.equal(await readCliGovernanceArtifactUtf8(path), contents);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("CLI governance artifact reader rejects POSIX symlink substitution", { skip: process.platform === "win32" }, async () => {
   const dir = await mkdtemp(join(tmpdir(), "zyron-cli-governance-symlink-"));
   try {
