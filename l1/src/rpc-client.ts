@@ -43,8 +43,10 @@ export async function readBoundedResponseText(
   // A trustworthy Content-Length can be allocated exactly. Chunked/unknown-length
   // responses start small and grow only with observed body bytes, while maxBytes
   // remains the absolute allocation and wire-byte ceiling.
-  let capacity = declaredBytes ?? Math.min(maxBytes, RPC_CLIENT_INITIAL_RESPONSE_BYTES);
-  let bytes = allocateResponseBytes(capacity, hooks);
+  let bytes = allocateResponseBytes(
+    declaredBytes ?? Math.min(maxBytes, RPC_CLIENT_INITIAL_RESPONSE_BYTES),
+    hooks
+  );
   let total = 0;
   try {
     while (true) {
@@ -64,7 +66,6 @@ export async function readBoundedResponseText(
         const grown = allocateResponseBytes(nextCapacity, hooks);
         grown.set(bytes.subarray(0, total));
         bytes = grown;
-        capacity = nextCapacity;
       }
       bytes.set(value, total);
       total += value.byteLength;
