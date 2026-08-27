@@ -176,6 +176,21 @@ test("byte pressure never cascades through multiple ordinary evictions for one i
   assert.deepEqual(new Set(mempool.values().map((tx) => tx.txid)), new Set([first.txid, second.txid]));
 });
 
+test("rejected same-nonce replacement preserves the original transaction", () => {
+  const first = transfer(1);
+  const second = transfer(2);
+  const oversizedReplacement = { ...transferReplacement(second), feeAtoms: 1_000_000_000_000 };
+  const byteBudget = txBytes(first) + txBytes(second);
+  const mempool = new Mempool(10, 0, byteBudget, 1024 * 1024);
+
+  mempool.add(first);
+  mempool.add(second);
+  assert.ok(txBytes(first) + txBytes(oversizedReplacement) > byteBudget);
+  assert.ok(txBytes(oversizedReplacement) <= byteBudget);
+  assert.throws(() => mempool.add(oversizedReplacement), /Mempool full/);
+  assert.deepEqual(new Set(mempool.values().map((tx) => tx.txid)), new Set([first.txid, second.txid]));
+});
+
 test("non-mining byte accounting is released by removal and stays exact across replacement", () => {
   const first = transfer(1);
   const second = transfer(2);
@@ -196,7 +211,8 @@ test("mining retained-byte reserve is isolated from saturated non-mining bytes",
   const normal = transfer(1);
   const firstClaim = miningClaim(1);
   const strongerClaim = { ...miningClaim(2), height: firstClaim.height + 1 };
-  const mempool = new Mempool(10, 2, txBytes(normal), txBytes(firstClaim));
+  const miningByteBudget = Math.max(txBytes(firstClaim), txBytes(strongerClaim));
+  const mempool = new Mempool(10, 2, txBytes(normal), miningByteBudget);
 
   mempool.add(normal);
   assert.throws(() => mempool.add(transfer(2)), /Mempool full/);
