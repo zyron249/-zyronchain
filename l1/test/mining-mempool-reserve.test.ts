@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { canonicalJson } from "../src/codec.js";
 import { Mempool } from "../src/mempool.js";
 import type { MiningClaimTx, TransferTx } from "../src/types.js";
 
@@ -62,6 +63,10 @@ function strongerMiningReplacement(existing: MiningClaimTx): MiningClaimTx {
     signature: "66".repeat(64),
     txid: "fe".repeat(32)
   };
+}
+
+function txBytes(tx: TransferTx | MiningClaimTx): number {
+  return Buffer.byteLength(canonicalJson(tx), "utf8");
 }
 
 test("reserved mining capacity remains available when non-mining capacity is saturated", () => {
@@ -143,4 +148,79 @@ test("occupancy accounting stays exact across remove prune and same-nonce replac
   assert.equal(mempool.size, 3);
   assert.equal(mempool.values().filter((tx) => tx.kind === "mining_claim").length, 1);
   assert.ok(mempool.values().some((tx) => tx.txid === strongerIndependentClaim.txid));
+});
+
+test("non-mining retained bytes fail closed before the entry-count cap", () => {
+  const first = transfer(1);
+  const second = transfer(2);
+  const byteBudget = txBytes(first) + txBytes(second) - 1;
+  const mempool = new Mempool(10, 0, byteBudget, 1024 * 1024);
+
+  mempool.add(first);
+  assert.throws(() => mempool.add(second), /Mempool full/);
+  assert.equal(mempool.size, 1);
+  assert.equal(mempool.values()[0]?.txid, first.txid);
+});
+
+test("byte pressure never cascades through multiple ordinary evictions for one incoming transaction", () => {
+  const first = transfer(1);
+  const second = transfer(2);
+  const incoming = { ...transfer(3), feeAtoms: 1_000_000_000_000 };
+  const byteBudget = txBytes(first) + txBytes(second);
+  const mempool = new Mempool(10, 0, byteBudget, 1024 * 1024);
+
+  mempool.add(first);
+  mempool.add(second);
+  assert.ok(txBytes(second) + txBytes(incoming) > byteBudget);
+  assert.throws(() => mempool.add(incoming), /Mempool full/);
+  assert.deepEqual(new Set(mempool.values().map((tx) => tx.txid)), new Set([first.txid, second.txid]));
+});
+
+test("rejected same-nonce replacement preserves the original transaction", () => {
+  const first = transfer(1);
+  const second = transfer(2);
+  const oversizedReplacement = { ...transferReplacement(second), feeAtoms: 1_000_000_000_000 };
+  const byteBudget = txBytes(first) + txBytes(second);
+  const mempool = new Mempool(10, 0, byteBudget, 1024 * 1024);
+
+  mempool.add(first);
+  mempool.add(second);
+  assert.ok(txBytes(first) + txBytes(oversizedReplacement) > byteBudget);
+  assert.ok(txBytes(oversizedReplacement) <= byteBudget);
+  assert.throws(() => mempool.add(oversizedReplacement), /Mempool full/);
+  assert.deepEqual(new Set(mempool.values().map((tx) => tx.txid)), new Set([first.txid, second.txid]));
+});
+
+test("non-mining byte accounting is released by removal and stays exact across replacement", () => {
+  const first = transfer(1);
+  const second = transfer(2);
+  const replacement = transferReplacement(second);
+  const byteBudget = Math.max(txBytes(first), txBytes(second), txBytes(replacement));
+  const mempool = new Mempool(10, 0, byteBudget, 1024 * 1024);
+
+  mempool.add(first);
+  mempool.remove([first.txid]);
+  mempool.add(second);
+  mempool.add(replacement);
+
+  assert.equal(mempool.size, 1);
+  assert.equal(mempool.values()[0]?.txid, replacement.txid);
+});
+
+test("mining retained-byte reserve is isolated from saturated non-mining bytes", () => {
+  const normal = transfer(1);
+  const firstClaim = miningClaim(1);
+  const strongerClaim = { ...miningClaim(2), height: firstClaim.height + 1 };
+  const miningByteBudget = Math.max(txBytes(firstClaim), txBytes(strongerClaim));
+  const mempool = new Mempool(10, 2, txBytes(normal), miningByteBudget);
+
+  mempool.add(normal);
+  assert.throws(() => mempool.add(transfer(2)), /Mempool full/);
+
+  mempool.add(firstClaim);
+  mempool.add(strongerClaim);
+
+  const values = mempool.values();
+  assert.equal(values.filter((tx) => tx.kind !== "mining_claim").length, 1);
+  assert.deepEqual(values.filter((tx) => tx.kind === "mining_claim").map((tx) => tx.txid), [strongerClaim.txid]);
 });
