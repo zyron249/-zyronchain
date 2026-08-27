@@ -36,6 +36,39 @@ test("bounded RPC text rejects oversized declared and streamed bodies before unb
   await assert.rejects(readBoundedResponseText(new Response(body), 64), /too large/);
 });
 
+test("bounded RPC text sizes unknown-length buffers to observed payloads", async () => {
+  const allocations: number[] = [];
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("ok"));
+      controller.close();
+    }
+  });
+  assert.equal(
+    await readBoundedResponseText(new Response(body), 64 * 1024, "RPC response", {
+      onAllocate(bytes) { allocations.push(bytes); }
+    }),
+    "ok"
+  );
+  assert.deepEqual(allocations, [4 * 1024]);
+});
+
+test("bounded RPC text grows unknown-length buffers only as observed bytes require", async () => {
+  const allocations: number[] = [];
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array(3_000).fill(0x61));
+      controller.enqueue(new Uint8Array(2_000).fill(0x62));
+      controller.close();
+    }
+  });
+  const text = await readBoundedResponseText(new Response(body), 64 * 1024, "RPC response", {
+    onAllocate(bytes) { allocations.push(bytes); }
+  });
+  assert.equal(Buffer.byteLength(text), 5_000);
+  assert.deepEqual(allocations, [4 * 1024, 8 * 1024]);
+});
+
 test("bounded RPC text enforces declared body length exactly", async () => {
   await assert.rejects(
     readBoundedResponseText(new Response("short", { headers: { "content-length": "6" } }), 64),
