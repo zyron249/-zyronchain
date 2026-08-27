@@ -39,6 +39,32 @@ test("standalone miner rejects legacy plaintext private-key JSON", async () => {
   }
 });
 
+test("standalone miner rejects excessive keystore JSON nesting before parse", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-miner-depth-"));
+  const keyPath = join(root, "wallet.json");
+  const passwordPath = join(root, "wallet.password");
+  try {
+    await writeFile(keyPath, `${"[".repeat(33)}0${"]".repeat(33)}\n`, { mode: 0o600 });
+    await writeFile(passwordPath, `${PASSWORD}\n`, { mode: 0o600 });
+    await assert.rejects(loadEncryptedMinerPrivateKey(keyPath, passwordPath), /Miner keystore JSON complexity exceeded/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("standalone miner rejects dense keystore JSON structure before parse", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-miner-tokens-"));
+  const keyPath = join(root, "wallet.json");
+  const passwordPath = join(root, "wallet.password");
+  try {
+    await writeFile(keyPath, `[${Array.from({ length: 4_100 }, () => "0").join(",")}]\n`, { mode: 0o600 });
+    await writeFile(passwordPath, `${PASSWORD}\n`, { mode: 0o600 });
+    await assert.rejects(loadEncryptedMinerPrivateKey(keyPath, passwordPath), /Miner keystore JSON complexity exceeded/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("standalone miner rejects group or world-accessible secret files on POSIX", async (t) => {
   if (process.platform === "win32") return t.skip("POSIX mode bits are not authoritative on Windows");
   const root = await mkdtemp(join(tmpdir(), "zyron-miner-mode-"));
