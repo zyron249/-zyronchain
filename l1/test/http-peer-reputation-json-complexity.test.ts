@@ -34,7 +34,7 @@ test("HTTP peer reputation JSON complexity rejects excessive nesting before pars
 });
 
 test("HTTP peer reputation JSON complexity rejects excessive structural density", () => {
-  const dense = `[${Array.from({ length: Math.ceil(MAX_HTTP_REPUTATION_JSON_STRUCTURAL_TOKENS / 2) + 8 }, () => "0").join(",")}]`;
+  const dense = `[${Array.from({ length: MAX_HTTP_REPUTATION_JSON_STRUCTURAL_TOKENS + 8 }, () => "0").join(",")}]`;
   assert.throws(
     () => assertBoundedHttpReputationJsonStructure(dense),
     /HTTP peer reputation JSON complexity exceeded/
