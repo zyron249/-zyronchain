@@ -73,23 +73,23 @@ export class Mempool {
       const configuredMiningCapacity = this.miningReserve > 0
         ? this.miningReserve
         : MAX_MINING_MEMPOOL_CLAIMS;
-      while (this.miningSize >= configuredMiningCapacity || this.byId.size >= totalCapacity ||
+      if (this.miningSize >= configuredMiningCapacity || this.byId.size >= totalCapacity ||
           this.miningBytes + txBytes > this.maxMiningBytes) {
         const weakest = this.weakestMiningClaim();
-        if (!weakest || !isBetterMiningClaim(weakest.tx, tx)) {
+        if (!weakest || !isBetterMiningClaim(weakest.tx, tx) ||
+            this.miningBytes - transactionBytes(weakest.tx) + txBytes > this.maxMiningBytes) {
           throw new Error("Mining mempool full");
         }
         this.deleteTransaction(weakest.txid, weakest.tx);
       }
-    } else {
-      while (this.nonMiningSize >= this.maxNonMiningSize ||
-          this.nonMiningBytes + txBytes > this.maxNonMiningBytes) {
-        const eviction = this.lowestPriorityEvictableTransfer();
-        if (!eviction || (tx.kind === "transfer" && !hasRequiredFeeRateBump(eviction.tx, tx))) {
-          throw new Error("Mempool full");
-        }
-        this.deleteTransaction(eviction.txid, eviction.tx);
+    } else if (this.nonMiningSize >= this.maxNonMiningSize ||
+        this.nonMiningBytes + txBytes > this.maxNonMiningBytes) {
+      const eviction = this.lowestPriorityEvictableTransfer();
+      if (!eviction || (tx.kind === "transfer" && !hasRequiredFeeRateBump(eviction.tx, tx)) ||
+          this.nonMiningBytes - transactionBytes(eviction.tx) + txBytes > this.maxNonMiningBytes) {
+        throw new Error("Mempool full");
       }
+      this.deleteTransaction(eviction.txid, eviction.tx);
     }
 
     const stored = structuredClone(tx);
