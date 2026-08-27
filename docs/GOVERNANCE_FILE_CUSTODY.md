@@ -4,7 +4,9 @@ Validator-set and protocol-governance proposal/approval files are local control-
 
 The boundary enforces a 1 MiB maximum per proposal/approval artifact, regular-file semantics, canonical path revalidation before/after descriptor reads, POSIX no-follow/non-blocking behavior, and 0600 staged copies in a private temporary directory. Repeated `--approval` inputs are staged independently and preserve their original order.
 
-Direct invocation of the compiled legacy CLI is defense-in-depth hardened to the same per-artifact reader: validator/protocol proposal and approval readers call `readCliGovernanceArtifactUtf8()` before JSON materialization. Therefore both the published staged entrypoint and direct legacy entrypoint enforce the 1 MiB descriptor/path-custody boundary; published 0600 staging remains unchanged and repeated approval ordering is preserved.
+Before downstream JSON parsing, the shared governance reader also applies a deterministic structural-complexity preflight: nesting is capped at 64 levels and structural punctuation at 100,000 tokens. Punctuation inside quoted or escaped JSON strings is ignored by the scan. This keeps parser/object-graph work bounded within the existing 1 MiB file ceiling without changing governance schema, quorum, signature, authorization, or activation semantics.
+
+Direct invocation of the compiled legacy CLI is defense-in-depth hardened to the same per-artifact reader: validator/protocol proposal and approval readers call `readCliGovernanceArtifactUtf8()` before JSON materialization. Therefore both the published staged entrypoint and direct legacy entrypoint enforce the 1 MiB descriptor/path-custody and structural-complexity boundary; published 0600 staging remains unchanged and repeated approval ordering is preserved.
 
 The dedicated custody CI exercises both direct legacy invocation and the published path boundary; green CI is evidence of the file-custody implementation only, not governance authorization or launch readiness.
 
