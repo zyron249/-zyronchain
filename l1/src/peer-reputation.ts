@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 
 import { readBoundedUtf8File } from "./bounded-file.js";
 import { canonicalJson } from "./codec.js";
+import { assertBoundedHttpReputationJsonStructure } from "./http-peer-reputation-json-complexity.js";
 
 const REPUTATION_VERSION = 1;
 const BASE_BACKOFF_MS = 30_000;
@@ -47,6 +48,7 @@ export class PeerReputationStore {
         MAX_PEER_REPUTATION_SNAPSHOT_BYTES,
         "Peer reputation snapshot"
       );
+      assertBoundedHttpReputationJsonStructure(text);
       const value = JSON.parse(text) as unknown;
       const snapshot = validateSnapshot(value);
       for (const entry of snapshot.peers) store.entries.set(entry.endpoint, entry);
