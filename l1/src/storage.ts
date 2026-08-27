@@ -8,6 +8,7 @@ import { canonicalJson, sha256Hex } from "./codec.js";
 import { readBoundedRegularControlFile } from "./control-file.js";
 import { readBoundedFileBuffer } from "./bounded-file.js";
 import { assertBoundedCheckpointJsonStructure } from "./checkpoint-json-complexity.js";
+import { assertSigningJournalJsonComplexity } from "./signing-journal-json-complexity.js";
 import { ZyronChain } from "./chain.js";
 import { StateV2DiskStore } from "./state-v2-store.js";
 import { stateV2TransactionKeyPreimages } from "./state-v2.js";
@@ -811,6 +812,7 @@ export class SigningJournal {
       for await (const record of readLines(journal.path, MAX_SIGNING_LINE_BYTES, "Corrupt signing journal")) {
         const line = record.text;
         if (!line.trim()) continue;
+        assertSigningJournalJsonComplexity(line);
         const parsed = JSON.parse(line) as Record<string, unknown>;
         if (!Number.isSafeInteger(parsed.height) || !Number.isSafeInteger(parsed.round) ||
             (parsed.kind !== "attest" && parsed.kind !== "skip") ||
