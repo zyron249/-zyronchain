@@ -3,6 +3,9 @@ import { resolve } from "node:path";
 import { decryptPrivateKey, isEncryptedKeystore, normalizePasswordFile } from "./keystore.js";
 import { readPrivateRegularFile } from "./local-security.js";
 
+const MAX_MINER_KEYSTORE_JSON_NESTING_DEPTH = 32;
+const MAX_MINER_KEYSTORE_JSON_STRUCTURAL_TOKENS = 4_096;
+
 /**
  * Load a miner key only from the encrypted local-keystore format.
  *
@@ -18,7 +21,9 @@ export async function loadEncryptedMinerPrivateKey(keyPath: string, passwordPath
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(await readPrivateRegularFile(resolvedKeyPath, "Miner keystore"));
+    const contents = await readPrivateRegularFile(resolvedKeyPath, "Miner keystore");
+    assertMinerKeystoreJsonComplexity(contents);
+    parsed = JSON.parse(contents);
   } catch (error) {
     if (error instanceof SyntaxError) throw new Error("Miner keystore is not valid JSON");
     throw error;
@@ -29,4 +34,47 @@ export async function loadEncryptedMinerPrivateKey(keyPath: string, passwordPath
 
   const password = normalizePasswordFile(await readPrivateRegularFile(resolvedPasswordPath, "Miner password file"));
   return decryptPrivateKey(parsed, password);
+}
+
+function assertMinerKeystoreJsonComplexity(contents: string): void {
+  let inString = false;
+  let escaped = false;
+  let depth = 0;
+  let tokens = 0;
+
+  for (let index = 0; index < contents.length; index += 1) {
+    const code = contents.charCodeAt(index);
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (code === 0x5c) {
+        escaped = true;
+        continue;
+      }
+      if (code === 0x22) inString = false;
+      continue;
+    }
+
+    if (code === 0x22) {
+      inString = true;
+      continue;
+    }
+    if (code === 0x7b || code === 0x5b) {
+      depth += 1;
+      tokens += 1;
+      if (depth > MAX_MINER_KEYSTORE_JSON_NESTING_DEPTH) {
+        throw new Error("Miner keystore JSON complexity exceeded");
+      }
+    } else if (code === 0x7d || code === 0x5d) {
+      depth = Math.max(0, depth - 1);
+      tokens += 1;
+    } else if (code === 0x2c || code === 0x3a) {
+      tokens += 1;
+    }
+    if (tokens > MAX_MINER_KEYSTORE_JSON_STRUCTURAL_TOKENS) {
+      throw new Error("Miner keystore JSON complexity exceeded");
+    }
+  }
 }
