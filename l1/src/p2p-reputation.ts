@@ -5,6 +5,7 @@ import { peerIdFromString } from "@libp2p/peer-id";
 
 import { readBoundedUtf8File } from "./bounded-file.js";
 import { canonicalJson } from "./codec.js";
+import { assertBoundedNativeReputationJsonStructure } from "./p2p-reputation-json-complexity.js";
 
 const VERSION = 1;
 const MAX_ENTRIES = 256;
@@ -42,6 +43,7 @@ export class NativePeerReputationStore {
         MAX_NATIVE_REPUTATION_SNAPSHOT_BYTES,
         "Native peer reputation snapshot"
       );
+      assertBoundedNativeReputationJsonStructure(text);
       const snapshot = validateSnapshot(JSON.parse(text) as unknown);
       for (const entry of snapshot.peers) store.entries.set(entry.peerId, entry);
     } catch (error) {
