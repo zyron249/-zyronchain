@@ -6,7 +6,9 @@ This document records the one-time recovery boundary used when a node upgrades f
 
 Legacy `state-v2.nodes.ndjson` and `state-v2.keys.ndjson` inputs are consumed incrementally. The migration does not read or split either complete file into JavaScript memory. Node records are limited to 64 KiB per newline-terminated record, semantic-key records are limited to 1 KiB, input is read in bounded chunks, and validated records are committed to SQLite in batches of at most 256 entries. The normal State-v2 resolver cache remains separately bounded.
 
-An unterminated final record is treated as the historical crash tail and is ignored. A newline-terminated record that exceeds its byte limit is rejected before JSON parsing. Checksums, duplicate/conflict detection, root authentication and semantic-key verification remain fail-closed.
+Every complete legacy JSON line is structurally preflighted before `JSON.parse()`. Node envelopes are limited to 64 levels of nesting and 16,384 structural tokens; semantic-key envelopes are limited to 16 levels and 128 structural tokens. Brackets, braces, commas and colons inside quoted or escaped JSON strings are ignored by the structural scan, so semantic key text does not consume parser-complexity budget.
+
+An unterminated final record is treated as the historical crash tail and is ignored. A newline-terminated record that exceeds its byte or structural-complexity limit is rejected before JSON parsing. Checksums, duplicate/conflict detection, root authentication and semantic-key verification remain fail-closed.
 
 ## Cutover ordering
 
@@ -16,4 +18,4 @@ A crash before either marker is published is restart-safe: migration is idempote
 
 ## Readiness scope
 
-This hardening reduces upgrade/recovery memory amplification and malformed-record startup risk. It does not change consensus rules, State-v2 root semantics, validator authorization, mining activation, public-testnet activation or mainnet activation. Synthetic regression coverage is not evidence that public testnet or mainnet operational gates are satisfied.
+This hardening reduces upgrade/recovery memory and parser/object-graph amplification from malformed legacy records. It does not change consensus rules, State-v2 root semantics, validator authorization, mining activation, public-testnet activation or mainnet activation. Synthetic regression coverage is not evidence that public testnet or mainnet operational gates are satisfied.
