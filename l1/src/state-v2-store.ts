@@ -29,6 +29,10 @@ interface SemanticBackendMarker extends SemanticBackendMarkerBody { checksum: st
 
 const LEGACY_NODE_LINE_MAX_BYTES = 64 * 1024;
 const LEGACY_SEMANTIC_KEY_LINE_MAX_BYTES = 1_024;
+const LEGACY_NODE_JSON_MAX_DEPTH = 64;
+const LEGACY_NODE_JSON_MAX_STRUCTURAL_TOKENS = 16_384;
+const LEGACY_SEMANTIC_KEY_JSON_MAX_DEPTH = 16;
+const LEGACY_SEMANTIC_KEY_JSON_MAX_STRUCTURAL_TOKENS = 128;
 const LEGACY_MIGRATION_BATCH_SIZE = 256;
 const LEGACY_READ_CHUNK_BYTES = 16 * 1024;
 export const STATE_V2_METADATA_MAX_BYTES = 4 * 1024;
@@ -188,6 +192,8 @@ async function migrateLegacyNodeRecords(dataDir: string, nodeObjects: StateV2Nod
     join(dataDir, "state-v2.nodes.ndjson"),
     LEGACY_NODE_LINE_MAX_BYTES,
     "State v2 legacy node",
+    LEGACY_NODE_JSON_MAX_DEPTH,
+    LEGACY_NODE_JSON_MAX_STRUCTURAL_TOKENS,
     async (line) => {
       const envelope = parseNodeEnvelope(line);
       batch.push(envelope.record);
@@ -241,6 +247,8 @@ async function migrateSemanticKeyPreimages(dataDir: string, nodeObjects: StateV2
     join(dataDir, "state-v2.keys.ndjson"),
     LEGACY_SEMANTIC_KEY_LINE_MAX_BYTES,
     "State v2 legacy semantic key",
+    LEGACY_SEMANTIC_KEY_JSON_MAX_DEPTH,
+    LEGACY_SEMANTIC_KEY_JSON_MAX_STRUCTURAL_TOKENS,
     async (line) => {
       const key = parseSemanticKeyEnvelope(line);
       batch.push(key);
@@ -293,6 +301,8 @@ async function forEachCompleteLegacyLine(
   path: string,
   maxLineBytes: number,
   label: string,
+  maxJsonDepth: number,
+  maxStructuralTokens: number,
   onLine: (line: string) => void | Promise<void>
 ): Promise<void> {
   let handle;
@@ -321,7 +331,11 @@ async function forEachCompleteLegacyLine(
           ? Buffer.from(segment)
           : Buffer.concat([pending, segment], pending.length + segment.length);
         pending = Buffer.alloc(0);
-        if (lineBytes.length > 0) await onLine(lineBytes.toString("utf8"));
+        if (lineBytes.length > 0) {
+          const line = lineBytes.toString("utf8");
+          assertLegacyJsonComplexity(line, label, maxJsonDepth, maxStructuralTokens);
+          await onLine(line);
+        }
         start = index + 1;
       }
       const remainder = view.subarray(start);
@@ -343,6 +357,43 @@ async function forEachCompleteLegacyLine(
     // oversized one. Every newline-terminated record is byte-bounded and parsed.
   } finally {
     await handle.close();
+  }
+}
+
+function assertLegacyJsonComplexity(line: string, label: string, maxDepth: number, maxStructuralTokens: number): void {
+  let depth = 0;
+  let structuralTokens = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{" || char === "[") {
+      depth += 1;
+      structuralTokens += 1;
+      if (depth > maxDepth) throw new Error(`${label} JSON nesting exceeds ${maxDepth}`);
+    } else if (char === "}" || char === "]") {
+      depth = Math.max(0, depth - 1);
+      structuralTokens += 1;
+    } else if (char === "," || char === ":") {
+      structuralTokens += 1;
+    }
+    if (structuralTokens > maxStructuralTokens) {
+      throw new Error(`${label} JSON structure exceeds ${maxStructuralTokens} token limit`);
+    }
   }
 }
 
