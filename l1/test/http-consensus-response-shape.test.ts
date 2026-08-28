@@ -194,16 +194,24 @@ test("HTTP consensus collection uses one shared wall-clock deadline", async () =
   const peers = Array.from({ length: 64 }, (_, index) => `peer-${index}`);
   let started = 0;
   const startedAt = Date.now();
-  const result = await collectHttpConsensusPeers(peers, async (_peer, signal) => {
-    started += 1;
-    await new Promise<void>((resolve, reject) => {
-      if (signal.aborted) return reject(signal.reason);
-      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-    });
-    return "unreachable";
-  }, 40, 4);
-  const elapsed = Date.now() - startedAt;
-  assert.deepEqual(result, []);
-  assert.ok(started <= 4, `started ${started} requests after deadline`);
-  assert.ok(elapsed < 250, `shared deadline took ${elapsed}ms`);
+  // The production deadline timer is deliberately unref'ed. Keep the synthetic
+  // stalled-request harness alive on Node 22 as well as Node 24 so the test
+  // observes the deadline rather than the test runner observing an idle loop.
+  const keepAlive = setInterval(() => {}, 1_000);
+  try {
+    const result = await collectHttpConsensusPeers(peers, async (_peer, signal) => {
+      started += 1;
+      await new Promise<void>((resolve, reject) => {
+        if (signal.aborted) return reject(signal.reason);
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+      return "unreachable";
+    }, 40, 4);
+    const elapsed = Date.now() - startedAt;
+    assert.deepEqual(result, []);
+    assert.ok(started <= 4, `started ${started} requests after deadline`);
+    assert.ok(elapsed < 250, `shared deadline took ${elapsed}ms`);
+  } finally {
+    clearInterval(keepAlive);
+  }
 });
