@@ -3,6 +3,7 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:
 import { addressFromPublicKey, publicKeyFromPrivate } from "./crypto.js";
 
 const KEYSTORE_DOMAIN = "zyronchain/local-keystore/v1";
+const MAX_KEYSTORE_PASSWORD_BYTES = 1_024;
 const SCRYPT_N = 32_768;
 const SCRYPT_R = 8;
 const SCRYPT_P = 1;
@@ -95,7 +96,9 @@ export function isEncryptedKeystore(value: unknown): boolean {
 }
 
 export function normalizePasswordFile(contents: string): string {
-  if (Buffer.byteLength(contents, "utf8") > 1_024) throw new Error("Keystore password file is too large");
+  if (Buffer.byteLength(contents, "utf8") > MAX_KEYSTORE_PASSWORD_BYTES) {
+    throw new Error("Keystore password file is too large");
+  }
   const password = contents.replace(/\r?\n$/, "");
   assertPassword(password);
   return password;
@@ -147,6 +150,9 @@ function assertPrivateKey(value: string): void {
 
 function assertPassword(value: string): void {
   if (value.length < 12) throw new Error("Keystore password must contain at least 12 characters");
+  if (Buffer.byteLength(value, "utf8") > MAX_KEYSTORE_PASSWORD_BYTES) {
+    throw new Error("Keystore password is too large");
+  }
   if (value.includes("\0") || value.includes("\n") || value.includes("\r")) {
     throw new Error("Keystore password contains forbidden characters");
   }
