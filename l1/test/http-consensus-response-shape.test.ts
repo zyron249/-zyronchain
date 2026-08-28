@@ -4,8 +4,10 @@ import test from "node:test";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import {
   MAX_HTTP_ATTESTATION_RESPONSE_BYTES,
+  MAX_HTTP_CONSENSUS_OUTBOUND_CONCURRENCY,
   MAX_HTTP_ROUND_SKIP_RESPONSE_BYTES,
   PeerClient,
+  collectHttpConsensusPeers,
   validateHttpPeerAttestationShape,
   validateHttpPeerRoundSkipVoteShape
 } from "../src/node.js";
@@ -155,4 +157,42 @@ test("HTTP attestation canonical response remains accepted under tightened ceili
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("HTTP consensus collection bounds aggregate concurrency", async () => {
+  const peers = Array.from({ length: 32 }, (_, index) => `peer-${index}`);
+  let active = 0;
+  let maxActive = 0;
+  const releases: Array<() => void> = [];
+  const pending = collectHttpConsensusPeers(peers, async (peer) => {
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await new Promise<void>((resolve) => releases.push(resolve));
+    active -= 1;
+    return peer;
+  }, 1_000);
+  while (releases.length < MAX_HTTP_CONSENSUS_OUTBOUND_CONCURRENCY) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(maxActive, MAX_HTTP_CONSENSUS_OUTBOUND_CONCURRENCY);
+  while (releases.length > 0) releases.shift()!();
+  const result = await pending;
+  assert.equal(result.length, peers.length);
+  assert.ok(maxActive <= MAX_HTTP_CONSENSUS_OUTBOUND_CONCURRENCY);
+});
+
+test("HTTP consensus collection uses one shared wall-clock deadline", async () => {
+  const peers = Array.from({ length: 64 }, (_, index) => `peer-${index}`);
+  let started = 0;
+  const startedAt = Date.now();
+  const result = await collectHttpConsensusPeers(peers, async (_peer, signal) => {
+    started += 1;
+    await new Promise<void>((resolve, reject) => {
+      if (signal.aborted) return reject(signal.reason);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+    return "unreachable";
+  }, 40, 4);
+  const elapsed = Date.now() - startedAt;
+  assert.deepEqual(result, []);
+  assert.ok(started <= 4, `started ${started} requests after deadline`);
+  assert.ok(elapsed < 250, `shared deadline took ${elapsed}ms`);
 });
