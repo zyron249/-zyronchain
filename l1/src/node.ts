@@ -26,6 +26,7 @@ import type { Address, Block, BlockAttestation, RoundSkipVote } from "./types.js
 import { LocalValidatorSigner, type ValidatorSigner } from "./validator-signer.js";
 
 const HTTP_CONSENSUS_TIMEOUT_MS = 8_000;
+export const MAX_HTTP_CONSENSUS_OUTBOUND_CONCURRENCY = 8;
 export const MAX_HTTP_ATTESTATION_RESPONSE_BYTES = 8_192;
 export const MAX_HTTP_ROUND_SKIP_RESPONSE_BYTES = 16_384;
 export const MAX_CONSENSUS_ROUND_CATCHUP = 64;
@@ -146,7 +147,8 @@ async function postHttpConsensusJson<T>(
   maxResponseBytes: number,
   peerAuthToken: string | undefined,
   peerRequestCredentials: PeerRequestCredentials | undefined,
-  validate: (value: unknown) => T
+  validate: (value: unknown) => T,
+  signal: AbortSignal
 ): Promise<T> {
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -168,10 +170,45 @@ async function postHttpConsensusJson<T>(
     method: "POST",
     headers,
     body,
-    signal: AbortSignal.timeout(HTTP_CONSENSUS_TIMEOUT_MS)
+    signal
   });
   if (!response.ok) throw new Error(`Peer returned HTTP ${response.status}`);
   return parseHttpConsensusResponse(response, maxResponseBytes, validate);
+}
+
+export async function collectHttpConsensusPeers<T>(
+  peers: readonly string[],
+  request: (peer: string, signal: AbortSignal) => Promise<T>,
+  deadlineMs = HTTP_CONSENSUS_TIMEOUT_MS,
+  concurrency = MAX_HTTP_CONSENSUS_OUTBOUND_CONCURRENCY
+): Promise<T[]> {
+  if (!Number.isSafeInteger(deadlineMs) || deadlineMs < 1) throw new Error("Invalid HTTP consensus deadline");
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new Error("Invalid HTTP consensus concurrency");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error("HTTP consensus collection deadline exceeded")), deadlineMs);
+  timer.unref?.();
+  let next = 0;
+  const results: T[] = [];
+  const worker = async (): Promise<void> => {
+    while (!controller.signal.aborted) {
+      const index = next;
+      if (index >= peers.length) return;
+      next += 1;
+      try {
+        const value = await request(peers[index]!, controller.signal);
+        if (!controller.signal.aborted) results.push(value);
+      } catch {
+      }
+    }
+  };
+  try {
+    const workerCount = Math.min(peers.length, concurrency);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    return results;
+  } finally {
+    clearTimeout(timer);
+    if (!controller.signal.aborted) controller.abort();
+  }
 }
 
 export class PeerClient extends BasePeerClient {
@@ -185,7 +222,7 @@ export class PeerClient extends BasePeerClient {
   }
 
   override async requestAttestations(block: Block): Promise<BlockAttestation[]> {
-    const results = await Promise.allSettled(this.peers.map(async (peer) => {
+    return collectHttpConsensusPeers(this.peers, async (peer, signal) => {
       return postHttpConsensusJson(
         `${peer}/proposal/attest`,
         block,
@@ -196,10 +233,10 @@ export class PeerClient extends BasePeerClient {
           assertPlainRecord(payload, "attestation response");
           assertExactKeys(payload, ["attestation"], "attestation response");
           return validateHttpPeerAttestationShape(payload.attestation);
-        }
+        },
+        signal
       );
-    }));
-    return results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+    });
   }
 
   override async requestRoundSkips(
@@ -207,7 +244,7 @@ export class PeerClient extends BasePeerClient {
     round: number,
     previousCertificate: RoundSkipVote[] = []
   ): Promise<RoundSkipVote[]> {
-    const results = await Promise.allSettled(this.peers.map(async (peer) => {
+    return collectHttpConsensusPeers(this.peers, async (peer, signal) => {
       return postHttpConsensusJson(
         `${peer}/round/skip`,
         { height, round, previousCertificate },
@@ -218,10 +255,10 @@ export class PeerClient extends BasePeerClient {
           assertPlainRecord(payload, "round skip response");
           assertExactKeys(payload, ["vote"], "round skip response");
           return validateHttpPeerRoundSkipVoteShape(payload.vote);
-        }
+        },
+        signal
       );
-    }));
-    return results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+    });
   }
 }
 
