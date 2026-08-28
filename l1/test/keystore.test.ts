@@ -40,12 +40,24 @@ test("encrypted keystore rejects wrong passwords and authenticated-field substit
   );
 });
 
+test("keystore password resource ceiling applies at direct crypto entrypoints", () => {
+  const privateKey = generatePrivateKey();
+  const oversizedAscii = "x".repeat(1_025);
+  const oversizedUtf8 = "é".repeat(513);
+
+  assert.throws(() => encryptPrivateKey(privateKey, oversizedAscii), /password is too large/i);
+  assert.throws(() => encryptPrivateKey(privateKey, oversizedUtf8), /password is too large/i);
+  assert.throws(() => decryptPrivateKey(null, oversizedAscii), /password is too large/i);
+});
+
 test("password files are bounded, single-line secrets", () => {
   assert.equal(normalizePasswordFile("twelve-characters-or-more\n"), "twelve-characters-or-more");
   assert.equal(normalizePasswordFile("twelve-characters-or-more\r\n"), "twelve-characters-or-more");
+  assert.equal(normalizePasswordFile("x".repeat(1_024)), "x".repeat(1_024));
   assert.throws(() => normalizePasswordFile("too-short"), /at least 12/);
   assert.throws(() => normalizePasswordFile("long-enough\nsecond-line"), /forbidden characters/);
   assert.throws(() => normalizePasswordFile("x".repeat(1_025)), /too large/);
+  assert.throws(() => normalizePasswordFile("é".repeat(513)), /too large/);
 });
 
 test("mutable keystore secret buffers are explicitly zeroized", () => {
