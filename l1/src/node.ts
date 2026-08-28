@@ -28,6 +28,7 @@ import { LocalValidatorSigner, type ValidatorSigner } from "./validator-signer.j
 const HTTP_CONSENSUS_TIMEOUT_MS = 8_000;
 export const MAX_HTTP_ATTESTATION_RESPONSE_BYTES = 8_192;
 export const MAX_HTTP_ROUND_SKIP_RESPONSE_BYTES = 16_384;
+export const MAX_CONSENSUS_ROUND_CATCHUP = 64;
 const MAX_HTTP_CONSENSUS_WIRE_BYTES_INFLIGHT = 16_000_000;
 const MAX_HTTP_CONSENSUS_PARSE_BYTES_INFLIGHT = 64_000_000;
 const MAX_HTTP_CONSENSUS_CHAIN_ID_LENGTH = 128;
@@ -132,9 +133,6 @@ async function parseHttpConsensusResponse<T>(
     if (total === 0) throw new Error("Peer returned empty body");
     const parsed = parsePeerResponseJsonChunks(chunks, total, httpConsensusParseBudget);
     releaseDecoded = parsed.release;
-    // The route-specific inner shape gate runs before the decoded-memory lease
-    // is released, so Promise.allSettled() cannot retain arbitrary nested peer
-    // graphs after parse-budget capacity has been returned.
     return validate(parsed.value);
   } finally {
     releaseDecoded?.();
@@ -176,12 +174,6 @@ async function postHttpConsensusJson<T>(
   return parseHttpConsensusResponse(response, maxResponseBytes, validate);
 }
 
-/**
- * Canonical configured-HTTP peer client. The base implementation still owns
- * sync/discovery/gossip behavior; consensus result parsing is overridden here
- * so inner peer-controlled graphs are shape-gated before their decoded-memory
- * leases are released.
- */
 export class PeerClient extends BasePeerClient {
   constructor(
     peers: string[],
@@ -243,8 +235,12 @@ export class PeerClient extends BasePeerClient {
  * NodeService clock watermark and making an older captured proposal timestamp
  * look like a physical clock rollback.
  *
- * Tests that explicitly inject `nowMs` retain the historical deterministic
- * fixed-clock behavior.
+ * Round catch-up is explicitly bounded before any skip-vote signing or peer
+ * request. A clock fault or stale tip that derives a larger round fails closed;
+ * the validator never clamps to a different round/proposer.
+ *
+ * Tests that explicitly inject `nowMs` retain deterministic fixed-clock
+ * behavior inside the supported catch-up window.
  */
 export async function produceFinalizedBlock(
   service: NodeService,
@@ -259,6 +255,7 @@ export async function produceFinalizedBlock(
   const elapsed = consensusNowMs - chain.tip.header.timestampMs;
   if (elapsed < BLOCK_INTERVAL_MS) return null;
   const round = Math.max(0, Math.floor((elapsed - BLOCK_INTERVAL_MS) / ROUND_WINDOW_MS));
+  if (!Number.isSafeInteger(round) || round > MAX_CONSENSUS_ROUND_CATCHUP) return null;
   const signer = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
   const publicKey = signer.publicKey;
   const validators = chain.validatorsAt(chain.height + 1);
@@ -278,7 +275,6 @@ export async function produceFinalizedBlock(
           signingNowMs()
         ));
       } catch {
-        // An honest validator that already attested this round must never also skip it.
       }
       votes.push(...await peers.requestRoundSkips(chain.height + 1, skippedRound, previousCertificate));
       const unique = new Map<Address, RoundSkipVote>();
@@ -294,7 +290,6 @@ export async function produceFinalizedBlock(
           );
           unique.set(vote.validator, vote);
         } catch {
-          // A malformed or invalid peer vote cannot poison an otherwise valid quorum.
         }
       }
       const certificate = [...unique.values()];
@@ -338,7 +333,6 @@ export async function produceFinalizedBlock(
       validateBlockAttestation(proposal, attestation, validators);
       byValidator.set(attestation.validator, attestation);
     } catch {
-      // Invalid peer attestations are ignored instead of poisoning block assembly.
     }
   }
   const withVotes = { ...proposal, attestations: [...byValidator.values()] };
