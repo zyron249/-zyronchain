@@ -12,7 +12,7 @@ ZyronChain is a Python/Flask proof-of-work blockchain testnet with independently
 blocks, signed secp256k1 transactions, cumulative-work fork choice, PostgreSQL persistence,
 a browser wallet and a web explorer.
 
-Live explorer: https://zyronchain.onrender.com
+Historical Render endpoint: `https://zyronchain.onrender.com` is intentionally quarantined and must not be used as a canonical ZyronChain explorer, RPC, bootstrap, miner, checkpoint, or release endpoint.
 
 ## Current release candidate
 
