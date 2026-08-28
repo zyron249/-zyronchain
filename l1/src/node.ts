@@ -7,6 +7,8 @@ import {
   PeerClient as BasePeerClient,
   PeerResponseByteBudget,
   RPC_API_VERSION,
+  assertPeerHttpSuccess,
+  cancelPeerResponseBody,
   parsePeerResponseJsonChunks,
   type ConsensusPeerClient,
   type PeerRequestCredentials
@@ -83,27 +85,27 @@ async function parseHttpConsensusResponse<T>(
 ): Promise<T> {
   const contentType = response.headers.get("content-type");
   if (!contentType || !/^application\/json(?:\s*;|$)/i.test(contentType)) {
-    await response.body?.cancel();
+    await cancelPeerResponseBody(response);
     throw new Error("Peer response must use application/json");
   }
   const advertised = response.headers.get("x-zyron-rpc-version");
   if (advertised === null) {
-    await response.body?.cancel();
+    await cancelPeerResponseBody(response);
     throw new Error("Peer response is missing RPC API version");
   }
   if (advertised !== String(RPC_API_VERSION)) {
-    await response.body?.cancel();
+    await cancelPeerResponseBody(response);
     throw new Error(`Peer uses unsupported RPC API version ${advertised}`);
   }
   const declaredLength = response.headers.get("content-length");
   if (declaredLength !== null) {
     if (!/^(0|[1-9][0-9]*)$/.test(declaredLength)) {
-      await response.body?.cancel();
+      await cancelPeerResponseBody(response);
       throw new Error("Peer response has invalid Content-Length");
     }
     const declaredBytes = Number(declaredLength);
     if (!Number.isSafeInteger(declaredBytes) || declaredBytes > maxBytes) {
-      await response.body?.cancel();
+      await cancelPeerResponseBody(response);
       throw new Error("Peer response too large");
     }
   }
@@ -172,7 +174,7 @@ async function postHttpConsensusJson<T>(
     body,
     signal
   });
-  if (!response.ok) throw new Error(`Peer returned HTTP ${response.status}`);
+  await assertPeerHttpSuccess(response);
   return parseHttpConsensusResponse(response, maxResponseBytes, validate);
 }
 
