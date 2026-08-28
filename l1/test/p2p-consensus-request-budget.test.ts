@@ -18,7 +18,7 @@ test("native consensus client writes use the request-kind budget while server re
   const source = readFileSync(resolve(process.cwd(), "src/p2p-consensus.ts"), "utf8");
   assert.match(
     source,
-    /writeP2PFrame\(stream, request, nativeConsensusRequestMaxBytes\(request\.kind\), P2P_CONSENSUS_TIMEOUT_MS\)/
+    /writeP2PFrame\(stream, request, nativeConsensusRequestMaxBytes\(request\.kind\), timeout\(\)\)/
   );
   assert.match(
     source,
@@ -26,6 +26,6 @@ test("native consensus client writes use the request-kind budget while server re
   );
   assert.doesNotMatch(
     source,
-    /writeP2PFrame\(stream, request, MAX_CONSENSUS_FRAME_BYTES, P2P_CONSENSUS_TIMEOUT_MS\)/
+    /writeP2PFrame\(stream, request, MAX_CONSENSUS_FRAME_BYTES, (?:P2P_CONSENSUS_TIMEOUT_MS|timeout\(\))\)/
   );
 });
