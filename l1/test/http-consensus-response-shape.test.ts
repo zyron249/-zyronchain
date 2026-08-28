@@ -163,17 +163,28 @@ test("HTTP consensus collection bounds aggregate concurrency", async () => {
   const peers = Array.from({ length: 32 }, (_, index) => `peer-${index}`);
   let active = 0;
   let maxActive = 0;
-  const releases: Array<() => void> = [];
+  let started = 0;
+  let releaseFirstWave!: () => void;
+  const firstWaveGate = new Promise<void>((resolve) => {
+    releaseFirstWave = resolve;
+  });
   const pending = collectHttpConsensusPeers(peers, async (peer) => {
     active += 1;
+    started += 1;
     maxActive = Math.max(maxActive, active);
-    await new Promise<void>((resolve) => releases.push(resolve));
+    if (started <= MAX_HTTP_CONSENSUS_OUTBOUND_CONCURRENCY) {
+      await firstWaveGate;
+    } else {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
     active -= 1;
     return peer;
   }, 1_000);
-  while (releases.length < MAX_HTTP_CONSENSUS_OUTBOUND_CONCURRENCY) await new Promise((resolve) => setImmediate(resolve));
+  while (active < MAX_HTTP_CONSENSUS_OUTBOUND_CONCURRENCY) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
   assert.equal(maxActive, MAX_HTTP_CONSENSUS_OUTBOUND_CONCURRENCY);
-  while (releases.length > 0) releases.shift()!();
+  releaseFirstWave();
   const result = await pending;
   assert.equal(result.length, peers.length);
   assert.ok(maxActive <= MAX_HTTP_CONSENSUS_OUTBOUND_CONCURRENCY);
