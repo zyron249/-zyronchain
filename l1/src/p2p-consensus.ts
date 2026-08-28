@@ -17,6 +17,8 @@ const MAX_CONFIGURED_NATIVE_PEERS = 64;
 const MAX_NATIVE_GOSSIP_FANOUT = 8;
 const MAX_NATIVE_GOSSIP_DEDUP = 4_096;
 const MAX_NATIVE_CONSENSUS_INFLIGHT_PER_PEER = 2;
+export const MAX_NATIVE_CONSENSUS_OUTBOUND_CONCURRENCY = 8;
+export const NATIVE_CONSENSUS_COLLECTION_TIMEOUT_MS = 8_000;
 const MAX_CONSENSUS_CHAIN_ID_LENGTH = 128;
 
 const NATIVE_CONSENSUS_REQUEST_MAX_BYTES = {
@@ -52,6 +54,51 @@ export function nativeConsensusRequestMaxBytes(kind: "attest" | "skip" | "block"
 
 export function nativeConsensusResponseMaxBytes(kind: ConsensusResponse["kind"]): number {
   return NATIVE_CONSENSUS_RESPONSE_MAX_BYTES[kind];
+}
+
+/**
+ * Schedules every eligible target through a bounded worker pool while sharing
+ * one wall-clock deadline. No target is removed from quorum eligibility merely
+ * because it was queued behind another target.
+ */
+export async function collectNativeConsensusBounded<T, U>(
+  targets: readonly T[],
+  request: (target: T, signal: AbortSignal, deadlineMs: number) => Promise<U>,
+  options: { maxConcurrency?: number; timeoutMs?: number } = {}
+): Promise<Array<PromiseSettledResult<U>>> {
+  const maxConcurrency = options.maxConcurrency ?? MAX_NATIVE_CONSENSUS_OUTBOUND_CONCURRENCY;
+  const timeoutMs = options.timeoutMs ?? NATIVE_CONSENSUS_COLLECTION_TIMEOUT_MS;
+  if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) throw new Error("Invalid native consensus concurrency");
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("Invalid native consensus collection timeout");
+  if (targets.length === 0) return [];
+
+  const controller = new AbortController();
+  const deadlineMs = Date.now() + timeoutMs;
+  const results: Array<PromiseSettledResult<U> | undefined> = new Array(targets.length);
+  let cursor = 0;
+  const timer = setTimeout(() => controller.abort(new Error("Native consensus collection deadline exceeded")), timeoutMs);
+
+  const worker = async (): Promise<void> => {
+    while (!controller.signal.aborted) {
+      const index = cursor++;
+      if (index >= targets.length) return;
+      try {
+        const value = await request(targets[index]!, controller.signal, deadlineMs);
+        results[index] = { status: "fulfilled", value };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  };
+
+  try {
+    const workers = Array.from({ length: Math.min(maxConcurrency, targets.length) }, () => worker());
+    await Promise.all(workers);
+  } finally {
+    clearTimeout(timer);
+    if (!controller.signal.aborted) controller.abort();
+  }
+  return results.filter((result): result is PromiseSettledResult<U> => result !== undefined);
 }
 
 export async function registerP2PConsensusProtocol(
@@ -128,26 +175,30 @@ export class NativeConsensusPeerClient implements ConsensusPeerClient {
   }
 
   async requestAttestations(block: Block): Promise<BlockAttestation[]> {
-    const results = await Promise.allSettled(this.targets.map((target) => this.request(target, {
+    const request: ConsensusRequest = {
       version: 1,
       identity: localIdentity(this.identity, this.chain),
       kind: "attest",
       block
-    })));
+    };
+    const results = await collectNativeConsensusBounded(this.targets, (target, signal, deadlineMs) =>
+      this.request(target, request, signal, deadlineMs));
     return results.flatMap((result) => result.status === "fulfilled" && result.value.kind === "attest"
       ? [result.value.result as BlockAttestation]
       : []);
   }
 
   async requestRoundSkips(height: number, round: number, previousCertificate: RoundSkipVote[] = []): Promise<RoundSkipVote[]> {
-    const results = await Promise.allSettled(this.targets.map((target) => this.request(target, {
+    const request: ConsensusRequest = {
       version: 1,
       identity: localIdentity(this.identity, this.chain),
       kind: "skip",
       height,
       round,
       previousCertificate
-    })));
+    };
+    const results = await collectNativeConsensusBounded(this.targets, (target, signal, deadlineMs) =>
+      this.request(target, request, signal, deadlineMs));
     return results.flatMap((result) => result.status === "fulfilled" && result.value.kind === "skip"
       ? [result.value.result as RoundSkipVote]
       : []);
@@ -186,20 +237,35 @@ export class NativeConsensusPeerClient implements ConsensusPeerClient {
     await Promise.allSettled(selected.map((target) => this.request(target, request)));
   }
 
-  private async request(target: Parameters<Libp2p["dial"]>[0], request: ConsensusRequest): Promise<ConsensusResponse> {
-    const connection = await this.node.dial(target, { signal: AbortSignal.timeout(P2P_CONSENSUS_TIMEOUT_MS) });
+  private async request(
+    target: Parameters<Libp2p["dial"]>[0],
+    request: ConsensusRequest,
+    signal?: AbortSignal,
+    deadlineMs?: number
+  ): Promise<ConsensusResponse> {
+    const operationSignal = signal ?? AbortSignal.timeout(P2P_CONSENSUS_TIMEOUT_MS);
+    const timeout = (): number => {
+      if (deadlineMs === undefined) return P2P_CONSENSUS_TIMEOUT_MS;
+      const remaining = deadlineMs - Date.now();
+      if (remaining <= 0) throw new Error("Native consensus collection deadline exceeded");
+      return Math.max(1, remaining);
+    };
+
+    timeout();
+    const connection = await this.node.dial(target, { signal: operationSignal });
     if (connection.encryption !== "/noise") {
       connection.abort(new Error("Native consensus requires authenticated Noise"));
       throw new Error("Native consensus requires authenticated Noise");
     }
-    const stream = await connection.newStream(P2P_CONSENSUS_PROTOCOL, { signal: AbortSignal.timeout(P2P_CONSENSUS_TIMEOUT_MS) });
+    timeout();
+    const stream = await connection.newStream(P2P_CONSENSUS_PROTOCOL, { signal: operationSignal });
     let releaseFrame: (() => void) | undefined;
     try {
-      await writeP2PFrame(stream, request, nativeConsensusRequestMaxBytes(request.kind), P2P_CONSENSUS_TIMEOUT_MS);
-      const retained = await readP2PFrameRetained(stream, nativeConsensusResponseMaxBytes(request.kind), P2P_CONSENSUS_TIMEOUT_MS);
+      await writeP2PFrame(stream, request, nativeConsensusRequestMaxBytes(request.kind), timeout());
+      const retained = await readP2PFrameRetained(stream, nativeConsensusResponseMaxBytes(request.kind), timeout());
       releaseFrame = retained.release;
       const response = parseConsensusResponse(retained.value, this.chain, connection.remotePeer, request.kind);
-      await stream.close({ signal: AbortSignal.timeout(P2P_CONSENSUS_TIMEOUT_MS) });
+      await stream.close({ signal: signal ?? AbortSignal.timeout(timeout()) });
       return response;
     } catch (error) {
       stream.abort(error instanceof Error ? error : new Error("Native consensus protocol failure"));
