@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import {
   BLOCK_INTERVAL_MS,
+  MAX_CONSENSUS_ROUND_CATCHUP,
   ROUND_WINDOW_MS,
   NodeService,
   produceFinalizedBlock
@@ -55,9 +56,6 @@ test("production block signing refreshes local clock after concurrent signing ad
           try {
             await service.requestSkipVote(height, round, previousCertificate);
           } catch {
-            // The first local skip already reserved this round. The important
-            // effect here is the legitimate fresh clock sample before the
-            // duplicate journal reservation is rejected.
           }
         }
         return [];
@@ -73,6 +71,43 @@ test("production block signing refreshes local clock after concurrent signing ad
     assert.deepEqual(service.readiness(), { ready: true, height: 1, reasons: [] });
   } finally {
     Date.now = originalDateNow;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("excessive forward round catch-up fails closed before peer consensus work", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zyron-round-catchup-bound-"));
+  try {
+    const service = new NodeService(
+      await ChainStore.open(genesis("zyron-round-catchup-bound-1"), dir),
+      await SigningJournal.open(dir),
+      validatorPrivate
+    );
+    let skipRequests = 0;
+    let attestationRequests = 0;
+    let broadcasts = 0;
+    const peers = {
+      requestAttestations: async () => {
+        attestationRequests += 1;
+        return [];
+      },
+      requestRoundSkips: async () => {
+        skipRequests += 1;
+        return [];
+      },
+      broadcastBlock: async () => {
+        broadcasts += 1;
+      }
+    };
+    const tooFarNowMs = genesisTimestamp + BLOCK_INTERVAL_MS + ROUND_WINDOW_MS * (MAX_CONSENSUS_ROUND_CATCHUP + 1);
+    const block = await produceFinalizedBlock(service, peers, validatorPrivate, tooFarNowMs);
+    assert.equal(block, null);
+    assert.equal(skipRequests, 0);
+    assert.equal(attestationRequests, 0);
+    assert.equal(broadcasts, 0);
+    assert.equal(service.status().height, 0);
+    assert.deepEqual(service.readiness(), { ready: true, height: 0, reasons: [] });
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
