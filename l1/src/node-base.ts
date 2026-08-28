@@ -1156,6 +1156,19 @@ function peerTransportProtectsCredentials(value: string): boolean {
   return url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1" || url.hostname === "[::1]";
 }
 
+export async function cancelPeerResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+  }
+}
+
+export async function assertPeerHttpSuccess(response: Response): Promise<void> {
+  if (response.ok) return;
+  await cancelPeerResponseBody(response);
+  throw new Error(`Peer returned HTTP ${response.status}`);
+}
+
 async function getJson<T = unknown>(
   url: string,
   maxBytes: number,
@@ -1165,7 +1178,7 @@ async function getJson<T = unknown>(
     headers: { "x-zyron-rpc-version": String(RPC_API_VERSION) },
     signal: AbortSignal.timeout(PEER_TIMEOUT_MS)
   });
-  if (!response.ok) throw new Error(`Peer returned HTTP ${response.status}`);
+  await assertPeerHttpSuccess(response);
   return parseBoundedResponse(response, maxBytes, validate);
 }
 
@@ -1180,7 +1193,7 @@ async function getJsonRetained<T>(
     headers: { "x-zyron-rpc-version": String(RPC_API_VERSION) },
     signal: AbortSignal.timeout(PEER_TIMEOUT_MS)
   });
-  if (!response.ok) throw new Error(`Peer returned HTTP ${response.status}`);
+  await assertPeerHttpSuccess(response);
   return parseBoundedResponseRetained(response, maxBytes, validate);
 }
 
@@ -1211,16 +1224,18 @@ async function postJson<T = unknown>(
     body,
     signal: AbortSignal.timeout(PEER_TIMEOUT_MS)
   });
-  if (!response.ok) throw new Error(`Peer returned HTTP ${response.status}`);
+  await assertPeerHttpSuccess(response);
   return parseBoundedResponse(response, maxResponseBytes, validate);
 }
 
-function assertCompatibleRpcResponse(response: Response): void {
+async function assertCompatibleRpcResponse(response: Response): Promise<void> {
   const advertised = response.headers.get("x-zyron-rpc-version");
   if (advertised === null) {
+    await cancelPeerResponseBody(response);
     throw new Error("Peer response is missing RPC API version");
   }
   if (advertised !== String(RPC_API_VERSION)) {
+    await cancelPeerResponseBody(response);
     throw new Error(`Peer uses unsupported RPC API version ${advertised}`);
   }
 }
@@ -1295,22 +1310,22 @@ async function parseBoundedResponseRetained<T>(
 ): Promise<RetainedPeerResponse<T>> {
   const contentType = response.headers.get("content-type");
   if (!contentType || !/^application\/json(?:\s*;|$)/i.test(contentType)) {
-    await response.body?.cancel();
+    await cancelPeerResponseBody(response);
     throw new Error("Peer response must use application/json");
   }
   const declaredLength = response.headers.get("content-length");
   if (declaredLength !== null) {
     if (!/^(0|[1-9][0-9]*)$/.test(declaredLength)) {
-      await response.body?.cancel();
+      await cancelPeerResponseBody(response);
       throw new Error("Peer response has invalid Content-Length");
     }
     const declaredBytes = Number(declaredLength);
     if (!Number.isSafeInteger(declaredBytes) || declaredBytes > maxBytes) {
-      await response.body?.cancel();
+      await cancelPeerResponseBody(response);
       throw new Error("Peer response too large");
     }
   }
-  assertCompatibleRpcResponse(response);
+  await assertCompatibleRpcResponse(response);
   if (!response.body) throw new Error("Peer returned empty body");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -1417,11 +1432,6 @@ export function parseRpcJsonChunks(
   if (!Number.isSafeInteger(totalBytes) || totalBytes < 1 || totalBytes > MAX_BODY_BYTES) {
     throw new Error("Invalid RPC JSON parse size");
   }
-  // The received chunk bytes are already retained by the request lifecycle.
-  // Before allocating another contiguous Buffer plus the transient JavaScript
-  // UTF-8 string, conservatively reserve 1x + 2x the wire bytes from the same
-  // aggregate budget. The decoded graph is separately bounded by the lexical
-  // depth/cardinality scan below.
   const transientBytes = totalBytes * 3;
   const releaseTransient = reservation?.reserveTransient(transientBytes);
   try {
