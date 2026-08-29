@@ -4,19 +4,16 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 const workflow = resolve(process.cwd(), '..', '.github', 'workflows', 'miner-release-candidate.yml');
-const packager = resolve(process.cwd(), 'scripts', 'package-windows-miner-zip.mjs');
 
 describe('Windows end-user miner package contract', () => {
-  it('keeps publication and public mining fail closed while producing a ZIP candidate', async () => {
-    const [workflowText, packagerText] = await Promise.all([
-      readFile(workflow, 'utf8'),
-      readFile(packager, 'utf8')
-    ]);
-    assert.match(workflowText, /Package Windows end-user ZIP/);
-    assert.match(workflowText, /ZyronMiner-windows-\*\.zip/);
-    assert.match(workflowText, /publicMiningActivated: false/);
-    assert.match(workflowText, /publicationAllowed: false/);
-    assert.match(packagerText, /Compress-Archive/);
-    assert.match(packagerText, /Windows miner ZIP packaging must run on Windows/);
+  it('keeps package materialization and publication fail closed while custody is quarantined', async () => {
+    const workflowText = await readFile(workflow, 'utf8');
+    assert.match(workflowText, /Prove release-candidate materialization is quarantined before filesystem writes/);
+    assert.match(workflowText, /node scripts\/test-miner-packaging-quarantine\.mjs/);
+    assert.match(workflowText, /Assert no release candidate was materialized/);
+    assert.match(workflowText, /if \[ -e miner-release \]/);
+    assert.doesNotMatch(workflowText, /Package Windows end-user ZIP/);
+    assert.doesNotMatch(workflowText, /actions\/upload-artifact/);
+    assert.doesNotMatch(workflowText, /actions\/attest/);
   });
 });
