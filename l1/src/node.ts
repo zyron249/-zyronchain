@@ -195,7 +195,12 @@ export async function collectHttpConsensusPeers<T>(
   if (!Number.isSafeInteger(deadlineMs) || deadlineMs < 1) throw new Error("Invalid HTTP consensus deadline");
   if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new Error("Invalid HTTP consensus concurrency");
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error("HTTP consensus collection deadline exceeded")), deadlineMs);
+  let resolveDeadline!: () => void;
+  const deadlineReached = new Promise<void>((resolve) => { resolveDeadline = resolve; });
+  const timer = setTimeout(() => {
+    controller.abort(new Error("HTTP consensus collection deadline exceeded"));
+    resolveDeadline();
+  }, deadlineMs);
   timer.unref?.();
   let next = 0;
   const results: T[] = [];
@@ -213,8 +218,10 @@ export async function collectHttpConsensusPeers<T>(
   };
   try {
     const workerCount = Math.min(peers.length, concurrency);
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
-    return results;
+    const workersDone = Promise.all(Array.from({ length: workerCount }, () => worker()));
+    await Promise.race([workersDone, deadlineReached]);
+    if (controller.signal.aborted) void workersDone.catch(() => undefined);
+    return [...results];
   } finally {
     clearTimeout(timer);
     if (!controller.signal.aborted) controller.abort();
