@@ -14,7 +14,11 @@ function responseWithLength(value: string, cancelError?: Error): { response: Res
       return cancelError ? Promise.reject(cancelError) : Promise.resolve();
     }
   };
-  const headers = new Headers({ "content-length": value });
+  const headers = {
+    get(name: string) {
+      return name.toLowerCase() === "content-length" ? value : null;
+    }
+  };
   return {
     response: { headers, body } as unknown as Response,
     cancelled: () => wasCancelled
