@@ -3,8 +3,6 @@ import { readFile } from 'node:fs/promises';
 
 const CHECKOUT_SHA = '3d3c42e5aac5ba805825da76410c181273ba90b1';
 const SETUP_NODE_SHA = '820762786026740c76f36085b0efc47a31fe5020';
-const UPLOAD_ARTIFACT_SHA = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a';
-const ATTEST_SHA = '1e69f48acb82d1966a394da916b4c1698aa569d6';
 
 const workflow = await readFile(new URL('../workflows/unix-miner-archive-candidate.yml', import.meta.url), 'utf8');
 
@@ -16,8 +14,6 @@ const requireExactRef = (action, expected, expectedCount = 1) => {
 
 requireExactRef('checkout', CHECKOUT_SHA);
 requireExactRef('setup-node', SETUP_NODE_SHA);
-requireExactRef('upload-artifact', UPLOAD_ARTIFACT_SHA);
-requireExactRef('attest', ATTEST_SHA);
 
 const checkoutIndex = workflow.indexOf(`uses: actions/checkout@${CHECKOUT_SHA}`);
 if (checkoutIndex < 0) throw new Error('Unix miner archive checkout missing');
@@ -27,33 +23,40 @@ if (!/^\s*persist-credentials:\s*false\b/m.test(checkoutStep)) throw new Error('
 
 for (const required of [
   'permissions:\n  contents: read',
-  'id-token: write',
-  'attestations: write',
   'matrix:\n        os: [ubuntu-24.04, macos-15]',
   'node-version: 22.23.2',
   "test \"$(node -p 'process.version')\" = 'v22.23.2'",
   'npm ci',
   'npm run typecheck',
   'npm audit --omit=dev --audit-level=high',
-  'npm sbom --omit=dev --sbom-format=spdx',
   'node scripts/test-unix-miner-package-contract.mjs',
-  'bash scripts/verify-unix-miner-tarball.sh',
-  'test "$status" -eq 78',
-  'test ! -e "$test_home"',
-  'publicMiningActivated: false',
-  'releaseEligible: false',
-  'platformSigningVerified: false',
-  'publicationAllowed: false',
-  'Generate SHA-256 manifest including archive',
-  'Attest Unix end-user archive',
-  'if-no-files-found: error',
-  'retention-days: 90'
+  'node scripts/test-miner-packaging-quarantine.mjs',
+  'publicMiningActivated !== false',
+  'rpcUrl !== null',
+  'genesisFile !== null',
+  'if [ -e miner-release ]; then',
+  'custody quarantine must not materialize miner-release',
+  'Unix miner archive candidate remains intentionally non-materialized pending #761.'
 ]) {
-  if (!workflow.includes(required)) throw new Error(`Required Unix miner archive security invariant missing: ${required}`);
+  if (!workflow.includes(required)) throw new Error(`Required Unix miner archive quarantine invariant missing: ${required}`);
 }
 
-if (/publicMiningActivated:\s*true|releaseEligible:\s*true|platformSigningVerified:\s*true|publicationAllowed:\s*true/.test(workflow)) {
-  throw new Error('Unix miner archive candidate must remain non-publishable and mining-inactive');
+for (const forbidden of [
+  /actions\/upload-artifact@/,
+  /actions\/attest@/,
+  /id-token:\s*write/,
+  /attestations:\s*write/,
+  /npm sbom/,
+  /verify-unix-miner-tarball\.sh/,
+  /Generate SHA-256 manifest including archive/,
+  /Attest Unix end-user archive/,
+  /retention-days:/,
+  /publicMiningActivated:\s*true/,
+  /releaseEligible:\s*true/,
+  /platformSigningVerified:\s*true/,
+  /publicationAllowed:\s*true/
+]) {
+  if (forbidden.test(workflow)) throw new Error(`Unsafe Unix miner archive materialization/publication invariant reintroduced: ${forbidden}`);
 }
 
-console.log('unix-miner-archive-action-custody: ok');
+console.log('unix-miner-archive-action-custody: quarantine ok');
