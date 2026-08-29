@@ -1158,7 +1158,8 @@ function peerTransportProtectsCredentials(value: string): boolean {
 
 export async function cancelPeerResponseBody(response: Response): Promise<void> {
   try {
-    await response.body?.cancel();
+    const cancellation = response.body?.cancel();
+    if (cancellation) void cancellation.catch(() => undefined);
   } catch {
   }
 }
