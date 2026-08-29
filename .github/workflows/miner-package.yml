@@ -44,6 +44,8 @@ jobs:
           node --check scripts/miner-launcher-security.mjs
           node --check scripts/test-miner-launcher-security.mjs
           node --check scripts/package-miner.mjs
+          node --check scripts/miner-packaging-custody-gate.mjs
+          node --check scripts/test-miner-packaging-quarantine.mjs
           node --check scripts/generate-miner-sha256sums.mjs
           node --check scripts/test-miner-release-manifest.mjs
           node --check scripts/test-miner-release-manifest-snapshot.mjs
@@ -63,37 +65,5 @@ jobs:
       - name: Run Windows miner-specific regressions
         if: runner.os == 'Windows'
         run: node --test dist/test/miner-genesis.test.js dist/test/miner-network.test.js dist/test/miner-security.test.js
-      - name: Generate production SBOM before pruning development dependencies
-        run: |
-          node -e "require('node:fs').mkdirSync('miner-release',{recursive:true})"
-          npm sbom --omit=dev --sbom-format=spdx > miner-release/SBOM.spdx.json
-      - name: Prune to production runtime
-        run: npm prune --omit=dev
-      - name: Package miner runtime
-        run: node scripts/package-miner.mjs
-      - name: Verify inactive package fails closed before custody
-        shell: bash
-        run: |
-          BUNDLE=$(find miner-release -mindepth 1 -maxdepth 1 -type d | head -n 1)
-          if [ -z "$BUNDLE" ]; then echo 'missing miner bundle' >&2; exit 1; fi
-          TEST_HOME="$RUNNER_TEMP/zyron-miner-smoke-${{ matrix.node }}"
-          rm -rf "$TEST_HOME"
-          set +e
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            ZYRON_MINER_HOME="$TEST_HOME" "$BUNDLE/node.exe" "$BUNDLE/scripts/miner-launcher.mjs"
-          else
-            ZYRON_MINER_HOME="$TEST_HOME" "$BUNDLE/node" "$BUNDLE/scripts/miner-launcher.mjs"
-          fi
-          STATUS=$?
-          set -e
-          if [ "$STATUS" -ne 78 ]; then echo "expected inactive launcher exit 78, got $STATUS" >&2; exit 1; fi
-          if [ -e "$TEST_HOME" ]; then echo 'inactive launcher touched custody directory' >&2; exit 1; fi
-      - name: Generate SHA-256 manifest
-        run: node scripts/generate-miner-sha256sums.mjs miner-release
-      - name: Upload miner bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: zyron-miner-${{ runner.os }}-${{ runner.arch }}-node${{ matrix.node }}
-          path: l1/miner-release/
-          if-no-files-found: error
-          retention-days: 14
+      - name: Prove package materialization is quarantined before filesystem writes
+        run: node scripts/test-miner-packaging-quarantine.mjs
