@@ -1,7 +1,11 @@
 # Miner Package Action Custody
 
-`Miner Package CI` is a packaging and regression boundary, not public-mining activation evidence. It builds self-contained miner candidates for Linux, macOS and Windows under Node 22 and Node 24, but the bundled network profile must remain fail closed until a separate reviewed activation explicitly opens public mining.
+`Miner Package CI` is currently a **fail-closed packaging quarantine boundary**, not artifact-production or public-mining activation evidence.
 
-The workflow therefore pins checkout, setup-node and artifact upload actions to reviewed immutable commit SHAs and disables checkout credential persistence. A dedicated policy verifier rejects mutable action refs or drift in the matrix, locked install/typecheck checks, fail-closed network profile assertion, platform-specific regression coverage, SBOM generation, production dependency pruning, package creation, exit-78 no-custody smoke, SHA-256 manifest, fail-on-missing artifact upload, or retention policy.
+Until #761 supplies true handle-relative filesystem custody, the workflow must not create a self-contained miner bundle, SBOM, checksum manifest, release candidate, or uploaded miner artifact. It still runs the supported Linux/macOS/Windows and Node 22/24 matrix, locked installation, typecheck, miner security checks, inactive-network-profile assertion, build, and platform-appropriate regressions. Its final custody assertion invokes `test-miner-packaging-quarantine.mjs`, which requires the packager to reject before `miner-release` exists.
 
-These controls protect package provenance and CI custody. They do not publish GitHub Release assets, satisfy platform signing/notarization requirements, authorize a website download CTA, or change `publicMiningActivated`, public-testnet, or mainnet activation gates.
+The dedicated policy verifier pins checkout/setup-node actions to reviewed immutable commit SHAs, requires checkout credential persistence to remain disabled, requires the quarantine regression on every matrix job, and rejects reintroduction of package materialization, SBOM/prune, checksum publication, or artifact upload while the quarantine is active.
+
+`Miner Release Candidate CI` follows the same containment rule: it may validate source/runtime/security behavior, but it must not materialize, attest, upload, or describe a miner release candidate until the handle-relative custody stop-ship is closed.
+
+These controls do not solve #761, #757, #683, or #636. They prevent the known pathname-only materialization path from producing candidate bytes while those issues remain open. Public mining, website download publication, public-testnet activation, and mainnet activation remain separately fail-closed.
