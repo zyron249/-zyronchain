@@ -76,7 +76,12 @@ export async function collectNativeConsensusBounded<T, U>(
   const deadlineMs = Date.now() + timeoutMs;
   const results: Array<PromiseSettledResult<U> | undefined> = new Array(targets.length);
   let cursor = 0;
-  const timer = setTimeout(() => controller.abort(new Error("Native consensus collection deadline exceeded")), timeoutMs);
+  let resolveDeadline!: () => void;
+  const deadlineReached = new Promise<void>((resolve) => { resolveDeadline = resolve; });
+  const timer = setTimeout(() => {
+    controller.abort(new Error("Native consensus collection deadline exceeded"));
+    resolveDeadline();
+  }, timeoutMs);
 
   const worker = async (): Promise<void> => {
     while (!controller.signal.aborted) {
@@ -84,7 +89,7 @@ export async function collectNativeConsensusBounded<T, U>(
       if (index >= targets.length) return;
       try {
         const value = await request(targets[index]!, controller.signal, deadlineMs);
-        results[index] = { status: "fulfilled", value };
+        if (!controller.signal.aborted) results[index] = { status: "fulfilled", value };
       } catch (reason) {
         results[index] = { status: "rejected", reason };
       }
@@ -92,8 +97,18 @@ export async function collectNativeConsensusBounded<T, U>(
   };
 
   try {
-    const workers = Array.from({ length: Math.min(maxConcurrency, targets.length) }, () => worker());
-    await Promise.all(workers);
+    const workersDone = Promise.all(
+      Array.from({ length: Math.min(maxConcurrency, targets.length) }, () => worker())
+    );
+    await Promise.race([workersDone, deadlineReached]);
+    if (controller.signal.aborted) {
+      const reason = controller.signal.reason ?? new Error("Native consensus collection deadline exceeded");
+      const started = Math.min(cursor, targets.length);
+      for (let index = 0; index < started; index += 1) {
+        if (results[index] === undefined) results[index] = { status: "rejected", reason };
+      }
+      void workersDone.catch(() => undefined);
+    }
   } finally {
     clearTimeout(timer);
     if (!controller.signal.aborted) controller.abort();
@@ -115,9 +130,6 @@ export async function registerP2PConsensusProtocol(
     let releaseFrame: (() => void) | undefined;
     try {
       if (connection.encryption !== "/noise") throw new Error("Native consensus requires authenticated Noise");
-      // Gate before reading a potentially block-sized frame. Noise has already
-      // authenticated this PeerId, so repeated connections cannot evade the
-      // per-identity memory/CPU concurrency bound.
       const peerId = connection.remotePeer.toString();
       if (!rate.consume(peerId)) throw new Error("Native consensus rate limit exceeded");
       release = inflight.enter(peerId);
@@ -166,7 +178,6 @@ export class NativeConsensusPeerClient implements ConsensusPeerClient {
     validateP2PChainIdentity(localIdentity(identity, chain), chain, node.peerId);
   }
 
-  /** Replaces the verified peer selection without resetting gossip dedup state. */
   replaceTargets(targets: Array<Parameters<Libp2p["dial"]>[0]>): void {
     if (targets.length > MAX_CONFIGURED_NATIVE_PEERS) throw new Error("Too many configured native peers");
     this.targets = [...targets];
@@ -325,10 +336,6 @@ function parseConsensusResponse(
   return { version: 1, identity, kind: expectedKind, result: record.result };
 }
 
-/**
- * Shape-gates peer-controlled consensus results while the decoded frame lease is
- * still retained. Cryptographic/quorum checks remain at the consensus caller.
- */
 export function validateConsensusResponseResultShape(kind: ConsensusResponse["kind"], value: unknown): void {
   assertRecord(value, `native consensus ${kind} result`);
   if (kind === "attest") {
