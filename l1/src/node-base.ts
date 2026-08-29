@@ -1340,13 +1340,21 @@ async function parseBoundedResponseRetained<T>(
       if (value.byteLength === 0) continue;
       total += value.byteLength;
       if (total > maxBytes) {
-        await reader.cancel();
+        try {
+          const cancellation = reader.cancel();
+          void cancellation.catch(() => undefined);
+        } catch {
+        }
         throw new Error("Peer response too large");
       }
       try {
         releases.push(peerResponseByteBudget.reserve(value.byteLength));
       } catch (error) {
-        await reader.cancel();
+        try {
+          const cancellation = reader.cancel();
+          void cancellation.catch(() => undefined);
+        } catch {
+        }
         throw error;
       }
       chunks.push(value);
