@@ -11,8 +11,12 @@ function rejectedResponse(version?: string, cancelError?: Error): { response: Re
       return cancelError ? Promise.reject(cancelError) : Promise.resolve();
     }
   };
-  const headers = new Headers();
-  if (version !== undefined) headers.set("x-zyron-rpc-version", version);
+  const headers = {
+    get(name: string) {
+      if (name.toLowerCase() !== "x-zyron-rpc-version") return null;
+      return version ?? null;
+    }
+  };
   return {
     response: { headers, body } as unknown as Response,
     cancelled: () => wasCancelled
