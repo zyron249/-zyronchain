@@ -39,31 +39,29 @@ test("native reputation persists transient backoff and protocol temporary bans",
   }
 });
 
-test("native reputation fails closed when active penalties saturate identity capacity", async () => {
+test("native reputation never evicts tracked identities when capacity is saturated", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-native-reputation-cap-"));
   const now = 1_900_000_000_000;
   try {
     const store = await NativePeerReputationStore.open(directory);
     const penalized = Array.from({ length: 256 }, (_, index) => peerIdForIndex(index + 1));
     for (const candidate of penalized) await store.recordFailure(candidate, "protocol", now);
-
     const rotated = peerIdForIndex(10_000);
     assert.equal(store.isAvailable(rotated, now), false);
     await store.recordFailure(rotated, "protocol", now);
-    assert.equal(store.isAvailable(rotated, now), false);
-    assert.equal(store.isAvailable(penalized[0]!, now), false);
-
-    const snapshot = JSON.parse(await readFile(join(directory, "native-peer-reputation.json"), "utf8")) as { peers: unknown[] };
-    assert.equal(snapshot.peers.length, 256);
-
     const expiry = now + (30 * 60_000);
-    assert.equal(store.isAvailable(rotated, expiry), true);
-    await store.recordFailure(rotated, "protocol", expiry);
+    assert.equal(store.isAvailable(penalized[0]!, expiry), true);
     assert.equal(store.isAvailable(rotated, expiry), false);
+    await store.recordFailure(rotated, "protocol", expiry);
+    await store.recordSuccess(rotated, expiry);
     const reopened = await NativePeerReputationStore.open(directory);
-    assert.equal(reopened.failureCount(rotated), 1);
-    const reopenedSnapshot = JSON.parse(await readFile(join(directory, "native-peer-reputation.json"), "utf8")) as { peers: unknown[] };
-    assert.equal(reopenedSnapshot.peers.length, 256);
+    assert.equal(reopened.failureCount(rotated), 0);
+    assert.equal(reopened.failureCount(penalized[0]!), 1);
+    assert.equal(reopened.isAvailable(rotated, expiry), false);
+    const snapshot = JSON.parse(await readFile(join(directory, "native-peer-reputation.json"), "utf8")) as { peers: Array<{ peerId: string }> };
+    assert.equal(snapshot.peers.length, 256);
+    assert.equal(snapshot.peers.some((entry) => entry.peerId === rotated), false);
+    assert.equal(snapshot.peers.some((entry) => entry.peerId === penalized[0]), true);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -84,14 +82,8 @@ test("native reputation classifies transport failure separately and fails closed
 test("native reputation rejects oversized snapshot before JSON materialization", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-native-reputation-oversized-"));
   try {
-    await writeFile(
-      join(directory, "native-peer-reputation.json"),
-      Buffer.alloc(MAX_NATIVE_REPUTATION_SNAPSHOT_BYTES + 1, 0x61)
-    );
-    await assert.rejects(
-      () => NativePeerReputationStore.open(directory),
-      /Corrupt native peer reputation store/
-    );
+    await writeFile(join(directory, "native-peer-reputation.json"), Buffer.alloc(MAX_NATIVE_REPUTATION_SNAPSHOT_BYTES + 1, 0x61));
+    await assert.rejects(() => NativePeerReputationStore.open(directory), /Corrupt native peer reputation store/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
