@@ -1,5 +1,16 @@
+type RpcVersionResponse = Pick<Response, "headers"> & Partial<Pick<Response, "body">>;
+
+function cancelRejectedBody(response: RpcVersionResponse): void {
+  try {
+    const pending = response.body?.cancel("rpc-version-rejected");
+    void pending?.catch(() => undefined);
+  } catch {
+    // Best-effort cleanup must never replace the protocol validation error.
+  }
+}
+
 export function assertRpcResponseVersion(
-  response: Pick<Response, "headers">,
+  response: RpcVersionResponse,
   expectedVersion: number,
   label = "RPC server"
 ): void {
@@ -8,31 +19,11 @@ export function assertRpcResponseVersion(
   }
   const advertised = response.headers.get("x-zyron-rpc-version");
   if (advertised === null) {
+    cancelRejectedBody(response);
     throw new Error(`${label} did not advertise an API version`);
   }
   if (advertised !== String(expectedVersion)) {
+    cancelRejectedBody(response);
     throw new Error(`${label} uses unsupported API version ${advertised}`);
-  }
-}
-
-/**
- * Validate an RPC response version while taking explicit custody of a rejected
- * streaming body. Cancellation is best-effort: the original protocol rejection
- * must remain the observable error even if body cleanup itself fails.
- */
-export async function assertRpcResponseVersionWithBodyCleanup(
-  response: Pick<Response, "headers" | "body">,
-  expectedVersion: number,
-  label = "RPC server"
-): Promise<void> {
-  try {
-    assertRpcResponseVersion(response, expectedVersion, label);
-  } catch (error) {
-    try {
-      await response.body?.cancel("rpc-version-rejected");
-    } catch {
-      // Preserve the original fail-closed protocol validation error.
-    }
-    throw error;
   }
 }
