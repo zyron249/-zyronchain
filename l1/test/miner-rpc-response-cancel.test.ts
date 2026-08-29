@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const modulePath = "../scripts/miner-rpc-response.mjs";
-const { readBoundedJsonResponse } = await import(modulePath) as {
+// The canonical suite executes compiled tests from l1/dist/test while the miner
+// response helper remains an .mjs runtime script under l1/scripts. Resolve the
+// helper from the compiled test location without requiring a copied dist/scripts
+// tree that the production package does not create.
+const moduleUrl = new URL("../../scripts/miner-rpc-response.mjs", import.meta.url);
+const { readBoundedJsonResponse } = await import(moduleUrl.href) as {
   readBoundedJsonResponse: (response: Response, maxBytes: number) => Promise<unknown>;
 };
 
