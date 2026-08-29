@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { assertRpcResponseVersionWithBodyCleanup } from "../src/rpc-response-version.js";
+import { assertRpcResponseVersion } from "../src/rpc-response-version.js";
 
 function rejectedResponse(version?: string, cancelError?: Error): { response: Response; cancelled: () => boolean } {
   let wasCancelled = false;
@@ -19,26 +19,26 @@ function rejectedResponse(version?: string, cancelError?: Error): { response: Re
   };
 }
 
-test("RPC version rejection cancels an unconsumed response body", async () => {
+test("RPC version rejection cancels an unconsumed response body", () => {
   const missing = rejectedResponse();
-  await assert.rejects(
-    assertRpcResponseVersionWithBodyCleanup(missing.response, 1, "miner RPC"),
+  assert.throws(
+    () => assertRpcResponseVersion(missing.response, 1, "miner RPC"),
     /did not advertise an API version/
   );
   assert.equal(missing.cancelled(), true);
 
   const incompatible = rejectedResponse("2");
-  await assert.rejects(
-    assertRpcResponseVersionWithBodyCleanup(incompatible.response, 1, "miner RPC"),
+  assert.throws(
+    () => assertRpcResponseVersion(incompatible.response, 1, "miner RPC"),
     /unsupported API version 2/
   );
   assert.equal(incompatible.cancelled(), true);
 });
 
-test("RPC version cleanup failure preserves the original rejection", async () => {
+test("RPC version cleanup failure preserves the original rejection", () => {
   const rejected = rejectedResponse("9", new Error("cleanup failed"));
-  await assert.rejects(
-    assertRpcResponseVersionWithBodyCleanup(rejected.response, 1, "miner RPC"),
+  assert.throws(
+    () => assertRpcResponseVersion(rejected.response, 1, "miner RPC"),
     /unsupported API version 9/
   );
   assert.equal(rejected.cancelled(), true);
