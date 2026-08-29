@@ -42,6 +42,14 @@ function safeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function cancelHttpConsensusReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
+  try {
+    const cancellation = reader.cancel();
+    void cancellation.catch(() => undefined);
+  } catch {
+  }
+}
+
 export function validateHttpPeerAttestationShape(value: unknown): BlockAttestation {
   assertPlainRecord(value, "HTTP peer attestation");
   assertExactKeys(value, ["validator", "publicKey", "signature"], "HTTP peer attestation");
@@ -122,13 +130,13 @@ async function parseHttpConsensusResponse<T>(
       if (value.byteLength === 0) continue;
       total += value.byteLength;
       if (total > maxBytes) {
-        await reader.cancel();
+        cancelHttpConsensusReader(reader);
         throw new Error("Peer response too large");
       }
       try {
         releases.push(httpConsensusWireBudget.reserve(value.byteLength));
       } catch (error) {
-        await reader.cancel();
+        cancelHttpConsensusReader(reader);
         throw error;
       }
       chunks.push(value);
