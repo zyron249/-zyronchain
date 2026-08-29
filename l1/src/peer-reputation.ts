@@ -63,8 +63,7 @@ export class PeerReputationStore {
     const normalized = normalizeEndpoint(endpoint);
     const tracked = this.entries.get(normalized);
     if (tracked) return tracked.backoffUntilMs <= nowMs;
-    if (this.entries.size < MAX_STORED_PEERS) return true;
-    return this.reclaimableEntry(nowMs) !== undefined;
+    return this.entries.size < MAX_STORED_PEERS;
   }
 
   failureCount(endpoint: string): number {
@@ -82,7 +81,7 @@ export class PeerReputationStore {
       const previous = this.entries.get(normalized);
       const consecutiveFailures = Math.min(MAX_FAILURE_COUNT, (previous?.consecutiveFailures ?? 0) + 1);
       const backoffMs = failureBackoffMs(consecutiveFailures);
-      if (!previous && !this.ensureSlot(nowMs)) return backoffMs;
+      if (!previous && !this.hasCapacity()) return backoffMs;
       this.entries.set(normalized, {
         endpoint: normalized,
         consecutiveFailures,
@@ -104,7 +103,7 @@ export class PeerReputationStore {
     const normalized = normalizeEndpoint(endpoint);
     await this.exclusive(async () => {
       const previous = this.entries.get(normalized);
-      if (!previous && !this.ensureSlot(nowMs)) return;
+      if (!previous && !this.hasCapacity()) return;
       this.entries.set(normalized, {
         endpoint: normalized,
         consecutiveFailures: 0,
@@ -128,21 +127,8 @@ export class PeerReputationStore {
     }
   }
 
-  private ensureSlot(nowMs: number): boolean {
-    if (this.entries.size < MAX_STORED_PEERS) return true;
-    const reclaimable = this.reclaimableEntry(nowMs);
-    if (!reclaimable) return false;
-    this.entries.delete(reclaimable.endpoint);
-    return true;
-  }
-
-  private reclaimableEntry(nowMs: number): PeerReputationEntry | undefined {
-    let selected: PeerReputationEntry | undefined;
-    for (const entry of this.entries.values()) {
-      if (entry.backoffUntilMs > nowMs) continue;
-      if (!selected || compareEntryAge(entry, selected) < 0) selected = entry;
-    }
-    return selected;
+  private hasCapacity(): boolean {
+    return this.entries.size < MAX_STORED_PEERS;
   }
 
   private async persist(faultHooks: PeerReputationPersistenceFaultHooks): Promise<void> {
@@ -190,11 +176,6 @@ export function httpPeerReputationDirectorySyncSupported(platform = process.plat
 export function failureBackoffMs(consecutiveFailures: number): number {
   if (!Number.isSafeInteger(consecutiveFailures) || consecutiveFailures < 1) throw new Error("Invalid peer failure count");
   return Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * (2 ** Math.min(20, consecutiveFailures - 1)));
-}
-
-function compareEntryAge(a: PeerReputationEntry, b: PeerReputationEntry): number {
-  const byActivity = Math.max(a.lastFailureMs, a.lastSuccessMs) - Math.max(b.lastFailureMs, b.lastSuccessMs);
-  return byActivity !== 0 ? byActivity : a.endpoint.localeCompare(b.endpoint);
 }
 
 function validateSnapshot(value: unknown): PeerReputationSnapshot {
