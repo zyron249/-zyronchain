@@ -8,7 +8,8 @@ function rejectedResponse(version?: string, cancelError?: Error): { response: Re
   const body = {
     cancel() {
       wasCancelled = true;
-      return cancelError ? Promise.reject(cancelError) : Promise.resolve();
+      if (cancelError) throw cancelError;
+      return Promise.resolve();
     }
   };
   const headers = {
