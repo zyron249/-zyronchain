@@ -3,7 +3,12 @@ import { chmod, cp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { copyMinerRuntimeTree } from './copy-miner-runtime-tree.mjs';
+import { assertMinerPackagingCustodyReady } from './miner-packaging-custody-gate.mjs';
 import { bindMinerReleaseRoot } from './miner-release-root.mjs';
+
+// Stop before binding or materializing miner-release. Pathname validation alone cannot
+// provide the handle-relative custody required by #761/#757/#683/#636.
+assertMinerPackagingCustodyReady();
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
