@@ -114,3 +114,32 @@ test("response cancellation failure never replaces the original HTTP rejection",
     globalThis.fetch = originalFetch;
   }
 });
+
+test("pending response cancellation cannot stall a fail-closed HTTP rejection", async () => {
+  const originalFetch = globalThis.fetch;
+  let cancelled = false;
+  const neverSettles = new Promise<void>(() => {});
+  globalThis.fetch = async () => streamingResponse(
+    503,
+    { "content-type": "application/json", "x-zyron-rpc-version": "1" },
+    () => {
+      cancelled = true;
+      return neverSettles;
+    }
+  );
+  try {
+    const client = new BasePeerClient(["https://peer.example"]);
+    const outcome = await Promise.race<Error | "timeout">([
+      client.fetchPeerRecords("https://peer.example", expectedChain).then(
+        () => new Error("peer rejection unexpectedly resolved"),
+        (error: unknown) => error instanceof Error ? error : new Error(String(error))
+      ),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 250))
+    ]);
+    assert.notEqual(outcome, "timeout", "peer rejection waited for response-body cancellation settlement");
+    assert.match((outcome as Error).message, /Peer returned HTTP 503/);
+    assert.equal(cancelled, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
