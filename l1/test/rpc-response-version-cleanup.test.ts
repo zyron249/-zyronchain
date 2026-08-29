@@ -5,16 +5,16 @@ import { assertRpcResponseVersion } from "../src/rpc-response-version.js";
 
 function rejectedResponse(version?: string, cancelError?: Error): { response: Response; cancelled: () => boolean } {
   let wasCancelled = false;
-  const body = new ReadableStream<Uint8Array>({
+  const body = {
     cancel() {
       wasCancelled = true;
-      if (cancelError) throw cancelError;
+      return cancelError ? Promise.reject(cancelError) : Promise.resolve();
     }
-  });
+  };
   const headers = new Headers();
   if (version !== undefined) headers.set("x-zyron-rpc-version", version);
   return {
-    response: new Response(body, { headers }),
+    response: { headers, body } as unknown as Response,
     cancelled: () => wasCancelled
   };
 }
