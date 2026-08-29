@@ -8,14 +8,15 @@ const { readBoundedJsonResponse } = await import(modulePath) as {
 
 function responseWithLength(value: string, cancelError?: Error): { response: Response; cancelled: () => boolean } {
   let wasCancelled = false;
-  const stream = new ReadableStream<Uint8Array>({
+  const body = {
     cancel() {
       wasCancelled = true;
-      if (cancelError) throw cancelError;
+      return cancelError ? Promise.reject(cancelError) : Promise.resolve();
     }
-  });
+  };
+  const headers = new Headers({ "content-length": value });
   return {
-    response: new Response(stream, { headers: { "content-length": value } }),
+    response: { headers, body } as unknown as Response,
     cancelled: () => wasCancelled
   };
 }
