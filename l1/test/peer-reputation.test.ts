@@ -35,12 +35,10 @@ test("peer reputation survives restart and successful recovery clears backoff", 
     const store = await PeerReputationStore.open(directory);
     assert.equal(await store.recordFailure(peer, now), 30_000);
     assert.equal(await store.recordFailure(peer, now + 30_000), 60_000);
-
     const reopened = await PeerReputationStore.open(directory);
     assert.equal(reopened.failureCount(peer), 2);
     assert.equal(reopened.isAvailable(peer, now + 89_999), false);
     assert.equal(reopened.isAvailable(peer, now + 90_000), true);
-
     await reopened.recordSuccess(peer, now + 90_000);
     const recovered = await PeerReputationStore.open(directory);
     assert.equal(recovered.failureCount(peer), 0);
@@ -51,31 +49,29 @@ test("peer reputation survives restart and successful recovery clears backoff", 
   }
 });
 
-test("peer reputation fails closed when active endpoint penalties saturate capacity", async () => {
+test("peer reputation never evicts tracked identities when capacity is saturated", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-peer-reputation-cap-"));
   const now = 1_800_000_000_000;
   try {
     const store = await PeerReputationStore.open(directory);
     const peers = Array.from({ length: 256 }, (_, index) => `https://validator-${index}.example:9137`);
     for (const peer of peers) await store.recordFailure(peer, now);
-
     const rotated = "https://rotated-attacker.example:9137";
     assert.equal(store.isAvailable(rotated, now), false);
     await store.recordFailure(rotated, now);
-    assert.equal(store.isAvailable(rotated, now), false);
-    assert.equal(store.isAvailable(peers[0]!, now), false);
-
-    const snapshot = JSON.parse(await readFile(join(directory, "peer-reputation.json"), "utf8")) as { peers: unknown[] };
-    assert.equal(snapshot.peers.length, 256);
-
     const expiry = now + 30_000;
-    assert.equal(store.isAvailable(rotated, expiry), true);
-    await store.recordFailure(rotated, expiry);
+    assert.equal(store.isAvailable(peers[0]!, expiry), true);
     assert.equal(store.isAvailable(rotated, expiry), false);
+    await store.recordFailure(rotated, expiry);
+    await store.recordSuccess(rotated, expiry);
     const reopened = await PeerReputationStore.open(directory);
-    assert.equal(reopened.failureCount(rotated), 1);
-    const reopenedSnapshot = JSON.parse(await readFile(join(directory, "peer-reputation.json"), "utf8")) as { peers: unknown[] };
-    assert.equal(reopenedSnapshot.peers.length, 256);
+    assert.equal(reopened.failureCount(rotated), 0);
+    assert.equal(reopened.failureCount(peers[0]!), 1);
+    assert.equal(reopened.isAvailable(rotated, expiry), false);
+    const snapshot = JSON.parse(await readFile(join(directory, "peer-reputation.json"), "utf8")) as { peers: Array<{ endpoint: string }> };
+    assert.equal(snapshot.peers.length, 256);
+    assert.equal(snapshot.peers.some((entry) => entry.endpoint === rotated), false);
+    assert.equal(snapshot.peers.some((entry) => entry.endpoint === peers[0]), true);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
