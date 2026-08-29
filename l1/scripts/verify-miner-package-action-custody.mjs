@@ -17,24 +17,32 @@ const required = [
   'node scripts/test-miner-release-manifest-snapshot.mjs',
   'node scripts/test-miner-release-manifest-root-relative.mjs',
   'node scripts/test-miner-release-manifest-path-controls.mjs',
+  'node --check scripts/miner-packaging-custody-gate.mjs',
+  'node --check scripts/test-miner-packaging-quarantine.mjs',
   'p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null',
   "if: runner.os != 'Windows'",
   'run: npm test',
   "if: runner.os == 'Windows'",
   'dist/test/miner-genesis.test.js dist/test/miner-network.test.js dist/test/miner-security.test.js',
-  'npm sbom --omit=dev --sbom-format=spdx',
-  'npm prune --omit=dev',
-  'node scripts/package-miner.mjs',
-  'if [ "$STATUS" -ne 78 ]',
-  "if [ -e \"$TEST_HOME\" ]; then echo 'inactive launcher touched custody directory'",
-  'node scripts/generate-miner-sha256sums.mjs miner-release',
-  'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
-  'if-no-files-found: error',
-  'retention-days: 14'
+  'Prove package materialization is quarantined before filesystem writes',
+  'run: node scripts/test-miner-packaging-quarantine.mjs'
 ];
 
 for (const needle of required) {
   if (!workflow.includes(needle)) throw new Error(`miner package custody invariant missing: ${needle}`);
+}
+
+for (const forbidden of [
+  'npm sbom --omit=dev --sbom-format=spdx',
+  'npm prune --omit=dev',
+  'run: node scripts/package-miner.mjs',
+  'Generate SHA-256 manifest',
+  'actions/upload-artifact@',
+  'Upload miner bundle'
+]) {
+  if (workflow.includes(forbidden)) {
+    throw new Error(`quarantined Miner Package CI must not materialize or publish artifacts: ${forbidden}`);
+  }
 }
 
 if (/uses:\s+[^\n]+@(v\d+|main|master)\b/.test(workflow)) {
@@ -42,7 +50,7 @@ if (/uses:\s+[^\n]+@(v\d+|main|master)\b/.test(workflow)) {
 }
 
 if (workflow.includes("crypto.createHash('sha256')") || workflow.includes('fs.readFileSync(file)')) {
-  throw new Error('Miner Package CI must not bypass the canonical checksum publisher with inline pathname hashing');
+  throw new Error('Miner Package CI must not bypass the custody quarantine with inline artifact hashing');
 }
 
 const checkoutSteps = workflow.split(/\n(?=\s*- name: )/).filter((block) => block.includes('actions/checkout@'));
@@ -50,4 +58,4 @@ if (checkoutSteps.length !== 1 || !checkoutSteps[0].includes('persist-credential
   throw new Error('Miner Package checkout must disable credential persistence');
 }
 
-console.log('miner package action custody policy: ok');
+console.log('miner package action custody policy: quarantine ok');
