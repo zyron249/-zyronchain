@@ -2,11 +2,12 @@ const DEFAULT_MAX_JSON_DEPTH = 64;
 const DEFAULT_MAX_STRUCTURAL_TOKENS = 250_000;
 const DEFAULT_UNDECLARED_INITIAL_BYTES = 4 * 1024;
 
-async function cancelRejectedBody(response, reason) {
+function cancelRejectedBody(response, reason) {
   try {
-    await response.body?.cancel(reason);
+    const pending = response.body?.cancel(reason);
+    void pending?.catch(() => undefined);
   } catch {
-    // Best-effort cleanup must never replace the original validation error.
+    // Best-effort cleanup must never replace or delay the original validation error.
   }
 }
 
@@ -21,12 +22,12 @@ export async function readBoundedJsonResponse(response, maxBytes, options = {}) 
   let declaredBytes = null;
   if (declaredHeader !== null) {
     if (!/^(0|[1-9][0-9]*)$/.test(declaredHeader)) {
-      await cancelRejectedBody(response, "invalid-content-length");
+      cancelRejectedBody(response, "invalid-content-length");
       throw new Error("RPC returned invalid Content-Length");
     }
     declaredBytes = Number(declaredHeader);
     if (!Number.isSafeInteger(declaredBytes) || declaredBytes > maxBytes) {
-      await cancelRejectedBody(response, "declared-response-too-large");
+      cancelRejectedBody(response, "declared-response-too-large");
       throw new Error(`RPC response exceeds ${formatByteLimit(maxBytes)} limit`);
     }
   }
