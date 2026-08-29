@@ -10,12 +10,15 @@ const { readBoundedJsonResponse } = await import(moduleUrl.href) as {
   readBoundedJsonResponse: (response: Response, maxBytes: number) => Promise<unknown>;
 };
 
-function responseWithLength(value: string, cancelError?: Error): { response: Response; cancelled: () => boolean } {
+function responseWithLength(
+  value: string,
+  cancelImpl: () => Promise<void> = () => Promise.resolve()
+): { response: Response; cancelled: () => boolean } {
   let wasCancelled = false;
   const body = {
     cancel() {
       wasCancelled = true;
-      return cancelError ? Promise.reject(cancelError) : Promise.resolve();
+      return cancelImpl();
     }
   };
   const headers = {
@@ -42,7 +45,17 @@ test("miner RPC oversized declared response cancels unconsumed body", async () =
 });
 
 test("miner RPC cleanup failure preserves early Content-Length rejection", async () => {
-  const rejected = responseWithLength("invalid", new Error("cleanup failed"));
+  const rejected = responseWithLength("invalid", () => Promise.reject(new Error("cleanup failed")));
   await assert.rejects(readBoundedJsonResponse(rejected.response, 64 * 1024), /invalid Content-Length/);
+  assert.equal(rejected.cancelled(), true);
+});
+
+test("miner RPC rejection does not wait for stalled body cancellation", async () => {
+  const rejected = responseWithLength("invalid", () => new Promise<void>(() => undefined));
+  const outcome = await Promise.race([
+    assert.rejects(readBoundedJsonResponse(rejected.response, 64 * 1024), /invalid Content-Length/).then(() => "rejected"),
+    new Promise<string>((resolve) => setImmediate(() => resolve("blocked")))
+  ]);
+  assert.equal(outcome, "rejected");
   assert.equal(rejected.cancelled(), true);
 });
