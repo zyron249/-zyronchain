@@ -23,8 +23,6 @@ jobs:
     timeout-minutes: 25
     permissions:
       contents: read
-      id-token: write
-      attestations: write
     defaults:
       run:
         working-directory: l1
@@ -59,6 +57,8 @@ jobs:
           node --check scripts/miner-launcher-security.mjs
           node --check scripts/test-miner-launcher-security.mjs
           node --check scripts/package-miner.mjs
+          node --check scripts/miner-packaging-custody-gate.mjs
+          node --check scripts/test-miner-packaging-quarantine.mjs
           node --check scripts/miner-release-root.mjs
           node --check scripts/test-miner-release-root.mjs
           node --check scripts/test-windows-miner-package-contract.mjs
@@ -90,104 +90,14 @@ jobs:
       - name: Audit runtime dependencies
         run: npm audit --omit=dev --audit-level=high
 
-      - name: Generate production SBOM before pruning development dependencies
+      - name: Prove release-candidate materialization is quarantined before filesystem writes
+        run: node scripts/test-miner-packaging-quarantine.mjs
+
+      - name: Assert no release candidate was materialized
         shell: bash
         run: |
-          node -e "require('node:fs').mkdirSync('miner-release',{recursive:true})"
-          npm sbom --omit=dev --sbom-format=spdx > miner-release/SBOM.spdx.json
-
-      - name: Prune to production runtime
-        run: npm prune --omit=dev
-
-      - name: Package self-contained miner
-        run: node scripts/package-miner.mjs
-
-      - name: Add Windows start instructions
-        if: runner.os == 'Windows'
-        run: node scripts/copy-windows-miner-readme.mjs
-
-      - name: Package Windows end-user ZIP
-        if: runner.os == 'Windows'
-        run: node scripts/package-windows-miner-zip.mjs
-
-      - name: Verify Windows ZIP contains double-click launcher and runtime
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/verify-windows-miner-zip.ps1
-
-      - name: Verify inactive candidate fails closed before custody
-        shell: bash
-        run: |
-          BUNDLE=$(find miner-release -mindepth 1 -maxdepth 1 -type d | head -n 1)
-          if [ -z "$BUNDLE" ]; then echo 'missing miner bundle' >&2; exit 1; fi
-          TEST_HOME="$RUNNER_TEMP/zyron-miner-release-smoke"
-          rm -rf "$TEST_HOME"
-          set +e
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            ZYRON_MINER_HOME="$TEST_HOME" "$BUNDLE/node.exe" "$BUNDLE/scripts/miner-launcher.mjs"
-          else
-            ZYRON_MINER_HOME="$TEST_HOME" "$BUNDLE/node" "$BUNDLE/scripts/miner-launcher.mjs"
+          if [ -e miner-release ]; then
+            echo 'custody quarantine must not materialize miner-release' >&2
+            exit 1
           fi
-          STATUS=$?
-          set -e
-          if [ "$STATUS" -ne 78 ]; then echo "expected inactive launcher exit 78, got $STATUS" >&2; exit 1; fi
-          if [ -e "$TEST_HOME" ]; then echo 'inactive release candidate touched custody directory' >&2; exit 1; fi
-
-      - name: Write fail-closed release metadata
-        shell: bash
-        env:
-          SOURCE_SHA: ${{ github.sha }}
-          SOURCE_REF: ${{ github.ref }}
-          RUNNER_OS_VALUE: ${{ runner.os }}
-          RUNNER_ARCH_VALUE: ${{ runner.arch }}
-        run: |
-          node - <<'NODE'
-          const fs = require('node:fs');
-          const profile = JSON.parse(fs.readFileSync('miner-network-profile.json', 'utf8'));
-          if (profile.publicMiningActivated !== false || profile.rpcUrl !== null || profile.genesisFile !== null) {
-            throw new Error('candidate metadata requires inactive canonical network profile');
-          }
-          const metadata = {
-            schemaVersion: 1,
-            sourceSha: process.env.SOURCE_SHA,
-            sourceRef: process.env.SOURCE_REF,
-            runnerOs: process.env.RUNNER_OS_VALUE,
-            runnerArch: process.env.RUNNER_ARCH_VALUE,
-            nodeVersion: process.version,
-            publicMiningActivated: false,
-            releaseEligible: false,
-            platformSigningVerified: false,
-            publicationAllowed: false,
-            note: 'Candidate evidence only. Promotion requires reviewed platform signing/provenance and explicit public-mining activation.'
-          };
-          fs.writeFileSync('miner-release/RELEASE-METADATA.json', JSON.stringify(metadata, null, 2) + '\n');
-          NODE
-
-      - name: Generate SHA-256 manifest
-        run: node scripts/generate-miner-sha256sums.mjs miner-release
-
-      - name: Verify release metadata stays non-publishable
-        run: node -e "const m=require('./miner-release/RELEASE-METADATA.json'); if (m.nodeVersion !== 'v22.23.2' || m.publicMiningActivated !== false || m.releaseEligible !== false || m.platformSigningVerified !== false || m.publicationAllowed !== false) throw new Error('release-candidate fail-closed metadata drift')"
-
-      - name: Attest candidate evidence
-        if: github.event_name != 'pull_request'
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
-        with:
-          subject-path: |
-            l1/miner-release/SBOM.spdx.json
-            l1/miner-release/SHA256SUMS
-            l1/miner-release/RELEASE-METADATA.json
-
-      - name: Attest Windows end-user ZIP
-        if: github.event_name != 'pull_request' && runner.os == 'Windows'
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
-        with:
-          subject-path: l1/miner-release/ZyronMiner-windows-*.zip
-
-      - name: Upload non-publishable release candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: zyron-miner-release-candidate-${{ runner.os }}-${{ runner.arch }}
-          path: l1/miner-release/
-          if-no-files-found: error
-          retention-days: 90
+          echo 'Miner release candidate remains intentionally non-materialized pending #761.'
