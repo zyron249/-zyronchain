@@ -23,6 +23,14 @@ export function assertRpcApiVersion(response: Response, expectedVersion: number)
   assertRpcResponseVersion(response, expectedVersion, "RPC server");
 }
 
+function cancelRpcResponseReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
+  try {
+    const cancellation = reader.cancel("RPC response byte limit exceeded");
+    void cancellation.catch(() => undefined);
+  } catch {
+  }
+}
+
 export async function readBoundedResponseText(
   response: Response,
   maxBytes: number,
@@ -54,7 +62,7 @@ export async function readBoundedResponseText(
       if (done) break;
       if (!value) continue;
       if (value.byteLength > maxBytes - total) {
-        try { await reader.cancel("RPC response byte limit exceeded"); } catch { /* best effort */ }
+        cancelRpcResponseReader(reader);
         throw new Error(`${label} too large`);
       }
       const required = total + value.byteLength;
