@@ -4,16 +4,16 @@ The self-contained miner packager treats `l1/miner-release` as a security bounda
 
 ## Current status: materialization quarantined
 
-Miner bundle materialization is intentionally fail-closed while issue #761 remains open. The existing release-root admission logic can reject a pre-seeded symlink/non-directory, but pathname validation cannot bind the admitted directory identity across later descendant writes. That leaves the replacement races tracked by #757, #683 and #636 unresolved.
+Miner bundle materialization remains intentionally fail-closed while issue #761 is open. `package-miner.mjs` invokes the custody gate **before** `bindMinerReleaseRoot()` and before descriptor-relative materialization; the gate has no environment-variable or CLI bypass. Miner Package CI and Miner Release Candidate CI prove that normal packager invocation still fails with the custody-quarantine error and does not create a release candidate.
 
-`package-miner.mjs` therefore invokes the custody gate **before** `bindMinerReleaseRoot()` and before any `miner-release` mkdir/remove/copy/write/chmod operation. There is no environment-variable or CLI bypass for pathname-only packaging. Miner Package CI and Miner Release Candidate CI now prove on supported runners that invoking the packager fails with the custody-quarantine error and leaves `miner-release` absent.
+The dormant post-gate POSIX path is no longer a pathname `rm/mkdir/cp/writeFile/chmod` pipeline. After static release-root admission it delegates to `materialize-miner-package-posix.mjs`, which binds the accepted release directory in the native custody session, reserves the bundle exclusively, retains nested directory descriptors and emits candidate files with descriptor-relative `COPY`. Existing bundles are not deleted or reused.
 
-This quarantine is containment, not the final fix. It must not be removed until #761 provides an audited handle/descriptor-relative primitive on every supported platform and the replacement regressions for #757/#683/#636 prove that no candidate byte can escape the validated release tree.
+This is still containment plus implementation evidence, not activation. The quarantine must remain until the real materialization path has deterministic replacement tests for the release root, bundle root and nested destinations, and each release platform has audited handle-relative custody or is explicitly unsupported. Windows currently has no equivalent audited handle implementation and therefore remains fail-closed.
 
-## Existing admission boundary
+## Static admission boundary
 
-When handle-relative packaging is eventually enabled, `bindMinerReleaseRoot()` still provides a useful static admission check: a symlink or non-directory release root is rejected fail closed, and the accepted path must canonically resolve to the `miner-release` child of the canonical L1 project root.
+`bindMinerReleaseRoot()` remains a static admission check before the descriptor session starts: a symlink or non-directory release root is rejected fail closed, and the accepted path must canonically resolve to the `miner-release` child of the canonical L1 project root.
 
-That check protects against a pre-seeded release-root redirect but does not by itself close a replacement race after validation. It must never be described as equivalent to stable directory-handle custody.
+That admission check is not itself stable directory-handle custody. The security guarantee for subsequent POSIX destination operations comes from the retained descriptor session; code must not fall back to pathname mutation after admission.
 
-The quarantine does not alter miner-network activation, signing, protocol-v5 consensus rules, checksums, SBOM requirements, immutable-release policy, or website publication gates. While quarantine is active, no self-contained miner candidate is produced at all. Green CI proves only that the unsafe materialization path remains disabled; it is not evidence that public mining, public testnet, or mainnet is ready.
+The quarantine does not alter miner-network activation, signing, protocol-v5 consensus rules, checksums, SBOM requirements, immutable-release policy, or website publication gates. While quarantine is active, no self-contained miner candidate is produced by the normal packaging entry point. Green CI for this work is not evidence that public mining, public testnet, or mainnet is ready.
