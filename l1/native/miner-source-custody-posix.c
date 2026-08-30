@@ -8,14 +8,12 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#ifndef O_NOFOLLOW
+#error "miner source custody requires O_NOFOLLOW"
+#endif
+
 #ifndef O_CLOEXEC
 #define O_CLOEXEC 0
-#endif
-#ifndef O_NOFOLLOW
-#define O_NOFOLLOW 0
-#endif
-#ifndef O_DIRECTORY
-#define O_DIRECTORY 0
 #endif
 
 #define MAX_COMPONENTS 64
@@ -27,9 +25,19 @@ static void die(const char *what) {
   exit(1);
 }
 
+static void assert_directory_fd(int fd, const char *what) {
+  struct stat st;
+  if (fstat(fd, &st) != 0) die(what);
+  if (!S_ISDIR(st.st_mode)) {
+    errno = ENOTDIR;
+    die(what);
+  }
+}
+
 static int open_root_nofollow(const char *path) {
-  int fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0) die("open source root");
+  assert_directory_fd(fd, "source root is not a directory");
   return fd;
 }
 
@@ -91,11 +99,12 @@ static int open_relative_regular_nofollow(int root_fd, const char *relative_path
       return file_fd;
     }
 
-    int next_fd = openat(current_fd, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    int next_fd = openat(current_fd, component, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     int saved = errno;
     close(current_fd);
     errno = saved;
     if (next_fd < 0) die("open relative source directory");
+    assert_directory_fd(next_fd, "relative source component is not a directory");
     current_fd = next_fd;
     component = next;
   }
