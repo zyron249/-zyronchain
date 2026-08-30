@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #ifndef O_NOFOLLOW
-#error "miner destination custody requires O_NOFOLLOW"
+#error "miner destination/source custody requires O_NOFOLLOW"
 #endif
 
 #ifndef O_CLOEXEC
@@ -84,21 +84,21 @@ static void write_child_file(int parent_fd, const char *name, const char *payloa
   if (close(fd) != 0) die("close child file");
 }
 
-static void copy_child_file(int parent_fd, const char *name, const char *source_path) {
-  int source_fd = open(source_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-  if (source_fd < 0) die("open copy source");
+static void copy_child_file_from_dir(int parent_fd, const char *name, int source_dir_fd, const char *source_name) {
+  int source_fd = openat(source_dir_fd, source_name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (source_fd < 0) die("open retained copy source");
 
   struct stat source_stat;
   if (fstat(source_fd, &source_stat) != 0) {
     int saved = errno;
     close(source_fd);
     errno = saved;
-    die("fstat copy source");
+    die("fstat retained copy source");
   }
   if (!S_ISREG(source_stat.st_mode)) {
     close(source_fd);
     errno = EINVAL;
-    die("copy source is not a regular file");
+    die("retained copy source is not a regular file");
   }
 
   int dest_fd = openat(parent_fd, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
@@ -118,7 +118,7 @@ static void copy_child_file(int parent_fd, const char *name, const char *source_
       close(dest_fd);
       close(source_fd);
       errno = saved;
-      die("read copy source");
+      die("read retained copy source");
     }
     if (got == 0) break;
     write_all(dest_fd, buffer, (size_t)got, "write copy destination");
@@ -144,7 +144,7 @@ static void copy_child_file(int parent_fd, const char *name, const char *source_
     errno = saved;
     die("close copy destination");
   }
-  if (close(source_fd) != 0) die("close copy source");
+  if (close(source_fd) != 0) die("close retained copy source");
 }
 
 static int valid_component(const char *name) {
@@ -162,18 +162,20 @@ static void assert_identity_unchanged(int fd, const struct stat *before) {
   }
 }
 
-static void close_session_stack(int *fds, size_t depth) {
-  while (depth > 1) {
-    if (close(fds[depth - 1]) != 0) die("close nested session directory");
-    depth--;
+static void close_stack(int *fds, size_t *depth, size_t minimum) {
+  while (*depth > minimum) {
+    if (close(fds[*depth - 1]) != 0) die("close retained directory");
+    (*depth)--;
   }
 }
 
 static void run_session(int root_fd, const struct stat *before) {
   char line[8192];
-  int fds[MAX_SESSION_DEPTH];
-  size_t depth = 1;
-  fds[0] = root_fd;
+  int dest_fds[MAX_SESSION_DEPTH];
+  size_t dest_depth = 1;
+  int source_fds[MAX_SESSION_DEPTH];
+  size_t source_depth = 0;
+  dest_fds[0] = root_fd;
   puts("READY");
   fflush(stdout);
 
@@ -186,7 +188,8 @@ static void run_session(int root_fd, const struct stat *before) {
     line[len - 1] = '\0';
 
     if (strcmp(line, "END") == 0) {
-      close_session_stack(fds, depth);
+      close_stack(source_fds, &source_depth, 0);
+      close_stack(dest_fds, &dest_depth, 1);
       assert_identity_unchanged(root_fd, before);
       puts("OK END");
       fflush(stdout);
@@ -194,14 +197,24 @@ static void run_session(int root_fd, const struct stat *before) {
     }
 
     if (strcmp(line, "LEAVE") == 0) {
-      if (depth <= 1) {
+      if (dest_depth <= 1) {
         fprintf(stderr, "miner-custody-posix: cannot leave bound release root\n");
         exit(64);
       }
-      if (close(fds[depth - 1]) != 0) die("close nested session directory");
-      depth--;
+      close_stack(dest_fds, &dest_depth, dest_depth - 1);
       assert_identity_unchanged(root_fd, before);
       puts("OK LEAVE");
+      fflush(stdout);
+      continue;
+    }
+
+    if (strcmp(line, "SOURCE_LEAVE") == 0) {
+      if (source_depth <= 1) {
+        fprintf(stderr, "miner-custody-posix: cannot leave retained source root\n");
+        exit(64);
+      }
+      close_stack(source_fds, &source_depth, source_depth - 1);
+      puts("OK SOURCE_LEAVE");
       fflush(stdout);
       continue;
     }
@@ -215,14 +228,39 @@ static void run_session(int root_fd, const struct stat *before) {
     const char *command = line;
     char *component = first_tab + 1;
 
-    if (!valid_component(component) && strcmp(command, "WRITE") != 0 && strcmp(command, "COPY") != 0) {
+    if (strcmp(command, "SOURCE") == 0) {
+      if (!*component || strchr(component, '\t') != NULL) {
+        fprintf(stderr, "miner-custody-posix: invalid source root path\n");
+        exit(64);
+      }
+      close_stack(source_fds, &source_depth, 0);
+      source_fds[0] = open_dir_nofollow(component);
+      source_depth = 1;
+      puts("OK SOURCE");
+      fflush(stdout);
+      continue;
+    }
+
+    if (strcmp(command, "SOURCE_ENTER") == 0) {
+      if (source_depth == 0 || !valid_component(component) || source_depth >= MAX_SESSION_DEPTH) {
+        fprintf(stderr, "miner-custody-posix: invalid retained source directory transition\n");
+        exit(64);
+      }
+      source_fds[source_depth] = open_child_dir_nofollow(source_fds[source_depth - 1], component);
+      source_depth++;
+      puts("OK SOURCE_ENTER");
+      fflush(stdout);
+      continue;
+    }
+
+    if (!valid_component(component) && strcmp(command, "WRITE") != 0 && strcmp(command, "COPYREL") != 0) {
       fprintf(stderr, "miner-custody-posix: invalid child component\n");
       exit(64);
     }
 
     if (strcmp(command, "RESERVE") == 0) {
-      reserve_child_dir(fds[depth - 1], component);
-      int child_fd = open_child_dir_nofollow(fds[depth - 1], component);
+      reserve_child_dir(dest_fds[dest_depth - 1], component);
+      int child_fd = open_child_dir_nofollow(dest_fds[dest_depth - 1], component);
       if (close(child_fd) != 0) die("close reserved child directory");
       assert_identity_unchanged(root_fd, before);
       puts("OK RESERVE");
@@ -231,19 +269,19 @@ static void run_session(int root_fd, const struct stat *before) {
     }
 
     if (strcmp(command, "ENTER") == 0) {
-      if (depth >= MAX_SESSION_DEPTH) {
+      if (dest_depth >= MAX_SESSION_DEPTH) {
         fprintf(stderr, "miner-custody-posix: session directory depth exceeded\n");
         exit(64);
       }
-      fds[depth] = open_child_dir_nofollow(fds[depth - 1], component);
-      depth++;
+      dest_fds[dest_depth] = open_child_dir_nofollow(dest_fds[dest_depth - 1], component);
+      dest_depth++;
       assert_identity_unchanged(root_fd, before);
       puts("OK ENTER");
       fflush(stdout);
       continue;
     }
 
-    if (strcmp(command, "WRITE") == 0 || strcmp(command, "COPY") == 0) {
+    if (strcmp(command, "WRITE") == 0 || strcmp(command, "COPYREL") == 0) {
       char *second_tab = strchr(component, '\t');
       if (!second_tab) {
         fprintf(stderr, "miner-custody-posix: malformed file command\n");
@@ -256,15 +294,15 @@ static void run_session(int root_fd, const struct stat *before) {
         exit(64);
       }
       if (strcmp(command, "WRITE") == 0) {
-        write_child_file(fds[depth - 1], component, argument);
+        write_child_file(dest_fds[dest_depth - 1], component, argument);
         puts("OK WRITE");
       } else {
-        if (!*argument || strchr(argument, '\t') != NULL) {
-          fprintf(stderr, "miner-custody-posix: invalid copy source path\n");
+        if (source_depth == 0 || !valid_component(argument)) {
+          fprintf(stderr, "miner-custody-posix: COPYREL requires a retained source directory and one regular-file component\n");
           exit(64);
         }
-        copy_child_file(fds[depth - 1], component, argument);
-        puts("OK COPY");
+        copy_child_file_from_dir(dest_fds[dest_depth - 1], component, source_fds[source_depth - 1], argument);
+        puts("OK COPYREL");
       }
       assert_identity_unchanged(root_fd, before);
       fflush(stdout);

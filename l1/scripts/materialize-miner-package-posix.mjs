@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { chmod, lstat, mkdtemp, readlink, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 
 const PACKAGED_SCRIPTS = [
   'mine.mjs',
@@ -51,13 +51,27 @@ async function command(session, line, expected) {
   await waitForLine(session.stdout, expected);
 }
 
-async function copyFile(session, sourcePath, destinationName) {
-  assertProtocolText(sourcePath, 'copy source path');
-  assertProtocolText(destinationName, 'destination component');
-  await command(session, `COPY\t${destinationName}\t${sourcePath}`, 'OK COPY');
+async function bindSource(session, sourceRoot) {
+  assertProtocolText(sourceRoot, 'source root');
+  await command(session, `SOURCE\t${sourceRoot}`, 'OK SOURCE');
 }
 
-async function copyTree(session, sourceRoot, sourceDir, destinationComponent) {
+async function enterSource(session, component) {
+  assertProtocolText(component, 'source component');
+  await command(session, `SOURCE_ENTER\t${component}`, 'OK SOURCE_ENTER');
+}
+
+async function leaveSource(session) {
+  await command(session, 'SOURCE_LEAVE', 'OK SOURCE_LEAVE');
+}
+
+async function copyFile(session, sourceName, destinationName = sourceName) {
+  assertProtocolText(sourceName, 'copy source component');
+  assertProtocolText(destinationName, 'destination component');
+  await command(session, `COPYREL\t${destinationName}\t${sourceName}`, 'OK COPYREL');
+}
+
+async function copyTree(session, sourceDir, destinationComponent) {
   assertProtocolText(destinationComponent, 'destination component');
   await command(session, `RESERVE\t${destinationComponent}`, 'OK RESERVE');
   await command(session, `ENTER\t${destinationComponent}`, 'OK ENTER');
@@ -68,23 +82,19 @@ async function copyTree(session, sourceRoot, sourceDir, destinationComponent) {
     const sourcePath = join(sourceDir, entry.name);
     const sourceLstat = await lstat(sourcePath);
     if (sourceLstat.isDirectory()) {
-      const canonical = await realpath(sourcePath);
-      if (!isWithin(sourceRoot, canonical)) throw new Error(`miner package source directory escapes root: ${sourcePath}`);
-      await copyTree(session, sourceRoot, canonical, entry.name);
+      await enterSource(session, entry.name);
+      try {
+        await copyTree(session, sourcePath, entry.name);
+      } finally {
+        await leaveSource(session);
+      }
       continue;
     }
-    let copyPath = sourcePath;
     if (sourceLstat.isSymbolicLink()) {
-      const link = await readlink(sourcePath);
-      const canonical = await realpath(resolve(dirname(sourcePath), link));
-      if (!isWithin(sourceRoot, canonical)) throw new Error(`miner package symlink escapes root: ${sourcePath}`);
-      const target = await stat(canonical);
-      if (!target.isFile()) throw new Error(`miner package symlink must resolve to a regular file: ${sourcePath}`);
-      copyPath = canonical;
-    } else if (!sourceLstat.isFile()) {
-      throw new Error(`unsupported miner package source entry: ${sourcePath}`);
+      throw new Error(`miner package source symlink is not accepted by retained descriptor custody: ${sourcePath}`);
     }
-    await copyFile(session, copyPath, entry.name);
+    if (!sourceLstat.isFile()) throw new Error(`unsupported miner package source entry: ${sourcePath}`);
+    await copyFile(session, entry.name);
   }
   await command(session, 'LEAVE', 'OK LEAVE');
 }
@@ -133,23 +143,37 @@ export async function materializeMinerPackagePosix({ root, outRoot, bundleName, 
     await waitForLine(session.stdout, 'READY');
     await command(session, `RESERVE\t${bundleName}`, 'OK RESERVE');
     await command(session, `ENTER\t${bundleName}`, 'OK ENTER');
-    await copyFile(session, process.execPath, nodeName);
 
+    await bindSource(session, canonicalRoot);
     await command(session, 'RESERVE\tdist', 'OK RESERVE');
     await command(session, 'ENTER\tdist', 'OK ENTER');
-    await copyTree(session, canonicalRoot, join(canonicalRoot, 'dist', 'src'), 'src');
+    await enterSource(session, 'dist');
+    await enterSource(session, 'src');
+    await copyTree(session, join(canonicalRoot, 'dist', 'src'), 'src');
+    await leaveSource(session);
+    await leaveSource(session);
     await command(session, 'LEAVE', 'OK LEAVE');
 
     await command(session, 'RESERVE\tscripts', 'OK RESERVE');
     await command(session, 'ENTER\tscripts', 'OK ENTER');
-    for (const name of PACKAGED_SCRIPTS) await copyFile(session, join(canonicalRoot, 'scripts', name), name);
+    await enterSource(session, 'scripts');
+    for (const name of PACKAGED_SCRIPTS) await copyFile(session, name);
+    await leaveSource(session);
     await command(session, 'LEAVE', 'OK LEAVE');
 
-    await copyFile(session, join(canonicalRoot, 'miner-network-profile.json'), 'miner-network-profile.json');
-    await copyTree(session, canonicalRoot, join(canonicalRoot, 'node_modules'), 'node_modules');
-    for (const name of ['package.json', 'MINING.md']) await copyFile(session, join(canonicalRoot, name), name);
-    await copyFile(session, launcherSource, 'ZyronMiner');
-    await copyFile(session, readmeSource, 'README.txt');
+    await copyFile(session, 'miner-network-profile.json');
+    await enterSource(session, 'node_modules');
+    await copyTree(session, join(canonicalRoot, 'node_modules'), 'node_modules');
+    await leaveSource(session);
+    for (const name of ['package.json', 'MINING.md']) await copyFile(session, name);
+
+    const runtimePath = await realpath(process.execPath);
+    await bindSource(session, dirname(runtimePath));
+    await copyFile(session, basename(runtimePath), nodeName);
+
+    await bindSource(session, temp);
+    await copyFile(session, 'ZyronMiner');
+    await copyFile(session, 'README.txt');
 
     await command(session, 'LEAVE', 'OK LEAVE');
     await command(session, 'END', 'OK END');
