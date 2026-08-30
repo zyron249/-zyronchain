@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +41,24 @@ function waitForLine(stream, expected) {
   });
 }
 
+async function heldRead(sourceRoot, relativeFile, mutate) {
+  const child = spawn(helper, ['hold-read', sourceRoot, relativeFile], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stderr = '';
+  child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+  await waitForLine(child.stdout, 'BOUND');
+  const chunks = [];
+  child.stdout.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+  await mutate();
+  child.stdin.write('\n');
+  child.stdin.end();
+  const exitCode = await new Promise((resolveExit, reject) => {
+    child.once('error', reject);
+    child.once('close', resolveExit);
+  });
+  if (exitCode !== 0) throw new Error(`source custody helper failed: ${stderr}`);
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 try {
   const compiler = process.env.CC || 'cc';
   const build = spawnSync(compiler, ['-std=c11', '-Wall', '-Wextra', '-Werror', '-O2', source, '-o', helper], { encoding: 'utf8' });
@@ -54,26 +72,36 @@ try {
   await writeFile(join(sourceRoot, 'nested', 'payload.bin'), 'ORIGINAL-CANDIDATE-SOURCE');
   await writeFile(join(externalRoot, 'nested', 'payload.bin'), 'ATTACKER-REPLACEMENT-SOURCE');
 
-  const child = spawn(helper, ['hold-read', sourceRoot, 'nested/payload.bin'], { stdio: ['pipe', 'pipe', 'pipe'] });
-  let stderr = '';
-  child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
-  await waitForLine(child.stdout, 'BOUND');
-
-  await rename(sourceRoot, heldRoot);
-  await symlink(externalRoot, sourceRoot, 'dir');
-
-  const chunks = [];
-  child.stdout.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
-  child.stdin.write('\n');
-  child.stdin.end();
-  const exitCode = await new Promise((resolveExit, reject) => {
-    child.once('error', reject);
-    child.once('close', resolveExit);
+  const rootPayload = await heldRead(sourceRoot, 'nested/payload.bin', async () => {
+    await rename(sourceRoot, heldRoot);
+    await symlink(externalRoot, sourceRoot, 'dir');
   });
-  if (exitCode !== 0) throw new Error(`source custody helper failed: ${stderr}`);
-  const payload = Buffer.concat(chunks).toString('utf8');
-  if (payload !== 'ORIGINAL-CANDIDATE-SOURCE') {
-    throw new Error(`bound source root did not preserve original bytes; got ${JSON.stringify(payload)}`);
+  if (rootPayload !== 'ORIGINAL-CANDIDATE-SOURCE') {
+    throw new Error(`bound source root did not preserve original bytes; got ${JSON.stringify(rootPayload)}`);
+  }
+
+  const originalFile = join(heldRoot, 'nested', 'payload.bin');
+  const heldFile = join(heldRoot, 'nested', 'payload-held.bin');
+  const filePayload = await heldRead(heldRoot, 'nested/payload.bin', async () => {
+    await rename(originalFile, heldFile);
+    await writeFile(originalFile, 'ATTACKER-IN-ROOT-FILE-REPLACEMENT');
+  });
+  if (filePayload !== 'ORIGINAL-CANDIDATE-SOURCE') {
+    throw new Error(`bound source file descriptor admitted replacement bytes; got ${JSON.stringify(filePayload)}`);
+  }
+  await rm(originalFile, { force: true });
+  await rename(heldFile, originalFile);
+
+  const nestedRoot = join(temp, 'nested-source-root');
+  const nestedHeld = join(nestedRoot, 'nested-held');
+  await mkdir(join(nestedRoot, 'nested'), { recursive: true });
+  await writeFile(join(nestedRoot, 'nested', 'payload.bin'), 'ORIGINAL-NESTED-SOURCE');
+  const nestedPayload = await heldRead(nestedRoot, 'nested/payload.bin', async () => {
+    await rename(join(nestedRoot, 'nested'), nestedHeld);
+    await symlink(join(externalRoot, 'nested'), join(nestedRoot, 'nested'), 'dir');
+  });
+  if (nestedPayload !== 'ORIGINAL-NESTED-SOURCE') {
+    throw new Error(`bound nested source descriptor path admitted replacement bytes; got ${JSON.stringify(nestedPayload)}`);
   }
 
   const traversal = spawnSync(helper, ['read', heldRoot, '../external-source/nested/payload.bin'], { encoding: 'utf8' });
@@ -84,7 +112,7 @@ try {
   const symlinkRead = spawnSync(helper, ['read', heldRoot, 'nested/link.bin'], { encoding: 'utf8' });
   if (symlinkRead.status === 0) throw new Error('source custody helper followed a final-component symlink');
 
-  console.log('PASS: POSIX miner source-root descriptor survives pathname replacement, rejects traversal/final symlinks, and does not substitute attacker source bytes.');
+  console.log('PASS: POSIX miner source custody retains root/file identity across root, nested-directory, and file replacement; traversal/final symlinks remain rejected.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
