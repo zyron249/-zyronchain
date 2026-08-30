@@ -1,3 +1,6 @@
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE
+#endif
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <fcntl.h>
@@ -8,14 +11,12 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#ifndef O_NOFOLLOW
+#error "miner destination custody requires O_NOFOLLOW"
+#endif
+
 #ifndef O_CLOEXEC
 #define O_CLOEXEC 0
-#endif
-#ifndef O_NOFOLLOW
-#define O_NOFOLLOW 0
-#endif
-#ifndef O_DIRECTORY
-#define O_DIRECTORY 0
 #endif
 
 #define MAX_SESSION_DEPTH 64
@@ -26,15 +27,26 @@ static void die(const char *what) {
   exit(1);
 }
 
+static void assert_directory_fd(int fd, const char *what) {
+  struct stat st;
+  if (fstat(fd, &st) != 0) die(what);
+  if (!S_ISDIR(st.st_mode)) {
+    errno = ENOTDIR;
+    die(what);
+  }
+}
+
 static int open_dir_nofollow(const char *path) {
-  int fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0) die("open directory");
+  assert_directory_fd(fd, "opened root is not a directory");
   return fd;
 }
 
 static int open_child_dir_nofollow(int parent_fd, const char *name) {
-  int fd = openat(parent_fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  int fd = openat(parent_fd, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0) die("open child directory");
+  assert_directory_fd(fd, "opened child is not a directory");
   return fd;
 }
 

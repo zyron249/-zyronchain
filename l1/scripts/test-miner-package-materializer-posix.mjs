@@ -29,6 +29,20 @@ async function assertMissing(path, message) {
 }
 
 try {
+  const helperText = await readFile(helperSource, 'utf8');
+  if (/^#define O_NOFOLLOW 0$/m.test(helperText)) {
+    throw new Error('destination custody silently disables O_NOFOLLOW');
+  }
+  if (/^#define O_DIRECTORY 0$/m.test(helperText)) {
+    throw new Error('destination custody silently disables directory-open protection');
+  }
+  if (!helperText.includes('#error "miner destination custody requires O_NOFOLLOW"')) {
+    throw new Error('destination custody does not fail closed when O_NOFOLLOW is unavailable');
+  }
+  if (!helperText.includes('static void assert_directory_fd') || !helperText.includes('S_ISDIR(st.st_mode)')) {
+    throw new Error('destination custody does not verify opened directory descriptors with fstat');
+  }
+
   await mkdir(join(root, 'dist', 'src'), { recursive: true });
   await mkdir(join(root, 'scripts'), { recursive: true });
   await mkdir(join(root, 'node_modules', 'fixture-pkg'), { recursive: true });
@@ -72,7 +86,7 @@ try {
   }
   if (!duplicateFailed) throw new Error('descriptor-relative materializer reused an existing bundle directory');
 
-  console.log('PASS: descriptor-relative miner package materializer preserves the existing package layout/allowlist and fails closed instead of replacing an existing bundle.');
+  console.log('PASS: descriptor-relative miner package materializer preserves package layout/allowlist, rejects unsafe destination-custody fallbacks, and fails closed instead of replacing an existing bundle.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
