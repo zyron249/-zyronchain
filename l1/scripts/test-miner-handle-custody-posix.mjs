@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rename, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -106,6 +106,9 @@ try {
 
   const nestedRoot = join(temp, 'nested-release');
   const nestedExternal = join(temp, 'nested-external-sentinel');
+  const copySource = join(temp, 'copy-source.bin');
+  const binaryPayload = Buffer.from([0, 1, 2, 3, 255, 10, 13, 42]);
+  await writeFile(copySource, binaryPayload);
   await mkdir(nestedRoot);
   await mkdir(nestedExternal);
 
@@ -130,6 +133,8 @@ try {
 
   nested.stdin.write('WRITE\tmine.mjs\tNESTED-CANDIDATE\n');
   await waitForLine(nested.stdout, 'OK WRITE');
+  nested.stdin.write(`COPY\tnode.bin\t${copySource}\n`);
+  await waitForLine(nested.stdout, 'OK COPY');
   nested.stdin.write('LEAVE\n');
   await waitForLine(nested.stdout, 'OK LEAVE');
   nested.stdin.write('LEAVE\n');
@@ -138,9 +143,12 @@ try {
 
   const nestedPayload = await readFile(join(heldScripts, 'mine.mjs'), 'utf8');
   if (nestedPayload !== 'NESTED-CANDIDATE') throw new Error('nested held descriptor did not receive the candidate payload');
+  const copiedPayload = await readFile(join(heldScripts, 'node.bin'));
+  if (!copiedPayload.equals(binaryPayload)) throw new Error('descriptor-relative COPY changed binary candidate bytes');
   await assertAbsent(join(nestedExternal, 'mine.mjs'), 'nested replacement target received candidate bytes');
+  await assertAbsent(join(nestedExternal, 'node.bin'), 'nested replacement target received copied candidate bytes');
 
-  console.log('PASS: POSIX miner custody session retains release-root and nested directory descriptors across pathname replacement, with zero candidate bytes written through raced replacement paths.');
+  console.log('PASS: POSIX miner custody session retains release-root and nested descriptors across pathname replacement; WRITE and binary COPY stay descriptor-relative and external sentinels receive zero candidate bytes.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
