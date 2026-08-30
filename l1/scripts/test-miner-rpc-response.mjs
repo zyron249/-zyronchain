@@ -83,10 +83,12 @@ await assert.rejects(
 {
   const minerSource = await readFile(join(here, 'mine.mjs'), 'utf8');
   const packageSource = await readFile(join(here, 'package-miner.mjs'), 'utf8');
+  const materializerSource = await readFile(join(here, 'materialize-miner-package-posix.mjs'), 'utf8');
   const parserSource = await readFile(join(here, 'miner-rpc-response.mjs'), 'utf8');
   assert.match(minerSource, /readBoundedJsonResponse/);
   assert.doesNotMatch(minerSource, /Buffer\.concat\(chunks/);
-  assert.match(packageSource, /miner-rpc-response\.mjs/);
+  assert.match(packageSource, /materializeMinerPackagePosix/);
+  assert.match(materializerSource, /['"]miner-rpc-response\.mjs['"]/);
   assert.match(parserSource, /Math\.min\(maxBytes, DEFAULT_UNDECLARED_INITIAL_BYTES\)/);
   assert.match(parserSource, /Math\.min\(maxBytes, Math\.max\(required, Math\.max\(1, capacity\) \* 2\)\)/);
   assert.doesNotMatch(parserSource, /declaredBytes \?\? maxBytes/);
