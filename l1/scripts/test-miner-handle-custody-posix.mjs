@@ -41,6 +41,27 @@ function waitForLine(stream, expected) {
   });
 }
 
+async function finishSession(session, stderrRef) {
+  session.stdin.write('END\n');
+  await waitForLine(session.stdout, 'OK END');
+  session.stdin.end();
+  const exitCode = await new Promise((resolveExit, reject) => {
+    session.once('error', reject);
+    session.once('close', resolveExit);
+  });
+  if (exitCode !== 0) throw new Error(`custody session failed: ${stderrRef()}`);
+}
+
+async function assertAbsent(path, message) {
+  try {
+    await readFile(path);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  throw new Error(message);
+}
+
 try {
   const compiler = process.env.CC || 'cc';
   const build = spawnSync(compiler, ['-std=c11', '-Wall', '-Wextra', '-Werror', '-O2', source, '-o', helper], { encoding: 'utf8' });
@@ -77,29 +98,49 @@ try {
 
   session.stdin.write('WRITE\tproof\tCANDIDATE\n');
   await waitForLine(session.stdout, 'OK WRITE');
-  session.stdin.write('END\n');
-  await waitForLine(session.stdout, 'OK END');
-  session.stdin.end();
-
-  const exitCode = await new Promise((resolveExit, reject) => {
-    session.once('error', reject);
-    session.once('close', resolveExit);
-  });
-  if (exitCode !== 0) throw new Error(`custody session failed: ${stderr}`);
+  await finishSession(session, () => stderr);
 
   const heldPayload = await readFile(join(heldRoot, 'proof'), 'utf8');
   if (heldPayload !== 'CANDIDATE') throw new Error('held descriptor did not receive the candidate payload');
+  await assertAbsent(join(external, 'proof'), 'replacement target received candidate bytes');
 
-  let externalTouched = false;
-  try {
-    await readFile(join(external, 'proof'));
-    externalTouched = true;
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
-  }
-  if (externalTouched) throw new Error('replacement target received candidate bytes');
+  const nestedRoot = join(temp, 'nested-release');
+  const nestedExternal = join(temp, 'nested-external-sentinel');
+  await mkdir(nestedRoot);
+  await mkdir(nestedExternal);
 
-  console.log('PASS: POSIX miner custody primitive keeps one release-root descriptor across a session and writes zero candidate bytes through a raced pathname replacement.');
+  const nested = spawn(helper, ['session', nestedRoot], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let nestedStderr = '';
+  nested.stderr.on('data', (chunk) => { nestedStderr += chunk.toString('utf8'); });
+  await waitForLine(nested.stdout, 'READY');
+
+  nested.stdin.write('RESERVE\tbundle\n');
+  await waitForLine(nested.stdout, 'OK RESERVE');
+  nested.stdin.write('ENTER\tbundle\n');
+  await waitForLine(nested.stdout, 'OK ENTER');
+  nested.stdin.write('RESERVE\tscripts\n');
+  await waitForLine(nested.stdout, 'OK RESERVE');
+  nested.stdin.write('ENTER\tscripts\n');
+  await waitForLine(nested.stdout, 'OK ENTER');
+
+  const scriptsPath = join(nestedRoot, 'bundle', 'scripts');
+  const heldScripts = join(nestedRoot, 'bundle', 'scripts-held');
+  await rename(scriptsPath, heldScripts);
+  await symlink(nestedExternal, scriptsPath, 'dir');
+
+  nested.stdin.write('WRITE\tmine.mjs\tNESTED-CANDIDATE\n');
+  await waitForLine(nested.stdout, 'OK WRITE');
+  nested.stdin.write('LEAVE\n');
+  await waitForLine(nested.stdout, 'OK LEAVE');
+  nested.stdin.write('LEAVE\n');
+  await waitForLine(nested.stdout, 'OK LEAVE');
+  await finishSession(nested, () => nestedStderr);
+
+  const nestedPayload = await readFile(join(heldScripts, 'mine.mjs'), 'utf8');
+  if (nestedPayload !== 'NESTED-CANDIDATE') throw new Error('nested held descriptor did not receive the candidate payload');
+  await assertAbsent(join(nestedExternal, 'mine.mjs'), 'nested replacement target received candidate bytes');
+
+  console.log('PASS: POSIX miner custody session retains release-root and nested directory descriptors across pathname replacement, with zero candidate bytes written through raced replacement paths.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
