@@ -19,6 +19,7 @@
 #endif
 
 #define MAX_SESSION_DEPTH 64
+#define COPY_BUFFER_SIZE 65536
 
 static void die(const char *what) {
   fprintf(stderr, "miner-custody-posix: %s: %s\n", what, strerror(errno));
@@ -41,17 +42,27 @@ static void reserve_child_dir(int parent_fd, const char *name) {
   if (mkdirat(parent_fd, name, 0700) != 0) die("reserve child directory");
 }
 
+static void write_all(int fd, const unsigned char *buffer, size_t len, const char *what) {
+  size_t offset = 0;
+  while (offset < len) {
+    ssize_t wrote = write(fd, buffer + offset, len - offset);
+    if (wrote < 0) {
+      if (errno == EINTR) continue;
+      die(what);
+    }
+    if (wrote == 0) {
+      errno = EIO;
+      die(what);
+    }
+    offset += (size_t)wrote;
+  }
+}
+
 static void write_child_file(int parent_fd, const char *name, const char *payload) {
   int fd = openat(parent_fd, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
   if (fd < 0) die("create child file");
   size_t len = strlen(payload);
-  ssize_t wrote = write(fd, payload, len);
-  if (wrote < 0 || (size_t)wrote != len) {
-    int saved = errno;
-    close(fd);
-    errno = saved ? saved : EIO;
-    die("write child file");
-  }
+  write_all(fd, (const unsigned char *)payload, len, "write child file");
   if (fsync(fd) != 0) {
     int saved = errno;
     close(fd);
@@ -59,6 +70,69 @@ static void write_child_file(int parent_fd, const char *name, const char *payloa
     die("fsync child file");
   }
   if (close(fd) != 0) die("close child file");
+}
+
+static void copy_child_file(int parent_fd, const char *name, const char *source_path) {
+  int source_fd = open(source_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (source_fd < 0) die("open copy source");
+
+  struct stat source_stat;
+  if (fstat(source_fd, &source_stat) != 0) {
+    int saved = errno;
+    close(source_fd);
+    errno = saved;
+    die("fstat copy source");
+  }
+  if (!S_ISREG(source_stat.st_mode)) {
+    close(source_fd);
+    errno = EINVAL;
+    die("copy source is not a regular file");
+  }
+
+  int dest_fd = openat(parent_fd, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (dest_fd < 0) {
+    int saved = errno;
+    close(source_fd);
+    errno = saved;
+    die("create copy destination");
+  }
+
+  unsigned char buffer[COPY_BUFFER_SIZE];
+  for (;;) {
+    ssize_t got = read(source_fd, buffer, sizeof(buffer));
+    if (got < 0) {
+      if (errno == EINTR) continue;
+      int saved = errno;
+      close(dest_fd);
+      close(source_fd);
+      errno = saved;
+      die("read copy source");
+    }
+    if (got == 0) break;
+    write_all(dest_fd, buffer, (size_t)got, "write copy destination");
+  }
+
+  if (fchmod(dest_fd, source_stat.st_mode & 0777) != 0) {
+    int saved = errno;
+    close(dest_fd);
+    close(source_fd);
+    errno = saved;
+    die("chmod copy destination");
+  }
+  if (fsync(dest_fd) != 0) {
+    int saved = errno;
+    close(dest_fd);
+    close(source_fd);
+    errno = saved;
+    die("fsync copy destination");
+  }
+  if (close(dest_fd) != 0) {
+    int saved = errno;
+    close(source_fd);
+    errno = saved;
+    die("close copy destination");
+  }
+  if (close(source_fd) != 0) die("close copy source");
 }
 
 static int valid_component(const char *name) {
@@ -129,7 +203,7 @@ static void run_session(int root_fd, const struct stat *before) {
     const char *command = line;
     char *component = first_tab + 1;
 
-    if (!valid_component(component) && strcmp(command, "WRITE") != 0) {
+    if (!valid_component(component) && strcmp(command, "WRITE") != 0 && strcmp(command, "COPY") != 0) {
       fprintf(stderr, "miner-custody-posix: invalid child component\n");
       exit(64);
     }
@@ -157,21 +231,30 @@ static void run_session(int root_fd, const struct stat *before) {
       continue;
     }
 
-    if (strcmp(command, "WRITE") == 0) {
+    if (strcmp(command, "WRITE") == 0 || strcmp(command, "COPY") == 0) {
       char *second_tab = strchr(component, '\t');
       if (!second_tab) {
-        fprintf(stderr, "miner-custody-posix: malformed WRITE command\n");
+        fprintf(stderr, "miner-custody-posix: malformed file command\n");
         exit(64);
       }
       *second_tab = '\0';
-      const char *payload = second_tab + 1;
+      const char *argument = second_tab + 1;
       if (!valid_component(component)) {
         fprintf(stderr, "miner-custody-posix: invalid child component\n");
         exit(64);
       }
-      write_child_file(fds[depth - 1], component, payload);
+      if (strcmp(command, "WRITE") == 0) {
+        write_child_file(fds[depth - 1], component, argument);
+        puts("OK WRITE");
+      } else {
+        if (!*argument || strchr(argument, '\t') != NULL) {
+          fprintf(stderr, "miner-custody-posix: invalid copy source path\n");
+          exit(64);
+        }
+        copy_child_file(fds[depth - 1], component, argument);
+        puts("OK COPY");
+      }
       assert_identity_unchanged(root_fd, before);
-      puts("OK WRITE");
       fflush(stdout);
       continue;
     }
