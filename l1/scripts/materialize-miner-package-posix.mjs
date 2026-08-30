@@ -3,6 +3,13 @@ import { chmod, lstat, mkdtemp, readlink, readdir, realpath, rm, stat, writeFile
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
+const PACKAGED_SCRIPTS = [
+  'mine.mjs',
+  'miner-rpc-response.mjs',
+  'miner-launcher.mjs',
+  'miner-launcher-security.mjs'
+];
+
 function assertProtocolText(value, label) {
   if (typeof value !== 'string' || value.length === 0 || /[\t\r\n]/.test(value)) {
     throw new Error(`${label} contains unsupported session protocol characters`);
@@ -44,6 +51,12 @@ async function command(session, line, expected) {
   await waitForLine(session.stdout, expected);
 }
 
+async function copyFile(session, sourcePath, destinationName) {
+  assertProtocolText(sourcePath, 'copy source path');
+  assertProtocolText(destinationName, 'destination component');
+  await command(session, `COPY\t${destinationName}\t${sourcePath}`, 'OK COPY');
+}
+
 async function copyTree(session, sourceRoot, sourceDir, destinationComponent) {
   assertProtocolText(destinationComponent, 'destination component');
   await command(session, `RESERVE\t${destinationComponent}`, 'OK RESERVE');
@@ -71,13 +84,12 @@ async function copyTree(session, sourceRoot, sourceDir, destinationComponent) {
     } else if (!sourceLstat.isFile()) {
       throw new Error(`unsupported miner package source entry: ${sourcePath}`);
     }
-    assertProtocolText(copyPath, 'copy source path');
-    await command(session, `COPY\t${entry.name}\t${copyPath}`, 'OK COPY');
+    await copyFile(session, copyPath, entry.name);
   }
   await command(session, 'LEAVE', 'OK LEAVE');
 }
 
-export async function materializeMinerPackagePosix({ root, outRoot, bundleName, nodeName }) {
+export async function materializeMinerPackagePosix({ root, outRoot, bundleName, nodeName, helperSource }) {
   if (process.platform === 'win32') throw new Error('descriptor-relative miner materialization is not implemented on Windows');
   for (const [label, value] of Object.entries({ bundleName, nodeName })) assertProtocolText(value, label);
 
@@ -89,9 +101,9 @@ export async function materializeMinerPackagePosix({ root, outRoot, bundleName, 
 
   const temp = await mkdtemp(join(tmpdir(), 'zyron-miner-materializer-'));
   const helper = join(temp, 'miner-custody-posix');
-  const helperSource = join(canonicalRoot, 'native', 'miner-custody-posix.c');
+  const custodySource = helperSource ? await realpath(helperSource) : join(canonicalRoot, 'native', 'miner-custody-posix.c');
   const compiler = process.env.CC || 'cc';
-  const build = spawnSync(compiler, ['-std=c11', '-Wall', '-Wextra', '-Werror', '-O2', helperSource, '-o', helper], { encoding: 'utf8' });
+  const build = spawnSync(compiler, ['-std=c11', '-Wall', '-Wextra', '-Werror', '-O2', custodySource, '-o', helper], { encoding: 'utf8' });
   if (build.status !== 0) {
     await rm(temp, { recursive: true, force: true });
     throw new Error(`failed to compile descriptor-relative miner custody helper: ${build.stderr || build.stdout}`);
@@ -121,16 +133,24 @@ export async function materializeMinerPackagePosix({ root, outRoot, bundleName, 
     await waitForLine(session.stdout, 'READY');
     await command(session, `RESERVE\t${bundleName}`, 'OK RESERVE');
     await command(session, `ENTER\t${bundleName}`, 'OK ENTER');
-    await command(session, `COPY\t${nodeName}\t${process.execPath}`, 'OK COPY');
-    await copyTree(session, canonicalRoot, join(canonicalRoot, 'dist', 'src'), 'dist-src');
-    await copyTree(session, canonicalRoot, join(canonicalRoot, 'scripts'), 'scripts');
-    await command(session, `COPY\tminer-network-profile.json\t${join(canonicalRoot, 'miner-network-profile.json')}`, 'OK COPY');
+    await copyFile(session, process.execPath, nodeName);
+
+    await command(session, 'RESERVE\tdist', 'OK RESERVE');
+    await command(session, 'ENTER\tdist', 'OK ENTER');
+    await copyTree(session, canonicalRoot, join(canonicalRoot, 'dist', 'src'), 'src');
+    await command(session, 'LEAVE', 'OK LEAVE');
+
+    await command(session, 'RESERVE\tscripts', 'OK RESERVE');
+    await command(session, 'ENTER\tscripts', 'OK ENTER');
+    for (const name of PACKAGED_SCRIPTS) await copyFile(session, join(canonicalRoot, 'scripts', name), name);
+    await command(session, 'LEAVE', 'OK LEAVE');
+
+    await copyFile(session, join(canonicalRoot, 'miner-network-profile.json'), 'miner-network-profile.json');
     await copyTree(session, canonicalRoot, join(canonicalRoot, 'node_modules'), 'node_modules');
-    for (const name of ['package.json', 'MINING.md']) {
-      await command(session, `COPY\t${name}\t${join(canonicalRoot, name)}`, 'OK COPY');
-    }
-    await command(session, `COPY\tZyronMiner\t${launcherSource}`, 'OK COPY');
-    await command(session, `COPY\tREADME.txt\t${readmeSource}`, 'OK COPY');
+    for (const name of ['package.json', 'MINING.md']) await copyFile(session, join(canonicalRoot, name), name);
+    await copyFile(session, launcherSource, 'ZyronMiner');
+    await copyFile(session, readmeSource, 'README.txt');
+
     await command(session, 'LEAVE', 'OK LEAVE');
     await command(session, 'END', 'OK END');
     session.stdin.end();
