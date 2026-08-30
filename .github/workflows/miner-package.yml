@@ -37,7 +37,7 @@ jobs:
         run: npm ci
       - name: Typecheck
         run: npm run typecheck
-      - name: Check miner scripts and inactive network profile
+      - name: Check miner script syntax
         run: |
           node --check scripts/mine.mjs
           node --check scripts/miner-launcher.mjs
@@ -54,12 +54,16 @@ jobs:
           node --check scripts/test-miner-release-manifest-snapshot.mjs
           node --check scripts/test-miner-release-manifest-root-relative.mjs
           node --check scripts/test-miner-release-manifest-path-controls.mjs
-          node scripts/test-miner-launcher-security.mjs
+      - name: Run miner launcher custody security regression
+        run: node scripts/test-miner-launcher-security.mjs
+      - name: Run miner release manifest regressions
+        run: |
           node scripts/test-miner-release-manifest.mjs
           node scripts/test-miner-release-manifest-snapshot.mjs
           node scripts/test-miner-release-manifest-root-relative.mjs
           node scripts/test-miner-release-manifest-path-controls.mjs
-          node -e "const p=require('./miner-network-profile.json'); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('miner network profile must remain fail-closed before intentional activation')"
+      - name: Assert inactive miner network profile
+        run: node -e "const p=require('./miner-network-profile.json'); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('miner network profile must remain fail-closed before intentional activation')"
       - name: Exercise descriptor-relative miner custody primitive
         run: node scripts/test-miner-handle-custody-posix.mjs
       - name: Exercise descriptor-relative miner package materializer
