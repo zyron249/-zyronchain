@@ -1,6 +1,7 @@
 import type { Libp2p } from "libp2p";
 
 import { assertHex } from "./codec.js";
+import { ConsensusOperationBudget } from "./consensus-operation-budget.js";
 import { addressFromPublicKey } from "./crypto.js";
 import { PeerInflightLimiter, type ConsensusPeerClient, type NodeService, type NodeStatus } from "./node.js";
 import { readP2PFrameRetained, writeP2PFrame } from "./p2p-frame.js";
@@ -18,8 +19,10 @@ const MAX_NATIVE_GOSSIP_FANOUT = 8;
 const MAX_NATIVE_GOSSIP_DEDUP = 4_096;
 const MAX_NATIVE_CONSENSUS_INFLIGHT_PER_PEER = 2;
 export const MAX_NATIVE_CONSENSUS_OUTBOUND_CONCURRENCY = 8;
+export const MAX_NATIVE_CONSENSUS_OUTSTANDING = 32;
 export const NATIVE_CONSENSUS_COLLECTION_TIMEOUT_MS = 8_000;
 const MAX_CONSENSUS_CHAIN_ID_LENGTH = 128;
+const nativeConsensusOperationBudget = new ConsensusOperationBudget(MAX_NATIVE_CONSENSUS_OUTSTANDING, "native consensus");
 
 const NATIVE_CONSENSUS_REQUEST_MAX_BYTES = {
   attest: MAX_CONSENSUS_FRAME_BYTES,
@@ -58,8 +61,8 @@ export function nativeConsensusResponseMaxBytes(kind: ConsensusResponse["kind"])
 
 /**
  * Schedules every eligible target through a bounded worker pool while sharing
- * one wall-clock deadline. No target is removed from quorum eligibility merely
- * because it was queued behind another target.
+ * one wall-clock deadline. Process-wide outstanding work is additionally
+ * bounded; saturation skips new transport work instead of queueing waiters.
  */
 export async function collectNativeConsensusBounded<T, U>(
   targets: readonly T[],
@@ -87,11 +90,18 @@ export async function collectNativeConsensusBounded<T, U>(
     while (!controller.signal.aborted) {
       const index = cursor++;
       if (index >= targets.length) return;
+      const releaseOperation = nativeConsensusOperationBudget.tryAcquire();
+      if (!releaseOperation) {
+        results[index] = { status: "rejected", reason: new Error("Native consensus outstanding work limit reached") };
+        continue;
+      }
       try {
         const value = await request(targets[index]!, controller.signal, deadlineMs);
         if (!controller.signal.aborted) results[index] = { status: "fulfilled", value };
       } catch (reason) {
         results[index] = { status: "rejected", reason };
+      } finally {
+        releaseOperation();
       }
     }
   };
