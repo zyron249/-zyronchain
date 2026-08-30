@@ -65,9 +65,18 @@ static int valid_component(const char *name) {
   return strchr(name, '/') == NULL;
 }
 
+static void assert_identity_unchanged(int fd, const struct stat *before) {
+  struct stat after;
+  if (fstat(fd, &after) != 0) die("fstat bound directory after operation");
+  if (before->st_dev != after.st_dev || before->st_ino != after.st_ino) {
+    fprintf(stderr, "miner-custody-posix: bound directory identity changed\n");
+    exit(70);
+  }
+}
+
 int main(int argc, char **argv) {
   if (argc < 3) {
-    fprintf(stderr, "usage: %s <bind|reserve|write> <root> [component] [payload]\n", argv[0]);
+    fprintf(stderr, "usage: %s <bind|reserve|write|hold-write> <root> [component] [payload]\n", argv[0]);
     return 64;
   }
 
@@ -93,11 +102,21 @@ int main(int argc, char **argv) {
     reserve_child_dir(root_fd, argv[3]);
     int child_fd = open_child_dir_nofollow(root_fd, argv[3]);
     close(child_fd);
-  } else if (strcmp(command, "write") == 0) {
+  } else if (strcmp(command, "write") == 0 || strcmp(command, "hold-write") == 0) {
     if (argc != 5) {
       fprintf(stderr, "miner-custody-posix: write requires payload\n");
       close(root_fd);
       return 64;
+    }
+    if (strcmp(command, "hold-write") == 0) {
+      puts("BOUND");
+      fflush(stdout);
+      int ch = getchar();
+      if (ch == EOF) {
+        fprintf(stderr, "miner-custody-posix: hold-write coordination input closed\n");
+        close(root_fd);
+        return 65;
+      }
     }
     write_child_file(root_fd, argv[3], argv[4]);
   } else {
@@ -106,14 +125,7 @@ int main(int argc, char **argv) {
     return 64;
   }
 
-  struct stat after;
-  if (fstat(root_fd, &after) != 0) die("fstat bound directory after operation");
-  if (before.st_dev != after.st_dev || before.st_ino != after.st_ino) {
-    fprintf(stderr, "miner-custody-posix: bound directory identity changed\n");
-    close(root_fd);
-    return 70;
-  }
-
+  assert_identity_unchanged(root_fd, &before);
   if (close(root_fd) != 0) die("close bound directory");
   return 0;
 }
