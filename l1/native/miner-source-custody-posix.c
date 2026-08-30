@@ -157,18 +157,25 @@ int main(int argc, char **argv) {
   struct stat root_before;
   if (fstat(root_fd, &root_before) != 0) die("fstat source root");
 
+  /* Bind the final source file before any coordination window is exposed.
+     This makes hold-read retain both the source root identity and the exact
+     regular-file descriptor, so a later rename/replacement cannot substitute
+     candidate bytes between validation and streaming. */
+  int file_fd = open_relative_regular_nofollow(root_fd, argv[3]);
+  assert_root_identity(root_fd, &root_before);
+
   if (strcmp(argv[1], "hold-read") == 0) {
     puts("BOUND");
     fflush(stdout);
     int ch = getchar();
     if (ch == EOF) {
       fprintf(stderr, "miner-source-custody-posix: coordination input closed\n");
+      close(file_fd);
       close(root_fd);
       return 65;
     }
   }
 
-  int file_fd = open_relative_regular_nofollow(root_fd, argv[3]);
   assert_root_identity(root_fd, &root_before);
   stream_file(file_fd);
 
