@@ -18,6 +18,8 @@
 #define O_DIRECTORY 0
 #endif
 
+#define MAX_SESSION_DEPTH 64
+
 static void die(const char *what) {
   fprintf(stderr, "miner-custody-posix: %s: %s\n", what, strerror(errno));
   exit(1);
@@ -74,8 +76,18 @@ static void assert_identity_unchanged(int fd, const struct stat *before) {
   }
 }
 
+static void close_session_stack(int *fds, size_t depth) {
+  while (depth > 1) {
+    if (close(fds[depth - 1]) != 0) die("close nested session directory");
+    depth--;
+  }
+}
+
 static void run_session(int root_fd, const struct stat *before) {
   char line[8192];
+  int fds[MAX_SESSION_DEPTH];
+  size_t depth = 1;
+  fds[0] = root_fd;
   puts("READY");
   fflush(stdout);
 
@@ -88,10 +100,24 @@ static void run_session(int root_fd, const struct stat *before) {
     line[len - 1] = '\0';
 
     if (strcmp(line, "END") == 0) {
+      close_session_stack(fds, depth);
       assert_identity_unchanged(root_fd, before);
       puts("OK END");
       fflush(stdout);
       return;
+    }
+
+    if (strcmp(line, "LEAVE") == 0) {
+      if (depth <= 1) {
+        fprintf(stderr, "miner-custody-posix: cannot leave bound release root\n");
+        exit(64);
+      }
+      if (close(fds[depth - 1]) != 0) die("close nested session directory");
+      depth--;
+      assert_identity_unchanged(root_fd, before);
+      puts("OK LEAVE");
+      fflush(stdout);
+      continue;
     }
 
     char *first_tab = strchr(line, '\t');
@@ -103,16 +129,30 @@ static void run_session(int root_fd, const struct stat *before) {
     const char *command = line;
     char *component = first_tab + 1;
 
+    if (!valid_component(component) && strcmp(command, "WRITE") != 0) {
+      fprintf(stderr, "miner-custody-posix: invalid child component\n");
+      exit(64);
+    }
+
     if (strcmp(command, "RESERVE") == 0) {
-      if (!valid_component(component)) {
-        fprintf(stderr, "miner-custody-posix: invalid child component\n");
-        exit(64);
-      }
-      reserve_child_dir(root_fd, component);
-      int child_fd = open_child_dir_nofollow(root_fd, component);
+      reserve_child_dir(fds[depth - 1], component);
+      int child_fd = open_child_dir_nofollow(fds[depth - 1], component);
       if (close(child_fd) != 0) die("close reserved child directory");
       assert_identity_unchanged(root_fd, before);
       puts("OK RESERVE");
+      fflush(stdout);
+      continue;
+    }
+
+    if (strcmp(command, "ENTER") == 0) {
+      if (depth >= MAX_SESSION_DEPTH) {
+        fprintf(stderr, "miner-custody-posix: session directory depth exceeded\n");
+        exit(64);
+      }
+      fds[depth] = open_child_dir_nofollow(fds[depth - 1], component);
+      depth++;
+      assert_identity_unchanged(root_fd, before);
+      puts("OK ENTER");
       fflush(stdout);
       continue;
     }
@@ -129,7 +169,7 @@ static void run_session(int root_fd, const struct stat *before) {
         fprintf(stderr, "miner-custody-posix: invalid child component\n");
         exit(64);
       }
-      write_child_file(root_fd, component, payload);
+      write_child_file(fds[depth - 1], component, payload);
       assert_identity_unchanged(root_fd, before);
       puts("OK WRITE");
       fflush(stdout);
