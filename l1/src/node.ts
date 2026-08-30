@@ -20,6 +20,7 @@ import {
   validateRoundSkipVote
 } from "./block.js";
 import { assertHex, canonicalJson, sha256Hex } from "./codec.js";
+import { ConsensusOperationBudget } from "./consensus-operation-budget.js";
 import { addressFromPublicKey } from "./crypto.js";
 import type { PeerReputationStore } from "./peer-reputation.js";
 import { signPeerRequest } from "./peer-identity.js";
@@ -29,6 +30,7 @@ import { LocalValidatorSigner, type ValidatorSigner } from "./validator-signer.j
 
 const HTTP_CONSENSUS_TIMEOUT_MS = 8_000;
 export const MAX_HTTP_CONSENSUS_OUTBOUND_CONCURRENCY = 8;
+export const MAX_HTTP_CONSENSUS_OUTSTANDING = 32;
 export const MAX_HTTP_ATTESTATION_RESPONSE_BYTES = 8_192;
 export const MAX_HTTP_ROUND_SKIP_RESPONSE_BYTES = 16_384;
 export const MAX_CONSENSUS_ROUND_CATCHUP = 64;
@@ -37,6 +39,7 @@ const MAX_HTTP_CONSENSUS_PARSE_BYTES_INFLIGHT = 64_000_000;
 const MAX_HTTP_CONSENSUS_CHAIN_ID_LENGTH = 128;
 const httpConsensusWireBudget = new PeerResponseByteBudget(MAX_HTTP_CONSENSUS_WIRE_BYTES_INFLIGHT);
 const httpConsensusParseBudget = new PeerResponseByteBudget(MAX_HTTP_CONSENSUS_PARSE_BYTES_INFLIGHT);
+const httpConsensusOperationBudget = new ConsensusOperationBudget(MAX_HTTP_CONSENSUS_OUTSTANDING, "HTTP consensus");
 
 function safeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -209,10 +212,14 @@ export async function collectHttpConsensusPeers<T>(
       const index = next;
       if (index >= peers.length) return;
       next += 1;
+      const releaseOperation = httpConsensusOperationBudget.tryAcquire();
+      if (!releaseOperation) continue;
       try {
         const value = await request(peers[index]!, controller.signal);
         if (!controller.signal.aborted) results.push(value);
       } catch {
+      } finally {
+        releaseOperation();
       }
     }
   };
