@@ -106,8 +106,10 @@ try {
 
   const nestedRoot = join(temp, 'nested-release');
   const nestedExternal = join(temp, 'nested-external-sentinel');
-  const copySource = join(temp, 'copy-source.bin');
+  const copySourceDir = join(temp, 'copy-source');
+  const copySource = join(copySourceDir, 'copy-source.bin');
   const binaryPayload = Buffer.from([0, 1, 2, 3, 255, 10, 13, 42]);
+  await mkdir(copySourceDir);
   await writeFile(copySource, binaryPayload);
   await mkdir(nestedRoot);
   await mkdir(nestedExternal);
@@ -117,6 +119,8 @@ try {
   nested.stderr.on('data', (chunk) => { nestedStderr += chunk.toString('utf8'); });
   await waitForLine(nested.stdout, 'READY');
 
+  nested.stdin.write(`SOURCE\t${copySourceDir}\n`);
+  await waitForLine(nested.stdout, 'OK SOURCE');
   nested.stdin.write('RESERVE\tbundle\n');
   await waitForLine(nested.stdout, 'OK RESERVE');
   nested.stdin.write('ENTER\tbundle\n');
@@ -133,8 +137,8 @@ try {
 
   nested.stdin.write('WRITE\tmine.mjs\tNESTED-CANDIDATE\n');
   await waitForLine(nested.stdout, 'OK WRITE');
-  nested.stdin.write(`COPY\tnode.bin\t${copySource}\n`);
-  await waitForLine(nested.stdout, 'OK COPY');
+  nested.stdin.write('COPYREL\tnode.bin\tcopy-source.bin\n');
+  await waitForLine(nested.stdout, 'OK COPYREL');
   nested.stdin.write('LEAVE\n');
   await waitForLine(nested.stdout, 'OK LEAVE');
   nested.stdin.write('LEAVE\n');
@@ -144,11 +148,11 @@ try {
   const nestedPayload = await readFile(join(heldScripts, 'mine.mjs'), 'utf8');
   if (nestedPayload !== 'NESTED-CANDIDATE') throw new Error('nested held descriptor did not receive the candidate payload');
   const copiedPayload = await readFile(join(heldScripts, 'node.bin'));
-  if (!copiedPayload.equals(binaryPayload)) throw new Error('descriptor-relative COPY changed binary candidate bytes');
+  if (!copiedPayload.equals(binaryPayload)) throw new Error('descriptor-relative COPYREL changed binary candidate bytes');
   await assertAbsent(join(nestedExternal, 'mine.mjs'), 'nested replacement target received candidate bytes');
   await assertAbsent(join(nestedExternal, 'node.bin'), 'nested replacement target received copied candidate bytes');
 
-  console.log('PASS: POSIX miner custody session retains release-root and nested descriptors across pathname replacement; WRITE and binary COPY stay descriptor-relative and external sentinels receive zero candidate bytes.');
+  console.log('PASS: POSIX miner custody session retains release-root and nested descriptors across pathname replacement; WRITE and retained-source COPYREL stay descriptor-relative and external sentinels receive zero candidate bytes.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
