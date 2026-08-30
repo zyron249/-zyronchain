@@ -262,8 +262,13 @@ try {
   const packageMinerSource = fs.readFileSync(path.resolve(process.cwd(), 'scripts/package-miner.mjs'), 'utf8');
   assert.match(
     packageMinerSource,
-    /copyMinerRuntimeTree\(join\(root, 'node_modules'\), join\(bundle, 'node_modules'\)\)/,
-    'canonical miner packaging must use the bounded runtime-tree materializer'
+    /materializeMinerPackagePosix\(\{ root, outRoot, bundleName, nodeName \}\)/,
+    'canonical miner packaging must route POSIX candidate materialization through the retained descriptor materializer'
+  );
+  assert.doesNotMatch(
+    packageMinerSource,
+    /\b(?:rm|mkdir|cp|writeFile|chmod)\s*\(/,
+    'canonical miner packaging must not reintroduce pathname filesystem mutation after custody admission'
   );
   assert.doesNotMatch(
     packageMinerSource,

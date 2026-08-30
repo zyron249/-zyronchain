@@ -50,13 +50,15 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Check fail-closed miner bootstrap
+      - name: Check miner script syntax
         run: |
           node --check scripts/mine.mjs
           node --check scripts/miner-launcher.mjs
           node --check scripts/miner-launcher-security.mjs
           node --check scripts/test-miner-launcher-security.mjs
           node --check scripts/package-miner.mjs
+          node --check scripts/materialize-miner-package-posix.mjs
+          node --check scripts/test-miner-package-materializer-posix.mjs
           node --check scripts/miner-packaging-custody-gate.mjs
           node --check scripts/test-miner-packaging-quarantine.mjs
           node --check scripts/test-miner-handle-custody-posix.mjs
@@ -68,17 +70,31 @@ jobs:
           node --check scripts/test-miner-release-manifest-snapshot.mjs
           node --check scripts/test-miner-release-manifest-root-relative.mjs
           node --check scripts/test-miner-release-manifest-path-controls.mjs
-          node scripts/test-miner-launcher-security.mjs
-          node scripts/test-miner-release-root.mjs
-          node scripts/test-windows-miner-package-contract.mjs
+
+      - name: Run miner launcher custody security regression
+        run: node scripts/test-miner-launcher-security.mjs
+
+      - name: Run miner release-root custody regression
+        run: node scripts/test-miner-release-root.mjs
+
+      - name: Run Windows miner package quarantine contract
+        run: node scripts/test-windows-miner-package-contract.mjs
+
+      - name: Run miner release manifest regressions
+        run: |
           node scripts/test-miner-release-manifest.mjs
           node scripts/test-miner-release-manifest-snapshot.mjs
           node scripts/test-miner-release-manifest-root-relative.mjs
           node scripts/test-miner-release-manifest-path-controls.mjs
-          node -e "const p=require('./miner-network-profile.json'); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('release candidate profile must remain fail-closed')"
+
+      - name: Assert inactive release candidate network profile
+        run: node -e "const p=require('./miner-network-profile.json'); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('release candidate profile must remain fail-closed')"
 
       - name: Exercise descriptor-relative miner custody primitive
         run: node scripts/test-miner-handle-custody-posix.mjs
+
+      - name: Exercise descriptor-relative miner package materializer
+        run: node scripts/test-miner-package-materializer-posix.mjs
 
       - name: Build runtime
         run: npm run build

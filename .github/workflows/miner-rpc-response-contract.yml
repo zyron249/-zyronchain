@@ -7,6 +7,7 @@ on:
       - 'l1/scripts/miner-rpc-response.mjs'
       - 'l1/scripts/test-miner-rpc-response.mjs'
       - 'l1/scripts/package-miner.mjs'
+      - 'l1/scripts/materialize-miner-package-posix.mjs'
       - 'docs/MINER_RPC_RESPONSE_SECURITY.md'
       - '.github/workflows/miner-rpc-response-contract.yml'
 
@@ -38,3 +39,4 @@ jobs:
           node --check scripts/miner-rpc-response.mjs
           node --check scripts/mine.mjs
           node --check scripts/package-miner.mjs
+          node --check scripts/materialize-miner-package-posix.mjs
