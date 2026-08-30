@@ -6,11 +6,11 @@ Self-contained miner artifact materialization is intentionally disabled until is
 
 The current pathname-based packager cannot truthfully satisfy the zero-external-byte replacement guarantees required by #757, #683, and #636. Rechecking `lstat`/`realpath` or narrowing the race window is not an acceptable substitute.
 
-A POSIX descriptor-relative custody foundation exists under `l1/native/miner-custody-posix.c`. It uses `open(..., O_DIRECTORY|O_NOFOLLOW)`, `openat`, and `mkdirat` with exclusive child creation semantics. Its long-lived `session` mode binds the release-root descriptor once and can now descend through child directories with retained descriptors using `ENTER`/`LEAVE`, so later writes remain anchored to the already-open directory even if its pathname is replaced.
+A POSIX descriptor-relative custody foundation exists under `l1/native/miner-custody-posix.c`. It uses `open(..., O_DIRECTORY|O_NOFOLLOW)`, `openat`, and `mkdirat` with exclusive child creation semantics. Its long-lived `session` mode binds the release-root descriptor once, descends through child directories with retained descriptors using `ENTER`/`LEAVE`, and now supports binary `COPY` into the retained destination descriptor without reopening an attacker-replaceable destination pathname.
 
-The adversarial POSIX probe now covers both release-root replacement and nested destination replacement. It renames a bound nested `scripts` directory, replaces the original pathname with a symlink to an external sentinel directory, then proves a subsequent write reaches only the retained descriptor and writes zero candidate bytes through the replacement path.
+The adversarial POSIX probe covers release-root and nested destination replacement. It renames a bound nested `scripts` directory, replaces the original pathname with a symlink to an external sentinel directory, then proves both a text `WRITE` and a binary `COPY` reach only the retained descriptor and write zero candidate bytes through the replacement path.
 
-Miner Package / Miner Release Candidate CI compile and exercise the primitive on Linux and macOS. Windows explicitly treats this POSIX primitive as unsupported and remains protected by the packaging quarantine. This remains custody-primitive evidence only: `package-miner.mjs` has not yet moved candidate materialization into the descriptor session, and this work therefore does **not** satisfy or close #761 by itself.
+Miner Package / Miner Release Candidate CI compile and exercise the primitive on Linux and macOS. Windows explicitly treats this POSIX primitive as unsupported and remains protected by the packaging quarantine. This remains custody-primitive evidence only: `package-miner.mjs` has not yet moved candidate materialization into the descriptor session, recursive source-tree enumeration/copy integration is not complete, and this work therefore does **not** satisfy or close #761 by itself.
 
 While this quarantine is active:
 
