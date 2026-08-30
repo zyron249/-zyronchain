@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,7 @@ if (process.platform === 'win32') {
 const here = dirname(fileURLToPath(import.meta.url));
 const repositoryL1 = resolve(here, '..');
 const helperSource = join(repositoryL1, 'native', 'miner-custody-posix.c');
+const materializerSource = join(repositoryL1, 'scripts', 'materialize-miner-package-posix.mjs');
 const temp = await mkdtemp(join(tmpdir(), 'zyron-miner-package-materializer-test-'));
 const root = join(temp, 'l1');
 const outRoot = join(root, 'miner-release');
@@ -30,17 +31,30 @@ async function assertMissing(path, message) {
 
 try {
   const helperText = await readFile(helperSource, 'utf8');
+  const materializerText = await readFile(materializerSource, 'utf8');
   if (/^#define O_NOFOLLOW 0$/m.test(helperText)) {
-    throw new Error('destination custody silently disables O_NOFOLLOW');
+    throw new Error('destination/source custody silently disables O_NOFOLLOW');
   }
   if (/^#define O_DIRECTORY 0$/m.test(helperText)) {
-    throw new Error('destination custody silently disables directory-open protection');
+    throw new Error('destination/source custody silently disables directory-open protection');
   }
-  if (!helperText.includes('#error "miner destination custody requires O_NOFOLLOW"')) {
-    throw new Error('destination custody does not fail closed when O_NOFOLLOW is unavailable');
+  if (!helperText.includes('#error "miner destination/source custody requires O_NOFOLLOW"')) {
+    throw new Error('destination/source custody does not fail closed when O_NOFOLLOW is unavailable');
+  }
+  if (!helperText.includes('copy_child_file_from_dir') || !helperText.includes('openat(source_dir_fd, source_name')) {
+    throw new Error('production destination helper does not copy from a retained source-directory descriptor');
+  }
+  if (!helperText.includes('SOURCE_ENTER') || !helperText.includes('COPYREL')) {
+    throw new Error('production custody session is missing retained source traversal/copy commands');
   }
   if (!helperText.includes('static void assert_directory_fd') || !helperText.includes('S_ISDIR(st.st_mode)')) {
-    throw new Error('destination custody does not verify opened directory descriptors with fstat');
+    throw new Error('custody helper does not verify opened directory descriptors with fstat');
+  }
+  if (materializerText.includes('`COPY\\t${destinationName}\\t${sourcePath}`')) {
+    throw new Error('materializer regressed to pathname COPY');
+  }
+  if (!materializerText.includes('`COPYREL\\t${destinationName}\\t${sourceName}`') || !materializerText.includes('`SOURCE_ENTER\\t${component}`')) {
+    throw new Error('materializer does not use retained descriptor-relative source copy/traversal');
   }
 
   await mkdir(join(root, 'dist', 'src'), { recursive: true });
@@ -58,13 +72,7 @@ try {
   await writeFile(join(root, 'package.json'), '{"name":"fixture"}\n');
   await writeFile(join(root, 'MINING.md'), '# Fixture mining\n');
 
-  const bundle = await materializeMinerPackagePosix({
-    root,
-    outRoot,
-    bundleName,
-    nodeName: 'node',
-    helperSource
-  });
+  const bundle = await materializeMinerPackagePosix({ root, outRoot, bundleName, nodeName: 'node', helperSource });
 
   if ((await readFile(join(bundle, 'dist', 'src', 'index.js'), 'utf8')) !== 'export const fixture = true;\n') {
     throw new Error('descriptor-relative materializer changed dist/src payload');
@@ -86,7 +94,16 @@ try {
   }
   if (!duplicateFailed) throw new Error('descriptor-relative materializer reused an existing bundle directory');
 
-  console.log('PASS: descriptor-relative miner package materializer preserves package layout/allowlist, rejects unsafe destination-custody fallbacks, and fails closed instead of replacing an existing bundle.');
+  await symlink('index.js', join(root, 'node_modules', 'fixture-pkg', 'linked.js'));
+  let symlinkFailed = false;
+  try {
+    await materializeMinerPackagePosix({ root, outRoot, bundleName: `${bundleName}-symlink`, nodeName: 'node', helperSource });
+  } catch {
+    symlinkFailed = true;
+  }
+  if (!symlinkFailed) throw new Error('retained source custody accepted a source symlink instead of failing closed');
+
+  console.log('PASS: miner materializer copies from retained source-directory descriptors, preserves layout/allowlist, rejects source symlinks and unsafe custody fallbacks, and refuses an existing bundle.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
