@@ -37,10 +37,14 @@ try {
 
   const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
   const packageSource = fs.readFileSync(path.join(scriptsDir, 'package-miner.mjs'), 'utf8');
+  const gateIndex = packageSource.indexOf('assertMinerPackagingCustodyReady();');
   const bindIndex = packageSource.indexOf("const outRoot = bindMinerReleaseRoot(root, resolve(root, 'miner-release'));");
-  const destructiveIndex = packageSource.indexOf('await rm(bundle, { recursive: true, force: true });');
-  assert.ok(bindIndex >= 0, 'package-miner must bind the canonical release root');
-  assert.ok(destructiveIndex > bindIndex, 'release-root binding must precede bundle cleanup/materialization');
+  const materializeIndex = packageSource.indexOf('const bundle = await materializeMinerPackagePosix({ root, outRoot, bundleName, nodeName });');
+  assert.ok(gateIndex >= 0, 'package-miner must retain the fail-closed custody activation gate');
+  assert.ok(bindIndex > gateIndex, 'custody gate must fail closed before release-root binding');
+  assert.ok(materializeIndex > bindIndex, 'release-root binding must precede descriptor-relative package materialization');
+  assert.doesNotMatch(packageSource, /from ['"]node:fs\/promises['"]/, 'package-miner must not reintroduce pathname filesystem mutation imports');
+  assert.doesNotMatch(packageSource, /await\s+(?:rm|mkdir|cp|writeFile|chmod)\s*\(/, 'package-miner must not reintroduce pathname bundle mutation');
 
   const zipSource = fs.readFileSync(path.join(scriptsDir, 'package-windows-miner-zip.mjs'), 'utf8');
   const zipImportIndex = zipSource.indexOf("import { bindMinerReleaseRoot } from './miner-release-root.mjs';");
