@@ -57,6 +57,8 @@ jobs:
           node --check scripts/miner-launcher-security.mjs
           node --check scripts/test-miner-launcher-security.mjs
           node --check scripts/package-miner.mjs
+          node --check scripts/materialize-miner-package-posix.mjs
+          node --check scripts/test-miner-package-materializer-posix.mjs
           node --check scripts/miner-packaging-custody-gate.mjs
           node --check scripts/test-miner-packaging-quarantine.mjs
           node --check scripts/test-miner-handle-custody-posix.mjs
@@ -79,6 +81,9 @@ jobs:
 
       - name: Exercise descriptor-relative miner custody primitive
         run: node scripts/test-miner-handle-custody-posix.mjs
+
+      - name: Exercise descriptor-relative miner package materializer
+        run: node scripts/test-miner-package-materializer-posix.mjs
 
       - name: Build runtime
         run: npm run build
