@@ -71,7 +71,8 @@ async function copyFile(session, sourceName, destinationName = sourceName) {
   await command(session, `COPYREL\t${destinationName}\t${sourceName}`, 'OK COPYREL');
 }
 
-async function copyTree(session, sourceDir, destinationComponent) {
+async function copyTree(session, sourceDir, destinationComponent, options = {}) {
+  const ignoredDirectoryNames = options.ignoredDirectoryNames ?? new Set();
   assertProtocolText(destinationComponent, 'destination component');
   await command(session, `RESERVE\t${destinationComponent}`, 'OK RESERVE');
   await command(session, `ENTER\t${destinationComponent}`, 'OK ENTER');
@@ -81,17 +82,18 @@ async function copyTree(session, sourceDir, destinationComponent) {
     assertProtocolText(entry.name, 'source entry');
     const sourcePath = join(sourceDir, entry.name);
     const sourceLstat = await lstat(sourcePath);
+    if (sourceLstat.isSymbolicLink()) {
+      throw new Error(`miner package source symlink is not accepted by retained descriptor custody: ${sourcePath}`);
+    }
     if (sourceLstat.isDirectory()) {
+      if (ignoredDirectoryNames.has(entry.name)) continue;
       await enterSource(session, entry.name);
       try {
-        await copyTree(session, sourcePath, entry.name);
+        await copyTree(session, sourcePath, entry.name, options);
       } finally {
         await leaveSource(session);
       }
       continue;
-    }
-    if (sourceLstat.isSymbolicLink()) {
-      throw new Error(`miner package source symlink is not accepted by retained descriptor custody: ${sourcePath}`);
     }
     if (!sourceLstat.isFile()) throw new Error(`unsupported miner package source entry: ${sourcePath}`);
     await copyFile(session, entry.name);
@@ -163,7 +165,7 @@ export async function materializeMinerPackagePosix({ root, outRoot, bundleName, 
 
     await copyFile(session, 'miner-network-profile.json');
     await enterSource(session, 'node_modules');
-    await copyTree(session, join(canonicalRoot, 'node_modules'), 'node_modules');
+    await copyTree(session, join(canonicalRoot, 'node_modules'), 'node_modules', { ignoredDirectoryNames: new Set(['.bin']) });
     await leaveSource(session);
     for (const name of ['package.json', 'MINING.md']) await copyFile(session, name);
 

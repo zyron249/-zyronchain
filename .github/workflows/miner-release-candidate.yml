@@ -5,6 +5,7 @@ on:
     paths:
       - 'l1/**'
       - '.github/workflows/miner-release-candidate.yml'
+      - '.github/scripts/verify-miner-release-candidate-action-custody.mjs'
   workflow_dispatch:
   push:
     tags:
@@ -110,14 +111,37 @@ jobs:
       - name: Audit runtime dependencies
         run: npm audit --omit=dev --audit-level=high
 
-      - name: Prove release-candidate materialization is quarantined before filesystem writes
+      - name: Prove miner packaging platform gate
         run: node scripts/test-miner-packaging-quarantine.mjs
 
-      - name: Assert no release candidate was materialized
+      - name: Construct audited POSIX release candidate
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          if [ -e miner-release ]; then
-            echo 'custody quarantine must not materialize miner-release' >&2
+          mkdir miner-release
+          node scripts/package-miner.mjs
+
+      - name: Verify POSIX candidate remains local and inactive
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          test -d miner-release
+          count="$(find miner-release -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+          test "$count" = '1'
+          test ! -L miner-release
+          test -f miner-release/*/miner-network-profile.json
+          node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync(fs.readdirSync('miner-release',{withFileTypes:true}).filter(e=>e.isDirectory()).map(e=>'miner-release/'+e.name+'/miner-network-profile.json')[0],'utf8')); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('materialized candidate must remain activation-gated')"
+
+      - name: Prove Windows package entrypoint fails closed before writes
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if node scripts/package-miner.mjs >package-miner.stdout 2>package-miner.stderr; then
+            echo 'Windows package entrypoint unexpectedly succeeded' >&2
             exit 1
           fi
-          echo 'Miner release candidate remains intentionally non-materialized pending #761.'
+          grep -F 'Miner packaging requires the audited descriptor-relative POSIX custody path; this platform remains fail-closed.' package-miner.stderr
+          if [ -e miner-release ]; then
+            echo 'unsupported Windows packaging must fail before miner-release state exists' >&2
+            exit 1
+          fi

@@ -83,10 +83,14 @@ try {
   if (!materializerText.includes('`COPYREL\\t${destinationName}\\t${sourceName}`') || !materializerText.includes('`SOURCE_ENTER\\t${component}`')) {
     throw new Error('materializer does not use retained descriptor-relative source copy/traversal');
   }
+  if (!materializerText.includes("ignoredDirectoryNames: new Set(['.bin'])")) {
+    throw new Error('materializer does not explicitly omit npm executable shim directories from runtime dependency payloads');
+  }
 
   await mkdir(join(root, 'dist', 'src'), { recursive: true });
   await mkdir(join(root, 'scripts'), { recursive: true });
   await mkdir(join(root, 'node_modules', 'fixture-pkg'), { recursive: true });
+  await mkdir(join(root, 'node_modules', '.bin'), { recursive: true });
   await mkdir(outRoot, { recursive: true });
 
   await writeFile(join(root, 'dist', 'src', 'index.js'), 'export const fixture = true;\n');
@@ -95,6 +99,7 @@ try {
   }
   await writeFile(join(root, 'scripts', 'development-only.mjs'), '// must not ship\n');
   await writeFile(join(root, 'node_modules', 'fixture-pkg', 'index.js'), 'module.exports = 1;\n');
+  await symlink('../fixture-pkg/index.js', join(root, 'node_modules', '.bin', 'fixture-cli'));
   await writeFile(join(root, 'miner-network-profile.json'), '{"activated":false}\n');
   await writeFile(join(root, 'package.json'), '{"name":"fixture"}\n');
   await writeFile(join(root, 'MINING.md'), '# Fixture mining\n');
@@ -110,6 +115,7 @@ try {
   if ((await readFile(join(bundle, 'node_modules', 'fixture-pkg', 'index.js'), 'utf8')) !== 'module.exports = 1;\n') {
     throw new Error('descriptor-relative materializer changed node_modules payload');
   }
+  await assertMissing(join(bundle, 'node_modules', '.bin'), 'materializer copied npm executable shim symlinks into the runtime dependency payload');
   await assertMissing(join(bundle, 'scripts', 'development-only.mjs'), 'materializer broadened the packaged script allowlist');
   await assertMissing(join(bundle, 'dist-src'), 'materializer emitted an invalid dist-src layout');
 
@@ -130,7 +136,7 @@ try {
   }
   if (!symlinkFailed) throw new Error('retained source custody accepted a source symlink instead of failing closed');
 
-  console.log('PASS: miner materializer copies from retained source-directory descriptors, preserves layout/allowlist, rejects source symlinks and unsafe custody fallbacks, and refuses an existing bundle.');
+  console.log('PASS: miner materializer copies from retained source-directory descriptors, omits npm executable shim directories, preserves layout/allowlist, rejects all other source symlinks and unsafe custody fallbacks, and refuses an existing bundle.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
