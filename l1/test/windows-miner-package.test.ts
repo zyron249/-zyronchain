@@ -6,14 +6,27 @@ import assert from 'node:assert/strict';
 const workflow = resolve(process.cwd(), '..', '.github', 'workflows', 'miner-release-candidate.yml');
 
 describe('Windows end-user miner package contract', () => {
-  it('keeps package materialization and publication fail closed while custody is quarantined', async () => {
+  it('keeps Windows materialization/publication fail closed while allowing only local inactive POSIX candidates', async () => {
     const workflowText = await readFile(workflow, 'utf8');
-    assert.match(workflowText, /Prove release-candidate materialization is quarantined before filesystem writes/);
-    assert.match(workflowText, /node scripts\/test-miner-packaging-quarantine\.mjs/);
-    assert.match(workflowText, /Assert no release candidate was materialized/);
+
+    assert.match(workflowText, /Prove Windows package entrypoint fails closed before writes/);
+    assert.match(workflowText, /if: runner\.os == 'Windows'/);
+    assert.match(workflowText, /if node scripts\/package-miner\.mjs >package-miner\.stdout 2>package-miner\.stderr; then/);
+    assert.match(workflowText, /miner packaging custody is unsupported on this platform/);
     assert.match(workflowText, /if \[ -e miner-release \]/);
+
+    assert.match(workflowText, /Construct audited POSIX release candidate/);
+    assert.match(workflowText, /if: runner\.os != 'Windows'/);
+    assert.match(workflowText, /run: node scripts\/package-miner\.mjs/);
+    assert.match(workflowText, /Verify POSIX candidate remains local and inactive/);
+    assert.match(workflowText, /publicMiningActivated !== false/);
+    assert.match(workflowText, /p\.rpcUrl !== null/);
+    assert.match(workflowText, /p\.genesisFile !== null/);
+
     assert.doesNotMatch(workflowText, /Package Windows end-user ZIP/);
     assert.doesNotMatch(workflowText, /actions\/upload-artifact/);
     assert.doesNotMatch(workflowText, /actions\/attest/);
+    assert.doesNotMatch(workflowText, /id-token: write/);
+    assert.doesNotMatch(workflowText, /contents: write/);
   });
 });
