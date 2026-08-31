@@ -8,6 +8,8 @@ Linux and macOS candidate materialization now proceed only through the audited P
 
 Adversarial regressions cover release-root replacement, bundle-root replacement, nested destination replacement, source-root replacement, nested source-directory replacement and source-file replacement. External sentinels must receive zero candidate bytes.
 
+Runtime dependency packaging deliberately omits real directories named `node_modules/.bin` (including nested `.bin` directories) because npm populates them with executable symlink shims that are not required for the bundled miner runtime. The materializer still lstat-checks each entry before applying that directory-name omission, so a `.bin` symlink itself fails closed, and every other source symlink remains rejected. This keeps normal `npm ci` dependency trees packageable without weakening the no-source-symlink custody rule.
+
 Windows and any other non-audited platform remain explicitly fail-closed before release-root binding or candidate filesystem creation. There is no pathname-only fallback and no environment/CLI bypass.
 
 Miner Package CI exercises the custody primitive/materializer across the supported matrix. Miner Release Candidate CI now also invokes the canonical `scripts/package-miner.mjs` entrypoint on Linux/macOS, requires exactly one local candidate beneath `l1/miner-release`, and re-checks that the bundled network profile remains inactive (`publicMiningActivated=false`, no RPC URL, no genesis). On Windows the same canonical package entrypoint must fail closed before `miner-release` exists. The workflow has read-only contents permission and deliberately does not upload, attest, sign or publish the candidate.
