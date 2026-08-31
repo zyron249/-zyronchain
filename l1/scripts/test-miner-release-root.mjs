@@ -37,10 +37,10 @@ try {
 
   const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
   const packageSource = fs.readFileSync(path.join(scriptsDir, 'package-miner.mjs'), 'utf8');
-  const gateIndex = packageSource.indexOf('assertMinerPackagingCustodyReady();');
+  const gateIndex = packageSource.indexOf('assertMinerPackagingCustodyReady(process.platform);');
   const bindIndex = packageSource.indexOf("const outRoot = bindMinerReleaseRoot(root, resolve(root, 'miner-release'));");
   const materializeIndex = packageSource.indexOf('const bundle = await materializeMinerPackagePosix({ root, outRoot, bundleName, nodeName });');
-  assert.ok(gateIndex >= 0, 'package-miner must retain the fail-closed custody activation gate');
+  assert.ok(gateIndex >= 0, 'package-miner must retain the fail-closed platform-explicit custody gate');
   assert.ok(bindIndex > gateIndex, 'custody gate must fail closed before release-root binding');
   assert.ok(materializeIndex > bindIndex, 'release-root binding must precede descriptor-relative package materialization');
   assert.doesNotMatch(packageSource, /from ['"]node:fs\/promises['"]/, 'package-miner must not reintroduce pathname filesystem mutation imports');
