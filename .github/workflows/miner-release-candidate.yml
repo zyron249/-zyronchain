@@ -116,7 +116,10 @@ jobs:
 
       - name: Construct audited POSIX release candidate
         if: runner.os != 'Windows'
-        run: node scripts/package-miner.mjs
+        shell: bash
+        run: |
+          mkdir miner-release
+          node scripts/package-miner.mjs
 
       - name: Verify POSIX candidate remains local and inactive
         if: runner.os != 'Windows'
@@ -137,7 +140,7 @@ jobs:
             echo 'Windows package entrypoint unexpectedly succeeded' >&2
             exit 1
           fi
-          grep -F 'miner packaging custody is unsupported on this platform' package-miner.stderr
+          grep -F 'Miner packaging requires the audited descriptor-relative POSIX custody path; this platform remains fail-closed.' package-miner.stderr
           if [ -e miner-release ]; then
             echo 'unsupported Windows packaging must fail before miner-release state exists' >&2
             exit 1
