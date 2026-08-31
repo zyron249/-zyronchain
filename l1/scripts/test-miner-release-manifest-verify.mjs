@@ -70,7 +70,7 @@ function writeManifest(root, value) {
     assert.throws(() => verifyMinerSha256Sums(root), /malformed record/, 'single-space checksum syntax must fail closed');
 
     writeManifest(root, `${digest('alpha')}  ..\/a.txt\n`);
-    assert.throws(() => verifyMinerSha256Sums(root), /non-canonical release path|file set or ordering/, 'path traversal syntax must fail closed');
+    assert.throws(() => verifyMinerSha256Sums(root), /non-canonical path|non-canonical release path|file set or ordering/, 'path traversal syntax must fail closed');
 
     writeManifest(root, `${digest('alpha')}  nested\\b.txt\n`);
     assert.throws(() => verifyMinerSha256Sums(root), /non-canonical path/, 'ambiguous backslash paths must fail closed');
