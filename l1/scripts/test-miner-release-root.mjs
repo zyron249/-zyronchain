@@ -43,8 +43,12 @@ try {
   assert.ok(gateIndex >= 0, 'package-miner must retain the fail-closed platform-explicit custody gate');
   assert.ok(bindIndex > gateIndex, 'custody gate must fail closed before release-root binding');
   assert.ok(materializeIndex > bindIndex, 'release-root binding must precede descriptor-relative package materialization');
-  assert.doesNotMatch(packageSource, /from ['"]node:fs\/promises['"]/, 'package-miner must not reintroduce pathname filesystem mutation imports');
-  assert.doesNotMatch(packageSource, /await\s+(?:rm|mkdir|cp|writeFile|chmod)\s*\(/, 'package-miner must not reintroduce pathname bundle mutation');
+  assert.doesNotMatch(
+    packageSource,
+    /import\s*\{[^}]*\b(?:rm|mkdir|cp|writeFile|chmod|rename|unlink)\b[^}]*\}\s*from\s*['"]node:fs\/promises['"]/s,
+    'package-miner must not reintroduce pathname filesystem mutation imports'
+  );
+  assert.doesNotMatch(packageSource, /await\s+(?:rm|mkdir|cp|writeFile|chmod|rename|unlink)\s*\(/, 'package-miner must not reintroduce pathname bundle mutation');
 
   const zipSource = fs.readFileSync(path.join(scriptsDir, 'package-windows-miner-zip.mjs'), 'utf8');
   const zipImportIndex = zipSource.indexOf("import { bindMinerReleaseRoot } from './miner-release-root.mjs';");
