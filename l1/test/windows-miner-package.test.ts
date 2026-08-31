@@ -12,7 +12,7 @@ describe('Windows end-user miner package contract', () => {
     assert.match(workflowText, /Prove Windows package entrypoint fails closed before writes/);
     assert.match(workflowText, /if: runner\.os == 'Windows'/);
     assert.match(workflowText, /if node scripts\/package-miner\.mjs >package-miner\.stdout 2>package-miner\.stderr; then/);
-    assert.match(workflowText, /miner packaging custody is unsupported on this platform/);
+    assert.match(workflowText, /Miner packaging requires the audited descriptor-relative POSIX custody path; this platform remains fail-closed\./);
     assert.match(workflowText, /if \[ -e miner-release \]/);
 
     assert.match(workflowText, /Construct audited POSIX release candidate/);
