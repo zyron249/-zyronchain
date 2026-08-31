@@ -104,6 +104,36 @@ try {
   if (heldPayload !== 'CANDIDATE') throw new Error('held descriptor did not receive the candidate payload');
   await assertAbsent(join(external, 'proof'), 'replacement target received candidate bytes');
 
+  const bundleRoot = join(temp, 'bundle-release');
+  const bundleExternal = join(temp, 'bundle-external-sentinel');
+  await mkdir(bundleRoot);
+  await mkdir(bundleExternal);
+
+  const bundleSession = spawn(helper, ['session', bundleRoot], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let bundleStderr = '';
+  bundleSession.stderr.on('data', (chunk) => { bundleStderr += chunk.toString('utf8'); });
+  await waitForLine(bundleSession.stdout, 'READY');
+
+  bundleSession.stdin.write('RESERVE\tbundle\n');
+  await waitForLine(bundleSession.stdout, 'OK RESERVE');
+  bundleSession.stdin.write('ENTER\tbundle\n');
+  await waitForLine(bundleSession.stdout, 'OK ENTER');
+
+  const bundlePath = join(bundleRoot, 'bundle');
+  const heldBundle = join(bundleRoot, 'bundle-held');
+  await rename(bundlePath, heldBundle);
+  await symlink(bundleExternal, bundlePath, 'dir');
+
+  bundleSession.stdin.write('WRITE\tproof\tBUNDLE-CANDIDATE\n');
+  await waitForLine(bundleSession.stdout, 'OK WRITE');
+  bundleSession.stdin.write('LEAVE\n');
+  await waitForLine(bundleSession.stdout, 'OK LEAVE');
+  await finishSession(bundleSession, () => bundleStderr);
+
+  const heldBundlePayload = await readFile(join(heldBundle, 'proof'), 'utf8');
+  if (heldBundlePayload !== 'BUNDLE-CANDIDATE') throw new Error('held bundle descriptor did not receive the candidate payload');
+  await assertAbsent(join(bundleExternal, 'proof'), 'bundle replacement target received candidate bytes');
+
   const nestedRoot = join(temp, 'nested-release');
   const nestedExternal = join(temp, 'nested-external-sentinel');
   const copySourceDir = join(temp, 'copy-source');
@@ -152,7 +182,7 @@ try {
   await assertAbsent(join(nestedExternal, 'mine.mjs'), 'nested replacement target received candidate bytes');
   await assertAbsent(join(nestedExternal, 'node.bin'), 'nested replacement target received copied candidate bytes');
 
-  console.log('PASS: POSIX miner custody session retains release-root and nested descriptors across pathname replacement; WRITE and retained-source COPYREL stay descriptor-relative and external sentinels receive zero candidate bytes.');
+  console.log('PASS: POSIX miner custody session retains release-root, bundle-root, and nested descriptors across pathname replacement; WRITE and retained-source COPYREL stay descriptor-relative and external sentinels receive zero candidate bytes.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
