@@ -6,6 +6,7 @@ import { assertMinerPackagingCustodyReady } from './miner-packaging-custody-gate
 import { bindMinerReleaseRoot } from './miner-release-root.mjs';
 import { materializeMinerPackagePosix } from './materialize-miner-package-posix.mjs';
 import { resolveSourceCommit, verifyCandidateIntegrity, writeCandidateIntegrity } from './miner-candidate-integrity.mjs';
+import { verifyMinerCandidateSbom, writeMinerCandidateSbom } from './miner-candidate-sbom.mjs';
 
 // Filesystem-custody completion (#761/#757/#683/#636) permits candidate
 // materialization only on the audited POSIX descriptor-relative path. This is
@@ -23,9 +24,12 @@ const bundleName = `ZyronMiner-${platform}-${arch}`;
 const nodeName = 'node';
 const { version } = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 const sourceCommit = resolveSourceCommit(root);
+const metadata = { version, platform, arch, sourceCommit };
 
 const bundle = await materializeMinerPackagePosix({ root, outRoot, bundleName, nodeName });
-const integrity = writeCandidateIntegrity(bundle, { version, platform, arch, sourceCommit });
+const sbom = writeMinerCandidateSbom(bundle, metadata);
+verifyMinerCandidateSbom(bundle, metadata);
+const integrity = writeCandidateIntegrity(bundle, metadata);
 verifyCandidateIntegrity(bundle);
 
-console.log(JSON.stringify({ bundle, bundleName, platform, arch, runtime: basename(process.execPath), sourceCommit, integrityFile: 'candidate-integrity.json', integrityFiles: integrity.files.length }));
+console.log(JSON.stringify({ bundle, bundleName, platform, arch, runtime: basename(process.execPath), sourceCommit, sbomFile: 'miner-sbom.cdx.json', sbomComponents: sbom.components.length, integrityFile: 'candidate-integrity.json', integrityFiles: integrity.files.length }));
