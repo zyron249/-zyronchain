@@ -10,7 +10,7 @@ Adversarial regressions cover release-root replacement, bundle-root replacement,
 
 Windows and any other non-audited platform remain explicitly fail-closed before release-root binding or candidate filesystem creation. There is no pathname-only fallback and no environment/CLI bypass.
 
-Miner Package CI and Miner Release Candidate CI exercise the custody primitive and materializer across the supported POSIX matrix and require the unsupported Windows execution path to reject before candidate state is created.
+Miner Package CI exercises the custody primitive/materializer across the supported matrix. Miner Release Candidate CI now also invokes the canonical `scripts/package-miner.mjs` entrypoint on Linux/macOS, requires exactly one local candidate beneath `l1/miner-release`, and re-checks that the bundled network profile remains inactive (`publicMiningActivated=false`, no RPC URL, no genesis). On Windows the same canonical package entrypoint must fail closed before `miner-release` exists. The workflow has read-only contents permission and deliberately does not upload, attest, sign or publish the candidate.
 
 ## Independent activation/publication gates
 
