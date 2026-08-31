@@ -6,7 +6,34 @@ import { fileURLToPath } from 'node:url';
 import { materializeMinerPackagePosix } from './materialize-miner-package-posix.mjs';
 
 if (process.platform === 'win32') {
-  console.log('POSIX miner package materializer is unsupported on Windows; packaging remains fail-closed.');
+  const temp = await mkdtemp(join(tmpdir(), 'zyron-miner-package-materializer-windows-test-'));
+  const root = join(temp, 'l1');
+  const outRoot = join(root, 'miner-release');
+  let failedClosed = false;
+  try {
+    await materializeMinerPackagePosix({
+      root,
+      outRoot,
+      bundleName: 'ZyronMiner-windows-test-x64',
+      nodeName: 'node.exe'
+    });
+  } catch (error) {
+    if (error?.message === 'descriptor-relative miner materialization is not implemented on Windows') {
+      failedClosed = true;
+    } else {
+      throw error;
+    }
+  }
+  if (!failedClosed) throw new Error('Windows miner materializer did not fail closed before unsupported custody could run');
+  try {
+    await access(root);
+    throw new Error('Windows fail-closed materializer created filesystem state before rejecting the unsupported platform');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+  console.log('PASS: Windows miner package materialization fails closed before creating candidate filesystem state.');
   process.exit(0);
 }
 
