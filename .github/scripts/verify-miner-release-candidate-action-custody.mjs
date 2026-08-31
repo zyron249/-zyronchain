@@ -33,7 +33,10 @@ for (const required of [
   'Construct audited POSIX release candidate',
   "if: runner.os != 'Windows'",
   'node scripts/package-miner.mjs',
-  'Verify POSIX candidate remains local and inactive',
+  'Verify POSIX candidate remains local, inactive, and integrity-bound',
+  'candidate-integrity.json',
+  'verifyCandidateIntegrity',
+  'p.sourceCommit!==process.env.GITHUB_SHA',
   'test -d miner-release',
   'materialized candidate must remain activation-gated',
   'Prove Windows package entrypoint fails closed before writes',
@@ -55,4 +58,4 @@ for (const forbidden of [
   if (workflow.includes(forbidden)) throw new Error(`non-publishable miner candidate workflow must not gain publication authority: ${forbidden}`);
 }
 
-console.log('miner-release-candidate-action-custody: audited local candidate / unsupported-platform fail-closed ok');
+console.log('miner-release-candidate-action-custody: audited local integrity-bound candidate / unsupported-platform fail-closed ok');
