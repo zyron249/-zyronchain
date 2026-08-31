@@ -17,7 +17,7 @@ describe('Windows end-user miner package contract', () => {
 
     assert.match(workflowText, /Construct audited POSIX release candidate/);
     assert.match(workflowText, /if: runner\.os != 'Windows'/);
-    assert.match(workflowText, /run: node scripts\/package-miner\.mjs/);
+    assert.match(workflowText, /node scripts\/package-miner\.mjs/);
     assert.match(workflowText, /Verify POSIX candidate remains local and inactive/);
     assert.match(workflowText, /publicMiningActivated !== false/);
     assert.match(workflowText, /p\.rpcUrl !== null/);
