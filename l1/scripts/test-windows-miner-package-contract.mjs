@@ -14,7 +14,7 @@ const workflow = await readFile(resolve(root, '..', '.github', 'workflows', 'min
 assert.match(workflow, /Prove Windows package entrypoint fails closed before writes/);
 assert.match(workflow, /if: runner\.os == 'Windows'/);
 assert.match(workflow, /if node scripts\/package-miner\.mjs >package-miner\.stdout 2>package-miner\.stderr; then/);
-assert.match(workflow, /miner packaging custody is unsupported on this platform/);
+assert.match(workflow, /Miner packaging requires the audited descriptor-relative POSIX custody path; this platform remains fail-closed\./);
 assert.match(workflow, /if \[ -e miner-release \]/);
 assert.match(workflow, /Construct audited POSIX release candidate/);
 assert.match(workflow, /if: runner\.os != 'Windows'/);
@@ -26,4 +26,6 @@ assert.match(workflow, /p\.genesisFile !== null/);
 assert.doesNotMatch(workflow, /Package Windows end-user ZIP/);
 assert.doesNotMatch(workflow, /actions\/upload-artifact/);
 assert.doesNotMatch(workflow, /actions\/attest/);
+assert.doesNotMatch(workflow, /id-token: write/);
+assert.doesNotMatch(workflow, /contents: write/);
 console.log('Windows miner package fail-closed contract: ok');
