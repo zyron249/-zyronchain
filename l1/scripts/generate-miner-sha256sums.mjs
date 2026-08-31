@@ -8,6 +8,7 @@ const HASH_BUFFER_BYTES = 64 * 1024;
 const MANIFEST_PATH_CONTROL_BYTES = /[\u0000-\u001f\u007f]/;
 const MANIFEST_TEMP_PREFIX = '.SHA256SUMS.';
 const MANIFEST_TEMP_SUFFIX = '.tmp';
+const MANIFEST_LINE = /^([0-9a-f]{64})  (.+)$/;
 
 function isWithinRoot(root, candidate) {
   const relative = path.relative(root, candidate);
@@ -64,7 +65,7 @@ export function collectReleaseFiles(root, fsOps = fs) {
   }
 
   walk(absoluteRoot);
-  return files.sort();
+  return files.sort((a, b) => releaseManifestPath(absoluteRoot, a).localeCompare(releaseManifestPath(absoluteRoot, b)));
 }
 
 function hashBoundReleaseFile(file, canonicalRoot, fsOps) {
@@ -80,7 +81,8 @@ function hashBoundReleaseFile(file, canonicalRoot, fsOps) {
 
   let fd;
   try {
-    fd = fsOps.openSync(file, 'r');
+    const constants = fsOps.constants ?? fs.constants;
+    fd = fsOps.openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const openedStat = fsOps.fstatSync(fd);
     if (!openedStat.isFile() || !sameFileSnapshot(expectedStat, openedStat)) {
       throw new Error(`miner release manifest input snapshot changed before hashing: ${displayPath}`);
@@ -131,7 +133,7 @@ function publishManifestAtomic(canonicalRoot, manifest, fsOps) {
     renamed = true;
 
     const pathStat = fsOps.lstatSync(manifestPath);
-    if (!pathStat.isFile()) {
+    if (!pathStat.isFile() || pathStat.isSymbolicLink()) {
       throw new Error('miner release SHA256SUMS publication path became non-regular');
     }
     const canonicalManifest = fsOps.realpathSync(manifestPath);
@@ -144,6 +146,72 @@ function publishManifestAtomic(canonicalRoot, manifest, fsOps) {
       try { fsOps.rmSync(tempPath, { force: true }); } catch {}
     }
   }
+}
+
+function parseManifest(manifest) {
+  if (typeof manifest !== 'string' || !manifest.endsWith('\n')) {
+    throw new Error('miner release SHA256SUMS must end with exactly one canonical newline-delimited record set');
+  }
+  const body = manifest.slice(0, -1);
+  if (body.endsWith('\n')) throw new Error('miner release SHA256SUMS contains an empty record');
+  const lines = body ? body.split('\n') : [];
+  const entries = [];
+  const seen = new Set();
+  for (const line of lines) {
+    const match = MANIFEST_LINE.exec(line);
+    if (!match) throw new Error('miner release SHA256SUMS contains a malformed record');
+    const [, sha256, relative] = match;
+    if (
+      MANIFEST_PATH_CONTROL_BYTES.test(relative)
+      || relative.includes('\\')
+      || relative.startsWith('/')
+      || relative === '.'
+      || relative === '..'
+      || relative.startsWith('../')
+      || relative.startsWith('./')
+      || relative.includes('/../')
+      || relative.includes('/./')
+      || relative.endsWith('/..')
+      || relative.endsWith('/.')
+      || relative.includes('//')
+    ) {
+      throw new Error('miner release SHA256SUMS contains a non-canonical path');
+    }
+    if (seen.has(relative)) throw new Error(`miner release SHA256SUMS contains duplicate path: ${relative}`);
+    seen.add(relative);
+    entries.push({ sha256, relative });
+  }
+  return entries;
+}
+
+export function verifyMinerSha256Sums(root, fsOps = fs) {
+  const absoluteRoot = path.resolve(root);
+  const canonicalRoot = fsOps.realpathSync(absoluteRoot);
+  if (!fsOps.lstatSync(canonicalRoot).isDirectory()) throw new Error('miner release manifest root must be a directory');
+
+  const manifestPath = path.join(canonicalRoot, 'SHA256SUMS');
+  const manifestStat = fsOps.lstatSync(manifestPath);
+  if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) throw new Error('miner release SHA256SUMS must be a regular file');
+  const canonicalManifest = fsOps.realpathSync(manifestPath);
+  if (!isWithinRoot(canonicalRoot, canonicalManifest)) throw new Error('miner release SHA256SUMS escapes release root');
+
+  const manifest = fsOps.readFileSync(manifestPath, 'utf8');
+  const entries = parseManifest(manifest);
+  const files = collectReleaseFiles(canonicalRoot, fsOps);
+  if (entries.length !== files.length) throw new Error('miner release SHA256SUMS file set does not match release root');
+
+  for (let index = 0; index < files.length; index += 1) {
+    const expectedPath = releaseManifestPath(canonicalRoot, files[index]);
+    const entry = entries[index];
+    if (entry.relative !== expectedPath) throw new Error('miner release SHA256SUMS file set or ordering does not match release root');
+    const resolved = path.resolve(canonicalRoot, ...entry.relative.split('/'));
+    if (!isWithinRoot(canonicalRoot, resolved) || releaseManifestPath(canonicalRoot, resolved) !== entry.relative) {
+      throw new Error(`miner release SHA256SUMS contains non-canonical release path: ${entry.relative}`);
+    }
+    const digest = hashBoundReleaseFile(files[index], canonicalRoot, fsOps);
+    if (digest !== entry.sha256) throw new Error(`miner release SHA256SUMS digest mismatch: ${entry.relative}`);
+  }
+  return manifest;
 }
 
 export function generateMinerSha256Sums(root, fsOps = fs) {
@@ -160,6 +228,8 @@ export function generateMinerSha256Sums(root, fsOps = fs) {
   });
   const manifest = `${lines.join('\n')}\n`;
   publishManifestAtomic(canonicalRoot, manifest, fsOps);
+  const verified = verifyMinerSha256Sums(canonicalRoot, fsOps);
+  if (verified !== manifest) throw new Error('miner release SHA256SUMS changed after atomic publication');
   return manifest;
 }
 

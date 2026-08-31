@@ -71,6 +71,7 @@ jobs:
           node --check scripts/test-miner-release-manifest-snapshot.mjs
           node --check scripts/test-miner-release-manifest-root-relative.mjs
           node --check scripts/test-miner-release-manifest-path-controls.mjs
+          node --check scripts/test-miner-release-manifest-verify.mjs
           node --check scripts/miner-candidate-integrity.mjs
           node --check scripts/test-miner-candidate-integrity.mjs
 
@@ -89,6 +90,7 @@ jobs:
           node scripts/test-miner-release-manifest-snapshot.mjs
           node scripts/test-miner-release-manifest-root-relative.mjs
           node scripts/test-miner-release-manifest-path-controls.mjs
+          node scripts/test-miner-release-manifest-verify.mjs
           node scripts/test-miner-candidate-integrity.mjs
 
       - name: Assert inactive release candidate network profile
@@ -124,7 +126,7 @@ jobs:
           mkdir miner-release
           node scripts/package-miner.mjs
 
-      - name: Verify POSIX candidate remains local, inactive, and integrity-bound
+      - name: Verify POSIX candidate remains local, inactive, integrity-bound, and checksummed
         if: runner.os != 'Windows'
         shell: bash
         run: |
@@ -138,6 +140,9 @@ jobs:
           node --input-type=module -e "import { verifyCandidateIntegrity } from './scripts/miner-candidate-integrity.mjs'; verifyCandidateIntegrity(process.argv[1]);" "$candidate"
           node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync(process.argv[1]+'/miner-network-profile.json','utf8')); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('materialized candidate must remain activation-gated')" "$candidate"
           node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync(process.argv[1]+'/candidate-integrity.json','utf8')); if(p.sourceCommit!==process.env.GITHUB_SHA) throw new Error('candidate integrity sourceCommit must bind exact workflow SHA')" "$candidate"
+          node scripts/generate-miner-sha256sums.mjs "$candidate"
+          test -f "$candidate/SHA256SUMS"
+          node --input-type=module -e "import { verifyMinerSha256Sums } from './scripts/generate-miner-sha256sums.mjs'; verifyMinerSha256Sums(process.argv[1]);" "$candidate"
 
       - name: Prove Windows package entrypoint fails closed before writes
         if: runner.os == 'Windows'
