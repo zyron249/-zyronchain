@@ -1,0 +1,11 @@
+# Miner candidate SBOM security boundary
+
+This document describes local release-candidate evidence only. It does not authorize public mining, release publication, signing, attestation, uploads, or a website download CTA.
+
+On the audited Linux/macOS packaging path, `package-miner.mjs` materializes the candidate under descriptor-relative custody, then writes `miner-sbom.cdx.json` before the candidate integrity manifest is frozen. The SBOM is CycloneDX 1.5 and binds the application package/version plus platform, architecture, and exact source commit. Dependency components are derived from the materialized candidate's regular-file `node_modules/**/package.json` inventory and sorted deterministically.
+
+SBOM construction and verification fail closed when the candidate package identity does not match the packaging metadata, the source commit is not an exact lowercase 40-hex commit id, the platform is outside the audited POSIX set, dependency metadata is malformed, or a dependency path traversed during SBOM inventory is a symlink. The published SBOM itself must be a bound regular file and is immediately re-derived and compared before candidate integrity is written.
+
+Because `miner-sbom.cdx.json` exists before `candidate-integrity.json` is generated, the candidate integrity file hashes the SBOM. The later `SHA256SUMS` stage then verifies the exact final release-root regular-file set, including both SBOM and candidate integrity metadata. SBOM tampering, substitution, omission, dependency-version drift, or checksum mismatch therefore invalidates local candidate evidence.
+
+Windows packaging remains fail-closed before release-root writes until the separately audited custody path exists. No workflow in this stage receives `contents: write`, OIDC/attestation authority, release-upload authority, signing keys, or public-mining activation authority.
