@@ -161,7 +161,20 @@ function parseManifest(manifest) {
     const match = MANIFEST_LINE.exec(line);
     if (!match) throw new Error('miner release SHA256SUMS contains a malformed record');
     const [, sha256, relative] = match;
-    if (MANIFEST_PATH_CONTROL_BYTES.test(relative) || relative.includes('\\') || relative.startsWith('/') || relative === '.' || relative === '..') {
+    if (
+      MANIFEST_PATH_CONTROL_BYTES.test(relative)
+      || relative.includes('\\')
+      || relative.startsWith('/')
+      || relative === '.'
+      || relative === '..'
+      || relative.startsWith('../')
+      || relative.startsWith('./')
+      || relative.includes('/../')
+      || relative.includes('/./')
+      || relative.endsWith('/..')
+      || relative.endsWith('/.')
+      || relative.includes('//')
+    ) {
       throw new Error('miner release SHA256SUMS contains a non-canonical path');
     }
     if (seen.has(relative)) throw new Error(`miner release SHA256SUMS contains duplicate path: ${relative}`);
