@@ -32,7 +32,7 @@ for (const required of [
   'Prove miner packaging platform gate',
   'Construct audited POSIX release candidate',
   "if: runner.os != 'Windows'",
-  'run: node scripts/package-miner.mjs',
+  'node scripts/package-miner.mjs',
   'Verify POSIX candidate remains local and inactive',
   'test -d miner-release',
   'materialized candidate must remain activation-gated',
