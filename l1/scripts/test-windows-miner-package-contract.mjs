@@ -10,8 +10,8 @@ const workflow = await readFile(resolve(root, '..', '.github', 'workflows', 'min
 
 // The release-candidate workflow must exercise the real package entrypoint on
 // Windows and require it to fail closed before creating candidate state. POSIX
-// runners are allowed to construct one local, activation-gated, integrity-bound
-// candidate only; this must not grant publication authority.
+// runners are allowed to construct one local, activation-gated, integrity/checksum-
+// bound candidate only; this must not grant publication authority.
 assert.match(workflow, /Prove Windows package entrypoint fails closed before writes/);
 assert.match(workflow, /if: runner\.os == 'Windows'/);
 assert.match(workflow, /if node scripts\/package-miner\.mjs >package-miner\.stdout 2>package-miner\.stderr; then/);
@@ -20,10 +20,13 @@ assert.match(workflow, /if \[ -e miner-release \]/);
 assert.match(workflow, /Construct audited POSIX release candidate/);
 assert.match(workflow, /if: runner\.os != 'Windows'/);
 assert.match(workflow, /node scripts\/package-miner\.mjs/);
-assert.match(workflow, /Verify POSIX candidate remains local, inactive, and integrity-bound/);
+assert.match(workflow, /Verify POSIX candidate remains local, inactive, integrity-bound, and checksummed/);
 assert.match(workflow, /candidate-integrity\.json/);
 assert.match(workflow, /verifyCandidateIntegrity/);
 assert.match(workflow, /p\.sourceCommit!==process\.env\.GITHUB_SHA/);
+assert.match(workflow, /node scripts\/generate-miner-sha256sums\.mjs "\$candidate"/);
+assert.match(workflow, /test -f "\$candidate\/SHA256SUMS"/);
+assert.match(workflow, /verifyMinerSha256Sums/);
 assert.match(workflow, /publicMiningActivated !== false/);
 assert.match(workflow, /p\.rpcUrl !== null/);
 assert.match(workflow, /p\.genesisFile !== null/);
