@@ -14,8 +14,10 @@ const required = [
   'npm run typecheck',
   'node scripts/test-miner-launcher-security.mjs',
   'node scripts/test-miner-release-manifest.mjs',
+  'node scripts/test-miner-release-manifest-verify.mjs',
   'node scripts/test-miner-candidate-integrity.mjs',
   'node --check scripts/miner-candidate-integrity.mjs',
+  'node --check scripts/test-miner-release-manifest-verify.mjs',
   'p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null',
   "if: runner.os != 'Windows'",
   'run: npm test',
@@ -27,7 +29,10 @@ const required = [
   'node scripts/package-miner.mjs',
   'candidate-integrity.json',
   'verifyCandidateIntegrity',
-  'p.sourceCommit!==process.env.GITHUB_SHA'
+  'p.sourceCommit!==process.env.GITHUB_SHA',
+  'node scripts/generate-miner-sha256sums.mjs "$candidate"',
+  'test -f "$candidate/SHA256SUMS"',
+  'verifyMinerSha256Sums'
 ];
 
 for (const needle of required) {
@@ -37,7 +42,6 @@ for (const needle of required) {
 for (const forbidden of [
   'npm sbom --omit=dev --sbom-format=spdx',
   'npm prune --omit=dev',
-  'Generate SHA-256 manifest',
   'actions/upload-artifact@',
   'Upload miner bundle',
   'id-token: write',
@@ -59,4 +63,4 @@ if (checkoutSteps.length !== 1 || !checkoutSteps[0].includes('persist-credential
   throw new Error('Miner Package checkout must disable credential persistence');
 }
 
-console.log('miner package action custody policy: audited local integrity-bound candidate / no publication authority ok');
+console.log('miner package action custody policy: audited local integrity/checksum-bound candidate / no publication authority ok');
