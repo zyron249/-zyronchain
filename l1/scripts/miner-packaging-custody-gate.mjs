@@ -1,6 +1,7 @@
-export const MINER_PACKAGING_CUSTODY_ERROR =
-  'Miner packaging is quarantined until true handle-relative filesystem custody is implemented and verified (#761).';
+export const MINER_PACKAGING_UNSUPPORTED_PLATFORM_ERROR =
+  'Miner packaging requires the audited descriptor-relative POSIX custody path; this platform remains fail-closed.';
 
-export function assertMinerPackagingCustodyReady() {
-  throw new Error(MINER_PACKAGING_CUSTODY_ERROR);
+export function assertMinerPackagingCustodyReady(platform = process.platform) {
+  if (platform === 'linux' || platform === 'darwin') return;
+  throw new Error(MINER_PACKAGING_UNSUPPORTED_PLATFORM_ERROR);
 }
