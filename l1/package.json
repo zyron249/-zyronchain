@@ -20,7 +20,7 @@
     "mine": "node scripts/mine.mjs",
     "bench:restart": "npm run build && node dist/bench/restart.js",
     "bench:state-scale": "npm run build && node dist/bench/state-v2-scale.js",
-    "test": "npm run build && node --check scripts/mine.mjs && node scripts/test-suite.mjs",
+    "test": "npm run build && node --check scripts/mine.mjs && node scripts/test-miner-candidate-sbom.mjs && node scripts/test-suite.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
