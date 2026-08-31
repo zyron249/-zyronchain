@@ -71,6 +71,8 @@ jobs:
           node --check scripts/test-miner-release-manifest-snapshot.mjs
           node --check scripts/test-miner-release-manifest-root-relative.mjs
           node --check scripts/test-miner-release-manifest-path-controls.mjs
+          node --check scripts/miner-candidate-integrity.mjs
+          node --check scripts/test-miner-candidate-integrity.mjs
 
       - name: Run miner launcher custody security regression
         run: node scripts/test-miner-launcher-security.mjs
@@ -87,6 +89,7 @@ jobs:
           node scripts/test-miner-release-manifest-snapshot.mjs
           node scripts/test-miner-release-manifest-root-relative.mjs
           node scripts/test-miner-release-manifest-path-controls.mjs
+          node scripts/test-miner-candidate-integrity.mjs
 
       - name: Assert inactive release candidate network profile
         run: node -e "const p=require('./miner-network-profile.json'); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('release candidate profile must remain fail-closed')"
@@ -121,7 +124,7 @@ jobs:
           mkdir miner-release
           node scripts/package-miner.mjs
 
-      - name: Verify POSIX candidate remains local and inactive
+      - name: Verify POSIX candidate remains local, inactive, and integrity-bound
         if: runner.os != 'Windows'
         shell: bash
         run: |
@@ -129,8 +132,12 @@ jobs:
           count="$(find miner-release -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
           test "$count" = '1'
           test ! -L miner-release
-          test -f miner-release/*/miner-network-profile.json
-          node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync(fs.readdirSync('miner-release',{withFileTypes:true}).filter(e=>e.isDirectory()).map(e=>'miner-release/'+e.name+'/miner-network-profile.json')[0],'utf8')); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('materialized candidate must remain activation-gated')"
+          candidate="$(find miner-release -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -f "$candidate/miner-network-profile.json"
+          test -f "$candidate/candidate-integrity.json"
+          node --input-type=module -e "import { verifyCandidateIntegrity } from './scripts/miner-candidate-integrity.mjs'; verifyCandidateIntegrity(process.argv[1]);" "$candidate"
+          node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync(process.argv[1]+'/miner-network-profile.json','utf8')); if (p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null) throw new Error('materialized candidate must remain activation-gated')" "$candidate"
+          node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync(process.argv[1]+'/candidate-integrity.json','utf8')); if(p.sourceCommit!==process.env.GITHUB_SHA) throw new Error('candidate integrity sourceCommit must bind exact workflow SHA')" "$candidate"
 
       - name: Prove Windows package entrypoint fails closed before writes
         if: runner.os == 'Windows'

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 const workflow = resolve(process.cwd(), '..', '.github', 'workflows', 'miner-release-candidate.yml');
 
 describe('Windows end-user miner package contract', () => {
-  it('keeps Windows materialization/publication fail closed while allowing only local inactive POSIX candidates', async () => {
+  it('keeps Windows materialization/publication fail closed while allowing only local inactive integrity-bound POSIX candidates', async () => {
     const workflowText = await readFile(workflow, 'utf8');
 
     assert.match(workflowText, /Prove Windows package entrypoint fails closed before writes/);
@@ -18,7 +18,10 @@ describe('Windows end-user miner package contract', () => {
     assert.match(workflowText, /Construct audited POSIX release candidate/);
     assert.match(workflowText, /if: runner\.os != 'Windows'/);
     assert.match(workflowText, /node scripts\/package-miner\.mjs/);
-    assert.match(workflowText, /Verify POSIX candidate remains local and inactive/);
+    assert.match(workflowText, /Verify POSIX candidate remains local, inactive, and integrity-bound/);
+    assert.match(workflowText, /candidate-integrity\.json/);
+    assert.match(workflowText, /verifyCandidateIntegrity/);
+    assert.match(workflowText, /p\.sourceCommit!==process\.env\.GITHUB_SHA/);
     assert.match(workflowText, /publicMiningActivated !== false/);
     assert.match(workflowText, /p\.rpcUrl !== null/);
     assert.match(workflowText, /p\.genesisFile !== null/);
