@@ -16,6 +16,7 @@ if (baseline.status !== 0) {
 
 const policy = JSON.parse(readFileSync(policyFile, 'utf8'));
 const platforms = ['windows', 'macos', 'linux'];
+const sbomEvidenceFields = { windows: 'windowsSbom', macos: 'macosSbom', linux: 'linuxSbom' };
 const activationRequested = ['publicMiningActivated','releaseEligible','platformSigningVerified','provenanceVerified','checksumsVerified','immutableReleaseVerified','publicationAllowed','sbomVerified']
   .some((field) => policy[field] === true) || platforms.some((p) => policy.assets?.[p] !== null) || platforms.some((p) => policy.assetSha256?.[p] !== null);
 if (!activationRequested) {
@@ -29,16 +30,28 @@ const subjects = platforms.map((platform) => {
   if (typeof asset !== 'string' || typeof sha256 !== 'string') throw new Error(`missing ${platform} immutable-release subject identity`);
   const name = asset.slice(asset.lastIndexOf('/') + 1);
   if (!name || name.includes('/') || name.includes('\\')) throw new Error(`invalid ${platform} immutable-release subject filename`);
-  return { platform, name, sha256 };
+
+  const sbomEvidence = policy.evidence?.[sbomEvidenceFields[platform]];
+  if (typeof sbomEvidence !== 'string') throw new Error(`missing ${platform} SBOM evidence for immutable-release binding`);
+  const sbomMatch = sbomEvidence.match(/\/([^/#]+)#sha256=([0-9a-f]{64})$/);
+  if (!sbomMatch) throw new Error(`${platform} SBOM evidence must use an immutable filename and exact sha256 digest binding`);
+  const sbomName = sbomMatch[1];
+  const expectedSbomName = `${name}.sbom.cdx.json`;
+  if (sbomName !== expectedSbomName) throw new Error(`${platform} SBOM evidence filename does not match promoted artifact`);
+  return { platform, name, sha256, sbom: { name: sbomName, sha256: sbomMatch[2] } };
 });
 if (new Set(subjects.map((s) => s.name)).size !== platforms.length) throw new Error('immutable-release subjects must use distinct artifact filenames');
 if (new Set(subjects.map((s) => s.sha256)).size !== platforms.length) throw new Error('immutable-release subjects must use distinct artifact digests');
+if (new Set(subjects.map((s) => s.sbom.name)).size !== platforms.length) throw new Error('immutable-release subjects must use distinct SBOM filenames');
+if (new Set(subjects.map((s) => s.sbom.sha256)).size !== platforms.length) throw new Error('immutable-release subjects must use distinct SBOM digests');
+const artifactDigests = new Set(subjects.map((s) => s.sha256));
+if (subjects.some((s) => artifactDigests.has(s.sbom.sha256))) throw new Error('immutable-release SBOM digests must not alias promoted artifact digests');
 
 const evidence = policy.evidence?.immutableRelease;
 if (typeof evidence !== 'string') throw new Error('promotion requires immutableRelease evidence');
 const digestMatch = evidence.match(/#sha256=([0-9a-f]{64})$/);
 if (!digestMatch) throw new Error('immutableRelease evidence must include exact sha256 digest binding');
-const canonicalDocument = `${JSON.stringify({ schemaVersion: 1, releaseVersion: policy.releaseVersion, sourceCommit: policy.sourceCommit, subjects })}\n`;
+const canonicalDocument = `${JSON.stringify({ schemaVersion: 2, releaseVersion: policy.releaseVersion, sourceCommit: policy.sourceCommit, subjects })}\n`;
 const expected = createHash('sha256').update(canonicalDocument, 'utf8').digest('hex');
-if (digestMatch[1] !== expected) throw new Error('immutableRelease evidence digest does not bind the exact promoted release identity and platform subjects');
-console.log('miner immutable-release evidence binds exact release identity and all promoted platform subjects');
+if (digestMatch[1] !== expected) throw new Error('immutableRelease evidence digest does not bind the exact promoted release identity, platform artifacts, and SBOM subjects');
+console.log('miner immutable-release evidence binds exact release identity, all promoted platform artifacts, and per-platform SBOM subjects');
