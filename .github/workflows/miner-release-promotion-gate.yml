@@ -8,6 +8,8 @@ on:
       - 'docs/MINER_RELEASE_PROMOTION_CUSTODY.md'
       - 'l1/scripts/verify-miner-release-promotion.mjs'
       - 'l1/scripts/test-miner-release-promotion.mjs'
+      - 'l1/scripts/verify-miner-release-provenance-subjects.mjs'
+      - 'l1/scripts/test-miner-release-provenance-subjects.mjs'
       - 'scripts/verify-miner-release-promotion-action-custody.mjs'
       - '.github/workflows/miner-release-promotion-gate.yml'
       - '.github/workflows/miner-release-promotion-action-custody.yml'
@@ -32,6 +34,12 @@ jobs:
       - name: Verify canonical policy remains fail-closed
         working-directory: l1
         run: node scripts/verify-miner-release-promotion.mjs
+      - name: Verify promotion provenance subject binding remains fail-closed
+        working-directory: l1
+        run: node scripts/verify-miner-release-provenance-subjects.mjs
       - name: Run positive and negative promotion vectors
         working-directory: l1
         run: node scripts/test-miner-release-promotion.mjs
+      - name: Run provenance subject binding regressions
+        working-directory: l1
+        run: node scripts/test-miner-release-provenance-subjects.mjs
