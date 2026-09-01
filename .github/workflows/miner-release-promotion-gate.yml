@@ -6,8 +6,10 @@ on:
       - 'docs/miner-release-promotion.json'
       - 'docs/MINER_RELEASE_PROMOTION.md'
       - 'docs/MINER_RELEASE_PROMOTION_CUSTODY.md'
+      - 'docs/security/MINER_PROMOTION_SBOM_FAIL_CLOSED.md'
       - 'l1/scripts/verify-miner-release-promotion.mjs'
       - 'l1/scripts/test-miner-release-promotion.mjs'
+      - 'l1/scripts/test-miner-release-promotion-sbom-baseline.mjs'
       - 'l1/scripts/verify-miner-release-provenance-subjects.mjs'
       - 'l1/scripts/test-miner-release-provenance-subjects.mjs'
       - 'l1/scripts/verify-miner-release-signing-subjects.mjs'
@@ -65,6 +67,9 @@ jobs:
       - name: Run positive and negative promotion vectors
         working-directory: l1
         run: node scripts/test-miner-release-promotion.mjs
+      - name: Run baseline SBOM promotion regression
+        working-directory: l1
+        run: node scripts/test-miner-release-promotion-sbom-baseline.mjs
       - name: Run provenance subject binding regressions
         working-directory: l1
         run: node scripts/test-miner-release-provenance-subjects.mjs

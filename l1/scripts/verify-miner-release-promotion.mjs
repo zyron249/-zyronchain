@@ -127,7 +127,7 @@ for (const [platform, asset] of assetEntries) {
   if (!asset.startsWith(releaseAssetPrefix)) throw new Error(`${platform} asset must be bound to releaseVersion ${policy.releaseVersion}`);
 }
 
-for (const field of ['releaseEligible','platformSigningVerified','provenanceVerified','checksumsVerified','immutableReleaseVerified','publicationAllowed','publicMiningActivated']) {
+for (const field of ['releaseEligible','platformSigningVerified','provenanceVerified','checksumsVerified','sbomVerified','immutableReleaseVerified','publicationAllowed','publicMiningActivated']) {
   if (policy[field] !== true) throw new Error(`promotion requires ${field}=true`);
 }
 
@@ -198,4 +198,4 @@ for (const [name, digest] of evidenceDigests) {
   }
 }
 
-console.log('miner release promotion policy core evidence is fully evidenced; SBOM evidence is verified by the dedicated gate');
+console.log('miner release promotion policy core evidence is fully evidenced; SBOM verification is mandatory and dedicated SBOM evidence is verified by the dedicated gate');
