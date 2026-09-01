@@ -46,6 +46,7 @@ const active = {
   assets: Object.fromEntries(subjects.map((entry) => [entry.platform, `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${entry.name}`])),
   assetSha256: Object.fromEntries(subjects.map((entry) => [entry.platform, entry.sha256])),
   evidence: {
+    ...base.evidence,
     windowsSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/windows-signing.json#sha256=${evidenceDigests.windowsSigning}`,
     macosSigningOrNotarization: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/macos-notarization.json#sha256=${evidenceDigests.macosSigningOrNotarization}`,
     provenance: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/provenance.json#sha256=${evidenceDigests.provenance}`,
