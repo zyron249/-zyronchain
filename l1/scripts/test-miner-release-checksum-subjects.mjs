@@ -33,6 +33,7 @@ const checksumDigest = digestDocument(artifactSubjects, sbomSubjects);
 const evidenceDigests = {
   windowsSigning: '4'.repeat(64),
   macosSigningOrNotarization: '5'.repeat(64),
+  linuxSigning: 'd'.repeat(64),
   provenance: '6'.repeat(64),
   immutableRelease: '8'.repeat(64),
   publicMiningActivation: '9'.repeat(64)
@@ -56,6 +57,7 @@ const active = {
     ...base.evidence,
     windowsSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/windows-signing.json#sha256=${evidenceDigests.windowsSigning}`,
     macosSigningOrNotarization: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/macos-notarization.json#sha256=${evidenceDigests.macosSigningOrNotarization}`,
+    linuxSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/linux-signing.json#sha256=${evidenceDigests.linuxSigning}`,
     provenance: `${releasePrefix}provenance.json#sha256=${evidenceDigests.provenance}`,
     checksums: `${releasePrefix}SHA256SUMS#sha256=${checksumDigest}`,
     windowsSbom: `${releasePrefix}${sbomSubjects[0].name}#sha256=${sbomSubjects[0].sha256}`,
