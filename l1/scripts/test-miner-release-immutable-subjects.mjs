@@ -12,11 +12,11 @@ const base = JSON.parse(readFileSync(path.resolve(here, '../../docs/miner-releas
 const sourceCommit = '0123456789abcdef0123456789abcdef01234567';
 const releaseVersion = 'miner-v1.0.0';
 const subjects = [
-  { platform: 'windows', name: 'ZyronMiner-windows-x64.zip', sha256: '1'.repeat(64) },
-  { platform: 'macos', name: 'ZyronMiner-macos-arm64.tar.gz', sha256: '2'.repeat(64) },
-  { platform: 'linux', name: 'ZyronMiner-linux-x64.tar.gz', sha256: '3'.repeat(64) }
+  { platform: 'windows', name: 'ZyronMiner-windows-x64.zip', sha256: '1'.repeat(64), sbom: { name: 'ZyronMiner-windows-x64.zip.sbom.cdx.json', sha256: 'a'.repeat(64) } },
+  { platform: 'macos', name: 'ZyronMiner-macos-arm64.tar.gz', sha256: '2'.repeat(64), sbom: { name: 'ZyronMiner-macos-arm64.tar.gz.sbom.cdx.json', sha256: 'b'.repeat(64) } },
+  { platform: 'linux', name: 'ZyronMiner-linux-x64.tar.gz', sha256: '3'.repeat(64), sbom: { name: 'ZyronMiner-linux-x64.tar.gz.sbom.cdx.json', sha256: 'c'.repeat(64) } }
 ];
-const digestDocument = (items, version = releaseVersion, commit = sourceCommit) => createHash('sha256').update(`${JSON.stringify({ schemaVersion: 1, releaseVersion: version, sourceCommit: commit, subjects: items })}\n`).digest('hex');
+const digestDocument = (items, version = releaseVersion, commit = sourceCommit) => createHash('sha256').update(`${JSON.stringify({ schemaVersion: 2, releaseVersion: version, sourceCommit: commit, subjects: items })}\n`).digest('hex');
 const immutableDigest = digestDocument(subjects);
 const active = {
   ...base, releaseVersion, sourceCommit,
@@ -29,9 +29,9 @@ const active = {
     macosSigningOrNotarization: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/macos-notarization.json#sha256=${'5'.repeat(64)}`,
     provenance: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/provenance.json#sha256=${'6'.repeat(64)}`,
     checksums: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/SHA256SUMS#sha256=${'7'.repeat(64)}`,
-    windowsSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${subjects[0].name}.sbom.cdx.json#sha256=${'a'.repeat(64)}`,
-    macosSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${subjects[1].name}.sbom.cdx.json#sha256=${'b'.repeat(64)}`,
-    linuxSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${subjects[2].name}.sbom.cdx.json#sha256=${'c'.repeat(64)}`,
+    windowsSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${subjects[0].sbom.name}#sha256=${subjects[0].sbom.sha256}`,
+    macosSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${subjects[1].sbom.name}#sha256=${subjects[1].sbom.sha256}`,
+    linuxSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${subjects[2].sbom.name}#sha256=${subjects[2].sbom.sha256}`,
     immutableRelease: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/immutable-release.json#sha256=${immutableDigest}`,
     publicMiningActivation: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/public-mining-activation.json#sha256=${'9'.repeat(64)}`
   }
@@ -45,14 +45,19 @@ function run(policy, shouldPass, label) {
 }
 const withDigest = (digest) => ({ ...active, evidence: { ...active.evidence, immutableRelease: active.evidence.immutableRelease.replace(/[0-9a-f]{64}$/, digest) } });
 run(base, true, 'inactive canonical policy');
-run(active, true, 'exact immutable release subject binding');
+run(active, true, 'exact immutable release artifact and SBOM subject binding');
 run(withDigest(digestDocument(subjects.slice(0, 2))), false, 'missing platform subject');
 run(withDigest(digestDocument([subjects[0], subjects[1], subjects[0]])), false, 'duplicate subject');
-run(withDigest(digestDocument([{...subjects[0], sha256: subjects[2].sha256}, subjects[1], {...subjects[2], sha256: subjects[0].sha256}])), false, 'cross-platform digest swap');
-run(withDigest(digestDocument([{...subjects[0], name: subjects[2].name}, subjects[1], {...subjects[2], name: subjects[0].name}])), false, 'cross-platform filename swap');
+run(withDigest(digestDocument([{...subjects[0], sha256: subjects[2].sha256}, subjects[1], {...subjects[2], sha256: subjects[0].sha256}])), false, 'cross-platform artifact digest swap');
+run(withDigest(digestDocument([{...subjects[0], name: subjects[2].name}, subjects[1], {...subjects[2], name: subjects[0].name}])), false, 'cross-platform artifact filename swap');
+run(withDigest(digestDocument([{...subjects[0], sbom: {...subjects[0].sbom, sha256: subjects[2].sbom.sha256}}, subjects[1], {...subjects[2], sbom: {...subjects[2].sbom, sha256: subjects[0].sbom.sha256}}])), false, 'cross-platform SBOM digest swap');
+run(withDigest(digestDocument([{...subjects[0], sbom: {...subjects[0].sbom, name: subjects[2].sbom.name}}, subjects[1], {...subjects[2], sbom: {...subjects[2].sbom, name: subjects[0].sbom.name}}])), false, 'cross-platform SBOM filename swap');
 run(withDigest(digestDocument(subjects, 'miner-v1.0.1')), false, 'release version drift');
 run(withDigest(digestDocument(subjects, releaseVersion, 'fedcba9876543210fedcba9876543210fedcba98')), false, 'source commit drift');
 run({ ...active, evidence: { ...active.evidence, immutableRelease: `https://github.com/zyron249/-zyronchain/blob/main/evidence/immutable-release.json#sha256=${immutableDigest}` } }, false, 'mutable evidence ref');
 run({ ...active, evidence: { ...active.evidence, immutableRelease: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/immutable-release.json` } }, false, 'digestless evidence');
-run({ ...active, assetSha256: { ...active.assetSha256, windows: active.assetSha256.linux } }, false, 'policy subject drift');
-console.log('miner immutable-release subject regressions: OK');
+run({ ...active, evidence: { ...active.evidence, windowsSbom: active.evidence.windowsSbom.replace(subjects[0].sbom.sha256, subjects[1].sbom.sha256) } }, false, 'policy SBOM digest drift');
+run({ ...active, evidence: { ...active.evidence, windowsSbom: active.evidence.windowsSbom.replace(subjects[0].sbom.name, subjects[1].sbom.name) } }, false, 'policy SBOM filename drift');
+run({ ...active, evidence: { ...active.evidence, windowsSbom: active.evidence.windowsSbom.replace(subjects[0].sbom.sha256, subjects[0].sha256) } }, false, 'artifact SBOM digest alias');
+run({ ...active, assetSha256: { ...active.assetSha256, windows: active.assetSha256.linux } }, false, 'policy artifact subject drift');
+console.log('miner immutable-release artifact and SBOM subject regressions: OK');
