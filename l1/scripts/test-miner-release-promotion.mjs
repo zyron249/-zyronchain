@@ -23,6 +23,7 @@ function run(policy, shouldPass, label) {
 run(base, true, 'canonical fail-closed policy');
 run({ ...base, publicMiningActiviated: false }, false, 'inactive policy with shadow top-level activation field');
 run({ ...base, schemaVersion: 1 }, false, 'legacy promotion schema');
+run({ ...base, schemaVersion: 2 }, false, 'pre-SBOM promotion schema');
 run({ ...base, assets: {} }, false, 'empty platform asset set');
 run({ ...base, assets: { windows: null, macos: null } }, false, 'missing Linux platform key');
 run({ ...base, assets: { ...base.assets, freebsd: null } }, false, 'unexpected platform key');
@@ -39,6 +40,7 @@ run({ ...base, publicationAllowed: true }, false, 'publication without evidence'
 run({ ...base, platformSigningVerified: true }, false, 'inactive policy with positive signing verification');
 run({ ...base, provenanceVerified: true }, false, 'inactive policy with positive provenance verification');
 run({ ...base, checksumsVerified: true }, false, 'inactive policy with positive checksum verification');
+run({ ...base, sbomVerified: true }, false, 'inactive policy with positive SBOM verification');
 run({ ...base, immutableReleaseVerified: true }, false, 'inactive policy with positive immutable-release verification');
 run({ ...base, assets: { ...base.assets, windows: 'https://example.com/ZyronMiner.exe' } }, false, 'untrusted asset origin');
 run({ ...base, assets: { ...base.assets, windows: 'https://github.com/zyron249/-zyronchain/releases/download/miner-v1.0.0/ZyronMiner-windows-x64.zip' } }, false, 'partial asset promotion');
@@ -53,7 +55,10 @@ const evidenceDigests = {
   provenance: '6'.repeat(64),
   checksums: '7'.repeat(64),
   immutableRelease: '8'.repeat(64),
-  publicMiningActivation: '9'.repeat(64)
+  publicMiningActivation: '9'.repeat(64),
+  windowsSbom: 'a'.repeat(64),
+  macosSbom: 'b'.repeat(64),
+  linuxSbom: 'c'.repeat(64)
 };
 const fullyEvidenced = {
   ...base,
@@ -64,6 +69,7 @@ const fullyEvidenced = {
   platformSigningVerified: true,
   provenanceVerified: true,
   checksumsVerified: true,
+  sbomVerified: true,
   immutableReleaseVerified: true,
   publicationAllowed: true,
   assets: {
@@ -81,6 +87,9 @@ const fullyEvidenced = {
     macosSigningOrNotarization: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/macos-notarization.json#sha256=${evidenceDigests.macosSigningOrNotarization}`,
     provenance: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/provenance.json#sha256=${evidenceDigests.provenance}`,
     checksums: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/SHA256SUMS#sha256=${evidenceDigests.checksums}`,
+    windowsSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/ZyronMiner-windows-x64.zip.sbom.cdx.json#sha256=${evidenceDigests.windowsSbom}`,
+    macosSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/ZyronMiner-macos-arm64.tar.gz.sbom.cdx.json#sha256=${evidenceDigests.macosSbom}`,
+    linuxSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/ZyronMiner-linux-x64.tar.gz.sbom.cdx.json#sha256=${evidenceDigests.linuxSbom}`,
     immutableRelease: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/immutable-release.json#sha256=${evidenceDigests.immutableRelease}`,
     publicMiningActivation: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/public-mining-activation.json#sha256=${evidenceDigests.publicMiningActivation}`
   }
@@ -96,6 +105,8 @@ run({ ...fullyEvidenced, assetSha256: { ...fullyEvidenced.assetSha256, macos: fu
 run({ ...fullyEvidenced, assetSha256: { windows: fullyEvidenced.assetSha256.linux, macos: fullyEvidenced.assetSha256.linux, linux: fullyEvidenced.assetSha256.linux } }, false, 'all platform assets reuse one digest');
 const { checksums: _missingPromotedChecksums, ...promotedMissingEvidence } = fullyEvidenced.evidence;
 run({ ...fullyEvidenced, evidence: promotedMissingEvidence }, false, 'activated promotion missing checksums evidence');
+const { linuxSbom: _missingPromotedLinuxSbom, ...promotedMissingSbomEvidence } = fullyEvidenced.evidence;
+run({ ...fullyEvidenced, evidence: promotedMissingSbomEvidence }, false, 'activated promotion missing Linux SBOM evidence slot');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, operatorNote: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/operator-note.json#sha256=${digest}` } }, false, 'activated promotion with unexpected evidence key');
 run({ ...fullyEvidenced, immutableReleaseVerified: false }, false, 'mutable release');
 run({ ...fullyEvidenced, sourceCommit: 'main' }, false, 'non-exact source identity');

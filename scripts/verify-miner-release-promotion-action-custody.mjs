@@ -11,10 +11,12 @@ const required = [
   'node scripts/verify-miner-release-provenance-subjects.mjs',
   'node scripts/verify-miner-release-signing-subjects.mjs',
   'node scripts/verify-miner-release-checksum-subjects.mjs',
+  'node scripts/verify-miner-release-sbom-evidence.mjs',
   'node scripts/test-miner-release-promotion.mjs',
   'node scripts/test-miner-release-provenance-subjects.mjs',
   'node scripts/test-miner-release-signing-subjects.mjs',
-  'node scripts/test-miner-release-checksum-subjects.mjs'
+  'node scripts/test-miner-release-checksum-subjects.mjs',
+  'node scripts/test-miner-release-sbom-evidence.mjs'
 ];
 for (const token of required) {
   if (!workflow.includes(token)) throw new Error(`miner promotion custody invariant missing: ${token}`);
