@@ -206,6 +206,8 @@ A Python verifier consumes public interoperability vectors as an independent imp
 
 Production validators should use a pinned remote signer or HSM boundary. The node verifies every returned signature against the exact public key, payload, intent and protocol domain.
 
+The reusable remote-validator signer client itself requires an explicit bounded bearer credential before construction and sends it only in the `Authorization` header; missing, empty, weak, or header-unsafe credentials fail closed before any signing request. Non-loopback remote signer transport must use HTTPS. This client-side control does not replace signer-side authorization, anti-equivocation enforcement, credential rotation, or production HSM/remote-signer custody evidence.
+
 The anti-equivocation journal is persisted before a remote signing request. A signer outage may sacrifice liveness for one action but must not permit a conflicting signature after restart.
 
 Local operator and miner keys may use scrypt-derived AES-256-GCM keystores with authenticated public-key/address metadata and bounded password files. This is not a substitute for production HSM custody where validator keys are concerned.
