@@ -52,7 +52,8 @@ function canonicalDigest(platform, sbomField) {
 
 const bindings = [
   ['windows', 'windowsSigning', 'windowsSbom'],
-  ['macos', 'macosSigningOrNotarization', 'macosSbom']
+  ['macos', 'macosSigningOrNotarization', 'macosSbom'],
+  ['linux', 'linuxSigning', 'linuxSbom']
 ];
 for (const [platform, evidenceName, sbomField] of bindings) {
   const reference = policy.evidence?.[evidenceName];
@@ -63,4 +64,4 @@ for (const [platform, evidenceName, sbomField] of bindings) {
   if (match[1] !== expected) throw new Error(`${evidenceName} evidence is not bound to the exact promoted ${platform} artifact and SBOM subjects`);
 }
 
-console.log('miner release signing evidence is bound to exact promoted platform artifact and SBOM subjects');
+console.log('miner release signing evidence is bound to exact promoted Windows, macOS and Linux artifact and SBOM subjects');
