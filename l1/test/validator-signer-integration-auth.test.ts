@@ -137,7 +137,9 @@ test("authenticated remote validator signer binds protocol v3 requests and respo
       payload: unknown;
     };
     const authorization = request.headers.authorization;
-    assert.equal(typeof authorization, "string");
+    if (typeof authorization !== "string") {
+      throw new Error("Authenticated remote signer request is missing the Authorization header");
+    }
     requests.push({
       version: body.version,
       intent: body.intent,
