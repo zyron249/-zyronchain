@@ -27,6 +27,7 @@ const active = {
   evidence: {
     windowsSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/windows-signing.json#sha256=${'4'.repeat(64)}`,
     macosSigningOrNotarization: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/macos-notarization.json#sha256=${'5'.repeat(64)}`,
+    linuxSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/linux-signing.json#sha256=${'d'.repeat(64)}`,
     provenance: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/provenance.json#sha256=${'6'.repeat(64)}`,
     checksums: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/SHA256SUMS#sha256=${'7'.repeat(64)}`,
     windowsSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${subjects[0].sbom.name}#sha256=${subjects[0].sbom.sha256}`,
