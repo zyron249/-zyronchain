@@ -22,5 +22,10 @@ for (const line of workflow.split(/\r?\n/)) {
   if (!/^[0-9a-f]{40}$/.test(ref)) throw new Error(`mutable or non-SHA action ref: ${match[1]}`);
 }
 if (/persist-credentials:\s*true/i.test(workflow)) throw new Error('checkout credential persistence must remain disabled');
-if (/\b(?:upload-artifact|attest|release|publish)\b/i.test(workflow)) throw new Error('promotion gate must not acquire publication or attestation authority');
+for (const forbidden of ['actions/upload-artifact@', 'actions/attest-', 'softprops/action-gh-release@']) {
+  if (workflow.includes(forbidden)) throw new Error(`promotion gate must not acquire publication or attestation authority: ${forbidden}`);
+}
+if (/\bid-token:\s*write\b/i.test(workflow) || /\bcontents:\s*write\b/i.test(workflow)) {
+  throw new Error('promotion gate must remain read-only and without OIDC signing authority');
+}
 console.log('miner release promotion action custody policy: OK');
