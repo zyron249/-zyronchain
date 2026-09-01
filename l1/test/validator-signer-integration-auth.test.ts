@@ -136,11 +136,13 @@ test("authenticated remote validator signer binds protocol v3 requests and respo
       domain?: string;
       payload: unknown;
     };
+    const authorization = request.headers.authorization;
+    assert.equal(typeof authorization, "string");
     requests.push({
       version: body.version,
       intent: body.intent,
       ...(body.domain === undefined ? {} : { domain: body.domain }),
-      authorization: request.headers.authorization
+      authorization
     });
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify({
