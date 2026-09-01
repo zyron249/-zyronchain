@@ -1,0 +1,51 @@
+#!/usr/bin/env node
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const policyFile = process.argv[2] || path.resolve(process.cwd(), '../docs/miner-release-promotion.json');
+const baselineVerifier = path.join(here, 'verify-miner-release-promotion.mjs');
+const baseline = spawnSync(process.execPath, [baselineVerifier, policyFile], { encoding: 'utf8' });
+if (baseline.status !== 0) {
+  process.stderr.write(baseline.stderr || baseline.stdout || 'baseline miner release promotion verification failed\n');
+  process.exit(baseline.status ?? 1);
+}
+
+const policy = JSON.parse(readFileSync(policyFile, 'utf8'));
+const activationRequested = [
+  'publicMiningActivated', 'releaseEligible', 'platformSigningVerified', 'provenanceVerified',
+  'checksumsVerified', 'immutableReleaseVerified', 'publicationAllowed'
+].some((field) => policy[field] === true) || ['windows', 'macos', 'linux'].some((platform) => policy.assets?.[platform] !== null || policy.assetSha256?.[platform] !== null);
+
+if (!activationRequested) {
+  console.log('miner release signing subject binding remains fail-closed');
+  process.exit(0);
+}
+
+function canonicalDigest(platform) {
+  const asset = policy.assets?.[platform];
+  const sha256 = policy.assetSha256?.[platform];
+  if (typeof asset !== 'string' || typeof sha256 !== 'string') throw new Error(`missing ${platform} signing subject identity`);
+  const name = asset.slice(asset.lastIndexOf('/') + 1);
+  if (!name || name.includes('/') || name.includes('\\')) throw new Error(`invalid ${platform} signing subject filename`);
+  const body = `${JSON.stringify({ schemaVersion: 1, releaseVersion: policy.releaseVersion, sourceCommit: policy.sourceCommit, subject: { platform, name, sha256 } })}\n`;
+  return createHash('sha256').update(body, 'utf8').digest('hex');
+}
+
+const bindings = [
+  ['windows', 'windowsSigning'],
+  ['macos', 'macosSigningOrNotarization']
+];
+for (const [platform, evidenceName] of bindings) {
+  const reference = policy.evidence?.[evidenceName];
+  if (typeof reference !== 'string') throw new Error(`promotion requires ${evidenceName} evidence`);
+  const match = reference.match(/#sha256=([0-9a-f]{64})$/);
+  if (!match) throw new Error(`${evidenceName} evidence must include exact sha256 digest binding`);
+  const expected = canonicalDigest(platform);
+  if (match[1] !== expected) throw new Error(`${evidenceName} evidence is not bound to the exact promoted ${platform} artifact subject`);
+}
+
+console.log('miner release signing evidence is bound to exact promoted platform subjects');
