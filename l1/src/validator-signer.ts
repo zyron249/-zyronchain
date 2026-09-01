@@ -33,29 +33,32 @@ export class LocalValidatorSigner implements ValidatorSigner {
 
 /**
  * Provider-neutral remote signer client. The validator secret never enters the
- * node process. Production signer services should enforce the supplied intent
- * and their own anti-double-sign policy before releasing a signature.
+ * node process. Remote signer authentication is mandatory at this reusable
+ * client boundary. Production signer services should enforce the supplied
+ * intent and their own anti-double-sign policy before releasing a signature.
  */
 export class RemoteValidatorSigner implements ValidatorSigner {
   readonly publicKey: string;
   private readonly endpoint: URL;
+  private readonly bearerToken: string;
 
   constructor(
     endpoint: string,
     publicKey: string,
-    private readonly bearerToken?: string,
+    bearerToken?: string,
     private readonly timeoutMs = 3_000
   ) {
     assertHex(publicKey, 64, "validator signer public key");
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) {
       throw new Error("Invalid validator signer timeout");
     }
-    if (bearerToken !== undefined &&
-        (bearerToken.length < 32 || bearerToken.length > 512 || !/^[\x21-\x7e]+$/.test(bearerToken))) {
+    if (typeof bearerToken !== "string" ||
+        bearerToken.length < 32 || bearerToken.length > 512 || !/^[\x21-\x7e]+$/.test(bearerToken)) {
       throw new Error("Invalid validator signer bearer token");
     }
     this.endpoint = validateRemoteSignerEndpoint(endpoint);
     this.publicKey = publicKey;
+    this.bearerToken = bearerToken;
   }
 
   async signCanonical(payload: unknown, intent: ValidatorSigningIntent, protocolVersion = 1): Promise<string> {
@@ -65,7 +68,7 @@ export class RemoteValidatorSigner implements ValidatorSigner {
       headers: {
         "content-type": "application/json",
         "accept": "application/json",
-        ...(this.bearerToken ? { authorization: `Bearer ${this.bearerToken}` } : {})
+        authorization: `Bearer ${this.bearerToken}`
       },
       body: JSON.stringify(domain
         ? { version: 2, intent, domain, payload }
