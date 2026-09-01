@@ -27,12 +27,12 @@ const requiredTopLevelFields = [
 const topLevelKeys = Object.keys(policy);
 if (topLevelKeys.length !== requiredTopLevelFields.length ||
     [...topLevelKeys].sort().join(',') !== [...requiredTopLevelFields].sort().join(',')) {
-  throw new Error('promotion policy must contain exactly the canonical schema-v3 top-level fields');
+  throw new Error('promotion policy must contain exactly the canonical schema-v4 top-level fields');
 }
 for (const field of [...requiredBooleanFields, 'sbomVerified']) {
   if (typeof policy[field] !== 'boolean') throw new Error(`${field} must be boolean`);
 }
-if (policy.schemaVersion !== 3) throw new Error('unsupported miner release promotion schema');
+if (policy.schemaVersion !== 4) throw new Error('unsupported miner release promotion schema');
 if (!policy.assets || typeof policy.assets !== 'object' || Array.isArray(policy.assets)) throw new Error('assets object required');
 if (!policy.assetSha256 || typeof policy.assetSha256 !== 'object' || Array.isArray(policy.assetSha256)) throw new Error('assetSha256 object required');
 if (!policy.evidence || typeof policy.evidence !== 'object' || Array.isArray(policy.evidence)) throw new Error('evidence object required');
@@ -64,6 +64,7 @@ for (const [platform, digest] of digestEntries) {
 const requiredEvidence = [
   'windowsSigning',
   'macosSigningOrNotarization',
+  'linuxSigning',
   'provenance',
   'checksums',
   'windowsSbom',
@@ -147,6 +148,9 @@ function evidenceRoleMatches(name, reference) {
   }
   if (name === 'macosSigningOrNotarization') {
     return exactCommitPath !== null && /^evidence\/macos-(?:signing|notarization)\.json$/.test(exactCommitPath);
+  }
+  if (name === 'linuxSigning') {
+    return exactCommitPath !== null && /^evidence\/linux-(?:signing|signature)\.json$/.test(exactCommitPath);
   }
   if (name === 'provenance') {
     return (exactCommitPath !== null && /^evidence\/(?:provenance|attestation)\.json$/.test(exactCommitPath)) ||
