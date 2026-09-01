@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "releaseVersion": null,
   "sourceCommit": null,
   "publicMiningActivated": false,
@@ -23,6 +23,7 @@
   "evidence": {
     "windowsSigning": null,
     "macosSigningOrNotarization": null,
+    "linuxSigning": null,
     "provenance": null,
     "checksums": null,
     "windowsSbom": null,

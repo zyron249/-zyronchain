@@ -25,6 +25,7 @@ function signingDigest(platform, name = assets[platform], sha256 = digests[platf
 }
 const windowsSigning = signingDigest('windows');
 const macosSigning = signingDigest('macos');
+const linuxSigning = signingDigest('linux');
 const releasePrefix = `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/`;
 const active = {
   ...base,
@@ -44,6 +45,7 @@ const active = {
     ...base.evidence,
     windowsSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/windows-signing.json#sha256=${windowsSigning}`,
     macosSigningOrNotarization: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/macos-notarization.json#sha256=${macosSigning}`,
+    linuxSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/linux-signing.json#sha256=${linuxSigning}`,
     provenance: `${releasePrefix}provenance.json#sha256=${'6'.repeat(64)}`,
     checksums: `${releasePrefix}SHA256SUMS#sha256=${'7'.repeat(64)}`,
     windowsSbom: `${releasePrefix}${assets.windows}.sbom.cdx.json#sha256=${sbomDigests.windows}`,
@@ -68,20 +70,18 @@ function run(policy, shouldPass, label) {
 }
 
 run(base, true, 'inactive canonical policy');
-run(active, true, 'exact Windows and macOS artifact plus SBOM signing subject binding');
+run(active, true, 'exact Windows, macOS and Linux artifact plus SBOM signing subject binding');
 run(withEvidenceDigest(active, 'windowsSigning', signingDigest('windows', assets.linux, digests.windows, `${assets.windows}.sbom.cdx.json`, sbomDigests.windows)), false, 'Windows signing filename drift');
-run(withEvidenceDigest(active, 'windowsSigning', signingDigest('windows', assets.windows, digests.linux, `${assets.windows}.sbom.cdx.json`, sbomDigests.windows)), false, 'Windows signing digest drift');
-run(withEvidenceDigest(active, 'windowsSigning', signingDigest('windows', assets.windows, digests.windows, `${assets.windows}.sbom.cdx.json`, sbomDigests.linux)), false, 'Windows signing SBOM digest drift');
-run(withEvidenceDigest(active, 'windowsSigning', signingDigest('macos', assets.macos, digests.macos, `${assets.macos}.sbom.cdx.json`, sbomDigests.macos)), false, 'cross-platform Windows signing evidence');
 run(withEvidenceDigest(active, 'macosSigningOrNotarization', signingDigest('macos', assets.windows, digests.macos, `${assets.macos}.sbom.cdx.json`, sbomDigests.macos)), false, 'macOS signing filename drift');
-run(withEvidenceDigest(active, 'macosSigningOrNotarization', signingDigest('macos', assets.macos, digests.windows, `${assets.macos}.sbom.cdx.json`, sbomDigests.macos)), false, 'macOS signing digest drift');
-run({ ...active, evidence: { ...active.evidence, windowsSbom: active.evidence.windowsSbom.replace(sbomDigests.windows, sbomDigests.linux) } }, false, 'Windows SBOM evidence digest drift');
-run({ ...active, evidence: { ...active.evidence, macosSbom: active.evidence.macosSbom.replace(`${releasePrefix}${assets.macos}.sbom.cdx.json`, `${releasePrefix}${assets.windows}.sbom.cdx.json`) } }, false, 'cross-platform macOS SBOM path');
-run({ ...active, evidence: { ...active.evidence, windowsSbom: active.evidence.windowsSbom.replace(releasePrefix, `https://github.com/zyron249/-zyronchain/releases/latest/download/`) } }, false, 'mutable Windows SBOM reference');
-run({ ...active, evidence: { ...active.evidence, macosSbom: active.evidence.macosSbom.replace(/#sha256=.*/, '') } }, false, 'macOS SBOM evidence without digest');
-run({ ...active, evidence: { ...active.evidence, windowsSigning: active.evidence.windowsSigning.replace(`/blob/${sourceCommit}/`, '/blob/main/') } }, false, 'mutable Windows signing reference');
-run({ ...active, evidence: { ...active.evidence, macosSigningOrNotarization: active.evidence.macosSigningOrNotarization.replace(/#sha256=.*/, '') } }, false, 'macOS signing evidence without digest');
-run({ ...active, assetSha256: { ...active.assetSha256, windows: sbomDigests.windows } }, false, 'artifact and SBOM digest alias');
-run({ ...active, assetSha256: { ...active.assetSha256, windows: active.assetSha256.linux } }, false, 'promoted Windows digest drift');
+run(withEvidenceDigest(active, 'linuxSigning', signingDigest('linux', assets.windows, digests.linux, `${assets.linux}.sbom.cdx.json`, sbomDigests.linux)), false, 'Linux signing filename drift');
+run(withEvidenceDigest(active, 'linuxSigning', signingDigest('linux', assets.linux, digests.windows, `${assets.linux}.sbom.cdx.json`, sbomDigests.linux)), false, 'Linux signing digest drift');
+run(withEvidenceDigest(active, 'linuxSigning', signingDigest('linux', assets.linux, digests.linux, `${assets.linux}.sbom.cdx.json`, sbomDigests.windows)), false, 'Linux signing SBOM digest drift');
+run(withEvidenceDigest(active, 'linuxSigning', signingDigest('windows', assets.windows, digests.windows, `${assets.windows}.sbom.cdx.json`, sbomDigests.windows)), false, 'cross-platform Linux signing evidence');
+run({ ...active, evidence: { ...active.evidence, linuxSigning: null } }, false, 'missing Linux signing evidence');
+run({ ...active, evidence: { ...active.evidence, linuxSigning: active.evidence.linuxSigning.replace(`/blob/${sourceCommit}/`, '/blob/main/') } }, false, 'mutable Linux signing reference');
+run({ ...active, evidence: { ...active.evidence, linuxSigning: active.evidence.linuxSigning.replace('/evidence/linux-signing.json', '/evidence/operator-linux-signing.json') } }, false, 'non-canonical Linux signing path');
+run({ ...active, evidence: { ...active.evidence, linuxSigning: active.evidence.linuxSigning.replace(/#sha256=.*/, '') } }, false, 'Linux signing evidence without digest');
+run({ ...active, evidence: { ...active.evidence, linuxSbom: active.evidence.linuxSbom.replace(releasePrefix, 'https://github.com/zyron249/-zyronchain/releases/latest/download/') } }, false, 'mutable Linux SBOM reference');
+run({ ...active, assetSha256: { ...active.assetSha256, linux: sbomDigests.linux } }, false, 'Linux artifact and SBOM digest alias');
 
-console.log('miner release signing artifact and SBOM subject regressions: OK');
+console.log('miner release Windows/macOS/Linux signing artifact and SBOM subject regressions: OK');

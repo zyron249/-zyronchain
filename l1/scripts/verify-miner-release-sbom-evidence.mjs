@@ -7,7 +7,7 @@ const policy = JSON.parse(fs.readFileSync(file, 'utf8'));
 const platforms = ['windows', 'macos', 'linux'];
 const sbomKeys = { windows: 'windowsSbom', macos: 'macosSbom', linux: 'linuxSbom' };
 
-if (policy.schemaVersion !== 3) throw new Error('SBOM promotion gate requires schemaVersion=3');
+if (policy.schemaVersion !== 4) throw new Error('SBOM promotion gate requires schemaVersion=4');
 if (typeof policy.sbomVerified !== 'boolean') throw new Error('sbomVerified must be boolean');
 if (!policy.evidence || typeof policy.evidence !== 'object' || Array.isArray(policy.evidence)) throw new Error('evidence object required');
 for (const key of Object.values(sbomKeys)) {
@@ -51,9 +51,7 @@ for (const platform of platforms) {
   const match = value.match(digestFragment);
   if (!match) throw new Error(`${platform} SBOM evidence must include exact sha256 digest binding`);
   const reference = value.slice(0, value.length - match[0].length);
-  if (reference !== `${releasePrefix}${expectedSbomName}`) {
-    throw new Error(`${platform} SBOM evidence must use exact promoted-artifact SBOM asset name`);
-  }
+  if (reference !== `${releasePrefix}${expectedSbomName}`) throw new Error(`${platform} SBOM evidence must use exact promoted-artifact SBOM asset name`);
   if (refs.has(reference)) throw new Error('SBOM evidence references must be distinct per platform');
   if (digests.has(match[1])) throw new Error('SBOM evidence sha256 identities must be distinct per platform');
   if (assetDigests.has(match[1])) throw new Error(`${platform} SBOM evidence must not alias promoted artifact bytes`);
