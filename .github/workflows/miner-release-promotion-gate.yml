@@ -14,6 +14,8 @@ on:
       - 'l1/scripts/test-miner-release-signing-subjects.mjs'
       - 'l1/scripts/verify-miner-release-checksum-subjects.mjs'
       - 'l1/scripts/test-miner-release-checksum-subjects.mjs'
+      - 'l1/scripts/verify-miner-release-sbom-evidence.mjs'
+      - 'l1/scripts/test-miner-release-sbom-evidence.mjs'
       - 'scripts/verify-miner-release-promotion-action-custody.mjs'
       - '.github/workflows/miner-release-promotion-gate.yml'
       - '.github/workflows/miner-release-promotion-action-custody.yml'
@@ -47,6 +49,9 @@ jobs:
       - name: Verify checksum subject binding remains fail-closed
         working-directory: l1
         run: node scripts/verify-miner-release-checksum-subjects.mjs
+      - name: Verify per-platform SBOM evidence remains fail-closed
+        working-directory: l1
+        run: node scripts/verify-miner-release-sbom-evidence.mjs
       - name: Run positive and negative promotion vectors
         working-directory: l1
         run: node scripts/test-miner-release-promotion.mjs
@@ -59,3 +64,6 @@ jobs:
       - name: Run checksum subject binding regressions
         working-directory: l1
         run: node scripts/test-miner-release-checksum-subjects.mjs
+      - name: Run per-platform SBOM evidence regressions
+        working-directory: l1
+        run: node scripts/test-miner-release-sbom-evidence.mjs
