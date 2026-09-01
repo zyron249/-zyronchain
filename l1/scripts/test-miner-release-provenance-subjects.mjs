@@ -13,18 +13,29 @@ const sourceCommit = '0123456789abcdef0123456789abcdef01234567';
 const releaseVersion = 'miner-v1.0.0';
 const platforms = ['windows', 'macos', 'linux'];
 
-function digestDocument(subjects) {
-  const body = `${JSON.stringify({ schemaVersion: 1, releaseVersion, sourceCommit, subjects })}\n`;
+function digestDocument(artifactSubjects, sbomSubjects, overrides = {}) {
+  const body = `${JSON.stringify({
+    schemaVersion: 2,
+    releaseVersion: overrides.releaseVersion ?? releaseVersion,
+    sourceCommit: overrides.sourceCommit ?? sourceCommit,
+    artifactSubjects,
+    sbomSubjects
+  })}\n`;
   return createHash('sha256').update(body, 'utf8').digest('hex');
 }
 
 function subject(platform, name, sha256) { return { platform, name, sha256 }; }
-const subjects = [
+const artifactSubjects = [
   subject('windows', 'ZyronMiner-windows-x64.zip', '1'.repeat(64)),
   subject('macos', 'ZyronMiner-macos-arm64.tar.gz', '2'.repeat(64)),
   subject('linux', 'ZyronMiner-linux-x64.tar.gz', '3'.repeat(64))
 ];
-const provenanceDigest = digestDocument(subjects);
+const sbomSubjects = [
+  subject('windows', `${artifactSubjects[0].name}.sbom.cdx.json`, 'a'.repeat(64)),
+  subject('macos', `${artifactSubjects[1].name}.sbom.cdx.json`, 'b'.repeat(64)),
+  subject('linux', `${artifactSubjects[2].name}.sbom.cdx.json`, 'c'.repeat(64))
+];
+const provenanceDigest = digestDocument(artifactSubjects, sbomSubjects);
 const evidenceDigests = {
   windowsSigning: '4'.repeat(64),
   macosSigningOrNotarization: '5'.repeat(64),
@@ -41,16 +52,20 @@ const active = {
   platformSigningVerified: true,
   provenanceVerified: true,
   checksumsVerified: true,
+  sbomVerified: true,
   immutableReleaseVerified: true,
   publicationAllowed: true,
-  assets: Object.fromEntries(subjects.map((entry) => [entry.platform, `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${entry.name}`])),
-  assetSha256: Object.fromEntries(subjects.map((entry) => [entry.platform, entry.sha256])),
+  assets: Object.fromEntries(artifactSubjects.map((entry) => [entry.platform, `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${entry.name}`])),
+  assetSha256: Object.fromEntries(artifactSubjects.map((entry) => [entry.platform, entry.sha256])),
   evidence: {
     ...base.evidence,
     windowsSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/windows-signing.json#sha256=${evidenceDigests.windowsSigning}`,
     macosSigningOrNotarization: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/macos-notarization.json#sha256=${evidenceDigests.macosSigningOrNotarization}`,
     provenance: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/provenance.json#sha256=${provenanceDigest}`,
     checksums: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/SHA256SUMS#sha256=${evidenceDigests.checksums}`,
+    windowsSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${sbomSubjects[0].name}#sha256=${sbomSubjects[0].sha256}`,
+    macosSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${sbomSubjects[1].name}#sha256=${sbomSubjects[1].sha256}`,
+    linuxSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${sbomSubjects[2].name}#sha256=${sbomSubjects[2].sha256}`,
     immutableRelease: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/immutable-release.json#sha256=${evidenceDigests.immutableRelease}`,
     publicMiningActivation: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/public-mining-activation.json#sha256=${evidenceDigests.publicMiningActivation}`
   }
@@ -70,18 +85,25 @@ function run(policy, shouldPass, label) {
 }
 
 run(base, true, 'inactive canonical policy');
-run(active, true, 'exact three-platform provenance subject binding');
-run(withProvenanceDigest(active, digestDocument(subjects.slice(0, 2))), false, 'missing Linux provenance subject');
-run(withProvenanceDigest(active, digestDocument([subjects[0], subjects[1], subjects[0]])), false, 'duplicate provenance subject');
+run(active, true, 'exact artifact and per-platform SBOM provenance binding');
+run(withProvenanceDigest(active, digestDocument(artifactSubjects.slice(0, 2), sbomSubjects)), false, 'missing Linux artifact subject');
+run(withProvenanceDigest(active, digestDocument(artifactSubjects, sbomSubjects.slice(0, 2))), false, 'missing Linux SBOM subject');
+run(withProvenanceDigest(active, digestDocument(artifactSubjects, [sbomSubjects[0], sbomSubjects[1], sbomSubjects[0]])), false, 'duplicate SBOM subject');
+run(withProvenanceDigest(active, digestDocument(artifactSubjects, [
+  { ...sbomSubjects[0], sha256: sbomSubjects[2].sha256 }, sbomSubjects[1], { ...sbomSubjects[2], sha256: sbomSubjects[0].sha256 }
+])), false, 'swapped cross-platform SBOM digests');
+run(withProvenanceDigest(active, digestDocument(artifactSubjects, [
+  { ...sbomSubjects[0], name: sbomSubjects[2].name }, sbomSubjects[1], { ...sbomSubjects[2], name: sbomSubjects[0].name }
+])), false, 'cross-platform SBOM filenames');
 run(withProvenanceDigest(active, digestDocument([
-  { ...subjects[0], sha256: subjects[2].sha256 }, subjects[1], { ...subjects[2], sha256: subjects[0].sha256 }
-])), false, 'swapped cross-platform provenance digests');
-run(withProvenanceDigest(active, digestDocument([
-  { ...subjects[0], name: subjects[2].name }, subjects[1], { ...subjects[2], name: subjects[0].name }
-])), false, 'cross-platform provenance filenames');
+  { ...artifactSubjects[0], sha256: artifactSubjects[2].sha256 }, artifactSubjects[1], { ...artifactSubjects[2], sha256: artifactSubjects[0].sha256 }
+], sbomSubjects)), false, 'swapped cross-platform artifact digests');
 run({ ...active, evidence: { ...active.evidence, provenance: `https://github.com/zyron249/-zyronchain/blob/main/evidence/provenance.json#sha256=${provenanceDigest}` } }, false, 'mutable provenance reference');
 run({ ...active, evidence: { ...active.evidence, provenance: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/provenance.json` } }, false, 'provenance reference without digest');
-run({ ...active, assetSha256: { ...active.assetSha256, windows: active.assetSha256.linux } }, false, 'policy subject digest drift');
+run({ ...active, evidence: { ...active.evidence, windowsSbom: active.evidence.windowsSbom.replace(/a{64}$/, 'd'.repeat(64)) } }, false, 'policy SBOM digest drift');
+run({ ...active, evidence: { ...active.evidence, linuxSbom: active.evidence.macosSbom } }, false, 'cross-platform policy SBOM evidence swap');
+run(withProvenanceDigest(active, digestDocument(artifactSubjects, sbomSubjects, { sourceCommit: 'f'.repeat(40) })), false, 'source commit drift');
+run(withProvenanceDigest(active, digestDocument(artifactSubjects, sbomSubjects, { releaseVersion: 'miner-v9.9.9' })), false, 'release version drift');
 
-if (platforms.length !== subjects.length) throw new Error('test fixture platform cardinality drift');
-console.log('miner release provenance subject regressions: OK');
+if (platforms.length !== artifactSubjects.length || platforms.length !== sbomSubjects.length) throw new Error('test fixture platform cardinality drift');
+console.log('miner release provenance artifact/SBOM subject regressions: OK');
