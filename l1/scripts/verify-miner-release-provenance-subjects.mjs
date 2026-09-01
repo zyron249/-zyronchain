@@ -17,12 +17,15 @@ if (baseline.status !== 0) {
 
 const policy = JSON.parse(readFileSync(policyFile, 'utf8'));
 const requiredPlatforms = ['windows', 'macos', 'linux'];
+const sbomKeys = { windows: 'windowsSbom', macos: 'macosSbom', linux: 'linuxSbom' };
+const digestFragment = /#sha256=([0-9a-f]{64})$/;
 const activationRequested = [
   'publicMiningActivated',
   'releaseEligible',
   'platformSigningVerified',
   'provenanceVerified',
   'checksumsVerified',
+  'sbomVerified',
   'immutableReleaseVerified',
   'publicationAllowed'
 ].some((field) => policy[field] === true) ||
@@ -34,43 +37,71 @@ if (!activationRequested) {
   process.exit(0);
 }
 
-function canonicalSubjects() {
+function canonicalArtifactSubjects() {
   return requiredPlatforms.map((platform) => {
-    const asset = policy.assets[platform];
-    const sha256 = policy.assetSha256[platform];
+    const asset = policy.assets?.[platform];
+    const sha256 = policy.assetSha256?.[platform];
     if (typeof asset !== 'string' || typeof sha256 !== 'string') {
-      throw new Error(`missing ${platform} provenance subject identity`);
+      throw new Error(`missing ${platform} provenance artifact subject identity`);
     }
     const name = asset.slice(asset.lastIndexOf('/') + 1);
     if (!name || name.includes('/') || name.includes('\\')) {
-      throw new Error(`invalid ${platform} provenance subject filename`);
+      throw new Error(`invalid ${platform} provenance artifact subject filename`);
     }
     return { platform, name, sha256 };
   });
 }
 
-const subjects = canonicalSubjects();
-if (new Set(subjects.map((subject) => subject.name)).size !== requiredPlatforms.length) {
-  throw new Error('provenance subjects must use distinct canonical artifact filenames');
+function canonicalSbomSubjects(artifactSubjects) {
+  const releasePrefix = `https://github.com/zyron249/-zyronchain/releases/download/${policy.releaseVersion}/`;
+  return artifactSubjects.map((artifact) => {
+    const evidence = policy.evidence?.[sbomKeys[artifact.platform]];
+    if (typeof evidence !== 'string') throw new Error(`missing ${artifact.platform} SBOM provenance subject evidence`);
+    const match = evidence.match(digestFragment);
+    if (!match) throw new Error(`${artifact.platform} SBOM provenance subject requires exact sha256 binding`);
+    const reference = evidence.slice(0, evidence.length - match[0].length);
+    const name = `${artifact.name}.sbom.cdx.json`;
+    if (reference !== `${releasePrefix}${name}`) {
+      throw new Error(`${artifact.platform} SBOM provenance subject must match exact promoted artifact SBOM`);
+    }
+    return { platform: artifact.platform, name, sha256: match[1] };
+  });
 }
-if (new Set(subjects.map((subject) => subject.sha256)).size !== requiredPlatforms.length) {
-  throw new Error('provenance subjects must use distinct platform artifact digests');
+
+const artifactSubjects = canonicalArtifactSubjects();
+const sbomSubjects = canonicalSbomSubjects(artifactSubjects);
+if (new Set(artifactSubjects.map((subject) => subject.name)).size !== requiredPlatforms.length) {
+  throw new Error('provenance artifact subjects must use distinct canonical filenames');
+}
+if (new Set(artifactSubjects.map((subject) => subject.sha256)).size !== requiredPlatforms.length) {
+  throw new Error('provenance artifact subjects must use distinct platform digests');
+}
+if (new Set(sbomSubjects.map((subject) => subject.name)).size !== requiredPlatforms.length) {
+  throw new Error('provenance SBOM subjects must use distinct canonical filenames');
+}
+if (new Set(sbomSubjects.map((subject) => subject.sha256)).size !== requiredPlatforms.length) {
+  throw new Error('provenance SBOM subjects must use distinct platform digests');
+}
+const artifactDigests = new Set(artifactSubjects.map((subject) => subject.sha256));
+for (const subject of sbomSubjects) {
+  if (artifactDigests.has(subject.sha256)) throw new Error('provenance SBOM subject must not alias promoted artifact bytes');
 }
 
 const provenance = policy.evidence?.provenance;
 if (typeof provenance !== 'string') throw new Error('promotion requires provenance evidence');
-const digestMatch = provenance.match(/#sha256=([0-9a-f]{64})$/);
+const digestMatch = provenance.match(digestFragment);
 if (!digestMatch) throw new Error('provenance evidence must include exact sha256 digest binding');
 
 const canonicalDocument = `${JSON.stringify({
-  schemaVersion: 1,
+  schemaVersion: 2,
   releaseVersion: policy.releaseVersion,
   sourceCommit: policy.sourceCommit,
-  subjects
+  artifactSubjects,
+  sbomSubjects
 })}\n`;
 const expectedDigest = createHash('sha256').update(canonicalDocument, 'utf8').digest('hex');
 if (digestMatch[1] !== expectedDigest) {
-  throw new Error('provenance evidence digest does not bind the exact Windows, macOS and Linux promoted subjects');
+  throw new Error('provenance evidence digest does not bind the exact promoted artifact and per-platform SBOM subjects');
 }
 
-console.log('miner release provenance binds all promoted platform subjects');
+console.log('miner release provenance binds promoted artifacts and per-platform SBOM subjects');
