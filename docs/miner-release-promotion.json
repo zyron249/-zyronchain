@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "releaseVersion": null,
   "sourceCommit": null,
   "publicMiningActivated": false,
@@ -7,6 +7,7 @@
   "platformSigningVerified": false,
   "provenanceVerified": false,
   "checksumsVerified": false,
+  "sbomVerified": false,
   "immutableReleaseVerified": false,
   "publicationAllowed": false,
   "assets": {
@@ -24,6 +25,9 @@
     "macosSigningOrNotarization": null,
     "provenance": null,
     "checksums": null,
+    "windowsSbom": null,
+    "macosSbom": null,
+    "linuxSbom": null,
     "immutableRelease": null,
     "publicMiningActivation": null
   }
