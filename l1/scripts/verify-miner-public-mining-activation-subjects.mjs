@@ -33,10 +33,12 @@ const subjects = platforms.map((platform) => {
 
   const sbomEvidence = policy.evidence?.[sbomEvidenceFields[platform]];
   if (typeof sbomEvidence !== 'string') throw new Error(`missing ${platform} SBOM evidence for public-mining activation binding`);
+  const expectedSbomName = `${name}.sbom.cdx.json`;
+  const canonicalSbomPrefix = `https://github.com/zyron249/-zyronchain/releases/download/${policy.releaseVersion}/${expectedSbomName}#sha256=`;
+  if (!sbomEvidence.startsWith(canonicalSbomPrefix)) throw new Error(`${platform} SBOM evidence must use the canonical immutable release asset path`);
   const sbomMatch = sbomEvidence.match(/\/([^/#]+)#sha256=([0-9a-f]{64})$/);
   if (!sbomMatch) throw new Error(`${platform} SBOM evidence must use an immutable filename and exact sha256 digest binding`);
   const sbomName = sbomMatch[1];
-  const expectedSbomName = `${name}.sbom.cdx.json`;
   if (sbomName !== expectedSbomName) throw new Error(`${platform} SBOM evidence filename does not match promoted artifact`);
   return { platform, name, sha256, sbom: { name: sbomName, sha256: sbomMatch[2] } };
 });
