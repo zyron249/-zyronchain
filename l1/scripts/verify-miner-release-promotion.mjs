@@ -19,6 +19,7 @@ const requiredTopLevelFields = [
   'releaseVersion',
   'sourceCommit',
   ...requiredBooleanFields,
+  'sbomVerified',
   'assets',
   'assetSha256',
   'evidence'
@@ -26,12 +27,12 @@ const requiredTopLevelFields = [
 const topLevelKeys = Object.keys(policy);
 if (topLevelKeys.length !== requiredTopLevelFields.length ||
     [...topLevelKeys].sort().join(',') !== [...requiredTopLevelFields].sort().join(',')) {
-  throw new Error('promotion policy must contain exactly the canonical schema-v2 top-level fields');
+  throw new Error('promotion policy must contain exactly the canonical schema-v3 top-level fields');
 }
-for (const field of requiredBooleanFields) {
+for (const field of [...requiredBooleanFields, 'sbomVerified']) {
   if (typeof policy[field] !== 'boolean') throw new Error(`${field} must be boolean`);
 }
-if (policy.schemaVersion !== 2) throw new Error('unsupported miner release promotion schema');
+if (policy.schemaVersion !== 3) throw new Error('unsupported miner release promotion schema');
 if (!policy.assets || typeof policy.assets !== 'object' || Array.isArray(policy.assets)) throw new Error('assets object required');
 if (!policy.assetSha256 || typeof policy.assetSha256 !== 'object' || Array.isArray(policy.assetSha256)) throw new Error('assetSha256 object required');
 if (!policy.evidence || typeof policy.evidence !== 'object' || Array.isArray(policy.evidence)) throw new Error('evidence object required');
@@ -65,27 +66,32 @@ const requiredEvidence = [
   'macosSigningOrNotarization',
   'provenance',
   'checksums',
+  'windowsSbom',
+  'macosSbom',
+  'linuxSbom',
   'immutableRelease',
   'publicMiningActivation'
 ];
+const coreEvidence = requiredEvidence.filter((name) => !name.endsWith('Sbom'));
 const evidenceKeys = Object.keys(policy.evidence);
 if (evidenceKeys.length !== requiredEvidence.length ||
     [...evidenceKeys].sort().join(',') !== [...requiredEvidence].sort().join(',')) {
   throw new Error('evidence must contain exactly the canonical promotion evidence keys');
 }
-const evidenceEntries = requiredEvidence.map((name) => [name, policy.evidence[name]]);
+const evidenceEntries = coreEvidence.map((name) => [name, policy.evidence[name]]);
+const allEvidenceEntries = requiredEvidence.map((name) => [name, policy.evidence[name]]);
 
 const anyAsset = assetEntries.some(([, asset]) => asset !== null);
 const allAssets = assetEntries.every(([, asset]) => asset !== null);
 const anyDigest = digestEntries.some(([, digest]) => digest !== null);
 const allDigests = digestEntries.every(([, digest]) => typeof digest === 'string');
-const activationRequested = requiredBooleanFields.some((field) => policy[field] === true) || anyAsset || anyDigest;
+const activationRequested = requiredBooleanFields.some((field) => policy[field] === true) || policy.sbomVerified === true || anyAsset || anyDigest;
 
 if (!activationRequested) {
   if (policy.releaseVersion !== null || policy.sourceCommit !== null) {
     throw new Error('inactive policy must not pin a publishable release identity');
   }
-  for (const [name, value] of evidenceEntries) {
+  for (const [name, value] of allEvidenceEntries) {
     if (value !== null) throw new Error(`inactive policy must not carry ${name} evidence`);
   }
   console.log('miner release promotion remains fail-closed');
@@ -174,12 +180,12 @@ for (const [name, value] of evidenceEntries) {
 }
 
 const distinctEvidenceReferences = new Set(evidenceReferences.map(([, reference]) => reference));
-if (distinctEvidenceReferences.size !== requiredEvidence.length) {
-  throw new Error('promotion requires distinct underlying references for all canonical evidence roles');
+if (distinctEvidenceReferences.size !== coreEvidence.length) {
+  throw new Error('promotion requires distinct underlying references for all canonical core evidence roles');
 }
 const distinctEvidenceDigests = new Set(evidenceDigests.map(([, digest]) => digest));
-if (distinctEvidenceDigests.size !== requiredEvidence.length) {
-  throw new Error('promotion requires distinct sha256 byte identities for all canonical evidence roles');
+if (distinctEvidenceDigests.size !== coreEvidence.length) {
+  throw new Error('promotion requires distinct sha256 byte identities for all canonical core evidence roles');
 }
 const platformAssetDigests = new Set(digestEntries.map(([, digest]) => digest));
 for (const [name, digest] of evidenceDigests) {
@@ -188,4 +194,4 @@ for (const [name, digest] of evidenceDigests) {
   }
 }
 
-console.log('miner release promotion policy is fully evidenced');
+console.log('miner release promotion policy core evidence is fully evidenced; SBOM evidence is verified by the dedicated gate');
