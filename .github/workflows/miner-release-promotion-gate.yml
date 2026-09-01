@@ -16,6 +16,8 @@ on:
       - 'l1/scripts/test-miner-release-checksum-subjects.mjs'
       - 'l1/scripts/verify-miner-release-sbom-evidence.mjs'
       - 'l1/scripts/test-miner-release-sbom-evidence.mjs'
+      - 'l1/scripts/verify-miner-release-immutable-subjects.mjs'
+      - 'l1/scripts/test-miner-release-immutable-subjects.mjs'
       - 'scripts/verify-miner-release-promotion-action-custody.mjs'
       - '.github/workflows/miner-release-promotion-gate.yml'
       - '.github/workflows/miner-release-promotion-action-custody.yml'
@@ -52,6 +54,9 @@ jobs:
       - name: Verify per-platform SBOM evidence remains fail-closed
         working-directory: l1
         run: node scripts/verify-miner-release-sbom-evidence.mjs
+      - name: Verify immutable release subject binding remains fail-closed
+        working-directory: l1
+        run: node scripts/verify-miner-release-immutable-subjects.mjs
       - name: Run positive and negative promotion vectors
         working-directory: l1
         run: node scripts/test-miner-release-promotion.mjs
@@ -67,3 +72,6 @@ jobs:
       - name: Run per-platform SBOM evidence regressions
         working-directory: l1
         run: node scripts/test-miner-release-sbom-evidence.mjs
+      - name: Run immutable release subject regressions
+        working-directory: l1
+        run: node scripts/test-miner-release-immutable-subjects.mjs
