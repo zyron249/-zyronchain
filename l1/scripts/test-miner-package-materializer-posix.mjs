@@ -19,11 +19,8 @@ if (process.platform === 'win32') {
       nodeName: 'node.exe'
     });
   } catch (error) {
-    if (error?.message === 'descriptor-relative miner materialization is not implemented on Windows') {
-      failedClosed = true;
-    } else {
-      throw error;
-    }
+    if (error?.message === 'descriptor-relative miner materialization is not implemented on Windows') failedClosed = true;
+    else throw error;
   }
   if (!failedClosed) throw new Error('Windows miner materializer did not fail closed before unsupported custody could run');
   try {
@@ -48,63 +45,30 @@ const outRoot = join(root, 'miner-release');
 const bundleName = 'ZyronMiner-test-x64';
 
 async function assertMissing(path, message) {
-  try {
-    await access(path);
-  } catch (error) {
-    if (error?.code === 'ENOENT') return;
-    throw error;
-  }
+  try { await access(path); }
+  catch (error) { if (error?.code === 'ENOENT') return; throw error; }
   throw new Error(message);
 }
 
 try {
   const helperText = await readFile(helperSource, 'utf8');
   const materializerText = await readFile(materializerSource, 'utf8');
-  if (/^#define O_NOFOLLOW 0$/m.test(helperText)) {
-    throw new Error('destination/source custody silently disables O_NOFOLLOW');
-  }
-  if (/^#define O_DIRECTORY 0$/m.test(helperText)) {
-    throw new Error('destination/source custody silently disables directory-open protection');
-  }
-  if (!helperText.includes('#error "miner destination/source custody requires O_NOFOLLOW"')) {
-    throw new Error('destination/source custody does not fail closed when O_NOFOLLOW is unavailable');
-  }
-  if (!helperText.includes('copy_child_file_from_dir') || !helperText.includes('openat(source_dir_fd, source_name')) {
-    throw new Error('production destination helper does not copy from a retained source-directory descriptor');
-  }
-  if (!helperText.includes('SOURCE_ENTER') || !helperText.includes('COPYREL')) {
-    throw new Error('production custody session is missing retained source traversal/copy commands');
-  }
-  if (!helperText.includes('static void assert_directory_fd') || !helperText.includes('S_ISDIR(st.st_mode)')) {
-    throw new Error('custody helper does not verify opened directory descriptors with fstat');
-  }
-  if (!helperText.includes('opened release root does not match expected identity')) {
-    throw new Error('custody helper does not fail closed when session root open differs from the expected dev/inode');
-  }
-  if (!helperText.includes('opened source root does not match expected identity')) {
-    throw new Error('custody helper does not fail closed when SOURCE open differs from the expected dev/inode');
-  }
-  if (materializerText.includes('`COPY\\t${destinationName}\\t${sourcePath}`')) {
-    throw new Error('materializer regressed to pathname COPY');
-  }
-  if (!materializerText.includes('`COPYREL\\t${destinationName}\\t${sourceName}`') || !materializerText.includes('`SOURCE_ENTER\\t${component}`')) {
-    throw new Error('materializer does not use retained descriptor-relative source copy/traversal');
-  }
-  if (!materializerText.includes('`SOURCE\\t${sourceRoot}\\t${String(sourceStat.dev)}\\t${String(sourceStat.ino)}`')) {
-    throw new Error('materializer does not bind SOURCE opens to an expected source-root dev/inode');
-  }
-  if (!materializerText.includes("ignoredDirectoryNames: new Set(['.bin'])")) {
-    throw new Error('materializer does not explicitly omit npm executable shim directories from runtime dependency payloads');
-  }
-  if (!materializerText.includes('await assertBoundRootPath(canonicalOutRoot, boundOutRootStat)')) {
-    throw new Error('materializer does not bind successful completion to the release-root pathname identity');
-  }
-  if (!materializerText.includes("const sessionArgs = ['session', canonicalOutRoot, String(boundOutRootStat.dev), String(boundOutRootStat.ino)]")) {
-    throw new Error('materializer does not pass the expected release-root identity into every native session startup');
-  }
-  if (materializerText.includes('const sessionArgs = helperSource')) {
-    throw new Error('helperSource can downgrade the release-root session identity binding');
-  }
+  if (/^#define O_NOFOLLOW 0$/m.test(helperText)) throw new Error('destination/source custody silently disables O_NOFOLLOW');
+  if (/^#define O_DIRECTORY 0$/m.test(helperText)) throw new Error('destination/source custody silently disables directory-open protection');
+  if (!helperText.includes('#error "miner destination/source custody requires O_NOFOLLOW"')) throw new Error('destination/source custody does not fail closed when O_NOFOLLOW is unavailable');
+  if (!helperText.includes('copy_child_file_from_dir') || !helperText.includes('openat(source_dir_fd, source_name')) throw new Error('production destination helper does not copy from a retained source-directory descriptor');
+  if (!helperText.includes('SOURCE_ENTER') || !helperText.includes('COPYREL')) throw new Error('production custody session is missing retained source traversal/copy commands');
+  if (!helperText.includes('static void assert_directory_fd') || !helperText.includes('S_ISDIR(st.st_mode)')) throw new Error('custody helper does not verify opened directory descriptors with fstat');
+  if (!helperText.includes('opened release root does not match expected identity')) throw new Error('custody helper does not fail closed when session root open differs from expected dev/inode');
+  if (!helperText.includes('opened source root does not match expected identity')) throw new Error('custody helper does not fail closed when SOURCE open differs from expected dev/inode');
+  if (!helperText.includes('opened retained source child does not match expected identity')) throw new Error('custody helper does not fail closed when SOURCE_ENTER opens a different child inode');
+  if (materializerText.includes('`COPY\\t${destinationName}\\t${sourcePath}`')) throw new Error('materializer regressed to pathname COPY');
+  if (!materializerText.includes('`COPYREL\\t${destinationName}\\t${sourceName}`') || !materializerText.includes('`SOURCE_ENTER\\t${component}\\t${String(sourceStat.dev)}\\t${String(sourceStat.ino)}`')) throw new Error('materializer does not identity-bind retained descriptor-relative source traversal');
+  if (!materializerText.includes('`SOURCE\\t${sourceRoot}\\t${String(sourceStat.dev)}\\t${String(sourceStat.ino)}`')) throw new Error('materializer does not bind SOURCE opens to expected source-root dev/inode');
+  if (!materializerText.includes("ignoredDirectoryNames: new Set(['.bin'])")) throw new Error('materializer does not explicitly omit npm executable shim directories');
+  if (!materializerText.includes('await assertBoundRootPath(canonicalOutRoot, boundOutRootStat)')) throw new Error('materializer does not bind successful completion to release-root pathname identity');
+  if (!materializerText.includes("const sessionArgs = ['session', canonicalOutRoot, String(boundOutRootStat.dev), String(boundOutRootStat.ino)]")) throw new Error('materializer does not pass expected release-root identity into native session startup');
+  if (materializerText.includes('const sessionArgs = helperSource')) throw new Error('helperSource can downgrade release-root session identity binding');
 
   await mkdir(join(root, 'dist', 'src'), { recursive: true });
   await mkdir(join(root, 'scripts'), { recursive: true });
@@ -118,23 +82,19 @@ try {
   if (build.status !== 0) throw new Error(`failed to compile custody helper regression: ${build.stderr || build.stdout}`);
   const outStat = await lstat(outRoot);
   const mismatch = spawnSync(compiledHelper, ['session', outRoot, String(outStat.dev), String(outStat.ino + 1)], { encoding: 'utf8' });
-  if (mismatch.status !== 70 || mismatch.stdout.includes('READY') || !mismatch.stderr.includes('opened release root does not match expected identity')) {
-    throw new Error('custody helper did not reject mismatched expected root identity before READY/mutation boundary');
-  }
+  if (mismatch.status !== 70 || mismatch.stdout.includes('READY') || !mismatch.stderr.includes('opened release root does not match expected identity')) throw new Error('custody helper did not reject mismatched expected root identity before READY/mutation boundary');
   const rootStat = await lstat(root);
-  const sourceMismatch = spawnSync(
-    compiledHelper,
-    ['session', outRoot, String(outStat.dev), String(outStat.ino)],
-    { input: `SOURCE\t${root}\t${String(rootStat.dev)}\t${String(rootStat.ino + 1)}\n`, encoding: 'utf8' }
-  );
-  if (sourceMismatch.status !== 70 || !sourceMismatch.stdout.includes('READY') || sourceMismatch.stdout.includes('OK SOURCE') || !sourceMismatch.stderr.includes('opened source root does not match expected identity')) {
-    throw new Error('custody helper did not reject mismatched expected SOURCE identity before acknowledging the retained source root');
-  }
+  const sourceMismatch = spawnSync(compiledHelper, ['session', outRoot, String(outStat.dev), String(outStat.ino)], { input: `SOURCE\t${root}\t${String(rootStat.dev)}\t${String(rootStat.ino + 1)}\n`, encoding: 'utf8' });
+  if (sourceMismatch.status !== 70 || !sourceMismatch.stdout.includes('READY') || sourceMismatch.stdout.includes('OK SOURCE') || !sourceMismatch.stderr.includes('opened source root does not match expected identity')) throw new Error('custody helper did not reject mismatched expected SOURCE identity before acknowledgement');
+  const distStat = await lstat(join(root, 'dist'));
+  const sourceChildMismatch = spawnSync(compiledHelper, ['session', outRoot, String(outStat.dev), String(outStat.ino)], {
+    input: `SOURCE\t${root}\t${String(rootStat.dev)}\t${String(rootStat.ino)}\nSOURCE_ENTER\tdist\t${String(distStat.dev)}\t${String(distStat.ino + 1)}\n`,
+    encoding: 'utf8'
+  });
+  if (sourceChildMismatch.status !== 70 || !sourceChildMismatch.stdout.includes('OK SOURCE') || sourceChildMismatch.stdout.includes('OK SOURCE_ENTER') || !sourceChildMismatch.stderr.includes('opened retained source child does not match expected identity')) throw new Error('custody helper did not reject mismatched expected SOURCE_ENTER child identity before acknowledgement');
 
   await writeFile(join(root, 'dist', 'src', 'index.js'), 'export const fixture = true;\n');
-  for (const name of ['mine.mjs', 'miner-rpc-response.mjs', 'miner-launcher.mjs', 'miner-launcher-security.mjs']) {
-    await writeFile(join(root, 'scripts', name), `// ${name}\n`);
-  }
+  for (const name of ['mine.mjs', 'miner-rpc-response.mjs', 'miner-launcher.mjs', 'miner-launcher-security.mjs']) await writeFile(join(root, 'scripts', name), `// ${name}\n`);
   await writeFile(join(root, 'scripts', 'development-only.mjs'), '// must not ship\n');
   await writeFile(join(root, 'node_modules', 'fixture-pkg', 'index.js'), 'module.exports = 1;\n');
   await symlink('../fixture-pkg/index.js', join(root, 'node_modules', '.bin', 'fixture-cli'));
@@ -143,26 +103,15 @@ try {
   await writeFile(join(root, 'MINING.md'), '# Fixture mining\n');
 
   const bundle = await materializeMinerPackagePosix({ root, outRoot, bundleName, nodeName: 'node', helperSource });
-
-  if ((await readFile(join(bundle, 'dist', 'src', 'index.js'), 'utf8')) !== 'export const fixture = true;\n') {
-    throw new Error('descriptor-relative materializer changed dist/src payload');
-  }
-  if ((await readFile(join(bundle, 'scripts', 'mine.mjs'), 'utf8')) !== '// mine.mjs\n') {
-    throw new Error('descriptor-relative materializer changed packaged script payload');
-  }
-  if ((await readFile(join(bundle, 'node_modules', 'fixture-pkg', 'index.js'), 'utf8')) !== 'module.exports = 1;\n') {
-    throw new Error('descriptor-relative materializer changed node_modules payload');
-  }
-  await assertMissing(join(bundle, 'node_modules', '.bin'), 'materializer copied npm executable shim symlinks into the runtime dependency payload');
-  await assertMissing(join(bundle, 'scripts', 'development-only.mjs'), 'materializer broadened the packaged script allowlist');
-  await assertMissing(join(bundle, 'dist-src'), 'materializer emitted an invalid dist-src layout');
+  if ((await readFile(join(bundle, 'dist', 'src', 'index.js'), 'utf8')) !== 'export const fixture = true;\n') throw new Error('descriptor-relative materializer changed dist/src payload');
+  if ((await readFile(join(bundle, 'scripts', 'mine.mjs'), 'utf8')) !== '// mine.mjs\n') throw new Error('descriptor-relative materializer changed packaged script payload');
+  if ((await readFile(join(bundle, 'node_modules', 'fixture-pkg', 'index.js'), 'utf8')) !== 'module.exports = 1;\n') throw new Error('descriptor-relative materializer changed node_modules payload');
+  await assertMissing(join(bundle, 'node_modules', '.bin'), 'materializer copied npm executable shim symlinks');
+  await assertMissing(join(bundle, 'scripts', 'development-only.mjs'), 'materializer broadened packaged script allowlist');
+  await assertMissing(join(bundle, 'dist-src'), 'materializer emitted invalid dist-src layout');
 
   let duplicateFailed = false;
-  try {
-    await materializeMinerPackagePosix({ root, outRoot, bundleName, nodeName: 'node', helperSource });
-  } catch {
-    duplicateFailed = true;
-  }
+  try { await materializeMinerPackagePosix({ root, outRoot, bundleName, nodeName: 'node', helperSource }); } catch { duplicateFailed = true; }
   if (!duplicateFailed) throw new Error('descriptor-relative materializer reused an existing bundle directory');
 
   const replacingHelperSource = join(temp, 'replace-root-helper.c');
@@ -179,15 +128,9 @@ int main(int argc, char **argv) {
   char line[8192];
   while (fgets(line, sizeof(line), stdin)) {
     if (strcmp(line, "END\\n") == 0) {
-      size_t n = strlen(root) + 16;
-      char *moved = malloc(n);
-      if (!moved) return 70;
-      snprintf(moved, n, "%s.replaced", root);
-      if (rename(root, moved) != 0) return 71;
-      if (mkdir(root, 0700) != 0) return 72;
-      free(moved);
-      puts("OK END"); fflush(stdout);
-      return 0;
+      size_t n = strlen(root) + 16; char *moved = malloc(n); if (!moved) return 70;
+      snprintf(moved, n, "%s.replaced", root); if (rename(root, moved) != 0) return 71; if (mkdir(root, 0700) != 0) return 72;
+      free(moved); puts("OK END"); fflush(stdout); return 0;
     }
     if (strcmp(line, "LEAVE\\n") == 0) puts("OK LEAVE");
     else if (strcmp(line, "SOURCE_LEAVE\\n") == 0) puts("OK SOURCE_LEAVE");
@@ -205,32 +148,19 @@ int main(int argc, char **argv) {
 
   let rootReplacementFailed = false;
   try {
-    await materializeMinerPackagePosix({
-      root,
-      outRoot,
-      bundleName: `${bundleName}-root-replacement`,
-      nodeName: 'node',
-      helperSource: replacingHelperSource
-    });
+    await materializeMinerPackagePosix({ root, outRoot, bundleName: `${bundleName}-root-replacement`, nodeName: 'node', helperSource: replacingHelperSource });
   } catch (error) {
-    if (error?.message === 'miner release root pathname identity changed during materialization') {
-      rootReplacementFailed = true;
-    } else {
-      throw error;
-    }
+    if (error?.message === 'miner release root pathname identity changed during materialization') rootReplacementFailed = true;
+    else throw error;
   }
-  if (!rootReplacementFailed) throw new Error('materializer acknowledged success after the bound release-root pathname was replaced');
+  if (!rootReplacementFailed) throw new Error('materializer acknowledged success after bound release-root pathname was replaced');
 
   await symlink('index.js', join(root, 'node_modules', 'fixture-pkg', 'linked.js'));
   let symlinkFailed = false;
-  try {
-    await materializeMinerPackagePosix({ root, outRoot, bundleName: `${bundleName}-symlink`, nodeName: 'node', helperSource });
-  } catch {
-    symlinkFailed = true;
-  }
+  try { await materializeMinerPackagePosix({ root, outRoot, bundleName: `${bundleName}-symlink`, nodeName: 'node', helperSource }); } catch { symlinkFailed = true; }
   if (!symlinkFailed) throw new Error('retained source custody accepted a source symlink instead of failing closed');
 
-  console.log('PASS: miner materializer binds destination and source roots to expected inodes; descriptor-relative custody, final pathname binding, symlink rejection, and exclusive bundle creation remain intact.');
+  console.log('PASS: miner materializer binds destination/source roots and SOURCE_ENTER children to expected inodes; descriptor-relative custody and fail-closed gates remain intact.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
