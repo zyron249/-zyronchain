@@ -108,7 +108,7 @@ try {
   const build = spawnSync(compiler, ['-std=c11', '-Wall', '-Wextra', '-Werror', '-O2', helperSource, '-o', compiledHelper], { encoding: 'utf8' });
   if (build.status !== 0) throw new Error(`failed to compile custody helper regression: ${build.stderr || build.stdout}`);
   const outStat = await lstat(outRoot);
-  const mismatch = spawnSync(compiledHelper, ['session', outRoot, String(outStat.dev), String(outStat.ino + 1n)], { encoding: 'utf8' });
+  const mismatch = spawnSync(compiledHelper, ['session', outRoot, String(outStat.dev), String(outStat.ino + 1)], { encoding: 'utf8' });
   if (mismatch.status !== 70 || mismatch.stdout.includes('READY') || !mismatch.stderr.includes('opened release root does not match expected identity')) {
     throw new Error('custody helper did not reject mismatched expected root identity before READY/mutation boundary');
   }
