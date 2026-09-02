@@ -63,15 +63,21 @@ async function assertAbsent(path, message) {
   throw new Error(message);
 }
 
+async function boundSessionArgs(rootPath) {
+  const stat = await lstat(rootPath, { bigint: true });
+  if (!stat.isDirectory()) throw new Error(`test session root is not a directory: ${rootPath}`);
+  return ['session', rootPath, String(stat.dev), String(stat.ino)];
+}
+
 async function bindSource(session, sourceRoot) {
-  const stat = await lstat(sourceRoot);
+  const stat = await lstat(sourceRoot, { bigint: true });
   if (!stat.isDirectory()) throw new Error(`test source root is not a directory: ${sourceRoot}`);
   session.stdin.write(`SOURCE\t${sourceRoot}\t${String(stat.dev)}\t${String(stat.ino)}\n`);
   await waitForLine(session.stdout, 'OK SOURCE');
 }
 
 async function copyRel(session, destinationName, sourceName, sourcePath) {
-  const stat = await lstat(sourcePath);
+  const stat = await lstat(sourcePath, { bigint: true });
   if (!stat.isFile()) throw new Error(`test COPYREL source is not a regular file: ${sourcePath}`);
   session.stdin.write(`COPYREL\t${destinationName}\t${sourceName}\t${String(stat.dev)}\t${String(stat.ino)}\n`);
   await waitForLine(session.stdout, 'OK COPYREL');
@@ -103,7 +109,7 @@ try {
   await mkdir(sessionRoot);
   await mkdir(external);
 
-  const session = spawn(helper, ['session', sessionRoot], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const session = spawn(helper, await boundSessionArgs(sessionRoot), { stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '';
   session.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
   await waitForLine(session.stdout, 'READY');
@@ -124,7 +130,7 @@ try {
   await mkdir(bundleRoot);
   await mkdir(bundleExternal);
 
-  const bundleSession = spawn(helper, ['session', bundleRoot], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const bundleSession = spawn(helper, await boundSessionArgs(bundleRoot), { stdio: ['pipe', 'pipe', 'pipe'] });
   let bundleStderr = '';
   bundleSession.stderr.on('data', (chunk) => { bundleStderr += chunk.toString('utf8'); });
   await waitForLine(bundleSession.stdout, 'READY');
@@ -159,7 +165,7 @@ try {
   await mkdir(nestedRoot);
   await mkdir(nestedExternal);
 
-  const nested = spawn(helper, ['session', nestedRoot], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const nested = spawn(helper, await boundSessionArgs(nestedRoot), { stdio: ['pipe', 'pipe', 'pipe'] });
   let nestedStderr = '';
   nested.stderr.on('data', (chunk) => { nestedStderr += chunk.toString('utf8'); });
   await waitForLine(nested.stdout, 'READY');
@@ -203,7 +209,7 @@ try {
   await mkdir(mutationSourceDir);
   await writeFile(mutationSource, Buffer.alloc(stableSize, 0x5a));
 
-  const mutationSession = spawn(helper, ['session', mutationRoot], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const mutationSession = spawn(helper, await boundSessionArgs(mutationRoot), { stdio: ['pipe', 'pipe', 'pipe'] });
   let mutationStderr = '';
   mutationSession.stderr.on('data', (chunk) => { mutationStderr += chunk.toString('utf8'); });
   await waitForLine(mutationSession.stdout, 'READY');
@@ -217,14 +223,13 @@ try {
     mutationSession.once('error', reject);
     mutationSession.once('close', resolveExit);
   });
-  const mutationStat = await lstat(mutationSource);
+  const mutationStat = await lstat(mutationSource, { bigint: true });
   mutationSession.stdin.write(`COPYREL\tlarge.bin\tlarge.bin\t${String(mutationStat.dev)}\t${String(mutationStat.ino)}\n`);
   const mutator = setInterval(() => {
     try {
       appendFileSync(mutationSource, Buffer.from([0x41]));
       truncateSync(mutationSource, stableSize);
     } catch {
-      // The helper may exit while the interval is being cleared below.
     }
   }, 1);
   const mutationCode = await mutationExit;
@@ -234,7 +239,7 @@ try {
     throw new Error(`COPYREL mutation did not fail at the stable-source snapshot boundary: ${mutationStderr}`);
   }
 
-  console.log('PASS: POSIX miner custody retains destination/source descriptors across pathname replacement, binds COPYREL to the expected source inode, and fails closed when a retained source mutates during copy.');
+  console.log('PASS: POSIX miner custody requires exact session/source identities, retains destination/source descriptors across pathname replacement, binds COPYREL to the expected source inode, and fails closed when a retained source mutates during copy.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
