@@ -288,12 +288,45 @@ static void run_session(int root_fd, const struct stat *before) {
     char *component = first_tab + 1;
 
     if (strcmp(command, "SOURCE") == 0) {
-      if (!*component || strchr(component, '\t') != NULL) {
-        fprintf(stderr, "miner-custody-posix: invalid source root path\n");
+      char *dev_text = strchr(component, '\t');
+      if (!dev_text) {
+        fprintf(stderr, "miner-custody-posix: SOURCE requires path and expected dev/inode\n");
+        exit(64);
+      }
+      *dev_text = '\0';
+      dev_text++;
+      char *ino_text = strchr(dev_text, '\t');
+      if (!ino_text) {
+        fprintf(stderr, "miner-custody-posix: SOURCE requires path and expected dev/inode\n");
+        exit(64);
+      }
+      *ino_text = '\0';
+      ino_text++;
+      if (!*component || strchr(ino_text, '\t') != NULL) {
+        fprintf(stderr, "miner-custody-posix: invalid source root binding\n");
+        exit(64);
+      }
+      unsigned long long expected_dev;
+      unsigned long long expected_ino;
+      if (!parse_u64(dev_text, &expected_dev) || !parse_u64(ino_text, &expected_ino)) {
+        fprintf(stderr, "miner-custody-posix: invalid expected source identity\n");
         exit(64);
       }
       close_stack(source_fds, &source_depth, 0);
-      source_fds[0] = open_dir_nofollow(component);
+      int source_fd = open_dir_nofollow(component);
+      struct stat source_stat;
+      if (fstat(source_fd, &source_stat) != 0) {
+        int saved = errno;
+        close(source_fd);
+        errno = saved;
+        die("fstat bound source root");
+      }
+      if ((unsigned long long)source_stat.st_dev != expected_dev || (unsigned long long)source_stat.st_ino != expected_ino) {
+        fprintf(stderr, "miner-custody-posix: opened source root does not match expected identity\n");
+        close(source_fd);
+        exit(70);
+      }
+      source_fds[0] = source_fd;
       source_depth = 1;
       puts("OK SOURCE");
       fflush(stdout);

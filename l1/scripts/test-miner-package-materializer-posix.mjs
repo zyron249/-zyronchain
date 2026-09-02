@@ -81,11 +81,17 @@ try {
   if (!helperText.includes('opened release root does not match expected identity')) {
     throw new Error('custody helper does not fail closed when session root open differs from the expected dev/inode');
   }
+  if (!helperText.includes('opened source root does not match expected identity')) {
+    throw new Error('custody helper does not fail closed when SOURCE open differs from the expected dev/inode');
+  }
   if (materializerText.includes('`COPY\\t${destinationName}\\t${sourcePath}`')) {
     throw new Error('materializer regressed to pathname COPY');
   }
   if (!materializerText.includes('`COPYREL\\t${destinationName}\\t${sourceName}`') || !materializerText.includes('`SOURCE_ENTER\\t${component}`')) {
     throw new Error('materializer does not use retained descriptor-relative source copy/traversal');
+  }
+  if (!materializerText.includes('`SOURCE\\t${sourceRoot}\\t${String(sourceStat.dev)}\\t${String(sourceStat.ino)}`')) {
+    throw new Error('materializer does not bind SOURCE opens to an expected source-root dev/inode');
   }
   if (!materializerText.includes("ignoredDirectoryNames: new Set(['.bin'])")) {
     throw new Error('materializer does not explicitly omit npm executable shim directories from runtime dependency payloads');
@@ -114,6 +120,15 @@ try {
   const mismatch = spawnSync(compiledHelper, ['session', outRoot, String(outStat.dev), String(outStat.ino + 1)], { encoding: 'utf8' });
   if (mismatch.status !== 70 || mismatch.stdout.includes('READY') || !mismatch.stderr.includes('opened release root does not match expected identity')) {
     throw new Error('custody helper did not reject mismatched expected root identity before READY/mutation boundary');
+  }
+  const rootStat = await lstat(root);
+  const sourceMismatch = spawnSync(
+    compiledHelper,
+    ['session', outRoot, String(outStat.dev), String(outStat.ino)],
+    { input: `SOURCE\t${root}\t${String(rootStat.dev)}\t${String(rootStat.ino + 1)}\n`, encoding: 'utf8' }
+  );
+  if (sourceMismatch.status !== 70 || !sourceMismatch.stdout.includes('READY') || sourceMismatch.stdout.includes('OK SOURCE') || !sourceMismatch.stderr.includes('opened source root does not match expected identity')) {
+    throw new Error('custody helper did not reject mismatched expected SOURCE identity before acknowledging the retained source root');
   }
 
   await writeFile(join(root, 'dist', 'src', 'index.js'), 'export const fixture = true;\n');
@@ -215,7 +230,7 @@ int main(int argc, char **argv) {
   }
   if (!symlinkFailed) throw new Error('retained source custody accepted a source symlink instead of failing closed');
 
-  console.log('PASS: miner materializer binds every native session, including injected helpers, to the expected release-root inode; descriptor-relative custody, final pathname binding, symlink rejection, and exclusive bundle creation remain intact.');
+  console.log('PASS: miner materializer binds destination and source roots to expected inodes; descriptor-relative custody, final pathname binding, symlink rejection, and exclusive bundle creation remain intact.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
