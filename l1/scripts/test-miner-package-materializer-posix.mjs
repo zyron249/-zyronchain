@@ -93,8 +93,11 @@ try {
   if (!materializerText.includes('await assertBoundRootPath(canonicalOutRoot, boundOutRootStat)')) {
     throw new Error('materializer does not bind successful completion to the release-root pathname identity');
   }
-  if (!materializerText.includes("['session', canonicalOutRoot, String(boundOutRootStat.dev), String(boundOutRootStat.ino)]")) {
-    throw new Error('production materializer does not pass the expected release-root identity into native session startup');
+  if (!materializerText.includes("const sessionArgs = ['session', canonicalOutRoot, String(boundOutRootStat.dev), String(boundOutRootStat.ino)]")) {
+    throw new Error('materializer does not pass the expected release-root identity into every native session startup');
+  }
+  if (materializerText.includes('const sessionArgs = helperSource')) {
+    throw new Error('helperSource can downgrade the release-root session identity binding');
   }
 
   await mkdir(join(root, 'dist', 'src'), { recursive: true });
@@ -155,7 +158,7 @@ try {
 #include <sys/stat.h>
 #include <unistd.h>
 int main(int argc, char **argv) {
-  if (argc != 3 || strcmp(argv[1], "session") != 0) return 64;
+  if (argc != 5 || strcmp(argv[1], "session") != 0 || argv[3][0] == '\\0' || argv[4][0] == '\\0') return 64;
   const char *root = argv[2];
   puts("READY"); fflush(stdout);
   char line[8192];
@@ -212,7 +215,7 @@ int main(int argc, char **argv) {
   }
   if (!symlinkFailed) throw new Error('retained source custody accepted a source symlink instead of failing closed');
 
-  console.log('PASS: miner materializer binds native session startup to the expected release-root inode, keeps descriptor-relative source/destination custody, validates final pathname identity, rejects unsafe source symlinks, and refuses an existing bundle.');
+  console.log('PASS: miner materializer binds every native session, including injected helpers, to the expected release-root inode; descriptor-relative custody, final pathname binding, symlink rejection, and exclusive bundle creation remain intact.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
