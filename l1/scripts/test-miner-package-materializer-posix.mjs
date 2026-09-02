@@ -12,25 +12,15 @@ if (process.platform === 'win32') {
   const outRoot = join(root, 'miner-release');
   let failedClosed = false;
   try {
-    await materializeMinerPackagePosix({
-      root,
-      outRoot,
-      bundleName: 'ZyronMiner-windows-test-x64',
-      nodeName: 'node.exe'
-    });
+    await materializeMinerPackagePosix({ root, outRoot, bundleName: 'ZyronMiner-windows-test-x64', nodeName: 'node.exe' });
   } catch (error) {
     if (error?.message === 'descriptor-relative miner materialization is not implemented on Windows') failedClosed = true;
     else throw error;
   }
   if (!failedClosed) throw new Error('Windows miner materializer did not fail closed before unsupported custody could run');
-  try {
-    await access(root);
-    throw new Error('Windows fail-closed materializer created filesystem state before rejecting the unsupported platform');
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
-  } finally {
-    await rm(temp, { recursive: true, force: true });
-  }
+  try { await access(root); throw new Error('Windows fail-closed materializer created filesystem state before rejecting the unsupported platform'); }
+  catch (error) { if (error?.code !== 'ENOENT') throw error; }
+  finally { await rm(temp, { recursive: true, force: true }); }
   console.log('PASS: Windows miner package materialization fails closed before creating candidate filesystem state.');
   process.exit(0);
 }
@@ -62,8 +52,10 @@ try {
   if (!helperText.includes('opened release root does not match expected identity')) throw new Error('custody helper does not fail closed when session root open differs from expected dev/inode');
   if (!helperText.includes('opened source root does not match expected identity')) throw new Error('custody helper does not fail closed when SOURCE open differs from expected dev/inode');
   if (!helperText.includes('opened retained source child does not match expected identity')) throw new Error('custody helper does not fail closed when SOURCE_ENTER opens a different child inode');
+  if (!helperText.includes('opened retained copy source does not match expected identity')) throw new Error('custody helper does not fail closed when COPYREL opens a different regular-file inode');
   if (materializerText.includes('`COPY\\t${destinationName}\\t${sourcePath}`')) throw new Error('materializer regressed to pathname COPY');
-  if (!materializerText.includes('`COPYREL\\t${destinationName}\\t${sourceName}`') || !materializerText.includes('`SOURCE_ENTER\\t${component}\\t${String(sourceStat.dev)}\\t${String(sourceStat.ino)}`')) throw new Error('materializer does not identity-bind retained descriptor-relative source traversal');
+  if (!materializerText.includes('`COPYREL\\t${destinationName}\\t${sourceName}\\t${String(sourceStat.dev)}\\t${String(sourceStat.ino)}`')) throw new Error('materializer does not identity-bind retained regular-file copies');
+  if (!materializerText.includes('`SOURCE_ENTER\\t${component}\\t${String(sourceStat.dev)}\\t${String(sourceStat.ino)}`')) throw new Error('materializer does not identity-bind retained descriptor-relative source traversal');
   if (!materializerText.includes('`SOURCE\\t${sourceRoot}\\t${String(sourceStat.dev)}\\t${String(sourceStat.ino)}`')) throw new Error('materializer does not bind SOURCE opens to expected source-root dev/inode');
   if (!materializerText.includes("ignoredDirectoryNames: new Set(['.bin'])")) throw new Error('materializer does not explicitly omit npm executable shim directories');
   if (!materializerText.includes('await assertBoundRootPath(canonicalOutRoot, boundOutRootStat)')) throw new Error('materializer does not bind successful completion to release-root pathname identity');
@@ -87,11 +79,15 @@ try {
   const sourceMismatch = spawnSync(compiledHelper, ['session', outRoot, String(outStat.dev), String(outStat.ino)], { input: `SOURCE\t${root}\t${String(rootStat.dev)}\t${String(rootStat.ino + 1)}\n`, encoding: 'utf8' });
   if (sourceMismatch.status !== 70 || !sourceMismatch.stdout.includes('READY') || sourceMismatch.stdout.includes('OK SOURCE') || !sourceMismatch.stderr.includes('opened source root does not match expected identity')) throw new Error('custody helper did not reject mismatched expected SOURCE identity before acknowledgement');
   const distStat = await lstat(join(root, 'dist'));
-  const sourceChildMismatch = spawnSync(compiledHelper, ['session', outRoot, String(outStat.dev), String(outStat.ino)], {
-    input: `SOURCE\t${root}\t${String(rootStat.dev)}\t${String(rootStat.ino)}\nSOURCE_ENTER\tdist\t${String(distStat.dev)}\t${String(distStat.ino + 1)}\n`,
-    encoding: 'utf8'
-  });
+  const sourceChildMismatch = spawnSync(compiledHelper, ['session', outRoot, String(outStat.dev), String(outStat.ino)], { input: `SOURCE\t${root}\t${String(rootStat.dev)}\t${String(rootStat.ino)}\nSOURCE_ENTER\tdist\t${String(distStat.dev)}\t${String(distStat.ino + 1)}\n`, encoding: 'utf8' });
   if (sourceChildMismatch.status !== 70 || !sourceChildMismatch.stdout.includes('OK SOURCE') || sourceChildMismatch.stdout.includes('OK SOURCE_ENTER') || !sourceChildMismatch.stderr.includes('opened retained source child does not match expected identity')) throw new Error('custody helper did not reject mismatched expected SOURCE_ENTER child identity before acknowledgement');
+
+  const copySource = join(root, 'copy-source.txt');
+  await writeFile(copySource, 'expected source\n');
+  const copyStat = await lstat(copySource);
+  const copyMismatch = spawnSync(compiledHelper, ['session', outRoot, String(outStat.dev), String(outStat.ino)], { input: `SOURCE\t${root}\t${String(rootStat.dev)}\t${String(rootStat.ino)}\nCOPYREL\tcopy-destination.txt\tcopy-source.txt\t${String(copyStat.dev)}\t${String(copyStat.ino + 1)}\n`, encoding: 'utf8' });
+  if (copyMismatch.status !== 70 || !copyMismatch.stdout.includes('OK SOURCE') || copyMismatch.stdout.includes('OK COPYREL') || !copyMismatch.stderr.includes('opened retained copy source does not match expected identity')) throw new Error('custody helper did not reject mismatched expected COPYREL regular-file identity before acknowledgement');
+  await assertMissing(join(outRoot, 'copy-destination.txt'), 'COPYREL published a destination after source identity mismatch');
 
   await writeFile(join(root, 'dist', 'src', 'index.js'), 'export const fixture = true;\n');
   for (const name of ['mine.mjs', 'miner-rpc-response.mjs', 'miner-launcher.mjs', 'miner-launcher-security.mjs']) await writeFile(join(root, 'scripts', name), `// ${name}\n`);
@@ -147,12 +143,8 @@ int main(int argc, char **argv) {
 `, 'utf8');
 
   let rootReplacementFailed = false;
-  try {
-    await materializeMinerPackagePosix({ root, outRoot, bundleName: `${bundleName}-root-replacement`, nodeName: 'node', helperSource: replacingHelperSource });
-  } catch (error) {
-    if (error?.message === 'miner release root pathname identity changed during materialization') rootReplacementFailed = true;
-    else throw error;
-  }
+  try { await materializeMinerPackagePosix({ root, outRoot, bundleName: `${bundleName}-root-replacement`, nodeName: 'node', helperSource: replacingHelperSource }); }
+  catch (error) { if (error?.message === 'miner release root pathname identity changed during materialization') rootReplacementFailed = true; else throw error; }
   if (!rootReplacementFailed) throw new Error('materializer acknowledged success after bound release-root pathname was replaced');
 
   await symlink('index.js', join(root, 'node_modules', 'fixture-pkg', 'linked.js'));
@@ -160,7 +152,7 @@ int main(int argc, char **argv) {
   try { await materializeMinerPackagePosix({ root, outRoot, bundleName: `${bundleName}-symlink`, nodeName: 'node', helperSource }); } catch { symlinkFailed = true; }
   if (!symlinkFailed) throw new Error('retained source custody accepted a source symlink instead of failing closed');
 
-  console.log('PASS: miner materializer binds destination/source roots and SOURCE_ENTER children to expected inodes; descriptor-relative custody and fail-closed gates remain intact.');
+  console.log('PASS: miner materializer binds destination/source roots, SOURCE_ENTER children, and COPYREL regular files to expected inodes; descriptor-relative custody and fail-closed gates remain intact.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
