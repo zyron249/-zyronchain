@@ -27,7 +27,8 @@ function requireNoFollowFlags(fsOps) {
   }
   return {
     source: constants.O_RDONLY | noFollow,
-    destination: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow
+    destination: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow,
+    directory: constants.O_RDONLY | noFollow
   };
 }
 
@@ -50,6 +51,30 @@ function openBoundSource(sourcePath, openFlags, fsOps, displayPath) {
       throw new Error(`miner runtime source snapshot changed before copy: ${displayPath}`);
     }
     throw error;
+  }
+}
+
+function fsyncBoundDirectory(directoryPath, fsOps, openFlags) {
+  const canonicalDirectory = fsOps.realpathSync(directoryPath);
+  const expectedStat = fsOps.lstatSync(canonicalDirectory);
+  if (!expectedStat.isDirectory()) {
+    throw new Error(`miner runtime durability target must be a directory: ${directoryPath}`);
+  }
+
+  let directoryFd;
+  try {
+    directoryFd = fsOps.openSync(canonicalDirectory, openFlags.directory);
+    const openedStat = fsOps.fstatSync(directoryFd);
+    if (!openedStat.isDirectory() || !sameFileIdentity(expectedStat, openedStat)) {
+      throw new Error(`miner runtime durability directory identity changed before fsync: ${directoryPath}`);
+    }
+    fsOps.fsyncSync(directoryFd);
+    const completedStat = fsOps.lstatSync(canonicalDirectory);
+    if (!completedStat.isDirectory() || !sameFileIdentity(openedStat, completedStat)) {
+      throw new Error(`miner runtime durability directory identity changed during fsync: ${directoryPath}`);
+    }
+  } finally {
+    if (directoryFd !== undefined) fsOps.closeSync(directoryFd);
   }
 }
 
@@ -79,6 +104,7 @@ function copyBoundRegularFile(sourcePath, destinationPath, expectedStat, fsOps, 
       throw new Error(`miner runtime source mutated during copy: ${displayPath}`);
     }
     fsOps.fchmodSync(destinationFd, expectedStat.mode & 0o777);
+    fsOps.fsyncSync(destinationFd);
   } finally {
     if (destinationFd !== undefined) fsOps.closeSync(destinationFd);
     if (sourceFd !== undefined) fsOps.closeSync(sourceFd);
@@ -138,6 +164,7 @@ export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
         copyEntry(path.join(sourcePath, entry), path.join(destinationPath, entry));
         assertDirectoryIdentity(sourcePath, stat, displayPath);
       }
+      fsyncBoundDirectory(destinationPath, fsOps, openFlags);
       return;
     }
     if (stat.isFile()) {
@@ -181,4 +208,6 @@ export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
     copyEntry(path.join(sourceRoot, entry), path.join(destinationRoot, entry));
     assertDirectoryIdentity(sourceRoot, sourceRootStat, '');
   }
+  fsyncBoundDirectory(destinationRoot, fsOps, openFlags);
+  fsyncBoundDirectory(path.dirname(destinationRoot), fsOps, openFlags);
 }
