@@ -70,6 +70,13 @@ async function bindSource(session, sourceRoot) {
   await waitForLine(session.stdout, 'OK SOURCE');
 }
 
+async function copyRel(session, destinationName, sourceName, sourcePath) {
+  const stat = await lstat(sourcePath);
+  if (!stat.isFile()) throw new Error(`test COPYREL source is not a regular file: ${sourcePath}`);
+  session.stdin.write(`COPYREL\t${destinationName}\t${sourceName}\t${String(stat.dev)}\t${String(stat.ino)}\n`);
+  await waitForLine(session.stdout, 'OK COPYREL');
+}
+
 try {
   const compiler = process.env.CC || 'cc';
   const build = spawnSync(compiler, ['-std=c11', '-Wall', '-Wextra', '-Werror', '-O2', source, '-o', helper], { encoding: 'utf8' });
@@ -174,8 +181,7 @@ try {
 
   nested.stdin.write('WRITE\tmine.mjs\tNESTED-CANDIDATE\n');
   await waitForLine(nested.stdout, 'OK WRITE');
-  nested.stdin.write('COPYREL\tnode.bin\tcopy-source.bin\n');
-  await waitForLine(nested.stdout, 'OK COPYREL');
+  await copyRel(nested, 'node.bin', 'copy-source.bin', copySource);
   nested.stdin.write('LEAVE\n');
   await waitForLine(nested.stdout, 'OK LEAVE');
   nested.stdin.write('LEAVE\n');
@@ -211,7 +217,8 @@ try {
     mutationSession.once('error', reject);
     mutationSession.once('close', resolveExit);
   });
-  mutationSession.stdin.write('COPYREL\tlarge.bin\tlarge.bin\n');
+  const mutationStat = await lstat(mutationSource);
+  mutationSession.stdin.write(`COPYREL\tlarge.bin\tlarge.bin\t${String(mutationStat.dev)}\t${String(mutationStat.ino)}\n`);
   const mutator = setInterval(() => {
     try {
       appendFileSync(mutationSource, Buffer.from([0x41]));
@@ -227,7 +234,7 @@ try {
     throw new Error(`COPYREL mutation did not fail at the stable-source snapshot boundary: ${mutationStderr}`);
   }
 
-  console.log('PASS: POSIX miner custody retains destination/source descriptors across pathname replacement and fails closed when a retained COPYREL source mutates during the copy.');
+  console.log('PASS: POSIX miner custody retains destination/source descriptors across pathname replacement, binds COPYREL to the expected source inode, and fails closed when a retained source mutates during copy.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }

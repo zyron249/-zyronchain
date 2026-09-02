@@ -117,7 +117,7 @@ static int same_regular_file_snapshot(const struct stat *before, const struct st
     && stat_ctime_nsec(before) == stat_ctime_nsec(after);
 }
 
-static void copy_child_file_from_dir(int parent_fd, const char *name, int source_dir_fd, const char *source_name) {
+static void copy_child_file_from_dir(int parent_fd, const char *name, int source_dir_fd, const char *source_name, unsigned long long expected_dev, unsigned long long expected_ino) {
   int source_fd = openat(source_dir_fd, source_name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   if (source_fd < 0) die("open retained copy source");
 
@@ -132,6 +132,11 @@ static void copy_child_file_from_dir(int parent_fd, const char *name, int source
     close(source_fd);
     errno = EINVAL;
     die("retained copy source is not a regular file");
+  }
+  if ((unsigned long long)source_stat.st_dev != expected_dev || (unsigned long long)source_stat.st_ino != expected_ino) {
+    fprintf(stderr, "miner-custody-posix: opened retained copy source does not match expected identity\n");
+    close(source_fd);
+    exit(70);
   }
 
   int dest_fd = openat(parent_fd, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
@@ -406,7 +411,7 @@ static void run_session(int root_fd, const struct stat *before) {
       continue;
     }
 
-    if (strcmp(command, "WRITE") == 0 || strcmp(command, "COPYREL") == 0) {
+    if (strcmp(command, "WRITE") == 0) {
       char *second_tab = strchr(component, '\t');
       if (!second_tab) {
         fprintf(stderr, "miner-custody-posix: malformed file command\n");
@@ -418,17 +423,47 @@ static void run_session(int root_fd, const struct stat *before) {
         fprintf(stderr, "miner-custody-posix: invalid child component\n");
         exit(64);
       }
-      if (strcmp(command, "WRITE") == 0) {
-        write_child_file(dest_fds[dest_depth - 1], component, argument);
-        puts("OK WRITE");
-      } else {
-        if (source_depth == 0 || !valid_component(argument)) {
-          fprintf(stderr, "miner-custody-posix: COPYREL requires a retained source directory and one regular-file component\n");
-          exit(64);
-        }
-        copy_child_file_from_dir(dest_fds[dest_depth - 1], component, source_fds[source_depth - 1], argument);
-        puts("OK COPYREL");
+      write_child_file(dest_fds[dest_depth - 1], component, argument);
+      puts("OK WRITE");
+      assert_identity_unchanged(root_fd, before);
+      fflush(stdout);
+      continue;
+    }
+
+    if (strcmp(command, "COPYREL") == 0) {
+      char *source_name = strchr(component, '\t');
+      if (!source_name) {
+        fprintf(stderr, "miner-custody-posix: COPYREL requires destination, source, and expected dev/inode\n");
+        exit(64);
       }
+      *source_name = '\0';
+      source_name++;
+      char *dev_text = strchr(source_name, '\t');
+      if (!dev_text) {
+        fprintf(stderr, "miner-custody-posix: COPYREL requires destination, source, and expected dev/inode\n");
+        exit(64);
+      }
+      *dev_text = '\0';
+      dev_text++;
+      char *ino_text = strchr(dev_text, '\t');
+      if (!ino_text) {
+        fprintf(stderr, "miner-custody-posix: COPYREL requires destination, source, and expected dev/inode\n");
+        exit(64);
+      }
+      *ino_text = '\0';
+      ino_text++;
+      if (source_depth == 0 || !valid_component(component) || !valid_component(source_name) || strchr(ino_text, '\t') != NULL) {
+        fprintf(stderr, "miner-custody-posix: invalid COPYREL source binding\n");
+        exit(64);
+      }
+      unsigned long long expected_dev;
+      unsigned long long expected_ino;
+      if (!parse_u64(dev_text, &expected_dev) || !parse_u64(ino_text, &expected_ino)) {
+        fprintf(stderr, "miner-custody-posix: invalid expected retained copy source identity\n");
+        exit(64);
+      }
+      copy_child_file_from_dir(dest_fds[dest_depth - 1], component, source_fds[source_depth - 1], source_name, expected_dev, expected_ino);
+      puts("OK COPYREL");
       assert_identity_unchanged(root_fd, before);
       fflush(stdout);
       continue;
