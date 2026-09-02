@@ -7,6 +7,55 @@ import { copyMinerRuntimeTree } from './copy-miner-runtime-tree.mjs';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zyron-miner-source-mutation-'));
 try {
+  const noFollow = fs.constants.O_NOFOLLOW;
+  if (!Number.isInteger(noFollow) || noFollow === 0) {
+    const unsupportedSource = path.join(root, 'unsupported-source');
+    const unsupportedDestination = path.join(root, 'unsupported-candidate');
+    fs.mkdirSync(unsupportedSource);
+    fs.writeFileSync(path.join(unsupportedSource, 'tool.js'), 'validated');
+    assert.throws(
+      () => copyMinerRuntimeTree(unsupportedSource, unsupportedDestination),
+      /miner runtime packaging requires O_NOFOLLOW support/,
+      'platforms without O_NOFOLLOW must fail closed before materialization'
+    );
+    assert.equal(fs.existsSync(unsupportedDestination), false, 'unsupported platform must not create a candidate');
+    console.log('miner runtime no-follow unsupported-platform regression passed');
+    process.exit(0);
+  }
+
+  const symlinkRaceSourceRoot = path.join(root, 'symlink-race-source');
+  const symlinkRaceSource = path.join(symlinkRaceSourceRoot, 'tool.js');
+  const symlinkRaceTarget = path.join(symlinkRaceSourceRoot, 'alternate.js');
+  const symlinkRaceDestination = path.join(root, 'symlink-race-candidate');
+  fs.mkdirSync(symlinkRaceSourceRoot);
+  fs.writeFileSync(symlinkRaceSource, 'validated');
+  fs.writeFileSync(symlinkRaceTarget, 'attacker-controlled');
+  const canonicalSymlinkRaceSource = fs.realpathSync(symlinkRaceSource);
+  let symlinkRaceInjected = false;
+  const symlinkRaceFsOps = new Proxy(fs, {
+    get(target, property) {
+      if (property === 'openSync') {
+        return (candidate, ...args) => {
+          if (!symlinkRaceInjected && path.resolve(candidate) === path.resolve(canonicalSymlinkRaceSource)) {
+            symlinkRaceInjected = true;
+            fs.unlinkSync(symlinkRaceSource);
+            fs.symlinkSync(path.basename(symlinkRaceTarget), symlinkRaceSource);
+          }
+          return fs.openSync(candidate, ...args);
+        };
+      }
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    }
+  });
+  assert.throws(
+    () => copyMinerRuntimeTree(symlinkRaceSourceRoot, symlinkRaceDestination, symlinkRaceFsOps),
+    (error) => error?.code === 'ELOOP' || /symbolic link|too many levels/i.test(String(error?.message)),
+    'source replacement with a symlink immediately before open must fail at O_NOFOLLOW'
+  );
+  assert.equal(symlinkRaceInjected, true, 'symlink race regression must exercise the descriptor-open boundary');
+  assert.equal(fs.existsSync(path.join(symlinkRaceDestination, 'tool.js')), false, 'symlink-race bytes must not enter the candidate');
+
   const preOpenSourceRoot = path.join(root, 'pre-open-source');
   const preOpenSource = path.join(preOpenSourceRoot, 'tool.js');
   const preOpenDestination = path.join(root, 'pre-open-candidate');
