@@ -211,6 +211,16 @@ static void assert_identity_unchanged(int fd, const struct stat *before) {
   }
 }
 
+static int parse_u64(const char *text, unsigned long long *value) {
+  if (!text || !*text) return 0;
+  char *end = NULL;
+  errno = 0;
+  unsigned long long parsed = strtoull(text, &end, 10);
+  if (errno != 0 || !end || *end != '\0') return 0;
+  *value = parsed;
+  return 1;
+}
+
 static void close_stack(int *fds, size_t *depth, size_t minimum) {
   while (*depth > minimum) {
     if (close(fds[*depth - 1]) != 0) die("close retained directory");
@@ -385,10 +395,24 @@ int main(int argc, char **argv) {
   }
 
   if (strcmp(command, "session") == 0) {
-    if (argc != 3) {
-      fprintf(stderr, "miner-custody-posix: session accepts only a root path\n");
+    if (argc != 3 && argc != 5) {
+      fprintf(stderr, "miner-custody-posix: session accepts root path and optional expected dev/inode\n");
       close(root_fd);
       return 64;
+    }
+    if (argc == 5) {
+      unsigned long long expected_dev;
+      unsigned long long expected_ino;
+      if (!parse_u64(argv[3], &expected_dev) || !parse_u64(argv[4], &expected_ino)) {
+        fprintf(stderr, "miner-custody-posix: invalid expected root identity\n");
+        close(root_fd);
+        return 64;
+      }
+      if ((unsigned long long)before.st_dev != expected_dev || (unsigned long long)before.st_ino != expected_ino) {
+        fprintf(stderr, "miner-custody-posix: opened release root does not match expected identity\n");
+        close(root_fd);
+        return 70;
+      }
     }
     run_session(root_fd, &before);
     if (close(root_fd) != 0) die("close bound directory");
