@@ -96,6 +96,7 @@ const activityPool = addressFromPublicKey(publicKeyFromPrivate("06".padStart(64,
 const newValidatorOne = addressFromPublicKey(newValidatorOnePublic);
 const newValidatorTwo = addressFromPublicKey(newValidatorTwoPublic);
 const execFileAsync = promisify(execFile);
+const remoteSignerTestToken = "remote-signer-legacy-test-token-".padEnd(64, "x");
 
 test("canonical signing domains prevent cross-context and legacy signature replay", () => {
   const payload = { chainId: "zyron-devnet-1", height: 42, blockHash: "a".repeat(64) };
@@ -1723,7 +1724,7 @@ test("remote validator signer keeps the secret out of the node and signs proposa
     });
     const address = signerServer.address();
     if (!address || typeof address === "string") throw new Error("Signer test server has no TCP address");
-    const signer = new RemoteValidatorSigner(`http://127.0.0.1:${address.port}/sign`, validatorOnePublic);
+    const signer = new RemoteValidatorSigner(`http://127.0.0.1:${address.port}/sign`, validatorOnePublic, remoteSignerTestToken);
     const store = await ChainStore.open(genesis(), directory);
     const service = new NodeService(store, await SigningJournal.open(directory), signer);
     const peers: ConsensusPeerClient = {
@@ -1746,7 +1747,7 @@ test("remote validator signer keeps the secret out of the node and signs proposa
 
 test("remote validator signer is fail-closed on wrong-key signatures and unsafe plaintext endpoints", async () => {
   assert.throws(
-    () => new RemoteValidatorSigner("http://192.0.2.10/sign", validatorOnePublic),
+    () => new RemoteValidatorSigner("http://192.0.2.10/sign", validatorOnePublic, remoteSignerTestToken),
     /loopback/
   );
   const signerServer = createServer(async (request, response) => {
@@ -1763,7 +1764,7 @@ test("remote validator signer is fail-closed on wrong-key signatures and unsafe 
     });
     const address = signerServer.address();
     if (!address || typeof address === "string") throw new Error("Signer test server has no TCP address");
-    const signer = new RemoteValidatorSigner(`http://127.0.0.1:${address.port}/sign`, validatorOnePublic);
+    const signer = new RemoteValidatorSigner(`http://127.0.0.1:${address.port}/sign`, validatorOnePublic, remoteSignerTestToken);
     await assert.rejects(() => signer.signCanonical({ height: 1 }, "block-proposal"), /wrong key or payload/);
   } finally {
     if (signerServer.listening) {
@@ -1800,7 +1801,7 @@ test("remote validator signer binds protocol v3 requests and responses to the ex
     });
     const address = signerServer.address();
     if (!address || typeof address === "string") throw new Error("Signer test server has no TCP address");
-    const signer = new RemoteValidatorSigner(`http://127.0.0.1:${address.port}/sign`, validatorOnePublic);
+    const signer = new RemoteValidatorSigner(`http://127.0.0.1:${address.port}/sign`, validatorOnePublic, remoteSignerTestToken);
     const payload = { chainId: genesis().chainId, height: 9, blockHash: "a".repeat(64) };
     const signature = await signer.signCanonical(payload, "block-attestation", 3);
 
