@@ -77,9 +77,11 @@ async function bindSource(session, sourceRoot) {
   await command(session, `SOURCE\t${sourceRoot}\t${String(sourceStat.dev)}\t${String(sourceStat.ino)}`, 'OK SOURCE');
 }
 
-async function enterSource(session, component) {
+async function enterSource(session, component, sourcePath) {
   assertProtocolText(component, 'source component');
-  await command(session, `SOURCE_ENTER\t${component}`, 'OK SOURCE_ENTER');
+  const sourceStat = await lstat(sourcePath);
+  if (!sourceStat.isDirectory()) throw new Error(`miner retained source child must be a directory: ${sourcePath}`);
+  await command(session, `SOURCE_ENTER\t${component}\t${String(sourceStat.dev)}\t${String(sourceStat.ino)}`, 'OK SOURCE_ENTER');
 }
 
 async function leaveSource(session) {
@@ -108,7 +110,7 @@ async function copyTree(session, sourceDir, destinationComponent, options = {}) 
     }
     if (sourceLstat.isDirectory()) {
       if (ignoredDirectoryNames.has(entry.name)) continue;
-      await enterSource(session, entry.name);
+      await enterSource(session, entry.name, sourcePath);
       try {
         await copyTree(session, sourcePath, entry.name, options);
       } finally {
@@ -173,8 +175,8 @@ export async function materializeMinerPackagePosix({ root, outRoot, bundleName, 
     await bindSource(session, canonicalRoot);
     await command(session, 'RESERVE\tdist', 'OK RESERVE');
     await command(session, 'ENTER\tdist', 'OK ENTER');
-    await enterSource(session, 'dist');
-    await enterSource(session, 'src');
+    await enterSource(session, 'dist', join(canonicalRoot, 'dist'));
+    await enterSource(session, 'src', join(canonicalRoot, 'dist', 'src'));
     await copyTree(session, join(canonicalRoot, 'dist', 'src'), 'src');
     await leaveSource(session);
     await leaveSource(session);
@@ -182,13 +184,13 @@ export async function materializeMinerPackagePosix({ root, outRoot, bundleName, 
 
     await command(session, 'RESERVE\tscripts', 'OK RESERVE');
     await command(session, 'ENTER\tscripts', 'OK ENTER');
-    await enterSource(session, 'scripts');
+    await enterSource(session, 'scripts', join(canonicalRoot, 'scripts'));
     for (const name of PACKAGED_SCRIPTS) await copyFile(session, name);
     await leaveSource(session);
     await command(session, 'LEAVE', 'OK LEAVE');
 
     await copyFile(session, 'miner-network-profile.json');
-    await enterSource(session, 'node_modules');
+    await enterSource(session, 'node_modules', join(canonicalRoot, 'node_modules'));
     await copyTree(session, join(canonicalRoot, 'node_modules'), 'node_modules', { ignoredDirectoryNames: new Set(['.bin']) });
     await leaveSource(session);
     for (const name of ['package.json', 'MINING.md']) await copyFile(session, name);
