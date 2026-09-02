@@ -50,8 +50,8 @@ try {
   });
   assert.throws(
     () => copyMinerRuntimeTree(symlinkRaceSourceRoot, symlinkRaceDestination, symlinkRaceFsOps),
-    (error) => error?.code === 'ELOOP' || /symbolic link|too many levels/i.test(String(error?.message)),
-    'source replacement with a symlink immediately before open must fail at O_NOFOLLOW'
+    /miner runtime source snapshot changed before copy: tool\.js/,
+    'source replacement with a symlink immediately before open must fail closed through the canonical snapshot-change contract'
   );
   assert.equal(symlinkRaceInjected, true, 'symlink race regression must exercise the descriptor-open boundary');
   assert.equal(fs.existsSync(path.join(symlinkRaceDestination, 'tool.js')), false, 'symlink-race bytes must not enter the candidate');
