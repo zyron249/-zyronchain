@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { appendFileSync, truncateSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -182,7 +183,46 @@ try {
   await assertAbsent(join(nestedExternal, 'mine.mjs'), 'nested replacement target received candidate bytes');
   await assertAbsent(join(nestedExternal, 'node.bin'), 'nested replacement target received copied candidate bytes');
 
-  console.log('PASS: POSIX miner custody session retains release-root, bundle-root, and nested descriptors across pathname replacement; WRITE and retained-source COPYREL stay descriptor-relative and external sentinels receive zero candidate bytes.');
+  const mutationRoot = join(temp, 'mutation-release');
+  const mutationSourceDir = join(temp, 'mutation-source');
+  const mutationSource = join(mutationSourceDir, 'large.bin');
+  const stableSize = 64 * 1024 * 1024;
+  await mkdir(mutationRoot);
+  await mkdir(mutationSourceDir);
+  await writeFile(mutationSource, Buffer.alloc(stableSize, 0x5a));
+
+  const mutationSession = spawn(helper, ['session', mutationRoot], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let mutationStderr = '';
+  mutationSession.stderr.on('data', (chunk) => { mutationStderr += chunk.toString('utf8'); });
+  await waitForLine(mutationSession.stdout, 'READY');
+  mutationSession.stdin.write(`SOURCE\t${mutationSourceDir}\n`);
+  await waitForLine(mutationSession.stdout, 'OK SOURCE');
+  mutationSession.stdin.write('RESERVE\tbundle\n');
+  await waitForLine(mutationSession.stdout, 'OK RESERVE');
+  mutationSession.stdin.write('ENTER\tbundle\n');
+  await waitForLine(mutationSession.stdout, 'OK ENTER');
+
+  const mutationExit = new Promise((resolveExit, reject) => {
+    mutationSession.once('error', reject);
+    mutationSession.once('close', resolveExit);
+  });
+  mutationSession.stdin.write('COPYREL\tlarge.bin\tlarge.bin\n');
+  const mutator = setInterval(() => {
+    try {
+      appendFileSync(mutationSource, Buffer.from([0x41]));
+      truncateSync(mutationSource, stableSize);
+    } catch {
+      // The helper may exit while the interval is being cleared below.
+    }
+  }, 1);
+  const mutationCode = await mutationExit;
+  clearInterval(mutator);
+  if (mutationCode === 0) throw new Error('COPYREL accepted a source that mutated during retained copy');
+  if (!mutationStderr.includes('retained copy source mutated during read')) {
+    throw new Error(`COPYREL mutation did not fail at the stable-source snapshot boundary: ${mutationStderr}`);
+  }
+
+  console.log('PASS: POSIX miner custody retains destination/source descriptors across pathname replacement and fails closed when a retained COPYREL source mutates during the copy.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
