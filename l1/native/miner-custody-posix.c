@@ -84,6 +84,33 @@ static void write_child_file(int parent_fd, const char *name, const char *payloa
   if (close(fd) != 0) die("close child file");
 }
 
+static long stat_mtime_nsec(const struct stat *st) {
+#if defined(__APPLE__)
+  return st->st_mtimespec.tv_nsec;
+#else
+  return st->st_mtim.tv_nsec;
+#endif
+}
+
+static long stat_ctime_nsec(const struct stat *st) {
+#if defined(__APPLE__)
+  return st->st_ctimespec.tv_nsec;
+#else
+  return st->st_ctim.tv_nsec;
+#endif
+}
+
+static int same_regular_file_snapshot(const struct stat *before, const struct stat *after) {
+  return S_ISREG(after->st_mode)
+    && before->st_dev == after->st_dev
+    && before->st_ino == after->st_ino
+    && before->st_size == after->st_size
+    && before->st_mtime == after->st_mtime
+    && stat_mtime_nsec(before) == stat_mtime_nsec(after)
+    && before->st_ctime == after->st_ctime
+    && stat_ctime_nsec(before) == stat_ctime_nsec(after);
+}
+
 static void copy_child_file_from_dir(int parent_fd, const char *name, int source_dir_fd, const char *source_name) {
   int source_fd = openat(source_dir_fd, source_name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   if (source_fd < 0) die("open retained copy source");
@@ -122,6 +149,21 @@ static void copy_child_file_from_dir(int parent_fd, const char *name, int source
     }
     if (got == 0) break;
     write_all(dest_fd, buffer, (size_t)got, "write copy destination");
+  }
+
+  struct stat completed_source_stat;
+  if (fstat(source_fd, &completed_source_stat) != 0) {
+    int saved = errno;
+    close(dest_fd);
+    close(source_fd);
+    errno = saved;
+    die("fstat retained copy source after read");
+  }
+  if (!same_regular_file_snapshot(&source_stat, &completed_source_stat)) {
+    close(dest_fd);
+    close(source_fd);
+    errno = ESTALE;
+    die("retained copy source mutated during read");
   }
 
   if (fchmod(dest_fd, source_stat.st_mode & 0777) != 0) {
