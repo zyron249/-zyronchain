@@ -8,19 +8,20 @@ import { materializeMinerPackagePosix } from './materialize-miner-package-posix.
 import { resolveSourceCommit, verifyCandidateIntegrity, writeCandidateIntegrity } from './miner-candidate-integrity.mjs';
 import { verifyMinerCandidateSbom, writeMinerCandidateSbom } from './miner-candidate-sbom.mjs';
 import { verifyMinerCandidateProvenance, writeMinerCandidateProvenance } from './miner-candidate-provenance.mjs';
+import { resolveMinerPackageTarget } from './miner-package-target.mjs';
 
 // Filesystem-custody completion (#761/#757/#683/#636) permits candidate
 // materialization only on the audited POSIX descriptor-relative path. This is
 // independent of public-mining activation, signing, external attestation and publication gates.
 assertMinerPackagingCustodyReady(process.platform);
 
+// Resolve and validate the release target before binding or materializing any
+// candidate path. Unreviewed platforms/architectures fail closed.
+const { platform, arch } = resolveMinerPackageTarget(process.platform, process.arch);
+
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const outRoot = bindMinerReleaseRoot(root, resolve(root, 'miner-release'));
-const platform = process.platform === 'darwin' ? 'macos' : process.platform === 'linux' ? 'linux' : null;
-if (!platform) throw new Error(`Unsupported miner package platform: ${process.platform}`);
-
-const arch = process.arch;
 const bundleName = `ZyronMiner-${platform}-${arch}`;
 const nodeName = 'node';
 const { version } = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
