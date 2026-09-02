@@ -109,6 +109,54 @@ try {
     'destination fsync failures must fail closed instead of acknowledging candidate success'
   );
   assert.equal(failureInjected, true, 'durability failure regression must exercise destination file fsync');
+
+  const replacementSource = path.join(root, 'replacement-source');
+  const replacementDestination = path.join(root, 'replacement-candidate');
+  const replacementFile = path.resolve(path.join(replacementDestination, 'tool.js'));
+  const replacementTarget = path.join(replacementSource, 'replacement.js');
+  fs.mkdirSync(replacementSource);
+  fs.writeFileSync(path.join(replacementSource, 'tool.js'), 'validated');
+  fs.writeFileSync(replacementTarget, 'attacker-replacement');
+  const replacementOpenedPaths = new Map();
+  let replacementInjected = false;
+  const replacingFsOps = new Proxy(fs, {
+    get(target, property) {
+      if (property === 'openSync') {
+        return (candidate, ...args) => {
+          const fd = fs.openSync(candidate, ...args);
+          replacementOpenedPaths.set(fd, path.resolve(candidate));
+          return fd;
+        };
+      }
+      if (property === 'closeSync') {
+        return (fd) => {
+          replacementOpenedPaths.delete(fd);
+          return fs.closeSync(fd);
+        };
+      }
+      if (property === 'fsyncSync') {
+        return (fd) => {
+          const result = fs.fsyncSync(fd);
+          if (!replacementInjected && replacementOpenedPaths.get(fd) === replacementFile) {
+            replacementInjected = true;
+            fs.unlinkSync(replacementFile);
+            fs.symlinkSync(replacementTarget, replacementFile);
+          }
+          return result;
+        };
+      }
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    }
+  });
+
+  assert.throws(
+    () => copyMinerRuntimeTree(replacementSource, replacementDestination, replacingFsOps),
+    /miner runtime destination identity changed during copy: tool\.js/,
+    'destination pathname replacement after descriptor open must fail closed'
+  );
+  assert.equal(replacementInjected, true, 'destination identity regression must exercise a post-open pathname replacement');
+  assert.equal(fs.lstatSync(replacementFile).isSymbolicLink(), true, 'regression must leave a distinct replacement pathname for the identity check');
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }
