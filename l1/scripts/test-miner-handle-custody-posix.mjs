@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { appendFileSync, truncateSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -61,6 +61,13 @@ async function assertAbsent(path, message) {
     throw error;
   }
   throw new Error(message);
+}
+
+async function bindSource(session, sourceRoot) {
+  const stat = await lstat(sourceRoot);
+  if (!stat.isDirectory()) throw new Error(`test source root is not a directory: ${sourceRoot}`);
+  session.stdin.write(`SOURCE\t${sourceRoot}\t${String(stat.dev)}\t${String(stat.ino)}\n`);
+  await waitForLine(session.stdout, 'OK SOURCE');
 }
 
 try {
@@ -150,8 +157,7 @@ try {
   nested.stderr.on('data', (chunk) => { nestedStderr += chunk.toString('utf8'); });
   await waitForLine(nested.stdout, 'READY');
 
-  nested.stdin.write(`SOURCE\t${copySourceDir}\n`);
-  await waitForLine(nested.stdout, 'OK SOURCE');
+  await bindSource(nested, copySourceDir);
   nested.stdin.write('RESERVE\tbundle\n');
   await waitForLine(nested.stdout, 'OK RESERVE');
   nested.stdin.write('ENTER\tbundle\n');
@@ -195,8 +201,7 @@ try {
   let mutationStderr = '';
   mutationSession.stderr.on('data', (chunk) => { mutationStderr += chunk.toString('utf8'); });
   await waitForLine(mutationSession.stdout, 'READY');
-  mutationSession.stdin.write(`SOURCE\t${mutationSourceDir}\n`);
-  await waitForLine(mutationSession.stdout, 'OK SOURCE');
+  await bindSource(mutationSession, mutationSourceDir);
   mutationSession.stdin.write('RESERVE\tbundle\n');
   await waitForLine(mutationSession.stdout, 'OK RESERVE');
   mutationSession.stdin.write('ENTER\tbundle\n');
