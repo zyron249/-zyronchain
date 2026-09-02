@@ -21,6 +21,25 @@ function isWithin(root, candidate) {
   return rel === '' || (!rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && rel !== '..' && !isAbsolute(rel));
 }
 
+function sameDirectoryIdentity(expected, actual) {
+  return expected.dev === actual.dev && expected.ino === actual.ino;
+}
+
+async function assertBoundRootPath(rootPath, expectedStat) {
+  let currentStat;
+  try {
+    currentStat = await lstat(rootPath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      throw new Error('miner release root pathname identity changed during materialization');
+    }
+    throw error;
+  }
+  if (!currentStat.isDirectory() || !sameDirectoryIdentity(expectedStat, currentStat)) {
+    throw new Error('miner release root pathname identity changed during materialization');
+  }
+}
+
 function waitForLine(stream, expected) {
   return new Promise((resolveLine, reject) => {
     let buffer = '';
@@ -110,6 +129,8 @@ export async function materializeMinerPackagePosix({ root, outRoot, bundleName, 
   if (!isWithin(canonicalRoot, canonicalOutRoot) || relative(canonicalRoot, canonicalOutRoot) !== 'miner-release') {
     throw new Error('miner release root must be the canonical l1/miner-release directory');
   }
+  const boundOutRootStat = await lstat(canonicalOutRoot);
+  if (!boundOutRootStat.isDirectory()) throw new Error('miner release root must be a directory');
 
   const temp = await mkdtemp(join(tmpdir(), 'zyron-miner-materializer-'));
   const helper = join(temp, 'miner-custody-posix');
@@ -185,6 +206,7 @@ export async function materializeMinerPackagePosix({ root, outRoot, bundleName, 
       session.once('close', resolveExit);
     });
     if (exitCode !== 0) throw new Error(`descriptor-relative miner materialization failed: ${stderr}`);
+    await assertBoundRootPath(canonicalOutRoot, boundOutRootStat);
   } catch (error) {
     session.kill('SIGKILL');
     throw error;
