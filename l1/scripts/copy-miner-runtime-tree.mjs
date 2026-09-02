@@ -78,6 +78,22 @@ function fsyncBoundDirectory(directoryPath, fsOps, openFlags) {
   }
 }
 
+function assertDestinationIdentity(destinationPath, destinationFd, fsOps, displayPath) {
+  const descriptorStat = fsOps.fstatSync(destinationFd);
+  let pathnameStat;
+  try {
+    pathnameStat = fsOps.lstatSync(destinationPath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      throw new Error(`miner runtime destination identity changed during copy: ${displayPath}`);
+    }
+    throw error;
+  }
+  if (!descriptorStat.isFile() || !pathnameStat.isFile() || !sameFileIdentity(descriptorStat, pathnameStat)) {
+    throw new Error(`miner runtime destination identity changed during copy: ${displayPath}`);
+  }
+}
+
 function copyBoundRegularFile(sourcePath, destinationPath, expectedStat, fsOps, displayPath, openFlags) {
   let sourceFd;
   let destinationFd;
@@ -105,6 +121,7 @@ function copyBoundRegularFile(sourcePath, destinationPath, expectedStat, fsOps, 
     }
     fsOps.fchmodSync(destinationFd, expectedStat.mode & 0o777);
     fsOps.fsyncSync(destinationFd);
+    assertDestinationIdentity(destinationPath, destinationFd, fsOps, displayPath);
   } finally {
     if (destinationFd !== undefined) fsOps.closeSync(destinationFd);
     if (sourceFd !== undefined) fsOps.closeSync(sourceFd);
