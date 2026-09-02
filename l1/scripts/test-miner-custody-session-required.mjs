@@ -30,7 +30,7 @@ try {
   const malformed = spawnSync(helper, ['session', root, 'not-a-device', 'not-an-inode'], { input: 'END\n', encoding: 'utf8' });
   if (malformed.status !== 64 || malformed.stdout.includes('READY')) throw new Error('malformed session identity reached READY');
 
-  const stat = await lstat(root);
+  const stat = await lstat(root, { bigint: true });
   const valid = spawnSync(helper, ['session', root, String(stat.dev), String(stat.ino)], { input: 'END\n', encoding: 'utf8' });
   if (valid.status !== 0 || !valid.stdout.includes('READY') || !valid.stdout.includes('OK END')) throw new Error(`valid identity-bound session failed: ${valid.stderr || valid.stdout}`);
 
@@ -42,7 +42,7 @@ try {
     if (error?.code !== 'ENOENT') throw error;
   }
 
-  console.log('PASS: every production POSIX custody session requires expected release-root dev/inode before READY or mutation.');
+  console.log('PASS: every production POSIX custody session requires exact release-root dev/inode before READY or mutation.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
