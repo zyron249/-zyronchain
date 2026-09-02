@@ -7,9 +7,10 @@ import { RemoteValidatorSigner } from "../src/validator-signer.js";
 
 const privateKey = "41".padStart(64, "0");
 const publicKey = publicKeyFromPrivate(privateKey);
+const testToken = "signer-test-token-".padEnd(64, "x");
 
 test("remote validator signer authenticates requests without placing the token in the body", async () => {
-  const token = "signer-test-token-".padEnd(64, "x");
+  const token = testToken;
   let authorization: string | undefined;
   let rawBody = "";
   const server = createServer(async (request, response) => {
@@ -49,7 +50,15 @@ test("remote validator signer authenticates requests without placing the token i
   }
 });
 
-test("remote validator signer rejects weak or header-unsafe bearer tokens", () => {
+test("remote validator signer rejects missing, weak or header-unsafe bearer tokens", () => {
+  assert.throws(
+    () => new RemoteValidatorSigner("http://127.0.0.1:9138/sign", publicKey),
+    /bearer token/
+  );
+  assert.throws(
+    () => new RemoteValidatorSigner("http://127.0.0.1:9138/sign", publicKey, ""),
+    /bearer token/
+  );
   assert.throws(
     () => new RemoteValidatorSigner("http://127.0.0.1:9138/sign", publicKey, "short"),
     /bearer token/
@@ -87,14 +96,14 @@ test("remote validator signer rejects non-JSON and oversized chunked responses",
     const base = `http://127.0.0.1:${address.port}`;
 
     await assert.rejects(
-      () => new RemoteValidatorSigner(`${base}/wrong-type`, publicKey).signCanonical(
+      () => new RemoteValidatorSigner(`${base}/wrong-type`, publicKey, testToken).signCanonical(
         { height: 1 },
         "block-proposal"
       ),
       /must return application\/json/
     );
     await assert.rejects(
-      () => new RemoteValidatorSigner(`${base}/oversized`, publicKey).signCanonical(
+      () => new RemoteValidatorSigner(`${base}/oversized`, publicKey, testToken).signCanonical(
         { height: 1 },
         "block-proposal"
       ),
