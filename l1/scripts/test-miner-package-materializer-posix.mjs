@@ -86,6 +86,9 @@ try {
   if (!materializerText.includes("ignoredDirectoryNames: new Set(['.bin'])")) {
     throw new Error('materializer does not explicitly omit npm executable shim directories from runtime dependency payloads');
   }
+  if (!materializerText.includes('await assertBoundRootPath(canonicalOutRoot, boundOutRootStat)')) {
+    throw new Error('materializer does not bind successful completion to the release-root pathname identity');
+  }
 
   await mkdir(join(root, 'dist', 'src'), { recursive: true });
   await mkdir(join(root, 'scripts'), { recursive: true });
@@ -127,6 +130,62 @@ try {
   }
   if (!duplicateFailed) throw new Error('descriptor-relative materializer reused an existing bundle directory');
 
+  const replacingHelperSource = join(temp, 'replace-root-helper.c');
+  await writeFile(replacingHelperSource, `
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  if (argc != 3 || strcmp(argv[1], "session") != 0) return 64;
+  const char *root = argv[2];
+  puts("READY"); fflush(stdout);
+  char line[8192];
+  while (fgets(line, sizeof(line), stdin)) {
+    if (strcmp(line, "END\\n") == 0) {
+      size_t n = strlen(root) + 16;
+      char *moved = malloc(n);
+      if (!moved) return 70;
+      snprintf(moved, n, "%s.replaced", root);
+      if (rename(root, moved) != 0) return 71;
+      if (mkdir(root, 0700) != 0) return 72;
+      free(moved);
+      puts("OK END"); fflush(stdout);
+      return 0;
+    }
+    if (strcmp(line, "LEAVE\\n") == 0) puts("OK LEAVE");
+    else if (strcmp(line, "SOURCE_LEAVE\\n") == 0) puts("OK SOURCE_LEAVE");
+    else if (strncmp(line, "SOURCE\\t", 7) == 0) puts("OK SOURCE");
+    else if (strncmp(line, "SOURCE_ENTER\\t", 13) == 0) puts("OK SOURCE_ENTER");
+    else if (strncmp(line, "RESERVE\\t", 8) == 0) puts("OK RESERVE");
+    else if (strncmp(line, "ENTER\\t", 6) == 0) puts("OK ENTER");
+    else if (strncmp(line, "COPYREL\\t", 8) == 0) puts("OK COPYREL");
+    else return 73;
+    fflush(stdout);
+  }
+  return 74;
+}
+`, 'utf8');
+
+  let rootReplacementFailed = false;
+  try {
+    await materializeMinerPackagePosix({
+      root,
+      outRoot,
+      bundleName: `${bundleName}-root-replacement`,
+      nodeName: 'node',
+      helperSource: replacingHelperSource
+    });
+  } catch (error) {
+    if (error?.message === 'miner release root pathname identity changed during materialization') {
+      rootReplacementFailed = true;
+    } else {
+      throw error;
+    }
+  }
+  if (!rootReplacementFailed) throw new Error('materializer acknowledged success after the bound release-root pathname was replaced');
+
   await symlink('index.js', join(root, 'node_modules', 'fixture-pkg', 'linked.js'));
   let symlinkFailed = false;
   try {
@@ -136,7 +195,7 @@ try {
   }
   if (!symlinkFailed) throw new Error('retained source custody accepted a source symlink instead of failing closed');
 
-  console.log('PASS: miner materializer copies from retained source-directory descriptors, omits npm executable shim directories, preserves layout/allowlist, rejects all other source symlinks and unsafe custody fallbacks, and refuses an existing bundle.');
+  console.log('PASS: miner materializer keeps descriptor-relative source/destination custody, binds successful completion to the original release-root pathname identity, rejects unsafe source symlinks, and refuses an existing bundle.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
