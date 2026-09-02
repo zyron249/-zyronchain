@@ -19,6 +19,18 @@ function sameRegularFileSnapshot(expected, actual) {
     && expected.ctimeMs === actual.ctimeMs;
 }
 
+function requireNoFollowFlags(fsOps) {
+  const constants = fsOps.constants ?? fs.constants;
+  const noFollow = constants?.O_NOFOLLOW;
+  if (!Number.isInteger(noFollow) || noFollow === 0) {
+    throw new Error('miner runtime packaging requires O_NOFOLLOW support');
+  }
+  return {
+    source: constants.O_RDONLY | noFollow,
+    destination: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow
+  };
+}
+
 function canonicalDestinationPath(candidate, fsOps) {
   const destinationPath = path.resolve(candidate);
   const parentPath = path.dirname(destinationPath);
@@ -30,17 +42,17 @@ function canonicalDestinationPath(candidate, fsOps) {
   return path.join(canonicalParent, path.basename(destinationPath));
 }
 
-function copyBoundRegularFile(sourcePath, destinationPath, expectedStat, fsOps, displayPath) {
+function copyBoundRegularFile(sourcePath, destinationPath, expectedStat, fsOps, displayPath, openFlags) {
   let sourceFd;
   let destinationFd;
   try {
-    sourceFd = fsOps.openSync(sourcePath, 'r');
+    sourceFd = fsOps.openSync(sourcePath, openFlags.source);
     const openedStat = fsOps.fstatSync(sourceFd);
     if (!openedStat.isFile() || !sameRegularFileSnapshot(expectedStat, openedStat)) {
       throw new Error(`miner runtime source snapshot changed before copy: ${displayPath}`);
     }
 
-    destinationFd = fsOps.openSync(destinationPath, 'wx', expectedStat.mode & 0o777);
+    destinationFd = fsOps.openSync(destinationPath, openFlags.destination, expectedStat.mode & 0o777);
     const buffer = Buffer.allocUnsafe(COPY_BUFFER_BYTES);
     while (true) {
       const bytesRead = fsOps.readSync(sourceFd, buffer, 0, buffer.length, null);
@@ -63,6 +75,7 @@ function copyBoundRegularFile(sourcePath, destinationPath, expectedStat, fsOps, 
 }
 
 export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
+  const openFlags = requireNoFollowFlags(fsOps);
   const sourceRoot = fsOps.realpathSync(source);
   const sourceRootStat = fsOps.lstatSync(sourceRoot);
   if (!sourceRootStat.isDirectory()) {
@@ -118,7 +131,7 @@ export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
     }
     if (stat.isFile()) {
       assertSourceWithinRoot(sourcePath, displayPath);
-      copyBoundRegularFile(sourcePath, destinationPath, stat, fsOps, displayPath);
+      copyBoundRegularFile(sourcePath, destinationPath, stat, fsOps, displayPath, openFlags);
       return;
     }
     if (stat.isSymbolicLink()) {
@@ -131,7 +144,7 @@ export function copyMinerRuntimeTree(source, destination, fsOps = fs) {
         throw new Error(`miner runtime symlink must resolve to a regular file: ${displayPath}`);
       }
       fsOps.mkdirSync(path.dirname(destinationPath), { recursive: true });
-      copyBoundRegularFile(resolved, destinationPath, target, fsOps, displayPath);
+      copyBoundRegularFile(resolved, destinationPath, target, fsOps, displayPath, openFlags);
       return;
     }
     throw new Error(`unsupported miner runtime entry: ${displayPath}`);
