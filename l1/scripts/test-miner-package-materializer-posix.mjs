@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { access, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -77,6 +78,9 @@ try {
   if (!helperText.includes('static void assert_directory_fd') || !helperText.includes('S_ISDIR(st.st_mode)')) {
     throw new Error('custody helper does not verify opened directory descriptors with fstat');
   }
+  if (!helperText.includes('opened release root does not match expected identity')) {
+    throw new Error('custody helper does not fail closed when session root open differs from the expected dev/inode');
+  }
   if (materializerText.includes('`COPY\\t${destinationName}\\t${sourcePath}`')) {
     throw new Error('materializer regressed to pathname COPY');
   }
@@ -89,12 +93,25 @@ try {
   if (!materializerText.includes('await assertBoundRootPath(canonicalOutRoot, boundOutRootStat)')) {
     throw new Error('materializer does not bind successful completion to the release-root pathname identity');
   }
+  if (!materializerText.includes("['session', canonicalOutRoot, String(boundOutRootStat.dev), String(boundOutRootStat.ino)]")) {
+    throw new Error('production materializer does not pass the expected release-root identity into native session startup');
+  }
 
   await mkdir(join(root, 'dist', 'src'), { recursive: true });
   await mkdir(join(root, 'scripts'), { recursive: true });
   await mkdir(join(root, 'node_modules', 'fixture-pkg'), { recursive: true });
   await mkdir(join(root, 'node_modules', '.bin'), { recursive: true });
   await mkdir(outRoot, { recursive: true });
+
+  const compiledHelper = join(temp, 'miner-custody-posix');
+  const compiler = process.env.CC || 'cc';
+  const build = spawnSync(compiler, ['-std=c11', '-Wall', '-Wextra', '-Werror', '-O2', helperSource, '-o', compiledHelper], { encoding: 'utf8' });
+  if (build.status !== 0) throw new Error(`failed to compile custody helper regression: ${build.stderr || build.stdout}`);
+  const outStat = await lstat(outRoot);
+  const mismatch = spawnSync(compiledHelper, ['session', outRoot, String(outStat.dev), String(outStat.ino + 1)], { encoding: 'utf8' });
+  if (mismatch.status !== 70 || mismatch.stdout.includes('READY') || !mismatch.stderr.includes('opened release root does not match expected identity')) {
+    throw new Error('custody helper did not reject mismatched expected root identity before READY/mutation boundary');
+  }
 
   await writeFile(join(root, 'dist', 'src', 'index.js'), 'export const fixture = true;\n');
   for (const name of ['mine.mjs', 'miner-rpc-response.mjs', 'miner-launcher.mjs', 'miner-launcher-security.mjs']) {
@@ -195,7 +212,7 @@ int main(int argc, char **argv) {
   }
   if (!symlinkFailed) throw new Error('retained source custody accepted a source symlink instead of failing closed');
 
-  console.log('PASS: miner materializer keeps descriptor-relative source/destination custody, binds successful completion to the original release-root pathname identity, rejects unsafe source symlinks, and refuses an existing bundle.');
+  console.log('PASS: miner materializer binds native session startup to the expected release-root inode, keeps descriptor-relative source/destination custody, validates final pathname identity, rejects unsafe source symlinks, and refuses an existing bundle.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }

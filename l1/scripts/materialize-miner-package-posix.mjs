@@ -158,7 +158,10 @@ export async function materializeMinerPackagePosix({ root, outRoot, bundleName, 
     'The website one-click button stays disabled until a canonical network profile, signed release assets, and public-mining activation are all available.'
   ].join('\n'), 'utf8');
 
-  const session = spawn(helper, ['session', canonicalOutRoot], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const sessionArgs = helperSource
+    ? ['session', canonicalOutRoot]
+    : ['session', canonicalOutRoot, String(boundOutRootStat.dev), String(boundOutRootStat.ino)];
+  const session = spawn(helper, sessionArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '';
   session.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
 
