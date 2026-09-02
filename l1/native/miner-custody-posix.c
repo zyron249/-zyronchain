@@ -334,11 +334,44 @@ static void run_session(int root_fd, const struct stat *before) {
     }
 
     if (strcmp(command, "SOURCE_ENTER") == 0) {
-      if (source_depth == 0 || !valid_component(component) || source_depth >= MAX_SESSION_DEPTH) {
+      char *dev_text = strchr(component, '\t');
+      if (!dev_text) {
+        fprintf(stderr, "miner-custody-posix: SOURCE_ENTER requires component and expected dev/inode\n");
+        exit(64);
+      }
+      *dev_text = '\0';
+      dev_text++;
+      char *ino_text = strchr(dev_text, '\t');
+      if (!ino_text) {
+        fprintf(stderr, "miner-custody-posix: SOURCE_ENTER requires component and expected dev/inode\n");
+        exit(64);
+      }
+      *ino_text = '\0';
+      ino_text++;
+      if (source_depth == 0 || !valid_component(component) || source_depth >= MAX_SESSION_DEPTH || strchr(ino_text, '\t') != NULL) {
         fprintf(stderr, "miner-custody-posix: invalid retained source directory transition\n");
         exit(64);
       }
-      source_fds[source_depth] = open_child_dir_nofollow(source_fds[source_depth - 1], component);
+      unsigned long long expected_dev;
+      unsigned long long expected_ino;
+      if (!parse_u64(dev_text, &expected_dev) || !parse_u64(ino_text, &expected_ino)) {
+        fprintf(stderr, "miner-custody-posix: invalid expected retained source child identity\n");
+        exit(64);
+      }
+      int child_fd = open_child_dir_nofollow(source_fds[source_depth - 1], component);
+      struct stat child_stat;
+      if (fstat(child_fd, &child_stat) != 0) {
+        int saved = errno;
+        close(child_fd);
+        errno = saved;
+        die("fstat retained source child");
+      }
+      if ((unsigned long long)child_stat.st_dev != expected_dev || (unsigned long long)child_stat.st_ino != expected_ino) {
+        fprintf(stderr, "miner-custody-posix: opened retained source child does not match expected identity\n");
+        close(child_fd);
+        exit(70);
+      }
+      source_fds[source_depth] = child_fd;
       source_depth++;
       puts("OK SOURCE_ENTER");
       fflush(stdout);
