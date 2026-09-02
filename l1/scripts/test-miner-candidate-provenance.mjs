@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildMinerCandidateProvenance, verifyMinerCandidateProvenance, writeMinerCandidateProvenance } from './miner-candidate-provenance.mjs';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zyron-miner-provenance-'));
+const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'zyron-miner-provenance-')));
 try {
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@zyronchain/l1', version: '1.2.3' }));
   fs.writeFileSync(path.join(root, 'miner-sbom.cdx.json'), '{"bomFormat":"CycloneDX","specVersion":"1.5"}\n');
