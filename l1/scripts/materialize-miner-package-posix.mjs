@@ -72,7 +72,9 @@ async function command(session, line, expected) {
 
 async function bindSource(session, sourceRoot) {
   assertProtocolText(sourceRoot, 'source root');
-  await command(session, `SOURCE\t${sourceRoot}`, 'OK SOURCE');
+  const sourceStat = await lstat(sourceRoot);
+  if (!sourceStat.isDirectory()) throw new Error('miner package source root must be a directory');
+  await command(session, `SOURCE\t${sourceRoot}\t${String(sourceStat.dev)}\t${String(sourceStat.ino)}`, 'OK SOURCE');
 }
 
 async function enterSource(session, component) {
