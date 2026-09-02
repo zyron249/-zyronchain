@@ -13,11 +13,36 @@ function assertString(value, label) {
   return value;
 }
 
+function sameFileSnapshot(expected, actual) {
+  return expected.dev === actual.dev
+    && expected.ino === actual.ino
+    && expected.size === actual.size
+    && expected.mtimeMs === actual.mtimeMs
+    && expected.ctimeMs === actual.ctimeMs;
+}
+
 function readRegular(file, label) {
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`miner provenance ${label} must be a regular file`);
+  const expectedStat = fs.lstatSync(file);
+  if (!expectedStat.isFile() || expectedStat.isSymbolicLink()) throw new Error(`miner provenance ${label} must be a regular file`);
   if (fs.realpathSync(file) !== file) throw new Error(`miner provenance ${label} path must be canonical`);
-  return fs.readFileSync(file);
+
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const openedStat = fs.fstatSync(fd);
+    if (!openedStat.isFile() || !sameFileSnapshot(expectedStat, openedStat)) {
+      throw new Error(`miner provenance ${label} snapshot changed before read`);
+    }
+
+    const bytes = fs.readFileSync(fd);
+    const completedStat = fs.fstatSync(fd);
+    if (!completedStat.isFile() || !sameFileSnapshot(openedStat, completedStat)) {
+      throw new Error(`miner provenance ${label} mutated during read`);
+    }
+    return bytes;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
 }
 
 function readJsonRegular(file, label) {
