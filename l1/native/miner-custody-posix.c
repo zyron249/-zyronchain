@@ -50,8 +50,13 @@ static int open_child_dir_nofollow(int parent_fd, const char *name) {
   return fd;
 }
 
+static void sync_directory(int fd, const char *what) {
+  if (fsync(fd) != 0) die(what);
+}
+
 static void reserve_child_dir(int parent_fd, const char *name) {
   if (mkdirat(parent_fd, name, 0700) != 0) die("reserve child directory");
+  sync_directory(parent_fd, "fsync parent directory after reserve");
 }
 
 static void write_all(int fd, const unsigned char *buffer, size_t len, const char *what) {
@@ -82,6 +87,7 @@ static void write_child_file(int parent_fd, const char *name, const char *payloa
     die("fsync child file");
   }
   if (close(fd) != 0) die("close child file");
+  sync_directory(parent_fd, "fsync parent directory after write");
 }
 
 static long stat_mtime_nsec(const struct stat *st) {
@@ -187,6 +193,7 @@ static void copy_child_file_from_dir(int parent_fd, const char *name, int source
     die("close copy destination");
   }
   if (close(source_fd) != 0) die("close retained copy source");
+  sync_directory(parent_fd, "fsync parent directory after copy");
 }
 
 static int valid_component(const char *name) {
