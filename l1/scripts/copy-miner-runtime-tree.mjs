@@ -42,11 +42,22 @@ function canonicalDestinationPath(candidate, fsOps) {
   return path.join(canonicalParent, path.basename(destinationPath));
 }
 
+function openBoundSource(sourcePath, openFlags, fsOps, displayPath) {
+  try {
+    return fsOps.openSync(sourcePath, openFlags.source);
+  } catch (error) {
+    if (error?.code === 'ELOOP') {
+      throw new Error(`miner runtime source snapshot changed before copy: ${displayPath}`);
+    }
+    throw error;
+  }
+}
+
 function copyBoundRegularFile(sourcePath, destinationPath, expectedStat, fsOps, displayPath, openFlags) {
   let sourceFd;
   let destinationFd;
   try {
-    sourceFd = fsOps.openSync(sourcePath, openFlags.source);
+    sourceFd = openBoundSource(sourcePath, openFlags, fsOps, displayPath);
     const openedStat = fsOps.fstatSync(sourceFd);
     if (!openedStat.isFile() || !sameRegularFileSnapshot(expectedStat, openedStat)) {
       throw new Error(`miner runtime source snapshot changed before copy: ${displayPath}`);
