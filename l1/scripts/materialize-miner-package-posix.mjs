@@ -88,10 +88,12 @@ async function leaveSource(session) {
   await command(session, 'SOURCE_LEAVE', 'OK SOURCE_LEAVE');
 }
 
-async function copyFile(session, sourceName, destinationName = sourceName) {
+async function copyFile(session, sourceName, sourcePath, destinationName = sourceName) {
   assertProtocolText(sourceName, 'copy source component');
   assertProtocolText(destinationName, 'destination component');
-  await command(session, `COPYREL\t${destinationName}\t${sourceName}`, 'OK COPYREL');
+  const sourceStat = await lstat(sourcePath);
+  if (!sourceStat.isFile()) throw new Error(`miner retained copy source must be a regular file: ${sourcePath}`);
+  await command(session, `COPYREL\t${destinationName}\t${sourceName}\t${String(sourceStat.dev)}\t${String(sourceStat.ino)}`, 'OK COPYREL');
 }
 
 async function copyTree(session, sourceDir, destinationComponent, options = {}) {
@@ -119,7 +121,7 @@ async function copyTree(session, sourceDir, destinationComponent, options = {}) 
       continue;
     }
     if (!sourceLstat.isFile()) throw new Error(`unsupported miner package source entry: ${sourcePath}`);
-    await copyFile(session, entry.name);
+    await copyFile(session, entry.name, sourcePath);
   }
   await command(session, 'LEAVE', 'OK LEAVE');
 }
@@ -185,23 +187,23 @@ export async function materializeMinerPackagePosix({ root, outRoot, bundleName, 
     await command(session, 'RESERVE\tscripts', 'OK RESERVE');
     await command(session, 'ENTER\tscripts', 'OK ENTER');
     await enterSource(session, 'scripts', join(canonicalRoot, 'scripts'));
-    for (const name of PACKAGED_SCRIPTS) await copyFile(session, name);
+    for (const name of PACKAGED_SCRIPTS) await copyFile(session, name, join(canonicalRoot, 'scripts', name));
     await leaveSource(session);
     await command(session, 'LEAVE', 'OK LEAVE');
 
-    await copyFile(session, 'miner-network-profile.json');
+    await copyFile(session, 'miner-network-profile.json', join(canonicalRoot, 'miner-network-profile.json'));
     await enterSource(session, 'node_modules', join(canonicalRoot, 'node_modules'));
     await copyTree(session, join(canonicalRoot, 'node_modules'), 'node_modules', { ignoredDirectoryNames: new Set(['.bin']) });
     await leaveSource(session);
-    for (const name of ['package.json', 'MINING.md']) await copyFile(session, name);
+    for (const name of ['package.json', 'MINING.md']) await copyFile(session, name, join(canonicalRoot, name));
 
     const runtimePath = await realpath(process.execPath);
     await bindSource(session, dirname(runtimePath));
-    await copyFile(session, basename(runtimePath), nodeName);
+    await copyFile(session, basename(runtimePath), runtimePath, nodeName);
 
     await bindSource(session, temp);
-    await copyFile(session, 'ZyronMiner');
-    await copyFile(session, 'README.txt');
+    await copyFile(session, 'ZyronMiner', launcherSource);
+    await copyFile(session, 'README.txt', readmeSource);
 
     await command(session, 'LEAVE', 'OK LEAVE');
     await command(session, 'END', 'OK END');
