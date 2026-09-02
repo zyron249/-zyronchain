@@ -53,6 +53,43 @@ try {
     fs.rmSync(sbom, { force: true });
     fs.renameSync(sbomReal, sbom);
   }
+
+  const originalOpenSync = fs.openSync;
+  const replacement = path.join(root, 'sbom-replacement.json');
+  fs.writeFileSync(replacement, '{"bomFormat":"replacement"}\n');
+  let replaced = false;
+  fs.openSync = function patchedOpenSync(file, ...args) {
+    if (!replaced && file === sbom) {
+      replaced = true;
+      fs.renameSync(sbom, `${sbom}.original`);
+      fs.renameSync(replacement, sbom);
+    }
+    return originalOpenSync.call(fs, file, ...args);
+  };
+  try {
+    assert.throws(() => buildMinerCandidateProvenance(root, metadata), /snapshot changed before read/);
+  } finally {
+    fs.openSync = originalOpenSync;
+    fs.rmSync(sbom, { force: true });
+    fs.renameSync(`${sbom}.original`, sbom);
+    fs.rmSync(replacement, { force: true });
+  }
+
+  const originalReadFileSync = fs.readFileSync;
+  let descriptorReads = 0;
+  fs.readFileSync = function patchedReadFileSync(file, ...args) {
+    if (typeof file === 'number') {
+      descriptorReads += 1;
+      if (descriptorReads === 2) fs.appendFileSync(sbom, ' ');
+    }
+    return originalReadFileSync.call(fs, file, ...args);
+  };
+  try {
+    assert.throws(() => buildMinerCandidateProvenance(root, metadata), /mutated during read/);
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+    fs.writeFileSync(sbom, '{"bomFormat":"CycloneDX","specVersion":"1.5"}\n');
+  }
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }
