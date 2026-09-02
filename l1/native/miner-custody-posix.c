@@ -1,6 +1,3 @@
-#include <stdio.h>
-#include <string.h>
-
 /*
  * Production entrypoint for POSIX miner custody.
  *
@@ -8,6 +5,11 @@
  * enforce the release-root identity contract before the session implementation
  * can emit READY or accept mutation commands. The included implementation still
  * performs the authoritative opened-descriptor dev/inode comparison.
+ *
+ * Keep the implementation include before any libc headers in this translation
+ * unit. miner-custody-posix-impl.inc defines the required POSIX feature-test
+ * macros before including system headers; including libc headers here first
+ * makes those macros too late on glibc and can hide declarations such as openat.
  *
  * Audit anchors for the included implementation (behavior is exercised by the
  * materializer regression suite):
