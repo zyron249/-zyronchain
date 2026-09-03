@@ -21,14 +21,18 @@ function isWithin(root, candidate) {
   return rel === '' || (!rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && rel !== '..' && !isAbsolute(rel));
 }
 
-function sameDirectoryIdentity(expected, actual) {
+async function lstatExact(path) {
+  return lstat(path, { bigint: true });
+}
+
+export function sameDirectoryIdentity(expected, actual) {
   return expected.dev === actual.dev && expected.ino === actual.ino;
 }
 
 async function assertBoundRootPath(rootPath, expectedStat) {
   let currentStat;
   try {
-    currentStat = await lstat(rootPath);
+    currentStat = await lstatExact(rootPath);
   } catch (error) {
     if (error?.code === 'ENOENT') {
       throw new Error('miner release root pathname identity changed during materialization');
@@ -72,16 +76,16 @@ async function command(session, line, expected) {
 
 async function bindSource(session, sourceRoot) {
   assertProtocolText(sourceRoot, 'source root');
-  const sourceStat = await lstat(sourceRoot);
+  const sourceStat = await lstatExact(sourceRoot);
   if (!sourceStat.isDirectory()) throw new Error('miner package source root must be a directory');
-  await command(session, `SOURCE\t${sourceRoot}\t${String(sourceStat.dev)}\t${String(sourceStat.ino)}`, 'OK SOURCE');
+  await command(session, `SOURCE\t${sourceRoot}\t${sourceStat.dev.toString()}\t${sourceStat.ino.toString()}`, 'OK SOURCE');
 }
 
 async function enterSource(session, component, sourcePath) {
   assertProtocolText(component, 'source component');
-  const sourceStat = await lstat(sourcePath);
+  const sourceStat = await lstatExact(sourcePath);
   if (!sourceStat.isDirectory()) throw new Error(`miner retained source child must be a directory: ${sourcePath}`);
-  await command(session, `SOURCE_ENTER\t${component}\t${String(sourceStat.dev)}\t${String(sourceStat.ino)}`, 'OK SOURCE_ENTER');
+  await command(session, `SOURCE_ENTER\t${component}\t${sourceStat.dev.toString()}\t${sourceStat.ino.toString()}`, 'OK SOURCE_ENTER');
 }
 
 async function leaveSource(session) {
@@ -91,9 +95,9 @@ async function leaveSource(session) {
 async function copyFile(session, sourceName, sourcePath, destinationName = sourceName) {
   assertProtocolText(sourceName, 'copy source component');
   assertProtocolText(destinationName, 'destination component');
-  const sourceStat = await lstat(sourcePath);
+  const sourceStat = await lstatExact(sourcePath);
   if (!sourceStat.isFile()) throw new Error(`miner retained copy source must be a regular file: ${sourcePath}`);
-  await command(session, `COPYREL\t${destinationName}\t${sourceName}\t${String(sourceStat.dev)}\t${String(sourceStat.ino)}`, 'OK COPYREL');
+  await command(session, `COPYREL\t${destinationName}\t${sourceName}\t${sourceStat.dev.toString()}\t${sourceStat.ino.toString()}`, 'OK COPYREL');
 }
 
 async function copyTree(session, sourceDir, destinationComponent, options = {}) {
@@ -106,7 +110,7 @@ async function copyTree(session, sourceDir, destinationComponent, options = {}) 
   for (const entry of entries) {
     assertProtocolText(entry.name, 'source entry');
     const sourcePath = join(sourceDir, entry.name);
-    const sourceLstat = await lstat(sourcePath);
+    const sourceLstat = await lstatExact(sourcePath);
     if (sourceLstat.isSymbolicLink()) {
       throw new Error(`miner package source symlink is not accepted by retained descriptor custody: ${sourcePath}`);
     }
@@ -135,7 +139,7 @@ export async function materializeMinerPackagePosix({ root, outRoot, bundleName, 
   if (!isWithin(canonicalRoot, canonicalOutRoot) || relative(canonicalRoot, canonicalOutRoot) !== 'miner-release') {
     throw new Error('miner release root must be the canonical l1/miner-release directory');
   }
-  const boundOutRootStat = await lstat(canonicalOutRoot);
+  const boundOutRootStat = await lstatExact(canonicalOutRoot);
   if (!boundOutRootStat.isDirectory()) throw new Error('miner release root must be a directory');
 
   const temp = await mkdtemp(join(tmpdir(), 'zyron-miner-materializer-'));
@@ -164,7 +168,7 @@ export async function materializeMinerPackagePosix({ root, outRoot, bundleName, 
     'The website one-click button stays disabled until a canonical network profile, signed release assets, and public-mining activation are all available.'
   ].join('\n'), 'utf8');
 
-  const sessionArgs = ['session', canonicalOutRoot, String(boundOutRootStat.dev), String(boundOutRootStat.ino)];
+  const sessionArgs = ['session', canonicalOutRoot, boundOutRootStat.dev.toString(), boundOutRootStat.ino.toString()];
   const session = spawn(helper, sessionArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '';
   session.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
