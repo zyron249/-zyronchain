@@ -203,8 +203,7 @@ async function requireSamePrivateRegularFile(
   phase: string,
   initialPathMetadata?: { dev: bigint; ino: bigint }
 ): Promise<void> {
-  const descriptorMetadata = await handle.stat();
-  const descriptorIdentity = await handle.stat({ bigint: true });
+  const descriptorMetadata = await handle.stat({ bigint: true });
   const pathMetadata = await lstat(resolved, { bigint: true });
   if (pathMetadata.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link`);
   if (!descriptorMetadata.isFile() || !pathMetadata.isFile()) {
@@ -218,14 +217,14 @@ async function requireSamePrivateRegularFile(
       && !samePrivateFileIdentity(
         initialPathMetadata.dev,
         initialPathMetadata.ino,
-        descriptorIdentity.dev,
-        descriptorIdentity.ino
+        descriptorMetadata.dev,
+        descriptorMetadata.ino
       )) {
     throw new Error(`${label} changed before opening`);
   }
   if (!samePrivateFileIdentity(
-    descriptorIdentity.dev,
-    descriptorIdentity.ino,
+    descriptorMetadata.dev,
+    descriptorMetadata.ino,
     pathMetadata.dev,
     pathMetadata.ino
   )) {
@@ -233,10 +232,10 @@ async function requireSamePrivateRegularFile(
   }
   if (process.platform !== "win32") {
     const effectiveUid = typeof process.geteuid === "function" ? process.geteuid() : null;
-    if (effectiveUid !== null && descriptorMetadata.uid !== effectiveUid) {
+    if (effectiveUid !== null && descriptorMetadata.uid !== BigInt(effectiveUid)) {
       throw new Error(`${label} must be owned by the effective user`);
     }
-    if ((descriptorMetadata.mode & 0o077) !== 0) {
+    if ((descriptorMetadata.mode & 0o077n) !== 0n) {
       throw new Error(`${label} must not be readable, writable, or executable by group/other users (0600 recommended)`);
     }
   }
