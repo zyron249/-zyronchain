@@ -6,7 +6,9 @@ on:
       - 'docs/miner-release-promotion.json'
       - 'docs/MINER_RELEASE_PROMOTION.md'
       - 'docs/MINER_RELEASE_PROMOTION_CUSTODY.md'
+      - 'docs/MINER_LINUX_SIGNING_BINDING.md'
       - 'docs/security/MINER_PROMOTION_SBOM_FAIL_CLOSED.md'
+      - 'docs/security/MINER_SIGNING_EVIDENCE_FAIL_CLOSED.md'
       - 'l1/scripts/verify-miner-release-promotion.mjs'
       - 'l1/scripts/test-miner-release-promotion.mjs'
       - 'l1/scripts/test-miner-release-promotion-sbom-baseline.mjs'
@@ -35,10 +37,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Checkout exact source
+      - name: Checkout exact source and retained evidence history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Set up canonical Node runtime
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -49,7 +52,7 @@ jobs:
       - name: Verify promotion provenance subject binding remains fail-closed
         working-directory: l1
         run: node scripts/verify-miner-release-provenance-subjects.mjs
-      - name: Verify platform signing subject binding remains fail-closed
+      - name: Verify platform signing evidence remains fail-closed
         working-directory: l1
         run: node scripts/verify-miner-release-signing-subjects.mjs
       - name: Verify checksum subject binding remains fail-closed
@@ -73,7 +76,7 @@ jobs:
       - name: Run provenance subject binding regressions
         working-directory: l1
         run: node scripts/test-miner-release-provenance-subjects.mjs
-      - name: Run signing subject binding regressions
+      - name: Run structured signing evidence regressions
         working-directory: l1
         run: node scripts/test-miner-release-signing-subjects.mjs
       - name: Run checksum subject binding regressions

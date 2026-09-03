@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const policyFile = process.argv[2] || path.resolve(process.cwd(), '../docs/miner-release-promotion.json');
+const repositoryRoot = path.resolve(process.argv[3] || path.resolve(here, '../..'));
 const baselineVerifier = path.join(here, 'verify-miner-release-promotion.mjs');
 const baseline = spawnSync(process.execPath, [baselineVerifier, policyFile], { encoding: 'utf8' });
 if (baseline.status !== 0) {
@@ -21,11 +22,39 @@ const activationRequested = [
 ].some((field) => policy[field] === true) || ['windows', 'macos', 'linux'].some((platform) => policy.assets?.[platform] !== null || policy.assetSha256?.[platform] !== null);
 
 if (!activationRequested) {
-  console.log('miner release signing subject binding remains fail-closed');
+  console.log('miner release signing evidence remains fail-closed');
   process.exit(0);
 }
 
 const releasePrefix = `https://github.com/zyron249/-zyronchain/releases/download/${policy.releaseVersion}/`;
+const exactBlobPrefix = `https://github.com/zyron249/-zyronchain/blob/${policy.sourceCommit}/`;
+const allowedVerification = Object.freeze({
+  windows: new Set(['authenticode']),
+  macos: new Set(['codesign', 'notarization']),
+  linux: new Set(['detached-signature'])
+});
+
+function requireExactKeys(value, keys, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.join(',') !== expected.join(',')) {
+    throw new Error(`${label} must contain exactly ${expected.join(', ')}`);
+  }
+}
+
+function runGit(args, options = {}) {
+  const result = spawnSync('git', ['-C', repositoryRoot, ...args], {
+    encoding: options.binary ? undefined : 'utf8',
+    maxBuffer: 4 * 1024 * 1024
+  });
+  if (result.status !== 0) {
+    const detail = options.binary ? result.stderr?.toString('utf8') : result.stderr;
+    throw new Error(`unable to resolve signing evidence from exact source commit: ${detail || args.join(' ')}`);
+  }
+  return result.stdout;
+}
+
 function evidenceDigest(field, expectedName) {
   const reference = policy.evidence?.[field];
   if (typeof reference !== 'string') throw new Error(`promotion requires ${field} evidence`);
@@ -36,7 +65,7 @@ function evidenceDigest(field, expectedName) {
   return match[1];
 }
 
-function canonicalDigest(platform, sbomField) {
+function canonicalSubject(platform, sbomField) {
   const asset = policy.assets?.[platform];
   const sha256 = policy.assetSha256?.[platform];
   if (typeof asset !== 'string' || typeof sha256 !== 'string') throw new Error(`missing ${platform} signing subject identity`);
@@ -46,22 +75,87 @@ function canonicalDigest(platform, sbomField) {
   const sbomName = `${name}.sbom.cdx.json`;
   const sbomSha256 = evidenceDigest(sbomField, sbomName);
   if (sha256 === sbomSha256) throw new Error(`${platform} artifact and SBOM identities must not alias`);
-  const body = `${JSON.stringify({ schemaVersion: 2, releaseVersion: policy.releaseVersion, sourceCommit: policy.sourceCommit, subject: { platform, name, sha256, sbom: { name: sbomName, sha256: sbomSha256 } } })}\n`;
-  return createHash('sha256').update(body, 'utf8').digest('hex');
+  return { platform, name, sha256, sbom: { name: sbomName, sha256: sbomSha256 } };
 }
 
+function sameSubject(actual, expected) {
+  return actual.platform === expected.platform &&
+    actual.name === expected.name &&
+    actual.sha256 === expected.sha256 &&
+    actual.sbom.name === expected.sbom.name &&
+    actual.sbom.sha256 === expected.sbom.sha256;
+}
+
+function exactSourceBlob(relativePath, field) {
+  const treeLine = runGit(['ls-tree', policy.sourceCommit, '--', relativePath]).trimEnd();
+  const match = treeLine.match(/^(100644|100755) blob ([0-9a-f]{40,64})\t(.+)$/);
+  if (!match || match[3] !== relativePath) {
+    throw new Error(`${field} evidence must be a regular file in exact sourceCommit`);
+  }
+  const bytes = runGit(['show', `${policy.sourceCommit}:${relativePath}`], { binary: true });
+  if (!Buffer.isBuffer(bytes)) throw new Error(`${field} evidence exact source blob unavailable`);
+  return bytes;
+}
+
+function readSigningEvidence(field, platform, expectedSubject) {
+  const reference = policy.evidence?.[field];
+  if (typeof reference !== 'string') throw new Error(`promotion requires ${field} evidence`);
+  const match = reference.match(/#sha256=([0-9a-f]{64})$/);
+  if (!match) throw new Error(`${field} evidence must include exact sha256 digest binding`);
+  const url = reference.slice(0, reference.indexOf('#sha256='));
+  if (!url.startsWith(exactBlobPrefix)) throw new Error(`${field} evidence must bind to exact sourceCommit`);
+  const relativePath = url.slice(exactBlobPrefix.length);
+  const allowedPath = platform === 'windows'
+    ? /^evidence\/windows-(?:signing|signature)\.json$/
+    : platform === 'macos'
+      ? /^evidence\/macos-(?:signing|notarization)\.json$/
+      : /^evidence\/linux-(?:signing|signature)\.json$/;
+  if (!allowedPath.test(relativePath)) throw new Error(`${field} evidence must use its canonical platform path`);
+
+  const absolutePath = path.resolve(repositoryRoot, relativePath);
+  const rootPrefix = `${repositoryRoot}${path.sep}`;
+  if (!absolutePath.startsWith(rootPrefix)) throw new Error(`${field} evidence path escapes repository root`);
+  const stat = lstatSync(absolutePath);
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`${field} evidence must be a regular non-symlink working-tree file`);
+  const workingBytes = readFileSync(absolutePath);
+  const sourceBytes = exactSourceBlob(relativePath, field);
+  const sourceDigest = createHash('sha256').update(sourceBytes).digest('hex');
+  if (sourceDigest !== match[1]) throw new Error(`${field} evidence digest does not match exact sourceCommit blob bytes`);
+  const workingDigest = createHash('sha256').update(workingBytes).digest('hex');
+  if (workingDigest !== sourceDigest) throw new Error(`${field} working-tree evidence differs from exact sourceCommit blob`);
+
+  let document;
+  try {
+    document = JSON.parse(sourceBytes.toString('utf8'));
+  } catch {
+    throw new Error(`${field} evidence must be valid JSON`);
+  }
+  requireExactKeys(document, ['schemaVersion', 'releaseVersion', 'subject', 'verification'], `${field} evidence`);
+  if (document.schemaVersion !== 3) throw new Error(`${field} evidence must use signing schemaVersion 3`);
+  if (document.releaseVersion !== policy.releaseVersion) throw new Error(`${field} evidence release identity mismatch`);
+  requireExactKeys(document.subject, ['platform', 'name', 'sha256', 'sbom'], `${field} subject`);
+  requireExactKeys(document.subject.sbom, ['name', 'sha256'], `${field} SBOM subject`);
+  if (!sameSubject(document.subject, expectedSubject)) {
+    throw new Error(`${field} evidence is not bound to the exact promoted artifact and SBOM subjects`);
+  }
+  requireExactKeys(document.verification, ['verified', 'method', 'tool'], `${field} verification`);
+  if (document.verification.verified !== true) throw new Error(`${field} evidence verification must be explicitly true`);
+  if (!allowedVerification[platform].has(document.verification.method)) {
+    throw new Error(`${field} evidence uses an unapproved ${platform} verification method`);
+  }
+  if (typeof document.verification.tool !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9 ._+:/-]{1,127}$/.test(document.verification.tool)) {
+    throw new Error(`${field} evidence requires a bounded verification tool identity`);
+  }
+}
+
+runGit(['cat-file', '-e', `${policy.sourceCommit}^{commit}`]);
 const bindings = [
   ['windows', 'windowsSigning', 'windowsSbom'],
   ['macos', 'macosSigningOrNotarization', 'macosSbom'],
   ['linux', 'linuxSigning', 'linuxSbom']
 ];
 for (const [platform, evidenceName, sbomField] of bindings) {
-  const reference = policy.evidence?.[evidenceName];
-  if (typeof reference !== 'string') throw new Error(`promotion requires ${evidenceName} evidence`);
-  const match = reference.match(/#sha256=([0-9a-f]{64})$/);
-  if (!match) throw new Error(`${evidenceName} evidence must include exact sha256 digest binding`);
-  const expected = canonicalDigest(platform, sbomField);
-  if (match[1] !== expected) throw new Error(`${evidenceName} evidence is not bound to the exact promoted ${platform} artifact and SBOM subjects`);
+  readSigningEvidence(evidenceName, platform, canonicalSubject(platform, sbomField));
 }
 
-console.log('miner release signing evidence is bound to exact promoted Windows, macOS and Linux artifact and SBOM subjects');
+console.log('miner release signing evidence is byte-bound to exact sourceCommit blobs and verified platform artifact/SBOM subjects');
