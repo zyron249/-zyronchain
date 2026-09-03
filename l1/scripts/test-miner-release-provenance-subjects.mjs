@@ -100,6 +100,7 @@ function run({ label, shouldPass, document = provenanceDocument(), mutatePolicy,
   const target = path.join(root, evidencePath);
 
   if (!omitEvidence) writeFileSync(target, bytes);
+  else writeFileSync(path.join(evidenceDir, '.fixture-anchor'), 'missing provenance fixture\n');
   if (symlinkEvidence && process.platform !== 'win32') {
     const real = `${target}.real`;
     writeFileSync(real, bytes);
