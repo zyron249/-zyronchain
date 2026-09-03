@@ -33,6 +33,7 @@ const active = {
     windowsSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${subjects[0].sbom.name}#sha256=${subjects[0].sbom.sha256}`,
     macosSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${subjects[1].sbom.name}#sha256=${subjects[1].sbom.sha256}`,
     linuxSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${subjects[2].sbom.name}#sha256=${subjects[2].sbom.sha256}`,
+    sbomVerification: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/sbom-verification.json#sha256=${'d'.repeat(64)}`,
     immutableRelease: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/immutable-release.json#sha256=${'8'.repeat(64)}`,
     publicMiningActivation: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/public-mining-activation.json#sha256=${activationDigest}`
   }
