@@ -70,10 +70,12 @@ const requiredEvidence = [
   'windowsSbom',
   'macosSbom',
   'linuxSbom',
+  'sbomVerification',
   'immutableRelease',
   'publicMiningActivation'
 ];
-const coreEvidence = requiredEvidence.filter((name) => !name.endsWith('Sbom'));
+const dedicatedEvidence = new Set(['windowsSbom', 'macosSbom', 'linuxSbom', 'sbomVerification']);
+const coreEvidence = requiredEvidence.filter((name) => !dedicatedEvidence.has(name));
 const evidenceKeys = Object.keys(policy.evidence);
 if (evidenceKeys.length !== requiredEvidence.length ||
     [...evidenceKeys].sort().join(',') !== [...requiredEvidence].sort().join(',')) {
@@ -143,15 +145,9 @@ function evidenceRoleMatches(name, reference) {
     ? reference.slice(releaseAssetPrefix.length)
     : null;
 
-  if (name === 'windowsSigning') {
-    return exactCommitPath !== null && /^evidence\/windows-(?:signing|signature)\.json$/.test(exactCommitPath);
-  }
-  if (name === 'macosSigningOrNotarization') {
-    return exactCommitPath !== null && /^evidence\/macos-(?:signing|notarization)\.json$/.test(exactCommitPath);
-  }
-  if (name === 'linuxSigning') {
-    return exactCommitPath !== null && /^evidence\/linux-(?:signing|signature)\.json$/.test(exactCommitPath);
-  }
+  if (name === 'windowsSigning') return exactCommitPath !== null && /^evidence\/windows-(?:signing|signature)\.json$/.test(exactCommitPath);
+  if (name === 'macosSigningOrNotarization') return exactCommitPath !== null && /^evidence\/macos-(?:signing|notarization)\.json$/.test(exactCommitPath);
+  if (name === 'linuxSigning') return exactCommitPath !== null && /^evidence\/linux-(?:signing|signature)\.json$/.test(exactCommitPath);
   if (name === 'provenance') {
     return (exactCommitPath !== null && /^evidence\/(?:provenance|attestation)\.json$/.test(exactCommitPath)) ||
       (exactReleaseAsset !== null && /^(?:provenance|attestation)\.json$/.test(exactReleaseAsset));
@@ -160,12 +156,8 @@ function evidenceRoleMatches(name, reference) {
     return (exactCommitPath !== null && exactCommitPath === 'evidence/checksums.json') ||
       (exactReleaseAsset !== null && /^(?:SHA256SUMS|checksums\.txt)$/.test(exactReleaseAsset));
   }
-  if (name === 'immutableRelease') {
-    return exactCommitPath !== null && exactCommitPath === 'evidence/immutable-release.json';
-  }
-  if (name === 'publicMiningActivation') {
-    return exactCommitPath !== null && /^evidence\/public-mining-(?:activation|authorization)\.json$/.test(exactCommitPath);
-  }
+  if (name === 'immutableRelease') return exactCommitPath !== null && exactCommitPath === 'evidence/immutable-release.json';
+  if (name === 'publicMiningActivation') return exactCommitPath !== null && /^evidence\/public-mining-(?:activation|authorization)\.json$/.test(exactCommitPath);
   return false;
 }
 for (const [name, value] of evidenceEntries) {
@@ -175,9 +167,7 @@ for (const [name, value] of evidenceEntries) {
   const reference = value.slice(0, value.length - digestMatch[0].length);
   const exactCommitEvidence = reference.startsWith(exactBlobPrefix);
   const exactReleaseAssetEvidence = reference.startsWith(releaseAssetPrefix);
-  if (!exactCommitEvidence && !exactReleaseAssetEvidence) {
-    throw new Error(`${name} evidence must bind to exact sourceCommit or releaseVersion`);
-  }
+  if (!exactCommitEvidence && !exactReleaseAssetEvidence) throw new Error(`${name} evidence must bind to exact sourceCommit or releaseVersion`);
   if (/\/blob\/(?:main|master|HEAD)\//.test(reference)) throw new Error(`${name} evidence must not use mutable branch refs`);
   if (!evidenceRoleMatches(name, reference)) throw new Error(`${name} evidence must use its canonical security-role path`);
   evidenceReferences.push([name, reference]);
@@ -185,18 +175,12 @@ for (const [name, value] of evidenceEntries) {
 }
 
 const distinctEvidenceReferences = new Set(evidenceReferences.map(([, reference]) => reference));
-if (distinctEvidenceReferences.size !== coreEvidence.length) {
-  throw new Error('promotion requires distinct underlying references for all canonical core evidence roles');
-}
+if (distinctEvidenceReferences.size !== coreEvidence.length) throw new Error('promotion requires distinct underlying references for all canonical core evidence roles');
 const distinctEvidenceDigests = new Set(evidenceDigests.map(([, digest]) => digest));
-if (distinctEvidenceDigests.size !== coreEvidence.length) {
-  throw new Error('promotion requires distinct sha256 byte identities for all canonical core evidence roles');
-}
+if (distinctEvidenceDigests.size !== coreEvidence.length) throw new Error('promotion requires distinct sha256 byte identities for all canonical core evidence roles');
 const platformAssetDigests = new Set(digestEntries.map(([, digest]) => digest));
 for (const [name, digest] of evidenceDigests) {
-  if (platformAssetDigests.has(digest)) {
-    throw new Error(`${name} evidence sha256 must not alias a promoted platform asset byte identity`);
-  }
+  if (platformAssetDigests.has(digest)) throw new Error(`${name} evidence sha256 must not alias a promoted platform asset byte identity`);
 }
 
-console.log('miner release promotion policy core evidence is fully evidenced; SBOM verification is mandatory and dedicated SBOM evidence is verified by the dedicated gate');
+console.log('miner release promotion policy core evidence is fully evidenced; SBOM release subjects and exact byte-bound SBOM verification evidence are mandatory in the dedicated gate');
