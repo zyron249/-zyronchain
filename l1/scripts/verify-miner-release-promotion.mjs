@@ -157,7 +157,8 @@ function evidenceRoleMatches(name, reference) {
       (exactReleaseAsset !== null && /^(?:provenance|attestation)\.json$/.test(exactReleaseAsset));
   }
   if (name === 'checksums') {
-    return exactReleaseAsset !== null && /^(?:SHA256SUMS|checksums\.txt)$/.test(exactReleaseAsset);
+    return (exactCommitPath !== null && exactCommitPath === 'evidence/checksums.json') ||
+      (exactReleaseAsset !== null && /^(?:SHA256SUMS|checksums\.txt)$/.test(exactReleaseAsset));
   }
   if (name === 'immutableRelease') {
     return exactCommitPath !== null && exactCommitPath === 'evidence/immutable-release.json';
