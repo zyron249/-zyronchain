@@ -29,6 +29,7 @@
     "windowsSbom": null,
     "macosSbom": null,
     "linuxSbom": null,
+    "sbomVerification": null,
     "immutableRelease": null,
     "publicMiningActivation": null
   }
