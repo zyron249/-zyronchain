@@ -19,10 +19,11 @@ test("local-secret identity binding preserves adjacent values above Number safe 
   assert.equal(samePrivateFileIdentity(lower, 7n, upper, 7n), false);
 });
 
-test("local-secret open validation wires bigint pathname identity into the descriptor gate", async () => {
+test("local-secret open validation wires bigint pathname identity into a single descriptor gate", async () => {
   const source = await readFile(resolve(process.cwd(), "src/local-security.ts"), "utf8");
   assert.match(source, /lstat\(resolved, \{ bigint: true \}\)/, "initial pathname identity must use bigint lstat");
-  assert.match(source, /handle\.stat\(\{ bigint: true \}\)/, "opened descriptor identity must use bigint stat");
+  assert.match(source, /const descriptorMetadata = await handle\.stat\(\{ bigint: true \}\)/, "opened descriptor validation must use one bigint stat snapshot");
+  assert.doesNotMatch(source, /descriptorIdentity\s*=\s*await handle\.stat/, "identity validation must not add a second descriptor stat race window");
   assert.match(
     source,
     /requireSamePrivateRegularFile\([\s\S]*?"after opening",\s*initialPathMetadata\s*\)/,
@@ -38,7 +39,7 @@ test("local-secret open validation wires bigint pathname identity into the descr
   );
   assert.match(
     source,
-    /descriptorIdentity\.dev,\s*descriptorIdentity\.ino,\s*pathMetadata\.dev,\s*pathMetadata\.ino/,
+    /descriptorMetadata\.dev,\s*descriptorMetadata\.ino,\s*pathMetadata\.dev,\s*pathMetadata\.ino/,
     "current pathname identity must remain bound to the opened descriptor using exact values"
   );
 });
