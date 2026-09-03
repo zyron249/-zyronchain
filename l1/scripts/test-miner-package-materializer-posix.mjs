@@ -54,12 +54,12 @@ try {
   if (!helperText.includes('opened retained source child does not match expected identity')) throw new Error('custody helper does not fail closed when SOURCE_ENTER opens a different child inode');
   if (!helperText.includes('opened retained copy source does not match expected identity')) throw new Error('custody helper does not fail closed when COPYREL opens a different regular-file inode');
   if (materializerText.includes('`COPY\\t${destinationName}\\t${sourcePath}`')) throw new Error('materializer regressed to pathname COPY');
-  if (!materializerText.includes('`COPYREL\\t${destinationName}\\t${sourceName}\\t${String(sourceStat.dev)}\\t${String(sourceStat.ino)}`')) throw new Error('materializer does not identity-bind retained regular-file copies');
-  if (!materializerText.includes('`SOURCE_ENTER\\t${component}\\t${String(sourceStat.dev)}\\t${String(sourceStat.ino)}`')) throw new Error('materializer does not identity-bind retained descriptor-relative source traversal');
-  if (!materializerText.includes('`SOURCE\\t${sourceRoot}\\t${String(sourceStat.dev)}\\t${String(sourceStat.ino)}`')) throw new Error('materializer does not bind SOURCE opens to expected source-root dev/inode');
+  if (!materializerText.includes('`COPYREL\\t${destinationName}\\t${sourceName}\\t${sourceStat.dev.toString()}\\t${sourceStat.ino.toString()}`')) throw new Error('materializer does not identity-bind retained regular-file copies with exact POSIX identities');
+  if (!materializerText.includes('`SOURCE_ENTER\\t${component}\\t${sourceStat.dev.toString()}\\t${sourceStat.ino.toString()}`')) throw new Error('materializer does not identity-bind retained descriptor-relative source traversal with exact POSIX identities');
+  if (!materializerText.includes('`SOURCE\\t${sourceRoot}\\t${sourceStat.dev.toString()}\\t${sourceStat.ino.toString()}`')) throw new Error('materializer does not bind SOURCE opens to exact expected source-root dev/inode');
   if (!materializerText.includes("ignoredDirectoryNames: new Set(['.bin'])")) throw new Error('materializer does not explicitly omit npm executable shim directories');
   if (!materializerText.includes('await assertBoundRootPath(canonicalOutRoot, boundOutRootStat)')) throw new Error('materializer does not bind successful completion to release-root pathname identity');
-  if (!materializerText.includes("const sessionArgs = ['session', canonicalOutRoot, String(boundOutRootStat.dev), String(boundOutRootStat.ino)]")) throw new Error('materializer does not pass expected release-root identity into native session startup');
+  if (!materializerText.includes("const sessionArgs = ['session', canonicalOutRoot, boundOutRootStat.dev.toString(), boundOutRootStat.ino.toString()]")) throw new Error('materializer does not pass exact expected release-root identity into native session startup');
   if (materializerText.includes('const sessionArgs = helperSource')) throw new Error('helperSource can downgrade release-root session identity binding');
 
   await mkdir(join(root, 'dist', 'src'), { recursive: true });
@@ -152,7 +152,7 @@ int main(int argc, char **argv) {
   try { await materializeMinerPackagePosix({ root, outRoot, bundleName: `${bundleName}-symlink`, nodeName: 'node', helperSource }); } catch { symlinkFailed = true; }
   if (!symlinkFailed) throw new Error('retained source custody accepted a source symlink instead of failing closed');
 
-  console.log('PASS: miner materializer binds destination/source roots, SOURCE_ENTER children, and COPYREL regular files to expected inodes; descriptor-relative custody and fail-closed gates remain intact.');
+  console.log('PASS: miner materializer binds destination/source roots, SOURCE_ENTER children, and COPYREL regular files to exact expected inodes; descriptor-relative custody and fail-closed gates remain intact.');
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
