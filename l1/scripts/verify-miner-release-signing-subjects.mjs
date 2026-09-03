@@ -66,6 +66,14 @@ function canonicalSubject(platform, sbomField) {
   return { platform, name, sha256, sbom: { name: sbomName, sha256: sbomSha256 } };
 }
 
+function sameSubject(actual, expected) {
+  return actual.platform === expected.platform &&
+    actual.name === expected.name &&
+    actual.sha256 === expected.sha256 &&
+    actual.sbom.name === expected.sbom.name &&
+    actual.sbom.sha256 === expected.sbom.sha256;
+}
+
 function readSigningEvidence(field, platform, expectedSubject) {
   const reference = policy.evidence?.[field];
   if (typeof reference !== 'string') throw new Error(`promotion requires ${field} evidence`);
@@ -103,7 +111,7 @@ function readSigningEvidence(field, platform, expectedSubject) {
   }
   requireExactKeys(document.subject, ['platform', 'name', 'sha256', 'sbom'], `${field} subject`);
   requireExactKeys(document.subject.sbom, ['name', 'sha256'], `${field} SBOM subject`);
-  if (JSON.stringify(document.subject) !== JSON.stringify(expectedSubject)) {
+  if (!sameSubject(document.subject, expectedSubject)) {
     throw new Error(`${field} evidence is not bound to the exact promoted artifact and SBOM subjects`);
   }
   requireExactKeys(document.verification, ['verified', 'method', 'tool'], `${field} verification`);
