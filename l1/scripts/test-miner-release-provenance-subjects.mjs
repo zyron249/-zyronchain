@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -9,103 +9,184 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const verifier = path.join(here, 'verify-miner-release-provenance-subjects.mjs');
 const base = JSON.parse(readFileSync(path.resolve(here, '../../docs/miner-release-promotion.json'), 'utf8'));
-const sourceCommit = '0123456789abcdef0123456789abcdef01234567';
 const releaseVersion = 'miner-v1.0.0';
-const platforms = ['windows', 'macos', 'linux'];
+const evidencePath = 'evidence/provenance.json';
+const assets = {
+  windows: 'ZyronMiner-windows-x64.zip',
+  macos: 'ZyronMiner-macos-arm64.tar.gz',
+  linux: 'ZyronMiner-linux-x64.tar.gz'
+};
+const digests = { windows: '1'.repeat(64), macos: '2'.repeat(64), linux: '3'.repeat(64) };
+const sbomDigests = { windows: 'a'.repeat(64), macos: 'b'.repeat(64), linux: 'c'.repeat(64) };
+const releasePrefix = `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/`;
+const artifactSubjects = ['windows', 'macos', 'linux'].map((platform) => ({
+  platform,
+  name: assets[platform],
+  sha256: digests[platform]
+}));
+const sbomSubjects = ['windows', 'macos', 'linux'].map((platform) => ({
+  platform,
+  name: `${assets[platform]}.sbom.cdx.json`,
+  sha256: sbomDigests[platform]
+}));
+const verification = { verified: true, method: 'slsa-provenance', tool: 'slsa-verifier verify-artifact' };
 
-function digestDocument(artifactSubjects, sbomSubjects, overrides = {}) {
-  const body = `${JSON.stringify({
-    schemaVersion: 2,
+function sha256(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+function provenanceDocument(overrides = {}) {
+  return {
+    schemaVersion: overrides.schemaVersion ?? 3,
     releaseVersion: overrides.releaseVersion ?? releaseVersion,
-    sourceCommit: overrides.sourceCommit ?? sourceCommit,
-    artifactSubjects,
-    sbomSubjects
-  })}\n`;
-  return createHash('sha256').update(body, 'utf8').digest('hex');
+    artifactSubjects: overrides.artifactSubjects ?? artifactSubjects,
+    sbomSubjects: overrides.sbomSubjects ?? sbomSubjects,
+    verification: overrides.verification ?? verification,
+    ...(overrides.extra ? { extra: overrides.extra } : {})
+  };
+}
+function serialize(document) {
+  return `${JSON.stringify(document)}\n`;
+}
+function git(root, args) {
+  const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+  return result.stdout.trim();
+}
+function commitEvidence(root) {
+  git(root, ['init', '-q']);
+  git(root, ['config', 'user.name', 'Zyron Test']);
+  git(root, ['config', 'user.email', 'zyron-test@example.invalid']);
+  git(root, ['add', 'evidence']);
+  git(root, ['commit', '-q', '-m', 'test provenance evidence']);
+  return git(root, ['rev-parse', 'HEAD']);
+}
+function activeSkeleton(sourceCommit, provenanceDigest) {
+  const exactBlobPrefix = `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/`;
+  return {
+    ...base,
+    releaseVersion,
+    sourceCommit,
+    publicMiningActivated: true,
+    releaseEligible: true,
+    platformSigningVerified: true,
+    provenanceVerified: true,
+    checksumsVerified: true,
+    sbomVerified: true,
+    immutableReleaseVerified: true,
+    publicationAllowed: true,
+    assets: Object.fromEntries(Object.entries(assets).map(([platform, name]) => [platform, `${releasePrefix}${name}`])),
+    assetSha256: digests,
+    evidence: {
+      ...base.evidence,
+      windowsSigning: `${exactBlobPrefix}evidence/windows-signing.json#sha256=${'4'.repeat(64)}`,
+      macosSigningOrNotarization: `${exactBlobPrefix}evidence/macos-notarization.json#sha256=${'5'.repeat(64)}`,
+      linuxSigning: `${exactBlobPrefix}evidence/linux-signing.json#sha256=${'d'.repeat(64)}`,
+      provenance: `${exactBlobPrefix}${evidencePath}#sha256=${provenanceDigest}`,
+      checksums: `${releasePrefix}SHA256SUMS#sha256=${'7'.repeat(64)}`,
+      windowsSbom: `${releasePrefix}${assets.windows}.sbom.cdx.json#sha256=${sbomDigests.windows}`,
+      macosSbom: `${releasePrefix}${assets.macos}.sbom.cdx.json#sha256=${sbomDigests.macos}`,
+      linuxSbom: `${releasePrefix}${assets.linux}.sbom.cdx.json#sha256=${sbomDigests.linux}`,
+      immutableRelease: `${exactBlobPrefix}evidence/immutable-release.json#sha256=${'8'.repeat(64)}`,
+      publicMiningActivation: `${exactBlobPrefix}evidence/public-mining-activation.json#sha256=${'9'.repeat(64)}`
+    }
+  };
 }
 
-function subject(platform, name, sha256) { return { platform, name, sha256 }; }
-const artifactSubjects = [
-  subject('windows', 'ZyronMiner-windows-x64.zip', '1'.repeat(64)),
-  subject('macos', 'ZyronMiner-macos-arm64.tar.gz', '2'.repeat(64)),
-  subject('linux', 'ZyronMiner-linux-x64.tar.gz', '3'.repeat(64))
-];
-const sbomSubjects = [
-  subject('windows', `${artifactSubjects[0].name}.sbom.cdx.json`, 'a'.repeat(64)),
-  subject('macos', `${artifactSubjects[1].name}.sbom.cdx.json`, 'b'.repeat(64)),
-  subject('linux', `${artifactSubjects[2].name}.sbom.cdx.json`, 'c'.repeat(64))
-];
-const provenanceDigest = digestDocument(artifactSubjects, sbomSubjects);
-const evidenceDigests = {
-  windowsSigning: '4'.repeat(64),
-  macosSigningOrNotarization: '5'.repeat(64),
-  linuxSigning: 'd'.repeat(64),
-  checksums: '7'.repeat(64),
-  immutableRelease: '8'.repeat(64),
-  publicMiningActivation: '9'.repeat(64)
-};
-const active = {
-  ...base,
-  releaseVersion,
-  sourceCommit,
-  publicMiningActivated: true,
-  releaseEligible: true,
-  platformSigningVerified: true,
-  provenanceVerified: true,
-  checksumsVerified: true,
-  sbomVerified: true,
-  immutableReleaseVerified: true,
-  publicationAllowed: true,
-  assets: Object.fromEntries(artifactSubjects.map((entry) => [entry.platform, `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${entry.name}`])),
-  assetSha256: Object.fromEntries(artifactSubjects.map((entry) => [entry.platform, entry.sha256])),
-  evidence: {
-    ...base.evidence,
-    windowsSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/windows-signing.json#sha256=${evidenceDigests.windowsSigning}`,
-    macosSigningOrNotarization: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/macos-notarization.json#sha256=${evidenceDigests.macosSigningOrNotarization}`,
-    linuxSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/linux-signing.json#sha256=${evidenceDigests.linuxSigning}`,
-    provenance: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/provenance.json#sha256=${provenanceDigest}`,
-    checksums: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/SHA256SUMS#sha256=${evidenceDigests.checksums}`,
-    windowsSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${sbomSubjects[0].name}#sha256=${sbomSubjects[0].sha256}`,
-    macosSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${sbomSubjects[1].name}#sha256=${sbomSubjects[1].sha256}`,
-    linuxSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/${sbomSubjects[2].name}#sha256=${sbomSubjects[2].sha256}`,
-    immutableRelease: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/immutable-release.json#sha256=${evidenceDigests.immutableRelease}`,
-    publicMiningActivation: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/public-mining-activation.json#sha256=${evidenceDigests.publicMiningActivation}`
+function run({ label, shouldPass, document = provenanceDocument(), mutatePolicy, omitEvidence = false, symlinkEvidence = false, mutateWorkingTree = null }) {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'zyron-provenance-evidence-'));
+  const evidenceDir = path.join(root, 'evidence');
+  mkdirSync(evidenceDir, { recursive: true });
+  const bytes = serialize(document);
+  const target = path.join(root, evidencePath);
+
+  if (!omitEvidence) writeFileSync(target, bytes);
+  if (symlinkEvidence && process.platform !== 'win32') {
+    const real = `${target}.real`;
+    writeFileSync(real, bytes);
+    rmSync(target, { force: true });
+    symlinkSync(path.basename(real), target);
   }
-};
 
-function withProvenanceDigest(policy, digest) {
-  return { ...policy, evidence: { ...policy.evidence, provenance: policy.evidence.provenance.replace(/[0-9a-f]{64}$/, digest) } };
-}
-function run(policy, shouldPass, label) {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'zyron-provenance-subjects-'));
-  const file = path.join(dir, 'policy.json');
-  writeFileSync(file, JSON.stringify(policy, null, 2));
-  const result = spawnSync(process.execPath, [verifier, file], { encoding: 'utf8' });
-  rmSync(dir, { recursive: true, force: true });
+  const sourceCommit = commitEvidence(root);
+  let policy = activeSkeleton(sourceCommit, sha256(bytes));
+  if (mutatePolicy) policy = mutatePolicy(policy, sourceCommit);
+  if (mutateWorkingTree) mutateWorkingTree(root);
+  const policyFile = path.join(root, 'policy.json');
+  writeFileSync(policyFile, JSON.stringify(policy, null, 2));
+  const result = spawnSync(process.execPath, [verifier, policyFile, root], { encoding: 'utf8' });
+  rmSync(root, { recursive: true, force: true });
   if (shouldPass && result.status !== 0) throw new Error(`${label} should pass: ${result.stderr || result.stdout}`);
   if (!shouldPass && result.status === 0) throw new Error(`${label} should fail`);
 }
 
-run(base, true, 'inactive canonical policy');
-run(active, true, 'exact artifact and per-platform SBOM provenance binding');
-run(withProvenanceDigest(active, digestDocument(artifactSubjects.slice(0, 2), sbomSubjects)), false, 'missing Linux artifact subject');
-run(withProvenanceDigest(active, digestDocument(artifactSubjects, sbomSubjects.slice(0, 2))), false, 'missing Linux SBOM subject');
-run(withProvenanceDigest(active, digestDocument(artifactSubjects, [sbomSubjects[0], sbomSubjects[1], sbomSubjects[0]])), false, 'duplicate SBOM subject');
-run(withProvenanceDigest(active, digestDocument(artifactSubjects, [
-  { ...sbomSubjects[0], sha256: sbomSubjects[2].sha256 }, sbomSubjects[1], { ...sbomSubjects[2], sha256: sbomSubjects[0].sha256 }
-])), false, 'swapped cross-platform SBOM digests');
-run(withProvenanceDigest(active, digestDocument(artifactSubjects, [
-  { ...sbomSubjects[0], name: sbomSubjects[2].name }, sbomSubjects[1], { ...sbomSubjects[2], name: sbomSubjects[0].name }
-])), false, 'cross-platform SBOM filenames');
-run(withProvenanceDigest(active, digestDocument([
-  { ...artifactSubjects[0], sha256: artifactSubjects[2].sha256 }, artifactSubjects[1], { ...artifactSubjects[2], sha256: artifactSubjects[0].sha256 }
-], sbomSubjects)), false, 'swapped cross-platform artifact digests');
-run({ ...active, evidence: { ...active.evidence, provenance: `https://github.com/zyron249/-zyronchain/blob/main/evidence/provenance.json#sha256=${provenanceDigest}` } }, false, 'mutable provenance reference');
-run({ ...active, evidence: { ...active.evidence, provenance: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/provenance.json` } }, false, 'provenance reference without digest');
-run({ ...active, evidence: { ...active.evidence, windowsSbom: active.evidence.windowsSbom.replace(/a{64}$/, 'd'.repeat(64)) } }, false, 'policy SBOM digest drift');
-run({ ...active, evidence: { ...active.evidence, linuxSbom: active.evidence.macosSbom } }, false, 'cross-platform policy SBOM evidence swap');
-run(withProvenanceDigest(active, digestDocument(artifactSubjects, sbomSubjects, { sourceCommit: 'f'.repeat(40) })), false, 'source commit drift');
-run(withProvenanceDigest(active, digestDocument(artifactSubjects, sbomSubjects, { releaseVersion: 'miner-v9.9.9' })), false, 'release version drift');
+{
+  const root = mkdtempSync(path.join(os.tmpdir(), 'zyron-provenance-inactive-'));
+  const file = path.join(root, 'policy.json');
+  writeFileSync(file, JSON.stringify(base, null, 2));
+  const result = spawnSync(process.execPath, [verifier, file, root], { encoding: 'utf8' });
+  rmSync(root, { recursive: true, force: true });
+  if (result.status !== 0) throw new Error(`inactive canonical policy should pass: ${result.stderr || result.stdout}`);
+}
 
-if (platforms.length !== artifactSubjects.length || platforms.length !== sbomSubjects.length) throw new Error('test fixture platform cardinality drift');
-console.log('miner release provenance artifact/SBOM subject regressions: OK');
+run({ label: 'structured immutable provenance evidence', shouldPass: true });
+run({
+  label: 'metadata-only legacy provenance evidence',
+  shouldPass: false,
+  document: { schemaVersion: 2, releaseVersion, artifactSubjects, sbomSubjects }
+});
+run({
+  label: 'explicitly false provenance verification',
+  shouldPass: false,
+  document: provenanceDocument({ verification: { ...verification, verified: false } })
+});
+run({
+  label: 'unapproved provenance verification method',
+  shouldPass: false,
+  document: provenanceDocument({ verification: { ...verification, method: 'checksum-only' } })
+});
+run({
+  label: 'artifact subject digest drift',
+  shouldPass: false,
+  document: provenanceDocument({ artifactSubjects: [{ ...artifactSubjects[0], sha256: digests.linux }, artifactSubjects[1], artifactSubjects[2]] })
+});
+run({
+  label: 'SBOM subject platform swap',
+  shouldPass: false,
+  document: provenanceDocument({ sbomSubjects: [sbomSubjects[2], sbomSubjects[1], sbomSubjects[0]] })
+});
+run({
+  label: 'release identity drift',
+  shouldPass: false,
+  document: provenanceDocument({ releaseVersion: 'miner-v9.9.9' })
+});
+run({
+  label: 'unknown provenance field',
+  shouldPass: false,
+  document: provenanceDocument({ extra: true })
+});
+run({ label: 'missing provenance evidence file', shouldPass: false, omitEvidence: true });
+run({
+  label: 'provenance digest mismatch',
+  shouldPass: false,
+  mutatePolicy: (policy) => ({ ...policy, evidence: { ...policy.evidence, provenance: policy.evidence.provenance.replace(/[0-9a-f]{64}$/, 'f'.repeat(64)) } })
+});
+run({
+  label: 'mutable provenance evidence reference',
+  shouldPass: false,
+  mutatePolicy: (policy, sourceCommit) => ({ ...policy, evidence: { ...policy.evidence, provenance: policy.evidence.provenance.replace(`/blob/${sourceCommit}/`, '/blob/main/') } })
+});
+run({
+  label: 'release-asset provenance reference is not exact source evidence',
+  shouldPass: false,
+  mutatePolicy: (policy) => ({ ...policy, evidence: { ...policy.evidence, provenance: `${releasePrefix}provenance.json#sha256=${policy.evidence.provenance.slice(-64)}` } })
+});
+run({
+  label: 'working-tree provenance drift from exact sourceCommit',
+  shouldPass: false,
+  mutateWorkingTree: (root) => writeFileSync(path.join(root, evidencePath), serialize(provenanceDocument({ verification: { ...verification, tool: 'different verifier' } })))
+});
+if (process.platform !== 'win32') {
+  run({ label: 'symlink provenance evidence', shouldPass: false, symlinkEvidence: true });
+}
+
+console.log('miner release structured provenance exact-Git-blob regressions: OK');
