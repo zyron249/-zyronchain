@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   assertRpcTrustedProxyConfiguration,
+  isTrustedHttpsProxyRequest,
   MAX_RPC_FORWARDED_HOPS,
   MAX_RPC_TRUSTED_PROXIES,
   rpcRateLimitIdentity
@@ -73,5 +74,34 @@ test("IPv4-mapped proxy and client addresses normalize before bucketing", () => 
   assert.equal(
     rpcRateLimitIdentity("::ffff:10.0.0.2", "::ffff:198.51.100.7", ["10.0.0.2"]),
     "198.51.100.7"
+  );
+});
+
+test("equivalent IPv6 client spellings share one canonical rate-limit identity", () => {
+  const trusted = ["2001:db8::2"];
+  const compressed = rpcRateLimitIdentity("2001:db8::2", "2001:db8::7", trusted);
+  const expanded = rpcRateLimitIdentity(
+    "2001:0db8:0000:0000:0000:0000:0000:0002",
+    "2001:0db8:0000:0000:0000:0000:0000:0007",
+    trusted
+  );
+  assert.equal(compressed, "2001:db8::7");
+  assert.equal(expanded, compressed);
+});
+
+test("trusted IPv6 proxy matching canonicalizes configured and transport spellings", () => {
+  const configured = ["2001:0db8:0000:0000:0000:0000:0000:0002"];
+  assert.equal(
+    rpcRateLimitIdentity("2001:db8::2", "198.51.100.7", configured),
+    "198.51.100.7"
+  );
+  assert.equal(isTrustedHttpsProxyRequest("2001:db8::2", "https", configured), true);
+});
+
+test("invalid forwarded IPv6 hop still fails closed to the canonical proxy bucket", () => {
+  const trusted = ["2001:db8::2"];
+  assert.equal(
+    rpcRateLimitIdentity("2001:0db8:0:0:0:0:0:2", "2001:db8::7, 2001:db8:::3", trusted),
+    "proxy:2001:db8::2"
   );
 });

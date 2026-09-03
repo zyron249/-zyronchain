@@ -11,12 +11,14 @@ Standalone ZyronChain RPC rate limiting must distinguish public clients even whe
 - `X-Forwarded-For` is parsed strictly as IP addresses. At most 16 forwarding hops are accepted. The hop count is bounded before the chain is split into an array; over-bound chains fail closed to the shared `proxy:<transport-ip>` bucket.
 - Within the bound, the chain is walked from right to left, dropping trusted proxy hops; the first non-trusted IP becomes the client rate-limit identity.
 - Missing, malformed, array-valued, empty, over-bound, or fully trusted forwarded chains fail closed to a shared `proxy:<transport-ip>` bucket rather than trusting attacker-controlled text.
-- IPv4-mapped IPv6 addresses are normalized before comparison and bucketing.
+- IPv4-mapped IPv6 addresses are normalized to their IPv4 form before comparison and bucketing.
+- Valid IPv6 addresses must be canonicalized before trusted-proxy membership checks and rate-limit bucketing, so equivalent expanded/compressed textual forms consume the same identity quota.
+- Invalid forwarded hops continue to fail closed to the canonical `proxy:<transport-ip>` bucket; canonicalization must not turn malformed text into an admitted client identity.
 - The bounded RPC identity limiter from issue #288 remains independent: unseen identities beyond its tracked-identity cap still share the fail-closed overflow quota rather than evicting live client state.
 
 ## Threat addressed
 
-The trusted-proxy path executes before the fixed-window limiter can apply. Without explicit configuration and forwarding-hop bounds, a large operator configuration or a hostile client behind a trusted proxy could force avoidable proxy-set allocation and long forwarding-chain walks on every request. The cardinality bounds keep this pre-admission work deterministic while preserving the existing spoof-resistant right-to-left identity semantics.
+The trusted-proxy path executes before the fixed-window limiter can apply. Without explicit configuration and forwarding-hop bounds, a large operator configuration or a hostile client behind a trusted proxy could force avoidable proxy-set allocation and long forwarding-chain walks on every request. Without canonical IPv6 identities, one IPv6 client can also multiply its effective per-identity quota by presenting equivalent expanded/compressed spellings through a trusted proxy. The cardinality bounds and canonicalization requirement keep this pre-admission work deterministic while preserving the existing spoof-resistant right-to-left identity semantics.
 
 ## Deployment requirement
 
