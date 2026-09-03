@@ -155,12 +155,20 @@ export function assertSafeRpcBinding(
   }
 }
 
+function canonicalizeIpv6Address(address: string): string {
+  const hostname = new URL(`http://[${address}]/`).hostname;
+  if (!hostname.startsWith("[") || !hostname.endsWith("]")) {
+    throw new Error("Trusted RPC proxy must be an IP address");
+  }
+  return hostname.slice(1, -1).toLowerCase();
+}
+
 function normalizeProxyAddress(address: string): string {
   const normalized = address.toLowerCase().replace(/^\[|\]$/g, "");
   const ipv4Mapped = normalized.startsWith("::ffff:") ? normalized.slice(7) : normalized;
-  const candidate = isIP(ipv4Mapped) === 4 ? ipv4Mapped : normalized;
-  if (isIP(candidate) === 0) throw new Error("Trusted RPC proxy must be an IP address");
-  return candidate;
+  if (isIP(ipv4Mapped) === 4) return ipv4Mapped;
+  if (isIP(normalized) === 6) return canonicalizeIpv6Address(normalized);
+  throw new Error("Trusted RPC proxy must be an IP address");
 }
 
 function normalizeTrustedProxyAddresses(addresses: readonly string[]): ReadonlySet<string> {
