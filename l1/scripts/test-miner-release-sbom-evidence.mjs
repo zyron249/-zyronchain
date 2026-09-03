@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import fs from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -7,63 +8,61 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const verifier = path.join(here, 'verify-miner-release-sbom-evidence.mjs');
-const canonical = path.resolve(here, '../../docs/miner-release-promotion.json');
-const base = JSON.parse(fs.readFileSync(canonical, 'utf8'));
-
-function run(policy, shouldPass, label) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zyron-sbom-promotion-'));
-  const file = path.join(dir, 'policy.json');
-  fs.writeFileSync(file, JSON.stringify(policy, null, 2));
-  const result = spawnSync(process.execPath, [verifier, file], { encoding: 'utf8' });
-  fs.rmSync(dir, { recursive: true, force: true });
-  if (shouldPass && result.status !== 0) throw new Error(`${label} should pass: ${result.stderr}`);
-  if (!shouldPass && result.status === 0) throw new Error(`${label} should fail`);
-}
-
-run(base, true, 'canonical inactive SBOM policy');
-run({ ...base, sbomVerified: true }, false, 'inactive SBOM verification cannot be asserted');
-run({ ...base, evidence: { ...base.evidence, windowsSbom: 'https://example.invalid/sbom#sha256=' + 'a'.repeat(64) } }, false, 'inactive policy cannot carry SBOM evidence');
-
+const base = JSON.parse(readFileSync(path.resolve(here, '../../docs/miner-release-promotion.json'), 'utf8'));
 const releaseVersion = 'miner-v1.2.3';
-const sourceCommit = '0123456789abcdef0123456789abcdef01234567';
-const assets = {
-  windows: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/ZyronMiner-windows-x64.zip`,
-  macos: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/ZyronMiner-macos-arm64.tar.gz`,
-  linux: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/ZyronMiner-linux-x64.tar.gz`
-};
-const active = {
-  ...base,
-  releaseVersion,
-  sourceCommit,
-  publicMiningActivated: true,
-  releaseEligible: true,
-  publicationAllowed: true,
-  sbomVerified: true,
-  assets,
-  assetSha256: { windows: '1'.repeat(64), macos: '2'.repeat(64), linux: '3'.repeat(64) },
-  evidence: {
-    ...base.evidence,
-    windowsSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/windows-signing.json#sha256=${'4'.repeat(64)}`,
-    macosSigningOrNotarization: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/macos-notarization.json#sha256=${'5'.repeat(64)}`,
-    provenance: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/provenance.json#sha256=${'6'.repeat(64)}`,
-    checksums: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/SHA256SUMS#sha256=${'7'.repeat(64)}`,
-    immutableRelease: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/immutable-release.json#sha256=${'8'.repeat(64)}`,
-    publicMiningActivation: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/public-mining-activation.json#sha256=${'9'.repeat(64)}`,
-    windowsSbom: `${assets.windows}.sbom.cdx.json#sha256=${'a'.repeat(64)}`,
-    macosSbom: `${assets.macos}.sbom.cdx.json#sha256=${'b'.repeat(64)}`,
-    linuxSbom: `${assets.linux}.sbom.cdx.json#sha256=${'c'.repeat(64)}`
-  }
-};
-run(active, true, 'complete per-platform SBOM evidence');
-run({ ...active, sbomVerified: false }, false, 'active promotion without SBOM verification');
-run({ ...active, evidence: { ...active.evidence, linuxSbom: null } }, false, 'missing Linux SBOM');
-run({ ...active, evidence: { ...active.evidence, macosSbom: active.evidence.windowsSbom } }, false, 'cross-platform SBOM substitution');
-run({ ...active, evidence: { ...active.evidence, windowsSbom: `${assets.windows}.sbom.cdx.json` } }, false, 'digestless SBOM evidence');
-run({ ...active, evidence: { ...active.evidence, windowsSbom: `${assets.windows}.sbom.cdx.json#sha256=${active.assetSha256.windows}` } }, false, 'SBOM digest aliases promoted artifact');
-run({ ...active, evidence: { ...active.evidence, windowsSbom: `${assets.windows}.sbom.cdx.json#sha256=${'6'.repeat(64)}` } }, false, 'SBOM digest aliases provenance evidence');
-run({ ...active, evidence: { ...active.evidence, macosSbom: `${assets.macos}.sbom.cdx.json#sha256=${'a'.repeat(64)}` } }, false, 'duplicate SBOM digest identity');
-run({ ...active, evidence: { ...active.evidence, linuxSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/ZyronMiner-windows-x64.zip.sbom.cdx.json#sha256=${'c'.repeat(64)}` } }, false, 'Linux slot uses Windows SBOM');
-run({ ...active, evidence: { ...active.evidence, windowsSbom: `https://github.com/zyron249/-zyronchain/releases/download/miner-v1.2.4/ZyronMiner-windows-x64.zip.sbom.cdx.json#sha256=${'a'.repeat(64)}` } }, false, 'cross-release SBOM evidence');
-run({ ...active, sourceCommit: sourceCommit.toUpperCase() }, false, 'non-canonical source commit');
-
-console.log('miner release SBOM evidence regressions: OK');
+const evidencePath = 'evidence/sbom-verification.json';
+const releasePrefix = `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/`;
+const subjects = [
+  { platform: 'windows', artifact: { name: 'ZyronMiner-windows-x64.zip', sha256: '1'.repeat(64) }, sbom: { name: 'ZyronMiner-windows-x64.zip.sbom.cdx.json', sha256: 'a'.repeat(64) } },
+  { platform: 'macos', artifact: { name: 'ZyronMiner-macos-arm64.tar.gz', sha256: '2'.repeat(64) }, sbom: { name: 'ZyronMiner-macos-arm64.tar.gz.sbom.cdx.json', sha256: 'b'.repeat(64) } },
+  { platform: 'linux', artifact: { name: 'ZyronMiner-linux-x64.tar.gz', sha256: '3'.repeat(64) }, sbom: { name: 'ZyronMiner-linux-x64.tar.gz.sbom.cdx.json', sha256: 'c'.repeat(64) } }
+];
+const verification = { verified: true, method: 'cyclonedx-sbom-verification', tool: 'cyclonedx-cli validate' };
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const document = (overrides = {}) => ({ schemaVersion: overrides.schemaVersion ?? 1, releaseVersion: overrides.releaseVersion ?? releaseVersion, subjects: overrides.subjects ?? subjects, verification: overrides.verification ?? verification, ...(overrides.extra ? { extra: true } : {}) });
+const serialize = (value) => `${JSON.stringify(value)}\n`;
+function git(root, args) { const r = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' }); if (r.status !== 0) throw new Error(r.stderr || r.stdout); return r.stdout.trim(); }
+function commitEvidence(root) { git(root, ['init', '-q']); git(root, ['config', 'user.name', 'Zyron Test']); git(root, ['config', 'user.email', 'zyron-test@example.invalid']); git(root, ['add', 'evidence']); git(root, ['commit', '-q', '-m', 'test sbom verification evidence']); return git(root, ['rev-parse', 'HEAD']); }
+function active(sourceCommit, digest) {
+  const exact = `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/`;
+  return { ...base, releaseVersion, sourceCommit, publicMiningActivated: true, releaseEligible: true, platformSigningVerified: true, provenanceVerified: true, checksumsVerified: true, sbomVerified: true, immutableReleaseVerified: true, publicationAllowed: true,
+    assets: Object.fromEntries(subjects.map((s) => [s.platform, `${releasePrefix}${s.artifact.name}`])),
+    assetSha256: Object.fromEntries(subjects.map((s) => [s.platform, s.artifact.sha256])),
+    evidence: { ...base.evidence,
+      windowsSigning: `${exact}evidence/windows-signing.json#sha256=${'4'.repeat(64)}`,
+      macosSigningOrNotarization: `${exact}evidence/macos-notarization.json#sha256=${'5'.repeat(64)}`,
+      linuxSigning: `${exact}evidence/linux-signing.json#sha256=${'d'.repeat(64)}`,
+      provenance: `${exact}evidence/provenance.json#sha256=${'6'.repeat(64)}`,
+      checksums: `${exact}evidence/checksums.json#sha256=${'7'.repeat(64)}`,
+      windowsSbom: `${releasePrefix}${subjects[0].sbom.name}#sha256=${subjects[0].sbom.sha256}`,
+      macosSbom: `${releasePrefix}${subjects[1].sbom.name}#sha256=${subjects[1].sbom.sha256}`,
+      linuxSbom: `${releasePrefix}${subjects[2].sbom.name}#sha256=${subjects[2].sbom.sha256}`,
+      sbomVerification: `${exact}${evidencePath}#sha256=${digest}`,
+      immutableRelease: `${exact}evidence/immutable-release.json#sha256=${'8'.repeat(64)}`,
+      publicMiningActivation: `${exact}evidence/public-mining-activation.json#sha256=${'9'.repeat(64)}` }
+  };
+}
+function run({ label, shouldPass, doc = document(), mutatePolicy, mutateWorkingTree, symlinkEvidence = false }) {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'zyron-sbom-evidence-')); mkdirSync(path.join(root, 'evidence'), { recursive: true });
+  const target = path.join(root, evidencePath); const bytes = serialize(doc); writeFileSync(target, bytes);
+  if (symlinkEvidence && process.platform !== 'win32') { const real = `${target}.real`; writeFileSync(real, bytes); rmSync(target); symlinkSync(path.basename(real), target); }
+  const sourceCommit = commitEvidence(root); let policy = active(sourceCommit, sha256(bytes)); if (mutatePolicy) policy = mutatePolicy(policy, sourceCommit); if (mutateWorkingTree) mutateWorkingTree(root);
+  const policyFile = path.join(root, 'policy.json'); writeFileSync(policyFile, JSON.stringify(policy, null, 2));
+  const result = spawnSync(process.execPath, [verifier, policyFile, root], { encoding: 'utf8' }); rmSync(root, { recursive: true, force: true });
+  if (shouldPass && result.status !== 0) throw new Error(`${label} should pass: ${result.stderr || result.stdout}`); if (!shouldPass && result.status === 0) throw new Error(`${label} should fail`);
+}
+{
+  const root = mkdtempSync(path.join(os.tmpdir(), 'zyron-sbom-inactive-')); const policyFile = path.join(root, 'policy.json'); writeFileSync(policyFile, JSON.stringify(base)); const result = spawnSync(process.execPath, [verifier, policyFile, root], { encoding: 'utf8' }); rmSync(root, { recursive: true, force: true }); if (result.status !== 0) throw new Error(`inactive policy should pass: ${result.stderr}`);
+}
+run({ label: 'structured exact SBOM verification evidence', shouldPass: true });
+run({ label: 'legacy metadata-only verification', shouldPass: false, mutatePolicy: (p) => ({ ...p, evidence: { ...p.evidence, sbomVerification: null } }) });
+run({ label: 'false verification', shouldPass: false, doc: document({ verification: { ...verification, verified: false } }) });
+run({ label: 'unknown verification method', shouldPass: false, doc: document({ verification: { ...verification, method: 'url-metadata-only' } }) });
+run({ label: 'subject drift', shouldPass: false, doc: document({ subjects: [{ ...subjects[0], sbom: { ...subjects[0].sbom, sha256: 'e'.repeat(64) } }, subjects[1], subjects[2]] }) });
+run({ label: 'release drift', shouldPass: false, doc: document({ releaseVersion: 'miner-v9.9.9' }) });
+run({ label: 'unknown field', shouldPass: false, doc: document({ extra: true }) });
+run({ label: 'digest mismatch', shouldPass: false, mutatePolicy: (p) => ({ ...p, evidence: { ...p.evidence, sbomVerification: p.evidence.sbomVerification.replace(/[0-9a-f]{64}$/, 'f'.repeat(64)) } }) });
+run({ label: 'mutable branch ref', shouldPass: false, mutatePolicy: (p, c) => ({ ...p, evidence: { ...p.evidence, sbomVerification: p.evidence.sbomVerification.replace(`/blob/${c}/`, '/blob/main/') } }) });
+run({ label: 'working-tree substitution', shouldPass: false, mutateWorkingTree: (root) => writeFileSync(path.join(root, evidencePath), serialize(document({ verification: { ...verification, tool: 'different verifier' } }))) });
+if (process.platform !== 'win32') run({ label: 'symlink substitution', shouldPass: false, symlinkEvidence: true });
+console.log('miner release SBOM exact-Git-blob verification regressions: OK');
