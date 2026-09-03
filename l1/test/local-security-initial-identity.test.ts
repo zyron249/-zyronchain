@@ -6,13 +6,24 @@ import test from "node:test";
 import { samePrivateFileIdentity } from "../src/local-security.js";
 
 test("local-secret identity binding rejects initial-vs-open device or inode drift", () => {
-  assert.equal(samePrivateFileIdentity(10, 20, 10, 20), true);
-  assert.equal(samePrivateFileIdentity(10, 20, 11, 20), false);
-  assert.equal(samePrivateFileIdentity(10, 20, 10, 21), false);
+  assert.equal(samePrivateFileIdentity(10n, 20n, 10n, 20n), true);
+  assert.equal(samePrivateFileIdentity(10n, 20n, 11n, 20n), false);
+  assert.equal(samePrivateFileIdentity(10n, 20n, 10n, 21n), false);
 });
 
-test("local-secret open validation wires initial pathname identity into the descriptor gate", async () => {
+test("local-secret identity binding preserves adjacent values above Number safe precision", () => {
+  const lower = 9_007_199_254_740_992n;
+  const upper = lower + 1n;
+  assert.equal(Number(lower), Number(upper), "control: Number must collapse the adjacent identities");
+  assert.equal(samePrivateFileIdentity(1n, lower, 1n, upper), false);
+  assert.equal(samePrivateFileIdentity(lower, 7n, upper, 7n), false);
+});
+
+test("local-secret open validation wires bigint pathname identity into a single descriptor gate", async () => {
   const source = await readFile(resolve(process.cwd(), "src/local-security.ts"), "utf8");
+  assert.match(source, /lstat\(resolved, \{ bigint: true \}\)/, "initial pathname identity must use bigint lstat");
+  assert.match(source, /const descriptorMetadata = await handle\.stat\(\{ bigint: true \}\)/, "opened descriptor validation must use one bigint stat snapshot");
+  assert.doesNotMatch(source, /descriptorIdentity\s*=\s*await handle\.stat/, "identity validation must not add a second descriptor stat race window");
   assert.match(
     source,
     /requireSamePrivateRegularFile\([\s\S]*?"after opening",\s*initialPathMetadata\s*\)/,
@@ -29,6 +40,6 @@ test("local-secret open validation wires initial pathname identity into the desc
   assert.match(
     source,
     /descriptorMetadata\.dev,\s*descriptorMetadata\.ino,\s*pathMetadata\.dev,\s*pathMetadata\.ino/,
-    "current pathname identity must remain bound to the opened descriptor"
+    "current pathname identity must remain bound to the opened descriptor using exact values"
   );
 });

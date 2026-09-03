@@ -16,10 +16,10 @@ interface OpenedPrivateFile {
 
 /** @internal Shared by production validation and deterministic regression tests. */
 export function samePrivateFileIdentity(
-  expectedDev: number,
-  expectedIno: number,
-  actualDev: number,
-  actualIno: number
+  expectedDev: bigint,
+  expectedIno: bigint,
+  actualDev: bigint,
+  actualIno: bigint
 ): boolean {
   return expectedDev === actualDev && expectedIno === actualIno;
 }
@@ -61,24 +61,27 @@ export async function assertPrivateRegularFile(path: string, label: string): Pro
  * The path itself must not be a symlink, POSIX group/other permission bits must
  * be clear, and the descriptor inode/device must still match both the initial
  * pre-open path identity and the path after open on every platform so a path
- * replacement between validation and read fails closed. POSIX secret files
- * must also be owned by the node process's effective UID so a privileged
- * process does not silently expand custody to another local user. The canonical
- * path is also re-resolved after open and after every bounded descriptor read;
- * this catches parent junction/reparse substitution before secret bytes are
- * returned. The descriptor content snapshot (identity, size, mtime and ctime)
- * must remain stable across the read so an in-place writer cannot make callers
- * consume bytes from a changed secret. A ctime/link-count-only transition used
- * by atomic hard-link publication is accepted only after a second descriptor-bound
- * bounded read has the same SHA-256 as the bytes about to be returned, the
- * descriptor remains metadata-stable, and the current path/canonical identity
- * is revalidated again after that reread. POSIX opens additionally use
- * no-follow/non-blocking flags so symlink/FIFO substitution cannot redirect or
- * block secret loading. Reads are capped and allocate only the bound descriptor
- * size plus one overflow byte, so small secrets do not pay ceiling-sized
- * transient allocations and concurrent growth still fails closed before bytes
- * are returned. Mutable read buffers are explicitly zeroized before their
- * operation-scoped lifetime ends; returned JavaScript strings remain GC-managed.
+ * replacement between validation and read fails closed. Security-relevant
+ * device/inode identities are captured with BigInt-backed stat APIs so values
+ * above JavaScript's safe-integer range cannot alias through Number rounding.
+ * POSIX secret files must also be owned by the node process's effective UID so
+ * a privileged process does not silently expand custody to another local user.
+ * The canonical path is also re-resolved after open and after every bounded
+ * descriptor read; this catches parent junction/reparse substitution before
+ * secret bytes are returned. The descriptor content snapshot (identity, size,
+ * mtime and ctime) must remain stable across the read so an in-place writer
+ * cannot make callers consume bytes from a changed secret. A ctime/link-count-
+ * only transition used by atomic hard-link publication is accepted only after a
+ * second descriptor-bound bounded read has the same SHA-256 as the bytes about
+ * to be returned, the descriptor remains metadata-stable, and the current
+ * path/canonical identity is revalidated again after that reread. POSIX opens
+ * additionally use no-follow/non-blocking flags so symlink/FIFO substitution
+ * cannot redirect or block secret loading. Reads are capped and allocate only
+ * the bound descriptor size plus one overflow byte, so small secrets do not pay
+ * ceiling-sized transient allocations and concurrent growth still fails closed
+ * before bytes are returned. Mutable read buffers are explicitly zeroized
+ * before their operation-scoped lifetime ends; returned JavaScript strings
+ * remain GC-managed.
  */
 export async function readPrivateRegularFile(path: string, label: string): Promise<string> {
   const opened = await openValidatedPrivateFile(path, label);
@@ -167,7 +170,7 @@ async function revalidatePrivateFileBytesAfterHardlinkTransition(
 
 async function openValidatedPrivateFile(path: string, label: string): Promise<OpenedPrivateFile> {
   const resolved = resolve(path);
-  const initialPathMetadata = await lstat(resolved);
+  const initialPathMetadata = await lstat(resolved, { bigint: true });
   if (initialPathMetadata.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link`);
   if (!initialPathMetadata.isFile()) throw new Error(`${label} must be a regular file`);
   const canonical = await realpath(resolved);
@@ -198,10 +201,10 @@ async function requireSamePrivateRegularFile(
   expectedCanonical: string,
   handle: FileHandle,
   phase: string,
-  initialPathMetadata?: { dev: number; ino: number }
+  initialPathMetadata?: { dev: bigint; ino: bigint }
 ): Promise<void> {
-  const descriptorMetadata = await handle.stat();
-  const pathMetadata = await lstat(resolved);
+  const descriptorMetadata = await handle.stat({ bigint: true });
+  const pathMetadata = await lstat(resolved, { bigint: true });
   if (pathMetadata.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link`);
   if (!descriptorMetadata.isFile() || !pathMetadata.isFile()) {
     throw new Error(`${label} must be a regular file`);
@@ -229,10 +232,10 @@ async function requireSamePrivateRegularFile(
   }
   if (process.platform !== "win32") {
     const effectiveUid = typeof process.geteuid === "function" ? process.geteuid() : null;
-    if (effectiveUid !== null && descriptorMetadata.uid !== effectiveUid) {
+    if (effectiveUid !== null && descriptorMetadata.uid !== BigInt(effectiveUid)) {
       throw new Error(`${label} must be owned by the effective user`);
     }
-    if ((descriptorMetadata.mode & 0o077) !== 0) {
+    if ((descriptorMetadata.mode & 0o077n) !== 0n) {
       throw new Error(`${label} must not be readable, writable, or executable by group/other users (0600 recommended)`);
     }
   }
