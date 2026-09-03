@@ -60,7 +60,8 @@ const evidenceDigests = {
   publicMiningActivation: '9'.repeat(64),
   windowsSbom: 'a'.repeat(64),
   macosSbom: 'b'.repeat(64),
-  linuxSbom: 'c'.repeat(64)
+  linuxSbom: 'c'.repeat(64),
+  sbomVerification: 'e'.repeat(64)
 };
 const fullyEvidenced = {
   ...base,
@@ -93,6 +94,7 @@ const fullyEvidenced = {
     windowsSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/ZyronMiner-windows-x64.zip.sbom.cdx.json#sha256=${evidenceDigests.windowsSbom}`,
     macosSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/ZyronMiner-macos-arm64.tar.gz.sbom.cdx.json#sha256=${evidenceDigests.macosSbom}`,
     linuxSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/ZyronMiner-linux-x64.tar.gz.sbom.cdx.json#sha256=${evidenceDigests.linuxSbom}`,
+    sbomVerification: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/sbom-verification.json#sha256=${evidenceDigests.sbomVerification}`,
     immutableRelease: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/immutable-release.json#sha256=${evidenceDigests.immutableRelease}`,
     publicMiningActivation: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/public-mining-activation.json#sha256=${evidenceDigests.publicMiningActivation}`
   }
@@ -112,6 +114,8 @@ const { linuxSigning: _missingLinuxSigning, ...promotedMissingLinuxSigning } = f
 run({ ...fullyEvidenced, evidence: promotedMissingLinuxSigning }, false, 'activated promotion missing Linux signing evidence');
 const { linuxSbom: _missingPromotedLinuxSbom, ...promotedMissingSbomEvidence } = fullyEvidenced.evidence;
 run({ ...fullyEvidenced, evidence: promotedMissingSbomEvidence }, false, 'activated promotion missing Linux SBOM evidence slot');
+const { sbomVerification: _missingSbomVerification, ...promotedMissingSbomVerification } = fullyEvidenced.evidence;
+run({ ...fullyEvidenced, evidence: promotedMissingSbomVerification }, false, 'activated promotion missing SBOM verification evidence');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, operatorNote: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/operator-note.json#sha256=${digest}` } }, false, 'activated promotion with unexpected evidence key');
 run({ ...fullyEvidenced, immutableReleaseVerified: false }, false, 'mutable release');
 run({ ...fullyEvidenced, sourceCommit: 'main' }, false, 'non-exact source identity');
