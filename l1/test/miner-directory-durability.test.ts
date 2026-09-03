@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 test("POSIX miner custody persists namespace entries before acknowledging success", async () => {
-  const source = await readFile(join(process.cwd(), "native", "miner-custody-posix.c"), "utf8");
+  const source = await readFile(join(process.cwd(), "native", "miner-custody-posix-impl.inc"), "utf8");
 
   assert.match(source, /static void sync_directory\(int fd, const char \*what\)/);
   assert.match(source, /mkdirat\(parent_fd, name, 0700\)[\s\S]*?sync_directory\(parent_fd, "fsync parent directory after reserve"\)/);
