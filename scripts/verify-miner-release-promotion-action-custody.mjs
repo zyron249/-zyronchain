@@ -5,6 +5,7 @@ const workflow = readFileSync('.github/workflows/miner-release-promotion-gate.ym
 const required = [
   'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
   'persist-credentials: false',
+  'fetch-depth: 0',
   'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
   'node-version: 22.23.2',
   'node scripts/verify-miner-release-promotion.mjs',
@@ -32,6 +33,7 @@ for (const line of workflow.split(/\r?\n/)) {
   if (!/^[0-9a-f]{40}$/.test(ref)) throw new Error(`mutable or non-SHA action ref: ${match[1]}`);
 }
 if (/persist-credentials:\s*true/i.test(workflow)) throw new Error('checkout credential persistence must remain disabled');
+if (!/fetch-depth:\s*0\b/.test(workflow)) throw new Error('promotion gate must retain source history for exact evidence Git-object verification');
 for (const forbidden of ['actions/upload-artifact@', 'actions/attest-', 'softprops/action-gh-release@']) {
   if (workflow.includes(forbidden)) throw new Error(`promotion gate must not acquire publication or attestation authority: ${forbidden}`);
 }
