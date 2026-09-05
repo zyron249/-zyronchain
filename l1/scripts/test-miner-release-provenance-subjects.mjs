@@ -87,7 +87,8 @@ function activeSkeleton(sourceCommit, provenanceDigest) {
       macosSbom: `${releasePrefix}${assets.macos}.sbom.cdx.json#sha256=${sbomDigests.macos}`,
       linuxSbom: `${releasePrefix}${assets.linux}.sbom.cdx.json#sha256=${sbomDigests.linux}`,
       immutableRelease: `${exactBlobPrefix}evidence/immutable-release.json#sha256=${'8'.repeat(64)}`,
-      publicMiningActivation: `${exactBlobPrefix}evidence/public-mining-activation.json#sha256=${'9'.repeat(64)}`
+      publicMiningActivation: `${exactBlobPrefix}evidence/public-mining-activation.json#sha256=${'9'.repeat(64)}`,
+      publication: `${exactBlobPrefix}evidence/publication.json#sha256=${'0'.repeat(63)}1`
     }
   };
 }

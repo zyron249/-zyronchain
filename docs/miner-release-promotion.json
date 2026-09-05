@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "releaseVersion": null,
   "sourceCommit": null,
   "publicMiningActivated": false,
@@ -31,6 +31,7 @@
     "linuxSbom": null,
     "sbomVerification": null,
     "immutableRelease": null,
-    "publicMiningActivation": null
+    "publicMiningActivation": null,
+    "publication": null
   }
 }
