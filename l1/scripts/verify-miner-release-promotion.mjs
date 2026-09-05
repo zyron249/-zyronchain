@@ -27,12 +27,12 @@ const requiredTopLevelFields = [
 const topLevelKeys = Object.keys(policy);
 if (topLevelKeys.length !== requiredTopLevelFields.length ||
     [...topLevelKeys].sort().join(',') !== [...requiredTopLevelFields].sort().join(',')) {
-  throw new Error('promotion policy must contain exactly the canonical schema-v4 top-level fields');
+  throw new Error('promotion policy must contain exactly the canonical schema-v5 top-level fields');
 }
 for (const field of [...requiredBooleanFields, 'sbomVerified']) {
   if (typeof policy[field] !== 'boolean') throw new Error(`${field} must be boolean`);
 }
-if (policy.schemaVersion !== 4) throw new Error('unsupported miner release promotion schema');
+if (policy.schemaVersion !== 5) throw new Error('unsupported miner release promotion schema');
 if (!policy.assets || typeof policy.assets !== 'object' || Array.isArray(policy.assets)) throw new Error('assets object required');
 if (!policy.assetSha256 || typeof policy.assetSha256 !== 'object' || Array.isArray(policy.assetSha256)) throw new Error('assetSha256 object required');
 if (!policy.evidence || typeof policy.evidence !== 'object' || Array.isArray(policy.evidence)) throw new Error('evidence object required');
@@ -72,7 +72,8 @@ const requiredEvidence = [
   'linuxSbom',
   'sbomVerification',
   'immutableRelease',
-  'publicMiningActivation'
+  'publicMiningActivation',
+  'publication'
 ];
 const dedicatedEvidence = new Set(['windowsSbom', 'macosSbom', 'linuxSbom', 'sbomVerification']);
 const coreEvidence = requiredEvidence.filter((name) => !dedicatedEvidence.has(name));
@@ -183,4 +184,4 @@ for (const [name, digest] of evidenceDigests) {
   if (platformAssetDigests.has(digest)) throw new Error(`${name} evidence sha256 must not alias a promoted platform asset byte identity`);
 }
 
-console.log('miner release promotion policy core evidence is fully evidenced; SBOM release subjects and exact byte-bound SBOM verification evidence are mandatory in the dedicated gate');
+console.log('miner release promotion policy core evidence is fully evidenced; SBOM release subjects, exact byte-bound SBOM verification evidence, and exact byte-bound publication evidence are mandatory in dedicated gates');
