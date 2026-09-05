@@ -16,44 +16,32 @@ const subjects = [
   { platform: 'macos', artifact: { name: 'ZyronMiner-macos-arm64.tar.gz', sha256: '2'.repeat(64) }, sbom: { name: 'ZyronMiner-macos-arm64.tar.gz.sbom.cdx.json', sha256: 'b'.repeat(64) } },
   { platform: 'linux', artifact: { name: 'ZyronMiner-linux-x64.tar.gz', sha256: '3'.repeat(64) }, sbom: { name: 'ZyronMiner-linux-x64.tar.gz.sbom.cdx.json', sha256: 'c'.repeat(64) } }
 ];
+const evidenceDocument = (overrides = {}) => ({
+  schemaVersion: 1,
+  releaseVersion,
+  subjects,
+  verification: { verified: true, method: 'publication-review', tool: 'zyron-release-publication-verifier/1' },
+  ...overrides
+});
 
-function evidenceDocument(sourceCommit, overrides = {}) {
-  return {
-    schemaVersion: 1,
-    releaseVersion,
-    sourceCommit,
-    subjects,
-    verification: { verified: true, method: 'publication-review', tool: 'zyron-release-publication-verifier/1' },
-    ...overrides
-  };
-}
 function git(repoPath, args) {
   const result = spawnSync('git', ['-C', repoPath, ...args], { encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(' ')} failed`);
   return result.stdout.trim();
 }
-function makeRepo(documentFactory = evidenceDocument) {
+function makeRepo(document = evidenceDocument()) {
   const repoPath = mkdtempSync(path.join(os.tmpdir(), 'zyron-publication-evidence-'));
   mkdirSync(path.join(repoPath, 'evidence'), { recursive: true });
+  writeFileSync(path.join(repoPath, evidencePath), `${JSON.stringify(document)}\n`);
   git(repoPath, ['init', '-q']);
   git(repoPath, ['config', 'user.email', 'ci@example.invalid']);
   git(repoPath, ['config', 'user.name', 'Zyron CI']);
-
-  // Establish a parent commit so the evidence document can bind the exact commit that contains it
-  // through a deterministic amend operation.
-  writeFileSync(path.join(repoPath, 'seed.txt'), 'seed\n');
-  git(repoPath, ['add', 'seed.txt']);
-  git(repoPath, ['commit', '-qm', 'seed']);
-
-  // The sourceCommit field cannot equal the commit containing itself without a fixed-point hash.
-  // The verifier's authoritative source binding is the exact Git blob at policy.sourceCommit;
-  // therefore fixtures set the field after creating the evidence commit and amend only for drift tests.
-  const provisional = '0'.repeat(40);
-  writeFileSync(path.join(repoPath, evidencePath), `${JSON.stringify(documentFactory(provisional))}\n`);
   git(repoPath, ['add', evidencePath]);
   git(repoPath, ['commit', '-qm', 'fixture']);
   const sourceCommit = git(repoPath, ['rev-parse', 'HEAD']);
-  return { repoPath, sourceCommit };
+  const bytes = readFileSync(path.join(repoPath, evidencePath));
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  return { repoPath, sourceCommit, digest };
 }
 function policyFor(sourceCommit, digest) {
   const releasePrefix = `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/`;
@@ -80,16 +68,11 @@ function policyFor(sourceCommit, digest) {
     }
   };
 }
-function runFixture({ documentFactory = evidenceDocument, mutatePolicy, mutateTree, shouldPass, label }) {
-  const { repoPath, sourceCommit } = makeRepo(documentFactory);
-  // Replace the provisional sourceCommit in the working tree without committing it. This lets the
-  // verifier distinguish working-tree substitution from the immutable source blob. Positive vectors
-  // instead use a schema document that omits self-referential dependence beyond the policy binding.
-  const sourceBytes = readFileSync(path.join(repoPath, evidencePath));
-  const digest = createHash('sha256').update(sourceBytes).digest('hex');
+function runFixture({ document = evidenceDocument(), mutatePolicy, mutateTree, shouldPass, label }) {
+  const { repoPath, sourceCommit, digest } = makeRepo(document);
   const policy = policyFor(sourceCommit, digest);
   const finalPolicy = mutatePolicy ? mutatePolicy(policy) : policy;
-  if (mutateTree) mutateTree(repoPath, sourceCommit);
+  if (mutateTree) mutateTree(repoPath);
   const policyFile = path.join(repoPath, 'policy.json');
   writeFileSync(policyFile, JSON.stringify(finalPolicy, null, 2));
   const result = spawnSync(process.execPath, [verifier, policyFile, repoPath], { encoding: 'utf8' });
@@ -98,7 +81,6 @@ function runFixture({ documentFactory = evidenceDocument, mutatePolicy, mutateTr
   if (!shouldPass && result.status === 0) throw new Error(`${label} should fail`);
 }
 
-// Canonical inactive policy must remain valid and require no evidence bytes.
 const inactiveDir = mkdtempSync(path.join(os.tmpdir(), 'zyron-publication-inactive-'));
 const inactiveFile = path.join(inactiveDir, 'policy.json');
 writeFileSync(inactiveFile, JSON.stringify(base, null, 2));
@@ -106,45 +88,18 @@ const inactive = spawnSync(process.execPath, [verifier, inactiveFile, inactiveDi
 rmSync(inactiveDir, { recursive: true, force: true });
 if (inactive.status !== 0) throw new Error(`inactive canonical policy should pass: ${inactive.stderr || inactive.stdout}`);
 
-// The self-reference field is validated separately below; these negative vectors still prove
-// byte binding, method allowlisting, release/subject integrity, mutable-ref rejection and FS checks.
-runFixture({ shouldPass: false, label: 'provisional sourceCommit identity must fail closed' });
-runFixture({
-  documentFactory: (sourceCommit) => evidenceDocument(sourceCommit, { verification: { verified: false, method: 'publication-review', tool: 'zyron-release-publication-verifier/1' } }),
-  shouldPass: false, label: 'false verification'
-});
-runFixture({
-  documentFactory: (sourceCommit) => evidenceDocument(sourceCommit, { verification: { verified: true, method: 'unknown-method', tool: 'zyron-release-publication-verifier/1' } }),
-  shouldPass: false, label: 'unknown verification method'
-});
-runFixture({
-  mutatePolicy: (p) => ({ ...p, evidence: { ...p.evidence, publication: p.evidence.publication.replace(/#sha256=[0-9a-f]{64}$/, `#sha256=${'f'.repeat(64)}`) } }),
-  shouldPass: false, label: 'evidence digest mismatch'
-});
-runFixture({
-  mutatePolicy: (p) => ({ ...p, evidence: { ...p.evidence, publication: p.evidence.publication.replace(`/blob/${p.sourceCommit}/`, '/blob/main/') } }),
-  shouldPass: false, label: 'mutable evidence ref'
-});
-runFixture({
-  mutatePolicy: (p) => ({ ...p, assetSha256: { ...p.assetSha256, windows: p.assetSha256.linux } }),
-  shouldPass: false, label: 'artifact subject drift'
-});
-runFixture({
-  mutatePolicy: (p) => ({ ...p, evidence: { ...p.evidence, windowsSbom: p.evidence.windowsSbom.replace(subjects[0].sbom.sha256, 'f'.repeat(64)) } }),
-  shouldPass: false, label: 'SBOM subject drift'
-});
-runFixture({
-  mutateTree: (repoPath) => writeFileSync(path.join(repoPath, evidencePath), '{}\n'),
-  shouldPass: false, label: 'working-tree substitution'
-});
-runFixture({
-  mutateTree: (repoPath) => {
-    const target = path.join(repoPath, 'replacement.json');
-    writeFileSync(target, '{}\n');
-    rmSync(path.join(repoPath, evidencePath));
-    symlinkSync(target, path.join(repoPath, evidencePath));
-  },
-  shouldPass: false, label: 'symlink substitution'
-});
+runFixture({ shouldPass: true, label: 'exact immutable publication evidence' });
+runFixture({ document: evidenceDocument({ verification: { verified: false, method: 'publication-review', tool: 'zyron-release-publication-verifier/1' } }), shouldPass: false, label: 'false verification' });
+runFixture({ document: evidenceDocument({ verification: { verified: true, method: 'unknown-method', tool: 'zyron-release-publication-verifier/1' } }), shouldPass: false, label: 'unknown verification method' });
+runFixture({ document: evidenceDocument({ releaseVersion: 'miner-v1.0.1' }), shouldPass: false, label: 'release drift' });
+runFixture({ document: evidenceDocument({ subjects: subjects.slice(0, 2) }), shouldPass: false, label: 'missing subject' });
+runFixture({ document: { ...evidenceDocument(), unexpected: true }, shouldPass: false, label: 'unknown evidence field' });
+runFixture({ mutatePolicy: (p) => ({ ...p, evidence: { ...p.evidence, publication: p.evidence.publication.replace(/#sha256=[0-9a-f]{64}$/, `#sha256=${'f'.repeat(64)}`) } }), shouldPass: false, label: 'evidence digest mismatch' });
+runFixture({ mutatePolicy: (p) => ({ ...p, evidence: { ...p.evidence, publication: p.evidence.publication.replace(`/blob/${p.sourceCommit}/`, '/blob/main/') } }), shouldPass: false, label: 'mutable evidence ref' });
+runFixture({ mutatePolicy: (p) => ({ ...p, assetSha256: { ...p.assetSha256, windows: p.assetSha256.linux } }), shouldPass: false, label: 'artifact subject drift' });
+runFixture({ mutatePolicy: (p) => ({ ...p, evidence: { ...p.evidence, windowsSbom: p.evidence.windowsSbom.replace(subjects[0].sbom.sha256, 'f'.repeat(64)) } }), shouldPass: false, label: 'SBOM subject drift' });
+runFixture({ mutatePolicy: (p) => ({ ...p, evidence: { ...p.evidence, publication: p.evidence.publication.replace('/evidence/publication.json', '/evidence/operator-publication.json') } }), shouldPass: false, label: 'non-canonical publication path' });
+runFixture({ mutateTree: (repoPath) => writeFileSync(path.join(repoPath, evidencePath), '{}\n'), shouldPass: false, label: 'working-tree substitution' });
+runFixture({ mutateTree: (repoPath) => { const target = path.join(repoPath, 'replacement.json'); writeFileSync(target, `${JSON.stringify(evidenceDocument())}\n`); rmSync(path.join(repoPath, evidencePath)); symlinkSync(target, path.join(repoPath, evidencePath)); }, shouldPass: false, label: 'symlink substitution' });
 
 console.log('publication immutable evidence regressions: OK');
