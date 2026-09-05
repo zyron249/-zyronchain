@@ -63,7 +63,8 @@ function policyFor(sourceCommit, digest) {
       linuxSbom: `${releasePrefix}${subjects[2].sbom.name}#sha256=${subjects[2].sbom.sha256}`,
       sbomVerification: `${blobPrefix}evidence/sbom-verification.json#sha256=${'d'.repeat(64)}`,
       immutableRelease: `${blobPrefix}evidence/immutable-release.json#sha256=${'e'.repeat(64)}`,
-      publicMiningActivation: `${blobPrefix}${evidencePath}#sha256=${digest}`
+      publicMiningActivation: `${blobPrefix}${evidencePath}#sha256=${digest}`,
+      publication: `${blobPrefix}evidence/publication.json#sha256=${'0'.repeat(63)}1`
     }
   };
 }
