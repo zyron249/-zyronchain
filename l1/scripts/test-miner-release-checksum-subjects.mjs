@@ -75,7 +75,8 @@ function active(sourceCommit, digest) {
       macosSbom: `${releasePrefix}${sbomSubjects[1].name}#sha256=${sbomSubjects[1].sha256}`,
       linuxSbom: `${releasePrefix}${sbomSubjects[2].name}#sha256=${sbomSubjects[2].sha256}`,
       immutableRelease: `${exact}evidence/immutable-release.json#sha256=${'8'.repeat(64)}`,
-      publicMiningActivation: `${exact}evidence/public-mining-activation.json#sha256=${'9'.repeat(64)}`
+      publicMiningActivation: `${exact}evidence/public-mining-activation.json#sha256=${'9'.repeat(64)}`,
+      publication: `${exact}evidence/publication.json#sha256=${'0'.repeat(63)}1`
     }
   };
 }
