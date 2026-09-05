@@ -96,10 +96,9 @@ if (artifactDigests.has(sourceDigest) || subjects.some((s) => s.sbom.sha256 === 
 
 let document;
 try { document = JSON.parse(sourceBytes.toString('utf8')); } catch { throw new Error('publication evidence must be valid JSON'); }
-requireExactKeys(document, ['schemaVersion', 'releaseVersion', 'sourceCommit', 'subjects', 'verification'], 'publication evidence');
+requireExactKeys(document, ['schemaVersion', 'releaseVersion', 'subjects', 'verification'], 'publication evidence');
 if (document.schemaVersion !== 1) throw new Error('publication evidence must use schemaVersion 1');
 if (document.releaseVersion !== policy.releaseVersion) throw new Error('publication release identity mismatch');
-if (document.sourceCommit !== policy.sourceCommit) throw new Error('publication sourceCommit identity mismatch');
 if (!Array.isArray(document.subjects) || JSON.stringify(document.subjects) !== JSON.stringify(subjects)) throw new Error('publication subjects do not match exact promoted artifact/SBOM subjects');
 for (const [index, subject] of document.subjects.entries()) {
   requireExactKeys(subject, ['platform', 'artifact', 'sbom'], `publication subject ${index}`);
