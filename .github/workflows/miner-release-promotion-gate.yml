@@ -9,6 +9,7 @@ on:
       - 'docs/MINER_LINUX_SIGNING_BINDING.md'
       - 'docs/security/MINER_PROMOTION_SBOM_FAIL_CLOSED.md'
       - 'docs/security/MINER_SIGNING_EVIDENCE_FAIL_CLOSED.md'
+      - 'docs/security/MINER_PUBLICATION_EVIDENCE_FAIL_CLOSED.md'
       - 'l1/scripts/verify-miner-release-promotion.mjs'
       - 'l1/scripts/test-miner-release-promotion.mjs'
       - 'l1/scripts/test-miner-release-promotion-sbom-baseline.mjs'
