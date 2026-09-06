@@ -26,7 +26,11 @@ Validator-set changes are protocol transactions, not single-admin actions. The i
 
 ## Build and verify
 
-Requires Node.js 22 or newer.
+Requires Node.js 22 or newer. Validator nodes and the full storage/signing test
+suite require Linux or macOS with POSIX directory fsync. On Windows, use WSL2
+and clone into its Linux filesystem (for example `~/zyronchain`, not `/mnt/c`).
+Native Windows remains suitable for the miner and typechecking; it is not a
+supported validator host.
 
 ```sh
 npm ci
@@ -36,6 +40,21 @@ npm audit --omit=dev
 ```
 
 ## Private devnet quick start
+
+For an automatically configured, loopback-only two-validator network:
+
+```sh
+cd l1
+npm ci
+npm run devnet
+```
+
+This generates fresh encrypted development keys, starts both validators, and
+verifies a transfer before reporting readiness. Press Ctrl+C to stop both nodes.
+`npm run devnet:check` additionally verifies quorum loss and recovery plus a
+full restart, then stops the processes and removes the successful temporary
+test chain. See [LOCAL_DEVNET.md](LOCAL_DEVNET.md) for Windows/WSL instructions,
+temporary-key handling, and GitHub Actions verification.
 
 Generate one key file for each validator and another for the activity oracle. Key files are created mode `0600`. Prefer encrypted local keystores for operator-managed development keys; production validators should still use the remote-signer/HSM boundary.
 

@@ -17,6 +17,8 @@
   },
   "scripts": {
     "build": "tsc --outDir dist",
+    "devnet": "npm run build && node scripts/local-devnet.mjs",
+    "devnet:check": "npm run build && node scripts/local-devnet.mjs --check",
     "mine": "node scripts/mine.mjs",
     "bench:restart": "npm run build && node dist/bench/restart.js",
     "bench:state-scale": "npm run build && node dist/bench/state-v2-scale.js",

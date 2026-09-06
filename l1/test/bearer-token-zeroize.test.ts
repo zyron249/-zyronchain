@@ -5,7 +5,7 @@ import test from "node:test";
 
 test("bearer-token comparison preserves timing-safe equality and zeroizes both buffers in finally", async () => {
   const source = await readFile(resolve(process.cwd(), "src/node-base.ts"), "utf8");
-  const helper = source.match(/function validBearerToken[\s\S]*?\n}\n\nclass PeerAuthenticationError/);
+  const helper = source.match(/function validBearerToken[\s\S]*?\r?\n}\r?\n\r?\nclass PeerAuthenticationError/);
   assert.ok(helper, "expected bearer-token comparison helper");
   assert.match(helper[0], /if \(!header\?\.startsWith\("Bearer "\)\) return false;/);
   assert.match(helper[0], /return provided\.length === wanted\.length && timingSafeEqual\(provided, wanted\);/);

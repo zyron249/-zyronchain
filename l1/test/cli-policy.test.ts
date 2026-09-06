@@ -4,14 +4,15 @@ import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { enforceCanonicalCliSecurityPolicy } from "../src/cli-policy.js";
 import { isEncryptedKeystore } from "../src/keystore.js";
 
 const execFileAsync = promisify(execFile);
-const cliPath = new URL("../src/cli.js", import.meta.url).pathname;
-const secureCliPath = new URL("../src/secure-cli.js", import.meta.url).pathname;
+const cliPath = fileURLToPath(new URL("../src/cli.js", import.meta.url));
+const secureCliPath = fileURLToPath(new URL("../src/secure-cli.js", import.meta.url));
 
 async function runCli(args: string[], env: NodeJS.ProcessEnv = process.env) {
   return execFileAsync(process.execPath, [cliPath, ...args], {
