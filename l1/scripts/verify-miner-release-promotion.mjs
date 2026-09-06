@@ -159,6 +159,7 @@ function evidenceRoleMatches(name, reference) {
   }
   if (name === 'immutableRelease') return exactCommitPath !== null && exactCommitPath === 'evidence/immutable-release.json';
   if (name === 'publicMiningActivation') return exactCommitPath !== null && /^evidence\/public-mining-(?:activation|authorization)\.json$/.test(exactCommitPath);
+  if (name === 'publication') return exactCommitPath !== null && exactCommitPath === 'evidence/publication.json';
   return false;
 }
 for (const [name, value] of evidenceEntries) {
