@@ -5,12 +5,13 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 
 const execFileAsync = promisify(execFile);
-const cliPath = new URL("../src/cli.js", import.meta.url).pathname;
+const cliPath = fileURLToPath(new URL("../src/cli.js", import.meta.url));
 
 async function listen(server: ReturnType<typeof createServer>): Promise<number> {
   await new Promise<void>((resolve, reject) => {
