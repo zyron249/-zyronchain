@@ -1,0 +1,58 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #f5f7fb;
+  background: #080b12;
+  font-synthesis: none;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top, #161c2b 0, #080b12 48%); }
+button { font: inherit; }
+.shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 36px 0 48px; }
+.topbar { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-bottom: 20px; }
+.eyebrow { margin: 0 0 6px; font-size: 12px; font-weight: 800; letter-spacing: .18em; color: #93a1bb; }
+h1 { margin: 0; font-size: clamp(34px, 6vw, 64px); letter-spacing: -.045em; }
+h2 { margin: 0 0 18px; font-size: 18px; }
+.status-pill { padding: 10px 14px; border: 1px solid #30394c; border-radius: 999px; background: #111724; color: #aab4c8; white-space: nowrap; }
+.status-pill.good { color: #a8f0c1; border-color: #2b6f48; background: #10251a; }
+.status-pill.warn { color: #ffe2a8; border-color: #6c5425; background: #281f0d; }
+.status-pill.danger { color: #ffc0c0; border-color: #743a3a; background: #2c1515; }
+.notice { padding: 14px 16px; margin-bottom: 16px; border: 1px solid #735b2f; background: #2b220f; color: #ffe2a5; border-radius: 14px; }
+.hero-card, .panel, .metrics article { border: 1px solid #242c3a; background: rgba(15, 20, 31, .92); box-shadow: 0 14px 40px rgba(0, 0, 0, .18); }
+.hero-card { display: grid; grid-template-columns: 1fr auto auto; gap: 14px; align-items: center; padding: 22px; border-radius: 20px; }
+.wallet-block { min-width: 0; }
+.wallet-block .label, .metrics span { display: block; color: #8e9ab0; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+.wallet-block strong { display: block; margin: 7px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wallet-block small { color: #7d899d; }
+.primary, .secondary { min-height: 48px; padding: 0 18px; border-radius: 12px; border: 1px solid transparent; font-weight: 800; cursor: pointer; }
+.primary { background: #f5f7fb; color: #0b0f16; }
+.secondary { background: #151b28; color: #dce3ef; border-color: #30394a; }
+button:disabled { opacity: .42; cursor: not-allowed; }
+.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
+.metrics article { padding: 17px; border-radius: 16px; }
+.metrics strong { display: block; margin-top: 8px; font-size: 22px; letter-spacing: -.025em; }
+.details-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.panel { border-radius: 18px; padding: 20px; }
+dl { margin: 0; }
+dl div { display: grid; grid-template-columns: 145px minmax(0, 1fr); gap: 12px; padding: 10px 0; border-top: 1px solid #222a38; }
+dl div:first-child { border-top: 0; }
+dt { color: #7f8ba0; }
+dd { margin: 0; overflow-wrap: anywhere; }
+.logs-panel { margin-top: 16px; }
+.panel-head { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+#errorText { color: #ffaaa5; font-size: 13px; }
+pre { margin: 0; min-height: 220px; max-height: 360px; overflow: auto; padding: 14px; border-radius: 12px; background: #070a10; border: 1px solid #1d2430; color: #b8c6dd; font: 12px/1.6 "SFMono-Regular", Consolas, "Liberation Mono", monospace; white-space: pre-wrap; word-break: break-word; }
+footer { padding: 22px 2px 0; color: #738097; font-size: 13px; }
+@media (max-width: 850px) {
+  .hero-card { grid-template-columns: 1fr 1fr; }
+  .wallet-block { grid-column: 1 / -1; }
+  .metrics { grid-template-columns: repeat(2, 1fr); }
+  .details-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  .shell { width: min(100% - 20px, 1180px); padding-top: 20px; }
+  .topbar { align-items: flex-start; flex-direction: column; }
+  .hero-card { grid-template-columns: 1fr; }
+  .wallet-block { grid-column: auto; }
+  .metrics { grid-template-columns: 1fr 1fr; }
+  dl div { grid-template-columns: 110px minmax(0, 1fr); }
+}
