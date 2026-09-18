@@ -106,3 +106,7 @@ Value-bearing mainnet activation requires every public-testnet activation gate p
 No autonomous change should invent irreversible public/mainnet chain ID, activation height or operator-custody facts merely to flip `mainnetActivationAllowed` to `true`.
 
 Until every stop-ship gate is closed with evidence, the project must not describe itself as “100% certified mainnet”, permissionless-finality, Bitcoin-equivalent or founder-independent.
+
+### Launch-policy consistency regression
+
+`l1/scripts/verify-launch-authorization.mjs` requires every one of the nine public-testnet gates above, including target-hardware measurements, independent succession, and mining contention/calibration. All nine existing mainnet requirements are also mandatory. Duplicate, malformed, or missing requirements fail even when an unrelated placeholder preserves the array length. `test-launch-authorization.mjs` exercises removal of every required gate and rejects both activation flags. CI results explicitly report `resultKind: policy-consistency-only` and `launchReadinessVerified: false`; passing this check proves policy consistency, never closure of external evidence. Both activation flags remain false.

@@ -13,7 +13,10 @@
     "independent-consensus-cryptography-network-audit-and-retest",
     "sustained-independent-operator-internet-adversarial-soak",
     "production-hsm-or-audited-signer-custody-and-cross-host-rotation",
-    "protected-branch-independent-review-repository-policy"
+    "protected-branch-independent-review-repository-policy",
+    "target-hardware-state-v2-scale-and-recovery-measurements",
+    "independent-maintainer-and-security-custody-succession-evidence",
+    "independent-mining-contention-target-calibration-and-retest"
   ],
   "mainnetActivationRequirements": [
     "all-public-testnet-activation-requirements-closed-with-evidence",

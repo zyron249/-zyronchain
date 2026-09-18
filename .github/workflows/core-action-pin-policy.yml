@@ -6,6 +6,7 @@ on:
       - '.github/workflows/ci.yml'
       - '.github/workflows/core-action-pin-policy.yml'
       - '.github/scripts/verify-core-action-pins.mjs'
+      - '.github/scripts/test-core-action-pins.mjs'
   push:
     branches:
       - main
@@ -13,6 +14,7 @@ on:
       - '.github/workflows/ci.yml'
       - '.github/workflows/core-action-pin-policy.yml'
       - '.github/scripts/verify-core-action-pins.mjs'
+      - '.github/scripts/test-core-action-pins.mjs'
 
 permissions:
   contents: read
@@ -28,3 +30,5 @@ jobs:
           persist-credentials: false
       - name: Verify core action pins
         run: node .github/scripts/verify-core-action-pins.mjs
+      - name: Verify LF and CRLF policy regressions
+        run: node --test .github/scripts/test-core-action-pins.mjs
