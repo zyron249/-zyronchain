@@ -33,6 +33,28 @@ that the CI failure followed this exact voting history. Existing diagnostics
 did not retain the corresponding journal choices. Both facts must remain
 distinct in readiness reports.
 
+### Confirmed real-node reproduction
+
+The subsequent run at `8cc0621e8edbd23313f53427b561ec8e1712bd26`
+captured the actual persisted choices after the same restart exercise:
+
+| Validator | Finalized height | Reserved height / round | Choice |
+| --- | --- | --- | --- |
+| A | 2 | 3 / 0 | attest |
+| B | 2 | 3 / 0 | skip |
+
+Both tips were `170af593f0899be521ed78acd97908c3f02ce5323d8ff29c617e2e5efbca4b8d`.
+Persistence and clocks were healthy; both mempools were empty. The last
+finalized block was 156 seconds old. The bounded journal readers reported no
+omitted or rejected records. This confirms the split-choice deadlock in this
+run, rather than inferring it from a timeout alone. The first of three planned
+fresh-network runs failed; the other two did not execute.
+
+Evidence: [real-node CI job](https://github.com/zyron249/-zyronchain/actions/runs/35366853429/job/105671301746)
+and [sanitized observations](evidence/consensus-split-vote-2026-09-18.json).
+Node 22 and 24 each passed 605 tests at this SHA; the four diagnostic-reader
+tests also passed on Linux. No recovery fix is claimed.
+
 There is also a proposal-retry gap: `produceFinalizedBlock` builds a new proposal
 with the current timestamp on each attempt. A failed attempt has already
 reserved the previous proposal hash. The existing four-validator partition
