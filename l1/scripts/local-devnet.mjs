@@ -7,6 +7,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readSigningChoices } from './devnet-diagnostics.mjs';
 
 const args = process.argv.slice(2);
 if (args.some(arg => !['--check', '--help'].includes(arg))) {
@@ -112,6 +113,8 @@ async function waitFor(label, predicate, timeout = 120_000) {
 
 async function printDiagnostics(label) {
   for (const [name, node] of nodes) {
+    console.error(JSON.stringify({ diagnostic: label, validator: name,
+      signingJournal: await readSigningChoices(join(directory, `data-${name}`)) }));
     try {
       const status = await json(node.port, '/status');
       const metrics = await json(node.port, '/metrics');

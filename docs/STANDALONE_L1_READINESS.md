@@ -110,3 +110,15 @@ Until every stop-ship gate is closed with evidence, the project must not describ
 ### Launch-policy consistency regression
 
 `l1/scripts/verify-launch-authorization.mjs` requires every one of the nine public-testnet gates above, including target-hardware measurements, independent succession, and mining contention/calibration. All nine existing mainnet requirements are also mandatory. Duplicate, malformed, or missing requirements fail even when an unrelated placeholder preserves the array length. `test-launch-authorization.mjs` exercises removal of every required gate and rejects both activation flags. CI results explicitly report `resultKind: policy-consistency-only` and `launchReadinessVerified: false`; passing this check proves policy consistency, never closure of external evidence. Both activation flags remain false.
+
+## Open launch blocker: quorum recovery stall (2026-09-18)
+
+Public testnet is not technically ready. In the repeated real two-validator devnet CI at `b33942fbb1dc6017b50f10f3200afed44ed535b3`, the transfer finalized but finality did not resume after validator B was restarted. Both validators reported height 2, the same tip `47eaa64a5814bbe972204e24b5b06ffd4913ccb5375d3999a4a75854160a8c33`, empty mempools, healthy persistence and healthy validator clocks, with 157 seconds since finality. The first of three fresh-network repetitions failed; the remaining repetitions were not completed. An earlier transfer-finality timeout and an intervening successful run must not be presented as a resolved problem.
+
+Evidence: https://github.com/zyron249/-zyronchain/actions/runs/35363386851/job/105659868454
+
+The source currently reserves an attestation choice before quorum collection, and skipped rounds require their own quorum certificate while the signing journal forbids conflicting attest/skip choices. Recovery of partially signed proposals and split choices requires investigation and a deterministic regression. This is a source-based hypothesis, not a proven root cause from the retained journal: the CI diagnostics did not capture journal contents. No consensus fix is claimed. Never clear journals, lower quorum or accept conflicting signatures to make the test green.
+
+Node 22/24 each passed 602 tests and separate crash/checkpoint/adversarial rehearsals passed at this revision; those successes do not close this liveness blocker. PR #898 remains draft. The earlier quota blocker has been cleared; the separately verified publication-evidence changes are recorded in local checkpoint `f028583`.
+
+The new certificate model exercises disjoint attest/skip choices with 2, 4 and 7 honest validators using real signatures and quorum verification. It characterizes an unresolved protocol liveness defect; it is not a recovery fix or proof of the precise CI failure history. See [the counterexample, evidence limits and required resolution](security/CONSENSUS_SPLIT_VOTE_LIVENESS.md). Merely increasing the validator count or replaying a proposal cannot close this split-choice case.
