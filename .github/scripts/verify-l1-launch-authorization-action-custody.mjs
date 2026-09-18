@@ -5,7 +5,7 @@ const CHECKOUT_SHA = '3d3c42e5aac5ba805825da76410c181273ba90b1';
 const SETUP_NODE_SHA = '820762786026740c76f36085b0efc47a31fe5020';
 const UPLOAD_ARTIFACT_SHA = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a';
 
-const workflow = await readFile(new URL('../workflows/l1-launch-authorization.yml', import.meta.url), 'utf8');
+const workflow = (await readFile(new URL('../workflows/l1-launch-authorization.yml', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 
 const requireExactRef = (action, expected) => {
   const refs = [...workflow.matchAll(new RegExp(`actions/${action}@([0-9a-f]{40})`, 'g'))].map((m) => m[1]);
@@ -26,6 +26,7 @@ for (const required of [
   'permissions:\n  contents: read',
   'node-version: 24',
   'verify-launch-authorization.mjs',
+  'node --test l1/scripts/test-launch-authorization.mjs',
   '--policy docs/l1-launch-authorization.json',
   'sha256sum docs/l1-launch-authorization.json "$evidence/result.json" > "$evidence/SHA256SUMS"',
   'l1-launch-authorization-${{ github.sha }}-${{ github.run_attempt }}',

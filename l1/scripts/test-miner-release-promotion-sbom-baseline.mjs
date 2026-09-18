@@ -13,7 +13,7 @@ const releasePrefix = `https://github.com/zyron249/-zyronchain/releases/download
 const blobPrefix = `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/`;
 
 const active = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   releaseVersion,
   sourceCommit,
   publicMiningActivated: true,
@@ -45,7 +45,8 @@ const active = {
     linuxSbom: `${releasePrefix}ZyronMiner-linux-x64.tar.gz.sbom.cdx.json#sha256=${'c'.repeat(64)}`,
     sbomVerification: `${blobPrefix}evidence/sbom-verification.json#sha256=${'e'.repeat(64)}`,
     immutableRelease: `${blobPrefix}evidence/immutable-release.json#sha256=${'9'.repeat(64)}`,
-    publicMiningActivation: `${blobPrefix}evidence/public-mining-activation.json#sha256=${'d'.repeat(64)}`
+    publicMiningActivation: `${blobPrefix}evidence/public-mining-activation.json#sha256=${'d'.repeat(64)}`,
+    publication: `${blobPrefix}evidence/publication.json#sha256=${'0'.repeat(63)}1`
   }
 };
 

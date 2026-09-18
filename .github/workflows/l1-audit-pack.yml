@@ -31,6 +31,7 @@ jobs:
         run: npm run typecheck
       - name: Build deterministic commit-bound audit manifest
         run: |
+          node --test l1/scripts/test-external-audit-pack-binding.mjs
           audit="${RUNNER_TEMP}/zyron-audit-pack"
           mkdir -p "$audit"
           node l1/scripts/build-external-audit-pack.mjs \

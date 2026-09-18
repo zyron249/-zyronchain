@@ -9,6 +9,8 @@ const required = [
   'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
   'node-version: 22.23.2',
   'node scripts/verify-miner-release-promotion.mjs',
+  'node scripts/verify-miner-release-publication-evidence.mjs',
+  'node scripts/test-miner-release-publication-evidence.mjs',
   'node scripts/verify-miner-release-provenance-subjects.mjs',
   'node scripts/verify-miner-release-signing-subjects.mjs',
   'node scripts/verify-miner-release-checksum-subjects.mjs',

@@ -34,6 +34,27 @@ when no longer needed.
 
 ## Windows
 
+From a Git checkout, double-click `START-DEVNET.cmd` at the repository root.
+It detects installed WSL distributions, prefers Ubuntu (including versioned
+names such as `Ubuntu-24.04`) then Debian, and excludes Docker/Rancher service
+distributions. A missing distribution produces installation guidance; an access
+denial is reported as a discovery failure and never triggers reinstallation.
+The launcher cannot bypass a restricted Windows account's WSL permissions.
+
+Startup installs missing Linux build tools using sudo and downloads Node.js 24
+with SHA-256 verification if Node.js >=22/npm are unavailable. It exports only
+the current Git checkpoint into a fresh directory under the Linux home folder,
+installs locked dependencies there, and starts the existing local devnet.
+Commit outstanding changes first; a dirty checkout is rejected to avoid running
+different code silently. Generated keys and ignored local files are not copied.
+The original checkout is not overwritten. The Linux working copy is retained.
+
+For a custom configured distribution, invoke `l1/scripts/start-devnet.ps1` with
+`-Distribution <exact-name>`. Automatic tool installation requires an apt-based
+distribution. On Windows, `l1/scripts/test-wsl-devnet.ps1` tests discovery policy,
+failure handling, and real PowerShell-to-Bash quoting without requiring WSL.
+Those tests do not establish that a particular machine can run WSL.
+
 Use an existing WSL2 Ubuntu terminal. If WSL is not installed, install it using
 Microsoft's WSL installation procedure first; that system operation may need
 administrator access and a restart. Inside Ubuntu, install Node.js 22 or 24,

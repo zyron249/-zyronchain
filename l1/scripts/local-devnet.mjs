@@ -7,6 +7,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readSigningChoices } from './devnet-diagnostics.mjs';
 
 const args = process.argv.slice(2);
 if (args.some(arg => !['--check', '--help'].includes(arg))) {
@@ -106,7 +107,26 @@ async function waitFor(label, predicate, timeout = 120_000) {
     catch (error) { lastError = error; }
     await sleep(500);
   }
+  await printDiagnostics(label);
   throw new Error(`Timed out: ${label}${lastError ? ` (${lastError.message})` : ''}`);
+}
+
+async function printDiagnostics(label) {
+  for (const [name, node] of nodes) {
+    console.error(JSON.stringify({ diagnostic: label, validator: name,
+      signingJournal: await readSigningChoices(join(directory, `data-${name}`)) }));
+    try {
+      const status = await json(node.port, '/status');
+      const metrics = await json(node.port, '/metrics');
+      console.error(JSON.stringify({ diagnostic: label, validator: name,
+        height: status.height, tipHash: status.tipHash, mempoolSize: metrics.mempoolSize,
+        persistenceHealthy: metrics.persistenceHealthy, validatorClockHealthy: metrics.validatorClockHealthy,
+        finalizedBlockAgeSeconds: metrics.finalizedBlockAgeSeconds }));
+    } catch { console.error(JSON.stringify({ diagnostic: label, validator: name, rpcUnavailable: true })); }
+    // Only operational events from these locally created nodes; never dump secret files.
+    const events = logs[name].split(/\r?\n/).filter(line => /^(Validator round failed:|Finalized block |Caught up |Periodic peer sync skipped:)/.test(line));
+    for (const line of events.slice(-12)) console.error('[' + name + '] ' + line);
+  }
 }
 
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { interrupted = true; });
@@ -145,7 +165,7 @@ try {
     if (!state) return false;
     for (const port of [portA, portB]) {
       const receiver = await json(port, `/balance/${keys.b.address}`);
-      if (receiver.balanceAtoms !== 100000000) return false;
+      assert.equal(receiver.balanceAtoms, 100000000, 'Receiver transfer balance is not finalized');
       const sender = await json(port, `/balance/${keys.a.address}`);
       assert.equal(sender.balanceAtoms, 99899999000);
       assert.equal((await json(port, `/nonce/${keys.a.address}`)).nonce, 1);

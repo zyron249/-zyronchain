@@ -106,3 +106,25 @@ Value-bearing mainnet activation requires every public-testnet activation gate p
 No autonomous change should invent irreversible public/mainnet chain ID, activation height or operator-custody facts merely to flip `mainnetActivationAllowed` to `true`.
 
 Until every stop-ship gate is closed with evidence, the project must not describe itself as “100% certified mainnet”, permissionless-finality, Bitcoin-equivalent or founder-independent.
+
+### Launch-policy consistency regression
+
+`l1/scripts/verify-launch-authorization.mjs` requires every one of the nine public-testnet gates above, including target-hardware measurements, independent succession, and mining contention/calibration. All nine existing mainnet requirements are also mandatory. Duplicate, malformed, or missing requirements fail even when an unrelated placeholder preserves the array length. `test-launch-authorization.mjs` exercises removal of every required gate and rejects both activation flags. CI results explicitly report `resultKind: policy-consistency-only` and `launchReadinessVerified: false`; passing this check proves policy consistency, never closure of external evidence. Both activation flags remain false.
+
+## Open launch blocker: quorum recovery stall (2026-09-18)
+
+Public testnet is not technically ready. In the repeated real two-validator devnet CI at `b33942fbb1dc6017b50f10f3200afed44ed535b3`, the transfer finalized but finality did not resume after validator B was restarted. Both validators reported height 2, the same tip `47eaa64a5814bbe972204e24b5b06ffd4913ccb5375d3999a4a75854160a8c33`, empty mempools, healthy persistence and healthy validator clocks, with 157 seconds since finality. The first of three fresh-network repetitions failed; the remaining repetitions were not completed. An earlier transfer-finality timeout and an intervening successful run must not be presented as a resolved problem.
+
+Evidence: https://github.com/zyron249/-zyronchain/actions/runs/35363386851/job/105659868454
+
+The source currently reserves an attestation choice before quorum collection, and skipped rounds require their own quorum certificate while the signing journal forbids conflicting attest/skip choices. Recovery of partially signed proposals and split choices requires investigation and a deterministic regression. This is a source-based hypothesis, not a proven root cause from the retained journal: the CI diagnostics did not capture journal contents. No consensus fix is claimed. Never clear journals, lower quorum or accept conflicting signatures to make the test green.
+
+Node 22/24 each passed 602 tests and separate crash/checkpoint/adversarial rehearsals passed at this revision; those successes do not close this liveness blocker. PR #898 remains draft. The earlier quota blocker has been cleared; the separately verified publication-evidence changes are recorded in local checkpoint `f028583`.
+
+The new certificate model exercises disjoint attest/skip choices with 2, 4 and 7 honest validators using real signatures and quorum verification. It characterizes an unresolved protocol liveness defect; it is not a recovery fix or proof of the precise CI failure history. See [the counterexample, evidence limits and required resolution](security/CONSENSUS_SPLIT_VOTE_LIVENESS.md). Merely increasing the validator count or replaying a proposal cannot close this split-choice case.
+
+A subsequent real-node run at `8cc0621e8edbd23313f53427b561ec8e1712bd26` now confirms the split in persisted journal choices: A reserved `attest` and restarted B reserved `skip`, both at height 3 / round 0, while both chains remained at height 2. The observation closes the root-cause evidence gap for this run, not the recovery defect. Sanitized records and exact CI references are in [the evidence file](security/evidence/consensus-split-vote-2026-09-18.json). Node 22/24 each passed 605 tests; the live devnet still failed and public activation remains disabled.
+
+An isolated [prepare/commit recovery experiment](security/CONSENSUS_RECOVERY_EXPERIMENT.md) now exercises a candidate cross-view rule with authenticated model messages, simulated persistence failures and bounded adversarial schedules. It is not imported by production nodes and does not fix the live devnet. Independent consensus review, a versioned implementation, actual durable recovery, signer/light-client/network integration and real multi-process validation remain required.
+
+At `7e909c5d5529b34755fc9ebdde760981bc32f1ff`, Node 22 and 24 each passed 629 tests, including 24 experimental-recovery tests. The first real devnet repetition passed, but the second stalled during transfer finality before its restart exercise: A reserved `skip` and B `attest` at height 2 / round 0 while both remained at height 1. The third repetition did not execute. [The second evidence record](security/evidence/consensus-split-vote-transfer-2026-09-18.json) confirms this is also an ordinary-transfer liveness defect. Public activation remains disabled.

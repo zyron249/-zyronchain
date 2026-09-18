@@ -1,0 +1,22 @@
+name: Windows Devnet Launcher
+on:
+  push:
+    branches: [main]
+    paths: ['START-DEVNET.cmd', 'l1/scripts/*devnet*', '.github/workflows/windows-devnet-launcher.yml']
+  pull_request:
+    paths: ['START-DEVNET.cmd', 'l1/scripts/*devnet*', '.github/workflows/windows-devnet-launcher.yml']
+permissions:
+  contents: read
+jobs:
+  launcher:
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Test distribution selection and native command transport
+        shell: powershell
+        run: ./l1/scripts/test-wsl-devnet.ps1
+      - name: Verify line-ending-independent action custody
+        run: node --test .github/scripts/test-core-action-pins.mjs

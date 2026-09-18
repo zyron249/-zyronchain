@@ -25,6 +25,7 @@ run({ ...base, publicMiningActiviated: false }, false, 'inactive policy with sha
 run({ ...base, schemaVersion: 1 }, false, 'legacy promotion schema');
 run({ ...base, schemaVersion: 2 }, false, 'pre-SBOM promotion schema');
 run({ ...base, schemaVersion: 3 }, false, 'pre-Linux-signing promotion schema');
+run({ ...base, schemaVersion: 4 }, false, 'pre-publication-evidence promotion schema');
 run({ ...base, assets: {} }, false, 'empty platform asset set');
 run({ ...base, assets: { windows: null, macos: null } }, false, 'missing Linux platform key');
 run({ ...base, assets: { ...base.assets, freebsd: null } }, false, 'unexpected platform key');
@@ -61,7 +62,8 @@ const evidenceDigests = {
   windowsSbom: 'a'.repeat(64),
   macosSbom: 'b'.repeat(64),
   linuxSbom: 'c'.repeat(64),
-  sbomVerification: 'e'.repeat(64)
+  sbomVerification: 'e'.repeat(64),
+  publication: '0'.repeat(64)
 };
 const fullyEvidenced = {
   ...base,
@@ -96,7 +98,8 @@ const fullyEvidenced = {
     linuxSbom: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/ZyronMiner-linux-x64.tar.gz.sbom.cdx.json#sha256=${evidenceDigests.linuxSbom}`,
     sbomVerification: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/sbom-verification.json#sha256=${evidenceDigests.sbomVerification}`,
     immutableRelease: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/immutable-release.json#sha256=${evidenceDigests.immutableRelease}`,
-    publicMiningActivation: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/public-mining-activation.json#sha256=${evidenceDigests.publicMiningActivation}`
+    publicMiningActivation: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/public-mining-activation.json#sha256=${evidenceDigests.publicMiningActivation}`,
+    publication: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/publication.json#sha256=${evidenceDigests.publication}`
   }
 };
 run(fullyEvidenced, true, 'fully evidenced promotion vector');
@@ -114,6 +117,8 @@ const { linuxSigning: _missingLinuxSigning, ...promotedMissingLinuxSigning } = f
 run({ ...fullyEvidenced, evidence: promotedMissingLinuxSigning }, false, 'activated promotion missing Linux signing evidence');
 const { linuxSbom: _missingPromotedLinuxSbom, ...promotedMissingSbomEvidence } = fullyEvidenced.evidence;
 run({ ...fullyEvidenced, evidence: promotedMissingSbomEvidence }, false, 'activated promotion missing Linux SBOM evidence slot');
+const { publication: _missingPublication, ...promotedMissingPublication } = fullyEvidenced.evidence;
+run({ ...fullyEvidenced, evidence: promotedMissingPublication }, false, 'activated promotion missing publication evidence');
 const { sbomVerification: _missingSbomVerification, ...promotedMissingSbomVerification } = fullyEvidenced.evidence;
 run({ ...fullyEvidenced, evidence: promotedMissingSbomVerification }, false, 'activated promotion missing SBOM verification evidence');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, operatorNote: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/operator-note.json#sha256=${digest}` } }, false, 'activated promotion with unexpected evidence key');
@@ -144,6 +149,7 @@ run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, provenance: `ht
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, checksums: `https://github.com/zyron249/-zyronchain/releases/download/${releaseVersion}/provenance-2.json#sha256=${digest}` } }, false, 'checksum evidence with provenance role');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, immutableRelease: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/operator-note-immutable.json#sha256=${digest}` } }, false, 'immutable release evidence with unrelated role');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, publicMiningActivation: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/operator-approval.json#sha256=${digest}` } }, false, 'public mining activation evidence with unrelated role');
+run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, publication: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/operator-publication.json#sha256=${digest}` } }, false, 'publication evidence with unrelated role');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, windowsSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/operator-note-windows-signing.json#sha256=${digest}` } }, false, 'misleading Windows signing keyword path');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, macosSigningOrNotarization: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/audit-macos-notarization.json#sha256=${digest}` } }, false, 'misleading macOS notarization keyword path');
 run({ ...fullyEvidenced, evidence: { ...fullyEvidenced.evidence, linuxSigning: `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/evidence/audit-linux-signing.json#sha256=${digest}` } }, false, 'misleading Linux signing keyword path');

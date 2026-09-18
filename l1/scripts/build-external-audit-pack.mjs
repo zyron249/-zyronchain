@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { writeFile } from "node:fs/promises";
 
 function option(name) {
   const index = process.argv.indexOf(name);
@@ -31,7 +32,31 @@ const outputPath = option("--out");
 const commitSha = option("--commit-sha");
 if (!/^[0-9a-f]{40}$/.test(commitSha)) throw new Error("--commit-sha must be a lowercase 40-hex Git commit SHA");
 
-const scopeBytes = await readFile(scopePath);
+function git(args) {
+  return execFileSync("git", args, { maxBuffer: 16 * 1024 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+}
+try {
+  if (git(["rev-parse", "--verify", `${commitSha}^{commit}`]).toString("utf8").trim() !== commitSha) throw new Error();
+} catch { throw new Error("Audit source must name an available exact Git commit"); }
+const sourceFiles = new Map(git(["ls-tree", "-r", "-z", commitSha]).toString("utf8").split("\0")
+  .filter(Boolean).map(entry => {
+    const tab = entry.indexOf("\t");
+    const [mode, type, oid] = entry.slice(0, tab).split(" ");
+    return [entry.slice(tab + 1), { mode, type, oid }];
+  }));
+function readSource(path) {
+  const allowed = path === "SECURITY.md" || /^(l1\/|docs\/|\.github\/workflows\/)[A-Za-z0-9_./-]+$/.test(path);
+  if (!allowed || path.includes("..")) throw new Error(`Unsafe audit path: ${path}`);
+  const entry = sourceFiles.get(path);
+  if (!entry || entry.type !== "blob" || !["100644", "100755"].includes(entry.mode)) {
+    throw new Error(`Audit source path is not a committed regular file: ${path}`);
+  }
+  return git(["cat-file", "blob", entry.oid]);
+}
+
+// All inputs come from the declared commit, including the scope. Worktree
+// substitutions and Windows CRLF conversion cannot change the audit target.
+const scopeBytes = readSource(scopePath);
 const scope = JSON.parse(scopeBytes.toString("utf8"));
 exactKeys(scope, [
   "scopeVersion", "status", "canonicalImplementation", "supportedProtocolVersions", "reviewAreas",
@@ -135,21 +160,18 @@ const paths = [...new Set([
 
 const files = [];
 for (const path of paths) {
-  const allowed = path === "SECURITY.md" || /^(l1\/|docs\/|\.github\/workflows\/)[A-Za-z0-9_./-]+$/.test(path);
-  if (!allowed || path.includes("..")) throw new Error(`Unsafe audit path: ${path}`);
-  const metadata = await stat(path);
-  assert.ok(metadata.isFile(), `Audit path is not a regular file: ${path}`);
-  const bytes = await readFile(path);
+  const bytes = readSource(path);
   files.push({ path, bytes: bytes.length, sha256: sha256(bytes) });
 }
 
-const packageJson = JSON.parse(await readFile("l1/package.json", "utf8"));
+const packageJson = JSON.parse(readSource("l1/package.json").toString("utf8"));
 assert.equal(packageJson.name, "@zyronchain/l1");
 assert.ok(packageJson.engines?.node, "L1 package must declare a Node.js engine policy");
 
 const pack = {
   auditPackVersion: 1,
   status: "prepared-not-independently-audited",
+  inputSource: "immutable-git-blobs",
   repository: process.env.GITHUB_REPOSITORY ?? "local-checkout",
   commitSha,
   scope: {

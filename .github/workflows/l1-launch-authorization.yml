@@ -20,6 +20,8 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
+      - name: Reject missing gates and unauthorized activation
+        run: node --test l1/scripts/test-launch-authorization.mjs
       - name: Verify governance authorization and activation gates
         run: |
           evidence="${RUNNER_TEMP}/zyron-launch-authorization"

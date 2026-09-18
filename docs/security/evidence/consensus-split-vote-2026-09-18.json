@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "resultKind": "unresolved-consensus-liveness-counterexample",
+  "publicTestnetReady": false,
+  "sourceCommit": "8cc0621e8edbd23313f53427b561ec8e1712bd26",
+  "workflowRun": 35366853429,
+  "jobId": 105671301746,
+  "url": "https://github.com/zyron249/-zyronchain/actions/runs/35366853429/job/105671301746",
+  "scenario": "two real CLI validators; transfer finalized; validator B stopped and restarted; finality did not resume",
+  "observations": [
+    {
+      "observedAt": "2026-09-18T16:14:14.5038198Z",
+      "diagnostic": "finality resumes after validator restart",
+      "validator": "a",
+      "signingJournal": {
+        "status": "read",
+        "choices": [
+          {
+            "height": 3,
+            "round": 0,
+            "kind": "attest"
+          }
+        ],
+        "omittedRecords": 0,
+        "rejectedRecords": 0
+      }
+    },
+    {
+      "observedAt": "2026-09-18T16:14:14.5071225Z",
+      "diagnostic": "finality resumes after validator restart",
+      "validator": "a",
+      "height": 2,
+      "tipHash": "170af593f0899be521ed78acd97908c3f02ce5323d8ff29c617e2e5efbca4b8d",
+      "mempoolSize": 0,
+      "persistenceHealthy": true,
+      "validatorClockHealthy": true,
+      "finalizedBlockAgeSeconds": 156
+    },
+    {
+      "observedAt": "2026-09-18T16:14:14.5080604Z",
+      "diagnostic": "finality resumes after validator restart",
+      "validator": "b",
+      "signingJournal": {
+        "status": "read",
+        "choices": [
+          {
+            "height": 3,
+            "round": 0,
+            "kind": "skip"
+          }
+        ],
+        "omittedRecords": 0,
+        "rejectedRecords": 0
+      }
+    },
+    {
+      "observedAt": "2026-09-18T16:14:14.5106523Z",
+      "diagnostic": "finality resumes after validator restart",
+      "validator": "b",
+      "height": 2,
+      "tipHash": "170af593f0899be521ed78acd97908c3f02ce5323d8ff29c617e2e5efbca4b8d",
+      "mempoolSize": 0,
+      "persistenceHealthy": true,
+      "validatorClockHealthy": true,
+      "finalizedBlockAgeSeconds": 156
+    }
+  ],
+  "verification": {
+    "node22": {
+      "tests": 605,
+      "passed": 605,
+      "failed": 0,
+      "skipped": 0,
+      "jobId": 105671301389
+    },
+    "node24": {
+      "tests": 605,
+      "passed": 605,
+      "failed": 0,
+      "skipped": 0,
+      "jobId": 105671301648
+    },
+    "diagnosticTestsPassed": 4
+  },
+  "limits": [
+    "No recovery fix is implemented.",
+    "This is a loopback CI experiment, not independent-operator or public-network evidence.",
+    "Only bounded signing-choice projections were collected; no keystores, passwords or raw journals are included."
+  ]
+}
