@@ -39,7 +39,8 @@ function active(sourceCommit, digest) {
       linuxSbom: `${releasePrefix}${subjects[2].sbom.name}#sha256=${subjects[2].sbom.sha256}`,
       sbomVerification: `${exact}${evidencePath}#sha256=${digest}`,
       immutableRelease: `${exact}evidence/immutable-release.json#sha256=${'8'.repeat(64)}`,
-      publicMiningActivation: `${exact}evidence/public-mining-activation.json#sha256=${'9'.repeat(64)}` }
+      publicMiningActivation: `${exact}evidence/public-mining-activation.json#sha256=${'9'.repeat(64)}`,
+      publication: `${exact}evidence/publication.json#sha256=${'0'.repeat(63)}1` }
   };
 }
 function run({ label, shouldPass, doc = document(), mutatePolicy, mutateWorkingTree, symlinkEvidence = false }) {
