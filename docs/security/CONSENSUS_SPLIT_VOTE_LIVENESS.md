@@ -55,6 +55,15 @@ and [sanitized observations](evidence/consensus-split-vote-2026-09-18.json).
 Node 22 and 24 each passed 605 tests at this SHA; the four diagnostic-reader
 tests also passed on Linux. No recovery fix is claimed.
 
+At `7e909c5d5529b34755fc9ebdde760981bc32f1ff`, the first fresh-network
+repetition passed but the second stalled during transfer finality, before the
+restart exercise. A reserved `skip` and B reserved `attest` at height 2 / round
+0; both chains stayed at height 1 with one pending transaction and healthy
+storage/clocks. This confirms that the defect also affects ordinary transfer
+progress. The third repetition did not execute. Node 22/24 each passed 629
+tests, including the isolated recovery experiment; production is unchanged.
+See [the second real-node evidence record](evidence/consensus-split-vote-transfer-2026-09-18.json).
+
 There is also a proposal-retry gap: `produceFinalizedBlock` builds a new proposal
 with the current timestamp on each attempt. A failed attempt has already
 reserved the previous proposal hash. The existing four-validator partition

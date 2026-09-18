@@ -51,6 +51,12 @@ It enumerates 64 four-replica schedules formed by prepare-certificate delivery
 subsets and new-view quorum omissions. These are bounded tests, not exhaustive
 verification of every Byzantine schedule or a network soak.
 
+At `7e909c5d5529b34755fc9ebdde760981bc32f1ff`, all 24 candidate-model tests
+passed within the 629-test suites on both Node 22 and Node 24. Evidence:
+[Node 22](https://github.com/zyron249/-zyronchain/actions/runs/35369367790/job/105679423459),
+[Node 24](https://github.com/zyron249/-zyronchain/actions/runs/35369367790/job/105679423595).
+The separate live devnet still failed; it uses the unchanged production rules.
+
 The previous split-vote characterization and quorum-intersection tests remain
 unchanged. The live devnet failure remains visible in CI. No production source
 imports this model, and no launcher flag enables it.

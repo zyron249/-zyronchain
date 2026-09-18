@@ -8,6 +8,8 @@ The canonical consensus implementation is the standalone TypeScript L1 under `l1
 
 The machine-readable scope is `docs/l1-audit-scope.json`. CI validates that every security invariant points only to an explicitly listed critical module and produces a commit-bound manifest containing SHA-256 digests for every critical module, security specification, independent verifier input and required evidence/control workflow.
 
+The scope now includes the confirmed split-vote liveness failure and the isolated recovery model as executable design material. The model is not the production protocol and its passing tests do not close the live-node defect; see `security/CONSENSUS_RECOVERY_EXPERIMENT.md` for the review request and integration gaps.
+
 Protocol v5 permissionless proof-of-work issuance is part of the audit target. It does **not** replace the permissioned validator finality layer: miners compete for ZYN issuance while validators still propose, attest and finalize blocks. Protocol v4 remains intentionally unsupported/fail-stop.
 
 ## Required independent review
@@ -58,7 +60,7 @@ A packaged release must contain `scripts/mine.mjs` and `MINING.md`; the miner de
 
 ## Commit-bound audit artifact
 
-`Standalone L1 External Audit Pack CI` builds `audit-pack.json` from the reviewed checkout. The artifact includes:
+`Standalone L1 External Audit Pack CI` builds `audit-pack.json` from the exact declared Git commit. Scope, package metadata and all file hashes come from immutable regular-file Git blobs, not mutable checkout files. Missing commits, non-commit object identities, unsafe paths and symlinks are rejected. `inputSource: immutable-git-blobs` makes this boundary explicit; working-tree edits are excluded until committed. Windows CRLF conversion does not alter the digests. The artifact includes:
 
 - exact GitHub commit checked out by the job;
 - audit-scope SHA-256;

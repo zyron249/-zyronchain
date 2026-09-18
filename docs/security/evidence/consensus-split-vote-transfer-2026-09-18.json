@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "resultKind": "unresolved-consensus-liveness-counterexample",
+  "publicTestnetReady": false,
+  "sourceCommit": "7e909c5d5529b34755fc9ebdde760981bc32f1ff",
+  "workflowRun": 35369367790,
+  "jobId": 105679423535,
+  "url": "https://github.com/zyron249/-zyronchain/actions/runs/35369367790/job/105679423535",
+  "scenario": "fresh network repetition 1 passed; repetition 2 stalled during transfer finality before restart exercise; repetition 3 did not run",
+  "observations": [
+    {
+      "observedAt": "2026-09-18T16:42:06.3736927Z",
+      "diagnostic": "transfer finalized by both validators",
+      "validator": "a",
+      "signingJournal": {
+        "status": "read",
+        "choices": [
+          {
+            "height": 2,
+            "round": 0,
+            "kind": "skip"
+          }
+        ],
+        "omittedRecords": 0,
+        "rejectedRecords": 0
+      }
+    },
+    {
+      "observedAt": "2026-09-18T16:42:06.3759952Z",
+      "diagnostic": "transfer finalized by both validators",
+      "validator": "a",
+      "height": 1,
+      "tipHash": "cc6d00c0582b6050b92fde5093ea8436bb5b432cfa22cad79da4be44e72a817b",
+      "mempoolSize": 1,
+      "persistenceHealthy": true,
+      "validatorClockHealthy": true,
+      "finalizedBlockAgeSeconds": 120
+    },
+    {
+      "observedAt": "2026-09-18T16:42:06.3763916Z",
+      "diagnostic": "transfer finalized by both validators",
+      "validator": "b",
+      "signingJournal": {
+        "status": "read",
+        "choices": [
+          {
+            "height": 2,
+            "round": 0,
+            "kind": "attest"
+          }
+        ],
+        "omittedRecords": 0,
+        "rejectedRecords": 0
+      }
+    },
+    {
+      "observedAt": "2026-09-18T16:42:06.3776336Z",
+      "diagnostic": "transfer finalized by both validators",
+      "validator": "b",
+      "height": 1,
+      "tipHash": "cc6d00c0582b6050b92fde5093ea8436bb5b432cfa22cad79da4be44e72a817b",
+      "mempoolSize": 1,
+      "persistenceHealthy": true,
+      "validatorClockHealthy": true,
+      "finalizedBlockAgeSeconds": 120
+    }
+  ],
+  "verification": {
+    "node22": {
+      "tests": 629,
+      "passed": 629,
+      "failed": 0,
+      "skipped": 0,
+      "jobId": 105679423459
+    },
+    "node24": {
+      "tests": 629,
+      "passed": 629,
+      "failed": 0,
+      "skipped": 0,
+      "jobId": 105679423595
+    }
+  },
+  "limits": [
+    "Experimental recovery model is not integrated into production nodes.",
+    "A passing repetition does not close a subsequent live-network failure."
+  ]
+}
