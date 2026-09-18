@@ -13,7 +13,7 @@ permissions:
 jobs:
   local-devnet:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: l1
@@ -31,7 +31,11 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
       - name: Verify live two-validator local devnet
-        run: npm run devnet:check
+        run: |
+          for attempt in 1 2 3; do
+            echo "Fresh devnet repetition ${attempt}/3"
+            npm run devnet:check
+          done
 
   l1:
     runs-on: ubuntu-latest

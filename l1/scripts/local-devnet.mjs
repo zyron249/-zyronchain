@@ -116,7 +116,7 @@ async function printDiagnostics(label) {
       const status = await json(node.port, '/status');
       const metrics = await json(node.port, '/metrics');
       console.error(JSON.stringify({ diagnostic: label, validator: name,
-        height: status.height, tipHash: status.tipHash, mempoolSize: status.mempoolSize,
+        height: status.height, tipHash: status.tipHash, mempoolSize: metrics.mempoolSize,
         persistenceHealthy: metrics.persistenceHealthy, validatorClockHealthy: metrics.validatorClockHealthy,
         finalizedBlockAgeSeconds: metrics.finalizedBlockAgeSeconds }));
     } catch { console.error(JSON.stringify({ diagnostic: label, validator: name, rpcUnavailable: true })); }

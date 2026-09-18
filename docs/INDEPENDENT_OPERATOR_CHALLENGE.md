@@ -34,4 +34,4 @@ Required CI uses a clearly marked synthetic test vector solely to prove the veri
 
 ## Launch boundary
 
-The challenge can be prepared in advance, but the external gate remains open until genuinely independent operators execute it against a real candidate network and the evidence is reviewed. `publicTestnetAuthorized` and `mainnetAuthorized` remain false in the repository policy until the broader readiness process explicitly changes them.
+The challenge can be prepared in advance, but the external gate remains open until genuinely independent operators execute it against a real candidate network and the evidence is reviewed. The challenge policy itself grants no launch authorization. Repository governance authorization is recorded separately in `l1-launch-authorization.json`; `publicTestnetActivationAllowed` and `mainnetActivationAllowed` remain false until the broader readiness process independently closes the required gates.
