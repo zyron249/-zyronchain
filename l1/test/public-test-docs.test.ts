@@ -79,7 +79,7 @@ test("public tester docs stay honest and do not invent hosted endpoints", async 
     assert.ok(publicTest.includes(needle), `docs/PUBLIC_TEST.md missing required text: ${needle}`);
   }
 
-  assert.ok(publicTest.includes("do not use it"), "quarantined Render hostname must stay a warning");
+  assert.ok(/do not use it/i.test(publicTest), "quarantined Render hostname must stay a warning");
   assert.ok(readme.includes("docs/PUBLIC_TEST.md"), "root README must point testers at the public-test guide");
   assert.ok(readme.includes("CONTRIBUTING.md"), "root README must point to CONTRIBUTING.md");
   assert.ok(contributing.includes("Do not invent launch facts"), "CONTRIBUTING.md must forbid invented launch facts");
