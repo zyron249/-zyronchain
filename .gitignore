@@ -1,4 +1,6 @@
 # Dependency/build artifacts
+__pycache__/
+*.py[cod]
 node_modules/
 l1/node_modules/
 l1/dist/
