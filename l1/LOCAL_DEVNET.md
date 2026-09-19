@@ -69,3 +69,7 @@ npm test
 ```
 
 Local verification does not activate public mining, public testnet, or mainnet.
+
+For wallet creation, test-token transfers, RPC inspection, and an honest list of
+what is **not** published (no public RPC, explorer, or faucet), see
+[docs/PUBLIC_TEST.md](../docs/PUBLIC_TEST.md).

@@ -106,7 +106,16 @@ async function waitFor(label, predicate, timeout = 120_000) {
     catch (error) { lastError = error; }
     await sleep(500);
   }
-  throw new Error(`Timed out: ${label}${lastError ? ` (${lastError.message})` : ''}`);
+  let snapshot = '';
+  try {
+    const observed = await Promise.allSettled([...nodes.values()].map(node => json(node.port, '/status')));
+    snapshot = ` last-status=${JSON.stringify(observed.map(item => (
+      item.status === 'fulfilled' ? item.value : (item.reason instanceof Error ? item.reason.message : 'status failed')
+    )))}`;
+  } catch {
+    snapshot = '';
+  }
+  throw new Error(`Timed out: ${label}${lastError ? ` (${lastError.message})` : ''}${snapshot}`);
 }
 
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { interrupted = true; });
@@ -153,6 +162,28 @@ try {
     return state;
   });
   console.log(`Transfer verified on both validators at height ${transferred.a.height}.`);
+
+  if (!check) {
+    console.log(`
+Local public-test surface (loopback only — not a hosted network)
+  Chain ID:      ${chainId}
+  RPC A:         http://127.0.0.1:${portA}
+  RPC B:         http://127.0.0.1:${portB}
+  Genesis:       ${join(directory, 'genesis.json')}
+  Secrets:       ${secretDirectory}  (encrypted keystores + password files; 0600)
+  Funded A:      ${keys.a.address}  (starts 1000 ZYN; 1 ZYN already sent to B)
+  Receiver B:    ${keys.b.address}
+  Activity pool: ${keys.oracle.address}
+
+  curl -s http://127.0.0.1:${portA}/status
+  curl -s http://127.0.0.1:${portA}/healthz
+  curl -s http://127.0.0.1:${portA}/balance/${keys.a.address}
+
+ZyronChain is not EVM. MetaMask cannot connect.
+There is no public faucet, explorer, or published wallet RPC in this repository.
+See docs/PUBLIC_TEST.md
+`);
+  }
 
   if (check) {
     // Neither validator alone may finalize a new block in a two-member set.

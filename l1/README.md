@@ -54,7 +54,9 @@ verifies a transfer before reporting readiness. Press Ctrl+C to stop both nodes.
 `npm run devnet:check` additionally verifies quorum loss and recovery plus a
 full restart, then stops the processes and removes the successful temporary
 test chain. See [LOCAL_DEVNET.md](LOCAL_DEVNET.md) for Windows/WSL instructions,
-temporary-key handling, and GitHub Actions verification.
+temporary-key handling, and GitHub Actions verification. External testers who
+want wallet, RPC, and token steps should use [docs/PUBLIC_TEST.md](../docs/PUBLIC_TEST.md).
+This local launcher is not a hosted public testnet.
 
 Generate one key file for each validator and another for the activity oracle. Key files are created mode `0600`. Prefer encrypted local keystores for operator-managed development keys; production validators should still use the remote-signer/HSM boundary.
 
