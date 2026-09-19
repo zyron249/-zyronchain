@@ -106,7 +106,16 @@ async function waitFor(label, predicate, timeout = 120_000) {
     catch (error) { lastError = error; }
     await sleep(500);
   }
-  throw new Error(`Timed out: ${label}${lastError ? ` (${lastError.message})` : ''}`);
+  let snapshot = '';
+  try {
+    const observed = await Promise.allSettled([...nodes.values()].map(node => json(node.port, '/status')));
+    snapshot = ` last-status=${JSON.stringify(observed.map(item => (
+      item.status === 'fulfilled' ? item.value : (item.reason instanceof Error ? item.reason.message : 'status failed')
+    )))}`;
+  } catch {
+    snapshot = '';
+  }
+  throw new Error(`Timed out: ${label}${lastError ? ` (${lastError.message})` : ''}${snapshot}`);
 }
 
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { interrupted = true; });

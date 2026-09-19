@@ -117,6 +117,7 @@ Never commit:
 - Permissioned validator set (local launcher uses two validators). This is not Bitcoin-like or permissionless finality.
 - 30-second block interval; first finality takes about one to two minutes.
 - Each `npm run devnet` creates a new chain. It does not resume an earlier session.
+- `npm run devnet:check` also stops one validator to prove that a single node cannot finalize. After a missed 30-second round, view-change recovery can take a couple of minutes and has timed out on some hosts (the `local-devnet` job is already flaky on `main`). Interactive `npm run devnet` only needs the first verified transfer and does not exercise that restart path. If the check times out locally, re-run it or use **Actions → Standalone L1 CI → local-devnet**.
 - Interactive runs keep the temporary directory (including development passwords) for diagnosis. Delete it when finished.
 - No light-client mobile wallet, hardware-wallet integration, or public explorer.
 - Independent-operator, multi-region, HSM-custody, external-audit, and sustained-Internet soak evidence remain open. See [`STANDALONE_L1_READINESS.md`](STANDALONE_L1_READINESS.md).
