@@ -16,6 +16,23 @@ Historical policy note: the former repository statement `No ZyronChain public te
 
 The historical Python/Flask Proof-of-Work network and its explorer are a **legacy compatibility testnet**, not the canonical chain. Its preserved documentation is in [Legacy Python/Flask Testnet](docs/LEGACY_PYTHON_TESTNET.md).
 
+## Public tester path
+
+There is **no hosted public L1 RPC, explorer, faucet, or bootstrap list** in this repository. External testers should run the loopback two-validator network:
+
+```sh
+cd l1
+npm ci
+npm run devnet
+```
+
+That command is the supported public-test surface today: local-only RPC on `127.0.0.1`, a fresh `zyron-local-<hex>` chain ID, and a verified 1 ZYN transfer. ZyronChain is not EVM; MetaMask cannot connect.
+
+- Tester walkthrough (wallet, tokens, RPC, limitations): [Public tester guide](docs/PUBLIC_TEST.md)
+- Local launcher details: [`l1/LOCAL_DEVNET.md`](l1/LOCAL_DEVNET.md)
+- Contribution and secret rules: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Environment variable checklist (not auto-loaded): [`.env.example`](.env.example)
+
 ## Canonical implementation
 
 - Source: [`l1/src/`](l1/src)
@@ -57,10 +74,13 @@ Maintainer succession likewise cannot be satisfied by naming placeholder account
 |---|---|
 | `l1/` | Canonical standalone L1 |
 | `docs/` | Readiness, threat model, audits and operational evidence |
+| `docs/PUBLIC_TEST.md` | External tester walkthrough for the local public-test path |
+| `CONTRIBUTING.md` | Tester and contributor rules |
+| `.env.example` | Environment variable checklist (no secrets) |
 | `app.py`, `zyron/`, `templates/`, `static/` | Legacy Python/Flask compatibility testnet |
 | `tests/` | Legacy Python testnet tests |
 | `l1/test/` | Canonical L1 tests |
 
 ## Contributions and launch discipline
 
-Security and consensus changes must preserve deterministic replay and include regression evidence. Security reports follow [`SECURITY.md`](SECURITY.md); maintainer/release continuity follows [`docs/L1_MAINTAINER_SUCCESSION.md`](docs/L1_MAINTAINER_SUCCESSION.md). Do not deploy generated keys, genesis files or operator secrets from this repository. Do not activate or advertise a value-bearing mainnet until the activation gates in the launch authorization/readiness policies are independently closed.
+Security and consensus changes must preserve deterministic replay and include regression evidence. How to run tests and what not to invent (chain IDs, RPC URLs, activation flags) is in [`CONTRIBUTING.md`](CONTRIBUTING.md). Security reports follow [`SECURITY.md`](SECURITY.md); maintainer/release continuity follows [`docs/L1_MAINTAINER_SUCCESSION.md`](docs/L1_MAINTAINER_SUCCESSION.md). Do not deploy generated keys, genesis files or operator secrets from this repository. Do not activate or advertise a value-bearing mainnet until the activation gates in the launch authorization/readiness policies are independently closed.

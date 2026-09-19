@@ -154,6 +154,28 @@ try {
   });
   console.log(`Transfer verified on both validators at height ${transferred.a.height}.`);
 
+  if (!check) {
+    console.log(`
+Local public-test surface (loopback only — not a hosted network)
+  Chain ID:      ${chainId}
+  RPC A:         http://127.0.0.1:${portA}
+  RPC B:         http://127.0.0.1:${portB}
+  Genesis:       ${join(directory, 'genesis.json')}
+  Secrets:       ${secretDirectory}  (encrypted keystores + password files; 0600)
+  Funded A:      ${keys.a.address}  (starts 1000 ZYN; 1 ZYN already sent to B)
+  Receiver B:    ${keys.b.address}
+  Activity pool: ${keys.oracle.address}
+
+  curl -s http://127.0.0.1:${portA}/status
+  curl -s http://127.0.0.1:${portA}/healthz
+  curl -s http://127.0.0.1:${portA}/balance/${keys.a.address}
+
+ZyronChain is not EVM. MetaMask cannot connect.
+There is no public faucet, explorer, or published wallet RPC in this repository.
+See docs/PUBLIC_TEST.md
+`);
+  }
+
   if (check) {
     // Neither validator alone may finalize a new block in a two-member set.
     await stop('b');
