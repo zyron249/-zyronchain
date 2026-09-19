@@ -102,6 +102,10 @@ jobs:
             'ZyronChain',
             'Public testnet governance authorized',
             'Authorized does not mean activated',
+            'docs/PUBLIC_TEST.md',
+            'npm run devnet',
+            'cd l1 &amp;&amp; npm ci &amp;&amp; npm run devnet',
+            'not a hosted testnet',
             '50M ZYN',
             'Create a wallet',
             'No analytics cookies'
@@ -123,6 +127,8 @@ jobs:
             'NO SECRET IN BROWSER',
             'PRIVATE KEY STAYS LOCAL',
             'PUBLIC_WALLET_RPC_WHEN_PUBLISHED',
+            'docs/PUBLIC_TEST.md',
+            'npm run devnet',
             'data-release-short'
           ]) {
             if (!walletHtml.includes(marker)) throw new Error(`Wallet page missing required marker: ${marker}`);
@@ -136,6 +142,8 @@ jobs:
             'Validator Launchpad',
             'Private key stays local',
             'Public validator enrollment not active',
+            'docs/PUBLIC_TEST.md',
+            'npm run devnet',
             'NO SECRET IN BROWSER',
             'PRIVATE / NON-VALUE',
             'id="release-ref"'
@@ -317,6 +325,23 @@ jobs:
             }
             if (/fonts\.googleapis\.com|fonts\.gstatic\.com/i.test(source)) {
               throw new Error('Production website must remain self-contained and not depend on remote web fonts');
+            }
+          }
+
+          const inventedPublicHosts = [
+            'rpc.zyronchain.com',
+            'explorer.zyronchain.com',
+            'faucet.zyronchain.com',
+            'testnet.zyronchain.com',
+            'mainnet.zyronchain.com',
+            'wss://'
+          ];
+          for (const [file, source] of pages) {
+            const lower = source.toLowerCase();
+            for (const host of inventedPublicHosts) {
+              if (lower.includes(host)) {
+                throw new Error(`${file} must not invent hosted endpoint ${host}`);
+              }
             }
           }
 

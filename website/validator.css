@@ -70,7 +70,9 @@
 .next-callout code { color:#b7e7ca; }
 .next-callout.warning { background:#2a2418; color:#c8b78f; border-color:#493d27; }
 .public-panel { background:#fbfcfb; }
-.inline-cta { display:inline-flex; margin-left:14px; color:var(--green-dark); font-size:12px; font-weight:700; }
+.public-test-note { margin:16px 0 0; max-width:72ch; color:var(--muted); font-size:13px; }
+.public-test-note code { color:var(--green-dark); }
+.inline-cta { display:inline-flex; margin:12px 14px 0 0; color:var(--green-dark); font-size:12px; font-weight:700; }
 .inline-cta:hover { text-decoration:underline; }
 .safety-section { padding-top:10px; padding-bottom:92px; }
 .safety-section h2 { max-width:780px; margin:12px 0 35px; color:var(--text-strong); font-size:clamp(38px,5vw,56px); line-height:1.06; letter-spacing:-.045em; }

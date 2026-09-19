@@ -18,7 +18,7 @@ Production static website for `https://zyronchain.com`. The website is intention
 
 ## Product portal boundary
 
-The website explains the canonical protocol, wallet model, ZYN supply rules, activation status, validator path, developer quick start and security/readiness model. It may link to canonical repository documents for deeper evidence, but it must not invent live network state or turn governance authorization into an activation claim.
+The website explains the canonical protocol, wallet model, ZYN supply rules, activation status, validator path, developer quick start and security/readiness model. It may link to canonical repository documents for deeper evidence, but it must not invent live network state or turn governance authorization into an activation claim. Testers are pointed at [`docs/PUBLIC_TEST.md`](https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md) for the local `cd l1 && npm ci && npm run devnet` path. That is not a hosted testnet, and the site must not invent public RPC, explorer or faucet endpoints.
 
 The portal must not:
 
