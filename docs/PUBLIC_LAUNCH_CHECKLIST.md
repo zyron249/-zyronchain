@@ -114,6 +114,7 @@ This pass did **not** write exploits, PoCs, or attack procedures. Findings are f
 | Low | Packaged miner and CLI treat DNS name `localhost` as loopback for plaintext HTTP | Residual DNS-rebinding class; prefer literal `127.0.0.1` / `::1`. Shared helper tests pin `localhost`; left unchanged this pass |
 | Low | Interactive local-devnet retains encrypted keystores **and** password files in one `0700` directory | Documented development-only; do not reuse on any public network |
 | Low | `npm run devnet:check` / `local-devnet` CI job is known-flaky on view-change recovery | Documented in `PUBLIC_TEST.md`; not hidden |
+| Low | State-v2 cache identity test used a same-length rewrite (`before`/`after!`) that can keep size+mtime+ctime identical on coarse-timestamp filesystems | Test now mutates to a different size so the fail-closed check is deterministic |
 | Info | RPC default bind is `127.0.0.1`. Non-loopback listen fail-closes without consensus auth **and** `--rpc-trusted-proxy` | Keep |
 | Info | Miner profile `l1/miner-network-profile.json` has `publicMiningActivated=false` and null RPC/genesis | Keep |
 | Info | Website miner download CTA stays disabled (`enabled: false`) | Keep |
