@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-const l1Root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const l1Root = process.cwd();
 
 test("local-devnet refuses to combine --check with --local-v5", () => {
   const result = spawnSync(process.execPath, ["scripts/local-devnet.mjs", "--check", "--local-v5"], {

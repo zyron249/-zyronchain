@@ -132,7 +132,7 @@ Recommended next gates (in order, all external):
 ## 6. What this repository must not do
 
 - Flip `publicTestnetActivationAllowed` or `mainnetActivationAllowed`.
-- Invent public RPC, explorer, faucet, bootstrap, or chain IDs.
+- Do not invent public RPC, explorer, faucet, bootstrap, or chain IDs.
 - Publish miner downloads or set `publicMiningActivated=true` / `publicationAllowed=true`.
 - Commit secrets, live genesis operator keys, or `.env` files.
 - Describe the network as Bitcoin-like, permissionless-finality, or value-bearing.
