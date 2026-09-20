@@ -11,7 +11,9 @@ test("durable State-v2 cache rejects same-inode file mutation after discovery", 
   const path = join(root, "manifest.json");
   await writeFile(path, "before");
   const discovered = await lstat(path);
-  await writeFile(path, "after!");
+  // Size must change. Same-length writes can keep size+mtime+ctime identical on
+  // coarse-timestamp filesystems, which would hide a same-inode mutation.
+  await writeFile(path, "after-mutation");
 
   await assert.rejects(
     stableRegularFileBytes(path, discovered),

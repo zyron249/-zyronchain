@@ -11,19 +11,26 @@
     "independent-operators-deploy-from-release-artifacts-without-founder-assistance",
     "bootstrap-archive-monitoring-across-independent-failure-domains",
     "independent-consensus-cryptography-network-audit-and-retest",
+    "independent-protocol-v5-mining-issuance-audit-and-retest",
     "sustained-independent-operator-internet-adversarial-soak",
     "production-hsm-or-audited-signer-custody-and-cross-host-rotation",
-    "protected-branch-independent-review-repository-policy"
+    "protected-branch-independent-review-repository-policy",
+    "target-hardware-state-v2-scale-and-recovery-measurements",
+    "independent-maintainer-and-security-custody-succession-evidence",
+    "mining-contention-calibration-and-inclusion-fairness-evidence"
   ],
   "mainnetActivationRequirements": [
     "all-public-testnet-activation-requirements-closed-with-evidence",
     "immutable-mainnet-chain-id",
     "immutable-mainnet-genesis-allocation",
+    "immutable-mining-reward-halving-cap-and-difficulty-policy",
     "validator-reward-inflation-and-fee-policy",
     "activity-oracle-production-governance",
     "validator-admission-removal-governance",
     "target-hardware-state-v2-scale-and-recovery-measurements",
+    "sustained-public-testnet-mining-finality-and-independent-retest",
     "multi-region-disaster-recovery-and-incident-drills",
-    "independent-maintainer-and-security-custody-succession-evidence"
+    "independent-maintainer-and-security-custody-succession-evidence",
+    "protected-release-tag-and-branch-review-policy"
   ]
 }

@@ -17,13 +17,16 @@ ZyronChain protocol v5 implements permissionless proof-of-work **issuance** whil
 
 Use a ZyronChain encrypted wallet and a local or HTTPS RPC endpoint. The packaged miner deliberately refuses legacy plaintext private-key JSON. On POSIX systems both `wallet.json` and `wallet.password` must be owner-only before the miner reads either file (`chmod 600` recommended). Secret paths must be real regular files rather than symbolic links; the miner validates the exact opened file descriptor and reads from that same descriptor so path replacement during validation fails closed.
 
+Default `npm run devnet` is protocol v1 and will not finalize mining claims. The honest local rehearsal is `npm run mine:local`, which prints the **actual** loopback RPC port (not necessarily `9137`), genesis path, and a disposable miner wallet. Use those printed values.
+
 ```sh
+# After `npm run mine:local` prints paths/ports — example only if you started a node on 9137:
 chmod 600 /path/to/wallet.json /path/to/wallet.password
 npm run mine -- \
   --genesis /path/to/genesis.json \
   --key /path/to/wallet.json \
   --password-file /path/to/wallet.password \
-  --rpc http://127.0.0.1:9137
+  --rpc http://127.0.0.1:<printed-port>
 ```
 
 Useful options:

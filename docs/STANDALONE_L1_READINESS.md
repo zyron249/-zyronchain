@@ -87,6 +87,8 @@ Public-testnet governance authorization exists, but activation remains blocked u
 
 Until these are independently closed, `publicTestnetActivationAllowed` must remain `false`.
 
+The operator-facing ready-vs-blocked map, including the honest local mining path (`npm run mine:local`) versus gated public mining, is [`PUBLIC_LAUNCH_CHECKLIST.md`](PUBLIC_LAUNCH_CHECKLIST.md). That checklist is documentation; it does not flip activation flags or invent public RPC/explorer/faucet/chain IDs.
+
 ## Mainnet stop-ship gates
 
 Value-bearing mainnet activation requires every public-testnet activation gate plus:

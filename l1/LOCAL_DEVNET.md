@@ -68,6 +68,18 @@ npm run typecheck
 npm test
 ```
 
+## Local mining rehearsal
+
+Default `npm run devnet` is protocol v1. Mining claims will not finalize on that chain.
+
+```sh
+npm run mine:local
+```
+
+is `node scripts/local-devnet.mjs --local-v5`. After the verified transfer it has both local validators approve a protocol-v5 upgrade at `height + 1 + 100`, creates an encrypted miner wallet in the temporary directory, and prints the real RPC port. The 100-block delay is the consensus `MIN_PROTOCOL_UPDATE_DELAY` (~50 minutes at 30 seconds/block). `--check` cannot be combined with `--local-v5`; CI stays on the protocol-v1 transfer/quorum/restart path.
+
+This disposable loopback schedule is not public mining, does not publish RPC, and does not flip `publicTestnetActivationAllowed`.
+
 Local verification does not activate public mining, public testnet, or mainnet.
 
 For wallet creation, test-token transfers, RPC inspection, and an honest list of

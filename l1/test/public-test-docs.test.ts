@@ -31,6 +31,7 @@ test("public tester docs stay honest and do not invent hosted endpoints", async 
   const repoRoot = await findRepoRoot(process.cwd());
   const requiredFiles = [
     "docs/PUBLIC_TEST.md",
+    "docs/PUBLIC_LAUNCH_CHECKLIST.md",
     "CONTRIBUTING.md",
     ".env.example",
     "l1/.env.example"
@@ -41,6 +42,7 @@ test("public tester docs stay honest and do not invent hosted endpoints", async 
   }
 
   const publicTest = await readFile(join(repoRoot, "docs/PUBLIC_TEST.md"), "utf8");
+  const launchChecklist = await readFile(join(repoRoot, "docs/PUBLIC_LAUNCH_CHECKLIST.md"), "utf8");
   const contributing = await readFile(join(repoRoot, "CONTRIBUTING.md"), "utf8");
   const readme = await readFile(join(repoRoot, "README.md"), "utf8");
   const envExample = await readFile(join(repoRoot, ".env.example"), "utf8");
@@ -53,10 +55,13 @@ test("public tester docs stay honest and do not invent hosted endpoints", async 
     mainnetAuthorized: boolean;
     publicTestnetActivationAllowed: boolean;
     mainnetActivationAllowed: boolean;
+    publicTestnetActivationRequirements: string[];
+    mainnetActivationRequirements: string[];
   };
 
   for (const [label, text] of [
     ["docs/PUBLIC_TEST.md", publicTest],
+    ["docs/PUBLIC_LAUNCH_CHECKLIST.md", launchChecklist],
     ["CONTRIBUTING.md", contributing],
     ["README.md", readme]
   ] as const) {
@@ -74,9 +79,21 @@ test("public tester docs stay honest and do not invent hosted endpoints", async 
     "127.0.0.1",
     "zyron-local-",
     "MetaMask",
-    "zyronchain.onrender.com"
+    "zyronchain.onrender.com",
+    "npm run mine:local",
+    "protocol v1"
   ]) {
     assert.ok(publicTest.includes(needle), `docs/PUBLIC_TEST.md missing required text: ${needle}`);
+  }
+
+  for (const needle of [
+    "publicTestnetActivationAllowed",
+    "npm run mine:local",
+    "mining-contention-calibration-and-inclusion-fairness-evidence",
+    "Do not invent public RPC",
+    "127.0.0.1"
+  ]) {
+    assert.ok(launchChecklist.includes(needle), `docs/PUBLIC_LAUNCH_CHECKLIST.md missing required text: ${needle}`);
   }
 
   assert.ok(/do not use it/i.test(publicTest), "quarantined Render hostname must stay a warning");
@@ -87,7 +104,12 @@ test("public tester docs stay honest and do not invent hosted endpoints", async 
   assert.ok(envExample.includes("ZYRON_KEYSTORE_PASSWORD_FILE"), ".env.example must document the keystore password file");
   assert.match(envExample, /^\s*#/, ".env.example must not assign live secrets");
   assert.ok(launcher.includes("docs/PUBLIC_TEST.md"), "local-devnet launcher must point at the tester guide");
+  assert.ok(launcher.includes("docs/PUBLIC_LAUNCH_CHECKLIST.md"), "local-devnet launcher must point at the public-launch checklist");
   assert.ok(launcher.includes("MetaMask cannot connect"), "local-devnet launcher must warn that the chain is not EVM");
+  assert.ok(launcher.includes("--local-v5"), "local-devnet launcher must expose the local v5 mining rehearsal flag");
+  assert.ok(launcher.includes("cannot be combined"), "local-devnet --check must stay protocol v1");
+  assert.ok(readme.includes("docs/PUBLIC_LAUNCH_CHECKLIST.md"), "root README must point at the public-launch checklist");
+  assert.ok(contributing.includes("npm run mine:local"), "CONTRIBUTING.md must mention the local mining rehearsal");
   assert.ok(
     challenge.includes("publicTestnetActivationAllowed"),
     "independent-operator challenge must describe activation, not stale authorization flags"
@@ -97,4 +119,23 @@ test("public tester docs stay honest and do not invent hosted endpoints", async 
   assert.equal(authorization.mainnetAuthorized, true);
   assert.equal(authorization.publicTestnetActivationAllowed, false);
   assert.equal(authorization.mainnetActivationAllowed, false);
+  for (const gate of [
+    "independent-protocol-v5-mining-issuance-audit-and-retest",
+    "mining-contention-calibration-and-inclusion-fairness-evidence",
+    "independent-maintainer-and-security-custody-succession-evidence"
+  ]) {
+    assert.ok(
+      authorization.publicTestnetActivationRequirements.includes(gate),
+      `authorization JSON missing public-testnet gate: ${gate}`
+    );
+  }
+  for (const gate of [
+    "immutable-mining-reward-halving-cap-and-difficulty-policy",
+    "sustained-public-testnet-mining-finality-and-independent-retest"
+  ]) {
+    assert.ok(
+      authorization.mainnetActivationRequirements.includes(gate),
+      `authorization JSON missing mainnet gate: ${gate}`
+    );
+  }
 });
