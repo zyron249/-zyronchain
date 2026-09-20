@@ -28,6 +28,7 @@
     <div class="shell notice-inner">
       <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Public mining, wallet RPC and value-bearing use remain activation gated.</p>
       <a href="#status">View network status <span aria-hidden="true">→</span></a>
+      <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Public tester guide <span aria-hidden="true">↗</span></a>
     </div>
   </aside>
 
@@ -179,6 +180,7 @@
           <p class="feature-kicker">DEVELOPERS</p>
           <h3>Clone it. Build it. Test the boundaries.</h3>
           <p>The canonical Layer-1 is TypeScript/Node.js. Development and release workflows cover Node.js 22 and 24, reproducible package checks, dependency audits, recovery rehearsals, mixed-version behavior, adversarial soak and an independent Python light-client verifier.</p>
+          <p>The honest public-test path today is local, not a hosted testnet: <code>cd l1 &amp;&amp; npm ci &amp;&amp; npm run devnet</code>. That starts a disposable two-validator loopback chain. No public RPC, explorer or faucet is published.</p>
           <div class="code-sample" aria-label="ZyronChain quick start">
             <div class="code-sample-head"><span>QUICK START</span><button type="button" data-copy="quickstart-code">Copy</button></div>
             <pre id="quickstart-code"><code>git clone https://github.com/zyron249/-zyronchain.git
@@ -187,6 +189,13 @@ npm ci
 npm run build
 npm test</code></pre>
           </div>
+          <div class="code-sample" aria-label="Local public test">
+            <div class="code-sample-head"><span>LOCAL PUBLIC TEST</span><button type="button" data-copy="devnet-code">Copy</button></div>
+            <pre id="devnet-code"><code>cd l1
+npm ci
+npm run devnet</code></pre>
+          </div>
+          <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Read the public tester guide (docs/PUBLIC_TEST.md) <span aria-hidden="true">↗</span></a>
         </div>
       </article>
     </section>
@@ -216,6 +225,12 @@ npm test</code></pre>
           <strong>Developer source ↗</strong>
         </a>
       </div>
+      <aside class="shell public-test-callout" id="public-test" data-reveal>
+        <p class="section-label">Public test</p>
+        <h3>There is no hosted testnet to join.</h3>
+        <p>The honest path today is local: <code>cd l1 &amp;&amp; npm ci &amp;&amp; npm run devnet</code>. That command starts a disposable two-validator chain on <code>127.0.0.1</code>. Authorized does not mean activated, and this website does not publish a public RPC, explorer or faucet.</p>
+        <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Open docs/PUBLIC_TEST.md <span aria-hidden="true">↗</span></a>
+      </aside>
     </section>
 
     <section class="network-status section" id="status">
@@ -229,8 +244,9 @@ npm test</code></pre>
         <div class="status-row"><span>Mainnet</span><strong class="status-authorized">Governance authorized</strong><small>Not value-bearing / not activated</small></div>
         <div class="status-row"><span>Public wallet RPC</span><strong>Not published</strong><small>Validator RPC remains a separate protected surface</small></div>
         <div class="status-row"><span>Public mining</span><strong>Activation gated</strong><small>Protocol-v5 mining code exists; the public network is not active</small></div>
+        <div class="status-row"><span>Local public test</span><strong>Loopback only</strong><small><code>cd l1 &amp;&amp; npm ci &amp;&amp; npm run devnet</code> — not a hosted testnet</small></div>
       </div>
-      <p class="status-legal content-shell"><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Current hosted rehearsal/private profiles remain non-value-bearing.</p>
+      <p class="status-legal content-shell"><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Current hosted rehearsal/private profiles remain non-value-bearing. Testers should follow <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">docs/PUBLIC_TEST.md</a> instead of looking for a public RPC, explorer or faucet.</p>
     </section>
 
     <section class="closing-cta">
@@ -265,6 +281,7 @@ npm test</code></pre>
         <a href="./wallet.html">Wallet Setup</a>
         <a href="./validator.html">Validator Launchpad</a>
         <a href="https://github.com/zyron249/-zyronchain/blob/main/WHITEPAPER.md" target="_blank" rel="noopener noreferrer">Whitepaper ↗</a>
+        <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Public tester guide ↗</a>
         <a href="https://github.com/zyron249/-zyronchain/tree/main/docs" target="_blank" rel="noopener noreferrer">Documentation ↗</a>
       </div>
 
