@@ -12,6 +12,7 @@ Production static website for `https://zyronchain.com`. The website is intention
 - `wallet.js` — prepares pinned local wallet setup scripts and transfer templates; it never generates, requests or uploads wallet secrets.
 - `wallet.css` — wallet-specific presentation.
 - `validator.html` — browser-based validator configuration launchpad.
+- `mining.html` — protocol-v5 mining documentation; public downloads stay fail-closed. Default `npm run devnet` is protocol v1 and is not a public mining network.
 - `validator.js` — generates local operator shell scripts; it does not generate or upload validator private keys.
 - `validator.css` — launchpad-specific presentation.
 - `robots.txt` / `sitemap.xml` / `site.webmanifest` — production discovery/PWA metadata.
@@ -85,6 +86,7 @@ Open:
 - `http://127.0.0.1:8080/`
 - `http://127.0.0.1:8080/wallet.html`
 - `http://127.0.0.1:8080/validator.html`
+- `http://127.0.0.1:8080/mining.html`
 
 ## Deployment boundary
 

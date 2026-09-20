@@ -13,6 +13,8 @@ if ((html.match(/aria-disabled="true"/g) || []).length < 3) throw new Error('man
 if ((html.match(/data-miner-platform="(?:windows|macos|linux)" disabled/g) || []).length !== 3) throw new Error('all manual platform controls must remain disabled while mining is gated');
 if (/data-miner-platform="(?:windows|macos|linux)"[^>]+href=/s.test(html)) throw new Error('manual platform controls must not carry download hrefs while gated');
 if (!html.includes('operating system still requires user consent')) throw new Error('manual platform UX must preserve explicit execution-consent boundary');
+if (!html.includes('protocol v1')) throw new Error('mining page must warn that default devnet stays protocol v1');
+if (html.includes('http://127.0.0.1:9137')) throw new Error('mining page must not present 9137 as a copy-paste local-devnet RPC');
 if (!app.includes('enabled: false') || !app.includes('publicMiningActivated: false')) throw new Error('website miner activation must remain fail-closed');
 if (!app.includes('assets: Object.freeze({ windows: null, macos: null, linux: null })')) throw new Error('website miner assets must remain null');
 if (/fetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(/.test(app)) throw new Error('website miner UX must not fetch activation/distribution state');
