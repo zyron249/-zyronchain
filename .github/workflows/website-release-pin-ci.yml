@@ -60,7 +60,7 @@ jobs:
 
           node <<'NODE'
           const fs = require('node:fs');
-          const pages = ['website/index.html', 'website/wallet.html', 'website/validator.html'];
+          const pages = ['website/index.html', 'website/wallet.html', 'website/validator.html', 'website/mining.html'];
           for (const page of pages) {
             const html = fs.readFileSync(page, 'utf8');
             for (const marker of [
