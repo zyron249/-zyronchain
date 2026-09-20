@@ -13,6 +13,7 @@ The only supported way for an external tester to exercise the **canonical** chai
 | Canonical L1 local public test | Two-validator PoA chain on `127.0.0.1`, disposable keys, verified 1 ZYN transfer | `cd l1 && npm ci && npm run devnet` |
 | Automated local check | Same network plus quorum-loss, recovery, and restart | `cd l1 && npm run devnet:check` |
 | Packaged miner (local) | Protocol-v5 issuance miner against **your** loopback RPC | [`l1/MINING.md`](../l1/MINING.md) |
+| Local v5 mining rehearsal | Same loopback network, then a quorum-approved protocol-v5 schedule (100-block delay) | `cd l1 && npm run mine:local` |
 | Website / wallet / validator pages | Static local-first setup assistants; they never hold secrets | `python3 -m http.server 8080 --directory website` |
 | Legacy Python/Flask node | Archived compatibility testnet (`zyron-testnet-1`), not the canonical chain | [`LEGACY_PYTHON_TESTNET.md`](LEGACY_PYTHON_TESTNET.md) |
 
@@ -98,7 +99,17 @@ Do not expose validator RPC to the Internet. Non-loopback RPC fails closed unles
 
 Protocol v5 mining is issuance-only. Hash power does not choose the canonical fork. Public mining is not activated.
 
-Against the local devnet you can point the packaged miner at loopback HTTP after creating an encrypted wallet. Follow [`l1/MINING.md`](../l1/MINING.md). Remote RPC must be HTTPS; plaintext HTTP is accepted only on loopback. The local launcher's genesis is **not** protocol-v5-activated by default; mining claims will not finalize unless that network actually has protocol v5 scheduled.
+Default `npm run devnet` stays **protocol v1**. Mining claims will not finalize there. Do not point the miner at `http://127.0.0.1:9137` unless you started a node on that port yourself — the local launcher prints a **random free loopback port**.
+
+The honest local mining path is:
+
+```sh
+cd l1
+npm ci
+npm run mine:local
+```
+
+That schedules protocol v5 on the disposable loopback chain after the consensus 100-block delay (about 50 minutes at the 30-second interval), prints the real RPC URL / genesis / miner wallet paths, and still does **not** activate public mining. Follow [`l1/MINING.md`](../l1/MINING.md) and [`PUBLIC_LAUNCH_CHECKLIST.md`](PUBLIC_LAUNCH_CHECKLIST.md). Remote RPC must be HTTPS; plaintext HTTP is accepted only on loopback.
 
 ## Environment and secrets
 

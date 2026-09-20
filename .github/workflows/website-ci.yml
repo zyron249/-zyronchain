@@ -58,7 +58,9 @@ jobs:
             'website/wallet.js',
             'website/validator.html',
             'website/validator.css',
-            'website/validator.js'
+            'website/validator.js',
+            'website/mining.html',
+            'website/mining.css'
           ];
           for (const file of required) {
             if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
@@ -76,6 +78,8 @@ jobs:
           const validatorHtml = fs.readFileSync('website/validator.html', 'utf8');
           const validatorCss = fs.readFileSync('website/validator.css', 'utf8');
           const validatorJs = fs.readFileSync('website/validator.js', 'utf8');
+          const miningHtml = fs.readFileSync('website/mining.html', 'utf8');
+          const miningCss = fs.readFileSync('website/mining.css', 'utf8');
           const robots = fs.readFileSync('website/robots.txt', 'utf8');
           const sitemap = fs.readFileSync('website/sitemap.xml', 'utf8');
           const favicon = fs.readFileSync('website/favicon.svg', 'utf8');
@@ -182,6 +186,23 @@ jobs:
           if (!validatorHtml.includes('<link rel="canonical" href="https://zyronchain.com/validator.html"')) {
             throw new Error('Validator launchpad canonical URL is missing');
           }
+          if (!miningHtml.includes('<link rel="canonical" href="https://zyronchain.com/mining.html"')) {
+            throw new Error('Mining launchpad canonical URL is missing');
+          }
+          for (const marker of [
+            'npm run mine:local',
+            'protocol v1',
+            'not public mining',
+            'docs/PUBLIC_TEST.md',
+            'docs/PUBLIC_LAUNCH_CHECKLIST.md',
+            'printed-port',
+            'public mining is not activated'
+          ]) {
+            if (!miningHtml.includes(marker)) throw new Error(`Mining page missing honesty marker: ${marker}`);
+          }
+          if (miningHtml.includes('http://127.0.0.1:9137')) {
+            throw new Error('Mining page must not present 9137 as the local-devnet RPC');
+          }
 
           if (!robots.includes('Sitemap: https://zyronchain.com/sitemap.xml')) {
             throw new Error('robots.txt is not bound to the production sitemap');
@@ -189,7 +210,8 @@ jobs:
           for (const loc of [
             '<loc>https://zyronchain.com/</loc>',
             '<loc>https://zyronchain.com/wallet.html</loc>',
-            '<loc>https://zyronchain.com/validator.html</loc>'
+            '<loc>https://zyronchain.com/validator.html</loc>',
+            '<loc>https://zyronchain.com/mining.html</loc>'
           ]) {
             if (!sitemap.includes(loc)) throw new Error(`sitemap.xml missing ${loc}`);
           }
@@ -214,7 +236,7 @@ jobs:
             throw new Error('Validator launchpad mobile boundary is missing');
           }
 
-          const allStaticCss = [css, walletCss, validatorCss].join('\n');
+          const allStaticCss = [css, walletCss, validatorCss, miningCss].join('\n');
           const definedCssVars = new Set([...allStaticCss.matchAll(/--([a-z0-9-]+)\s*:/gi)].map((match) => match[1]));
           const usedCssVars = new Set([...allStaticCss.matchAll(/var\(--([a-z0-9-]+)/gi)].map((match) => match[1]));
           const missingCssVars = [...usedCssVars].filter((name) => !definedCssVars.has(name));
@@ -230,7 +252,8 @@ jobs:
           const pages = new Map([
             ['website/index.html', html],
             ['website/wallet.html', walletHtml],
-            ['website/validator.html', validatorHtml]
+            ['website/validator.html', validatorHtml],
+            ['website/mining.html', miningHtml]
           ]);
           for (const [file, source] of pages) {
             if (!/<html\s+lang="en">/i.test(source)) throw new Error(`${file} is missing its language declaration`);

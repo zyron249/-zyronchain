@@ -15,6 +15,8 @@ npm run devnet
 
 `npm run devnet:check` is the automated variant used in CI. This is not a hosted public testnet and does not activate mainnet.
 
+Local protocol-v5 mining rehearsal is `cd l1 && npm run mine:local`. That schedules v5 on a disposable loopback chain after the 100-block delay; it is not public mining. See [`docs/PUBLIC_LAUNCH_CHECKLIST.md`](docs/PUBLIC_LAUNCH_CHECKLIST.md).
+
 ## Development setup
 
 **Canonical L1** (Node.js 22+; Linux/macOS or WSL2 for validators):

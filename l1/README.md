@@ -56,7 +56,7 @@ full restart, then stops the processes and removes the successful temporary
 test chain. See [LOCAL_DEVNET.md](LOCAL_DEVNET.md) for Windows/WSL instructions,
 temporary-key handling, and GitHub Actions verification. External testers who
 want wallet, RPC, and token steps should use [docs/PUBLIC_TEST.md](../docs/PUBLIC_TEST.md).
-This local launcher is not a hosted public testnet.
+This local launcher is not a hosted public testnet. Default `npm run devnet` stays protocol v1. For a disposable loopback protocol-v5 mining rehearsal (100-block delay, not public mining) use `npm run mine:local` and [`docs/PUBLIC_LAUNCH_CHECKLIST.md`](../docs/PUBLIC_LAUNCH_CHECKLIST.md).
 
 Generate one key file for each validator and another for the activity oracle. Key files are created mode `0600`. Prefer encrypted local keystores for operator-managed development keys; production validators should still use the remote-signer/HSM boundary.
 

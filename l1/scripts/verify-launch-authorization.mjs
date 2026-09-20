@@ -25,16 +25,23 @@ assert.ok(Array.isArray(policy.mainnetActivationRequirements) && policy.mainnetA
 
 for (const gate of [
   "independent-consensus-cryptography-network-audit-and-retest",
+  "independent-protocol-v5-mining-issuance-audit-and-retest",
   "sustained-independent-operator-internet-adversarial-soak",
-  "production-hsm-or-audited-signer-custody-and-cross-host-rotation"
+  "production-hsm-or-audited-signer-custody-and-cross-host-rotation",
+  "target-hardware-state-v2-scale-and-recovery-measurements",
+  "independent-maintainer-and-security-custody-succession-evidence",
+  "mining-contention-calibration-and-inclusion-fairness-evidence"
 ]) assert.ok(policy.publicTestnetActivationRequirements.includes(gate), `Missing public-testnet gate: ${gate}`);
 
 for (const gate of [
   "immutable-mainnet-chain-id",
   "immutable-mainnet-genesis-allocation",
+  "immutable-mining-reward-halving-cap-and-difficulty-policy",
   "validator-reward-inflation-and-fee-policy",
   "activity-oracle-production-governance",
-  "validator-admission-removal-governance"
+  "validator-admission-removal-governance",
+  "sustained-public-testnet-mining-finality-and-independent-retest",
+  "protected-release-tag-and-branch-review-policy"
 ]) assert.ok(policy.mainnetActivationRequirements.includes(gate), `Missing mainnet gate: ${gate}`);
 
 const result = {
