@@ -47,6 +47,7 @@ import {
   parsePublicTestnetIdentity,
   publicTestnetActivationFromAuthorization
 } from "./public-testnet-identity.js";
+import { admitPublicTestnetBootstrap, parsePublicTestnetBootstrap } from "./public-testnet-bootstrap.js";
 import {
   createProtocolUpgrade,
   createProtocolUpgradeApproval,
@@ -295,7 +296,7 @@ async function runNode(args: string[]): Promise<void> {
     "--genesis", "--data", "--host", "--port", "--peer", "--advertise-peer", "--validator-key", "--peer-token-file",
     "--trusted-peer-public-key", "--rpc-trusted-proxy", "--p2p-listen", "--p2p-peer", "--p2p-peer-group", "--validator-signer-url",
     "--validator-public-key", "--validator-signer-token-file", "--network-class", "--public-testnet-identity",
-    "--launch-authorization"
+    "--public-testnet-bootstrap", "--launch-authorization"
   ]));
   const genesisPath = option(args, "--genesis");
   const dataDir = option(args, "--data");
@@ -755,21 +756,26 @@ const PUBLIC_TESTNET_CONTROL_MAX_BYTES = 16 * 1024;
 async function assertPublicTestnetNetworkClass(args: string[], genesis: GenesisConfig): Promise<void> {
   const networkClass = option(args, "--network-class");
   const identityPath = option(args, "--public-testnet-identity");
+  const bootstrapPath = option(args, "--public-testnet-bootstrap");
   const authorizationPath = option(args, "--launch-authorization");
-  if (networkClass === undefined && identityPath === undefined && authorizationPath === undefined) return;
+  if (networkClass === undefined && identityPath === undefined && bootstrapPath === undefined && authorizationPath === undefined) return;
   if (networkClass === undefined) {
-    throw new Error("--public-testnet-identity and --launch-authorization require --network-class public-testnet");
+    throw new Error("Public-testnet configuration files require --network-class public-testnet");
   }
   if (networkClass === "mainnet") {
     throw new Error("Mainnet network class is not defined; refusing to invent a mainnet chain identity");
   }
   if (networkClass !== "public-testnet") throw new Error("Unsupported network class");
-  if (!identityPath || !authorizationPath) {
-    throw new Error("--network-class public-testnet requires --public-testnet-identity and --launch-authorization");
+  if (!identityPath || !bootstrapPath || !authorizationPath) {
+    throw new Error("--network-class public-testnet requires --public-testnet-identity, --public-testnet-bootstrap, and --launch-authorization");
   }
   const identity = parsePublicTestnetIdentity(parseControlJson(
     await readBoundedRegularControlFile(resolve(identityPath), "Public-testnet identity", PUBLIC_TESTNET_CONTROL_MAX_BYTES),
     "Public-testnet identity"
+  ));
+  const bootstrap = parsePublicTestnetBootstrap(parseControlJson(
+    await readBoundedRegularControlFile(resolve(bootstrapPath), "Public-testnet bootstrap", PUBLIC_TESTNET_CONTROL_MAX_BYTES),
+    "Public-testnet bootstrap"
   ));
   const activation = publicTestnetActivationFromAuthorization(parseControlJson(
     await readBoundedRegularControlFile(resolve(authorizationPath), "Launch authorization", PUBLIC_TESTNET_CONTROL_MAX_BYTES),
@@ -781,8 +787,10 @@ async function assertPublicTestnetNetworkClass(args: string[], genesis: GenesisC
     genesisHash: new ZyronChain(genesis).genesisHash,
     activation
   });
-  if (!admission.admitted) {
-    throw new Error(`Public testnet admission refused: ${admission.reasons.join(", ")}`);
+  const bootstrapAdmission = admitPublicTestnetBootstrap(bootstrap, activation.publicTestnetActivationAllowed);
+  const reasons = [...new Set([...admission.reasons, ...bootstrapAdmission.reasons])];
+  if (reasons.length > 0 || bootstrapAdmission.dialTargets.length > 0) {
+    throw new Error(`Public testnet admission refused: ${reasons.join(", ")}`);
   }
   console.log("Public-testnet admission checks passed for the supplied identity and launch-authorization files");
 }
@@ -1061,8 +1069,8 @@ function usage(): void {
   console.log("  zyron-l1 keygen --out validator-key.json [--password-file password.txt]");
   console.log("  zyron-l1 genesis --out genesis.json --chain-id zyron-devnet-1 --validator-public-key <hex> --oracle-public-key <hex> --activity-pool <address> --allocation <address:atoms>");
   console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json | --validator-signer-url https://signer/sign --validator-public-key <hex> --validator-signer-token-file signer-token.txt] [--peer https://node:9137] [--rpc-trusted-proxy <ip> ...] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>]");
-  console.log("  zyron-l1 node --network-class public-testnet --public-testnet-identity l1/config/public-testnet-identity.json --launch-authorization docs/l1-launch-authorization.json --genesis genesis.json --data ./data");
-  console.log("Public-testnet admission fail-closes while config/public-testnet-identity.json is an unfilled proposal. Passing that flag does not activate a network.");
+  console.log("  zyron-l1 node --network-class public-testnet --public-testnet-identity l1/config/public-testnet-identity.json --public-testnet-bootstrap l1/config/public-testnet-bootstrap.json --launch-authorization docs/l1-launch-authorization.json --genesis genesis.json --data ./data");
+  console.log("Public-testnet admission fail-closes while the identity and bootstrap files are unfilled proposals. PLACEHOLDER bootstrap values are not dial targets. Passing these flags does not activate a network.");
   console.log("  zyron-l1 transfer --key wallet-key.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms <n> [--fee-atoms <n>]");
   console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");
   console.log("  zyron-l1 validator-approve --proposal update.json --key validator.json --out approval.json");
