@@ -8,14 +8,18 @@ import {
   attachBlockSignature,
   attestationPayload,
   expectedValidator,
+  hashCouldStillBeFinalized,
+  observedAttestation,
   roundSkipPayload,
+  uniquePossiblyFinalizedHash,
   validateBlockAttestation,
   validateBlockShape,
   validateLockedAttestEvidence,
   validateRoundProgressCertificate,
   validateRoundSkipVote,
   validateRoundSkipQuorum,
-  validateUncommittedRoundCertificate
+  validateUncommittedRoundCertificate,
+  validatorQuorumSize
 } from "./block.js";
 import { addressFromPublicKey } from "./crypto.js";
 import { Mempool } from "./mempool.js";
@@ -40,6 +44,7 @@ import type {
   Block,
   BlockAttestation,
   LockedAttestEvidence,
+  RoundChoiceReport,
   RoundProgressEntry,
   RoundSkipVote,
   Transaction,
@@ -156,6 +161,8 @@ export interface ConsensusPeerClient {
   requestAttestations(block: Block): Promise<BlockAttestation[]>;
   requestRoundSkips(height: number, round: number, previousCertificate?: RoundProgressEntry[]): Promise<RoundSkipVote[]>;
   requestLockedAttestations?(height: number, round: number, previousHash: string): Promise<LockedAttestEvidence[]>;
+  requestRoundReports?(height: number, round: number, previousHash: string): Promise<RoundChoiceReport[]>;
+  requestCompletionAttestations?(block: Block, votes: RoundProgressEntry[]): Promise<BlockAttestation[]>;
   broadcastBlock(block: Block): Promise<void>;
 }
 
@@ -404,6 +411,7 @@ export class NodeService {
       if (choice?.kind === "skip" || (choice?.kind === "attest" && choice.value !== block.hash)) {
         throw new Error("Conflicting validator action prevented for consensus round");
       }
+      this.assertPriorHeightAttestationReleased(block);
       await this.roundProposals?.save(block);
       await this.signingJournal.reserveAttestation(block.header.height, block.header.round, block.hash);
       return {
@@ -439,6 +447,7 @@ export class NodeService {
       }
       const proposal = stored ?? block;
       this.store.chain.validatePreparedUnsignedBlock(proposal, nowMs);
+      this.assertPriorHeightAttestationReleased(proposal);
       if (!stored) await this.roundProposals?.save(proposal);
       await this.signingJournal.reserveAttestation(proposal.header.height, proposal.header.round, proposal.hash);
       const signed = attachBlockSignature(
@@ -553,6 +562,146 @@ export class NodeService {
     });
   }
 
+  async reportRoundChoice(
+    height: number,
+    round: number,
+    previousHash: string,
+    nowMs = Date.now()
+  ): Promise<RoundChoiceReport> {
+    return this.exclusive(async () => {
+      if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
+      this.assertValidatorClock(nowMs);
+      const chain = this.store.chain;
+      if (!Number.isSafeInteger(height) || height !== chain.height + 1 || !Number.isSafeInteger(round) || round < 0) {
+        throw new Error("Invalid round report request");
+      }
+      if (typeof previousHash !== "string" || previousHash !== chain.tip.hash) {
+        throw new Error("Round report does not match the current tip");
+      }
+      const none: RoundChoiceReport = {
+        height, round, previousHash, choice: "none", skip: null, block: null, evidence: null
+      };
+      const choice = this.signingJournal.choice(height, round);
+      if (!choice) return none;
+      const publicKey = this.validatorSigner.publicKey;
+      if (choice.kind === "skip") {
+        if (choice.value !== previousHash) throw new Error("Round report does not match the current tip");
+        const unsigned = {
+          validator: addressFromPublicKey(publicKey),
+          publicKey,
+          chainId: chain.genesis.chainId,
+          height,
+          round,
+          previousHash
+        };
+        return {
+          height,
+          round,
+          previousHash,
+          choice: "skip",
+          skip: {
+            ...unsigned,
+            signature: await signWithValidator(
+              this.validatorSigner,
+              roundSkipPayload(unsigned),
+              "round-skip",
+              chain.protocolVersionAt(height)
+            )
+          },
+          block: null,
+          evidence: null
+        };
+      }
+      const stored = await this.roundProposals?.load(height, round);
+      if (!stored || stored.hash !== choice.value || !stored.signature || stored.header.previousHash !== previousHash) {
+        throw new Error("Locked proposal is unavailable");
+      }
+      const validator = chain.validatorsAt(height).find((item) => item.publicKey === publicKey);
+      if (!validator) throw new Error("Configured validator key is not in genesis");
+      const evidence: LockedAttestEvidence = {
+        header: stored.header,
+        attestation: {
+          validator: validator.address,
+          publicKey,
+          signature: await signWithValidator(
+            this.validatorSigner,
+            attestationPayload(stored),
+            "block-attestation",
+            stored.header.version
+          )
+        }
+      };
+      validateLockedAttestEvidence(
+        evidence,
+        chain.validatorsAt(height),
+        chain.genesis.chainId,
+        height,
+        round,
+        previousHash,
+        stored.header.version
+      );
+      return { height, round, previousHash, choice: "attest", skip: null, block: stored, evidence };
+    });
+  }
+
+  async attestCompletion(block: Block, votes: RoundProgressEntry[], nowMs = Date.now()): Promise<BlockAttestation> {
+    return this.exclusive(async () => {
+      if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
+      this.assertValidatorClock(nowMs);
+      validateBlockShape(block);
+      if (block.header.round !== 0) throw new Error("Split completion is limited to round 0");
+      this.store.chain.validateProposal(block, nowMs);
+      const validators = this.store.chain.validatorsAt(block.header.height);
+      if (!Array.isArray(votes) || votes.length > validators.length) throw new Error("Invalid split completion votes");
+      const candidate = uniquePossiblyFinalizedHash(
+        votes,
+        validators,
+        block.header.chainId,
+        block.header.height,
+        block.header.round,
+        block.header.previousHash,
+        block.header.version
+      );
+      if (candidate !== block.hash) throw new Error("Split completion refused");
+      const publicKey = this.validatorSigner.publicKey;
+      const validator = validators.find((item) => item.publicKey === publicKey);
+      if (!validator) throw new Error("Configured validator key is not in genesis");
+      const priors = this.signingJournal.choicesAtHeight(block.header.height);
+      if (priors.some((prior) => prior.kind === "attest" && prior.value !== block.hash)) {
+        throw new Error("Conflicting validator action prevented for consensus round");
+      }
+      const slot = this.signingJournal.choice(block.header.height, block.header.round);
+      const recoveryRound = block.header.round + 1;
+      const recovery = this.signingJournal.choice(block.header.height, recoveryRound);
+      if (!slot) {
+        if (recovery && !(recovery.kind === "attest" && recovery.value === block.hash)) {
+          throw new Error("Conflicting validator action prevented for consensus round");
+        }
+        await this.signingJournal.reserveAttestation(block.header.height, block.header.round, block.hash);
+      } else if (slot.kind === "attest" && slot.value === block.hash) {
+        // The original attestation is already reserved. Re-sign it.
+      } else if (slot.kind === "skip" && slot.value === block.header.previousHash) {
+        if (!recovery) {
+          await this.signingJournal.reserveAttestation(block.header.height, recoveryRound, block.hash);
+        } else if (!(recovery.kind === "attest" && recovery.value === block.hash)) {
+          throw new Error("Conflicting validator action prevented for consensus round");
+        }
+      } else {
+        throw new Error("Conflicting validator action prevented for consensus round");
+      }
+      return {
+        validator: validator.address,
+        publicKey,
+        signature: await signWithValidator(
+          this.validatorSigner,
+          attestationPayload(block),
+          "block-attestation",
+          block.header.version
+        )
+      };
+    });
+  }
+
   async acceptFinalizedBlock(value: unknown): Promise<void> {
     return this.exclusive(async () => {
       validateBlockShape(value);
@@ -581,6 +730,39 @@ export class NodeService {
       throw new Error("Locked proposal does not extend the current tip");
     }
     return stored;
+  }
+
+  private assertPriorHeightAttestationReleased(block: Block): void {
+    if (!this.signingJournal) return;
+    const priors = this.signingJournal.choicesAtHeight(block.header.height)
+      .filter((choice) => choice.kind === "attest" && choice.value !== block.hash);
+    if (priors.length === 0) return;
+    if (block.header.round === 0) throw new Error("Conflicting validator action prevented for consensus round");
+    const validators = this.store.chain.validatorsAt(block.header.height);
+    validateRoundProgressCertificate(
+      block.roundCertificate,
+      validators,
+      block.header.chainId,
+      block.header.height,
+      block.header.round - 1,
+      block.header.previousHash,
+      block.header.version
+    );
+    for (const prior of priors) {
+      const observed = observedAttestation(
+        block.roundCertificate,
+        validators,
+        block.header.chainId,
+        block.header.height,
+        block.header.round - 1,
+        block.header.previousHash,
+        prior.value,
+        block.header.version
+      );
+      if (hashCouldStillBeFinalized(observed.visible, observed.votesSeen, validators.length)) {
+        throw new Error("Conflicting validator action prevented for consensus round");
+      }
+    }
   }
 
   private assertValidatorClock(nowMs: number): void {
@@ -895,6 +1077,43 @@ async function route(
       release();
     }
   }
+  if (request.method === "POST" && url.pathname === "/round/report") {
+    preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
+    const body = await readJsonBody(request, bodyReservation, bodyLimit);
+    const release = enterConsensusRequest(
+      request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
+    );
+    try {
+      assertPlainRecord(body, "round report request");
+      assertExactKeys(body, ["height", "round", "previousHash"], "round report request");
+      if (!Number.isSafeInteger(body.height) || !Number.isSafeInteger(body.round) || typeof body.previousHash !== "string") {
+        throw new Error("Invalid round report request");
+      }
+      return writeJson(response, 200, {
+        report: await service.reportRoundChoice(Number(body.height), Number(body.round), body.previousHash)
+      });
+    } finally {
+      release();
+    }
+  }
+  if (request.method === "POST" && url.pathname === "/round/complete") {
+    preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
+    const body = await readJsonBody(request, bodyReservation, bodyLimit);
+    const release = enterConsensusRequest(
+      request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
+    );
+    try {
+      assertPlainRecord(body, "round completion request");
+      assertExactKeys(body, ["block", "votes"], "round completion request");
+      if (!Array.isArray(body.votes)) throw new Error("Invalid round completion request");
+      validateBlockShape(body.block);
+      return writeJson(response, 200, {
+        attestation: await service.attestCompletion(body.block, body.votes as RoundProgressEntry[])
+      });
+    } finally {
+      release();
+    }
+  }
   if (request.method === "POST" && url.pathname === "/block") {
     preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
     const body = await readJsonBody(request, bodyReservation, bodyLimit);
@@ -1158,6 +1377,42 @@ export class PeerClient {
     return results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
   }
 
+  async requestRoundReports(height: number, round: number, previousHash: string): Promise<RoundChoiceReport[]> {
+    const results = await Promise.allSettled(this.peers.map(async (peer) => {
+      return postJson(
+        `${peer}/round/report`,
+        { height, round, previousHash },
+        MAX_BODY_BYTES,
+        this.peerAuthToken,
+        this.peerRequestCredentials,
+        (payload) => {
+          assertPlainRecord(payload, "round report response");
+          assertExactKeys(payload, ["report"], "round report response");
+          return payload.report as RoundChoiceReport;
+        }
+      );
+    }));
+    return results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+  }
+
+  async requestCompletionAttestations(block: Block, votes: RoundProgressEntry[]): Promise<BlockAttestation[]> {
+    const results = await Promise.allSettled(this.peers.map(async (peer) => {
+      return postJson(
+        `${peer}/round/complete`,
+        { block, votes },
+        8_192,
+        this.peerAuthToken,
+        this.peerRequestCredentials,
+        (payload) => {
+          assertPlainRecord(payload, "round completion response");
+          assertExactKeys(payload, ["attestation"], "round completion response");
+          return payload.attestation as BlockAttestation;
+        }
+      );
+    }));
+    return results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+  }
+
   async broadcastBlock(block: Block): Promise<void> {
     if (!rememberGossipId(this.blockGossipSeen, block.hash)) return;
     const fanout = this.nextGossipFanout();
@@ -1333,6 +1588,97 @@ function sameProgressVote(previous: RoundProgressEntry, next: LockedAttestEviden
     previous.attestation.validator === next.attestation.validator;
 }
 
+export async function tryCompleteSplitRound(
+  service: NodeService,
+  peers: ConsensusPeerClient,
+  nowMs: number,
+  signingNowMs: () => number = () => nowMs
+): Promise<Block | null> {
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) return null;
+  const chain = service.store.chain;
+  const elapsed = nowMs - chain.tip.header.timestampMs;
+  if (elapsed < BLOCK_INTERVAL_MS + ROUND_WINDOW_MS) return null;
+  const height = chain.height + 1;
+  const round = 0;
+  const previousHash = chain.tip.hash;
+  const validators = chain.validatorsAt(height);
+  const chainId = chain.genesis.chainId;
+  const protocolVersion = chain.protocolVersionAt(height);
+  const reports: RoundChoiceReport[] = [];
+  try {
+    reports.push(await service.reportRoundChoice(height, round, previousHash, signingNowMs()));
+  } catch {
+  }
+  if (peers.requestRoundReports) {
+    try {
+      reports.push(...await peers.requestRoundReports(height, round, previousHash));
+    } catch {
+    }
+  }
+  const votes: RoundProgressEntry[] = [];
+  const blocks = new Map<string, Block>();
+  const preexisting = new Map<Address, BlockAttestation>();
+  for (const report of reports) {
+    if (report.height !== height || report.round !== round || report.previousHash !== previousHash) continue;
+    if (report.choice === "skip" && report.skip) {
+      try {
+        validateRoundSkipVote(report.skip, validators, chainId, height, round, previousHash, protocolVersion);
+        votes.push(report.skip);
+      } catch {
+      }
+      continue;
+    }
+    if (report.choice !== "attest" || !report.evidence || !report.block?.signature) continue;
+    try {
+      const locked = validateLockedAttestEvidence(
+        report.evidence, validators, chainId, height, round, previousHash, protocolVersion
+      );
+      if (report.block.hash !== locked.blockHash) continue;
+      votes.push(report.evidence);
+      blocks.set(report.block.hash, report.block);
+      preexisting.set(locked.validator, report.evidence.attestation);
+    } catch {
+    }
+  }
+  const candidate = uniquePossiblyFinalizedHash(
+    votes, validators, chainId, height, round, previousHash, protocolVersion
+  );
+  if (!candidate) return null;
+  const original = blocks.get(candidate);
+  if (!original || original.header.round !== 0) return null;
+  const attestations: BlockAttestation[] = [];
+  for (const attestation of preexisting.values()) {
+    try {
+      validateBlockAttestation(original, attestation, validators);
+      attestations.push(attestation);
+    } catch {
+    }
+  }
+  try {
+    attestations.push(await service.attestCompletion(original, votes, signingNowMs()));
+  } catch {
+  }
+  if (peers.requestCompletionAttestations) {
+    try {
+      attestations.push(...await peers.requestCompletionAttestations(original, votes));
+    } catch {
+    }
+  }
+  const byValidator = new Map<Address, BlockAttestation>();
+  for (const attestation of attestations) {
+    try {
+      validateBlockAttestation(original, attestation, validators);
+      byValidator.set(attestation.validator, attestation);
+    } catch {
+    }
+  }
+  if (byValidator.size < validatorQuorumSize(validators.length)) return null;
+  const finalized: Block = { ...original, attestations: [...byValidator.values()] };
+  await service.acceptFinalizedBlock(finalized);
+  await peers.broadcastBlock(finalized);
+  return finalized;
+}
+
 export async function produceFinalizedBlock(
   service: NodeService,
   peers: ConsensusPeerClient,
@@ -1343,6 +1689,10 @@ export async function produceFinalizedBlock(
   const elapsed = nowMs - chain.tip.header.timestampMs;
   if (elapsed < BLOCK_INTERVAL_MS) return null;
   const round = Math.max(0, Math.floor((elapsed - BLOCK_INTERVAL_MS) / ROUND_WINDOW_MS));
+  if (round > 0) {
+    const completed = await tryCompleteSplitRound(service, peers, nowMs);
+    if (completed) return completed;
+  }
   const signer = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
   const publicKey = signer.publicKey;
   const validators = chain.validatorsAt(chain.height + 1);

@@ -15,7 +15,9 @@ It checks the certificate-level argument behind certified view changes:
 5. reaching a later round requires the immediately preceding progress certificate;
 6. therefore a finalized value prevents the first skip needed to reach a conflicting later-round proposal.
 
-A progress certificate is either the existing skip quorum or an uncommitted-round certificate. The uncommitted form counts already-signed skip votes and attestations together. It is accepted only when no block hash reaches `uncommittedAttestationRevealThreshold`, which is the minimum number of those attestations that would still be visible if the hash had a finality quorum and at most `floor((N-1)/3)` Byzantine voters hid their real vote. Quorum size is unchanged. For validator counts such as 4 and 7 that threshold is 1, so any visible attestation still blocks the certificate; those splits remain unresolved. The executable check is `l1/test/split-vote-liveness.test.ts`.
+A progress certificate is either the existing skip quorum or an uncommitted-round certificate. The uncommitted form counts already-signed skip votes and attestations together. It is accepted only when no block hash reaches `uncommittedAttestationRevealThreshold`, which is the minimum number of those attestations that would still be visible if the hash had a finality quorum and at most `floor((N-1)/3)` Byzantine voters hid their real vote. Quorum size is unchanged. For validator counts such as 4 and 7 that threshold is 1, so any visible attestation still blocks a fresh later-round block.
+
+When the votes for round 0 leave exactly one hash that could still reach quorum, and a hash with no visible attestation could not, validators complete that original block with a normal finality quorum. A skipper records the new attestation at `(height, round+1)` so the skip slot stays intact. Two hashes that could both still reach quorum are not completed and do not open a later round. This is not a prepare/commit view-change. The executable check is `l1/test/split-vote-liveness.test.ts`.
 
 The model separately checks conflicting finality certificates and the finality-versus-progress certificate pair.
 
