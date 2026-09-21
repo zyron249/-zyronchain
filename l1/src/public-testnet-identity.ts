@@ -190,20 +190,31 @@ function parseBootstrapPeers(value: unknown): PublicTestnetBootstrapPeer[] {
     if (typeof entry.peerId !== "string" || typeof entry.multiaddr !== "string" || typeof entry.failureDomain !== "string") {
       throw new Error("Invalid public-testnet bootstrap peer");
     }
-    if (!FAILURE_DOMAIN_PATTERN.test(entry.failureDomain)) throw new Error("Invalid public-testnet failure domain");
-    const address = parseNativePeerAddress(entry.multiaddr);
-    if (nativePeerId(address) !== entry.peerId) throw new Error("Bootstrap multiaddr peer ID does not match peerId");
-    assertPublicBootstrapHost(address);
-    if (peerIds.has(entry.peerId) || multiaddrs.has(address.toString())) throw new Error("Duplicate public-testnet bootstrap peer");
-    peerIds.add(entry.peerId);
-    multiaddrs.add(address.toString());
-    domains.add(entry.failureDomain);
-    peers.push({ peerId: entry.peerId, multiaddr: address.toString(), failureDomain: entry.failureDomain });
+    const peer = canonicalizePublicTestnetBootstrapPeer(entry.peerId, entry.multiaddr, entry.failureDomain);
+    if (peerIds.has(peer.peerId) || multiaddrs.has(peer.multiaddr)) throw new Error("Duplicate public-testnet bootstrap peer");
+    peerIds.add(peer.peerId);
+    multiaddrs.add(peer.multiaddr);
+    domains.add(peer.failureDomain);
+    peers.push(peer);
   }
   if (domains.size < PUBLIC_TESTNET_MIN_FAILURE_DOMAINS) {
     throw new Error("Frozen public-testnet identity requires at least 3 distinct failure domains");
   }
   return peers;
+}
+
+export function canonicalizePublicTestnetBootstrapPeer(
+  peerId: string,
+  multiaddr: string,
+  failureDomain: string
+): PublicTestnetBootstrapPeer {
+  if (!FAILURE_DOMAIN_PATTERN.test(failureDomain) || failureDomain.includes("placeholder") || failureDomain.includes("mainnet")) {
+    throw new Error("Invalid public-testnet failure domain");
+  }
+  const address = parseNativePeerAddress(multiaddr);
+  if (nativePeerId(address) !== peerId) throw new Error("Bootstrap multiaddr peer ID does not match peerId");
+  assertPublicBootstrapHost(address);
+  return { peerId, multiaddr: address.toString(), failureDomain };
 }
 
 function assertPublicBootstrapHost(address: ReturnType<typeof parseNativePeerAddress>): void {

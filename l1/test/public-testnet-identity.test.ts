@@ -21,6 +21,7 @@ import type { GenesisConfig } from "../src/types.js";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const checkedInIdentityPath = join(here, "../../config/public-testnet-identity.json");
+const checkedInBootstrapPath = join(here, "../../config/public-testnet-bootstrap.json");
 const launchAuthorizationPath = join(here, "../../../docs/l1-launch-authorization.json");
 const cliPath = join(here, "../src/cli.js");
 
@@ -246,6 +247,7 @@ test("public-testnet node command fail-closes on the checked-in proposal and ref
     "node",
     "--network-class", "public-testnet",
     "--public-testnet-identity", checkedInIdentityPath,
+    "--public-testnet-bootstrap", checkedInBootstrapPath,
     "--launch-authorization", launchAuthorizationPath,
     "--genesis", genesisPath,
     "--data", dataDir

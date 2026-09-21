@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "status": "proposal-unfilled",
+  "networkClass": "public-testnet",
+  "live": false,
+  "environmentIgnored": true,
+  "slots": [
+    {
+      "slot": "bootstrap-a",
+      "failureDomainEnv": "ZYRON_PUBLIC_TESTNET_BOOTSTRAP_A_FAILURE_DOMAIN",
+      "peerIdEnv": "ZYRON_PUBLIC_TESTNET_BOOTSTRAP_A_PEER_ID",
+      "multiaddrEnv": "ZYRON_PUBLIC_TESTNET_BOOTSTRAP_A_MULTIADDR",
+      "failureDomain": "PLACEHOLDER",
+      "peerId": "PLACEHOLDER",
+      "multiaddr": "PLACEHOLDER"
+    },
+    {
+      "slot": "bootstrap-b",
+      "failureDomainEnv": "ZYRON_PUBLIC_TESTNET_BOOTSTRAP_B_FAILURE_DOMAIN",
+      "peerIdEnv": "ZYRON_PUBLIC_TESTNET_BOOTSTRAP_B_PEER_ID",
+      "multiaddrEnv": "ZYRON_PUBLIC_TESTNET_BOOTSTRAP_B_MULTIADDR",
+      "failureDomain": "PLACEHOLDER",
+      "peerId": "PLACEHOLDER",
+      "multiaddr": "PLACEHOLDER"
+    },
+    {
+      "slot": "bootstrap-c",
+      "failureDomainEnv": "ZYRON_PUBLIC_TESTNET_BOOTSTRAP_C_FAILURE_DOMAIN",
+      "peerIdEnv": "ZYRON_PUBLIC_TESTNET_BOOTSTRAP_C_PEER_ID",
+      "multiaddrEnv": "ZYRON_PUBLIC_TESTNET_BOOTSTRAP_C_MULTIADDR",
+      "failureDomain": "PLACEHOLDER",
+      "peerId": "PLACEHOLDER",
+      "multiaddr": "PLACEHOLDER"
+    }
+  ]
+}
