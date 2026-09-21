@@ -20,7 +20,7 @@ The only supported way for an external tester to exercise the **canonical** chai
 ## What does not exist in this repository
 
 - No published public wallet RPC, P2P bootstrap, explorer, or faucet for the TypeScript L1.
-- No immutable public-testnet chain ID or genesis hash. `npm run devnet` generates a fresh `zyron-local-<hex>` identity every run. The placeholder in [`l1/config/public-testnet-identity.json`](../l1/config/public-testnet-identity.json) is an unfilled proposal. `zyron-l1 node --network-class public-testnet` refuses to start against it. See [`PUBLIC_TESTNET_READINESS.md`](PUBLIC_TESTNET_READINESS.md).
+- No immutable public-testnet chain ID or genesis hash. `npm run devnet` generates a fresh `zyron-local-<hex>` identity every run. The placeholders in [`l1/config/public-testnet-identity.json`](../l1/config/public-testnet-identity.json) and [`l1/config/public-testnet-bootstrap.json`](../l1/config/public-testnet-bootstrap.json) are unfilled proposals. Bootstrap values are the token `PLACEHOLDER` and are not dial targets. `zyron-l1 node --network-class public-testnet` refuses to start against them. See [`PUBLIC_TESTNET_READINESS.md`](PUBLIC_TESTNET_READINESS.md).
 - `zyron-devnet-1` appears only as a **local CLI example** in `l1/README.md`. It is not a live network.
 - `zyron-render-private-testnet-1` is the default chain ID of the **ephemeral private Render rehearsal** ([`L1_RENDER_PRIVATE_TESTNET.md`](L1_RENDER_PRIVATE_TESTNET.md)). It is not a public testnet.
 - The historical hostname `https://zyronchain.onrender.com` is quarantined. Do not use it as RPC, explorer, faucet, or bootstrap.
