@@ -91,6 +91,8 @@ node dist/src/cli.js genesis \
 
 Start validator nodes with distinct data directories and ports. Configure at least one explicit bootstrap peer; dynamic discovery never bypasses authenticated admission.
 
+`l1/config/public-testnet-identity.json` is an unfilled public-testnet proposal, not a live network. `node dist/src/cli.js node --network-class public-testnet` refuses to open a data directory until a reviewed identity matches the genesis file and launch authorization separately allows activation. Those flags stay false. Details: [`docs/PUBLIC_TESTNET_READINESS.md`](../docs/PUBLIC_TESTNET_READINESS.md).
+
 The preferred new node-to-node data plane is native TCP/libp2p with Noise and yamux. Enable a
 listener explicitly with `--p2p-listen /ip4/0.0.0.0/tcp/9140` and configure outbound peers
 with repeated `--p2p-peer` multiaddrs. Outbound peer addresses **must pin the expected PeerId**,

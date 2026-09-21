@@ -1,4 +1,4 @@
-import { BlockList } from "node:net";
+import { BlockList, isIP } from "node:net";
 import type { Libp2p } from "libp2p";
 import type { Multiaddr } from "@multiformats/multiaddr";
 import { peerIdFromString } from "@libp2p/peer-id";
@@ -120,13 +120,16 @@ export function assertSafeDiscoveredPeer(candidate: Multiaddr): Multiaddr {
   if (!host?.value || (host.name !== "ip4" && host.name !== "ip6")) {
     throw new Error("Discovered native peer must use a public IP address");
   }
-  const blocked = host.name === "ip4"
-    ? blockedIpv4.check(host.value, "ipv4")
-    : blockedIpv6.check(host.value, "ipv6");
-  if (blocked) {
+  if (!isGloballyReachableIp(host.value, host.name === "ip4" ? "ipv4" : "ipv6")) {
     throw new Error("Discovered native peer uses a non-public IP address");
   }
   return address;
+}
+
+/** True only for globally routable addresses. Special-purpose ranges stay closed. */
+export function isGloballyReachableIp(host: string, family: "ipv4" | "ipv6"): boolean {
+  if (family === "ipv4") return isIP(host) === 4 && !blockedIpv4.check(host, "ipv4");
+  return isIP(host) === 6 && !blockedIpv6.check(host, "ipv6");
 }
 
 // Keep address families in separate BlockLists: Node represents IPv4 as
