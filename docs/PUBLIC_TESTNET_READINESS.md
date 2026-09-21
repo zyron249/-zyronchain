@@ -4,6 +4,7 @@ Status: **not launched**. `publicTestnetActivationAllowed` and `publicMiningActi
 
 Checked-in identity proposal: [`l1/config/public-testnet-identity.json`](../l1/config/public-testnet-identity.json).  
 Checked-in bootstrap proposal: [`l1/config/public-testnet-bootstrap.json`](../l1/config/public-testnet-bootstrap.json).  
+Checked-in public RPC proposal: [`l1/config/public-testnet-rpc.json`](../l1/config/public-testnet-rpc.json).  
 Governance flags: [`l1-launch-authorization.json`](l1-launch-authorization.json).  
 Local tester path: [`PUBLIC_TEST.md`](PUBLIC_TEST.md).
 
@@ -35,14 +36,20 @@ Filling the proposal in a later reviewed change is not activation. Activation re
 
 `--network-class public-testnet` also requires `--public-testnet-bootstrap`. The checked-in file adds `bootstrap-unfilled` and `bootstrap-not-dialable` to the refusal, and the dial target list stays empty. A structurally complete in-memory file with three distinct failure domains is still not dialed, because this file is not allowed to mark itself live. No production IP address or DNS name is published.
 
+## Public RPC scaffold
+
+`l1/config/public-testnet-rpc.json` keeps the public role disabled. Bind hosts and both HTTPS origins are `PLACEHOLDER`. The documented variables `ZYRON_PUBLIC_TESTNET_PUBLIC_RPC_ORIGIN_A`, `ZYRON_PUBLIC_TESTNET_PUBLIC_RPC_ORIGIN_B`, `ZYRON_PUBLIC_TESTNET_PUBLIC_RPC_PORT`, and `ZYRON_PUBLIC_TESTNET_VALIDATOR_RPC_PORT` are not read. The parser rejects `live: true`, a real URL, and any limit above the pinned public ceilings.
+
+The public role, if selected in process with `rpcRole: "public"`, serves `/status`, `/protocol`, `/healthz`, `/readyz`, `/rpc-info`, `/balance/*`, `/nonce/*`, and `POST /tx`. It refuses `/proposal/attest`, `/round/skip`, `/block`, `/blocks`, `/metrics`, `/peers`, and `/peer-record`. Its ceilings are 60 requests per 60 seconds, 64 KiB bodies, 5 second header and request timeouts, 64 connections, and 16 inflight requests. Those are stricter than the combined validator RPC defaults. The checked-in proposal still does not bind a listener. Local nodes keep the combined server.
+
 ## Architecture (canonical `l1/`)
 
 | Question | What the code does | Gap for a real public testnet |
 |---|---|---|
 | Node boot | `zyron-l1 node --genesis --data` defaults to `127.0.0.1:9137`. `ChainStore.open` replays the data directory and rejects a stored chain ID or genesis hash that does not match the genesis file. | Boot accepts any well-formed genesis. Nothing persistent names "the" public testnet unless `--network-class public-testnet` is passed, and that path currently fail-closes. |
 | Peer discovery | Configured `--p2p-peer` multiaddrs are pinned. Discovery exchanges bounded hints over Noise; callers must dial and complete the chain-identity handshake before admission. Failure-domain labels are operator-supplied. | The checked-in bootstrap file has three placeholder slots and zero dial targets. Real independent failure domains are still unpublished. |
-| RPC auth and rate limit | Non-loopback bind requires consensus authentication and at least one `--rpc-trusted-proxy`, and forwarded protocol must be exactly `https`. Fixed-window limits cap tracked client identities and share one overflow quota. | The same HTTP server serves public reads and consensus. There is no deployed public listener and no separate public-RPC process. |
-| Consensus vs public RPC | Validator consensus uses authenticated HTTP peers and/or Noise P2P. Public reads are unauthenticated on loopback. | A public testnet still needs an explicit split: loopback or authenticated validator RPC, and a separate HTTPS public RPC tier. |
+| RPC auth and rate limit | Non-loopback bind requires consensus authentication and at least one `--rpc-trusted-proxy`, and forwarded protocol must be exactly `https`. Fixed-window limits cap tracked client identities and share one overflow quota. The public role adds stricter ceilings and refuses consensus routes. | No public listener is bound. Origins remain `PLACEHOLDER`. |
+| Consensus vs public RPC | Validator consensus uses authenticated HTTP peers and/or Noise P2P. A `public` RPC role refuses attest, skip, block, block sync, metrics, and peer routes. | The checked-in proposal does not start that role. Local nodes still use the combined server. |
 | Genesis and chain ID | Chain ID must match `^[a-z0-9-]{3,64}$`. Genesis hash is the genesis block hash. Restart identity is the stored chain ID plus that hash. `npm run devnet` mints `zyron-local-<hex>` and does not resume. | No immutable public-testnet chain ID or genesis hash is published. `zyron-devnet-1` is a CLI example. `zyron-render-private-testnet-1` is a private rehearsal. |
 | Protocol upgrade and v5 | Height 0 is protocol 1. Supported versions are 1, 2, 3, and 5. Protocol 4 fails closed. A v5 schedule needs >2/3 active-validator approval and at least `MIN_PROTOCOL_UPDATE_DELAY` (100) blocks of delay. | Local `mine:local` can schedule v5 on a disposable chain. That does not activate public mining. |
 | Claim flow | Miners sign locally from an encrypted keystore and submit one tip-bound `mining_claim`. A block accepts at most one valid claim. Stale previous-hash claims are rejected. The consensus tracker address `ZYN` + 40 zeroes counts finalized claims and has no spend key. | Public claim submission has nowhere persistent to go. |
@@ -83,7 +90,7 @@ P0 items block a shared, persistent public testnet or public mining. Identity an
 |---|---|---|
 | P0 | Persistent public-testnet chain ID, genesis hash, timestamp, and reviewed genesis file | Scaffold exists and fail-closes. Values are still null |
 | P0 | Bootstrap peers in at least three independent failure domains, plus archive and monitoring on independent domains | Placeholder scaffold exists and is not dialable. No real peers, archive, or monitoring are published |
-| P0 | At least two distinct HTTPS public RPC endpoints, separate from validator consensus RPC | Schema requires two origins. None are published |
+| P0 | At least two distinct HTTPS public RPC endpoints, separate from validator consensus RPC | Public role and stricter limits exist. Origins are `PLACEHOLDER` and the role is not bound |
 | P0 | `publicTestnetActivationAllowed` and the 10 requirements in `l1-launch-authorization.json` (issue #260) | Unchanged and false |
 | P0 | `miner-network-profile.json` `publicMiningActivated` plus chain, genesis, and RPC | Unchanged: false and null |
 | P0 | Multi-validator split-vote liveness | Draft PR #898 models it. Consensus was not modified and the deadlock was not re-run here |
@@ -101,13 +108,13 @@ P0 items block a shared, persistent public testnet or public mining. Identity an
 
 ## Remaining public-mining activation count
 
-**10** requirements in `publicTestnetActivationRequirements` remain open. This bootstrap scaffold closes none of them.
+**10** requirements in `publicTestnetActivationRequirements` remain open. The identity, bootstrap, and public-RPC scaffolds close none of them.
 
 Engineering P0s that still block a real shared public testnet:
 
 1. Identity values are still null.
 2. Bootstrap slots are still `PLACEHOLDER`, so no independent failure domain is published.
-3. Public RPC is still the same server as validator consensus, with no public origins.
+3. Public RPC origins are still `PLACEHOLDER`, so no public listener is bound.
 4. Multi-validator split-vote liveness is still only modeled on draft PR #898.
 
 `publicMiningActivated` stays false. A later edit may replace placeholder bootstrap tokens. That edit still must not mark the file `live`, invent production endpoints, or set `publicTestnetActivationAllowed`, `mainnetActivationAllowed`, `publicMiningActivated`, or `publicationAllowed`.
