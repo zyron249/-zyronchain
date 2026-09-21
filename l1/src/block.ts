@@ -15,6 +15,7 @@ import type {
   BlockHeader,
   GenesisConfig,
   LockedAttestEvidence,
+  RoundChoiceReport,
   RoundProgressEntry,
   RoundSkipVote,
   Transaction,
@@ -219,6 +220,110 @@ export function uncommittedAttestationRevealThreshold(validatorCount: number): n
   return threshold;
 }
 
+/**
+ * Upper bound on attestations of one hash given what a vote set actually shows.
+ * Unseen validators may all have attested it. Up to floor((N-1)/3) voters who
+ * showed a different choice may have equivocated and attested it as well.
+ * A hash can still have been finalized when this bound reaches the quorum.
+ */
+export function maximumAttestationsPossible(visible: number, votesSeen: number, validatorCount: number): number {
+  if (!Number.isSafeInteger(validatorCount) || validatorCount < 1) throw new Error("Invalid validator count");
+  if (!Number.isSafeInteger(visible) || visible < 0 || !Number.isSafeInteger(votesSeen) ||
+      votesSeen < visible || votesSeen > validatorCount) {
+    throw new Error("Invalid attestation observation");
+  }
+  const faults = Math.floor((validatorCount - 1) / 3);
+  const unseen = validatorCount - votesSeen;
+  const contradictory = votesSeen - visible;
+  return visible + unseen + Math.min(faults, contradictory);
+}
+
+export function hashCouldStillBeFinalized(visible: number, votesSeen: number, validatorCount: number): boolean {
+  return maximumAttestationsPossible(visible, votesSeen, validatorCount) >= validatorQuorumSize(validatorCount);
+}
+
+export function uniquePossiblyFinalizedHash(
+  votes: RoundProgressEntry[],
+  validators: Validator[],
+  chainId: string,
+  height: number,
+  round: number,
+  previousHash: string,
+  protocolVersion = 1
+): string | null {
+  const observed = observeRoundProgress(votes, validators, chainId, height, round, previousHash, protocolVersion);
+  // Zero visible attestations can still hide a finalized hash when the unseen
+  // set is large enough. Completion is allowed only when that bound is below
+  // quorum and exactly one visible hash remains possible.
+  if (hashCouldStillBeFinalized(0, observed.votesSeen, validators.length)) return null;
+  const candidates: string[] = [];
+  for (const [hash, visible] of observed.attestations) {
+    if (hashCouldStillBeFinalized(visible, observed.votesSeen, validators.length)) candidates.push(hash);
+  }
+  if (candidates.length !== 1) return null;
+  return candidates[0]!;
+}
+
+export function observedAttestation(
+  votes: RoundProgressEntry[],
+  validators: Validator[],
+  chainId: string,
+  height: number,
+  round: number,
+  previousHash: string,
+  blockHash: string,
+  protocolVersion = 1
+): { visible: number; votesSeen: number } {
+  const observed = observeRoundProgress(votes, validators, chainId, height, round, previousHash, protocolVersion);
+  return {
+    visible: observed.attestations.get(blockHash) ?? 0,
+    votesSeen: observed.votesSeen
+  };
+}
+
+function observeRoundProgress(
+  votes: RoundProgressEntry[],
+  validators: Validator[],
+  chainId: string,
+  height: number,
+  round: number,
+  previousHash: string,
+  protocolVersion: number
+): { votesSeen: number; attestations: Map<string, number> } {
+  const progress = new Map<string, string | null>();
+  const conflicted = new Set<string>();
+  for (const vote of votes) {
+    let validator: string;
+    let hash: string | null;
+    try {
+      if (isRoundSkipVoteShape(vote)) {
+        validateRoundSkipVote(vote, validators, chainId, height, round, previousHash, protocolVersion);
+        validator = vote.validator;
+        hash = null;
+      } else {
+        const locked = validateLockedAttestEvidence(vote, validators, chainId, height, round, previousHash, protocolVersion);
+        validator = locked.validator;
+        hash = locked.blockHash;
+      }
+    } catch {
+      continue;
+    }
+    const previous = progress.get(validator);
+    if (conflicted.has(validator) || (previous !== undefined && previous !== hash)) {
+      progress.delete(validator);
+      conflicted.add(validator);
+      continue;
+    }
+    progress.set(validator, hash);
+  }
+  const attestations = new Map<string, number>();
+  for (const hash of progress.values()) {
+    if (!hash) continue;
+    attestations.set(hash, (attestations.get(hash) ?? 0) + 1);
+  }
+  return { votesSeen: progress.size, attestations };
+}
+
 export function validateBlockEnvelope(
   block: Block,
   previous: Block,
@@ -386,6 +491,36 @@ export function assertLockedAttestEvidenceShape(value: unknown): asserts value i
   }
   assertHex(value.attestation.publicKey, 64, "locked attestation publicKey");
   assertHex(value.attestation.signature, 64, "locked attestation signature");
+}
+
+export function assertRoundChoiceReport(value: unknown): asserts value is RoundChoiceReport {
+  assertPlainRecord(value, "round choice report");
+  assertExactKeys(
+    value,
+    ["height", "round", "previousHash", "choice", "skip", "block", "evidence"],
+    "round choice report"
+  );
+  if (!Number.isSafeInteger(value.height) || Number(value.height) < 1 ||
+      !Number.isSafeInteger(value.round) || Number(value.round) < 0 ||
+      typeof value.previousHash !== "string" ||
+      (value.choice !== "none" && value.choice !== "skip" && value.choice !== "attest")) {
+    throw new Error("Invalid round choice report");
+  }
+  assertHex(value.previousHash, 32, "round choice report previousHash");
+  if (value.choice === "none") {
+    if (value.skip !== null || value.block !== null || value.evidence !== null) {
+      throw new Error("Invalid round choice report");
+    }
+    return;
+  }
+  if (value.choice === "skip") {
+    if (value.block !== null || value.evidence !== null) throw new Error("Invalid round choice report");
+    assertPlainRecord(value.skip, "round choice report skip");
+    return;
+  }
+  if (value.skip !== null) throw new Error("Invalid round choice report");
+  validateBlockShape(value.block);
+  assertLockedAttestEvidenceShape(value.evidence);
 }
 
 function isRoundSkipVoteShape(value: unknown): value is RoundSkipVote {

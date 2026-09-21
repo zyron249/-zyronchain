@@ -446,6 +446,14 @@ async function runNode(args: string[]): Promise<void> {
       ...await peers.requestLockedAttestations(height, round, previousHash),
       ...await nativeConsensus.requestLockedAttestations(height, round, previousHash)
     ],
+    requestRoundReports: async (height, round, previousHash) => [
+      ...await peers.requestRoundReports(height, round, previousHash),
+      ...await nativeConsensus.requestRoundReports(height, round, previousHash)
+    ],
+    requestCompletionAttestations: async (block, votes) => [
+      ...await peers.requestCompletionAttestations(block, votes),
+      ...await nativeConsensus.requestCompletionAttestations(block, votes)
+    ],
     broadcastBlock: async (block) => {
       await Promise.allSettled([peers.broadcastBlock(block), nativeConsensus.broadcastBlock(block)]);
     }
