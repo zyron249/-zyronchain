@@ -27,12 +27,13 @@ import {
   type SignedPeerRecord
 } from "./peer-identity.js";
 import { FixedWindowLimiter } from "./rpc-rate-limit.js";
+import { classifyRpcRoute, PUBLIC_RPC_LIMITS } from "./public-testnet-rpc.js";
 import { ChainStore, SigningJournal } from "./storage.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
 import type { Address, Block, BlockAttestation, RoundSkipVote, Transaction } from "./types.js";
 import { LocalValidatorSigner, signWithValidator, type ValidatorSigner } from "./validator-signer.js";
 
-const MAX_BODY_BYTES = 2_500_000;
+export const MAX_BODY_BYTES = 2_500_000;
 export const MAX_RPC_JSON_NESTING_DEPTH = 64;
 export const MAX_RPC_JSON_STRUCTURAL_TOKENS = 250_000;
 export const MAX_PEER_RESPONSE_JSON_NESTING_DEPTH = 64;
@@ -50,10 +51,12 @@ export const MAX_GOSSIP_FANOUT = 8;
 const MAX_GOSSIP_DEDUP_IDS = 4_096;
 const PEER_FAILURE_BACKOFF_MS = 30_000;
 const PEER_TIMEOUT_MS = 8_000;
-const DEFAULT_RPC_WINDOW_MS = 60_000;
-const DEFAULT_RPC_REQUESTS_PER_WINDOW = 600;
-const DEFAULT_RPC_MAX_CONNECTIONS = 256;
-const DEFAULT_RPC_MAX_INFLIGHT_REQUESTS = 128;
+export const DEFAULT_RPC_WINDOW_MS = 60_000;
+export const DEFAULT_RPC_REQUESTS_PER_WINDOW = 600;
+export const DEFAULT_RPC_MAX_CONNECTIONS = 256;
+export const DEFAULT_RPC_MAX_INFLIGHT_REQUESTS = 128;
+export const DEFAULT_RPC_REQUEST_TIMEOUT_MS = 15_000;
+export const DEFAULT_RPC_HEADERS_TIMEOUT_MS = 10_000;
 export const DEFAULT_RPC_MAX_INFLIGHT_BODY_BYTES = 25_000_000;
 export const DEFAULT_RPC_MAX_INFLIGHT_RESPONSE_BYTES = 25_000_000;
 export const MAX_SMALL_RPC_RESPONSE_SERIALIZATION_BYTES = 4_000_000;
@@ -125,6 +128,8 @@ export interface RpcServerOptions {
   onTransactionAccepted?: (transaction: Transaction) => void | Promise<void>;
   requestsPerWindow?: number;
   windowMs?: number;
+  /** Combined serves the existing local/validator surface. Public refuses consensus and operator routes. */
+  rpcRole?: "combined" | "public";
 }
 
 export interface PeerRequestCredentials {
@@ -500,12 +505,33 @@ export class NodeService {
   }
 }
 
+function assertPublicRoleDoesNotRaiseLimits(options: RpcServerOptions): void {
+  const ceilings: Array<[number | undefined, number, string]> = [
+    [options.requestsPerWindow, PUBLIC_RPC_LIMITS.requestsPerWindow, "request rate"],
+    [options.windowMs, PUBLIC_RPC_LIMITS.windowMs, "rate-limit window"],
+    [options.maxConnections, PUBLIC_RPC_LIMITS.maxConnections, "connection"],
+    [options.maxInflightRequests, PUBLIC_RPC_LIMITS.maxInflightRequests, "inflight"],
+    [options.maxInflightRequestBodyBytes, PUBLIC_RPC_LIMITS.maxRequestBytes * PUBLIC_RPC_LIMITS.maxInflightRequests, "request-body"],
+    [options.maxInflightResponseBytes, PUBLIC_RPC_LIMITS.maxRequestBytes * PUBLIC_RPC_LIMITS.maxInflightRequests, "response"]
+  ];
+  for (const [requested, ceiling, name] of ceilings) {
+    if (requested !== undefined && requested > ceiling) {
+      throw new Error(`Public RPC role cannot raise the ${name} ceiling`);
+    }
+  }
+}
+
 export function createRpcServer(service: NodeService, options: RpcServerOptions = {}): Server {
+  const publicRole = options.rpcRole === "public";
+  if (publicRole) assertPublicRoleDoesNotRaiseLimits(options);
   const requestsPerWindow = boundedPositiveInteger(
-    options.requestsPerWindow ?? DEFAULT_RPC_REQUESTS_PER_WINDOW,
+    publicRole ? PUBLIC_RPC_LIMITS.requestsPerWindow : options.requestsPerWindow ?? DEFAULT_RPC_REQUESTS_PER_WINDOW,
     "RPC requests per window"
   );
-  const windowMs = boundedPositiveInteger(options.windowMs ?? DEFAULT_RPC_WINDOW_MS, "RPC rate-limit window");
+  const windowMs = boundedPositiveInteger(
+    publicRole ? PUBLIC_RPC_LIMITS.windowMs : options.windowMs ?? DEFAULT_RPC_WINDOW_MS,
+    "RPC rate-limit window"
+  );
   const peerAuthToken = options.peerAuthToken === undefined ? undefined : validatePeerAuthToken(options.peerAuthToken);
   const peerRecord = options.peerRecord === undefined
     ? undefined
@@ -520,13 +546,17 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
     )
   );
   const rpcAdmission = new RpcAdmissionController(
-    options.maxInflightRequests ?? DEFAULT_RPC_MAX_INFLIGHT_REQUESTS
+    publicRole ? PUBLIC_RPC_LIMITS.maxInflightRequests : options.maxInflightRequests ?? DEFAULT_RPC_MAX_INFLIGHT_REQUESTS
   );
   const rpcBodyBudget = new RpcRequestBodyByteBudget(
-    options.maxInflightRequestBodyBytes ?? DEFAULT_RPC_MAX_INFLIGHT_BODY_BYTES
+    publicRole
+      ? PUBLIC_RPC_LIMITS.maxRequestBytes * PUBLIC_RPC_LIMITS.maxInflightRequests
+      : options.maxInflightRequestBodyBytes ?? DEFAULT_RPC_MAX_INFLIGHT_BODY_BYTES
   );
   const rpcResponseBudget = new RpcResponseByteBudget(
-    options.maxInflightResponseBytes ?? DEFAULT_RPC_MAX_INFLIGHT_RESPONSE_BYTES
+    publicRole
+      ? PUBLIC_RPC_LIMITS.maxRequestBytes * PUBLIC_RPC_LIMITS.maxInflightRequests
+      : options.maxInflightResponseBytes ?? DEFAULT_RPC_MAX_INFLIGHT_RESPONSE_BYTES
   );
   const limiter = new FixedWindowLimiter(requestsPerWindow, windowMs);
   const trustedProxyAddresses = normalizeTrustedProxyAddresses(options.trustedProxyAddresses ?? []);
@@ -576,7 +606,8 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
         bodyReservation,
         rpcAdmission,
         rpcResponseBudget,
-        options.onTransactionAccepted
+        options.onTransactionAccepted,
+        options.rpcRole
       );
     } catch (error) {
       if (error instanceof PeerAuthenticationError) {
@@ -615,9 +646,12 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
       .catch((error) => writeJson(response, 500, { error: safeError(error) }))
       .finally(release);
   });
-  server.maxConnections = boundedPositiveInteger(options.maxConnections ?? DEFAULT_RPC_MAX_CONNECTIONS, "RPC max connections");
-  server.headersTimeout = 10_000;
-  server.requestTimeout = 15_000;
+  server.maxConnections = boundedPositiveInteger(
+    publicRole ? PUBLIC_RPC_LIMITS.maxConnections : options.maxConnections ?? DEFAULT_RPC_MAX_CONNECTIONS,
+    "RPC max connections"
+  );
+  server.headersTimeout = publicRole ? PUBLIC_RPC_LIMITS.headersTimeoutMs : DEFAULT_RPC_HEADERS_TIMEOUT_MS;
+  server.requestTimeout = publicRole ? PUBLIC_RPC_LIMITS.requestTimeoutMs : DEFAULT_RPC_REQUEST_TIMEOUT_MS;
   server.keepAliveTimeout = 5_000;
   server.maxHeadersCount = RPC_MAX_HEADERS;
   server.maxRequestsPerSocket = RPC_MAX_REQUESTS_PER_SOCKET;
@@ -636,9 +670,20 @@ async function route(
   bodyReservation?: RpcRequestBodyReservation,
   rpcAdmission?: RpcAdmissionController,
   rpcResponseBudget?: RpcResponseByteBudget,
-  onTransactionAccepted?: (transaction: Transaction) => void | Promise<void>
+  onTransactionAccepted?: (transaction: Transaction) => void | Promise<void>,
+  rpcRole?: "combined" | "public"
 ): Promise<void> {
   const url = new URL(request.url ?? "/", "http://node.invalid");
+  const bodyLimit = rpcRole === "public" ? PUBLIC_RPC_LIMITS.maxRequestBytes : MAX_BODY_BYTES;
+  if (rpcRole === "public") {
+    const routeClass = classifyRpcRoute(request.method ?? "", url.pathname);
+    if (routeClass !== "public") {
+      writeJson(response, routeClass === "unknown" ? 404 : 403, {
+        error: routeClass === "unknown" ? "Not found" : "Public RPC role does not serve this route"
+      });
+      return;
+    }
+  }
   if (request.method === "GET" && url.pathname === "/rpc-info") {
     return writeJson(response, 200, {
       rpcVersion: RPC_API_VERSION,
@@ -690,7 +735,7 @@ async function route(
     return writeJson(response, 200, { address, nonce: service.nonce(address) });
   }
   if (request.method === "POST" && url.pathname === "/tx") {
-    const body = await readJsonBody(request, bodyReservation);
+    const body = await readJsonBody(request, bodyReservation, bodyLimit);
     const txid = service.submitTransaction(body);
     if (onTransactionAccepted) {
       const transaction = structuredClone(body as Transaction);
@@ -700,7 +745,7 @@ async function route(
   }
   if (request.method === "POST" && url.pathname === "/proposal/attest") {
     preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
-    const body = await readJsonBody(request, bodyReservation);
+    const body = await readJsonBody(request, bodyReservation, bodyLimit);
     const release = enterConsensusRequest(
       request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
     );
@@ -712,7 +757,7 @@ async function route(
   }
   if (request.method === "POST" && url.pathname === "/round/skip") {
     preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
-    const body = await readJsonBody(request, bodyReservation);
+    const body = await readJsonBody(request, bodyReservation, bodyLimit);
     const release = enterConsensusRequest(
       request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
     );
@@ -731,7 +776,7 @@ async function route(
   }
   if (request.method === "POST" && url.pathname === "/block") {
     preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
-    const body = await readJsonBody(request, bodyReservation);
+    const body = await readJsonBody(request, bodyReservation, bodyLimit);
     const release = enterConsensusRequest(
       request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
     );
@@ -1460,7 +1505,11 @@ export function parseRpcJsonChunks(
   }
 }
 
-async function readJsonBody(request: IncomingMessage, bodyReservation?: RpcRequestBodyReservation): Promise<unknown> {
+async function readJsonBody(
+  request: IncomingMessage,
+  bodyReservation?: RpcRequestBodyReservation,
+  maxBytes = MAX_BODY_BYTES
+): Promise<unknown> {
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] ?? "")) {
     throw new Error("Content-Type must be application/json");
   }
@@ -1468,7 +1517,7 @@ async function readJsonBody(request: IncomingMessage, bodyReservation?: RpcReque
   if (declaredLength !== undefined) {
     if (!/^(0|[1-9][0-9]*)$/.test(declaredLength)) throw new Error("Invalid Content-Length");
     const declaredBytes = Number(declaredLength);
-    if (!Number.isSafeInteger(declaredBytes) || declaredBytes > MAX_BODY_BYTES) throw new Error("Request body too large");
+    if (!Number.isSafeInteger(declaredBytes) || declaredBytes > maxBytes) throw new Error("Request body too large");
     if (declaredBytes > 0) bodyReservation?.reserve(declaredBytes);
   }
   const chunks: Buffer[] = [];
@@ -1477,7 +1526,7 @@ async function readJsonBody(request: IncomingMessage, bodyReservation?: RpcReque
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     if (buffer.length === 0) continue;
     total += buffer.length;
-    if (total > MAX_BODY_BYTES) throw new Error("Request body too large");
+    if (total > maxBytes) throw new Error("Request body too large");
     if (declaredLength === undefined) bodyReservation?.reserve(buffer.length);
     chunks.push(buffer);
   }
