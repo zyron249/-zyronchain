@@ -1,5 +1,6 @@
 import type { Libp2p } from "libp2p";
 
+import { assertLockedAttestEvidenceShape } from "./block.js";
 import { assertHex } from "./codec.js";
 import { ConsensusOperationBudget } from "./consensus-operation-budget.js";
 import { addressFromPublicKey } from "./crypto.js";
@@ -9,7 +10,7 @@ import { validateP2PChainIdentity, type P2PChainIdentity } from "./p2p.js";
 import { P2PPeerRateLimiter } from "./p2p-rate.js";
 import type { NodeIdentity } from "./peer-identity.js";
 import { validateTransactionShape } from "./transaction.js";
-import type { Block, BlockAttestation, RoundSkipVote, Transaction } from "./types.js";
+import type { Block, BlockAttestation, LockedAttestEvidence, RoundProgressEntry, RoundSkipVote, Transaction } from "./types.js";
 
 export const P2P_CONSENSUS_PROTOCOL = "/zyronchain/consensus/1.0.0";
 const MAX_CONSENSUS_FRAME_BYTES = 2_500_000;
@@ -27,6 +28,7 @@ const nativeConsensusOperationBudget = new ConsensusOperationBudget(MAX_NATIVE_C
 const NATIVE_CONSENSUS_REQUEST_MAX_BYTES = {
   attest: MAX_CONSENSUS_FRAME_BYTES,
   skip: 128_000,
+  lock: 8_192,
   block: MAX_CONSENSUS_FRAME_BYTES,
   transaction: 64_000
 } as const;
@@ -34,24 +36,26 @@ const NATIVE_CONSENSUS_REQUEST_MAX_BYTES = {
 const NATIVE_CONSENSUS_RESPONSE_MAX_BYTES = {
   attest: 8 * 1024,
   skip: 16 * 1024,
+  lock: 16 * 1024,
   block: 4 * 1024,
   transaction: 4 * 1024
 } as const;
 
 type ConsensusRequest =
   | { version: 1; identity: P2PChainIdentity; kind: "attest"; block: Block }
-  | { version: 1; identity: P2PChainIdentity; kind: "skip"; height: number; round: number; previousCertificate: RoundSkipVote[] }
+  | { version: 1; identity: P2PChainIdentity; kind: "skip"; height: number; round: number; previousCertificate: RoundProgressEntry[] }
+  | { version: 1; identity: P2PChainIdentity; kind: "lock"; height: number; round: number; previousHash: string }
   | { version: 1; identity: P2PChainIdentity; kind: "block"; block: Block }
   | { version: 1; identity: P2PChainIdentity; kind: "transaction"; transaction: Transaction };
 
 interface ConsensusResponse {
   version: 1;
   identity: P2PChainIdentity;
-  kind: "attest" | "skip" | "block" | "transaction";
+  kind: "attest" | "skip" | "lock" | "block" | "transaction";
   result: unknown;
 }
 
-export function nativeConsensusRequestMaxBytes(kind: "attest" | "skip" | "block" | "transaction"): number {
+export function nativeConsensusRequestMaxBytes(kind: "attest" | "skip" | "lock" | "block" | "transaction"): number {
   return NATIVE_CONSENSUS_REQUEST_MAX_BYTES[kind];
 }
 
@@ -149,6 +153,7 @@ export async function registerP2PConsensusProtocol(
       let result: unknown;
       if (request.kind === "attest") result = await service.attestProposal(request.block);
       else if (request.kind === "skip") result = await service.requestSkipVote(request.height, request.round, request.previousCertificate);
+      else if (request.kind === "lock") result = await service.lockedAttestEvidence(request.height, request.round, request.previousHash);
       else if (request.kind === "block") {
         await service.acceptFinalizedBlock(request.block);
         result = { accepted: true };
@@ -209,7 +214,23 @@ export class NativeConsensusPeerClient implements ConsensusPeerClient {
       : []);
   }
 
-  async requestRoundSkips(height: number, round: number, previousCertificate: RoundSkipVote[] = []): Promise<RoundSkipVote[]> {
+  async requestLockedAttestations(height: number, round: number, previousHash: string): Promise<LockedAttestEvidence[]> {
+    const request: ConsensusRequest = {
+      version: 1,
+      identity: localIdentity(this.identity, this.chain),
+      kind: "lock",
+      height,
+      round,
+      previousHash
+    };
+    const results = await collectNativeConsensusBounded(this.targets, (target, signal, deadlineMs) =>
+      this.request(target, request, signal, deadlineMs));
+    return results.flatMap((result) => result.status === "fulfilled" && result.value.kind === "lock"
+      ? [result.value.result as LockedAttestEvidence]
+      : []);
+  }
+
+  async requestRoundSkips(height: number, round: number, previousCertificate: RoundProgressEntry[] = []): Promise<RoundSkipVote[]> {
     const request: ConsensusRequest = {
       version: 1,
       identity: localIdentity(this.identity, this.chain),
@@ -325,7 +346,21 @@ function parseConsensusRequest(
       kind: "skip",
       height: Number(record.height),
       round: Number(record.round),
-      previousCertificate: record.previousCertificate as RoundSkipVote[]
+      previousCertificate: record.previousCertificate as RoundProgressEntry[]
+    };
+  }
+  if (record.kind === "lock") {
+    assertExactKeys(record, ["version", "identity", "kind", "height", "round", "previousHash"], "native consensus request");
+    if (!Number.isSafeInteger(record.height) || Number(record.height) < 1 || !Number.isSafeInteger(record.round) || Number(record.round) < 0 ||
+        typeof record.previousHash !== "string") throw new Error("Invalid native lock request");
+    assertHex(record.previousHash, 32, "native consensus lock previous hash");
+    return {
+      version: 1,
+      identity,
+      kind: "lock",
+      height: Number(record.height),
+      round: Number(record.round),
+      previousHash: record.previousHash
     };
   }
   throw new Error("Unsupported native consensus request");
@@ -370,6 +405,10 @@ export function validateConsensusResponseResultShape(kind: ConsensusResponse["ki
     assertHex(value.signature, 64, "native consensus skip signature");
     assertHex(value.previousHash, 32, "native consensus skip previous hash");
     if (value.validator !== addressFromPublicKey(value.publicKey)) throw new Error("Invalid native consensus skip validator");
+    return;
+  }
+  if (kind === "lock") {
+    assertLockedAttestEvidenceShape(value);
     return;
   }
   if (kind === "block") {
