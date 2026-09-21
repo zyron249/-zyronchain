@@ -168,3 +168,14 @@ export interface LockedAttestEvidence {
 }
 
 export type RoundProgressEntry = RoundSkipVote | LockedAttestEvidence;
+
+/** Read-only report of a validator's existing choice for one height and round. */
+export interface RoundChoiceReport {
+  height: number;
+  round: number;
+  previousHash: string;
+  choice: "none" | "skip" | "attest";
+  skip: RoundSkipVote | null;
+  block: Block | null;
+  evidence: LockedAttestEvidence | null;
+}

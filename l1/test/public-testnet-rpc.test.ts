@@ -84,6 +84,8 @@ test("public RPC role serves reads and transaction submission, not consensus or 
   assert.equal(classifyRpcRoute("POST", "/proposal/attest"), "consensus");
   assert.equal(classifyRpcRoute("POST", "/round/skip"), "consensus");
   assert.equal(classifyRpcRoute("POST", "/round/lock"), "consensus");
+  assert.equal(classifyRpcRoute("POST", "/round/report"), "consensus");
+  assert.equal(classifyRpcRoute("POST", "/round/complete"), "consensus");
   assert.equal(classifyRpcRoute("POST", "/block"), "consensus");
   assert.equal(classifyRpcRoute("GET", "/blocks"), "operator");
   assert.equal(classifyRpcRoute("GET", "/metrics"), "operator");

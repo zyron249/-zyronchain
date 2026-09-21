@@ -105,7 +105,7 @@ The following are stop-ship invariants:
 
 - two conflicting blocks cannot both satisfy finality at one height under the fault assumption;
 - a validator cannot attest and skip the same `(height, round)`;
-- non-zero rounds require the immediately preceding progress certificate: a skip quorum, or an uncommitted-round certificate whose per-hash attestation count stays below the Byzantine-safe reveal threshold;
+- non-zero rounds require the immediately preceding progress certificate: a skip quorum, or an uncommitted-round certificate whose per-hash attestation count stays below the Byzantine-safe reveal threshold. A round-0 block may instead be completed in place when the observed votes leave exactly one hash that could still reach quorum and no unseen hash could; that completion still requires `floor(2N/3)+1` attestations;
 - blocks use the scheduled proposer and exact active validator set;
 - every finalized block re-executes to its committed transaction and state roots;
 - unsupported active protocol versions fail closed;
