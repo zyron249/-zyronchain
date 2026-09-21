@@ -9,10 +9,13 @@ import {
 import { merkleRoot } from "./merkle.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
 import type {
+  Address,
   Block,
   BlockAttestation,
   BlockHeader,
   GenesisConfig,
+  LockedAttestEvidence,
+  RoundProgressEntry,
   RoundSkipVote,
   Transaction,
   Validator
@@ -60,7 +63,7 @@ export function createSignedBlock(input: {
   stateRoot: string;
   proposerPrivateKey: string;
   proposerPublicKey: string;
-  roundCertificate?: RoundSkipVote[];
+  roundCertificate?: RoundProgressEntry[];
 }): Block {
   const unsigned = createUnsignedBlock(input);
   const signature = signForProtocol(
@@ -82,7 +85,7 @@ export function createUnsignedBlock(input: {
   transactions: Transaction[];
   stateRoot: string;
   proposerPublicKey: string;
-  roundCertificate?: RoundSkipVote[];
+  roundCertificate?: RoundProgressEntry[];
 }): Block {
   const header: BlockHeader = {
     version: input.version,
@@ -197,6 +200,25 @@ export function validatorQuorumSize(validatorCount: number): number {
   return Math.floor((validatorCount * 2) / 3) + 1;
 }
 
+/**
+ * Minimum attestations of one hash that must appear in any quorum-sized vote
+ * set when that hash was finalized and at most floor((N-1)/3) Byzantine
+ * voters hide their real attestation.
+ *
+ * A later round may treat the previous round as uncommitted only when every
+ * hash is below this threshold. The threshold stays at least 1, so a real
+ * finality quorum can never be mistaken for an uncommitted round. For some
+ * sizes (including 4 and 7) the threshold is 1, and any visible attestation
+ * still blocks this certificate.
+ */
+export function uncommittedAttestationRevealThreshold(validatorCount: number): number {
+  const quorum = validatorQuorumSize(validatorCount);
+  const faults = Math.floor((validatorCount - 1) / 3);
+  const threshold = (2 * quorum) - validatorCount - faults;
+  if (!Number.isSafeInteger(threshold) || threshold < 1) throw new Error("Invalid uncommitted-round threshold");
+  return threshold;
+}
+
 export function validateBlockEnvelope(
   block: Block,
   previous: Block,
@@ -247,7 +269,7 @@ export function validateRoundCertificate(block: Block, validators: Validator[]):
     if (block.roundCertificate.length !== 0) throw new Error("Round 0 must not contain a skip certificate");
     return;
   }
-  validateRoundSkipQuorum(
+  validateRoundProgressCertificate(
     block.roundCertificate,
     validators,
     block.header.chainId,
@@ -256,6 +278,119 @@ export function validateRoundCertificate(block: Block, validators: Validator[]):
     block.header.previousHash,
     block.header.version
   );
+}
+
+export function validateRoundProgressCertificate(
+  votes: RoundProgressEntry[],
+  validators: Validator[],
+  chainId: string,
+  height: number,
+  round: number,
+  previousHash: string,
+  protocolVersion = 1
+): void {
+  if (votes.every((vote) => isRoundSkipVoteShape(vote))) {
+    validateRoundSkipQuorum(votes, validators, chainId, height, round, previousHash, protocolVersion);
+    return;
+  }
+  validateUncommittedRoundCertificate(votes, validators, chainId, height, round, previousHash, protocolVersion);
+}
+
+export function validateUncommittedRoundCertificate(
+  votes: RoundProgressEntry[],
+  validators: Validator[],
+  chainId: string,
+  height: number,
+  round: number,
+  previousHash: string,
+  protocolVersion = 1
+): void {
+  if (votes.length > validators.length) throw new Error("Uncommitted round certificate exceeds active validator set");
+  const seen = new Set<string>();
+  const attestationsByHash = new Map<string, number>();
+  for (const vote of votes) {
+    if (isRoundSkipVoteShape(vote)) {
+      validateRoundSkipVote(vote, validators, chainId, height, round, previousHash, protocolVersion);
+      if (seen.has(vote.validator)) throw new Error("Duplicate round progress vote");
+      seen.add(vote.validator);
+      continue;
+    }
+    const locked = validateLockedAttestEvidence(vote, validators, chainId, height, round, previousHash, protocolVersion);
+    if (seen.has(locked.validator)) throw new Error("Duplicate round progress vote");
+    seen.add(locked.validator);
+    attestationsByHash.set(locked.blockHash, (attestationsByHash.get(locked.blockHash) ?? 0) + 1);
+  }
+  const quorum = validatorQuorumSize(validators.length);
+  if (seen.size < quorum) throw new Error(`Uncommitted round certificate not reached: ${seen.size}/${quorum}`);
+  const threshold = uncommittedAttestationRevealThreshold(validators.length);
+  for (const count of attestationsByHash.values()) {
+    if (count >= threshold) throw new Error("Uncommitted round certificate contains a possibly finalized attestation");
+  }
+}
+
+export function validateLockedAttestEvidence(
+  evidence: unknown,
+  validators: Validator[],
+  chainId: string,
+  height: number,
+  round: number,
+  previousHash: string,
+  protocolVersion = 1
+): { validator: Address; blockHash: string } {
+  assertLockedAttestEvidenceShape(evidence);
+  const header = evidence.header;
+  if (header.chainId !== chainId || header.height !== height || header.round !== round || header.previousHash !== previousHash) {
+    throw new Error("Locked attestation does not match the skipped round");
+  }
+  if (header.version !== protocolVersion) throw new Error("Locked attestation protocol version mismatch");
+  const hash = blockHash(header);
+  const expected = expectedValidator(validators, height, round);
+  if (header.proposer !== expected.address) throw new Error("Locked attestation proposer mismatch");
+  const block: Block = {
+    header,
+    transactions: [],
+    hash,
+    proposerPublicKey: expected.publicKey,
+    signature: null,
+    roundCertificate: [],
+    attestations: []
+  };
+  validateBlockAttestation(block, evidence.attestation, validators);
+  return { validator: evidence.attestation.validator, blockHash: hash };
+}
+
+export function assertLockedAttestEvidenceShape(value: unknown): asserts value is LockedAttestEvidence {
+  assertPlainRecord(value, "locked attestation");
+  assertExactKeys(value, ["header", "attestation"], "locked attestation");
+  assertPlainRecord(value.header, "locked attestation header");
+  assertExactKeys(value.header, [
+    "version", "chainId", "height", "round", "previousHash", "timestampMs",
+    "transactionRoot", "stateRoot", "proposer"
+  ], "locked attestation header");
+  const header = value.header;
+  if (!Number.isSafeInteger(header.version) || Number(header.version) < 1 || typeof header.chainId !== "string" ||
+      !Number.isSafeInteger(header.height) || Number(header.height) < 1 || !Number.isSafeInteger(header.round) ||
+      Number(header.round) < 0 || !Number.isSafeInteger(header.timestampMs) || typeof header.previousHash !== "string" ||
+      typeof header.transactionRoot !== "string" || typeof header.stateRoot !== "string" || typeof header.proposer !== "string") {
+    throw new Error("Invalid locked attestation header");
+  }
+  assertHex(header.previousHash, 32, "locked attestation previousHash");
+  assertHex(header.transactionRoot, 32, "locked attestation transactionRoot");
+  assertHex(header.stateRoot, 32, "locked attestation stateRoot");
+  assertAddress(header.proposer);
+  assertPlainRecord(value.attestation, "locked attestation signature");
+  assertExactKeys(value.attestation, ["validator", "publicKey", "signature"], "locked attestation signature");
+  assertAddress(value.attestation.validator as string);
+  if (typeof value.attestation.publicKey !== "string" || typeof value.attestation.signature !== "string") {
+    throw new Error("Invalid locked attestation signature");
+  }
+  assertHex(value.attestation.publicKey, 64, "locked attestation publicKey");
+  assertHex(value.attestation.signature, 64, "locked attestation signature");
+}
+
+function isRoundSkipVoteShape(value: unknown): value is RoundSkipVote {
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    "previousHash" in value && !("header" in value);
 }
 
 export function validateRoundSkipQuorum(
@@ -360,17 +495,23 @@ export function validateBlockShape(value: unknown): asserts value is Block {
     assertHex(item.publicKey, 64, "attestation publicKey");
     assertHex(item.signature, 64, "attestation signature");
   }
-  for (const item of value.roundCertificate) {
-    assertPlainRecord(item, "round skip vote");
-    assertExactKeys(item, ["validator", "publicKey", "chainId", "height", "round", "previousHash", "signature"], "round skip vote");
-    assertAddress(item.validator as string);
-    if (typeof item.publicKey !== "string" || typeof item.chainId !== "string" || typeof item.previousHash !== "string" ||
-        typeof item.signature !== "string" || !Number.isSafeInteger(item.height) || !Number.isSafeInteger(item.round) ||
-        Number(item.height) < 1 || Number(item.round) < 0) throw new Error("Invalid round skip vote");
-    assertHex(item.publicKey, 64, "round skip publicKey");
-    assertHex(item.previousHash, 32, "round skip previousHash");
-    assertHex(item.signature, 64, "round skip signature");
+  for (const item of value.roundCertificate) assertRoundCertificateEntryShape(item);
+}
+
+function assertRoundCertificateEntryShape(item: unknown): void {
+  if (item !== null && typeof item === "object" && !Array.isArray(item) && "header" in item) {
+    assertLockedAttestEvidenceShape(item);
+    return;
   }
+  assertPlainRecord(item, "round skip vote");
+  assertExactKeys(item, ["validator", "publicKey", "chainId", "height", "round", "previousHash", "signature"], "round skip vote");
+  assertAddress(item.validator as string);
+  if (typeof item.publicKey !== "string" || typeof item.chainId !== "string" || typeof item.previousHash !== "string" ||
+      typeof item.signature !== "string" || !Number.isSafeInteger(item.height) || !Number.isSafeInteger(item.round) ||
+      Number(item.height) < 1 || Number(item.round) < 0) throw new Error("Invalid round skip vote");
+  assertHex(item.publicKey, 64, "round skip publicKey");
+  assertHex(item.previousHash, 32, "round skip previousHash");
+  assertHex(item.signature, 64, "round skip signature");
 }
 
 export function validateAttestationQuorum(block: Block, validators: Validator[]): void {

@@ -12,8 +12,10 @@ It checks the certificate-level argument behind certified view changes:
 2. at most `floor((N-1)/3)` validators are Byzantine;
 3. every pair of valid certificates intersects in at least one honest validator;
 4. an honest validator's durable journal cannot attest and skip the same `(height, round)`;
-5. reaching a later round requires the immediately preceding skip certificate;
+5. reaching a later round requires the immediately preceding progress certificate;
 6. therefore a finalized value prevents the first skip needed to reach a conflicting later-round proposal.
+
+A progress certificate is either the existing skip quorum or an uncommitted-round certificate. The uncommitted form counts already-signed skip votes and attestations together. It is accepted only when no block hash reaches `uncommittedAttestationRevealThreshold`, which is the minimum number of those attestations that would still be visible if the hash had a finality quorum and at most `floor((N-1)/3)` Byzantine voters hid their real vote. Quorum size is unchanged. For validator counts such as 4 and 7 that threshold is 1, so any visible attestation still blocks the certificate; those splits remain unresolved. The executable check is `l1/test/split-vote-liveness.test.ts`.
 
 The model separately checks conflicting finality certificates and the finality-versus-progress certificate pair.
 

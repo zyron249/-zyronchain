@@ -867,6 +867,24 @@ export class SigningJournal {
     }
   }
 
+  choice(height: number, round: number): { kind: "attest" | "skip"; value: string } | undefined {
+    if (this.closed) throw new Error("Signing journal is closed");
+    if (this.persistenceFaulted) throw new Error("Signing journal persistence fault requires validator restart");
+    if (!Number.isSafeInteger(height) || height < 1 || !Number.isSafeInteger(round) || round < 0) {
+      throw new Error("Invalid signing slot");
+    }
+    const existing = this.reservations.get(`${height}:${round}`);
+    if (!existing) return undefined;
+    const separator = existing.indexOf(":");
+    const kind = existing.slice(0, separator);
+    const value = existing.slice(separator + 1);
+    if ((kind !== "attest" && kind !== "skip") || !/^[0-9a-f]{64}$/.test(value)) {
+      this.persistenceFaulted = true;
+      throw new Error("Signing journal in-memory state is corrupt; validator restart required");
+    }
+    return { kind, value };
+  }
+
   async reserveAttestation(
     height: number,
     round: number,

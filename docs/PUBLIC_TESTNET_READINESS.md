@@ -57,7 +57,7 @@ The public role, if selected in process with `rpcRole: "public"`, serves `/statu
 | Rewards and nonce | See the economics section. Claim nonce is the miner account nonce. The tracker nonce is the claim counter. | Economics are implemented and pinned by tests. They are not a frozen public-testnet or mainnet policy beyond the code. |
 | Wallet custody | Keystores are scrypt + AES-256-GCM. The miner refuses plaintext private keys. Password files stay on the miner machine. | Production validator custody still requires HSM or an audited remote signer. Remote signer support exists; production evidence does not. |
 | HTTPS | Remote miner RPC must be HTTPS. Plain HTTP is accepted only for loopback. Public-testnet RPC origins in a frozen identity must be HTTPS. | No public certificate or hostname is published. |
-| Finality | Quorum is `floor(2N/3)+1` distinct validator signatures. Skip certificates are deadline-gated. Mining hash power does not choose the canonical chain. | Multi-validator liveness under split vote is modeled on draft PR #898 and is not changed here. This run did not re-execute that deadlock. |
+| Finality | Quorum is `floor(2N/3)+1` distinct validator signatures. Skip certificates are deadline-gated. A round can also advance with an uncommitted-round certificate assembled from existing attestations and skips when no hash reaches the Byzantine-safe reveal threshold. Mining hash power does not choose the canonical chain. | Two-validator attest/skip splits can finalize on the next round. Splits that leave `floor(2N/3)` attestations, including the 4-validator and 7-validator cases, remain stuck. Draft PR #898 documented the deadlock and did not ship this recovery. |
 | Restart identity | One data directory has one writer lease. The signing journal makes attest and skip mutually exclusive across restart. Chain identity is rebound to the genesis file on open. | A public testnet restart only works after one genesis file is frozen and every operator keeps it. |
 | Snapshot and sync | Checkpoint and portable-state install require an out-of-band tip hash and snapshot digest. Peers do not choose the trust anchor. | No public archive or checkpoint channel exists. |
 
@@ -93,7 +93,7 @@ P0 items block a shared, persistent public testnet or public mining. Identity an
 | P0 | At least two distinct HTTPS public RPC endpoints, separate from validator consensus RPC | Public role and stricter limits exist. Origins are `PLACEHOLDER` and the role is not bound |
 | P0 | `publicTestnetActivationAllowed` and the 10 requirements in `l1-launch-authorization.json` (issue #260) | Unchanged and false |
 | P0 | `miner-network-profile.json` `publicMiningActivated` plus chain, genesis, and RPC | Unchanged: false and null |
-| P0 | Multi-validator split-vote liveness | Draft PR #898 models it. Consensus was not modified and the deadlock was not re-run here |
+| P0 | Multi-validator split-vote liveness for sets where one visible attestation is indistinguishable from a hidden quorum | Two-validator local rehearsal can recover without lowering quorum or erasing journals. Four- and seven-validator `Q-1` splits remain open |
 | P1 | Miner multi-RPC failover | Profile still has one `rpcUrl` field. Frozen identity can name two endpoints; the miner does not fail over yet |
 | P1 | Mining contention, stale-tip races, inclusion fairness, and a reviewed 20-bit decision | Still required before public mining |
 | P1 | Production HSM or audited signer custody and cross-host rotation evidence | Remote signer boundary exists; evidence does not |
@@ -115,6 +115,6 @@ Engineering P0s that still block a real shared public testnet:
 1. Identity values are still null.
 2. Bootstrap slots are still `PLACEHOLDER`, so no independent failure domain is published.
 3. Public RPC origins are still `PLACEHOLDER`, so no public listener is bound.
-4. Multi-validator split-vote liveness is still only modeled on draft PR #898.
+4. Attest/skip splits for 4 and 7 validators remain unresolved. A two-validator local rehearsal can form an uncommitted-round certificate and finalize the next round. That does not activate a public testnet.
 
 `publicMiningActivated` stays false. A later edit may replace placeholder bootstrap tokens. That edit still must not mark the file `live`, invent production endpoints, or set `publicTestnetActivationAllowed`, `mainnetActivationAllowed`, `publicMiningActivated`, or `publicationAllowed`.
