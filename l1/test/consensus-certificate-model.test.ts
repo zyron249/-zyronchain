@@ -12,7 +12,7 @@ import {
   validatorQuorumSize
 } from "../src/block.js";
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "../src/crypto.js";
-import type { Block, Validator } from "../src/types.js";
+import type { Block, RoundSkipVote, Validator } from "../src/types.js";
 
 const TEST_HASH = "11".repeat(32);
 
@@ -94,7 +94,7 @@ test("round skip quorum rejects certificates larger than the active validator se
   const signer = testValidator();
   assert.throws(
     () => validateRoundSkipQuorum(
-      [null, null] as unknown as Block["roundCertificate"],
+      [null, null] as unknown as RoundSkipVote[],
       [signer.validator],
       "zyron-certificate-bounds-test",
       1,

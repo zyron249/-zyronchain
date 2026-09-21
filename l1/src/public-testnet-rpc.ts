@@ -71,7 +71,7 @@ export function classifyRpcRoute(method: string, pathname: string): RpcRouteClas
   }
   if (method === "GET" && (pathname.startsWith("/balance/") || pathname.startsWith("/nonce/"))) return "public";
   if (method === "POST" && pathname === "/tx") return "public";
-  if (method === "POST" && (pathname === "/proposal/attest" || pathname === "/round/skip" || pathname === "/block")) return "consensus";
+  if (method === "POST" && (pathname === "/proposal/attest" || pathname === "/round/skip" || pathname === "/round/lock" || pathname === "/block")) return "consensus";
   if (method === "GET" && (pathname === "/metrics" || pathname === "/peers" || pathname === "/peer-record" || pathname === "/blocks")) {
     return "operator";
   }

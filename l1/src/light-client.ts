@@ -3,7 +3,7 @@ import { assertHex } from "./codec.js";
 import { addressFromPublicKey, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
 import { protocolScheduleKey, validatorScheduleKey, verifySparseMerkleProof, type SparseMerkleProof } from "./state-v2.js";
 import { assertExactKeys, assertPlainRecord } from "./transaction.js";
-import type { Block, BlockAttestation, BlockHeader, RoundSkipVote, Validator } from "./types.js";
+import type { Block, BlockAttestation, BlockHeader, RoundProgressEntry, Validator } from "./types.js";
 
 export const LIGHT_CLIENT_SUPPORTED_PROTOCOL_VERSIONS = new Set([1, 2, 3, 5]);
 
@@ -25,7 +25,7 @@ export interface LightFinalityProof {
   hash: string;
   proposerPublicKey: string;
   signature: string;
-  roundCertificate: RoundSkipVote[];
+  roundCertificate: RoundProgressEntry[];
   attestations: BlockAttestation[];
 }
 
@@ -97,7 +97,7 @@ export function verifyNextFinalizedHeader(anchorValue: unknown, proofValue: unkn
     hash: proofValue.hash,
     proposerPublicKey: proofValue.proposerPublicKey,
     signature: proofValue.signature,
-    roundCertificate: proofValue.roundCertificate as RoundSkipVote[],
+    roundCertificate: proofValue.roundCertificate as RoundProgressEntry[],
     attestations: proofValue.attestations as BlockAttestation[]
   };
   validateBlockShape(block);

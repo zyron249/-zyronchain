@@ -1835,6 +1835,10 @@ test("signing journal reserves proposer choice before a remote signer can releas
     const conflicting = store.chain.prepareBlock([], validatorOnePublic, { timestampMs: genesis().timestampMs + 101 });
     await assert.rejects(
       () => service.signPreparedProposal(conflicting, genesis().timestampMs + 101),
+      /injected signer outage/
+    );
+    await assert.rejects(
+      () => service.requestSkipVote(1, 0, [], genesis().timestampMs + 60_000),
       /Conflicting validator action/
     );
   } finally {
