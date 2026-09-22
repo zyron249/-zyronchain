@@ -12,9 +12,9 @@ The baseline already refuses completion when two hashes are both still possibly 
 
 After the network is eventually synchronous, at most `f = floor((N-1)/3)` validators are faulty, and every honest validator answers in the round it is in:
 
-an ambiguous prepare split that produced no commit quorum is followed by a finalized hash within `X = f + 1` further rounds.
+a nil-lock ambiguous prepare split is followed by a finalized hash within `X = f + 1` further rounds.
 
-`X` is the worst-case run of Byzantine proposers before the round-robin proposer is honest. It is not a tuned timeout.
+`X` is `roundChangeLivenessBound`: at most `f` Byzantine round-robin proposers can each burn one round before an honest proposer. Honest count `N - f` is at least `Q`, so a view-change quorum exists once those honest validators answer. This is not a proof of every message schedule, clock fault, or a synchrony window that ends during the honest proposer's round. If a commit quorum already exists, the next step is to finish that locked hash, not to propose a fresh one. `exploreBoundedConsensus` assumes the nil view-change path and does not replay every schedule.
 
 ## Approaches
 
@@ -68,7 +68,7 @@ Rejected shortcuts, all of which fail the safety bar:
 1. Prepare at most one hash in a round. A prepare conflicts with a skip in that round.
 2. Commit at most one hash in a round. The commit signature is the existing finality attestation.
 3. Commit only if a prepare quorum for that hash and round verifies, except the pre-existing unique-hash completion path, which already proves every other hash cannot reach quorum.
-4. A view-change for the round being left is nil when the validator has no commit at that height. Otherwise it carries the highest commit and one prepare quorum for it.
+4. A view-change is nil when the validator has no commit at that height. A non-nil vote names the highest commit. The certificate treats that lock as proved only when some vote in the same certificate carries a prepare quorum for that hash and round.
 5. A view-change quorum with a verified lock does not justify a new hash. Peers commit the locked block.
 6. A view-change quorum whose locks are all nil is a valid predecessor certificate for a new proposal. The new proposal still needs its own prepare quorum and commit quorum.
 7. Two locks at the same round for different hashes, both with valid prepare quorums, make the certificate invalid. The node does not pick one.

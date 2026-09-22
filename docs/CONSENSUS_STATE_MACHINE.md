@@ -90,7 +90,7 @@ The attestation above was doing two jobs. This branch splits them.
 | View-change | `zyronchain/round-view-change/v1` | `(height,round)#view` | No |
 | Skip | unchanged | unchanged, and it conflicts with a prepare in that round | No |
 
-A validator commits a hash only after a prepare quorum for that same hash and round, or through the existing unique-hash completion path whose bound already shows every other hash is impossible. A view-change carries either a nil lock or the highest commit together with one prepare quorum that justifies it. Timeout and view-change never finalize.
+A validator commits a hash only after a prepare quorum for that same hash and round, or through the existing unique-hash completion path whose bound already shows every other hash is impossible. A view-change vote is nil, or it names one commit hash and round. `validateViewChangeCertificate` accepts that lock only when at least one counted vote carries a prepare quorum for the same hash and round. Other lock votes for that pair count without each embedding the quorum. Nil votes carry an empty prepare list. Two different hashes at the highest lock round reject the certificate. Timeout and view-change never finalize. `tryCompleteSplitRound` still completes only round 0.
 
 A later-round block may embed a view-change certificate only when that certificate's highest lock is nil. If any valid lock is present, the original locked block is finalized by gathering commit signatures. It is not replaced by a new hash.
 
