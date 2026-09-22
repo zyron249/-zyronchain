@@ -27,6 +27,8 @@ oracle-key-*.json
 peer-token.txt
 signer-token.txt
 validator-signer-token.txt
+l1/config/public-testnet-hosts.operator.json
+l1/config/public-testnet-domains.operator.json
 
 # Node runtime state and databases
 data/
