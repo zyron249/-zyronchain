@@ -32,6 +32,7 @@ import {
   assessSoakEvidence
 } from "../src/public-testnet-governance.js";
 import { ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS } from "../src/types.js";
+import { assertHostPlacement } from "../src/public-testnet-provisioning.js";
 import {
   REHEARSAL_SCENARIOS,
   WORKLOAD_SCENARIOS,
@@ -272,12 +273,13 @@ test("deployment templates keep consensus private and do not commit certificates
   assert.equal(compose.split("\n").filter((line) => line.trim() === "ports:").length, 1);
   assert.match(compose, /internal: true/);
   const regions = JSON.parse(await readFile(join(deploy, "regions.json"), "utf8"));
+  assertHostPlacement(regions.hosts);
   assert.equal(assessRehearsalTopology({
     validators: regions.roles.filter((role: { kind: string }) => role.kind === "validator").length,
     bootstraps: regions.roles.filter((role: { kind: string }) => role.kind === "bootstrap").length,
     publicRpc: regions.roles.filter((role: { kind: string }) => role.kind === "public-rpc").length,
     archive: regions.roles.filter((role: { kind: string }) => role.kind === "archive").length,
-    monitoring: regions.roles.filter((role: { kind: string }) => role.kind === "monitoring").length,
+    monitoring: regions.roles.filter((role: { kind: string; optional?: boolean }) => role.kind === "monitoring" && role.optional !== true).length,
     regions: regions.regions,
     publicConsensus: regions.roles.some((role: { publicConsensus: boolean }) => role.publicConsensus),
     scenarios: [...REHEARSAL_SCENARIOS]
