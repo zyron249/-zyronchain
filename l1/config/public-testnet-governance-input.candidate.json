@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "status": "candidate-awaiting-operator-input",
+  "networkName": "Zyron Public Testnet",
+  "chainId": "zyron-public-testnet-1",
+  "genesisVersion": 1,
+  "genesisTimestampMs": null,
+  "initialProtocolVersion": 1,
+  "protocolV5ActivationPolicy": "quorum-delayed-upgrade",
+  "validators": [],
+  "activityOracles": [],
+  "activityPool": null,
+  "allocations": [],
+  "bootstrapPeers": [],
+  "publicRpcOrigins": [],
+  "archiveEndpoints": [],
+  "monitoringEndpoints": []
+}

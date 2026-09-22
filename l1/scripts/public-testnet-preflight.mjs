@@ -18,9 +18,29 @@ const report = preflightCheckedInPublicTestnet({
   rpc: await readJson(resolve(root, "config/public-testnet-rpc.json")),
   minerProfile: await readJson(resolve(root, "miner-network-profile.json")),
   authorization: await readJson(resolve(repo, "docs/l1-launch-authorization.json")),
-  governanceExample: await readJson(resolve(root, "config/public-testnet-governance-input.example.json"))
+  governanceExample: await readJson(resolve(root, "config/public-testnet-governance-input.example.json")),
+  governanceCandidate: await readJson(resolve(root, "config/public-testnet-governance-input.candidate.json"))
 });
 
+const identity = report.networkIdentity;
+process.stdout.write([
+  "NETWORK IDENTITY",
+  `  name: ${identity.networkName}`,
+  `  chainId: ${identity.chainId}`,
+  `  validators: ${identity.validators}`,
+  `  bootstraps: ${identity.bootstraps}`,
+  `  publicRpc: ${identity.publicRpc}`,
+  `  archive: ${identity.archive}`,
+  `  monitoring: ${identity.monitoring}`,
+  `  regions: ${identity.regions}`,
+  `  genesis: ${identity.genesis}`,
+  `  mining: ${identity.mining}`,
+  `  authorization: ${identity.authorization}`,
+  `  engineering: ${identity.engineeringReadiness}`,
+  `  deployment: ${identity.deploymentReadiness}`,
+  `  activation: ${identity.activationReadiness}`,
+  ""
+].join("\n"));
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 if (report.engineeringReadiness !== "PASS" || report.governanceActivation !== "BLOCKED" || report.activationFlagsFalse !== true) {
   process.exitCode = 1;

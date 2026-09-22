@@ -156,7 +156,8 @@ test("checked-in preflight stays fail-closed and governance-blocked", async () =
     rpc: JSON.parse(await readFile(join(root, "config/public-testnet-rpc.json"), "utf8")),
     minerProfile: JSON.parse(await readFile(join(root, "miner-network-profile.json"), "utf8")),
     authorization: JSON.parse(await readFile(join(repo, "docs/l1-launch-authorization.json"), "utf8")),
-    governanceExample: JSON.parse(await readFile(join(root, "config/public-testnet-governance-input.example.json"), "utf8"))
+    governanceExample: JSON.parse(await readFile(join(root, "config/public-testnet-governance-input.example.json"), "utf8")),
+    governanceCandidate: JSON.parse(await readFile(join(root, "config/public-testnet-governance-input.candidate.json"), "utf8"))
   });
   assert.equal(report.engineeringReadiness, "PASS");
   assert.equal(report.governanceActivation, "BLOCKED");
@@ -171,6 +172,15 @@ test("checked-in preflight stays fail-closed and governance-blocked", async () =
   assert.equal(report.miningEconomicsChanged, false);
   assert.equal(report.publicTestnetActivationRequirementsRemaining, 10);
   assert.deepEqual(report.humanInputsRequired, HUMAN_INPUTS_REQUIRED);
+  assert.equal(report.networkIdentity.networkName, "Zyron Public Testnet");
+  assert.equal(report.networkIdentity.chainId, "zyron-public-testnet-1");
+  assert.equal(report.networkIdentity.validators, "0/3");
+  assert.equal(report.networkIdentity.bootstraps, "0/3");
+  assert.equal(report.networkIdentity.publicRpc, "0/2");
+  assert.equal(report.networkIdentity.genesis, "NOT BUILT");
+  assert.equal(report.networkIdentity.mining, "INACTIVE");
+  assert.equal(report.networkIdentity.authorization, "BLOCKED");
+  assert.equal(report.networkIdentity.deploymentReadiness, "NOT READY");
   assert.deepEqual(report.failures, []);
 });
 
