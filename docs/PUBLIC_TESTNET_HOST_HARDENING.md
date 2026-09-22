@@ -43,7 +43,17 @@ Every role runs as an unprivileged `zyron` user. Consensus and signer sockets st
 - Sync from validators over the private network.
 - Do not expose consensus or metrics to the internet.
 
-## Monitoring (`monitoring-a`)
+## Layout
+
+Use one VM per role on Ubuntu LTS. Region A holds validator-a, bootstrap-a, and an optional monitoring replica. Region B holds validator-b, bootstrap-b, rpc-a, and the archive VM. Region C holds validator-c, bootstrap-c, rpc-b, and primary monitoring. Do not place every validator, every bootstrap, or both public RPC roles on one machine. Consensus stays off the public interface. Apply `l1/deploy/public-testnet/firewall/network-edge.nft` at the host or region edge.
+
+Enable `systemd-timesyncd` or the operator’s NTP client and the `zyron-clock-sync.service` check. Install the logrotate snippet. Systemd start limits are 5 restarts in 300 seconds.
+
+## Backup
+
+Stop the process, then copy `/var/lib/zyron` (database, signing journal, and node identity) together. Restore the same directory and the same genesis. Do not delete the journal or mint a new identity as part of restore.
+
+## Monitoring (`monitoring-primary`)
 
 - Scrape metrics over the private network only.
 - Critical alerts: finality stall, divergent finalized hash, quorum loss, chain-id or genesis mismatch, signing-failure burst, state corruption, total public-RPC outage, all bootstraps down, reward or supply mismatch.

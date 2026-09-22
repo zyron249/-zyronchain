@@ -5,6 +5,7 @@ services:
     environment:
       ZYRON_ROLE: validator-a
       ZYRON_REGION: region-a
+    volumes: [validator-a-data:/var/lib/zyron]
     networks: [private]
     restart: unless-stopped
   validator-b:
@@ -12,6 +13,7 @@ services:
     environment:
       ZYRON_ROLE: validator-b
       ZYRON_REGION: region-b
+    volumes: [validator-b-data:/var/lib/zyron]
     networks: [private]
     restart: unless-stopped
   validator-c:
@@ -19,6 +21,7 @@ services:
     environment:
       ZYRON_ROLE: validator-c
       ZYRON_REGION: region-c
+    volumes: [validator-c-data:/var/lib/zyron]
     networks: [private]
     restart: unless-stopped
   bootstrap-a:
@@ -82,3 +85,7 @@ networks:
   private:
     internal: true
   edge: {}
+volumes:
+  validator-a-data: {}
+  validator-b-data: {}
+  validator-c-data: {}
