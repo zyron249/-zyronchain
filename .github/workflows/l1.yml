@@ -71,6 +71,30 @@ jobs:
       - name: Audit runtime dependencies
         run: npm audit --omit=dev --audit-level=high
 
+  consensus-liveness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: l1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: l1/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Round-change liveness, state-space, journal, mixed-version, and multiprocess
+        run: node --test --test-timeout=600000 dist/test/round-double-hash-liveness-regression.test.js dist/test/consensus-safety-invariants.test.js dist/test/split-vote-liveness.test.js dist/test/consensus-1-1-qualification.test.js dist/test/consensus-extended-qualification.test.js
+
   mixed-version-rehearsal:
     runs-on: ubuntu-latest
     steps:
