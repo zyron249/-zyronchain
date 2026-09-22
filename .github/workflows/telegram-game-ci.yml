@@ -1,0 +1,74 @@
+name: ZYRON NODE
+
+on:
+  pull_request:
+    paths:
+      - 'telegram-game/**'
+      - 'pytest.ini'
+      - '.github/workflows/telegram-game-ci.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'telegram-game/**'
+      - 'pytest.ini'
+      - '.github/workflows/telegram-game-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: zyron
+          POSTGRES_PASSWORD: zyron
+          POSTGRES_DB: zyron_node
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zyron -d zyron_node"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://zyron:zyron@127.0.0.1:5432/zyron_node
+      ENVIRONMENT: test
+      ALLOW_TEST_CLOCK: "1"
+      TELEGRAM_BOT_TOKEN: "123456:TEST_TOKEN_NOT_A_SECRET"
+      TELEGRAM_BOT_USERNAME: ZyronNodeBot
+      ADMIN_TOKEN: test-admin-token
+      REFERRAL_IP_SALT: test-salt-value-ok
+      DEV_AUTH_BYPASS: "0"
+      ZYRON_RPC_ALLOW_REMOTE: "0"
+      REFERRAL_MIN_AGE_SECONDS: "0"
+      REFERRAL_MIN_CYCLES: "2"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            telegram-game/requirements.txt
+            telegram-game/requirements-dev.txt
+      - name: Install game dependencies
+        working-directory: telegram-game
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Check frontend syntax
+        run: |
+          node --check telegram-game/frontend/app.js
+          node --check telegram-game/frontend/admin.js
+      - name: Run unit and integration tests
+        working-directory: telegram-game
+        run: pytest -q

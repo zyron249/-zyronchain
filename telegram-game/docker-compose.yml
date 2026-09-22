@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: zyron
+      POSTGRES_PASSWORD: zyron
+      POSTGRES_DB: zyron_node
+    ports:
+      - "5432:5432"
+    volumes:
+      - zyron_node_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zyron -d zyron_node"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://zyron:zyron@postgres:5432/zyron_node
+      REDIS_URL: redis://redis:6379/0
+      HOST: 0.0.0.0
+      PORT: "8000"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  bot:
+    build: .
+    command: python -m zyron_node.bot
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://zyron:zyron@postgres:5432/zyron_node
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  zyron_node_pg:
