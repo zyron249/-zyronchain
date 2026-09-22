@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "status": "example-unfilled",
+  "networkName": "PLACEHOLDER",
+  "chainId": null,
+  "genesisVersion": 1,
+  "genesisTimestampMs": null,
+  "initialProtocolVersion": 1,
+  "protocolV5ActivationPolicy": "quorum-delayed-upgrade",
+  "validators": [],
+  "activityOracles": [],
+  "activityPool": null,
+  "allocations": [],
+  "bootstrapPeers": [],
+  "publicRpcOrigins": [],
+  "archiveEndpoints": [],
+  "monitoringEndpoints": []
+}

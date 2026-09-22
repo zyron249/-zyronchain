@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "status": "AWAITING REAL OPERATOR INPUT",
+  "hosts": [
+    {"roleName": "validator-a", "failureDomain": "region-a", "provider": null, "publicAddress": null, "privateAddress": null},
+    {"roleName": "validator-b", "failureDomain": "region-b", "provider": null, "publicAddress": null, "privateAddress": null},
+    {"roleName": "validator-c", "failureDomain": "region-c", "provider": null, "publicAddress": null, "privateAddress": null},
+    {"roleName": "bootstrap-a", "failureDomain": "region-a", "provider": null, "publicAddress": null, "privateAddress": null},
+    {"roleName": "bootstrap-b", "failureDomain": "region-b", "provider": null, "publicAddress": null, "privateAddress": null},
+    {"roleName": "bootstrap-c", "failureDomain": "region-c", "provider": null, "publicAddress": null, "privateAddress": null},
+    {"roleName": "rpc-a", "failureDomain": "region-b", "provider": null, "publicAddress": null, "privateAddress": null},
+    {"roleName": "rpc-b", "failureDomain": "region-c", "provider": null, "publicAddress": null, "privateAddress": null},
+    {"roleName": "archive-a", "failureDomain": "region-b", "provider": null, "publicAddress": null, "privateAddress": null},
+    {"roleName": "monitoring-a", "failureDomain": "region-c", "provider": null, "publicAddress": null, "privateAddress": null}
+  ]
+}

@@ -50,7 +50,7 @@ import type {
   GenesisConfig,
   MiningClaimTx,
   ProtocolUpgradeTx,
-  RoundSkipVote,
+  RoundProgressEntry,
   Transaction,
   Validator,
   ValidatorSetUpdateTx
@@ -337,7 +337,7 @@ export class ZyronChain {
   produceBlock(
     transactions: Transaction[],
     proposerPrivateKey: string,
-    options: { round?: number; timestampMs?: number; roundCertificate?: RoundSkipVote[] } = {}
+    options: { round?: number; timestampMs?: number; roundCertificate?: RoundProgressEntry[] } = {}
   ): Block {
     const publicKey = publicKeyFromPrivate(proposerPrivateKey);
     const unsigned = this.prepareBlock(transactions, publicKey, options);
@@ -361,7 +361,7 @@ export class ZyronChain {
   prepareBlock(
     transactions: Transaction[],
     proposerPublicKey: string,
-    options: { round?: number; timestampMs?: number; roundCertificate?: RoundSkipVote[] } = {}
+    options: { round?: number; timestampMs?: number; roundCertificate?: RoundProgressEntry[] } = {}
   ): Block {
     const round = options.round ?? 0;
     const protocolVersion = this.protocolVersionAt(this.height + 1);

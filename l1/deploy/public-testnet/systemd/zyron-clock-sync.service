@@ -1,0 +1,11 @@
+[Unit]
+Description=Require synchronized clock before a Zyron role starts
+After=time-sync.target
+Wants=time-sync.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'test "$(timedatectl show -p NTPSynchronized --value)" = yes'
+
+[Install]
+WantedBy=multi-user.target

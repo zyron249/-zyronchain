@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "status": "proposal-unfilled",
+  "networkClass": "public-testnet",
+  "live": false,
+  "environmentIgnored": true,
+  "publicRole": {
+    "enabled": false,
+    "bindHost": "PLACEHOLDER",
+    "portEnv": "ZYRON_PUBLIC_TESTNET_PUBLIC_RPC_PORT",
+    "originEnv": [
+      "ZYRON_PUBLIC_TESTNET_PUBLIC_RPC_ORIGIN_A",
+      "ZYRON_PUBLIC_TESTNET_PUBLIC_RPC_ORIGIN_B"
+    ],
+    "origins": ["PLACEHOLDER", "PLACEHOLDER"]
+  },
+  "validatorRole": {
+    "bindHost": "PLACEHOLDER",
+    "portEnv": "ZYRON_PUBLIC_TESTNET_VALIDATOR_RPC_PORT",
+    "servesConsensusRoutes": true
+  },
+  "publicLimits": {
+    "requestsPerWindow": 60,
+    "windowMs": 60000,
+    "maxRequestBytes": 65536,
+    "requestTimeoutMs": 5000,
+    "headersTimeoutMs": 5000,
+    "maxConnections": 64,
+    "maxInflightRequests": 16
+  }
+}

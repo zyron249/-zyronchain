@@ -141,7 +141,7 @@ export interface Block {
   hash: string;
   proposerPublicKey: string | null;
   signature: string | null;
-  roundCertificate: RoundSkipVote[];
+  roundCertificate: RoundProgressEntry[];
   attestations: BlockAttestation[];
 }
 
@@ -159,4 +159,23 @@ export interface RoundSkipVote {
   round: number;
   previousHash: string;
   signature: string;
+}
+
+/** An existing attestation of a proposal that did not gather a finality quorum. */
+export interface LockedAttestEvidence {
+  header: BlockHeader;
+  attestation: BlockAttestation;
+}
+
+export type RoundProgressEntry = RoundSkipVote | LockedAttestEvidence;
+
+/** Read-only report of a validator's existing choice for one height and round. */
+export interface RoundChoiceReport {
+  height: number;
+  round: number;
+  previousHash: string;
+  choice: "none" | "skip" | "attest";
+  skip: RoundSkipVote | null;
+  block: Block | null;
+  evidence: LockedAttestEvidence | null;
 }
