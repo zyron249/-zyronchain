@@ -22,17 +22,36 @@ export const PUBLIC_TESTNET_GENESIS_VERSION = 1;
 export const PUBLIC_TESTNET_INITIAL_PROTOCOL_VERSION = 1;
 export const PUBLIC_TESTNET_V5_ACTIVATION_POLICY = "quorum-delayed-upgrade";
 export const PUBLIC_TESTNET_ACTIVATION_REQUIREMENT_COUNT = 10;
+export const PUBLIC_TESTNET_CANDIDATE_NETWORK_NAME = "Zyron Public Testnet";
+export const PUBLIC_TESTNET_CANDIDATE_CHAIN_ID = "zyron-public-testnet-1";
+export const PUBLIC_TESTNET_VALIDATOR_COUNT = 3;
+export const PUBLIC_TESTNET_BOOTSTRAP_COUNT = 3;
+export const PUBLIC_TESTNET_PUBLIC_RPC_COUNT = 2;
+export const PUBLIC_TESTNET_ARCHIVE_COUNT = 1;
+export const PUBLIC_TESTNET_MONITORING_COUNT = 1;
+export const PUBLIC_TESTNET_REGION_COUNT = 3;
 export const SOAK_DURATIONS = ["24h", "72h", "7d"] as const;
 export const MINER_COHORT_SIZES = [3, 10, 25, 50] as const;
 
 export const HUMAN_INPUTS_REQUIRED = [
-  "network name",
-  "chain ID",
-  "genesis validator public keys",
-  "real bootstrap identities (peer ID, multiaddr, failure domain)",
+  "genesis timestamp (exact UTC milliseconds)",
+  "genesis validator public keys for validator-a, validator-b, and validator-c",
+  "activity oracle public key",
+  "faucet address and amountAtoms",
+  "activity pool address and amountAtoms",
+  "operations address and amountAtoms",
+  "real bootstrap identities (peer ID, multiaddr, failure domain) for bootstrap-a, bootstrap-b, and bootstrap-c",
   "public HTTPS RPC domains",
+  "archive endpoint",
+  "monitoring endpoint",
   "hosting regions and providers",
   "activation authorization"
+] as const;
+
+export const ALLOCATION_HUMAN_INPUTS = [
+  "faucet address and amountAtoms",
+  "activity pool address and amountAtoms",
+  "operations address and amountAtoms"
 ] as const;
 
 export const PUBLIC_TESTNET_NODE_BASELINE = {
@@ -53,6 +72,7 @@ const RESERVED_DNS_SUFFIXES = new Set([
 ]);
 const CHAIN_ID_PATTERN = /^zyron-public-testnet-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const NETWORK_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])$/;
+const DISPLAY_NAME_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9 ]{0,62}[A-Za-z0-9])$/;
 const DNS_NAME_PATTERN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$/;
 const ALLOCATION_PURPOSES = new Set(["activity-pool", "documented-public-allocation"]);
 const REJECTED_ALLOCATION_PURPOSES = new Set(["founder", "premine", "team"]);
@@ -132,7 +152,29 @@ export interface ApprovedPublicTestnetGovernance {
   monitoringEndpoints: string[];
 }
 
-export type PublicTestnetGovernanceInput = ExamplePublicTestnetGovernance | ApprovedPublicTestnetGovernance;
+export interface CandidatePublicTestnetGovernance {
+  schemaVersion: 1;
+  status: "candidate-awaiting-operator-input";
+  networkName: string;
+  chainId: string;
+  genesisVersion: 1;
+  genesisTimestampMs: null;
+  initialProtocolVersion: 1;
+  protocolV5ActivationPolicy: typeof PUBLIC_TESTNET_V5_ACTIVATION_POLICY;
+  validators: [];
+  activityOracles: [];
+  activityPool: null;
+  allocations: [];
+  bootstrapPeers: [];
+  publicRpcOrigins: [];
+  archiveEndpoints: [];
+  monitoringEndpoints: [];
+}
+
+export type PublicTestnetGovernanceInput =
+  | ExamplePublicTestnetGovernance
+  | CandidatePublicTestnetGovernance
+  | ApprovedPublicTestnetGovernance;
 
 export interface PublicTestnetGenesisReport {
   genesisSha256: string;
@@ -145,6 +187,8 @@ export interface PublicTestnetGenesisReport {
   protocolV5ActivationPolicy: typeof PUBLIC_TESTNET_V5_ACTIVATION_POLICY;
   validatorCount: number;
   activationFlagsFalse: true;
+  genesisSupplyAtoms: number;
+  miningBudgetAtoms: number;
 }
 
 export interface BuiltPublicTestnetGenesis {
@@ -169,6 +213,26 @@ export interface PublicTestnetPreflightReport {
   publicTestnetActivationRequirementsRemaining: number;
   humanInputsRequired: readonly string[];
   failures: string[];
+  networkIdentity: PublicTestnetNetworkIdentitySummary;
+}
+
+export interface PublicTestnetNetworkIdentitySummary {
+  networkName: typeof PUBLIC_TESTNET_CANDIDATE_NETWORK_NAME;
+  chainId: typeof PUBLIC_TESTNET_CANDIDATE_CHAIN_ID;
+  candidateStatus: "candidate-awaiting-operator-input";
+  publishedIdentityChainId: null;
+  validators: string;
+  bootstraps: string;
+  publicRpc: string;
+  archive: string;
+  monitoring: string;
+  regions: string;
+  genesis: "NOT BUILT" | "BUILT" | "VERIFIED";
+  mining: "INACTIVE";
+  authorization: "BLOCKED";
+  engineeringReadiness: "PASS" | "FAIL";
+  deploymentReadiness: "NOT READY";
+  activationReadiness: "NOT READY FOR ACTIVATION";
 }
 
 export interface FirewallFlow {
@@ -177,6 +241,24 @@ export interface FirewallFlow {
   decision: "allow" | "deny" | "allow-private";
   purpose: string;
 }
+
+export interface FirewallPortRule {
+  source: "internet" | "miner" | "validator" | "bootstrap" | "monitoring";
+  role: "public-rpc" | "validator-consensus" | "validator-signer" | "bootstrap-p2p" | "metrics";
+  port: number | "assigned-bootstrap-port" | "any";
+  decision: "allow" | "deny" | "allow-private";
+  purpose: string;
+}
+
+export const PUBLIC_TESTNET_PORT_MATRIX: readonly FirewallPortRule[] = [
+  { source: "internet", role: "public-rpc", port: 443, decision: "allow", purpose: "Internet to HTTPS RPC" },
+  { source: "internet", role: "validator-consensus", port: "any", decision: "deny", purpose: "Internet to validator consensus" },
+  { source: "internet", role: "validator-signer", port: "any", decision: "deny", purpose: "Internet to validator signer" },
+  { source: "internet", role: "bootstrap-p2p", port: "assigned-bootstrap-port", decision: "allow", purpose: "Bootstrap P2P only on the assigned port" },
+  { source: "miner", role: "public-rpc", port: 443, decision: "allow", purpose: "Miner to HTTPS RPC" },
+  { source: "miner", role: "validator-consensus", port: "any", decision: "deny", purpose: "Miner to consensus" },
+  { source: "monitoring", role: "metrics", port: "any", decision: "allow-private", purpose: "Metrics stay off the public internet" }
+];
 
 export const PUBLIC_TESTNET_FIREWALL: readonly FirewallFlow[] = [
   { source: "internet", destination: "public-rpc", decision: "allow", purpose: "HTTPS public role only" },
@@ -292,14 +374,21 @@ export function parsePublicTestnetGovernanceInput(value: unknown): PublicTestnet
     throw new Error("Protocol v5 must stay a quorum-delayed upgrade");
   }
   if (value.status === "example-unfilled") return parseExampleGovernance(value);
+  if (value.status === "candidate-awaiting-operator-input") return parseCandidateGovernance(value);
   if (value.status === "governance-approved") return parseApprovedGovernance(value);
   throw new Error("Invalid public-testnet governance status");
 }
 
 export function buildPublicTestnetGenesis(value: unknown): BuiltPublicTestnetGenesis {
   const input = parsePublicTestnetGovernanceInput(value);
-  if (input.status !== "governance-approved") {
+  if (input.status === "example-unfilled") {
     throw new Error("Governance input is an example and cannot build a genesis");
+  }
+  if (input.status === "candidate-awaiting-operator-input") {
+    throw new Error(`Governance candidate is awaiting operator input and cannot build a genesis: ${candidateOperatorGaps().join(", ")}`);
+  }
+  if (input.chainId === PUBLIC_TESTNET_CANDIDATE_CHAIN_ID && input.validators.length !== PUBLIC_TESTNET_VALIDATOR_COUNT) {
+    throw new Error("Zyron Public Testnet requires exactly 3 validators");
   }
   const validators = [...input.validators].sort((left, right) => left.publicKey.localeCompare(right.publicKey));
   const genesis: GenesisConfig = {
@@ -317,6 +406,7 @@ export function buildPublicTestnetGenesis(value: unknown): BuiltPublicTestnetGen
   };
   const chain = new ZyronChain(genesis);
   const genesisBytes = `${canonicalJson(genesis)}\n`;
+  const supply = publicTestnetAllocationReport(input.allocations);
   const report: PublicTestnetGenesisReport = {
     genesisSha256: sha256Hex(genesisBytes),
     genesisHash: chain.genesisHash,
@@ -327,7 +417,9 @@ export function buildPublicTestnetGenesis(value: unknown): BuiltPublicTestnetGen
     initialProtocolVersion: 1,
     protocolV5ActivationPolicy: PUBLIC_TESTNET_V5_ACTIVATION_POLICY,
     validatorCount: genesis.validators.length,
-    activationFlagsFalse: true
+    activationFlagsFalse: true,
+    genesisSupplyAtoms: supply.genesisSupplyAtoms,
+    miningBudgetAtoms: supply.miningBudgetAtoms
   };
   return { genesis, genesisBytes, report, reportBytes: `${canonicalJson(report)}\n` };
 }
@@ -355,6 +447,26 @@ export function firewallDecision(source: string, destination: string): FirewallF
   const flow = PUBLIC_TESTNET_FIREWALL.find((item) => item.source === source && item.destination === destination);
   if (!flow) throw new Error("Unknown public-testnet firewall flow");
   return flow.decision;
+}
+
+export function firewallPortDecision(input: {
+  source: FirewallPortRule["source"];
+  role: FirewallPortRule["role"];
+  port: number;
+  assignedBootstrapPort?: number;
+}): FirewallPortRule["decision"] {
+  if (!Number.isSafeInteger(input.port) || input.port < 1 || input.port > 65535) {
+    throw new Error("Invalid firewall port");
+  }
+  if (input.role === "validator-consensus" || input.role === "validator-signer") return "deny";
+  if (input.source === "miner" && input.role !== "public-rpc") return "deny";
+  if (input.role === "public-rpc") return input.port === 443 ? "allow" : "deny";
+  if (input.role === "bootstrap-p2p") {
+    if (input.assignedBootstrapPort === undefined) throw new Error("Bootstrap firewall requires the assigned port");
+    return input.port === input.assignedBootstrapPort ? "allow" : "deny";
+  }
+  if (input.role === "metrics") return input.source === "monitoring" ? "allow-private" : "deny";
+  return "deny";
 }
 
 export function publicProxyRouteClass(pathname: string): RpcRouteClass {
@@ -390,6 +502,7 @@ export function preflightCheckedInPublicTestnet(documents: {
   minerProfile: unknown;
   authorization: unknown;
   governanceExample: unknown;
+  governanceCandidate: unknown;
 }): PublicTestnetPreflightReport {
   const failures: string[] = [];
   const identity = recordOrFail(documents.identity, "identity", failures);
@@ -438,19 +551,41 @@ export function preflightCheckedInPublicTestnet(documents: {
       failures.push("activation-requirement-count-changed");
     }
   }
+  let candidate: CandidatePublicTestnetGovernance | undefined;
   try {
     const example = parsePublicTestnetGovernanceInput(documents.governanceExample);
     if (example.status !== "example-unfilled" || example.chainId !== null) failures.push("example-governance-is-not-an-example");
   } catch {
     failures.push("example-governance-schema");
   }
+  try {
+    const parsed = parsePublicTestnetGovernanceInput(documents.governanceCandidate);
+    if (parsed.status !== "candidate-awaiting-operator-input") failures.push("candidate-governance-status");
+    else candidate = parsed;
+  } catch {
+    failures.push("candidate-governance-schema");
+  }
+  if (candidate) {
+    if (candidate.networkName !== PUBLIC_TESTNET_CANDIDATE_NETWORK_NAME) failures.push("candidate-network-name");
+    if (candidate.chainId !== PUBLIC_TESTNET_CANDIDATE_CHAIN_ID) failures.push("candidate-chain-id");
+    if (candidate.genesisTimestampMs !== null) failures.push("candidate-timestamp-published");
+    if (candidate.validators.length !== 0 || candidate.bootstrapPeers.length !== 0 || candidate.publicRpcOrigins.length !== 0) {
+      failures.push("candidate-operator-sets-published");
+    }
+  }
   if (INITIAL_MINING_REWARD_ATOMS !== 625_000_000 || MINING_DIFFICULTY_BITS !== 20 ||
       MINING_ERA_TARGET_CLAIMS !== 4_000_000 || MINING_PROTOCOL_VERSION !== 5 ||
       MAX_SUPPLY_ATOMS !== 50_000_000 * ATOMS_PER_ZYN) {
     failures.push("mining-economics-drift");
   }
+  const engineeringReadiness = failures.length === 0 ? "PASS" : "FAIL";
+  const validatorCount = candidate?.validators.length ?? 0;
+  const bootstrapCount = candidate?.bootstrapPeers.length ?? 0;
+  const rpcCount = candidate?.publicRpcOrigins.length ?? 0;
+  const archiveCount = candidate?.archiveEndpoints.length ?? 0;
+  const monitoringCount = candidate?.monitoringEndpoints.length ?? 0;
   return {
-    engineeringReadiness: failures.length === 0 ? "PASS" : "FAIL",
+    engineeringReadiness,
     governanceActivation: "BLOCKED",
     activationReadiness: "NOT READY FOR ACTIVATION",
     chainIdNull,
@@ -463,7 +598,25 @@ export function preflightCheckedInPublicTestnet(documents: {
     miningEconomicsChanged: false,
     publicTestnetActivationRequirementsRemaining: PUBLIC_TESTNET_ACTIVATION_REQUIREMENT_COUNT,
     humanInputsRequired: HUMAN_INPUTS_REQUIRED,
-    failures
+    failures,
+    networkIdentity: {
+      networkName: PUBLIC_TESTNET_CANDIDATE_NETWORK_NAME,
+      chainId: PUBLIC_TESTNET_CANDIDATE_CHAIN_ID,
+      candidateStatus: "candidate-awaiting-operator-input",
+      publishedIdentityChainId: null,
+      validators: `${validatorCount}/${PUBLIC_TESTNET_VALIDATOR_COUNT}`,
+      bootstraps: `${bootstrapCount}/${PUBLIC_TESTNET_BOOTSTRAP_COUNT}`,
+      publicRpc: `${rpcCount}/${PUBLIC_TESTNET_PUBLIC_RPC_COUNT}`,
+      archive: `${archiveCount}/${PUBLIC_TESTNET_ARCHIVE_COUNT}`,
+      monitoring: `${monitoringCount}/${PUBLIC_TESTNET_MONITORING_COUNT}`,
+      regions: `0/${PUBLIC_TESTNET_REGION_COUNT}`,
+      genesis: "NOT BUILT",
+      mining: "INACTIVE",
+      authorization: "BLOCKED",
+      engineeringReadiness,
+      deploymentReadiness: "NOT READY",
+      activationReadiness: "NOT READY FOR ACTIVATION"
+    }
   };
 }
 
@@ -484,6 +637,16 @@ export function assessSoakEvidence(samples: readonly SoakSample[], duration: Soa
     const first = samples[0]!;
     const last = samples[samples.length - 1]!;
     if (last.finalizedHeight <= first.finalizedHeight) reasons.push("finalized-height-did-not-advance");
+    if (duration === "72h" || duration === "7d") {
+      if (last.rssBytes > first.rssBytes * 8 && last.rssBytes - first.rssBytes > 50_000_000) reasons.push("process-rss-growth");
+      if (last.dbBytes > first.dbBytes * 8 && last.dbBytes - first.dbBytes > 50_000_000) reasons.push("state-or-db-growth");
+    }
+    if (duration === "7d") {
+      if (samples.every((sample) => sample.peerCount === 0)) reasons.push("peers-absent");
+      const rpcGrowth = last.rpcErrors - first.rpcErrors;
+      const heightGrowth = last.finalizedHeight - first.finalizedHeight;
+      if (rpcGrowth > heightGrowth * 10 && rpcGrowth > 100) reasons.push("rpc-error-growth");
+    }
   }
   return { progress: reasons.length === 0, reasons: [...new Set(reasons)] };
 }
@@ -586,6 +749,90 @@ export function reconcileMultiMinerCohort(input: {
   return { ok: reasons.length === 0, reasons };
 }
 
+export function assertPublicTestnetChainId(chainId: unknown): asserts chainId is string {
+  if (typeof chainId !== "string" || chainId.length > 64 || !CHAIN_ID_PATTERN.test(chainId) || containsBannedLiveToken(chainId)) {
+    throw new Error("Invalid public-testnet chain ID");
+  }
+  if (chainId.includes("mainnet") || chainId.includes("devnet") || chainId.includes("local")) {
+    throw new Error("Public-testnet chain ID cannot be a mainnet or local-devnet identifier");
+  }
+}
+
+export function assertChainIdAllowedForClass(chainId: string, networkClass: "public-testnet" | "mainnet" | "local-devnet"): void {
+  if (networkClass === "mainnet") {
+    throw new Error("Mainnet must not use a public-testnet chain ID or be derived from public-testnet identity");
+  }
+  if (networkClass === "local-devnet") {
+    if (CHAIN_ID_PATTERN.test(chainId)) throw new Error("Local-devnet cannot use a public-testnet chain ID");
+    return;
+  }
+  assertPublicTestnetChainId(chainId);
+}
+
+export function publicTestnetAllocationReport(allocations: readonly { amountAtoms: number }[]): {
+  humanInputsRequired: readonly string[];
+  genesisSupplyAtoms: number;
+  miningBudgetAtoms: number;
+  maxSupplyAtoms: number;
+} {
+  const genesisSupplyAtoms = allocations.reduce((sum, allocation) => sum + allocation.amountAtoms, 0);
+  if (genesisSupplyAtoms > MAX_SUPPLY_ATOMS) throw new Error("Allocations exceed the mining supply cap");
+  return {
+    humanInputsRequired: allocations.length === 0 ? ALLOCATION_HUMAN_INPUTS : [],
+    genesisSupplyAtoms,
+    miningBudgetAtoms: MAX_SUPPLY_ATOMS - genesisSupplyAtoms,
+    maxSupplyAtoms: MAX_SUPPLY_ATOMS
+  };
+}
+
+function isAcceptableNetworkName(value: unknown): value is string {
+  return typeof value === "string" && !containsBannedLiveToken(value) &&
+    (NETWORK_NAME_PATTERN.test(value) || DISPLAY_NAME_PATTERN.test(value));
+}
+
+function parseCandidateGovernance(value: Record<string, unknown>): CandidatePublicTestnetGovernance {
+  if (!isAcceptableNetworkName(value.networkName)) throw new Error("Invalid public-testnet network name");
+  assertPublicTestnetChainId(value.chainId);
+  if (value.genesisTimestampMs !== null || value.activityPool !== null) {
+    throw new Error("Candidate governance must keep the genesis timestamp and activity pool empty");
+  }
+  for (const key of ["validators", "activityOracles", "allocations", "bootstrapPeers", "publicRpcOrigins", "archiveEndpoints", "monitoringEndpoints"] as const) {
+    if (!Array.isArray(value[key]) || value[key].length !== 0) throw new Error("Candidate governance must not publish operator sets");
+  }
+  return {
+    schemaVersion: 1,
+    status: "candidate-awaiting-operator-input",
+    networkName: value.networkName,
+    chainId: value.chainId,
+    genesisVersion: 1,
+    genesisTimestampMs: null,
+    initialProtocolVersion: 1,
+    protocolV5ActivationPolicy: PUBLIC_TESTNET_V5_ACTIVATION_POLICY,
+    validators: [],
+    activityOracles: [],
+    activityPool: null,
+    allocations: [],
+    bootstrapPeers: [],
+    publicRpcOrigins: [],
+    archiveEndpoints: [],
+    monitoringEndpoints: []
+  };
+}
+
+function candidateOperatorGaps(): string[] {
+  return [
+    "genesisTimestampMs",
+    "validators",
+    "activityOracles",
+    "activityPool",
+    "allocations",
+    "bootstrapPeers",
+    "publicRpcOrigins",
+    "archiveEndpoints",
+    "monitoringEndpoints"
+  ];
+}
+
 function parseExampleGovernance(value: Record<string, unknown>): ExamplePublicTestnetGovernance {
   if (typeof value.networkName !== "string" || value.chainId !== null || value.genesisTimestampMs !== null || value.activityPool !== null) {
     throw new Error("Example governance must keep chain ID, timestamp, and activity pool empty");
@@ -614,11 +861,11 @@ function parseExampleGovernance(value: Record<string, unknown>): ExamplePublicTe
 }
 
 function parseApprovedGovernance(value: Record<string, unknown>): ApprovedPublicTestnetGovernance {
-  if (typeof value.networkName !== "string" || !NETWORK_NAME_PATTERN.test(value.networkName) || containsBannedLiveToken(value.networkName)) {
-    throw new Error("Invalid public-testnet network name");
-  }
-  if (typeof value.chainId !== "string" || !CHAIN_ID_PATTERN.test(value.chainId) || value.chainId.includes("mainnet") || containsBannedLiveToken(value.chainId)) {
-    throw new Error("Approved public-testnet chain ID must be an explicit zyron-public-testnet label");
+  if (!isAcceptableNetworkName(value.networkName)) throw new Error("Invalid public-testnet network name");
+  try {
+    assertPublicTestnetChainId(value.chainId);
+  } catch (error) {
+    throw new Error(`Approved public-testnet chain ID must be an explicit zyron-public-testnet label: ${(error as Error).message}`);
   }
   if (!Number.isSafeInteger(value.genesisTimestampMs) || Number(value.genesisTimestampMs) < 0) {
     throw new Error("Approved governance requires an explicit genesis timestamp");
