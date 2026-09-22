@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "pricing": null,
+  "note": "Capacities are minimums already used by the node baseline. Bandwidth is unmeasured. No cloud price is stated.",
+  "minimumSafe": {
+    "hostCount": 7,
+    "logicalRoles": 10,
+    "sharing": [
+      "Three validator hosts stay isolated and are the only hosts that may hold validator keys.",
+      "bootstrap-b may share a host with rpc-a, and bootstrap-c may share a host with rpc-b. That puts public RPC beside a published P2P identity and is minimum-only.",
+      "bootstrap-a stays on its own host.",
+      "archive-a may share a host with monitoring-a. Neither may hold a validator key or a bootstrap key."
+    ],
+    "perHost": {
+      "minCpuCores": 2,
+      "minRamGb": 4,
+      "minDiskGb": 100,
+      "persistentDisk": true,
+      "backup": "Required for every validator data directory and the archive data directory."
+    },
+    "publicIp": "Bootstrap and public RPC hosts only.",
+    "privateNetwork": "Required among the three validators. Consensus is not published on the public address.",
+    "bandwidth": "Unmeasured. Size for the 30-second block interval and public RPC without a figure from this repository."
+  },
+  "recommended": {
+    "hostCount": 10,
+    "logicalRoles": 10,
+    "sharing": "None. One VM per role: validator-a/b/c, bootstrap-a/b/c, rpc-a, rpc-b, archive-a, monitoring-a.",
+    "perHost": {
+      "minCpuCores": 2,
+      "minRamGb": 4,
+      "minDiskGb": 100,
+      "persistentDisk": true,
+      "backup": "Required for validators and archive. Monitoring keeps only its own scrape state."
+    },
+    "publicIp": "Three bootstrap hosts and two public RPC hosts.",
+    "privateNetwork": "Validators, archive sync, and monitoring scrapes.",
+    "bandwidth": "Unmeasured."
+  }
+}
