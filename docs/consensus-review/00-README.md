@@ -1,6 +1,6 @@
 # Consensus 1.1 review package
 
-Status of this package: **READY FOR INDEPENDENT REVIEW** is the highest label this repository may claim after the qualification tests in the pull request pass. This package is the author's review. It is not an independent review. Do not write "INDEPENDENT REVIEW PASSED".
+Status of this package: the consensus rules on this branch are **CONSENSUS CANDIDATE FROZEN FOR REVIEW**. Qualification tests were added after that freeze. This package is the author's review. It is not an independent review. Do not write "INDEPENDENT REVIEW PASSED". **HUMAN INPUT REQUIRED: INDEPENDENT CONSENSUS REVIEWER.**
 
 Public testnet is not launched. Flags stay false. PR #904 stays draft until a human marks it ready for review.
 
@@ -19,6 +19,7 @@ Public testnet is not launched. Flags stay false. PR #904 stays draft until a hu
 | `09-ECONOMICS-AND-FLAGS.md` | Constants that must not move |
 | `10-LIMITATIONS.md` | Honest gaps |
 | `11-REVIEW-CHECKLIST.md` | Independent reviewer checklist and commands |
+| `12-EXTENDED-QUALIFICATION.md` | Chaos, NodeService v5, OS-process matrices, measured runs |
 
 Also read `docs/CONSENSUS_1_1_CHANGELOG.md` and `docs/CONSENSUS_1_1_UPGRADE_RUNBOOK.md`.
 

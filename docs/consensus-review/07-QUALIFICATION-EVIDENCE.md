@@ -64,4 +64,4 @@ Result: 18 pass, 0 fail, duration 5752 ms.
 | N=4 OS processes, 2+2 | 615 ms |
 | N=7 in-process unique completion and refusal | 2574 ms |
 
-Full `npm test` on this same tree, before the documentation-only timing note, finished with 668 pass, 0 fail, duration 50567 ms. That run includes `mining-economics-pin.test.ts`, the 50-miner cohort in `public-testnet-readiness.test.ts` (`cohortSize: 50`, `accepted` 4, `critical` false), and the protocol-v5 rehearsal that uses `ZyronChain.attestBlock` with delay 100. It does not add a 101-height `NodeService` prepare/commit rehearsal. That rehearsal remains NOT RUN.
+`npm test` on the tree that contains `consensus-extended-qualification.test.ts` finished with 680 pass, 0 fail, duration 59160.703602 ms. `npm run typecheck` completed before that run. `npm audit --audit-level=high` reported 0 vulnerabilities. Root `pytest -q` after installing `requirements.txt` reported 58 passed. The extended file alone, before that full suite, was 12 pass, 0 fail, duration 20180.889178 ms. See `12-EXTENDED-QUALIFICATION.md`.
