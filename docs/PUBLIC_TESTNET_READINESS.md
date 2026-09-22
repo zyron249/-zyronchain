@@ -17,7 +17,9 @@ Local tester path: [`PUBLIC_TEST.md`](PUBLIC_TEST.md).
 - `bootstrapPeers` and `publicRpcEndpoints` are empty
 - `activationAllowed`, `publicMiningActivated`, and `publicationAllowed` are false inside the file and the parser rejects `true`
 
-`zyron-l1 node --network-class public-testnet` loads that file plus `docs/l1-launch-authorization.json` and refuses to open a data directory unless all of the following hold:
+`l1/config/public-testnet-governance-input.candidate.json` records the governance candidate `Zyron Public Testnet` / `zyron-public-testnet-1` with protocol genesis version 1 and quorum-delayed protocol v5. Validator, bootstrap, RPC, archive, monitoring, timestamp, and allocation fields stay empty, so genesis build remains fail-closed. That file is not an official genesis and it does not fill the identity proposal above. Operator steps are in [`PUBLIC_TESTNET_OPERATOR_GUIDE.md`](PUBLIC_TESTNET_OPERATOR_GUIDE.md).
+
+`zyron-l1 node --network-class public-testnet` loads `l1/config/public-testnet-identity.json` plus `docs/l1-launch-authorization.json` and refuses to open a data directory unless all of the following hold:
 
 1. status is `identity-frozen` (not the checked-in placeholder);
 2. chain ID matches `zyron-public-testnet-<label>`, is at most 64 characters, and does not contain `mainnet`;

@@ -23,6 +23,7 @@
     "mine:local": "npm run build && node scripts/local-devnet.mjs --local-v5",
     "public-testnet:preflight": "npm run build && node scripts/public-testnet-preflight.mjs",
     "public-testnet:genesis": "npm run build && node scripts/build-public-testnet-genesis.mjs",
+    "public-testnet:provision": "npm run build && node scripts/provision-public-testnet-operator.mjs",
     "bench:restart": "npm run build && node dist/bench/restart.js",
     "bench:state-scale": "npm run build && node dist/bench/state-v2-scale.js",
     "test": "npm run build && node --check scripts/mine.mjs && node scripts/test-miner-package-target.mjs && node scripts/test-miner-candidate-sbom.mjs && node scripts/test-miner-candidate-provenance.mjs && node scripts/test-miner-custody-bigint-identity.mjs && node scripts/test-suite.mjs",

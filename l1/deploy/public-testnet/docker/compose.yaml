@@ -1,0 +1,84 @@
+services:
+  validator-a:
+    build: .
+    env_file: ../env/role.env.example
+    environment:
+      ZYRON_ROLE: validator-a
+      ZYRON_REGION: region-a
+    networks: [private]
+    restart: unless-stopped
+  validator-b:
+    build: .
+    environment:
+      ZYRON_ROLE: validator-b
+      ZYRON_REGION: region-b
+    networks: [private]
+    restart: unless-stopped
+  validator-c:
+    build: .
+    environment:
+      ZYRON_ROLE: validator-c
+      ZYRON_REGION: region-c
+    networks: [private]
+    restart: unless-stopped
+  bootstrap-a:
+    build: .
+    environment:
+      ZYRON_ROLE: bootstrap-a
+      ZYRON_REGION: region-a
+    networks: [private]
+    restart: unless-stopped
+  bootstrap-b:
+    build: .
+    environment:
+      ZYRON_ROLE: bootstrap-b
+      ZYRON_REGION: region-b
+    networks: [private]
+    restart: unless-stopped
+  bootstrap-c:
+    build: .
+    environment:
+      ZYRON_ROLE: bootstrap-c
+      ZYRON_REGION: region-c
+    networks: [private]
+    restart: unless-stopped
+  rpc-a:
+    build: .
+    environment:
+      ZYRON_ROLE: rpc-a
+      ZYRON_REGION: region-a
+    networks: [private, edge]
+    restart: unless-stopped
+  rpc-b:
+    build: .
+    environment:
+      ZYRON_ROLE: rpc-b
+      ZYRON_REGION: region-b
+    networks: [private, edge]
+    restart: unless-stopped
+  archive-a:
+    build: .
+    environment:
+      ZYRON_ROLE: archive-a
+      ZYRON_REGION: region-a
+    networks: [private]
+    restart: unless-stopped
+  monitoring-a:
+    build: .
+    environment:
+      ZYRON_ROLE: monitoring-a
+      ZYRON_REGION: region-c
+    networks: [private]
+    restart: unless-stopped
+  edge-proxy:
+    image: caddy:2
+    volumes:
+      - ../tls/Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "443:443"
+    networks: [edge]
+    restart: unless-stopped
+networks:
+  private:
+    internal: true
+  edge: {}

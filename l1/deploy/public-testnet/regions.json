@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "status": "vendor-neutral-template",
+  "regions": ["region-a", "region-b", "region-c"],
+  "roles": [
+    { "id": "validator-a", "region": "region-a", "kind": "validator", "publicConsensus": false },
+    { "id": "validator-b", "region": "region-b", "kind": "validator", "publicConsensus": false },
+    { "id": "validator-c", "region": "region-c", "kind": "validator", "publicConsensus": false },
+    { "id": "bootstrap-a", "region": "region-a", "kind": "bootstrap", "publicConsensus": false },
+    { "id": "bootstrap-b", "region": "region-b", "kind": "bootstrap", "publicConsensus": false },
+    { "id": "bootstrap-c", "region": "region-c", "kind": "bootstrap", "publicConsensus": false },
+    { "id": "rpc-a", "region": "region-a", "kind": "public-rpc", "publicConsensus": false },
+    { "id": "rpc-b", "region": "region-b", "kind": "public-rpc", "publicConsensus": false },
+    { "id": "archive-a", "region": "region-a", "kind": "archive", "publicConsensus": false },
+    { "id": "monitoring-a", "region": "region-c", "kind": "monitoring", "publicConsensus": false }
+  ]
+}
