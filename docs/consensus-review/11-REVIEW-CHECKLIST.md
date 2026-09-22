@@ -45,12 +45,17 @@ node --test --test-timeout=600000 \
   dist/test/round-double-hash-liveness-regression.test.js \
   dist/test/consensus-safety-invariants.test.js \
   dist/test/split-vote-liveness.test.js \
-  dist/test/consensus-1-1-qualification.test.js
+  dist/test/consensus-1-1-qualification.test.js \
+  dist/test/consensus-extended-qualification.test.js
 npm test
 node --test --test-timeout=120000 dist/test/mining-economics-pin.test.js dist/test/public-testnet-readiness.test.js dist/test/mining.test.js
 ```
 
-CI job `consensus-liveness` in `.github/workflows/l1.yml` runs the four consensus files. The main `l1` job runs `npm test`.
+CI job `consensus-liveness` in `.github/workflows/l1.yml` runs the five consensus files. The main `l1` job runs `npm test`.
+
+- [ ] `l1/test/consensus-extended-qualification.test.ts` still shows one hash under delay, loss, duplication, and reorder, a null result above round 64, journal fail-stop on power-loss hooks, and N=4 and N=7 OS processes with separate directories.
+- [ ] The NodeService rehearsal in that file reaches height 101 at chain protocol 5 with one 6.25 ZYN claim and the same tip after restart.
+- [ ] Cohort sizes 3, 10, 25, and 50 reconcile, and a forged 1-atom reward is `CRITICAL FAIL`. The cohort function is an accounting reconciler, not 50 OS miners.
 
 ## Stop-ship if found
 

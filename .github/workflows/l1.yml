@@ -93,7 +93,7 @@ jobs:
       - name: Build
         run: npm run build
       - name: Round-change liveness, state-space, journal, mixed-version, and multiprocess
-        run: node --test --test-timeout=600000 dist/test/round-double-hash-liveness-regression.test.js dist/test/consensus-safety-invariants.test.js dist/test/split-vote-liveness.test.js dist/test/consensus-1-1-qualification.test.js
+        run: node --test --test-timeout=600000 dist/test/round-double-hash-liveness-regression.test.js dist/test/consensus-safety-invariants.test.js dist/test/split-vote-liveness.test.js dist/test/consensus-1-1-qualification.test.js dist/test/consensus-extended-qualification.test.js
 
   mixed-version-rehearsal:
     runs-on: ubuntu-latest
