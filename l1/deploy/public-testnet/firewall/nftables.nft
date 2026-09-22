@@ -1,0 +1,18 @@
+#!/usr/sbin/nft -f
+# Enforceable port matrix for Zyron Public Testnet templates.
+# Replace __ASSIGNED_BOOTSTRAP_PORT__ and __METRICS_PORT__ before use.
+# Validator consensus and signer ports have no accept rule from the public internet.
+
+table inet zyron {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    ct state established,related accept
+    iif "lo" accept
+    tcp dport 443 accept comment "Internet and miners to HTTPS RPC"
+    tcp dport __ASSIGNED_BOOTSTRAP_PORT__ accept comment "bootstrap P2P only on the assigned port"
+    # validator consensus: deny
+    # validator signer: deny
+    # miner to consensus: deny
+    # metrics are not accepted from the public internet
+  }
+}

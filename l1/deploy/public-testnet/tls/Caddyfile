@@ -1,0 +1,27 @@
+{
+  servers {
+    protocols h1 h2
+  }
+}
+
+__OPERATOR_RPC_HOSTNAME__ {
+  tls /etc/zyron/tls/fullchain.pem /etc/zyron/tls/privkey.pem {
+    protocols tls1.2 tls1.3
+  }
+  request_body {
+    max_size 256kb
+  }
+  header {
+    -Server
+  }
+  @consensus path /proposal/attest /round/skip /round/lock /round/report /round/complete /block /metrics
+  respond @consensus 403
+  reverse_proxy __PUBLIC_RPC_UPSTREAM__ {
+    header_up X-Forwarded-Proto https
+    header_up X-Forwarded-For {remote_host}
+    transport http {
+      read_timeout 30s
+      write_timeout 30s
+    }
+  }
+}
