@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "status": "AWAITING REAL OPERATOR INPUT",
+  "networkName": "Zyron Public Testnet",
+  "chainId": "zyron-public-testnet-1",
+  "genesisVersion": 1,
+  "initialProtocolVersion": 1,
+  "protocolV5ActivationPolicy": "quorum-delayed-upgrade",
+  "genesisTimestampMs": null,
+  "validators": [
+    { "label": "validator-a", "publicKey": null, "weight": 1 },
+    { "label": "validator-b", "publicKey": null, "weight": 1 },
+    { "label": "validator-c", "publicKey": null, "weight": 1 }
+  ],
+  "activityOraclePublicKey": null,
+  "activityPool": null,
+  "allocations": [],
+  "bootstrapPeers": [
+    { "label": "bootstrap-a", "peerId": null, "multiaddr": null, "failureDomain": null },
+    { "label": "bootstrap-b", "peerId": null, "multiaddr": null, "failureDomain": null },
+    { "label": "bootstrap-c", "peerId": null, "multiaddr": null, "failureDomain": null }
+  ],
+  "publicRpcOrigins": [],
+  "archiveEndpoints": [],
+  "monitoringEndpoints": [],
+  "hostingProviders": [],
+  "tlsCertificateRefs": [],
+  "officialGenesis": false,
+  "notes": "No secrets. Null fields are human input. This pack is not a genesis and not an activation."
+}
