@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from zyron_node.client_ip import Network, parse_network_tokens
+
 
 class ConfigError(RuntimeError):
     pass
@@ -45,7 +47,7 @@ class Settings:
     referral_ip_salt: str
     referral_min_age_seconds: int
     referral_min_cycles: int
-    trust_proxy: bool
+    trusted_proxies: tuple[Network, ...]
     log_level: str
     host: str
     port: int
@@ -61,6 +63,7 @@ class Settings:
             "devAuthBypass": self.dev_auth_bypass,
             "rpcConfigured": bool(self.zyron_rpc_url),
             "rpcAllowRemote": self.zyron_rpc_allow_remote,
+            "trustedProxies": len(self.trusted_proxies),
             "host": self.host,
             "port": self.port,
         }
@@ -84,7 +87,7 @@ def load_settings() -> Settings:
         referral_ip_salt=os.environ.get("REFERRAL_IP_SALT", "dev-salt-change-me"),
         referral_min_age_seconds=_int("REFERRAL_MIN_AGE_SECONDS", 1800),
         referral_min_cycles=_int("REFERRAL_MIN_CYCLES", 15),
-        trust_proxy=_bool("TRUST_PROXY", False),
+        trusted_proxies=_trusted_proxies(),
         log_level=os.environ.get("LOG_LEVEL", "INFO").strip().upper() or "INFO",
         host=os.environ.get("HOST", "0.0.0.0").strip() or "0.0.0.0",
         port=_int("PORT", 8000),
@@ -137,6 +140,45 @@ def validate_rpc_base(url: str, allow_remote: bool) -> None:
             )
         if parsed.scheme != "https":
             raise ConfigError("Non-loopback Zyron RPC must use HTTPS")
+
+
+_PROXY_TRUTHY = {"1", "true", "yes", "on"}
+_PROXY_FALSEY = {"", "0", "false", "no", "off", "none"}
+
+
+def _trusted_proxies() -> tuple[Network, ...]:
+    """Load the reverse proxies allowed to supply a client address.
+
+    ``TRUST_PROXY=1`` (or true/yes/on) used to mean "trust every peer". That
+    accepts a spoofed ``X-Forwarded-For`` from the client itself, so a boolean
+    with no explicit list is rejected. ``TRUSTED_PROXIES`` and a list in
+    ``TRUST_PROXY`` are comma- or whitespace-separated IPs and CIDRs. When the
+    boolean form is set together with ``TRUSTED_PROXIES``, the list is used.
+    """
+    trust_raw = os.environ.get("TRUST_PROXY", "").strip()
+    list_raw = os.environ.get("TRUSTED_PROXIES", "").strip()
+    tokens: list[str] = []
+    if trust_raw.lower() in _PROXY_TRUTHY:
+        if list_raw.lower() in _PROXY_FALSEY:
+            raise ConfigError(
+                "TRUST_PROXY=1 would trust every peer. "
+                "Set TRUSTED_PROXIES or TRUST_PROXY to a list of proxy IPs or CIDRs"
+            )
+    elif trust_raw.lower() not in _PROXY_FALSEY:
+        tokens.extend(_proxy_tokens(trust_raw))
+    if list_raw.lower() not in _PROXY_FALSEY:
+        tokens.extend(_proxy_tokens(list_raw))
+    try:
+        return parse_network_tokens(tokens)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+
+
+def _proxy_tokens(raw: str) -> list[str]:
+    tokens: list[str] = []
+    for chunk in raw.replace(";", ",").split(","):
+        tokens.extend(part for part in chunk.split() if part)
+    return tokens
 
 
 def _db_host(database_url: str) -> str:

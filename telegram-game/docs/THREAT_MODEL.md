@@ -32,6 +32,7 @@ Zyron Points are not ZYN and not Zyrum. There is no conversion rate and no autom
 | Wallet linkage stores the address only | The game cannot sign or broadcast. |
 | Chain reads are allowlisted GETs | Submission and validator routes are out of bounds. |
 | Admin routes require a bearer token compared in constant time | The dashboard can ban, snapshot, and close a season. |
+| Forwarded client IP headers are trusted only from configured proxies | Otherwise a client can pick the address used for rate limits and referral network hashes. |
 | Closing a season or exporting a snapshot does not pay anyone | Payouts are a later, explicit decision. |
 
 ## Abuse cases and controls
@@ -49,6 +50,8 @@ Zyron Points are not ZYN and not Zyrum. There is no conversion rate and no autom
 **Referral farming.** A referee qualifies only after `REFERRAL_MIN_CYCLES` (default 15) and `REFERRAL_MIN_AGE_SECONDS` (default 30 minutes). Rewards are once per referral. A referrer can be paid for at most 20 qualified referrals per 7 days. Mutual links are refused. Six or more signups from one network hash in an hour are flagged and their referrals are rejected. Same-network referrals are flagged but not auto-rejected, because households share addresses. Abuse score at or above 80 blocks referral payout. It does not confiscate points already earned. The Security upgrade does not reduce abuse score or lift a ban.
 
 **Wallet farming.** An address matches `^ZYN[0-9a-f]{40}$` and cannot be the all-zero tracker. The first operator to claim an address keeps it after unlink, so the link quest cannot be passed around. More than four link/unlink events in 24 hours is flagged and blocked. Admins can release a claim.
+
+**Spoofed client IP.** Signup-network hashes and per-IP rate limits use the TCP peer address. `X-Forwarded-For`, RFC 7239 `Forwarded`, and `X-Real-IP` are read only when that peer falls inside `TRUSTED_PROXIES` or a CIDR/IP list in `TRUST_PROXY`. `TRUST_PROXY=1` does not mean "trust every connection" and the process refuses to boot with that setting unless an explicit list is also set. Hops that are themselves trusted proxies are skipped from the right, so a client cannot hide behind a trusted address it wrote at the left of the header. A missing or malformed forwarded header keeps the peer address.
 
 **Dev and test backdoors.** `DEV_AUTH_BYPASS` and `ALLOW_TEST_CLOCK` refuse to boot when `ENVIRONMENT=production`. The test clock also refuses to boot unless `ENVIRONMENT=test`.
 

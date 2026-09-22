@@ -86,5 +86,6 @@ The root ZyronChain pytest suite ignores this directory. Game CI is `.github/wor
 - Wallet link stores a public `ZYN` address only.
 - The RPC client is GET-only, cached, and rate-limited.
 - `DEV_AUTH_BYPASS` and `ALLOW_TEST_CLOCK` will not boot in production.
+- `X-Forwarded-For` and similar headers are used only when the TCP peer is listed in `TRUSTED_PROXIES` or `TRUST_PROXY`.
 
 Do not deploy this to mainnet, wire a treasury, or announce a public launch from this MVP. Those need a separate approval.

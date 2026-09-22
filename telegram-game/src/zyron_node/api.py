@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from zyron_node.auth import AuthError, TelegramIdentity, admin_authorized, hash_ip, verify_init_data
+from zyron_node.client_ip import client_address
 from zyron_node.economy import POINTS_NOTICE
 from zyron_node.game import (
     GameError,
@@ -76,13 +77,15 @@ def request_now(request: Request) -> datetime:
 
 def client_ip(request: Request) -> str:
     settings = request.app.state.settings
-    if settings.trust_proxy:
-        forwarded = request.headers.get("x-forwarded-for", "")
-        if forwarded:
-            return forwarded.split(",")[0].strip()[:64]
-    if request.client and request.client.host:
-        return request.client.host
-    return "unknown"
+    peer = request.client.host if request.client is not None else None
+    real_ip = request.headers.get("x-real-ip")
+    return client_address(
+        peer,
+        settings.trusted_proxies,
+        forwarded_for=request.headers.getlist("x-forwarded-for"),
+        forwarded=request.headers.getlist("forwarded"),
+        real_ip=real_ip,
+    )
 
 
 def resolve_identity(request: Request, now: datetime) -> TelegramIdentity:
