@@ -108,7 +108,7 @@ P0 items block a shared, persistent public testnet or public mining. Identity an
 
 ## Remaining public-mining activation count
 
-**10** requirements in `publicTestnetActivationRequirements` remain open. The identity, bootstrap, and public-RPC scaffolds close none of them.
+**10** requirements in `publicTestnetActivationRequirements` remain open. The identity, bootstrap, and public-RPC scaffolds close none of them. The deployment runbook and `npm run public-testnet:preflight` also close none of them: engineering readiness can be PASS while governance activation stays BLOCKED.
 
 Engineering P0s that still block a real shared public testnet:
 
