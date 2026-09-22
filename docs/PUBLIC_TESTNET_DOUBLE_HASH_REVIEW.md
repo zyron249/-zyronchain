@@ -1,6 +1,8 @@
 # Round-0 double-hash review
 
-Status: **STOP-SHIP REVIEW**. This document does not change quorum, the reveal threshold, or the signing journal. It does not approve activation.
+Status: **STOP-SHIP REVIEW** of the baseline bound. The arithmetic classification in code stays `BLOCKS PUBLIC TESTNET` until an independent review accepts the round-change machine. Quorum, the reveal threshold, the signing journal's equivocation rule, activation flags, and mining economics are unchanged.
+
+The liveness gap described below is what `docs/CONSENSUS_SAFETY_LIVENESS_REVIEW.md` addresses: a prepare is not a commit, and a nil view-change opens the next round. This file remains the record of why completion must still return null when two hashes are both possibly final.
 
 ## What the bound says
 

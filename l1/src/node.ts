@@ -10,6 +10,8 @@ import {
   assertPeerHttpSuccess,
   cancelPeerResponseBody,
   collectPredecessorRoundCertificate,
+  collectPreparedCommits,
+  finalizeLockedHash,
   parsePeerResponseJsonChunks,
   tryCompleteSplitRound,
   type ConsensusPeerClient,
@@ -20,13 +22,15 @@ import {
   expectedValidator,
   validateBlockAttestation
 } from "./block.js";
+import { isViewChangeVote, validateViewChangeCertificate } from "./round-view-change.js";
 import { assertHex, canonicalJson, sha256Hex } from "./codec.js";
 import { ConsensusOperationBudget } from "./consensus-operation-budget.js";
 import { addressFromPublicKey } from "./crypto.js";
 import type { PeerReputationStore } from "./peer-reputation.js";
 import { signPeerRequest } from "./peer-identity.js";
 import { assertExactKeys, assertPlainRecord } from "./transaction.js";
-import type { Address, Block, BlockAttestation, LockedAttestEvidence, RoundChoiceReport, RoundProgressEntry, RoundSkipVote } from "./types.js";
+import type { Address, Block, BlockAttestation, LockedAttestEvidence, PrepareVote, RoundChoiceReport, RoundProgressEntry, RoundSkipVote, ViewChangeVote } from "./types.js";
+import type { PrepareReport } from "./node-base.js";
 import { LocalValidatorSigner, type ValidatorSigner } from "./validator-signer.js";
 
 const HTTP_CONSENSUS_TIMEOUT_MS = 8_000;
@@ -67,6 +71,25 @@ export function validateHttpPeerAttestationShape(value: unknown): BlockAttestati
     throw new Error("Invalid HTTP peer attestation validator");
   }
   return value as unknown as BlockAttestation;
+}
+
+export function validateHttpPeerPrepareVote(value: unknown): PrepareVote {
+  assertPlainRecord(value, "HTTP peer prepare");
+  assertExactKeys(
+    value,
+    ["validator", "publicKey", "chainId", "height", "round", "blockHash", "signature"],
+    "HTTP peer prepare"
+  );
+  if (typeof value.validator !== "string" || typeof value.publicKey !== "string" || typeof value.signature !== "string" ||
+      typeof value.chainId !== "string" || typeof value.blockHash !== "string" ||
+      !Number.isSafeInteger(value.height) || !Number.isSafeInteger(value.round)) {
+    throw new Error("Invalid HTTP peer prepare");
+  }
+  assertHex(value.publicKey, 64, "HTTP peer prepare public key");
+  assertHex(value.signature, 64, "HTTP peer prepare signature");
+  assertHex(value.blockHash, 32, "HTTP peer prepare hash");
+  if (value.validator !== addressFromPublicKey(value.publicKey)) throw new Error("Invalid HTTP peer prepare validator");
+  return value as unknown as PrepareVote;
 }
 
 export function validateHttpPeerRoundSkipVoteShape(value: unknown): RoundSkipVote {
@@ -247,11 +270,29 @@ export class PeerClient extends BasePeerClient {
     super(peers, consensusPeerAuthToken, consensusPeerRequestCredentials, peerReputation);
   }
 
-  override async requestAttestations(block: Block): Promise<BlockAttestation[]> {
+  override async requestPrepares(block: Block): Promise<PrepareVote[]> {
+    return collectHttpConsensusPeers(this.peers, async (peer, signal) => {
+      return postHttpConsensusJson(
+        `${peer}/proposal/prepare`,
+        block,
+        MAX_HTTP_ATTESTATION_RESPONSE_BYTES,
+        this.consensusPeerAuthToken,
+        this.consensusPeerRequestCredentials,
+        (payload) => {
+          assertPlainRecord(payload, "prepare response");
+          assertExactKeys(payload, ["vote"], "prepare response");
+          return validateHttpPeerPrepareVote(payload.vote);
+        },
+        signal
+      );
+    });
+  }
+
+  override async requestAttestations(block: Block, prepares: PrepareVote[] = []): Promise<BlockAttestation[]> {
     return collectHttpConsensusPeers(this.peers, async (peer, signal) => {
       return postHttpConsensusJson(
         `${peer}/proposal/attest`,
-        block,
+        { block, prepares },
         MAX_HTTP_ATTESTATION_RESPONSE_BYTES,
         this.consensusPeerAuthToken,
         this.consensusPeerRequestCredentials,
@@ -335,11 +376,56 @@ export class PeerClient extends BasePeerClient {
     });
   }
 
-  override async requestCompletionAttestations(block: Block, votes: RoundProgressEntry[]): Promise<BlockAttestation[]> {
+  override async requestViewChanges(
+    height: number,
+    round: number,
+    previousCertificate: RoundProgressEntry[] = [],
+    knownPrepares: PrepareVote[] = []
+  ): Promise<ViewChangeVote[]> {
+    return collectHttpConsensusPeers(this.peers, async (peer, signal) => {
+      return postHttpConsensusJson(
+        `${peer}/round/view`,
+        { height, round, previousCertificate, knownPrepares },
+        262_144,
+        this.consensusPeerAuthToken,
+        this.consensusPeerRequestCredentials,
+        (payload) => {
+          assertPlainRecord(payload, "view-change response");
+          assertExactKeys(payload, ["vote"], "view-change response");
+          return payload.vote as ViewChangeVote;
+        },
+        signal
+      );
+    });
+  }
+
+  override async requestPrepareReports(height: number, round: number, previousHash: string): Promise<PrepareReport[]> {
+    return collectHttpConsensusPeers(this.peers, async (peer, signal) => {
+      return postHttpConsensusJson(
+        `${peer}/round/prepare-report`,
+        { height, round, previousHash },
+        MAX_HTTP_ROUND_REPORT_RESPONSE_BYTES,
+        this.consensusPeerAuthToken,
+        this.consensusPeerRequestCredentials,
+        (payload) => {
+          assertPlainRecord(payload, "prepare report response");
+          assertExactKeys(payload, ["report"], "prepare report response");
+          return payload.report as PrepareReport;
+        },
+        signal
+      );
+    });
+  }
+
+  override async requestCompletionAttestations(
+    block: Block,
+    votes: RoundProgressEntry[],
+    prepares: PrepareVote[] = []
+  ): Promise<BlockAttestation[]> {
     return collectHttpConsensusPeers(this.peers, async (peer, signal) => {
       return postHttpConsensusJson(
         `${peer}/round/complete`,
-        { block, votes },
+        { block, votes, prepares },
         MAX_HTTP_ATTESTATION_RESPONSE_BYTES,
         this.consensusPeerAuthToken,
         this.consensusPeerRequestCredentials,
@@ -413,6 +499,29 @@ export async function produceFinalizedBlock(
       previousCertificate = certificate;
     }
   }
+  if (roundCertificate.length > 0 && roundCertificate.every((entry) => isViewChangeVote(entry))) {
+    const lock = validateViewChangeCertificate(
+      roundCertificate,
+      validators,
+      chain.genesis.chainId,
+      chain.height + 1,
+      round - 1,
+      chain.tip.hash,
+      chain.protocolVersionAt(chain.height + 1)
+    );
+    if (lock) {
+      return finalizeLockedHash(
+        service,
+        peers,
+        lock.lockHash,
+        lock.lockRound,
+        roundCertificate,
+        validators,
+        consensusNowMs,
+        signingNowMs
+      );
+    }
+  }
 
   const transactions = chain.selectValidPending(service.mempool.values(), 10_000);
   const unsignedProposal = chain.prepareBlock(transactions, publicKey, {
@@ -422,30 +531,5 @@ export async function produceFinalizedBlock(
   });
   const proposal = await service.signPreparedProposal(unsignedProposal, signingNowMs());
   chain.validatePreparedBlock(proposal, consensusNowMs);
-
-  const attestations: BlockAttestation[] = [];
-  try {
-    attestations.push(await service.attestProposal(proposal, signingNowMs()));
-  } catch (error) {
-    if (!/Validator signing is disabled/.test(safeError(error))) throw error;
-  }
-  attestations.push(...await peers.requestAttestations(proposal));
-
-  const byValidator = new Map<Address, BlockAttestation>();
-  for (const attestation of attestations) {
-    try {
-      validateBlockAttestation(proposal, attestation, validators);
-      byValidator.set(attestation.validator, attestation);
-    } catch {
-    }
-  }
-  const withVotes = { ...proposal, attestations: [...byValidator.values()] };
-  try {
-    await service.acceptFinalizedBlock(withVotes);
-  } catch (error) {
-    if (/Finality quorum not reached/.test(safeError(error))) return null;
-    throw error;
-  }
-  await peers.broadcastBlock(withVotes);
-  return withVotes;
+  return collectPreparedCommits(service, peers, proposal, validators, consensusNowMs, signingNowMs);
 }

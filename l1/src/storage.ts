@@ -18,6 +18,45 @@ import type { Block, GenesisConfig } from "./types.js";
 const STORE_VERSION = 1;
 const MAX_STORED_BLOCK_LINE_BYTES = 2_500_000;
 const MAX_SIGNING_LINE_BYTES = 1_024;
+
+type JournalKind = "attest" | "skip" | "prepare" | "view";
+
+function isJournalKind(value: string): value is JournalKind {
+  return value === "attest" || value === "skip" || value === "prepare" || value === "view";
+}
+
+function journalValueOk(kind: JournalKind, value: string): boolean {
+  if (kind === "view") return value === "nil" || /^[0-9]+:[0-9a-f]{64}$/.test(value);
+  return /^[0-9a-f]{64}$/.test(value);
+}
+
+function journalMapKey(height: number, round: number, kind: JournalKind): string {
+  return kind === "prepare" || kind === "view" ? `${height}:${round}#${kind}` : `${height}:${round}`;
+}
+
+function decodeJournalEntry(key: string, reservation: string): {
+  key: string;
+  height: number;
+  round: number;
+  kind: JournalKind;
+  value: string;
+} | undefined {
+  const reservationSep = reservation.indexOf(":");
+  if (reservationSep <= 0) return undefined;
+  const kind = reservation.slice(0, reservationSep);
+  const value = reservation.slice(reservationSep + 1);
+  if (!isJournalKind(kind) || !journalValueOk(kind, value)) return undefined;
+  const phase = key.indexOf("#");
+  const slot = phase === -1 ? key : key.slice(0, phase);
+  const suffix = phase === -1 ? "" : key.slice(phase + 1);
+  const colon = slot.indexOf(":");
+  if (colon <= 0) return undefined;
+  const height = Number(slot.slice(0, colon));
+  const round = Number(slot.slice(colon + 1));
+  if (!Number.isSafeInteger(height) || height < 1 || !Number.isSafeInteger(round) || round < 0) return undefined;
+  if ((kind === "prepare" || kind === "view") ? suffix !== kind : suffix !== "") return undefined;
+  return { key, height, round, kind, value };
+}
 export const MAX_RECOVERY_CHECKPOINT_FILE_BYTES = 65 * 1024 * 1024;
 
 interface StoreMetadata {
@@ -814,12 +853,19 @@ export class SigningJournal {
         if (!line.trim()) continue;
         assertSigningJournalJsonComplexity(line);
         const parsed = JSON.parse(line) as Record<string, unknown>;
-        if (!Number.isSafeInteger(parsed.height) || !Number.isSafeInteger(parsed.round) ||
-            (parsed.kind !== "attest" && parsed.kind !== "skip") ||
-            typeof parsed.value !== "string" || !/^[0-9a-f]{64}$/.test(parsed.value)) {
+        const height = parsed.height;
+        const round = parsed.round;
+        const kind = parsed.kind;
+        const value = parsed.value;
+        if (typeof height !== "number" || !Number.isSafeInteger(height) ||
+            typeof round !== "number" || !Number.isSafeInteger(round)) {
           throw new Error("Corrupt signing journal entry");
         }
-        const key = `${parsed.height}:${parsed.round}`;
+        if (typeof kind !== "string" || !isJournalKind(kind) ||
+            typeof value !== "string" || !journalValueOk(kind, value)) {
+          throw new Error("Corrupt signing journal entry");
+        }
+        const key = journalMapKey(height, round, kind);
         const reservation = `${parsed.kind}:${parsed.value}`;
         const previous = journal.reservations.get(key);
         if (previous && previous !== reservation) throw new Error("Conflicting signing journal history");
@@ -873,16 +919,28 @@ export class SigningJournal {
     if (!Number.isSafeInteger(height) || height < 1 || !Number.isSafeInteger(round) || round < 0) {
       throw new Error("Invalid signing slot");
     }
-    const existing = this.reservations.get(`${height}:${round}`);
-    if (!existing) return undefined;
-    const separator = existing.indexOf(":");
-    const kind = existing.slice(0, separator);
-    const value = existing.slice(separator + 1);
-    if ((kind !== "attest" && kind !== "skip") || !/^[0-9a-f]{64}$/.test(value)) {
+    const decoded = this.readDecoded(`${height}:${round}`);
+    if (!decoded) return undefined;
+    if (decoded.kind !== "attest" && decoded.kind !== "skip") {
       this.persistenceFaulted = true;
       throw new Error("Signing journal in-memory state is corrupt; validator restart required");
     }
-    return { kind, value };
+    return { kind: decoded.kind, value: decoded.value };
+  }
+
+  phase(height: number, round: number, kind: "prepare" | "view"): { kind: "prepare" | "view"; value: string } | undefined {
+    if (this.closed) throw new Error("Signing journal is closed");
+    if (this.persistenceFaulted) throw new Error("Signing journal persistence fault requires validator restart");
+    if (!Number.isSafeInteger(height) || height < 1 || !Number.isSafeInteger(round) || round < 0) {
+      throw new Error("Invalid signing slot");
+    }
+    const decoded = this.readDecoded(journalMapKey(height, round, kind));
+    if (!decoded) return undefined;
+    if (decoded.kind !== kind) {
+      this.persistenceFaulted = true;
+      throw new Error("Signing journal in-memory state is corrupt; validator restart required");
+    }
+    return { kind, value: decoded.value };
   }
 
   choicesAtHeight(height: number): Array<{ round: number; kind: "attest" | "skip"; value: string }> {
@@ -891,23 +949,13 @@ export class SigningJournal {
     if (!Number.isSafeInteger(height) || height < 1) throw new Error("Invalid signing slot");
     const found: Array<{ round: number; kind: "attest" | "skip"; value: string }> = [];
     for (const [key, reservation] of this.reservations) {
-      const separator = key.indexOf(":");
-      const reservationSeparator = reservation.indexOf(":");
-      if (separator <= 0 || reservationSeparator <= 0) {
+      const decoded = decodeJournalEntry(key, reservation);
+      if (!decoded) {
         this.persistenceFaulted = true;
         throw new Error("Signing journal in-memory state is corrupt; validator restart required");
       }
-      const keyHeight = Number(key.slice(0, separator));
-      const round = Number(key.slice(separator + 1));
-      const kind = reservation.slice(0, reservationSeparator);
-      const value = reservation.slice(reservationSeparator + 1);
-      if (!Number.isSafeInteger(keyHeight) || keyHeight < 1 || !Number.isSafeInteger(round) || round < 0 ||
-          (kind !== "attest" && kind !== "skip") || !/^[0-9a-f]{64}$/.test(value)) {
-        this.persistenceFaulted = true;
-        throw new Error("Signing journal in-memory state is corrupt; validator restart required");
-      }
-      if (keyHeight !== height) continue;
-      found.push({ round, kind, value });
+      if (decoded.height !== height || (decoded.kind !== "attest" && decoded.kind !== "skip")) continue;
+      found.push({ round: decoded.round, kind: decoded.kind, value: decoded.value });
     }
     found.sort((left, right) => left.round - right.round);
     return found;
@@ -922,12 +970,37 @@ export class SigningJournal {
     return this.reserveChoice(height, round, "attest", blockHash, faultHooks);
   }
 
+  async reservePrepare(
+    height: number,
+    round: number,
+    blockHash: string,
+    faultHooks: SigningJournalFaultHooks = {}
+  ): Promise<void> {
+    const commit = this.choice(height, round);
+    if (commit?.kind === "skip" || (commit?.kind === "attest" && commit.value !== blockHash)) {
+      throw new Error("Conflicting validator action prevented for consensus round");
+    }
+    return this.reserveChoice(height, round, "prepare", blockHash, faultHooks);
+  }
+
+  async reserveView(
+    height: number,
+    round: number,
+    value: string,
+    faultHooks: SigningJournalFaultHooks = {}
+  ): Promise<void> {
+    return this.reserveChoice(height, round, "view", value, faultHooks);
+  }
+
   async reserveSkip(
     height: number,
     round: number,
     previousHash: string,
     faultHooks: SigningJournalFaultHooks = {}
   ): Promise<void> {
+    if (this.phase(height, round, "prepare")) {
+      throw new Error("Conflicting validator action prevented for consensus round");
+    }
     return this.reserveChoice(height, round, "skip", previousHash, faultHooks);
   }
 
@@ -939,22 +1012,16 @@ export class SigningJournal {
     if (this.persistenceFaulted) throw new Error("Signing journal persistence fault requires validator restart");
     if (!Number.isSafeInteger(finalizedHeight) || finalizedHeight < 0) throw new Error("Invalid signing journal compaction height");
 
-    const retained: Array<{ key: string; height: number; round: number; kind: "attest" | "skip"; value: string }> = [];
+    const retained: Array<{ key: string; height: number; round: number; kind: JournalKind; value: string }> = [];
     const removedKeys: string[] = [];
     for (const [key, reservation] of this.reservations) {
-      const separator = key.indexOf(":");
-      const reservationSeparator = reservation.indexOf(":");
-      const height = Number(key.slice(0, separator));
-      const round = Number(key.slice(separator + 1));
-      const kind = reservation.slice(0, reservationSeparator);
-      const value = reservation.slice(reservationSeparator + 1);
-      if (!Number.isSafeInteger(height) || height < 1 || !Number.isSafeInteger(round) || round < 0 ||
-          (kind !== "attest" && kind !== "skip") || !/^[0-9a-f]{64}$/.test(value)) {
+      const decoded = decodeJournalEntry(key, reservation);
+      if (!decoded) {
         this.persistenceFaulted = true;
         throw new Error("Signing journal in-memory state is corrupt; validator restart required");
       }
-      if (height <= finalizedHeight) removedKeys.push(key);
-      else retained.push({ key, height, round, kind, value });
+      if (decoded.height <= finalizedHeight) removedKeys.push(key);
+      else retained.push(decoded);
     }
     if (removedKeys.length === 0) return 0;
 
@@ -996,10 +1063,21 @@ export class SigningJournal {
     return removedKeys.length;
   }
 
+  private readDecoded(key: string): { kind: JournalKind; value: string } | undefined {
+    const existing = this.reservations.get(key);
+    if (!existing) return undefined;
+    const decoded = decodeJournalEntry(key, existing);
+    if (!decoded) {
+      this.persistenceFaulted = true;
+      throw new Error("Signing journal in-memory state is corrupt; validator restart required");
+    }
+    return decoded;
+  }
+
   private async reserveChoice(
     height: number,
     round: number,
-    kind: "attest" | "skip",
+    kind: JournalKind,
     value: string,
     faultHooks: SigningJournalFaultHooks
   ): Promise<void> {
@@ -1008,8 +1086,8 @@ export class SigningJournal {
     if (!Number.isSafeInteger(height) || height < 1 || !Number.isSafeInteger(round) || round < 0) {
       throw new Error("Invalid signing slot");
     }
-    if (!/^[0-9a-f]{64}$/.test(value)) throw new Error("Invalid signing hash");
-    const key = `${height}:${round}`;
+    if (!journalValueOk(kind, value)) throw new Error("Invalid signing hash");
+    const key = journalMapKey(height, round, kind);
     const reservation = `${kind}:${value}`;
     const existing = this.reservations.get(key);
     if (existing === reservation) return;

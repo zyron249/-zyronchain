@@ -7,6 +7,7 @@ import {
   verifyCanonicalDomain
 } from "./crypto.js";
 import { merkleRoot } from "./merkle.js";
+import { assertViewChangeVoteShape, isViewChangeVote, validateViewChangeCertificate } from "./round-view-change.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
 import type {
   Address,
@@ -374,6 +375,19 @@ export function validateRoundCertificate(block: Block, validators: Validator[]):
     if (block.roundCertificate.length !== 0) throw new Error("Round 0 must not contain a skip certificate");
     return;
   }
+  if (block.roundCertificate.length > 0 && block.roundCertificate.every((entry) => isViewChangeVote(entry))) {
+    const lock = validateViewChangeCertificate(
+      block.roundCertificate,
+      validators,
+      block.header.chainId,
+      block.header.height,
+      block.header.round - 1,
+      block.header.previousHash,
+      block.header.version
+    );
+    if (lock) throw new Error("View-change lock must be finalized before opening a new round");
+    return;
+  }
   validateRoundProgressCertificate(
     block.roundCertificate,
     validators,
@@ -634,6 +648,10 @@ export function validateBlockShape(value: unknown): asserts value is Block {
 }
 
 function assertRoundCertificateEntryShape(item: unknown): void {
+  if (item !== null && typeof item === "object" && !Array.isArray(item) && "prepares" in item && "lockHash" in item) {
+    assertViewChangeVoteShape(item);
+    return;
+  }
   if (item !== null && typeof item === "object" && !Array.isArray(item) && "header" in item) {
     assertLockedAttestEvidenceShape(item);
     return;

@@ -434,13 +434,25 @@ async function runNode(args: string[]): Promise<void> {
   }
 
   const consensusPeers: ConsensusPeerClient = nativeConsensus ? {
-    requestAttestations: async (block) => [
-      ...await peers.requestAttestations(block),
-      ...await nativeConsensus.requestAttestations(block)
+    requestPrepares: async (block) => [
+      ...await peers.requestPrepares(block),
+      ...await nativeConsensus.requestPrepares(block)
+    ],
+    requestAttestations: async (block, prepares = []) => [
+      ...await peers.requestAttestations(block, prepares),
+      ...await nativeConsensus.requestAttestations(block, prepares)
     ],
     requestRoundSkips: async (height, round, previousCertificate = []) => [
       ...await peers.requestRoundSkips(height, round, previousCertificate),
       ...await nativeConsensus.requestRoundSkips(height, round, previousCertificate)
+    ],
+    requestViewChanges: async (height, round, previousCertificate = [], knownPrepares = []) => [
+      ...await peers.requestViewChanges(height, round, previousCertificate, knownPrepares),
+      ...await nativeConsensus.requestViewChanges(height, round, previousCertificate, knownPrepares)
+    ],
+    requestPrepareReports: async (height, round, previousHash) => [
+      ...await peers.requestPrepareReports(height, round, previousHash),
+      ...await nativeConsensus.requestPrepareReports(height, round, previousHash)
     ],
     requestLockedAttestations: async (height, round, previousHash) => [
       ...await peers.requestLockedAttestations(height, round, previousHash),
@@ -450,9 +462,9 @@ async function runNode(args: string[]): Promise<void> {
       ...await peers.requestRoundReports(height, round, previousHash),
       ...await nativeConsensus.requestRoundReports(height, round, previousHash)
     ],
-    requestCompletionAttestations: async (block, votes) => [
-      ...await peers.requestCompletionAttestations(block, votes),
-      ...await nativeConsensus.requestCompletionAttestations(block, votes)
+    requestCompletionAttestations: async (block, votes, prepares = []) => [
+      ...await peers.requestCompletionAttestations(block, votes, prepares),
+      ...await nativeConsensus.requestCompletionAttestations(block, votes, prepares)
     ],
     broadcastBlock: async (block) => {
       await Promise.allSettled([peers.broadcastBlock(block), nativeConsensus.broadcastBlock(block)]);

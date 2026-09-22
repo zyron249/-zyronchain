@@ -15,9 +15,10 @@ import {
   validatorQuorumSize
 } from "../src/block.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
+import { isViewChangeVote, uniquePossiblyFinalizedWithPrepares } from "../src/round-view-change.js";
 import { ChainStore, SigningJournal } from "../src/storage.js";
 import { createRpcServer, NodeService, PeerClient, produceFinalizedBlock, type ConsensusPeerClient } from "../src/node.js";
-import type { Block, GenesisConfig, LockedAttestEvidence, RoundProgressEntry, RoundSkipVote } from "../src/types.js";
+import type { Block, GenesisConfig, PrepareVote, RoundProgressEntry } from "../src/types.js";
 
 const validatorOnePrivate = "01".padStart(64, "0");
 const validatorTwoPrivate = "02".padStart(64, "0");
@@ -84,7 +85,7 @@ test("a locked proposal is retransmitted instead of reserving a second hash", as
   }
 });
 
-test("two validators finalize the next round after an attest/skip split", async () => {
+test("two validators finalize the next round after a prepare/skip split", async () => {
   const firstDir = await mkdtemp(join(tmpdir(), "zyron-split-a-"));
   const secondDir = await mkdtemp(join(tmpdir(), "zyron-split-b-"));
   const first = new NodeService(
@@ -127,26 +128,18 @@ test("two validators finalize the next round after an attest/skip split", async 
     assert.equal(second.status().height, 1);
     assert.equal(second.status().tipHash, first.status().tipHash);
     assert.notEqual(first.status().tipHash, locked.hash);
-    const skips = block.roundCertificate.filter((entry): entry is RoundSkipVote => "previousHash" in entry);
-    const locks = block.roundCertificate.filter((entry): entry is LockedAttestEvidence => "header" in entry);
-    assert.equal(skips.length, 1);
-    assert.equal(skips[0]!.validator, validatorTwo);
-    assert.equal(locks.length, 1);
-    assert.equal(locks[0]!.attestation.validator, validatorOne);
-    assert.equal(locks[0]!.header.round, 0);
+    assert.ok(block.roundCertificate.every((entry) => isViewChangeVote(entry)));
+    assert.ok(block.roundCertificate.every((entry) => isViewChangeVote(entry) && entry.lockHash === null));
 
     const conflicting: Block = { ...locked, attestations: onlyProposer.attestations };
     await assert.rejects(
       () => second.acceptFinalizedBlock(conflicting),
       /Refusing non-sequential block persistence|Wrong block height/
     );
-    const bothLocked = [
-      locks[0]!,
-      {
-        header: locks[0]!.header,
-        attestation: createBlockAttestation(locked, validatorTwoPrivate, validatorTwoPublic)
-      }
-    ];
+    const bothLocked = [validatorOnePrivate, validatorTwoPrivate].map((key, index) => ({
+      header: locked.header,
+      attestation: createBlockAttestation(locked, key, index === 0 ? validatorOnePublic : validatorTwoPublic)
+    }));
     assert.throws(
       () => validateUncommittedRoundCertificate(
         bothLocked,
@@ -263,12 +256,33 @@ async function openValidatorSet(count: number, label: string): Promise<{
 
 function directPeers(services: NodeService[], nowMs: number): ConsensusPeerClient {
   return {
-    async requestAttestations(block) {
+    async requestPrepares(block) {
+      const votes = [];
+      for (const service of services) {
+        try { votes.push(await service.prepareProposal(block, nowMs)); } catch { /* already prepared or refused */ }
+      }
+      return votes;
+    },
+    async requestAttestations(block, prepares = []) {
       const attestations = [];
       for (const service of services) {
-        try { attestations.push(await service.attestProposal(block, nowMs)); } catch { /* already reserved or refused */ }
+        try { attestations.push(await service.attestProposal(block, nowMs, prepares)); } catch { /* already reserved or refused */ }
       }
       return attestations;
+    },
+    async requestViewChanges(height, round, previousCertificate = [], knownPrepares = []) {
+      const votes = [];
+      for (const service of services) {
+        try { votes.push(await service.requestViewChange(height, round, previousCertificate, knownPrepares, nowMs)); } catch { /* locked without a quorum or already voted */ }
+      }
+      return votes;
+    },
+    async requestPrepareReports(height, round, previousHash) {
+      const reports = [];
+      for (const service of services) {
+        try { reports.push(await service.reportPrepare(height, round, previousHash, nowMs)); } catch { /* not at this tip */ }
+      }
+      return reports;
     },
     async requestRoundSkips(height, round, previousCertificate = []) {
       const votes = [];
@@ -291,10 +305,10 @@ function directPeers(services: NodeService[], nowMs: number): ConsensusPeerClien
       }
       return reports;
     },
-    async requestCompletionAttestations(block, votes) {
+    async requestCompletionAttestations(block, votes, prepares = []) {
       const attestations = [];
       for (const service of services) {
-        try { attestations.push(await service.attestCompletion(block, votes, nowMs)); } catch { /* refused or already final */ }
+        try { attestations.push(await service.attestCompletion(block, votes, nowMs, prepares)); } catch { /* refused or already final */ }
       }
       return attestations;
     },
@@ -318,7 +332,7 @@ test("four validators complete the original block after a 2-attest/2-skip split"
     const roundOne = opened.config.timestampMs + 60_000;
     const unsigned = opened.services[0]!.store.chain.prepareBlock([], opened.publics[0]!, { timestampMs: roundZero });
     const locked = await opened.services[0]!.signPreparedProposal(unsigned, roundZero);
-    await opened.services[1]!.attestProposal(locked, roundZero);
+    await opened.services[1]!.prepareProposal(locked, roundZero);
     await opened.services[2]!.requestSkipVote(1, 0, [], roundOne);
     await opened.services[3]!.requestSkipVote(1, 0, [], roundOne);
     const alternate = signOutsideJournal(opened.services[0]!, opened.keys[0]!, opened.publics[0]!, roundZero + 1_000);
@@ -376,7 +390,7 @@ test("seven validators complete a unique round-0 split and refuse two possibly f
       const unsigned = opened.services[0]!.store.chain.prepareBlock([], opened.publics[0]!, { timestampMs: roundZero });
       const locked = await opened.services[0]!.signPreparedProposal(unsigned, roundZero);
       for (let index = 1; index < attestCount; index += 1) {
-        await opened.services[index]!.attestProposal(locked, roundZero);
+        await opened.services[index]!.prepareProposal(locked, roundZero);
       }
       for (let index = attestCount; index < 7; index += 1) {
         await opened.services[index]!.requestSkipVote(1, 0, [], roundOne);
@@ -410,13 +424,13 @@ test("seven validators complete a unique round-0 split and refuse two possibly f
     const roundOne = opened.config.timestampMs + 60_000;
     const unsigned = opened.services[0]!.store.chain.prepareBlock([], opened.publics[0]!, { timestampMs: roundZero });
     const first = await opened.services[0]!.signPreparedProposal(unsigned, roundZero);
-    await opened.services[1]!.attestProposal(first, roundZero);
-    await opened.services[2]!.attestProposal(first, roundZero);
+    await opened.services[1]!.prepareProposal(first, roundZero);
+    await opened.services[2]!.prepareProposal(first, roundZero);
     const second = signOutsideJournal(opened.services[0]!, opened.keys[0]!, opened.publics[0]!, roundZero + 1_000);
     assert.notEqual(second.hash, first.hash);
-    await opened.services[3]!.attestProposal(second, roundZero + 1_000);
-    await opened.services[4]!.attestProposal(second, roundZero + 1_000);
-    await opened.services[5]!.attestProposal(second, roundZero + 1_000);
+    await opened.services[3]!.prepareProposal(second, roundZero + 1_000);
+    await opened.services[4]!.prepareProposal(second, roundZero + 1_000);
+    await opened.services[5]!.prepareProposal(second, roundZero + 1_000);
     await opened.services[6]!.requestSkipVote(1, 0, [], roundOne);
     const votes: RoundProgressEntry[] = [];
     for (const service of opened.services) {
@@ -433,8 +447,23 @@ test("seven validators complete a unique round-0 split and refuse two possibly f
       first.header.previousHash,
       1
     ), null);
+    const prepares: PrepareVote[] = [];
+    for (const service of opened.services) {
+      const report = await service.reportPrepare(1, 0, first.header.previousHash, roundOne);
+      if (report.vote) prepares.push(report.vote);
+    }
+    assert.equal(uniquePossiblyFinalizedWithPrepares(
+      votes,
+      prepares,
+      opened.config.validators,
+      opened.config.chainId,
+      1,
+      0,
+      first.header.previousHash,
+      1
+    ), null);
     await assert.rejects(
-      () => opened.services[6]!.attestCompletion(first, votes, roundOne),
+      () => opened.services[6]!.attestCompletion(first, votes, roundOne, prepares),
       /Split completion refused/
     );
     const block = await produceFinalizedBlock(
@@ -443,8 +472,17 @@ test("seven validators complete a unique round-0 split and refuse two possibly f
       opened.keys[1]!,
       roundOne
     );
-    assert.equal(block, null);
-    for (const service of opened.services) assert.equal(service.status().height, 0);
+    assert.ok(block);
+    assert.equal(block.header.round, 1);
+    assert.equal(block.header.height, 1);
+    assert.ok(block.attestations.length >= validatorQuorumSize(7));
+    assert.notEqual(block.hash, first.hash);
+    assert.notEqual(block.hash, second.hash);
+    const tip = block.hash;
+    for (const service of opened.services) {
+      assert.equal(service.status().height, 1);
+      assert.equal(service.status().tipHash, tip);
+    }
   } finally {
     await closeDirs(opened.directories);
   }

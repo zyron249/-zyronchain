@@ -275,8 +275,11 @@ export const PUBLIC_TESTNET_FIREWALL: readonly FirewallFlow[] = [
 ];
 
 export const CONSENSUS_HTTP_PATHS = [
+  "/proposal/prepare",
   "/proposal/attest",
   "/round/skip",
+  "/round/view",
+  "/round/prepare-report",
   "/round/lock",
   "/round/report",
   "/round/complete",

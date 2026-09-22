@@ -13,6 +13,7 @@ import {
   verifyCanonicalDomain
 } from "../src/crypto.js";
 import { NodeService, produceFinalizedBlock, type ConsensusPeerClient } from "../src/node.js";
+import { createPrepareVote } from "../src/round-view-change.js";
 import { ChainStore, SigningJournal } from "../src/storage.js";
 import type { GenesisConfig } from "../src/types.js";
 import { RemoteValidatorSigner } from "../src/validator-signer.js";
@@ -70,6 +71,15 @@ test("authenticated remote validator signer keeps the secret out of the node and
     const journal = await SigningJournal.open(directory);
     const service = new NodeService(store, journal, signer);
     const peers: ConsensusPeerClient = {
+      requestPrepares: async (block) => [createPrepareVote({
+        chainId: block.header.chainId,
+        height: block.header.height,
+        round: block.header.round,
+        blockHash: block.hash,
+        validatorPrivateKey: validatorTwoPrivate,
+        validatorPublicKey: validatorTwoPublic,
+        protocolVersion: block.header.version
+      })],
       requestAttestations: async (block) => [store.chain.attestBlock(block, validatorTwoPrivate).attestations[0]!],
       requestRoundSkips: async () => [],
       broadcastBlock: async () => undefined
@@ -77,8 +87,8 @@ test("authenticated remote validator signer keeps the secret out of the node and
     const block = await produceFinalizedBlock(service, peers, signer, genesis().timestampMs + 30_000);
     assert.ok(block);
     assert.equal(block.header.height, 1);
-    assert.deepEqual(intents, ["block-proposal", "block-attestation"]);
-    assert.deepEqual(authorizations, [`Bearer ${testToken}`, `Bearer ${testToken}`]);
+    assert.deepEqual(intents, ["block-proposal", "round-prepare", "block-attestation"]);
+    assert.deepEqual(authorizations, [`Bearer ${testToken}`, `Bearer ${testToken}`, `Bearer ${testToken}`]);
     assert.equal(service.status().height, 1);
     journal.close();
   } finally {
