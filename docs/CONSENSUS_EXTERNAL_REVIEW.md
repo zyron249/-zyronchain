@@ -26,8 +26,10 @@ From `l1/`:
 ```
 npm ci
 npm test
-node --test --test-timeout=600000 dist/test/round-double-hash-liveness-regression.test.js dist/test/consensus-safety-invariants.test.js dist/test/split-vote-liveness.test.js
+node --test --test-timeout=600000 dist/test/round-double-hash-liveness-regression.test.js dist/test/consensus-safety-invariants.test.js dist/test/split-vote-liveness.test.js dist/test/consensus-1-1-qualification.test.js
 ```
+
+The review package is `docs/consensus-review/`. Start at `00-README.md`. Self-review of that package is not an independent review.
 
 The old halt is the N=4 2+2 case and the N=7 3+3+1 case in the regression file. Completion of those observations is null. One later hash finalizes. A second finalized hash at that height is rejected.
 

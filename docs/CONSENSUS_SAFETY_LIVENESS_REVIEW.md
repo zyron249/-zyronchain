@@ -14,7 +14,7 @@ Timeouts do not finalize. Unseen validators are not assigned. Missing votes are 
 
 Lock rule: a later commit of a different hash is allowed only when its prepare quorum round is strictly higher than every conflicting commit. Honest committers of the earlier quorum do not prepare the new hash, and `N - Q + f < Q`, so that quorum cannot be assembled while faults stay within `f`.
 
-Liveness bound: after an ambiguous round, at most `f` Byzantine proposers precede an honest round-robin proposer. `X = f + 1` (`roundChangeLivenessBound`). N=4 gives `X=2`. N=7 gives `X=3`.
+Liveness bound, nil-lock case only: after an ambiguous round with no commit quorum, round-robin `validators[((height - 1) + round) mod N]` meets at most `f` Byzantine proposers before an honest one. `X = f + 1` (`roundChangeLivenessBound`). N=4 gives `X=2`. N=7 gives `X=3`. The bound assumes eventual synchrony, faults at most `f`, and honest validators answering in that round. It does not claim every schedule or clock fault. A height that already has a commit quorum finishes that hash.
 
 ## Safety invariants
 
@@ -52,11 +52,13 @@ The bounded search `exploreBoundedConsensus` covers prepare assignments for N=3,
 - `l1/test/round-double-hash-liveness-regression.test.ts` drives the real `NodeService` for N=4 and N=7, partition heal, crash/restart lock files, and four OS processes with separate directories, keys, and ports.
 - `l1/test/split-vote-liveness.test.ts` keeps unique 2-prepare/2-skip and N=7 unique completion on the original hash, and the N=7 ambiguous case now finalizes one later hash.
 - `l1/test/consensus-safety-invariants.test.ts` binds S1–S10 and the bounded search.
-- CI job `consensus-liveness` runs those three files. The main `l1` job runs the full suite.
+- `l1/test/consensus-1-1-qualification.test.ts` proves S9 against `validateAttestationQuorum`, protocol-v5 prepare domain separation, malformed `/round/view` HTTP, operational rejection of `/zyronchain/consensus/1.0.0`, and an N=7 OS-process 3+3+1 run. In-process N=7 tests are not described as multiprocess.
+- CI job `consensus-liveness` runs those four files. The main `l1` job runs the full suite.
 
 ## Limitations
 
-- The state-space search does not replay every interleaving of P2P delay. Reorder coverage is the deterministic in-process harness plus the HTTP and process tests.
+- The state-space search does not replay every interleaving of P2P delay. There is no dedicated delay/loss/duplication/reorder chaos scheduler. Partition and reconnect coverage is the regression matrix. Anything beyond that is not claimed.
+- `tryCompleteSplitRound` completes only round 0. Later unique splits use the view-change path in `produceFinalizedBlock`.
 - Rounds above the tested window still use the same rules, but the bounded search stops at 2 rounds.
 - Unique-hash completion can still commit a hash that has not gathered a prepare quorum, which is the pre-existing safety rule for a single reachable hash. Those commits do not invent a prepare certificate.
 - Happy-path finality costs one extra prepare round-trip.
