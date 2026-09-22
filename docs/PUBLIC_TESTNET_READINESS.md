@@ -117,6 +117,6 @@ Engineering P0s that still block a real shared public testnet:
 1. Identity values are still null.
 2. Bootstrap slots are still `PLACEHOLDER`, so no independent failure domain is published.
 3. Public RPC origins are still `PLACEHOLDER`, so no public listener is bound.
-4. A round where two different hashes could both still reach quorum stays stuck. Unique round-0 attest/skip splits for 4 and 7 validators can complete the original block. There is no prepare/commit view-change, and a split after round 0 is not completed. That does not activate a public testnet.
+4. STOP-SHIP REVIEW: a round-0 double-hash split, where two different hashes could both still reach quorum, stays stuck. Unique round-0 attest/skip splits for 4 and 7 validators can complete the original block. There is no prepare/commit view-change, and a split after round 0 is not completed. Quorum and the reveal threshold are not lowered here. That does not activate a public testnet.
 
 `publicMiningActivated` stays false. A later edit may replace placeholder bootstrap tokens. That edit still must not mark the file `live`, invent production endpoints, or set `publicTestnetActivationAllowed`, `mainnetActivationAllowed`, `publicMiningActivated`, or `publicationAllowed`.

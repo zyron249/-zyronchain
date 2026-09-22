@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { preflightCheckedInPublicTestnet } from "../dist/src/public-testnet-governance.js";
+import { formatPublicTestnetPreflight } from "../dist/src/public-testnet-provisioning.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repo = resolve(root, "..");
@@ -22,25 +23,7 @@ const report = preflightCheckedInPublicTestnet({
   governanceCandidate: await readJson(resolve(root, "config/public-testnet-governance-input.candidate.json"))
 });
 
-const identity = report.networkIdentity;
-process.stdout.write([
-  "NETWORK IDENTITY",
-  `  name: ${identity.networkName}`,
-  `  chainId: ${identity.chainId}`,
-  `  validators: ${identity.validators}`,
-  `  bootstraps: ${identity.bootstraps}`,
-  `  publicRpc: ${identity.publicRpc}`,
-  `  archive: ${identity.archive}`,
-  `  monitoring: ${identity.monitoring}`,
-  `  regions: ${identity.regions}`,
-  `  genesis: ${identity.genesis}`,
-  `  mining: ${identity.mining}`,
-  `  authorization: ${identity.authorization}`,
-  `  engineering: ${identity.engineeringReadiness}`,
-  `  deployment: ${identity.deploymentReadiness}`,
-  `  activation: ${identity.activationReadiness}`,
-  ""
-].join("\n"));
+process.stdout.write(formatPublicTestnetPreflight(report));
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 if (report.engineeringReadiness !== "PASS" || report.governanceActivation !== "BLOCKED" || report.activationFlagsFalse !== true) {
   process.exitCode = 1;

@@ -75,7 +75,9 @@ const NETWORK_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])$/;
 const DISPLAY_NAME_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9 ]{0,62}[A-Za-z0-9])$/;
 const DNS_NAME_PATTERN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$/;
 const ALLOCATION_PURPOSES = new Set(["activity-pool", "documented-public-allocation"]);
-const REJECTED_ALLOCATION_PURPOSES = new Set(["founder", "premine", "team"]);
+const REJECTED_ALLOCATION_PURPOSES = new Set([
+  "founder", "premine", "team", "hidden", "admin", "emergency", "emergency-mint"
+]);
 
 const GOVERNANCE_KEYS = [
   "schemaVersion", "status", "networkName", "chainId", "genesisVersion", "genesisTimestampMs",
@@ -953,7 +955,7 @@ function parseAllocations(value: unknown, activityPool: Address): PublicTestnetG
     assertPlainRecord(entry, "governance allocation");
     assertExactKeys(entry, ALLOCATION_KEYS, "governance allocation");
     if (typeof entry.purpose !== "string" || REJECTED_ALLOCATION_PURPOSES.has(entry.purpose)) {
-      throw new Error("Founder, premine, and team allocations are rejected");
+      throw new Error("Founder, premine, and team allocations are rejected, including hidden, admin, and emergency mint");
     }
     if (!ALLOCATION_PURPOSES.has(entry.purpose)) throw new Error("Invalid allocation purpose");
     if (typeof entry.address !== "string" || !/^ZYN[0-9a-f]{40}$/.test(entry.address)) throw new Error("Invalid allocation address");

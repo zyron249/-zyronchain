@@ -1,7 +1,21 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "status": "vendor-neutral-template",
+  "placementRule": "One VM runs one role. Validators, bootstraps, and the two RPC roles span three regions. Archive and monitoring are separate VMs.",
   "regions": ["region-a", "region-b", "region-c"],
+  "hosts": [
+    { "id": "vm-validator-a", "region": "region-a", "roles": ["validator-a"] },
+    { "id": "vm-bootstrap-a", "region": "region-a", "roles": ["bootstrap-a"] },
+    { "id": "vm-monitoring-replica", "region": "region-a", "roles": ["monitoring-replica"], "optional": true },
+    { "id": "vm-validator-b", "region": "region-b", "roles": ["validator-b"] },
+    { "id": "vm-bootstrap-b", "region": "region-b", "roles": ["bootstrap-b"] },
+    { "id": "vm-rpc-a", "region": "region-b", "roles": ["rpc-a"] },
+    { "id": "vm-archive", "region": "region-b", "roles": ["archive-a"] },
+    { "id": "vm-validator-c", "region": "region-c", "roles": ["validator-c"] },
+    { "id": "vm-bootstrap-c", "region": "region-c", "roles": ["bootstrap-c"] },
+    { "id": "vm-rpc-b", "region": "region-c", "roles": ["rpc-b"] },
+    { "id": "vm-monitoring-primary", "region": "region-c", "roles": ["monitoring-primary"] }
+  ],
   "roles": [
     { "id": "validator-a", "region": "region-a", "kind": "validator", "publicConsensus": false },
     { "id": "validator-b", "region": "region-b", "kind": "validator", "publicConsensus": false },
@@ -9,9 +23,10 @@
     { "id": "bootstrap-a", "region": "region-a", "kind": "bootstrap", "publicConsensus": false },
     { "id": "bootstrap-b", "region": "region-b", "kind": "bootstrap", "publicConsensus": false },
     { "id": "bootstrap-c", "region": "region-c", "kind": "bootstrap", "publicConsensus": false },
-    { "id": "rpc-a", "region": "region-a", "kind": "public-rpc", "publicConsensus": false },
-    { "id": "rpc-b", "region": "region-b", "kind": "public-rpc", "publicConsensus": false },
-    { "id": "archive-a", "region": "region-a", "kind": "archive", "publicConsensus": false },
-    { "id": "monitoring-a", "region": "region-c", "kind": "monitoring", "publicConsensus": false }
+    { "id": "rpc-a", "region": "region-b", "kind": "public-rpc", "publicConsensus": false },
+    { "id": "rpc-b", "region": "region-c", "kind": "public-rpc", "publicConsensus": false },
+    { "id": "archive-a", "region": "region-b", "kind": "archive", "publicConsensus": false },
+    { "id": "monitoring-primary", "region": "region-c", "kind": "monitoring", "publicConsensus": false },
+    { "id": "monitoring-replica", "region": "region-a", "kind": "monitoring", "publicConsensus": false, "optional": true }
   ]
 }

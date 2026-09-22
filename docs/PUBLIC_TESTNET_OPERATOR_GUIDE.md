@@ -83,6 +83,40 @@ The pipeline plan lists Linux, macOS, and Windows, plus SHA256SUMS, SBOM, commit
 
 `npm run public-testnet:preflight` prints the network identity summary and exits 0 only when engineering is PASS, governance activation is BLOCKED, and the activation flags are false. Expected summary while operator input is missing: validators `0/3`, bootstraps `0/3`, public RPC `0/2`, archive `0/1`, monitoring `0/1`, regions `0/3`, genesis `NOT BUILT`, mining `INACTIVE`, authorization `BLOCKED`, deployment `NOT READY`.
 
+## Hosts
+
+Templates assume Ubuntu LTS, an unprivileged `zyron` user, systemd, and separate directories for data (`/var/lib/zyron`), config (`/etc/zyron`), and secrets (`/var/lib/zyron/keys`, mode `0700`). Logrotate covers `/var/log/zyron`. Restart burst is limited. The clock unit refuses to start a role until `NTPSynchronized=yes`. Docker is optional: images contain no secrets, and the data volume keeps the signing journal and node identity across recreate.
+
+One VM runs one role. Region A: `validator-a`, `bootstrap-a`, optional monitoring replica. Region B: `validator-b`, `bootstrap-b`, `rpc-a`, archive. Region C: `validator-c`, `bootstrap-c`, `rpc-b`, primary monitoring. A single VM does not hold every validator, every bootstrap, or both RPC roles.
+
+Public RPC hosts do not receive validator or bootstrap keystores. Consensus routes stay HTTP 403 on the public role. TLS is terminated by the Nginx or Caddy template (TLS 1.2 minimum, TLS 1.3 preferred). Domains are human input. `example.com`, `localhost`, private addresses, non-HTTPS URLs, paths, queries, fragments, and credentials are rejected. The nftables file `firewall/network-edge.nft` is the network boundary, not only an application check.
+
+The machine-readable pack is `l1/config/public-testnet-operator-input.pack.json`. Status is `AWAITING REAL OPERATOR INPUT`. It contains no secrets and is not a genesis.
+
+## Allocations, faucet, and the activity oracle
+
+Do not invent amounts. Each allocation line must show purpose, address, `amountAtoms`, amount in ZYN, and the remaining mining budget. Genesis supply plus the mining budget stays within 50M ZYN. Founder, premine, team, hidden, admin, and emergency mint purposes are rejected.
+
+A faucet, if operators add one later, is testnet-only. It may spend only an explicit documented public allocation. It has no protocol mint authority. Rate limits belong on that service. With no allocation, the faucet has nothing to send.
+
+The activity oracle public key is required before an approved genesis. This repository does not contain a production oracle key. An explicit `amountAtoms` of 0 for the activity pool is safe only as a reviewed governance choice: the pool address is still required, no coins are minted, and the mining budget stays the full cap when every allocation is zero. Leaving the address null does not build a genesis.
+
+## Deterministic genesis
+
+Build the same approved input on two hosts. The genesis bytes must match or the procedure stops. The freeze file stays format-only until that reproduction and a human approval exist. After a freeze, the same chain ID must not be reused with a different genesis hash.
+
+## Backup and restore
+
+Copy the data directory as one set: chain database, signing journal, and `node-identity.json`. Restore that whole directory with the same genesis file. A restored validator must keep the same chain ID, genesis hash, node identity, and tip, and must refuse a second signature for a journal slot it already reserved. Do not delete the journal, regenerate the key, or replace genesis to “fix” a restore.
+
+## Soak
+
+24h, 72h, and 7d are `NOT RUN` until samples whose timestamps actually span those horizons exist. Short fixtures are not elapsed time.
+
+## STOP-SHIP REVIEW
+
+A round-0 split where two different hashes could both still reach quorum stays stuck. That limitation is a STOP-SHIP REVIEW for a public launch. Quorum and the reveal threshold are unchanged. A fix, if one is proven safe, belongs in a separate consensus PR.
+
 ## Rollback
 
 Allowed: restart the same binary with the same genesis file and the same data directory.
