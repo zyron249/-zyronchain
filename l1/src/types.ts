@@ -167,7 +167,36 @@ export interface LockedAttestEvidence {
   attestation: BlockAttestation;
 }
 
-export type RoundProgressEntry = RoundSkipVote | LockedAttestEvidence;
+export interface PrepareVote {
+  validator: Address;
+  publicKey: string;
+  chainId: string;
+  height: number;
+  round: number;
+  blockHash: string;
+  signature: string;
+}
+
+/**
+ * A timeout vote. It never finalizes a hash.
+ * `lockRound` and `lockHash` are both null when the voter has not committed.
+ * A non-nil lock is justified by `prepares` on this vote or by another vote
+ * in the same certificate that carries a prepare quorum for that lock.
+ */
+export interface ViewChangeVote {
+  validator: Address;
+  publicKey: string;
+  chainId: string;
+  height: number;
+  round: number;
+  previousHash: string;
+  lockRound: number | null;
+  lockHash: string | null;
+  prepares: PrepareVote[];
+  signature: string;
+}
+
+export type RoundProgressEntry = RoundSkipVote | LockedAttestEvidence | ViewChangeVote;
 
 /** Read-only report of a validator's existing choice for one height and round. */
 export interface RoundChoiceReport {

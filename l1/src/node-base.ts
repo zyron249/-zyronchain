@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { dirname, join } from "node:path";
+import { readLockCertificate, writeLockCertificate } from "./lock-certificate-store.js";
 import { canonicalJson, sha256Hex } from "./codec.js";
 
 import {
@@ -37,6 +38,16 @@ import {
 import { FixedWindowLimiter } from "./rpc-rate-limit.js";
 import { classifyRpcRoute, PUBLIC_RPC_LIMITS } from "./public-testnet-rpc.js";
 import { RoundProposalStore } from "./round-proposal-store.js";
+import {
+  commitAllowedByLock,
+  preparePayload,
+  isViewChangeVote,
+  uniquePossiblyFinalizedWithPrepares,
+  validatePrepareQuorum,
+  validatePrepareVote,
+  validateViewChangeCertificate,
+  viewChangePayload
+} from "./round-view-change.js";
 import { ChainStore, SigningJournal } from "./storage.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
 import type {
@@ -44,11 +55,13 @@ import type {
   Block,
   BlockAttestation,
   LockedAttestEvidence,
+  PrepareVote,
   RoundChoiceReport,
   RoundProgressEntry,
   RoundSkipVote,
   Transaction,
-  Validator
+  Validator,
+  ViewChangeVote
 } from "./types.js";
 import { LocalValidatorSigner, signWithValidator, type ValidatorSigner } from "./validator-signer.js";
 
@@ -158,12 +171,32 @@ export interface PeerRequestCredentials {
 }
 
 export interface ConsensusPeerClient {
-  requestAttestations(block: Block): Promise<BlockAttestation[]>;
+  requestAttestations(block: Block, prepares?: PrepareVote[]): Promise<BlockAttestation[]>;
+  requestPrepares?(block: Block): Promise<PrepareVote[]>;
   requestRoundSkips(height: number, round: number, previousCertificate?: RoundProgressEntry[]): Promise<RoundSkipVote[]>;
+  requestViewChanges?(
+    height: number,
+    round: number,
+    previousCertificate?: RoundProgressEntry[],
+    knownPrepares?: PrepareVote[]
+  ): Promise<ViewChangeVote[]>;
+  requestPrepareReports?(height: number, round: number, previousHash: string): Promise<PrepareReport[]>;
   requestLockedAttestations?(height: number, round: number, previousHash: string): Promise<LockedAttestEvidence[]>;
   requestRoundReports?(height: number, round: number, previousHash: string): Promise<RoundChoiceReport[]>;
-  requestCompletionAttestations?(block: Block, votes: RoundProgressEntry[]): Promise<BlockAttestation[]>;
+  requestCompletionAttestations?(
+    block: Block,
+    votes: RoundProgressEntry[],
+    prepares?: PrepareVote[]
+  ): Promise<BlockAttestation[]>;
   broadcastBlock(block: Block): Promise<void>;
+}
+
+export interface PrepareReport {
+  height: number;
+  round: number;
+  previousHash: string;
+  vote: PrepareVote | null;
+  block: Block | null;
 }
 
 export function assertSafeRpcBinding(
@@ -297,6 +330,7 @@ export class NodeService {
   private readonly startedAtMs = Date.now();
   private readonly validatorSigner: ValidatorSigner | undefined;
   private readonly roundProposals: RoundProposalStore | undefined;
+  private readonly lockCertificates: string | undefined;
   private lastValidatorClockMs: number | undefined;
   private validatorClockFaulted = false;
 
@@ -308,6 +342,9 @@ export class NodeService {
     this.validatorSigner = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
     this.roundProposals = signingJournal
       ? new RoundProposalStore(join(dirname(signingJournal.path), "round-proposals"))
+      : undefined;
+    this.lockCertificates = signingJournal
+      ? join(dirname(signingJournal.path), "lock-certificates")
       : undefined;
   }
 
@@ -397,7 +434,52 @@ export class NodeService {
     return tx.txid;
   }
 
-  async attestProposal(value: unknown, nowMs = Date.now()): Promise<BlockAttestation> {
+  async prepareProposal(value: unknown, nowMs = Date.now()): Promise<PrepareVote> {
+    return this.exclusive(async () => {
+      if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
+      this.assertValidatorClock(nowMs);
+      validateBlockShape(value);
+      const block = value as Block;
+      this.store.chain.validateProposal(block, nowMs);
+      const publicKey = this.validatorSigner.publicKey;
+      const validator = this.store.chain.validatorsAt(block.header.height).find((item) => item.publicKey === publicKey);
+      if (!validator) throw new Error("Configured validator key is not in genesis");
+      const priors = this.signingJournal.choicesAtHeight(block.header.height)
+        .filter((choice) => choice.kind === "attest");
+      if (!commitAllowedByLock(
+        priors.map((choice) => ({ round: choice.round, hash: choice.value })),
+        block.header.round,
+        block.hash,
+        null
+      )) {
+        throw new Error("Conflicting validator action prevented for consensus round");
+      }
+      const choice = this.signingJournal.choice(block.header.height, block.header.round);
+      if (choice?.kind === "skip" || (choice?.kind === "attest" && choice.value !== block.hash)) {
+        throw new Error("Conflicting validator action prevented for consensus round");
+      }
+      await this.roundProposals?.save(block);
+      await this.signingJournal.reservePrepare(block.header.height, block.header.round, block.hash);
+      const unsigned = {
+        validator: validator.address,
+        publicKey,
+        chainId: block.header.chainId,
+        height: block.header.height,
+        round: block.header.round,
+        blockHash: block.hash
+      };
+      return {
+        ...unsigned,
+        signature: await signWithValidator(this.validatorSigner, preparePayload(unsigned), "round-prepare", block.header.version)
+      };
+    });
+  }
+
+  async attestProposal(
+    value: unknown,
+    nowMs = Date.now(),
+    prepares: PrepareVote[] = []
+  ): Promise<BlockAttestation> {
     return this.exclusive(async () => {
       if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
       this.assertValidatorClock(nowMs);
@@ -408,12 +490,57 @@ export class NodeService {
       const validator = this.store.chain.validatorsAt(block.header.height).find((item) => item.publicKey === publicKey);
       if (!validator) throw new Error("Configured validator key is not in genesis");
       const choice = this.signingJournal.choice(block.header.height, block.header.round);
-      if (choice?.kind === "skip" || (choice?.kind === "attest" && choice.value !== block.hash)) {
+      if (choice?.kind === "attest" && choice.value !== block.hash) {
         throw new Error("Conflicting validator action prevented for consensus round");
       }
-      this.assertPriorHeightAttestationReleased(block);
-      await this.roundProposals?.save(block);
-      await this.signingJournal.reserveAttestation(block.header.height, block.header.round, block.hash);
+      if (choice?.kind === "skip" && choice.value !== block.header.previousHash) {
+        throw new Error("Conflicting validator action prevented for consensus round");
+      }
+      const priors = this.signingJournal.choicesAtHeight(block.header.height)
+        .filter((prior) => prior.kind === "attest" && prior.round !== block.header.round);
+      if (!commitAllowedByLock(
+        priors.map((prior) => ({ round: prior.round, hash: prior.value })),
+        block.header.round,
+        block.hash,
+        block.header.round
+      )) {
+        throw new Error("Conflicting validator action prevented for consensus round");
+      }
+      if (!(choice?.kind === "attest" && choice.value === block.hash)) {
+        let quorumOk = false;
+        try {
+          validatePrepareQuorum(
+            prepares,
+            this.store.chain.validatorsAt(block.header.height),
+            block.header.chainId,
+            block.header.height,
+            block.header.round,
+            block.hash,
+            block.header.version
+          );
+          quorumOk = true;
+        } catch {
+          quorumOk = false;
+        }
+        if (!quorumOk) {
+          if (choice?.kind === "skip") throw new Error("Conflicting validator action prevented for consensus round");
+          throw new Error("Prepare quorum required");
+        }
+        if (choice?.kind === "skip") {
+          const recoveryRound = block.header.round + 1;
+          const recovery = this.signingJournal.choice(block.header.height, recoveryRound);
+          if (!recovery) {
+            await this.signingJournal.reserveAttestation(block.header.height, recoveryRound, block.hash);
+          } else if (!(recovery.kind === "attest" && recovery.value === block.hash)) {
+            throw new Error("Conflicting validator action prevented for consensus round");
+          }
+        } else {
+          if (this.lockCertificates) {
+            await writeLockCertificate(this.lockCertificates, block.header.height, block.header.round, prepares);
+          }
+          await this.signingJournal.reserveAttestation(block.header.height, block.header.round, block.hash);
+        }
+      }
       return {
         validator: validator.address,
         publicKey,
@@ -437,11 +564,18 @@ export class NodeService {
       const reusable = await this.reusableSignedProposal(block.header.height, block.header.round);
       if (reusable) return reusable;
       const stored = await this.roundProposals?.load(block.header.height, block.header.round);
+      const prepared = this.signingJournal.phase(block.header.height, block.header.round, "prepare");
       if (choice?.kind === "attest") {
         if (!stored || stored.hash !== choice.value || stored.header.height !== this.store.chain.height + 1 ||
             stored.header.previousHash !== this.store.chain.tip.hash) {
           throw new Error("Conflicting validator action prevented for consensus round");
         }
+      } else if (prepared) {
+        if (!stored || stored.hash !== prepared.value || stored.header.height !== this.store.chain.height + 1 ||
+            stored.header.previousHash !== this.store.chain.tip.hash) {
+          throw new Error("Conflicting validator action prevented for consensus round");
+        }
+        if (stored.signature) return stored;
       } else if (stored && stored.hash !== block.hash) {
         throw new Error("Conflicting validator action prevented for consensus round");
       }
@@ -449,13 +583,179 @@ export class NodeService {
       this.store.chain.validatePreparedUnsignedBlock(proposal, nowMs);
       this.assertPriorHeightAttestationReleased(proposal);
       if (!stored) await this.roundProposals?.save(proposal);
-      await this.signingJournal.reserveAttestation(proposal.header.height, proposal.header.round, proposal.hash);
+      await this.signingJournal.reservePrepare(proposal.header.height, proposal.header.round, proposal.hash);
       const signed = attachBlockSignature(
         proposal,
         await signWithValidator(this.validatorSigner, proposal.header, "block-proposal", proposal.header.version)
       );
       await this.roundProposals?.save(signed);
       return signed;
+    });
+  }
+
+  async reportPrepare(height: number, round: number, previousHash: string, nowMs = Date.now()): Promise<PrepareReport> {
+    return this.exclusive(async () => {
+      if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
+      this.assertValidatorClock(nowMs);
+      const chain = this.store.chain;
+      if (!Number.isSafeInteger(height) || height !== chain.height + 1 || !Number.isSafeInteger(round) || round < 0) {
+        throw new Error("Invalid prepare report request");
+      }
+      if (previousHash !== chain.tip.hash) throw new Error("Prepare report does not match the current tip");
+      const prepared = this.signingJournal.phase(height, round, "prepare");
+      const empty: PrepareReport = { height, round, previousHash, vote: null, block: null };
+      if (!prepared) return empty;
+      const stored = await this.roundProposals?.load(height, round);
+      if (!stored || stored.hash !== prepared.value || stored.header.previousHash !== previousHash) {
+        throw new Error("Prepared proposal is unavailable");
+      }
+      const publicKey = this.validatorSigner.publicKey;
+      const validator = chain.validatorsAt(height).find((item) => item.publicKey === publicKey);
+      if (!validator) throw new Error("Configured validator key is not in genesis");
+      const unsigned = {
+        validator: validator.address,
+        publicKey,
+        chainId: chain.genesis.chainId,
+        height,
+        round,
+        blockHash: stored.hash
+      };
+      const vote: PrepareVote = {
+        ...unsigned,
+        signature: await signWithValidator(
+          this.validatorSigner,
+          preparePayload(unsigned),
+          "round-prepare",
+          chain.protocolVersionAt(height)
+        )
+      };
+      validatePrepareVote(
+        vote,
+        chain.validatorsAt(height),
+        chain.genesis.chainId,
+        height,
+        round,
+        stored.hash,
+        chain.protocolVersionAt(height)
+      );
+      return { height, round, previousHash, vote, block: stored };
+    });
+  }
+
+  async requestViewChange(
+    height: number,
+    round: number,
+    previousCertificate: RoundProgressEntry[] = [],
+    knownPrepares: PrepareVote[] = [],
+    nowMs = Date.now()
+  ): Promise<ViewChangeVote> {
+    return this.exclusive(async () => {
+      if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
+      this.assertValidatorClock(nowMs);
+      const chain = this.store.chain;
+      if (!Number.isSafeInteger(height) || height !== chain.height + 1 || !Number.isSafeInteger(round) || round < 0) {
+        throw new Error("Invalid view-change request");
+      }
+      const deadline = chain.tip.header.timestampMs + BLOCK_INTERVAL_MS + ((round + 1) * ROUND_WINDOW_MS);
+      if (nowMs < deadline) throw new Error("View-change deadline has not elapsed");
+      if (round === 0 && previousCertificate.length !== 0) {
+        throw new Error("Round 0 view-change must not contain a predecessor certificate");
+      }
+      if (round > 0) {
+        validateRoundProgressCertificate(
+          previousCertificate,
+          chain.validatorsAt(height),
+          chain.genesis.chainId,
+          height,
+          round - 1,
+          chain.tip.hash,
+          chain.protocolVersionAt(height)
+        );
+      }
+      const publicKey = this.validatorSigner.publicKey;
+      const validator = chain.validatorsAt(height).find((item) => item.publicKey === publicKey);
+      if (!validator) throw new Error("Configured validator key is not in genesis");
+      const commits = this.signingJournal.choicesAtHeight(height).filter((choice) => choice.kind === "attest");
+      const highest = commits.reduce<{ round: number; value: string } | undefined>((best, choice) => {
+        if (!best || choice.round > best.round) return choice;
+        return best;
+      }, undefined);
+      let lockRound: number | null = null;
+      let lockHash: string | null = null;
+      let prepares: PrepareVote[] = [];
+      if (highest) {
+        lockHash = highest.value;
+        const validatorsAtHeight = chain.validatorsAt(height);
+        const protocol = chain.protocolVersionAt(height);
+        // A skipper's commit is journaled one round above the prepare quorum
+        // that justified it. The lock round is the quorum's round.
+        const candidateRounds = [highest.round];
+        if (highest.round > 0) candidateRounds.push(highest.round - 1);
+        for (const candidateRound of candidateRounds) {
+          const stored = this.lockCertificates
+            ? await readLockCertificate(this.lockCertificates, height, candidateRound)
+            : undefined;
+          const candidates = stored ?? knownPrepares;
+          const matching = candidates.filter((vote) => {
+            try {
+              validatePrepareVote(
+                vote,
+                validatorsAtHeight,
+                chain.genesis.chainId,
+                height,
+                candidateRound,
+                highest.value,
+                protocol
+              );
+              return true;
+            } catch {
+              return false;
+            }
+          });
+          try {
+            validatePrepareQuorum(
+              matching,
+              validatorsAtHeight,
+              chain.genesis.chainId,
+              height,
+              candidateRound,
+              highest.value,
+              protocol
+            );
+          } catch {
+            continue;
+          }
+          prepares = matching;
+          lockRound = candidateRound;
+          if (this.lockCertificates && !stored) {
+            await writeLockCertificate(this.lockCertificates, height, candidateRound, prepares);
+          }
+          break;
+        }
+        if (lockRound === null) throw new Error("Locked commit is missing its prepare quorum");
+      }
+      const viewValue = lockHash === null || lockRound === null ? "nil" : `${lockRound}:${lockHash}`;
+      await this.signingJournal.reserveView(height, round, viewValue);
+      const unsigned = {
+        validator: validator.address,
+        publicKey,
+        chainId: chain.genesis.chainId,
+        height,
+        round,
+        previousHash: chain.tip.hash,
+        lockRound,
+        lockHash
+      };
+      return {
+        ...unsigned,
+        prepares,
+        signature: await signWithValidator(
+          this.validatorSigner,
+          viewChangePayload(unsigned),
+          "round-view-change",
+          chain.protocolVersionAt(height)
+        )
+      };
     });
   }
 
@@ -644,17 +944,23 @@ export class NodeService {
     });
   }
 
-  async attestCompletion(block: Block, votes: RoundProgressEntry[], nowMs = Date.now()): Promise<BlockAttestation> {
+  async attestCompletion(
+    block: Block,
+    votes: RoundProgressEntry[],
+    nowMs = Date.now(),
+    prepares: PrepareVote[] = []
+  ): Promise<BlockAttestation> {
     return this.exclusive(async () => {
       if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
       this.assertValidatorClock(nowMs);
       validateBlockShape(block);
-      if (block.header.round !== 0) throw new Error("Split completion is limited to round 0");
       this.store.chain.validateProposal(block, nowMs);
       const validators = this.store.chain.validatorsAt(block.header.height);
       if (!Array.isArray(votes) || votes.length > validators.length) throw new Error("Invalid split completion votes");
-      const candidate = uniquePossiblyFinalizedHash(
+      if (!Array.isArray(prepares) || prepares.length > validators.length) throw new Error("Invalid split completion prepares");
+      const candidate = uniquePossiblyFinalizedWithPrepares(
         votes,
+        prepares,
         validators,
         block.header.chainId,
         block.header.height,
@@ -688,6 +994,22 @@ export class NodeService {
         }
       } else {
         throw new Error("Conflicting validator action prevented for consensus round");
+      }
+      if (this.lockCertificates && prepares.length > 0) {
+        try {
+          validatePrepareQuorum(
+            prepares,
+            validators,
+            block.header.chainId,
+            block.header.height,
+            block.header.round,
+            block.hash,
+            block.header.version
+          );
+          await writeLockCertificate(this.lockCertificates, block.header.height, block.header.round, prepares);
+        } catch {
+          // Unique-hash completion may commit without a prepare quorum.
+        }
       }
       return {
         validator: validator.address,
@@ -1027,6 +1349,18 @@ async function route(
     }
     return writeJson(response, 202, { txid });
   }
+  if (request.method === "POST" && url.pathname === "/proposal/prepare") {
+    preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
+    const body = await readJsonBody(request, bodyReservation, bodyLimit);
+    const release = enterConsensusRequest(
+      request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
+    );
+    try {
+      return writeJson(response, 200, { vote: await service.prepareProposal(body) });
+    } finally {
+      release();
+    }
+  }
   if (request.method === "POST" && url.pathname === "/proposal/attest") {
     preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
     const body = await readJsonBody(request, bodyReservation, bodyLimit);
@@ -1034,7 +1368,57 @@ async function route(
       request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
     );
     try {
-      return writeJson(response, 200, { attestation: await service.attestProposal(body) });
+      assertPlainRecord(body, "commit request");
+      assertExactKeys(body, ["block", "prepares"], "commit request");
+      validateBlockShape(body.block);
+      if (!Array.isArray(body.prepares)) throw new Error("Invalid commit request");
+      return writeJson(response, 200, {
+        attestation: await service.attestProposal(body.block, Date.now(), body.prepares as PrepareVote[])
+      });
+    } finally {
+      release();
+    }
+  }
+  if (request.method === "POST" && url.pathname === "/round/view") {
+    preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
+    const body = await readJsonBody(request, bodyReservation, bodyLimit);
+    const release = enterConsensusRequest(
+      request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
+    );
+    try {
+      assertPlainRecord(body, "view-change request");
+      assertExactKeys(body, ["height", "round", "previousCertificate", "knownPrepares"], "view-change request");
+      if (!Number.isSafeInteger(body.height) || !Number.isSafeInteger(body.round) ||
+          !Array.isArray(body.previousCertificate) || !Array.isArray(body.knownPrepares)) {
+        throw new Error("Invalid view-change request");
+      }
+      return writeJson(response, 200, {
+        vote: await service.requestViewChange(
+          Number(body.height),
+          Number(body.round),
+          body.previousCertificate as RoundProgressEntry[],
+          body.knownPrepares as PrepareVote[]
+        )
+      });
+    } finally {
+      release();
+    }
+  }
+  if (request.method === "POST" && url.pathname === "/round/prepare-report") {
+    preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
+    const body = await readJsonBody(request, bodyReservation, bodyLimit);
+    const release = enterConsensusRequest(
+      request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
+    );
+    try {
+      assertPlainRecord(body, "prepare report request");
+      assertExactKeys(body, ["height", "round", "previousHash"], "prepare report request");
+      if (!Number.isSafeInteger(body.height) || !Number.isSafeInteger(body.round) || typeof body.previousHash !== "string") {
+        throw new Error("Invalid prepare report request");
+      }
+      return writeJson(response, 200, {
+        report: await service.reportPrepare(Number(body.height), Number(body.round), body.previousHash)
+      });
     } finally {
       release();
     }
@@ -1104,11 +1488,16 @@ async function route(
     );
     try {
       assertPlainRecord(body, "round completion request");
-      assertExactKeys(body, ["block", "votes"], "round completion request");
-      if (!Array.isArray(body.votes)) throw new Error("Invalid round completion request");
+      assertExactKeys(body, ["block", "votes", "prepares"], "round completion request");
+      if (!Array.isArray(body.votes) || !Array.isArray(body.prepares)) throw new Error("Invalid round completion request");
       validateBlockShape(body.block);
       return writeJson(response, 200, {
-        attestation: await service.attestCompletion(body.block, body.votes as RoundProgressEntry[])
+        attestation: await service.attestCompletion(
+          body.block,
+          body.votes as RoundProgressEntry[],
+          Date.now(),
+          body.prepares as PrepareVote[]
+        )
       });
     } finally {
       release();
@@ -1319,11 +1708,29 @@ export class PeerClient {
     return accepted;
   }
 
-  async requestAttestations(block: Block): Promise<BlockAttestation[]> {
+  async requestPrepares(block: Block): Promise<PrepareVote[]> {
+    const results = await Promise.allSettled(this.peers.map(async (peer) => {
+      return postJson(
+        `${peer}/proposal/prepare`,
+        block,
+        MAX_BODY_BYTES,
+        this.peerAuthToken,
+        this.peerRequestCredentials,
+        (payload) => {
+          assertPlainRecord(payload, "prepare response");
+          assertExactKeys(payload, ["vote"], "prepare response");
+          return payload.vote as PrepareVote;
+        }
+      );
+    }));
+    return results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+  }
+
+  async requestAttestations(block: Block, prepares: PrepareVote[] = []): Promise<BlockAttestation[]> {
     const results = await Promise.allSettled(this.peers.map(async (peer) => {
       return postJson(
         `${peer}/proposal/attest`,
-        block,
+        { block, prepares },
         MAX_BODY_BYTES,
         this.peerAuthToken,
         this.peerRequestCredentials,
@@ -1331,6 +1738,47 @@ export class PeerClient {
           assertPlainRecord(payload, "attestation response");
           assertExactKeys(payload, ["attestation"], "attestation response");
           return payload.attestation as BlockAttestation;
+        }
+      );
+    }));
+    return results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+  }
+
+  async requestViewChanges(
+    height: number,
+    round: number,
+    previousCertificate: RoundProgressEntry[] = [],
+    knownPrepares: PrepareVote[] = []
+  ): Promise<ViewChangeVote[]> {
+    const results = await Promise.allSettled(this.peers.map(async (peer) => {
+      return postJson(
+        `${peer}/round/view`,
+        { height, round, previousCertificate, knownPrepares },
+        MAX_BODY_BYTES,
+        this.peerAuthToken,
+        this.peerRequestCredentials,
+        (payload) => {
+          assertPlainRecord(payload, "view-change response");
+          assertExactKeys(payload, ["vote"], "view-change response");
+          return payload.vote as ViewChangeVote;
+        }
+      );
+    }));
+    return results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+  }
+
+  async requestPrepareReports(height: number, round: number, previousHash: string): Promise<PrepareReport[]> {
+    const results = await Promise.allSettled(this.peers.map(async (peer) => {
+      return postJson(
+        `${peer}/round/prepare-report`,
+        { height, round, previousHash },
+        MAX_BODY_BYTES,
+        this.peerAuthToken,
+        this.peerRequestCredentials,
+        (payload) => {
+          assertPlainRecord(payload, "prepare report response");
+          assertExactKeys(payload, ["report"], "prepare report response");
+          return payload.report as PrepareReport;
         }
       );
     }));
@@ -1395,11 +1843,15 @@ export class PeerClient {
     return results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
   }
 
-  async requestCompletionAttestations(block: Block, votes: RoundProgressEntry[]): Promise<BlockAttestation[]> {
+  async requestCompletionAttestations(
+    block: Block,
+    votes: RoundProgressEntry[],
+    prepares: PrepareVote[] = []
+  ): Promise<BlockAttestation[]> {
     const results = await Promise.allSettled(this.peers.map(async (peer) => {
       return postJson(
         `${peer}/round/complete`,
-        { block, votes },
+        { block, votes, prepares },
         8_192,
         this.peerAuthToken,
         this.peerRequestCredentials,
@@ -1547,6 +1999,24 @@ export async function collectPredecessorRoundCertificate(
     validateUncommittedRoundCertificate(progress, validators, chainId, height, round, previousHash, protocolVersion);
     return progress;
   } catch {
+    // A prepare split does not form an uncommitted certificate. A view-change
+    // quorum is the only other predecessor, and it does not finalize.
+  }
+  const viewChanges: ViewChangeVote[] = [];
+  try {
+    viewChanges.push(await service.requestViewChange(height, round, previousCertificate, [], nowMs));
+  } catch {
+  }
+  if (peers.requestViewChanges) {
+    try {
+      viewChanges.push(...await peers.requestViewChanges(height, round, previousCertificate));
+    } catch {
+    }
+  }
+  try {
+    validateViewChangeCertificate(viewChanges, validators, chainId, height, round, previousHash, protocolVersion);
+    return viewChanges;
+  } catch {
     return null;
   }
 }
@@ -1616,8 +2086,29 @@ export async function tryCompleteSplitRound(
     }
   }
   const votes: RoundProgressEntry[] = [];
+  const prepares: PrepareVote[] = [];
   const blocks = new Map<string, Block>();
   const preexisting = new Map<Address, BlockAttestation>();
+  const prepareReports: PrepareReport[] = [];
+  try {
+    prepareReports.push(await service.reportPrepare(height, round, previousHash, signingNowMs()));
+  } catch {
+  }
+  if (peers.requestPrepareReports) {
+    try {
+      prepareReports.push(...await peers.requestPrepareReports(height, round, previousHash));
+    } catch {
+    }
+  }
+  for (const report of prepareReports) {
+    if (!report.vote || !report.block || report.block.hash !== report.vote.blockHash) continue;
+    try {
+      validatePrepareVote(report.vote, validators, chainId, height, round, report.block.hash, protocolVersion);
+      prepares.push(report.vote);
+      blocks.set(report.block.hash, report.block);
+    } catch {
+    }
+  }
   for (const report of reports) {
     if (report.height !== height || report.round !== round || report.previousHash !== previousHash) continue;
     if (report.choice === "skip" && report.skip) {
@@ -1640,12 +2131,12 @@ export async function tryCompleteSplitRound(
     } catch {
     }
   }
-  const candidate = uniquePossiblyFinalizedHash(
-    votes, validators, chainId, height, round, previousHash, protocolVersion
+  const candidate = uniquePossiblyFinalizedWithPrepares(
+    votes, prepares, validators, chainId, height, round, previousHash, protocolVersion
   );
   if (!candidate) return null;
   const original = blocks.get(candidate);
-  if (!original || original.header.round !== 0) return null;
+  if (!original || original.header.round !== round) return null;
   const attestations: BlockAttestation[] = [];
   for (const attestation of preexisting.values()) {
     try {
@@ -1655,12 +2146,12 @@ export async function tryCompleteSplitRound(
     }
   }
   try {
-    attestations.push(await service.attestCompletion(original, votes, signingNowMs()));
+    attestations.push(await service.attestCompletion(original, votes, signingNowMs(), prepares));
   } catch {
   }
   if (peers.requestCompletionAttestations) {
     try {
-      attestations.push(...await peers.requestCompletionAttestations(original, votes));
+      attestations.push(...await peers.requestCompletionAttestations(original, votes, prepares));
     } catch {
     }
   }
@@ -1716,17 +2207,58 @@ export async function produceFinalizedBlock(
       previousCertificate = certificate;
     }
   }
+  if (roundCertificate.length > 0 && roundCertificate.every((entry) => isViewChangeVote(entry))) {
+    const lock = validateViewChangeCertificate(
+      roundCertificate,
+      validators,
+      chain.genesis.chainId,
+      chain.height + 1,
+      round - 1,
+      chain.tip.hash,
+      chain.protocolVersionAt(chain.height + 1)
+    );
+    if (lock) {
+      return finalizeLockedHash(service, peers, lock.lockHash, lock.lockRound, roundCertificate, validators, nowMs, () => nowMs);
+    }
+  }
   const transactions = chain.selectValidPending(service.mempool.values(), 10_000);
   const unsignedProposal = chain.prepareBlock(transactions, publicKey, { round, timestampMs: nowMs, roundCertificate });
   const proposal = await service.signPreparedProposal(unsignedProposal, nowMs);
   chain.validatePreparedBlock(proposal, nowMs);
+  const finalized = await collectPreparedCommits(service, peers, proposal, validators, nowMs, () => nowMs);
+  return finalized;
+}
+
+export async function collectPreparedCommits(
+  service: NodeService,
+  peers: ConsensusPeerClient,
+  proposal: Block,
+  validators: Validator[],
+  nowMs: number,
+  signingNowMs: () => number,
+  seedPrepares: PrepareVote[] = []
+): Promise<Block | null> {
+  const prepares: PrepareVote[] = [...seedPrepares];
+  try {
+    prepares.push(await service.prepareProposal(proposal, signingNowMs()));
+  } catch (error) {
+    if (!/Validator signing is disabled|Conflicting validator action/.test(safeError(error))) throw error;
+  }
+  if (peers.requestPrepares) {
+    try {
+      prepares.push(...await peers.requestPrepares(proposal));
+    } catch {
+    }
+  }
   const attestations: BlockAttestation[] = [];
   try {
-    attestations.push(await service.attestProposal(proposal, nowMs));
+    attestations.push(await service.attestProposal(proposal, signingNowMs(), prepares));
   } catch (error) {
-    if (!/Validator signing is disabled/.test(safeError(error))) throw error;
+    if (!/Validator signing is disabled|Prepare quorum required|Conflicting validator action|Finality quorum/.test(safeError(error))) {
+      throw error;
+    }
   }
-  attestations.push(...await peers.requestAttestations(proposal));
+  attestations.push(...await peers.requestAttestations(proposal, prepares));
   const byValidator = new Map<Address, BlockAttestation>();
   for (const attestation of attestations) {
     try {
@@ -1743,6 +2275,36 @@ export async function produceFinalizedBlock(
   }
   await peers.broadcastBlock(withVotes);
   return withVotes;
+}
+
+export async function finalizeLockedHash(
+  service: NodeService,
+  peers: ConsensusPeerClient,
+  lockHash: string,
+  lockRound: number,
+  certificate: RoundProgressEntry[],
+  validators: Validator[],
+  nowMs: number,
+  signingNowMs: () => number
+): Promise<Block | null> {
+  const chain = service.store.chain;
+  const height = chain.height + 1;
+  const previousHash = chain.tip.hash;
+  const reports: PrepareReport[] = [];
+  try {
+    reports.push(await service.reportPrepare(height, lockRound, previousHash, signingNowMs()));
+  } catch {
+  }
+  if (peers.requestPrepareReports) {
+    try {
+      reports.push(...await peers.requestPrepareReports(height, lockRound, previousHash));
+    } catch {
+    }
+  }
+  const original = reports.find((report) => report.block?.hash === lockHash)?.block;
+  if (!original) return null;
+  const seed = certificate.flatMap((entry) => isViewChangeVote(entry) ? entry.prepares : []);
+  return collectPreparedCommits(service, peers, original, validators, nowMs, signingNowMs, seed);
 }
 
 function parseStatus(value: unknown): NodeStatus {

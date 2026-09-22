@@ -44,6 +44,7 @@ import {
   validateBlockShape,
   validateRoundSkipQuorum
 } from "../src/block.js";
+import { createPrepareVote } from "../src/round-view-change.js";
 import { ChainStore, NodeDataDirectoryLease, SigningJournal } from "../src/storage.js";
 import { stateV2FromLedgerSnapshot } from "../src/state-v2.js";
 import { createStateV2PortableBundle } from "../src/state-v2-portable.js";
@@ -1690,8 +1691,11 @@ test("two node services attest a proposal, finalize it, persist it, and converge
     const first = new NodeService(firstStore, await SigningJournal.open(firstDir), validatorOnePrivate);
     const second = new NodeService(secondStore, await SigningJournal.open(secondDir), validatorTwoPrivate);
     const proposal = firstStore.chain.produceBlock([], validatorOnePrivate, { timestampMs: 1_700_000_000_100 });
-    const attestationOne = await first.attestProposal(proposal);
-    const attestationTwo = await second.attestProposal(proposal);
+    const prepareOne = await first.prepareProposal(proposal, 1_700_000_000_100);
+    const prepareTwo = await second.prepareProposal(proposal, 1_700_000_000_100);
+    const prepares = [prepareOne, prepareTwo];
+    const attestationOne = await first.attestProposal(proposal, 1_700_000_000_100, prepares);
+    const attestationTwo = await second.attestProposal(proposal, 1_700_000_000_100, prepares);
     const finalized = { ...proposal, attestations: [attestationOne, attestationTwo] };
     await first.acceptFinalizedBlock(finalized);
     await second.acceptFinalizedBlock(finalized);
@@ -1728,6 +1732,15 @@ test("remote validator signer keeps the secret out of the node and signs proposa
     const store = await ChainStore.open(genesis(), directory);
     const service = new NodeService(store, await SigningJournal.open(directory), signer);
     const peers: ConsensusPeerClient = {
+      requestPrepares: async (block) => [createPrepareVote({
+        chainId: block.header.chainId,
+        height: block.header.height,
+        round: block.header.round,
+        blockHash: block.hash,
+        validatorPrivateKey: validatorTwoPrivate,
+        validatorPublicKey: validatorTwoPublic,
+        protocolVersion: block.header.version
+      })],
       requestAttestations: async (block) => [store.chain.attestBlock(block, validatorTwoPrivate).attestations[0]!],
       requestRoundSkips: async () => [],
       broadcastBlock: async () => undefined
@@ -1735,7 +1748,7 @@ test("remote validator signer keeps the secret out of the node and signs proposa
     const block = await produceFinalizedBlock(service, peers, signer, genesis().timestampMs + 30_000);
     assert.ok(block);
     assert.equal(block.header.height, 1);
-    assert.deepEqual(intents, ["block-proposal", "block-attestation"]);
+    assert.deepEqual(intents, ["block-proposal", "round-prepare", "block-attestation"]);
     assert.equal(service.status().height, 1);
   } finally {
     if (signerServer.listening) {

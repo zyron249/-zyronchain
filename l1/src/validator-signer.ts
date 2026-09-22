@@ -10,7 +10,12 @@ import {
   verifyCanonicalDomain
 } from "./crypto.js";
 
-export type ValidatorSigningIntent = "block-proposal" | "block-attestation" | "round-skip";
+export type ValidatorSigningIntent =
+  | "block-proposal"
+  | "block-attestation"
+  | "round-skip"
+  | "round-prepare"
+  | "round-view-change";
 
 export interface ValidatorSigner {
   readonly publicKey: string;
@@ -122,6 +127,8 @@ export function validatorSigningDomain(intent: ValidatorSigningIntent): string {
     case "block-proposal": return "zyronchain/block-proposal/v1";
     case "block-attestation": return "zyronchain/finality-attestation/v1";
     case "round-skip": return "zyronchain/round-skip/v1";
+    case "round-prepare": return "zyronchain/round-prepare/v1";
+    case "round-view-change": return "zyronchain/round-view-change/v1";
   }
 }
 

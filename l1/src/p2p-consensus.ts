@@ -10,9 +10,10 @@ import { validateP2PChainIdentity, type P2PChainIdentity } from "./p2p.js";
 import { P2PPeerRateLimiter } from "./p2p-rate.js";
 import type { NodeIdentity } from "./peer-identity.js";
 import { validateTransactionShape } from "./transaction.js";
-import type { Block, BlockAttestation, LockedAttestEvidence, RoundChoiceReport, RoundProgressEntry, RoundSkipVote, Transaction } from "./types.js";
+import type { Block, BlockAttestation, LockedAttestEvidence, PrepareVote, RoundChoiceReport, RoundProgressEntry, RoundSkipVote, Transaction, ViewChangeVote } from "./types.js";
+import type { PrepareReport } from "./node.js";
 
-export const P2P_CONSENSUS_PROTOCOL = "/zyronchain/consensus/1.0.0";
+export const P2P_CONSENSUS_PROTOCOL = "/zyronchain/consensus/1.1.0";
 const MAX_CONSENSUS_FRAME_BYTES = 2_500_000;
 const P2P_CONSENSUS_TIMEOUT_MS = 8_000;
 const MAX_CONFIGURED_NATIVE_PEERS = 64;
@@ -26,8 +27,11 @@ const MAX_CONSENSUS_CHAIN_ID_LENGTH = 128;
 const nativeConsensusOperationBudget = new ConsensusOperationBudget(MAX_NATIVE_CONSENSUS_OUTSTANDING, "native consensus");
 
 const NATIVE_CONSENSUS_REQUEST_MAX_BYTES = {
+  prepare: MAX_CONSENSUS_FRAME_BYTES,
   attest: MAX_CONSENSUS_FRAME_BYTES,
   skip: 128_000,
+  view: MAX_CONSENSUS_FRAME_BYTES,
+  "prepare-report": 8_192,
   lock: 8_192,
   report: 8_192,
   complete: MAX_CONSENSUS_FRAME_BYTES,
@@ -36,8 +40,11 @@ const NATIVE_CONSENSUS_REQUEST_MAX_BYTES = {
 } as const;
 
 const NATIVE_CONSENSUS_RESPONSE_MAX_BYTES = {
+  prepare: 8 * 1024,
   attest: 8 * 1024,
   skip: 16 * 1024,
+  view: 256 * 1024,
+  "prepare-report": MAX_CONSENSUS_FRAME_BYTES,
   lock: 16 * 1024,
   report: MAX_CONSENSUS_FRAME_BYTES,
   complete: 8 * 1024,
@@ -45,14 +52,27 @@ const NATIVE_CONSENSUS_RESPONSE_MAX_BYTES = {
   transaction: 4 * 1024
 } as const;
 
-type NativeConsensusKind = "attest" | "skip" | "lock" | "report" | "complete" | "block" | "transaction";
+type NativeConsensusKind =
+  | "prepare"
+  | "attest"
+  | "skip"
+  | "view"
+  | "prepare-report"
+  | "lock"
+  | "report"
+  | "complete"
+  | "block"
+  | "transaction";
 
 type ConsensusRequest =
-  | { version: 1; identity: P2PChainIdentity; kind: "attest"; block: Block }
+  | { version: 1; identity: P2PChainIdentity; kind: "prepare"; block: Block }
+  | { version: 1; identity: P2PChainIdentity; kind: "attest"; block: Block; prepares: PrepareVote[] }
   | { version: 1; identity: P2PChainIdentity; kind: "skip"; height: number; round: number; previousCertificate: RoundProgressEntry[] }
+  | { version: 1; identity: P2PChainIdentity; kind: "view"; height: number; round: number; previousCertificate: RoundProgressEntry[]; knownPrepares: PrepareVote[] }
+  | { version: 1; identity: P2PChainIdentity; kind: "prepare-report"; height: number; round: number; previousHash: string }
   | { version: 1; identity: P2PChainIdentity; kind: "lock"; height: number; round: number; previousHash: string }
   | { version: 1; identity: P2PChainIdentity; kind: "report"; height: number; round: number; previousHash: string }
-  | { version: 1; identity: P2PChainIdentity; kind: "complete"; block: Block; votes: RoundProgressEntry[] }
+  | { version: 1; identity: P2PChainIdentity; kind: "complete"; block: Block; votes: RoundProgressEntry[]; prepares: PrepareVote[] }
   | { version: 1; identity: P2PChainIdentity; kind: "block"; block: Block }
   | { version: 1; identity: P2PChainIdentity; kind: "transaction"; transaction: Transaction };
 
@@ -159,11 +179,16 @@ export async function registerP2PConsensusProtocol(
       releaseFrame = retained.release;
       const request = parseConsensusRequest(retained.value, service.status(), connection.remotePeer);
       let result: unknown;
-      if (request.kind === "attest") result = await service.attestProposal(request.block);
-      else if (request.kind === "skip") result = await service.requestSkipVote(request.height, request.round, request.previousCertificate);
+      if (request.kind === "prepare") result = await service.prepareProposal(request.block);
+      else if (request.kind === "attest") result = await service.attestProposal(request.block, Date.now(), request.prepares);
+      else if (request.kind === "view") {
+        result = await service.requestViewChange(request.height, request.round, request.previousCertificate, request.knownPrepares);
+      } else if (request.kind === "prepare-report") {
+        result = await service.reportPrepare(request.height, request.round, request.previousHash);
+      } else if (request.kind === "skip") result = await service.requestSkipVote(request.height, request.round, request.previousCertificate);
       else if (request.kind === "lock") result = await service.lockedAttestEvidence(request.height, request.round, request.previousHash);
       else if (request.kind === "report") result = await service.reportRoundChoice(request.height, request.round, request.previousHash);
-      else if (request.kind === "complete") result = await service.attestCompletion(request.block, request.votes);
+      else if (request.kind === "complete") result = await service.attestCompletion(request.block, request.votes, Date.now(), request.prepares);
       else if (request.kind === "block") {
         await service.acceptFinalizedBlock(request.block);
         result = { accepted: true };
@@ -210,12 +235,65 @@ export class NativeConsensusPeerClient implements ConsensusPeerClient {
     else this.gossipCursor %= this.targets.length;
   }
 
-  async requestAttestations(block: Block): Promise<BlockAttestation[]> {
+  async requestPrepares(block: Block): Promise<PrepareVote[]> {
+    const request: ConsensusRequest = {
+      version: 1,
+      identity: localIdentity(this.identity, this.chain),
+      kind: "prepare",
+      block
+    };
+    const results = await collectNativeConsensusBounded(this.targets, (target, signal, deadlineMs) =>
+      this.request(target, request, signal, deadlineMs));
+    return results.flatMap((result) => result.status === "fulfilled" && result.value.kind === "prepare"
+      ? [result.value.result as PrepareVote]
+      : []);
+  }
+
+  async requestViewChanges(
+    height: number,
+    round: number,
+    previousCertificate: RoundProgressEntry[] = [],
+    knownPrepares: PrepareVote[] = []
+  ): Promise<ViewChangeVote[]> {
+    const request: ConsensusRequest = {
+      version: 1,
+      identity: localIdentity(this.identity, this.chain),
+      kind: "view",
+      height,
+      round,
+      previousCertificate,
+      knownPrepares
+    };
+    const results = await collectNativeConsensusBounded(this.targets, (target, signal, deadlineMs) =>
+      this.request(target, request, signal, deadlineMs));
+    return results.flatMap((result) => result.status === "fulfilled" && result.value.kind === "view"
+      ? [result.value.result as ViewChangeVote]
+      : []);
+  }
+
+  async requestPrepareReports(height: number, round: number, previousHash: string): Promise<PrepareReport[]> {
+    const request: ConsensusRequest = {
+      version: 1,
+      identity: localIdentity(this.identity, this.chain),
+      kind: "prepare-report",
+      height,
+      round,
+      previousHash
+    };
+    const results = await collectNativeConsensusBounded(this.targets, (target, signal, deadlineMs) =>
+      this.request(target, request, signal, deadlineMs));
+    return results.flatMap((result) => result.status === "fulfilled" && result.value.kind === "prepare-report"
+      ? [result.value.result as PrepareReport]
+      : []);
+  }
+
+  async requestAttestations(block: Block, prepares: PrepareVote[] = []): Promise<BlockAttestation[]> {
     const request: ConsensusRequest = {
       version: 1,
       identity: localIdentity(this.identity, this.chain),
       kind: "attest",
-      block
+      block,
+      prepares
     };
     const results = await collectNativeConsensusBounded(this.targets, (target, signal, deadlineMs) =>
       this.request(target, request, signal, deadlineMs));
@@ -256,13 +334,18 @@ export class NativeConsensusPeerClient implements ConsensusPeerClient {
       : []);
   }
 
-  async requestCompletionAttestations(block: Block, votes: RoundProgressEntry[]): Promise<BlockAttestation[]> {
+  async requestCompletionAttestations(
+    block: Block,
+    votes: RoundProgressEntry[],
+    prepares: PrepareVote[] = []
+  ): Promise<BlockAttestation[]> {
     const request: ConsensusRequest = {
       version: 1,
       identity: localIdentity(this.identity, this.chain),
       kind: "complete",
       block,
-      votes
+      votes,
+      prepares
     };
     const results = await collectNativeConsensusBounded(this.targets, (target, signal, deadlineMs) =>
       this.request(target, request, signal, deadlineMs));
@@ -368,9 +451,14 @@ function parseConsensusRequest(
   const record = value as Record<string, unknown>;
   if (record.version !== 1 || typeof record.kind !== "string") throw new Error("Invalid native consensus request");
   const identity = validateP2PChainIdentity(record.identity, expected, remotePeer);
-  if (record.kind === "attest" || record.kind === "block") {
+  if (record.kind === "prepare" || record.kind === "block") {
     assertExactKeys(record, ["version", "identity", "kind", "block"], "native consensus request");
     return { version: 1, identity, kind: record.kind, block: record.block as Block };
+  }
+  if (record.kind === "attest") {
+    assertExactKeys(record, ["version", "identity", "kind", "block", "prepares"], "native consensus request");
+    if (!Array.isArray(record.prepares) || record.prepares.length > 100) throw new Error("Invalid native attest request");
+    return { version: 1, identity, kind: "attest", block: record.block as Block, prepares: record.prepares as PrepareVote[] };
   }
   if (record.kind === "transaction") {
     assertExactKeys(record, ["version", "identity", "kind", "transaction"], "native consensus request");
@@ -418,15 +506,49 @@ function parseConsensusRequest(
       previousHash: record.previousHash
     };
   }
+  if (record.kind === "view") {
+    assertExactKeys(record, ["version", "identity", "kind", "height", "round", "previousCertificate", "knownPrepares"], "native consensus request");
+    if (!Number.isSafeInteger(record.height) || Number(record.height) < 1 || !Number.isSafeInteger(record.round) || Number(record.round) < 0 ||
+        !Array.isArray(record.previousCertificate) || record.previousCertificate.length > 256 ||
+        !Array.isArray(record.knownPrepares) || record.knownPrepares.length > 256) {
+      throw new Error("Invalid native view-change request");
+    }
+    return {
+      version: 1,
+      identity,
+      kind: "view",
+      height: Number(record.height),
+      round: Number(record.round),
+      previousCertificate: record.previousCertificate as RoundProgressEntry[],
+      knownPrepares: record.knownPrepares as PrepareVote[]
+    };
+  }
+  if (record.kind === "prepare-report") {
+    assertExactKeys(record, ["version", "identity", "kind", "height", "round", "previousHash"], "native consensus request");
+    if (!Number.isSafeInteger(record.height) || Number(record.height) < 1 || !Number.isSafeInteger(record.round) || Number(record.round) < 0 ||
+        typeof record.previousHash !== "string") throw new Error("Invalid native prepare report request");
+    assertHex(record.previousHash, 32, "native consensus prepare report previous hash");
+    return {
+      version: 1,
+      identity,
+      kind: "prepare-report",
+      height: Number(record.height),
+      round: Number(record.round),
+      previousHash: record.previousHash
+    };
+  }
   if (record.kind === "complete") {
-    assertExactKeys(record, ["version", "identity", "kind", "block", "votes"], "native consensus request");
-    if (!Array.isArray(record.votes) || record.votes.length > 256) throw new Error("Invalid native completion request");
+    assertExactKeys(record, ["version", "identity", "kind", "block", "votes", "prepares"], "native consensus request");
+    if (!Array.isArray(record.votes) || record.votes.length > 256 || !Array.isArray(record.prepares) || record.prepares.length > 256) {
+      throw new Error("Invalid native completion request");
+    }
     return {
       version: 1,
       identity,
       kind: "complete",
       block: record.block as Block,
-      votes: record.votes as RoundProgressEntry[]
+      votes: record.votes as RoundProgressEntry[],
+      prepares: record.prepares as PrepareVote[]
     };
   }
   throw new Error("Unsupported native consensus request");
@@ -449,6 +571,18 @@ function parseConsensusResponse(
 
 export function validateConsensusResponseResultShape(kind: ConsensusResponse["kind"], value: unknown): void {
   assertRecord(value, `native consensus ${kind} result`);
+  if (kind === "prepare") {
+    assertExactKeys(value, ["validator", "publicKey", "chainId", "height", "round", "blockHash", "signature"], "native consensus prepare result");
+    return;
+  }
+  if (kind === "view") {
+    if (!("prepares" in value) || !("lockHash" in value)) throw new Error("Invalid native consensus view result");
+    return;
+  }
+  if (kind === "prepare-report") {
+    assertExactKeys(value, ["height", "round", "previousHash", "vote", "block"], "native consensus prepare report result");
+    return;
+  }
   if (kind === "attest") {
     assertExactKeys(value, ["validator", "publicKey", "signature"], "native consensus attest result");
     if (typeof value.publicKey !== "string" || typeof value.signature !== "string" || typeof value.validator !== "string") {
