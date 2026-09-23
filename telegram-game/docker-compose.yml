@@ -22,6 +22,8 @@ services:
 
   api:
     build: .
+    # Image CMD also starts the bot. Compose already has a bot service, so keep one poller.
+    command: python -m zyron_node
     env_file:
       - .env
     environment:

@@ -13,6 +13,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY migrations ./migrations
 COPY frontend ./frontend
 COPY src ./src
+COPY scripts/start-web-and-bot.sh ./scripts/start-web-and-bot.sh
+RUN chmod 755 ./scripts/start-web-and-bot.sh
 USER zyron
 EXPOSE 8000
-CMD ["python", "-m", "zyron_node"]
+CMD ["/srv/scripts/start-web-and-bot.sh"]
