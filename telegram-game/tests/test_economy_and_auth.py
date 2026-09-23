@@ -17,6 +17,7 @@ from zyron_node.economy import (
     empty_levels,
     max_energy,
     network_power,
+    level_chest_reward,
     streak_reward,
     upgrade_cost,
 )
@@ -60,6 +61,14 @@ def test_energy_regen_respects_cap_and_remainder():
     assert updated == start + timedelta(seconds=600)
     capped, _ = apply_energy(max_energy(levels), start, start + timedelta(days=3), levels)
     assert capped == max_energy(levels)
+
+
+def test_level_chest_reward_is_deterministic():
+    assert level_chest_reward(2) == 10
+    assert level_chest_reward(3) == 20
+    assert level_chest_reward(10) == 90
+    with pytest.raises(ValueError):
+        level_chest_reward(1)
 
 
 def test_streak_calendar_and_gaps():

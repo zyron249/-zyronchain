@@ -12,12 +12,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from zyron_node.auth import AuthError, TelegramIdentity, admin_authorized, hash_ip, verify_init_data
 from zyron_node.client_ip import client_address
-from zyron_node.economy import POINTS_NOTICE
+from zyron_node.economy import LEVEL_CHEST_STEP, POINTS_NOTICE, REFEREE_REWARD, REFERRER_REWARD
 from zyron_node.game import (
     GameError,
     achievements_view,
     admin_overview,
     admin_search,
+    chests_view,
     claim_streak,
     close_season,
     export_snapshot,
@@ -26,6 +27,7 @@ from zyron_node.game import (
     link_wallet,
     list_snapshots,
     observe_chain,
+    open_chest,
     open_session,
     purchase_upgrade,
     quests_view,
@@ -53,6 +55,10 @@ class UpgradeBody(IdempotentBody):
 
 class WalletBody(IdempotentBody):
     address: str = Field(min_length=43, max_length=43)
+
+
+class ChestBody(BaseModel):
+    id: str = Field(min_length=3, max_length=40, pattern=r"^(daily|quest:[a-z0-9_]+|level:[1-9][0-9]?)$")
 
 
 class BanBody(BaseModel):
@@ -161,12 +167,22 @@ def register_routes(app) -> None:
             ).fetchone()
             if row:
                 season = {"id": int(row["id"]), "name": row["name"], "status": row["status"]}
+        pace = max(settings.cycle_min_interval_ms, 1_500)
         return {
             "name": "ZYRON NODE",
             "pointsNotice": POINTS_NOTICE,
             "devAuth": bool(settings.dev_auth_bypass and settings.environment != "production"),
             "season": season,
             "rpcConfigured": bool(settings.zyron_rpc_url),
+            "cycleMinIntervalMs": settings.cycle_min_interval_ms,
+            "autoCyclePaceMs": pace,
+            "rules": {
+                "referralReferrer": REFERRER_REWARD,
+                "referralReferee": REFEREE_REWARD,
+                "referralMinCycles": settings.referral_min_cycles,
+                "referralMinAgeSeconds": settings.referral_min_age_seconds,
+                "levelChestStep": LEVEL_CHEST_STEP,
+            },
         }
 
     @app.get("/api/me")
@@ -208,6 +224,22 @@ def register_routes(app) -> None:
         limit_user(request, identity.id, "upgrades", 60, 60, now)
         player = _player_id(request, identity, ip_hash, now)
         return upgrades_view(request.app.state.pool, player, now)
+
+    @app.get("/api/chests")
+    def chests(request: Request):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "chests", 60, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return chests_view(request.app.state.pool, player, now)
+
+    @app.post("/api/chests/open")
+    def chests_open(request: Request, body: ChestBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "chestopen", 30, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return open_chest(request.app.state.pool, player, body.id, now)
 
     @app.post("/api/streak/claim")
     def streak(request: Request):

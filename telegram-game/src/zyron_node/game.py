@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
 from psycopg.errors import UniqueViolation
 from psycopg.types.json import Json
 
-from zyron_node.catalog import ACHIEVEMENTS, QUESTS, period_key, utc_day_bounds
+from zyron_node.catalog import ACHIEVEMENTS, ACHIEVEMENTS_BY_ID, QUESTS, QUESTS_BY_ID, period_key, utc_day_bounds
 from zyron_node.economy import (
     ABUSE_REFERRAL_BLOCK,
     MODULE_ORDER,
@@ -22,6 +23,7 @@ from zyron_node.economy import (
     apply_energy,
     cycle_reward,
     empty_levels,
+    level_chest_reward,
     max_energy,
     network_power,
     node_level,
@@ -35,6 +37,7 @@ from zyron_node.rpc import valid_watch_address
 
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 KEY_RE_SOURCE = r"^[A-Za-z0-9_.:-]{8,80}$"
+CHEST_ID_RE = re.compile(r"^(daily|quest:[a-z0-9_]+|level:[1-9][0-9]?)$")
 
 
 class GameError(Exception):
@@ -94,7 +97,7 @@ def run_cycle(pool, player_id: int, key: str, now: datetime, *, min_interval_ms:
             if updated is None:
                 raise GameError("no_energy", "Energy is empty. It regenerates on server time.", 409)
             player = reload_player(conn, player_id)
-            quests, achievements = sync_rewards(conn, player, levels, now, season_id)
+            quests, achievements = sync_rewards(conn, player, levels, now, season_id, include_quests=False)
             qualified = qualify_referral(conn, player_id, now, min_cycles, min_age, season_id)
             player = reload_player(conn, player_id)
             response = {
@@ -142,7 +145,7 @@ def purchase_upgrade(pool, player_id: int, module: str, key: str, now: datetime)
                 (node_level(levels), player_id),
             )
             player = reload_player(conn, player_id)
-            quests, achievements = sync_rewards(conn, player, levels, now, season_id)
+            quests, achievements = sync_rewards(conn, player, levels, now, season_id, include_quests=False)
             player = reload_player(conn, player_id)
             response = {
                 "replayed": False,
@@ -187,7 +190,7 @@ def claim_streak(pool, player_id: int, now: datetime) -> dict:
                     (new_count, now.date(), longest, player_id),
                 )
             player = reload_player(conn, player_id)
-            quests, achievements = sync_rewards(conn, player, levels, now, season_id)
+            quests, achievements = sync_rewards(conn, player, levels, now, season_id, include_quests=False)
             player = reload_player(conn, player_id)
             response = {
                 "replayed": False,
@@ -256,7 +259,7 @@ def link_wallet(pool, player_id: int, address: str, key: str, now: datetime) -> 
             levels = load_levels(conn, player_id)
             season = active_season(conn)
             player = reload_player(conn, player_id)
-            quests, achievements = sync_rewards(conn, player, levels, now, season["id"] if season else None)
+            quests, achievements = sync_rewards(conn, player, levels, now, season["id"] if season else None, include_quests=False)
             response = {
                 "replayed": False,
                 "linked": True,
@@ -457,7 +460,7 @@ def observe_chain(pool, player_id: int, panel: dict, now: datetime) -> dict:
             season = active_season(conn)
             quests, achievements = ([], [])
             if not player["banned"]:
-                quests, achievements = sync_rewards(conn, player, levels, now, season["id"] if season else None)
+                quests, achievements = sync_rewards(conn, player, levels, now, season["id"] if season else None, include_quests=False)
             public = {key: value for key, value in panel.items() if key != "markers"}
             public["questsCompleted"] = quests
             public["achievementsUnlocked"] = achievements
@@ -891,11 +894,349 @@ def qualify_referral(conn, player_id: int, now: datetime, min_cycles: int, min_a
     return True
 
 
-def sync_rewards(conn, player, levels: dict[str, int], now: datetime, season_id: int | None) -> tuple[list[str], list[str]]:
+def chests_view(pool, player_id: int, now: datetime) -> dict:
+    with pool.connection() as conn:
+        player = reload_player(conn, player_id)
+        levels = load_levels(conn, player_id)
+        return assemble_chests(conn, player, levels, now)
+
+
+def open_chest(pool, player_id: int, chest_id: str, now: datetime) -> dict:
+    if not CHEST_ID_RE.fullmatch(chest_id or ""):
+        raise GameError("bad_chest", "Unknown supply chest.", 400)
+    if chest_id == "daily":
+        return open_daily_chest(pool, player_id, now)
+    if chest_id.startswith("quest:"):
+        return open_quest_chest(pool, player_id, chest_id, now)
+    return open_level_chest(pool, player_id, chest_id, now)
+
+
+def open_daily_chest(pool, player_id: int, now: datetime) -> dict:
+    result = claim_streak(pool, player_id, now)
+    points, lifetime = balances(pool, player_id)
+    replayed = bool(result["replayed"])
+    return {
+        "id": "daily",
+        "kind": "daily",
+        "title": "Daily supply",
+        "detail": f"Streak day {result['streak']}",
+        "replayed": replayed,
+        "opened": True,
+        "gained": 0 if replayed else int(result["gained"]),
+        "points": points,
+        "lifetimePoints": lifetime,
+        "achievementsUnlocked": [] if replayed else list(result.get("achievementsUnlocked") or []),
+        "serverTime": iso(now),
+    }
+
+
+def open_quest_chest(pool, player_id: int, chest_id: str, now: datetime) -> dict:
+    quest_id = chest_id.split(":", 1)[1]
+    quest = QUESTS_BY_ID.get(quest_id)
+    if quest is None:
+        raise GameError("bad_chest", "Unknown supply chest.", 400)
+    with pool.connection() as conn:
+        with conn.transaction():
+            player = lock_player(conn, player_id)
+            reject_if_banned(player)
+            levels = load_levels(conn, player_id)
+            key = period_key(quest.period, now.date())
+            existing = conn.execute(
+                "SELECT reward_points FROM quest_claims WHERE player_id = %s AND quest_id = %s AND period_key = %s",
+                (player_id, quest.id, key),
+            ).fetchone()
+            if existing:
+                player = reload_player(conn, player_id)
+                return chest_result(
+                    chest_id,
+                    "quest",
+                    quest.title,
+                    quest.description,
+                    replayed=True,
+                    gained=0,
+                    points=int(player["points"]),
+                    lifetime=int(player["lifetime_points"]),
+                    achievements=[],
+                    now=now,
+                )
+            context = build_context(conn, player, levels, now)
+            if int(context.get(quest.metric, 0)) < quest.target:
+                raise GameError("chest_sealed", "That supply chest is not ready yet.", 409)
+            payout = quest_payout(quest.reward, levels["storage"])
+            season = active_season(conn)
+            season_id = season["id"] if season else None
+            apply_points(conn, player_id, payout, "quest", f"quest:{player_id}:{quest.id}:{key}", season_id, now)
+            conn.execute(
+                """
+                INSERT INTO quest_claims (player_id, quest_id, period_key, reward_points, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
+                """,
+                (player_id, quest.id, key, payout, now),
+            )
+            player = reload_player(conn, player_id)
+            _quests, achievements = sync_rewards(conn, player, levels, now, season_id, include_quests=False)
+            player = reload_player(conn, player_id)
+            return chest_result(
+                chest_id,
+                "quest",
+                quest.title,
+                quest.description,
+                replayed=False,
+                gained=payout,
+                points=int(player["points"]),
+                lifetime=int(player["lifetime_points"]),
+                achievements=achievements,
+                now=now,
+            )
+
+
+def open_level_chest(pool, player_id: int, chest_id: str, now: datetime) -> dict:
+    level = int(chest_id.split(":", 1)[1])
+    with pool.connection() as conn:
+        with conn.transaction():
+            player = lock_player(conn, player_id)
+            reject_if_banned(player)
+            levels = load_levels(conn, player_id)
+            current = node_level(levels)
+            if level < 2 or level > current:
+                raise GameError("chest_sealed", "Reach that node level to unseal this chest.", 409)
+            existing = conn.execute(
+                "SELECT reward_points FROM chest_claims WHERE player_id = %s AND chest_id = %s",
+                (player_id, chest_id),
+            ).fetchone()
+            if existing:
+                player = reload_player(conn, player_id)
+                return chest_result(
+                    chest_id,
+                    "level",
+                    f"Level {level} supply",
+                    "Already collected.",
+                    replayed=True,
+                    gained=0,
+                    points=int(player["points"]),
+                    lifetime=int(player["lifetime_points"]),
+                    achievements=[],
+                    now=now,
+                )
+            reward = level_chest_reward(level)
+            season = active_season(conn)
+            season_id = season["id"] if season else None
+            apply_points(conn, player_id, reward, "chest", f"chest:{player_id}:level:{level}", season_id, now)
+            conn.execute(
+                """
+                INSERT INTO chest_claims (player_id, chest_id, reward_points, created_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
+                """,
+                (player_id, chest_id, reward, now),
+            )
+            player = reload_player(conn, player_id)
+            _quests, achievements = sync_rewards(conn, player, levels, now, season_id, include_quests=False)
+            player = reload_player(conn, player_id)
+            return chest_result(
+                chest_id,
+                "level",
+                f"Level {level} supply",
+                "Node level milestone. Zyron Points only.",
+                replayed=False,
+                gained=reward,
+                points=int(player["points"]),
+                lifetime=int(player["lifetime_points"]),
+                achievements=achievements,
+                now=now,
+            )
+
+
+def assemble_chests(conn, player, levels: dict[str, int], now: datetime) -> dict:
+    context = build_context(conn, player, levels, now)
+    claimed = {
+        (row["quest_id"], row["period_key"])
+        for row in conn.execute(
+            "SELECT quest_id, period_key FROM quest_claims WHERE player_id = %s",
+            (player["id"],),
+        ).fetchall()
+    }
+    opened_levels = {
+        row["chest_id"]: int(row["reward_points"])
+        for row in conn.execute(
+            "SELECT chest_id, reward_points FROM chest_claims WHERE player_id = %s",
+            (player["id"],),
+        ).fetchall()
+    }
+    ready: list[dict] = []
+    sealed: list[dict] = []
+    opened: list[dict] = []
+    claimed_today = player["streak_last_date"] == now.date()
+    projected, _grant = advance_streak(player["streak_last_date"], int(player["streak_count"]), now.date())
+    streak_day = int(player["streak_count"]) if claimed_today else projected
+    daily_reward = streak_reward(int(player["streak_count"])) if claimed_today else streak_reward(projected)
+    daily = chest_card(
+        "daily",
+        "daily",
+        "Daily supply",
+        f"Login streak · day {streak_day}",
+        daily_reward,
+        ready=not claimed_today,
+        opened=claimed_today,
+        current=1 if claimed_today else 0,
+        target=1,
+        tag="Streak",
+    )
+    (opened if claimed_today else ready).append(daily)
+    for quest in QUESTS:
+        key = period_key(quest.period, now.date())
+        current = min(quest.target, int(context.get(quest.metric, 0)))
+        payout = quest_payout(quest.reward, levels["storage"])
+        card = chest_card(
+            f"quest:{quest.id}",
+            "quest",
+            quest.title,
+            quest.description,
+            payout,
+            ready=current >= quest.target and (quest.id, key) not in claimed,
+            opened=(quest.id, key) in claimed,
+            current=current,
+            target=quest.target,
+            tag=quest.period.capitalize(),
+        )
+        if card["opened"]:
+            opened.append(card)
+        elif card["ready"]:
+            ready.append(card)
+        else:
+            sealed.append(card)
+    current_level = node_level(levels)
+    for level in range(2, current_level + 1):
+        chest_id = f"level:{level}"
+        reward = opened_levels.get(chest_id, level_chest_reward(level))
+        card = chest_card(
+            chest_id,
+            "level",
+            f"Level {level} supply",
+            "One-time node level reward. Zyron Points only.",
+            reward,
+            ready=chest_id not in opened_levels,
+            opened=chest_id in opened_levels,
+            current=level,
+            target=level,
+            tag="Level",
+        )
+        (opened if card["opened"] else ready).append(card)
+    total = sum(levels.values())
+    max_total = sum(spec.max_level for spec in MODULES.values())
+    if total < max_total:
+        into = total % 4
+        next_level = current_level + 1
+        sealed.append(
+            chest_card(
+                f"level:{next_level}",
+                "level",
+                f"Level {next_level} supply",
+                "Four module levels raise the node one rank.",
+                level_chest_reward(next_level),
+                ready=False,
+                opened=False,
+                current=into,
+                target=4,
+                tag="Level",
+            )
+        )
+    sealed.sort(key=lambda item: (item["current"] / item["target"] if item["target"] else 0), reverse=True)
+    return {
+        "ready": ready,
+        "sealed": sealed,
+        "opened": opened[:16],
+        "serverTime": iso(now),
+    }
+
+
+def chest_card(
+    chest_id: str,
+    kind: str,
+    title: str,
+    detail: str,
+    reward: int,
+    *,
+    ready: bool,
+    opened: bool,
+    current: int,
+    target: int,
+    tag: str,
+) -> dict:
+    return {
+        "id": chest_id,
+        "kind": kind,
+        "title": title,
+        "detail": detail,
+        "reward": int(reward),
+        "ready": bool(ready),
+        "opened": bool(opened),
+        "current": int(current),
+        "target": int(target),
+        "tag": tag,
+    }
+
+
+def chest_result(
+    chest_id: str,
+    kind: str,
+    title: str,
+    detail: str,
+    *,
+    replayed: bool,
+    gained: int,
+    points: int,
+    lifetime: int,
+    achievements: list[str],
+    now: datetime,
+) -> dict:
+    bonus = 0
+    for item_id in achievements:
+        spec = ACHIEVEMENTS_BY_ID.get(item_id)
+        if spec is not None:
+            bonus += spec.reward
+    return {
+        "id": chest_id,
+        "kind": kind,
+        "title": title,
+        "detail": detail,
+        "replayed": replayed,
+        "opened": True,
+        "gained": int(gained),
+        "achievementPoints": bonus,
+        "points": int(points),
+        "lifetimePoints": int(lifetime),
+        "achievementsUnlocked": list(achievements),
+        "serverTime": iso(now),
+    }
+
+
+def balances(pool, player_id: int) -> tuple[int, int]:
+    with pool.connection() as conn:
+        row = conn.execute("SELECT points, lifetime_points FROM players WHERE id = %s", (player_id,)).fetchone()
+    if row is None:
+        raise GameError("not_found", "Operator not found.", 404)
+    return int(row["points"]), int(row["lifetime_points"])
+
+
+def sync_rewards(
+    conn,
+    player,
+    levels: dict[str, int],
+    now: datetime,
+    season_id: int | None,
+    *,
+    include_quests: bool = True,
+) -> tuple[list[str], list[str]]:
     if player["banned"]:
         return [], []
     context = build_context(conn, player, levels, now)
     quests_done: list[str] = []
+    if not include_quests:
+        player = reload_player(conn, player["id"])
+        context = build_context(conn, player, levels, now)
+        return [], _grant_achievements(conn, player, levels, context, season_id, now)
     for quest in QUESTS:
         key = period_key(quest.period, now.date())
         if conn.execute(
@@ -918,6 +1259,10 @@ def sync_rewards(conn, player, levels: dict[str, int], now: datetime, season_id:
         quests_done.append(quest.id)
     player = reload_player(conn, player["id"])
     context = build_context(conn, player, levels, now)
+    return quests_done, _grant_achievements(conn, player, levels, context, season_id, now)
+
+
+def _grant_achievements(conn, player, levels: dict[str, int], context: dict[str, int], season_id: int | None, now: datetime) -> list[str]:
     achievements_done: list[str] = []
     for item in ACHIEVEMENTS:
         if conn.execute(
@@ -945,7 +1290,7 @@ def sync_rewards(conn, player, levels: dict[str, int], now: datetime, season_id:
             (player["id"], item.id, now),
         )
         achievements_done.append(item.id)
-    return quests_done, achievements_done
+    return achievements_done
 
 
 def build_context(conn, player, levels: dict[str, int], now: datetime) -> dict[str, int]:
@@ -1080,11 +1425,16 @@ def persist_energy(conn, player, levels: dict[str, int], now: datetime):
 
 
 def energy_view(player, levels: dict[str, int], now: datetime) -> dict:
+    current = int(player["energy"])
+    cap = max_energy(levels)
+    nxt = seconds_until_next_energy(current, player["energy_updated_at"], now, levels)
+    next_at = None if current >= cap or nxt <= 0 else iso(now + timedelta(seconds=nxt))
     return {
-        "current": int(player["energy"]),
-        "max": max_energy(levels),
+        "current": current,
+        "max": cap,
         "regenSeconds": regen_interval_seconds(levels),
-        "nextInSeconds": seconds_until_next_energy(int(player["energy"]), player["energy_updated_at"], now, levels),
+        "nextInSeconds": nxt,
+        "nextAt": next_at,
     }
 
 

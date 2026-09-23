@@ -41,6 +41,7 @@ def client(settings):
                 conn.execute(
                     """
                     TRUNCATE TABLE
+                        chest_claims,
                         players,
                         season_snapshots,
                         chain_cache,

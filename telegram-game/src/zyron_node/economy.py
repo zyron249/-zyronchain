@@ -17,6 +17,8 @@ REFERRER_REWARD = 100
 REFEREE_REWARD = 25
 REFERRAL_WEEKLY_CAP = 20
 ABUSE_REFERRAL_BLOCK = 80
+# One-time level supply chest pays this times (level - 1). Not ZYN.
+LEVEL_CHEST_STEP = 10
 
 # Index 0 is unused. Days 1–30 are explicit; later days keep the day-30 reward.
 STREAK_REWARDS: tuple[int, ...] = (
@@ -167,6 +169,13 @@ def seconds_until_next_energy(current: int, updated_at: datetime, now: datetime,
     if remain <= 0:
         return interval
     return int(remain)
+
+
+def level_chest_reward(level: int) -> int:
+    """Deterministic supply chest for reaching a node level. Paid once. Not ZYN."""
+    if level < 2 or level > 99:
+        raise ValueError("level chest is out of range")
+    return LEVEL_CHEST_STEP * (level - 1)
 
 
 def streak_reward(day: int) -> int:
