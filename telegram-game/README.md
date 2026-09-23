@@ -56,6 +56,10 @@ cp .env.example .env
 docker compose up --build
 ```
 
+Compose runs the API and the bot as separate containers. The `api` service overrides the image command so it does not start a second poller beside the `bot` service.
+
+The image default command is `scripts/start-web-and-bot.sh`. It starts `python -m zyron_node.bot` in the background and execs `python -m zyron_node` in the foreground, with the image `PYTHONPATH` and the rest of the container environment. On a single Render Free web service, leave Docker Command empty so that entrypoint runs both processes. Free web services still spin down after inactivity, so the bot polls only while the service is awake. A dedicated worker running `python -m zyron_node.bot`, with the web service on `python -m zyron_node`, is still the better split when a worker is available.
+
 ## Tests
 
 ```sh
