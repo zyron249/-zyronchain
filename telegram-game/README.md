@@ -6,7 +6,9 @@ One tap starts the node. It keeps cycling until energy runs out, with a live reg
 
 This directory is a separate service. It does not import or modify `l1/` consensus, validator signing, mining, or the legacy Python chain.
 
-Zyron Points are not ZYN and not Zyrum. There is no conversion rate. The service does not mint tokens, store seeds, or send mainnet transfers. Season snapshots are exports only.
+Zyron Points are not ZYN and not Zyrum. There is no conversion rate. The service does not mint tokens, store seeds, or send mainnet transfers. Season snapshots and the activity-ledger cutoff are exports only.
+
+Competitive tiers (Bronze, Silver, Gold, Diamond) follow lifetime Zyron Points and do not reset daily. An append-only activity ledger records earnings, tier changes, and all-time rank changes so a later distribution can be audited. The export path is in `docs/TIERS.md`.
 
 ## What you need locally
 
@@ -82,6 +84,7 @@ The root ZyronChain pytest suite ignores this directory. Game CI is `.github/wor
 | `docs/L1_FINDINGS.md` | Phase 0 chain notes |
 | `docs/THREAT_MODEL.md` | Abuse cases and controls |
 | `docs/ECONOMY.md` | Point and energy formulas |
+| `docs/TIERS.md` | Competitive tiers and the activity-ledger export |
 | `docs/ADMIN.md` | Dashboard actions |
 
 ## Safety rails already in the code

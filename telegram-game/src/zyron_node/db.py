@@ -9,6 +9,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations"
+OPENING_LEDGER_MIGRATION = "003_activity_ledger.sql"
 
 
 def create_pool(database_url: str) -> ConnectionPool:
@@ -55,6 +56,12 @@ def apply_migrations(conn) -> list[str]:
             continue
         for statement in split_sql(path.read_text(encoding="utf-8")):
             conn.execute(statement)
+        if path.name == OPENING_LEDGER_MIGRATION:
+            # Same transaction as the schema version insert. Existing lifetime
+            # totals are seeded once; later startups do not run this again.
+            from zyron_node.ledger import seed_opening_ledger
+
+            seed_opening_ledger(conn)
         conn.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (path.name,))
         fresh.append(path.name)
     return fresh
@@ -67,22 +74,64 @@ def migrate(pool: ConnectionPool) -> list[str]:
 
 
 def split_sql(sql: str) -> list[str]:
-    """Split a migration file on semicolons. Statements do not contain semicolons in literals."""
+    """Split a migration on semicolons that are outside comments and dollar quotes.
+
+    String literals in these files do not contain semicolons. Dollar-quoted
+    function bodies may.
+    """
     statements: list[str] = []
-    buffer: list[str] = []
-    for line in sql.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("--"):
+    buf: list[str] = []
+    i = 0
+    n = len(sql)
+    dollar: str | None = None
+    while i < n:
+        if dollar is not None:
+            if sql.startswith(dollar, i):
+                buf.append(dollar)
+                i += len(dollar)
+                dollar = None
+                continue
+            buf.append(sql[i])
+            i += 1
             continue
-        buffer.append(line)
-        if stripped.endswith(";"):
-            statement = "\n".join(buffer).strip()
-            buffer = []
-            if statement.endswith(";"):
-                statement = statement[:-1].strip()
+        if sql.startswith("--", i):
+            end = sql.find("\n", i)
+            i = n if end < 0 else end + 1
+            continue
+        if sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            if end < 0:
+                raise ValueError("unterminated block comment in migration")
+            i = end + 2
+            continue
+        if sql[i] == "$":
+            tag = _dollar_tag(sql, i)
+            if tag is not None:
+                buf.append(tag)
+                i += len(tag)
+                dollar = tag
+                continue
+        if sql[i] == ";":
+            statement = "".join(buf).strip()
+            buf = []
             if statement:
                 statements.append(statement)
-    trailing = "\n".join(buffer).strip()
+            i += 1
+            continue
+        buf.append(sql[i])
+        i += 1
+    trailing = "".join(buf).strip()
     if trailing:
-        statements.append(trailing.rstrip(";").strip())
+        statements.append(trailing)
     return statements
+
+
+def _dollar_tag(sql: str, start: int) -> str | None:
+    if sql[start] != "$":
+        return None
+    j = start + 1
+    while j < len(sql) and (sql[j].isalnum() or sql[j] == "_"):
+        j += 1
+    if j < len(sql) and sql[j] == "$":
+        return sql[start : j + 1]
+    return None

@@ -10,6 +10,17 @@ from psycopg.errors import UniqueViolation
 from psycopg.types.json import Json
 
 from zyron_node.catalog import ACHIEVEMENTS, ACHIEVEMENTS_BY_ID, QUESTS, QUESTS_BY_ID, period_key, utc_day_bounds
+from zyron_node.ledger import append_activity, append_activity_for_player
+from zyron_node.tiers import (
+    above_race_line,
+    public_tier,
+    threshold_payload,
+    tier_distribution,
+    tier_race_line,
+    tier_for,
+    tier_view,
+    tiers_crossed,
+)
 from zyron_node.economy import (
     ABUSE_REFERRAL_BLOCK,
     MODULE_ORDER,
@@ -89,6 +100,7 @@ def run_cycle(pool, player_id: int, key: str, now: datetime, *, min_interval_ms:
             reward = cycle_reward(levels, int(player["streak_count"]))
             season = active_season(conn)
             season_id = season["id"] if season else None
+            before_lifetime = int(player["lifetime_points"])
             apply_points(conn, player_id, reward, "cycle", f"cycle:{player_id}:{key}", season_id, now)
             updated = conn.execute(
                 """
@@ -121,6 +133,7 @@ def run_cycle(pool, player_id: int, key: str, now: datetime, *, min_interval_ms:
                 "referralQualified": qualified,
                 "serverTime": iso(now),
             }
+            attach_tier(response, player, before_lifetime)
             store_idempotency(conn, player_id, "cycle", key, response, now)
             return response
 
@@ -143,6 +156,7 @@ def purchase_upgrade(pool, player_id: int, module: str, key: str, now: datetime)
             cost = upgrade_cost(module, levels[module])
             season = active_season(conn)
             season_id = season["id"] if season else None
+            before_lifetime = int(player["lifetime_points"])
             apply_points(conn, player_id, -cost, "upgrade", f"upgrade:{player_id}:{key}", season_id, now)
             levels[module] += 1
             conn.execute(
@@ -168,6 +182,7 @@ def purchase_upgrade(pool, player_id: int, module: str, key: str, now: datetime)
                 "achievementsUnlocked": achievements,
                 "serverTime": iso(now),
             }
+            attach_tier(response, player, before_lifetime)
             store_idempotency(conn, player_id, "upgrade", key, response, now)
             return response
 
@@ -186,9 +201,19 @@ def claim_streak(pool, player_id: int, now: datetime) -> dict:
             gained = 0
             season = active_season(conn)
             season_id = season["id"] if season else None
+            before_lifetime = int(player["lifetime_points"])
             if grant:
                 gained = streak_reward(new_count)
-                apply_points(conn, player_id, gained, "streak", f"streak:{player_id}:{key}", season_id, now)
+                paid = apply_points(conn, player_id, gained, "streak", f"streak:{player_id}:{key}", season_id, now)
+                if paid:
+                    log_event(
+                        conn,
+                        player_id,
+                        "daily_claim",
+                        gained,
+                        {"source": "streak", "day": new_count},
+                        now,
+                    )
                 longest = max(int(player["longest_streak"]), new_count)
                 conn.execute(
                     """
@@ -212,6 +237,7 @@ def claim_streak(pool, player_id: int, now: datetime) -> dict:
                 "achievementsUnlocked": achievements,
                 "serverTime": iso(now),
             }
+            attach_tier(response, player, before_lifetime)
             store_idempotency(conn, player_id, "streak", key, response, now)
             return response
 
@@ -268,7 +294,9 @@ def link_wallet(pool, player_id: int, address: str, key: str, now: datetime) -> 
             levels = load_levels(conn, player_id)
             season = active_season(conn)
             player = reload_player(conn, player_id)
+            before_lifetime = int(player["lifetime_points"])
             quests, achievements = sync_rewards(conn, player, levels, now, season["id"] if season else None, include_quests=False)
+            player = reload_player(conn, player_id)
             response = {
                 "replayed": False,
                 "linked": True,
@@ -278,6 +306,7 @@ def link_wallet(pool, player_id: int, address: str, key: str, now: datetime) -> 
                 "achievementsUnlocked": achievements,
                 "serverTime": iso(now),
             }
+            attach_tier(response, player, before_lifetime)
             store_idempotency(conn, player_id, "wallet", key, response, now)
             return response
 
@@ -382,6 +411,7 @@ def quests_view(pool, player_id: int, now: datetime, *, claim: bool) -> dict:
     with pool.connection() as conn:
         with conn.transaction():
             player = lock_player(conn, player_id)
+            before_lifetime = int(player["lifetime_points"])
             levels = load_levels(conn, player_id)
             season = active_season(conn)
             newly: list[str] = []
@@ -414,13 +444,15 @@ def quests_view(pool, player_id: int, now: datetime, *, claim: bool) -> dict:
                         "claimed": (quest.id, key) in claimed,
                     }
                 )
-            return {
+            response = {
                 "quests": items,
                 "newlyCompleted": newly,
                 "achievementsUnlocked": achievements,
                 "points": int(player["points"]),
                 "serverTime": iso(now),
             }
+            attach_tier(response, player, before_lifetime if claim else int(player["lifetime_points"]))
+            return response
 
 
 def achievements_view(pool, player_id: int) -> dict:
@@ -466,6 +498,7 @@ def scores_cte(extra_sql: str) -> str:
                 p.id,
                 p.display_name,
                 p.node_level,
+                p.lifetime_points,
                 ROW_NUMBER() OVER (ORDER BY s.score DESC, p.id ASC)::int AS rank
             FROM scores s
             JOIN players p ON p.id = s.player_id
@@ -475,7 +508,7 @@ def scores_cte(extra_sql: str) -> str:
 
 def ranked_sql(extra_sql: str, where_sql: str) -> str:
     return scores_cte(extra_sql) + f"""
-        SELECT score, id, display_name, node_level, rank
+        SELECT score, id, display_name, node_level, lifetime_points, rank
         FROM ranked
         {where_sql}
         ORDER BY rank ASC
@@ -483,14 +516,18 @@ def ranked_sql(extra_sql: str, where_sql: str) -> str:
 
 
 def rank_entry(row, player_id: int) -> dict:
-    return {
+    lifetime = int(row["lifetime_points"])
+    entry = {
         "rank": int(row["rank"]),
         "playerId": int(row["id"]),
         "displayName": row["display_name"] or f"Node {row['id']}",
         "nodeLevel": int(row["node_level"]),
         "score": int(row["score"]),
+        "lifetimePoints": lifetime,
         "you": int(row["id"]) == player_id,
     }
+    entry.update(tier_fields(lifetime))
+    return entry
 
 
 def leaderboard_view(pool, player_id: int, board: str, now: datetime, limit: int = 20) -> dict:
@@ -517,21 +554,39 @@ def leaderboard_view(pool, player_id: int, board: str, now: datetime, limit: int
         ).fetchone()
         score, rank = score_and_rank(conn, player_id, extra, params)
         me_row = conn.execute(
-            "SELECT display_name, node_level FROM players WHERE id = %s",
+            "SELECT display_name, node_level, lifetime_points FROM players WHERE id = %s",
             (player_id,),
         ).fetchone()
+        lifetime = int(me_row["lifetime_points"]) if me_row else 0
+        above = None
+        if rank > 1:
+            above_rows = conn.execute(ranked_sql(extra, "WHERE rank = %s"), (*params, rank - 1)).fetchall()
+            if above_rows:
+                above = rank_entry(above_rows[0], player_id)
+        distribution = tier_distribution(conn)
+        on_board = score > 0
+        me = {
+            "rank": rank,
+            "score": score,
+            "displayName": (me_row["display_name"] if me_row else None) or "Operator",
+            "nodeLevel": int(me_row["node_level"]) if me_row else 1,
+            "lifetimePoints": lifetime,
+            "onBoard": on_board,
+        }
+        me.update(tier_view(lifetime))
     population = int(population_row["n"]) if population_row else 0
     return {
         "board": board,
         "population": population,
         "entries": [rank_entry(row, player_id) for row in rows],
         "neighbors": [rank_entry(row, player_id) for row in neighbors],
-        "me": {
-            "rank": rank,
-            "score": score,
-            "displayName": (me_row["display_name"] if me_row else None) or "Operator",
-            "nodeLevel": int(me_row["node_level"]) if me_row else 1,
-            "onBoard": score > 0,
+        "me": me,
+        "above": above,
+        "thresholds": threshold_payload(),
+        "tierDistribution": distribution,
+        "race": {
+            "tier": tier_race_line(lifetime),
+            "above": above_race_line(score, on_board, above),
         },
         "serverTime": iso(now),
     }
@@ -541,6 +596,7 @@ def observe_chain(pool, player_id: int, panel: dict, now: datetime) -> dict:
     with pool.connection() as conn:
         with conn.transaction():
             player = lock_player(conn, player_id)
+            before_lifetime = int(player["lifetime_points"])
             markers = panel.get("markers") if isinstance(panel.get("markers"), dict) else {}
             record_markers(conn, player_id, markers, now)
             levels = load_levels(conn, player_id)
@@ -548,10 +604,12 @@ def observe_chain(pool, player_id: int, panel: dict, now: datetime) -> dict:
             quests, achievements = ([], [])
             if not player["banned"]:
                 quests, achievements = sync_rewards(conn, player, levels, now, season["id"] if season else None, include_quests=False)
+                player = reload_player(conn, player_id)
             public = {key: value for key, value in panel.items() if key != "markers"}
             public["questsCompleted"] = quests
             public["achievementsUnlocked"] = achievements
             public["serverTime"] = iso(now)
+            attach_tier(public, player, before_lifetime)
             return public
 
 
@@ -647,7 +705,8 @@ def admin_overview(pool) -> dict:
                 (SELECT COUNT(*) FROM players WHERE banned) AS banned,
                 (SELECT COALESCE(SUM(points), 0) FROM players) AS points_outstanding,
                 (SELECT COUNT(*) FROM abuse_flags WHERE resolved_at IS NULL) AS open_flags,
-                (SELECT COUNT(*) FROM referrals WHERE status = 'rewarded') AS qualified_referrals
+                (SELECT COUNT(*) FROM referrals WHERE status = 'rewarded') AS qualified_referrals,
+                (SELECT COUNT(*) FROM activity_ledger) AS ledger_events
             """
         ).fetchone()
         season = active_season(conn)
@@ -666,6 +725,7 @@ def admin_overview(pool) -> dict:
         "pointsOutstanding": int(counts["points_outstanding"]),
         "openFlags": int(counts["open_flags"]),
         "qualifiedReferrals": int(counts["qualified_referrals"]),
+        "ledgerEvents": int(counts["ledger_events"]),
         "season": None
         if season is None
         else {"id": int(season["id"]), "name": season["name"], "status": season["status"]},
@@ -691,7 +751,7 @@ def admin_search(pool, query: str) -> dict:
     with pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT id, telegram_id, username, display_name, referral_code, points, node_level,
+            SELECT id, telegram_id, username, display_name, referral_code, points, lifetime_points, node_level,
                    banned, abuse_score, wallet_address, created_at
             FROM players
             WHERE telegram_id::text = %s
@@ -705,7 +765,7 @@ def admin_search(pool, query: str) -> dict:
         if not rows and query.replace("@", "").isalnum():
             rows = conn.execute(
                 """
-                SELECT id, telegram_id, username, display_name, referral_code, points, node_level,
+                SELECT id, telegram_id, username, display_name, referral_code, points, lifetime_points, node_level,
                        banned, abuse_score, wallet_address, created_at
                 FROM players
                 WHERE username ILIKE %s
@@ -1002,19 +1062,27 @@ def open_daily_chest(pool, player_id: int, now: datetime) -> dict:
     result = claim_streak(pool, player_id, now)
     points, lifetime = balances(pool, player_id)
     replayed = bool(result["replayed"])
-    return {
+    gained = 0 if replayed else int(result["gained"])
+    if gained > 0:
+        with pool.connection() as conn:
+            with conn.transaction():
+                log_event(conn, player_id, "chest_opened", gained, {"kind": "daily", "source": "streak"}, now)
+    payload = {
         "id": "daily",
         "kind": "daily",
         "title": "Daily supply",
         "detail": f"Streak day {result['streak']}",
         "replayed": replayed,
         "opened": True,
-        "gained": 0 if replayed else int(result["gained"]),
+        "gained": gained,
         "points": points,
         "lifetimePoints": lifetime,
         "achievementsUnlocked": [] if replayed else list(result.get("achievementsUnlocked") or []),
         "serverTime": iso(now),
     }
+    payload.update(tier_view(lifetime))
+    payload["tierUpgrades"] = [] if replayed else list(result.get("tierUpgrades") or [])
+    return payload
 
 
 def open_quest_chest(pool, player_id: int, chest_id: str, now: datetime) -> dict:
@@ -1025,6 +1093,7 @@ def open_quest_chest(pool, player_id: int, chest_id: str, now: datetime) -> dict
     with pool.connection() as conn:
         with conn.transaction():
             player = lock_player(conn, player_id)
+            before_lifetime = int(player["lifetime_points"])
             reject_if_banned(player)
             levels = load_levels(conn, player_id)
             key = period_key(quest.period, now.date())
@@ -1034,17 +1103,21 @@ def open_quest_chest(pool, player_id: int, chest_id: str, now: datetime) -> dict
             ).fetchone()
             if existing:
                 player = reload_player(conn, player_id)
-                return chest_result(
-                    chest_id,
-                    "quest",
-                    quest.title,
-                    quest.description,
-                    replayed=True,
-                    gained=0,
-                    points=int(player["points"]),
-                    lifetime=int(player["lifetime_points"]),
-                    achievements=[],
-                    now=now,
+                return attach_tier(
+                    chest_result(
+                        chest_id,
+                        "quest",
+                        quest.title,
+                        quest.description,
+                        replayed=True,
+                        gained=0,
+                        points=int(player["points"]),
+                        lifetime=int(player["lifetime_points"]),
+                        achievements=[],
+                        now=now,
+                    ),
+                    player,
+                    int(player["lifetime_points"]),
                 )
             context = build_context(conn, player, levels, now)
             if int(context.get(quest.metric, 0)) < quest.target:
@@ -1052,7 +1125,7 @@ def open_quest_chest(pool, player_id: int, chest_id: str, now: datetime) -> dict
             payout = quest_payout(quest.reward, levels["storage"])
             season = active_season(conn)
             season_id = season["id"] if season else None
-            apply_points(conn, player_id, payout, "quest", f"quest:{player_id}:{quest.id}:{key}", season_id, now)
+            paid = apply_points(conn, player_id, payout, "quest", f"quest:{player_id}:{quest.id}:{key}", season_id, now)
             conn.execute(
                 """
                 INSERT INTO quest_claims (player_id, quest_id, period_key, reward_points, created_at)
@@ -1061,20 +1134,41 @@ def open_quest_chest(pool, player_id: int, chest_id: str, now: datetime) -> dict
                 """,
                 (player_id, quest.id, key, payout, now),
             )
+            if paid:
+                log_event(
+                    conn,
+                    player_id,
+                    "quest_completed",
+                    payout,
+                    {"questId": quest.id, "periodKey": key},
+                    now,
+                )
+                log_event(
+                    conn,
+                    player_id,
+                    "chest_opened",
+                    payout,
+                    {"kind": "quest", "questId": quest.id, "periodKey": key},
+                    now,
+                )
             player = reload_player(conn, player_id)
             _quests, achievements = sync_rewards(conn, player, levels, now, season_id, include_quests=False)
             player = reload_player(conn, player_id)
-            return chest_result(
-                chest_id,
-                "quest",
-                quest.title,
-                quest.description,
-                replayed=False,
-                gained=payout,
-                points=int(player["points"]),
-                lifetime=int(player["lifetime_points"]),
-                achievements=achievements,
-                now=now,
+            return attach_tier(
+                chest_result(
+                    chest_id,
+                    "quest",
+                    quest.title,
+                    quest.description,
+                    replayed=False,
+                    gained=payout,
+                    points=int(player["points"]),
+                    lifetime=int(player["lifetime_points"]),
+                    achievements=achievements,
+                    now=now,
+                ),
+                player,
+                before_lifetime,
             )
 
 
@@ -1083,6 +1177,7 @@ def open_level_chest(pool, player_id: int, chest_id: str, now: datetime) -> dict
     with pool.connection() as conn:
         with conn.transaction():
             player = lock_player(conn, player_id)
+            before_lifetime = int(player["lifetime_points"])
             reject_if_banned(player)
             levels = load_levels(conn, player_id)
             current = node_level(levels)
@@ -1094,22 +1189,26 @@ def open_level_chest(pool, player_id: int, chest_id: str, now: datetime) -> dict
             ).fetchone()
             if existing:
                 player = reload_player(conn, player_id)
-                return chest_result(
-                    chest_id,
-                    "level",
-                    f"Level {level} supply",
-                    "Already collected.",
-                    replayed=True,
-                    gained=0,
-                    points=int(player["points"]),
-                    lifetime=int(player["lifetime_points"]),
-                    achievements=[],
-                    now=now,
+                return attach_tier(
+                    chest_result(
+                        chest_id,
+                        "level",
+                        f"Level {level} supply",
+                        "Already collected.",
+                        replayed=True,
+                        gained=0,
+                        points=int(player["points"]),
+                        lifetime=int(player["lifetime_points"]),
+                        achievements=[],
+                        now=now,
+                    ),
+                    player,
+                    int(player["lifetime_points"]),
                 )
             reward = level_chest_reward(level)
             season = active_season(conn)
             season_id = season["id"] if season else None
-            apply_points(conn, player_id, reward, "chest", f"chest:{player_id}:level:{level}", season_id, now)
+            paid = apply_points(conn, player_id, reward, "chest", f"chest:{player_id}:level:{level}", season_id, now)
             conn.execute(
                 """
                 INSERT INTO chest_claims (player_id, chest_id, reward_points, created_at)
@@ -1118,20 +1217,33 @@ def open_level_chest(pool, player_id: int, chest_id: str, now: datetime) -> dict
                 """,
                 (player_id, chest_id, reward, now),
             )
+            if paid:
+                log_event(
+                    conn,
+                    player_id,
+                    "chest_opened",
+                    reward,
+                    {"kind": "level", "level": level},
+                    now,
+                )
             player = reload_player(conn, player_id)
             _quests, achievements = sync_rewards(conn, player, levels, now, season_id, include_quests=False)
             player = reload_player(conn, player_id)
-            return chest_result(
-                chest_id,
-                "level",
-                f"Level {level} supply",
-                "Node level milestone. Zyron Points only.",
-                replayed=False,
-                gained=reward,
-                points=int(player["points"]),
-                lifetime=int(player["lifetime_points"]),
-                achievements=achievements,
-                now=now,
+            return attach_tier(
+                chest_result(
+                    chest_id,
+                    "level",
+                    f"Level {level} supply",
+                    "Node level milestone. Zyron Points only.",
+                    replayed=False,
+                    gained=reward,
+                    points=int(player["points"]),
+                    lifetime=int(player["lifetime_points"]),
+                    achievements=achievements,
+                    now=now,
+                ),
+                player,
+                before_lifetime,
             )
 
 
@@ -1334,7 +1446,7 @@ def sync_rewards(
         if int(context.get(quest.metric, 0)) < quest.target:
             continue
         payout = quest_payout(quest.reward, levels["storage"])
-        apply_points(conn, int(player["id"]), payout, "quest", f"quest:{player['id']}:{quest.id}:{key}", season_id, now)
+        paid = apply_points(conn, int(player["id"]), payout, "quest", f"quest:{player['id']}:{quest.id}:{key}", season_id, now)
         conn.execute(
             """
             INSERT INTO quest_claims (player_id, quest_id, period_key, reward_points, created_at)
@@ -1343,6 +1455,15 @@ def sync_rewards(
             """,
             (player["id"], quest.id, key, payout, now),
         )
+        if paid:
+            log_event(
+                conn,
+                int(player["id"]),
+                "quest_completed",
+                payout,
+                {"questId": quest.id, "periodKey": key, "source": "sync"},
+                now,
+            )
         quests_done.append(quest.id)
     player = reload_player(conn, player["id"])
     context = build_context(conn, player, levels, now)
@@ -1456,6 +1577,7 @@ def build_profile(conn, player, levels: dict[str, int], now: datetime, bot_usern
             "walletAddress": player["wallet_address"],
             "banned": bool(player["banned"]),
             "rank": ranks,
+            **tier_view(int(player["lifetime_points"])),
             "referral": {
                 "code": player["referral_code"],
                 "link": invite_link(bot_username, player["referral_code"]),
@@ -1525,9 +1647,71 @@ def energy_view(player, levels: dict[str, int], now: datetime) -> dict:
     }
 
 
-def apply_points(conn, player_id: int, amount: int, reason: str, idempotency_key: str, season_id: int | None, now: datetime) -> None:
+def tier_fields(lifetime_points: int) -> dict:
+    view = tier_view(lifetime_points)
+    return {
+        "tier": view["tier"],
+        "nextTier": view["nextTier"],
+        "tierProgress": view["tierProgress"],
+    }
+
+
+def attach_tier(payload: dict, player, before_lifetime: int) -> dict:
+    lifetime = int(player["lifetime_points"])
+    payload.update(tier_view(lifetime))
+    payload["tierUpgrades"] = [public_tier(spec) for spec in tiers_crossed(before_lifetime, lifetime)]
+    return payload
+
+
+def log_event(conn, player_id: int, event_type: str, amount: int | None, metadata: dict, now: datetime) -> None:
+    append_activity_for_player(conn, player_id, event_type, amount, metadata, now)
+
+
+def snapshot_alltime_rank(conn, player_id: int, telegram_id: int, now: datetime) -> None:
+    """Append a rank_snapshot when this operator's all-time place changes."""
+    extra, params = score_filter("alltime", now, None)
+    score, rank = score_and_rank(conn, player_id, extra, params)
+    if score <= 0:
+        return
+    previous = conn.execute(
+        """
+        SELECT amount
+        FROM activity_ledger
+        WHERE player_id = %s
+          AND event_type = 'rank_snapshot'
+          AND metadata->>'board' = 'alltime'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (player_id,),
+    ).fetchone()
+    previous_rank = None if previous is None or previous["amount"] is None else int(previous["amount"])
+    if previous_rank == rank:
+        return
+    append_activity(
+        conn,
+        player_id,
+        telegram_id,
+        "rank_snapshot",
+        rank,
+        {"board": "alltime", "score": score, "previousRank": previous_rank},
+        now,
+    )
+
+
+def apply_points(conn, player_id: int, amount: int, reason: str, idempotency_key: str, season_id: int | None, now: datetime) -> bool:
+    """Grant or spend points. Returns True when this call inserted a new point_ledger row.
+
+    Positive grants also append activity-ledger rows. Those rows are insert-only.
+    """
     if amount == 0:
         raise GameError("bad_amount", "Point change cannot be zero.", 500)
+    identity = conn.execute(
+        "SELECT telegram_id, lifetime_points FROM players WHERE id = %s",
+        (player_id,),
+    ).fetchone()
+    if identity is None:
+        raise GameError("not_found", "Operator not found.", 404)
     inserted = conn.execute(
         """
         INSERT INTO point_ledger (player_id, amount, reason, idempotency_key, season_id, created_at)
@@ -1538,8 +1722,10 @@ def apply_points(conn, player_id: int, amount: int, reason: str, idempotency_key
         (player_id, amount, reason, idempotency_key, season_id, now),
     ).fetchone()
     if inserted is None:
-        return
+        return False
     if amount > 0:
+        before = int(identity["lifetime_points"])
+        after = before + int(amount)
         conn.execute(
             """
             UPDATE players
@@ -1548,7 +1734,34 @@ def apply_points(conn, player_id: int, amount: int, reason: str, idempotency_key
             """,
             (amount, amount, player_id),
         )
-        return
+        telegram_id = int(identity["telegram_id"])
+        append_activity(
+            conn,
+            player_id,
+            telegram_id,
+            "points_earned",
+            int(amount),
+            {"source": reason},
+            now,
+        )
+        for spec in tiers_crossed(before, after):
+            append_activity(
+                conn,
+                player_id,
+                telegram_id,
+                "tier_upgraded",
+                None,
+                {
+                    "tierId": spec.id,
+                    "label": spec.label,
+                    "labelTr": spec.label_tr,
+                    "minLifetimePoints": spec.min_lifetime_points,
+                    "lifetimePoints": after,
+                },
+                now,
+            )
+        snapshot_alltime_rank(conn, player_id, telegram_id, now)
+        return True
     updated = conn.execute(
         """
         UPDATE players
@@ -1560,6 +1773,7 @@ def apply_points(conn, player_id: int, amount: int, reason: str, idempotency_key
     ).fetchone()
     if updated is None:
         raise GameError("insufficient_points", "Not enough Zyron Points for that upgrade.", 409)
+    return True
 
 
 def load_levels(conn, player_id: int) -> dict[str, int]:
@@ -1711,6 +1925,8 @@ def public_admin_player(row) -> dict:
         "displayName": row["display_name"],
         "referralCode": row["referral_code"],
         "points": int(row["points"]),
+        "lifetimePoints": int(row["lifetime_points"]) if "lifetime_points" in row else 0,
+        "tier": public_tier(tier_for(int(row["lifetime_points"]))) if row.get("lifetime_points") is not None else None,
         "nodeLevel": int(row["node_level"]),
         "banned": bool(row["banned"]),
         "abuseScore": int(row["abuse_score"]),

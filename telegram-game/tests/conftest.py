@@ -41,6 +41,7 @@ def client(settings):
                 conn.execute(
                     """
                     TRUNCATE TABLE
+                        activity_ledger,
                         chest_claims,
                         players,
                         season_snapshots,
