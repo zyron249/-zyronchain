@@ -809,7 +809,7 @@
 
   function chestArt(open) {
     return svg("svg", { viewBox: "0 0 120 96", class: "chest-art" + (open ? " is-open" : "") }, [
-      svg("g", { class: "lid" }, [
+      svg("g", { class: "lid", transform: open ? "rotate(-22 60 42) translate(0 -8)" : null }, [
         svg("path", { d: "M18 44 V32 Q18 14 60 14 Q102 14 102 32 V44 Z", fill: "#f3c56b", stroke: "#7af0ff", "stroke-width": "2" })
       ]),
       svg("rect", { x: "12", y: "42", width: "96", height: "42", rx: "8", fill: "#c9923a", stroke: "#7af0ff", "stroke-width": "2" }),
