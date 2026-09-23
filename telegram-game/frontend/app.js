@@ -1,5 +1,9 @@
 (function () {
+  const SHELL = "home-chests-intel";
+  const buildMeta = document.querySelector('meta[name="zyron-build"]');
+  const BUILD = buildMeta ? buildMeta.getAttribute("content") || "" : "";
   const root = document.querySelector("#app");
+  if (root) root.dataset.booted = "1";
   const toasts = document.querySelector("#toast-root");
   const modals = document.querySelector("#modal-root");
   const state = {
@@ -24,6 +28,9 @@
     energyReceivedAt: 0,
     cycleReadyAt: 0,
     recentGains: [],
+    ticks: [],
+    holdUntil: 0,
+    blocked: "",
     devId: localStorage.getItem("zyronDevId") || "",
     introChecked: false,
     introStep: 0,
@@ -141,17 +148,54 @@
     return date.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
   }
 
+  function profileReady(me) {
+    const p = me && me.player;
+    return !!(
+      p && p.energy && typeof p.energy.current === "number" && typeof p.energy.max === "number" &&
+      p.rank && p.rank.season && p.streak && typeof p.cycleReward === "number" && p.referral
+    );
+  }
+
+  function describeError(error) {
+    const message = (error && error.message) || "Request failed";
+    const code = (error && error.code) || "";
+    if (code === "cycle_too_fast" || /settling/i.test(message)) {
+      return { code: "cycle_too_fast", message: "The node is between cycles. It will be ready in a moment." };
+    }
+    if (code === "bad_profile") {
+      return { code: code, message: "Node data is incomplete. Try again in a moment." };
+    }
+    return { code: code, message: message };
+  }
+
   function toast(message, kind) {
     const node = el("div", { class: "toast " + (kind === "ok" ? "ok" : kind === "err" ? "err" : ""), text: message });
     toasts.append(node);
     setTimeout(function () { node.remove(); }, 3200);
   }
 
-  function floatGain(amount) {
+  function floatGain(amount, spent) {
     if (!amount) return;
-    const node = el("div", { class: "float-gain", text: "+" + formatPoints(amount) + " Zyron Points" });
+    const previous = toasts.querySelector(".float-gain");
+    if (previous) previous.remove();
+    const node = el("div", { class: "float-gain" }, [
+      el("b", { text: "+" + formatPoints(amount) }),
+      el("span", { text: spent ? "Zyron Points · −" + spent + " energy" : "Zyron Points" })
+    ]);
     toasts.append(node);
-    setTimeout(function () { node.remove(); }, 1100);
+    const points = root.querySelector("[data-points]");
+    if (points) {
+      points.classList.remove("pop");
+      void points.offsetWidth;
+      points.classList.add("pop");
+    }
+    const visual = root.querySelector("[data-node]");
+    if (visual) {
+      visual.classList.remove("did-reward");
+      void visual.offsetWidth;
+      visual.classList.add("did-reward");
+    }
+    setTimeout(function () { node.remove(); }, 1400);
   }
 
   function player() {
@@ -234,7 +278,13 @@
     state.busy = false;
     state.busyModule = "";
     state.error = "";
-    state.me = await api("/api/me");
+    const me = await api("/api/me");
+    if (!profileReady(me)) {
+      const error = new Error("Node data is incomplete. Try again in a moment.");
+      error.code = "bad_profile";
+      throw error;
+    }
+    state.me = me;
     state.energyReceivedAt = Date.now();
     state.upgrades = await api("/api/upgrades");
     state.chests = await api("/api/chests");
@@ -249,9 +299,13 @@
 
   function render() {
     clear(root);
+    if (state.blocked) {
+      root.append(blockedPanel());
+      return;
+    }
     if (!state.meta) {
-      root.append(el("p", { class: "muted", text: "Connecting…" }));
-      if (state.error) root.append(el("p", { class: "error", text: state.error }));
+      if (state.error || state.holdUntil) root.append(loadPanel());
+      else root.append(el("p", { class: "muted", text: "Connecting…" }));
       return;
     }
     if (!authed()) {
@@ -260,8 +314,8 @@
       return;
     }
     if (!state.me) {
-      root.append(el("div", { class: "skeleton hero-skel" }), el("div", { class: "skeleton" }), el("div", { class: "skeleton" }));
-      if (state.error) root.append(el("p", { class: "error", text: state.error }));
+      if (state.error || state.holdUntil) root.append(loadPanel());
+      else root.append(el("div", { class: "skeleton hero-skel" }), el("div", { class: "skeleton" }), el("div", { class: "skeleton" }));
       renderModal();
       return;
     }
@@ -306,9 +360,66 @@
     ]);
   }
 
+  function blockedPanel() {
+    return el("section", { class: "gate" }, [
+      el("h1", { text: "ZYRON NODE needs a fresh copy" }),
+      el("p", { class: "fine", text: "This screen does not match the current Play Zyron app (Home, Chests, Intel). Close it and open Play Zyron again." }),
+      el("button", {
+        class: "primary",
+        text: "Reload",
+        onclick: function () {
+          const url = new URL(window.location.href);
+          url.searchParams.set("v", BUILD || String(Date.now()));
+          window.location.replace(url.pathname + "?" + url.searchParams.toString());
+        }
+      })
+    ]);
+  }
+
+  function loadPanel() {
+    const between = state.holdUntil || (state.errorCode === "cycle_too_fast");
+    const title = between ? "Node is between cycles" : "Couldn't load your node";
+    const detail = between
+      ? "The last cycle just landed. You can run again when this finishes. Nothing is stuck."
+      : (state.error || "The server did not answer. Try again.");
+    const button = el("button", {
+      class: "primary",
+      text: "Try again",
+      onclick: function () {
+        if (state.holdUntil && Date.now() < state.holdUntil) return;
+        state.error = "";
+        state.errorCode = "";
+        state.holdUntil = 0;
+        render();
+        refresh().catch(fail);
+      }
+    });
+    if (state.holdUntil && Date.now() < state.holdUntil) button.disabled = true;
+    return el("section", { class: "gate" }, [
+      el("h1", { text: title }),
+      el("p", { "data-hold": between ? "1" : null, text: detail }),
+      button
+    ]);
+  }
+
   function view() {
     const wrap = el("main", { class: "stack" });
-    if (state.error) wrap.append(el("p", { class: "error", text: state.error }));
+    if (state.holdUntil) wrap.append(loadPanel());
+    else if (state.error) {
+      wrap.append(el("div", { class: "empty" }, [
+        el("h2", { text: "Couldn't refresh" }),
+        el("p", { text: state.error }),
+        el("button", {
+          class: "primary",
+          text: "Try again",
+          onclick: function () {
+            state.error = "";
+            state.errorCode = "";
+            refresh().catch(fail);
+          }
+        })
+      ]));
+    }
     if (state.running && state.tab !== "home") {
       wrap.append(el("p", { class: "run-chip", "data-run-chip": "1", text: "Node running · this pass +" + formatPoints(state.sessionPoints) }));
     }
@@ -324,7 +435,7 @@
     const p = player();
     const energy = displayEnergy();
     const progress = moduleProgress();
-    const section = el("section", { "data-live": "1" });
+    const section = el("section", { class: "home-grid", "data-live": "1" });
     section.append(el("article", { class: "balance" }, [
       el("p", { class: "kicker", text: "Zyron Points" }),
       el("div", { class: "balance-row" }, [
@@ -335,13 +446,14 @@
     ]));
     const visual = el("div", { class: "node-visual " + nodeMode(), "data-node": "1" }, [nodeArt(energy.current)]);
     const pillClass = "status-pill " + (state.running ? "on" : state.phase === "routing" ? "busy" : "");
+    const ticks = el("div", { class: "tick-log", "data-ticks": "1" });
+    fillTicks(ticks);
     section.append(el("article", { class: "node-card" }, [
       visual,
       el("div", { class: pillClass }, [
         el("i"),
         el("span", { "data-node-status": "1", text: statusText() })
       ]),
-      el("p", { class: "gains", "data-gains": "1", text: state.recentGains.slice(-6).map(function (n) { return "+" + n; }).join("  ") }),
       meter(energy),
       el("button", {
         class: "primary" + (state.running ? " is-stop" : ""),
@@ -354,23 +466,118 @@
         class: "fine",
         "data-session": "1",
         text: sessionLine(p)
-      })
+      }),
+      ticks
     ]));
+    section.append(todayCard(energy));
     section.append(el("div", { class: "chips" }, [
       chip("Level", progress.atMax ? p.level + " · max" : p.level + " · " + progress.into + "/" + progress.target),
       chip("Rank", "#" + p.rank.season.rank + " season"),
       chip("Streak", p.streak.count + " days"),
       chip("Network Power", formatPoints(p.networkPower))
     ]));
+    return section;
+  }
+
+  function chestLists() {
+    const chests = state.chests || {};
+    return [].concat(chests.ready || [], chests.sealed || [], chests.opened || []);
+  }
+
+  function dailyChest() {
+    const items = chestLists().filter(function (item) { return item.kind === "daily"; });
+    return items[0] || null;
+  }
+
+  function dailyQuests() {
+    return chestLists().filter(function (item) { return item.kind === "quest" && item.tag === "Daily"; });
+  }
+
+  function todayEnergyText(energy) {
+    if (state.phase === "routing") return energy.current + "/" + energy.max + " · spending 1";
+    if (energy.full) return energy.current + "/" + energy.max + " · cell full";
+    if (energy.current < 1) return "0/" + energy.max + " · next +1 in " + formatDuration(energy.nextIn);
+    return energy.current + "/" + energy.max + " · next +1 in " + formatDuration(energy.nextIn);
+  }
+
+  function nextStepText(energy) {
+    const daily = dailyChest();
     const ready = readyChests();
-    if (ready.length) {
-      section.append(el("button", {
-        class: "callout",
-        onclick: function () { go("chests"); },
-        text: ready.length + " supply chest" + (ready.length === 1 ? "" : "s") + " ready · " + ready[0].title
+    if (player().banned) return "This node is suspended.";
+    if (daily && daily.ready) return "Claim today's check-in. It pays " + formatPoints(daily.reward) + " Zyron Points.";
+    if (ready.length) return ready.length + " supply chest" + (ready.length === 1 ? " is" : "s are") + " ready to open.";
+    if (energy.current < 1) return "Energy is recharging. Come back when the next point lands.";
+    const openQuest = dailyQuests().filter(function (quest) { return !quest.opened && quest.current < quest.target; })[0];
+    if (openQuest) return "Keep the node running. Next up: " + openQuest.title + ".";
+    return "You're caught up. Start the node or check Intel if you want the rules.";
+  }
+
+  function todayCard(energy) {
+    const daily = dailyChest();
+    const ready = readyChests();
+    const card = el("article", { class: "card today" }, [
+      el("p", { class: "kicker", text: "Today" }),
+      el("p", { class: "next-step", text: nextStepText(energy) }),
+      el("div", { class: "today-row" }, [
+        el("span", { text: "Energy regen" }),
+        el("b", { "data-today-energy": "1", text: todayEnergyText(energy) })
+      ])
+    ]);
+    const check = el("div", { class: "today-row" }, [
+      el("span", { text: "Check-in" }),
+      el("b", { text: daily && daily.ready ? "Ready · +" + formatPoints(daily.reward) : (daily && daily.opened ? "Claimed today" : "Opens with the daily chest") })
+    ]);
+    card.append(check);
+    card.append(el("div", { class: "today-row" }, [
+      el("span", { text: "Chests" }),
+      el("b", { text: ready.length ? ready.length + " ready" : "None ready" })
+    ]));
+    if (daily && daily.ready) {
+      card.append(el("button", {
+        class: "primary",
+        text: "Open daily check-in",
+        disabled: state.busy ? "disabled" : null,
+        onclick: function () { openChests(["daily"]); }
+      }));
+    } else if (ready.length) {
+      card.append(el("button", {
+        class: "ghost buy",
+        text: "Open supply chests",
+        onclick: function () { go("chests"); }
       }));
     }
-    return section;
+    const quests = dailyQuests();
+    if (quests.length) {
+      card.append(el("h3", { text: "Quest progress" }));
+      quests.forEach(function (quest) {
+        const ratio = quest.target ? Math.min(1, quest.current / quest.target) : 0;
+        const bar = el("div", { class: "bar" }, [el("i")]);
+        bar.firstChild.style.width = (ratio * 100) + "%";
+        const status = quest.opened ? "Collected" : (quest.ready ? "Ready to open" : quest.current + "/" + quest.target);
+        card.append(el("div", { class: "quest-line" }, [
+          el("strong", { text: quest.title }),
+          el("p", { class: "fine", text: status + " · " + formatPoints(quest.reward) + " pts" }),
+          bar
+        ]));
+      });
+    }
+    return card;
+  }
+
+  function fillTicks(node) {
+    clear(node);
+    node.append(el("p", { class: "kicker", text: "Recent cycles" }));
+    if (!state.ticks.length) {
+      node.append(el("p", { class: "fine", text: "Each cycle lists points gained and the 1 energy the server spent." }));
+      return;
+    }
+    state.ticks.slice(-5).reverse().forEach(function (tick) {
+      node.append(el("div", { class: "tick" }, [
+        el("b", { text: "+" + formatPoints(tick.gained) + " pts" }),
+        el("span", { text: "−" + tick.spent + " energy" }),
+        el("span", { text: tick.energy + " left" })
+      ]));
+    });
   }
 
   function sessionLine(p) {
@@ -412,7 +619,7 @@
         el("p", { class: "fine", text: "Spend Zyron Points to raise yield, energy, and Network Power. Costs are calculated on the server. Validator Power is gameplay only and does not join the ZyronChain validator set." })
       ])
     ]);
-    (state.upgrades.modules || []).forEach(function (module) {
+    ((state.upgrades && state.upgrades.modules) || []).forEach(function (module) {
       const ratio = module.maxLevel ? module.level / module.maxLevel : 0;
       const bar = el("div", { class: "bar" }, [el("i")]);
       bar.firstChild.style.width = (ratio * 100) + "%";
@@ -425,6 +632,7 @@
         ]),
         el("p", { text: module.summary }),
         bar,
+        el("p", { class: "preview", text: previewCopy(module) }),
         el("button", {
           class: "ghost buy",
           text: label,
@@ -478,6 +686,22 @@
     }
     wrap.append(streakTrack());
     return wrap;
+  }
+
+  function signed(value) {
+    const number = Number(value) || 0;
+    return (number > 0 ? "+" : "") + number;
+  }
+
+  function previewCopy(module) {
+    const preview = module.preview;
+    if (!preview) return "This module is at max level.";
+    const parts = ["Next cycle reward " + formatPoints(preview.cycleReward) + " Zyron Points"];
+    if (preview.cycleRewardDelta) parts[0] += " (" + signed(preview.cycleRewardDelta) + ")";
+    if (preview.energyMaxDelta) parts.push("energy cap " + preview.energyMax + " (" + signed(preview.energyMaxDelta) + ")");
+    if (preview.regenSecondsDelta) parts.push("regen " + formatDuration(preview.regenSeconds) + " (" + signed(preview.regenSecondsDelta) + "s)");
+    if (preview.networkPowerDelta) parts.push("Network Power " + signed(preview.networkPowerDelta));
+    return "Before you install: " + parts.join(" · ") + ".";
   }
 
   function focusRun() {
@@ -541,41 +765,84 @@
       wrap.append(el("p", { class: "muted", text: "Loading board…" }));
       return wrap;
     }
-    wrap.append(el("p", { class: "fine", text: "Your rank #" + state.ranks.me.rank + " · score " + formatPoints(state.ranks.me.score) + " Zyron Points" }));
-    if (!state.ranks.entries.length) {
+    const ranks = state.ranks;
+    const me = ranks.me || { rank: 0, score: 0, displayName: "You", onBoard: false };
+    const entries = ranks.entries || [];
+    const neighbors = ranks.neighbors || [];
+    const population = typeof ranks.population === "number" ? ranks.population : entries.length;
+    wrap.append(standingCard(me, population));
+    if (!population) {
       wrap.append(el("div", { class: "empty" }, [
-        el("h2", { text: "No scores in this window yet" }),
-        el("p", { text: "Be the first operator on this board. Run the node and the season score posts itself. Scores count Zyron Points gained, not a token price." }),
+        el("h2", { text: "No scores on this board yet" }),
+        el("p", { text: "You are here with " + formatPoints(me.score) + " Zyron Points. Run the node and your row will be the first real one. Empty places are not filled with other operators." }),
         el("button", { class: "primary", text: "Start node", onclick: focusRun })
       ]));
       return wrap;
     }
-    state.ranks.entries.forEach(function (entry) {
-      const medalClass = entry.rank <= 3 ? " medal m" + entry.rank : "";
-      wrap.append(el("div", { class: "rank-row" + (entry.you ? " you" : "") }, [
-        el("div", { class: "who" }, [
-          el("div", { class: "medal" + medalClass, text: String(entry.rank) }),
-          el("span", { text: entry.displayName + (entry.you ? " · you" : "") + " · Lv " + entry.nodeLevel })
-        ]),
-        el("strong", { text: formatPoints(entry.score) })
-      ]));
+    if (population === 1 && me.onBoard) {
+      wrap.append(el("p", { class: "board-note", text: "You're the only operator with a score on this board. This row is yours. No other players are added." }));
+    } else if (population < 8) {
+      wrap.append(el("p", { class: "board-note", text: population + " operators have a score. Everyone with points is listed. Empty places stay empty." }));
+    }
+    entries.forEach(function (entry) { wrap.append(rankRow(entry)); });
+    const youInEntries = entries.some(function (entry) { return entry.you; });
+    const neighborOnly = neighbors.filter(function (entry) {
+      return !entries.some(function (top) { return top.playerId === entry.playerId; });
     });
+    if (!youInEntries && (neighborOnly.length || !me.onBoard)) {
+      wrap.append(el("h3", { class: "section-title", text: "Near your rank" }));
+      if (!me.onBoard) {
+        wrap.append(el("p", { class: "board-note", text: "You have no score in this window, so you are not placed among these operators." }));
+      }
+      neighborOnly.forEach(function (entry) { wrap.append(rankRow(entry)); });
+      if (!me.onBoard) wrap.append(rankRow({
+        rank: me.rank,
+        displayName: me.displayName || "You",
+        nodeLevel: me.nodeLevel || player().level,
+        score: me.score,
+        you: true
+      }));
+    }
     return wrap;
+  }
+
+  function standingCard(me, population) {
+    const placed = me.onBoard && me.score > 0;
+    const headline = placed ? "#" + me.rank : "Not ranked yet";
+    const detail = placed
+      ? (me.displayName || "You") + " · " + formatPoints(me.score) + " Zyron Points"
+      : (me.displayName || "You") + " · " + formatPoints(me.score) + " Zyron Points · " + (population ? population + " operators ahead" : "no scores in this window");
+    return el("article", { class: "standing" }, [
+      el("p", { class: "kicker", text: "Your standing" }),
+      el("h2", { text: headline }),
+      el("p", { text: detail })
+    ]);
+  }
+
+  function rankRow(entry) {
+    const medalClass = entry.rank <= 3 ? " medal m" + entry.rank : "";
+    return el("div", { class: "rank-row" + (entry.you ? " you" : "") }, [
+      el("div", { class: "who" }, [
+        el("div", { class: "medal" + medalClass, text: String(entry.rank) }),
+        el("span", { text: entry.displayName + (entry.you ? " · you" : "") + " · Lv " + entry.nodeLevel })
+      ]),
+      el("strong", { text: formatPoints(entry.score) })
+    ]);
   }
 
   function intelView() {
     const p = player();
     const rules = (state.meta && state.meta.rules) || {};
     const wrap = el("section", { class: "stack" });
-    wrap.append(el("article", { class: "card" }, [
+    wrap.append(el("article", { class: "card brief" }, [
       el("h2", { text: "Operator brief" }),
-      el("p", { class: "fine", text: p.displayName + " · level " + p.level + " · " + formatPoints(p.cycleCount) + " cycles" }),
-      info("What Zyron Points are", state.meta.pointsNotice),
-      info("How the node runs", "Tap Start node once. The app repeats cycles until energy is empty or you stop it. Each cycle spends 1 energy and pays the server cycle reward (" + formatPoints(p.cycleReward) + " right now). Pace is " + Math.round(pace() / 100) / 10 + "s so it stays inside the server rate limit. This is fictional. It does not mine ZYN."),
-      info("Energy", "Cap " + p.energy.max + ". One point returns every " + formatDuration(p.energy.regenSeconds) + ". Time already at the cap is not banked. The countdown uses the server clock."),
-      info("Level", "Every 4 module levels raise the node one level. A level supply chest then pays " + (rules.levelChestStep || 10) + " × (level − 1) Zyron Points, once."),
-      info("Season", seasonCopy()),
-      info("Invite rules", referralCopy())
+      el("p", { class: "intel-lead", text: p.displayName + " · level " + p.level + " · " + formatPoints(p.cycleCount) + " cycles" }),
+      briefBlock("Zyron Points", state.meta.pointsNotice),
+      briefBlock("How the node runs", "Tap Start node once. The app repeats cycles until energy is empty or you stop it. Each cycle spends 1 energy and pays the server cycle reward (" + formatPoints(p.cycleReward) + " right now). Pace is " + Math.round(pace() / 100) / 10 + "s so it stays inside the server rate limit. This is fictional. It does not mine ZYN."),
+      briefBlock("Energy", "Cap " + p.energy.max + ". One point returns every " + formatDuration(p.energy.regenSeconds) + ". Time already at the cap is not banked. The countdown uses the server clock."),
+      briefBlock("Level", "Every 4 module levels raise the node one level. A level supply chest then pays " + (rules.levelChestStep || 10) + " × (level − 1) Zyron Points, once."),
+      briefBlock("Season", seasonCopy()),
+      briefBlock("Invites", referralCopy())
     ]));
     wrap.append(referralCard(p));
     wrap.append(walletCard(p));
@@ -600,10 +867,11 @@
     return "You receive " + (rules.referralReferrer || 100) + " Zyron Points. They receive " + (rules.referralReferee || 25) + " after " + (rules.referralMinCycles || 15) + " cycles" + wait + ". No self-invite and no mutual link. This does not mint ZYN.";
   }
 
-  function info(title, body) {
-    const block = el("details", { class: "info" }, [el("summary", { text: title })]);
-    block.append(el("p", { text: body }));
-    return block;
+  function briefBlock(title, body) {
+    return el("div", { class: "intel-block" }, [
+      el("h3", { text: title }),
+      el("p", { text: body })
+    ]);
   }
 
   function referralCard(p) {
@@ -848,6 +1116,17 @@
     if (bar) bar.style.width = Math.round((energy.current / Math.max(1, energy.max)) * 100) + "%";
     const countdown = root.querySelector("[data-countdown]");
     if (countdown) countdown.textContent = countdownText(energy);
+    const todayEnergy = root.querySelector("[data-today-energy]");
+    if (todayEnergy) todayEnergy.textContent = todayEnergyText(energy);
+    const hold = root.querySelector("[data-hold]");
+    if (hold && state.holdUntil) {
+      const left = Math.max(0, state.holdUntil - Date.now());
+      hold.textContent = left
+        ? "Ready in " + formatDuration(left / 1000) + ". The last cycle just landed."
+        : "Ready to try again.";
+      const button = hold.parentNode && hold.parentNode.querySelector("button");
+      if (button) button.disabled = left > 0;
+    }
     const core = root.querySelector("[data-core-energy]");
     if (core) core.textContent = String(energy.current);
     const status = root.querySelector("[data-node-status]");
@@ -872,8 +1151,8 @@
   function patch() {
     const points = root.querySelector("[data-points]");
     if (points && player()) points.textContent = formatPoints(player().points);
-    const gains = root.querySelector("[data-gains]");
-    if (gains) gains.textContent = state.recentGains.slice(-6).map(function (n) { return "+" + n; }).join("  ");
+    const ticks = root.querySelector("[data-ticks]");
+    if (ticks) fillTicks(ticks);
     const session = root.querySelector("[data-session]");
     if (session && player()) session.textContent = sessionLine(player());
     const run = root.querySelector("[data-run]");
@@ -896,6 +1175,10 @@
     state.energyReceivedAt = Date.now();
     state.recentGains.push(res.gained || 0);
     if (state.recentGains.length > 8) state.recentGains.shift();
+    const spent = res.energySpent || 1;
+    const left = res.energy && typeof res.energy.current === "number" ? res.energy.current : predictedEnergy().current;
+    state.ticks.push({ gained: res.gained || 0, spent: spent, energy: left });
+    if (state.ticks.length > 8) state.ticks.shift();
   }
 
   function toggleRun() {
@@ -945,7 +1228,7 @@
           state.sessionPoints += res.gained || 0;
           state.sessionCycles += 1;
           state.phase = state.running ? "running" : "idle";
-          floatGain(res.gained || 0);
+          floatGain(res.gained || 0, res.energySpent || 1);
           haptic("light");
           (res.achievementsUnlocked || []).forEach(function (id) { toast(achievementTitle(id) + " unlocked", "ok"); });
           if (res.referralQualified) toast("Referral qualified", "ok");
@@ -1110,7 +1393,15 @@
     state.boardBusy = false;
     state.running = false;
     state.phase = "idle";
-    state.error = (error && error.message) || "Request failed";
+    const described = describeError(error);
+    state.errorCode = described.code;
+    if (described.code === "cycle_too_fast") {
+      state.error = "";
+      state.holdUntil = Date.now() + Math.max(800, ((error && error.retryAfter) || 1) * 1000);
+    } else {
+      state.holdUntil = 0;
+      state.error = described.message;
+    }
     haptic("error");
     render();
   }
@@ -1233,14 +1524,45 @@
     if (!tg) return;
     const height = tg.viewportStableHeight || tg.viewportHeight;
     if (height) document.documentElement.style.setProperty("--app-height", height + "px");
-    const inset = tg.contentSafeAreaInset || tg.safeAreaInset;
-    if (inset && inset.top) document.documentElement.style.setProperty("--safe-top", inset.top + "px");
-    if (inset && inset.bottom) document.documentElement.style.setProperty("--safe-bottom", inset.bottom + "px");
+    const safe = tg.safeAreaInset || {};
+    const content = tg.contentSafeAreaInset || {};
+    const top = Math.max(Number(safe.top) || 0, Number(content.top) || 0);
+    const bottom = Math.max(Number(safe.bottom) || 0, Number(content.bottom) || 0);
+    document.documentElement.style.setProperty("--safe-top", top + "px");
+    document.documentElement.style.setProperty("--safe-bottom", bottom + "px");
+  }
+
+  function reloadForBuild(build) {
+    const key = "zyronBuildReload";
+    try {
+      if (sessionStorage.getItem(key) === build) {
+        state.blocked = "shell";
+        render();
+        return;
+      }
+      sessionStorage.setItem(key, build);
+    } catch (error) {
+      state.blocked = "shell";
+      render();
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.set("v", build);
+    window.location.replace(url.pathname + "?" + url.searchParams.toString());
   }
 
   setInterval(onTick, 250);
 
   api("/api/meta").then(function (meta) {
+    if (!meta || meta.shell !== SHELL || !meta.clientBuild) {
+      state.blocked = "shell";
+      render();
+      return;
+    }
+    if (BUILD && meta.clientBuild !== BUILD) {
+      reloadForBuild(meta.clientBuild);
+      return;
+    }
     state.meta = meta;
     render();
     if (authed()) return refresh();

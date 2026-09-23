@@ -8,9 +8,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 
 from zyron_node.api import error_payload, install_error_handlers, register_routes
+from zyron_node.buildinfo import CLIENT_BUILD, SHELL_ID
 from zyron_node.config import Settings, validate_settings
 from zyron_node.db import create_pool, migrate
 from zyron_node.logging_setup import setup_logging
@@ -28,6 +29,42 @@ CSP = (
     "form-action 'self'; "
     "frame-ancestors 'self' https://web.telegram.org https://webk.telegram.org https://webz.telegram.org"
 )
+
+
+def stale_client_script() -> str:
+    """Refuse to boot an unversioned or outdated bundle.
+
+    Older Mini App HTML asks for ``/assets/app.js`` with no query. Serving the
+    current shell there lets a cached page mix Home/Quests/You with new API
+    shapes. This script only reloads the versioned entry, or tells the player
+    to reopen Play Zyron.
+    """
+    return (
+        "(function(){"
+        f"var build={CLIENT_BUILD!r};"
+        "var key='zyronAssetReload';"
+        "try{"
+        "if(sessionStorage.getItem(key)!==build){"
+        "sessionStorage.setItem(key,build);"
+        "var url=new URL(window.location.href);"
+        "url.searchParams.set('v',build);"
+        "window.location.replace(url.pathname+'?'+url.searchParams.toString());"
+        "return;}"
+        "}catch(e){}"
+        "var root=document.querySelector('#app');"
+        "if(!root)return;"
+        "root.replaceChildren();"
+        "root.dataset.booted='stale';"
+        "var card=document.createElement('section');"
+        "card.className='gate';"
+        "var title=document.createElement('h1');"
+        "title.textContent='ZYRON NODE updated';"
+        "var copy=document.createElement('p');"
+        f"copy.textContent='This screen is an older copy. Close it and open Play Zyron again. Current shell: {SHELL_ID}.';"
+        "card.append(title,copy);"
+        "root.append(card);"
+        "})();"
+    )
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -69,7 +106,14 @@ def create_app(settings: Settings) -> FastAPI:
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = CSP
-        response.headers["Cache-Control"] = "no-store"
+        version = request.query_params.get("v", "")
+        path = request.url.path
+        if path.startswith("/assets/") and version == CLIENT_BUILD and response.status_code == 200:
+            response.headers["Cache-Control"] = "public, max-age=86400, immutable"
+        else:
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
         elapsed = int((time.perf_counter() - started) * 1000)
         log.info("http %s %s %s %sms", request.method, request.url.path, response.status_code, elapsed)
         return response
@@ -79,16 +123,20 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/")
     def index():
-        return FileResponse(FRONTEND / "index.html")
+        html = (FRONTEND / "index.html").read_text(encoding="utf-8")
+        html = html.replace("{{CLIENT_BUILD}}", CLIENT_BUILD).replace("{{SHELL_ID}}", SHELL_ID)
+        return HTMLResponse(html)
 
     @app.get("/admin")
     def admin_page():
         return FileResponse(FRONTEND / "admin.html")
 
     @app.get("/assets/{name}")
-    def asset(name: str):
-        if name not in {"app.js", "admin.js", "styles.css"}:
+    def asset(name: str, v: str = ""):
+        if name not in {"app.js", "admin.js", "styles.css", "boot.js"}:
             return JSONResponse(error_payload("not_found", "Not found."), status_code=404)
+        if name == "app.js" and v != CLIENT_BUILD:
+            return Response(stale_client_script(), media_type="text/javascript")
         path = FRONTEND / name
         media = "text/css" if name.endswith(".css") else "text/javascript"
         return FileResponse(path, media_type=media)
