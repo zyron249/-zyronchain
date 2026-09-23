@@ -18,6 +18,7 @@ All numbers below are computed in `src/zyron_node/economy.py`. The database ledg
 - One point returns every `max(60, 300 - EnergyCore * 10)` seconds.
 - Time spent already at the cap is not banked.
 - Spending sets the regen clock to server time.
+- The profile reports `regenSeconds`, `nextInSeconds`, and `nextAt` (absolute server time of the next point, or null at the cap). The client counts down from those fields.
 
 ## Upgrades
 
@@ -51,6 +52,20 @@ One claim per UTC date, using server time. A missed day resets the next claim to
 ## Quests and achievements
 
 Defined in `src/zyron_node/catalog.py`. Completion is derived from the ledger, upgrade rows, streak date, and server-side RPC markers. Claims are unique per period. Storage level adds its level to the quest payout.
+
+Cycling, upgrading, streak claims, wallet links, and chain reads do not pay quest points by themselves. The Mini App collects a ready quest by opening its supply chest (`POST /api/chests/open`). `POST /api/quests/sync` still claims every ready quest in one call, for older clients and for operators who want to settle them together.
+
+## Supply chests
+
+Chests do not roll random loot and they do not mint ZYN.
+
+| Chest | When it opens | Payout |
+|---|---|---|
+| Daily supply | Once per UTC day, until the streak is claimed | The existing streak reward for that day |
+| Quest | The quest target is met and that period is unclaimed | The existing quest payout, including Storage |
+| Level | Node level is at least this level, once each from level 2 | `10 * (level - 1)` Zyron Points |
+
+Opening the daily chest is the streak claim. A second open returns `replayed: true` and `gained: 0`. Quest ledger keys match `/api/quests/sync`, so the two paths cannot both pay. Level claims live in `chest_claims`.
 
 Chain quests complete only when this service successfully reads the configured Zyron RPC. If no RPC is configured, those quests stay open.
 

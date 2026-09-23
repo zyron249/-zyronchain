@@ -66,7 +66,9 @@ def reply_for(command: str, argument: str, profile: dict | None, webapp_url: str
     elif command == "help":
         text = (
             "Commands: /play /profile /rank /invite /help\n\n"
-            "Energy regenerates on server time. Upgrades spend Zyron Points. "
+            "Energy regenerates on server time. In the Mini App, Start node keeps cycling until energy runs out. "
+            "Supply chests collect the daily streak, quests, and level rewards. "
+            "Upgrades spend Zyron Points. "
             "Linking a wallet stores only a public ZYN address — never a seed or private key.\n\n"
             f"{POINTS_NOTICE}"
         )

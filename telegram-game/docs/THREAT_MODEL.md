@@ -47,6 +47,8 @@ Zyron Points are not ZYN and not Zyrum. There is no conversion rate and no autom
 
 **Quest and achievement double claims.** Primary keys are `(player, quest, period)` and `(player, achievement)`. Ledger keys repeat that identity.
 
+**Supply chest double opens.** The client sends a chest id, never an amount. Daily open uses the streak idempotency key. Quest open uses the same ledger key as quest sync. Level open uses `chest:{player}:level:{n}` plus `chest_claims`. A replay returns `gained: 0` and the live point balance. Sealed chests answer 409. The auto-run client waits at least `autoCyclePaceMs` (1.5s, or the cycle interval if that is slower) so a running node stays inside the 40 cycles / 60s budget.
+
 **Referral farming.** A referee qualifies only after `REFERRAL_MIN_CYCLES` (default 15) and `REFERRAL_MIN_AGE_SECONDS` (default 30 minutes). Rewards are once per referral. A referrer can be paid for at most 20 qualified referrals per 7 days. Mutual links are refused. Six or more signups from one network hash in an hour are flagged and their referrals are rejected. Same-network referrals are flagged but not auto-rejected, because households share addresses. Abuse score at or above 80 blocks referral payout. It does not confiscate points already earned. The Security upgrade does not reduce abuse score or lift a ban.
 
 **Wallet farming.** An address matches `^ZYN[0-9a-f]{40}$` and cannot be the all-zero tracker. The first operator to claim an address keeps it after unlink, so the link quest cannot be passed around. More than four link/unlink events in 24 hours is flagged and blocked. Admins can release a claim.

@@ -2,6 +2,8 @@
 
 Telegram Mini App for the ZyronChain community. Operators run a **fictional node**, spend **Zyron Points**, and climb off-chain leaderboards.
 
+One tap starts the node. It keeps cycling until energy runs out, with a live regen countdown. Streak, quest, and level rewards are collected from supply chests. Amounts stay server-side.
+
 This directory is a separate service. It does not import or modify `l1/` consensus, validator signing, mining, or the legacy Python chain.
 
 Zyron Points are not ZYN and not Zyrum. There is no conversion rate. The service does not mint tokens, store seeds, or send mainnet transfers. Season snapshots are exports only.

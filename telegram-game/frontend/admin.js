@@ -76,7 +76,11 @@
   function renderDashboard(overview, snapshots) {
     clear(root);
     root.append(el("header", { class: "top" }, [
-      el("div", {}, [el("p", { class: "eyebrow", text: "ZYRON NODE" }), el("h1", { text: "Admin" })]),
+      el("div", {}, [
+        el("p", { class: "eyebrow", text: "ZYRON NODE" }),
+        el("h1", { text: "Admin" }),
+        el("p", { class: "fine", text: "Operators, flags, and season snapshots. Snapshots do not pay ZYN." })
+      ]),
       el("button", { class: "ghost", text: "Lock", onclick: function () { sessionStorage.removeItem(tokenKey); renderLogin(""); } })
     ]));
     root.append(el("p", { class: "fine", text: overview.notice }));

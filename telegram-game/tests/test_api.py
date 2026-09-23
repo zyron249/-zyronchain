@@ -23,6 +23,10 @@ def test_health_and_meta(client):
     assert meta["name"] == "ZYRON NODE"
     assert "no conversion rate" in meta["pointsNotice"]
     assert meta["devAuth"] is False
+    assert meta["cycleMinIntervalMs"] == 800
+    assert meta["autoCyclePaceMs"] >= 1500
+    assert meta["rules"]["referralReferrer"] == 100
+    assert meta["rules"]["levelChestStep"] == 10
     assert client.post("/tx").status_code == 404
 
 
@@ -41,11 +45,16 @@ def test_cycle_is_idempotent_and_rate_limited(client):
     assert body["level"] == 1
     assert body["points"] == 0
     assert body["energy"]["current"] == 100
+    assert body["energy"]["nextInSeconds"] == 0
+    assert body["energy"]["nextAt"] is None
     assert body["networkPower"] >= 10
     first = client.post("/api/cycle", json={"idempotencyKey": "cycle-key-0001"}, headers=headers)
     assert first.status_code == 200, first.text
     assert first.json()["gained"] == 1
     assert first.json()["replayed"] is False
+    assert first.json()["energy"]["current"] == 99
+    assert first.json()["energy"]["nextInSeconds"] > 0
+    assert first.json()["energy"]["nextAt"]
     assert "first_cycle" in first.json()["achievementsUnlocked"]
     replay = client.post("/api/cycle", json={"idempotencyKey": "cycle-key-0001"}, headers=headers)
     assert replay.json()["replayed"] is True
@@ -227,6 +236,98 @@ def test_wallet_and_activity_and_snapshot(client):
     assert closed.json()["payout"] is False
 
 
+def test_supply_chests_pay_streak_and_quest_once(client):
+    headers = auth(81)
+    listed = client.get("/api/chests", headers=headers)
+    assert listed.status_code == 200, listed.text
+    ready = {item["id"]: item for item in listed.json()["ready"]}
+    sealed = {item["id"]: item for item in listed.json()["sealed"]}
+    assert ready["daily"]["reward"] == 10
+    assert ready["daily"]["kind"] == "daily"
+    assert "quest:daily_login" not in ready
+    assert sealed["quest:daily_login"]["ready"] is False
+    assert sealed["level:2"]["target"] == 4
+    opened = client.post("/api/chests/open", json={"id": "daily"}, headers=headers)
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["gained"] == 10
+    assert opened.json()["replayed"] is False
+    assert opened.json()["points"] == 10
+    again = client.post("/api/chests/open", json={"id": "daily"}, headers=headers)
+    assert again.json()["replayed"] is True
+    assert again.json()["gained"] == 0
+    assert again.json()["points"] == 10
+    quests = client.get("/api/chests", headers=headers).json()
+    quest_ready = {item["id"]: item for item in quests["ready"]}
+    assert quest_ready["quest:daily_login"]["reward"] == 15
+    claimed = client.post("/api/chests/open", json={"id": "quest:daily_login"}, headers=headers)
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["gained"] == 15
+    assert claimed.json()["points"] == 25
+    replay = client.post("/api/chests/open", json={"id": "daily"}, headers=headers)
+    assert replay.json()["replayed"] is True
+    assert replay.json()["gained"] == 0
+    assert replay.json()["points"] == 25
+    synced = client.post("/api/quests/sync", headers=headers)
+    assert synced.json()["points"] == 25
+    sealed_open = client.post("/api/chests/open", json={"id": "quest:daily_cycles"}, headers=headers)
+    assert sealed_open.status_code == 409
+    assert client.post("/api/chests/open", json={"id": "loot"}, headers=headers).status_code == 422
+    assert client.post("/api/chests/open", json={"id": "quest:not_real"}, headers=headers).status_code == 400
+    assert client.post("/api/chests/open", json={"id": "level:2"}, headers=headers).status_code == 409
+
+
+def test_cycles_leave_quest_chest_for_the_player_to_open(client):
+    for index in range(25):
+        when = NOW + timedelta(seconds=index * 2)
+        response = client.post(
+            "/api/cycle",
+            json={"idempotencyKey": f"chest-cycle-{index:04d}"},
+            headers=auth(61, when),
+        )
+        assert response.status_code == 200, response.text
+        assert "daily_cycles" not in response.json()["questsCompleted"]
+    when = NOW + timedelta(seconds=80)
+    headers = auth(61, when)
+    quests = client.get("/api/quests", headers=headers).json()
+    daily = {item["id"]: item for item in quests["quests"]}
+    assert daily["daily_cycles"]["complete"] is True
+    assert daily["daily_cycles"]["claimed"] is False
+    before = client.get("/api/me", headers=headers).json()["player"]["points"]
+    opened = client.post("/api/chests/open", json={"id": "quest:daily_cycles"}, headers=headers)
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["gained"] == 40
+    assert opened.json()["replayed"] is False
+    after = client.get("/api/me", headers=auth(61, NOW + timedelta(seconds=90))).json()["player"]["points"]
+    assert after == before + 40
+    second = client.post("/api/chests/open", json={"id": "quest:daily_cycles"}, headers=auth(61, NOW + timedelta(seconds=100)))
+    assert second.json()["replayed"] is True
+    assert second.json()["gained"] == 0
+    assert second.json()["points"] == after
+
+
+def test_level_chest_pays_once_after_the_node_levels(client):
+    headers = auth(71)
+    player_id = client.get("/api/me", headers=headers).json()["player"]["id"]
+    assert client.post("/api/chests/open", json={"id": "level:2"}, headers=headers).status_code == 409
+    with client.app.state.pool.connection() as conn:
+        with conn.transaction():
+            conn.execute(
+                "UPDATE player_upgrades SET level = 4 WHERE player_id = %s AND module = 'cpu'",
+                (player_id,),
+            )
+    listed = client.get("/api/chests", headers=headers).json()
+    ready = {item["id"]: item for item in listed["ready"]}
+    assert ready["level:2"]["reward"] == 10
+    opened = client.post("/api/chests/open", json={"id": "level:2"}, headers=headers)
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["gained"] == 10
+    assert opened.json()["replayed"] is False
+    again = client.post("/api/chests/open", json={"id": "level:2"}, headers=headers)
+    assert again.json()["replayed"] is True
+    assert again.json()["gained"] == 0
+    assert again.json()["points"] == opened.json()["points"]
+
+
 def test_bot_commands_do_not_touch_groups():
     assert parse_command("/start@ZyronNodeBot ref_ABCDEFGH") == ("start", "ref_ABCDEFGH")
     reply = reply_for("play", "", None, "https://game.example/app")
@@ -252,4 +353,4 @@ def test_service_does_not_touch_consensus_or_keys():
     for label in ("Level", "Zyron Points", "Energy", "Network Power", "Rank"):
         assert label in frontend
     assert "seed phrase" in frontend
-    assert "Run node cycle" in frontend
+    assert "Start node" in frontend
