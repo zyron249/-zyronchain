@@ -5,6 +5,7 @@ from pathlib import Path
 
 from tests.test_economy_and_auth import sign_init
 from zyron_node.bot import menu_button_payload, parse_command, reply_for
+from zyron_node.buildinfo import CLIENT_BUILD, SHELL_ID
 from zyron_node.game import run_cycle
 
 NOW = datetime(2026, 9, 22, 15, 0, tzinfo=timezone.utc)
@@ -21,6 +22,8 @@ def test_health_and_meta(client):
     assert client.get("/readyz").status_code == 200
     meta = client.get("/api/meta").json()
     assert meta["name"] == "ZYRON NODE"
+    assert meta["shell"] == SHELL_ID
+    assert meta["clientBuild"] == CLIENT_BUILD
     assert "no conversion rate" in meta["pointsNotice"]
     assert meta["devAuth"] is False
     assert meta["cycleMinIntervalMs"] == 800
@@ -51,6 +54,7 @@ def test_cycle_is_idempotent_and_rate_limited(client):
     first = client.post("/api/cycle", json={"idempotencyKey": "cycle-key-0001"}, headers=headers)
     assert first.status_code == 200, first.text
     assert first.json()["gained"] == 1
+    assert first.json()["energySpent"] == 1
     assert first.json()["replayed"] is False
     assert first.json()["energy"]["current"] == 99
     assert first.json()["energy"]["nextInSeconds"] > 0
@@ -61,6 +65,8 @@ def test_cycle_is_idempotent_and_rate_limited(client):
     assert replay.json()["points"] == first.json()["points"]
     too_fast = client.post("/api/cycle", json={"idempotencyKey": "cycle-key-0002"}, headers=headers)
     assert too_fast.status_code == 429
+    assert "settling" not in too_fast.json()["error"]["message"].lower()
+    assert int(too_fast.headers["retry-after"]) >= 1
 
 
 def test_parallel_same_idempotency_key_grants_once(client):
@@ -332,9 +338,13 @@ def test_bot_commands_do_not_touch_groups():
     assert parse_command("/start@ZyronNodeBot ref_ABCDEFGH") == ("start", "ref_ABCDEFGH")
     reply = reply_for("play", "", None, "https://game.example/app")
     assert reply["reply_markup"]["inline_keyboard"][0][0]["text"] == "Play Zyron"
+    assert reply["reply_markup"]["inline_keyboard"][0][0]["web_app"]["url"].endswith("?v=" + CLIENT_BUILD)
     assert "no conversion rate" in reply["text"]
-    menu = menu_button_payload("https://game.example/app")
+    menu = menu_button_payload("https://game.example/app?ref=keep")
     assert menu["menu_button"]["text"] == "Play Zyron"
+    menu_url = menu["menu_button"]["web_app"]["url"]
+    assert "ref=keep" in menu_url
+    assert "v=" + CLIENT_BUILD in menu_url
     help_text = reply_for("help", "", None, "")["text"]
     assert "private key" in help_text
     source = Path("src/zyron_node/bot.py").read_text(encoding="utf-8")
@@ -354,3 +364,84 @@ def test_service_does_not_touch_consensus_or_keys():
         assert label in frontend
     assert "seed phrase" in frontend
     assert "Start node" in frontend
+    assert SHELL_ID in frontend
+    assert "Recent cycles" in frontend
+
+
+def test_shell_assets_are_versioned_and_stale_js_does_not_boot(client):
+    home = client.get("/")
+    assert home.status_code == 200
+    assert "no-store" in home.headers["cache-control"]
+    assert f"/assets/app.js?v={CLIENT_BUILD}" in home.text
+    assert f"/assets/styles.css?v={CLIENT_BUILD}" in home.text
+    assert f"/assets/boot.js?v={CLIENT_BUILD}" in home.text
+    assert SHELL_ID in home.text
+    fresh = client.get(f"/assets/app.js?v={CLIENT_BUILD}")
+    assert fresh.status_code == 200
+    assert "immutable" in fresh.headers["cache-control"]
+    assert "Chests" in fresh.text
+    assert "Intel" in fresh.text
+    stale = client.get("/assets/app.js")
+    assert stale.status_code == 200
+    assert "no-store" in stale.headers["cache-control"]
+    assert "ZYRON NODE updated" in stale.text
+    assert "Quests" not in stale.text
+    assert "Supply chests" not in stale.text
+    old = client.get("/assets/app.js?v=old-shell")
+    assert "ZYRON NODE updated" in old.text
+    assert "Chests" not in old.text
+
+
+def test_upgrade_preview_reports_cycle_and_energy_impact(client):
+    headers = auth(81)
+    view = client.get("/api/upgrades", headers=headers)
+    assert view.status_code == 200, view.text
+    body = view.json()
+    assert body["cycleReward"] == 1
+    modules = {item["id"]: item for item in body["modules"]}
+    cpu = modules["cpu"]["preview"]
+    assert cpu["cycleReward"] == 2
+    assert cpu["cycleRewardDelta"] == 1
+    assert cpu["energyMaxDelta"] == 0
+    energy = modules["energy"]["preview"]
+    assert energy["energyMaxDelta"] == 20
+    assert energy["regenSecondsDelta"] == -10
+    assert energy["cycleRewardDelta"] == 0
+    network = modules["network"]["preview"]
+    assert network["networkPowerDelta"] == 8
+
+
+def test_leaderboard_empty_and_neighbors_are_real_players(client):
+    headers = auth(91)
+    empty = client.get("/api/leaderboard?board=daily", headers=headers)
+    assert empty.status_code == 200, empty.text
+    alone = empty.json()
+    assert alone["population"] == 0
+    assert alone["entries"] == []
+    assert alone["neighbors"] == []
+    assert alone["me"]["score"] == 0
+    assert alone["me"]["onBoard"] is False
+    assert alone["me"]["displayName"]
+    first = client.post("/api/cycle", json={"idempotencyKey": "board-cycle-0001"}, headers=headers)
+    assert first.status_code == 200, first.text
+    solo = client.get("/api/leaderboard?board=alltime", headers=headers).json()
+    assert solo["population"] == 1
+    assert len(solo["entries"]) == 1
+    assert solo["entries"][0]["you"] is True
+    assert solo["neighbors"][0]["you"] is True
+    assert solo["neighbors"][0]["playerId"] == solo["entries"][0]["playerId"]
+    assert solo["me"]["onBoard"] is True
+    assert solo["me"]["rank"] == 1
+    for index in range(3):
+        response = client.post(
+            "/api/cycle",
+            json={"idempotencyKey": f"board-other-{index}"},
+            headers=auth(92, NOW + timedelta(seconds=2 * (index + 1))),
+        )
+        assert response.status_code == 200, response.text
+    board = client.get("/api/leaderboard?board=alltime", headers=headers).json()
+    assert board["population"] == 2
+    ids = {entry["playerId"] for entry in board["neighbors"]}
+    assert ids == {entry["playerId"] for entry in board["entries"]}
+    assert all(entry["displayName"] for entry in board["neighbors"])
+    assert sum(1 for entry in board["neighbors"] if entry["you"]) == 1

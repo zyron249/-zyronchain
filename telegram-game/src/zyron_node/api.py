@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from zyron_node.auth import AuthError, TelegramIdentity, admin_authorized, hash_ip, verify_init_data
+from zyron_node.buildinfo import CLIENT_BUILD, SHELL_ID
 from zyron_node.client_ip import client_address
 from zyron_node.economy import LEVEL_CHEST_STEP, POINTS_NOTICE, REFEREE_REWARD, REFERRER_REWARD
 from zyron_node.game import (
@@ -170,6 +171,8 @@ def register_routes(app) -> None:
         pace = max(settings.cycle_min_interval_ms, 1_500)
         return {
             "name": "ZYRON NODE",
+            "shell": SHELL_ID,
+            "clientBuild": CLIENT_BUILD,
             "pointsNotice": POINTS_NOTICE,
             "devAuth": bool(settings.dev_auth_bypass and settings.environment != "production"),
             "season": season,
@@ -383,7 +386,10 @@ def _player_id(request: Request, identity: TelegramIdentity, ip_hash: str, now: 
 def install_error_handlers(app) -> None:
     @app.exception_handler(GameError)
     async def game_error(_request: Request, exc: GameError):
-        return JSONResponse(error_payload(exc.code, exc.message), status_code=exc.status)
+        response = JSONResponse(error_payload(exc.code, exc.message), status_code=exc.status)
+        if exc.retry_after:
+            response.headers["Retry-After"] = str(int(exc.retry_after))
+        return response
 
     @app.exception_handler(AuthError)
     async def auth_error(_request: Request, exc: AuthError):

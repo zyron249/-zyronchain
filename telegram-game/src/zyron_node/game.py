@@ -41,10 +41,11 @@ CHEST_ID_RE = re.compile(r"^(daily|quest:[a-z0-9_]+|level:[1-9][0-9]?)$")
 
 
 class GameError(Exception):
-    def __init__(self, code: str, message: str, status: int = 400):
+    def __init__(self, code: str, message: str, status: int = 400, retry_after: int | None = None):
         self.code = code
         self.message = message
         self.status = status
+        self.retry_after = retry_after
         super().__init__(message)
 
 
@@ -75,7 +76,14 @@ def run_cycle(pool, player_id: int, key: str, now: datetime, *, min_interval_ms:
             if player["last_cycle_at"] is not None:
                 elapsed_ms = (now - player["last_cycle_at"]).total_seconds() * 1000
                 if elapsed_ms < min_interval_ms:
-                    raise GameError("cycle_too_fast", "The node bus is still settling. Try again in a moment.", 429)
+                    remain_ms = max(0.0, min_interval_ms - elapsed_ms)
+                    retry_after = max(1, int((remain_ms + 999) // 1000))
+                    raise GameError(
+                        "cycle_too_fast",
+                        "The node is between cycles. It will be ready in a moment.",
+                        429,
+                        retry_after=retry_after,
+                    )
             if int(player["energy"]) < 1:
                 raise GameError("no_energy", "Energy is empty. It regenerates on server time.", 409)
             reward = cycle_reward(levels, int(player["streak_count"]))
@@ -103,6 +111,7 @@ def run_cycle(pool, player_id: int, key: str, now: datetime, *, min_interval_ms:
             response = {
                 "replayed": False,
                 "gained": reward,
+                "energySpent": 1,
                 "points": int(player["points"]),
                 "lifetimePoints": int(player["lifetime_points"]),
                 "cycleCount": int(player["cycle_count"]),
@@ -307,12 +316,40 @@ def unlink_wallet(pool, player_id: int, key: str, now: datetime) -> dict:
             return response
 
 
+def module_preview(levels: dict[str, int], module: str, streak_count: int) -> dict | None:
+    """Server-computed next level. The client displays this; it does not invent yields."""
+    spec = MODULES[module]
+    if levels[module] >= spec.max_level:
+        return None
+    bumped = dict(levels)
+    bumped[module] += 1
+    reward = cycle_reward(levels, streak_count)
+    energy = max_energy(levels)
+    regen = regen_interval_seconds(levels)
+    power = network_power(levels)
+    next_reward = cycle_reward(bumped, streak_count)
+    next_energy = max_energy(bumped)
+    next_regen = regen_interval_seconds(bumped)
+    next_power = network_power(bumped)
+    return {
+        "cycleReward": next_reward,
+        "cycleRewardDelta": next_reward - reward,
+        "energyMax": next_energy,
+        "energyMaxDelta": next_energy - energy,
+        "regenSeconds": next_regen,
+        "regenSecondsDelta": next_regen - regen,
+        "networkPower": next_power,
+        "networkPowerDelta": next_power - power,
+    }
+
+
 def upgrades_view(pool, player_id: int, now: datetime) -> dict:
     with pool.connection() as conn:
         with conn.transaction():
             player = lock_player(conn, player_id)
             levels = load_levels(conn, player_id)
             player = persist_energy(conn, player, levels, now)
+            streak = int(player["streak_count"])
             modules = []
             for module in MODULE_ORDER:
                 spec = MODULES[module]
@@ -327,12 +364,16 @@ def upgrades_view(pool, player_id: int, now: datetime) -> dict:
                         "maxLevel": spec.max_level,
                         "nextCost": nxt,
                         "affordable": nxt is not None and int(player["points"]) >= nxt,
+                        "preview": module_preview(levels, module, streak),
                     }
                 )
             return {
                 "points": int(player["points"]),
                 "nodeLevel": node_level(levels),
                 "networkPower": network_power(levels),
+                "cycleReward": cycle_reward(levels, streak),
+                "energyMax": max_energy(levels),
+                "regenSeconds": regen_interval_seconds(levels),
                 "modules": modules,
             }
 
@@ -411,41 +452,87 @@ def achievements_view(pool, player_id: int) -> dict:
         return {"achievements": items}
 
 
+def scores_cte(extra_sql: str) -> str:
+    return f"""
+        WITH scores AS (
+            SELECT player_id, SUM(amount)::bigint AS score
+            FROM point_ledger
+            WHERE amount > 0 {extra_sql}
+            GROUP BY player_id
+        ),
+        ranked AS (
+            SELECT
+                s.score,
+                p.id,
+                p.display_name,
+                p.node_level,
+                ROW_NUMBER() OVER (ORDER BY s.score DESC, p.id ASC)::int AS rank
+            FROM scores s
+            JOIN players p ON p.id = s.player_id
+        )
+    """
+
+
+def ranked_sql(extra_sql: str, where_sql: str) -> str:
+    return scores_cte(extra_sql) + f"""
+        SELECT score, id, display_name, node_level, rank
+        FROM ranked
+        {where_sql}
+        ORDER BY rank ASC
+    """
+
+
+def rank_entry(row, player_id: int) -> dict:
+    return {
+        "rank": int(row["rank"]),
+        "playerId": int(row["id"]),
+        "displayName": row["display_name"] or f"Node {row['id']}",
+        "nodeLevel": int(row["node_level"]),
+        "score": int(row["score"]),
+        "you": int(row["id"]) == player_id,
+    }
+
+
 def leaderboard_view(pool, player_id: int, board: str, now: datetime, limit: int = 20) -> dict:
     if board not in {"daily", "weekly", "season", "alltime"}:
         raise GameError("bad_board", "Leaderboard must be daily, weekly, season, or alltime.", 400)
     with pool.connection() as conn:
         season = active_season(conn)
         extra, params = score_filter(board, now, season)
-        query = f"""
-            WITH scores AS (
-                SELECT player_id, SUM(amount)::bigint AS score
-                FROM point_ledger
-                WHERE amount > 0 {extra}
-                GROUP BY player_id
-            )
-            SELECT s.score, p.id, p.display_name, p.node_level, p.referral_code
-            FROM scores s
-            JOIN players p ON p.id = s.player_id
-            ORDER BY s.score DESC, p.id ASC
-            LIMIT %s
-        """
-        rows = conn.execute(query, (*params, limit)).fetchall()
+        rows = conn.execute(ranked_sql(extra, "WHERE rank <= %s"), (*params, limit)).fetchall()
+        neighbors = conn.execute(
+            ranked_sql(
+                extra,
+                """
+                WHERE rank BETWEEN
+                    GREATEST(1, COALESCE((SELECT rank FROM ranked WHERE id = %s), (SELECT COUNT(*)::int + 1 FROM ranked)) - %s)
+                    AND (COALESCE((SELECT rank FROM ranked WHERE id = %s), (SELECT COUNT(*)::int FROM ranked)) + %s)
+                """,
+            ),
+            (*params, player_id, 2, player_id, 2),
+        ).fetchall()
+        population_row = conn.execute(
+            scores_cte(extra) + " SELECT COUNT(*)::int AS n FROM ranked",
+            params,
+        ).fetchone()
         score, rank = score_and_rank(conn, player_id, extra, params)
+        me_row = conn.execute(
+            "SELECT display_name, node_level FROM players WHERE id = %s",
+            (player_id,),
+        ).fetchone()
+    population = int(population_row["n"]) if population_row else 0
     return {
         "board": board,
-        "entries": [
-            {
-                "rank": index,
-                "playerId": int(row["id"]),
-                "displayName": row["display_name"] or f"Node {row['id']}",
-                "nodeLevel": int(row["node_level"]),
-                "score": int(row["score"]),
-                "you": int(row["id"]) == player_id,
-            }
-            for index, row in enumerate(rows, start=1)
-        ],
-        "me": {"rank": rank, "score": score},
+        "population": population,
+        "entries": [rank_entry(row, player_id) for row in rows],
+        "neighbors": [rank_entry(row, player_id) for row in neighbors],
+        "me": {
+            "rank": rank,
+            "score": score,
+            "displayName": (me_row["display_name"] if me_row else None) or "Operator",
+            "nodeLevel": int(me_row["node_level"]) if me_row else 1,
+            "onBoard": score > 0,
+        },
         "serverTime": iso(now),
     }
 
@@ -1607,20 +1694,10 @@ def score_filter(board: str, now: datetime, season) -> tuple[str, list]:
 
 
 def score_and_rank(conn, player_id: int, extra_sql: str, params: list) -> tuple[int, int]:
-    query = f"""
-        WITH scores AS (
-            SELECT player_id, SUM(amount)::bigint AS score
-            FROM point_ledger
-            WHERE amount > 0 {extra_sql}
-            GROUP BY player_id
-        )
+    query = scores_cte(extra_sql) + """
         SELECT
-            COALESCE((SELECT score FROM scores WHERE player_id = %s), 0) AS score,
-            (
-                SELECT 1 + COUNT(*)
-                FROM scores
-                WHERE score > COALESCE((SELECT score FROM scores WHERE player_id = %s), 0)
-            ) AS rank
+            COALESCE((SELECT score FROM ranked WHERE id = %s), 0) AS score,
+            COALESCE((SELECT rank FROM ranked WHERE id = %s), (SELECT COUNT(*)::int + 1 FROM ranked)) AS rank
     """
     row = conn.execute(query, (*params, player_id, player_id)).fetchone()
     return int(row["score"]), int(row["rank"])

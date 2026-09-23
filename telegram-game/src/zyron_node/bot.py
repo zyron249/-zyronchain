@@ -9,10 +9,12 @@ import logging
 import signal
 import threading
 from datetime import datetime, timezone
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
 from zyron_node.auth import TelegramIdentity
+from zyron_node.buildinfo import CLIENT_BUILD
 from zyron_node.config import load_settings, validate_settings
 from zyron_node.db import create_pool, migrate
 from zyron_node.economy import POINTS_NOTICE
@@ -40,15 +42,27 @@ def parse_command(text: str) -> tuple[str, str]:
     return command, argument
 
 
+def versioned_webapp_url(webapp_url: str) -> str:
+    """Append the shell build so Telegram refetches Play Zyron instead of a cached page."""
+    if not webapp_url.startswith("https://"):
+        return webapp_url
+    parts = urlsplit(webapp_url)
+    pairs = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True) if key != "v"]
+    pairs.append(("v", CLIENT_BUILD))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path or "/", urlencode(pairs), parts.fragment))
+
+
 def play_markup(webapp_url: str) -> dict | None:
-    if webapp_url.startswith("https://"):
-        return {"inline_keyboard": [[{"text": "Play Zyron", "web_app": {"url": webapp_url}}]]}
+    url = versioned_webapp_url(webapp_url)
+    if url.startswith("https://"):
+        return {"inline_keyboard": [[{"text": "Play Zyron", "web_app": {"url": url}}]]}
     return None
 
 
 def menu_button_payload(webapp_url: str) -> dict:
-    if webapp_url.startswith("https://"):
-        return {"menu_button": {"type": "web_app", "text": "Play Zyron", "web_app": {"url": webapp_url}}}
+    url = versioned_webapp_url(webapp_url)
+    if url.startswith("https://"):
+        return {"menu_button": {"type": "web_app", "text": "Play Zyron", "web_app": {"url": url}}}
     return {"menu_button": {"type": "commands"}}
 
 
