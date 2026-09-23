@@ -97,6 +97,7 @@
       search,
       el("button", { class: "ghost", text: "Search", onclick: function () { runSearch(search.value); } }),
       el("button", { class: "ghost", text: "Export Season snapshot", onclick: exportSnapshot }),
+      el("button", { class: "ghost", text: "Distribution cutoff CSV", onclick: downloadCutoff }),
       el("button", { class: "ghost", text: "Close season (no payout)", onclick: closeSeason })
     );
     root.append(tools);
@@ -156,6 +157,20 @@
   function closeSeason() {
     if (!window.confirm("Close the active season? This does not transfer ZYN or Zyrum.")) return;
     api("/api/admin/season/close", { method: "POST" }).then(boot).catch(showError);
+  }
+
+  async function downloadCutoff() {
+    const response = await fetch("/api/admin/ledger/cutoff.csv", {
+      headers: { authorization: "Bearer " + token() }
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(function () { return {}; });
+      const message = payload.error && payload.error.message ? payload.error.message : "Export failed";
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const link = el("a", { href: URL.createObjectURL(blob), download: "zyron-node-distribution-cutoff.csv" });
+    link.click();
   }
 
   async function download(id) {

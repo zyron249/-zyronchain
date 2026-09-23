@@ -242,6 +242,30 @@ button:active { transform: translateY(1px); }
 .board-switch button { flex: 1; }
 .rank-row { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
 .rank-row.you { color: var(--gold-2); }
+.rank-row.top { background: linear-gradient(90deg, rgba(243, 197, 107, 0.08), transparent 72%); margin: 0 -8px; padding-left: 8px; padding-right: 8px; border-radius: 12px; }
+.tier-track { margin-top: 10px; }
+.tier-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.tier-row .fine { margin: 0; }
+.tier-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 750;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+  flex: 0 0 auto;
+}
+.tier-badge.bronze { color: #f0c8a8; border-color: rgba(196, 132, 90, 0.75); background: rgba(196, 132, 90, 0.16); }
+.tier-badge.silver { color: #f4f7fb; border-color: rgba(186, 198, 214, 0.85); background: rgba(186, 198, 214, 0.16); }
+.tier-badge.gold { color: var(--gold-2); border-color: rgba(243, 197, 107, 0.8); background: rgba(243, 197, 107, 0.16); }
+.tier-badge.diamond { color: #d7f6ff; border-color: rgba(62, 224, 255, 0.75); background: rgba(62, 224, 255, 0.14); }
+.who .tier-badge { letter-spacing: 0.04em; text-transform: none; padding: 2px 6px; font-size: 10px; }
+.race-line { margin: 0 0 6px; font-size: 15px; line-height: 1.4; color: var(--gold-2); }
 .medal {
   width: 28px;
   height: 28px;

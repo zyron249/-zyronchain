@@ -69,6 +69,10 @@ Opening the daily chest is the streak claim. A second open returns `replayed: tr
 
 Chain quests complete only when this service successfully reads the configured Zyron RPC. If no RPC is configured, those quests stay open.
 
+## Competitive tiers
+
+Tiers are a function of lifetime Zyron Points only. They do not reset with the daily board, the week, or the season, and spending points on modules does not lower them. Thresholds and the activity ledger used for a future fair distribution are described in `docs/TIERS.md`.
+
 ## Season 0
 
 Migration `001_init.sql` opens Season 0 as active from 2026-09-01. Positive ledger rows store the active season id. Spending points does not reduce season score. Admins can export a JSON snapshot and can close the season. Neither action transfers ZYN or Zyrum.

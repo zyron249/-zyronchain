@@ -1,5 +1,5 @@
 (function () {
-  const SHELL = "home-chests-intel";
+  const SHELL = "tiers-ledger";
   const buildMeta = document.querySelector('meta[name="zyron-build"]');
   const BUILD = buildMeta ? buildMeta.getAttribute("content") || "" : "";
   const root = document.querySelector("#app");
@@ -13,6 +13,8 @@
     chests: null,
     board: "season",
     ranks: null,
+    tierReady: false,
+    tierId: "",
     activity: null,
     achievements: null,
     meta: null,
@@ -285,6 +287,7 @@
       throw error;
     }
     state.me = me;
+    watchTier();
     state.energyReceivedAt = Date.now();
     state.upgrades = await api("/api/upgrades");
     state.chests = await api("/api/chests");
@@ -442,7 +445,8 @@
         coinIcon(42),
         el("b", { "data-points": "1", text: formatPoints(p.points) })
       ]),
-      el("p", { class: "fine", text: "Lifetime " + formatPoints(p.lifetimePoints) + " · off-chain · not ZYN" })
+      el("p", { class: "fine", text: "Lifetime " + formatPoints(p.lifetimePoints) + " · off-chain · not ZYN" }),
+      tierTrack(p)
     ]));
     const visual = el("div", { class: "node-visual " + nodeMode(), "data-node": "1" }, [nodeArt(energy.current)]);
     const pillClass = "status-pill " + (state.running ? "on" : state.phase === "routing" ? "busy" : "");
@@ -608,6 +612,67 @@
     return "Next +1 in " + formatDuration(energy.nextIn) + " · 1 energy / " + formatDuration(player().energy.regenSeconds);
   }
 
+  function tierCaption(p) {
+    const progress = p.tierProgress || {};
+    const next = p.nextTier;
+    const tier = p.tier;
+    if (!next) return (tier && tier.label ? tier.label : "Top tier") + " held";
+    return formatPoints(progress.pointsToNext) + " to " + next.label;
+  }
+
+  function tierBadge(tier, compact) {
+    const id = tier && tier.id ? tier.id : "none";
+    const label = tier && tier.label ? tier.label : "Unranked";
+    const tr = !compact && tier && tier.labelTr ? " · " + tier.labelTr : "";
+    return el("span", { class: "tier-badge " + id, "data-tier-badge": compact ? null : "1", text: label + tr });
+  }
+
+  function tierTrack(p) {
+    const progress = p.tierProgress || { ratio: 0 };
+    const bar = el("div", { class: "bar" }, [el("i", { "data-tier-bar": "1" })]);
+    bar.firstChild.style.width = Math.round((Number(progress.ratio) || 0) * 100) + "%";
+    return el("div", { class: "tier-track" }, [
+      el("div", { class: "tier-row" }, [
+        tierBadge(p.tier, false),
+        el("span", { class: "fine", "data-tier-caption": "1", text: tierCaption(p) })
+      ]),
+      bar
+    ]);
+  }
+
+  function celebrateTier(tier) {
+    if (!tier || !tier.id) return;
+    const tr = tier.labelTr ? " · " + tier.labelTr : "";
+    toast((tier.label || tier.id) + " tier" + tr, "ok");
+    haptic("success");
+    state.tierId = tier.id;
+  }
+
+  function absorbTier(res) {
+    const upgrades = (res && res.tierUpgrades) || [];
+    upgrades.forEach(celebrateTier);
+    if (!res || !player()) return;
+    if (res.tier !== undefined) player().tier = res.tier;
+    if (res.nextTier !== undefined) player().nextTier = res.nextTier;
+    if (res.tierProgress) player().tierProgress = res.tierProgress;
+    if (res.thresholds) player().thresholds = res.thresholds;
+    if (typeof res.lifetimePoints === "number") player().lifetimePoints = res.lifetimePoints;
+    if (!upgrades.length && res.tier) state.tierId = res.tier.id || "";
+    if (!upgrades.length && !res.tier) state.tierId = "";
+  }
+
+  function watchTier() {
+    const tier = player() ? player().tier : null;
+    const id = tier && tier.id ? tier.id : "";
+    if (!state.tierReady) {
+      state.tierReady = true;
+      state.tierId = id;
+      return;
+    }
+    if (id && id !== state.tierId) celebrateTier(tier);
+    else state.tierId = id;
+  }
+
   function chip(label, value) {
     return el("article", { class: "chip" }, [el("span", { text: label }), el("b", { text: value })]);
   }
@@ -761,6 +826,8 @@
       }));
     });
     wrap.append(el("h2", { text: "Rank" }), switcher);
+    const profile = player();
+    if (profile) wrap.append(tierTrack(profile));
     if (state.boardBusy || !state.ranks) {
       wrap.append(el("p", { class: "muted", text: "Loading board…" }));
       return wrap;
@@ -771,6 +838,11 @@
     const neighbors = ranks.neighbors || [];
     const population = typeof ranks.population === "number" ? ranks.population : entries.length;
     wrap.append(standingCard(me, population));
+    if (ranks.race) {
+      wrap.append(el("p", { class: "race-line", text: ranks.race.tier }));
+      wrap.append(el("p", { class: "race-line", text: ranks.race.above }));
+    }
+    wrap.append(distributionLine(ranks.tierDistribution));
     if (!population) {
       wrap.append(el("div", { class: "empty" }, [
         el("h2", { text: "No scores on this board yet" }),
@@ -800,6 +872,7 @@
         displayName: me.displayName || "You",
         nodeLevel: me.nodeLevel || player().level,
         score: me.score,
+        tier: me.tier,
         you: true
       }));
     }
@@ -819,12 +892,25 @@
     ]);
   }
 
+  function distributionLine(rows) {
+    const list = rows || [];
+    if (!list.length) return el("p", { class: "board-note", text: "Tier counts are not loaded yet." });
+    const reached = list.reduce(function (sum, row) { return sum + (Number(row.players) || 0); }, 0);
+    if (!reached) {
+      return el("p", { class: "board-note", text: "No operator has reached Bronze yet. Tiers use lifetime Zyron Points, and empty tiers stay at zero." });
+    }
+    const text = list.map(function (row) { return row.players + " at " + row.label; }).join(" · ");
+    return el("p", { class: "board-note", text: "Lifetime tiers · " + text + "." });
+  }
+
   function rankRow(entry) {
     const medalClass = entry.rank <= 3 ? " medal m" + entry.rank : "";
-    return el("div", { class: "rank-row" + (entry.you ? " you" : "") }, [
+    const top = entry.rank <= 3 ? " top" : "";
+    return el("div", { class: "rank-row" + (entry.you ? " you" : "") + top }, [
       el("div", { class: "who" }, [
         el("div", { class: "medal" + medalClass, text: String(entry.rank) }),
-        el("span", { text: entry.displayName + (entry.you ? " · you" : "") + " · Lv " + entry.nodeLevel })
+        el("span", { text: entry.displayName + (entry.you ? " · you" : "") + " · Lv " + entry.nodeLevel }),
+        tierBadge(entry.tier, true)
       ]),
       el("strong", { text: formatPoints(entry.score) })
     ]);
@@ -841,6 +927,7 @@
       briefBlock("How the node runs", "Tap Start node once. The app repeats cycles until energy is empty or you stop it. Each cycle spends 1 energy and pays the server cycle reward (" + formatPoints(p.cycleReward) + " right now). Pace is " + Math.round(pace() / 100) / 10 + "s so it stays inside the server rate limit. This is fictional. It does not mine ZYN."),
       briefBlock("Energy", "Cap " + p.energy.max + ". One point returns every " + formatDuration(p.energy.regenSeconds) + ". Time already at the cap is not banked. The countdown uses the server clock."),
       briefBlock("Level", "Every 4 module levels raise the node one level. A level supply chest then pays " + (rules.levelChestStep || 10) + " × (level − 1) Zyron Points, once."),
+      briefBlock("Tiers", tierCopy(p)),
       briefBlock("Season", seasonCopy()),
       briefBlock("Invites", referralCopy())
     ]));
@@ -852,6 +939,14 @@
       wrap.append(el("p", { class: "fine", text: notice }));
     });
     return wrap;
+  }
+
+  function tierCopy(p) {
+    const lines = (p.thresholds || (state.meta && state.meta.tierThresholds) || []).map(function (tier) {
+      return tier.label + " " + formatPoints(tier.minLifetimePoints);
+    });
+    const scale = lines.length ? lines.join(" · ") + ". " : "";
+    return scale + "Tiers follow lifetime Zyron Points earned. They do not reset each day, and spending points on modules does not lower them. " + tierCaption(p) + ".";
   }
 
   function seasonCopy() {
@@ -1155,6 +1250,7 @@
     if (ticks) fillTicks(ticks);
     const session = root.querySelector("[data-session]");
     if (session && player()) session.textContent = sessionLine(player());
+    paintTier();
     const run = root.querySelector("[data-run]");
     if (run) {
       run.textContent = runLabel();
@@ -1166,10 +1262,26 @@
     onTick();
   }
 
+  function paintTier() {
+    const p = player();
+    if (!p) return;
+    const caption = root.querySelector("[data-tier-caption]");
+    if (caption) caption.textContent = tierCaption(p);
+    const tierBar = root.querySelector("[data-tier-bar]");
+    if (tierBar && p.tierProgress) tierBar.style.width = Math.round((Number(p.tierProgress.ratio) || 0) * 100) + "%";
+    const badge = root.querySelector("[data-tier-badge]");
+    if (badge) {
+      const tier = p.tier;
+      badge.className = "tier-badge " + (tier && tier.id ? tier.id : "none");
+      badge.textContent = tier && tier.label ? tier.label + (tier.labelTr ? " · " + tier.labelTr : "") : "Unranked";
+    }
+  }
+
   function applyCycle(res) {
     const p = player();
     p.points = res.points;
     p.lifetimePoints = res.lifetimePoints;
+    absorbTier(res);
     p.cycleCount = res.cycleCount;
     p.energy = res.energy;
     state.energyReceivedAt = Date.now();
@@ -1297,6 +1409,7 @@
           total += result.gained || 0;
           player().points = result.points;
           player().lifetimePoints = result.lifetimePoints;
+          absorbTier(result);
           floatGain(result.gained || 0);
         }
         state.modal = { phase: "open", result: result, total: total, index: i + 1, count: ids.length };
@@ -1334,6 +1447,7 @@
     render();
     api("/api/upgrade", { method: "POST", body: { module: module.id, idempotencyKey: key("upgrade") } })
       .then(function (res) {
+        absorbTier(res);
         toast(module.title + " installed", "ok");
         haptic("success");
         (res.achievementsUnlocked || []).forEach(function (id) { toast(achievementTitle(id) + " unlocked", "ok"); });
@@ -1345,7 +1459,7 @@
   function onLink(address) {
     state.busy = true;
     api("/api/wallet/link", { method: "POST", body: { address: address, idempotencyKey: key("wallet") } })
-      .then(function () { toast("Watch address linked", "ok"); haptic("success"); return refresh(); })
+      .then(function (res) { absorbTier(res); toast("Watch address linked", "ok"); haptic("success"); return refresh(); })
       .catch(fail);
   }
 

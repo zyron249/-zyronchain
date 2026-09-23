@@ -92,6 +92,7 @@ def reply_for(command: str, argument: str, profile: dict | None, webapp_url: str
         text = (
             f"{player.get('displayName', 'Operator')} · level {player.get('level', 1)}\n"
             f"Zyron Points: {player.get('points', 0)}\n"
+            f"Tier: {(player.get('tier') or {}).get('label') or 'Unranked'}\n"
             f"Energy: {energy.get('current', 0)}/{energy.get('max', 0)}\n"
             f"Network Power: {player.get('networkPower', 0)}\n"
             f"Streak: {((player.get('streak') or {}).get('count', 0))} days"
@@ -99,7 +100,11 @@ def reply_for(command: str, argument: str, profile: dict | None, webapp_url: str
     elif command == "rank":
         text = "Leaderboards are Daily, Weekly, Season, and All-time inside the Mini App."
         if profile and profile.get("top"):
-            lines = [f"{row['rank']}. {row['displayName']} — {row['score']}" for row in profile["top"]]
+            lines = []
+            for row in profile["top"]:
+                tier = (row.get("tier") or {}).get("label")
+                label = f"{row['displayName']} · {tier}" if tier else row["displayName"]
+                lines.append(f"{row['rank']}. {label} — {row['score']}")
             text = "All-time Zyron Points\n" + "\n".join(lines)
     elif command == "invite":
         referral = ((profile or {}).get("player") or {}).get("referral") or {}

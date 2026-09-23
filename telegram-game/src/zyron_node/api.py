@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from fastapi import Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -14,6 +14,8 @@ from zyron_node.auth import AuthError, TelegramIdentity, admin_authorized, hash_
 from zyron_node.buildinfo import CLIENT_BUILD, SHELL_ID
 from zyron_node.client_ip import client_address
 from zyron_node.economy import LEVEL_CHEST_STEP, POINTS_NOTICE, REFEREE_REWARD, REFERRER_REWARD
+from zyron_node.ledger import distribution_csv, distribution_cutoff, ledger_summary, rank_reigns
+from zyron_node.tiers import TIER_METRIC, threshold_payload
 from zyron_node.game import (
     GameError,
     achievements_view,
@@ -186,6 +188,8 @@ def register_routes(app) -> None:
                 "referralMinAgeSeconds": settings.referral_min_age_seconds,
                 "levelChestStep": LEVEL_CHEST_STEP,
             },
+            "tierMetric": TIER_METRIC,
+            "tierThresholds": threshold_payload(),
         }
 
     @app.get("/api/me")
@@ -370,6 +374,62 @@ def register_routes(app) -> None:
     def season_close(request: Request):
         actor = require_admin(request)
         return close_season(request.app.state.pool, actor, request_now(request))
+
+    @app.get("/api/admin/ledger/summary")
+    def ledger_summary_route(request: Request):
+        require_admin(request)
+        with request.app.state.pool.connection() as conn:
+            return ledger_summary(conn, request_now(request))
+
+    @app.get("/api/admin/ledger/reigns")
+    def ledger_reigns(request: Request, rank: int = 1):
+        require_admin(request)
+        if rank < 1 or rank > 100:
+            raise GameError("bad_rank", "Rank must be between 1 and 100.", 400)
+        now = request_now(request)
+        with request.app.state.pool.connection() as conn:
+            return {
+                "rank": rank,
+                "asOf": now.isoformat().replace("+00:00", "Z"),
+                "automaticPayout": False,
+                "note": "Durations start at the first rank_snapshot. Opening snapshots are not a reconstructed history.",
+                "reigns": rank_reigns(conn, rank, now),
+            }
+
+    @app.get("/api/admin/ledger/cutoff")
+    def ledger_cutoff(request: Request, at: str = ""):
+        require_admin(request)
+        cutoff = parse_cutoff(at, request_now(request))
+        with request.app.state.pool.connection() as conn:
+            return distribution_cutoff(conn, cutoff)
+
+    @app.get("/api/admin/ledger/cutoff.csv")
+    def ledger_cutoff_csv(request: Request, at: str = ""):
+        require_admin(request)
+        cutoff = parse_cutoff(at, request_now(request))
+        with request.app.state.pool.connection() as conn:
+            payload = distribution_cutoff(conn, cutoff)
+        filename = "zyron-node-distribution-cutoff.csv"
+        return PlainTextResponse(
+            distribution_csv(payload),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+
+def parse_cutoff(raw: str, now: datetime) -> datetime:
+    if not raw or not raw.strip():
+        return now
+    text = raw.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise GameError("bad_cutoff", "Cutoff must be an ISO-8601 timestamp.", 400) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _player_id(request: Request, identity: TelegramIdentity, ip_hash: str, now: datetime) -> int:

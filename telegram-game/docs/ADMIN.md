@@ -11,6 +11,7 @@ The API is disabled with HTTP 503 when `ADMIN_TOKEN` is empty. In production the
 - Ban or unban. Banned operators cannot cycle, upgrade, claim, or link.
 - Resolve a flag. Resolving subtracts that flag's weight from the abuse score and does not delete points.
 - Export a Season snapshot. The file has `conversionRate: null` and `automaticPayout: false`. It omits Telegram ids.
+- Export a distribution cutoff from the activity ledger (`GET /api/admin/ledger/cutoff` or `cutoff.csv`). This file is also not a payout. It includes Telegram ids, lifetime points, tier, and rank at the cutoff so a later distribution can be checked. See `docs/TIERS.md`.
 - Close the active season. This sets `ends_at` and does not pay anyone.
 - Release a watch-address claim if an operator linked the wrong public address.
 
