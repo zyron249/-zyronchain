@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import signal
 import threading
+import time
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -22,6 +23,9 @@ from zyron_node.game import invite_link, leaderboard_view, open_session, referra
 from zyron_node.logging_setup import setup_logging
 
 log = logging.getLogger("zyron_node.bot")
+
+MENU_REFRESH_OK_SECONDS = 6 * 60 * 60
+MENU_REFRESH_RETRY_SECONDS = 20
 
 COMMANDS = [
     {"command": "start", "description": "Open ZYRON NODE"},
@@ -64,6 +68,13 @@ def menu_button_payload(webapp_url: str) -> dict:
     if url.startswith("https://"):
         return {"menu_button": {"type": "web_app", "text": "Play Zyron", "web_app": {"url": url}}}
     return {"menu_button": {"type": "commands"}}
+
+
+def sync_telegram_menu(token: str, webapp_url: str, call=None) -> None:
+    """Register commands and the versioned Play Zyron button. Raises if Telegram rejects it."""
+    invoke = call or telegram_call
+    invoke(token, "setMyCommands", {"commands": COMMANDS})
+    invoke(token, "setChatMenuButton", menu_button_payload(webapp_url))
 
 
 def reply_for(command: str, argument: str, profile: dict | None, webapp_url: str) -> dict:
@@ -128,11 +139,17 @@ def run_bot(stop: threading.Event) -> None:
     migrate(pool)
     token = settings.telegram_bot_token
     try:
-        telegram_call(token, "setMyCommands", {"commands": COMMANDS})
-        telegram_call(token, "setChatMenuButton", menu_button_payload(settings.webapp_url))
-        log.info("telegram commands and Play Zyron menu button registered")
         offset = None
+        next_menu = 0.0
         while not stop.is_set():
+            if time.monotonic() >= next_menu:
+                try:
+                    sync_telegram_menu(token, settings.webapp_url)
+                    log.info("telegram commands and Play Zyron menu button registered")
+                    next_menu = time.monotonic() + MENU_REFRESH_OK_SECONDS
+                except Exception:  # noqa: BLE001 — keep polling; retry the versioned button
+                    log.warning("telegram menu registration failed")
+                    next_menu = time.monotonic() + MENU_REFRESH_RETRY_SECONDS
             payload: dict = {"timeout": 25}
             if offset is not None:
                 payload["offset"] = offset
