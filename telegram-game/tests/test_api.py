@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tests.test_economy_and_auth import sign_init
-from zyron_node.bot import menu_button_payload, parse_command, reply_for
+from zyron_node.bot import menu_button_payload, parse_command, reply_for, sync_telegram_menu, versioned_webapp_url
 from zyron_node.buildinfo import CLIENT_BUILD, SHELL_ID
 from zyron_node.game import run_cycle
 
@@ -350,6 +350,39 @@ def test_bot_commands_do_not_touch_groups():
     source = Path("src/zyron_node/bot.py").read_text(encoding="utf-8")
     for forbidden in ("banChatMember", "promoteChatMember", "setChatPermissions", "deleteMessage"):
         assert forbidden not in source
+    loop = source.split("while not stop.is_set():", 1)[1]
+    assert "sync_telegram_menu" in loop
+    assert "MENU_REFRESH_RETRY_SECONDS" in loop
+
+
+def test_launch_url_rotates_and_menu_registration_retries():
+    url = versioned_webapp_url("https://zyron-node.onrender.com/?v=stale&ref=keep")
+    assert "v=stale" not in url
+    assert "ref=keep" in url
+    assert url.count("v=") == 1
+    assert "v=" + CLIENT_BUILD in url
+    calls = []
+
+    def call(token, method, payload, timeout=15):
+        calls.append((method, payload))
+        if method == "setChatMenuButton" and sum(1 for item in calls if item[0] == "setChatMenuButton") == 1:
+            raise RuntimeError("cold start")
+        return {"ok": True}
+
+    raised = False
+    try:
+        sync_telegram_menu("token", "https://zyron-node.onrender.com/", call=call)
+    except RuntimeError:
+        raised = True
+    assert raised
+    sync_telegram_menu("token", "https://zyron-node.onrender.com/", call=call)
+    menu_urls = [
+        payload["menu_button"]["web_app"]["url"]
+        for method, payload in calls
+        if method == "setChatMenuButton" and payload.get("menu_button", {}).get("web_app")
+    ]
+    assert len(menu_urls) == 2
+    assert all("v=" + CLIENT_BUILD in item and "v=stale" not in item for item in menu_urls)
 
 
 def test_service_does_not_touch_consensus_or_keys():
@@ -366,6 +399,11 @@ def test_service_does_not_touch_consensus_or_keys():
     assert "Start node" in frontend
     assert SHELL_ID in frontend
     assert "Recent cycles" in frontend
+    assert "Connecting…" in frontend
+    assert "recoverBoot" in frontend
+    assert "hideMainButton" in frontend
+    assert "hasSessionAuth" in frontend
+    assert "url.hash" in frontend
 
 
 def test_shell_assets_are_versioned_and_stale_js_does_not_boot(client):
@@ -375,6 +413,10 @@ def test_shell_assets_are_versioned_and_stale_js_does_not_boot(client):
     assert f"/assets/app.js?v={CLIENT_BUILD}" in home.text
     assert f"/assets/styles.css?v={CLIENT_BUILD}" in home.text
     assert f"/assets/boot.js?v={CLIENT_BUILD}" in home.text
+    assert f"/assets/boot-recover.js?v={CLIENT_BUILD}" in home.text
+    assert 'http-equiv="Cache-Control"' in home.text
+    assert "no-store" in home.text
+    assert "no-store" in home.headers["surrogate-control"]
     assert SHELL_ID in home.text
     fresh = client.get(f"/assets/app.js?v={CLIENT_BUILD}")
     assert fresh.status_code == 200
@@ -385,6 +427,12 @@ def test_shell_assets_are_versioned_and_stale_js_does_not_boot(client):
     assert stale.status_code == 200
     assert "no-store" in stale.headers["cache-control"]
     assert "ZYRON NODE updated" in stale.text
+    assert "+url.hash" in stale.text
+    recover = client.get(f"/assets/boot-recover.js?v={CLIENT_BUILD}")
+    assert recover.status_code == 200
+    assert "immutable" in recover.headers["cache-control"]
+    assert "recoverBoot" in recover.text
+    assert "hasSessionAuth" in recover.text
     assert "Quests" not in stale.text
     assert "Supply chests" not in stale.text
     old = client.get("/assets/app.js?v=old-shell")
