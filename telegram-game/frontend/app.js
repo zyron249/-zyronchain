@@ -307,8 +307,8 @@
       return;
     }
     if (!state.meta) {
-      if (state.error || state.holdUntil) root.append(loadPanel());
-      else root.append(el("p", { class: "muted", text: "Connecting…" }));
+      if (state.error || state.holdUntil) root.append(loadPanel(true));
+      else root.append(connectingPanel());
       return;
     }
     if (!authed()) {
@@ -317,8 +317,8 @@
       return;
     }
     if (!state.me) {
-      if (state.error || state.holdUntil) root.append(loadPanel());
-      else root.append(el("div", { class: "skeleton hero-skel" }), el("div", { class: "skeleton" }), el("div", { class: "skeleton" }));
+      if (state.error || state.holdUntil) root.append(loadPanel(true));
+      else root.append(shellBrand(), el("div", { class: "skeleton hero-skel" }), el("div", { class: "skeleton" }), el("div", { class: "skeleton" }));
       renderModal();
       return;
     }
@@ -327,9 +327,28 @@
     syncChrome();
   }
 
+  function logoMark(variant) {
+    const variantClass = variant === "header" ? "logo-header" : variant === "panel" ? "logo-panel" : "logo-gate";
+    const size = variant === "header" ? 72 : variant === "panel" ? 156 : 210;
+    return el("img", {
+      class: "logo " + variantClass,
+      src: "/assets/logo.png?v=" + encodeURIComponent(BUILD),
+      alt: "ZYRON",
+      width: size,
+      height: size
+    });
+  }
+
+  function connectingPanel() {
+    return el("section", { class: "gate gate-brand", "aria-busy": "true" }, [
+      logoMark("gate"),
+      el("p", { class: "muted", text: "Connecting…" })
+    ]);
+  }
+
   function renderGate() {
-    const gate = el("section", { class: "gate" }, [
-      coinIcon(56),
+    const gate = el("section", { class: "gate gate-brand" }, [
+      logoMark("gate"),
       el("p", { class: "eyebrow", text: "ZyronChain" }),
       el("h1", { text: "ZYRON NODE" }),
       el("p", { class: "fine", text: "Open this Mini App from Telegram. Zyron Points stay off-chain. The game never asks for a seed phrase or private key." })
@@ -350,21 +369,27 @@
     root.append(gate);
   }
 
-  function header() {
+  function shellBrand() {
     return el("header", { class: "top" }, [
       el("div", { class: "brand" }, [
-        coinIcon(36),
+        logoMark("header"),
         el("div", {}, [
           el("p", { class: "eyebrow", text: "ZyronChain" }),
           el("h1", { text: "ZYRON NODE" })
         ])
-      ]),
-      el("div", { class: "season", text: state.me.season ? state.me.season.name : "Off-season" })
+      ])
     ]);
   }
 
+  function header() {
+    const bar = shellBrand();
+    bar.append(el("div", { class: "season", text: state.me.season ? state.me.season.name : "Off-season" }));
+    return bar;
+  }
+
   function blockedPanel() {
-    return el("section", { class: "gate" }, [
+    return el("section", { class: "gate gate-brand" }, [
+      logoMark("panel"),
       el("h1", { text: "ZYRON NODE needs a fresh copy" }),
       el("p", { class: "fine", text: "This screen does not match the current Play Zyron app (Home, Chests, Intel). Close it and open Play Zyron again." }),
       el("button", {
@@ -379,7 +404,7 @@
     ]);
   }
 
-  function loadPanel() {
+  function loadPanel(brand) {
     const between = state.holdUntil || (state.errorCode === "cycle_too_fast");
     const title = between ? "Node is between cycles" : "Couldn't load your node";
     const detail = between
@@ -398,11 +423,14 @@
       }
     });
     if (state.holdUntil && Date.now() < state.holdUntil) button.disabled = true;
-    return el("section", { class: "gate" }, [
+    const children = [];
+    if (brand) children.push(logoMark("panel"));
+    children.push(
       el("h1", { text: title }),
       el("p", { "data-hold": between ? "1" : null, text: detail }),
       button
-    ]);
+    );
+    return el("section", { class: brand ? "gate gate-brand" : "gate" }, children);
   }
 
   function view() {
@@ -1080,7 +1108,7 @@
   function introModal() {
     const step = state.introStep;
     const sheet = el("div", { class: "sheet", role: "dialog", "aria-modal": "true" }, [
-      coinIcon(64),
+      logoMark("panel"),
       el("p", { class: "eyebrow", text: step === 1 ? "Step 1 of 2" : "Step 2 of 2" }),
       el("h2", { text: step === 1 ? "Your node is online" : "It runs itself" }),
       el("p", { class: "fine", text: step === 1

@@ -11,7 +11,12 @@
   <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
 </head>
 <body>
-  <div id="app" class="shell"></div>
+  <div id="app" class="shell">
+    <section class="gate gate-brand" aria-busy="true">
+      <img class="logo logo-gate" src="/assets/logo.png?v={{CLIENT_BUILD}}" alt="ZYRON" width="210" height="210" />
+      <p class="muted">Connecting…</p>
+    </section>
+  </div>
   <div id="toast-root" aria-live="polite"></div>
   <div id="modal-root"></div>
   <script src="/assets/boot.js?v={{CLIENT_BUILD}}"></script>
