@@ -30,3 +30,25 @@ h1,h2,h3{letter-spacing:-.045em;line-height:1.1;text-wrap:balance}p{max-width:74
 
 /* Supplied metallic emblem; original image preserved. */
 .hero-mark{width:100%;height:auto;mix-blend-mode:screen}.brand-surface{max-width:510px}.brand-coordinate{z-index:2}.protocol-portal .hero h1 span{color:#d6b35d}.site-header .mini-button{color:#fff}.protocol-portal .feature-icon svg{stroke:#987526}
+
+/* ZYRON emblem. The file keeps its black plate so the mark stays dark on light chrome. */
+.site-header .brand,
+.site-footer .brand,
+.footer-brand > a,
+.brand-logo-link{width:auto;min-width:0;flex:0 0 auto}
+.brand img.brand-mark,
+.footer-brand img.brand-mark,
+img.brand-logo.brand-mark{
+  width:64px;
+  height:64px;
+  max-width:none;
+  object-fit:contain;
+  border-radius:14px;
+  background:#070b14;
+}
+.footer-brand img.brand-mark,
+.site-footer .brand img.brand-mark{width:72px;height:72px;border-radius:16px}
+@media(max-width:700px){
+  .site-header .brand img.brand-mark,
+  img.brand-logo.brand-mark{width:52px;height:52px;border-radius:12px}
+}

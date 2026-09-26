@@ -52,6 +52,11 @@ jobs:
             'website/sitemap.xml',
             'website/favicon.svg',
             'website/logo.svg',
+            'website/zyron-gold.png',
+            'website/brand-mark.png',
+            'website/favicon-32.png',
+            'website/apple-touch-icon.png',
+            'website/icon-192.png',
             'website/site.webmanifest',
             'website/wallet.html',
             'website/wallet.css',
@@ -99,8 +104,10 @@ jobs:
           for (const marker of [
             './styles.css',
             './app.js',
-            './favicon.svg',
-            './logo.svg',
+            './favicon-32.png',
+            './apple-touch-icon.png',
+            './brand-mark.png',
+            './zyron-gold.png',
             './wallet.html',
             './validator.html',
             'ZyronChain',
@@ -125,7 +132,7 @@ jobs:
             './wallet.css',
             './release.js',
             './wallet.js',
-            './logo.svg',
+            './brand-mark.png',
             'ZyronChain Wallet Setup',
             'LOCAL-ONLY WALLET SETUP',
             'NO SECRET IN BROWSER',
@@ -142,7 +149,7 @@ jobs:
             './validator.css',
             './release.js',
             './validator.js',
-            './logo.svg',
+            './brand-mark.png',
             'Validator Launchpad',
             'Private key stays local',
             'Public validator enrollment not active',
@@ -219,6 +226,22 @@ jobs:
           }
           if (!logo.includes('<svg') || !logo.includes('ZyronChain') || !logo.includes('VERIFIABLE LAYER-1')) {
             throw new Error('ZyronChain production logo contract is invalid');
+          }
+          for (const file of [
+            'website/zyron-gold.png',
+            'website/brand-mark.png',
+            'website/favicon-32.png',
+            'website/apple-touch-icon.png',
+            'website/icon-192.png'
+          ]) {
+            const bytes = fs.readFileSync(file);
+            if (bytes.length < 32 || bytes[0] !== 0x89 || bytes.toString('ascii', 1, 4) !== 'PNG') {
+              throw new Error(`${file} is not a PNG brand asset`);
+            }
+          }
+          const iconSources = (manifest.icons || []).map((icon) => icon.src);
+          for (const src of ['/favicon-32.png', '/apple-touch-icon.png', '/icon-192.png']) {
+            if (!iconSources.includes(src)) throw new Error(`Web manifest missing icon ${src}`);
           }
           if (manifest.name !== 'ZyronChain' || manifest.start_url !== '/' || manifest.display !== 'standalone') {
             throw new Error('Web manifest contract is invalid');

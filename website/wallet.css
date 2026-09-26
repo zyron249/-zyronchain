@@ -14,8 +14,8 @@
 .wallet-identity-card { position: relative; min-width: 0; padding: 30px; border: 1px solid var(--line); border-radius: 8px; background: #f8faf9; box-shadow: var(--shadow-soft); }
 .identity-head { display:flex; align-items:center; justify-content:space-between; color:#748079; font:700 9px/1 ui-monospace,monospace; letter-spacing:.11em; }
 .identity-head i, .identity-foot i { width:6px; height:6px; border-radius:50%; background:var(--green); }
-.identity-mark { width:100px; height:100px; margin-top:38px; display:grid; place-items:center; border:1px solid var(--line); border-radius:50%; background:#fff; }
-.identity-mark img { width:72px; height:72px; object-fit:contain; object-position:center; clip-path:none; transform:none; }
+.identity-mark { width:112px; height:112px; margin-top:38px; display:grid; place-items:center; border:1px solid #2c2618; border-radius:24px; background:#080808; }
+.identity-mark img { width:96px; height:96px; object-fit:contain; object-position:center; clip-path:none; transform:none; border-radius:16px; }
 .identity-address { display:grid; min-width:0; gap:6px; margin-top:27px; }
 .identity-address small, .identity-row span { color:#7d8982; font:700 8px/1 ui-monospace,monospace; letter-spacing:.09em; }
 .identity-address code { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#2f3e46; font-size:13px; }
