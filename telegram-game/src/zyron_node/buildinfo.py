@@ -1,4 +1,4 @@
 """Mini App shell identity. Bump CLIENT_BUILD when Play Zyron must refetch."""
 
-CLIENT_BUILD = "20260926.1"
+CLIENT_BUILD = "20260926.2"
 SHELL_ID = "tiers-ledger"

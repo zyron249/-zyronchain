@@ -46,8 +46,26 @@ button:active { transform: translateY(1px); }
   padding: calc(10px + var(--safe-top)) 14px calc(72px + var(--safe-bottom));
 }
 .top { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; margin-bottom: 14px; }
-.brand { display: flex; align-items: center; gap: 10px; }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .brand h1, .gate h1 { margin: 0; font-size: 22px; letter-spacing: 0.08em; font-weight: 750; }
+.logo {
+  display: block;
+  width: 72px;
+  height: auto;
+  aspect-ratio: 1;
+  object-fit: contain;
+  background: transparent;
+  border: 0;
+  flex: 0 0 auto;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.logo-header { width: 72px; height: 72px; }
+.logo-gate { width: min(210px, 58vw); margin: 0 auto 4px; }
+.logo-panel { width: min(156px, 44vw); margin: 0 auto 8px; }
+.gate-brand { text-align: center; }
+.gate-brand .muted { margin: 6px 0 0; }
 .eyebrow { margin: 0; letter-spacing: 0.22em; text-transform: uppercase; font-size: 10px; color: var(--cyan); }
 .season, .pill {
   border: 1px solid var(--line);
@@ -306,6 +324,7 @@ button:active { transform: translateY(1px); }
 .error { color: var(--danger); }
 .ok { color: var(--ok); }
 .gate { padding: 22px; margin-top: 28px; }
+.gate-brand input { text-align: left; }
 .gate input, .admin-shell input, .wallet-input {
   width: 100%;
   margin: 8px 0 12px;

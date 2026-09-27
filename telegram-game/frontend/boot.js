@@ -8,8 +8,16 @@
     }
     if (root.dataset.booted) return;
     root.replaceChildren();
+    var buildMeta = document.querySelector('meta[name="zyron-build"]');
+    var build = buildMeta ? buildMeta.getAttribute("content") || "" : "";
     var card = document.createElement("section");
-    card.className = "gate";
+    card.className = "gate gate-brand";
+    var logo = document.createElement("img");
+    logo.className = "logo logo-panel";
+    logo.alt = "ZYRON";
+    logo.width = 156;
+    logo.height = 156;
+    logo.src = "/assets/logo.png?v=" + encodeURIComponent(build);
     var title = document.createElement("h1");
     title.textContent = "ZYRON NODE did not finish loading";
     var copy = document.createElement("p");
@@ -23,7 +31,7 @@
       url.searchParams.set("v", String(Date.now()));
       window.location.replace(url.pathname + "?" + url.searchParams.toString() + url.hash);
     });
-    card.append(title, copy, button);
+    card.append(logo, title, copy, button);
     root.append(card);
   }, 8000);
 })();

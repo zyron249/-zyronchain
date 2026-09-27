@@ -56,12 +56,17 @@ def stale_client_script() -> str:
         "root.replaceChildren();"
         "root.dataset.booted='stale';"
         "var card=document.createElement('section');"
-        "card.className='gate';"
+        "card.className='gate gate-brand';"
+        "var logo=document.createElement('img');"
+        "logo.className='logo logo-panel';"
+        "logo.alt='ZYRON';"
+        "logo.width=156;logo.height=156;"
+        "logo.src='/assets/logo.png?v='+encodeURIComponent(build);"
         "var title=document.createElement('h1');"
         "title.textContent='ZYRON NODE updated';"
         "var copy=document.createElement('p');"
         f"copy.textContent='This screen is an older copy. Close it and open Play Zyron again. Current shell: {SHELL_ID}.';"
-        "card.append(title,copy);"
+        "card.append(logo,title,copy);"
         "root.append(card);"
         "})();"
     )
@@ -134,12 +139,17 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/assets/{name}")
     def asset(name: str, v: str = ""):
-        if name not in {"app.js", "admin.js", "styles.css", "boot.js", "boot-recover.js"}:
+        if name not in {"app.js", "admin.js", "styles.css", "boot.js", "logo.png", "boot-recover.js"}:
             return JSONResponse(error_payload("not_found", "Not found."), status_code=404)
         if name == "app.js" and v != CLIENT_BUILD:
             return Response(stale_client_script(), media_type="text/javascript")
         path = FRONTEND / name
-        media = "text/css" if name.endswith(".css") else "text/javascript"
+        if name.endswith(".png"):
+            media = "image/png"
+        elif name.endswith(".css"):
+            media = "text/css"
+        else:
+            media = "text/javascript"
         return FileResponse(path, media_type=media)
 
     @app.get("/robots.txt")

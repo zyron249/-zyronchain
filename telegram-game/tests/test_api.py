@@ -413,11 +413,24 @@ def test_shell_assets_are_versioned_and_stale_js_does_not_boot(client):
     assert f"/assets/app.js?v={CLIENT_BUILD}" in home.text
     assert f"/assets/styles.css?v={CLIENT_BUILD}" in home.text
     assert f"/assets/boot.js?v={CLIENT_BUILD}" in home.text
+    assert f'/assets/logo.png?v={CLIENT_BUILD}' in home.text
+    assert 'alt="ZYRON"' in home.text
+    assert 'class="logo logo-gate"' in home.text
     assert f"/assets/boot-recover.js?v={CLIENT_BUILD}" in home.text
     assert 'http-equiv="Cache-Control"' in home.text
     assert "no-store" in home.text
     assert "no-store" in home.headers["surrogate-control"]
-    assert SHELL_ID in home.text
+    assert SHELL_ID in home.text 
+    logo = client.get(f"/assets/logo.png?v={CLIENT_BUILD}")
+    assert logo.status_code == 200
+    assert logo.headers["content-type"].startswith("image/png")
+    assert "immutable" in logo.headers["cache-control"]
+    assert logo.content.startswith(b"\x89PNG\r\n\x1a\n")
+    assert logo.content == Path("frontend/logo.png").read_bytes()
+    bare_logo = client.get("/assets/logo.png")
+    assert bare_logo.status_code == 200
+    assert "no-store" in bare_logo.headers["cache-control"]
+    assert client.get("/assets/not-logo.png").status_code == 404
     fresh = client.get(f"/assets/app.js?v={CLIENT_BUILD}")
     assert fresh.status_code == 200
     assert "immutable" in fresh.headers["cache-control"]
@@ -427,6 +440,14 @@ def test_shell_assets_are_versioned_and_stale_js_does_not_boot(client):
     assert stale.status_code == 200
     assert "no-store" in stale.headers["cache-control"]
     assert "ZYRON NODE updated" in stale.text
+    assert "/assets/logo.png?v=" in stale.text
+    assert "logo-panel" in stale.text
+    frontend = Path("frontend/app.js").read_text(encoding="utf-8")
+    assert "/assets/logo.png?v=" in frontend
+    assert "logo-header" in frontend
+    assert "logo-gate" in frontend
+    boot = Path("frontend/boot.js").read_text(encoding="utf-8")
+    assert "/assets/logo.png?v=" in boot
     assert "+url.hash" in stale.text
     recover = client.get(f"/assets/boot-recover.js?v={CLIENT_BUILD}")
     assert recover.status_code == 200

@@ -6,8 +6,10 @@ Production static website for `https://zyronchain.com`. The website is intention
 
 - `index.html` — main ZyronChain product/protocol portal.
 - `styles.css` / `app.js` — shared responsive presentation, navigation and progressive enhancement.
-- `logo.svg` — canonical website brand/wordmark asset.
-- `favicon.svg` — compact ZyronChain protocol mark.
+- `zyron-gold.png` — homepage hero emblem (metallic ZC monogram and ZYRON wordmark).
+- `brand-mark.png` — header, footer, and wallet identity mark, same artwork at a smaller size.
+- `favicon-32.png`, `apple-touch-icon.png`, `icon-192.png` — browser and home-screen icons from that emblem.
+- `logo.svg` / `favicon.svg` — earlier vector wordmark, kept beside the raster mark.
 - `wallet.html` — local-first wallet onboarding and security education.
 - `wallet.js` — prepares pinned local wallet setup scripts and transfer templates; it never generates, requests or uploads wallet secrets.
 - `wallet.css` — wallet-specific presentation.
