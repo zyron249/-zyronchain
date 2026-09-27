@@ -48,7 +48,7 @@ def stale_client_script() -> str:
         "sessionStorage.setItem(key,build);"
         "var url=new URL(window.location.href);"
         "url.searchParams.set('v',build);"
-        "window.location.replace(url.pathname+'?'+url.searchParams.toString());"
+        "window.location.replace(url.pathname+'?'+url.searchParams.toString()+url.hash);"
         "return;}"
         "}catch(e){}"
         "var root=document.querySelector('#app');"
@@ -119,6 +119,7 @@ def create_app(settings: Settings) -> FastAPI:
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
+            response.headers["Surrogate-Control"] = "no-store"
         elapsed = int((time.perf_counter() - started) * 1000)
         log.info("http %s %s %s %sms", request.method, request.url.path, response.status_code, elapsed)
         return response
@@ -138,7 +139,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/assets/{name}")
     def asset(name: str, v: str = ""):
-        if name not in {"app.js", "admin.js", "styles.css", "boot.js", "logo.png"}:
+        if name not in {"app.js", "admin.js", "styles.css", "boot.js", "logo.png", "boot-recover.js"}:
             return JSONResponse(error_payload("not_found", "Not found."), status_code=404)
         if name == "app.js" and v != CLIENT_BUILD:
             return Response(stale_client_script(), media_type="text/javascript")

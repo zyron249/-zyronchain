@@ -34,6 +34,7 @@
     holdUntil: 0,
     blocked: "",
     devId: localStorage.getItem("zyronDevId") || "",
+    bootAttempt: 0,
     introChecked: false,
     introStep: 0,
     modal: null,
@@ -90,11 +91,29 @@
     if (tg && tg.initData) headers.Authorization = "tma " + tg.initData;
     else if (state.devId) headers["X-Dev-Telegram-Id"] = state.devId;
     if (options && options.body) headers["content-type"] = "application/json";
-    const response = await fetch(path, {
-      method: (options && options.method) || "GET",
-      headers: headers,
-      body: options && options.body ? JSON.stringify(options.body) : undefined
-    });
+    const timeoutMs = options && options.timeoutMs;
+    const controller = timeoutMs ? new AbortController() : null;
+    const timer = controller ? setTimeout(function () { controller.abort(); }, timeoutMs) : 0;
+    let response;
+    try {
+      response = await fetch(path, {
+        method: (options && options.method) || "GET",
+        headers: headers,
+        body: options && options.body ? JSON.stringify(options.body) : undefined,
+        signal: controller ? controller.signal : undefined
+      });
+    } catch (error) {
+      if (timer) clearTimeout(timer);
+      if (error && error.name === "AbortError") {
+        const timeout = new Error("The server did not answer in time.");
+        timeout.code = "timeout";
+        throw timeout;
+      }
+      const network = new Error("The server did not answer.");
+      network.code = "network";
+      throw network;
+    }
+    if (timer) clearTimeout(timer);
     const payload = await response.json().catch(function () { return {}; });
     if (!response.ok) {
       const message = payload.error && payload.error.message ? payload.error.message : "Request failed";
@@ -166,6 +185,9 @@
     }
     if (code === "bad_profile") {
       return { code: code, message: "Node data is incomplete. Try again in a moment." };
+    }
+    if (code === "timeout" || code === "network") {
+      return { code: code, message: "The server did not answer. Try again." };
     }
     return { code: code, message: message };
   }
@@ -276,11 +298,12 @@
     return { into: atMax ? 4 : total % 4, target: 4, atMax: atMax };
   }
 
-  async function refresh() {
+  async function refresh(options) {
+    const timeoutMs = options && options.timeoutMs;
     state.busy = false;
     state.busyModule = "";
     state.error = "";
-    const me = await api("/api/me");
+    const me = await api("/api/me", { timeoutMs: timeoutMs });
     if (!profileReady(me)) {
       const error = new Error("Node data is incomplete. Try again in a moment.");
       error.code = "bad_profile";
@@ -289,10 +312,10 @@
     state.me = me;
     watchTier();
     state.energyReceivedAt = Date.now();
-    state.upgrades = await api("/api/upgrades");
-    state.chests = await api("/api/chests");
-    state.achievements = await api("/api/achievements");
-    state.ranks = await api("/api/leaderboard?board=" + encodeURIComponent(state.board));
+    state.upgrades = await api("/api/upgrades", { timeoutMs: timeoutMs });
+    state.chests = await api("/api/chests", { timeoutMs: timeoutMs });
+    state.achievements = await api("/api/achievements", { timeoutMs: timeoutMs });
+    state.ranks = await api("/api/leaderboard?board=" + encodeURIComponent(state.board), { timeoutMs: timeoutMs });
     if (!state.introChecked) {
       state.introChecked = true;
       if (!localStorage.getItem("zyronNodeIntro")) state.introStep = 1;
@@ -302,6 +325,7 @@
 
   function render() {
     clear(root);
+    if (!player()) hideMainButton();
     if (state.blocked) {
       root.append(blockedPanel());
       return;
@@ -361,7 +385,8 @@
         onclick: function () {
           state.devId = input.value.trim();
           localStorage.setItem("zyronDevId", state.devId);
-          refresh().catch(fail);
+          followUps = 0;
+          boot();
         }
       }));
     }
@@ -396,9 +421,7 @@
         class: "primary",
         text: "Reload",
         onclick: function () {
-          const url = new URL(window.location.href);
-          url.searchParams.set("v", BUILD || String(Date.now()));
-          window.location.replace(url.pathname + "?" + url.searchParams.toString());
+          replaceWithBuild(BUILD || String(Date.now()));
         }
       })
     ]);
@@ -418,6 +441,11 @@
         state.error = "";
         state.errorCode = "";
         state.holdUntil = 0;
+        if (!state.me) {
+          followUps = 0;
+          boot();
+          return;
+        }
         render();
         refresh().catch(fail);
       }
@@ -1231,7 +1259,10 @@
   }
 
   function onTick() {
-    if (!player()) return;
+    if (!player()) {
+      hideMainButton();
+      return;
+    }
     const energy = displayEnergy();
     const count = root.querySelector("[data-energy-count]");
     if (count) count.textContent = energy.current + " / " + energy.max;
@@ -1546,6 +1577,7 @@
     }
     haptic("error");
     render();
+    scheduleFollowUp(error);
   }
 
   function chromeSignature() {
@@ -1613,9 +1645,15 @@
     else go("home");
   }
 
+  function hideMainButton() {
+    if (!tg || !tg.MainButton || !tg.MainButton.hide) return;
+    try { tg.MainButton.hide(); } catch (error) { /* Telegram chrome is absent in a normal browser. */ }
+  }
+
   function bootTelegram() {
     if (!tg) return;
     try {
+      hideMainButton();
       tg.ready();
       tg.expand();
       if (typeof tg.disableVerticalSwipes === "function") tg.disableVerticalSwipes();
@@ -1674,6 +1712,12 @@
     document.documentElement.style.setProperty("--safe-bottom", bottom + "px");
   }
 
+  function replaceWithBuild(build) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("v", build || String(Date.now()));
+    window.location.replace(url.pathname + "?" + url.searchParams.toString() + url.hash);
+  }
+
   function reloadForBuild(build) {
     const key = "zyronBuildReload";
     try {
@@ -1688,25 +1732,126 @@
       render();
       return;
     }
-    const url = new URL(window.location.href);
-    url.searchParams.set("v", build);
-    window.location.replace(url.pathname + "?" + url.searchParams.toString());
+    replaceWithBuild(build);
   }
 
-  setInterval(onTick, 250);
+  let bootToken = 0;
+  let bootPromise = null;
+  let followUp = 0;
+  let followUps = 0;
 
-  api("/api/meta").then(function (meta) {
-    if (!meta || meta.shell !== SHELL || !meta.clientBuild) {
+  function scheduleFollowUp(error) {
+    const policy = window.ZyronBoot;
+    if (!policy || !policy.isTransientFailure(error)) return;
+    if (state.me || state.blocked) return;
+    if (state.meta && !authed()) return;
+    if (followUps >= policy.FOLLOW_UP_LIMIT) return;
+    followUps += 1;
+    clearTimeout(followUp);
+    followUp = setTimeout(function () {
+      if (state.me || state.blocked) return;
+      if (state.meta && !authed()) return;
+      boot();
+    }, policy.FOLLOW_UP_MS);
+  }
+
+  async function ensureAuth() {
+    const policy = window.ZyronBoot;
+    const allowed = function () {
+      return policy.hasSessionAuth(tg && tg.initData, state.devId);
+    };
+    if (allowed()) return true;
+    if (!tg) return false;
+    for (let i = 0; i < 10; i += 1) {
+      await sleep(100);
+      if (allowed()) return true;
+    }
+    return false;
+  }
+
+  async function runBoot(token) {
+    const policy = window.ZyronBoot;
+    hideMainButton();
+    state.error = "";
+    state.errorCode = "";
+    state.holdUntil = 0;
+    if (!state.me) render();
+    let outcome;
+    try {
+      outcome = await policy.recoverBoot({
+        shell: SHELL,
+        build: BUILD,
+        attempts: policy.ATTEMPTS,
+        sleep: sleep,
+        onRetry: function (attempt) {
+          if (token !== bootToken) return;
+          state.bootAttempt = attempt;
+          if (!state.meta && !state.error) render();
+        },
+        onMeta: function (meta) {
+          if (token !== bootToken) return;
+          state.meta = meta;
+          state.bootAttempt = 0;
+          render();
+        },
+        fetchMeta: function () {
+          return api("/api/meta", { timeoutMs: policy.TIMEOUT_MS });
+        },
+        ensureAuth: ensureAuth,
+        fetchSession: function () {
+          if (token !== bootToken) return Promise.resolve(null);
+          return refresh({ timeoutMs: policy.TIMEOUT_MS });
+        }
+      });
+    } catch (error) {
+      if (token !== bootToken) return;
+      fail(error);
+      return;
+    }
+    if (token !== bootToken) return;
+    if (outcome.phase === "reload") {
+      reloadForBuild(outcome.build);
+      return;
+    }
+    if (outcome.phase === "blocked") {
       state.blocked = "shell";
       render();
       return;
     }
-    if (BUILD && meta.clientBuild !== BUILD) {
-      reloadForBuild(meta.clientBuild);
+    if (outcome.phase === "error") {
+      fail(outcome.error);
       return;
     }
-    state.meta = meta;
+    followUps = 0;
+    clearTimeout(followUp);
+    if (!state.me) render();
+  }
+
+  function boot() {
+    if (bootPromise) return bootPromise;
+    const token = ++bootToken;
+    bootPromise = runBoot(token).finally(function () { bootPromise = null; });
+    return bootPromise;
+  }
+
+  function resumeBoot() {
+    if (state.me || state.blocked) return;
+    if (state.meta && !authed()) return;
+    boot();
+  }
+
+  setInterval(onTick, 250);
+
+  if (!window.ZyronBoot) {
+    state.blocked = "shell";
     render();
-    if (authed()) return refresh();
-  }).catch(fail);
+  } else {
+    boot();
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "visible") resumeBoot();
+    });
+    window.addEventListener("pageshow", function (event) {
+      if (event.persisted) resumeBoot();
+    });
+  }
 })();

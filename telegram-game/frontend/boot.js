@@ -2,6 +2,10 @@
   var root = document.querySelector("#app");
   if (!root) return;
   window.setTimeout(function () {
+    var tg = window.Telegram && window.Telegram.WebApp;
+    if (tg && tg.MainButton && tg.MainButton.hide && root.dataset.booted !== "1") {
+      try { tg.MainButton.hide(); } catch (e) { /* No Telegram chrome. */ }
+    }
     if (root.dataset.booted) return;
     root.replaceChildren();
     var buildMeta = document.querySelector('meta[name="zyron-build"]');
@@ -25,7 +29,7 @@
     button.addEventListener("click", function () {
       var url = new URL(window.location.href);
       url.searchParams.set("v", String(Date.now()));
-      window.location.replace(url.pathname + "?" + url.searchParams.toString());
+      window.location.replace(url.pathname + "?" + url.searchParams.toString() + url.hash);
     });
     card.append(logo, title, copy, button);
     root.append(card);
