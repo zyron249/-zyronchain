@@ -1,0 +1,42 @@
+{
+  "asOf": "2026-09-27T04:25:13-04:00",
+  "sourceGate": 0,
+  "mainTip": "8794b4e2becc0ae33b2df2fd6824847327e43be6",
+  "vocabulary": [
+    "INTERNAL PASS",
+    "PREPARED",
+    "BLOCKED",
+    "EXTERNAL EVIDENCE REQUIRED",
+    "HUMAN DECISION REQUIRED"
+  ],
+  "matrix": {
+    "Consensus Safety": "PREPARED on main (PoA quorum + journal); INTERNAL PASS candidate only on draft #904 \u2014 not merged; EXTERNAL EVIDENCE REQUIRED for independent audit",
+    "Consensus Liveness": "BLOCKED on main for ambiguous split-quorum (no round-view-change.ts); PREPARED in draft #904 (split quorum view-change) \u2014 keep draft until human review",
+    "Cryptography": "PREPARED (existing domains / secp256k1) \u2014 full inventory later gates; EXTERNAL EVIDENCE REQUIRED for independent crypto review",
+    "State Determinism": "INTERNAL PASS candidate on main for Gate 0 suite (607+ tests green this session) \u2014 not a formal proof",
+    "Persistence": "PREPARED on main (fail-stop fsync / crash tests present); #904 adds additional crash hooks \u2014 verify after rebase",
+    "Crash Recovery": "PREPARED on main (SIGKILL / lease / prune crash suites); extended round-change recovery PREPARED only on #904",
+    "P2P": "PREPARED \u2014 Noise/libp2p; mixed 1.0/1.1 unsupported per #904 design (requires homogeneous 1.1)",
+    "RPC Security": "PREPARED partially (TRUST_PROXY era on main via #905 path) \u2014 public gateway EXTERNAL hosts",
+    "Validator Governance": "PREPARED docs \u2014 HUMAN DECISION REQUIRED for production validator set",
+    "Protocol Upgrades": "PREPARED (v1\u2192v5 delayed 100) \u2014 verify boundary tests remain green (Gate 0 suite includes upgrade tests)",
+    "Mining": "PREPARED code; activation gated; economic policy incomplete \u2192 HUMAN DECISION REQUIRED where needed",
+    "50M Supply Invariant": "INTERNAL PASS on main after Gate 0 supply-invariant.test.ts + existing mining tests \u2014 MAX_SUPPLY forever 50_000_000 ZYN",
+    "Key Custody": "PREPARED local keystore / remote signer boundary \u2014 production HSM EXTERNAL EVIDENCE REQUIRED",
+    "Release Security": "PREPARED partially \u2014 later gates",
+    "Independent Audit": "EXTERNAL EVIDENCE REQUIRED",
+    "Independent Operators": "EXTERNAL EVIDENCE REQUIRED (#903 templates only)",
+    "Public Internet Soak": "EXTERNAL EVIDENCE REQUIRED",
+    "Public RPC": "BLOCKED (not published; correct)",
+    "Explorer": "BLOCKED / PREPARED tooling later",
+    "Bootstrap Infrastructure": "PREPARED templates in #903 \u2014 no invented hosts",
+    "Disaster Recovery": "PREPARED rehearsals in CI language \u2014 external multi-region EXTERNAL EVIDENCE REQUIRED",
+    "Monitoring": "PREPARED in #903 BOM roles \u2014 not deployed",
+    "GitHub Protection": "EXTERNAL / HUMAN DECISION REQUIRED (branch protection not verified this session)",
+    "Genesis": "BLOCKED \u2014 not built; HUMAN DECISION REQUIRED inputs",
+    "Token Distribution": "HUMAN DECISION REQUIRED",
+    "Economic Policy": "HUMAN DECISION REQUIRED for unresolved emission/difficulty policy choices beyond frozen 50M/6.25/4M/20-bit",
+    "Mainnet Activation": "BLOCKED",
+    "Public Testnet Activation": "BLOCKED (publicTestnetActivationAllowed=false)"
+  }
+}
