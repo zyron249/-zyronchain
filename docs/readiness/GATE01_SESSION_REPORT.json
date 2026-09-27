@@ -1,0 +1,130 @@
+{
+  "asOf": "2026-09-27T04:31:20-04:00",
+  "gate0": {
+    "status": "DONE locally; PR NOT opened (git push auth missing)",
+    "branch": "readiness/gate0-baseline",
+    "tip": "a638f4ec3f59de01c9cef94b80254e82b2388988",
+    "baseMain": "8794b4e2becc0ae33b2df2fd6824847327e43be6",
+    "pathsChanged": [
+      "docs/readiness/README.md",
+      "docs/readiness/GATE0_BASELINE.md",
+      "docs/readiness/GATE0_LEDGER.json",
+      "docs/readiness/GATE0_PR_BODY.md",
+      "docs/readiness/PUSH_INSTRUCTIONS.md",
+      "docs/readiness/readiness-matrix.json",
+      "l1/test/supply-invariant.test.ts"
+    ],
+    "tests": {
+      "npm_ci": "PASS",
+      "npm_typecheck": "PASS",
+      "npm_test": {
+        "pass": 610,
+        "fail": 0,
+        "durationMs": 51198,
+        "notes": "on gate0 branch before #904 stack"
+      },
+      "npm_audit_omit_dev_high": {
+        "vulnerabilities": 0
+      },
+      "pytest_q": {
+        "pass": 58,
+        "fail": 0
+      }
+    },
+    "prUrl": null,
+    "pushBlocked": "fatal: could not read Username for https://github.com"
+  },
+  "gate1": {
+    "status": "MAXIMALLY ADVANCED locally; push/PR update blocked (auth); keep draft",
+    "branch": "cursor/round-view-change-liveness-068e",
+    "tip": "b20c47a",
+    "rebasedOntoMain": "8794b4e",
+    "companion903Branch": "cursor/public-testnet-identity-scaffold-70eb",
+    "stackNote": "self-contained (#903 commits included); companion #903 also rebased separately (independent tip hashes)",
+    "pathsChangedBeyondUpstream904": [
+      "docs/readiness/* (Gate0 cherry-pick + Gate1 status/PR body/matrix/push instructions)",
+      "docs/consensus-review/10-LIMITATIONS.md",
+      "l1/test/supply-invariant.test.ts",
+      "l1/test/gate1-adversarial-consensus.test.ts"
+    ],
+    "tests": {
+      "npm_typecheck": "PASS",
+      "npm_test": {
+        "pass": 690,
+        "fail": 0,
+        "durationMs": 52608,
+        "flakes": "none observed"
+      },
+      "npm_audit_omit_dev_high": {
+        "vulnerabilities": 0
+      },
+      "focused_consensus_earlier": {
+        "pass": 34,
+        "fail": 0
+      },
+      "gate1_adversarial": {
+        "pass": 7,
+        "fail": 0
+      },
+      "pytest_q": {
+        "pass": 58,
+        "fail": 0,
+        "notes": "requires PYTHONPATH=."
+      }
+    },
+    "vulnsFoundFixed": {
+      "npm_high_plus": 0,
+      "criticalHighConsensusCodeFixesThisSession": 0,
+      "notes": "No CRITICAL/HIGH consensus defects requiring production code changes found during Gate1 audit; adversarial unit coverage extended"
+    },
+    "prUrl": "https://github.com/zyron249/-zyronchain/pull/904 (existing draft; local rebase not pushed)",
+    "pr903Url": "https://github.com/zyron249/-zyronchain/pull/903 (existing draft; local rebase not pushed)"
+  },
+  "immutable": {
+    "MAX_SUPPLY_ZYN": 50000000,
+    "activationFlags": {
+      "publicTestnetActivationAllowed": false,
+      "mainnetActivationAllowed": false
+    }
+  },
+  "unresolvedRisks": [
+    "GitHub push/PR auth missing on box \u2014 need token via secret-request; see docs/readiness/PUSH_INSTRUCTIONS.md",
+    "Independent audit EXTERNAL EVIDENCE REQUIRED",
+    "HSM / independent operators / public soak EXTERNAL EVIDENCE REQUIRED",
+    "Genesis / allocations / validator set HUMAN DECISION REQUIRED",
+    "Public testnet/mainnet activation correctly BLOCKED",
+    "Human review required before any merge of #903/#904; do not auto-merge"
+  ],
+  "nextGate": 2,
+  "nextGateHint": "After push+human review of #904: continue remaining readiness gates (crypto inventory, persistence soak evidence, operator/HSM, etc.) without flipping activation flags",
+  "readinessMatrixSnapshot": {
+    "Consensus Safety": "INTERNAL PASS candidate on rebased draft #904 \u2014 EXTERNAL EVIDENCE REQUIRED for independent audit; not merged to main",
+    "Consensus Liveness": "INTERNAL PASS candidate on rebased draft #904 (round-view-change + gate1 adversarial) \u2014 keep draft; HUMAN review before merge; BLOCKED for public-testnet activation until reviewed+merged+external gates",
+    "Cryptography": "PREPARED (existing domains / secp256k1) \u2014 full inventory later gates; EXTERNAL EVIDENCE REQUIRED for independent crypto review",
+    "State Determinism": "INTERNAL PASS candidate on main for Gate 0 suite (607+ tests green this session) \u2014 not a formal proof",
+    "Persistence": "PREPARED on main (fail-stop fsync / crash tests present); #904 adds additional crash hooks \u2014 verify after rebase",
+    "Crash Recovery": "PREPARED on main (SIGKILL / lease / prune crash suites); extended round-change recovery PREPARED only on #904",
+    "P2P": "PREPARED \u2014 Noise/libp2p; mixed 1.0/1.1 unsupported per #904 design (requires homogeneous 1.1)",
+    "RPC Security": "PREPARED partially (TRUST_PROXY era on main via #905 path) \u2014 public gateway EXTERNAL hosts",
+    "Validator Governance": "PREPARED docs \u2014 HUMAN DECISION REQUIRED for production validator set",
+    "Protocol Upgrades": "PREPARED (v1\u2192v5 delayed 100) \u2014 verify boundary tests remain green (Gate 0 suite includes upgrade tests)",
+    "Mining": "PREPARED code; activation gated; economic policy incomplete \u2192 HUMAN DECISION REQUIRED where needed",
+    "50M Supply Invariant": "INTERNAL PASS (supply-invariant.test.ts + mining economics pin on this stack)",
+    "Key Custody": "PREPARED local keystore / remote signer boundary \u2014 production HSM EXTERNAL EVIDENCE REQUIRED",
+    "Release Security": "PREPARED partially \u2014 later gates",
+    "Independent Audit": "EXTERNAL EVIDENCE REQUIRED",
+    "Independent Operators": "EXTERNAL EVIDENCE REQUIRED (#903 templates only)",
+    "Public Internet Soak": "EXTERNAL EVIDENCE REQUIRED",
+    "Public RPC": "BLOCKED (not published; correct)",
+    "Explorer": "BLOCKED / PREPARED tooling later",
+    "Bootstrap Infrastructure": "PREPARED templates in #903 \u2014 no invented hosts",
+    "Disaster Recovery": "PREPARED rehearsals in CI language \u2014 external multi-region EXTERNAL EVIDENCE REQUIRED",
+    "Monitoring": "PREPARED in #903 BOM roles \u2014 not deployed",
+    "GitHub Protection": "EXTERNAL / HUMAN DECISION REQUIRED (branch protection not verified this session)",
+    "Genesis": "BLOCKED \u2014 not built; HUMAN DECISION REQUIRED inputs",
+    "Token Distribution": "HUMAN DECISION REQUIRED",
+    "Economic Policy": "HUMAN DECISION REQUIRED for unresolved emission/difficulty policy choices beyond frozen 50M/6.25/4M/20-bit",
+    "Mainnet Activation": "BLOCKED",
+    "Public Testnet Activation": "BLOCKED (publicTestnetActivationAllowed=false)"
+  }
+}
