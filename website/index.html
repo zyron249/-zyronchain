@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#092a25" />
+  <meta name="theme-color" content="#080808" />
   <meta name="description" content="ZyronChain is an open-source Layer-1 with local key custody, deterministic execution, authenticated state, permissionless ZYN issuance and quorum finality." />
   <meta name="referrer" content="no-referrer" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'" />
@@ -17,10 +17,37 @@
   <meta property="og:title" content="ZyronChain — Open rules. Local keys." />
   <meta property="og:description" content="A verifiable Layer-1 built around local key custody, deterministic execution, authenticated state, permissionless issuance and quorum finality." />
   <meta property="og:url" content="https://zyronchain.com/" />
-  <meta name="twitter:card" content="summary" />
+  <meta property="og:image" content="https://zyronchain.com/brand-mark.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://zyronchain.com/brand-mark.png" />
   <title>ZyronChain — Verifiable Layer-1</title>
   <link rel="stylesheet" href="./styles.css" />
   <link rel="stylesheet" href="./professional.css" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Organization",
+        "name": "ZyronChain",
+        "url": "https://zyronchain.com/",
+        "logo": "https://zyronchain.com/brand-mark.png",
+        "sameAs": [
+          "https://x.com/Zyronchain",
+          "https://t.me/zyronchain",
+          "https://github.com/zyron249/-zyronchain"
+        ]
+      },
+      {
+        "@type": "WebSite",
+        "name": "ZyronChain",
+        "url": "https://zyronchain.com/",
+        "description": "Open-source Layer-1 with local key custody, deterministic execution and explicit activation boundaries.",
+        "publisher": { "@type": "Organization", "name": "ZyronChain" }
+      }
+    ]
+  }
+  </script>
 </head>
 <body class="protocol-portal">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -65,12 +92,13 @@
       <div class="shell hero-inner">
         <div class="hero-copy" data-reveal>
           <p class="eyebrow">THE ZYRONCHAIN PROTOCOL / LAYER 01</p>
-          <h1>Trust the rules.<br /><span>Own your future.</span></h1>
+          <h1>Trust the rules. <br /><span>Own your future.</span></h1>
           <p class="hero-lede">An open-source Layer-1. Keys you control. State you can verify. A protocol built to be inspected.</p>
           <div class="hero-actions">
-            <a class="primary-button" href="./wallet.html">Get started <span aria-hidden="true">↗</span></a>
+            <a class="primary-button" href="./wallet.html">Local wallet setup <span aria-hidden="true">↗</span></a>
             <a class="secondary-button" href="#protocol">Explore the protocol <span aria-hidden="true">↓</span></a>
           </div>
+          <p class="hero-honesty">Public network not activated · Local setup only · Authorized ≠ activated</p>
         </div>
 
         <div class="brand-surface" aria-hidden="true">
@@ -212,7 +240,7 @@ npm run devnet</code></pre>
           <span>01</span>
           <h3>Use ZyronChain</h3>
           <p>Create an encrypted local wallet and understand the self-custody boundary before the public network activates.</p>
-          <strong>Create a wallet →</strong>
+          <strong>Local wallet setup →</strong>
         </a>
         <a class="start-card" href="./validator.html" data-reveal>
           <span>02</span>
@@ -227,6 +255,12 @@ npm run devnet</code></pre>
           <strong>Developer source ↗</strong>
         </a>
       </div>
+      <aside class="shell community-card" id="community" data-reveal>
+        <p class="section-label">Community</p>
+        <h3>ZYRON NODE on Telegram</h3>
+        <p>Join the community channel for project discussion. This is not an L1 activation signal and does not publish RPC, explorer or faucet endpoints.</p>
+        <a href="https://t.me/zyronchain" target="_blank" rel="noopener noreferrer">Open ZYRON NODE → https://t.me/zyronchain <span aria-hidden="true">↗</span></a>
+      </aside>
       <aside class="shell public-test-callout" id="public-test" data-reveal>
         <p class="section-label">Public test</p>
         <h3>There is no hosted testnet to join.</h3>
@@ -296,12 +330,14 @@ npm run devnet</code></pre>
         <a href="https://github.com/zyron249/-zyronchain/issues" target="_blank" rel="noopener noreferrer">Issues ↗</a>
         <a href="#developers">Development</a>
         <a href="#status">Network status</a>
+        <a href="./privacy.html">Privacy</a>
+        <a href="./terms.html">Terms</a>
       </div>
     </div>
 
     <div class="shell footer-bottom">
       <span>© <span data-year></span> ZyronChain · Open source</span>
-      <span>Local keys. Verifiable rules. No analytics cookies</span>
+      <span>Local keys. Verifiable rules. No analytics cookies · <a href="./privacy.html">Privacy</a> · <a href="./terms.html">Terms</a></span>
     </div>
   </footer>
 
