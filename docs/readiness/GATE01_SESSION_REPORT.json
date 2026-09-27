@@ -37,7 +37,7 @@
   "gate1": {
     "status": "MAXIMALLY ADVANCED locally; push/PR update blocked (auth); keep draft",
     "branch": "cursor/round-view-change-liveness-068e",
-    "tip": "b20c47a",
+    "tip": "df3131a5ff561c015b7786ec37a42dffa1e817df",
     "rebasedOntoMain": "8794b4e",
     "companion903Branch": "cursor/public-testnet-identity-scaffold-70eb",
     "stackNote": "self-contained (#903 commits included); companion #903 also rebased separately (independent tip hashes)",
@@ -78,7 +78,8 @@
       "notes": "No CRITICAL/HIGH consensus defects requiring production code changes found during Gate1 audit; adversarial unit coverage extended"
     },
     "prUrl": "https://github.com/zyron249/-zyronchain/pull/904 (existing draft; local rebase not pushed)",
-    "pr903Url": "https://github.com/zyron249/-zyronchain/pull/903 (existing draft; local rebase not pushed)"
+    "pr903Url": "https://github.com/zyron249/-zyronchain/pull/903 (existing draft; local rebase not pushed)",
+    "tipShort": "df3131a"
   },
   "immutable": {
     "MAX_SUPPLY_ZYN": 50000000,
