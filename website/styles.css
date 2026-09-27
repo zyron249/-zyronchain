@@ -294,7 +294,16 @@ button { color: inherit; }
 }
 
 @media (max-width: 820px) {
-  .network-notice { display: none; }
+  .network-notice {
+    display: block;
+  }
+  .notice-inner {
+    min-height: auto;
+    padding: 10px 0;
+    gap: 8px 16px;
+    font-size: 12px;
+    justify-content: flex-start;
+  }
   .header-inner { min-height: 68px; }
   .brand { width: 178px; }
   .menu-toggle { display: grid; order: 3; }

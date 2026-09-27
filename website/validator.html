@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#092a25" />
+  <meta name="theme-color" content="#080808" />
   <meta name="description" content="Configure a ZyronChain validator safely in the browser and run it locally without exposing private keys." />
   <meta name="referrer" content="no-referrer" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'" />
@@ -12,13 +12,48 @@
   <link rel="icon" href="./icon-192.png" type="image/png" sizes="192x192" />
   <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
   <link rel="manifest" href="./site.webmanifest" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="ZyronChain" />
+  <meta property="og:title" content="ZyronChain Validator Launchpad" />
+  <meta property="og:description" content="Configure a ZyronChain validator safely in the browser and run it locally without exposing private keys." />
+  <meta property="og:url" content="https://zyronchain.com/validator.html" />
+  <meta property="og:image" content="https://zyronchain.com/brand-mark.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://zyronchain.com/brand-mark.png" />
   <title>ZyronChain Validator Launchpad</title>
   <link rel="stylesheet" href="./styles.css" />
   <link rel="stylesheet" href="./validator.css" />
   <link rel="stylesheet" href="./professional.css" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    "name": "ZyronChain Validator Launchpad",
+    "url": "https://zyronchain.com/validator.html",
+    "description": "Configure a ZyronChain validator safely in the browser and run it locally without exposing private keys.",
+    "isPartOf": { "@type": "WebSite", "name": "ZyronChain", "url": "https://zyronchain.com/" },
+    "publisher": {
+      "@type": "Organization",
+      "name": "ZyronChain",
+      "url": "https://zyronchain.com/",
+      "sameAs": [
+        "https://x.com/Zyronchain",
+        "https://t.me/zyronchain",
+        "https://github.com/zyron249/-zyronchain"
+      ]
+    }
+  }
+  </script>
 </head>
 <body class="validator-page">
   <a class="skip-link" href="#main">Skip to validator launchpad</a>
+  <aside class="network-notice" aria-label="Network activation notice">
+    <div class="shell notice-inner">
+      <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Public mining, wallet RPC and value-bearing use remain activation gated.</p>
+      <a href="./index.html#status">View network status <span aria-hidden="true">→</span></a>
+      <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Public tester guide <span aria-hidden="true">↗</span></a>
+    </div>
+  </aside>
   <div class="page-noise" aria-hidden="true"></div>
   <div class="page-glow glow-one" aria-hidden="true"></div>
 
@@ -40,7 +75,7 @@
     <section class="launchpad-hero shell">
       <div>
         <span class="section-kicker">Validator Launchpad</span>
-        <h1>Configure in the browser.<br><span>Run on your own machine.</span></h1>
+        <h1>Configure in the browser. <br /><span>Run on your own machine.</span></h1>
         <p>ZyronChain never asks the website to hold a validator secret. This launchpad prepares deterministic operator scripts; your encrypted validator key is created locally on your device and stays there.</p>
         <div class="launchpad-badges">
           <span>Private key stays local</span>
@@ -170,8 +205,8 @@
           <div class="panel-heading">
             <div>
               <span class="panel-index">03</span>
-              <h2>Join the public ZyronChain network</h2>
-              <p>The governance class is authorized, but public-testnet activation is still blocked by external evidence gates. Authorized does not mean activated.</p>
+              <h2>Public network enrollment (not activated)</h2>
+              <p>The governance class is authorized, but public-testnet activation is still blocked by external evidence gates. Authorized does not mean activated. This launchpad prepares local scripts only—not hosted enrollment.</p>
             </div>
             <span class="gate-chip">ACTIVATION GATED</span>
           </div>
@@ -197,7 +232,7 @@
 
   <footer class="site-footer shell">
     <div class="footer-brand"><img class="brand-mark" src="./brand-mark.png" alt="ZyronChain" width="320" height="320" /><p>Open-source Layer-1 engineering. No presale. No investment promises.</p></div>
-    <div class="footer-links"><a href="./">Home</a><a href="https://x.com/Zyronchain" target="_blank" rel="noreferrer noopener">X / Twitter</a><a href="https://t.me/zyronchain" target="_blank" rel="noreferrer noopener">Telegram</a><a href="https://github.com/zyron249/-zyronchain" target="_blank" rel="noreferrer noopener">GitHub</a><a href="https://github.com/zyron249/-zyronchain/blob/main/SECURITY.md" target="_blank" rel="noreferrer noopener">Security</a></div>
+    <div class="footer-links"><a href="./">Home</a><a href="./privacy.html">Privacy</a><a href="./terms.html">Terms</a><a href="https://x.com/Zyronchain" target="_blank" rel="noreferrer noopener">X / Twitter</a><a href="https://t.me/zyronchain" target="_blank" rel="noreferrer noopener">Telegram</a><a href="https://github.com/zyron249/-zyronchain" target="_blank" rel="noreferrer noopener">GitHub</a><a href="https://github.com/zyron249/-zyronchain/blob/main/SECURITY.md" target="_blank" rel="noreferrer noopener">Security</a></div>
     <div class="footer-meta"><span>© <span data-year></span> ZyronChain</span><span>No analytics cookies</span></div>
   </footer>
 

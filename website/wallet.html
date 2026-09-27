@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#092a25" />
+  <meta name="theme-color" content="#080808" />
   <meta name="description" content="Create a ZyronChain encrypted wallet locally. Private keys and passwords never enter the browser." />
   <meta name="referrer" content="no-referrer" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'" />
@@ -16,13 +16,43 @@
   <meta property="og:title" content="ZyronChain Wallet Setup" />
   <meta property="og:description" content="Generate a canonical encrypted ZyronChain keystore on your own machine." />
   <meta property="og:url" content="https://zyronchain.com/wallet.html" />
+  <meta property="og:image" content="https://zyronchain.com/brand-mark.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://zyronchain.com/brand-mark.png" />
   <title>ZyronChain — Wallet Setup</title>
   <link rel="stylesheet" href="./styles.css" />
   <link rel="stylesheet" href="./wallet.css" />
   <link rel="stylesheet" href="./professional.css" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    "name": "ZyronChain Wallet Setup",
+    "url": "https://zyronchain.com/wallet.html",
+    "description": "Generate a canonical encrypted ZyronChain keystore on your own machine. Local-only setup; no browser secrets.",
+    "isPartOf": { "@type": "WebSite", "name": "ZyronChain", "url": "https://zyronchain.com/" },
+    "publisher": {
+      "@type": "Organization",
+      "name": "ZyronChain",
+      "url": "https://zyronchain.com/",
+      "sameAs": [
+        "https://x.com/Zyronchain",
+        "https://t.me/zyronchain",
+        "https://github.com/zyron249/-zyronchain"
+      ]
+    }
+  }
+  </script>
 </head>
 <body class="wallet-page">
   <a class="skip-link" href="#main">Skip to content</a>
+  <aside class="network-notice" aria-label="Network activation notice">
+    <div class="shell notice-inner">
+      <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Public mining, wallet RPC and value-bearing use remain activation gated.</p>
+      <a href="./index.html#status">View network status <span aria-hidden="true">→</span></a>
+      <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Public tester guide <span aria-hidden="true">↗</span></a>
+    </div>
+  </aside>
   <div class="ambient ambient-a" aria-hidden="true"></div>
   <div class="grain" aria-hidden="true"></div>
 
@@ -43,7 +73,7 @@
     <section class="wallet-hero shell">
       <div class="wallet-hero-copy">
         <div class="wallet-local-badge"><i></i> LOCAL-ONLY WALLET SETUP</div>
-        <h1>Create your<br /><em>ZyronChain wallet.</em></h1>
+        <h1>Create your <br /><em>ZyronChain wallet.</em></h1>
         <p>Your wallet is a cryptographic identity, not a website account. This page prepares a local setup script. The private key, wallet password and encrypted keystore are created only on your computer.</p>
         <div class="wallet-hero-actions">
           <a class="primary-button" href="#create">Create locally →</a>
@@ -80,7 +110,7 @@
     <section class="wallet-create section shell" id="create">
       <div class="wallet-section-heading">
         <span>01 / CREATE</span>
-        <h2>Generate the wallet<br />on your machine.</h2>
+        <h2>Generate the wallet <br />on your machine.</h2>
         <p>Choose your operating system. The script checks out the exact canonical release revision shown below, installs the locked L1 dependencies, builds the CLI and asks for the wallet password inside your local terminal.</p>
       </div>
 
@@ -102,8 +132,8 @@
             <div class="wallet-script-head">
               <div><span>LOCAL SETUP SCRIPT</span><small data-wallet-script-label>bash</small></div>
               <div class="wallet-script-actions">
-                <button type="button" data-wallet-copy>Copy</button>
-                <button type="button" data-wallet-download>Download</button>
+                <button type="button" data-wallet-copy aria-label="Copy setup script">Copy</button>
+                <button type="button" data-wallet-download aria-label="Download setup script">Download</button>
               </div>
             </div>
             <pre><code data-wallet-script></code></pre>
@@ -126,7 +156,7 @@
       <div class="shell wallet-backup-layout">
         <div class="wallet-section-heading">
           <span>02 / BACKUP</span>
-          <h2>Two files.<br />Two separate backups.</h2>
+          <h2>Two files. <br />Two separate backups.</h2>
           <p>The encrypted keystore and its password are both required for local signing. Keeping them together defeats part of the protection provided by encryption.</p>
         </div>
 
@@ -147,7 +177,7 @@
     <section class="wallet-use section shell" id="use">
       <div class="wallet-section-heading">
         <span>03 / USE</span>
-        <h2>Sign locally.<br />Submit deliberately.</h2>
+        <h2>Sign locally. <br />Submit deliberately.</h2>
         <p>The canonical CLI can submit signed transfers to a wallet-facing RPC endpoint. Public wallet RPC is not currently published, so the example stays activation-gated instead of silently pointing users at validator infrastructure.</p>
         <p>The honest way to exercise a transfer today is local, not a hosted testnet: <code>cd l1 &amp;&amp; npm ci &amp;&amp; npm run devnet</code>. Follow the public tester guide for loopback RPC, wallet creation and the printed disposable keys. This website does not publish a public RPC, explorer or faucet.</p>
         <a class="wallet-doc-link" href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Read docs/PUBLIC_TEST.md <span aria-hidden="true">↗</span></a>
@@ -161,8 +191,8 @@
         </article>
         <article>
           <span>BALANCE</span>
-          <h3>Read through a public gateway</h3>
-          <p>When the public network activates, this website will publish the canonical chain ID and separately bounded wallet/read-only endpoint.</p>
+          <h3>Read only after activation</h3>
+          <p>No public wallet RPC is published today. When the public network activates, this website will publish the canonical chain ID and a separately bounded read-only endpoint—not a custody or hosted wallet service.</p>
         </article>
         <article>
           <span>TRANSFER</span>
@@ -188,7 +218,7 @@ node dist/src/cli.js transfer \
       <div class="shell wallet-safety-layout">
         <div class="wallet-section-heading">
           <span>04 / SAFETY</span>
-          <h2>The wallet rule:<br />the secret does not travel.</h2>
+          <h2>The wallet rule: <br />the secret does not travel.</h2>
         </div>
         <div class="wallet-safety-list">
           <article><span>NEVER</span><strong>Enter a wallet password on zyronchain.com</strong><p>The canonical website intentionally has no password field for wallet creation.</p></article>
@@ -202,7 +232,7 @@ node dist/src/cli.js transfer \
     <section class="wallet-final shell">
       <div>
         <span>READY TO START?</span>
-        <h2>Create locally.<br />Keep control.</h2>
+        <h2>Create locally. <br />Keep control.</h2>
         <p>No ZyronChain account is required. Your cryptographic identity belongs to the key you generate and protect.</p>
       </div>
       <a class="primary-button large" href="#create">Generate setup script ↑</a>
@@ -212,7 +242,7 @@ node dist/src/cli.js transfer \
   <footer class="site-footer">
     <div class="shell footer-bottom wallet-footer">
       <span>© <span data-wallet-year></span> ZyronChain · Local-first wallet setup</span>
-      <span>No analytics cookies · No secret collection · No public RPC claim</span>
+      <span>No analytics cookies · No secret collection · No public RPC claim · <a href="./privacy.html">Privacy</a> · <a href="./terms.html">Terms</a></span>
       <span><a href="https://x.com/Zyronchain" target="_blank" rel="noopener noreferrer">X / Twitter ↗</a> · <a href="https://t.me/zyronchain" target="_blank" rel="noopener noreferrer">Telegram ↗</a></span>
     </div>
   </footer>
