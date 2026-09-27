@@ -1,0 +1,151 @@
+{
+  "gate": 0,
+  "asOf": "2026-09-27T04:25:13-04:00",
+  "timezone": "America/New_York",
+  "repo": "https://github.com/zyron249/-zyronchain",
+  "branch": "readiness/gate0-baseline",
+  "mainTip": "8794b4e2becc0ae33b2df2fd6824847327e43be6",
+  "mainTipShort": "8794b4e",
+  "immutable": {
+    "MAX_SUPPLY_ZYN": 50000000,
+    "ATOMS_PER_ZYN": 100000000,
+    "MAX_SUPPLY_ATOMS": 5000000000000000,
+    "publicTestnetActivationAllowed": false,
+    "mainnetActivationAllowed": false,
+    "doNotAutoMergeConsensusPRs": true,
+    "doNotInventHostsAllocationsChainIdsOrHsmEvidence": true,
+    "doNotClaimIndependentAudit": true
+  },
+  "environment": {
+    "node": "v22.19.0",
+    "npm": "10.9.3",
+    "pythonPytest": "9.1.1",
+    "boxPath": "/workspace/zyron-l1/-zyronchain"
+  },
+  "commands": {
+    "l1": [
+      {
+        "cmd": "npm ci",
+        "cwd": "l1",
+        "result": "PASS",
+        "notes": "131 packages"
+      },
+      {
+        "cmd": "npm run typecheck",
+        "cwd": "l1",
+        "result": "PASS",
+        "exitCode": 0
+      },
+      {
+        "cmd": "npm test",
+        "cwd": "l1",
+        "result": "PASS",
+        "pass": 610,
+        "fail": 0,
+        "durationMs": 51198,
+        "notes": "includes supply-invariant.test.ts (+3); 0 flakes"
+      },
+      {
+        "cmd": "npm audit --omit=dev --audit-level=high",
+        "cwd": "l1",
+        "result": "PASS",
+        "vulnerabilities": 0
+      },
+      {
+        "cmd": "node --test dist/test/supply-invariant.test.js",
+        "cwd": "l1",
+        "result": "PASS",
+        "pass": 3,
+        "fail": 0
+      }
+    ],
+    "root": [
+      {
+        "cmd": "pytest -q",
+        "cwd": ".",
+        "result": "PASS",
+        "pass": 58,
+        "fail": 0,
+        "durationSec": 4.35
+      }
+    ]
+  },
+  "openPriorityPRs": {
+    "903": {
+      "title": "Public testnet deployment scaffold",
+      "draft": true,
+      "head": "cursor/public-testnet-identity-scaffold-70eb",
+      "tip": "49b6002",
+      "mergeBaseWithMain": "f33e982",
+      "status": "PREPARED scaffolds; genesis/hosts EXTERNAL; rebase onto main required",
+      "blocks": "BLOCKS PUBLIC TESTNET language for N=4/7 double-hash ambiguity; consensus fix deferred to #904"
+    },
+    "904": {
+      "title": "Round-change liveness",
+      "draft": true,
+      "head": "cursor/round-view-change-liveness-068e",
+      "tip": "20f098a",
+      "stacksOn": 903,
+      "mergeBaseWithMain": "f33e982",
+      "status": "INTERNAL PASS candidate on draft only \u2014 needs rebase onto current main + human review; do not auto-merge",
+      "claims": "Internal engineering qualification only; CONSENSUS CANDIDATE FROZEN FOR REVIEW language in prior docs"
+    },
+    "898": {
+      "title": "Launch evidence / deadlock recovery",
+      "draft": true
+    },
+    "895": {
+      "title": "Miner publication evidence",
+      "draft": false
+    },
+    "896": {
+      "title": "Windows miner GUI",
+      "priority": "low vs consensus"
+    }
+  },
+  "readinessMatrix": {
+    "Consensus Safety": "PREPARED on main (PoA quorum + journal); INTERNAL PASS candidate only on draft #904 \u2014 not merged; EXTERNAL EVIDENCE REQUIRED for independent audit",
+    "Consensus Liveness": "BLOCKED on main for ambiguous split-quorum (no round-view-change.ts); PREPARED in draft #904 (split quorum view-change) \u2014 keep draft until human review",
+    "Cryptography": "PREPARED (existing domains / secp256k1) \u2014 full inventory later gates; EXTERNAL EVIDENCE REQUIRED for independent crypto review",
+    "State Determinism": "INTERNAL PASS candidate on main for Gate 0 suite (607+ tests green this session) \u2014 not a formal proof",
+    "Persistence": "PREPARED on main (fail-stop fsync / crash tests present); #904 adds additional crash hooks \u2014 verify after rebase",
+    "Crash Recovery": "PREPARED on main (SIGKILL / lease / prune crash suites); extended round-change recovery PREPARED only on #904",
+    "P2P": "PREPARED \u2014 Noise/libp2p; mixed 1.0/1.1 unsupported per #904 design (requires homogeneous 1.1)",
+    "RPC Security": "PREPARED partially (TRUST_PROXY era on main via #905 path) \u2014 public gateway EXTERNAL hosts",
+    "Validator Governance": "PREPARED docs \u2014 HUMAN DECISION REQUIRED for production validator set",
+    "Protocol Upgrades": "PREPARED (v1\u2192v5 delayed 100) \u2014 verify boundary tests remain green (Gate 0 suite includes upgrade tests)",
+    "Mining": "PREPARED code; activation gated; economic policy incomplete \u2192 HUMAN DECISION REQUIRED where needed",
+    "50M Supply Invariant": "INTERNAL PASS on main after Gate 0 supply-invariant.test.ts + existing mining tests \u2014 MAX_SUPPLY forever 50_000_000 ZYN",
+    "Key Custody": "PREPARED local keystore / remote signer boundary \u2014 production HSM EXTERNAL EVIDENCE REQUIRED",
+    "Release Security": "PREPARED partially \u2014 later gates",
+    "Independent Audit": "EXTERNAL EVIDENCE REQUIRED",
+    "Independent Operators": "EXTERNAL EVIDENCE REQUIRED (#903 templates only)",
+    "Public Internet Soak": "EXTERNAL EVIDENCE REQUIRED",
+    "Public RPC": "BLOCKED (not published; correct)",
+    "Explorer": "BLOCKED / PREPARED tooling later",
+    "Bootstrap Infrastructure": "PREPARED templates in #903 \u2014 no invented hosts",
+    "Disaster Recovery": "PREPARED rehearsals in CI language \u2014 external multi-region EXTERNAL EVIDENCE REQUIRED",
+    "Monitoring": "PREPARED in #903 BOM roles \u2014 not deployed",
+    "GitHub Protection": "EXTERNAL / HUMAN DECISION REQUIRED (branch protection not verified this session)",
+    "Genesis": "BLOCKED \u2014 not built; HUMAN DECISION REQUIRED inputs",
+    "Token Distribution": "HUMAN DECISION REQUIRED",
+    "Economic Policy": "HUMAN DECISION REQUIRED for unresolved emission/difficulty policy choices beyond frozen 50M/6.25/4M/20-bit",
+    "Mainnet Activation": "BLOCKED",
+    "Public Testnet Activation": "BLOCKED (publicTestnetActivationAllowed=false)"
+  },
+  "changesThisGate": [
+    "docs/readiness/* ledger + baseline",
+    "l1/test/supply-invariant.test.ts (MAX_SUPPLY forever 50M)"
+  ],
+  "bugsFixedOnMain": [],
+  "unresolvedRisks": [
+    "Round-view-change absent on main \u2014 public-testnet consensus blocker until #904 reviewed/merged",
+    "Independent audit EXTERNAL EVIDENCE REQUIRED",
+    "HSM / independent operators / public soak EXTERNAL EVIDENCE REQUIRED",
+    "Genesis/allocations/validator set HUMAN DECISION REQUIRED",
+    "Activation flags correctly BLOCKED",
+    "gh auth missing on box \u2014 push/PR may need token"
+  ],
+  "nextGate": 1,
+  "nextGateFocus": "Rebase #904 onto main; adversarial audit of round-view-change; extend tests; keep draft"
+}
