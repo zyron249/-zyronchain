@@ -262,5 +262,7 @@
       "TEST_ADDED": "existing gate1/safety tests + audit adversarial suite",
       "RETEST": "PASS (existing)"
     }
-  ]
+  ],
+  "audit_branch_tip": "a1b534914c1fdd0dce8ade54820cbc00d24a0eb1",
+  "code_fix_commit": "fcc27ee0d3e83c16af80bf141d6d3e7eda68c0d8"
 }
