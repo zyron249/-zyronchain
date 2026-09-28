@@ -30,6 +30,9 @@ export class LedgerState {
     const state = new LedgerState();
     let supply = 0;
     for (const allocation of genesis.allocations) {
+      if (allocation.address === MINING_TRACKER_ADDRESS) {
+        throw new Error("Mining tracker cannot receive a genesis allocation");
+      }
       if (!Number.isSafeInteger(allocation.amountAtoms) || allocation.amountAtoms < 0) {
         throw new Error("Invalid genesis allocation");
       }

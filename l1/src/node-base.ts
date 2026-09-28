@@ -530,6 +530,11 @@ export class NodeService {
           const recoveryRound = block.header.round + 1;
           const recovery = this.signingJournal.choice(block.header.height, recoveryRound);
           if (!recovery) {
+            // Persist the prepare quorum that justified this recovery commit. Without it,
+            // a later view-change cannot prove the lock unless peers re-supply prepares.
+            if (this.lockCertificates) {
+              await writeLockCertificate(this.lockCertificates, block.header.height, block.header.round, prepares);
+            }
             await this.signingJournal.reserveAttestation(block.header.height, recoveryRound, block.hash);
           } else if (!(recovery.kind === "attest" && recovery.value === block.hash)) {
             throw new Error("Conflicting validator action prevented for consensus round");
