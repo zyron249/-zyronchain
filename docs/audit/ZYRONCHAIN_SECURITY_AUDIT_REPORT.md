@@ -264,7 +264,9 @@ Full mandatory fields live in [`FINDINGS.json`](./FINDINGS.json).
 
 ## Branch tip
 
-After local audit commits, record tip SHA with:
+Audit commit tip: `fcc27ee0d3e83c16af80bf141d6d3e7eda68c0d8`.
+
+Verify with:
 
 ```bash
 git rev-parse HEAD

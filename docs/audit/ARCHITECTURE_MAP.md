@@ -1,7 +1,7 @@
 # ZyronChain L1 Architecture Map (Independent Audit 2026-09-28)
 
 **Audited tip (pre-audit commits):** `d6aa19e` on `cursor/round-view-change-liveness-068e` (PR #904 stack including #903).  
-**Audit branch:** `audit/security-20260928`  
+**Audit branch:** `audit/security-20260928` @ `fcc27ee`  
 **Canonical implementation:** TypeScript `l1/` (not Python `app.py` / Flask).  
 **Ticker:** `ZYN`. **Hard cap:** `MAX_SUPPLY_ATOMS = 50_000_000 * ATOMS_PER_ZYN` (`l1/src/types.ts`).
 

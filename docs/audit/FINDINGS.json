@@ -3,6 +3,7 @@
   "auditor": "independent-senior-blockchain-security-auditor (automated executor)",
   "branch": "audit/security-20260928",
   "base_tip_audited": "d6aa19e4043527a13cbe98fb2b5e648ff2661e7e",
+  "audit_commit": "fcc27ee0d3e83c16af80bf141d6d3e7eda68c0d8",
   "main_sha": "8794b4e2becc0ae33b2df2fd6824847327e43be6",
   "canonical_path": "l1/",
   "ticker": "ZYN",
