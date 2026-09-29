@@ -15,6 +15,7 @@ Production static website for `https://zyronchain.com`. The website is intention
 - `wallet.css` — wallet-specific presentation.
 - `validator.html` — browser-based validator configuration launchpad.
 - `mining.html` — protocol-v5 mining documentation; public downloads stay fail-closed. Default `npm run devnet` is protocol v1 and is not a public mining network.
+- Homepage tokenomics/market preview — shows the fixed 50M launch design under review and a deliberately disabled Buy/Sell surface. It must never accept funds or imply a quote asset/AMM is live before the corresponding protocol gates are closed.
 - `validator.js` — generates local operator shell scripts; it does not generate or upload validator private keys.
 - `validator.css` — launchpad-specific presentation.
 - `robots.txt` / `sitemap.xml` / `site.webmanifest` — production discovery/PWA metadata.
