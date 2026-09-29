@@ -25,7 +25,8 @@
     "bench:state-scale": "npm run build && node dist/bench/state-v2-scale.js",
     "test": "npm run build && node --check scripts/mine.mjs && node scripts/test-miner-package-target.mjs && node scripts/test-miner-candidate-sbom.mjs && node scripts/test-miner-candidate-provenance.mjs && node scripts/test-miner-custody-bigint-identity.mjs && node scripts/test-suite.mjs",
     "typecheck": "tsc --noEmit",
-    "tokenomics:check": "npm run build && node scripts/validate-fixed-supply-genesis.mjs"
+    "tokenomics:check": "npm run build && node scripts/validate-fixed-supply-genesis.mjs",
+    "trading:preflight": "node scripts/verify-trading-activation.mjs ../docs/fixed-supply-launch-plan.json"
   },
   "dependencies": {
     "@chainsafe/libp2p-noise": "17.0.0",
