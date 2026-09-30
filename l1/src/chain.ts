@@ -19,7 +19,7 @@ import {
   miningRewardAtoms as scheduledMiningRewardAtoms,
   miningWorkHash
 } from "./mining.js";
-import { LedgerState, type LedgerSnapshot } from "./state.js";
+import { assertNoActivityPoolInflow, LedgerState, type LedgerSnapshot } from "./state.js";
 import {
   SparseMerkleState,
   accountKey,
@@ -459,6 +459,7 @@ export class ZyronChain {
     const protocolVersion = this.protocolVersionAt(this.height + 1);
     assertTransactionVersionForProtocol(tx, protocolVersion);
     if (tx.kind === "transfer") {
+      assertNoActivityPoolInflow(tx.receiver, this.genesis.activityPool);
       const total = tx.amountAtoms + tx.feeAtoms;
       if (!Number.isSafeInteger(total) || this.balance(tx.sender) < total) {
         throw new Error("Insufficient balance");
@@ -468,6 +469,7 @@ export class ZyronChain {
     if (tx.kind === "activity_settlement") {
       if (!this.genesis.activityOracles.includes(tx.publicKey)) throw new Error("Unauthorized activity oracle");
       if (tx.sender !== this.genesis.activityPool) throw new Error("Invalid activity pool sender");
+      for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, this.genesis.activityPool);
       const settled = this.stateV2 && protocolUsesStateV2(this.protocolVersionAt(this.height))
         ? stateV2ActivityEpochSettled(this.stateV2, tx.epoch)
         : this.requireLegacyState().isActivityEpochSettled(tx.epoch);

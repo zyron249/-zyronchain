@@ -113,8 +113,10 @@ export class LedgerState {
   }
 
   apply(tx: Transaction, activityPool: Address): void {
-    if (tx.kind === "transfer") this.applyTransfer(tx);
-    else if (tx.kind === "activity_settlement") this.applyActivity(tx, activityPool);
+    if (tx.kind === "transfer") {
+      assertNoActivityPoolInflow(tx.receiver, activityPool);
+      this.applyTransfer(tx);
+    } else if (tx.kind === "activity_settlement") this.applyActivity(tx, activityPool);
     else if (tx.kind === "mining_claim") this.applyMining(tx);
     else if (tx.kind === "validator_update") this.applyValidatorUpdate(tx);
     else this.applyProtocolUpgrade(tx);
@@ -149,6 +151,7 @@ export class LedgerState {
 
   private applyActivity(tx: ActivitySettlementTx, activityPool: Address): void {
     if (tx.sender !== activityPool) throw new Error("Invalid activity pool sender");
+    for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, activityPool);
     if (tx.entries.some((entry) => entry.receiver === MINING_TRACKER_ADDRESS)) {
       throw new Error("Mining tracker address is protocol-reserved");
     }
@@ -217,4 +220,12 @@ export class LedgerState {
     account.nonce = nonce;
     this.accounts.set(address, account);
   }
+}
+
+/**
+ * The activity pool is outflow-only: cumulative activity settlements can never
+ * exceed the pool's genesis allocation (ZC-CRY-20260930-006).
+ */
+export function assertNoActivityPoolInflow(receiver: Address, activityPool: Address): void {
+  if (receiver === activityPool) throw new Error("Activity pool cannot receive funds");
 }
