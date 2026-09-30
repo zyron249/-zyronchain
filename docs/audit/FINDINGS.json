@@ -1,0 +1,268 @@
+{
+  "audit_id": "ZYRONCHAIN-L1-SECURITY-20260928",
+  "auditor": "independent-senior-blockchain-security-auditor (automated executor)",
+  "branch": "audit/security-20260928",
+  "base_tip_audited": "d6aa19e4043527a13cbe98fb2b5e648ff2661e7e",
+  "audit_commit": "fcc27ee0d3e83c16af80bf141d6d3e7eda68c0d8",
+  "main_sha": "8794b4e2becc0ae33b2df2fd6824847327e43be6",
+  "canonical_path": "l1/",
+  "ticker": "ZYN",
+  "max_supply_atoms": 5000000000000000,
+  "generated_at_et": "2026-09-28T19:19:03-0400",
+  "tests_before_fixes": {
+    "pass": 690,
+    "fail": 0
+  },
+  "tests_after_fixes": {
+    "pass": 711,
+    "fail": 0
+  },
+  "npm_audit_omit_dev_high": "0 vulnerabilities",
+  "severity_by_severity": {
+    "CRITICAL": 0,
+    "HIGH": 2,
+    "MEDIUM": 4,
+    "LOW": 2,
+    "INFORMATIONAL": 2
+  },
+  "fixed": 4,
+  "remaining": 6,
+  "findings": [
+    {
+      "ID": "ZC-AUD-20260928-001",
+      "TITLE": "Skip-then-attest recovery omitted durable prepare lock certificate",
+      "SEVERITY": "HIGH",
+      "FILES": [
+        "l1/src/node-base.ts",
+        "l1/src/lock-certificate-store.ts"
+      ],
+      "FUNCTIONS": [
+        "NodeService.attestProposal",
+        "NodeService.requestViewChange",
+        "writeLockCertificate"
+      ],
+      "DESCRIPTION": "When a validator had already reserved a round-skip and later committed via a prepare quorum (recovery path journaling the attest at round+1), attestProposal wrote no lock-certificate file for the prepare round. requestViewChange then required peers to re-supply knownPrepares or failed with 'Locked commit is missing its prepare quorum'.",
+      "ATTACK": "After a skip-then-attest recovery, withhold prepare votes from the locked validator during a subsequent view-change. The honest node cannot prove its lock from durable local state alone.",
+      "PRECONDITIONS": "Validator previously skipped the round, then attested after a prepare quorum on the recovery path; lock-certificate store enabled (signing journal present).",
+      "IMPACT": "Liveness degradation / possible stuck view-change for honest recovery committers; safety of finality not directly broken, but lock accountability weakened after crash/restart without peer prepares.",
+      "PROOF": "l1/test/audit-skip-recovery-lock-cert.test.ts failed before fix (lock-certificates empty); passed after writing lock cert on skip recovery.",
+      "ROOT_CAUSE": "attestProposal skip branch reserved recovery attestation but did not call writeLockCertificate (unlike the non-skip branch).",
+      "FIX": "Write lock certificate for block.header.round with the justifying prepares before reserveAttestation on the skip-recovery path.",
+      "PATCH_STATUS": "FIXED",
+      "TEST_ADDED": "l1/test/audit-skip-recovery-lock-cert.test.ts",
+      "RETEST": "PASS"
+    },
+    {
+      "ID": "ZC-AUD-20260928-002",
+      "TITLE": "LedgerState.fromGenesis allowed mining-tracker genesis allocation",
+      "SEVERITY": "MEDIUM",
+      "FILES": [
+        "l1/src/state.ts",
+        "l1/src/chain.ts"
+      ],
+      "FUNCTIONS": [
+        "LedgerState.fromGenesis",
+        "validateGenesis"
+      ],
+      "DESCRIPTION": "Chain.validateGenesis correctly rejects MINING_TRACKER_ADDRESS allocations, but LedgerState.fromGenesis did not. Direct construction could credit the protocol-reserved tracker address, corrupting the miningClaimCount nonce semantics if nonce were later manipulated and creating inconsistent ledger snapshots.",
+      "ATTACK": "Feed a crafted genesis/snapshot path that uses LedgerState.fromGenesis without validateGenesis (tests, tooling, or future callers) and allocate to ZYN000\u20260.",
+      "PRECONDITIONS": "Caller uses LedgerState.fromGenesis without Chain.validateGenesis.",
+      "IMPACT": "Defense-in-depth failure; potential mining-counter confusion if combined with other bugs. Production Chain.open path was already gated.",
+      "PROOF": "Independent probe: LedgerState.fromGenesis({allocations:[{address:MINING_TRACKER_ADDRESS,amountAtoms:100}]}) succeeded before fix.",
+      "ROOT_CAUSE": "Duplicate validation boundary; tracker ban only in validateGenesis.",
+      "FIX": "Reject mining-tracker allocations inside LedgerState.fromGenesis.",
+      "PATCH_STATUS": "FIXED",
+      "TEST_ADDED": "l1/test/audit-supply-economics.test.ts",
+      "RETEST": "PASS"
+    },
+    {
+      "ID": "ZC-AUD-20260928-003",
+      "TITLE": "Transfer amount+fee could overflow Number before apply-time rejection",
+      "SEVERITY": "LOW",
+      "FILES": [
+        "l1/src/transaction.ts",
+        "l1/src/state.ts"
+      ],
+      "FUNCTIONS": [
+        "validateTransactionShape",
+        "LedgerState.applyTransfer"
+      ],
+      "DESCRIPTION": "assertAmount allows each of amountAtoms and feeAtoms up to MAX_SUPPLY_ATOMS. Their sum can exceed Number.MAX_SAFE_INTEGER. Apply paths rejected via !Number.isSafeInteger(total), but shape validation previously accepted the fields individually.",
+      "ATTACK": "Submit a transfer with amount=MAX_SUPPLY and fee=MAX_SUPPLY to stress mempool/validation paths.",
+      "PRECONDITIONS": "Ability to submit transactions to a node.",
+      "IMPACT": "DoS/noise and misleading errors; no silent mint observed (apply rejects). Hardened at shape boundary.",
+      "PROOF": "audit-supply-economics amount+fee overflow test; Number.isSafeInteger(MAX+MAX)===false.",
+      "ROOT_CAUSE": "Per-field caps without sum check at admission.",
+      "FIX": "Reject non-safe amount+fee sum in validateTransactionShape for transfers.",
+      "PATCH_STATUS": "FIXED",
+      "TEST_ADDED": "l1/test/audit-supply-economics.test.ts",
+      "RETEST": "PASS"
+    },
+    {
+      "ID": "ZC-AUD-20260928-004",
+      "TITLE": "Consensus crypto (@noble/curves) was only a transitive dependency",
+      "SEVERITY": "MEDIUM",
+      "FILES": [
+        "l1/package.json",
+        "l1/src/crypto.ts"
+      ],
+      "FUNCTIONS": [
+        "signCanonical",
+        "verifyCanonical"
+      ],
+      "DESCRIPTION": "secp256k1 consensus signing imported @noble/curves, but package.json listed it only via libp2p transitive deps. A networking-stack upgrade could silently change or remove the consensus crypto library.",
+      "ATTACK": "Supply-chain / dependency-resolution drift on libp2p upgrades.",
+      "PRECONDITIONS": "Dependency update without lockfile discipline.",
+      "IMPACT": "Consensus signature compatibility risk across nodes.",
+      "PROOF": "npm ls @noble/curves showed only transitive edges before pin; package.json lacked direct dependency.",
+      "ROOT_CAUSE": "Consensus crypto not declared as a first-class dependency.",
+      "FIX": "Pin @noble/curves@2.3.0 as a direct dependency (same resolved version).",
+      "PATCH_STATUS": "FIXED",
+      "TEST_ADDED": "NOT TESTED (packaging change; existing crypto tests cover signing)",
+      "RETEST": "npm ls / npm audit clean"
+    },
+    {
+      "ID": "ZC-AUD-20260928-005",
+      "TITLE": "Prepare/view-change payloads embed domain then wrap again for protocol>=3",
+      "SEVERITY": "INFORMATIONAL",
+      "FILES": [
+        "l1/src/round-view-change.ts",
+        "l1/src/crypto.ts",
+        "l1/src/validator-signer.ts"
+      ],
+      "FUNCTIONS": [
+        "preparePayload",
+        "viewChangePayload",
+        "signCanonicalDomain",
+        "signWithValidator"
+      ],
+      "DESCRIPTION": "preparePayload/viewChangePayload include a domain field; protocol>=3 additionally wraps via signCanonicalDomain({domain,payload}). Create/verify are consistent, but remote signers must implement the double nesting exactly.",
+      "ATTACK": "None proven if LocalValidatorSigner and verifyForProtocol stay paired. Mis-implemented remote signer could refuse or produce unverifiable signatures.",
+      "PRECONDITIONS": "RemoteValidatorSigner / external HSM.",
+      "IMPACT": "Operational footgun; not a verified safety break.",
+      "PROOF": "Code inspection; audit domain-separation test shows legacy bare sig fails under protocol 3 verification.",
+      "ROOT_CAUSE": "Historical payload-embedded domain plus later domain wrapper.",
+      "FIX": "Document only for now; avoid changing wire format without a protocol bump.",
+      "PATCH_STATUS": "REMAINING (documented)",
+      "TEST_ADDED": "l1/test/audit-consensus-adversarial.test.ts",
+      "RETEST": "PASS (characterization)"
+    },
+    {
+      "ID": "ZC-AUD-20260928-006",
+      "TITLE": "State-v2 mining apply checks per-account balance, not explicit total supply",
+      "SEVERITY": "LOW",
+      "FILES": [
+        "l1/src/chain.ts",
+        "l1/src/state.ts"
+      ],
+      "FUNCTIONS": [
+        "applyMiningClaimStateV2",
+        "LedgerState.applyMining",
+        "assertMiningClaimContext"
+      ],
+      "DESCRIPTION": "Legacy applyMining checks totalSupplyAtoms()+reward <= MAX_SUPPLY. State-v2 mining only checks miner nextBalance <= MAX_SUPPLY. Issuance schedule (assertMiningClaimContext) remains the authoritative historical cap.",
+      "ATTACK": "UNCERTAIN without corrupting genesisSupplyAtoms or bypassing assertMiningClaimContext.",
+      "PRECONDITIONS": "Would require schedule bypass.",
+      "IMPACT": "Defense-in-depth gap only under current call graph.",
+      "PROOF": "Code comparison of applyMining vs applyMiningClaimStateV2.",
+      "ROOT_CAUSE": "Sparse Merkle apply lacks global supply accumulator.",
+      "FIX": "Optional: track cumulative supply or re-check schedule-issued+genesis in applyMiningClaimStateV2.",
+      "PATCH_STATUS": "REMAINING",
+      "TEST_ADDED": "NOT TESTED (no exploit under current gates)",
+      "RETEST": "NOT TESTED"
+    },
+    {
+      "ID": "ZC-AUD-20260928-007",
+      "TITLE": "Permissioned PoA: N<=3 has f=0; mainnet decentralization not established",
+      "SEVERITY": "HIGH",
+      "FILES": [
+        "l1/src/block.ts",
+        "l1/src/round-view-change.ts"
+      ],
+      "FUNCTIONS": [
+        "validatorQuorumSize",
+        "byzantineFaultBound"
+      ],
+      "DESCRIPTION": "Quorum is floor(2N/3)+1 with f=floor((N-1)/3). For N=1,2,3 Byzantine fault tolerance is zero. Security is permissioned validator finality, not Nakamoto PoW consensus for block production.",
+      "ATTACK": "Compromise or withhold >f validators (any single validator for N<=3).",
+      "PRECONDITIONS": "Small validator set or correlated custody.",
+      "IMPACT": "Safety loss if Byzantine quorum; liveness halt if >f crash. Mainnet readiness blocker for decentralization claims.",
+      "PROOF": "Quorum arithmetic tests N=1..100; architecture review.",
+      "ROOT_CAUSE": "By design for BFT PoA.",
+      "FIX": "Operational: require N>=4 independent operators before mainnet; document threat model. No consensus formula change proposed.",
+      "PATCH_STATUS": "REMAINING (operational/gate)",
+      "TEST_ADDED": "l1/test/audit-invariants.test.ts",
+      "RETEST": "PASS (characterization)"
+    },
+    {
+      "ID": "ZC-AUD-20260928-008",
+      "TITLE": "createRpcServer allows unauthenticated consensus if called without assertSafeRpcBinding",
+      "SEVERITY": "MEDIUM",
+      "FILES": [
+        "l1/src/node-base.ts",
+        "l1/src/cli.ts"
+      ],
+      "FUNCTIONS": [
+        "preauthorizeConsensusRequest",
+        "assertSafeRpcBinding",
+        "createRpcServer"
+      ],
+      "DESCRIPTION": "CLI enforces non-loopback => peer auth + trusted HTTPS proxy. Programmatic createRpcServer without peerAuthToken/trustedPeerPublicKeys accepts consensus writes from any TCP peer.",
+      "ATTACK": "Bind validator RPC on a reachable interface via custom embedding without auth options; flood prepare/attest/skip.",
+      "PRECONDITIONS": "Non-CLI embedding or misconfigured host binding bypassing assertSafeRpcBinding.",
+      "IMPACT": "Unauthorized signing-journal pressure / DoS against validator process; not remote key theft (signatures still need local journal+key).",
+      "PROOF": "preauthorizeConsensusRequest no-ops when both auth mechanisms unset; assertSafeRpcBinding only in CLI path.",
+      "ROOT_CAUSE": "Auth optional at library layer; safety pushed to CLI.",
+      "FIX": "REMAINING: fail-closed default in createRpcServer when host is non-loopback, or require explicit allowUnauthenticatedConsensus.",
+      "PATCH_STATUS": "REMAINING",
+      "TEST_ADDED": "l1/test/audit-rpc-classification.test.ts",
+      "RETEST": "PASS (characterization of CLI binding rules)"
+    },
+    {
+      "ID": "ZC-AUD-20260928-009",
+      "TITLE": "Unique-hash completion may commit without persisting a prepare quorum lock file",
+      "SEVERITY": "MEDIUM",
+      "FILES": [
+        "l1/src/node-base.ts"
+      ],
+      "FUNCTIONS": [
+        "NodeService complete-split / unique-hash attestation path"
+      ],
+      "DESCRIPTION": "Comments and code allow unique-hash completion to commit without a prepare quorum; lock-certificate write is best-effort inside try/catch. A later view-change then depends on knownPrepares.",
+      "ATTACK": "Drive unique-hash completion then refuse to gossip prepares during view-change.",
+      "PRECONDITIONS": "Unique-hash completion path taken; prepares not durable.",
+      "IMPACT": "Liveness friction similar to ZC-AUD-001 for a narrower path. Prefer finalize the unique hash rather than view-change.",
+      "PROOF": "Code comment: 'Unique-hash completion may commit without a prepare quorum.'",
+      "ROOT_CAUSE": "S4 exception path without mandatory lock durability.",
+      "FIX": "REMAINING: if prepares exist, require durable lock cert; if not, forbid view-change until finality or document as finalize-only.",
+      "PATCH_STATUS": "REMAINING",
+      "TEST_ADDED": "NOT TESTED (narrow integration)",
+      "RETEST": "NOT TESTED"
+    },
+    {
+      "ID": "ZC-AUD-20260928-010",
+      "TITLE": "No independent formal verification of view-change state machine",
+      "SEVERITY": "INFORMATIONAL",
+      "FILES": [
+        "l1/src/round-view-change.ts",
+        "docs/consensus-review/"
+      ],
+      "FUNCTIONS": [
+        "exploreBoundedConsensus",
+        "validateViewChangeCertificate"
+      ],
+      "DESCRIPTION": "Bounded search covers N=3,4,7 assignments but is not a complete model check. Author package explicitly says it is not an independent review.",
+      "ATTACK": "N/A \u2014 assurance gap.",
+      "PRECONDITIONS": "Mainnet launch without external review.",
+      "IMPACT": "Residual unknown consensus risk.",
+      "PROOF": "docs/consensus-review/00-README.md; exploreBoundedConsensus limits.",
+      "ROOT_CAUSE": "Review maturity.",
+      "FIX": "Commission independent consensus review + broader model checking before mainnet.",
+      "PATCH_STATUS": "REMAINING",
+      "TEST_ADDED": "existing gate1/safety tests + audit adversarial suite",
+      "RETEST": "PASS (existing)"
+    }
+  ],
+  "audit_branch_tip": "a1b534914c1fdd0dce8ade54820cbc00d24a0eb1",
+  "code_fix_commit": "fcc27ee0d3e83c16af80bf141d6d3e7eda68c0d8"
+}

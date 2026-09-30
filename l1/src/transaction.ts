@@ -285,6 +285,8 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
     }
     assertAmount(tx.amountAtoms, "amountAtoms", false);
     assertAmount(tx.feeAtoms, "feeAtoms", true);
+    const spend = tx.amountAtoms + tx.feeAtoms;
+    if (!Number.isSafeInteger(spend)) throw new Error("Transfer amount+fee overflow");
     if (addressFromPublicKey(tx.publicKey) !== tx.sender) {
       throw new Error("Public key does not match sender");
     }
