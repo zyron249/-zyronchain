@@ -77,6 +77,20 @@ export function assertFixedSupplyAllocations(
 
 export function assertFixedSupplyGenesis(genesis: GenesisConfig, addresses: FixedSupplyAddresses): void {
   assertFixedSupplyAllocations(genesis.allocations, addresses);
+  // ZC-CRY-20260930-006 (owner decision 2026-09-30): the activity airdrop is paid
+  // only from the 5M ecosystem/community allocation. Any genesis activity oracle
+  // can move the whole activityPool balance with one settlement, so the pool must
+  // never be the founder, public-distribution, or permanent-liquidity account.
+  // Consensus also refuses inflows to the activity pool, so cumulative airdrops can
+  // never exceed this genesis allocation (ECOSYSTEM_RESERVE_ATOMS).
+  if (genesis.activityPool === addresses.founder ||
+      genesis.activityPool === addresses.publicDistribution ||
+      genesis.activityPool === addresses.liquidityReserve) {
+    throw new Error("Fixed-supply activity pool must not be the founder, public-distribution, or permanent-liquidity allocation");
+  }
+  if (genesis.activityPool !== addresses.ecosystemReserve) {
+    throw new Error("Fixed-supply activity pool must be the ecosystem/community allocation");
+  }
 }
 
 export function fixedSupplyPlanAtoms(): Readonly<{

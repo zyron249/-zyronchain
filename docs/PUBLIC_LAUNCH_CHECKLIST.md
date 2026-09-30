@@ -6,7 +6,7 @@ Machine-readable authority: [`l1-launch-authorization.json`](l1-launch-authoriza
 Human policy: [`L1_LAUNCH_AUTHORIZATION.md`](L1_LAUNCH_AUTHORIZATION.md).  
 A–Z engineering gate: [`STANDALONE_L1_READINESS.md`](STANDALONE_L1_READINESS.md).  
 Local tester path: [`PUBLIC_TEST.md`](PUBLIC_TEST.md).  
-Local mining path: [`../l1/MINING.md`](../l1/MINING.md) and `cd l1 && npm run mine:local`.
+Mining: **retired** by owner decision (2026-09-30). The former local path `cd l1 && npm run mine:local` now exits with an error; [`../l1/MINING.md`](../l1/MINING.md) is a retired record.
 
 `publicTestnetActivationAllowed` and `mainnetActivationAllowed` remain **false**. This checklist does not close those flags.
 
@@ -26,42 +26,24 @@ Authorization (`*Authorized=true`) is not activation. Green CI is not activation
 |---|---|---|---|
 | Local two-validator public-test | Ready | `cd l1 && npm ci && npm run devnet` | Not a hosted testnet. Fresh `zyron-local-<hex>` every run. RPC on `127.0.0.1` only |
 | Automated local check | Ready (known-flaky) | `npm run devnet:check` | The `local-devnet` CI job has timed out on some hosts after quorum-loss recovery |
-| Local protocol-v5 mining rehearsal | Ready (slow by design) | `cd l1 && npm run mine:local` | Schedules v5 on **this** disposable loopback chain after a 100-block delay (~50 minutes). Does not activate public mining |
-| Packaged miner against an already-v5 loopback RPC | Ready | `npm run mine -- --genesis … --rpc http://127.0.0.1:<printed-port>` | Default `npm run devnet` stays protocol v1; claims will not finalize there |
-| In-process mining regression | Ready | `cd l1 && npm test` (includes `test/mining*.ts`) | In-memory 100 empty blocks; not Internet mining evidence |
-| Website / wallet / mining / validator pages | Ready (docs only) | `python3 -m http.server 8080 --directory website` | No browser custody, no download CTA, no public RPC |
+| Local protocol-v5 mining rehearsal | Retired | `cd l1 && npm run mine:local` exits non-zero | Mining is shut down for every genesis |
+| Packaged miner | Retired | `npm run mine` exits non-zero before reading keys | Consensus rejects every `mining_claim` |
+| In-process mining regression | Ready (rejection tests) | `cd l1 && npm test` (includes `test/mining*.ts`) | Now asserts mining claims are rejected on every consensus path |
+| Website / wallet / validator pages | Ready (docs only) | `python3 -m http.server 8080 --directory website` | No browser custody, no download CTA, no public RPC |
 | Legacy Python/Flask node | Legacy only | [`LEGACY_PYTHON_TESTNET.md`](LEGACY_PYTHON_TESTNET.md) | Not the canonical chain. Binds `0.0.0.0` in `app.py` for that archived stack |
 | Public L1 RPC / explorer / faucet / bootstrap | Blocked | — | Do not invent hosts or chain IDs |
 | Public mining / one-click miner download | Blocked | website `publicMiningActivated: false` | Release-candidate workflows stay `publicationAllowed=false` |
 | Public testnet activation | Blocked | `publicTestnetActivationAllowed=false` | See section 3 |
 | Mainnet activation | Blocked | `mainnetActivationAllowed=false` | See section 4 |
 
-## 2. Honest local mining path
+## 2. Mining is retired
 
-Default genesis always starts at protocol version 1 (`ZyronChain` sets `protocolSchedule(0)=1`). Protocol v5 is the mining issuance version. A 100-block quorum-approved delay (`MIN_PROTOCOL_UPDATE_DELAY`) is a consensus rule, not a launcher convenience.
+Owner decision (2026-09-30): mining is shut down for every genesis. Consensus rejects `mining_claim` transactions on every path (shape validation, mempool admission, block production, block validation, and both the legacy and State-v2 state appliers), independent of protocol version. Protocol v5 no longer enables issuance.
 
-```sh
-cd l1
-npm ci
-npm run mine:local
-```
-
-That command:
-
-1. starts the same loopback two-validator network as `npm run devnet`;
-2. verifies a 1 ZYN transfer;
-3. creates an encrypted miner wallet under the temporary `0700` directory;
-4. has both local validators approve a protocol-v5 upgrade at `height + 1 + 100`;
-5. prints the real RPC port, genesis path, miner key paths, activation height, and an estimated wait;
-6. keeps `publicMiningActivated=false` and does not publish anything.
-
-Until `GET /protocol` shows `nextVersion >= 5`, `npm run mine` prints `Mining is gated` and `--once` exits 2.
-
-Do **not** treat `http://127.0.0.1:9137` as the local-devnet RPC. The launcher picks free loopback ports. `9137` is only the CLI default if you start a node yourself with `--port 9137`.
-
-Remote miner RPC must be HTTPS. Plain HTTP is accepted only for loopback. Hash power does not choose the canonical fork.
-
-`--check` (CI) and `--local-v5` cannot be combined. The automated job must stay on the faster protocol-v1 transfer/quorum/restart path.
+- `npm run mine:local` (`local-devnet.mjs --local-v5`) exits non-zero; `--check` stays on the protocol-v1 transfer/quorum/restart path.
+- `npm run mine` exits non-zero before reading keys, passwords, or contacting any RPC.
+- `l1/miner-network-profile.json` keeps `publicMiningActivated=false`.
+- The miner packaging/release tooling and workflows still exist in the repository; removing them is a separate, pending owner decision. Nothing may be published from them.
 
 ## 3. Public-testnet activation gates
 
@@ -110,7 +92,7 @@ This pass did **not** write exploits, PoCs, or attack procedures. Findings are f
 | High (gate) | Public testnet/mainnet/mining activation evidence is absent | Keep all activation and publication flags false |
 | High (gate) | No independent cryptography/consensus/network/**mining** audit/retest | Stop-ship for public mining |
 | Medium | Machine-readable authorization previously omitted mining, capacity, and succession gates that `STANDALONE_L1_READINESS.md` already required | Aligned in `l1-launch-authorization.json` without flipping activation flags |
-| Medium | Miners following website/`MINING.md` `127.0.0.1:9137` against default `npm run devnet` would hash forever on protocol v1 or hit the wrong port | Honest `mine:local` path + docs/website corrections |
+| Medium | Miners following website/`MINING.md` `127.0.0.1:9137` against default `npm run devnet` would hash forever on protocol v1 or hit the wrong port | Superseded: mining retired (2026-09-30); `mine` and `mine:local` fail closed |
 | Low | Packaged miner and CLI treat DNS name `localhost` as loopback for plaintext HTTP | Residual DNS-rebinding class; prefer literal `127.0.0.1` / `::1`. Shared helper tests pin `localhost`; left unchanged this pass |
 | Low | Interactive local-devnet retains encrypted keystores **and** password files in one `0700` directory | Documented development-only; do not reuse on any public network |
 | Low | `npm run devnet:check` / `local-devnet` CI job is known-flaky on view-change recovery | Documented in `PUBLIC_TEST.md`; not hidden |

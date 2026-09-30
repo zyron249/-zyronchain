@@ -30,26 +30,27 @@ function genesis(): GenesisConfig {
   };
 }
 
-test("mining mempool admission rejects future account nonces before proof validation", () => {
+// RETIRED (owner decision 2026-09-30): mining is shut down for every genesis.
+// This test previously proved future-nonce claims were rejected before proof
+// validation; it now proves every claim (future or exact nonce) is rejected by
+// the retirement guard even when protocol v5 is forced on.
+test("mining mempool admission rejects every mining claim (mining retired), including under forced protocol v5", () => {
   const chain = new ZyronChain(genesis());
-  // Isolate the protocol-v5 admission rule without building a 100-block
-  // governance activation fixture. The claim intentionally has no valid PoW;
-  // exact confirmed-nonce admission must fail before proof verification.
   (chain as unknown as { protocolVersionAt(height: number): number }).protocolVersionAt = () => 5;
-  const claim = createMiningClaim({
-    chainId: chain.genesis.chainId,
-    nonce: 2,
-    sender: miner,
-    height: chain.height + 1,
-    previousHash: chain.tip.hash,
-    rewardAtoms: INITIAL_MINING_REWARD_ATOMS,
-    workNonce: "0000000000000000",
-    timestampMs: chain.genesis.timestampMs + 1
-  }, minerPrivate, minerPublic);
-
-  assert.equal(chain.nonce(miner), 0);
-  assert.throws(
-    () => chain.validateMempoolAdmission(claim),
-    /Mining claim nonce must be next confirmed nonce/
-  );
+  for (const nonce of [1, 2]) {
+    const claim = createMiningClaim({
+      chainId: chain.genesis.chainId,
+      nonce,
+      sender: miner,
+      height: chain.height + 1,
+      previousHash: chain.tip.hash,
+      rewardAtoms: INITIAL_MINING_REWARD_ATOMS,
+      workNonce: "0000000000000000",
+      timestampMs: chain.genesis.timestampMs + 1
+    }, minerPrivate, minerPublic);
+    assert.equal(chain.nonce(miner), 0);
+    assert.throws(() => chain.validateMempoolAdmission(claim), /Mining is retired/);
+  }
+  assert.equal(chain.nextMiningRewardAtoms(), 0);
+  assert.equal(chain.balance(miner), 0);
 });

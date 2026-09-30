@@ -1,4 +1,6 @@
-# Mining ZYN with the packaged Layer-1
+# Mining ZYN with the packaged Layer-1 (RETIRED)
+
+> **RETIRED (2026-09-30).** Mining has been shut down by owner decision for every ZyronChain genesis. Consensus rejects every `mining_claim` transaction on every protocol version, `npm run mine` exits with an error before reading keys or contacting an RPC, and `npm run mine:local` (`local-devnet.mjs --local-v5`) exits with an error. Nothing below is an instruction to mine; it is kept only as a historical record of the retired design and of the still-present (unpublished) packaging tooling.
 
 ZyronChain protocol v5 implements permissionless proof-of-work **issuance** while validator quorum continues to provide block finality. Public mining is not active merely because this code is present; the target network must actually have protocol v5 scheduled and activated.
 

@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJson, compareCanonicalStrings } from "./codec.js";
-import { MINING_TRACKER_ADDRESS } from "./mining.js";
-import { LedgerState, type LedgerSnapshot } from "./state.js";
+import { assertMiningNotRetired, MINING_TRACKER_ADDRESS } from "./mining.js";
+import { assertNoActivityPoolInflow, LedgerState, type LedgerSnapshot } from "./state.js";
 import { MAX_SUPPLY_ATOMS, type Address, type Transaction, type Validator } from "./types.js";
 
 const TREE_DEPTH = 256;
@@ -486,6 +486,7 @@ export function applyStateV2Transaction(
   activityPool: Address
 ): SparseMerkleState {
   if (tx.kind === "transfer") {
+    assertNoActivityPoolInflow(tx.receiver, activityPool);
     requireStateV2Nonce(state, tx.sender, tx.nonce);
     const total = tx.amountAtoms + tx.feeAtoms;
     if (!Number.isSafeInteger(total)) throw new Error("Insufficient balance");
@@ -495,6 +496,7 @@ export function applyStateV2Transaction(
   }
   if (tx.kind === "activity_settlement") {
     if (tx.sender !== activityPool) throw new Error("Invalid activity pool sender");
+    for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, activityPool);
     if (state.get(activityEpochKey(tx.epoch)) !== undefined) throw new Error("Activity epoch already settled");
     requireStateV2Nonce(state, activityPool, tx.nonce);
     const total = tx.entries.reduce((sum, entry) => {
@@ -508,6 +510,7 @@ export function applyStateV2Transaction(
     return next.set(activityEpochKey(tx.epoch), { settled: true });
   }
   if (tx.kind === "mining_claim") {
+    assertMiningNotRetired();
     throw new Error("Mining claim requires chain-context State-v2 application");
   }
   requireStateV2Nonce(state, tx.sender, tx.nonce);

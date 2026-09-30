@@ -14,12 +14,13 @@ import {
 import { addressFromPublicKey, publicKeyFromPrivate, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
 import {
   assertMiningClaimContext,
+  assertMiningNotRetired,
   MINING_PROTOCOL_VERSION,
   MINING_TRACKER_ADDRESS,
   miningRewardAtoms as scheduledMiningRewardAtoms,
   miningWorkHash
 } from "./mining.js";
-import { LedgerState, type LedgerSnapshot } from "./state.js";
+import { assertNoActivityPoolInflow, LedgerState, type LedgerSnapshot } from "./state.js";
 import {
   SparseMerkleState,
   accountKey,
@@ -459,6 +460,7 @@ export class ZyronChain {
     const protocolVersion = this.protocolVersionAt(this.height + 1);
     assertTransactionVersionForProtocol(tx, protocolVersion);
     if (tx.kind === "transfer") {
+      assertNoActivityPoolInflow(tx.receiver, this.genesis.activityPool);
       const total = tx.amountAtoms + tx.feeAtoms;
       if (!Number.isSafeInteger(total) || this.balance(tx.sender) < total) {
         throw new Error("Insufficient balance");
@@ -468,6 +470,7 @@ export class ZyronChain {
     if (tx.kind === "activity_settlement") {
       if (!this.genesis.activityOracles.includes(tx.publicKey)) throw new Error("Unauthorized activity oracle");
       if (tx.sender !== this.genesis.activityPool) throw new Error("Invalid activity pool sender");
+      for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, this.genesis.activityPool);
       const settled = this.stateV2 && protocolUsesStateV2(this.protocolVersionAt(this.height))
         ? stateV2ActivityEpochSettled(this.stateV2, tx.epoch)
         : this.requireLegacyState().isActivityEpochSettled(tx.epoch);
@@ -477,6 +480,7 @@ export class ZyronChain {
       return;
     }
     if (tx.kind === "mining_claim") {
+      assertMiningNotRetired();
       if (tx.nonce !== this.nonce(tx.sender) + 1) throw new Error("Mining claim nonce must be next confirmed nonce");
       assertMiningClaimContext(tx, {
         nextHeight: this.height + 1,
@@ -810,6 +814,8 @@ function assertTransactionVersionForProtocol(tx: Transaction, protocolVersion: n
   if (tx.version !== expected) {
     throw new Error(`Transaction version ${tx.version} is not valid under protocol version ${protocolVersion}`);
   }
+  // Mining is retired for every genesis and every protocol version.
+  if (tx.kind === "mining_claim") assertMiningNotRetired();
   if (tx.kind === "mining_claim" && protocolVersion < MINING_PROTOCOL_VERSION) {
     throw new Error(`Mining claims require protocol version ${MINING_PROTOCOL_VERSION}`);
   }
@@ -884,6 +890,7 @@ function stateV2KeysForTransaction(tx: Transaction): string[] {
 }
 
 function applyMiningClaimStateV2(state: SparseMerkleState, tx: MiningClaimTx): SparseMerkleState {
+  assertMiningNotRetired();
   if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
   const minerNonce = stateV2Nonce(state, tx.sender);
   if (tx.nonce !== minerNonce + 1) throw new Error("Invalid nonce");
