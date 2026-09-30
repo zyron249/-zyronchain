@@ -55,7 +55,7 @@
 
   <aside class="network-notice" aria-label="Network activation notice">
     <div class="shell notice-inner">
-      <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Public mining, wallet RPC and value-bearing use remain activation gated.</p>
+      <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Mining is retired. Wallet RPC and value-bearing use remain activation gated.</p>
       <a href="#status">View network status <span aria-hidden="true">→</span></a>
       <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Public tester guide <span aria-hidden="true">↗</span></a>
     </div>
@@ -148,11 +148,11 @@
         <div class="feature-copy">
           <p class="feature-kicker">ZYN SUPPLY</p>
           <h3>A fixed 50M launch design is under review.</h3>
-          <p>The proposed fixed-supply launch allocates the complete 50,000,000 ZYN ceiling at genesis: 5M founder, 20M public distribution, 20M permanent-liquidity reserve and 5M ecosystem/community. If adopted exactly, the existing consensus supply ceiling leaves no remaining mining issuance headroom.</p>
-          <p class="transition-note"><strong>Current code disclosure:</strong> Protocol-v5 mining still exists in the canonical repository for local/historical rehearsal. Its current parameters are 6.25 ZYN initial reward, a 4,000,000-claim halving interval and a fixed 20-bit SHA-256 target. Protocol-v5 mining does not select the canonical chain; validator quorum finality remains separate.</p>
+          <p>The proposed fixed-supply launch allocates the complete 50,000,000 ZYN ceiling at genesis: 5M founder, 20M public distribution, 20M permanent-liquidity reserve and 5M ecosystem/community. If adopted exactly, the existing consensus supply ceiling leaves no issuance headroom beyond genesis.</p>
+          <p class="transition-note"><strong>Mining retired:</strong> Mining has been shut down by owner decision (2026-09-30). Do not mine or run miner software. A change that makes consensus reject every mining claim is under review and is not yet merged to the main branch; until it is, legacy protocol-v5 mining code remains in the repository.</p>
           <div class="inline-facts">
             <span><strong>50M ZYN</strong> proposed full-genesis supply</span>
-            <span><strong>0 ZYN</strong> mining headroom under that design</span>
+            <span><strong>0 ZYN</strong> mining issuance (mining retired)</span>
             <span><strong>Trading</strong> not activated</span>
           </div>
           <a href="https://github.com/zyron249/-zyronchain/pull/913" target="_blank" rel="noopener noreferrer">Review fixed-supply PR #913 <span aria-hidden="true">↗</span></a>
@@ -178,7 +178,7 @@
         <div class="feature-copy">
           <p class="feature-kicker">AUTHENTICATED STATE</p>
           <h3>State can be independently checked.</h3>
-          <p>State-v2 commits accounts, governance schedules and protocol-owned mining state into an authenticated sparse Merkle structure. Checkpoint recovery, portable state sync and independent light-client verification are designed around explicit roots rather than trusting a serving node's narrative.</p>
+          <p>State-v2 commits accounts, governance schedules and protocol-owned state into an authenticated sparse Merkle structure. Checkpoint recovery, portable state sync and independent light-client verification are designed around explicit roots rather than trusting a serving node's narrative.</p>
         </div>
       </article>
 
@@ -201,7 +201,7 @@
         <div class="feature-copy">
           <p class="feature-kicker">GLOBAL BY DESIGN</p>
           <h3>Open-source infrastructure without a website account.</h3>
-          <p>ZyronChain nodes, wallets and miners are designed to operate from public source and reproducible local tooling. The website is an onboarding and documentation surface—not a custody service, exchange, bank or privileged signing coordinator.</p>
+          <p>ZyronChain nodes and wallets are designed to operate from public source and reproducible local tooling. The website is an onboarding and documentation surface—not a custody service, exchange, bank or privileged signing coordinator.</p>
         </div>
       </article>
 
@@ -302,7 +302,7 @@ npm run devnet</code></pre>
         <a class="start-card" href="https://github.com/zyron249/-zyronchain/tree/main/l1" target="_blank" rel="noopener noreferrer" data-reveal>
           <span>03</span>
           <h3>Build on the protocol</h3>
-          <p>Inspect consensus, state, networking, mining and release tooling directly in the public repository.</p>
+          <p>Inspect consensus, state, networking and release tooling directly in the public repository.</p>
           <strong>Developer source ↗</strong>
         </a>
       </div>
@@ -332,7 +332,7 @@ npm run devnet</code></pre>
         <div class="status-row"><span>Public wallet RPC</span><strong>Not published</strong><small>Validator RPC remains a separate protected surface</small></div>
         <div class="status-row"><span>Fixed-supply launch</span><strong>Under review</strong><small>50M full-genesis allocation design is not activated</small></div>
         <div class="status-row"><span>Token trading</span><strong>Not activated</strong><small>No quote asset, production AMM or live Buy/Sell surface</small></div>
-        <div class="status-row"><span>Public mining</span><strong>Activation gated</strong><small>Protocol-v5 mining code exists for the current implementation; the public network is not active</small></div>
+        <div class="status-row"><span>Mining</span><strong>Retired</strong><small>Shut down by owner decision; consensus-level rejection is under review, not yet on main</small></div>
         <div class="status-row"><span>Local public test</span><strong>Loopback only</strong><small><code>cd l1 &amp;&amp; npm ci &amp;&amp; npm run devnet</code> — not a hosted testnet</small></div>
       </div>
       <p class="status-legal content-shell"><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Current hosted rehearsal/private profiles remain non-value-bearing. Testers should follow <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">docs/PUBLIC_TEST.md</a> instead of looking for a public RPC, explorer or faucet.</p>
@@ -369,7 +369,6 @@ npm run devnet</code></pre>
       <div class="footer-column">
         <strong>Resources</strong>
         <a href="./wallet.html">Wallet Setup</a>
-        <a href="./mining.html">Mining Launchpad</a>
         <a href="./validator.html">Validator Launchpad</a>
         <a href="https://github.com/zyron249/-zyronchain/blob/main/WHITEPAPER.md" target="_blank" rel="noopener noreferrer">Whitepaper ↗</a>
         <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Public tester guide ↗</a>

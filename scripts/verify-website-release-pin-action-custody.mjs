@@ -13,8 +13,8 @@ const required = [
   'Website release pin is stale:',
   'CHANGED_L1=',
   "connect-src 'none'",
-  'Protocol-v5 mining',
-  'validator quorum finality'
+  'Homepage mining retirement disclosure missing',
+  'Homepage still advertises retired mining'
 ];
 for (const marker of required) {
   if (!text.includes(marker)) throw new Error(`website release-pin custody invariant missing: ${marker}`);
