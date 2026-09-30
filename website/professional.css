@@ -314,3 +314,6 @@ img.brand-logo.brand-mark{
   .allocation-grid strong{font-size:42px}
   .tokenomics-section{padding-block:65px}
 }
+/* Mobile overflow fix: grid tracks default to minmax(auto,1fr), so long unbreakable content (commands/code) widened the single mobile column past the viewport. */
+.protocol-portal .feature-list{grid-template-columns:repeat(2,minmax(0,1fr))}.protocol-portal .feature-row,.protocol-portal .feature-copy{min-width:0}
+@media(max-width:700px){.protocol-portal .feature-list{grid-template-columns:minmax(0,1fr)}.protocol-portal .feature-copy pre,.protocol-portal .feature-copy code{overflow-wrap:anywhere}}
