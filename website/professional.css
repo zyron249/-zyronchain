@@ -112,3 +112,208 @@ img.brand-logo.brand-mark{
 .legal-page .content-shell h2{margin:36px 0 14px;font-size:clamp(22px,3vw,28px)}
 .legal-page .content-shell a{color:#806019;font-weight:600}
 .legal-page .content-shell a:hover{text-decoration:underline}
+
+
+/* Fixed-supply tokenomics + fail-closed market preview. */
+.tokenomics-section{
+  background:
+    radial-gradient(circle at 82% 18%,rgba(214,179,93,.10),transparent 28%),
+    linear-gradient(180deg,#f7f6f2 0%,#fff 100%);
+  border-top:1px solid var(--line);
+  border-bottom:1px solid var(--line);
+}
+.tokenomics-layout{
+  display:grid;
+  grid-template-columns:minmax(0,1.15fr) minmax(340px,.85fr);
+  gap:64px;
+  align-items:start;
+}
+.tokenomics-copy h2{
+  margin:18px 0 24px;
+  max-width:760px;
+  color:var(--text-strong);
+  font-size:clamp(38px,4.8vw,62px);
+  line-height:1.04;
+}
+.allocation-grid{
+  margin-top:42px;
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:12px;
+}
+.allocation-grid article{
+  min-height:210px;
+  padding:24px;
+  display:flex;
+  flex-direction:column;
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:#fff;
+  box-shadow:0 14px 34px rgba(31,25,13,.035);
+}
+.allocation-grid span{
+  color:#8a6b24;
+  font:700 10px/1 ui-monospace,Consolas,monospace;
+  letter-spacing:.14em;
+}
+.allocation-grid strong{
+  margin-top:34px;
+  color:#171714;
+  font-size:48px;
+  line-height:1;
+  letter-spacing:-.06em;
+}
+.allocation-grid small{
+  margin-top:auto;
+  padding-top:20px;
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.55;
+}
+.tokenomics-guardrails{
+  margin-top:18px;
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+}
+.tokenomics-guardrails span{
+  padding:8px 10px;
+  border:1px solid #ddd4bf;
+  border-radius:999px;
+  background:#fbf8f0;
+  color:#66583a;
+  font-size:11px;
+  font-weight:700;
+}
+.transition-note{
+  margin-top:18px!important;
+  padding:16px 18px;
+  border-left:3px solid #d6b35d;
+  background:#faf7ee;
+  color:#5f5a50!important;
+}
+.trade-preview{
+  position:sticky;
+  top:118px;
+  overflow:hidden;
+  border:1px solid #2b2822;
+  border-radius:12px;
+  background:#0b0b0a;
+  color:#f8f4e9;
+  box-shadow:0 26px 70px rgba(23,18,8,.18);
+}
+.trade-preview-head{
+  min-height:78px;
+  padding:20px 22px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:20px;
+  border-bottom:1px solid #2a2823;
+}
+.trade-preview-head div{
+  display:grid;
+  gap:5px;
+}
+.trade-preview-head div>span{
+  color:#b49b61;
+  font:700 9px/1 ui-monospace,Consolas,monospace;
+  letter-spacing:.15em;
+}
+.trade-preview-head strong{
+  font-size:16px;
+}
+.trade-state{
+  padding:7px 9px;
+  border:1px solid #5e5031;
+  border-radius:999px;
+  color:#d6b35d;
+  font:700 9px/1 ui-monospace,Consolas,monospace;
+  letter-spacing:.12em;
+}
+.trade-pair{
+  padding:22px;
+  display:grid;
+  gap:6px;
+  border-bottom:1px solid #24221e;
+}
+.trade-pair>span{
+  color:#7e7769;
+  font:700 9px/1 ui-monospace,Consolas,monospace;
+  letter-spacing:.14em;
+}
+.trade-pair strong{
+  font-size:30px;
+  letter-spacing:-.04em;
+}
+.trade-pair small{
+  color:#8f887b;
+  font-size:11px;
+}
+.trade-form{
+  padding:22px;
+  display:grid;
+  gap:8px;
+}
+.trade-form label{
+  color:#8f887b;
+  font-size:11px;
+}
+.trade-form div{
+  min-height:62px;
+  padding:0 16px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  border:1px solid #2d2a24;
+  border-radius:8px;
+  background:#12110f;
+}
+.trade-form div strong{
+  color:#777165;
+  font-size:22px;
+}
+.trade-form div span{
+  color:#b49b61;
+  font-size:11px;
+  font-weight:800;
+}
+.trade-disabled{
+  width:calc(100% - 44px);
+  min-height:48px;
+  margin:0 22px;
+  border:1px solid #4e4329;
+  border-radius:7px;
+  background:#2a2519;
+  color:#ac9a6c;
+  font-weight:800;
+  cursor:not-allowed;
+}
+.trade-preview>p{
+  margin:18px 22px 0;
+  color:#8f887b;
+  font-size:11px;
+  line-height:1.65;
+}
+.trade-preview>a{
+  display:inline-block;
+  margin:16px 22px 22px;
+  color:#d6b35d;
+  font-size:12px;
+  font-weight:800;
+}
+.trade-preview>a:hover{text-decoration:underline}
+
+@media(max-width:900px){
+  .tokenomics-layout{grid-template-columns:1fr;gap:38px}
+  .trade-preview{position:relative;top:auto;max-width:620px}
+}
+@media(max-width:700px){
+  .allocation-grid{grid-template-columns:1fr}
+  .allocation-grid article{min-height:170px}
+  .allocation-grid strong{font-size:42px}
+  .tokenomics-section{padding-block:65px}
+}
+/* Mobile overflow fix: grid tracks default to minmax(auto,1fr), so long unbreakable content (commands/code) widened the single mobile column past the viewport. */
+.protocol-portal .feature-list{grid-template-columns:repeat(2,minmax(0,1fr))}.protocol-portal .feature-row,.protocol-portal .feature-copy{min-width:0}
+@media(max-width:700px){.protocol-portal .feature-list{grid-template-columns:minmax(0,1fr)}.protocol-portal .feature-copy pre,.protocol-portal .feature-copy code{overflow-wrap:anywhere}}

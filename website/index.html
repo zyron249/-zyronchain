@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#080808" />
-  <meta name="description" content="ZyronChain is an open-source Layer-1 with local key custody, deterministic execution, authenticated state, permissionless ZYN issuance and quorum finality." />
+  <meta name="description" content="ZyronChain is an open-source Layer-1 with local key custody, deterministic execution, authenticated state, a fixed 50M ZYN launch design under review, and quorum finality." />
   <meta name="referrer" content="no-referrer" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'" />
   <link rel="canonical" href="https://zyronchain.com/" />
@@ -15,7 +15,7 @@
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="ZyronChain" />
   <meta property="og:title" content="ZyronChain — Open rules. Local keys." />
-  <meta property="og:description" content="A verifiable Layer-1 built around local key custody, deterministic execution, authenticated state, permissionless issuance and quorum finality." />
+  <meta property="og:description" content="A verifiable Layer-1 with local key custody, deterministic execution, a fixed 50M ZYN launch design under review, and quorum finality." />
   <meta property="og:url" content="https://zyronchain.com/" />
   <meta property="og:image" content="https://zyronchain.com/brand-mark.png" />
   <meta name="twitter:card" content="summary_large_image" />
@@ -55,7 +55,7 @@
 
   <aside class="network-notice" aria-label="Network activation notice">
     <div class="shell notice-inner">
-      <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Public mining, wallet RPC and value-bearing use remain activation gated.</p>
+      <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Mining is retired. Wallet RPC and value-bearing use remain activation gated.</p>
       <a href="#status">View network status <span aria-hidden="true">→</span></a>
       <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Public tester guide <span aria-hidden="true">↗</span></a>
     </div>
@@ -75,6 +75,7 @@
         <a href="#start">Introduction</a>
         <a href="#protocol">How it works</a>
         <a href="#token">ZYN</a>
+        <a href="#market">Tokenomics</a>
         <a href="#security">Security</a>
         <a href="#developers">Developers</a>
         <a href="#status">Network</a>
@@ -92,13 +93,13 @@
       <div class="shell hero-inner">
         <div class="hero-copy" data-reveal>
           <p class="eyebrow">THE ZYRONCHAIN PROTOCOL / LAYER 01</p>
-          <h1>Trust the rules. <br /><span>Own your future.</span></h1>
-          <p class="hero-lede">An open-source Layer-1. Keys you control. State you can verify. A protocol built to be inspected.</p>
+          <h1>Fixed supply. <br /><span>Open rules.</span></h1>
+          <p class="hero-lede">An open-source Layer-1 built around verifiable state, local key custody and a transparent 50,000,000 ZYN launch design now under review.</p>
           <div class="hero-actions">
             <a class="primary-button" href="./wallet.html">Local wallet setup <span aria-hidden="true">↗</span></a>
             <a class="secondary-button" href="#protocol">Explore the protocol <span aria-hidden="true">↓</span></a>
           </div>
-          <p class="hero-honesty">Public network not activated · Local setup only · Authorized ≠ activated</p>
+          <p class="hero-honesty">Public network not activated · Trading not active · Fixed-supply launch design under review · Authorized ≠ activated</p>
         </div>
 
         <div class="brand-surface" aria-hidden="true">
@@ -112,10 +113,10 @@
 
     <section class="trust-bar" aria-label="ZyronChain principles">
       <div class="shell trust-grid">
-        <div><strong>50M ZYN</strong><span>historical issuance cap</span></div>
-        <div><strong>Local custody</strong><span>keys stay on your machine</span></div>
-        <div><strong>Protocol v5</strong><span>PoW issuance when activated</span></div>
-        <div><strong>Open source</strong><span>inspect the implementation</span></div>
+        <div><strong>50M ZYN</strong><span>fixed maximum supply</span></div>
+        <div><strong>10% founder</strong><span>vesting design: 12m cliff + 36m linear</span></div>
+        <div><strong>40% liquidity</strong><span>permanent-liquidity reserve design</span></div>
+        <div><strong>Open source</strong><span>inspect every launch assumption</span></div>
       </div>
     </section>
 
@@ -145,14 +146,16 @@
           <svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="24"/><path d="M21 22h23L27 42h17"/><path d="M24 14v6M40 44v6"/></svg>
         </div>
         <div class="feature-copy">
-          <p class="feature-kicker">ZYN ISSUANCE</p>
-          <h3>Work earns issuance. Quorum provides finality.</h3>
-          <p>Protocol-v5 mining introduces permissionless Proof-of-Work claims for ZYN issuance. A valid miner searches for a tip-bound SHA-256 solution, signs the claim locally and submits the public transaction. The current engineering target is a fixed 20-bit SHA-256 target. Proof-of-Work issuance does not select the canonical chain; validator quorum finality remains separate.</p>
+          <p class="feature-kicker">ZYN SUPPLY</p>
+          <h3>A fixed 50M launch design is under review.</h3>
+          <p>The proposed fixed-supply launch allocates the complete 50,000,000 ZYN ceiling at genesis: 5M founder, 20M public distribution, 20M permanent-liquidity reserve and 5M ecosystem/community. If adopted exactly, the existing consensus supply ceiling leaves no issuance headroom beyond genesis.</p>
+          <p class="transition-note"><strong>Mining retired:</strong> Mining has been shut down by owner decision (2026-09-30). Do not mine or run miner software. A change that makes consensus reject every mining claim is under review and is not yet merged to the main branch; until it is, legacy protocol-v5 mining code remains in the repository.</p>
           <div class="inline-facts">
-            <span><strong>6.25 ZYN</strong> initial reward</span>
-            <span><strong>4,000,000 claims</strong> halving interval</span>
-            <span><strong>50M ZYN</strong> historical cap</span>
+            <span><strong>50M ZYN</strong> proposed full-genesis supply</span>
+            <span><strong>0 ZYN</strong> mining issuance (mining retired)</span>
+            <span><strong>Trading</strong> not activated</span>
           </div>
+          <a href="https://github.com/zyron249/-zyronchain/pull/913" target="_blank" rel="noopener noreferrer">Review fixed-supply PR #913 <span aria-hidden="true">↗</span></a>
         </div>
       </article>
 
@@ -175,7 +178,7 @@
         <div class="feature-copy">
           <p class="feature-kicker">AUTHENTICATED STATE</p>
           <h3>State can be independently checked.</h3>
-          <p>State-v2 commits accounts, governance schedules and protocol-owned mining state into an authenticated sparse Merkle structure. Checkpoint recovery, portable state sync and independent light-client verification are designed around explicit roots rather than trusting a serving node's narrative.</p>
+          <p>State-v2 commits accounts, governance schedules and protocol-owned state into an authenticated sparse Merkle structure. Checkpoint recovery, portable state sync and independent light-client verification are designed around explicit roots rather than trusting a serving node's narrative.</p>
         </div>
       </article>
 
@@ -198,7 +201,7 @@
         <div class="feature-copy">
           <p class="feature-kicker">GLOBAL BY DESIGN</p>
           <h3>Open-source infrastructure without a website account.</h3>
-          <p>ZyronChain nodes, wallets and miners are designed to operate from public source and reproducible local tooling. The website is an onboarding and documentation surface—not a custody service, exchange, bank or privileged signing coordinator.</p>
+          <p>ZyronChain nodes and wallets are designed to operate from public source and reproducible local tooling. The website is an onboarding and documentation surface—not a custody service, exchange, bank or privileged signing coordinator.</p>
         </div>
       </article>
 
@@ -230,6 +233,54 @@ npm run devnet</code></pre>
       </article>
     </section>
 
+    <section class="tokenomics-section section" id="market">
+      <div class="shell tokenomics-layout">
+        <div class="tokenomics-copy" data-reveal>
+          <p class="section-label">Fixed-supply launch design</p>
+          <h2>Every ZYN has a disclosed role before launch.</h2>
+          <p class="section-intro">This is a design under review, not a token sale. The website does not accept money, custody purchaser funds or route orders. The quote asset and production AMM are intentionally unset until their trust model is frozen and independently reviewed.</p>
+
+          <div class="allocation-grid" aria-label="Proposed ZYN allocation">
+            <article><span>FOUNDER</span><strong>5M</strong><small>10% · 12-month cliff + 36-month linear vesting design</small></article>
+            <article><span>PUBLIC</span><strong>20M</strong><small>40% · future public-distribution reserve</small></article>
+            <article><span>LIQUIDITY</span><strong>20M</strong><small>40% · permanent-liquidity reserve design</small></article>
+            <article><span>ECOSYSTEM</span><strong>5M</strong><small>10% · community and ecosystem reserve</small></article>
+          </div>
+
+          <div class="tokenomics-guardrails">
+            <span>No hidden mint key</span>
+            <span>No founder withdrawal path for permanent liquidity</span>
+            <span>No live quote asset yet</span>
+            <span>No real-money trading yet</span>
+          </div>
+        </div>
+
+        <aside class="trade-preview" aria-label="Trading activation preview" data-reveal>
+          <div class="trade-preview-head">
+            <div>
+              <span>ZYRON MARKET</span>
+              <strong>Activation gated</strong>
+            </div>
+            <span class="trade-state">OFFLINE</span>
+          </div>
+          <div class="trade-pair">
+            <span>PAIR</span>
+            <strong>ZYN / —</strong>
+            <small>Quote asset not frozen</small>
+          </div>
+          <div class="trade-form" aria-hidden="true">
+            <label>You pay</label>
+            <div><strong>—</strong><span>QUOTE</span></div>
+            <label>You receive</label>
+            <div><strong>—</strong><span>ZYN</span></div>
+          </div>
+          <button type="button" class="trade-disabled" disabled aria-disabled="true">Buy / Sell not activated</button>
+          <p>Real trading remains fail-closed until founder vesting is consensus-enforced, the quote-asset model is frozen, the AMM is implemented and independently retested, and launch/legal gates are closed.</p>
+          <a href="https://github.com/zyron249/-zyronchain/pull/913" target="_blank" rel="noopener noreferrer">Inspect implementation work ↗</a>
+        </aside>
+      </div>
+    </section>
+
     <section class="getting-started section">
       <div class="content-shell" data-reveal>
         <p class="section-label">Getting started</p>
@@ -251,7 +302,7 @@ npm run devnet</code></pre>
         <a class="start-card" href="https://github.com/zyron249/-zyronchain/tree/main/l1" target="_blank" rel="noopener noreferrer" data-reveal>
           <span>03</span>
           <h3>Build on the protocol</h3>
-          <p>Inspect consensus, state, networking, mining and release tooling directly in the public repository.</p>
+          <p>Inspect consensus, state, networking and release tooling directly in the public repository.</p>
           <strong>Developer source ↗</strong>
         </a>
       </div>
@@ -279,7 +330,9 @@ npm run devnet</code></pre>
         <div class="status-row"><span>Public testnet</span><strong class="status-authorized">Governance authorized</strong><small>Activation evidence still required</small></div>
         <div class="status-row"><span>Mainnet</span><strong class="status-authorized">Governance authorized</strong><small>Not value-bearing / not activated</small></div>
         <div class="status-row"><span>Public wallet RPC</span><strong>Not published</strong><small>Validator RPC remains a separate protected surface</small></div>
-        <div class="status-row"><span>Public mining</span><strong>Activation gated</strong><small>Protocol-v5 mining code exists; the public network is not active</small></div>
+        <div class="status-row"><span>Fixed-supply launch</span><strong>Under review</strong><small>50M full-genesis allocation design is not activated</small></div>
+        <div class="status-row"><span>Token trading</span><strong>Not activated</strong><small>No quote asset, production AMM or live Buy/Sell surface</small></div>
+        <div class="status-row"><span>Mining</span><strong>Retired</strong><small>Shut down by owner decision; consensus-level rejection is under review, not yet on main</small></div>
         <div class="status-row"><span>Local public test</span><strong>Loopback only</strong><small><code>cd l1 &amp;&amp; npm ci &amp;&amp; npm run devnet</code> — not a hosted testnet</small></div>
       </div>
       <p class="status-legal content-shell"><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Current hosted rehearsal/private profiles remain non-value-bearing. Testers should follow <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">docs/PUBLIC_TEST.md</a> instead of looking for a public RPC, explorer or faucet.</p>
@@ -308,14 +361,14 @@ npm run devnet</code></pre>
         <strong>Introduction</strong>
         <a href="#start">Overview</a>
         <a href="#protocol">How it works</a>
-        <a href="#token">ZYN issuance</a>
+        <a href="#token">ZYN supply</a>
+        <a href="#market">Tokenomics</a>
         <a href="#security">Security</a>
       </div>
 
       <div class="footer-column">
         <strong>Resources</strong>
         <a href="./wallet.html">Wallet Setup</a>
-        <a href="./mining.html">Mining Launchpad</a>
         <a href="./validator.html">Validator Launchpad</a>
         <a href="https://github.com/zyron249/-zyronchain/blob/main/WHITEPAPER.md" target="_blank" rel="noopener noreferrer">Whitepaper ↗</a>
         <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Public tester guide ↗</a>

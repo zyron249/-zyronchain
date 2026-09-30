@@ -4,7 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#080808" />
-  <meta name="description" content="ZyronChain Mining Launchpad: understand protocol-v5 Proof-of-Work issuance, local encrypted miner custody, activation gates and the canonical miner workflow." />
+  <meta name="description" content="Retired: ZyronChain mining was shut down on 2026-09-30. Historical record of the former protocol-v5 mining design; do not mine." />
+  <meta name="robots" content="noindex" />
   <meta name="referrer" content="no-referrer" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'" />
   <link rel="canonical" href="https://zyronchain.com/mining.html" />
@@ -46,7 +47,7 @@
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
-  <aside class="network-notice" aria-label="Mining activation notice"><div class="shell notice-inner"><p><strong>Mining code exists; public mining is not activated by that fact.</strong> The target network must schedule and activate protocol v5 before claims can finalize.</p><a href="#activation">Check activation boundary →</a></div></aside>
+  <aside class="network-notice" aria-label="Mining retired notice"><div class="shell notice-inner"><p><strong>Mining is retired.</strong> Mining was shut down by owner decision on 2026-09-30. This page is kept only as a historical record: public mining is not activated and will not be. Do not mine or run miner software. Consensus-level rejection of mining claims is under review and not yet merged to main.</p><a href="./index.html">Back to home →</a></div></aside>
   <header class="site-header" data-header><div class="shell header-inner"><a class="brand" href="./index.html" aria-label="ZyronChain home"><img class="brand-mark" src="./brand-mark.png" alt="ZyronChain" width="320" height="320" /></a><nav class="nav mining-nav" aria-label="Mining navigation"><a href="#model">Model</a><a href="#economics">Economics</a><a href="#start">Run miner</a><a href="#security">Security</a><a href="#activation">Activation</a></nav><div class="header-actions"><a class="quiet-link" href="./index.html">Home</a><a class="mini-button" href="./wallet.html">Create wallet</a></div></div></header>
   <main id="main">
     <section class="mining-hero"><div class="shell mining-hero-grid"><div><p class="eyebrow">PROTOCOL V5 · PROOF OF WORK ISSUANCE</p><h1>Mine issuance. <br /><span>Keep finality separate.</span></h1><p class="hero-lede">ZyronChain miners compete for permissionless ZYN issuance with tip-bound SHA-256 work. Validators still provide canonical block finality. The miner decrypts and signs locally; your private key and password are never submitted to RPC.</p><div class="hero-actions"><a class="primary-button" href="#start">Local miner setup</a><a class="secondary-button" href="https://github.com/zyron249/-zyronchain/blob/main/l1/MINING.md" target="_blank" rel="noopener noreferrer">Read canonical mining docs ↗</a></div></div><div class="mining-console" aria-label="Mining protocol summary"><p>MINING MODEL</p><dl><div><dt>Work</dt><dd>SHA-256</dd></div><div><dt>Initial target</dt><dd>20 bits</dd></div><div><dt>Initial reward</dt><dd>6.25 ZYN</dd></div><div><dt>Claims / block</dt><dd>1 max</dd></div><div><dt>Finality</dt><dd>&gt;2/3 validator quorum</dd></div></dl><span class="console-state">ACTIVATION GATED</span></div></div></section>

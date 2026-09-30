@@ -89,15 +89,23 @@ jobs:
           if (!index.includes('cd ./-zyronchain/l1')) {
             throw new Error('Homepage quick-start must safely enter the leading-dash repository directory');
           }
+          // Mining retired by owner decision (2026-09-30): the homepage must carry
+          // the retirement disclosure and must not advertise mining parameters
+          // or link the retired mining launchpad.
           for (const marker of [
-            'Protocol-v5 mining',
-            '6.25 ZYN',
-            '4,000,000',
-            '20-bit SHA-256 target',
-            'does not select the canonical chain',
-            'validator quorum finality'
+            'Mining retired',
+            'Mining has been shut down by owner decision',
+            'not yet merged to the main branch'
           ]) {
-            if (!index.includes(marker)) throw new Error(`Homepage mining disclosure missing: ${marker}`);
+            if (!index.includes(marker)) throw new Error(`Homepage mining retirement disclosure missing: ${marker}`);
+          }
+          for (const retired of [
+            'Protocol-v5 mining still exists',
+            '6.25 ZYN',
+            '20-bit SHA-256 target',
+            'href="./mining.html"'
+          ]) {
+            if (index.includes(retired)) throw new Error(`Homepage still advertises retired mining: ${retired}`);
           }
           NODE
 
