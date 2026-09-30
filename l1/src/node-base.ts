@@ -162,6 +162,12 @@ export interface RpcServerOptions {
   windowMs?: number;
   /** Combined serves the existing local/validator surface. Public refuses consensus and operator routes. */
   rpcRole?: "combined" | "public";
+  /**
+   * Consensus routes fail closed when neither peerAuthToken nor trustedPeerPublicKeys
+   * is bound: only a direct loopback caller on a server without trusted proxies is
+   * served. Set true only for an embedding that enforces peer authentication itself.
+   */
+  allowUnauthenticatedConsensus?: boolean;
 }
 
 export interface PeerRequestCredentials {
@@ -213,6 +219,31 @@ export function assertSafeRpcBinding(
   if (!loopback && !trustedHttpsProxyConfigured) {
     throw new Error("Non-loopback RPC binding requires an HTTPS-enforcing trusted proxy");
   }
+  if (trustedHttpsProxyConfigured && !consensusAuthenticationConfigured) {
+    // A same-host reverse proxy forwards foreign traffic over loopback.
+    throw new Error("RPC behind a trusted proxy requires consensus peer authentication");
+  }
+}
+
+function isLoopbackRemoteAddress(address: string | undefined): boolean {
+  if (address === undefined) return false;
+  const normalized = address.toLowerCase().replace(/^\[|\]$/g, "");
+  const ipv4 = normalized.startsWith("::ffff:") ? normalized.slice(7) : normalized;
+  if (isIP(ipv4) === 4) return ipv4.startsWith("127.");
+  return normalized === "::1";
+}
+
+/**
+ * ZC-CRY-20260930-001: without bound consensus authentication, consensus routes are
+ * served only to a direct loopback caller when no trusted proxy is configured.
+ */
+export function unauthenticatedConsensusAllowed(
+  remoteAddress: string | undefined,
+  trustedProxyCount: number,
+  explicitOptIn: boolean
+): boolean {
+  if (explicitOptIn) return true;
+  return trustedProxyCount === 0 && isLoopbackRemoteAddress(remoteAddress);
 }
 
 function canonicalizeIpv6Address(address: string): string {
@@ -1203,6 +1234,20 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
         supportedRpcVersions: [RPC_API_VERSION]
       });
       return;
+    }
+    if (!publicRole && !peerAuthToken && !peerRequestAuthenticator) {
+      const routeUrl = new URL(request.url ?? "/", "http://node.invalid");
+      if (classifyRpcRoute(request.method ?? "", routeUrl.pathname) === "consensus" &&
+          !unauthenticatedConsensusAllowed(
+            request.socket.remoteAddress,
+            trustedProxyAddresses.size,
+            options.allowUnauthenticatedConsensus === true
+          )) {
+        response.setHeader("www-authenticate", "Bearer");
+        response.setHeader("connection", "close");
+        writeJson(response, 401, { error: "Consensus peer authentication is not configured" });
+        return;
+      }
     }
     try {
       await route(
