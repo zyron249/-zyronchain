@@ -183,7 +183,8 @@ requireText(threatModel, "source, domains, release credentials or security conta
 requireText(threatModel, "Permissionless issuance introduces a new competition surface", "threat model");
 
 const miningDoc = contents.get("docs/MINING.md");
-requireText(miningDoc, "Permissionless ZYN issuance is implemented", "mining documentation");
+requireText(miningDoc, "Permissionless ZYN issuance was implemented", "mining documentation");
+requireText(miningDoc, "RETIRED (2026-09-30)", "mining documentation");
 requireText(miningDoc, "protocol version 5", "mining documentation");
 requireText(miningDoc, "does **not** replace ZyronChain validator finality", "mining documentation");
 
