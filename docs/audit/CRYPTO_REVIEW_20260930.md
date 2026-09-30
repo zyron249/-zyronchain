@@ -96,10 +96,13 @@ Quarantined (`ZYRON_LEGACY_PUBLIC_QUARANTINE` → 410). v1 txs use SHA-1-padded 
 - ZC-CRY-002 (unconditional mining retirement), 006 (merge into #913), 007, 008, 010, 011 — owner decisions.
 
 ## Test evidence (box-local, ET)
+
+Note: the suggestion branch is not pushed; the merge check was a throwaway local merge, not a branch.
 | Suite | Before | After |
 |---|---|---|
 | `l1` `npm test` (audit/crypto-review-20260930) | 711/711 | 732/732 |
 | `l1` merge check (this branch + #913 + suggestion) | — | 748/748 |
+| `l1` #913 + suggestion branch alone | — | 623/623 |
 | root `pytest` (legacy) | 58 passed | 58 passed |
 | `telegram-game` `pytest` | 30 passed, 16 skipped | 34 passed, 16 skipped (skips need Postgres) |
 | `npm run typecheck` / `npm audit` | clean / 0 vulns | clean / 0 vulns |
