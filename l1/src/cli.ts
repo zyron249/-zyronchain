@@ -5,7 +5,9 @@ import { join, resolve } from "node:path";
 import type { Multiaddr } from "@multiformats/multiaddr";
 
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
-import { encryptPrivateKey, normalizePasswordFile } from "./keystore.js";
+import { decryptPrivateKey, encryptPrivateKey, isEncryptedKeystore, keystoreVersion, migrateKeystore, normalizePasswordFile } from "./keystore.js";
+import { parseAddressInput, toChecksumAddress } from "./address-checksum.js";
+import { assertPasswordStrength, promptHiddenLine } from "./password-prompt.js";
 import { readPrivateRegularFile } from "./local-security.js";
 import { readCliCheckpointSnapshotAnchoredUtf8, readCliGenesisUtf8 } from "./cli-recovery-file.js";
 import { readCliGovernanceArtifactUtf8 } from "./cli-governance-file.js";
@@ -90,6 +92,8 @@ async function main(): Promise<void> {
   if (command === "genesis") return createGenesis(args);
   if (command === "transfer") return submitTransfer(args);
   if (command === "keystore-verify") return verifyKeystore(args);
+  if (command === "keystore-migrate") return migrateKeystoreFile(args);
+  if (command === "address-checksum") return showAddressChecksum(args);
   if (command === "transfer-sign") return signTransferOffline(args);
   if (command === "tx-submit") return submitSignedTransaction(args);
   if (command === "validator-proposal") return createValidatorProposalFile(args);
@@ -235,14 +239,26 @@ async function pruneFinalized(args: string[]): Promise<void> {
   }
 }
 
-async function keygen(args: string[]): Promise<void> {
+async function keygen(rawArgs: string[]): Promise<void> {
+  // --password-prompt is a bare flag; every other keygen option takes a value.
+  const prompt = rawArgs.includes("--password-prompt");
+  const args = rawArgs.filter((value) => value !== "--password-prompt");
   assertKnownOptions(args, new Set(["--out", "--password-file"]));
   const output = option(args, "--out");
   if (!output) throw new Error("keygen requires --out <file>");
   const passwordFile = option(args, "--password-file");
-  const password = passwordFile
-    ? normalizePasswordFile(await readPrivateRegularFile(resolve(passwordFile), "Keygen password file"))
-    : undefined;
+  if (prompt && passwordFile) throw new Error("Use either --password-file or --password-prompt, not both");
+  let password: string | undefined;
+  if (passwordFile) {
+    password = normalizePasswordFile(await readPrivateRegularFile(resolve(passwordFile), "Keygen password file"));
+  } else if (prompt) {
+    // Interactive: nothing is written to disk. Ask twice and enforce the strength check.
+    const first = await promptHiddenLine("Choose wallet password (12+ chars, a long passphrase is best): ");
+    assertPasswordStrength(first);
+    const second = await promptHiddenLine("Type the same password again: ");
+    if (first !== second) throw new Error("Passwords do not match. Nothing was created.");
+    password = normalizePasswordFile(first);
+  }
   const privateKey = generatePrivateKey();
   const publicKey = publicKeyFromPrivate(privateKey);
   const address = addressFromPublicKey(publicKey);
@@ -257,6 +273,7 @@ async function keygen(args: string[]): Promise<void> {
   await chmod(path, 0o600);
   console.log(`ZyronChain ${password ? "encrypted " : ""}key written with mode 0600: ${path}`);
   console.log(`Address: ${address}`);
+  console.log(`Address (checksummed display): ${toChecksumAddress(address)}`);
   console.log(`Public key: ${publicKey}`);
 }
 
@@ -558,7 +575,7 @@ async function submitTransfer(args: string[]): Promise<void> {
   const key = await readPrivateKey(resolve(requiredOption(args, "--key")));
   const publicKey = publicKeyFromPrivate(key);
   const sender = addressFromPublicKey(publicKey);
-  const receiver = requiredOption(args, "--to");
+  const receiver = parseAddressInput(requiredOption(args, "--to")).canonical;
   assertAddress(receiver);
   const rpc = normalizeRpcUrl(requiredOption(args, "--rpc"));
   const chainId = requiredOption(args, "--chain-id");
@@ -600,9 +617,47 @@ async function verifyKeystore(args: string[]): Promise<void> {
   const path = resolve(requiredOption(args, "--key"));
   const key = await readPrivateKey(path);
   const publicKey = publicKeyFromPrivate(key);
+  const address = addressFromPublicKey(publicKey);
+  const parsed = JSON.parse(await readPrivateRegularFile(path, "Keystore")) as unknown;
   console.log("Keystore verified: it decrypts and re-derives its public key and address.");
-  console.log(`Address: ${addressFromPublicKey(publicKey)}`);
+  if (isEncryptedKeystore(parsed)) {
+    const version = keystoreVersion(parsed);
+    console.log(`Keystore format: v${version}${version === 1 ? " (legacy scrypt N=2^15; run keystore-migrate to upgrade to v2, N=2^17)" : " (scrypt N=2^17, r=8, p=1)"}`);
+  }
+  console.log(`Address: ${address}`);
+  console.log(`Address (checksummed display): ${toChecksumAddress(address)}`);
   console.log(`Public key: ${publicKey}`);
+}
+
+/** Re-encrypts a v1 or v2 keystore into v2 (fresh salt/IV). Never overwrites; source is kept. */
+async function migrateKeystoreFile(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--key", "--out"]));
+  const source = resolve(requiredOption(args, "--key"));
+  const output = resolve(requiredOption(args, "--out"));
+  if (source === output) throw new Error("--out must be a new file; the original keystore is kept as a backup");
+  const parsed = JSON.parse(await readPrivateRegularFile(source, "Keystore")) as unknown;
+  if (!isEncryptedKeystore(parsed)) throw new Error("keystore-migrate only accepts encrypted keystores");
+  const password = await keystorePassword();
+  const from = keystoreVersion(parsed);
+  const migrated = migrateKeystore(parsed, password);
+  // Prove the new file decrypts to the same identity before writing it.
+  decryptPrivateKey(migrated, password);
+  if (migrated.address !== (parsed as { address: string }).address) throw new Error("Migrated keystore identity mismatch");
+  await writeFile(output, `${JSON.stringify(migrated, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  await chmod(output, 0o600);
+  console.log(`Keystore migrated v${from} -> v2 (scrypt N=2^17, r=8, p=1): ${output}`);
+  console.log(`Address unchanged: ${migrated.address}`);
+  console.log("Verify the new file with keystore-verify, back it up, then retire the old copy.");
+}
+
+async function showAddressChecksum(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--address"]));
+  const parsed = parseAddressInput(requiredOption(args, "--address"));
+  console.log(`Canonical (consensus) address: ${parsed.canonical}`);
+  console.log(`Checksummed display address:   ${parsed.checksummed}`);
+  console.log(parsed.checksumVerified
+    ? "Checksum: verified (mixed-case input matched)."
+    : "Checksum: none in input (plain lower-case form is valid; compare it carefully).");
 }
 
 /**
@@ -617,7 +672,7 @@ async function signTransferOffline(args: string[]): Promise<void> {
   const output = resolve(requiredOption(args, "--out"));
   const chainId = requiredOption(args, "--chain-id");
   if (!/^[a-z0-9-]{3,64}$/.test(chainId)) throw new Error("Invalid chain-id (expected the genesis chain ID, e.g. zyron-devnet-1)");
-  const receiver = requiredOption(args, "--to");
+  const receiver = parseAddressInput(requiredOption(args, "--to")).canonical;
   assertAddress(receiver);
   const amountAtoms = parseSafeInteger(requiredOption(args, "--amount-atoms"), "amount-atoms");
   const feeAtoms = parseSafeInteger(option(args, "--fee-atoms") ?? "0", "fee-atoms");
@@ -991,7 +1046,28 @@ async function transactionVersionForRpc(rpc: string): Promise<TransactionVersion
 }
 
 async function readPrivateKey(path: string): Promise<string> {
-  return readOperatorPrivateKey(path, process.env.ZYRON_KEYSTORE_PASSWORD_FILE);
+  return readOperatorPrivateKey(path, process.env.ZYRON_KEYSTORE_PASSWORD_FILE, keystorePasswordFromEnvOrPrompt);
+}
+
+/**
+ * Password source when no ZYRON_KEYSTORE_PASSWORD_FILE is set:
+ * 1. ZYRON_KEYSTORE_PASSWORD (automation only; environment variables can leak to same-user
+ *    processes, shell history and CI logs), otherwise
+ * 2. a non-echoing prompt on the interactive terminal.
+ */
+async function keystorePasswordFromEnvOrPrompt(): Promise<string> {
+  const fromEnv = process.env.ZYRON_KEYSTORE_PASSWORD;
+  if (fromEnv !== undefined && fromEnv !== "") {
+    console.error("Warning: using ZYRON_KEYSTORE_PASSWORD from the environment (automation only). Unset it when done.");
+    return fromEnv;
+  }
+  return promptHiddenLine("Keystore password: ");
+}
+
+async function keystorePassword(): Promise<string> {
+  const file = process.env.ZYRON_KEYSTORE_PASSWORD_FILE;
+  if (file) return normalizePasswordFile(await readPrivateRegularFile(resolve(file), "Keystore password file"));
+  return normalizePasswordFile(await keystorePasswordFromEnvOrPrompt());
 }
 
 async function readAuthToken(path: string, label: string): Promise<string> {
@@ -1085,11 +1161,14 @@ function assertKnownOptions(args: string[], allowed: Set<string>): void {
 
 function usage(): void {
   console.log("Usage:");
-  console.log("  zyron-l1 keygen --out validator-key.json [--password-file password.txt]");
+  console.log("  zyron-l1 keygen --out validator-key.json (--password-file password.txt | --password-prompt)");
   console.log("  zyron-l1 genesis --out genesis.json --chain-id zyron-devnet-1 --validator-public-key <hex> --oracle-public-key <hex> --activity-pool <address> --allocation <address:atoms>");
   console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json | --validator-signer-url https://signer/sign --validator-public-key <hex> --validator-signer-token-file signer-token.txt] [--peer https://node:9137] [--rpc-trusted-proxy <ip> ...] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>]");
   console.log("  zyron-l1 transfer --key wallet-key.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms <n> [--fee-atoms <n>]");
-  console.log("  zyron-l1 keystore-verify --key wallet.json            (password via ZYRON_KEYSTORE_PASSWORD_FILE; prints only public data)");
+  console.log("  zyron-l1 keygen --out wallet.json --password-prompt     (interactive; no password file is written)");
+  console.log("  zyron-l1 keystore-verify --key wallet.json            (password: ZYRON_KEYSTORE_PASSWORD_FILE, ZYRON_KEYSTORE_PASSWORD or a terminal prompt; prints only public data)");
+  console.log("  zyron-l1 keystore-migrate --key old.json --out new.json   (v1 -> v2, scrypt N=2^17)");
+  console.log("  zyron-l1 address-checksum --address <ZYN...>           (display-only mixed-case checksum; consensus uses lower-case)");
   console.log("  zyron-l1 transfer-sign --key wallet.json --chain-id <id> --to <address> --amount-atoms <n> [--fee-atoms <n>] --nonce <next-nonce> --tx-version <1|2> --out tx.json   (offline)");
   console.log("  zyron-l1 tx-submit --tx tx.json --rpc <url>");
   console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");
