@@ -77,6 +77,17 @@ export function assertFixedSupplyAllocations(
 
 export function assertFixedSupplyGenesis(genesis: GenesisConfig, addresses: FixedSupplyAddresses): void {
   assertFixedSupplyAllocations(genesis.allocations, addresses);
+  // ZC-CRY-20260930-006: any genesis activity oracle can move the whole
+  // activityPool balance with a single settlement and no pool signature. The
+  // pool must therefore never be the founder (vesting bypass) or the
+  // permanent-liquidity reserve (drain). Which distribution reserve funds the
+  // activity airdrop is a product decision; both remaining roles are accepted.
+  if (genesis.activityPool === addresses.founder || genesis.activityPool === addresses.liquidityReserve) {
+    throw new Error("Fixed-supply activity pool must not be the founder or permanent-liquidity allocation");
+  }
+  if (genesis.activityPool !== addresses.publicDistribution && genesis.activityPool !== addresses.ecosystemReserve) {
+    throw new Error("Fixed-supply activity pool must be the public-distribution or ecosystem allocation");
+  }
 }
 
 export function fixedSupplyPlanAtoms(): Readonly<{
