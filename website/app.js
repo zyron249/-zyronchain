@@ -8,25 +8,7 @@ for (const link of document.querySelectorAll('a[target="_blank"]')) {
   link.rel = [...rel].join(' ');
 }
 
-const primaryNav = document.querySelector('[data-nav]');
-if (primaryNav && !primaryNav.querySelector('a[href="./mining.html"]')) {
-  const miningLink = document.createElement('a');
-  miningLink.href = './mining.html';
-  miningLink.textContent = 'Mining';
-  const networkLink = primaryNav.querySelector('a[href="#status"]');
-  primaryNav.insertBefore(miningLink, networkLink ?? null);
-}
-
-const tokenSection = document.getElementById('token');
-if (tokenSection && !tokenSection.querySelector('a[href="./mining.html"]')) {
-  const copy = tokenSection.querySelector('.feature-copy');
-  if (copy) {
-    const miningCta = document.createElement('a');
-    miningCta.href = './mining.html';
-    miningCta.textContent = 'Open Mining Launchpad →';
-    copy.appendChild(miningCta);
-  }
-}
+// Mining is retired (owner decision 2026-09-30): no Mining nav link or launchpad CTA is injected.
 
 const heroSymbol = document.querySelector('.hero-symbol');
 if (heroSymbol && !heroSymbol.querySelector('[data-hologram-stage]')) {
