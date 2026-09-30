@@ -1,0 +1,183 @@
+{
+  "review_id": "ZYRONCHAIN-CRYPTO-REVIEW-20260930",
+  "nature": "internal AI-assisted engineering review; NOT an independent audit",
+  "branch": "audit/crypto-review-20260930",
+  "base": "audit/security-20260928@da8924a",
+  "main_sha": "8794b4e2becc0ae33b2df2fd6824847327e43be6",
+  "pr913_head": "6fc97e8",
+  "pr914_head": "f0eeb97",
+  "pr913_suggestions_branch": "audit/crypto-review-20260930-pr913-suggestions",
+  "tokenomics_spec": {
+    "total_atoms": 5000000000000000,
+    "founder_atoms": 500000000000000,
+    "public_distribution_atoms": 2000000000000000,
+    "liquidity_reserve_atoms": 2000000000000000,
+    "ecosystem_atoms": 500000000000000,
+    "mining": "retired"
+  },
+  "tests": {
+    "l1_before": "711/711",
+    "l1_after": "732/732",
+    "l1_merge_with_pr913_and_suggestion": "748/748",
+    "root_pytest": "58 passed before and after",
+    "telegram_pytest_before": "30 passed, 16 skipped",
+    "telegram_pytest_after": "34 passed, 16 skipped",
+    "npm_audit": "0 vulnerabilities",
+    "typecheck": "clean",
+    "pr913_suggestions_after_owner_decisions": "625/625",
+    "merge_check_after_owner_decisions": "740/750 (10 mining-positive tests from the #903/#904 stack need conversion on integration)"
+  },
+  "findings": [
+    {
+      "ID": "ZC-CRY-20260930-001",
+      "SEVERITY": "MEDIUM",
+      "TITLE": "Consensus RPC routes fail open without bound peer auth (AUD-008) incl. CLI loopback-behind-trusted-proxy variant",
+      "FILES": [
+        "l1/src/node-base.ts"
+      ],
+      "PROOF": "l1/test/crypto-review-rpc-consensus-auth.test.ts: 3/6 failed before fix (proxied consensus reached handler; direct non-loopback reached handler; assertSafeRpcBinding(127.0.0.1,false,true) did not throw)",
+      "FIX": "Consensus routes served without bound auth only to direct loopback callers with no trusted proxy; explicit allowUnauthenticatedConsensus opt-in; assertSafeRpcBinding rejects trusted proxy without consensus auth",
+      "STATUS": "FIXED"
+    },
+    {
+      "ID": "ZC-CRY-20260930-002",
+      "SEVERITY": "HIGH",
+      "TITLE": "Mining mint path still live at protocol v5 for any genesis < 50M; fixed-supply retirement relied only on schedule remaining=0",
+      "FILES": [
+        "l1/src/mining.ts",
+        "l1/src/chain.ts",
+        "l1/src/public-testnet-governance.ts",
+        "l1/config/public-testnet-governance-input.candidate.json"
+      ],
+      "PROOF": "Existing l1/test/mining.test.ts mints 6.25 ZYN on small genesis at v5; l1/test/crypto-review-fixed-supply.test.ts 2/7 failed before explicit guard (claim was already refused via schedule, message-level)",
+      "FIX": "assertMiningClaimContext rejects all claims when genesis supply >= MAX before schedule/PoW; explicit genesis+issued+reward <= MAX check from consensus counters",
+      "STATUS": "FIXED on audit/crypto-review-20260930-pr913-suggestions (2edc6b0; mining retired for every genesis, owner decision 2026-09-30); not yet merged into #913/main; #903-stack mining tests/governance model still to convert"
+    },
+    {
+      "ID": "ZC-CRY-20260930-003",
+      "SEVERITY": "LOW",
+      "TITLE": "Transaction Merkle odd-node duplication (CVE-2012-2459 class); header does not commit to tx count",
+      "FILES": [
+        "l1/src/merkle.ts",
+        "l1/src/block.ts"
+      ],
+      "PROOF": "l1/test/crypto-review-merkle-duplicate.test.ts: validateBlockEnvelope accepted [a,b,c,c] with identical hash/signatures before fix",
+      "FIX": "Reject duplicate txids in validateBlockEnvelope; recommend domain-tagged leaves/nodes + tx count at next protocol version",
+      "STATUS": "FIXED (envelope); root format unchanged"
+    },
+    {
+      "ID": "ZC-CRY-20260930-004",
+      "SEVERITY": "LOW",
+      "TITLE": "Telegram initData non-ASCII hash raises TypeError (HTTP 500) and bypasses auth-failure rate limit",
+      "FILES": [
+        "telegram-game/src/zyron_node/auth.py"
+      ],
+      "PROOF": "telegram-game/tests/test_crypto_review_init_data.py: 2/4 failed before fix",
+      "FIX": "Require lowercase-hex hash; compare ASCII bytes with hmac.compare_digest",
+      "STATUS": "FIXED"
+    },
+    {
+      "ID": "ZC-CRY-20260930-005",
+      "SEVERITY": "INFO",
+      "TITLE": "Protocol v1/v2 consensus signatures are not domain-separated",
+      "FILES": [
+        "l1/src/block.ts",
+        "l1/src/round-view-change.ts",
+        "l1/src/transaction.ts"
+      ],
+      "PROOF": "l1/test/crypto-review-signatures.test.ts proves signed payload key-sets pairwise distinct",
+      "FIX": "None needed now; keep new message types domain-tagged (v3+ already)",
+      "STATUS": "ACCEPTED"
+    },
+    {
+      "ID": "ZC-CRY-20260930-006",
+      "SEVERITY": "MEDIUM",
+      "TITLE": "#913 assertFixedSupplyGenesis accepts activityPool = founder or liquidity reserve; oracle can drain it in one settlement",
+      "FILES": [
+        "l1/src/tokenomics.ts (pr-913)"
+      ],
+      "PROOF": "Probe against pr-913: validator accepted, oracle drain admitted to mempool for both roles; suggestion test fails before fix",
+      "FIX": "Pin activityPool to publicDistribution or ecosystemReserve (branch audit/crypto-review-20260930-pr913-suggestions)",
+      "STATUS": "FIXED on audit/crypto-review-20260930-pr913-suggestions (5a752a1; activityPool must equal ecosystemReserve; pool is outflow-only so airdrops <= 5M); not yet merged into #913"
+    },
+    {
+      "ID": "ZC-CRY-20260930-007",
+      "SEVERITY": "HIGH",
+      "TITLE": "#913 founder vesting and permanent liquidity are not enforced on-chain",
+      "FILES": [
+        "l1/src/founder-vesting.ts (pr-913)"
+      ],
+      "PROOF": "founder-vesting.ts is arithmetic only; genesis keys can spend full allocations (acknowledged in #913 docs)",
+      "FIX": "Protocol-level lock or audited custody construction before any value-bearing launch",
+      "STATUS": "REMAINING (launch blocker)"
+    },
+    {
+      "ID": "ZC-CRY-20260930-008",
+      "SEVERITY": "LOW",
+      "TITLE": "#913 block-height vesting assumes 30s cadence not enforced by consensus",
+      "FILES": [
+        "l1/src/founder-vesting.ts (pr-913)",
+        "l1/src/block.ts"
+      ],
+      "PROOF": "Consensus only requires increasing timestamps (<= +120s future)",
+      "FIX": "Vest by finalized timestamp or enforce minimum block interval",
+      "STATUS": "REMAINING"
+    },
+    {
+      "ID": "ZC-CRY-20260930-009",
+      "SEVERITY": "INFO",
+      "TITLE": "Prior audit artifacts labelled as independent audit",
+      "FILES": [
+        "docs/audit/FINDINGS.json",
+        "docs/audit/ZYRONCHAIN_SECURITY_AUDIT_REPORT.md",
+        "docs/audit/ARCHITECTURE_MAP.md"
+      ],
+      "PROOF": "Text inspection",
+      "FIX": "Labels corrected to internal automated review",
+      "STATUS": "FIXED"
+    },
+    {
+      "ID": "ZC-CRY-20260930-010",
+      "SEVERITY": "MEDIUM",
+      "TITLE": "Single activity-oracle key has unilateral, uncapped control of the activityPool balance",
+      "FILES": [
+        "l1/src/state.ts",
+        "l1/src/state-v2.ts",
+        "l1/src/chain.ts"
+      ],
+      "PROOF": "applyActivity debits pool with oracle signature only; no cap/threshold; see 006 probe",
+      "FIX": "Per-epoch cap, threshold oracle signatures, or timelocked pool",
+      "STATUS": "REMAINING"
+    },
+    {
+      "ID": "ZC-CRY-20260930-011",
+      "SEVERITY": "LOW",
+      "TITLE": "Stale mining copy after mining shutdown",
+      "FILES": [
+        "website/index.html",
+        "website/mining.html",
+        "WHITEPAPER.md",
+        "README.md",
+        "l1/README.md",
+        "l1/MINING.md",
+        "docs/PUBLIC_LAUNCH_CHECKLIST.md"
+      ],
+      "PROOF": "website/index.html:150,282,318; #914 keeps Mining Launchpad nav and status row",
+      "FIX": "Owner copy decision (#914 scope)",
+      "STATUS": "ADDRESSED on audit/crypto-review-20260930-copy-cleanup (website, 2c587df) and the #913 suggestion branch (README/WHITEPAPER/MINING docs, 6fbc1e5); #903 governance mining input and miner packaging tooling still open"
+    },
+    {
+      "ID": "ZC-CRY-20260930-012",
+      "SEVERITY": "INFO",
+      "TITLE": "Legacy Python chain: SHA-1 v1 signatures, no address checksum, non-BIP32 derivation",
+      "FILES": [
+        "zyron/transaction.py",
+        "zyron/wallet.py"
+      ],
+      "PROOF": "Code inspection; public surface quarantined (410)",
+      "FIX": "None while quarantined",
+      "STATUS": "ACCEPTED"
+    }
+  ],
+  "copy_cleanup_branch": "audit/crypto-review-20260930-copy-cleanup"
+}

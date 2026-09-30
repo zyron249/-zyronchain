@@ -1,4 +1,4 @@
-# ZyronChain L1 Architecture Map (Independent Audit 2026-09-28)
+# ZyronChain L1 Architecture Map (Internal Automated Review 2026-09-28 — not an independent audit)
 
 **Audited tip (pre-audit commits):** `d6aa19e` on `cursor/round-view-change-liveness-068e` (PR #904 stack including #903).  
 **Audit branch:** `audit/security-20260928` @ `fcc27ee`  

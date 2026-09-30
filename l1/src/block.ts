@@ -345,6 +345,14 @@ export function validateBlockEnvelope(
   if (block.header.timestampMs <= previous.header.timestampMs) throw new Error("Block time must increase");
   if (block.header.timestampMs > nowMs + 120_000) throw new Error("Block time too far in future");
   if (block.transactions.length > MAX_BLOCK_TRANSACTIONS) throw new Error("Too many transactions");
+  // ZC-CRY-20260930-003: the Merkle tree duplicates odd nodes (CVE-2012-2459
+  // class), so a duplicated tail keeps the same root/hash/signatures. Reject it
+  // here, before any caller can associate the mutated body with the block hash.
+  const envelopeTxids = new Set<string>();
+  for (const tx of block.transactions) {
+    if (envelopeTxids.has(tx.txid)) throw new Error("Duplicate transaction in block");
+    envelopeTxids.add(tx.txid);
+  }
   if (block.header.transactionRoot !== merkleRoot(block.transactions)) {
     throw new Error("Transaction Merkle root mismatch");
   }
