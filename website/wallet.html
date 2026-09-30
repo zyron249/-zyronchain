@@ -62,8 +62,10 @@
       <nav class="wallet-nav" aria-label="Wallet navigation">
         <a href="#create">Create</a>
         <a href="#backup">Backup</a>
+        <a href="#check">Check address</a>
         <a href="#use">Use</a>
         <a href="#safety">Safety</a>
+        <a href="#tr" hreflang="tr" lang="tr">Türkçe</a>
       </nav>
       <a class="mini-button" href="./index.html">Back to ZyronChain</a>
     </div>
@@ -98,6 +100,18 @@
       </div>
     </section>
 
+    <section class="wallet-status shell" aria-labelledby="wallet-status-title">
+      <h2 id="wallet-status-title" class="wallet-status-title">What works today</h2>
+      <ul class="wallet-status-grid">
+        <li data-state="ok"><span>WORKS NOW</span><strong>Create an encrypted wallet</strong><p>Offline, on your own computer, with the canonical CLI at a pinned release.</p></li>
+        <li data-state="ok"><span>WORKS NOW</span><strong>Test your backup</strong><p>The verify script decrypts your backup locally and confirms it re-derives the same address.</p></li>
+        <li data-state="ok"><span>WORKS NOW</span><strong>Check an address</strong><p>Format check and public-key → address derivation in this page, with no network access.</p></li>
+        <li data-state="gated"><span>NOT LIVE</span><strong>Balance and transfers</strong><p>There is no public wallet RPC yet, so no balance can be shown and no transfer can be sent.</p></li>
+        <li data-state="gated"><span>RETIRED</span><strong>Mining</strong><p>Mining is retired. There are no mining rewards to claim with a wallet.</p></li>
+        <li data-state="info"><span>DESIGN</span><strong>50,000,000 ZYN fixed supply</strong><p>The fixed-supply design is not yet activated on a public network.</p></li>
+      </ul>
+    </section>
+
     <section class="wallet-principles">
       <div class="shell wallet-principles-grid">
         <article><span>01</span><strong>Generate</strong><p>The canonical CLI creates a fresh secp256k1 private key using the operating system cryptographic random source.</p></article>
@@ -111,10 +125,14 @@
       <div class="wallet-section-heading">
         <span>01 / CREATE</span>
         <h2>Generate the wallet <br />on your machine.</h2>
-        <p>Choose your operating system. The script checks out the exact canonical release revision shown below, installs the locked L1 dependencies, builds the CLI and asks for the wallet password inside your local terminal.</p>
+        <p>Choose a task and your operating system. The script checks out the exact canonical release revision shown below, installs the locked L1 dependencies, builds the CLI and asks for the wallet password (twice) inside your local terminal. Right after creating the wallet it runs a restore test and prints the keystore SHA-256 for your backup records.</p>
       </div>
 
       <div class="wallet-builder" data-wallet-builder>
+        <div class="wallet-builder-tabs wallet-mode-tabs" role="tablist" aria-label="Task">
+          <button class="active" type="button" role="tab" data-wallet-mode="create" aria-selected="true">1 · Create new wallet</button>
+          <button type="button" role="tab" data-wallet-mode="restore" aria-selected="false" tabindex="-1">2 · Verify / restore a backup</button>
+        </div>
         <div class="wallet-builder-tabs" role="tablist" aria-label="Operating system">
           <button class="active" type="button" role="tab" data-wallet-os="unix" aria-selected="true">macOS / Linux</button>
           <button type="button" role="tab" data-wallet-os="windows" aria-selected="false" tabindex="-1">Windows PowerShell</button>
@@ -158,6 +176,12 @@
           <span>02 / BACKUP</span>
           <h2>Two files. <br />Two separate backups.</h2>
           <p>The encrypted keystore and its password are both required for local signing. Keeping them together defeats part of the protection provided by encryption.</p>
+          <ol class="backup-steps">
+            <li><strong>Write down</strong> the address and the <em>Keystore SHA-256</em> the script prints.</li>
+            <li><strong>Copy</strong> <code>wallet.json</code> to one offline medium and <code>wallet.password</code> (or the password itself, on paper) to a different place.</li>
+            <li><strong>Test</strong> the copies with <em>2 · Verify / restore a backup</em> above. It must print the same address and hash.</li>
+            <li><strong>Restore</strong> on a new computer the same way: run the verify script against your backups, then use the verified files with the CLI.</li>
+          </ol>
         </div>
 
         <div class="backup-diagram">
@@ -174,9 +198,29 @@
       </div>
     </section>
 
+    <section class="wallet-check section shell" id="check">
+      <div class="wallet-section-heading">
+        <span>03 / CHECK</span>
+        <h2>Check an address <br />before you share it.</h2>
+        <p>ZyronChain addresses are <code>ZYN</code> + 40 lower-case hex characters, derived as the first 20 bytes of SHA-256 of the 64-byte secp256k1 public key. The format has <strong>no checksum</strong>: a mistyped address can still look valid, so always compare every group. This checker runs entirely in your browser; it never asks for a private key, password or keystore.</p>
+      </div>
+      <div class="address-tool">
+        <label for="address-input">ZYN address <small>(public)</small></label>
+        <input id="address-input" type="text" data-address-input autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="text" placeholder="ZYN followed by 40 characters 0-9 a-f" />
+        <label for="pubkey-input">Public key <small>(optional, public: 128 hex, as printed by <code>keygen</code>)</small></label>
+        <input id="pubkey-input" type="text" data-pubkey-input autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="x||y public key, 128 hex characters" />
+        <p class="tool-result" data-address-result data-state="idle" role="status" aria-live="polite">Paste a ZYN address, a public key, or both.</p>
+        <div class="address-grouped-row">
+          <code class="address-grouped" data-address-grouped aria-label="Address split into groups of four"></code>
+          <button type="button" data-address-copy disabled>Copy address</button>
+        </div>
+        <p class="tool-note">Never paste a private key anywhere, including here. A public key and an address are safe to share.</p>
+      </div>
+    </section>
+
     <section class="wallet-use section shell" id="use">
       <div class="wallet-section-heading">
-        <span>03 / USE</span>
+        <span>04 / USE</span>
         <h2>Sign locally. <br />Submit deliberately.</h2>
         <p>The canonical CLI can submit signed transfers to a wallet-facing RPC endpoint. Public wallet RPC is not currently published, so the example stays activation-gated instead of silently pointing users at validator infrastructure.</p>
         <p>The honest way to exercise a transfer today is local, not a hosted testnet: <code>cd l1 &amp;&amp; npm ci &amp;&amp; npm run devnet</code>. Follow the public tester guide for loopback RPC, wallet creation and the printed disposable keys. This website does not publish a public RPC, explorer or faucet.</p>
@@ -201,6 +245,13 @@
         </article>
       </div>
 
+      <div class="transfer-builder" aria-label="Transfer template builder">
+        <div><label for="transfer-to">Receiver address</label><input id="transfer-to" type="text" data-transfer-to autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ZYN…" /></div>
+        <div><label for="transfer-amount">Amount (ZYN)</label><input id="transfer-amount" type="text" data-transfer-amount inputmode="decimal" autocomplete="off" placeholder="1.5" /></div>
+        <div><label for="transfer-fee">Fee (atoms)</label><input id="transfer-fee" type="text" data-transfer-fee inputmode="numeric" autocomplete="off" placeholder="1000" /></div>
+        <p class="tool-result" data-transfer-result data-state="idle" role="status" aria-live="polite">Fill in receiver and amount to build the command. Nothing is sent.</p>
+      </div>
+
       <div class="transfer-example">
         <div class="transfer-example-head"><span>TRANSFER TEMPLATE · ACTIVATION GATED</span><button type="button" data-copy-transfer>Copy</button></div>
         <pre><code data-transfer-code>export ZYRON_KEYSTORE_PASSWORD_FILE=/secure/path/wallet.password
@@ -217,7 +268,7 @@ node dist/src/cli.js transfer \
     <section class="wallet-safety section" id="safety">
       <div class="shell wallet-safety-layout">
         <div class="wallet-section-heading">
-          <span>04 / SAFETY</span>
+          <span>05 / SAFETY</span>
           <h2>The wallet rule: <br />the secret does not travel.</h2>
         </div>
         <div class="wallet-safety-list">
@@ -225,8 +276,31 @@ node dist/src/cli.js transfer \
           <article><span>NEVER</span><strong>Upload wallet.json to “verify” a wallet</strong><p>The website has no wallet-upload workflow and should never request one.</p></article>
           <article><span>CHECK</span><strong>Confirm the address before receiving funds</strong><p>Use the address stored in the authenticated keystore and compare it carefully when copying.</p></article>
           <article><span>CHECK</span><strong>Confirm chain ID and public endpoint</strong><p>Do not use rehearsal/private endpoints as though they were the activated public network.</p></article>
+          <article><span>NEVER</span><strong>Trust anyone offering a “recovery” or “airdrop claim”</strong><p>ZyronChain has no support desk that needs your files, and mining rewards do not exist (mining is retired).</p></article>
         </div>
+        <dl class="keystore-spec" aria-label="Keystore format">
+          <div><dt>Key</dt><dd>secp256k1, 32 bytes from the OS CSPRNG (<code>crypto.randomBytes</code>), redrawn if outside the valid range</dd></div>
+          <div><dt>Address</dt><dd><code>ZYN</code> + first 40 hex of SHA-256(64-byte public key x||y)</dd></div>
+          <div><dt>KDF</dt><dd>scrypt N=32768, r=8, p=1, fresh 32-byte random salt per keystore</dd></div>
+          <div><dt>Cipher</dt><dd>AES-256-GCM, fresh 12-byte random IV, 16-byte authentication tag; public key + address bound as associated data</dd></div>
+          <div><dt>Decrypt check</dt><dd>Wrong password or any tampering fails authentication; the decrypted key must re-derive the stored public key and address</dd></div>
+          <div><dt>Password</dt><dd>12+ characters, no newline; a long random passphrase is strongly recommended</dd></div>
+        </dl>
       </div>
+    </section>
+
+    <section class="wallet-tr section shell" id="tr" lang="tr" aria-labelledby="wallet-tr-title">
+      <div class="wallet-section-heading">
+        <span>TÜRKÇE ÖZET</span>
+        <h2 id="wallet-tr-title">Cüzdan: kısa ve net.</h2>
+      </div>
+      <ul class="wallet-tr-list">
+        <li><strong>Cüzdan kendi bilgisayarınızda oluşturulur.</strong> Bu site özel anahtarınızı, şifrenizi veya <code>wallet.json</code> dosyanızı hiçbir zaman istemez ve almaz.</li>
+        <li><strong>İki dosya, iki ayrı yedek.</strong> <code>wallet.json</code> (şifreli anahtar) ve şifre ayrı yerlerde saklanmalı. Yedekleri “2 · Verify / restore a backup” betiğiyle test edin; aynı adres ve SHA-256 çıkmalı.</li>
+        <li><strong>Adres biçimi:</strong> <code>ZYN</code> + 40 küçük harf onaltılık karakter. Sağlama toplamı (checksum) yoktur; paylaşmadan önce her grubu karşılaştırın.</li>
+        <li><strong>Bakiye ve transfer henüz çalışmıyor.</strong> Herkese açık bir cüzdan RPC'si yayımlanmadı. Madencilik kapatıldı. 50.000.000 ZYN sabit arz bir tasarımdır ve henüz aktif değildir.</li>
+        <li><strong>Kimseye güvenmeyin:</strong> “kurtarma”, “airdrop talebi” veya “cüzdan doğrulama” için dosya ya da şifre isteyen herkes dolandırıcıdır.</li>
+      </ul>
     </section>
 
     <section class="wallet-final shell">
@@ -248,6 +322,7 @@ node dist/src/cli.js transfer \
   </footer>
 
   <script src="./release.js"></script>
+  <script src="./wallet-core.js"></script>
   <script src="./wallet.js"></script>
 </body>
 </html>

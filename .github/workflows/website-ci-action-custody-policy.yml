@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/website-ci.yml'
+      - '.github/workflows/website-wallet-l1-crosscheck.yml'
       - '.github/workflows/miner-website-promotion-binding.yml'
       - '.github/workflows/miner-manual-platform-alternatives.yml'
       - '.github/workflows/website-ci-action-custody-policy.yml'

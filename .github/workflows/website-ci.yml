@@ -32,8 +32,11 @@ jobs:
         run: |
           node --check website/app.js
           node --check website/release.js
+          node --check website/wallet-core.js
           node --check website/wallet.js
           node --check website/validator.js
+      - name: Wallet derivation vectors and generated-script tests
+        run: node website/test-wallet-core.mjs
       - name: Verify production website, wallet and validator contracts
         shell: bash
         run: |
@@ -316,7 +319,18 @@ jobs:
             throw new Error('Main browser JavaScript must not bind to validator RPC');
           }
 
-          for (const [name, source] of [['release', releaseJs], ['wallet', walletJs], ['validator', validatorJs]]) {
+          const walletCoreJs = fs.readFileSync('website/wallet-core.js', 'utf8');
+          if (!walletHtml.includes('<script src="./wallet-core.js"></script>') ||
+              walletHtml.indexOf('<script src="./wallet-core.js"></script>') > walletHtml.indexOf('<script src="./wallet.js"></script>')) {
+            throw new Error('Wallet must load wallet-core.js before wallet.js');
+          }
+          for (const [name, source] of [['wallet.js', walletJs], ['wallet-core.js', walletCoreJs]]) {
+            // Browser wallet code may hash public data only: no key generation, signing, encryption or key import.
+            if (/getRandomValues|generateKey|importKey|deriveKey|deriveBits|subtle\.(sign|encrypt|decrypt|wrapKey|unwrapKey)|secp256k1\.sign|FileReader/.test(source)) {
+              throw new Error(`${name} must not generate, import, sign with or decrypt key material in the browser`);
+            }
+          }
+          for (const [name, source] of [['release', releaseJs], ['wallet', walletJs], ['wallet-core', walletCoreJs], ['validator', validatorJs]]) {
             if (/fetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(/.test(source)) {
               throw new Error(`${name} browser JavaScript must remain offline-only`);
             }
