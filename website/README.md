@@ -11,7 +11,9 @@ Production static website for `https://zyronchain.com`. The website is intention
 - `favicon-32.png`, `apple-touch-icon.png`, `icon-192.png` — browser and home-screen icons from that emblem.
 - `logo.svg` / `favicon.svg` — earlier vector wordmark, kept beside the raster mark.
 - `wallet.html` — local-first wallet onboarding and security education.
-- `wallet.js` — prepares pinned local wallet setup scripts and transfer templates; it never generates, requests or uploads wallet secrets.
+- `wallet.js` — prepares pinned local wallet setup and backup-verify scripts, the address checker and transfer templates; it never generates, requests or uploads wallet secrets.
+- `wallet-core.js` — public-data helpers (address format, public key → address derivation via Web Crypto SHA-256, ZYN/atoms conversion). No key generation, signing or decryption.
+- `test-wallet-core.mjs` — `node website/test-wallet-core.mjs [--require-l1]`; proves the page's address rule equals the L1 (`l1/src/crypto.ts`) and that the restore test in the generated scripts decrypts a real L1 keystore.
 - `wallet.css` — wallet-specific presentation.
 - `validator.html` — browser-based validator configuration launchpad.
 - `mining.html` — **retired** (mining shut down by owner decision, 2026-09-30). Kept only as a historical, `noindex` record; it is no longer linked from the site navigation. Public downloads stay fail-closed.
@@ -41,10 +43,15 @@ It may generate or download local terminal scripts that:
 1. verify Node.js 22+ and local prerequisites;
 2. clone the canonical repository and detach at a pinned reviewed revision;
 3. install/build the canonical TypeScript L1 CLI;
-4. ask for a wallet password **inside the local terminal**;
+4. ask for a wallet password (and its confirmation) **inside the local terminal**;
 5. create `wallet.json` with `keygen --out ... --password-file ...`;
 6. apply restrictive local permissions;
-7. print only the public `ZYN...` address.
+7. run a local restore test (decrypt with the password file, re-derive the address, print nothing secret);
+8. print only the public `ZYN...` address and the keystore SHA-256 for backup verification.
+
+A second script verifies backup copies (`wallet.json` + password file) the same way on any machine.
+
+The in-page address checker only handles public data (addresses and public keys) and uses no network.
 
 The wallet website must never request, upload, persist or transmit:
 
