@@ -89,6 +89,9 @@ async function main(): Promise<void> {
   if (command === "keygen") return keygen(args);
   if (command === "genesis") return createGenesis(args);
   if (command === "transfer") return submitTransfer(args);
+  if (command === "keystore-verify") return verifyKeystore(args);
+  if (command === "transfer-sign") return signTransferOffline(args);
+  if (command === "tx-submit") return submitSignedTransaction(args);
   if (command === "validator-proposal") return createValidatorProposalFile(args);
   if (command === "validator-approve") return approveValidatorProposal(args);
   if (command === "validator-submit") return submitValidatorProposal(args);
@@ -588,6 +591,83 @@ async function submitTransfer(args: string[]): Promise<void> {
   console.log(`Submitted transaction ${tx.txid}`);
 }
 
+/**
+ * Decrypts a keystore locally (password via ZYRON_KEYSTORE_PASSWORD_FILE) and proves it
+ * re-derives the stored identity. Prints only public data; never prints the private key.
+ */
+async function verifyKeystore(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--key"]));
+  const path = resolve(requiredOption(args, "--key"));
+  const key = await readPrivateKey(path);
+  const publicKey = publicKeyFromPrivate(key);
+  console.log("Keystore verified: it decrypts and re-derives its public key and address.");
+  console.log(`Address: ${addressFromPublicKey(publicKey)}`);
+  console.log(`Public key: ${publicKey}`);
+}
+
+/**
+ * Offline transfer signing: no network access. The caller supplies the chain ID, the next
+ * account nonce and the transaction version for the target network, so the signed transfer
+ * can be carried to an online machine and broadcast later with `tx-submit`.
+ */
+async function signTransferOffline(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set([
+    "--key", "--chain-id", "--to", "--amount-atoms", "--fee-atoms", "--nonce", "--tx-version", "--timestamp-ms", "--out"
+  ]));
+  const output = resolve(requiredOption(args, "--out"));
+  const chainId = requiredOption(args, "--chain-id");
+  if (!/^[a-z0-9-]{3,64}$/.test(chainId)) throw new Error("Invalid chain-id (expected the genesis chain ID, e.g. zyron-devnet-1)");
+  const receiver = requiredOption(args, "--to");
+  assertAddress(receiver);
+  const amountAtoms = parseSafeInteger(requiredOption(args, "--amount-atoms"), "amount-atoms");
+  const feeAtoms = parseSafeInteger(option(args, "--fee-atoms") ?? "0", "fee-atoms");
+  const nonce = parseSafeInteger(requiredOption(args, "--nonce"), "nonce");
+  if (nonce < 1) throw new Error("nonce must be the next account nonce (current nonce + 1, starting at 1)");
+  const versionText = requiredOption(args, "--tx-version");
+  if (versionText !== "1" && versionText !== "2") throw new Error("tx-version must be 1 or 2 (2 for protocol version 3 and later)");
+  const timestampMs = parseSafeInteger(option(args, "--timestamp-ms") ?? String(Date.now()), "timestamp-ms");
+  const key = await readPrivateKey(resolve(requiredOption(args, "--key")));
+  const publicKey = publicKeyFromPrivate(key);
+  const sender = addressFromPublicKey(publicKey);
+  if (receiver === sender) throw new Error("Receiver must differ from the sender");
+  const tx = createTransfer(
+    { chainId, nonce, sender, receiver, amountAtoms, feeAtoms, timestampMs },
+    key,
+    publicKey,
+    Number(versionText) as 1 | 2
+  );
+  validateTransactionShape(tx);
+  await writeFile(output, `${JSON.stringify(tx, null, 2)}\n`, { flag: "wx", mode: 0o644 });
+  console.log(`Signed transfer written (public data, no secrets): ${output}`);
+  console.log(`Transaction ID: ${tx.txid}`);
+  console.log(`From ${sender} to ${receiver}: ${amountAtoms} atoms, fee ${feeAtoms} atoms, nonce ${nonce}, chain ${chainId}`);
+}
+
+/** Broadcasts a transfer produced by `transfer-sign`. Verifies shape, txid and signature first. */
+async function submitSignedTransaction(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--tx", "--rpc"]));
+  const path = resolve(requiredOption(args, "--tx"));
+  const text = await readFile(path, "utf8");
+  if (Buffer.byteLength(text, "utf8") > 16_384) throw new Error("Signed transaction file is too large");
+  const tx = JSON.parse(text) as unknown;
+  validateTransactionShape(tx);
+  if (tx.kind !== "transfer") throw new Error("tx-submit only broadcasts signed transfers");
+  const rpc = normalizeRpcUrl(requiredOption(args, "--rpc"));
+  const response = await fetch(`${rpc}/tx`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-zyron-rpc-version": String(RPC_API_VERSION) },
+    body: JSON.stringify(tx),
+    signal: AbortSignal.timeout(8_000)
+  });
+  assertRpcApiVersion(response, RPC_API_VERSION);
+  if (!response.ok) {
+    throw new Error(`RPC rejected transaction: HTTP ${response.status} ${await readBoundedResponseText(response, 4_096, "RPC transaction error")}`);
+  }
+  const result = await readBoundedJson(response, 4_096, "RPC transaction response") as { txid?: unknown };
+  if (result.txid !== tx.txid) throw new Error("RPC transaction ID mismatch");
+  console.log(`Submitted transaction ${tx.txid}`);
+}
+
 async function createValidatorProposalFile(args: string[]): Promise<void> {
   assertKnownOptions(args, new Set(["--out", "--rpc", "--key", "--activation-height", "--validator-public-key"]));
   const output = resolve(requiredOption(args, "--out"));
@@ -1009,6 +1089,9 @@ function usage(): void {
   console.log("  zyron-l1 genesis --out genesis.json --chain-id zyron-devnet-1 --validator-public-key <hex> --oracle-public-key <hex> --activity-pool <address> --allocation <address:atoms>");
   console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json | --validator-signer-url https://signer/sign --validator-public-key <hex> --validator-signer-token-file signer-token.txt] [--peer https://node:9137] [--rpc-trusted-proxy <ip> ...] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>]");
   console.log("  zyron-l1 transfer --key wallet-key.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms <n> [--fee-atoms <n>]");
+  console.log("  zyron-l1 keystore-verify --key wallet.json            (password via ZYRON_KEYSTORE_PASSWORD_FILE; prints only public data)");
+  console.log("  zyron-l1 transfer-sign --key wallet.json --chain-id <id> --to <address> --amount-atoms <n> [--fee-atoms <n>] --nonce <next-nonce> --tx-version <1|2> --out tx.json   (offline)");
+  console.log("  zyron-l1 tx-submit --tx tx.json --rpc <url>");
   console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");
   console.log("  zyron-l1 validator-approve --proposal update.json --key validator.json --out approval.json");
   console.log("  zyron-l1 validator-submit --proposal update.json --approval approval-a.json [...] --key initiator.json --rpc <url>");

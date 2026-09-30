@@ -208,6 +208,20 @@ Create another key for a funded wallet and submit a signed transfer:
 node dist/src/cli.js transfer --key wallet.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms 100000000 --fee-atoms 1000
 ```
 
+Verify a keystore (or a backup copy) without printing the private key, and sign a transfer on an
+offline machine for later broadcast. The offline signer never touches the network, so the chain
+ID, the next account nonce (current nonce + 1) and the transaction version (1 before protocol 3,
+2 from protocol 3) must be supplied explicitly. The signed file contains only public data.
+
+```sh
+export ZYRON_KEYSTORE_PASSWORD_FILE=/secure/path/wallet.password
+node dist/src/cli.js keystore-verify --key wallet.json
+node dist/src/cli.js transfer-sign --key wallet.json --chain-id zyron-devnet-1 --to <address> \
+  --amount-atoms 100000000 --fee-atoms 1000 --nonce <next-nonce> --tx-version <1|2> --out tx.json
+# on an online machine:
+node dist/src/cli.js tx-submit --tx tx.json --rpc http://127.0.0.1:9137
+```
+
 Never commit generated key files or live genesis operator secrets.
 
 ## Rotate the validator set
