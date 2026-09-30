@@ -89,11 +89,20 @@ Quarantined (`ZYRON_LEGACY_PUBLIC_QUARANTINE` → 410). v1 txs use SHA-1-padded 
 - Secrets scan (PEM keys, Telegram bot tokens, GitHub/AWS/Slack tokens, hex private-key JSON): no hits outside obvious test constants.
 - #913 amounts: 500000000000000 / 2000000000000000 / 2000000000000000 / 500000000000000 atoms = 5e15 exactly; #914 homepage copy matches (5M/20M/20M/5M, 0 mining headroom, trading disabled button with no form/fetch).
 
+## Status update — owner decisions (2026-09-30, later the same day)
+
+The owner decided: (1) the activity airdrop is paid **only** from the 5M ecosystem/community pool; (2) mining is **retired for every genesis**. Implemented on unpushed local branches (not on main, not in #913/#914 yet):
+
+- **ZC-CRY-20260930-006 → FIXED on `audit/crypto-review-20260930-pr913-suggestions` (`5a752a1`).** `assertFixedSupplyGenesis` requires `activityPool == ecosystemReserve` and explicitly rejects founder, public-distribution and liquidity addresses. Consensus also makes the activity pool outflow-only: a transfer or settlement entry that credits it is rejected in mempool admission, `LedgerState.apply` and `applyStateV2Transaction`, so cumulative airdrops can never exceed 5,000,000 ZYN. Proof: `l1/test/activity-airdrop-cap.test.ts` (2/2 failed before the inflow ban, pass after) settles to exactly 5M and shows the next atom and any refill are rejected on every path.
+- **ZC-CRY-20260930-002 → FIXED on the same branch (`2edc6b0`).** `mining_claim` is rejected explicitly and fail-closed for every genesis and protocol version: shape validation, mempool admission, `Mempool.add`, pending selection/block production, block and proposal validation, and both state appliers. `miningRewardAtoms` always returns 0. `scripts/mine.mjs` and `local-devnet --local-v5` (`npm run mine:local`) exit non-zero. Every mining test was converted to a rejection assertion (none deleted). BREAKING: chain data containing a finalized mining claim no longer replays.
+- **ZC-CRY-20260930-011 → ADDRESSED on two branches.** Website copy is on `audit/crypto-review-20260930-copy-cleanup` (based on #914, `2c587df`): mining advertising and the Mining Launchpad links are removed, and `mining.html` is kept as a retired `noindex` record. README, WHITEPAPER, `l1/MINING.md`, `docs/MINING.md`, `l1/README.md`, PUBLIC_TEST, PUBLIC_LAUNCH_CHECKLIST and CONTRIBUTING are on the #913 suggestion branch (`2edc6b0`, `6fbc1e5`), because the website release-pin CI rejects website PRs that also touch `l1/**` or WHITEPAPER. Still open: the #903 public-testnet governance mining model and the miner packaging/release tooling (see below).
+- Merge-check caveat: this branch (which carries the #903/#904 stack) plus the suggestion branch gives 740/750. The 10 failures are mining-positive tests that only exist on this stack and must be converted to rejection tests when the branches are integrated: `audit-supply-economics`, `consensus-extended-qualification` ×2, `crypto-review-fixed-supply` ×2, `mining-economics-pin`, `public-testnet-deployment`, `public-testnet-provisioning`, `public-testnet-readiness` and `supply-invariant`.
+
 ## Remaining open items (from 2026-09-28 plus this review)
 - AUD-007 HIGH (N ≤ 3 has f = 0) — operational.
 - AUD-009 MEDIUM (unique-hash lock durability) — not addressed in this pass.
 - AUD-010 INFO — independent consensus review still required.
-- ZC-CRY-002 (unconditional mining retirement), 006 (merge into #913), 007, 008, 010, 011 — owner decisions.
+- ZC-CRY-002 / 006 / 011: implemented on unpushed suggestion branches (see status update); they still need to be merged into #913/#914 and, for the #903 stack, the mining tests and governance mining model still need converting. 007, 008 and 010 remain owner/design decisions.
 
 ## Test evidence (box-local, ET)
 

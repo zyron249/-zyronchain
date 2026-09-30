@@ -23,7 +23,9 @@
     "telegram_pytest_before": "30 passed, 16 skipped",
     "telegram_pytest_after": "34 passed, 16 skipped",
     "npm_audit": "0 vulnerabilities",
-    "typecheck": "clean"
+    "typecheck": "clean",
+    "pr913_suggestions_after_owner_decisions": "625/625",
+    "merge_check_after_owner_decisions": "740/750 (10 mining-positive tests from the #903/#904 stack need conversion on integration)"
   },
   "findings": [
     {
@@ -49,7 +51,7 @@
       ],
       "PROOF": "Existing l1/test/mining.test.ts mints 6.25 ZYN on small genesis at v5; l1/test/crypto-review-fixed-supply.test.ts 2/7 failed before explicit guard (claim was already refused via schedule, message-level)",
       "FIX": "assertMiningClaimContext rejects all claims when genesis supply >= MAX before schedule/PoW; explicit genesis+issued+reward <= MAX check from consensus counters",
-      "STATUS": "PARTIALLY FIXED (unconditional retirement requires consensus/product decision with #913)"
+      "STATUS": "FIXED on audit/crypto-review-20260930-pr913-suggestions (2edc6b0; mining retired for every genesis, owner decision 2026-09-30); not yet merged into #913/main; #903-stack mining tests/governance model still to convert"
     },
     {
       "ID": "ZC-CRY-20260930-003",
@@ -96,7 +98,7 @@
       ],
       "PROOF": "Probe against pr-913: validator accepted, oracle drain admitted to mempool for both roles; suggestion test fails before fix",
       "FIX": "Pin activityPool to publicDistribution or ecosystemReserve (branch audit/crypto-review-20260930-pr913-suggestions)",
-      "STATUS": "FIX PROPOSED (not in #913)"
+      "STATUS": "FIXED on audit/crypto-review-20260930-pr913-suggestions (5a752a1; activityPool must equal ecosystemReserve; pool is outflow-only so airdrops <= 5M); not yet merged into #913"
     },
     {
       "ID": "ZC-CRY-20260930-007",
@@ -162,7 +164,7 @@
       ],
       "PROOF": "website/index.html:150,282,318; #914 keeps Mining Launchpad nav and status row",
       "FIX": "Owner copy decision (#914 scope)",
-      "STATUS": "REMAINING"
+      "STATUS": "ADDRESSED on audit/crypto-review-20260930-copy-cleanup (website, 2c587df) and the #913 suggestion branch (README/WHITEPAPER/MINING docs, 6fbc1e5); #903 governance mining input and miner packaging tooling still open"
     },
     {
       "ID": "ZC-CRY-20260930-012",
@@ -176,5 +178,6 @@
       "FIX": "None while quarantined",
       "STATUS": "ACCEPTED"
     }
-  ]
+  ],
+  "copy_cleanup_branch": "audit/crypto-review-20260930-copy-cleanup"
 }
