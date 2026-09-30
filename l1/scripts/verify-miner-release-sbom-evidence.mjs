@@ -34,7 +34,7 @@ function exactSourceBlob(relativePath) {
   return bytes;
 }
 
-if (policy.schemaVersion !== 4) throw new Error('SBOM promotion gate requires schemaVersion=4');
+if (policy.schemaVersion !== 5) throw new Error('SBOM promotion gate requires schemaVersion=5');
 if (typeof policy.sbomVerified !== 'boolean') throw new Error('sbomVerified must be boolean');
 if (!policy.evidence || typeof policy.evidence !== 'object' || Array.isArray(policy.evidence)) throw new Error('evidence object required');
 for (const key of [...Object.values(sbomKeys), 'sbomVerification']) {
