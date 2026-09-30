@@ -1,6 +1,6 @@
 {
   "audit_id": "ZYRONCHAIN-L1-SECURITY-20260928",
-  "auditor": "independent-senior-blockchain-security-auditor (automated executor)",
+  "auditor": "internal automated review (AI executor); NOT an independent audit (label corrected by ZC-CRY-20260930-009)",
   "branch": "audit/security-20260928",
   "base_tip_audited": "d6aa19e4043527a13cbe98fb2b5e648ff2661e7e",
   "audit_commit": "fcc27ee0d3e83c16af80bf141d6d3e7eda68c0d8",
@@ -65,7 +65,7 @@
         "validateGenesis"
       ],
       "DESCRIPTION": "Chain.validateGenesis correctly rejects MINING_TRACKER_ADDRESS allocations, but LedgerState.fromGenesis did not. Direct construction could credit the protocol-reserved tracker address, corrupting the miningClaimCount nonce semantics if nonce were later manipulated and creating inconsistent ledger snapshots.",
-      "ATTACK": "Feed a crafted genesis/snapshot path that uses LedgerState.fromGenesis without validateGenesis (tests, tooling, or future callers) and allocate to ZYN000\u20260.",
+      "ATTACK": "Feed a crafted genesis/snapshot path that uses LedgerState.fromGenesis without validateGenesis (tests, tooling, or future callers) and allocate to ZYN000…0.",
       "PRECONDITIONS": "Caller uses LedgerState.fromGenesis without Chain.validateGenesis.",
       "IMPACT": "Defense-in-depth failure; potential mining-counter confusion if combined with other bugs. Production Chain.open path was already gated.",
       "PROOF": "Independent probe: LedgerState.fromGenesis({allocations:[{address:MINING_TRACKER_ADDRESS,amountAtoms:100}]}) succeeded before fix.",
@@ -167,7 +167,7 @@
       "PROOF": "Code comparison of applyMining vs applyMiningClaimStateV2.",
       "ROOT_CAUSE": "Sparse Merkle apply lacks global supply accumulator.",
       "FIX": "Optional: track cumulative supply or re-check schedule-issued+genesis in applyMiningClaimStateV2.",
-      "PATCH_STATUS": "REMAINING",
+      "PATCH_STATUS": "MITIGATED on audit/crypto-review-20260930 by ZC-CRY-20260930-002 (explicit genesis+issued+reward <= MAX check in assertMiningClaimContext, shared by legacy and State-v2 paths)",
       "TEST_ADDED": "NOT TESTED (no exploit under current gates)",
       "RETEST": "NOT TESTED"
     },
@@ -214,9 +214,9 @@
       "PROOF": "preauthorizeConsensusRequest no-ops when both auth mechanisms unset; assertSafeRpcBinding only in CLI path.",
       "ROOT_CAUSE": "Auth optional at library layer; safety pushed to CLI.",
       "FIX": "REMAINING: fail-closed default in createRpcServer when host is non-loopback, or require explicit allowUnauthenticatedConsensus.",
-      "PATCH_STATUS": "REMAINING",
+      "PATCH_STATUS": "FIXED on audit/crypto-review-20260930 by ZC-CRY-20260930-001 (fail-closed consensus routes without bound auth)",
       "TEST_ADDED": "l1/test/audit-rpc-classification.test.ts",
-      "RETEST": "PASS (characterization of CLI binding rules)"
+      "RETEST": "PASS (l1/test/crypto-review-rpc-consensus-auth.test.ts)"
     },
     {
       "ID": "ZC-AUD-20260928-009",
@@ -252,7 +252,7 @@
         "validateViewChangeCertificate"
       ],
       "DESCRIPTION": "Bounded search covers N=3,4,7 assignments but is not a complete model check. Author package explicitly says it is not an independent review.",
-      "ATTACK": "N/A \u2014 assurance gap.",
+      "ATTACK": "N/A — assurance gap.",
       "PRECONDITIONS": "Mainnet launch without external review.",
       "IMPACT": "Residual unknown consensus risk.",
       "PROOF": "docs/consensus-review/00-README.md; exploreBoundedConsensus limits.",

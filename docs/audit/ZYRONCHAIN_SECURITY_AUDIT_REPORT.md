@@ -1,7 +1,7 @@
 # ZyronChain L1 Security / Correctness Audit Report
 
 **Date:** 2026-09-28 (America/New_York)  
-**Auditor role:** Independent senior blockchain security auditor (executor pass; do not treat as human sign-off)  
+**Auditor role:** Internal automated review (AI executor pass); not an independent audit and not human sign-off (label corrected 2026-09-30, ZC-CRY-20260930-009)  
 **Clone:** `/workspace/zyron-l1/-zyronchain`  
 **Audit branch:** `audit/security-20260928`  
 **Consensus candidate tip audited:** `d6aa19e4043527a13cbe98fb2b5e648ff2661e7e` (`cursor/round-view-change-liveness-068e`, #904+#903)  
