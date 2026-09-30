@@ -103,11 +103,14 @@
     <section class="wallet-status shell" aria-labelledby="wallet-status-title">
       <h2 id="wallet-status-title" class="wallet-status-title">What works today</h2>
       <ul class="wallet-status-grid">
-        <li data-state="ok"><span>WORKS NOW</span><strong>Create an encrypted wallet</strong><p>Offline, on your own computer, with the canonical CLI at a pinned release.</p></li>
-        <li data-state="ok"><span>WORKS NOW</span><strong>Test your backup</strong><p>The verify script decrypts your backup locally and confirms it re-derives the same address.</p></li>
-        <li data-state="ok"><span>WORKS NOW</span><strong>Check an address</strong><p>Format check and public-key → address derivation in this page, with no network access.</p></li>
+        <li data-state="ok"><span>WORKS NOW</span><strong>Create an encrypted wallet</strong><p>Offline, on your own computer, with the canonical CLI at a pinned release. The password is asked for in the terminal and checked for strength.</p></li>
+        <li data-state="ok"><span>WORKS NOW</span><strong>No password file left behind</strong><p>The scripts keep the password in memory and a private temporary file only for the seconds the CLI needs it, then shred it.</p></li>
+        <li data-state="ok"><span>WORKS NOW</span><strong>Test your backup</strong><p>The verify script decrypts your backup locally and confirms it re-derives the same address and hash.</p></li>
+        <li data-state="ok"><span>WORKS NOW</span><strong>Checksummed addresses</strong><p>The checker below and the create script show a mixed-case display checksum that catches typos. The plain lower-case form stays valid and is what the chain uses. CLI support is in PR #921.</p></li>
+        <li data-state="info"><span>IN REVIEW</span><strong>Stronger keystore (v2)</strong><p>scrypt N=2^17 with v1→v2 migration is implemented in draft PR #921. Until it is merged, new keystores use v1 (N=2^15), which will stay readable.</p></li>
         <li data-state="gated"><span>NOT LIVE</span><strong>Balance and transfers</strong><p>There is no public wallet RPC yet, so no balance can be shown and no transfer can be sent.</p></li>
         <li data-state="gated"><span>RETIRED</span><strong>Mining</strong><p>Mining is retired. There are no mining rewards to claim with a wallet.</p></li>
+        <li data-state="info"><span>IN PROGRESS</span><strong>Hardened page headers</strong><p>This page refuses to run inside a frame and sends no referrer. Server-side HSTS and framing headers are pending a hosting setting.</p></li>
         <li data-state="info"><span>DESIGN</span><strong>50,000,000 ZYN fixed supply</strong><p>The fixed-supply design is not yet activated on a public network.</p></li>
       </ul>
     </section>
@@ -116,7 +119,7 @@
       <div class="shell wallet-principles-grid">
         <article><span>01</span><strong>Generate</strong><p>The canonical CLI creates a fresh secp256k1 private key using the operating system cryptographic random source.</p></article>
         <article><span>02</span><strong>Encrypt</strong><p>New keystores use scrypt-derived encryption keys and AES-256-GCM authenticated encryption.</p></article>
-        <article><span>03</span><strong>Derive</strong><p>The public address is derived from the public key and encoded as <code>ZYN</code> plus 40 lowercase hex characters.</p></article>
+        <article><span>03</span><strong>Derive</strong><p>The public address is derived from the public key and encoded as <code>ZYN</code> plus 40 lowercase hex characters. A mixed-case checksum form is for display only.</p></article>
         <article><span>04</span><strong>Control</strong><p>The website never receives the password, private key, keystore file or signing request.</p></article>
       </div>
     </section>
@@ -125,7 +128,7 @@
       <div class="wallet-section-heading">
         <span>01 / CREATE</span>
         <h2>Generate the wallet <br />on your machine.</h2>
-        <p>Choose a task and your operating system. The script checks out the exact canonical release revision shown below, installs the locked L1 dependencies, builds the CLI and asks for the wallet password (twice) inside your local terminal. Right after creating the wallet it runs a restore test and prints the keystore SHA-256 for your backup records.</p>
+        <p>Choose a task and your operating system. The script checks out the exact canonical release revision shown below, installs the locked L1 dependencies, builds the CLI and asks for the wallet password (twice) inside your local terminal, rejecting weak passwords. No password file is kept: it exists only in a private temporary file for the few seconds the CLI needs it and is then shredded. Right after creating the wallet it runs a restore test and prints the address, its checksummed form and the keystore SHA-256 for your backup records. For automation only, <code>ZYRON_WALLET_PASSWORD</code> skips the prompt (the script warns: environment variables can leak to other processes of your user, shell history and CI logs).</p>
       </div>
 
       <div class="wallet-builder" data-wallet-builder>
@@ -141,7 +144,7 @@
         <div class="wallet-builder-body">
           <div class="wallet-builder-meta">
             <div><span>OUTPUT</span><strong>wallet.json</strong></div>
-            <div><span>PASSWORD FILE</span><strong>wallet.password</strong></div>
+            <div><span>PASSWORD</span><strong>Prompted; never stored</strong></div>
             <div><span>RELEASE</span><strong data-release-short title="Canonical release commit">loading…</strong></div>
             <div><span>NETWORK</span><strong>Not required to create</strong></div>
           </div>
@@ -159,7 +162,7 @@
 
           <div class="wallet-run-note">
             <span>HOW TO RUN</span>
-            <p data-wallet-run-note>Save the script, review it, then run it from Terminal. It will request a 12+ character password locally and create files with restrictive permissions.</p>
+            <p data-wallet-run-note>Save the script, review it, then run it from Terminal. It will request a strong password locally and create the keystore with restrictive permissions.</p>
           </div>
         </div>
       </div>
@@ -174,20 +177,20 @@
       <div class="shell wallet-backup-layout">
         <div class="wallet-section-heading">
           <span>02 / BACKUP</span>
-          <h2>Two files. <br />Two separate backups.</h2>
-          <p>The encrypted keystore and its password are both required for local signing. Keeping them together defeats part of the protection provided by encryption.</p>
+          <h2>Keystore + password. <br />Two separate backups.</h2>
+          <p>The encrypted keystore and its password are both required for local signing. The scripts do not save the password anywhere, so remember it or write it down offline. Keeping it next to the keystore defeats part of the protection provided by encryption.</p>
           <ol class="backup-steps">
             <li><strong>Write down</strong> the address and the <em>Keystore SHA-256</em> the script prints.</li>
-            <li><strong>Copy</strong> <code>wallet.json</code> to one offline medium and <code>wallet.password</code> (or the password itself, on paper) to a different place.</li>
-            <li><strong>Test</strong> the copies with <em>2 · Verify / restore a backup</em> above. It must print the same address and hash.</li>
-            <li><strong>Restore</strong> on a new computer the same way: run the verify script against your backups, then use the verified files with the CLI.</li>
+            <li><strong>Copy</strong> <code>wallet.json</code> to one offline medium and keep the password (on paper or in an offline password manager) in a different place.</li>
+            <li><strong>Test</strong> the copy with <em>2 · Verify / restore a backup</em> above. It asks for the password and must print the same address and hash.</li>
+            <li><strong>Restore</strong> on a new computer the same way: run the verify script against your backup, then use the verified keystore with the CLI.</li>
           </ol>
         </div>
 
         <div class="backup-diagram">
           <div class="backup-file"><span>ENCRYPTED KEYSTORE</span><strong>wallet.json</strong><small>Contains encrypted key material + public identity</small></div>
           <div class="backup-separator"><i></i><span>KEEP SEPARATE</span><i></i></div>
-          <div class="backup-file"><span>PASSWORD BACKUP</span><strong>wallet.password</strong><small>Keep offline and away from the keystore copy</small></div>
+          <div class="backup-file"><span>PASSWORD BACKUP</span><strong>your password</strong><small>Never saved by the scripts; keep it offline and away from the keystore copy</small></div>
           <div class="backup-rules">
             <p><i>✓</i> Keep at least one offline backup.</p>
             <p><i>✓</i> Never commit either file to GitHub.</p>
@@ -202,17 +205,18 @@
       <div class="wallet-section-heading">
         <span>03 / CHECK</span>
         <h2>Check an address <br />before you share it.</h2>
-        <p>ZyronChain addresses are <code>ZYN</code> + 40 lower-case hex characters, derived as the first 20 bytes of SHA-256 of the 64-byte secp256k1 public key. The format has <strong>no checksum</strong>: a mistyped address can still look valid, so always compare every group. This checker runs entirely in your browser; it never asks for a private key, password or keystore.</p>
+        <p>ZyronChain addresses are <code>ZYN</code> + 40 lower-case hex characters, derived as the first 20 bytes of SHA-256 of the 64-byte secp256k1 public key. The consensus form has no checksum, so ZyronChain also defines a <strong>display-only checksum</strong>: some letters are upper-cased according to SHA-256 of the address (like Ethereum's EIP-55). A wrong upper/lower-case pattern means a typo. The plain lower-case form stays valid everywhere and is what the chain stores (<a href="https://github.com/zyron249/-zyronchain/blob/main/docs/ADDRESS_CHECKSUM.md" target="_blank" rel="noopener noreferrer">spec ↗</a>). This checker runs entirely in your browser; it never asks for a private key, password or keystore.</p>
       </div>
       <div class="address-tool">
         <label for="address-input">ZYN address <small>(public)</small></label>
-        <input id="address-input" type="text" data-address-input autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="text" placeholder="ZYN followed by 40 characters 0-9 a-f" />
+        <input id="address-input" type="text" data-address-input autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="text" placeholder="ZYN + 40 hex characters (plain or checksummed)" />
         <label for="pubkey-input">Public key <small>(optional, public: 128 hex, as printed by <code>keygen</code>)</small></label>
         <input id="pubkey-input" type="text" data-pubkey-input autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="x||y public key, 128 hex characters" />
         <p class="tool-result" data-address-result data-state="idle" role="status" aria-live="polite">Paste a ZYN address, a public key, or both.</p>
         <div class="address-grouped-row">
           <code class="address-grouped" data-address-grouped aria-label="Address split into groups of four"></code>
-          <button type="button" data-address-copy disabled>Copy address</button>
+          <button type="button" data-address-copy disabled>Copy checksummed</button>
+          <button type="button" data-address-copy-plain disabled>Copy plain (for today's CLI)</button>
         </div>
         <p class="tool-note">Never paste a private key anywhere, including here. A public key and an address are safe to share.</p>
       </div>
@@ -254,7 +258,8 @@
 
       <div class="transfer-example">
         <div class="transfer-example-head"><span>TRANSFER TEMPLATE · ACTIVATION GATED</span><button type="button" data-copy-transfer>Copy</button></div>
-        <pre><code data-transfer-code>export ZYRON_KEYSTORE_PASSWORD_FILE=/secure/path/wallet.password
+        <pre><code data-transfer-code># Today's CLI reads the password from a 0600 file: create it only for this command, then delete it.
+export ZYRON_KEYSTORE_PASSWORD_FILE=/secure/path/wallet.password
 node dist/src/cli.js transfer \
   --key wallet.json \
   --rpc &lt;PUBLIC_WALLET_RPC_WHEN_PUBLISHED&gt; \
@@ -281,10 +286,11 @@ node dist/src/cli.js transfer \
         <dl class="keystore-spec" aria-label="Keystore format">
           <div><dt>Key</dt><dd>secp256k1, 32 bytes from the OS CSPRNG (<code>crypto.randomBytes</code>), redrawn if outside the valid range</dd></div>
           <div><dt>Address</dt><dd><code>ZYN</code> + first 40 hex of SHA-256(64-byte public key x||y)</dd></div>
-          <div><dt>KDF</dt><dd>scrypt N=32768, r=8, p=1, fresh 32-byte random salt per keystore</dd></div>
+          <div><dt>KDF</dt><dd>Current release (v1): scrypt N=32768, r=8, p=1, fresh 32-byte random salt per keystore. v2 in review (PR #921): N=131072 (2^17), parameters bound into the authenticated data, v1 still readable and migratable</dd></div>
           <div><dt>Cipher</dt><dd>AES-256-GCM, fresh 12-byte random IV, 16-byte authentication tag; public key + address bound as associated data</dd></div>
           <div><dt>Decrypt check</dt><dd>Wrong password or any tampering fails authentication; the decrypted key must re-derive the stored public key and address</dd></div>
-          <div><dt>Password</dt><dd>12+ characters, no newline; a long random passphrase is strongly recommended</dd></div>
+          <div><dt>Password</dt><dd>Scripts require 12+ characters, 6+ distinct characters and about 60+ estimated bits; a long random passphrase is strongly recommended. Never stored by the scripts</dd></div>
+          <div><dt>Checksum</dt><dd>Display only: letter i upper-cased when nibble i of SHA-256("zyronchain/address-checksum/v1:" + address) ≥ 8. Consensus unchanged</dd></div>
         </dl>
       </div>
     </section>
@@ -296,8 +302,9 @@ node dist/src/cli.js transfer \
       </div>
       <ul class="wallet-tr-list">
         <li><strong>Cüzdan kendi bilgisayarınızda oluşturulur.</strong> Bu site özel anahtarınızı, şifrenizi veya <code>wallet.json</code> dosyanızı hiçbir zaman istemez ve almaz.</li>
-        <li><strong>İki dosya, iki ayrı yedek.</strong> <code>wallet.json</code> (şifreli anahtar) ve şifre ayrı yerlerde saklanmalı. Yedekleri “2 · Verify / restore a backup” betiğiyle test edin; aynı adres ve SHA-256 çıkmalı.</li>
-        <li><strong>Adres biçimi:</strong> <code>ZYN</code> + 40 küçük harf onaltılık karakter. Sağlama toplamı (checksum) yoktur; paylaşmadan önce her grubu karşılaştırın.</li>
+        <li><strong>Anahtar dosyası ve şifre, iki ayrı yedek.</strong> Betikler şifreyi diske kaydetmez; şifreyi ezberleyin veya çevrimdışı yazın ve <code>wallet.json</code> dosyasından ayrı saklayın. Yedeği “2 · Verify / restore a backup” betiğiyle test edin; aynı adres ve SHA-256 çıkmalı.</li>
+        <li><strong>Güçlü şifre:</strong> en az 12 karakter, en az 6 farklı karakter ve yaklaşık 60 bit tahmini güç gerekir. En iyisi uzun bir parola cümlesidir.</li>
+        <li><strong>Adres biçimi:</strong> <code>ZYN</code> + 40 onaltılık karakter. Zincir küçük harfli biçimi kullanır; site ve CLI ayrıca yalnızca görüntüleme amaçlı bir sağlama toplamı (checksum) gösterir: bazı harfler büyük yazılır. Büyük/küçük harf deseni tutmazsa adres hatalı yazılmıştır.</li>
         <li><strong>Bakiye ve transfer henüz çalışmıyor.</strong> Herkese açık bir cüzdan RPC'si yayımlanmadı. Madencilik kapatıldı. 50.000.000 ZYN sabit arz bir tasarımdır ve henüz aktif değildir.</li>
         <li><strong>Kimseye güvenmeyin:</strong> “kurtarma”, “airdrop talebi” veya “cüzdan doğrulama” için dosya ya da şifre isteyen herkes dolandırıcıdır.</li>
       </ul>

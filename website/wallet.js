@@ -3,14 +3,69 @@ if (typeof RELEASE_REF !== 'string' || !/^[0-9a-f]{40}$/.test(RELEASE_REF)) {
   throw new Error('ZyronChain canonical release reference is unavailable');
 }
 
+// Defense in depth against clickjacking until frame-ancestors/X-Frame-Options are served as
+// HTTP headers: refuse to render the wallet page inside a frame.
+if (globalThis.top !== globalThis.self && globalThis.document) {
+  document.documentElement.style.display = 'none';
+  throw new Error('ZyronChain wallet page refuses to render inside a frame');
+}
+
 const core = globalThis.ZyronWalletCore;
 if (!core || typeof core.RESTORE_CHECK_JS !== 'string') {
   throw new Error('ZyronChain wallet helpers are unavailable');
 }
 const RESTORE_JS = core.RESTORE_CHECK_JS;
+const PASSWORD_CHECK_JS = core.PASSWORD_CHECK_JS;
+// Prints the address, its display-only checksum form and 4-character groups (public data only).
+const ADDRESS_PRINT_JS = [
+  "const fs=require('node:fs');const c=require('node:crypto');",
+  "const a=JSON.parse(fs.readFileSync(process.argv[1],'utf8')).address;",
+  `const h=c.createHash('sha256').update('${core.ADDRESS_CHECKSUM_DOMAIN}'+a).digest('hex');`,
+  "let o='ZYN';for(let i=0;i<40;i++){const ch=a[i+3];o+=(ch>='a'&&ch<='f'&&parseInt(h[i],16)>=8)?ch.toUpperCase():ch;}",
+  "console.log('ZyronChain address:         '+a);",
+  "console.log('Checksummed (display only): '+o);",
+  "console.log('Grouped to compare:         '+['ZYN',...o.slice(3).match(/.{4}/g)].join(' '));"
+].join('');
+const psQuote = (value) => `'${value.replace(/'/g, "''")}'`;
+
+// Shared bash: the password lives only in shell memory and, for the few seconds the CLI needs it,
+// in a 0600 file inside a private temp directory (RAM-backed /dev/shm when available) that is
+// shredded/removed on exit, including on errors and Ctrl+C.
+const unixSecretHelpers = [
+  'SECRET_DIR=""',
+  'cleanup_secret() {',
+  '  if [ -n "$SECRET_DIR" ] && [ -d "$SECRET_DIR" ]; then',
+  '    if [ -f "$SECRET_DIR/wallet.password" ]; then',
+  '      if command -v shred >/dev/null 2>&1; then shred -u "$SECRET_DIR/wallet.password"; else rm -f "$SECRET_DIR/wallet.password"; fi',
+  '    fi',
+  '    rmdir "$SECRET_DIR" 2>/dev/null || true',
+  '  fi',
+  '  SECRET_DIR=""',
+  '}',
+  'trap cleanup_secret EXIT',
+  "trap 'exit 130' INT TERM",
+  'make_password_file() {',
+  '  if [ -d /dev/shm ] && [ -w /dev/shm ]; then SECRET_DIR="$(mktemp -d /dev/shm/zyron-wallet.XXXXXX)"; else SECRET_DIR="$(mktemp -d "${TMPDIR:-/tmp}/zyron-wallet.XXXXXX")"; fi',
+  '  chmod 700 "$SECRET_DIR"',
+  '  PASSWORD_FILE="$SECRET_DIR/wallet.password"',
+  '  (umask 077; printf "%s" "$WALLET_PASSWORD" > "$PASSWORD_FILE")',
+  '  unset WALLET_PASSWORD',
+  '}',
+  'read_env_password() {',
+  '  if [ -n "${ZYRON_WALLET_PASSWORD:-}" ]; then',
+  '    echo "WARNING: using ZYRON_WALLET_PASSWORD from the environment (automation only)." >&2',
+  '    echo "         Environment variables can leak to other processes of this user, shell history and CI logs. Unset it afterwards." >&2',
+  '    WALLET_PASSWORD="$ZYRON_WALLET_PASSWORD"',
+  '    return 0',
+  '  fi',
+  '  return 1',
+  '}'
+];
 
 const unixScript = [
   '#!/usr/bin/env bash',
+  '# Create a ZyronChain wallet locally. No password file is left on disk.',
+  '# Automation only: export ZYRON_WALLET_PASSWORD to skip the prompt (see the warning it prints).',
   'set -euo pipefail',
   '',
   `RELEASE_REF="${RELEASE_REF}"`,
@@ -39,43 +94,77 @@ const unixScript = [
   'npm run build',
   '',
   'umask 077',
-  'printf "Choose wallet password (12+ chars, a long passphrase is best): "',
-  'IFS= read -r -s ZYRON_WALLET_PASSWORD',
-  'printf "\\n"',
-  'if [ "${#ZYRON_WALLET_PASSWORD}" -lt 12 ]; then',
-  '  unset ZYRON_WALLET_PASSWORD',
-  '  echo "Password must contain at least 12 characters" >&2',
-  '  exit 1',
+  ...unixSecretHelpers,
+  '',
+  'if ! read_env_password; then',
+  '  printf "Choose wallet password (12+ chars, a long passphrase is best): "',
+  '  IFS= read -r -s WALLET_PASSWORD',
+  '  printf "\\n"',
+  '  printf "Type the same password again: "',
+  '  IFS= read -r -s WALLET_PASSWORD_CONFIRM',
+  '  printf "\\n"',
+  '  if [ "$WALLET_PASSWORD" != "$WALLET_PASSWORD_CONFIRM" ]; then',
+  '    unset WALLET_PASSWORD WALLET_PASSWORD_CONFIRM',
+  '    echo "Passwords do not match. Nothing was created." >&2',
+  '    exit 1',
+  '  fi',
+  '  unset WALLET_PASSWORD_CONFIRM',
   'fi',
-  'printf "Type the same password again: "',
-  'IFS= read -r -s ZYRON_WALLET_PASSWORD_CONFIRM',
-  'printf "\\n"',
-  'if [ "$ZYRON_WALLET_PASSWORD" != "$ZYRON_WALLET_PASSWORD_CONFIRM" ]; then',
-  '  unset ZYRON_WALLET_PASSWORD ZYRON_WALLET_PASSWORD_CONFIRM',
-  '  echo "Passwords do not match. Nothing was created." >&2',
-  '  exit 1',
-  'fi',
-  'printf "%s" "$ZYRON_WALLET_PASSWORD" > wallet.password',
-  'unset ZYRON_WALLET_PASSWORD ZYRON_WALLET_PASSWORD_CONFIRM',
   '',
-  'node dist/src/cli.js keygen --out wallet.json --password-file wallet.password',
-  'chmod 600 wallet.json wallet.password',
+  '# Strength check (length, repetition, ~60-bit estimate). The password goes through stdin, never argv.',
+  `printf "%s" "$WALLET_PASSWORD" | node -e "${PASSWORD_CHECK_JS}"`,
   '',
-  '# Restore test: decrypt locally with the password file and re-derive the address.',
-  '# Only the public address is printed; the private key never leaves this process.',
-  `node -e "${RESTORE_JS}" wallet.json wallet.password`,
+  'make_password_file',
+  'node dist/src/cli.js keygen --out wallet.json --password-file "$PASSWORD_FILE"',
+  'chmod 600 wallet.json',
   '',
-  'node -e "const fs=require(\'node:fs\');const w=JSON.parse(fs.readFileSync(\'wallet.json\',\'utf8\'));console.log(\'\\nZyronChain address:\',w.address);console.log(\'Grouped to compare:\',[\'ZYN\',...w.address.slice(3).match(/.{4}/g)].join(\' \'));"',
+  '# Restore test: decrypt locally and re-derive the address. Only the public address is printed.',
+  `node -e "${RESTORE_JS}" wallet.json "$PASSWORD_FILE"`,
+  'cleanup_secret',
+  '',
+  `node -e "${ADDRESS_PRINT_JS}" wallet.json`,
   'if command -v sha256sum >/dev/null 2>&1; then KEYSTORE_SHA256="$(sha256sum wallet.json | cut -d\' \' -f1)"; else KEYSTORE_SHA256="$(shasum -a 256 wallet.json | cut -d\' \' -f1)"; fi',
   'echo "Encrypted keystore: $WORKDIR/l1/wallet.json"',
   'echo "Keystore SHA-256:   $KEYSTORE_SHA256  (write it down; a backup copy must hash to the same value)"',
-  'echo "Password file:       $WORKDIR/l1/wallet.password"',
-  'echo "Back these files up separately. Never upload either file to a website."',
+  'echo "No password file was kept. Remember the password or store it offline, separate from the keystore."',
   'echo "Mining is retired and no public wallet RPC exists yet: balances and transfers are not live."',
   ''
 ].join('\n');
 
+const windowsSecretHelpers = [
+  'function Get-EnvWalletPassword {',
+  '  if ($env:ZYRON_WALLET_PASSWORD) {',
+  '    Write-Warning "Using ZYRON_WALLET_PASSWORD from the environment (automation only). Environment variables can leak to other processes of this user, shell history and CI logs. Remove it afterwards."',
+  '    return $env:ZYRON_WALLET_PASSWORD',
+  '  }',
+  '  return $null',
+  '}',
+  'function New-PasswordFile([string]$Plain) {',
+  '  $dir = Join-Path ([IO.Path]::GetTempPath()) ("zyron-wallet-" + [guid]::NewGuid().ToString("N"))',
+  '  New-Item -ItemType Directory -Path $dir | Out-Null',
+  '  icacls $dir /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" | Out-Null',
+  '  $file = Join-Path $dir "wallet.password"',
+  '  [IO.File]::WriteAllText($file, $Plain, (New-Object Text.UTF8Encoding($false)))',
+  '  return $file',
+  '}',
+  'function Remove-PasswordFile([string]$File) {',
+  '  if ($File -and (Test-Path -LiteralPath $File)) {',
+  '    [IO.File]::WriteAllBytes($File, (New-Object byte[] 1024))',
+  '    Remove-Item -LiteralPath $File -Force',
+  '    Remove-Item -LiteralPath (Split-Path -Parent $File) -Force -Recurse -ErrorAction SilentlyContinue',
+  '  }',
+  '}',
+  'function Read-PlainSecure([string]$Prompt) {',
+  '  $secure = Read-Host $Prompt -AsSecureString',
+  '  $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)',
+  '  try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }',
+  '  finally { if ($bstr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) } }',
+  '}'
+];
+
 const windowsScript = [
+  '# Create a ZyronChain wallet locally. No password file is left on disk.',
+  '# Automation only: set $env:ZYRON_WALLET_PASSWORD to skip the prompt (see the warning it prints).',
   '$ErrorActionPreference = "Stop"',
   `$ReleaseRef = "${RELEASE_REF}"`,
   '$WorkDir = Join-Path $HOME "zyronchain-wallet-setup"',
@@ -95,45 +184,41 @@ const windowsScript = [
   'npm ci',
   'npm run build',
   '',
-  '$SecurePassword = Read-Host "Choose wallet password (12+ chars)" -AsSecureString',
-  '$SecureConfirm = Read-Host "Type the same password again" -AsSecureString',
-  '$Bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)',
-  '$BstrConfirm = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureConfirm)',
-  'try {',
-  '  $PlainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($Bstr)',
-  '  $PlainConfirm = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($BstrConfirm)',
-  '  if ($PlainPassword.Length -lt 12) { throw "Password must contain at least 12 characters" }',
-  '  if (-not [string]::Equals($PlainPassword, $PlainConfirm, [StringComparison]::Ordinal)) { throw "Passwords do not match. Nothing was created." }',
-  '  [IO.File]::WriteAllText((Join-Path (Get-Location) "wallet.password"), $PlainPassword, (New-Object Text.UTF8Encoding($false)))',
-  '} finally {',
-  '  if ($Bstr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($Bstr) }',
-  '  if ($BstrConfirm -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BstrConfirm) }',
-  '  $PlainPassword = $null',
+  ...windowsSecretHelpers,
+  `$PasswordCheckJs = ${psQuote(PASSWORD_CHECK_JS)}`,
+  `$RestoreJs = ${psQuote(RESTORE_JS)}`,
+  `$AddressPrintJs = ${psQuote(ADDRESS_PRINT_JS)}`,
+  '',
+  '$PlainPassword = Get-EnvWalletPassword',
+  'if (-not $PlainPassword) {',
+  '  $PlainPassword = Read-PlainSecure "Choose wallet password (12+ chars)"',
+  '  $PlainConfirm = Read-PlainSecure "Type the same password again"',
+  '  if (-not [string]::Equals($PlainPassword, $PlainConfirm, [StringComparison]::Ordinal)) { $PlainPassword = $null; $PlainConfirm = $null; throw "Passwords do not match. Nothing was created." }',
   '  $PlainConfirm = $null',
-  '  $SecurePassword = $null',
-  '  $SecureConfirm = $null',
+  '}',
+  '# Strength check (length, repetition, ~60-bit estimate). The password goes through stdin, never argv.',
+  '$PlainPassword | node -e $PasswordCheckJs',
+  'if ($LASTEXITCODE -ne 0) { $PlainPassword = $null; throw "Password rejected by the strength check. Nothing was created." }',
+  '',
+  '$PasswordFile = $null',
+  'try {',
+  '  $PasswordFile = New-PasswordFile $PlainPassword',
+  '  $PlainPassword = $null',
+  '  node dist/src/cli.js keygen --out wallet.json --password-file $PasswordFile',
+  '  if ($LASTEXITCODE -ne 0) { throw "keygen failed" }',
+  '  icacls wallet.json /inheritance:r /grant:r "${env:USERNAME}:(R,W)" | Out-Null',
+  '  # Restore test: decrypt locally and re-derive the address. Only the public address is printed.',
+  '  node -e $RestoreJs wallet.json $PasswordFile',
+  '  if ($LASTEXITCODE -ne 0) { throw "Restore test failed" }',
+  '} finally {',
+  '  Remove-PasswordFile $PasswordFile',
+  '  $PlainPassword = $null',
   '}',
   '',
-  'node dist/src/cli.js keygen --out wallet.json --password-file wallet.password',
-  'icacls wallet.password /inheritance:r /grant:r "$env:USERNAME:(R,W)" | Out-Null',
-  'icacls wallet.json /inheritance:r /grant:r "$env:USERNAME:(R,W)" | Out-Null',
-  '',
-  '',
-  '# Restore test: decrypt locally with the password file and re-derive the address.',
-  '# Only the public address is printed; the private key never leaves this process.',
-  `$RestoreJs = '${RESTORE_JS.replace(/'/g, "''")}'`,
-  'node -e $RestoreJs wallet.json wallet.password',
-  'if ($LASTEXITCODE -ne 0) { throw "Restore test failed" }',
-  '',
-  '$Wallet = Get-Content wallet.json -Raw | ConvertFrom-Json',
-  '$Grouped = "ZYN " + (($Wallet.address.Substring(3) -split "(.{4})" | Where-Object { $_ }) -join " ")',
-  'Write-Host ""',
-  'Write-Host "ZyronChain address:" $Wallet.address',
-  'Write-Host "Grouped to compare:" $Grouped',
+  'node -e $AddressPrintJs wallet.json',
   'Write-Host "Encrypted keystore:" (Join-Path (Get-Location) "wallet.json")',
   'Write-Host "Keystore SHA-256:" (Get-FileHash wallet.json -Algorithm SHA256).Hash.ToLower() "(write it down; a backup copy must hash to the same value)"',
-  'Write-Host "Password file:" (Join-Path (Get-Location) "wallet.password")',
-  'Write-Host "Back these files up separately. Never upload either file to a website."',
+  'Write-Host "No password file was kept. Remember the password or store it offline, separate from the keystore."',
   'Write-Host "Mining is retired and no public wallet RPC exists yet: balances and transfers are not live."',
   ''
 ].join('\n');
@@ -141,16 +226,18 @@ const windowsScript = [
 const unixRestoreScript = [
   '#!/usr/bin/env bash',
   '# Verify (restore-test) a ZyronChain wallet backup on this machine.',
-  '# Usage: ./verify-zyron-wallet.sh /path/to/wallet.json /path/to/wallet.password',
+  '# Usage: ./verify-zyron-wallet.sh /path/to/wallet.json [/path/to/password-file]',
+  '# Without a password file it asks for the password (or reads ZYRON_WALLET_PASSWORD, automation only).',
   'set -euo pipefail',
   '',
   `RELEASE_REF="${RELEASE_REF}"`,
   'WORKDIR="${HOME}/zyronchain-wallet-verify"',
   '',
-  'if [ "$#" -ne 2 ]; then echo "Usage: $0 <wallet.json> <wallet.password>" >&2; exit 2; fi',
-  'for f in "$1" "$2"; do [ -f "$f" ] || { echo "Not a file: $f" >&2; exit 1; }; done',
+  'if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then echo "Usage: $0 <wallet.json> [password-file]" >&2; exit 2; fi',
+  '[ -f "$1" ] || { echo "Not a file: $1" >&2; exit 1; }',
   'KEYSTORE="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"',
-  'PASSWORD_FILE="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"',
+  'GIVEN_PASSWORD_FILE=""',
+  'if [ "$#" -eq 2 ]; then [ -f "$2" ] || { echo "Not a file: $2" >&2; exit 1; }; GIVEN_PASSWORD_FILE="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; fi',
   '',
   'command -v git >/dev/null 2>&1 || { echo "git is required" >&2; exit 1; }',
   'command -v node >/dev/null 2>&1 || { echo "Node.js 22+ is required" >&2; exit 1; }',
@@ -165,8 +252,24 @@ const unixRestoreScript = [
   'npm ci',
   'npm run build',
   '',
+  'umask 077',
+  ...unixSecretHelpers,
+  '',
+  'if [ -n "$GIVEN_PASSWORD_FILE" ]; then',
+  '  PASSWORD_FILE="$GIVEN_PASSWORD_FILE"',
+  'else',
+  '  if ! read_env_password; then',
+  '    printf "Wallet password: "',
+  '    IFS= read -r -s WALLET_PASSWORD',
+  '    printf "\\n"',
+  '  fi',
+  '  make_password_file',
+  'fi',
+  '',
   '# Decrypts locally and re-derives the address. Prints only the public address.',
   `node -e "${RESTORE_JS}" "$KEYSTORE" "$PASSWORD_FILE"`,
+  'cleanup_secret',
+  `node -e "${ADDRESS_PRINT_JS}" "$KEYSTORE"`,
   'if command -v sha256sum >/dev/null 2>&1; then sha256sum "$KEYSTORE"; else shasum -a 256 "$KEYSTORE"; fi',
   'echo "Compare the SHA-256 above with the value recorded when the wallet was created."',
   ''
@@ -174,13 +277,14 @@ const unixRestoreScript = [
 
 const windowsRestoreScript = [
   '# Verify (restore-test) a ZyronChain wallet backup on this machine.',
-  '# Usage: .\\verify-zyron-wallet.ps1 C:\\path\\wallet.json C:\\path\\wallet.password',
-  'param([Parameter(Mandatory = $true)][string]$Keystore, [Parameter(Mandatory = $true)][string]$PasswordFile)',
+  '# Usage: .\\verify-zyron-wallet.ps1 C:\\path\\wallet.json [C:\\path\\password-file]',
+  '# Without a password file it asks for the password (or reads $env:ZYRON_WALLET_PASSWORD, automation only).',
+  'param([Parameter(Mandatory = $true)][string]$Keystore, [string]$PasswordFile)',
   '$ErrorActionPreference = "Stop"',
   `$ReleaseRef = "${RELEASE_REF}"`,
   '$WorkDir = Join-Path $HOME "zyronchain-wallet-verify"',
   '$KeystorePath = (Resolve-Path -LiteralPath $Keystore).Path',
-  '$PasswordPath = (Resolve-Path -LiteralPath $PasswordFile).Path',
+  '$GivenPasswordPath = if ($PasswordFile) { (Resolve-Path -LiteralPath $PasswordFile).Path } else { $null }',
   '',
   'if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw "git is required" }',
   'if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw "Node.js 22+ is required" }',
@@ -193,10 +297,27 @@ const windowsRestoreScript = [
   'npm ci',
   'npm run build',
   '',
-  '# Decrypts locally and re-derives the address. Prints only the public address.',
-  `$RestoreJs = '${RESTORE_JS.replace(/'/g, "''")}'`,
-  'node -e $RestoreJs $KeystorePath $PasswordPath',
-  'if ($LASTEXITCODE -ne 0) { throw "Restore test failed" }',
+  ...windowsSecretHelpers,
+  `$RestoreJs = ${psQuote(RESTORE_JS)}`,
+  `$AddressPrintJs = ${psQuote(ADDRESS_PRINT_JS)}`,
+  '',
+  '$TempPasswordFile = $null',
+  'try {',
+  '  if ($GivenPasswordPath) { $UsePasswordFile = $GivenPasswordPath } else {',
+  '    $PlainPassword = Get-EnvWalletPassword',
+  '    if (-not $PlainPassword) { $PlainPassword = Read-PlainSecure "Wallet password" }',
+  '    $TempPasswordFile = New-PasswordFile $PlainPassword',
+  '    $PlainPassword = $null',
+  '    $UsePasswordFile = $TempPasswordFile',
+  '  }',
+  '  # Decrypts locally and re-derives the address. Prints only the public address.',
+  '  node -e $RestoreJs $KeystorePath $UsePasswordFile',
+  '  if ($LASTEXITCODE -ne 0) { throw "Restore test failed" }',
+  '} finally {',
+  '  Remove-PasswordFile $TempPasswordFile',
+  '  $PlainPassword = $null',
+  '}',
+  'node -e $AddressPrintJs $KeystorePath',
   'Write-Host "Keystore SHA-256:" (Get-FileHash -LiteralPath $KeystorePath -Algorithm SHA256).Hash.ToLower()',
   'Write-Host "Compare the SHA-256 above with the value recorded when the wallet was created."',
   ''
@@ -222,13 +343,13 @@ const scripts = {
       code: unixRestoreScript,
       label: 'bash',
       filename: 'verify-zyron-wallet.sh',
-      run: 'Run it against your BACKUP copies, e.g.: chmod +x verify-zyron-wallet.sh && ./verify-zyron-wallet.sh /media/usb/wallet.json /other/place/wallet.password'
+      run: 'Run it against your BACKUP copy; it asks for the password: chmod +x verify-zyron-wallet.sh && ./verify-zyron-wallet.sh /media/usb/wallet.json'
     },
     windows: {
       code: windowsRestoreScript,
       label: 'PowerShell',
       filename: 'verify-zyron-wallet.ps1',
-      run: 'Run it against your BACKUP copies, e.g.: .\\verify-zyron-wallet.ps1 E:\\wallet.json F:\\wallet.password (use a one-time process-scoped execution policy if needed).'
+      run: 'Run it against your BACKUP copy; it asks for the password: .\\verify-zyron-wallet.ps1 E:\\wallet.json (use a one-time process-scoped execution policy if needed).'
     }
   }
 };
@@ -333,7 +454,8 @@ const publicKeyInput = document.querySelector('[data-pubkey-input]');
 const addressResult = document.querySelector('[data-address-result]');
 const addressGrouped = document.querySelector('[data-address-grouped]');
 const addressCopy = document.querySelector('[data-address-copy]');
-let checkedAddress = '';
+const addressCopyPlain = document.querySelector('[data-address-copy-plain]');
+let checked = null;
 let checkSequence = 0;
 
 function setResult(element, state, message) {
@@ -346,53 +468,43 @@ async function checkAddress() {
   const sequence = ++checkSequence;
   const address = addressInput ? addressInput.value : '';
   const publicKey = publicKeyInput ? publicKeyInput.value.trim() : '';
-  checkedAddress = '';
-  if (addressCopy) addressCopy.disabled = true;
+  checked = null;
+  for (const button of [addressCopy, addressCopyPlain]) if (button) button.disabled = true;
   if (addressGrouped) addressGrouped.textContent = '';
   if (!address && !publicKey) {
-    setResult(addressResult, 'idle', 'Paste a ZYN address, a public key, or both.');
+    setResult(addressResult, 'idle', 'Paste a ZYN address (plain or checksummed), a public key, or both.');
     return;
   }
-  let derived = '';
-  if (publicKey) {
-    try {
-      derived = await core.addressFromPublicKey(publicKey);
-    } catch (error) {
-      if (sequence === checkSequence) setResult(addressResult, 'bad', error.message);
-      return;
-    }
-  }
-  if (sequence !== checkSequence) return;
-  if (address) {
-    const problem = core.explainAddress(address);
-    if (problem) {
-      setResult(addressResult, 'bad', `Not a valid ZyronChain address. ${problem}`);
-      return;
-    }
-    if (derived && derived !== address) {
+  try {
+    const derived = publicKey ? await core.addressFromPublicKey(publicKey) : '';
+    const parsed = address ? await core.parseAddressInput(address) : null;
+    if (sequence !== checkSequence) return;
+    if (parsed && derived && parsed.canonical !== derived) {
       setResult(addressResult, 'bad', `Mismatch: this public key derives ${derived}, not the address you entered. Do not use it.`);
       return;
     }
+    const canonical = parsed ? parsed.canonical : derived;
+    const checksummed = parsed ? parsed.checksummed : await core.toChecksumAddress(derived);
+    if (sequence !== checkSequence) return;
+    checked = { canonical, checksummed };
+    if (addressGrouped) addressGrouped.textContent = ['ZYN', ...checksummed.slice(3).match(/.{4}/g)].join(' ');
+    for (const button of [addressCopy, addressCopyPlain]) if (button) button.disabled = false;
+    let message;
+    if (parsed && derived) message = 'Match: the public key derives exactly this address (same rule as the L1).';
+    else if (derived) message = 'Derived with the L1 rule: ZYN + first 40 hex of SHA-256(public key).';
+    else if (parsed.checksumVerified) message = 'Checksum verified: the upper/lower-case pattern matches, so a typo is very unlikely.';
+    else message = 'Well-formed plain address (no checksum in it). Shown below in checksummed form; compare every group with the source or ask for the checksummed form.';
+    setResult(addressResult, 'ok', message);
+  } catch (error) {
+    if (sequence === checkSequence) setResult(addressResult, 'bad', `Not usable: ${error.message}`);
   }
-  checkedAddress = address || derived;
-  if (addressGrouped) addressGrouped.textContent = core.groupAddress(checkedAddress);
-  if (addressCopy) addressCopy.disabled = false;
-  const message = derived && address
-    ? 'Match: the public key derives exactly this address (same rule as the L1).'
-    : derived
-      ? 'Derived with the L1 rule: ZYN + first 40 hex of SHA-256(public key).'
-      : 'Well-formed ZyronChain address. The format has no checksum, so compare every group with the source.';
-  setResult(addressResult, 'ok', message);
 }
 
 for (const input of [addressInput, publicKeyInput]) {
   input?.addEventListener('input', () => { void checkAddress(); });
 }
-if (addressCopy) {
-  addressCopy.addEventListener('click', () => {
-    if (checkedAddress) void copyPublicText(addressCopy, checkedAddress);
-  });
-}
+addressCopy?.addEventListener('click', () => { if (checked) void copyPublicText(addressCopy, checked.checksummed); });
+addressCopyPlain?.addEventListener('click', () => { if (checked) void copyPublicText(addressCopyPlain, checked.canonical); });
 
 // ---- Transfer template builder (placeholders for RPC + chain ID stay until published) ----
 const transferCode = document.querySelector('[data-transfer-code]');
@@ -401,32 +513,41 @@ const transferAmount = document.querySelector('[data-transfer-amount]');
 const transferFee = document.querySelector('[data-transfer-fee]');
 const transferResult = document.querySelector('[data-transfer-result]');
 const transferDefault = transferCode ? transferCode.textContent : '';
+let transferSequence = 0;
 
-function renderTransfer() {
+async function renderTransfer() {
   if (!transferCode) return;
-  const receiver = transferTo ? transferTo.value.trim() : '';
+  const sequence = ++transferSequence;
+  const receiverInput = transferTo ? transferTo.value.trim() : '';
   const amountZyn = transferAmount ? transferAmount.value : '';
   const feeAtoms = transferFee ? transferFee.value : '';
-  if (!receiver && !amountZyn) {
+  if (!receiverInput && !amountZyn) {
     transferCode.textContent = transferDefault;
     setResult(transferResult, 'idle', 'Fill in receiver and amount to build the command. Nothing is sent.');
     return;
   }
   try {
-    transferCode.textContent = core.buildTransferCommand({ receiver, amountZyn, feeAtoms });
+    let parsed;
+    try {
+      parsed = await core.parseAddressInput(receiverInput);
+    } catch (error) {
+      throw new Error(`Receiver: ${error.message}`);
+    }
+    if (sequence !== transferSequence) return;
+    // The command carries the canonical lower-case address (what consensus signs and stores).
+    transferCode.textContent = core.buildTransferCommand({ receiver: parsed.canonical, amountZyn, feeAtoms });
     const atoms = core.zynToAtoms(amountZyn);
-    setResult(transferResult, 'ok', `${core.atomsToZyn(atoms)} ZYN = ${atoms} atoms (1 ZYN = 100,000,000 atoms). Template only: it cannot run until a public RPC and chain ID are published.`);
+    const check = parsed.checksumVerified ? 'Receiver checksum verified. ' : 'Receiver has no checksum; double-check it. ';
+    setResult(transferResult, 'ok', `${check}${core.atomsToZyn(atoms)} ZYN = ${atoms} atoms (1 ZYN = 100,000,000 atoms). Template only: it cannot run until a public RPC and chain ID are published.`);
   } catch (error) {
+    if (sequence !== transferSequence) return;
     transferCode.textContent = transferDefault;
-    const message = receiver && !core.isValidAddress(receiver)
-      ? `Receiver: ${core.explainAddress(receiver)}`
-      : error.message;
-    setResult(transferResult, 'bad', message);
+    setResult(transferResult, 'bad', error.message);
   }
 }
 
 for (const input of [transferTo, transferAmount, transferFee]) {
-  input?.addEventListener('input', renderTransfer);
+  input?.addEventListener('input', () => { void renderTransfer(); });
 }
 
 const transferButton = document.querySelector('[data-copy-transfer]');

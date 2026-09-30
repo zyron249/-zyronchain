@@ -12,7 +12,7 @@ Production static website for `https://zyronchain.com`. The website is intention
 - `logo.svg` / `favicon.svg` — earlier vector wordmark, kept beside the raster mark.
 - `wallet.html` — local-first wallet onboarding and security education.
 - `wallet.js` — prepares pinned local wallet setup and backup-verify scripts, the address checker and transfer templates; it never generates, requests or uploads wallet secrets.
-- `wallet-core.js` — public-data helpers (address format, public key → address derivation via Web Crypto SHA-256, ZYN/atoms conversion). No key generation, signing or decryption.
+- `wallet-core.js` — public-data helpers (address format, display-only checksum per `docs/ADDRESS_CHECKSUM.md`, public key → address derivation via Web Crypto SHA-256, ZYN/atoms conversion, the password-strength rule embedded into the local scripts). No key generation, signing or decryption.
 - `test-wallet-core.mjs` — `node website/test-wallet-core.mjs [--require-l1]`; proves the page's address rule equals the L1 (`l1/src/crypto.ts`) and that the restore test in the generated scripts decrypts a real L1 keystore.
 - `wallet.css` — wallet-specific presentation.
 - `validator.html` — browser-based validator configuration launchpad.
@@ -43,13 +43,13 @@ It may generate or download local terminal scripts that:
 1. verify Node.js 22+ and local prerequisites;
 2. clone the canonical repository and detach at a pinned reviewed revision;
 3. install/build the canonical TypeScript L1 CLI;
-4. ask for a wallet password (and its confirmation) **inside the local terminal**;
-5. create `wallet.json` with `keygen --out ... --password-file ...`;
+4. ask for a wallet password (and its confirmation) **inside the local terminal** and reject weak ones (12+ characters, 6+ distinct, ~60+ estimated bits); `ZYRON_WALLET_PASSWORD` may be used for automation, with a printed warning;
+5. create `wallet.json` with `keygen --out ... --password-file <temporary file>`; the temporary 0600 file lives in a private temp directory (RAM-backed `/dev/shm` where available) and is shredded/removed right after, including on errors and Ctrl+C — **no password file is left on disk**;
 6. apply restrictive local permissions;
-7. run a local restore test (decrypt with the password file, re-derive the address, print nothing secret);
-8. print only the public `ZYN...` address and the keystore SHA-256 for backup verification.
+7. run a local restore test (decrypt, re-derive the address, print nothing secret);
+8. print only the public `ZYN...` address, its checksummed display form and the keystore SHA-256 for backup verification.
 
-A second script verifies backup copies (`wallet.json` + password file) the same way on any machine.
+A second script verifies a backup copy of `wallet.json` the same way on any machine; it prompts for the password (an existing password file may be passed instead).
 
 The in-page address checker only handles public data (addresses and public keys) and uses no network.
 
@@ -102,3 +102,6 @@ Open:
 The production site is static and self-contained. Do not point browser JavaScript directly at validator consensus RPC ports. A future live explorer/status/wallet integration must use a separately controlled public/read-only or transaction-ingress gateway with explicit TLS, CORS, caching where appropriate, rate limits, bounded payloads and response-shape validation.
 
 Publishing or improving this website does not change protocol activation flags and does not constitute a network launch.
+## HTTP security headers
+
+The site is a dashboard-managed Render static site behind Cloudflare, so response headers (HSTS, frame-ancestors / X-Frame-Options, Referrer-Policy, Permissions-Policy, nosniff) are configured outside the repo. See [`docs/WEBSITE_SECURITY_HEADERS.md`](../docs/WEBSITE_SECURITY_HEADERS.md) for the required values, steps and the `curl -I` check. `wallet.js` additionally refuses to render inside a frame.
