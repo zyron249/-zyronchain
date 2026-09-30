@@ -12,6 +12,9 @@
   'use strict';
 
   const ADDRESS_RE = /^ZYN[0-9a-f]{40}$/;
+  const ADDRESS_INPUT_RE = /^ZYN[0-9a-fA-F]{40}$/;
+  // Display-only checksum (see docs/ADDRESS_CHECKSUM.md); mirrors l1/src/address-checksum.ts.
+  const ADDRESS_CHECKSUM_DOMAIN = 'zyronchain/address-checksum/v1:';
   const PUBLIC_KEY_RE = /^[0-9a-f]{128}$/;
   const ATOMS_PER_ZYN = 100000000n;
   // Fixed-supply design: 50,000,000 ZYN. Used only to reject absurd inputs.
@@ -29,8 +32,7 @@
     if (/^zyn/i.test(value) && !value.startsWith('ZYN')) return 'The prefix must be upper-case ZYN.';
     if (!value.startsWith('ZYN')) return 'A ZyronChain address starts with ZYN.';
     const body = value.slice(3);
-    if (/[A-F]/.test(body)) return 'After ZYN the address uses lower-case hex only (0-9, a-f).';
-    if (/[^0-9a-f]/.test(body)) return 'After ZYN only the characters 0-9 and a-f are allowed.';
+    if (/[^0-9a-fA-F]/.test(body)) return 'After ZYN only the characters 0-9 and a-f (or A-F in the checksummed form) are allowed.';
     if (body.length !== 40) return `After ZYN there must be exactly 40 characters (found ${body.length}).`;
     return '';
   }
@@ -102,6 +104,66 @@
     return `ZYN${bytesToHex(new Uint8Array(digest)).slice(0, 40)}`;
   }
 
+  // Display-only checksum: upper-case letter i when nibble i of
+  // SHA-256("zyronchain/address-checksum/v1:" + canonical) >= 8. Lower-casing restores consensus form.
+  async function toChecksumAddress(address) {
+    if (!isValidAddress(address)) throw new Error('Address must be canonical: ZYN + 40 lower-case hex');
+    const digest = await subtleCrypto().digest('SHA-256', new TextEncoder().encode(ADDRESS_CHECKSUM_DOMAIN + address));
+    const hash = bytesToHex(new Uint8Array(digest));
+    let out = 'ZYN';
+    for (let index = 0; index < 40; index += 1) {
+      const char = address[index + 3];
+      out += char >= 'a' && char <= 'f' && parseInt(hash[index], 16) >= 8 ? char.toUpperCase() : char;
+    }
+    return out;
+  }
+
+  // Accepts the plain lower-case form (nothing to verify) or the mixed-case checksum form (verified).
+  async function parseAddressInput(value) {
+    if (typeof value !== 'string' || !ADDRESS_INPUT_RE.test(value)) {
+      throw new Error(explainAddress(value) || 'Invalid ZyronChain address');
+    }
+    const canonical = `ZYN${value.slice(3).toLowerCase()}`;
+    const checksummed = await toChecksumAddress(canonical);
+    if (value === canonical) return { canonical, checksummed, checksumVerified: false };
+    if (value !== checksummed) {
+      throw new Error('Checksum mismatch: the upper/lower-case pattern does not match this address (likely a typo). Do not use it.');
+    }
+    return { canonical, checksummed, checksumVerified: true };
+  }
+
+  // Simple strength estimate (mirrors l1/src/password-prompt.ts): length x log2(pool), 6+ distinct
+  // characters, 60+ estimated bits. Written without regex/quotes/backslashes/dollar signs so its
+  // source can be embedded verbatim in the generated bash/PowerShell scripts.
+  function passwordStrength(password) {
+    const chars = Array.from(password);
+    let lower = false; let upper = false; let digit = false; let symbol = false; let other = false;
+    for (const char of chars) {
+      const code = char.codePointAt(0);
+      if (code >= 97 && code <= 122) lower = true;
+      else if (code >= 65 && code <= 90) upper = true;
+      else if (code >= 48 && code <= 57) digit = true;
+      else if (code >= 32 && code <= 126) symbol = true;
+      else other = true;
+    }
+    const pool = (lower ? 26 : 0) + (upper ? 26 : 0) + (digit ? 10 : 0) + (symbol ? 33 : 0) + (other ? 100 : 0);
+    const bits = pool > 0 ? Math.floor(chars.length * Math.log2(pool)) : 0;
+    const distinct = new Set(chars).size;
+    if (chars.length < 12) return { ok: false, bits: bits, reason: 'Password must contain at least 12 characters' };
+    if (distinct < 6) return { ok: false, bits: bits, reason: 'Password is too repetitive (fewer than 6 distinct characters)' };
+    if (bits < 60) return { ok: false, bits: bits, reason: 'Password is too weak (about ' + bits + ' bits estimated; need 60+). Use a longer passphrase or mix character types' };
+    return { ok: true, bits: bits, reason: '' };
+  }
+
+  // Reads the candidate password from stdin (never argv), exits 1 with the reason if weak.
+  const PASSWORD_CHECK_JS = [
+    'const passwordStrength=' + passwordStrength.toString() + ';',
+    "let d='';process.stdin.setEncoding('utf8');process.stdin.on('data',(c)=>{d+=c;});",
+    "process.stdin.on('end',()=>{const p=d.endsWith(String.fromCharCode(10))?d.slice(0,-1):d;",
+    "const q=p.endsWith(String.fromCharCode(13))?p.slice(0,-1):p;const r=passwordStrength(q);",
+    "if(!r.ok){console.error(r.reason);process.exit(1);}console.error('Password strength OK (about '+r.bits+' bits estimated).');});"
+  ].join('');
+
   // Exact decimal ZYN -> integer atoms (8 decimals), with no floating point.
   function zynToAtoms(value) {
     if (typeof value !== 'string') throw new Error('Amount must be text');
@@ -126,7 +188,7 @@
   // officially published; this function never invents an endpoint.
   function buildTransferCommand(input) {
     const receiver = input && input.receiver;
-    if (!isValidAddress(receiver)) throw new Error('Receiver must be a valid ZyronChain address');
+    if (!isValidAddress(receiver)) throw new Error('Receiver must be a valid canonical ZyronChain address');
     const amountAtoms = zynToAtoms(input.amountZyn);
     if (amountAtoms === '0') throw new Error('Amount must be greater than zero');
     const feeAtoms = String(input.feeAtoms === undefined || input.feeAtoms === '' ? '1000' : input.feeAtoms).trim();
@@ -163,6 +225,11 @@
     ATOMS_PER_ZYN,
     MAX_SUPPLY_ATOMS,
     RESTORE_CHECK_JS,
+    PASSWORD_CHECK_JS,
+    ADDRESS_CHECKSUM_DOMAIN,
+    toChecksumAddress,
+    parseAddressInput,
+    passwordStrength,
     isValidAddress,
     explainAddress,
     groupAddress,

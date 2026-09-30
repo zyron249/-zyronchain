@@ -349,13 +349,24 @@ jobs:
           for (const marker of [
             'git clone https://github.com/zyron249/-zyronchain.git',
             'checkout --detach',
-            'keygen --out wallet.json --password-file wallet.password',
-            'chmod 600 wallet.json wallet.password',
-            'Read-Host "Choose wallet password (12+ chars)" -AsSecureString',
+            'keygen --out wallet.json --password-file "$PASSWORD_FILE"',
+            'keygen --out wallet.json --password-file $PasswordFile',
+            'trap cleanup_secret EXIT',
+            'shred -u',
+            'Remove-PasswordFile',
+            'ZYRON_WALLET_PASSWORD',
+            'PASSWORD_CHECK_JS',
+            'chmod 600 wallet.json',
+            'Read-PlainSecure "Choose wallet password (12+ chars)"',
+            '-AsSecureString',
             'navigator.clipboard',
             'new Blob'
           ]) {
             if (!walletJs.includes(marker)) throw new Error(`Wallet launcher missing security invariant: ${marker}`);
+          }
+          // Generated wallet scripts must never persist a password file next to the keystore.
+          if (/>\s*wallet\.password\b/.test(walletJs) || /Password file:/.test(walletJs) || /WriteAllText\(\(Join-Path \(Get-Location\) "wallet\.password"\)/.test(walletJs)) {
+            throw new Error('Wallet scripts must not leave wallet.password on disk');
           }
 
           for (const marker of [

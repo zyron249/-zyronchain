@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createECDH, createHash, randomBytes, webcrypto } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -88,7 +88,7 @@ function loadWalletPage(core) {
   };
   const single = ['[data-wallet-script]', '[data-wallet-script-label]', '[data-wallet-run-note]', '[data-transfer-code]',
     '[data-transfer-to]', '[data-transfer-amount]', '[data-transfer-fee]', '[data-transfer-result]', '[data-address-input]',
-    '[data-pubkey-input]', '[data-address-result]', '[data-address-grouped]', '[data-address-copy]', '[data-copy-transfer]'];
+    '[data-pubkey-input]', '[data-address-result]', '[data-address-grouped]', '[data-address-copy]', '[data-address-copy-plain]', '[data-copy-transfer]'];
   for (const selector of single) elements.set(selector, make());
   elements.get('[data-transfer-code]').textContent = 'DEFAULT';
   const osTabs = [make({ 'data-wallet-os': 'unix' }), make({ 'data-wallet-os': 'windows' })];
@@ -152,7 +152,7 @@ await test('address validation explains problems without guessing a correction',
   assert.equal(core.explainAddress(address), '');
   assert.match(core.explainAddress(` ${address}`), /spaces/);
   assert.match(core.explainAddress(`zyn${address.slice(3)}`), /upper-case ZYN/);
-  assert.match(core.explainAddress(`ZYN${address.slice(3).toUpperCase()}`), /lower-case/);
+  assert.equal(core.explainAddress(`ZYN${address.slice(3).toUpperCase()}`), '', 'upper-case hex is allowed by the character rule; the checksum decides');
   assert.match(core.explainAddress(address.slice(0, -1)), /found 39/);
   assert.match(core.explainAddress(`${address.slice(0, -1)}g`), /0-9 and a-f/);
   assert.match(core.explainAddress(`0x${address.slice(3)}`), /starts with ZYN/);
@@ -186,6 +186,69 @@ await test('transfer template never invents an RPC endpoint or chain ID', () => 
   assert.throws(() => core.buildTransferCommand({ receiver: VECTORS[1].address, amountZyn: '0' }), /greater than zero/);
 });
 
+// Display-only checksum vectors (docs/ADDRESS_CHECKSUM.md, produced by l1/src/address-checksum.ts).
+const CHECKSUM_VECTORS = [
+  ['ZYN09c0b2d1a486c439a87bcba6b46a7a1a23f3897c', 'ZYN09C0B2D1A486C439A87bCbA6b46A7a1A23F3897c'],
+  ['ZYN5d99ee966b42cd8fc7bdd1364b389153a9e78b42', 'ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42'],
+  ['ZYN8fb16cd1fbcedbd367eb258df0a7c40b7225c87a', 'ZYN8fB16Cd1FbCEDBd367Eb258Df0A7c40b7225C87A'],
+  ['ZYN5cb032e51cee3b6ba053648fcdb806aaabf92df6', 'ZYN5cB032e51Cee3b6Ba053648FcDb806aaaBF92Df6'],
+  ['ZYN80636eaa7a0a54ad4e369e0b6c6f08ead6a49448', 'ZYN80636Eaa7A0A54ad4E369E0b6C6F08eAd6a49448'],
+  ['ZYNffffffffffffffffffffffffffffffffffffffff', 'ZYNFfFFFfFFfFfFfffFFFfFffFFFfffFFfFfFfFFfFf'],
+  ['ZYN0000000000000000000000000000000000000000', 'ZYN0000000000000000000000000000000000000000']
+];
+
+function referenceChecksum(address) {
+  const hash = createHash('sha256').update(`zyronchain/address-checksum/v1:${address}`).digest('hex');
+  return 'ZYN' + [...address.slice(3)].map((c, i) => (c >= 'a' && c <= 'f' && parseInt(hash[i], 16) >= 8 ? c.toUpperCase() : c)).join('');
+}
+
+await test('display checksum: vectors, independent reference, spec doc and parsing rules', async () => {
+  const spec = readFileSync(join(repo, 'docs', 'ADDRESS_CHECKSUM.md'), 'utf8');
+  for (const [canonical, checksummed] of CHECKSUM_VECTORS) {
+    assert.equal(await core.toChecksumAddress(canonical), checksummed);
+    assert.equal(referenceChecksum(canonical), checksummed);
+    assert.ok(spec.includes(`| \`${canonical}\` | \`${checksummed}\` |`), `spec lists ${canonical}`);
+    const plain = await core.parseAddressInput(canonical);
+    assert.equal(plain.checksumVerified, false);
+    assert.equal(plain.checksummed, checksummed);
+    const verified = await core.parseAddressInput(checksummed);
+    assert.equal(verified.canonical, canonical);
+    assert.equal(verified.checksumVerified, checksummed !== canonical);
+  }
+  const [canonical, checksummed] = CHECKSUM_VECTORS[0];
+  await assert.rejects(core.parseAddressInput(`ZYN${canonical.slice(3).toUpperCase()}`), /Checksum mismatch/);
+  await assert.rejects(core.parseAddressInput(checksummed.replace('bCbA', 'bcbA')), /Checksum mismatch/);
+  await assert.rejects(core.parseAddressInput(`${canonical}0`), /exactly 40/);
+  await assert.rejects(core.toChecksumAddress(checksummed), /canonical/);
+  let detected = 0;
+  for (let index = 0; index < 200; index += 1) {
+    const { address } = referenceAddress(randomBytes(32).toString('hex'));
+    const shown = await core.toChecksumAddress(address);
+    assert.equal(shown, referenceChecksum(address));
+    const position = 3 + (index % 40);
+    const typo = shown.slice(0, position) + (shown[position] === '7' ? '8' : '7') + shown.slice(position + 1);
+    try { await core.parseAddressInput(typo); } catch { detected += 1; }
+  }
+  assert.ok(detected >= 194, `checksum detected ${detected}/200 single-character typos`);
+});
+
+await test('password strength rule and the embedded stdin checker agree', () => {
+  const cases = [
+    ['short', false], ['aaaaaaaaaaaaaaaa', false], ['abcdefghijkl', false], ['abcabcabcabcabcabc', false],
+    ['correct horse battery staple', true], ['Tr0ub4dor&3xyz', true], ['şifrem-çok-güçlü-2026', true],
+    ['a-strong-local-wallet-password', true]
+  ];
+  assert.doesNotMatch(core.PASSWORD_CHECK_JS, /[$`"\\]/, 'safe to embed in bash double quotes');
+  for (const [password, ok] of cases) {
+    assert.equal(core.passwordStrength(password).ok, ok, password);
+    for (const suffix of ['', '\n', '\r\n']) {
+      const run = spawnSync(process.execPath, ['-e', core.PASSWORD_CHECK_JS], { input: password + suffix, encoding: 'utf8' });
+      assert.equal(run.status === 0, ok, `${JSON.stringify(password + suffix)}: ${run.stderr}`);
+      assert.doesNotMatch(run.stdout + run.stderr, new RegExp(password.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'never echoes the password');
+    }
+  }
+});
+
 const page = loadWalletPage(core);
 const createUnix = page.scriptFor('create', 'unix');
 const createWindows = page.scriptFor('create', 'windows');
@@ -205,6 +268,16 @@ await test('generated scripts keep the local-only security invariants', () => {
   assert.match(createWindows, /Type the same password again/);
   assert.match(createWindows, /\[StringComparison\]::Ordinal/);
   assert.match(createWindows, /Get-FileHash wallet\.json -Algorithm SHA256/);
+  for (const script of [createUnix, createWindows, restoreUnix, restoreWindows]) {
+    assert.doesNotMatch(script, />\s*wallet\.password\b/, 'no password file next to the keystore');
+    assert.doesNotMatch(script, /Password file:/);
+    assert.match(script, /ZYRON_WALLET_PASSWORD/);
+  }
+  assert.match(createUnix, /trap cleanup_secret EXIT/);
+  assert.match(createUnix, /shred -u/);
+  assert.match(createUnix, /\/dev\/shm/);
+  assert.match(createWindows, /Remove-PasswordFile \$PasswordFile/);
+  assert.match(createWindows, /\$PlainPassword \| node -e \$PasswordCheckJs/);
   for (const script of [createUnix, restoreUnix]) {
     const syntax = spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' });
     assert.equal(syntax.status, 0, syntax.stderr);
@@ -223,6 +296,20 @@ await test('address checker UI reports match, mismatch and copy state', async ()
   assert.equal(result.dataset.state, 'bad'); assert.match(result.textContent, /Mismatch/); assert.equal(copy.disabled, true);
   key.value = ''; input.value = 'ZYN123'; input.fire('input'); await settle();
   assert.equal(result.dataset.state, 'bad');
+  const grouped = page.elements.get('[data-address-grouped]');
+  input.value = CHECKSUM_VECTORS[0][0]; input.fire('input'); await settle();
+  assert.equal(result.dataset.state, 'ok'); assert.match(result.textContent, /no checksum/);
+  assert.equal(grouped.textContent, 'ZYN 09C0 B2D1 A486 C439 A87b CbA6 b46A 7a1A 23F3 897c');
+  input.value = CHECKSUM_VECTORS[0][1]; input.fire('input'); await settle();
+  assert.match(result.textContent, /Checksum verified/);
+  input.value = CHECKSUM_VECTORS[0][1].replace('bCbA', 'bcbA'); input.fire('input'); await settle();
+  assert.equal(result.dataset.state, 'bad'); assert.match(result.textContent, /Checksum mismatch/);
+  // Transfer builder accepts the checksummed receiver but emits the canonical lower-case address.
+  page.elements.get('[data-transfer-to]').value = CHECKSUM_VECTORS[1][1];
+  page.elements.get('[data-transfer-amount]').value = '1';
+  page.elements.get('[data-transfer-to]').fire('input'); await settle();
+  assert.match(page.elements.get('[data-transfer-code]').textContent, new RegExp(`--to ${CHECKSUM_VECTORS[1][0]} `));
+  assert.match(page.elements.get('[data-transfer-result]').textContent, /checksum verified/);
 });
 
 const l1Dist = join(repo, 'l1', 'dist', 'src');
@@ -278,11 +365,12 @@ if (existsSync(join(l1Dist, 'keystore.js')) && existsSync(join(l1Dist, 'crypto.j
       writeFileSync(join(dir, 'wrong.password'), 'not the right passphrase', { mode: 0o600 });
       const line = createUnix.split('\n').find((entry) => entry.startsWith('node -e ') && entry.includes('Restore test passed'));
       assert.ok(line, 'create script contains the restore test');
-      const ok = spawnSync('bash', ['-c', line], { cwd: dir, encoding: 'utf8' });
+      const pwEnv = { ...process.env, PASSWORD_FILE: join(dir, 'wallet.password') };
+      const ok = spawnSync('bash', ['-c', line], { cwd: dir, encoding: 'utf8', env: pwEnv });
       assert.equal(ok.status, 0, ok.stderr);
       assert.match(ok.stdout, new RegExp(`Restore test passed.*${record.address}`));
       assert.doesNotMatch(ok.stdout + ok.stderr, new RegExp(privateKey), 'private key is never printed');
-      const bad = spawnSync('bash', ['-c', line.replace('wallet.password', 'wrong.password')], { cwd: dir, encoding: 'utf8' });
+      const bad = spawnSync('bash', ['-c', line], { cwd: dir, encoding: 'utf8', env: { ...pwEnv, PASSWORD_FILE: join(dir, 'wrong.password') } });
       assert.notEqual(bad.status, 0);
       assert.match(bad.stderr, /Restore test FAILED: Encrypted keystore authentication failed/);
       const restoreLine = restoreUnix.split('\n').find((entry) => entry.startsWith('node -e ') && entry.includes('Restore test passed'));
@@ -294,6 +382,70 @@ if (existsSync(join(l1Dist, 'keystore.js')) && existsSync(join(l1Dist, 'crypto.j
       rmSync(dir, { recursive: true, force: true });
     }
   });
+  await test('end-to-end: generated bash scripts create and verify a wallet, reject weak passwords, leave no password file', () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'zyron-wallet-e2e-'));
+    const shmBefore = existsSync('/dev/shm') ? readdirSync('/dev/shm').filter((n) => n.startsWith('zyron-wallet.')) : [];
+    try {
+      const bin = join(sandbox, 'bin');
+      const home = join(sandbox, 'home');
+      mkdirSync(bin); mkdirSync(home);
+      writeFileSync(join(bin, 'git'), `#!/usr/bin/env bash\nif [ "$1" = "clone" ]; then mkdir -p "$3/l1" && ln -s "${join(repo, 'l1', 'dist')}" "$3/l1/dist"; fi\nexit 0\n`);
+      writeFileSync(join(bin, 'npm'), '#!/usr/bin/env bash\nexit 0\n');
+      chmodSync(join(bin, 'git'), 0o755); chmodSync(join(bin, 'npm'), 0o755);
+      writeFileSync(join(sandbox, 'create.sh'), createUnix);
+      writeFileSync(join(sandbox, 'verify.sh'), restoreUnix);
+      const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, TMPDIR: sandbox };
+
+      const weak = spawnSync('bash', [join(sandbox, 'create.sh')], { env: { ...env, ZYRON_WALLET_PASSWORD: 'abcdefghijkl' }, encoding: 'utf8' });
+      assert.notEqual(weak.status, 0);
+      assert.match(weak.stderr, /too weak/);
+      assert.equal(existsSync(join(home, 'zyronchain-wallet-setup', 'l1', 'wallet.json')), false);
+      rmSync(join(home, 'zyronchain-wallet-setup'), { recursive: true, force: true });
+
+      const password = 'correct horse battery staple';
+      const created = spawnSync('bash', [join(sandbox, 'create.sh')], { env: { ...env, ZYRON_WALLET_PASSWORD: password }, encoding: 'utf8' });
+      assert.equal(created.status, 0, created.stderr);
+      assert.match(created.stderr, /WARNING: using ZYRON_WALLET_PASSWORD/);
+      assert.match(created.stdout, /Restore test passed/);
+      const workdir = join(home, 'zyronchain-wallet-setup', 'l1');
+      const wallet = JSON.parse(readFileSync(join(workdir, 'wallet.json'), 'utf8'));
+      assert.match(created.stdout, new RegExp(`Checksummed \\(display only\\): ${referenceChecksum(wallet.address)}`));
+      assert.match(created.stdout, /Keystore SHA-256: +[0-9a-f]{64}/);
+      assert.equal(existsSync(join(workdir, 'wallet.password')), false, 'no password file in the work dir');
+      assert.deepEqual(readdirSync(sandbox).filter((n) => n.startsWith('zyron-wallet.')), [], 'temp secret dir removed');
+      const shmAfter = existsSync('/dev/shm') ? readdirSync('/dev/shm').filter((n) => n.startsWith('zyron-wallet.')) : [];
+      assert.deepEqual(shmAfter.filter((n) => !shmBefore.includes(n)), [], 'no leftovers in /dev/shm');
+      assert.doesNotMatch(created.stdout + created.stderr, new RegExp(password));
+
+      const verified = spawnSync('bash', [join(sandbox, 'verify.sh'), join(workdir, 'wallet.json')], { env: { ...env, ZYRON_WALLET_PASSWORD: password }, encoding: 'utf8' });
+      assert.equal(verified.status, 0, verified.stderr);
+      assert.match(verified.stdout, new RegExp(`Restore test passed.*${wallet.address}`));
+      const wrong = spawnSync('bash', [join(sandbox, 'verify.sh'), join(workdir, 'wallet.json')], { env: { ...env, ZYRON_WALLET_PASSWORD: 'wrong horse battery staple' }, encoding: 'utf8' });
+      assert.notEqual(wrong.status, 0);
+      assert.match(wrong.stderr, /Restore test FAILED/);
+      assert.deepEqual(readdirSync(sandbox).filter((n) => n.startsWith('zyron-wallet.')), [], 'temp secret dir removed after failure too');
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  const l1Checksum = join(l1Dist, 'address-checksum.js');
+  const l1Password = join(l1Dist, 'password-prompt.js');
+  if (existsSync(l1Checksum) && existsSync(l1Password)) {
+    const checksum = await import(pathToFileURL(l1Checksum).href);
+    const strength = await import(pathToFileURL(l1Password).href);
+    await test('L1 cross-check: display checksum and password strength match the CLI implementation', async () => {
+      for (const [canonical, checksummed] of CHECKSUM_VECTORS) assert.equal(checksum.toChecksumAddress(canonical), checksummed);
+      for (let index = 0; index < 128; index += 1) {
+        const address = crypto.addressFromPublicKey(crypto.publicKeyFromPrivate(crypto.generatePrivateKey()));
+        assert.equal(await core.toChecksumAddress(address), checksum.toChecksumAddress(address));
+        const sample = randomBytes(1 + (index % 24)).toString(index % 2 ? 'base64' : 'hex');
+        assert.deepEqual({ ...core.passwordStrength(sample) }, { ...strength.passwordStrength(sample) });
+      }
+    });
+  } else {
+    console.log('skip - L1 checksum/password cross-check (CLI support not in this l1 build yet)');
+  }
 } else if (requireL1) {
   throw new Error('--require-l1 was given but l1/dist is missing; run: cd l1 && npm ci && npm run build');
 } else {
