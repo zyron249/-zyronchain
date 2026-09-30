@@ -6,7 +6,7 @@ import {
   verifyCanonical,
   verifyCanonicalDomain
 } from "./crypto.js";
-import { MINING_TRACKER_ADDRESS } from "./mining.js";
+import { MINING_RETIRED_MESSAGE, MINING_TRACKER_ADDRESS } from "./mining.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import type {
   ActivityEntry,
@@ -211,6 +211,10 @@ export function createActivitySettlement(
   return { ...withSignature, txid: sha256Hex(canonicalJson(withSignature)) };
 }
 
+/**
+ * @deprecated Mining is retired and consensus rejects every mining claim. This
+ * signer is kept only so tests can prove that rejection on every path.
+ */
 export function createMiningClaim(
   input: Omit<UnsignedMiningClaim, "kind" | "version" | "publicKey" | "feeAtoms">,
   privateKeyHex: string,
@@ -252,6 +256,8 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
       "kind", "version", "chainId", "nonce", "sender", "height", "previousHash", "rewardAtoms",
       "workNonce", "feeAtoms", "timestampMs", "publicKey", "signature", "txid"
     ], "mining claim");
+    // Mining is retired for every genesis: a well-formed claim is still refused.
+    throw new Error(MINING_RETIRED_MESSAGE);
   } else if (value.kind === "validator_update") {
     assertExactKeys(value, [
       "kind", "version", "chainId", "nonce", "sender", "activationHeight", "validators", "approvals",

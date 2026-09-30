@@ -1,5 +1,5 @@
 import { canonicalJson } from "./codec.js";
-import { miningWorkHash } from "./mining.js";
+import { assertMiningNotRetired, miningWorkHash } from "./mining.js";
 import type { MiningClaimTx, Transaction } from "./types.js";
 
 const REPLACEMENT_BUMP_NUMERATOR = 11n;
@@ -52,6 +52,8 @@ export class Mempool {
   }
 
   add(tx: Transaction): void {
+    // Mining is retired: the mining reserve can never be occupied.
+    if (tx.kind === "mining_claim") assertMiningNotRetired();
     if (this.byId.has(tx.txid)) throw new Error("Transaction already in mempool");
     const txBytes = transactionBytes(tx);
     if (tx.kind === "mining_claim") {

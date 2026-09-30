@@ -106,10 +106,16 @@ test("public tester docs stay honest and do not invent hosted endpoints", async 
   assert.ok(launcher.includes("docs/PUBLIC_TEST.md"), "local-devnet launcher must point at the tester guide");
   assert.ok(launcher.includes("docs/PUBLIC_LAUNCH_CHECKLIST.md"), "local-devnet launcher must point at the public-launch checklist");
   assert.ok(launcher.includes("MetaMask cannot connect"), "local-devnet launcher must warn that the chain is not EVM");
-  assert.ok(launcher.includes("--local-v5"), "local-devnet launcher must expose the local v5 mining rehearsal flag");
-  assert.ok(launcher.includes("cannot be combined"), "local-devnet --check must stay protocol v1");
+  // Mining retired (owner decision 2026-09-30): the launcher must refuse the old
+  // rehearsal flag rather than silently dropping it.
+  assert.ok(launcher.includes("--local-v5"), "local-devnet launcher must still recognize the retired --local-v5 flag");
+  assert.ok(launcher.includes("--local-v5 (local mining rehearsal) is retired"), "local-devnet must refuse the retired mining rehearsal");
+  assert.ok(/Mining is \*\*retired\*\*/.test(publicTest), "docs/PUBLIC_TEST.md must state that mining is retired");
+  assert.equal(publicTest.includes("The honest local mining path"), false, "docs/PUBLIC_TEST.md must not advertise a working mining path");
+  assert.ok(/retired/i.test(launchChecklist), "docs/PUBLIC_LAUNCH_CHECKLIST.md must state that mining is retired");
   assert.ok(readme.includes("docs/PUBLIC_LAUNCH_CHECKLIST.md"), "root README must point at the public-launch checklist");
-  assert.ok(contributing.includes("npm run mine:local"), "CONTRIBUTING.md must mention the local mining rehearsal");
+  assert.ok(contributing.includes("npm run mine:local"), "CONTRIBUTING.md must mention the retired local mining rehearsal");
+  assert.ok(/Mining is retired/.test(contributing), "CONTRIBUTING.md must state that mining is retired");
   assert.ok(
     challenge.includes("publicTestnetActivationAllowed"),
     "independent-operator challenge must describe activation, not stale authorization flags"

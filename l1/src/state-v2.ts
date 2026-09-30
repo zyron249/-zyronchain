@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJson, compareCanonicalStrings } from "./codec.js";
-import { MINING_TRACKER_ADDRESS } from "./mining.js";
+import { assertMiningNotRetired, MINING_TRACKER_ADDRESS } from "./mining.js";
 import { assertNoActivityPoolInflow, LedgerState, type LedgerSnapshot } from "./state.js";
 import { MAX_SUPPLY_ATOMS, type Address, type Transaction, type Validator } from "./types.js";
 
@@ -510,6 +510,7 @@ export function applyStateV2Transaction(
     return next.set(activityEpochKey(tx.epoch), { settled: true });
   }
   if (tx.kind === "mining_claim") {
+    assertMiningNotRetired();
     throw new Error("Mining claim requires chain-context State-v2 application");
   }
   requireStateV2Nonce(state, tx.sender, tx.nonce);

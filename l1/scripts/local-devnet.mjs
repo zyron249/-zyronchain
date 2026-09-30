@@ -14,12 +14,14 @@ if (args.some(arg => !allowed.has(arg))) {
   console.error('Usage: npm run devnet [-- --check | --local-v5]');
   process.exit(1);
 }
-if (args.includes('--check') && args.includes('--local-v5')) {
-  console.error('--check and --local-v5 cannot be combined. The automated check stays on protocol v1; local mining rehearsal is interactive only and does not activate public mining.');
+if (args.includes('--local-v5')) {
+  // RETIRED (owner decision 2026-09-30): mining is shut down for every genesis and
+  // consensus rejects every mining_claim, so there is no local mining rehearsal.
+  console.error('--local-v5 (local mining rehearsal) is retired: ZyronChain mining is shut down and consensus rejects every mining_claim transaction.');
   process.exit(1);
 }
 if (args.includes('--help')) {
-  console.log('Start a fresh, loopback-only two-validator development chain. Ctrl+C stops both nodes.\n--check verifies transfer, quorum and restart, then removes the temporary chain.\n--local-v5 schedules protocol v5 on this disposable loopback chain after the verified transfer (100-block delay; ~50 minutes at the 30-second interval). It does not activate public mining, publish RPC, or flip launch flags.\nRequires Linux/macOS; on Windows run inside WSL2 on the Linux filesystem.');
+  console.log('Start a fresh, loopback-only two-validator development chain. Ctrl+C stops both nodes.\n--check verifies transfer, quorum and restart, then removes the temporary chain.\n--local-v5 is retired (mining is shut down) and exits with an error.\nRequires Linux/macOS; on Windows run inside WSL2 on the Linux filesystem.');
   process.exit(0);
 }
 if (process.platform === 'win32') {
@@ -28,8 +30,6 @@ if (process.platform === 'win32') {
 }
 
 const check = args.includes('--check');
-const localV5 = args.includes('--local-v5');
-const LOCAL_PROTOCOL_V5_DELAY = 100;
 const l1Root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cli = join(l1Root, 'dist/src/secure-cli.js');
 const parent = await realpath(tmpdir());
@@ -129,7 +129,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { interru
 
 try {
   const keys = {};
-  const keyNames = localV5 ? ['a', 'b', 'oracle', 'miner'] : ['a', 'b', 'oracle'];
+  const keyNames = ['a', 'b', 'oracle'];
   for (const name of keyNames) {
     await writeFile(passwordFile(name), randomBytes(32).toString('hex'), { flag: 'wx', mode: 0o600 });
     command(name, 'keygen', '--out', keyFile(name), '--password-file', passwordFile(name));
@@ -171,39 +171,6 @@ try {
   });
   console.log(`Transfer verified on both validators at height ${transferred.a.height}.`);
 
-  let localMining = null;
-  if (localV5) {
-    const protocolBefore = await json(portA, '/protocol');
-    assert.equal(protocolBefore.currentVersion, 1);
-    assert.equal(protocolBefore.nextVersion, 1, 'Default local-devnet genesis must remain protocol v1 until an explicit local v5 schedule');
-    const activationHeight = transferred.a.height + 1 + LOCAL_PROTOCOL_V5_DELAY;
-    const proposalPath = join(directory, 'local-v5-upgrade.json');
-    command('a', 'protocol-proposal', '--out', proposalPath, '--rpc', `http://127.0.0.1:${portA}`,
-      '--key', keyFile('a'), '--activation-height', String(activationHeight), '--protocol-version', '5');
-    command('a', 'protocol-approve', '--proposal', proposalPath, '--key', keyFile('a'),
-      '--out', join(directory, 'local-v5-approval-a.json'));
-    command('b', 'protocol-approve', '--proposal', proposalPath, '--key', keyFile('b'),
-      '--out', join(directory, 'local-v5-approval-b.json'));
-    command('a', 'protocol-submit', '--proposal', proposalPath,
-      '--approval', join(directory, 'local-v5-approval-a.json'),
-      '--approval', join(directory, 'local-v5-approval-b.json'),
-      '--key', keyFile('a'), '--rpc', `http://127.0.0.1:${portA}`);
-    const scheduled = await waitFor('local protocol-v5 upgrade transaction finalized', async () => {
-      const state = await pair(transferred.a.height + 1);
-      if (!state) return false;
-      const protocol = await json(portA, '/protocol');
-      assert.equal(protocol.currentVersion, 1, 'Local v5 must not activate immediately after the schedule is included');
-      assert.equal(protocol.nextVersion, 1, 'Local v5 nextVersion must stay 1 until the 100-block delay elapses');
-      return { state, protocol };
-    });
-    localMining = {
-      activationHeight,
-      scheduledAtHeight: scheduled.state.a.height,
-      minerAddress: keys.miner.address
-    };
-    console.log(`Local protocol v5 scheduled at height ${activationHeight} (included at height ${scheduled.state.a.height}). Public mining is not activated.`);
-  }
-
   if (!check) {
     console.log(`
 Local public-test surface (loopback only — not a hosted network)
@@ -219,27 +186,8 @@ Local public-test surface (loopback only — not a hosted network)
   curl -s http://127.0.0.1:${portA}/status
   curl -s http://127.0.0.1:${portA}/healthz
   curl -s http://127.0.0.1:${portA}/balance/${keys.a.address}
-${localMining ? `
-Local mining rehearsal (loopback only — not public mining)
-  Protocol v5 activation height: ${localMining.activationHeight}
-  Estimated wait: ~${Math.ceil((localMining.activationHeight - localMining.scheduledAtHeight) * 30 / 60)} minutes at the 30-second block interval
-  Miner wallet:  ${keyFile('miner')}
-  Miner password file: ${passwordFile('miner')}
-  Miner address: ${localMining.minerAddress}
 
-  Wait until GET /protocol shows nextVersion >= 5, then:
-  npm run mine -- \\
-    --genesis ${join(directory, 'genesis.json')} \\
-    --key ${keyFile('miner')} \\
-    --password-file ${passwordFile('miner')} \\
-    --rpc http://127.0.0.1:${portA}
-
-  Default \`npm run devnet\` (without --local-v5) stays protocol v1 and will not finalize mining claims.
-  This disposable chain is not a public testnet. publicTestnetActivationAllowed remains false.
-` : `
-Default local-devnet genesis is protocol v1. Mining claims will not finalize unless you rerun with --local-v5
-or schedule protocol v5 yourself. That still is not public mining.
-`}
+Mining is retired: consensus rejects every mining_claim transaction on this and every other genesis.
 ZyronChain is not EVM. MetaMask cannot connect.
 There is no public faucet, explorer, or published wallet RPC in this repository.
 See docs/PUBLIC_TEST.md and docs/PUBLIC_LAUNCH_CHECKLIST.md

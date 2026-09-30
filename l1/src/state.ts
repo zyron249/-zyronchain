@@ -1,5 +1,5 @@
 import { canonicalJson, compareCanonicalStrings, sha256Hex } from "./codec.js";
-import { MINING_TRACKER_ADDRESS } from "./mining.js";
+import { assertMiningNotRetired, MINING_TRACKER_ADDRESS } from "./mining.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import { assertAddress, assertExactKeys, assertPlainRecord } from "./transaction.js";
 import type { ActivitySettlementTx, Address, GenesisConfig, MiningClaimTx, ProtocolUpgradeTx, Transaction, TransferTx, ValidatorSetUpdateTx } from "./types.js";
@@ -170,6 +170,7 @@ export class LedgerState {
   }
 
   private applyMining(tx: MiningClaimTx): void {
+    assertMiningNotRetired();
     if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     this.requireNonce(tx.sender, tx.nonce);
     const nextSupply = this.totalSupplyAtoms() + tx.rewardAtoms;

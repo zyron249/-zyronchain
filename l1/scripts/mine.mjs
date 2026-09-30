@@ -23,6 +23,13 @@ import { createMiningClaim } from "../dist/src/transaction.js";
 import { MAX_SUPPLY_ATOMS } from "../dist/src/types.js";
 import { readBoundedJsonResponse } from "./miner-rpc-response.mjs";
 
+// RETIRED (owner decision 2026-09-30): mining is shut down for every genesis and
+// consensus rejects every mining_claim transaction. This miner is disabled and
+// exits non-zero before parsing arguments, reading keys, or contacting any RPC.
+// The code below is retained only for historical review of the miner tooling.
+console.error("ZyronChain mining is retired: consensus rejects every mining_claim transaction. This miner is disabled.");
+process.exit(1);
+
 const MAX_RPC_RESPONSE_BYTES = 64 * 1024;
 const RPC_API_VERSION = 1;
 const args = process.argv.slice(2);
