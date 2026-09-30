@@ -121,7 +121,7 @@ export function assertMiningClaimContext(
   // launch. A genesis that allocates the whole 50M cap can never mint again; this
   // rejection does not depend on the reward schedule returning zero.
   if (input.genesisSupplyAtoms >= MAX_SUPPLY_ATOMS) {
-    throw new Error("Mining is retired: fixed-supply genesis allocates the full 50,000,000 ZYN cap");
+    throw new Error("Mining is retired: fixed-supply genesis allocates the full 50,000,000 ZYN cap (maximum historical issuance has been reached)");
   }
   if (tx.height !== input.nextHeight) throw new Error("Mining claim targets wrong block height");
   if (tx.previousHash !== input.previousHash) throw new Error("Mining claim targets stale previous hash");
