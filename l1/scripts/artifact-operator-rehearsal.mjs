@@ -131,7 +131,8 @@ try {
   const validatorTwo = JSON.parse(await readFile(validatorTwoPath, "utf8"));
   const oracle = JSON.parse(await readFile(oraclePath, "utf8"));
   for (const value of [validatorOne, validatorTwo, oracle]) {
-    assert.equal(value.version, 1);
+    assert.equal(value.version, 2, "New keystores use format v2");
+    assert.deepEqual(value.kdfParams, { n: 131072, r: 8, p: 1, dkLen: 32 }, "v2 keystores use scrypt N=2^17, r=8, p=1");
     assert.equal(Object.hasOwn(value, "privateKey"), false, "Release rehearsal must not create plaintext private-key JSON");
     assert.equal(value.kdf, "scrypt", "Release rehearsal keystore must use scrypt");
     assert.equal(value.cipher, "aes-256-gcm", "Release rehearsal keystore must use AES-256-GCM");

@@ -9,7 +9,8 @@ const MAX_VALIDATOR_KEY_JSON_STRUCTURAL_TOKENS = 4_096;
 
 export async function readOperatorPrivateKey(
   path: string,
-  passwordPath?: string
+  passwordPath?: string,
+  passwordProvider?: () => Promise<string>
 ): Promise<string> {
   let parsed: Record<string, unknown>;
   try {
@@ -22,10 +23,10 @@ export async function readOperatorPrivateKey(
   }
 
   if (isEncryptedKeystore(parsed)) {
-    if (!passwordPath) throw new Error("Encrypted keystore requires ZYRON_KEYSTORE_PASSWORD_FILE");
-    const password = normalizePasswordFile(
-      await readPrivateRegularFile(resolve(passwordPath), "Keystore password file")
-    );
+    if (!passwordPath && !passwordProvider) throw new Error("Encrypted keystore requires ZYRON_KEYSTORE_PASSWORD_FILE");
+    const password = passwordPath
+      ? normalizePasswordFile(await readPrivateRegularFile(resolve(passwordPath), "Keystore password file"))
+      : normalizePasswordFile(await passwordProvider!());
     return decryptPrivateKey(parsed, password);
   }
 

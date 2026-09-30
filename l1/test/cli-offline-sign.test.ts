@@ -11,6 +11,7 @@ import test from "node:test";
 import { ZyronChain } from "../src/chain.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { decryptPrivateKey } from "../src/keystore.js";
+import { toChecksumAddress as toChecksum } from "../src/address-checksum.js";
 import { validateTransactionShape } from "../src/transaction.js";
 import type { Address, GenesisConfig, Transaction } from "../src/types.js";
 
@@ -152,6 +153,56 @@ test("transfer-sign requires explicit nonce, tx-version and a valid receiver; ne
     await assert.rejects(cli([...base, "--to", w.address, "--nonce", "1", "--tx-version", "1", "--out", out], env), /differ from the sender/);
     await cli([...base, "--to", receiver, "--nonce", "1", "--tx-version", "1", "--out", out], env);
     await assert.rejects(cli([...base, "--to", receiver, "--nonce", "1", "--tx-version", "1", "--out", out], env), /EEXIST/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("keystore-migrate upgrades v1 to v2 without overwriting; ZYRON_KEYSTORE_PASSWORD env works; address-checksum and checksummed --to", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-keystore-migrate-"));
+  try {
+    const legacy = {
+      version: 1, kdf: "scrypt", cipher: "aes-256-gcm",
+      salt: "59892c3f19041bcfdb5d5886832a0f29b251a0248bce7c0c6b9d2bb9c5cd74a6",
+      iv: "c26057b446e0fe605094f884", tag: "ad3869d3cb2ea3aa68b648d9362ac038",
+      ciphertext: "6eacfe3883bb825d7616beac6b3018b6b9dc8e6e96247b26e5ba90c1b43a4d72fccd9c72595bf82b73bf994acb180c332bdaa62de5da756271e47340783b409d",
+      publicKey: "a598a8030da6d86c6bc7f2f5144ea549d28211ea58faa70ebf4c1e665c1fe9b5204b5d6f84822c307e4b4a7140737aec23fc63b65b35f86a10026dbd2d864e6b",
+      address: "ZYN80636eaa7a0a54ad4e369e0b6c6f08ead6a49448"
+    };
+    const oldPath = join(root, "old.json");
+    const newPath = join(root, "new.json");
+    await writeFile(oldPath, JSON.stringify(legacy), { mode: 0o600 });
+    const env = { ZYRON_KEYSTORE_PASSWORD: "legacy v1 keystore password" };
+    const verifyOld = await cli(["keystore-verify", "--key", oldPath], env);
+    assert.match(verifyOld.stdout, /Keystore format: v1 \(legacy/);
+    assert.match(verifyOld.stderr, /ZYRON_KEYSTORE_PASSWORD from the environment/);
+    const migrated = await cli(["keystore-migrate", "--key", oldPath, "--out", newPath], env);
+    assert.match(migrated.stdout, /migrated v1 -> v2/);
+    const parsed = JSON.parse(await readFile(newPath, "utf8")) as Record<string, unknown>;
+    assert.equal(parsed.version, 2);
+    assert.equal(parsed.address, legacy.address);
+    assert.equal(JSON.parse(await readFile(oldPath, "utf8")).version, 1, "original kept");
+    const verifyNew = await cli(["keystore-verify", "--key", newPath], env);
+    assert.match(verifyNew.stdout, /Keystore format: v2 \(scrypt N=2\^17/);
+    assert.match(verifyNew.stdout, /checksummed display\): ZYN80636Eaa7A0A54ad4E369E0b6C6F08eAd6a49448/);
+    await assert.rejects(cli(["keystore-migrate", "--key", oldPath, "--out", newPath], env), /EEXIST/);
+    await assert.rejects(cli(["keystore-migrate", "--key", oldPath, "--out", join(root, "x.json")], { ZYRON_KEYSTORE_PASSWORD: "wrong wrong wrong" }), /authentication failed/);
+
+    const shown = await cli(["address-checksum", "--address", "ZYN80636Eaa7A0A54ad4E369E0b6C6F08eAd6a49448"]);
+    assert.match(shown.stdout, /Canonical \(consensus\) address: ZYN80636eaa7a0a54ad4e369e0b6c6f08ead6a49448/);
+    assert.match(shown.stdout, /Checksum: verified/);
+    await assert.rejects(cli(["address-checksum", "--address", "ZYN80636eAa7A0A54ad4E369E0b6C6F08eAd6a49448"]), /checksum mismatch/);
+
+    // transfer-sign accepts the checksummed receiver and signs the canonical lower-case address.
+    const out = join(root, "tx.json");
+    await cli([
+      "transfer-sign", "--key", newPath, "--chain-id", "zyron-devnet-1", "--to", toChecksum(receiver),
+      "--amount-atoms", "5", "--nonce", "1", "--tx-version", "1", "--out", out
+    ], env);
+    assert.equal((JSON.parse(await readFile(out, "utf8")) as { receiver: string }).receiver, receiver);
+    // Without a password source and without a TTY, the CLI refuses instead of hanging.
+    await assert.rejects(cli(["keystore-verify", "--key", newPath], { ZYRON_KEYSTORE_PASSWORD: "" }), /No interactive terminal/);
+    await assert.rejects(cli(["keygen", "--out", join(root, "k.json"), "--password-prompt"]), /No interactive terminal/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
