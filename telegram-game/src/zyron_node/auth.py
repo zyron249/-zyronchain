@@ -40,12 +40,14 @@ def verify_init_data(init_data: str, bot_token: str, now: datetime, max_age_seco
             raise AuthError("bad_init_data", "Invalid Telegram init data")
         data[key] = value
     received = data.pop("hash", None)
-    if not received or len(received) != 64:
+    # Lowercase hex only: hmac.compare_digest raises TypeError on non-ASCII str,
+    # which would surface as HTTP 500 and bypass the auth-failure rate limit.
+    if not received or len(received) != 64 or not _is_lower_hex(received):
         raise AuthError("bad_init_data", "Invalid Telegram init data")
     check_string = "\n".join(f"{key}={data[key]}" for key in sorted(data))
     secret = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
     computed = hmac.new(secret, check_string.encode("utf-8"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(computed, received):
+    if not hmac.compare_digest(computed.encode("ascii"), received.encode("ascii")):
         raise AuthError("bad_hash", "Invalid Telegram init data")
     try:
         auth_date = int(data.get("auth_date", ""))
@@ -85,6 +87,13 @@ def admin_authorized(presented: str, expected: str) -> bool:
     if not expected or not presented:
         return False
     return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
+
+
+_LOWER_HEX = frozenset("0123456789abcdef")
+
+
+def _is_lower_hex(value: str) -> bool:
+    return all(ch in _LOWER_HEX for ch in value)
 
 
 def _clean_name(value: str) -> str:
