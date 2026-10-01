@@ -1,0 +1,23 @@
+{
+  "id": "/app/",
+  "name": "ZyronChain Wallet",
+  "short_name": "Zyron Wallet",
+  "description": "ZyronChain phone wallet (testnet, unaudited): keys stay on this device, encrypted. No public RPC yet.",
+  "lang": "en",
+  "dir": "ltr",
+  "start_url": "/app/index.html",
+  "scope": "/app/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#080808",
+  "theme_color": "#080808",
+  "categories": ["finance", "utilities"],
+  "prefer_related_applications": false,
+  "icons": [
+    { "src": "/app/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/app/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/app/icons/maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/app/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/app/icons/apple-touch-icon-180.png", "sizes": "180x180", "type": "image/png", "purpose": "any" }
+  ]
+}

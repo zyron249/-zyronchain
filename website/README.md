@@ -105,3 +105,7 @@ Publishing or improving this website does not change protocol activation flags a
 ## HTTP security headers
 
 The site is a dashboard-managed Render static site behind Cloudflare, so response headers (HSTS, frame-ancestors / X-Frame-Options, Referrer-Policy, Permissions-Policy, nosniff) are configured outside the repo. See [`docs/WEBSITE_SECURITY_HEADERS.md`](../docs/WEBSITE_SECURITY_HEADERS.md) for the required values, steps and the `curl -I` check. `wallet.js` additionally refuses to render inside a frame.
+
+## Phone wallet (PWA)
+
+`website/app/` is a separate installable phone wallet (iOS + Android, "Add to Home Screen", offline app shell). It is testnet-only and unaudited. Unlike `wallet.html` it generates keys in the browser (an owner-approved exception scoped to `website/app/**`) and stores only a scrypt + AES-256-GCM vault in IndexedDB. Design, KDF measurements, limits and update steps are in [`docs/PWA_WALLET.md`](../docs/PWA_WALLET.md). Tests and the reproducible vendor build live in `tools/pwa-wallet/` and run in `.github/workflows/website-pwa-wallet.yml`.

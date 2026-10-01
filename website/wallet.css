@@ -194,3 +194,12 @@
 @media (prefers-reduced-motion: reduce) {
   .wallet-builder *, .wallet-final * { animation:none !important; transition:none !important; }
 }
+
+/* Phone wallet (website/app) entry point */
+.nav a.nav-install, .wallet-nav a.nav-install { align-self: center; color: #8a5d0a; font-weight: 700; border: 1px solid rgba(215, 168, 74, 0.6); border-radius: 999px; padding: 6px 12px; white-space: nowrap; }
+.nav a.nav-install::after, .wallet-nav a.nav-install::after { display: none; }
+.nav a.nav-install:hover, .nav a.nav-install:focus-visible, .wallet-nav a.nav-install:hover, .wallet-nav a.nav-install:focus-visible { background: rgba(215, 168, 74, 0.14); color: #6b4705; }
+.phone-callout { display: grid; gap: 4px; margin: 18px 0 6px; padding: 14px 16px; border: 1px solid rgba(215, 168, 74, 0.7); border-radius: 14px; background: rgba(215, 168, 74, 0.08); color: inherit; text-decoration: none; max-width: 560px; }
+.phone-callout strong { color: #7a5108; font-size: 1.05rem; }
+.phone-callout span { font-size: 0.92rem; line-height: 1.45; }
+.phone-callout:hover, .phone-callout:focus-visible { background: rgba(215, 168, 74, 0.16); }

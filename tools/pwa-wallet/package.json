@@ -1,0 +1,22 @@
+{
+  "name": "@zyronchain/pwa-wallet-tools",
+  "private": true,
+  "description": "Reproducible build of the vendored, pinned crypto/QR libraries for website/app (ZyronChain PWA wallet). Not deployed.",
+  "type": "module",
+  "scripts": {
+    "build": "node build-vendor.mjs",
+    "check": "node build-vendor.mjs --check"
+  },
+  "dependencies": {
+    "@noble/curves": "2.3.0",
+    "@noble/hashes": "2.3.0",
+    "@scure/base": "2.3.0",
+    "@scure/bip32": "2.3.0",
+    "@scure/bip39": "2.3.0",
+    "qr": "0.6.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10",
+    "playwright-core": "1.55.0"
+  }
+}
