@@ -377,3 +377,17 @@ button { color: inherit; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .reveal-ready { opacity: 1; transform: none; }
 }
+
+/* Phone wallet (website/app) entry point */
+.nav a.nav-install, .wallet-nav a.nav-install { align-self: center; color: #8a5d0a; font-weight: 700; border: 1px solid rgba(215, 168, 74, 0.6); border-radius: 999px; padding: 6px 12px; white-space: nowrap; }
+.nav a.nav-install::after, .wallet-nav a.nav-install::after { display: none; }
+.nav a.nav-install:hover, .nav a.nav-install:focus-visible, .wallet-nav a.nav-install:hover, .wallet-nav a.nav-install:focus-visible { background: rgba(215, 168, 74, 0.14); color: #6b4705; }
+@media (min-width: 721px) and (max-width: 1050px) {
+  .quiet-link { display: none; }
+  .nav a.nav-install { padding: 5px 9px; }
+}
+.nav-install .ni-short { display: none; }
+@media (min-width: 721px) and (max-width: 960px) {
+  .nav-install .ni-long { display: none; }
+  .nav-install .ni-short { display: inline; }
+}

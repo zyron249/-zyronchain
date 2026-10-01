@@ -1,0 +1,69 @@
+name: Website PWA Wallet CI
+
+# ZyronChain phone wallet (website/app, testnet/unaudited). Proves:
+# - the vendored @noble/@scure/qr bundles are a reproducible build of the pinned lockfile;
+# - SRI hashes and the service-worker asset list are current;
+# - phrase -> m/44'/249249'/0'/0/0 -> address equals the MetaMask Snap vectors, an independent BIP-32
+#   reference and l1 address rules; signed transfers are byte-identical to l1 createTransfer and pass
+#   l1 validation/admission; vault round-trip, wrong password and tamper detection;
+# - static scans: no network APIs, no eval, strict CSP, no inline code;
+# - headless Chrome: SW install + offline load, Chrome installability, full create/backup/restore/lock/
+#   sign/delete flow, storage contents, network isolation, 360/390/414 layouts, frame blocking.
+on:
+  pull_request:
+    paths:
+      - 'website/app/**'
+      - 'website/wallet-core.js'
+      - 'docs/ADDRESS_CHECKSUM.md'
+      - 'tools/pwa-wallet/**'
+      - 'l1/src/crypto.ts'
+      - 'l1/src/codec.ts'
+      - 'l1/src/transaction.ts'
+      - '.github/workflows/website-pwa-wallet.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'website/app/**'
+      - 'website/wallet-core.js'
+      - 'docs/ADDRESS_CHECKSUM.md'
+      - 'tools/pwa-wallet/**'
+      - 'l1/src/crypto.ts'
+      - 'l1/src/codec.ts'
+      - 'l1/src/transaction.ts'
+      - '.github/workflows/website-pwa-wallet.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  pwa-wallet:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+      - name: Build L1
+        working-directory: l1
+        run: |
+          npm ci
+          npm run build
+      - name: Install pinned PWA tooling
+        working-directory: tools/pwa-wallet
+        run: npm ci
+      - name: Vendored bundles are reproducible and the app is stamped
+        run: |
+          node tools/pwa-wallet/build-vendor.mjs --check
+          node tools/pwa-wallet/stamp-app.mjs --check
+      - name: Core tests (vectors, vault, l1 equality, static scans, manifest)
+        run: node tools/pwa-wallet/test-core.mjs --require-l1
+      - name: Headless Chrome tests (SW, offline, installability, flows, layouts)
+        run: |
+          CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          export CHROME_PATH
+          node tools/pwa-wallet/test-browser.mjs

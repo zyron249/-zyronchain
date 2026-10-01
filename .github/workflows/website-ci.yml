@@ -35,6 +35,11 @@ jobs:
           node --check website/wallet-core.js
           node --check website/wallet.js
           node --check website/validator.js
+          node --check website/app/app.js
+          node --check website/app/zyron-wallet-core.js
+          node --check website/app/sw.js
+          node --check website/app/vendor/noble-scure.js
+          node --check website/app/vendor/qr.js
       - name: Wallet derivation vectors and generated-script tests
         run: node website/test-wallet-core.mjs
       - name: Verify production website, wallet and validator contracts
@@ -330,6 +335,29 @@ jobs:
               throw new Error(`${name} must not generate, import, sign with or decrypt key material in the browser`);
             }
           }
+          // Browser key handling is allowed ONLY inside the phone wallet app (website/app/**), which is a
+          // deliberate, owner-approved exception: keys are generated with crypto.getRandomValues, kept in memory
+          // only while unlocked and persisted solely as a scrypt + AES-256-GCM vault. That app has its own,
+          // stricter CI (website-pwa-wallet.yml: CSP, SRI, no network APIs, l1 equality, browser tests).
+          // Every other browser script on the site must stay free of key generation, signing, decryption and storage.
+          const walkJs = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) return full === path.join('website', 'app') ? [] : walkJs(full);
+            return entry.name.endsWith('.js') ? [full] : [];
+          });
+          for (const file of walkJs('website')) {
+            const source = fs.readFileSync(file, 'utf8');
+            if (/getRandomValues|generateKey|importKey|deriveKey|deriveBits|subtle\.(sign|encrypt|decrypt|wrapKey|unwrapKey)|secp256k1\.sign|FileReader/.test(source)) {
+              throw new Error(`${file}: browser key material handling is only allowed in website/app/** (PWA wallet exception)`);
+            }
+            if (/indexedDB|localStorage|sessionStorage/.test(source)) {
+              throw new Error(`${file}: browser storage is only allowed in website/app/** (encrypted PWA vault)`);
+            }
+          }
+          for (const required of ['website/app/index.html', 'website/app/app.js', 'website/app/zyron-wallet-core.js', 'website/app/sw.js', 'website/app/manifest.webmanifest', 'website/app/vendor/VENDOR.json']) {
+            if (!fs.existsSync(required)) throw new Error(`Missing PWA wallet file: ${required}`);
+          }
+
           for (const [name, source] of [['release', releaseJs], ['wallet', walletJs], ['wallet-core', walletCoreJs], ['validator', validatorJs]]) {
             if (/fetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(/.test(source)) {
               throw new Error(`${name} browser JavaScript must remain offline-only`);
