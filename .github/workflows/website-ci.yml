@@ -354,7 +354,7 @@ jobs:
               throw new Error(`${file}: browser storage is only allowed in website/app/** (encrypted PWA vault)`);
             }
           }
-          for (const required of ['website/app/index.html', 'website/app/app.js', 'website/app/zyron-wallet-core.js', 'website/app/sw.js', 'website/app/manifest.webmanifest', 'website/app/vendor/VENDOR.json']) {
+          for (const required of ['website/app/index.html', 'website/app/app.js', 'website/app/zyron-wallet-core.js', 'website/app/sw.js', 'website/app/manifest.json', 'website/app/vendor/VENDOR.json']) {
             if (!fs.existsSync(required)) throw new Error(`Missing PWA wallet file: ${required}`);
           }
 

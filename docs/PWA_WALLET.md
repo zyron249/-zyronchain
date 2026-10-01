@@ -67,7 +67,9 @@ CLI keystore v2, and a 2–4 s unlock on a mid-range phone is acceptable for a w
   Nothing is loaded from a CDN or any third party.
 - **Service worker** (`website/app/sw.js`, scope `/app/`):
   - Caches only the listed same-origin app-shell files, in a versioned cache.
-  - Every file's SHA-256 is checked during install; a mismatch aborts the install and the previous version stays.
+  - Every code/HTML/CSS/manifest file's SHA-256 is checked during install; a mismatch aborts the install and the
+    previous version stays. PNG icons are only type-checked, because Cloudflare's image optimization re-encodes
+    them in transit (observed live).
   - Answers only same-origin GET requests for exactly those paths. Everything else (other paths, other origins,
     non-GET, query strings) is never intercepted and never cached.
   - It never opens IndexedDB. Old caches are deleted on activate.

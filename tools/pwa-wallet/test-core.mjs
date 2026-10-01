@@ -257,11 +257,12 @@ await test('static scan: app code makes no network requests and has no eval/inli
   const scripts = [...html.matchAll(/<script\b[^>]*>/g)].map((m) => m[0]);
   assert.equal(scripts.length, 4);
   for (const tag of [...scripts, html.match(/<link rel="stylesheet"[^>]*>/)[0]]) {
-    const [, src] = tag.match(/(?:src|href)="\.\/([^"]+)"/);
+    const [, src] = tag.match(/(?:src|href)="\/app\/([^"]+)"/);
     const [, integrity] = tag.match(/integrity="(sha384-[^"]+)"/);
     assert.equal(integrity, 'sha384-' + createHash('sha384').update(readFileSync(join(app, src))).digest('base64'), `SRI for ${src}`);
   }
-  assert.ok(html.indexOf('vendor/noble-scure.js') < html.indexOf('zyron-wallet-core.js') && html.indexOf('zyron-wallet-core.js') < html.indexOf('./app.js'));
+  assert.ok(html.indexOf('vendor/noble-scure.js') < html.indexOf('zyron-wallet-core.js') && html.indexOf('zyron-wallet-core.js') < html.indexOf('/app/app.js'));
+  assert.doesNotMatch(html, /(?:src|href)="\.\.?\//, 'absolute /app/ paths so /app (no slash) also works');
   const vendor = JSON.parse(readFileSync(join(app, 'vendor', 'VENDOR.json'), 'utf8'));
   for (const bundle of vendor.bundles) {
     assert.equal(bundle.integrity, 'sha384-' + createHash('sha384').update(readFileSync(join(app, 'vendor', bundle.file))).digest('base64'));
@@ -284,6 +285,7 @@ await test('service worker: same-origin GET of listed shell files only, versione
   const assets = JSON.parse(sw.match(/const ASSETS = (\{[\s\S]*?\});/)[1]);
   for (const [path, sha256] of Object.entries(assets)) {
     assert.ok(path.startsWith('./') && !path.includes('..'), path);
+    if (sha256 === null) { assert.match(path, /\.png$/, 'only icons may skip the hash check'); continue; }
     assert.equal(createHash('sha256').update(readFileSync(join(app, path))).digest('hex'), sha256, `stamped hash for ${path}`);
   }
   assert.ok(assets['./index.html'] && assets['./vendor/noble-scure.js'] && assets['./app.js']);
@@ -295,7 +297,7 @@ function pngSize(file) {
   return [bytes.readUInt32BE(16), bytes.readUInt32BE(20)];
 }
 await test('web app manifest is valid and installable (name, scope, standalone, 192/512 + maskable icons, apple-touch-icon)', () => {
-  const manifest = JSON.parse(readFileSync(join(app, 'manifest.webmanifest'), 'utf8'));
+  const manifest = JSON.parse(readFileSync(join(app, 'manifest.json'), 'utf8'));
   assert.equal(manifest.name, 'ZyronChain Wallet');
   assert.equal(manifest.display, 'standalone');
   assert.equal(manifest.scope, '/app/');
@@ -310,7 +312,7 @@ await test('web app manifest is valid and installable (name, scope, standalone, 
   }
   assert.equal(need.size, 0, 'missing icons: ' + [...need].join(', '));
   const html = readFileSync(join(app, 'index.html'), 'utf8');
-  for (const marker of ['rel="manifest" href="./manifest.webmanifest"', 'rel="apple-touch-icon" sizes="180x180"', 'name="apple-mobile-web-app-capable" content="yes"', 'name="theme-color"', 'viewport-fit=cover']) assert.ok(html.includes(marker), marker);
+  for (const marker of ['rel="manifest" href="/app/manifest.json"', 'rel="apple-touch-icon" sizes="180x180"', 'name="apple-mobile-web-app-capable" content="yes"', 'name="theme-color"', 'viewport-fit=cover']) assert.ok(html.includes(marker), marker);
   assert.deepEqual(pngSize(join(app, 'icons', 'apple-touch-icon-180.png')), [180, 180]);
   for (const marker of ['TESTNET', 'Scam warning', 'No public RPC yet', 'unaudited', 'Add to Home Screen', 'Install app']) assert.ok(html.includes(marker), marker);
   const appJs = readFileSync(join(app, 'app.js'), 'utf8');
