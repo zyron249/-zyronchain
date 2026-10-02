@@ -1,0 +1,34 @@
+{
+  "version": "0.1.0",
+  "description": "ZyronChain (testnet-only, unaudited): derive a ZyronChain address and sign L1 transfers offline.",
+  "proposedName": "ZyronChain",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zyron249/-zyronchain.git"
+  },
+  "source": {
+    "shasum": "2LWbNdoddrmHwfEPJ6TOG/JqZQ6rLQUMWxCi7GOpAus=",
+    "location": {
+      "npm": {
+        "filePath": "dist/bundle.js",
+        "iconPath": "images/icon.svg",
+        "packageName": "@zyronchain/metamask-snap",
+        "registry": "https://registry.npmjs.org/"
+      }
+    }
+  },
+  "initialPermissions": {
+    "endowment:rpc": {
+      "allowedOrigins": ["https://zyronchain.com", "http://localhost:8000"]
+    },
+    "snap_dialog": {},
+    "snap_getBip32Entropy": [
+      {
+        "path": ["m", "44'", "249249'", "0'", "0", "0"],
+        "curve": "secp256k1"
+      }
+    ]
+  },
+  "platformVersion": "12.0.1",
+  "manifestVersion": "0.1"
+}

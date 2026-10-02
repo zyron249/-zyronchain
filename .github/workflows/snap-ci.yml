@@ -1,0 +1,66 @@
+name: MetaMask Snap CI
+
+on:
+  pull_request:
+    paths:
+      - 'snap/**'
+      - 'l1/src/**'
+      - 'l1/package.json'
+      - 'l1/package-lock.json'
+      - 'l1/tsconfig.json'
+      - '.github/workflows/snap-ci.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'snap/**'
+      - 'l1/src/**'
+      - 'l1/package.json'
+      - 'l1/package-lock.json'
+      - 'l1/tsconfig.json'
+      - '.github/workflows/snap-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  snap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            l1/package-lock.json
+            snap/package-lock.json
+      # The Snap tests compare against the real l1 implementation (l1/dist).
+      # Only TypeScript output is needed, so native install scripts are skipped.
+      - name: Build l1 (reference implementation for tests)
+        working-directory: l1
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
+      - name: Install Snap dependencies
+        working-directory: snap
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        working-directory: snap
+        run: npm run typecheck
+      - name: Build Snap bundle
+        working-directory: snap
+        run: npm run build
+      - name: Manifest shasum is committed and bundle has no Node globals
+        run: |
+          git diff --exit-code -- snap/snap.manifest.json
+          if grep -Eq '(^|[^A-Za-z0-9_.])Buffer([^A-Za-z0-9_]|$)' snap/dist/bundle.js; then
+            echo "bundle references Buffer" >&2
+            exit 1
+          fi
+      - name: Test (snaps-jest + l1 oracle)
+        working-directory: snap
+        run: npx jest --runInBand --ci

@@ -1,0 +1,16 @@
+{
+  "comment": "Fixed ZyronChain Snap derivation vectors. Mnemonics are PUBLIC BIP-39 test phrases; never fund these addresses. Expected values were produced by l1/src/crypto.ts (publicKeyFromPrivate/addressFromPublicKey) on the key at `derivationPath`, derived with @metamask/key-tree. The Jest suite re-derives them through MetaMask's snap_getBip32Entropy and re-checks against the real l1 code.",
+  "derivationPath": "m/44'/249249'/0'/0/0",
+  "vectors": [
+    {
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      "publicKey": "06317f0953a96539ad5435839ec3cfbdc8101dab70a9517a887466e882ca69ee5e4b3b52bbdee9fd4aec865685940bb31568887ba73ceaac153aebf77ad62d4c",
+      "address": "ZYN16623f437e90cb7216ce70746f642717cc8b531f"
+    },
+    {
+      "mnemonic": "test test test test test test test test test test test junk",
+      "publicKey": "c1c03507f87433e86902f9673cb296b3f00079f035489b8d8460b36e3b84de92b2ed8541368f1490164365e126b7b518c6cfb29c27b990bf12ecfa472d4a7d66",
+      "address": "ZYN0ac2dbccbd2a299dea4fcc2ddf98d7dd77eebb41"
+    }
+  ]
+}
