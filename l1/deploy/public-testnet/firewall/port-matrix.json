@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "rules": [
+    { "source": "internet", "role": "public-rpc", "port": 443, "decision": "allow" },
+    { "source": "internet", "role": "validator-consensus", "port": "any", "decision": "deny" },
+    { "source": "internet", "role": "validator-signer", "port": "any", "decision": "deny" },
+    { "source": "internet", "role": "bootstrap-p2p", "port": "assigned-bootstrap-port", "decision": "allow" },
+    { "source": "miner", "role": "public-rpc", "port": 443, "decision": "allow" },
+    { "source": "miner", "role": "validator-consensus", "port": "any", "decision": "deny" },
+    { "source": "monitoring", "role": "metrics", "port": "any", "decision": "allow-private" }
+  ]
+}

@@ -9,6 +9,9 @@ test("native consensus client request budgets remain kind-specific", () => {
   assert.equal(nativeConsensusRequestMaxBytes("attest"), 2_500_000);
   assert.equal(nativeConsensusRequestMaxBytes("block"), 2_500_000);
   assert.equal(nativeConsensusRequestMaxBytes("skip"), 128_000);
+  assert.equal(nativeConsensusRequestMaxBytes("lock"), 8_192);
+  assert.equal(nativeConsensusRequestMaxBytes("report"), 8_192);
+  assert.equal(nativeConsensusRequestMaxBytes("complete"), 2_500_000);
   assert.equal(nativeConsensusRequestMaxBytes("transaction"), 64_000);
   assert.ok(nativeConsensusRequestMaxBytes("skip") < nativeConsensusRequestMaxBytes("attest"));
   assert.ok(nativeConsensusRequestMaxBytes("transaction") < nativeConsensusRequestMaxBytes("block"));

@@ -1,0 +1,21 @@
+#cloud-config
+# Vendor-neutral cloud-init for one Zyron Public Testnet role.
+# Do not put provider names, public IPs, domains, or secrets in this file.
+users:
+  - name: zyron
+    system: true
+    lock_passwd: true
+    shell: /usr/sbin/nologin
+package_update: false
+write_files:
+  - path: /etc/zyron/role.env
+    permissions: "0600"
+    owner: zyron:zyron
+    content: |
+      ZYRON_ROLE=__OPERATOR_ROLE__
+      ZYRON_REGION=__OPERATOR_REGION__
+      ZYRON_NETWORK_NAME=Zyron Public Testnet
+      ZYRON_CHAIN_ID=zyron-public-testnet-1
+runcmd:
+  - [ systemctl, daemon-reload ]
+  - [ systemctl, enable, --now, zyron-role.service ]

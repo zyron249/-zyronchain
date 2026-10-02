@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "status": "format-only",
+  "networkName": null,
+  "chainId": null,
+  "genesisHash": null,
+  "genesisSha256": null,
+  "genesisTimestampMs": null,
+  "validatorSetHash": null,
+  "configurationHash": null,
+  "commit": null
+}

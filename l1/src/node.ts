@@ -9,15 +9,16 @@ import {
   RPC_API_VERSION,
   assertPeerHttpSuccess,
   cancelPeerResponseBody,
+  collectPredecessorRoundCertificate,
   parsePeerResponseJsonChunks,
+  tryCompleteSplitRound,
   type ConsensusPeerClient,
   type PeerRequestCredentials
 } from "./node-base.js";
 import {
+  assertRoundChoiceReport,
   expectedValidator,
-  validateBlockAttestation,
-  validateRoundSkipQuorum,
-  validateRoundSkipVote
+  validateBlockAttestation
 } from "./block.js";
 import { assertHex, canonicalJson, sha256Hex } from "./codec.js";
 import { ConsensusOperationBudget } from "./consensus-operation-budget.js";
@@ -25,7 +26,7 @@ import { addressFromPublicKey } from "./crypto.js";
 import type { PeerReputationStore } from "./peer-reputation.js";
 import { signPeerRequest } from "./peer-identity.js";
 import { assertExactKeys, assertPlainRecord } from "./transaction.js";
-import type { Address, Block, BlockAttestation, RoundSkipVote } from "./types.js";
+import type { Address, Block, BlockAttestation, LockedAttestEvidence, RoundChoiceReport, RoundProgressEntry, RoundSkipVote } from "./types.js";
 import { LocalValidatorSigner, type ValidatorSigner } from "./validator-signer.js";
 
 const HTTP_CONSENSUS_TIMEOUT_MS = 8_000;
@@ -33,6 +34,7 @@ export const MAX_HTTP_CONSENSUS_OUTBOUND_CONCURRENCY = 8;
 export const MAX_HTTP_CONSENSUS_OUTSTANDING = 32;
 export const MAX_HTTP_ATTESTATION_RESPONSE_BYTES = 8_192;
 export const MAX_HTTP_ROUND_SKIP_RESPONSE_BYTES = 16_384;
+export const MAX_HTTP_ROUND_REPORT_RESPONSE_BYTES = 2_500_000;
 export const MAX_CONSENSUS_ROUND_CATCHUP = 64;
 const MAX_HTTP_CONSENSUS_WIRE_BYTES_INFLIGHT = 16_000_000;
 const MAX_HTTP_CONSENSUS_PARSE_BYTES_INFLIGHT = 64_000_000;
@@ -266,7 +268,7 @@ export class PeerClient extends BasePeerClient {
   override async requestRoundSkips(
     height: number,
     round: number,
-    previousCertificate: RoundSkipVote[] = []
+    previousCertificate: RoundProgressEntry[] = []
   ): Promise<RoundSkipVote[]> {
     return collectHttpConsensusPeers(this.peers, async (peer, signal) => {
       return postHttpConsensusJson(
@@ -279,6 +281,72 @@ export class PeerClient extends BasePeerClient {
           assertPlainRecord(payload, "round skip response");
           assertExactKeys(payload, ["vote"], "round skip response");
           return validateHttpPeerRoundSkipVoteShape(payload.vote);
+        },
+        signal
+      );
+    });
+  }
+
+  override async requestLockedAttestations(
+    height: number,
+    round: number,
+    previousHash: string
+  ): Promise<LockedAttestEvidence[]> {
+    return collectHttpConsensusPeers(this.peers, async (peer, signal) => {
+      return postHttpConsensusJson(
+        `${peer}/round/lock`,
+        { height, round, previousHash },
+        16_384,
+        this.consensusPeerAuthToken,
+        this.consensusPeerRequestCredentials,
+        (payload) => {
+          assertPlainRecord(payload, "round lock response");
+          assertExactKeys(payload, ["evidence"], "round lock response");
+          if (payload.evidence === null || typeof payload.evidence !== "object" || Array.isArray(payload.evidence)) {
+            throw new Error("Invalid round lock response");
+          }
+          return payload.evidence as LockedAttestEvidence;
+        },
+        signal
+      );
+    });
+  }
+
+  override async requestRoundReports(
+    height: number,
+    round: number,
+    previousHash: string
+  ): Promise<RoundChoiceReport[]> {
+    return collectHttpConsensusPeers(this.peers, async (peer, signal) => {
+      return postHttpConsensusJson(
+        `${peer}/round/report`,
+        { height, round, previousHash },
+        MAX_HTTP_ROUND_REPORT_RESPONSE_BYTES,
+        this.consensusPeerAuthToken,
+        this.consensusPeerRequestCredentials,
+        (payload) => {
+          assertPlainRecord(payload, "round report response");
+          assertExactKeys(payload, ["report"], "round report response");
+          assertRoundChoiceReport(payload.report);
+          return payload.report;
+        },
+        signal
+      );
+    });
+  }
+
+  override async requestCompletionAttestations(block: Block, votes: RoundProgressEntry[]): Promise<BlockAttestation[]> {
+    return collectHttpConsensusPeers(this.peers, async (peer, signal) => {
+      return postHttpConsensusJson(
+        `${peer}/round/complete`,
+        { block, votes },
+        MAX_HTTP_ATTESTATION_RESPONSE_BYTES,
+        this.consensusPeerAuthToken,
+        this.consensusPeerRequestCredentials,
+        (payload) => {
+          assertPlainRecord(payload, "round completion response");
+          assertExactKeys(payload, ["attestation"], "round completion response");
+          return validateHttpPeerAttestationShape(payload.attestation);
         },
         signal
       );
@@ -315,6 +383,10 @@ export async function produceFinalizedBlock(
   const chain = service.store.chain;
   const elapsed = consensusNowMs - chain.tip.header.timestampMs;
   if (elapsed < BLOCK_INTERVAL_MS) return null;
+  if (elapsed >= BLOCK_INTERVAL_MS + ROUND_WINDOW_MS) {
+    const completed = await tryCompleteSplitRound(service, peers, consensusNowMs, signingNowMs);
+    if (completed) return completed;
+  }
   const round = Math.max(0, Math.floor((elapsed - BLOCK_INTERVAL_MS) / ROUND_WINDOW_MS));
   if (!Number.isSafeInteger(round) || round > MAX_CONSENSUS_ROUND_CATCHUP) return null;
   const signer = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
@@ -323,49 +395,20 @@ export async function produceFinalizedBlock(
   const expected = expectedValidator(validators, chain.height + 1, round);
   if (expected.publicKey !== publicKey) return null;
 
-  let roundCertificate: RoundSkipVote[] = [];
+  let roundCertificate: RoundProgressEntry[] = [];
   if (round > 0) {
-    let previousCertificate: RoundSkipVote[] = [];
+    let previousCertificate: RoundProgressEntry[] = [];
     for (let skippedRound = 0; skippedRound < round; skippedRound += 1) {
-      const votes: RoundSkipVote[] = [];
-      try {
-        votes.push(await service.requestSkipVote(
-          chain.height + 1,
-          skippedRound,
-          previousCertificate,
-          signingNowMs()
-        ));
-      } catch {
-      }
-      votes.push(...await peers.requestRoundSkips(chain.height + 1, skippedRound, previousCertificate));
-      const unique = new Map<Address, RoundSkipVote>();
-      for (const vote of votes) {
-        try {
-          validateRoundSkipVote(
-            vote,
-            validators,
-            chain.genesis.chainId,
-            chain.height + 1,
-            skippedRound,
-            chain.tip.hash
-          );
-          unique.set(vote.validator, vote);
-        } catch {
-        }
-      }
-      const certificate = [...unique.values()];
-      try {
-        validateRoundSkipQuorum(
-          certificate,
-          validators,
-          chain.genesis.chainId,
-          chain.height + 1,
-          skippedRound,
-          chain.tip.hash
-        );
-      } catch {
-        return null;
-      }
+      const certificate = await collectPredecessorRoundCertificate(
+        service,
+        peers,
+        chain.height + 1,
+        skippedRound,
+        previousCertificate,
+        chain.tip.hash,
+        signingNowMs()
+      );
+      if (!certificate) return null;
       roundCertificate = certificate;
       previousCertificate = certificate;
     }

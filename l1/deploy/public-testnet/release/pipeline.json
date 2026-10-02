@@ -1,0 +1,9 @@
+{
+  "status": "prepared-not-published",
+  "publicationAllowed": false,
+  "publish": false,
+  "targets": ["linux", "darwin", "windows"],
+  "artifacts": ["SHA256SUMS", "SBOM", "commit", "provenance"],
+  "networkName": "Zyron Public Testnet",
+  "chainId": "zyron-public-testnet-1"
+}

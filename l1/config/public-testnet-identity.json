@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "status": "proposal-unfilled",
+  "networkClass": "public-testnet",
+  "chainId": null,
+  "genesisHash": null,
+  "genesisTimestampMs": null,
+  "bootstrapPeers": [],
+  "publicRpcEndpoints": [],
+  "activationAllowed": false,
+  "publicMiningActivated": false,
+  "publicationAllowed": false
+}

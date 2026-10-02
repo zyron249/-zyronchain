@@ -1,0 +1,16 @@
+groups:
+  - name: zyron-public-testnet-critical
+    rules:
+      - alert: FinalityStalled
+        expr: increase(zyron_finalized_height[10m]) == 0
+      - alert: DivergentFinalizedHash
+        expr: count(count by (hash) (zyron_finalized_height)) > 1
+      - alert: QuorumLoss
+        expr: zyron_validator_up < 2
+      - alert: GenesisOrChainIdMismatch
+        expr: zyron_rpc_errors > 0
+      - alert: SigningFailureBurst
+        expr: increase(zyron_validator_signing_failures[5m]) > 0
+      - alert: RewardOrSupplyInvariantViolation
+        expr: zyron_mining_claims_accepted < 0
+# Metrics are operator-network only. Do not publish this scrape target on the public internet.

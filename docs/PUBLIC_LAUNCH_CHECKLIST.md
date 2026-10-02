@@ -31,6 +31,9 @@ Authorization (`*Authorized=true`) is not activation. Green CI is not activation
 | In-process mining regression | Ready | `cd l1 && npm test` (includes `test/mining*.ts`) | In-memory 100 empty blocks; not Internet mining evidence |
 | Website / wallet / mining / validator pages | Ready (docs only) | `python3 -m http.server 8080 --directory website` | No browser custody, no download CTA, no public RPC |
 | Legacy Python/Flask node | Legacy only | [`LEGACY_PYTHON_TESTNET.md`](LEGACY_PYTHON_TESTNET.md) | Not the canonical chain. Binds `0.0.0.0` in `app.py` for that archived stack |
+| Public-testnet identity proposal | Prepared / fail-closed | `l1/config/public-testnet-identity.json` and `--network-class public-testnet` | Placeholders only. Admission refuses the file. Not a chain ID, genesis, or activation |
+| Public-testnet bootstrap proposal | Prepared / fail-closed | `l1/config/public-testnet-bootstrap.json` | Three `PLACEHOLDER` slots. Not live peers, IPs, or DNS names. Dial list stays empty |
+| Public RPC role proposal | Prepared / fail-closed | `l1/config/public-testnet-rpc.json` and `rpcRole: "public"` | Origins are `PLACEHOLDER`. Consensus routes are refused on that role. Not a live HTTPS listener |
 | Public L1 RPC / explorer / faucet / bootstrap | Blocked | — | Do not invent hosts or chain IDs |
 | Public mining / one-click miner download | Blocked | website `publicMiningActivated: false` | Release-candidate workflows stay `publicationAllowed=false` |
 | Public testnet activation | Blocked | `publicTestnetActivationAllowed=false` | See section 3 |

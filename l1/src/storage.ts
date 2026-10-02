@@ -867,6 +867,52 @@ export class SigningJournal {
     }
   }
 
+  choice(height: number, round: number): { kind: "attest" | "skip"; value: string } | undefined {
+    if (this.closed) throw new Error("Signing journal is closed");
+    if (this.persistenceFaulted) throw new Error("Signing journal persistence fault requires validator restart");
+    if (!Number.isSafeInteger(height) || height < 1 || !Number.isSafeInteger(round) || round < 0) {
+      throw new Error("Invalid signing slot");
+    }
+    const existing = this.reservations.get(`${height}:${round}`);
+    if (!existing) return undefined;
+    const separator = existing.indexOf(":");
+    const kind = existing.slice(0, separator);
+    const value = existing.slice(separator + 1);
+    if ((kind !== "attest" && kind !== "skip") || !/^[0-9a-f]{64}$/.test(value)) {
+      this.persistenceFaulted = true;
+      throw new Error("Signing journal in-memory state is corrupt; validator restart required");
+    }
+    return { kind, value };
+  }
+
+  choicesAtHeight(height: number): Array<{ round: number; kind: "attest" | "skip"; value: string }> {
+    if (this.closed) throw new Error("Signing journal is closed");
+    if (this.persistenceFaulted) throw new Error("Signing journal persistence fault requires validator restart");
+    if (!Number.isSafeInteger(height) || height < 1) throw new Error("Invalid signing slot");
+    const found: Array<{ round: number; kind: "attest" | "skip"; value: string }> = [];
+    for (const [key, reservation] of this.reservations) {
+      const separator = key.indexOf(":");
+      const reservationSeparator = reservation.indexOf(":");
+      if (separator <= 0 || reservationSeparator <= 0) {
+        this.persistenceFaulted = true;
+        throw new Error("Signing journal in-memory state is corrupt; validator restart required");
+      }
+      const keyHeight = Number(key.slice(0, separator));
+      const round = Number(key.slice(separator + 1));
+      const kind = reservation.slice(0, reservationSeparator);
+      const value = reservation.slice(reservationSeparator + 1);
+      if (!Number.isSafeInteger(keyHeight) || keyHeight < 1 || !Number.isSafeInteger(round) || round < 0 ||
+          (kind !== "attest" && kind !== "skip") || !/^[0-9a-f]{64}$/.test(value)) {
+        this.persistenceFaulted = true;
+        throw new Error("Signing journal in-memory state is corrupt; validator restart required");
+      }
+      if (keyHeight !== height) continue;
+      found.push({ round, kind, value });
+    }
+    found.sort((left, right) => left.round - right.round);
+    return found;
+  }
+
   async reserveAttestation(
     height: number,
     round: number,

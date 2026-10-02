@@ -1,0 +1,33 @@
+[Unit]
+Description=Zyron Public Testnet role (__OPERATOR_ROLE__ / __OPERATOR_REGION__)
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=zyron
+Group=zyron
+WorkingDirectory=/var/lib/zyron
+EnvironmentFile=/etc/zyron/role.env
+ExecStart=/usr/bin/node /opt/zyron/l1/dist/src/secure-cli.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+StateDirectory=zyron
+ConfigurationDirectory=zyron
+LogsDirectory=zyron
+ReadWritePaths=/var/lib/zyron
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zyron
+
+[Install]
+WantedBy=multi-user.target
