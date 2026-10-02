@@ -50,7 +50,8 @@ if (!live) {
     if (existsSync(file) && statSync(file).isDirectory()) file = join(file, 'index.html');
     if (!file.startsWith(site) || !existsSync(file)) { res.writeHead(404, PROD_HEADERS); return res.end('not found'); }
     res.writeHead(200, { ...PROD_HEADERS, 'Content-Type': TYPES[extname(file)] || 'application/octet-stream' });
-    res.end(readFileSync(file));
+    // Emulate the CDN's lossless image re-encoding: PNG bytes differ from the repo (trailing bytes after IEND).
+    res.end(extname(file) === '.png' ? Buffer.concat([readFileSync(file), Buffer.from('cdn-reencoded')]) : readFileSync(file));
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -134,18 +135,18 @@ try {
     await page.goto(appUrl, { waitUntil: 'load' });
     await page.waitForFunction(() => document.body.dataset.current === 'welcome');
     assert.equal(await page.title(), 'ZyronChain Wallet (testnet)');
-    await page.evaluate(() => navigator.serviceWorker.ready);
+    await page.evaluate(() => Promise.race([navigator.serviceWorker.ready.then(() => true), new Promise((_, reject) => setTimeout(() => reject(new Error('service worker did not install within 45 s')), 45000))]));
     // Playwright contexts are incognito (never installable), so installability is checked in a real profile.
     const profile = mkdtempSync(join(tmpdir(), 'zyron-pwa-profile-'));
     const persistent = await chromium.launchPersistentContext(profile, { executablePath: chromePath, viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, userAgent: ANDROID_UA });
     try {
       const p = persistent.pages()[0] || await persistent.newPage();
       await p.goto(appUrl, { waitUntil: 'load' });
-      await p.evaluate(() => navigator.serviceWorker.ready);
+      await p.evaluate(() => Promise.race([navigator.serviceWorker.ready.then(() => true), new Promise((_, reject) => setTimeout(() => reject(new Error('service worker did not install within 45 s')), 45000))]));
       const cdp = await persistent.newCDPSession(p);
       const manifest = await cdp.send('Page.getAppManifest');
       assert.deepEqual(manifest.errors, [], 'manifest parse errors');
-      assert.match(manifest.url, /\/app\/manifest\.webmanifest$/);
+      assert.match(manifest.url, /\/app\/manifest\.json$/);
       let installability = [];
       for (let i = 0; i < 20; i += 1) { installability = (await cdp.send('Page.getInstallabilityErrors')).installabilityErrors; if (!installability.length) break; await p.waitForTimeout(500); }
       assert.deepEqual(installability, [], 'Chrome installability errors: ' + JSON.stringify(installability));
@@ -173,7 +174,7 @@ try {
     assert.match(names[0], /^zyron-wallet-app-[0-9a-f]{16}$/);
     const sw = readFileSync(join(site, 'app', 'sw.js'), 'utf8');
     if (!live) assert.ok(names[0].endsWith(sw.match(/const VERSION = '([0-9a-f]{16})'/)[1]));
-    assert.deepEqual(cached[names[0]], ['/app/apple-touch-icon-180.png', '/app/icons/icon-192.png', '/app/icons/maskable-192.png', '/app/app.css', '/app/app.js', '/app/index.html', '/app/manifest.webmanifest', '/app/vendor/noble-scure.js', '/app/vendor/qr.js', '/app/zyron-wallet-core.js'].map((p) => p.replace('/app/apple', '/app/icons/apple')).sort());
+    assert.deepEqual(cached[names[0]], ['/app/apple-touch-icon-180.png', '/app/icons/icon-192.png', '/app/icons/maskable-192.png', '/app/app.css', '/app/app.js', '/app/index.html', '/app/manifest.json', '/app/vendor/noble-scure.js', '/app/vendor/qr.js', '/app/zyron-wallet-core.js'].map((p) => p.replace('/app/apple', '/app/icons/apple')).sort());
     await context.setOffline(true);
     await page.reload({ waitUntil: 'load' });
     await page.waitForFunction(() => document.body.dataset.current === 'welcome' && !!globalThis.ZyronAppCore && !!globalThis.ZyronQR);
@@ -182,6 +183,12 @@ try {
     await offlineNav.goto(`${base}/app/`, { waitUntil: 'load' });
     assert.equal(await offlineNav.title(), 'ZyronChain Wallet (testnet)', '/app/ also opens offline');
     await offlineNav.close();
+    await context.setOffline(false);
+    const noSlash = await context.newPage();
+    await noSlash.goto(`${base}/app`, { waitUntil: 'load' });
+    await noSlash.waitForFunction(() => !!globalThis.ZyronAppCore && document.body.dataset.current === 'welcome');
+    await noSlash.close();
+    await context.setOffline(true);
   });
 
   let words;
@@ -338,7 +345,7 @@ try {
 
   await test('framing is blocked (header frame-ancestors + in-app guard)', async () => {
     const m = await newMobile();
-    await m.page.goto(`${base}/app/manifest.webmanifest`);
+    await m.page.goto(`${base}/app/manifest.json`);
     await m.page.setContent(`<iframe src="${appUrl}" width="390" height="600"></iframe>`);
     await m.page.waitForTimeout(1500);
     const frame = m.page.frames()[1];

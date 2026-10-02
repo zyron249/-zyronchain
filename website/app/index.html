@@ -15,15 +15,15 @@
   <meta name="format-detection" content="telephone=no" />
   <title>ZyronChain Wallet (testnet)</title>
   <meta name="description" content="ZyronChain phone wallet: keys are generated and encrypted on this device. Testnet only, unaudited." />
-  <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
-  <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon-180.png" />
-  <link rel="stylesheet" href="./app.css" integrity="sha384-JD3Lv85lmqjo77/+p4N0QWhVq04+SJcdo5DXPy0xUg64PREZIROy6BpLJIo/2igK" />
+  <link rel="manifest" href="/app/manifest.json" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/app/icons/icon-192.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/app/icons/apple-touch-icon-180.png" />
+  <link rel="stylesheet" href="/app/app.css" integrity="sha384-JD3Lv85lmqjo77/+p4N0QWhVq04+SJcdo5DXPy0xUg64PREZIROy6BpLJIo/2igK" />
 </head>
 <body>
   <div class="app" id="app">
     <header class="bar">
-      <a class="brand" href="../index.html" aria-label="ZyronChain home"><img src="./icons/icon-192.png" alt="" width="32" height="32" /><span>Zyron Wallet</span></a>
+      <a class="brand" href="/" aria-label="ZyronChain home"><img src="/app/icons/icon-192.png" alt="" width="32" height="32" /><span>Zyron Wallet</span></a>
       <span class="badge" data-i18n="badge">TESTNET · UNAUDITED</span>
       <button class="lang" type="button" data-lang-toggle aria-label="Türkçe / English">TR</button>
     </header>
@@ -230,14 +230,14 @@
 
     <footer class="foot">
       <p data-i18n="foot">Open source, served only from zyronchain.com with pinned, integrity-checked libraries (@noble/curves, @noble/hashes, @scure/bip39, @scure/bip32, qr). Unaudited testnet software.</p>
-      <p><a href="../wallet.html" data-i18n="cliLink">Prefer the computer? CLI wallet setup</a> · <a href="https://github.com/zyron249/-zyronchain/tree/main/website/app" target="_blank" rel="noopener noreferrer">Source</a></p>
+      <p><a href="/wallet.html" data-i18n="cliLink">Prefer the computer? CLI wallet setup</a> · <a href="https://github.com/zyron249/-zyronchain/tree/main/website/app" target="_blank" rel="noopener noreferrer">Source</a></p>
     </footer>
 
     <div class="busy" data-busy hidden><div><span class="spinner"></span><p data-busy-text>Working…</p></div></div>
   </div>
-  <script src="./vendor/noble-scure.js" integrity="sha384-cuU0s9lNqS3x5BaAT/+Pw2HWGeDECS/7vJIW3pRyX/FwGELSKmzYnnmYM53om5iC"></script>
-  <script src="./vendor/qr.js" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
-  <script src="./zyron-wallet-core.js" integrity="sha384-8n3H48EyMOe+r0pyIg6oLh3rDRSfoqIjdCpu84DwMTN/OZbn5WYX6Ha92YtNF8PG"></script>
-  <script src="./app.js" integrity="sha384-2s/WE6sh6GALyriY0uP+wQDK6n9SpLGKVXUTmk4YCcoU0a2vvP68rw1NNV1Cz3kY"></script>
+  <script src="/app/vendor/noble-scure.js" integrity="sha384-cuU0s9lNqS3x5BaAT/+Pw2HWGeDECS/7vJIW3pRyX/FwGELSKmzYnnmYM53om5iC"></script>
+  <script src="/app/vendor/qr.js" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
+  <script src="/app/zyron-wallet-core.js" integrity="sha384-8n3H48EyMOe+r0pyIg6oLh3rDRSfoqIjdCpu84DwMTN/OZbn5WYX6Ha92YtNF8PG"></script>
+  <script src="/app/app.js" integrity="sha384-2s/WE6sh6GALyriY0uP+wQDK6n9SpLGKVXUTmk4YCcoU0a2vvP68rw1NNV1Cz3kY"></script>
 </body>
 </html>

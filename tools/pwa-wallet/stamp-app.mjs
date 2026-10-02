@@ -17,21 +17,22 @@ const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 // Files that index.html loads with integrity="" (scripts + stylesheet).
 const SRI_FILES = ['app.css', 'vendor/noble-scure.js', 'vendor/qr.js', 'zyron-wallet-core.js', 'app.js'];
 // Offline app shell (everything the page needs without network).
-const SHELL = ['index.html', 'app.css', 'app.js', 'zyron-wallet-core.js', 'vendor/noble-scure.js', 'vendor/qr.js', 'manifest.webmanifest',
+const SHELL = ['index.html', 'app.css', 'app.js', 'zyron-wallet-core.js', 'vendor/noble-scure.js', 'vendor/qr.js', 'manifest.json',
   'icons/icon-192.png', 'icons/apple-touch-icon-180.png', 'icons/maskable-192.png'];
 
 let stale = [];
 let html = read('index.html').toString('utf8');
 for (const file of SRI_FILES) {
   const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(`((?:src|href)="\\./${escaped}" integrity=")[^"]*(")`);
-  if (!pattern.test(html)) throw new Error(`index.html does not load ./${file} with an integrity attribute`);
+  const pattern = new RegExp(`((?:src|href)="/app/${escaped}" integrity=")[^"]*(")`);
+  if (!pattern.test(html)) throw new Error(`index.html does not load /app/${file} with an integrity attribute`);
   html = html.replace(pattern, `$1${sri(file)}$2`);
 }
 if (html !== read('index.html').toString('utf8')) { stale.push('index.html (SRI)'); if (!check) writeFileSync(join(app, 'index.html'), html); }
 
 const assets = {};
-for (const file of SHELL) assets[`./${file}`] = sha256(file === 'index.html' ? Buffer.from(html) : read(file));
+// PNGs are not hash-pinned: the CDN (Cloudflare image optimization) may re-encode them in transit.
+for (const file of SHELL) assets[`./${file}`] = file.endsWith('.png') ? null : sha256(file === 'index.html' ? Buffer.from(html) : read(file));
 const sw = read('sw.js').toString('utf8');
 // The version covers every shell file AND the worker's own logic (outside the generated block).
 const swLogic = sw.replace(/\/\/ BEGIN GENERATED[\s\S]*?\/\/ END GENERATED/, '');
