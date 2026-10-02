@@ -208,6 +208,37 @@ Create another key for a funded wallet and submit a signed transfer:
 node dist/src/cli.js transfer --key wallet.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms 100000000 --fee-atoms 1000
 ```
 
+Keystores: new keys use format **v2** (scrypt N=2^17, r=8, p=1, AES-256-GCM; the version and
+KDF parameters are bound into the authenticated data). Legacy v1 keystores (N=2^15) still decrypt;
+upgrade one with `keystore-migrate` (writes a new file, keeps the original). The keystore password
+can come from `ZYRON_KEYSTORE_PASSWORD_FILE` (0600 file), from `ZYRON_KEYSTORE_PASSWORD`
+(automation only: environment variables can leak to same-user processes, shell history and CI
+logs), or from a non-echoing terminal prompt. `keygen --password-prompt` creates a wallet without
+writing any password file and rejects weak passwords (12+ characters, 6+ distinct, ~60+ bits).
+
+```sh
+node dist/src/cli.js keygen --out wallet.json --password-prompt
+node dist/src/cli.js keystore-migrate --key wallet-v1.json --out wallet.json
+node dist/src/cli.js address-checksum --address <ZYN...>
+```
+
+Addresses also have a display-only checksum (mixed case, see `docs/ADDRESS_CHECKSUM.md`). The CLI
+prints it and accepts it for `--to`, but transactions always carry the canonical lower-case form and
+consensus is unchanged.
+
+Verify a keystore (or a backup copy) without printing the private key, and sign a transfer on an
+offline machine for later broadcast. The offline signer never touches the network, so the chain
+ID, the next account nonce (current nonce + 1) and the transaction version (1 before protocol 3,
+2 from protocol 3) must be supplied explicitly. The signed file contains only public data.
+
+```sh
+node dist/src/cli.js keystore-verify --key wallet.json   # prompts for the password
+node dist/src/cli.js transfer-sign --key wallet.json --chain-id zyron-devnet-1 --to <address> \
+  --amount-atoms 100000000 --fee-atoms 1000 --nonce <next-nonce> --tx-version <1|2> --out tx.json
+# on an online machine:
+node dist/src/cli.js tx-submit --tx tx.json --rpc http://127.0.0.1:9137
+```
+
 Never commit generated key files or live genesis operator secrets.
 
 ## Rotate the validator set
