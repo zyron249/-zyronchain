@@ -3,11 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#080808" />
+  <meta name="theme-color" content="#02050a" />
   <meta name="description" content="ZyronChain is an open-source Layer-1 with local key custody, deterministic execution, authenticated state, a fixed 50M ZYN launch design under review, and quorum finality." />
   <meta name="referrer" content="no-referrer" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'" />
   <link rel="canonical" href="https://zyronchain.com/" />
+  <link rel="icon" href="./favicon.ico" sizes="16x16 32x32 48x48" />
   <link rel="icon" href="./favicon-32.png" type="image/png" sizes="32x32" />
   <link rel="icon" href="./icon-192.png" type="image/png" sizes="192x192" />
   <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
@@ -17,12 +18,16 @@
   <meta property="og:title" content="ZyronChain — Open rules. Local keys." />
   <meta property="og:description" content="A verifiable Layer-1 with local key custody, deterministic execution, a fixed 50M ZYN launch design under review, and quorum finality." />
   <meta property="og:url" content="https://zyronchain.com/" />
-  <meta property="og:image" content="https://zyronchain.com/brand-mark.png" />
+  <meta property="og:image" content="https://zyronchain.com/brand/og-image.jpg" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="ZYRON CHAIN wolf and Z logo" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:image" content="https://zyronchain.com/brand-mark.png" />
+  <meta name="twitter:image" content="https://zyronchain.com/brand/og-image.jpg" />
   <title>ZyronChain — Verifiable Layer-1</title>
   <link rel="stylesheet" href="./styles.css" />
   <link rel="stylesheet" href="./professional.css" />
+  <link rel="stylesheet" href="./brand.css" />
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -31,7 +36,7 @@
         "@type": "Organization",
         "name": "ZyronChain",
         "url": "https://zyronchain.com/",
-        "logo": "https://zyronchain.com/brand-mark.png",
+        "logo": "https://zyronchain.com/brand/icon-512.png",
         "sameAs": [
           "https://x.com/Zyronchain",
           "https://t.me/zyronchain",
@@ -64,7 +69,7 @@
   <header class="site-header" data-header>
     <div class="shell header-inner">
       <a class="brand" href="#top" aria-label="ZyronChain home">
-        <img class="brand-mark" src="./brand-mark.png" alt="ZyronChain" width="320" height="320" />
+        <img class="brand-mark" src="./brand-mark.png" alt="ZyronChain" width="192" height="192" /><img class="brand-wordmark" src="./brand/zyron-wordmark.png" alt="" width="712" height="80" />
       </a>
 
       <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav" data-menu-toggle>
@@ -90,24 +95,29 @@
   </header>
 
   <main id="main">
-    <section class="hero" id="top">
+    <section class="hero hero-brand" id="top">
+      <div class="hero-banner">
+        <picture>
+          <source media="(max-width: 720px)" type="image/webp" srcset="./brand/zyron-banner-m-720.webp 720w, ./brand/zyron-banner-m-1080.webp 1080w" sizes="100vw" />
+          <source media="(max-width: 720px)" srcset="./brand/zyron-banner-m-720.jpg" />
+          <source type="image/webp" srcset="./brand/zyron-banner-1080.webp 1080w, ./brand/zyron-banner-1600.webp 1600w, ./brand/zyron-banner-2172.webp 2172w" sizes="(max-width: 1680px) 100vw, 1680px" />
+          <img class="hero-banner-img" src="./brand/zyron-banner-1600.jpg" srcset="./brand/zyron-banner-1080.jpg 1080w, ./brand/zyron-banner-1600.jpg 1600w" sizes="(max-width: 1680px) 100vw, 1680px" width="1600" height="533" alt="ZYRON CHAIN: chrome wolf and Z mark in a blue ring over a blockchain network" fetchpriority="high" decoding="async" />
+        </picture>
+        <div class="brand-coordinate coordinate-top" aria-hidden="true">ZYRON / LAYER 01</div>
+        <div class="brand-coordinate coordinate-bottom" aria-hidden="true">OPEN SOURCE · LOCAL CUSTODY</div>
+      </div>
       <div class="shell hero-inner">
         <div class="hero-copy" data-reveal>
           <p class="eyebrow">THE ZYRONCHAIN PROTOCOL / LAYER 01</p>
           <h1>Fixed supply. <br /><span>Open rules.</span></h1>
+        </div>
+        <div class="hero-aside" data-reveal>
           <p class="hero-lede">An open-source Layer-1 built around verifiable state, local key custody and a transparent 50,000,000 ZYN launch design now under review.</p>
           <div class="hero-actions">
             <a class="primary-button" href="./wallet.html">Local wallet setup <span aria-hidden="true">↗</span></a>
             <a class="secondary-button" href="#protocol">Explore the protocol <span aria-hidden="true">↓</span></a>
           </div>
           <p class="hero-honesty">Public network not activated · Trading not active · Fixed-supply launch design under review · Authorized ≠ activated</p>
-        </div>
-
-        <div class="brand-surface" aria-hidden="true">
-          
-          <img class="hero-mark" src="./zyron-gold.png" alt="" width="1024" height="1024" />
-          <div class="brand-coordinate coordinate-top">ZYRON / LAYER 01</div>
-          <div class="brand-coordinate coordinate-bottom">OPEN SOURCE · LOCAL CUSTODY</div>
         </div>
       </div>
     </section>
@@ -354,7 +364,7 @@ npm run devnet</code></pre>
   <footer class="site-footer">
     <div class="shell footer-main">
       <div class="footer-brand">
-        <a href="#top" aria-label="ZyronChain home"><img class="brand-mark" src="./brand-mark.png" alt="ZyronChain" width="320" height="320" /></a>
+        <a href="#top" aria-label="ZyronChain home"><img class="brand-mark" src="./brand-mark.png" alt="ZyronChain" width="192" height="192" /><img class="brand-wordmark" src="./brand/zyron-wordmark.png" alt="" width="712" height="80" /></a>
         <p>Open-source Layer-1 research and implementation focused on verifiable rules, local custody and explicit activation boundaries.</p>
       </div>
 

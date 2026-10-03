@@ -9,8 +9,8 @@
   "scope": "/app/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#080808",
-  "theme_color": "#080808",
+  "background_color": "#02050a",
+  "theme_color": "#02050a",
   "categories": ["finance", "utilities"],
   "prefer_related_applications": false,
   "icons": [

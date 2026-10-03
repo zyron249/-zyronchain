@@ -60,8 +60,14 @@ jobs:
             'website/sitemap.xml',
             'website/favicon.svg',
             'website/logo.svg',
-            'website/zyron-gold.png',
+            'website/brand.css',
             'website/brand-mark.png',
+            'website/brand/zyron-wordmark.png',
+            'website/brand/zyron-banner-1600.jpg',
+            'website/brand/zyron-banner-1600.webp',
+            'website/brand/og-image.jpg',
+            'website/brand/icon-512.png',
+            'website/favicon.ico',
             'website/favicon-32.png',
             'website/apple-touch-icon.png',
             'website/icon-192.png',
@@ -115,7 +121,9 @@ jobs:
             './favicon-32.png',
             './apple-touch-icon.png',
             './brand-mark.png',
-            './zyron-gold.png',
+            './brand.css',
+            './brand/zyron-banner-1600.jpg',
+            'https://zyronchain.com/brand/og-image.jpg',
             './wallet.html',
             './validator.html',
             'ZyronChain',
@@ -236,8 +244,9 @@ jobs:
             throw new Error('ZyronChain production logo contract is invalid');
           }
           for (const file of [
-            'website/zyron-gold.png',
             'website/brand-mark.png',
+            'website/brand/zyron-wordmark.png',
+            'website/brand/icon-512.png',
             'website/favicon-32.png',
             'website/apple-touch-icon.png',
             'website/icon-192.png'
