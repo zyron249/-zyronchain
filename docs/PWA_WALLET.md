@@ -77,9 +77,20 @@ CLI keystore v2, and a 2–4 s unlock on a mid-range phone is acceptable for a w
   - Every code/HTML/CSS/manifest file's SHA-256 is checked during install; a mismatch aborts the install and the
     previous version stays. PNG icons are only type-checked, because Cloudflare's image optimization re-encodes
     them in transit (observed live).
-  - Answers only same-origin GET requests for exactly those paths. Everything else (other paths, other origins,
-    non-GET, query strings) is never intercepted and never cached.
+  - Scripts and the stylesheet are loaded as `/app/<file>?v=<sha256[:12]>` (content-versioned, with SRI), so a
+    deploy never mixes old and new files from a browser or CDN cache.
+  - Answers only same-origin GET requests for exactly those URLs (path plus the stamped version query; `/app/`
+    and `/app/index.html` map to the cached shell). Everything else (other paths, other queries, other origins,
+    non-GET) is never intercepted and never cached.
   - It never opens IndexedDB. Old caches are deleted on activate.
+  - **Updates**: the first install activates at once. A later version installs in the background and waits; the
+    page then shows "A new Zyron Wallet version is available." with **Update now**. The button posts
+    `zyron-skip-waiting` (the only message the worker accepts, and only from a same-origin page) and the page reloads
+    when the new worker takes control, which also locks the wallet. While a wallet is being created, a transfer is
+    under review or a signed transaction is on screen, the update is deferred with a hint. The page checks for a
+    new version when it becomes visible again (at most every 30 minutes); browsers also check on navigation.
+  - **Build id**: `stamp-app.mjs` writes `<meta name="zyron-build" content="app=<version>;release=<release ref>">`
+    and the footer shows `Build <app[:8]> · release <release[:8]>`. The app version equals the worker `VERSION`.
 - **Static CI scans**: no `fetch`/XHR/WebSocket/EventSource/sendBeacon/dynamic import in the page code or vendor
   bundles; no `eval`/`new Function`; no HTML injection sinks; exactly one IndexedDB write path.
 
@@ -96,7 +107,9 @@ its own stricter workflow, `.github/workflows/website-pwa-wallet.yml`, covering:
 - headless-Chrome tests: SW install and offline load (also at `/app/`), Chrome installability, the full
   create → privacy → hidden cards (tap, hold, blur, auto-hide) → 4-word check (nothing saved before it passes) → home → QR → clipboard clear → review → confirmed sign → lock → wrong password → unlock → auto-lock → tamper →
   delete (ack + DELETE) → restore → rejected-vault (v2 / bad KDF / garbage) flow, missing-crypto refusal, storage contents (only the vault; no localStorage/cookies), zero network requests while
-  creating/signing, no third-party requests, 360/390/414 px layouts, and frame blocking.
+  creating/signing, no third-party requests, the update prompt (a simulated deploy waits, is deferred during
+  creation, then activates and reloads on "Update now"), the build id, 360/390/414 px layouts, and frame blocking.
+  The test server sends the production headers plus `Cross-Origin-Opener-Policy: same-origin`.
 
 Lighthouse 12 removed the PWA category, so installability is checked with Chrome's own
 `Page.getInstallabilityErrors` (the signal Lighthouse used).

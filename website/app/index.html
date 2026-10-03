@@ -13,12 +13,13 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Zyron Wallet" />
   <meta name="format-detection" content="telephone=no" />
+  <meta name="zyron-build" content="app=9c795f022d3e78e2;release=d162afd2606b4c6aa01d524069fc3d949cb4056d" />
   <title>ZyronChain Wallet (testnet)</title>
   <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys are generated and encrypted on this device. No public RPC; sign locally, nothing is broadcast." />
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="icon" type="image/png" sizes="192x192" href="/app/icons/icon-192.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/app/icons/apple-touch-icon-180.png" />
-  <link rel="stylesheet" href="/app/app.css" integrity="sha384-Qzp2DnIopR/01NQl+ZLgvCcg455cRs7DmRbLk0/3yDTZzCELT9cMIh/58dcM3O9g" />
+  <link rel="stylesheet" href="/app/app.css?v=b1551d90d0ac" integrity="sha384-b3X01nqxSyVjzOhaPi6Sb5qBd6IoYeS0TuRT7blypTEjLC37uCB4qLmjchQeLg7s" />
 </head>
 <body>
   <div class="app" id="app">
@@ -29,6 +30,12 @@
     </header>
 
     <noscript><p class="notice bad">This wallet needs JavaScript. Nothing is sent anywhere; scripts are served from zyronchain.com only.</p></noscript>
+
+    <div class="notice update" data-update-banner role="status" hidden>
+      <span data-i18n="updateText">A new Zyron Wallet version is available.</span>
+      <button class="primary" type="button" data-update-now data-i18n="updateNow">Update now</button>
+      <span class="hint" data-update-hint hidden data-i18n="updateBusy">Finish or cancel the current step first; the update reloads the app and locks the wallet.</span>
+    </div>
 
     <p class="notice bad" data-unsupported role="alert" hidden></p>
 
@@ -320,13 +327,14 @@
     <footer class="foot">
       <p data-i18n="foot">Open source, served only from zyronchain.com with pinned, integrity-checked libraries (@noble/curves, @noble/hashes, @scure/bip39, @scure/bip32, qr). Unaudited testnet software.</p>
       <p><a href="/wallet.html" data-i18n="cliLink">Desktop Wallet Setup</a> · <a href="https://github.com/zyron249/-zyronchain/tree/main/website/app" target="_blank" rel="noopener noreferrer">Read source</a> · <a href="/privacy.html">Privacy</a></p>
+      <p class="build" data-build-id>Build unknown</p>
     </footer>
 
     <div class="busy" data-busy hidden><div><span class="spinner"></span><p data-busy-text>Working…</p></div></div>
   </div>
-  <script src="/app/vendor/noble-scure.js" integrity="sha384-cuU0s9lNqS3x5BaAT/+Pw2HWGeDECS/7vJIW3pRyX/FwGELSKmzYnnmYM53om5iC"></script>
-  <script src="/app/vendor/qr.js" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
-  <script src="/app/zyron-wallet-core.js" integrity="sha384-1uh5NljLmhaFu2/UERMIr6MzjgRHPaH0x1Gkmkyb/oIrgwBhMeTWRFzuiqLSId0U"></script>
-  <script src="/app/app.js" integrity="sha384-L1IYsoJ48wO77AKy4yF93gKuoVOmpRSzjwX48/A8w7Ug1vKQcZnos8k96x0Oirjh"></script>
+  <script src="/app/vendor/noble-scure.js?v=db17e57ac525" integrity="sha384-cuU0s9lNqS3x5BaAT/+Pw2HWGeDECS/7vJIW3pRyX/FwGELSKmzYnnmYM53om5iC"></script>
+  <script src="/app/vendor/qr.js?v=df7e5ee0f9db" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
+  <script src="/app/zyron-wallet-core.js?v=527c72cc63ac" integrity="sha384-1uh5NljLmhaFu2/UERMIr6MzjgRHPaH0x1Gkmkyb/oIrgwBhMeTWRFzuiqLSId0U"></script>
+  <script src="/app/app.js?v=dda463d0a93a" integrity="sha384-aXxN60/Nin6gYTgVoMz/eof4OqJPX7BZGA9sQlPLcyscjgmbPtsiv58mP1eA//Ie"></script>
 </body>
 </html>

@@ -39,9 +39,12 @@ const PROD_HEADERS = {
   'Content-Security-Policy': "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
   'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), interest-cohort=()',
+  // Recommended (docs/WEBSITE_SECURITY_HEADERS.md); served here so the whole suite proves the wallet works with it.
+  'Cross-Origin-Opener-Policy': 'same-origin',
   'Cache-Control': 'public, max-age=0, s-maxage=300'
 };
 let server = null;
+let swTestSuffix = ''; // appended to sw.js to simulate a new deployment (update flow test)
 if (!live) {
   server = createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
@@ -51,6 +54,7 @@ if (!live) {
     if (!file.startsWith(site) || !existsSync(file)) { res.writeHead(404, PROD_HEADERS); return res.end('not found'); }
     res.writeHead(200, { ...PROD_HEADERS, 'Content-Type': TYPES[extname(file)] || 'application/octet-stream' });
     // Emulate the CDN's lossless image re-encoding: PNG bytes differ from the repo (trailing bytes after IEND).
+    if (file.endsWith(join('app', 'sw.js')) && swTestSuffix) return res.end(Buffer.concat([readFileSync(file), Buffer.from(swTestSuffix)]));
     res.end(extname(file) === '.png' ? Buffer.concat([readFileSync(file), Buffer.from('cdn-reencoded')]) : readFileSync(file));
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -212,7 +216,11 @@ try {
     assert.match(names[0], /^zyron-wallet-app-[0-9a-f]{16}$/);
     const sw = readFileSync(join(site, 'app', 'sw.js'), 'utf8');
     if (!live) assert.ok(names[0].endsWith(sw.match(/const VERSION = '([0-9a-f]{16})'/)[1]));
-    assert.deepEqual(cached[names[0]], ['/app/apple-touch-icon-180.png', '/app/icons/icon-192.png', '/app/icons/maskable-192.png', '/app/app.css', '/app/app.js', '/app/index.html', '/app/manifest.json', '/app/vendor/noble-scure.js', '/app/vendor/qr.js', '/app/zyron-wallet-core.js'].map((p) => p.replace('/app/apple', '/app/icons/apple')).sort());
+    const cachedUrls = await page.evaluate(async (name) => (await (await caches.open(name)).keys()).map((r) => { const u = new URL(r.url); return u.pathname + u.search; }).sort(), names[0]);
+    const shellKeys = Object.keys(JSON.parse(sw.match(/const ASSETS = (\{[\s\S]*?\});/)[1])).map((k) => '/app/' + k.slice(2)).sort();
+    if (!live) assert.deepEqual(cachedUrls, shellKeys, 'cache holds exactly the stamped shell URLs');
+    for (const file of ['app.js', 'app.css', 'zyron-wallet-core.js', 'vendor/noble-scure.js', 'vendor/qr.js']) assert.ok(cachedUrls.some((u) => new RegExp(`^/app/${file.replace('.', '\\.')}\\?v=[0-9a-f]{12}$`).test(u)), `${file} cached under its versioned URL`);
+    assert.deepEqual(cached[names[0]].filter((p) => !/\.(js|css)$/.test(p)), ['/app/icons/apple-touch-icon-180.png', '/app/icons/icon-192.png', '/app/icons/maskable-192.png', '/app/index.html', '/app/manifest.json'].sort());
     await context.setOffline(true);
     await page.reload({ waitUntil: 'load' });
     await page.waitForFunction(() => document.body.dataset.current === 'welcome' && !!globalThis.ZyronAppCore && !!globalThis.ZyronQR);
@@ -227,6 +235,15 @@ try {
     await noSlash.waitForFunction(() => !!globalThis.ZyronAppCore && document.body.dataset.current === 'welcome');
     await noSlash.close();
     await context.setOffline(true);
+  });
+
+  await test('build id is shown and matches the stamped worker version and release', async () => {
+    const sw = readFileSync(join(site, 'app', 'sw.js'), 'utf8');
+    const version = sw.match(/const VERSION = '([0-9a-f]{16})'/)[1];
+    const release = readFileSync(join(site, 'release.js'), 'utf8').match(/const RELEASE_REF = '([0-9a-f]{40})'/)[1];
+    const text = await page.textContent('[data-build-id]');
+    if (!live) assert.equal(text, `Build ${version.slice(0, 8)} · release ${release.slice(0, 8)}`);
+    else assert.match(text, /^Build [0-9a-f]{8} · release [0-9a-f]{8}$/);
   });
 
   let words;
@@ -407,7 +424,7 @@ try {
 
   await test('missing crypto libraries: the wallet refuses to run', async () => {
     const m = await newMobile();
-    await m.page.route('**/app/vendor/noble-scure.js', (route) => route.fulfill({ status: 404, body: 'gone' }));
+    await m.page.route(/\/app\/vendor\/noble-scure\.js(\?|$)/, (route) => route.fulfill({ status: 404, body: 'gone' }));
     await m.page.goto(appUrl, { waitUntil: 'load' });
     await m.page.waitForFunction(() => !document.querySelector('[data-unsupported]').hidden);
     assert.match(await m.page.textContent('[data-unsupported]'), /refuses to run/);
@@ -420,6 +437,45 @@ try {
   assert.deepEqual(foreign, [], 'no third-party requests');
   assert.ok(requests.every((r) => r.method === 'GET'), 'GET requests only');
   await context.close();
+
+  if (!live) await test('update flow: a new worker waits, "Update now" activates it and reloads; deferred during wallet creation', async () => {
+    const m = await newMobile();
+    await m.page.goto(appUrl, { waitUntil: 'load' });
+    await m.page.evaluate(() => navigator.serviceWorker.ready);
+    await m.page.reload({ waitUntil: 'load' });
+    await m.page.waitForFunction(() => !!navigator.serviceWorker.controller);
+    assert.equal(await m.page.isVisible('[data-update-banner]'), false, 'no banner without an update');
+    const firstScript = await m.page.evaluate(() => navigator.serviceWorker.controller.scriptURL);
+    swTestSuffix = '\n// simulated deployment ' + Date.now() + '\n';
+    try {
+      await m.page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => r.update()));
+      await m.page.waitForSelector('[data-update-banner]:not([hidden])', { timeout: 30000 });
+      assert.equal(await m.page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => !!r.waiting)), true, 'new worker is waiting, not forced in');
+      assert.match(await m.page.textContent('[data-update-banner]'), /A new Zyron Wallet version is available\./);
+      await shot(m.page, '8-update-available');
+      // During wallet creation the update is deferred (it would reload and drop the pending flow).
+      await m.page.click('[data-go="create"]');
+      await m.page.fill('[data-create-password]', PASSWORD);
+      await m.page.fill('[data-create-password2]', PASSWORD);
+      await m.page.click('[data-create-next]');
+      await m.page.waitForSelector('[data-screen="privacy"]:not([hidden])', { timeout: 60000 });
+      await m.page.click('[data-update-now]');
+      assert.equal(await m.page.isVisible('[data-update-hint]'), true);
+      assert.equal(await m.page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => !!r.waiting)), true, 'still waiting');
+      await m.page.click('[data-screen="privacy"] [data-cancel-create]');
+      const reloaded = m.page.waitForEvent('load');
+      await m.page.click('[data-update-now]');
+      await reloaded;
+      await m.page.waitForFunction(() => document.body.dataset.current === 'welcome' && !!navigator.serviceWorker.controller);
+      assert.equal(await m.page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => !r.waiting && !!r.active)), true, 'new worker active');
+      assert.equal(await m.page.isVisible('[data-update-banner]'), false);
+      assert.equal(await m.page.evaluate(() => navigator.serviceWorker.controller.scriptURL), firstScript);
+      assert.equal((await m.page.evaluate(() => caches.keys())).length, 1, 'old cache removed on activate');
+    } finally {
+      swTestSuffix = '';
+    }
+    await m.context.close();
+  });
 
   await test('mobile layouts 360/390/414: no horizontal scroll on every screen; iOS shows Safari steps first', async () => {
     for (const width of [360, 390, 414]) {

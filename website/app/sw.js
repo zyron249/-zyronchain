@@ -3,25 +3,28 @@
  *
  * - Caches ONLY the same-origin static files listed in ASSETS (versioned cache). Code, HTML, CSS and the manifest
  *   are SHA-256-checked on install (any mismatch aborts the update); PNG icons are type-checked only.
- * - Answers ONLY same-origin GET requests for those exact paths. Every other request (other paths, other
- *   origins, non-GET, anything with a query string) is not intercepted at all and is never cached.
+ *   Scripts and the stylesheet use content-versioned URLs (?v=<sha256 prefix>), stamped by tools/pwa-wallet.
+ * - Answers ONLY same-origin GET requests for those exact URLs (path + exact version query). Every other request
+ *   (other paths, other origins, non-GET, other query strings) is not intercepted at all and is never cached.
+ * - Updates: the first install activates immediately. A later version waits until the page asks for it
+ *   ("Update now" sends the 'zyron-skip-waiting' message), so a running wallet is never swapped mid-flow.
  * - The app never sends secrets over the network; the vault lives in IndexedDB, which this worker never opens.
  */
 'use strict';
 
 // BEGIN GENERATED (tools/pwa-wallet/stamp-app.mjs)
-const VERSION = '3bed3e1659fddeef';
+const VERSION = '9c795f022d3e78e2';
 const ASSETS = {
-  "./index.html": "0f3fc880d7382206d9ae8783340a3557ca56a74e302c08a8b44f2ee117cda4b7",
-  "./app.css": "c1d091d8884f3aa7beeb4594bbf7acf0e46ccfcc6b7bd4def42651845b697d95",
-  "./app.js": "571752fbdc8bda500a7a60ad242b74882a6d0424fae2bb6c91545ac6ee0ec8b4",
-  "./zyron-wallet-core.js": "527c72cc63acb8b24cef318ed88aa126df01a7ab25ae8db0ca0edbffc851b8a1",
-  "./vendor/noble-scure.js": "db17e57ac525ad905f77f606fe5b1b5bc898d8f6119e9d556ff2f49181dd5c4d",
-  "./vendor/qr.js": "df7e5ee0f9db397a3f689313cc1bc8581e55e8752200309023df694d7e977612",
-  "./manifest.json": "5908854c28f43fb93e6777c04b3678ed53f83b9b82cf8c702035688e856ebf4b",
+  "./index.html": "e0263040232e986f3b9089e60f1f19e257274442bdcc8684d4842dd2759bc25a",
+  "./manifest.json": "3ab5a6037d573313f52f8aa6102591c4e6c539681eff81aea0afb1220c17c01a",
   "./icons/icon-192.png": null,
   "./icons/apple-touch-icon-180.png": null,
-  "./icons/maskable-192.png": null
+  "./icons/maskable-192.png": null,
+  "./app.css?v=b1551d90d0ac": "b1551d90d0ac226613210b2d67eac02f15d24298241cdeb01071c0d16d2c932e",
+  "./vendor/noble-scure.js?v=db17e57ac525": "db17e57ac525ad905f77f606fe5b1b5bc898d8f6119e9d556ff2f49181dd5c4d",
+  "./vendor/qr.js?v=df7e5ee0f9db": "df7e5ee0f9db397a3f689313cc1bc8581e55e8752200309023df694d7e977612",
+  "./zyron-wallet-core.js?v=527c72cc63ac": "527c72cc63acb8b24cef318ed88aa126df01a7ab25ae8db0ca0edbffc851b8a1",
+  "./app.js?v=dda463d0a93a": "dda463d0a93a11a88b6acf7bd891f8e8ed2bdea76a0271124a2bdf3818d6455a"
 };
 // END GENERATED
 
@@ -36,10 +39,11 @@ function hex(buffer) {
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
-    for (const [path, sha256] of Object.entries(ASSETS)) {
-      const url = new URL(path, self.location);
-      // The version query bypasses stale CDN copies; the response is stored under the plain path.
-      const response = await fetch(url.pathname + '?v=' + VERSION, { cache: 'no-store', credentials: 'omit', redirect: 'error' });
+    for (const [entry, sha256] of Object.entries(ASSETS)) {
+      const url = new URL(entry, self.location);
+      // Versioned shell files already carry their own ?v=; plain files get the worker version to bypass stale CDN copies.
+      const fetchUrl = url.search ? url.pathname + url.search : url.pathname + '?v=' + VERSION;
+      const response = await fetch(fetchUrl, { cache: 'no-store', credentials: 'omit', redirect: 'error' });
       if (!response.ok) throw new Error('App shell file unavailable: ' + url.pathname);
       const body = await response.clone().arrayBuffer();
       if (sha256 === null) {
@@ -48,10 +52,15 @@ self.addEventListener('install', (event) => {
       } else if (hex(await crypto.subtle.digest('SHA-256', body)) !== sha256) {
         throw new Error('App shell file failed its integrity check: ' + url.pathname);
       }
-      await cache.put(url.pathname, new Response(body, { headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream' } }));
+      await cache.put(url.pathname + url.search, new Response(body, { headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream' } }));
     }
-    await self.skipWaiting();
+    // First install: take over right away. Updates wait for the user's "Update now".
+    if (!self.registration.active) await self.skipWaiting();
   })());
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data === 'zyron-skip-waiting' && event.source && new URL(event.source.url).origin === self.location.origin) self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
@@ -63,18 +72,18 @@ self.addEventListener('activate', (event) => {
   })());
 });
 
-const SHELL_PATHS = new Set(Object.keys(ASSETS).map((path) => new URL(path, self.location).pathname));
+const SHELL_KEYS = new Set(Object.keys(ASSETS).map((entry) => { const url = new URL(entry, self.location); return url.pathname + url.search; }));
 
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
-  if (url.origin !== self.location.origin || url.search || url.hash) return;
-  let path = url.pathname;
-  if (request.mode === 'navigate' && path === SCOPE_PATH) path = INDEX_PATH;
-  if (!SHELL_PATHS.has(path)) return; // not ours: let the network handle it, never cache it
+  if (url.origin !== self.location.origin || url.hash) return;
+  let key = url.pathname + url.search;
+  if (request.mode === 'navigate' && !url.search && (url.pathname === SCOPE_PATH || url.pathname === INDEX_PATH)) key = INDEX_PATH;
+  if (!SHELL_KEYS.has(key)) return; // not ours: let the network handle it, never cache it
   event.respondWith((async () => {
-    const cached = await caches.match(path, { cacheName: CACHE });
+    const cached = await caches.match(key, { cacheName: CACHE });
     return cached || fetch(request);
   })());
 });

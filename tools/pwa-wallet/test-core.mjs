@@ -378,7 +378,8 @@ await test('static scan: app code makes no network requests and has no eval/inli
   const scripts = [...html.matchAll(/<script\b[^>]*>/g)].map((m) => m[0]);
   assert.equal(scripts.length, 4);
   for (const tag of [...scripts, html.match(/<link rel="stylesheet"[^>]*>/)[0]]) {
-    const [, src] = tag.match(/(?:src|href)="\/app\/([^"]+)"/);
+    const [, src, v] = tag.match(/(?:src|href)="\/app\/([^"?]+)\?v=([0-9a-f]{12})"/);
+    assert.equal(v, createHash('sha256').update(readFileSync(join(app, src))).digest('hex').slice(0, 12), `content version for ${src}`);
     const [, integrity] = tag.match(/integrity="(sha384-[^"]+)"/);
     assert.equal(integrity, 'sha384-' + createHash('sha384').update(readFileSync(join(app, src))).digest('base64'), `SRI for ${src}`);
   }
@@ -397,19 +398,37 @@ await test('static scan: app code makes no network requests and has no eval/inli
 await test('service worker: same-origin GET of listed shell files only, versioned cache, integrity-checked install, never touches IndexedDB', () => {
   const sw = readFileSync(join(app, 'sw.js'), 'utf8');
   assert.match(sw, /if \(request\.method !== 'GET'\) return;/);
-  assert.match(sw, /if \(url\.origin !== self\.location\.origin \|\| url\.search \|\| url\.hash\) return;/);
-  assert.match(sw, /if \(!SHELL_PATHS\.has\(path\)\) return;/);
+  assert.match(sw, /if \(url\.origin !== self\.location\.origin \|\| url\.hash\) return;/);
+  assert.match(sw, /let key = url\.pathname \+ url\.search;/, 'exact path + version query match');
+  assert.match(sw, /if \(!SHELL_KEYS\.has\(key\)\) return;/);
+  // update flow: updates wait for the page's explicit request; only that one message is understood
+  assert.match(sw, /if \(!self\.registration\.active\) await self\.skipWaiting\(\);/);
+  assert.equal((sw.match(/skipWaiting\(\)/g) || []).length, 2);
+  assert.match(sw, /event\.data === 'zyron-skip-waiting' && event\.source && new URL\(event\.source\.url\)\.origin === self\.location\.origin/);
   assert.match(sw, /const CACHE = 'zyron-wallet-app-' \+ VERSION;/);
   assert.match(sw, /failed its integrity check/);
   assert.doesNotMatch(sw, /indexedDB|localStorage|postMessage|importScripts|clients\.matchAll/);
   assert.equal((sw.match(/cache\.put\(/g) || []).length, 1, 'only the install step writes to the cache');
   const assets = JSON.parse(sw.match(/const ASSETS = (\{[\s\S]*?\});/)[1]);
-  for (const [path, sha256] of Object.entries(assets)) {
-    assert.ok(path.startsWith('./') && !path.includes('..'), path);
+  for (const [entry, sha256] of Object.entries(assets)) {
+    assert.ok(entry.startsWith('./') && !entry.includes('..'), entry);
+    const [path, query] = entry.split('?');
     if (sha256 === null) { assert.match(path, /\.png$/, 'only icons may skip the hash check'); continue; }
-    assert.equal(createHash('sha256').update(readFileSync(join(app, path))).digest('hex'), sha256, `stamped hash for ${path}`);
+    const digest = createHash('sha256').update(readFileSync(join(app, path))).digest('hex');
+    assert.equal(digest, sha256, `stamped hash for ${entry}`);
+    if (query) assert.equal(query, 'v=' + digest.slice(0, 12), `version query for ${entry}`);
   }
-  assert.ok(assets['./index.html'] && assets['./vendor/noble-scure.js'] && assets['./app.js']);
+  assert.ok(assets['./index.html'] && Object.keys(assets).some((k) => k.startsWith('./vendor/noble-scure.js?v=')) && Object.keys(assets).some((k) => k.startsWith('./app.js?v=')));
+  // build id: stamped meta matches the worker version and the canonical release reference
+  const html = readFileSync(join(app, 'index.html'), 'utf8');
+  const release = readFileSync(join(repo, 'website', 'release.js'), 'utf8').match(/const RELEASE_REF = '([0-9a-f]{40})';/)[1];
+  const version = sw.match(/const VERSION = '([0-9a-f]{16})';/)[1];
+  assert.ok(html.includes(`<meta name="zyron-build" content="app=${version};release=${release}" />`), 'build id meta');
+  const appJs = readFileSync(join(app, 'app.js'), 'utf8');
+  assert.match(appJs, /'Build ' \+ appBuild \+ ' · release ' \+ release/);
+  assert.match(appJs, /registration\.waiting\.postMessage\('zyron-skip-waiting'\)/);
+  assert.match(appJs, /if \(updateRequested\) window\.location\.reload\(\);/);
+  assert.ok(html.includes('A new Zyron Wallet version is available.') && html.includes('Update now'));
 });
 
 function pngSize(file) {

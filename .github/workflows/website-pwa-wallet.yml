@@ -8,12 +8,13 @@ name: Website PWA Wallet CI
 #   l1 validation/admission; vault round-trip, wrong password and tamper detection;
 # - static scans: no network APIs, no eval, strict CSP, no inline code;
 # - headless Chrome: SW install + offline load, Chrome installability, full create/backup/restore/lock/
-#   sign/delete flow, storage contents, network isolation, 360/390/414 layouts, frame blocking.
+#   sign/delete flow, update prompt, build id, storage contents, network isolation, 360/390/414 layouts, frame blocking.
 on:
   pull_request:
     paths:
       - 'website/app/**'
       - 'website/wallet-core.js'
+      - 'website/release.js'
       - 'docs/ADDRESS_CHECKSUM.md'
       - 'tools/pwa-wallet/**'
       - 'tools/site/**'
@@ -26,6 +27,7 @@ on:
     paths:
       - 'website/app/**'
       - 'website/wallet-core.js'
+      - 'website/release.js'
       - 'docs/ADDRESS_CHECKSUM.md'
       - 'tools/pwa-wallet/**'
       - 'tools/site/**'

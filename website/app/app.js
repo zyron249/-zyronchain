@@ -675,9 +675,50 @@
   });
   window.addEventListener('appinstalled', () => { $('[data-install-button]').hidden = true; $('[data-installed]').hidden = false; });
 
-  // ---------------- service worker (offline app shell; never sees secrets) ----------------
+  // ---------------- service worker (offline app shell; never sees secrets) + update prompt ----------------
+  const UPDATE_CHECK_MS = 30 * 60 * 1000;
+  let updateRequested = false;
+  let lastUpdateCheck = 0;
+  function showUpdate(registration) {
+    if (!registration.waiting || !navigator.serviceWorker.controller) return;
+    $('[data-update-banner]').hidden = false;
+  }
+  function trackInstalling(registration) {
+    const worker = registration.installing;
+    if (!worker) return;
+    worker.addEventListener('statechange', () => { if (worker.state === 'installed') showUpdate(registration); });
+  }
   if ('serviceWorker' in navigator && window.isSecureContext) {
-    navigator.serviceWorker.register('./sw.js', { scope: './', updateViaCache: 'none' }).catch(() => {});
+    navigator.serviceWorker.register('/app/sw.js', { scope: '/app/', updateViaCache: 'none' }).then((registration) => {
+      showUpdate(registration);
+      trackInstalling(registration);
+      registration.addEventListener('updatefound', () => trackInstalling(registration));
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden || Date.now() - lastUpdateCheck < UPDATE_CHECK_MS) return;
+        lastUpdateCheck = Date.now();
+        registration.update().catch(() => {});
+      });
+      $('[data-update-now]').addEventListener('click', () => {
+        if (state.pending || state.unsigned || state.lastTx) { $('[data-update-hint]').hidden = false; return; }
+        if (!registration.waiting) return;
+        updateRequested = true;
+        $('[data-update-now]').disabled = true;
+        registration.waiting.postMessage('zyron-skip-waiting');
+      });
+    }).catch(() => {});
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      // Reload only when the user asked for the update; the reload wipes the in-memory key (pagehide) and locks.
+      if (updateRequested) window.location.reload();
+    });
+  }
+
+  // ---------------- build id (stamped by tools/pwa-wallet/stamp-app.mjs) ----------------
+  function renderBuildId() {
+    const meta = document.querySelector('meta[name="zyron-build"]');
+    const parts = Object.fromEntries(String(meta ? meta.content : '').split(';').map((p) => p.split('=')).filter((p) => p.length === 2));
+    const appBuild = /^[0-9a-f]{16}$/.test(parts.app || '') ? parts.app.slice(0, 8) : 'unknown';
+    const release = /^[0-9a-f]{40}$/.test(parts.release || '') ? parts.release.slice(0, 8) : 'unknown';
+    $('[data-build-id]').textContent = 'Build ' + appBuild + ' · release ' + release;
   }
 
   // ---------------- local / offline-ready indicator (never implies a network connection) ----------------
@@ -698,6 +739,7 @@
   }
   async function start() {
     document.documentElement.lang = 'en';
+    renderBuildId();
     refreshLocalIndicator();
     const supported = window.isSecureContext && window.crypto && crypto.subtle && typeof indexedDB !== 'undefined' && core && QR && typeof QR.encodeQR === 'function';
     if (!supported) return refuse(core && QR ? t('msgUnsupported') : t('msgCryptoMissing', { message: 'libraries not loaded' }));

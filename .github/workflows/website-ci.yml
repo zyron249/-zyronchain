@@ -48,6 +48,8 @@ jobs:
         run: node website/test-wallet-core.mjs
       - name: Static network status component is current (build-time, never live RPC)
         run: node tools/site/network-status.mjs --check
+      - name: Site CSS/JS references carry current content versions
+        run: node tools/site/stamp-site.mjs --check
       - name: Verify production website, wallet and validator contracts
         shell: bash
         run: |
@@ -77,7 +79,7 @@ jobs:
             'website/favicon-32.png',
             'website/apple-touch-icon.png',
             'website/icon-192.png',
-            'website/site.webmanifest',
+            'website/site-manifest.json',
             'website/wallet.html',
             'website/wallet.css',
             'website/wallet.js',
@@ -109,7 +111,7 @@ jobs:
           const sitemap = fs.readFileSync('website/sitemap.xml', 'utf8');
           const favicon = fs.readFileSync('website/favicon.svg', 'utf8');
           const logo = fs.readFileSync('website/logo.svg', 'utf8');
-          const manifest = JSON.parse(fs.readFileSync('website/site.webmanifest', 'utf8'));
+          const manifest = JSON.parse(fs.readFileSync('website/site-manifest.json', 'utf8'));
 
           const releaseMatch = releaseJs.match(/const RELEASE_REF = '([0-9a-f]{40})';/);
           if (!releaseMatch) throw new Error('Canonical website release reference is missing or malformed');
@@ -184,13 +186,14 @@ jobs:
             if (!validatorHtml.includes(marker)) throw new Error(`Validator launchpad missing required marker: ${marker}`);
           }
 
-          const walletReleaseIndex = walletHtml.indexOf('<script src="./release.js"></script>');
-          const walletLauncherIndex = walletHtml.indexOf('<script src="./wallet.js"></script>');
+          const scriptAt = (source, file) => source.search(new RegExp(`<script src="\\./${file.replace('.', '\\.')}(\\?v=[0-9a-f]{12})?"></script>`));
+          const walletReleaseIndex = scriptAt(walletHtml, 'release.js');
+          const walletLauncherIndex = scriptAt(walletHtml, 'wallet.js');
           if (walletReleaseIndex < 0 || walletLauncherIndex < 0 || walletReleaseIndex > walletLauncherIndex) {
             throw new Error('Wallet must load canonical release metadata before wallet.js');
           }
-          const validatorReleaseIndex = validatorHtml.indexOf('<script src="./release.js"></script>');
-          const validatorLauncherIndex = validatorHtml.indexOf('<script src="./validator.js"></script>');
+          const validatorReleaseIndex = scriptAt(validatorHtml, 'release.js');
+          const validatorLauncherIndex = scriptAt(validatorHtml, 'validator.js');
           if (validatorReleaseIndex < 0 || validatorLauncherIndex < 0 || validatorReleaseIndex > validatorLauncherIndex) {
             throw new Error('Validator must load canonical release metadata before validator.js');
           }
@@ -314,7 +317,7 @@ jobs:
                 continue;
               }
               if (!href.startsWith('./')) continue;
-              const [relative, fragment] = href.split('#', 2);
+              const [relative, fragment] = href.replace(/\?v=[0-9a-f]{12}(?=#|$)/, '').split('#', 2);
               const targetName = relative === './' || relative === './index.html' ? 'index.html' : relative.slice(2);
               const targetPath = path.join('website', targetName);
               if (!fs.existsSync(targetPath)) throw new Error(`${file} has broken local link: ${href}`);
@@ -330,7 +333,7 @@ jobs:
             for (const match of source.matchAll(/\bsrc=["']([^"']+)["']/gi)) {
               const src = match[1];
               if (!src.startsWith('./')) continue;
-              const targetPath = path.join('website', src.slice(2));
+              const targetPath = path.join('website', src.slice(2).replace(/\?v=[0-9a-f]{12}$/, ''));
               if (!fs.existsSync(targetPath)) throw new Error(`${file} has broken local asset: ${src}`);
             }
           }
@@ -340,8 +343,7 @@ jobs:
           }
 
           const walletCoreJs = fs.readFileSync('website/wallet-core.js', 'utf8');
-          if (!walletHtml.includes('<script src="./wallet-core.js"></script>') ||
-              walletHtml.indexOf('<script src="./wallet-core.js"></script>') > walletHtml.indexOf('<script src="./wallet.js"></script>')) {
+          if (scriptAt(walletHtml, 'wallet-core.js') < 0 || scriptAt(walletHtml, 'wallet-core.js') > scriptAt(walletHtml, 'wallet.js')) {
             throw new Error('Wallet must load wallet-core.js before wallet.js');
           }
           for (const [name, source] of [['wallet.js', walletJs], ['wallet-core.js', walletCoreJs]]) {
