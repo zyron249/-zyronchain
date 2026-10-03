@@ -102,6 +102,23 @@ def test_production_points_play_zyron_at_the_static_host(monkeypatch):
     assert "https://zyron-node.onrender.com" not in _production(monkeypatch, CORS_ORIGINS="https://zyron-node.onrender.com").cors_origins
 
 
+def test_render_deployment_uses_the_static_shell_even_without_production(monkeypatch):
+    # zyron-node on Render runs without ENVIRONMENT=production; Render always sets RENDER=true.
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("ALLOW_TEST_CLOCK", "0")
+    monkeypatch.setenv("WEBAPP_URL", "https://zyron-node.onrender.com/")
+    monkeypatch.setenv("MINIAPP_URL", "")
+    monkeypatch.setenv("CORS_ORIGINS", "")
+    monkeypatch.setenv("RENDER", "true")
+    settings = load_settings()
+    assert settings.miniapp_url == DEFAULT_MINIAPP_URL
+    assert settings.cors_origins == (STATIC_ORIGIN,)
+    monkeypatch.setenv("RENDER", "")
+    local = load_settings()
+    assert local.miniapp_url == "https://zyron-node.onrender.com/"
+    assert local.cors_origins == ()
+
+
 def test_static_build_is_self_contained_and_locked_down(tmp_path):
     sys.path.insert(0, str(Path("scripts").resolve()))
     import build_static  # noqa: PLC0415

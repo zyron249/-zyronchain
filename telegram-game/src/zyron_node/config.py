@@ -87,10 +87,12 @@ def _origin(url: str) -> str:
 
 
 def _miniapp_url(environment: str, webapp_url: str) -> str:
+    """Play Zyron URL for the bot buttons. Any hosted deployment (production, or any Render service, which
+    always sets RENDER=true) uses the always-on static shell; local runs and tests keep the same-origin shell."""
     explicit = os.environ.get("MINIAPP_URL", "").strip()
     if explicit:
         return explicit
-    if environment == "production":
+    if environment == "production" or os.environ.get("RENDER", "").strip().lower() == "true":
         return DEFAULT_MINIAPP_URL
     return webapp_url
 
