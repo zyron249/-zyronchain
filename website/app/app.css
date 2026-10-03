@@ -40,7 +40,6 @@ body {
 .brand img { border-radius: 8px; box-shadow: 0 0 0 1px rgba(79, 216, 251, .35), 0 0 14px rgba(10, 159, 245, .35); }
 .brand span { background: linear-gradient(180deg, #ffffff 0%, #e6ebf0 45%, #aeb7c1 55%, #eef3f7 100%); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; white-space: nowrap; }
 .badge { font: 600 11px/1 var(--mono); letter-spacing: .06em; color: var(--warn); border: 1px solid var(--warn); border-radius: 999px; padding: 6px 8px; white-space: nowrap; }
-.lang { min-width: 44px; }
 h1 { font-size: 1.7rem; line-height: 1.2; margin: 8px 0 10px; background: linear-gradient(180deg, #ffffff 0%, #eef2f6 40%, #b9c1ca 55%, #eef3f7 75%, #c7ced6 100%); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; }
 @media (forced-colors: active) { h1, .brand span { background: none; color: CanvasText; -webkit-text-fill-color: currentColor; } }
 h2 { font-size: 1.15rem; margin: 0 0 10px; }

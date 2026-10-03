@@ -70,8 +70,7 @@
         <a href="#check">Check address</a>
         <a href="#use">Use</a>
         <a href="#safety">Safety</a>
-        <a href="#tr" hreflang="tr" lang="tr">Türkçe</a>
-        <a class="nav-install" href="./app/index.html" lang="tr">Telefona kur / <span lang="en">Install on phone</span></a>
+        <a class="nav-install" href="./app/index.html">📱 Install on phone</a>
       </nav>
       <a class="mini-button" href="./index.html">Back to ZyronChain</a>
     </div>
@@ -88,7 +87,7 @@
           <a class="secondary-button" href="#safety">Read security rules</a>
         </div>
         <a class="phone-callout" href="./app/index.html">
-          <strong lang="tr">📱 Telefona kur / <span lang="en">Install on phone</span></strong>
+          <strong>📱 Install on phone</strong>
           <span>New: a separate phone wallet app (iOS + Android, Add to Home Screen, works offline). Unlike this CLI page, it creates keys inside your phone's browser and stores them encrypted. Testnet only, unaudited.</span>
         </a>
         <div class="wallet-boundary">
@@ -303,21 +302,6 @@ node dist/src/cli.js transfer \
           <div><dt>Checksum</dt><dd>Display only: letter i upper-cased when nibble i of SHA-256("zyronchain/address-checksum/v1:" + address) ≥ 8. Consensus unchanged</dd></div>
         </dl>
       </div>
-    </section>
-
-    <section class="wallet-tr section shell" id="tr" lang="tr" aria-labelledby="wallet-tr-title">
-      <div class="wallet-section-heading">
-        <span>TÜRKÇE ÖZET</span>
-        <h2 id="wallet-tr-title">Cüzdan: kısa ve net.</h2>
-      </div>
-      <ul class="wallet-tr-list">
-        <li><strong>Cüzdan kendi bilgisayarınızda oluşturulur.</strong> Bu site özel anahtarınızı, şifrenizi veya <code>wallet.json</code> dosyanızı hiçbir zaman istemez ve almaz.</li>
-        <li><strong>Anahtar dosyası ve şifre, iki ayrı yedek.</strong> Betikler şifreyi diske kaydetmez; şifreyi ezberleyin veya çevrimdışı yazın ve <code>wallet.json</code> dosyasından ayrı saklayın. Yedeği “2 · Verify / restore a backup” betiğiyle test edin; aynı adres ve SHA-256 çıkmalı.</li>
-        <li><strong>Güçlü şifre:</strong> en az 12 karakter, en az 6 farklı karakter ve yaklaşık 60 bit tahmini güç gerekir. En iyisi uzun bir parola cümlesidir.</li>
-        <li><strong>Adres biçimi:</strong> <code>ZYN</code> + 40 onaltılık karakter. Zincir küçük harfli biçimi kullanır; site ve CLI ayrıca yalnızca görüntüleme amaçlı bir sağlama toplamı (checksum) gösterir: bazı harfler büyük yazılır. Büyük/küçük harf deseni tutmazsa adres hatalı yazılmıştır.</li>
-        <li><strong>Bakiye ve transfer henüz çalışmıyor.</strong> Herkese açık bir cüzdan RPC'si yayımlanmadı. Madencilik kapatıldı. 50.000.000 ZYN sabit arz bir tasarımdır ve henüz aktif değildir.</li>
-        <li><strong>Kimseye güvenmeyin:</strong> “kurtarma”, “airdrop talebi” veya “cüzdan doğrulama” için dosya ya da şifre isteyen herkes dolandırıcıdır.</li>
-      </ul>
     </section>
 
     <section class="wallet-final shell">

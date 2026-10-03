@@ -16,7 +16,7 @@ An installable web app for iOS and Android ("Add to Home Screen"). There is no a
 | Lock / unlock | Auto-lock after 5 minutes without activity, or after 60 s in the background. Lock wipes the key buffer. |
 | Sign transfer | Offline. Produces exactly l1's `transfer` (v2 domain-separated by default, v1 optional). Chain ID and the next nonce are typed in by hand. The code has no path that builds any other kind, so `mining_claim` is impossible. The mining-tracker address and self-sends are refused. |
 | Balance / broadcast | Disabled, with an honest "no public RPC yet" notice. A signed `tx.json` can be submitted later with the CLI (`tx-submit`). |
-| Other | ZYN ↔ atoms converter, clipboard auto-clear after 60 s, delete-wallet (type DELETE/SİL), scam warning, TR/EN UI. |
+| Other | ZYN ↔ atoms converter, clipboard auto-clear after 60 s, delete-wallet (type DELETE), scam warning, English-only UI. |
 
 ## Key storage
 - IndexedDB `zyron-wallet-app` / store `vault` holds **one encrypted vault and nothing else**. The UI refuses to

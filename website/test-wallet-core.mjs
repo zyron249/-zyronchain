@@ -235,7 +235,7 @@ await test('display checksum: vectors, independent reference, spec doc and parsi
 await test('password strength rule and the embedded stdin checker agree', () => {
   const cases = [
     ['short', false], ['aaaaaaaaaaaaaaaa', false], ['abcdefghijkl', false], ['abcabcabcabcabcabc', false],
-    ['correct horse battery staple', true], ['Tr0ub4dor&3xyz', true], ['şifrem-çok-güçlü-2026', true],
+    ['correct horse battery staple', true], ['Tr0ub4dor&3xyz', true], ['ünïcödé-pässphrase-✓-2026', true],
     ['a-strong-local-wallet-password', true]
   ];
   assert.doesNotMatch(core.PASSWORD_CHECK_JS, /[$`"\\]/, 'safe to embed in bash double quotes');

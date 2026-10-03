@@ -99,7 +99,7 @@
 .wallet-footer { border-top:1px solid var(--line); }
 .wallet-footer span { overflow-wrap:anywhere; }
 
-/* Status, address checker, transfer builder, keystore spec, Turkish summary */
+/* Status, address checker, transfer builder, keystore spec */
 .wallet-status { padding-top:8px; padding-bottom:56px; }
 .wallet-status-title { margin:0 0 16px; color:var(--text-strong); font-size:20px; letter-spacing:-.02em; }
 .wallet-status-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:0; padding:0; list-style:none; }
@@ -137,11 +137,6 @@
 .keystore-spec dt { color:var(--green-dark); font:700 9px/1 ui-monospace,monospace; letter-spacing:.1em; text-transform:uppercase; }
 .keystore-spec dd { margin:6px 0 0; color:#a7acb2; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
 .keystore-spec code { color:var(--green-dark); }
-.wallet-tr { border-top:1px solid var(--line); }
-.wallet-tr-list { max-width:880px; margin:24px 0 0; padding-left:20px; color:#a7acb2; font-size:15px; line-height:1.65; }
-.wallet-tr-list li + li { margin-top:10px; }
-.wallet-tr-list strong { color:var(--text-strong); }
-.wallet-tr-list code { color:var(--green-dark); }
 /* Readability: raise the smallest body text on this page. */
 .wallet-run-note p, .use-grid p { font-size:13px; }
 .backup-rules p, .wallet-safety-list p, .wallet-warning p { font-size:12px; }
