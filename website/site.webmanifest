@@ -4,8 +4,8 @@
   "description": "Verifiable Layer-1 protocol, local wallet setup and validator launchpad",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#080808",
-  "theme_color": "#080808",
+  "background_color": "#02050a",
+  "theme_color": "#02050a",
   "icons": [
     {
       "src": "/favicon-32.png",

@@ -6,10 +6,11 @@ Production static website for `https://zyronchain.com`. The website is intention
 
 - `index.html` — main ZyronChain product/protocol portal.
 - `styles.css` / `app.js` — shared responsive presentation, navigation and progressive enhancement.
-- `zyron-gold.png` — homepage hero emblem (metallic ZC monogram and ZYRON wordmark).
-- `brand-mark.png` — header, footer, and wallet identity mark, same artwork at a smaller size.
-- `favicon-32.png`, `apple-touch-icon.png`, `icon-192.png` — browser and home-screen icons from that emblem.
-- `logo.svg` / `favicon.svg` — earlier vector wordmark, kept beside the raster mark.
+- `brand.css` — ZYRON CHAIN theme layer (wolf + Z mark), loaded last on every page: near-black background with a pure-CSS network grid, chrome headings, electric-blue accents and glass cards. No remote fonts/scripts, no `data:` URIs. Palette and asset pipeline: [`tools/brand/README.md`](../tools/brand/README.md).
+- `brand/` — generated brand assets: header wordmark, hero banner (`zyron-banner-*.webp|jpg`, mobile crop `zyron-banner-m-*`), `og-image.jpg` (1200×630), `icon-512.png`, small favicons.
+- `brand-mark.png` — wolf + Z mark (transparent) for header, footer and wallet identity.
+- `favicon.ico` (16/32/48), `favicon-32.png`, `apple-touch-icon.png`, `icon-192.png` — browser and home-screen icons from the same mark.
+- `logo.svg` / `favicon.svg` — SVG wrappers (system-font wordmark + embedded raster mark).
 - `wallet.html` — local-first wallet onboarding and security education.
 - `wallet.js` — prepares pinned local wallet setup and backup-verify scripts, the address checker and transfer templates; it never generates, requests or uploads wallet secrets.
 - `wallet-core.js` — public-data helpers (address format, display-only checksum per `docs/ADDRESS_CHECKSUM.md`, public key → address derivation via Web Crypto SHA-256, ZYN/atoms conversion, the password-strength rule embedded into the local scripts). No key generation, signing or decryption.
