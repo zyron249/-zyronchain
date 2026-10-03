@@ -21,7 +21,7 @@ permissions:
 jobs:
   production-website:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -50,6 +50,8 @@ jobs:
         run: node tools/site/network-status.mjs --check
       - name: Site CSS/JS references carry current content versions
         run: node tools/site/stamp-site.mjs --check
+      - name: Site regression tests (English-only, network-status honesty, naming, mining retired, build id, SEO)
+        run: node tools/site/test-site.mjs
       - name: Verify production website, wallet and validator contracts
         shell: bash
         run: |
@@ -61,6 +63,7 @@ jobs:
           const required = [
             'website/index.html',
             'website/styles.css',
+            'website/site.css',
             'website/app.js',
             'website/release.js',
             'website/README.md',
@@ -97,6 +100,7 @@ jobs:
 
           const html = fs.readFileSync('website/index.html', 'utf8');
           const css = fs.readFileSync('website/styles.css', 'utf8');
+          const siteCss = fs.readFileSync('website/site.css', 'utf8');
           const js = fs.readFileSync('website/app.js', 'utf8');
           const releaseJs = fs.readFileSync('website/release.js', 'utf8');
           const walletHtml = fs.readFileSync('website/wallet.html', 'utf8');
@@ -124,12 +128,11 @@ jobs:
           execFileSync('git', ['merge-base', '--is-ancestor', releaseRef, 'HEAD'], { stdio: 'ignore' });
 
           for (const marker of [
-            './styles.css',
+            './site.css',
             './app.js',
             './favicon-32.png',
             './apple-touch-icon.png',
             './brand-mark.png',
-            './brand.css',
             './brand/zyron-banner-1600.jpg',
             'https://zyronchain.com/brand/og-image.jpg',
             './wallet.html',
@@ -143,10 +146,25 @@ jobs:
             'not a hosted testnet',
             '50M ZYN',
             'Create a wallet',
-            'No analytics cookies'
+            'No analytics cookies',
+            'Verifiable Layer-1 infrastructure',
+            'Phone Wallet — Testnet',
+            'Desktop Wallet Setup',
+            'Validator Launchpad',
+            'Buy / Sell not activated'
           ]) {
             if (!html.includes(marker)) throw new Error(`Website HTML missing required marker: ${marker}`);
           }
+          // Homepage information architecture: sections appear in this order.
+          const order = ['id="overview"', 'id="protocol"', 'id="security"', 'id="zyn"', 'id="wallets"', 'id="validators"', 'id="developers"', 'id="network-status"', 'id="docs"'];
+          const positions = order.map((marker) => html.indexOf(marker));
+          if (positions.some((p) => p < 0) || positions.some((p, i) => i > 0 && p < positions[i - 1])) {
+            throw new Error(`Homepage sections missing or out of order: ${order.join(' > ')}`);
+          }
+          if (/<button[^>]*>\s*Buy \/ Sell not activated/.test(html) && !/<button[^>]*disabled[^>]*>\s*Buy \/ Sell not activated/.test(html)) {
+            throw new Error('Buy / Sell control must stay disabled');
+          }
+          if (/mining\.html/.test(html + walletHtml + validatorHtml)) throw new Error('The retired mining page must not be linked');
           if (/\bV[1-9]\b/.test(html)) {
             throw new Error('Homepage validator visualization must not look like protocol-version labels');
           }
@@ -157,7 +175,8 @@ jobs:
             './release.js',
             './wallet.js',
             './brand-mark.png',
-            'ZyronChain Wallet Setup',
+            'Desktop Wallet Setup',
+            'Phone Wallet — Testnet',
             'LOCAL-ONLY WALLET SETUP',
             'NO SECRET IN BROWSER',
             'PRIVATE KEY STAYS LOCAL',
@@ -240,10 +259,12 @@ jobs:
           for (const loc of [
             '<loc>https://zyronchain.com/</loc>',
             '<loc>https://zyronchain.com/wallet.html</loc>',
-            '<loc>https://zyronchain.com/validator.html</loc>',
-            '<loc>https://zyronchain.com/mining.html</loc>'
+            '<loc>https://zyronchain.com/validator.html</loc>'
           ]) {
             if (!sitemap.includes(loc)) throw new Error(`sitemap.xml missing ${loc}`);
+          }
+          if (sitemap.includes('mining.html') || !miningHtml.includes('<meta name="robots" content="noindex" />')) {
+            throw new Error('The retired mining page must stay noindex and out of the sitemap');
           }
 
           if (!favicon.includes('<svg') || !favicon.includes('ZyronChain')) {
@@ -273,7 +294,7 @@ jobs:
             throw new Error('Web manifest contract is invalid');
           }
 
-          if (!css.includes('@media (max-width: 720px)') || !css.includes('@media (prefers-reduced-motion: reduce)')) {
+          if (!siteCss.includes('@media (max-width: 720px)') || !siteCss.includes('@media (prefers-reduced-motion: reduce)')) {
             throw new Error('Website responsive/accessibility boundaries are missing');
           }
           if (!walletCss.includes('@media (max-width: 720px)') || !walletCss.includes('@media (prefers-reduced-motion: reduce)')) {
@@ -283,7 +304,7 @@ jobs:
             throw new Error('Validator launchpad mobile boundary is missing');
           }
 
-          const allStaticCss = [css, walletCss, validatorCss, miningCss].join('\n');
+          const allStaticCss = [css, siteCss, walletCss, validatorCss, miningCss].join('\n');
           const definedCssVars = new Set([...allStaticCss.matchAll(/--([a-z0-9-]+)\s*:/gi)].map((match) => match[1]));
           const usedCssVars = new Set([...allStaticCss.matchAll(/var\(--([a-z0-9-]+)/gi)].map((match) => match[1]));
           const missingCssVars = [...usedCssVars].filter((name) => !definedCssVars.has(name));
@@ -461,3 +482,11 @@ jobs:
 
           console.log(`website-wallet-validator-contract-ok release=${releaseRef}`);
           NODE
+      - name: Install pinned browser tooling
+        working-directory: tools/pwa-wallet
+        run: npm ci
+      - name: Site layout tests (headless Chrome, 320-1920 px + landscape, no-JS, keyboard, reduced motion)
+        run: |
+          CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          export CHROME_PATH
+          node tools/site/test-layout.mjs

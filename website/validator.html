@@ -26,7 +26,7 @@
   <meta name="twitter:image" content="https://zyronchain.com/brand/og-image.jpg" />
   <title>ZyronChain Validator Launchpad</title>
   <link rel="stylesheet" href="./styles.css?v=7da20ca69e2e" />
-  <link rel="stylesheet" href="./validator.css?v=a9d3c525c8cf" />
+  <link rel="stylesheet" href="./validator.css?v=07d8686a9ed8" />
   <link rel="stylesheet" href="./professional.css?v=7e63790227e5" />
   <link rel="stylesheet" href="./brand.css?v=2112331aba7a" />
   <script type="application/ld+json">
@@ -55,7 +55,7 @@
   <aside class="network-notice" aria-label="Network activation notice">
     <div class="shell notice-inner">
       <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Mining is retired. Wallet RPC and value-bearing use remain activation gated.</p>
-      <a href="./index.html#status">View network status <span aria-hidden="true">→</span></a>
+      <a href="./index.html#network-status">View network status <span aria-hidden="true">→</span></a>
       <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Public tester guide <span aria-hidden="true">↗</span></a>
     </div>
   </aside>
@@ -70,6 +70,7 @@
       <nav class="launchpad-nav" aria-label="Validator navigation">
         <a href="#identity">Identity</a>
         <a href="#network">Network</a>
+        <a href="#operator-checklist">Checklist</a>
         <a href="#safety">Safety</a>
       </nav>
       <a class="button button-secondary button-small" href="./">Back to site</a>
@@ -223,6 +224,24 @@
       </div>
     </section>
 
+    <section class="shell safety-section" id="operator-checklist" aria-labelledby="operator-checklist-title">
+      <div class="section-kicker">Operator checklist</div>
+      <h2 id="operator-checklist-title">Before you run a validator.</h2>
+      <p class="checklist-intro">An operator-assistance tool, not a one-click validator. Every step runs on your machine; nothing is uploaded.</p>
+      <div class="safety-grid checklist-grid">
+        <article><b>01</b><strong>Hardware and OS</strong><p>A 64-bit Linux or macOS host (Windows via WSL2) with Node.js 22 or 24, a persistent disk and a stable connection. No official minimum is published yet: target-hardware measurements are an open activation requirement.</p></article>
+        <article><b>02</b><strong>Canonical repository</strong><p>Clone only <code>github.com/zyron249/-zyronchain</code> and check out the exact release commit shown above. The scripts verify the commit with <code>git cat-file -e</code> before building.</p></article>
+        <article><b>03</b><strong>Identity setup</strong><p>The identity script creates an encrypted validator keystore locally (<code>chmod 600</code>). Share only the address, public key and PeerId. Never send the keystore or its password.</p></article>
+        <article><b>04</b><strong>Genesis verification</strong><p>Every validator must use byte-identical genesis. Compare its SHA-256 with the coordinator over a second channel. The start script refuses genesis with placeholder values.</p></article>
+        <article><b>05</b><strong>Peers and bootstrap</strong><p>List explicit peers as multiaddrs with the expected <code>/p2p/&lt;PeerId&gt;</code> suffix, so a wrong host cannot impersonate a validator.</p></article>
+        <article><b>06</b><strong>Firewall</strong><p>Open only the P2P TCP port to the other validators. Keep everything else closed.</p></article>
+        <article><b>07</b><strong>Public vs private RPC</strong><p>Consensus RPC binds to <code>127.0.0.1</code> and must never be exposed to the Internet. A public interface, if ever offered, must be a separate bounded read-only gateway.</p></article>
+        <article><b>08</b><strong>Activation status</strong><p>Public testnet: authorized by governance, not activated. Only friends/private, non-value testnets can be run today.</p></article>
+        <article><b>09</b><strong>Recovery</strong><p>Back up the encrypted keystore and its password separately and offline. Rehearse a restore before relying on it. Losing both means losing the identity.</p></article>
+      </div>
+      <p class="checklist-links"><a href="https://github.com/zyron249/-zyronchain/blob/main/docs/L1_OPERATIONS_RUNBOOK.md" rel="noopener noreferrer">Operations runbook</a> · <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/L1_PRIVATE_TESTNET_PREFLIGHT.md" rel="noopener noreferrer">Private testnet preflight</a> · <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/L1_NODE_IDENTITY_CUSTODY.md" rel="noopener noreferrer">Node identity custody</a> · <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/DISASTER_RECOVERY_REHEARSAL.md" rel="noopener noreferrer">Disaster recovery rehearsal</a></p>
+    </section>
+
     <section class="shell safety-section" id="safety">
       <div class="section-kicker">Operator safety</div>
       <h2>What the website deliberately cannot do.</h2>
@@ -241,8 +260,8 @@
     <div class="footer-meta"><span>© <span data-year></span> ZyronChain</span><span>No analytics cookies</span></div>
   </footer>
 
-  <script src="./app.js?v=933cb3c848d9"></script>
-  <script src="./release.js?v=f0bbd032d442"></script>
+  <script src="./app.js?v=dbeb603ee988"></script>
+  <script src="./release.js?v=b20013b415a9"></script>
   <script src="./validator.js?v=98c1ad06b849"></script>
 </body>
 </html>
