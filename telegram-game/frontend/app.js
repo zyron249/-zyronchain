@@ -679,8 +679,7 @@
   function tierBadge(tier, compact) {
     const id = tier && tier.id ? tier.id : "none";
     const label = tier && tier.label ? tier.label : "Unranked";
-    const tr = !compact && tier && tier.labelTr ? " · " + tier.labelTr : "";
-    return el("span", { class: "tier-badge " + id, "data-tier-badge": compact ? null : "1", text: label + tr });
+    return el("span", { class: "tier-badge " + id, "data-tier-badge": compact ? null : "1", text: label });
   }
 
   function tierTrack(p) {
@@ -698,8 +697,7 @@
 
   function celebrateTier(tier) {
     if (!tier || !tier.id) return;
-    const tr = tier.labelTr ? " · " + tier.labelTr : "";
-    toast((tier.label || tier.id) + " tier" + tr, "ok");
+    toast((tier.label || tier.id) + " tier", "ok");
     haptic("success");
     state.tierId = tier.id;
   }
@@ -1332,7 +1330,7 @@
     if (badge) {
       const tier = p.tier;
       badge.className = "tier-badge " + (tier && tier.id ? tier.id : "none");
-      badge.textContent = tier && tier.label ? tier.label + (tier.labelTr ? " · " + tier.labelTr : "") : "Unranked";
+      badge.textContent = tier && tier.label ? tier.label : "Unranked";
     }
   }
 

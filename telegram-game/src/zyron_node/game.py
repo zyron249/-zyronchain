@@ -1754,7 +1754,6 @@ def apply_points(conn, player_id: int, amount: int, reason: str, idempotency_key
                 {
                     "tierId": spec.id,
                     "label": spec.label,
-                    "labelTr": spec.label_tr,
                     "minLifetimePoints": spec.min_lifetime_points,
                     "lifetimePoints": after,
                 },
