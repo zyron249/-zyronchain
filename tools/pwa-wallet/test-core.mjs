@@ -154,6 +154,127 @@ vm.createContext(walletCoreContext);
 vm.runInContext(readFileSync(join(repo, 'website', 'wallet-core.js'), 'utf8'), walletCoreContext);
 const siteCore = walletCoreContext.ZyronWalletCore;
 
+await test('vault parser fails closed: unknown versions, malformed data, prototypes and extra fields are rejected', async () => {
+  const entropy = core.phraseToEntropy(SNAP_VECTORS[1].mnemonic);
+  const account = await core.deriveAccount(entropy);
+  const vault = await core.createVault(entropy, PASSWORD, account);
+  const parsed = core.parseVault(vault);
+  assert.deepEqual(parsed, vault);
+  assert.notEqual(parsed, vault, 'parseVault returns a fresh copy');
+  assert.deepEqual(core.parseVault(JSON.stringify(vault)), vault, 'JSON text is accepted when it is exactly a v1 vault');
+  const bad = [
+    [null, /plain object/], [undefined, /plain object/], [42, /plain object/], ['not json', /valid JSON/], ['[]', /plain object/],
+    ['x'.repeat(5000), /too large/], [[vault], /plain object/],
+    [Object.assign(Object.create({ evil: true }), vault), /plain object/],
+    [{ ...vault, version: 0 }, /version/], [{ ...vault, version: 2 }, /version/], [{ ...vault, version: '1' }, /version/], [{ ...vault, version: 1.5 }, /version/],
+    [{ ...vault, format: 'zyronchain-pwa-vault-v2' }, /format/],
+    [{ ...vault, createdAt: 'yesterday' }, /creation time/], [{ ...vault, createdAt: 12 }, /creation time/],
+    [{ ...vault, words: '12' }, /word count/],
+    [{ ...vault, kdf: [] }, /KDF/], [{ ...vault, kdf: { ...vault.kdf, extra: 1 } }, /KDF/],
+    [{ ...vault, cipher: { ...vault.cipher, name: 'aes-128-gcm' } }, /cipher/], [{ ...vault, cipher: 'aes' }, /cipher/],
+    [{ ...vault, salt: 'zz' }, /salt/], [{ ...vault, ciphertext: 'ABC' }, /ciphertext/],
+    [(({ createdAt, ...rest }) => rest)(vault), /unexpected fields/], [{ ...vault, __proto__: null, extra: 1 }, /unexpected fields/]
+  ];
+  for (const [value, pattern] of bad) {
+    assert.throws(() => core.parseVault(value), pattern, `parseVault(${String(JSON.stringify(value)).slice(0, 40)})`);
+    if (value && typeof value === 'object') await assert.rejects(core.openVault(value, PASSWORD), pattern);
+  }
+  const appJs = readFileSync(join(app, 'app.js'), 'utf8');
+  assert.match(appJs, /state\.vault = core\.parseVault\(stored\); \/\/ unknown or malformed vaults are rejected, never rewritten/);
+  assert.doesNotMatch(appJs, /migrat/i, 'no silent vault migration');
+  core.wipe(entropy, account.privateKey);
+});
+
+await test('crypto self-test passes with the vendored libraries and refuses to run without them', async () => {
+  assert.equal(await core.selfTest(), true);
+  const saved = globalThis.ZyronVendor;
+  try {
+    globalThis.ZyronVendor = undefined;
+    await assert.rejects(core.selfTest(), /not loaded/);
+    globalThis.ZyronVendor = { ...saved, scryptAsync: undefined };
+    await assert.rejects(core.selfTest(), /incomplete: scryptAsync/);
+    globalThis.ZyronVendor = { ...saved, sha256: () => new Uint8Array(32) };
+    await assert.rejects(core.selfTest(), /SHA-256 self-test failed/);
+  } finally {
+    globalThis.ZyronVendor = saved;
+  }
+  const appJs = readFileSync(join(app, 'app.js'), 'utf8');
+  assert.match(appJs, /await core\.selfTest\(\);/);
+  assert.match(appJs, /msgCryptoMissing/);
+});
+
+await test('signing review: shows every field, refuses unknown types, messages and extra fields', async () => {
+  const entropy = core.phraseToEntropy(SNAP_VECTORS[0].mnemonic);
+  const account = await core.deriveAccount(entropy);
+  const unsigned = core.buildTransfer({ version: 2, chainId: 'zyron-review-test', nonce: 7, receiver: 'ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42', amountAtoms: 150000000, feeAtoms: 1000, timestampMs: 1700000000000 }, account);
+  const rows = core.describeTransfer(unsigned);
+  assert.deepEqual(rows.map((r) => r.key), ['type', 'from', 'to', 'amount', 'fee', 'chain', 'nonce', 'time']);
+  const byKey = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  assert.match(byKey.type, /^Transfer \(kind "transfer", version 2\)$/);
+  assert.equal(byKey.from, core.toChecksumAddress(account.address));
+  assert.equal(byKey.to, 'ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42');
+  assert.equal(byKey.amount, '1.5 ZYN (150000000 atoms)');
+  assert.equal(byKey.fee, '0.00001 ZYN (1000 atoms)');
+  assert.equal(byKey.chain, 'zyron-review-test');
+  assert.equal(byKey.nonce, '7');
+  for (const [bad, pattern] of [
+    [{ ...unsigned, kind: 'mining_claim' }, /transfers only/], [{ ...unsigned, kind: 'message' }, /transfers only/], [{ ...unsigned, kind: undefined }, /transfers only/],
+    [{ ...unsigned, memo: 'x' }, /Unexpected transfer fields/], [{ ...unsigned, data: '0x' }, /Unexpected transfer fields/],
+    [{ ...unsigned, version: 3 }, /version/], [{ ...unsigned, chainId: '' }, /Chain ID/], [{ ...unsigned, nonce: 0 }, /Nonce/],
+    [{ ...unsigned, receiver: core.MINING_TRACKER_ADDRESS }, /mining tracker/], [{ ...unsigned, sender: 'ZYN' + '1'.repeat(40) }, /Sender does not match/],
+    [JSON.stringify(unsigned), /Nothing to review/], [['transfer'], /Nothing to review/]
+  ]) {
+    assert.throws(() => core.describeTransfer(bad), pattern);
+    assert.throws(() => core.signTransfer(bad, account.privateKey), /transfers only|Unexpected|version|Chain ID|Nonce|mining tracker|Sender|Nothing/);
+  }
+  const html = readFileSync(join(app, 'index.html'), 'utf8');
+  const appJs = readFileSync(join(app, 'app.js'), 'utf8');
+  assert.match(html, /data-screen="review"/);
+  assert.match(html, /data-tx-sign disabled/, 'sign button starts disabled until the review is confirmed');
+  assert.match(appJs, /if \(!state\.unsigned \|\| !\$\('\[data-review-ack\]'\)\.checked\) return;/);
+  core.wipe(entropy, account.privateKey);
+});
+
+await test('recovery phrase UX: privacy screen first, words hidden by default, no copy path, randomized multi-word check', () => {
+  const html = readFileSync(join(app, 'index.html'), 'utf8');
+  const appJs = readFileSync(join(app, 'app.js'), 'utf8');
+  assert.ok(html.indexOf('data-screen="privacy"') < html.indexOf('data-screen="phrase"'), 'privacy screen precedes the phrase');
+  for (const text of ['controls the wallet', 'support will never ask', 'Telegram, Discord, X, email', 'airdrop, validator', 'on paper', 'nobody can see your screen', 'cannot block screenshots']) assert.ok(html.toLowerCase().includes(text.toLowerCase()), text);
+  assert.match(html, /data-privacy-next disabled/);
+  assert.doesNotMatch(html + appJs, /data-copy-phrase|copy (the )?(recovery )?phrase|copyPhrase/i, 'no copy-phrase control');
+  assert.doesNotMatch(html + appJs, /screenshots? (are|is) (blocked|disabled|prevented)/i, 'never claims screenshots are blocked');
+  assert.match(appJs, /text\.textContent = '•••••';/, 'cards render a placeholder until revealed');
+  assert.match(appJs, /const WORD_HIDE_MS = 20 \* 1000;/);
+  assert.match(appJs, /window\.addEventListener\('blur', hideWords\);/);
+  assert.match(appJs, /if \(document\.hidden\) \{\n\s+hideWords\(\);/);
+  assert.match(appJs, /const QUIZ_WORDS = 4;/);
+  assert.match(appJs, /for \(const type of \['copy', 'cut', 'dragstart'\]\)/);
+  assert.doesNotMatch(appJs, /pending\.words|words: core\.entropyToPhrase/, 'the phrase is not kept as a long-lived string list');
+  assert.match(appJs, /core\.wipe\(state\.pending\.entropy\);/);
+  assert.match(html, /JavaScript cannot guarantee that memory is erased/);
+  // copy is only offered for the address and a signed transfer
+  const copyButtons = [...html.matchAll(/<button\b[^>]*>[^<]*<\/button>/g)].map((m) => m[0]).filter((b) => /copy/i.test(b)).map((b) => b.match(/data-([a-z-]+)/)[1]).sort();
+  assert.deepEqual(copyButtons, ['copy-address', 'copy-plain', 'tx-copy']);
+  assert.ok(appJs.includes("msgCopied: 'Copied. Clipboard will be cleared automatically.'"));
+});
+
+await test('network status component: static, honest rows, identical everywhere it is used', async () => {
+  const { ROWS, render } = await import(pathToFileURL(join(repo, 'tools', 'site', 'network-status.mjs')).href);
+  const expected = { governance: 'Authorized', 'public-testnet': 'Not activated', 'public-rpc': 'Unavailable', explorer: 'Unavailable', 'wallet-creation': 'Available locally', 'offline-signing': 'Available', broadcasting: 'Unavailable until activation', mining: 'Retired', 'token-sale': 'None' };
+  assert.deepEqual(Object.fromEntries(ROWS.map((r) => [r.key, r.value])), expected);
+  const block = render();
+  for (const page of ['website/app/index.html', 'website/index.html', 'website/wallet.html']) {
+    const file = join(repo, page);
+    if (!existsSync(file)) continue;
+    const html = readFileSync(file, 'utf8');
+    if (!html.includes('BEGIN NETWORK STATUS')) { assert.notEqual(page, 'website/app/index.html', 'the phone wallet shows network status'); continue; }
+    const got = html.match(/<!-- BEGIN NETWORK STATUS[\s\S]*?<!-- END NETWORK STATUS -->/)[0].split('\n').map((l) => l.trim()).join('\n');
+    assert.equal(got, block.split('\n').map((l) => l.trim()).join('\n'), `${page} network status is stale`);
+  }
+  assert.doesNotMatch(block, /mainnet (is )?live|activated public testnet|public rpc: available|buy now|price target|\$\s?\d/i);
+  assert.doesNotMatch(block, /https?:\/\/(?!github\.com)/, 'no endpoints');
+});
+
 await test('display checksum vectors (docs/ADDRESS_CHECKSUM.md) and password rule equal website/wallet-core.js', async () => {
   const spec = readFileSync(join(repo, 'docs', 'ADDRESS_CHECKSUM.md'), 'utf8');
   const rows = [...spec.matchAll(/\| `(ZYN[0-9a-f]{40})` \| `(ZYN[0-9a-fA-F]{40})` \|/g)];
@@ -316,13 +437,14 @@ await test('web app manifest is valid and installable (name, scope, standalone, 
   assert.deepEqual(pngSize(join(app, 'icons', 'apple-touch-icon-180.png')), [180, 180]);
   for (const marker of ['TESTNET', 'Scam warning', 'No public RPC yet', 'unaudited', 'Add to Home Screen', 'Install app']) assert.ok(html.includes(marker), marker);
   const appJs = readFileSync(join(app, 'app.js'), 'utf8');
-  // English-only UI: no language toggle, no second dictionary, no locale auto-detect, no non-English UI copy.
-  for (const banned of ['data-lang-toggle', 'navigator.language', "lang=\"tr\"", 'hreflang', 'Telefona', 'Türkçe']) {
+  // English-only UI: no language toggle, no second dictionary, no locale auto-detect, no accented/non-English letters.
+  for (const banned of ['data-lang-toggle', 'navigator.language', 'navigator.languages', 'hreflang', 'Intl.DateTimeFormat().resolvedOptions']) {
     assert.ok(!html.includes(banned), `index.html contains ${banned}`);
     assert.ok(!appJs.includes(banned), `app.js contains ${banned}`);
   }
-  assert.doesNotMatch(appJs, /\btr: \{/, 'second-language dictionary in app.js');
-  assert.doesNotMatch(html + appJs, /[çğışÇĞİŞ]/, 'non-English UI characters in the app');
+  assert.deepEqual([...html.matchAll(/\blang="([^"]+)"/g)].map((m) => m[1]), ['en'], 'only lang="en"');
+  assert.doesNotMatch(appJs, /\b[a-z]{2}: \{\n/, 'no second-language dictionary in app.js');
+  assert.doesNotMatch(html + appJs, /[\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF\u0600-\u06FF]/, 'non-English letters in the app UI');
   const keys = [...html.matchAll(/data-i18n="([^"]+)"[^>]*>([^<]*)</g)];
   const english = new Map();
   for (const [, key, text] of keys) { if (english.has(key)) assert.equal(english.get(key), text, `UI key ${key} reused with different text`); english.set(key, text); }

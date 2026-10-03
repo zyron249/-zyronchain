@@ -10,12 +10,12 @@
 'use strict';
 
 // BEGIN GENERATED (tools/pwa-wallet/stamp-app.mjs)
-const VERSION = 'ef75b4f10c4f2e3d';
+const VERSION = '3bed3e1659fddeef';
 const ASSETS = {
-  "./index.html": "cf952a1e9787fea33d73792ead6314f2b29b7772da291ea475cbb61a562e740f",
-  "./app.css": "efa94db1bbeba3834760861a468c6004f656829ca69ae0579c4d3e883355dc2e",
-  "./app.js": "758e4d9e1ae6a045705b3b7f4ab353a53685416d69bfa707dea79500c64ecd64",
-  "./zyron-wallet-core.js": "4057cae04a2f77541f6bfeaf09d59f2e4e51b482b731dc5c3445e137cf2a29f7",
+  "./index.html": "0f3fc880d7382206d9ae8783340a3557ca56a74e302c08a8b44f2ee117cda4b7",
+  "./app.css": "c1d091d8884f3aa7beeb4594bbf7acf0e46ccfcc6b7bd4def42651845b697d95",
+  "./app.js": "571752fbdc8bda500a7a60ad242b74882a6d0424fae2bb6c91545ac6ee0ec8b4",
+  "./zyron-wallet-core.js": "527c72cc63acb8b24cef318ed88aa126df01a7ab25ae8db0ca0edbffc851b8a1",
   "./vendor/noble-scure.js": "db17e57ac525ad905f77f606fe5b1b5bc898d8f6119e9d556ff2f49181dd5c4d",
   "./vendor/qr.js": "df7e5ee0f9db397a3f689313cc1bc8581e55e8752200309023df694d7e977612",
   "./manifest.json": "5908854c28f43fb93e6777c04b3678ed53f83b9b82cf8c702035688e856ebf4b",
