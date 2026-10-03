@@ -1,1 +1,98 @@
-.mining-nav{display:flex;gap:1.1rem}.mining-hero{padding:7rem 0 4.5rem}.mining-hero-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(300px,.75fr);gap:4rem;align-items:center}.mining-hero h1{font-size:clamp(3.2rem,7vw,6.7rem);line-height:.92;letter-spacing:-.055em;margin:.4rem 0 1.5rem}.mining-hero h1 span{font-weight:400}.mining-console{border:1px solid rgba(120,175,255,0.16);border-radius:20px;padding:1.5rem;background:#070d18;box-shadow:0 24px 60px rgba(0,0,0,0.32)}.mining-console>p{font-size:.75rem;letter-spacing:.14em;font-weight:700;color:#979ca1}.mining-console dl{margin:1.25rem 0}.mining-console dl div{display:flex;justify-content:space-between;gap:2rem;padding:.9rem 0;border-bottom:1px solid rgba(120,175,255,0.16)}.mining-console dt{color:#979ca1}.mining-console dd{margin:0;font-weight:700;text-align:right}.console-state{display:inline-flex;margin-top:.8rem;border:1px solid rgba(120,175,255,0.16);border-radius:999px;padding:.5rem .75rem;font-size:.72rem;font-weight:800;letter-spacing:.08em}.mining-steps,.security-grid,.metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1rem;margin-top:2.4rem}.mining-steps article,.security-grid article,.metric-grid>div{border-top:1px solid rgba(120,175,255,0.16);padding:1.4rem 0}.mining-steps article>span{font-size:.76rem;font-weight:800;letter-spacing:.12em}.mining-steps h3,.security-grid h3{font-size:1.18rem;margin:.9rem 0 .5rem}.mining-steps p,.security-grid p,.mining-note{color:#979ca1;line-height:1.65}.metric-grid strong{display:block;font-size:clamp(1.55rem,3vw,2.5rem);letter-spacing:-.04em}.metric-grid span{display:block;color:#979ca1;margin-top:.45rem}.command-card{background:#121621;color:#f0f7ff;border-radius:22px;overflow:hidden;margin-top:2rem}.command-head{display:flex;justify-content:space-between;align-items:center;padding:1rem 1.25rem;border-bottom:1px solid #28466e;font-size:.75rem;letter-spacing:.12em}.command-head button{border:1px solid rgba(79,216,251,0.42);background:transparent;color:#f0f7ff;border-radius:999px;padding:.45rem .8rem;cursor:pointer}.command-card pre{margin:0;padding:1.5rem;overflow:auto;line-height:1.65}.command-options{display:flex;flex-wrap:wrap;gap:1rem;padding:1rem 1.25rem 1.35rem;border-top:1px solid #28466e;color:#4fd8fb;font-size:.9rem}.command-options code{color:#f0f7ff}.activation-box{border-left:3px solid #182a46;padding:1rem 0 1rem 1.4rem;margin-top:2rem}.activation-box p{color:#979ca1;max-width:760px}.activation-box a{font-weight:700}@media(max-width:900px){.mining-nav{display:none}.mining-hero-grid{grid-template-columns:1fr}.mining-steps,.security-grid,.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:600px){.mining-hero{padding-top:4rem}.mining-steps,.security-grid,.metric-grid{grid-template-columns:1fr}.command-options{display:grid}.mining-hero h1{font-size:3.5rem}}
+/* mining.css: page layout for mining.html. Uses the tokens in site.css (loaded first).
+   Generated once from the former styles.css + professional.css + brand.css layers by keeping only rules that
+   match this page, with dead (overridden) declarations removed. Edit this file directly from now on. */
+
+:where(main) a { color: inherit; text-decoration: none; }
+:where(main) button { font: inherit; }
+:where(main) button, :where(main) a { -webkit-tap-highlight-color: transparent; }
+:where(main) img { display: block; max-width: 100%; }
+:where(main) code, :where(main) pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+:where(main) button { color: inherit; }
+.shell { margin-inline: auto; }
+.content-shell { margin-inline: auto; }
+.secondary-button { display: inline-flex; align-items: center; justify-content: center; font-weight: 700; transition: background .18s ease, border-color .18s ease, color .18s ease, transform .18s ease; font-size: 14px; }
+.eyebrow, .section-label { margin: 0; font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.hero-lede { max-width: 680px; margin: 0; color: #979ca1; font-size: 18px; line-height: 1.72; }
+.hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 31px; }
+.content-shell h2 { margin: 14px 0 24px; color: var(--ink); font-size: clamp(42px, 5.4vw, 64px); line-height: 1.08; letter-spacing: -.045em; font-weight: 690; }
+.section-intro { margin: 0; }
+@media (max-width: 720px) {
+  .shell, .content-shell { width: min(100% - 32px, 1120px); }
+  .section { padding: 70px 0; }
+  .hero-lede { font-size: 16px; }
+  .hero-actions { display: grid; }
+  .secondary-button { width: 100%; }
+  .content-shell h2 { font-size: clamp(37px, 11.5vw, 52px); }
+  .section-intro { font-size: 16px; }
+}
+.mining-hero { padding: 7rem 0 4.5rem; }
+.mining-hero-grid { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(300px,.75fr); gap: 4rem; align-items: center; }
+.mining-hero h1 { font-size: clamp(3.2rem,7vw,6.7rem); line-height: .92; letter-spacing: -.055em; margin: .4rem 0 1.5rem; }
+.mining-hero h1 span { font-weight: 400; }
+.mining-console { border: 1px solid rgba(120,175,255,0.16); border-radius: 20px; padding: 1.5rem; background: #070d18; box-shadow: 0 24px 60px rgba(0,0,0,0.32); }
+.mining-console>p { font-size: .75rem; letter-spacing: .14em; font-weight: 700; color: #979ca1; }
+.mining-console dl { margin: 1.25rem 0; }
+.mining-console dl div { display: flex; justify-content: space-between; gap: 2rem; padding: .9rem 0; border-bottom: 1px solid rgba(120,175,255,0.16); }
+.mining-console dt { color: #979ca1; }
+.mining-console dd { margin: 0; font-weight: 700; text-align: right; }
+.console-state { display: inline-flex; margin-top: .8rem; border: 1px solid rgba(120,175,255,0.16); border-radius: 999px; padding: .5rem .75rem; font-size: .72rem; font-weight: 800; letter-spacing: .08em; }
+.mining-steps, .security-grid, .metric-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 1rem; margin-top: 2.4rem; }
+.mining-steps article, .security-grid article, .metric-grid>div { border-top: 1px solid rgba(120,175,255,0.16); padding: 1.4rem 0; }
+.mining-steps article>span { font-size: .76rem; font-weight: 800; letter-spacing: .12em; }
+.mining-steps h3, .security-grid h3 { font-size: 1.18rem; margin: .9rem 0 .5rem; }
+.mining-steps p, .security-grid p, .mining-note { color: #979ca1; line-height: 1.65; }
+.metric-grid strong { display: block; font-size: clamp(1.55rem,3vw,2.5rem); letter-spacing: -.04em; }
+.metric-grid span { display: block; color: #979ca1; margin-top: .45rem; }
+.command-card { color: #f0f7ff; margin-top: 2rem; }
+.command-head { display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.25rem; border-bottom: 1px solid #28466e; letter-spacing: .12em; }
+.command-head button { border: 1px solid rgba(79,216,251,0.42); background: transparent; color: #f0f7ff; border-radius: 999px; padding: .45rem .8rem; cursor: pointer; }
+.command-card pre { margin: 0; padding: 1.5rem; line-height: 1.65; }
+.command-options { display: flex; flex-wrap: wrap; gap: 1rem; padding: 1rem 1.25rem 1.35rem; border-top: 1px solid #28466e; color: #4fd8fb; font-size: .9rem; }
+.command-options code { color: #f0f7ff; }
+.activation-box { border-left: 3px solid #182a46; padding: 1rem 0 1rem 1.4rem; margin-top: 2rem; }
+.activation-box p { color: #979ca1; max-width: 760px; }
+.activation-box a { font-weight: 700; }
+@media(max-width:900px) {
+  .mining-hero-grid { grid-template-columns: 1fr; }
+  .mining-steps, .security-grid, .metric-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@media(max-width:600px) {
+  .mining-hero { padding-top: 4rem; }
+  .mining-steps, .security-grid, .metric-grid { grid-template-columns: 1fr; }
+  .command-options { display: grid; }
+  .mining-hero h1 { font-size: 3.5rem; }
+}
+.shell { width: min(1240px,calc(100% - 64px)); }
+.content-shell { width: min(860px,calc(100% - 64px)); }
+:where(main) h1, :where(main) h2, :where(main) h3 { letter-spacing: -.045em; line-height: 1.1; text-wrap: balance; }
+:where(main) p { max-width: 74ch; }
+.secondary-button { min-height: 52px; border-radius: 4px; padding: 0 24px; gap: 24px; }
+.section { padding: 100px 0; }
+.section-label, .eyebrow { font: 600 11px/1.5 ui-monospace,Consolas,monospace; letter-spacing: .14em; }
+.section h2 { font-size: clamp(32px,4vw,50px); margin: 18px 0 24px; }
+.section-intro { font-size: 18px; line-height: 1.75; color: var(--muted); }
+.command-card { border-radius: 6px; overflow: hidden; }
+.command-head { font-size: 10px; }
+.command-card pre { font-size: 12px; overflow: auto; }
+@media(max-width:700px) {
+  .shell, .content-shell { width: calc(100% - 36px); }
+  .section { padding: 65px 0; }
+}
+.section-label { font-size: 12px; }
+@media(max-width:700px) {
+  .section-label { font-size: 12px; }
+}
+:where(main) h1, :where(main) h2, .content-shell h2, .section h2 { background: var(--chrome); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; text-shadow: none; }
+:where(main) h1 span { background: linear-gradient(90deg, #7fe6ff 0%, #4fd8fb 40%, #2fa8ff 100%); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 18px rgba(10, 159, 245, .35)); }
+:where(main) h3 { color: var(--ink); }
+.eyebrow, .section-label { color: var(--cyan); }
+:where(main) a { text-underline-offset: 3px; }
+:where(main) code { color: var(--cyan); }
+.section-intro, .hero-lede { color: var(--text); }
+:where(main) a:focus-visible, :where(main) button:focus-visible { outline: 3px solid var(--cyan); outline-offset: 3px; border-radius: 4px; }
+.secondary-button { background: rgba(8, 16, 30, .6); color: var(--ink); border: 1px solid rgba(216, 220, 224, .32); }
+.secondary-button:hover { background: rgba(10, 159, 245, .12); border-color: rgba(79, 216, 251, .7); color: #fff; }
+.command-card { background: linear-gradient(180deg, #040a14, #02060d); border: 1px solid rgba(79, 216, 251, .2); box-shadow: 0 0 0 1px rgba(10, 159, 245, .05), 0 22px 60px rgba(0, 0, 0, .55), 0 0 30px rgba(10, 159, 245, .07); }
+@media (forced-colors: active) {
+  :where(main) h1, :where(main) h2, :where(main) h1 span, .content-shell h2, .section h2 { background: none; color: CanvasText; -webkit-text-fill-color: currentColor; filter: none; }
+}

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#02050a" />
-  <meta name="description" content="ZyronChain terms of use: documentation and local onboarding only; activation gated; no warranties." />
+  <meta name="description" content="ZyronChain terms: open-source software provided as is. Public testnet not activated; no token sale; you control your own keys." />
   <meta name="referrer" content="no-referrer" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'" />
   <link rel="canonical" href="https://zyronchain.com/terms.html" />
@@ -16,7 +16,7 @@
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="ZyronChain" />
   <meta property="og:title" content="ZyronChain — Terms" />
-  <meta property="og:description" content="ZyronChain terms of use: documentation and local onboarding only; activation gated; no warranties." />
+  <meta property="og:description" content="ZyronChain terms: open-source software provided as is. Public testnet not activated; no token sale; you control your own keys." />
   <meta property="og:url" content="https://zyronchain.com/terms.html" />
   <meta property="og:image" content="https://zyronchain.com/brand/og-image.jpg" />
   <meta property="og:image:width" content="1200" />
@@ -25,16 +25,14 @@
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:image" content="https://zyronchain.com/brand/og-image.jpg" />
   <title>ZyronChain — Terms</title>
-  <link rel="stylesheet" href="./styles.css?v=7da20ca69e2e" />
-  <link rel="stylesheet" href="./professional.css?v=7e63790227e5" />
-  <link rel="stylesheet" href="./brand.css?v=2112331aba7a" />
+  <link rel="stylesheet" href="./site.css?v=99006be00a32" />
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
     "@type": "WebPage",
     "name": "ZyronChain — Terms",
     "url": "https://zyronchain.com/terms.html",
-    "description": "ZyronChain terms of use: documentation and local onboarding only; activation gated; no warranties.",
+    "description": "ZyronChain terms: open-source software provided as is. Public testnet not activated; no token sale; you control your own keys.",
     "isPartOf": { "@type": "WebSite", "name": "ZyronChain", "url": "https://zyronchain.com/" },
     "publisher": {
       "@type": "Organization",
@@ -49,87 +47,96 @@
   }
   </script>
 </head>
-<body class="protocol-portal legal-page">
+<body class="site">
   <a class="skip-link" href="#main">Skip to content</a>
 
-  <aside class="network-notice" aria-label="Network activation notice">
-    <div class="shell notice-inner">
-      <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Mining is retired. Wallet RPC and value-bearing use remain activation gated.</p>
-      <a href="./index.html#network-status">View network status <span aria-hidden="true">→</span></a>
-      <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Public tester guide <span aria-hidden="true">↗</span></a>
+  <aside class="status-notice" aria-label="Network status notice">
+    <div class="wrap status-notice-inner">
+      <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated: no public RPC, explorer, balances or broadcasting yet. Mining is retired. There is no token sale.</p>
+      <a href="./#network-status">Network status <span aria-hidden="true">→</span></a>
     </div>
   </aside>
 
-  <header class="site-header" data-header>
-    <div class="shell header-inner">
-      <a class="brand" href="./index.html" aria-label="ZyronChain home">
-        <img class="brand-mark" src="./brand-mark.png" alt="ZyronChain" width="192" height="192" /><img class="brand-wordmark" src="./brand/zyron-wordmark.png" alt="" width="712" height="80" />
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="./" aria-label="ZyronChain home">
+        <img class="brand-mark" src="./brand-mark.png" alt="" width="192" height="192" /><img class="brand-wordmark" src="./brand/zyron-wordmark.png" alt="ZyronChain" width="712" height="80" />
       </a>
-      <nav class="nav" id="primary-nav" aria-label="Primary navigation">
-        <a href="./index.html#overview">Introduction</a>
-        <a href="./index.html#wallets">Wallet</a>
-        <a href="./validator.html">Validator Launchpad</a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="./#overview">Overview</a>
+        <a href="./#protocol">Protocol</a>
+        <a href="./#zyn">ZYN</a>
+        <a href="./#security">Security</a>
+        <a href="./#developers">Developers</a>
+        <a href="./#network-status">Network</a>
+        <a class="nav-wallet" href="./#wallets">Wallet</a>
       </nav>
-      <div class="header-actions">
-        <a class="quiet-link" href="https://github.com/zyron249/-zyronchain" target="_blank" rel="noopener noreferrer">Source</a>
-        <a class="mini-button" href="./wallet.html">Create a wallet</a>
-      </div>
+      <a class="header-source" href="https://github.com/zyron249/-zyronchain" rel="noopener noreferrer">Source</a>
     </div>
   </header>
 
-  <main id="main">
-    <section class="section intro">
-      <div class="content-shell" data-reveal>
-        <p class="section-label">Terms</p>
-        <h1>Terms of use</h1>
-        <p class="section-intro">These terms describe what zyronchain.com is—and what it is not. Please read them before relying on the site or related software.</p>
-      </div>
-    </section>
-    <section class="section section-flush">
-      <div class="content-shell">
-        <h2>Documentation and onboarding only</h2>
-        <p>This website provides documentation, status summary and local setup helpers for the open-source ZyronChain project. It is <strong>not</strong> a custody service, exchange, bank, broker, payment processor or privileged signing coordinator.</p>
-        <h2>Activation is gated</h2>
-        <p><strong>Public testnet governance authorized</strong> does not mean the public network is activated. Authorized ≠ activated. Mining is retired. Public wallet RPC and value-bearing use remain activation gated until evidence and repository gates say otherwise. There is no hosted public testnet, RPC, explorer or faucet published by this site.</p>
-        <h2>Local responsibility</h2>
-        <p>Wallet and validator workflows are intended to run on your own machine. Mining is retired and miner workflows must not be used. You are responsible for reviewing generated scripts, verifying repository URLs and release pins, protecting keystores and passwords, and confirming network activation status before any use that could carry value.</p>
-        <h2>Software and content as-is</h2>
-        <p>Protocol software, documentation and this website are provided without warranties of any kind, express or implied, including merchantability, fitness for a particular purpose and non-infringement, to the fullest extent permitted by law. Open-source licenses in the repository govern the code.</p>
-        <h2>No investment advice</h2>
-        <p>Nothing on this site is an offer to sell, solicitation to buy, or investment, legal or tax advice. ZYN issuance descriptions are protocol mechanics, not a promise of market availability or value.</p>
-        <h2>Third-party links</h2>
-        <p>Links to GitHub, Telegram, X and other external sites are for convenience. ZyronChain does not control those services.</p>
-        <h2>Changes</h2>
-        <p>These terms may be updated as the project and site evolve. Continued use of the site after changes are published constitutes acceptance of the updated terms.</p>
-        <p><a href="./privacy.html">Privacy policy →</a> · <a href="./index.html">Back to home →</a></p>
-      </div>
-    </section>
+  <main id="main" class="legal">
+    <div class="wrap">
+      <p class="kicker">Terms</p>
+      <h1>Terms of use</h1>
+      <p class="lead">What zyronchain.com is, what it is not, and what you are responsible for.</p>
+
+      <h2>1. Documentation and local tools only</h2>
+      <p>This site provides documentation, a static network status and local tools for the open-source ZyronChain project. It is <strong>not</strong> a custody service, exchange, bank, broker, payment processor, RPC provider or signing coordinator.</p>
+
+      <h2>2. Network state</h2>
+      <p><strong>Public testnet governance authorized</strong> does not mean the public network is activated. Authorized does not mean activated. There is no hosted public testnet, public RPC, explorer or faucet, and no mainnet. Mining is retired. Signing a transaction locally does not broadcast it.</p>
+
+      <h2>3. Phone Wallet — Testnet</h2>
+      <p>The Phone Wallet is testnet software and has not been independently audited. Do not use it for real value. You alone hold your recovery phrase: if you lose it and the device vault, access is lost permanently, and nobody can reset or recover it.</p>
+
+      <h2>4. Your responsibility</h2>
+      <p>Wallet and validator workflows run on your own machine. Review generated scripts, verify the repository URL and release commit, protect keystores, phrases and passwords, and check the network status before any use that could carry value. Do not run miner software.</p>
+
+      <h2>5. No sale, no investment advice</h2>
+      <p>Nothing here is an offer to sell or a solicitation to buy anything. There is no token sale, price or market. ZYN supply descriptions are protocol mechanics and proposals under review, not a promise of availability or value.</p>
+
+      <h2>6. Software as-is</h2>
+      <p>Software, documentation and this site are provided without warranties of any kind, express or implied, including merchantability, fitness for a particular purpose and non-infringement, to the fullest extent permitted by law. The open-source licenses in the repository govern the code.</p>
+
+      <h2>7. Third-party links and changes</h2>
+      <p>Links to GitHub, X and Telegram are for convenience; ZyronChain does not control those services. These terms may change; changes are made in the <a href="https://github.com/zyron249/-zyronchain" rel="noopener noreferrer">public repository</a>.</p>
+      <p><a href="./privacy.html">Privacy policy</a> · <a href="./">Back to home</a></p>
+    </div>
   </main>
 
   <footer class="site-footer">
-    <div class="shell footer-main">
+    <div class="wrap footer-grid">
       <div class="footer-brand">
-        <a href="./index.html" aria-label="ZyronChain home"><img class="brand-mark" src="./brand-mark.png" alt="ZyronChain" width="192" height="192" /><img class="brand-wordmark" src="./brand/zyron-wordmark.png" alt="" width="712" height="80" /></a>
-        <p>Open-source Layer-1 research and implementation focused on verifiable rules, local custody and explicit activation boundaries.</p>
+        <img class="brand-mark" src="./brand-mark.png" alt="" width="192" height="192" loading="lazy" />
+        <p>Open-source Layer-1. Local keys, verifiable rules, explicit network state.</p>
       </div>
-      <div class="footer-column">
-        <strong>Resources</strong>
+      <nav class="footer-col" aria-label="Protocol">
+        <strong>Protocol</strong>
+        <a href="./#overview">Overview</a>
+        <a href="./#protocol">How it works</a>
+        <a href="./#zyn">ZYN</a>
+        <a href="./#security">Security</a>
+        <a href="./#network-status">Network status</a>
+      </nav>
+      <nav class="footer-col" aria-label="Use">
+        <strong>Use</strong>
         <a href="./app/">Phone Wallet — Testnet</a>
         <a href="./wallet.html">Desktop Wallet Setup</a>
         <a href="./validator.html">Validator Launchpad</a>
-        <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Public tester guide ↗</a>
-      </div>
-      <div class="footer-column">
-        <strong>Legal</strong>
-        <a href="./privacy.html">Privacy</a>
-        <a href="./terms.html">Terms</a>
-        <a href="https://t.me/zyronchain" target="_blank" rel="noopener noreferrer">Telegram ↗</a>
-        <a href="https://github.com/zyron249/-zyronchain" target="_blank" rel="noopener noreferrer">Source code ↗</a>
-      </div>
+        <a href="./#developers">Developers</a>
+      </nav>
+      <nav class="footer-col" aria-label="Source and community">
+        <strong>Source</strong>
+        <a href="https://github.com/zyron249/-zyronchain" rel="noopener noreferrer">GitHub</a>
+        <a href="https://github.com/zyron249/-zyronchain/issues" rel="noopener noreferrer">Issues</a>
+        <a href="https://x.com/Zyronchain" rel="noopener noreferrer">X</a>
+        <a href="https://t.me/zyronchain" rel="noopener noreferrer">Telegram</a>
+      </nav>
     </div>
-    <div class="shell footer-bottom">
-      <span>© <span data-year></span> ZyronChain · Open source</span>
-      <span>Local keys. Verifiable rules. No analytics cookies</span>
+    <div class="wrap footer-bottom">
+      <span>© ZyronChain · Open source · No analytics cookies</span>
+      <span><a href="./privacy.html">Privacy</a> · <a href="./terms.html">Terms</a> · <span class="build" data-site-build>Build 5e1f305e</span></span>
     </div>
   </footer>
 

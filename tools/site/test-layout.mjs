@@ -33,7 +33,7 @@ const browser = await chromium.launch({ executablePath: chromePath, args: ['--no
 let passed = 0;
 const test = async (name, fn) => { await fn(); passed += 1; console.log(`ok - ${name}`); };
 
-const PAGES = ['/', '/wallet.html', '/validator.html', '/privacy.html', '/terms.html'];
+const PAGES = ['/', '/wallet.html', '/validator.html', '/privacy.html', '/terms.html', '/app/'];
 const SIZES = [[320, 640], [375, 812], [390, 844], [430, 932], [768, 1024], [1024, 768], [1440, 900], [1920, 1080], [844, 390]];
 
 try {

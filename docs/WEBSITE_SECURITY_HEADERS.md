@@ -42,7 +42,7 @@ Home Screen app), which this repo's CI cannot emulate.
 Every response is served with `cache-control: public, max-age=0, s-maxage=300`: browsers revalidate on each
 load, Cloudflare may keep a copy for up to five minutes. Caching stays on; staleness is handled by versioning:
 
-- Site CSS/JS links carry a content version (`./styles.css?v=<sha256[:12]>`, written by
+- Site CSS/JS links carry a content version (`./site.css?v=<sha256[:12]>`, written by
   `tools/site/stamp-site.mjs`, checked in CI). New HTML therefore never pairs with an old stylesheet.
 - The phone wallet loads `/app/<file>?v=<sha256[:12]>` with SRI (written by `tools/pwa-wallet/stamp-app.mjs`).
   Its service worker caches exactly those URLs, checks every hash at install and shows

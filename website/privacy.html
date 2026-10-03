@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#02050a" />
-  <meta name="description" content="ZyronChain privacy policy: no analytics cookies, no website account, no key collection." />
+  <meta name="description" content="ZyronChain privacy: no wallet secrets, accounts, analytics or cookies. Hosting and CDN providers keep standard access logs." />
   <meta name="referrer" content="no-referrer" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'" />
   <link rel="canonical" href="https://zyronchain.com/privacy.html" />
@@ -16,7 +16,7 @@
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="ZyronChain" />
   <meta property="og:title" content="ZyronChain — Privacy" />
-  <meta property="og:description" content="ZyronChain privacy policy: no analytics cookies, no website account, no key collection." />
+  <meta property="og:description" content="ZyronChain privacy: no wallet secrets, accounts, analytics or cookies. Hosting and CDN providers keep standard access logs." />
   <meta property="og:url" content="https://zyronchain.com/privacy.html" />
   <meta property="og:image" content="https://zyronchain.com/brand/og-image.jpg" />
   <meta property="og:image:width" content="1200" />
@@ -25,16 +25,14 @@
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:image" content="https://zyronchain.com/brand/og-image.jpg" />
   <title>ZyronChain — Privacy</title>
-  <link rel="stylesheet" href="./styles.css?v=7da20ca69e2e" />
-  <link rel="stylesheet" href="./professional.css?v=7e63790227e5" />
-  <link rel="stylesheet" href="./brand.css?v=2112331aba7a" />
+  <link rel="stylesheet" href="./site.css?v=99006be00a32" />
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
     "@type": "WebPage",
     "name": "ZyronChain — Privacy",
     "url": "https://zyronchain.com/privacy.html",
-    "description": "ZyronChain privacy policy: no analytics cookies, no website account, no key collection.",
+    "description": "ZyronChain privacy: no wallet secrets, accounts, analytics or cookies. Hosting and CDN providers keep standard access logs.",
     "isPartOf": { "@type": "WebSite", "name": "ZyronChain", "url": "https://zyronchain.com/" },
     "publisher": {
       "@type": "Organization",
@@ -49,86 +47,99 @@
   }
   </script>
 </head>
-<body class="protocol-portal legal-page">
+<body class="site">
   <a class="skip-link" href="#main">Skip to content</a>
 
-  <aside class="network-notice" aria-label="Network activation notice">
-    <div class="shell notice-inner">
-      <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Mining is retired. Wallet RPC and value-bearing use remain activation gated.</p>
-      <a href="./index.html#network-status">View network status <span aria-hidden="true">→</span></a>
-      <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Public tester guide <span aria-hidden="true">↗</span></a>
+  <aside class="status-notice" aria-label="Network status notice">
+    <div class="wrap status-notice-inner">
+      <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated: no public RPC, explorer, balances or broadcasting yet. Mining is retired. There is no token sale.</p>
+      <a href="./#network-status">Network status <span aria-hidden="true">→</span></a>
     </div>
   </aside>
 
-  <header class="site-header" data-header>
-    <div class="shell header-inner">
-      <a class="brand" href="./index.html" aria-label="ZyronChain home">
-        <img class="brand-mark" src="./brand-mark.png" alt="ZyronChain" width="192" height="192" /><img class="brand-wordmark" src="./brand/zyron-wordmark.png" alt="" width="712" height="80" />
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="./" aria-label="ZyronChain home">
+        <img class="brand-mark" src="./brand-mark.png" alt="" width="192" height="192" /><img class="brand-wordmark" src="./brand/zyron-wordmark.png" alt="ZyronChain" width="712" height="80" />
       </a>
-      <nav class="nav" id="primary-nav" aria-label="Primary navigation">
-        <a href="./index.html#overview">Introduction</a>
-        <a href="./index.html#wallets">Wallet</a>
-        <a href="./validator.html">Validator Launchpad</a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="./#overview">Overview</a>
+        <a href="./#protocol">Protocol</a>
+        <a href="./#zyn">ZYN</a>
+        <a href="./#security">Security</a>
+        <a href="./#developers">Developers</a>
+        <a href="./#network-status">Network</a>
+        <a class="nav-wallet" href="./#wallets">Wallet</a>
       </nav>
-      <div class="header-actions">
-        <a class="quiet-link" href="https://github.com/zyron249/-zyronchain" target="_blank" rel="noopener noreferrer">Source</a>
-        <a class="mini-button" href="./wallet.html">Create a wallet</a>
-      </div>
+      <a class="header-source" href="https://github.com/zyron249/-zyronchain" rel="noopener noreferrer">Source</a>
     </div>
   </header>
 
-  <main id="main">
-    <section class="section intro">
-      <div class="content-shell" data-reveal>
-        <p class="section-label">Privacy</p>
-        <h1>Privacy policy</h1>
-        <p class="section-intro">ZyronChain’s website is a documentation and local onboarding surface. It is designed to collect as little as possible.</p>
-      </div>
-    </section>
-    <section class="section section-flush">
-      <div class="content-shell">
-        <h2>What this site does not do</h2>
-        <ul>
-          <li><strong>No analytics cookies.</strong> This site does not set analytics, advertising or tracking cookies.</li>
-          <li><strong>No website account.</strong> There is no signup, login or user profile on zyronchain.com.</li>
-          <li><strong>No key collection.</strong> The site never asks for, receives or stores private keys, seed phrases, wallet passwords or encrypted keystores.</li>
-          <li><strong>No remote wallet API.</strong> Browser scripts stay offline-only (<code>connect-src 'none'</code>). Wallet and validator tooling generate local scripts; secrets stay on your machine.</li>
-        </ul>
-        <h2>What may be processed elsewhere</h2>
-        <p>If you visit linked third-party services (GitHub, X/Twitter, Telegram), those services apply their own privacy policies. ZyronChain does not control those properties.</p>
-        <h2>Hosting and server logs</h2>
-        <p>Whoever hosts the static website may retain ordinary web server logs (for example IP address, user agent and requested path) as part of normal operations. This project does not run website-side analytics on top of those logs.</p>
-        <h2>Contact</h2>
-        <p>Questions about this policy can be raised through the public repository: <a href="https://github.com/zyron249/-zyronchain/issues" target="_blank" rel="noopener noreferrer">GitHub issues ↗</a>.</p>
-        <p><a href="./terms.html">Terms of use →</a> · <a href="./index.html">Back to home →</a></p>
-      </div>
-    </section>
+  <main id="main" class="legal">
+    <div class="wrap">
+      <p class="kicker">Privacy</p>
+      <h1>Privacy policy</h1>
+      <p class="lead">zyronchain.com is a static documentation site with local tools. It has no accounts and collects no wallet secrets. Hosting and CDN providers still see ordinary request data, described below.</p>
+
+      <h2>1. What the site and its apps collect</h2>
+      <ul>
+        <li><strong>No wallet secrets.</strong> No page asks for, receives or stores a recovery phrase, private key, wallet password or keystore. Pages cannot make network requests from script (<code>connect-src 'none'</code>).</li>
+        <li><strong>No accounts, analytics, advertising or tracking.</strong> No cookies are set, and no analytics or telemetry scripts are loaded.</li>
+        <li><strong>Desktop Wallet Setup and Validator Launchpad</strong> build scripts in your browser. What you type (labels, genesis, peers) stays in the page and is not sent anywhere.</li>
+      </ul>
+
+      <h2>2. Phone Wallet — Testnet (on your device only)</h2>
+      <ul>
+        <li>The recovery phrase and keys are created on your device. Only an encrypted vault (scrypt + AES-256-GCM) is stored, in this browser's IndexedDB for zyronchain.com. Nothing is uploaded.</li>
+        <li>No localStorage, sessionStorage or cookies are used. The service worker caches only the app's own files and never reads the vault.</li>
+        <li>Copying an address or a signed transaction uses your clipboard, which the app tries to clear after a short time. Other apps on your device may still read the clipboard while it holds data.</li>
+        <li>The project cannot see, recover or reset your phrase, password or vault. Removing the wallet, clearing site data or uninstalling the app deletes the vault from this device; your phrase is then the only way back.</li>
+      </ul>
+
+      <h2>3. Hosting and CDN logs (infrastructure, not the app)</h2>
+      <p>The site is served by a static hosting provider (Render) behind a CDN (Cloudflare). Like any web server, they process request data such as IP address, user agent, requested URL, time and TLS metadata to deliver pages, cache content and block abuse, and may keep logs under their own policies. The project does not add analytics on top of these logs and does not sell or share them. It cannot promise what those providers retain; see the <a href="https://render.com/privacy" rel="noopener noreferrer">Render</a> and <a href="https://www.cloudflare.com/privacypolicy/" rel="noopener noreferrer">Cloudflare</a> privacy policies.</p>
+
+      <h2>4. Third-party sites</h2>
+      <p>Links to GitHub, X and Telegram leave this site. Those services apply their own privacy policies. Pages send no referrer (<code>Referrer-Policy: no-referrer</code>).</p>
+
+      <h2>5. Contact and changes</h2>
+      <p>Questions go through the public repository: <a href="https://github.com/zyron249/-zyronchain/issues" rel="noopener noreferrer">GitHub issues</a>. ZyronChain support will never ask for your recovery phrase, key or password. Changes to this policy are made in the public repository, where their history is visible.</p>
+      <p><a href="./terms.html">Terms of use</a> · <a href="./">Back to home</a></p>
+    </div>
   </main>
 
   <footer class="site-footer">
-    <div class="shell footer-main">
+    <div class="wrap footer-grid">
       <div class="footer-brand">
-        <a href="./index.html" aria-label="ZyronChain home"><img class="brand-mark" src="./brand-mark.png" alt="ZyronChain" width="192" height="192" /><img class="brand-wordmark" src="./brand/zyron-wordmark.png" alt="" width="712" height="80" /></a>
-        <p>Open-source Layer-1 research and implementation focused on verifiable rules, local custody and explicit activation boundaries.</p>
+        <img class="brand-mark" src="./brand-mark.png" alt="" width="192" height="192" loading="lazy" />
+        <p>Open-source Layer-1. Local keys, verifiable rules, explicit network state.</p>
       </div>
-      <div class="footer-column">
-        <strong>Resources</strong>
+      <nav class="footer-col" aria-label="Protocol">
+        <strong>Protocol</strong>
+        <a href="./#overview">Overview</a>
+        <a href="./#protocol">How it works</a>
+        <a href="./#zyn">ZYN</a>
+        <a href="./#security">Security</a>
+        <a href="./#network-status">Network status</a>
+      </nav>
+      <nav class="footer-col" aria-label="Use">
+        <strong>Use</strong>
         <a href="./app/">Phone Wallet — Testnet</a>
         <a href="./wallet.html">Desktop Wallet Setup</a>
         <a href="./validator.html">Validator Launchpad</a>
-        <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Public tester guide ↗</a>
-      </div>
-      <div class="footer-column">
-        <strong>Legal</strong>
-        <a href="./privacy.html">Privacy</a>
-        <a href="./terms.html">Terms</a>
-        <a href="https://t.me/zyronchain" target="_blank" rel="noopener noreferrer">Telegram ↗</a>
-        <a href="https://github.com/zyron249/-zyronchain" target="_blank" rel="noopener noreferrer">Source code ↗</a>
-      </div>
+        <a href="./#developers">Developers</a>
+      </nav>
+      <nav class="footer-col" aria-label="Source and community">
+        <strong>Source</strong>
+        <a href="https://github.com/zyron249/-zyronchain" rel="noopener noreferrer">GitHub</a>
+        <a href="https://github.com/zyron249/-zyronchain/issues" rel="noopener noreferrer">Issues</a>
+        <a href="https://x.com/Zyronchain" rel="noopener noreferrer">X</a>
+        <a href="https://t.me/zyronchain" rel="noopener noreferrer">Telegram</a>
+      </nav>
     </div>
-    <div class="shell footer-bottom">
-      <span>© <span data-year></span> ZyronChain · Open source</span>
-      <span>Local keys. Verifiable rules. No analytics cookies</span>
+    <div class="wrap footer-bottom">
+      <span>© ZyronChain · Open source · No analytics cookies</span>
+      <span><a href="./privacy.html">Privacy</a> · <a href="./terms.html">Terms</a> · <span class="build" data-site-build>Build 5e1f305e</span></span>
     </div>
   </footer>
 

@@ -251,3 +251,10 @@ main > .section:last-child { padding-bottom: var(--s-8); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+/* in-page navigation under the shared header (wallet, validator) */
+.page-nav { border-bottom: 1px solid var(--line); background: var(--bg-2); }
+.page-nav .wrap { display: flex; gap: var(--s-1); overflow-x: auto; scrollbar-width: none; padding-block: 6px; }
+.page-nav .wrap::-webkit-scrollbar { display: none; }
+.page-nav a { flex: none; color: var(--muted); font-size: var(--fs-0); font-weight: 600; text-decoration: none; padding: 6px 10px; border-radius: var(--r-1); }
+.page-nav a:hover { color: var(--ink); background: rgba(79, 216, 251, .08); }
