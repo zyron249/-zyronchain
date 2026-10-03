@@ -8,7 +8,7 @@
   "start_url": "/app/index.html",
   "scope": "/app/",
   "display": "standalone",
-  "orientation": "portrait",
+  "orientation": "any",
   "background_color": "#02050a",
   "theme_color": "#02050a",
   "categories": ["finance", "utilities"],

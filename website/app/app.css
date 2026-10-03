@@ -80,6 +80,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .notice.bad { border-color: var(--bad); background: #2a1411; }
 .notice.ok { border-color: var(--ok); background: #0f2219; }
 .notice.info { border-color: var(--info); background: #071a2e; }
+.notice.update { border-color: var(--gold-2); background: #06192b; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.notice.update > span:first-child { flex: 1 1 180px; font-weight: 600; }
+.notice.update .hint { flex-basis: 100%; margin: 0; }
+.build { font: 11px/1.4 var(--mono); color: var(--muted); letter-spacing: .04em; }
 .notice.scam { border-color: var(--bad); background: #1f0f0d; font-size: .86rem; line-height: 1.45; padding: 10px 12px; }
 .notice.scam strong { display: block; color: #ffb4a8; margin-bottom: 2px; }
 .hint { color: var(--muted); font-size: .88rem; overflow-wrap: anywhere; }
