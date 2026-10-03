@@ -5,10 +5,10 @@ Production static website for `https://zyronchain.com`. The website is intention
 ## Production surfaces
 
 - `index.html` — main ZyronChain portal. Section order: status notice, hero ("Verifiable Layer-1 infrastructure"), what it is (with the short answers: is it live, can I use ZYN, can I create a wallet, can I run a validator, where is the code, what to test), how the protocol works, security principles, ZYN tokenomics (final fact vs proposed vs pending), wallet options, validator path, developer path (LOCAL DEVNET vs PUBLIC TESTNET), network status, open-source/docs links. It works without JavaScript.
-- `site.css` — canonical design tokens (surfaces, lines, blue/cyan, chrome, text, status colors, type scale, spacing, radius, shadows) and the shared components. The homepage uses only this file.
-- `styles.css` / `professional.css` / `brand.css` — legacy layers still used by the wallet, validator, legal and historical mining pages until they move to `site.css`.
+- `site.css` — the one canonical design-token system (surfaces, lines, blue/cyan, chrome, text, status colors, type scale, spacing, radius, shadows, breakpoints) plus the shared header, nav, notice, footer, cards, network status and legal layout. Every page loads it first; the homepage and legal pages need nothing else.
+- `wallet.css` / `validator.css` / `mining.css` — page layout only, using `site.css` tokens. They were generated once from the retired `styles.css` + `professional.css` + `brand.css` layers by keeping only rules that match the page and dropping overridden declarations; `home.css`, `hologram.css` and their image were unused and removed. CI fails if a retired layer comes back or a page file defines its own `:root` tokens.
 - `app.js` — progressive enhancement only (copy buttons for public commands, legacy menu toggle). No network, storage or analytics.
-- `brand.css` — ZYRON CHAIN theme layer (wolf + Z mark), loaded last on every page: near-black background with a pure-CSS network grid, chrome headings, electric-blue accents and glass cards. No remote fonts/scripts, no `data:` URIs. Palette and asset pipeline: [`tools/brand/README.md`](../tools/brand/README.md).
+- Brand palette and asset pipeline: [`tools/brand/README.md`](../tools/brand/README.md) (near-black, electric blue/cyan, chrome; no remote fonts or scripts).
 - `brand/` — generated brand assets: header wordmark, hero banner (`zyron-banner-*.webp|jpg`, mobile crop `zyron-banner-m-*`), `og-image.jpg` (1200×630), `icon-512.png`, small favicons.
 - `brand-mark.png` — wolf + Z mark (transparent) for header, footer and wallet identity.
 - `favicon.ico` (16/32/48), `favicon-32.png`, `apple-touch-icon.png`, `icon-192.png` — browser and home-screen icons from the same mark.

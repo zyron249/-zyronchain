@@ -62,7 +62,6 @@ jobs:
 
           const required = [
             'website/index.html',
-            'website/styles.css',
             'website/site.css',
             'website/app.js',
             'website/release.js',
@@ -71,7 +70,6 @@ jobs:
             'website/sitemap.xml',
             'website/favicon.svg',
             'website/logo.svg',
-            'website/brand.css',
             'website/brand-mark.png',
             'website/brand/zyron-wordmark.png',
             'website/brand/zyron-banner-1600.jpg',
@@ -99,7 +97,6 @@ jobs:
           }
 
           const html = fs.readFileSync('website/index.html', 'utf8');
-          const css = fs.readFileSync('website/styles.css', 'utf8');
           const siteCss = fs.readFileSync('website/site.css', 'utf8');
           const js = fs.readFileSync('website/app.js', 'utf8');
           const releaseJs = fs.readFileSync('website/release.js', 'utf8');
@@ -170,7 +167,7 @@ jobs:
           }
 
           for (const marker of [
-            './styles.css',
+            './site.css',
             './wallet.css',
             './release.js',
             './wallet.js',
@@ -189,6 +186,7 @@ jobs:
           }
 
           for (const marker of [
+            './site.css',
             './validator.css',
             './release.js',
             './validator.js',
@@ -304,7 +302,14 @@ jobs:
             throw new Error('Validator launchpad mobile boundary is missing');
           }
 
-          const allStaticCss = [css, siteCss, walletCss, validatorCss, miningCss].join('\n');
+          const allStaticCss = [siteCss, walletCss, validatorCss, miningCss].join('\n');
+          // One canonical token system: the retired layers must not come back.
+          for (const legacy of ['styles.css', 'professional.css', 'brand.css', 'home.css', 'hologram.css']) {
+            if (fs.existsSync(path.join('website', legacy))) throw new Error(`Retired stylesheet website/${legacy} is back; use site.css tokens`);
+          }
+          for (const [file, source] of [['wallet.css', walletCss], ['validator.css', validatorCss], ['mining.css', miningCss]]) {
+            if (/:root\s*\{/.test(source)) throw new Error(`${file} must not define its own :root tokens (site.css owns them)`);
+          }
           const definedCssVars = new Set([...allStaticCss.matchAll(/--([a-z0-9-]+)\s*:/gi)].map((match) => match[1]));
           const usedCssVars = new Set([...allStaticCss.matchAll(/var\(--([a-z0-9-]+)/gi)].map((match) => match[1]));
           const missingCssVars = [...usedCssVars].filter((name) => !definedCssVars.has(name));
