@@ -96,16 +96,52 @@ async function createWallet(page, { snapshot = false } = {}) {
   await page.fill('[data-create-password2]', PASSWORD);
   if (snapshot) await shot(page, '2-create-password');
   await page.click('[data-create-next]');
-  await page.waitForSelector('[data-screen="phrase"]:not([hidden])', { timeout: 60000 });
-  const words = await page.$$eval('[data-phrase-words] li', (items) => items.map((li) => li.textContent));
-  assert.equal(words.length, 12);
+  await page.waitForSelector('[data-screen="privacy"]:not([hidden])', { timeout: 60000 });
+  assert.equal(await page.isDisabled('[data-privacy-next]'), true, 'cannot reveal before the privacy acknowledgement');
+  assert.equal(await page.$$eval('[data-phrase-words] .word-card', (l) => l.length), 0, 'no word cards exist before the privacy screen is acknowledged');
+  if (snapshot) await shot(page, '3a-privacy');
+  await page.check('[data-privacy-ack]');
+  await page.click('[data-privacy-next]');
+  await page.waitForSelector('[data-screen="phrase"]:not([hidden])');
+  const bip39 = new Set(globalThis.ZyronVendor.bip39.wordlist);
+  const visibleWords = () => page.$$eval('[data-phrase-words] .word-text', (items) => items.map((s) => s.textContent));
+  assert.deepEqual(await visibleWords(), Array(12).fill('•••••'), 'all words hidden by default');
+  assert.match(await page.textContent('[data-phrase-words]'), /^(\d+•••••)+$/, 'the word list holds only numbers and placeholders before reveal');
+  assert.ok((await page.$$eval('[data-phrase-words] [aria-label]', (b) => b.map((x) => x.getAttribute('aria-label')))).every((l) => /^Word \d+ of 12, hidden\./.test(l)), 'screen readers hear "hidden" with the word number');
+  assert.equal(await page.$('[data-copy-phrase]'), null, 'no copy-phrase button');
+  if (snapshot) await shot(page, '3b-phrase-hidden');
+  // tap-to-reveal each card, collecting the words
+  const words = [];
+  for (let i = 0; i < 12; i += 1) {
+    await page.click(`[data-word-index="${i}"]`);
+    const word = await page.textContent(`[data-word-index="${i}"] .word-text`);
+    assert.ok(bip39.has(word), `card ${i + 1} reveals a BIP-39 word`);
+    assert.match(await page.getAttribute(`[data-word-index="${i}"]`, 'aria-label'), new RegExp(`^Word ${i + 1} of 12: `));
+    words.push(word);
+  }
+  if (snapshot) await shot(page, '3c-phrase-revealed');
+  // leaving the window hides everything
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  assert.deepEqual(await visibleWords(), Array(12).fill('•••••'), 'blur hides all words');
+  // hold-to-reveal-all shows words only while pressed
+  const hold = await page.$('[data-hold-reveal]');
+  const box = await hold.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  assert.deepEqual(await visibleWords(), words, 'hold reveals all words');
+  await page.mouse.up();
+  assert.deepEqual(await visibleWords(), Array(12).fill('•••••'), 'release hides all words');
+  // auto-hide after inactivity
+  await page.click('[data-word-index="0"]');
+  assert.equal(await page.textContent('[data-word-index="0"] .word-text'), words[0]);
+  await page.waitForFunction(() => document.querySelector('[data-word-index="0"] .word-text').textContent === '•••••', null, { timeout: 25000 });
   assert.equal(await page.isDisabled('[data-phrase-next]'), true, 'cannot continue before acknowledging');
-  if (snapshot) await shot(page, '3-phrase-backup');
   await page.check('[data-phrase-ack]');
   await page.click('[data-phrase-next]');
   assert.equal(await page.$$eval('[data-phrase-words] li', (l) => l.length), 0, 'words leave the DOM during the quiz');
   const indexes = await page.$$eval('[data-quiz] input', (inputs) => inputs.map((i) => Number(i.dataset.quizIndex)));
-  assert.equal(indexes.length, 3);
+  assert.equal(indexes.length, 4, 'four-word backup check');
+  assert.equal(new Set(indexes).size, 4);
   // wrong answers first: nothing may be saved
   for (const index of indexes) await page.fill(`[data-quiz-index="${index}"]`, 'zoo');
   await page.click('[data-quiz-check]');
@@ -115,6 +151,8 @@ async function createWallet(page, { snapshot = false } = {}) {
   if (snapshot) await shot(page, '4-backup-quiz');
   await page.click('[data-quiz-check]');
   await page.waitForSelector('[data-screen="home"]:not([hidden])');
+  assert.equal(await page.isVisible('[data-created-note]'), true);
+  assert.equal(await page.$$eval('[data-phrase-words] li, [data-quiz] input', (l) => l.length), 0, 'phrase cards and check inputs are gone after saving');
   return words;
 }
 async function readVaultRecord(page) {
@@ -225,6 +263,7 @@ try {
       await page.clock.install();
       await page.click('[data-copy-address]');
       assert.equal(await page.evaluate(() => navigator.clipboard.readText()), core.toChecksumAddress(address));
+      assert.equal(await page.textContent('[data-copy-result]'), 'Copied. Clipboard will be cleared automatically.');
       await page.clock.fastForward(61000);
       await page.waitForFunction(() => navigator.clipboard.readText().then((t) => t === ''));
     }
@@ -240,8 +279,25 @@ try {
     assert.match(await page.textContent('[data-tx-check]'), /checksum verified/);
     await page.fill('[data-tx-amount]', '2.5');
     await page.fill('[data-tx-fee]', '0.00001');
+    await page.click('[data-tx-review]');
+    await page.waitForSelector('[data-screen="review"]:not([hidden])');
+    const rows = await page.$$eval('[data-review-rows] > div', (divs) => divs.map((d) => [d.dataset.reviewKey, d.querySelector('dt').textContent, d.querySelector('dd').textContent]));
+    assert.deepEqual(rows.map((r) => r[1]), ['Type', 'From', 'To', 'Amount', 'Fee', 'Chain ID', 'Nonce', 'Timestamp']);
+    const review = Object.fromEntries(rows.map((r) => [r[0], r[2]]));
+    assert.equal(review.from, core.toChecksumAddress(address));
+    assert.equal(review.to, RECEIVER);
+    assert.equal(review.amount, '2.5 ZYN (250000000 atoms)');
+    assert.equal(review.fee, '0.00001 ZYN (1000 atoms)');
+    assert.equal(review.chain, 'zyron-pwa-test');
+    assert.equal(review.nonce, '1');
+    assert.match(review.type, /Transfer \(kind "transfer", version 2\)/);
+    assert.equal(await page.isDisabled('[data-tx-sign]'), true, 'signing needs a deliberate confirmation');
+    assert.equal(await page.isVisible('[data-tx-out]'), false, 'nothing is signed on review');
+    await shot(page, '6a-review-transfer');
+    await page.check('[data-review-ack]');
     await page.click('[data-tx-sign]');
     await page.waitForSelector('[data-tx-out]:not([hidden])');
+    assert.match(await page.textContent('[data-tx-summary]'), /Signed locally\. Not broadcast\./);
     signed = JSON.parse(await page.textContent('[data-tx-json]'));
     assert.equal(signed.kind, 'transfer');
     assert.equal(signed.version, 2);
@@ -257,9 +313,16 @@ try {
     await page.click('[data-tx-download]');
     assert.match((await download).suggestedFilename(), /^zyron-transfer-nonce-1\.json$/);
     assert.equal(requests.slice(before).filter((r) => r.url.startsWith('http')).length, 0, 'signing makes no requests');
+    await page.click('[data-review-done]');
+    await page.waitForSelector('[data-screen="home"]:not([hidden])');
     await page.fill('[data-tx-to]', core.MINING_TRACKER_ADDRESS);
-    await page.click('[data-tx-sign]');
+    await page.click('[data-tx-review]');
     assert.match(await page.textContent('[data-tx-check]'), /mining tracker/);
+    assert.equal(await visibleScreen(page), 'home', 'invalid transfers never reach the review screen');
+    await page.fill('[data-tx-to]', RECEIVER);
+    await page.fill('[data-tx-chain]', '');
+    await page.click('[data-tx-review]');
+    assert.match(await page.textContent('[data-tx-check]'), /Chain ID/, 'missing chain parameters are not guessed');
   });
 
   await test('lock / wrong password / unlock / auto-lock after inactivity', async () => {
@@ -289,11 +352,16 @@ try {
     assert.match(await page.textContent('[data-unlock-result]'), /Wrong password|modified/);
   });
 
-  await test('delete wallet requires typing DELETE, then the vault is gone', async () => {
+  await test('delete wallet: confirmation screen, acknowledgement + typing DELETE, then the vault is gone', async () => {
     await page.click('[data-screen="unlock"] summary');
     await page.click('[data-screen="unlock"] [data-go="delete"]');
     assert.equal(await page.isDisabled('[data-delete-go]'), true);
+    assert.match(await page.textContent('[data-screen="delete"]'), /removes the local encrypted vault from this application's storage on this device/);
+    assert.match(await page.textContent('[data-screen="delete"]'), /may be permanently lost/);
+    assert.doesNotMatch(await page.textContent('[data-screen="delete"]'), /securely (erase|overwrite|wipe)s?\b(?! of)/i);
     await page.fill('[data-delete-confirm]', 'delete');
+    assert.equal(await page.isDisabled('[data-delete-go]'), true, 'typing alone is not enough');
+    await page.check('[data-delete-ack]');
     assert.equal(await page.isDisabled('[data-delete-go]'), false);
     await page.click('[data-delete-go]');
     await page.waitForFunction(() => document.body.dataset.current === 'welcome');
@@ -316,6 +384,37 @@ try {
     assert.equal(await page.textContent('[data-home-address]'), core.groupAddress(core.toChecksumAddress(SNAP.address)));
     await shot(page, '7-home-restored');
   });
+
+  await test('stored vault with an unknown version or malformed data is rejected and left untouched (fail closed)', async () => {
+    const original = (await readVaultRecord(page))[0];
+    for (const bad of [{ ...original, version: 2 }, { ...original, kdf: { ...original.kdf, n: 1024 } }, 'garbage']) {
+      await page.evaluate((value) => new Promise((r) => { const q = indexedDB.open('zyron-wallet-app'); q.onsuccess = () => { const db = q.result; db.transaction('vault', 'readwrite').objectStore('vault').put(value, 'primary').onsuccess = () => { db.close(); r(); }; }; }), bad);
+      await page.reload({ waitUntil: 'load' });
+      await page.waitForFunction(() => !document.querySelector('[data-unsupported]').hidden);
+      assert.match(await page.textContent('[data-unsupported]'), /stored vault was rejected and left untouched/);
+      assert.equal(await page.isDisabled('[data-go="create"]'), true, 'cannot overwrite a rejected vault by creating a new one');
+      assert.deepEqual(await readVaultRecord(page), [bad], 'rejected vault is not rewritten');
+    }
+    await page.click('[data-rejected-delete]');
+    await page.check('[data-delete-ack]');
+    await page.fill('[data-delete-confirm]', 'DELETE');
+    await page.click('[data-delete-go]');
+    await page.waitForFunction(() => document.body.dataset.current === 'welcome');
+    assert.deepEqual(await readVaultRecord(page), []);
+    assert.equal(await page.isDisabled('[data-go="create"]'), false);
+    assert.equal(await page.isVisible('[data-unsupported]'), false);
+  });
+
+  await test('missing crypto libraries: the wallet refuses to run', async () => {
+    const m = await newMobile();
+    await m.page.route('**/app/vendor/noble-scure.js', (route) => route.fulfill({ status: 404, body: 'gone' }));
+    await m.page.goto(appUrl, { waitUntil: 'load' });
+    await m.page.waitForFunction(() => !document.querySelector('[data-unsupported]').hidden);
+    assert.match(await m.page.textContent('[data-unsupported]'), /refuses to run/);
+    assert.equal(await m.page.isDisabled('[data-go="create"]'), true);
+    assert.equal(await m.page.isDisabled('[data-go="restore"]'), true);
+    await m.context.close();
+  });
   assert.deepEqual(problems, [], 'console/page errors');
   const foreign = requests.filter((r) => !r.url.startsWith(origin) && !r.url.startsWith('blob:') && !r.url.startsWith('data:'));
   assert.deepEqual(foreign, [], 'no third-party requests');
@@ -332,7 +431,7 @@ try {
         await m.page.locator('[data-install]').scrollIntoViewIfNeeded();
         await shot(m.page, '1-install-ios');
       }
-      for (const screen of ['welcome', 'create', 'restore', 'delete']) {
+      for (const screen of ['welcome', 'create', 'privacy', 'phrase', 'quiz', 'restore', 'review', 'delete']) {
         await m.page.evaluate((name) => { for (const s of document.querySelectorAll('[data-screen]')) s.hidden = s.dataset.screen !== name; }, screen);
         assert.ok(await noHorizontalScroll(m.page), `${width}px ${screen}`);
       }

@@ -208,22 +208,48 @@
     vault.ciphertext = bytesToHex(sealed);
     return vault;
   }
+  // Fail closed: anything that is not exactly a version-1 vault written by this app is rejected before any
+  // decryption is attempted. Unknown versions are never "best-effort" parsed or migrated.
+  function isPlainObject(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const proto = Object.getPrototypeOf(value);
+    return proto === Object.prototype || proto === null;
+  }
+  const ISO_UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
   function assertVaultShape(vault) {
-    if (!vault || typeof vault !== 'object' || Array.isArray(vault)) throw new Error('Vault is not an object');
+    if (!isPlainObject(vault)) throw new Error('Vault is not a plain object');
     const keys = Object.keys(vault).sort();
     if (keys.join(',') !== VAULT_KEYS.join(',')) throw new Error('Vault has unexpected fields');
-    if (vault.format !== VAULT_FORMAT || vault.version !== VAULT_VERSION) throw new Error('Unsupported vault format/version');
+    if (vault.format !== VAULT_FORMAT) throw new Error('Unsupported vault format');
+    if (typeof vault.version !== 'number' || vault.version !== VAULT_VERSION) throw new Error('Unsupported vault version (this app reads only version ' + VAULT_VERSION + '); nothing was changed');
+    if (typeof vault.createdAt !== 'string' || !ISO_UTC_RE.test(vault.createdAt) || !Number.isFinite(Date.parse(vault.createdAt))) throw new Error('Vault creation time is invalid');
     const k = vault.kdf;
-    if (!k || typeof k !== 'object' || Object.keys(k).sort().join(',') !== 'dkLen,n,name,p,r' ||
+    if (!isPlainObject(k) || Object.keys(k).sort().join(',') !== 'dkLen,n,name,p,r' ||
         k.name !== VAULT_KDF.name || k.n !== VAULT_KDF.n || k.r !== VAULT_KDF.r || k.p !== VAULT_KDF.p || k.dkLen !== VAULT_KDF.dkLen) {
       throw new Error('Vault KDF parameters are not the supported scrypt N=2^17, r=8, p=1 set');
     }
-    if (!vault.cipher || Object.keys(vault.cipher).sort().join(',') !== 'iv,name' || vault.cipher.name !== VAULT_CIPHER || !/^[0-9a-f]{24}$/.test(vault.cipher.iv)) throw new Error('Vault cipher is invalid');
+    if (!isPlainObject(vault.cipher) || Object.keys(vault.cipher).sort().join(',') !== 'iv,name' || vault.cipher.name !== VAULT_CIPHER || !/^[0-9a-f]{24}$/.test(vault.cipher.iv)) throw new Error('Vault cipher is invalid');
     if (!/^[0-9a-f]{32}$/.test(vault.salt)) throw new Error('Vault salt is invalid');
     if (vault.derivationPath !== DERIVATION_PATH) throw new Error('Vault derivation path is not supported');
-    if (![12, 15, 18, 21, 24].includes(vault.words)) throw new Error('Vault word count is invalid');
+    if (typeof vault.words !== 'number' || ![12, 15, 18, 21, 24].includes(vault.words)) throw new Error('Vault word count is invalid');
     if (!ADDRESS_RE.test(vault.address) || !PUBLIC_KEY_RE.test(vault.publicKey) || addressFromPublicKey(vault.publicKey) !== vault.address) throw new Error('Vault identity is invalid');
     if (typeof vault.ciphertext !== 'string' || !HEX_RE.test(vault.ciphertext) || vault.ciphertext.length !== (vault.words * 4 / 3 + 16) * 2) throw new Error('Vault ciphertext is invalid');
+  }
+  // Parses an untrusted stored value (IndexedDB record or JSON text) into a fresh vault object containing only the
+  // known fields. Throws (fail closed) on anything else.
+  function parseVault(raw) {
+    let value = raw;
+    if (typeof raw === 'string') {
+      if (raw.length > 4096) throw new Error('Vault is too large');
+      try { value = JSON.parse(raw); } catch (error) { throw new Error('Vault is not valid JSON'); }
+    }
+    assertVaultShape(value);
+    return {
+      format: value.format, version: value.version, createdAt: value.createdAt, address: value.address, publicKey: value.publicKey,
+      derivationPath: value.derivationPath, words: value.words,
+      kdf: { name: value.kdf.name, n: value.kdf.n, r: value.kdf.r, p: value.kdf.p, dkLen: value.kdf.dkLen },
+      cipher: { name: value.cipher.name, iv: value.cipher.iv }, salt: value.salt, ciphertext: value.ciphertext
+    };
   }
   // Returns { entropy, account } — caller must wipe entropy and account.privateKey.
   async function openVault(vault, password) {
@@ -299,8 +325,7 @@
   }
   function signTransfer(unsigned, privateKey) {
     if (!unsigned || unsigned.kind !== 'transfer') throw new Error('This wallet signs transfers only');
-    const keys = Object.keys(unsigned).sort().join(',');
-    if (keys !== 'amountAtoms,chainId,feeAtoms,kind,nonce,publicKey,receiver,sender,timestampMs,version') throw new Error('Unexpected transfer fields');
+    describeTransfer(unsigned); // same strict shape check the review screen uses
     const v = vendor();
     if (v.bytesToHex(v.secp256k1.getPublicKey(privateKey, false).slice(1)) !== unsigned.publicKey) throw new Error('Key does not match the transfer public key');
     const domainPayload = unsigned.version === 2 ? { domain: TRANSFER_SIGNING_DOMAIN_V2, payload: unsigned } : unsigned;
@@ -310,12 +335,54 @@
     return Object.assign({}, withSignature, { txid: sha256Hex(canonicalJson(withSignature)) });
   }
 
+  const TRANSFER_KEYS = 'amountAtoms,chainId,feeAtoms,kind,nonce,publicKey,receiver,sender,timestampMs,version';
+  // Review rows for an UNSIGNED transfer. Refuses anything that is not exactly the supported transfer shape, so the
+  // UI can never show (or be tricked into signing) another transaction kind, a message, or arbitrary JSON.
+  function describeTransfer(unsigned) {
+    if (!isPlainObject(unsigned)) throw new Error('Nothing to review');
+    if (unsigned.kind !== 'transfer') throw new Error('Unsupported transaction type: this wallet signs transfers only');
+    if (Object.keys(unsigned).sort().join(',') !== TRANSFER_KEYS) throw new Error('Unexpected transfer fields');
+    if (unsigned.version !== 1 && unsigned.version !== 2) throw new Error('Unsupported transfer version');
+    if (!CHAIN_ID_RE.test(unsigned.chainId)) throw new Error('Chain ID is missing or invalid');
+    if (!Number.isSafeInteger(unsigned.nonce) || unsigned.nonce < 1) throw new Error('Nonce is missing or invalid');
+    if (!ADDRESS_RE.test(unsigned.sender) || !ADDRESS_RE.test(unsigned.receiver)) throw new Error('Address is invalid');
+    if (unsigned.receiver === MINING_TRACKER_ADDRESS) throw new Error('Receiver is the protocol-reserved mining tracker address');
+    if (!Number.isSafeInteger(unsigned.amountAtoms) || unsigned.amountAtoms < 1 || !Number.isSafeInteger(unsigned.feeAtoms) || unsigned.feeAtoms < 0) throw new Error('Amount or fee is invalid');
+    if (!PUBLIC_KEY_RE.test(unsigned.publicKey) || addressFromPublicKey(unsigned.publicKey) !== unsigned.sender) throw new Error('Sender does not match the signing key');
+    return [
+      { key: 'type', label: 'Type', value: 'Transfer (kind "transfer", version ' + unsigned.version + ')' },
+      { key: 'from', label: 'From', value: toChecksumAddress(unsigned.sender) },
+      { key: 'to', label: 'To', value: toChecksumAddress(unsigned.receiver) },
+      { key: 'amount', label: 'Amount', value: atomsToZyn(String(unsigned.amountAtoms)) + ' ZYN (' + unsigned.amountAtoms + ' atoms)' },
+      { key: 'fee', label: 'Fee', value: atomsToZyn(String(unsigned.feeAtoms)) + ' ZYN (' + unsigned.feeAtoms + ' atoms)' },
+      { key: 'chain', label: 'Chain ID', value: unsigned.chainId },
+      { key: 'nonce', label: 'Nonce', value: String(unsigned.nonce) },
+      { key: 'time', label: 'Timestamp', value: new Date(unsigned.timestampMs).toISOString() }
+    ];
+  }
+
+  // Refuse to run when the vendored crypto is missing, incomplete or produces wrong results.
+  const SELF_TEST = { phrase: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about', address: 'ZYN16623f437e90cb7216ce70746f642717cc8b531f' };
+  async function selfTest() {
+    const v = vendor();
+    webCrypto();
+    for (const name of ['sha256', 'scryptAsync', 'bytesToHex', 'hexToBytes']) if (typeof v[name] !== 'function') throw new Error('Vendored crypto is incomplete: ' + name);
+    if (!v.bip39.wordlist || v.bip39.wordlist.length !== 2048) throw new Error('BIP-39 word list is missing');
+    if (sha256Hex('abc') !== 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad') throw new Error('SHA-256 self-test failed');
+    const entropy = phraseToEntropy(SELF_TEST.phrase);
+    const account = await deriveAccount(entropy);
+    wipe(entropy, account.privateKey);
+    if (account.address !== SELF_TEST.address) throw new Error('Key derivation self-test failed');
+    return true;
+  }
+
   const api = Object.freeze({
     DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_KDF, ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
     TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE,
     wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress,
     passwordStrength, normalizePhrase, generateEntropy, entropyToPhrase, phraseToEntropy, deriveAccount,
-    createVault, openVault, assertVaultShape, zynToAtoms, atomsToZyn, buildTransfer, signTransfer, verifyCanonical
+    createVault, openVault, assertVaultShape, parseVault, zynToAtoms, atomsToZyn, buildTransfer, describeTransfer, signTransfer, verifyCanonical,
+    selfTest
   });
   root.ZyronAppCore = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

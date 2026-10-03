@@ -1,7 +1,7 @@
-# ZyronChain phone wallet (PWA): `website/app/`
+# ZyronChain Phone Wallet — Testnet (PWA): `website/app/`
 
 **Status: TESTNET ONLY · UNAUDITED.** Do not hold real value with it until an independent security review is done.
-Live at `https://zyronchain.com/app/`. The CLI-first wallet page (`website/wallet.html`) is unchanged and stays
+Live at `https://zyronchain.com/app/`. The **Desktop Wallet Setup** page (`website/wallet.html`, CLI-first) stays
 the recommended path for anything serious.
 
 ## What it is
@@ -9,18 +9,25 @@ An installable web app for iOS and Android ("Add to Home Screen"). There is no a
 
 | Feature | Notes |
 |---|---|
-| Create | 128-bit entropy from `crypto.getRandomValues` gives a 12-word BIP-39 phrase. The phrase is shown once, then a forced 3-word backup quiz runs, and only after that is the vault saved. |
+| Create | 128-bit entropy from `crypto.getRandomValues` gives a 12-word BIP-39 phrase. Flow: device password (with strength meter) → **privacy screen** that must be acknowledged → **hidden word cards** → randomized **4-word backup check** → only then is the vault saved. |
+| Phrase privacy | Before reveal, a privacy screen explains: anyone with the words controls the wallet; support never asks; never send them on Telegram, Discord, X, email or to "support"; never enter them on airdrop/validator sites; write on paper; nobody may see the screen. Words are blurred placeholders until a card is tapped (the real word enters the DOM only while revealed); "Hold to reveal all" shows them only while pressed; everything hides after 20 s of inactivity, on window blur and when the app is backgrounded. There is no copy-phrase control, copy/cut/drag are blocked on the word list, and the app never claims screenshots are blocked (a web app cannot block them). During creation only the entropy bytes are held (wipeable); words are derived on demand for a revealed card or the check. After saving, the entropy is zeroed and all references are dropped; the app says honestly that JavaScript GC cannot guarantee erasure. |
 | Restore | Accepts a 12/15/18/21/24-word BIP-39 phrase (English list, checksum verified, no BIP-39 passphrase). |
 | Derivation | BIP-32 secp256k1 `m/44'/249249'/0'/0/0`, the same path as the MetaMask Snap (PR #922), so the same words give the same address in both. `249249'` is a **provisional** coin type (not registered in SLIP-44); changing it later would change every address. |
 | Address | `ZYN` + first 40 hex of SHA-256(64-byte uncompressed public key), exactly as in `l1/src/crypto.ts`. Displayed with the display-only checksum from `docs/ADDRESS_CHECKSUM.md`. The QR code holds the plain lower-case address. |
 | Lock / unlock | Auto-lock after 5 minutes without activity, or after 60 s in the background. Lock wipes the key buffer. |
-| Sign transfer | Offline. Produces exactly l1's `transfer` (v2 domain-separated by default, v1 optional). Chain ID and the next nonce are typed in by hand. The code has no path that builds any other kind, so `mining_claim` is impossible. The mining-tracker address and self-sends are refused. |
+| Sign transfer | Offline. Produces exactly l1's `transfer` (v2 domain-separated by default, v1 optional). Chain ID and the next nonce are typed in by hand; nothing is guessed. A **review screen** shows Type, From, To, Amount, Fee, Chain ID, Nonce and Timestamp (`describeTransfer`), and signing needs a deliberate confirmation. `describeTransfer`/`signTransfer` refuse any other kind, extra fields (memo/data), messages or arbitrary JSON, so `mining_claim` is impossible. The mining-tracker address and self-sends are refused. |
 | Balance / broadcast | Disabled, with an honest "no public RPC yet" notice. A signed `tx.json` can be submitted later with the CLI (`tx-submit`). |
-| Other | ZYN ↔ atoms converter, clipboard auto-clear after 60 s, delete-wallet (type DELETE), scam warning, English-only UI. |
+| Other | ZYN ↔ atoms converter; only the address and a signed transfer can be copied ("Copied. Clipboard will be cleared automatically.", cleared after 60 s); delete wallet = button → confirmation screen → acknowledgement + type DELETE (no secure-overwrite claim); scam warning with "Official site: zyronchain.com"; static network status (`tools/site/network-status.mjs`); "Local wallet · Offline ready" indicator that never implies a network connection; English-only UI. |
 
 ## Key storage
 - IndexedDB `zyron-wallet-app` / store `vault` holds **one encrypted vault and nothing else**. The UI refuses to
   persist anything that fails `assertVaultShape`.
+- **Fail closed on load**: `parseVault` accepts only a plain object (or JSON text) that is exactly a version-1 vault
+  with the known fields, types, KDF/cipher parameters and identity. Unknown versions, malformed data, extra fields
+  or odd prototypes are rejected; the stored record is left untouched (never migrated or rewritten), creating or
+  restoring is blocked, and the only offered action is an explicit, confirmed delete.
+- **Crypto self-test on start**: the app refuses to run if the vendored libraries are missing or incomplete, or if
+  a SHA-256 vector or the BIP-39/BIP-32 → address vector fails.
 - Vault v1 contents:
   - Plaintext encrypted: the BIP-39 entropy (16 bytes for 12 words).
   - KDF: **scrypt N=2^17, r=8, p=1**, dkLen 32, 128 MiB (same parameters as the CLI keystore v2), via the vendored `@noble/hashes`.
@@ -83,18 +90,19 @@ its own stricter workflow, `.github/workflows/website-pwa-wallet.yml`, covering:
 - reproducible vendor bundles and current SRI/SW stamps;
 - Snap vectors, an independent node:crypto BIP-32 reference and l1 address rules;
 - signed transfers byte-identical to l1 `createTransfer`, plus l1 `validateTransactionShape` and mempool admission;
-- vault round-trip, wrong password and 13 tamper cases;
+- vault round-trip, wrong password, 13 tamper cases and the fail-closed parser (unknown versions, malformed data);
+- signing review rows and refusal of unknown types/extra fields; crypto self-test; phrase-UX static checks;
 - the CSP/SRI/no-network scans;
 - headless-Chrome tests: SW install and offline load (also at `/app/`), Chrome installability, the full
-  create → quiz → home → QR → clipboard clear → sign → lock → wrong password → unlock → auto-lock → tamper →
-  delete → restore flow, storage contents (only the vault; no localStorage/cookies), zero network requests while
+  create → privacy → hidden cards (tap, hold, blur, auto-hide) → 4-word check (nothing saved before it passes) → home → QR → clipboard clear → review → confirmed sign → lock → wrong password → unlock → auto-lock → tamper →
+  delete (ack + DELETE) → restore → rejected-vault (v2 / bad KDF / garbage) flow, missing-crypto refusal, storage contents (only the vault; no localStorage/cookies), zero network requests while
   creating/signing, no third-party requests, 360/390/414 px layouts, and frame blocking.
 
 Lighthouse 12 removed the PWA category, so installability is checked with Chrome's own
 `Page.getInstallabilityErrors` (the signal Lighthouse used).
 
 ## Limits and advice
-- **The 12 words on paper are the only real backup.** Site data can be lost:
+- **The recovery phrase on paper is the only real backup.** Site data can be lost:
   - iOS/iPadOS Safari may delete a website's storage after 7 days without use. Home-screen web apps are treated
     separately, but data is still lost if the app is removed, the device runs low on storage, or "Clear History
     and Website Data" is used.

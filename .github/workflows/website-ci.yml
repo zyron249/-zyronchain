@@ -4,11 +4,15 @@ on:
   pull_request:
     paths:
       - 'website/**'
+      - 'tools/site/**'
+      - 'docs/l1-launch-authorization.json'
       - '.github/workflows/website-ci.yml'
   push:
     branches: [main]
     paths:
       - 'website/**'
+      - 'tools/site/**'
+      - 'docs/l1-launch-authorization.json'
       - '.github/workflows/website-ci.yml'
 
 permissions:
@@ -42,6 +46,8 @@ jobs:
           node --check website/app/vendor/qr.js
       - name: Wallet derivation vectors and generated-script tests
         run: node website/test-wallet-core.mjs
+      - name: Static network status component is current (build-time, never live RPC)
+        run: node tools/site/network-status.mjs --check
       - name: Verify production website, wallet and validator contracts
         shell: bash
         run: |

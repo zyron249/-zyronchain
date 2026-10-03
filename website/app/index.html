@@ -14,49 +14,59 @@
   <meta name="apple-mobile-web-app-title" content="Zyron Wallet" />
   <meta name="format-detection" content="telephone=no" />
   <title>ZyronChain Wallet (testnet)</title>
-  <meta name="description" content="ZyronChain phone wallet: keys are generated and encrypted on this device. Testnet only, unaudited." />
+  <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys are generated and encrypted on this device. No public RPC; sign locally, nothing is broadcast." />
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="icon" type="image/png" sizes="192x192" href="/app/icons/icon-192.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/app/icons/apple-touch-icon-180.png" />
-  <link rel="stylesheet" href="/app/app.css" integrity="sha384-PqNS0dX6jK1b3zYOXgFTrzs6A3Y5G8o52V5r5xHQG2NAcgUrgse/58YiQWUP6gaS" />
+  <link rel="stylesheet" href="/app/app.css" integrity="sha384-Qzp2DnIopR/01NQl+ZLgvCcg455cRs7DmRbLk0/3yDTZzCELT9cMIh/58dcM3O9g" />
 </head>
 <body>
   <div class="app" id="app">
     <header class="bar">
-      <a class="brand" href="/" aria-label="ZyronChain home"><img src="/app/icons/icon-192.png" alt="" width="32" height="32" /><span>Zyron Wallet</span></a>
+      <a class="brand" href="/" aria-label="ZyronChain home"><img src="/app/icons/icon-192.png" alt="" width="32" height="32" /><span>Phone Wallet</span></a>
       <span class="badge" data-i18n="badge">TESTNET · UNAUDITED</span>
+      <span class="chip local" data-local-indicator title="Keys and vault stay on this device"><span aria-hidden="true">●</span> <span data-local-text>Local wallet</span></span>
     </header>
 
     <noscript><p class="notice bad">This wallet needs JavaScript. Nothing is sent anywhere; scripts are served from zyronchain.com only.</p></noscript>
 
-    <p class="notice warn" data-unsupported hidden></p>
+    <p class="notice bad" data-unsupported role="alert" hidden></p>
 
-    <aside class="notice scam" role="note">
+    <aside class="notice scam" role="note" aria-label="Scam warning">
       <strong data-i18n="scamTitle">Scam warning</strong>
-      <span data-i18n="scamBody">Nobody from ZyronChain will ever ask for your recovery phrase or password: not support, not an airdrop, not a "validator". Anyone who asks is stealing. There is no token sale and no public network with real value yet.</span>
+      <span data-i18n="scamBody">ZyronChain never asks for your recovery phrase, private key or password. Not support, admins, validators or airdrops; not on Telegram, X, Discord or email. Anyone who asks is trying to steal.</span>
+      <span class="scam-official" data-i18n="scamOfficial">Official site: zyronchain.com</span>
     </aside>
 
     <!-- WELCOME -->
     <section class="screen" data-screen="welcome">
-      <h1 data-i18n="welcomeTitle">Your ZyronChain wallet, on your phone.</h1>
-      <p class="lead" data-i18n="welcomeLead">Keys are created on this device with its secure random generator and stored only as an encrypted vault. No account, no server, no app store.</p>
+      <p class="eyebrow">ZYRONCHAIN · PHONE WALLET — TESTNET</p>
+      <h1 data-i18n="welcomeTitle">Create and keep your keys on this device.</h1>
+      <p class="lead" data-i18n="welcomeLead">Keys are generated here with the device's secure random generator and stored only as an encrypted vault. No account, no server, no app store.</p>
       <ul class="facts">
-        <li data-i18n="fact1">Testnet only. This code is unaudited: do not use it for real funds until an independent review is done.</li>
-        <li data-i18n="fact2">There is no public RPC yet, so balances and broadcasting are disabled. You can create, back up, receive-address and sign transfers offline.</li>
-        <li data-i18n="fact3">Same derivation as the ZyronChain MetaMask Snap (m/44'/249249'/0'/0/0): the same 12 words give the same address in both.</li>
+        <li data-i18n="fact1">Testnet only and unaudited. Do not use it for real value until an independent review is done.</li>
+        <li data-i18n="fact2">No public RPC yet: no balances and no broadcasting. You can create, back up, show your address and sign transfers locally.</li>
+        <li data-i18n="fact3">Same derivation as the ZyronChain MetaMask Snap (m/44'/249249'/0'/0/0): the same recovery phrase gives the same address in both.</li>
       </ul>
       <div class="actions">
         <button class="primary" type="button" data-go="create" data-i18n="create">Create new wallet</button>
-        <button type="button" data-go="restore" data-i18n="restoreStart">Restore from 12 words</button>
+        <button type="button" data-go="restore" data-i18n="restoreStart">Restore from recovery phrase</button>
       </div>
+      <button type="button" class="danger" data-go="delete" data-rejected-delete hidden data-i18n="deleteRejected">Delete the unreadable stored vault</button>
     </section>
 
     <!-- CREATE: PASSWORD -->
     <section class="screen" data-screen="create" hidden>
-      <h2 data-i18n="createTitle">1 / 3 · Choose a password</h2>
-      <p data-i18n="createLead">The password encrypts the wallet on this phone. It cannot be recovered; your 12 words are the real backup.</p>
+      <p class="step">Step 1 of 4</p>
+      <h2 data-i18n="createTitle">Choose a device password</h2>
+      <div class="split-explain">
+        <p><strong>Password</strong> protects the encrypted vault on this device only. It cannot be reset.</p>
+        <p><strong>Recovery phrase</strong> (next step) restores ownership on any device. It is the real backup.</p>
+      </div>
       <label><span data-i18n="password">Password</span>
-        <input type="password" data-create-password autocomplete="new-password" minlength="12" spellcheck="false" autocapitalize="none" /></label>
+        <input type="password" data-create-password autocomplete="new-password" minlength="12" spellcheck="false" autocapitalize="none" aria-describedby="create-meter-text" /></label>
+      <div class="pw-meter" data-pw-meter="create" data-level="0" aria-hidden="true"><span></span></div>
+      <p class="hint" id="create-meter-text" data-pw-meter-text="create" aria-live="polite">Strength: enter at least 12 characters.</p>
       <label><span data-i18n="passwordAgain">Password again</span>
         <input type="password" data-create-password2 autocomplete="new-password" spellcheck="false" autocapitalize="none" /></label>
       <p class="hint" data-strength aria-live="polite" data-i18n="ruleText">12+ characters, 6+ different characters, about 60+ bits (same rule as the CLI).</p>
@@ -66,11 +76,37 @@
       </div>
     </section>
 
+    <!-- CREATE: PRIVACY BEFORE REVEAL -->
+    <section class="screen" data-screen="privacy" hidden>
+      <p class="step">Step 2 of 4</p>
+      <h2 data-i18n="privacyTitle">Before you reveal your recovery phrase</h2>
+      <ul class="privacy-list">
+        <li data-i18n="priv1">Anyone with these words controls the wallet and everything sent to it.</li>
+        <li data-i18n="priv2">ZyronChain support will never ask for them.</li>
+        <li data-i18n="priv3">Never send them on Telegram, Discord, X, email or to "support".</li>
+        <li data-i18n="priv4">Never enter them on airdrop, validator or "wallet check" sites.</li>
+        <li data-i18n="priv5">Write them on paper, in order, and keep the paper offline.</li>
+        <li data-i18n="priv6">Make sure nobody can see your screen and no camera is pointed at it.</li>
+      </ul>
+      <p class="hint" data-i18n="privNoBlock">A web app cannot block screenshots or screen recording. Do not take any.</p>
+      <label class="check"><input type="checkbox" data-privacy-ack /> <span data-i18n="privAck">I understand, and nobody can see my screen.</span></label>
+      <div class="actions">
+        <button class="primary" type="button" data-privacy-next disabled data-i18n="privNext">Show the recovery phrase</button>
+        <button type="button" data-cancel-create data-i18n="cancel">Cancel</button>
+      </div>
+    </section>
+
     <!-- CREATE: PHRASE -->
     <section class="screen" data-screen="phrase" hidden>
-      <h2 data-i18n="phraseTitle">2 / 3 · Write down your 12 words</h2>
-      <p class="notice warn" data-i18n="phraseWarn">Write these words on paper, in order, and keep it offline. Do not screenshot, photograph, copy, e-mail or store them in a cloud note. Anyone with these words owns the wallet. They are shown only once.</p>
-      <ol class="words" data-phrase-words></ol>
+      <p class="step">Step 3 of 4</p>
+      <h2 data-i18n="phraseTitle">Write down your recovery phrase</h2>
+      <p class="hint" data-i18n="phraseHint">Words are hidden. Tap a card to reveal it, or press and hold "Hold to reveal all". Words hide again after 20 seconds, or when you leave the app.</p>
+      <ol class="words" data-phrase-words aria-label="Recovery phrase words"></ol>
+      <div class="actions">
+        <button type="button" class="hold" data-hold-reveal aria-describedby="hold-hint" data-i18n="holdReveal">Hold to reveal all</button>
+        <button type="button" data-hide-words data-i18n="hideAll">Hide all</button>
+      </div>
+      <p class="sr-only" id="hold-hint">Keep pressing to show every word. Words hide when you release.</p>
       <label class="check"><input type="checkbox" data-phrase-ack /> <span data-i18n="phraseAck">I wrote all 12 words on paper, in order.</span></label>
       <div class="actions">
         <button class="primary" type="button" data-phrase-next disabled data-i18n="continue">Continue</button>
@@ -80,8 +116,9 @@
 
     <!-- CREATE: QUIZ -->
     <section class="screen" data-screen="quiz" hidden>
-      <h2 data-i18n="quizTitle">3 / 3 · Prove your backup</h2>
-      <p data-i18n="quizLead">Type the requested words from your paper. The wallet is saved only after this check passes.</p>
+      <p class="step">Step 4 of 4</p>
+      <h2 data-i18n="quizTitle">Check your backup</h2>
+      <p data-i18n="quizLead">Type the requested words from your paper. The wallet is saved on this device only after this check passes.</p>
       <div class="quiz" data-quiz></div>
       <p class="hint" data-quiz-result aria-live="polite"></p>
       <div class="actions">
@@ -93,11 +130,14 @@
     <!-- RESTORE -->
     <section class="screen" data-screen="restore" hidden>
       <h2 data-i18n="restoreTitle">Restore from recovery phrase</h2>
-      <p data-i18n="restoreLead">Enter your 12 words (24 also work) separated by spaces. The same words used in the ZyronChain MetaMask Snap give the same address.</p>
+      <p data-i18n="restoreLead">Enter your 12 words (15–24 also work) separated by spaces. The same phrase used in the ZyronChain MetaMask Snap gives the same address.</p>
+      <p class="notice warn" data-i18n="restoreWarn">Only type your phrase into zyronchain.com/app/ on your own device, with nobody watching. Nobody from ZyronChain will ever ask for it.</p>
       <label><span data-i18n="phrase">Recovery phrase</span>
-        <textarea data-restore-phrase rows="4" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-gramm="false"></textarea></label>
-      <label><span data-i18n="newPassword">New password for this phone</span>
-        <input type="password" data-restore-password autocomplete="new-password" spellcheck="false" autocapitalize="none" /></label>
+        <textarea data-restore-phrase rows="4" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-gramm="false" data-1p-ignore data-lpignore="true"></textarea></label>
+      <label><span data-i18n="newPassword">New device password</span>
+        <input type="password" data-restore-password autocomplete="new-password" spellcheck="false" autocapitalize="none" aria-describedby="restore-meter-text" /></label>
+      <div class="pw-meter" data-pw-meter="restore" data-level="0" aria-hidden="true"><span></span></div>
+      <p class="hint" id="restore-meter-text" data-pw-meter-text="restore" aria-live="polite">Strength: enter at least 12 characters.</p>
       <label><span data-i18n="passwordAgain">Password again</span>
         <input type="password" data-restore-password2 autocomplete="new-password" spellcheck="false" autocapitalize="none" /></label>
       <p class="hint" data-restore-result aria-live="polite"></p>
@@ -119,35 +159,41 @@
       </div>
       <details class="danger-zone">
         <summary data-i18n="forgot">Forgot the password?</summary>
-        <p data-i18n="forgotBody">The password cannot be reset. Delete this vault and restore from your 12 words with a new password.</p>
-        <button type="button" class="danger" data-go="delete" data-i18n="deleteWallet">Delete wallet from this phone</button>
+        <p data-i18n="forgotBody">There is no password reset. Delete the local vault, then restore from your recovery phrase with a new password. Without the phrase, access cannot be recovered.</p>
+        <button type="button" class="danger" data-go="delete" data-i18n="deleteWallet">Delete wallet</button>
       </details>
     </section>
 
     <!-- HOME -->
     <section class="screen" data-screen="home" hidden>
+      <p class="notice ok" data-created-note hidden data-i18n="createdNote">Wallet saved. The recovery phrase was removed from the screen and the app's references to it were cleared. JavaScript cannot guarantee that memory is erased, so close the app when you are done.</p>
       <div class="card receive">
         <div class="row between"><h2 data-i18n="receiveTitle">Your address</h2><button type="button" data-lock data-i18n="lock">Lock</button></div>
-        <p class="address" data-home-address></p>
+        <p class="address" data-home-address aria-label="Address, grouped for reading"></p>
+        <p class="label-small" data-i18n="rawLabel">Full address (what the chain uses)</p>
+        <p class="address-raw" data-home-raw></p>
+        <p class="hint" data-i18n="checksumNote">Upper/lower-case letters above are a display-only checksum, not consensus. The QR code holds the plain lower-case address.</p>
         <div class="qr" data-qr role="img" aria-label="QR code of your address"></div>
-        <p class="hint" data-i18n="qrHint">The QR code holds the plain lower-case address, which is what the chain uses. The mixed-case form above is a display checksum (docs/ADDRESS_CHECKSUM.md).</p>
         <div class="actions">
           <button class="primary" type="button" data-copy-address data-i18n="copyChecksummed">Copy address</button>
-          <button type="button" data-copy-plain data-i18n="copyPlain">Copy plain</button>
+          <button type="button" data-copy-plain data-i18n="copyPlain">Copy lower-case</button>
         </div>
         <p class="hint" data-copy-result aria-live="polite"></p>
       </div>
 
       <div class="card">
-        <h2 data-i18n="balanceTitle">Balance and sending</h2>
-        <p class="notice info" data-i18n="noRpc">No public RPC yet: balances cannot be shown and nothing can be broadcast from this app. Signed transfers below are files you can submit later with the CLI (tx-submit) once a public network exists.</p>
+        <h2 data-i18n="balanceTitle">Balance and broadcasting</h2>
+        <dl class="kv">
+          <div><dt>Balance</dt><dd data-balance>Unavailable: no public RPC</dd></div>
+          <div><dt>Broadcast</dt><dd>Unavailable until network activation</dd></div>
+        </dl>
         <button type="button" disabled data-i18n="broadcastDisabled">Broadcast (disabled: no public RPC)</button>
       </div>
 
       <div class="card">
-        <h2 data-i18n="signTitle">Sign a transfer offline</h2>
-        <p class="hint" data-i18n="signLead">Produces exactly the L1 transfer format. Chain ID and your next nonce must be entered by hand from an official announcement. Only transfers can be signed; mining claims are impossible.</p>
-        <label><span data-i18n="chainId">Chain ID</span><input data-tx-chain autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="e.g. zyron-testnet-1" /></label>
+        <h2 data-i18n="signTitle">Sign a transfer locally</h2>
+        <p class="hint" data-i18n="signLead">Builds exactly the L1 transfer format. Enter the chain ID and your next nonce by hand from an official announcement; nothing is guessed. Only transfers can be signed.</p>
+        <label><span data-i18n="chainId">Chain ID</span><input data-tx-chain autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="from an official announcement" /></label>
         <label><span data-i18n="nonce">Next nonce</span><input data-tx-nonce inputmode="numeric" autocomplete="off" placeholder="1" /></label>
         <label><span data-i18n="receiver">Receiver address</span><input data-tx-to autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ZYN…" /></label>
         <div class="row two">
@@ -157,15 +203,7 @@
         <label><span data-i18n="txVersion">Transaction version</span>
           <select data-tx-version><option value="2" selected>2 (protocol 3+, domain-separated)</option><option value="1">1 (legacy)</option></select></label>
         <p class="hint" data-tx-check aria-live="polite"></p>
-        <div class="actions"><button class="primary" type="button" data-tx-sign data-i18n="sign">Review and sign</button></div>
-        <div class="tx-out" data-tx-out hidden>
-          <p class="notice ok" data-tx-summary></p>
-          <pre data-tx-json></pre>
-          <div class="actions">
-            <button type="button" data-tx-copy data-i18n="copyTx">Copy signed transfer</button>
-            <button type="button" data-tx-download data-i18n="downloadTx">Download tx.json</button>
-          </div>
-        </div>
+        <div class="actions"><button class="primary" type="button" data-tx-review data-i18n="review">Review transfer</button></div>
       </div>
 
       <div class="card">
@@ -180,30 +218,83 @@
       <div class="card">
         <h2 data-i18n="securityTitle">Security</h2>
         <ul class="facts">
-          <li data-i18n="sec1">Only an encrypted vault is stored on this phone (scrypt N=2^17 + AES-256-GCM). The key exists in memory only while unlocked.</li>
+          <li data-i18n="sec1">Only an encrypted vault is stored on this device (scrypt N=2^17 + AES-256-GCM). The key exists in memory only while unlocked.</li>
           <li data-i18n="sec2">Auto-locks after 5 minutes without activity, or 60 seconds after the app goes to the background.</li>
-          <li data-i18n="sec3">Copied text is cleared from the clipboard after 60 seconds (when the browser allows it).</li>
-          <li data-i18n="sec4">iPhone/iPad: the browser may delete site data if storage runs low or the app is removed. Your paper backup of the 12 words is the only real backup.</li>
+          <li data-i18n="sec3">Only your address and signed transfers can be copied; the clipboard is cleared automatically after 60 seconds when the browser allows it.</li>
+          <li data-i18n="sec4">iPhone/iPad: the browser may delete site data if storage runs low or the app is removed. Your paper recovery phrase is the only real backup.</li>
         </ul>
         <p class="hint" data-storage-status></p>
-        <button type="button" class="danger" data-go="delete" data-i18n="deleteWallet">Delete wallet from this phone</button>
+        <button type="button" class="danger" data-go="delete" data-i18n="deleteWallet">Delete wallet</button>
       </div>
+    </section>
+
+    <!-- REVIEW + SIGN -->
+    <section class="screen" data-screen="review" hidden>
+      <h2 data-i18n="reviewTitle">Review transfer</h2>
+      <p class="hint" data-i18n="reviewLead">Check every field. Signing happens on this device; nothing is broadcast.</p>
+      <dl class="review" data-review-rows></dl>
+      <div data-review-confirm-box>
+        <label class="check"><input type="checkbox" data-review-ack /> <span data-i18n="reviewAck">I checked the receiver, amount, fee and chain ID.</span></label>
+        <div class="actions">
+          <button class="primary" type="button" data-tx-sign disabled data-i18n="sign">Sign locally</button>
+          <button type="button" data-review-cancel data-i18n="cancel">Cancel</button>
+        </div>
+      </div>
+      <div class="tx-out" data-tx-out hidden>
+        <p class="notice ok" data-tx-summary></p>
+        <pre data-tx-json></pre>
+        <div class="actions">
+          <button type="button" data-tx-copy data-i18n="copyTx">Copy signed transfer</button>
+          <button type="button" data-tx-download data-i18n="downloadTx">Download tx.json</button>
+        </div>
+        <p class="hint" data-tx-copy-result aria-live="polite"></p>
+        <div class="actions"><button class="primary" type="button" data-review-done data-i18n="done">Done</button></div>
+      </div>
+      <p class="hint badtext" data-review-error aria-live="polite"></p>
     </section>
 
     <!-- DELETE -->
     <section class="screen" data-screen="delete" hidden>
-      <h2 data-i18n="deleteTitle">Delete wallet from this phone?</h2>
-      <p class="notice bad" data-i18n="deleteWarn">This erases the encrypted vault from this device. Without your 12 words written down, the wallet and anything sent to it are lost forever.</p>
+      <h2 data-i18n="deleteTitle">Delete wallet from this device?</h2>
+      <p class="notice bad" data-i18n="deleteWarn">This removes the local encrypted vault from this application's storage on this device. It does not affect the blockchain. Without your recovery phrase, access to this wallet may be permanently lost.</p>
+      <p class="hint" data-i18n="deleteNoWipe">Browsers do not guarantee a secure overwrite of deleted data.</p>
+      <label class="check"><input type="checkbox" data-delete-ack /> <span data-i18n="deleteAck">I have my recovery phrase, or I accept losing access.</span></label>
       <label><span data-i18n="deleteType">Type DELETE to confirm</span><input data-delete-confirm autocomplete="off" autocapitalize="characters" spellcheck="false" /></label>
       <div class="actions">
-        <button type="button" class="danger" data-delete-go disabled data-i18n="deleteNow">Delete permanently</button>
+        <button type="button" class="danger" data-delete-go disabled data-i18n="deleteNow">Delete wallet</button>
         <button type="button" data-delete-cancel data-i18n="cancel">Cancel</button>
       </div>
     </section>
 
+    <div class="card">
+      <!-- BEGIN NETWORK STATUS (generated by tools/site/network-status.mjs; edit the script, not this block) -->
+      <section class="netstatus" id="network-status" aria-labelledby="network-status-title" data-network-status>
+        <div class="ns-head">
+          <h2 id="network-status-title">Network status</h2>
+          <p class="ns-sub">Static, published with this build from the repository. Not a live feed; this page never contacts validator RPC.</p>
+        </div>
+        <table class="ns-table">
+          <caption class="sr-only">ZyronChain network capabilities as of this build</caption>
+          <tbody>
+            <tr data-ns-row="governance"><th scope="row">Governance</th><td><span class="ns-state ns-gov"><span aria-hidden="true">◐</span> Authorized</span><span class="ns-note">Public testnet and mainnet authorized by governance. Activation is not allowed yet.</span></td></tr>
+            <tr data-ns-row="public-testnet"><th scope="row">Public testnet</th><td><span class="ns-state ns-off"><span aria-hidden="true">✕</span> Not activated</span><span class="ns-note">Authorized ≠ activated. A local devnet is not a hosted public testnet.</span></td></tr>
+            <tr data-ns-row="public-rpc"><th scope="row">Public RPC</th><td><span class="ns-state ns-off"><span aria-hidden="true">✕</span> Unavailable</span><span class="ns-note">No public wallet RPC is published.</span></td></tr>
+            <tr data-ns-row="explorer"><th scope="row">Explorer</th><td><span class="ns-state ns-off"><span aria-hidden="true">✕</span> Unavailable</span><span class="ns-note">No public block explorer is published.</span></td></tr>
+            <tr data-ns-row="wallet-creation"><th scope="row">Wallet creation</th><td><span class="ns-state ns-on"><span aria-hidden="true">✓</span> Available locally</span><span class="ns-note">Keys are created on your own device.</span></td></tr>
+            <tr data-ns-row="offline-signing"><th scope="row">Offline signing</th><td><span class="ns-state ns-on"><span aria-hidden="true">✓</span> Available</span><span class="ns-note">Can sign ≠ can broadcast.</span></td></tr>
+            <tr data-ns-row="broadcasting"><th scope="row">Broadcasting</th><td><span class="ns-state ns-off"><span aria-hidden="true">✕</span> Unavailable until activation</span><span class="ns-note">Signed transfers cannot be submitted to a public network yet.</span></td></tr>
+            <tr data-ns-row="mining"><th scope="row">Mining</th><td><span class="ns-state ns-retired"><span aria-hidden="true">—</span> Retired</span><span class="ns-note">Shut down on 2026-09-30. Do not run miner software.</span></td></tr>
+            <tr data-ns-row="token-sale"><th scope="row">Token sale</th><td><span class="ns-state ns-none"><span aria-hidden="true">—</span> None</span><span class="ns-note">No sale, no price, no market.</span></td></tr>
+          </tbody>
+        </table>
+        <p class="ns-foot">Source: docs/l1-launch-authorization.json (publicTestnetActivationAllowed=false, mainnetActivationAllowed=false).</p>
+      </section>
+      <!-- END NETWORK STATUS -->
+    </div>
+
     <!-- INSTALL -->
-    <section class="card install" data-install>
-      <h2 data-i18n="installTitle">Install on phone</h2>
+    <section class="card install" data-install aria-labelledby="install-title">
+      <h2 id="install-title" data-i18n="installTitle">Install on phone</h2>
       <p class="hint" data-installed hidden data-i18n="installed">Installed: you are using the home-screen app.</p>
       <button class="primary" type="button" data-install-button hidden data-i18n="installNow">Install app</button>
       <div class="install-steps">
@@ -211,17 +302,16 @@
           <h3>iPhone / iPad (Safari)</h3>
           <ol>
             <li data-i18n="ios1">Open zyronchain.com/app/ in Safari.</li>
-            <li data-i18n="ios2">Tap the Share button (square with an arrow).</li>
+            <li data-i18n="ios2">Tap Share (square with an arrow).</li>
             <li data-i18n="ios3">Choose "Add to Home Screen", then "Add".</li>
-            <li data-i18n="ios4">Open Zyron Wallet from the home screen (works offline).</li>
           </ol>
         </div>
         <div data-platform="android">
           <h3>Android (Chrome)</h3>
           <ol>
             <li data-i18n="and1">Open zyronchain.com/app/ in Chrome.</li>
-            <li data-i18n="and2">Tap "Install app" above, or the ⋮ menu → "Install app" / "Add to Home screen".</li>
-            <li data-i18n="and3">Confirm "Install". The app opens full-screen and works offline.</li>
+            <li data-i18n="and2">Tap "Install app" above, or ⋮ menu → "Install app" / "Add to Home screen".</li>
+            <li data-i18n="and3">Confirm. The app opens full-screen and works offline.</li>
           </ol>
         </div>
       </div>
@@ -229,14 +319,14 @@
 
     <footer class="foot">
       <p data-i18n="foot">Open source, served only from zyronchain.com with pinned, integrity-checked libraries (@noble/curves, @noble/hashes, @scure/bip39, @scure/bip32, qr). Unaudited testnet software.</p>
-      <p><a href="/wallet.html" data-i18n="cliLink">Prefer the computer? CLI wallet setup</a> · <a href="https://github.com/zyron249/-zyronchain/tree/main/website/app" target="_blank" rel="noopener noreferrer">Source</a></p>
+      <p><a href="/wallet.html" data-i18n="cliLink">Desktop Wallet Setup</a> · <a href="https://github.com/zyron249/-zyronchain/tree/main/website/app" target="_blank" rel="noopener noreferrer">Read source</a> · <a href="/privacy.html">Privacy</a></p>
     </footer>
 
     <div class="busy" data-busy hidden><div><span class="spinner"></span><p data-busy-text>Working…</p></div></div>
   </div>
   <script src="/app/vendor/noble-scure.js" integrity="sha384-cuU0s9lNqS3x5BaAT/+Pw2HWGeDECS/7vJIW3pRyX/FwGELSKmzYnnmYM53om5iC"></script>
   <script src="/app/vendor/qr.js" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
-  <script src="/app/zyron-wallet-core.js" integrity="sha384-8n3H48EyMOe+r0pyIg6oLh3rDRSfoqIjdCpu84DwMTN/OZbn5WYX6Ha92YtNF8PG"></script>
-  <script src="/app/app.js" integrity="sha384-mlrWs+naRNLKnDD62T09hsFSWIVRI1WE95aMG8tbzTQzmQfzrLxCfiHOMtXpuKE6"></script>
+  <script src="/app/zyron-wallet-core.js" integrity="sha384-1uh5NljLmhaFu2/UERMIr6MzjgRHPaH0x1Gkmkyb/oIrgwBhMeTWRFzuiqLSId0U"></script>
+  <script src="/app/app.js" integrity="sha384-L1IYsoJ48wO77AKy4yF93gKuoVOmpRSzjwX48/A8w7Ug1vKQcZnos8k96x0Oirjh"></script>
 </body>
 </html>
