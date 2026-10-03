@@ -89,8 +89,9 @@ Security of the split:
   with the bot token stays server-side.
 - The static page carries a meta CSP: `default-src 'none'`, scripts from itself and `telegram.org`, and
   `connect-src` limited to the API origin. It holds no secrets.
-- The bot points the menu button and every Play Zyron button at `MINIAPP_URL`. In production it defaults to the
-  GitHub Pages URL, so no Render environment change is needed. Set `MINIAPP_URL` only to move the shell.
+- The bot points the menu button and every Play Zyron button at `MINIAPP_URL`. On any hosted deployment
+  (`ENVIRONMENT=production`, or any Render service, which always sets `RENDER=true`) it defaults to the GitHub
+  Pages URL, so no Render environment change is needed. Set `MINIAPP_URL` only to move the shell.
 
 Telegram (BotFather) notes: menu and inline Play buttons are set by the bot itself on start. If a Main Mini App
 or a direct-link Mini App was configured in BotFather, update its URL there to
