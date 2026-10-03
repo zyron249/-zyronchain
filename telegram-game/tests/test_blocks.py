@@ -48,7 +48,7 @@ def test_wolf_is_gone():
 
 def test_chain_element_is_rendered_on_the_node_visual():
     app = (FRONTEND / "app.js").read_text(encoding="utf-8")
-    assert "[nodeArt(energy.current), chainTrack()]" in app
+    assert "[nodeArt(energy.current), buildersLayer(), chainTrack()]" in app
     assert '"data-chain": "1"' in app and '"data-chain-state"' in app
     assert 'syncChain(visual.querySelector("[data-chain]"))' in app
     assert "window.ZyronBlocks.stateFor(" in app
@@ -58,11 +58,14 @@ def test_chain_element_is_rendered_on_the_node_visual():
     # One timeline for the lap and the upright counter-rotation, set through CSSOM (style-src 'self').
     assert 'track.style.setProperty("--chain-delay", window.ZyronBlocks.lapDelay(' in app
     assert '"style"' not in app
-    # Each completed cycle snaps a block on.
+    # Each completed cycle snaps a block on (after the builders' carved block lands; see test_builders.py).
     loop = app[app.index("async function runLoop()") :]
     loop = loop[: loop.index("} finally {")]
-    assert "applyCycle(res);" in loop and "snapChain();" in loop
-    assert loop.index("applyCycle(res);") < loop.index("snapChain();")
+    assert "applyCycle(res);" in loop and "carveBlock();" in loop
+    assert loop.index("applyCycle(res);") < loop.index("carveBlock();")
+    carve = app[app.index("function carveBlock()") :]
+    carve = carve[: carve.index("\n  }\n")]
+    assert carve.count("snapChain();") == 2  # immediate fallback and on landing
     assert 'track.setAttribute("data-snap", window.ZyronBlocks.nextSnap(' in app
     assert 'classList.toggle("is-hidden", document.visibilityState === "hidden")' in app
     assert 'r: String(CHAIN_RING_R)' in app

@@ -201,6 +201,46 @@ html.is-hidden .chain-track * { animation-play-state: paused !important; }
 @keyframes chain-pop-b { 0% { transform: scale(0.35); } 55% { transform: scale(1.18); } 100% { transform: scale(1); } }
 @keyframes chain-flash-a { 0% { transform: scale(0.4); } 40% { transform: scale(1.9); } 100% { transform: scale(0); } }
 @keyframes chain-flash-b { 0% { transform: scale(0.4); } 40% { transform: scale(1.9); } 100% { transform: scale(0); } }
+/* Builders beside the orbit ring (frontend/builders.js). Transform/opacity-only; only data-builders-state="run"
+ * animates. The layer spans past the node art on both sides (viewBox -75 0 370 220) without affecting layout. */
+.builders {
+  position: absolute;
+  top: 0;
+  left: -34.0909%;
+  width: 168.1818%;
+  height: 100%;
+  pointer-events: none;
+}
+.builders[data-builders-state="hidden"] { display: none; }
+.builders-art { display: block; width: 100%; height: 100%; overflow: visible; }
+.builder-arm { transform: rotate(80deg); }
+.builder-pop,
+.builder-chip { opacity: 0; transform: scale(0); }
+.builders[data-builders-state="run"] .builder-arm { transform: rotate(-40deg); animation: builder-swing 1s linear infinite; }
+.builders[data-builders-state="run"] .builder-body { animation: builder-lean 1s linear infinite; }
+.builders[data-builders-state="run"] .builder-pop { animation: builder-pop 3s linear infinite; }
+.builders[data-builders-state="run"] .chip-1 { animation: builder-chip-1 3s ease-out infinite; }
+.builders[data-builders-state="run"] .chip-2 { animation: builder-chip-2 3s ease-out infinite; }
+.builders[data-builders-state="run"] .chip-3 { animation: builder-chip-3 3s ease-out infinite; }
+.builders[data-builders-state="run"] .builder-1 * { animation-delay: -1s; }
+.builders[data-builders-state="run"] .builder-2 * { animation-delay: -2s; }
+.builders[data-builders-state="rest"] .builder-arm { transform: rotate(96deg); }
+.builders[data-builders-state="rest"] .builder-body { transform: rotate(12deg); }
+.builders[data-builders-state="rest"] .builders-art { opacity: 0.5; filter: grayscale(0.6); }
+html.is-hidden .builders,
+html.is-hidden .builders * { animation-play-state: paused !important; }
+@keyframes builder-swing { 0% { transform: rotate(-125deg); } 50% { transform: rotate(-135deg); } 68% { transform: rotate(38deg); } 76% { transform: rotate(30deg); } 100% { transform: rotate(-125deg); } }
+@keyframes builder-lean { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(-4deg); } 68% { transform: rotate(6deg); } }
+@keyframes builder-pop {
+  0%, 22% { opacity: 0; transform: translate(0, 0) scale(0); }
+  23% { opacity: 1; transform: translate(0, 0) scale(0.7); }
+  35% { opacity: 1; transform: translate(0, -7px) scale(1); }
+  55% { opacity: 0; transform: translate(1px, -13px) scale(0.9); }
+  100% { opacity: 0; transform: translate(1px, -13px) scale(0); }
+}
+@keyframes builder-chip-1 { 0%, 22% { opacity: 0; transform: scale(0); } 23% { opacity: 1; transform: translate(0, 0) scale(1); } 38% { opacity: 0; transform: translate(5px, -6px) rotate(90deg); } 100% { opacity: 0; transform: scale(0); } }
+@keyframes builder-chip-2 { 0%, 22% { opacity: 0; transform: scale(0); } 23% { opacity: 1; transform: translate(0, 0) scale(1); } 38% { opacity: 0; transform: translate(-3px, -7px) rotate(-120deg); } 100% { opacity: 0; transform: scale(0); } }
+@keyframes builder-chip-3 { 0%, 22% { opacity: 0; transform: scale(0); } 23% { opacity: 1; transform: translate(0, 0) scale(1); } 40% { opacity: 0; transform: translate(7px, -2px) rotate(70deg); } 100% { opacity: 0; transform: scale(0); } }
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -537,5 +577,6 @@ html.is-hidden .chain-track * { animation-play-state: paused !important; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
-  /* The chain stays parked at the top of the ring (base transforms above); no snap flash. */
+  /* The chain stays parked at the top of the ring (base transforms above); no snap flash.
+   * Builders hold a static pose: pickaxe raised while RUNNING, down when idle, slumped when out of energy. */
 }
