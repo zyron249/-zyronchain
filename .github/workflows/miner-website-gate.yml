@@ -30,25 +30,14 @@ jobs:
           const html = fs.readFileSync('website/mining.html', 'utf8');
           const js = fs.readFileSync('website/app.js', 'utf8');
 
-          for (const marker of ['Mining Launchpad', 'id="start"', 'ACTIVATION GATED', 'Encrypted key custody is mandatory']) {
+          // Mining is retired (owner decision 2026-09-30). The historical page stays noindex and unlinked, and the site
+          // script carries no miner distribution, download or activation code at all (stronger than a disabled one).
+          for (const marker of ['Mining is retired', '<meta name="robots" content="noindex" />', 'id="start"', 'Encrypted key custody is mandatory']) {
             if (!html.includes(marker)) throw new Error(`Mining page missing ${marker}`);
           }
           if (!html.includes("connect-src 'none'")) throw new Error('Mining CSP must keep connect-src none');
-
-          for (const marker of [
-            'MINER_DISTRIBUTION',
-            'enabled: false',
-            'publicMiningActivated: false',
-            'assets: Object.freeze({ windows: null, macos: null, linux: null })',
-            'assetSha256: Object.freeze({ windows: null, macos: null, linux: null })',
-            'Miner download not yet activated',
-            'Expected SHA-256 will be published only with an activated reviewed release.',
-            'ACTIVATION GATED',
-            'navigator.userAgentData',
-            'github\\.com\\/zyron249\\/-zyronchain\\/releases\\/download',
-            '/^[0-9a-f]{64}$/'
-          ]) {
-            if (!js.includes(marker)) throw new Error(`Miner website gate missing ${marker}`);
+          if (/MINER_DISTRIBUTION|ZyronMiner|releases\/download|Download Zyron Miner|location\.assign/.test(js)) {
+            throw new Error('Mining is retired: website/app.js must not carry a miner download path');
           }
 
           if (/fetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(/.test(js)) {
@@ -57,16 +46,7 @@ jobs:
           if (/localStorage|sessionStorage|indexedDB/.test(js)) {
             throw new Error('Miner website must not persist custody/distribution state');
           }
-          if (!js.includes('never requests a private key, seed phrase, wallet password')) {
-            throw new Error('Miner website must state the no-secret boundary');
-          }
           if (/enabled:\s*true|publicMiningActivated:\s*true/.test(js)) {
-            throw new Error('Public miner download must remain activation-gated in this preparatory PR');
-          }
-          if (/assets:\s*Object\.freeze\(\{[^}]*https:\/\//s.test(js)) {
-            throw new Error('Preparatory PR must not bind downloadable release assets');
-          }
-          if (/assetSha256:\s*Object\.freeze\(\{[^}]*[0-9a-f]{64}/s.test(js)) {
-            throw new Error('Preparatory PR must not bind release digests before activation');
+            throw new Error('Public miner download must never be activated from the website (mining is retired)');
           }
           NODE

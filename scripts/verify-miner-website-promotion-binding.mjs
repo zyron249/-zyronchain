@@ -5,6 +5,17 @@ const promotion = JSON.parse(readFileSync('docs/miner-release-promotion.json', '
 const app = readFileSync('website/app.js', 'utf8');
 
 const requiredPlatforms = ['windows', 'macos', 'linux'];
+
+// Mining is retired (owner decision 2026-09-30): the website carries no miner distribution at all. That is only
+// valid while the canonical promotion policy is also closed.
+if (!/MINER_DISTRIBUTION/.test(app)) {
+  if (promotion.publicationAllowed === true || promotion.publicMiningActivated === true) {
+    throw new Error('canonical miner promotion is open but the website carries no reviewed distribution');
+  }
+  if (/ZyronMiner|releases\/download|location\.assign/.test(app)) throw new Error('website carries a miner download path outside the reviewed distribution');
+  console.log('Miner website promotion binding: mining retired, no website distribution, canonical promotion closed.');
+  process.exit(0);
+}
 const trustedAsset = /^https:\/\/github\.com\/zyron249\/-zyronchain\/releases\/download\/([^/]+)\/ZyronMiner-[A-Za-z0-9._-]+$/;
 const trustedSha256 = /^[0-9a-f]{64}$/;
 
