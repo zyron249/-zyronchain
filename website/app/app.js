@@ -22,106 +22,8 @@
   const STORE = 'vault';
   const VAULT_KEY = 'primary';
 
-  // ---------------- i18n ----------------
-  const STRINGS = { en: {}, tr: {
-    badge: 'TESTNET · DENETLENMEDİ',
-    scamTitle: 'Dolandırıcılık uyarısı',
-    scamBody: 'ZyronChain\'den hiç kimse kurtarma kelimelerinizi veya şifrenizi asla istemez: ne destek, ne airdrop, ne "validator". İsteyen herkes hırsızdır. Henüz token satışı ve gerçek değer taşıyan herkese açık bir ağ yok.',
-    welcomeTitle: 'ZyronChain cüzdanınız, telefonunuzda.',
-    welcomeLead: 'Anahtarlar bu cihazın güvenli rastgele üreticisiyle burada oluşturulur ve yalnızca şifreli bir kasa olarak saklanır. Hesap yok, sunucu yok, uygulama mağazası yok.',
-    fact1: 'Yalnızca testnet. Bu kod bağımsız olarak denetlenmedi: bağımsız inceleme yapılana kadar gerçek fonlar için kullanmayın.',
-    fact2: 'Henüz herkese açık RPC yok; bu yüzden bakiye ve yayınlama kapalı. Cüzdan oluşturabilir, yedekleyebilir, adresinizi paylaşabilir ve transferleri çevrimdışı imzalayabilirsiniz.',
-    fact3: 'ZyronChain MetaMask Snap ile aynı türetme yolu (m/44\'/249249\'/0\'/0/0): aynı 12 kelime ikisinde de aynı adresi verir.',
-    create: 'Yeni cüzdan oluştur',
-    restoreStart: '12 kelimeyle geri yükle',
-    restoreGo: 'Geri yükle',
-    createTitle: '1 / 3 · Şifre belirleyin',
-    createLead: 'Şifre, cüzdanı bu telefonda şifreler. Kurtarılamaz; asıl yedeğiniz 12 kelimedir.',
-    password: 'Şifre',
-    passwordAgain: 'Şifre (tekrar)',
-    ruleText: 'En az 12 karakter, en az 6 farklı karakter, yaklaşık 60+ bit (CLI ile aynı kural).',
-    continue: 'Devam',
-    back: 'Geri',
-    cancel: 'İptal',
-    phraseTitle: '2 / 3 · 12 kelimeyi yazın',
-    phraseWarn: 'Bu kelimeleri sırasıyla kâğıda yazın ve çevrimdışı saklayın. Ekran görüntüsü almayın, fotoğraflamayın, kopyalamayın, e-postayla göndermeyin, bulut notuna kaydetmeyin. Bu kelimelere sahip olan cüzdana sahip olur. Yalnızca bir kez gösterilir.',
-    phraseAck: '12 kelimenin hepsini sırasıyla kâğıda yazdım.',
-    quizTitle: '3 / 3 · Yedeğinizi kanıtlayın',
-    quizLead: 'İstenen kelimeleri kâğıdınızdan yazın. Cüzdan yalnızca bu kontrol geçtikten sonra kaydedilir.',
-    verifySave: 'Doğrula ve cüzdanı kaydet',
-    showAgain: 'Kelimeleri tekrar göster',
-    restoreTitle: 'Kurtarma kelimeleriyle geri yükle',
-    restoreLead: '12 kelimenizi (24 de olur) boşlukla ayırarak girin. ZyronChain MetaMask Snap\'te kullanılan aynı kelimeler aynı adresi verir.',
-    phrase: 'Kurtarma kelimeleri',
-    newPassword: 'Bu telefon için yeni şifre',
-    unlockTitle: 'Cüzdanı aç',
-    unlock: 'Aç',
-    forgot: 'Şifreyi mi unuttunuz?',
-    forgotBody: 'Şifre sıfırlanamaz. Bu kasayı silin ve 12 kelimenizle yeni bir şifreyle geri yükleyin.',
-    deleteWallet: 'Cüzdanı bu telefondan sil',
-    receiveTitle: 'Adresiniz',
-    lock: 'Kilitle',
-    qrHint: 'QR kod, zincirin kullandığı düz küçük harfli adresi içerir. Yukarıdaki büyük/küçük harfli biçim yalnızca görüntüleme sağlama toplamıdır (docs/ADDRESS_CHECKSUM.md).',
-    copyChecksummed: 'Adresi kopyala',
-    copyPlain: 'Düz biçimi kopyala',
-    balanceTitle: 'Bakiye ve gönderme',
-    noRpc: 'Henüz herkese açık RPC yok: bakiye gösterilemez ve bu uygulamadan hiçbir şey yayınlanamaz. Aşağıda imzalanan transferler, herkese açık ağ olduğunda CLI (tx-submit) ile daha sonra gönderebileceğiniz dosyalardır.',
-    broadcastDisabled: 'Yayınla (kapalı: herkese açık RPC yok)',
-    signTitle: 'Transferi çevrimdışı imzala',
-    signLead: 'Tam olarak L1 transfer biçimini üretir. Zincir kimliği ve sıradaki nonce resmi bir duyurudan elle girilmelidir. Yalnızca transfer imzalanabilir; madencilik talebi (mining_claim) imkânsızdır.',
-    chainId: 'Zincir kimliği (Chain ID)',
-    nonce: 'Sıradaki nonce',
-    receiver: 'Alıcı adresi',
-    amount: 'Miktar (ZYN)',
-    fee: 'Ücret (ZYN)',
-    txVersion: 'İşlem sürümü',
-    sign: 'Gözden geçir ve imzala',
-    copyTx: 'İmzalı transferi kopyala',
-    downloadTx: 'tx.json indir',
-    convTitle: 'ZYN ↔ atom',
-    securityTitle: 'Güvenlik',
-    sec1: 'Bu telefonda yalnızca şifreli bir kasa saklanır (scrypt N=2^17 + AES-256-GCM). Anahtar yalnızca kilit açıkken bellekte bulunur.',
-    sec2: '5 dakika işlem yapılmazsa veya uygulama 60 saniye arka planda kalırsa otomatik kilitlenir.',
-    sec3: 'Kopyalanan metin 60 saniye sonra panodan silinir (tarayıcı izin verdiğinde).',
-    sec4: 'iPhone/iPad: depolama azalırsa veya uygulama silinirse tarayıcı site verilerini silebilir. Tek gerçek yedek, 12 kelimenin kâğıttaki kopyasıdır.',
-    deleteTitle: 'Cüzdan bu telefondan silinsin mi?',
-    deleteWarn: 'Bu işlem şifreli kasayı bu cihazdan siler. 12 kelimeniz yazılı değilse cüzdan ve ona gönderilen her şey sonsuza dek kaybolur.',
-    deleteType: 'Onaylamak için SİL (veya DELETE) yazın',
-    deleteNow: 'Kalıcı olarak sil',
-    installTitle: 'Telefona kur / Install on phone',
-    installed: 'Kurulu: ana ekran uygulamasını kullanıyorsunuz.',
-    installNow: 'Uygulamayı kur',
-    ios1: 'zyronchain.com/app/ adresini Safari\'de açın.',
-    ios2: 'Paylaş düğmesine dokunun (oklu kare).',
-    ios3: '"Ana Ekrana Ekle"yi, ardından "Ekle"yi seçin.',
-    ios4: 'Zyron Wallet\'ı ana ekrandan açın (çevrimdışı da çalışır).',
-    and1: 'zyronchain.com/app/ adresini Chrome\'da açın.',
-    and2: 'Yukarıdaki "Uygulamayı kur"a veya ⋮ menüsü → "Uygulamayı yükle" / "Ana ekrana ekle"ye dokunun.',
-    and3: '"Yükle"yi onaylayın. Uygulama tam ekran açılır ve çevrimdışı çalışır.',
-    foot: 'Açık kaynak; yalnızca zyronchain.com\'dan, sabitlenmiş ve bütünlüğü doğrulanmış kütüphanelerle sunulur (@noble/curves, @noble/hashes, @scure/bip39, @scure/bip32, qr). Denetlenmemiş testnet yazılımı.',
-    cliLink: 'Bilgisayarı mı tercih edersiniz? CLI cüzdan kurulumu',
-    // dynamic
-    msgPasswordsDiffer: 'Şifreler eşleşmiyor.',
-    msgStrengthOk: 'Şifre gücü uygun (yaklaşık {bits} bit).',
-    msgWeak: 'Şifre zayıf: en az 12 karakter, 6 farklı karakter ve ~60 bit gerekir (şu an ~{bits} bit).',
-    msgDeriving: 'Anahtar türetiliyor ve şifreleniyor… (telefonlarda birkaç saniye sürebilir)',
-    msgUnlocking: 'Kilit açılıyor… (telefonlarda birkaç saniye sürebilir)',
-    msgQuizWord: '{n}. kelime',
-    msgQuizWrong: 'Bir veya daha fazla kelime yanlış. Kâğıdınızı kontrol edin veya kelimeleri tekrar gösterin.',
-    msgSaved: 'Cüzdan kaydedildi.',
-    msgCopied: 'Kopyalandı. Pano 60 saniye sonra temizlenecek.',
-    msgCopyFailed: 'Kopyalanamadı; elle seçip kopyalayın.',
-    msgWrongPassword: 'Şifre yanlış veya kasa değiştirilmiş.',
-    msgLocked: 'Kilitlendi.',
-    msgSigned: 'İmzalandı (yayınlanmadı): {amount} ZYN → {to}, ücret {fee} ZYN, zincir {chain}, nonce {nonce}. txid {txid}',
-    msgChecksumOk: 'Alıcı sağlama toplamı doğrulandı.',
-    msgChecksumNone: 'Alıcıda sağlama toplamı yok; dikkatle kontrol edin.',
-    msgUnsupported: 'Bu tarayıcı gerekli özellikleri desteklemiyor (Web Crypto / IndexedDB / güvenli bağlantı). Güncel Safari veya Chrome kullanın.',
-    msgPersisted: 'Depolama: kalıcı olarak işaretlendi.',
-    msgNotPersisted: 'Depolama: tarayıcı kalıcılık garantisi vermedi; 12 kelimelik yedeğiniz şarttır.',
-    msgVaultExists: 'Bu telefonda zaten bir cüzdan var. Önce silin.',
-    msgError: 'Hata: {message}'
-  } };
+  // ---------------- UI strings (English only) ----------------
+  const STRINGS = { en: {} };
   const EN_DYNAMIC = {
     msgPasswordsDiffer: 'Passwords do not match.',
     msgStrengthOk: 'Password strength OK (about {bits} bits).',
@@ -150,16 +52,14 @@
     STRINGS.en[key] = element.textContent;
   }
   Object.assign(STRINGS.en, EN_DYNAMIC);
-  let lang = /^tr\b/i.test(navigator.language || '') ? 'tr' : 'en';
   function t(key, vars) {
-    let text = (STRINGS[lang] && STRINGS[lang][key]) || STRINGS.en[key] || key;
+    let text = STRINGS.en[key] || key;
     if (vars) for (const name of Object.keys(vars)) text = text.split('{' + name + '}').join(String(vars[name]));
     return text;
   }
   function applyLang() {
-    document.documentElement.lang = lang;
+    document.documentElement.lang = 'en';
     for (const element of $$('[data-i18n]')) element.textContent = t(element.dataset.i18n);
-    $('[data-lang-toggle]').textContent = lang === 'tr' ? 'EN' : 'TR';
     if (state.quiz) renderQuiz();
   }
 
@@ -551,8 +451,8 @@
 
   // ---------------- delete ----------------
   $('[data-delete-confirm]').addEventListener('input', (event) => {
-    const value = event.target.value.trim().toLocaleUpperCase('tr');
-    $('[data-delete-go]').disabled = !(value === 'DELETE' || value === 'SİL' || value === 'SIL');
+    const value = event.target.value.trim().toUpperCase();
+    $('[data-delete-go]').disabled = !(value === 'DELETE');
   });
   $('[data-delete-go]').addEventListener('click', async () => {
     try {
@@ -578,7 +478,6 @@
       show(target);
     });
   }
-  $('[data-lang-toggle]').addEventListener('click', () => { lang = lang === 'tr' ? 'en' : 'tr'; applyLang(); });
 
   // ---------------- install (Android prompt + iOS instructions) ----------------
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;

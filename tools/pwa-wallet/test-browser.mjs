@@ -88,11 +88,11 @@ async function createWallet(page, { snapshot = false } = {}) {
   await page.fill('[data-create-password]', 'aaaaaaaaaaaaaaaa');
   await page.fill('[data-create-password2]', 'aaaaaaaaaaaaaaaa');
   await page.click('[data-create-next]');
-  assert.match(await page.textContent('[data-strength]'), /weak|repetitive|zayıf/i);
+  assert.match(await page.textContent('[data-strength]'), /weak|repetitive/i);
   await page.fill('[data-create-password]', PASSWORD);
   await page.fill('[data-create-password2]', PASSWORD + 'x');
   await page.click('[data-create-next]');
-  assert.match(await page.textContent('[data-strength]'), /do not match|eşleşmiyor/);
+  assert.match(await page.textContent('[data-strength]'), /do not match/);
   await page.fill('[data-create-password2]', PASSWORD);
   if (snapshot) await shot(page, '2-create-password');
   await page.click('[data-create-next]');
@@ -109,7 +109,7 @@ async function createWallet(page, { snapshot = false } = {}) {
   // wrong answers first: nothing may be saved
   for (const index of indexes) await page.fill(`[data-quiz-index="${index}"]`, 'zoo');
   await page.click('[data-quiz-check]');
-  assert.match(await page.textContent('[data-quiz-result]'), /wrong|yanlış/);
+  assert.match(await page.textContent('[data-quiz-result]'), /wrong/);
   assert.equal(await page.evaluate(() => new Promise((r) => { const q = indexedDB.open('zyron-wallet-app'); q.onsuccess = () => { const db = q.result; const g = db.transaction('vault').objectStore('vault').get('primary'); g.onsuccess = () => { r(g.result === undefined); db.close(); }; }; })), true, 'vault not saved before the quiz passes');
   for (const index of indexes) await page.fill(`[data-quiz-index="${index}"]`, ` ${words[index].toUpperCase()} `);
   if (snapshot) await shot(page, '4-backup-quiz');
@@ -237,7 +237,7 @@ try {
     await page.fill('[data-tx-chain]', 'zyron-pwa-test');
     await page.fill('[data-tx-nonce]', '1');
     await page.fill('[data-tx-to]', RECEIVER);
-    assert.match(await page.textContent('[data-tx-check]'), /checksum verified|doğrulandı/);
+    assert.match(await page.textContent('[data-tx-check]'), /checksum verified/);
     await page.fill('[data-tx-amount]', '2.5');
     await page.fill('[data-tx-fee]', '0.00001');
     await page.click('[data-tx-sign]');
@@ -268,8 +268,8 @@ try {
     assert.equal(await page.$$eval('[data-tx-json]', (n) => n[0].textContent), '', 'signed output cleared on lock');
     await page.fill('[data-unlock-password]', PASSWORD + 'nope');
     await page.click('[data-unlock-go]');
-    await page.waitForFunction(() => /Wrong password|modified|Şifre yanlış/.test(document.querySelector('[data-unlock-result]').textContent), null, { timeout: 60000 });
-    assert.match(await page.textContent('[data-unlock-result]'), /Wrong password|Şifre yanlış/);
+    await page.waitForFunction(() => /Wrong password|modified/.test(document.querySelector('[data-unlock-result]').textContent), null, { timeout: 60000 });
+    assert.match(await page.textContent('[data-unlock-result]'), /Wrong password/);
     await page.fill('[data-unlock-password]', PASSWORD);
     await page.click('[data-unlock-go]');
     await page.waitForSelector('[data-screen="home"]:not([hidden])', { timeout: 60000 });
@@ -285,8 +285,8 @@ try {
     await page.waitForFunction(() => document.body.dataset.current === 'unlock');
     await page.fill('[data-unlock-password]', PASSWORD);
     await page.click('[data-unlock-go]');
-    await page.waitForFunction(() => /Wrong password|modified|Şifre yanlış/.test(document.querySelector('[data-unlock-result]').textContent), null, { timeout: 60000 });
-    assert.match(await page.textContent('[data-unlock-result]'), /Wrong password|modified|Şifre yanlış/);
+    await page.waitForFunction(() => /Wrong password|modified/.test(document.querySelector('[data-unlock-result]').textContent), null, { timeout: 60000 });
+    assert.match(await page.textContent('[data-unlock-result]'), /Wrong password|modified/);
   });
 
   await test('delete wallet requires typing DELETE, then the vault is gone', async () => {
@@ -300,21 +300,21 @@ try {
     assert.deepEqual(await readVaultRecord(page), []);
   });
 
-  await test('restore from the Snap test phrase gives the Snap address (Turkish UI)', async () => {
-    await page.click('[data-lang-toggle]');
-    assert.equal(await page.getAttribute('html', 'lang'), 'tr');
-    assert.match(await page.textContent('[data-go="create"]'), /Yeni cüzdan/);
+  await test('restore from the Snap test phrase gives the Snap address (English-only UI)', async () => {
+    assert.equal(await page.getAttribute('html', 'lang'), 'en');
+    assert.equal(await page.$('[data-lang-toggle]'), null, 'no language toggle');
+    assert.match(await page.textContent('[data-go="create"]'), /Create a new wallet|new wallet/i);
     await page.click('[data-go="restore"]');
     await page.fill('[data-restore-phrase]', 'test test test test test test test test test test test jun');
     await page.fill('[data-restore-password]', PASSWORD);
     await page.fill('[data-restore-password2]', PASSWORD);
     await page.click('[data-restore-go]');
-    assert.match(await page.textContent('[data-restore-result]'), /word list|Hata/);
+    assert.match(await page.textContent('[data-restore-result]'), /word list|Error/);
     await page.fill('[data-restore-phrase]', SNAP.mnemonic);
     await page.click('[data-restore-go]');
     await page.waitForSelector('[data-screen="home"]:not([hidden])', { timeout: 60000 });
     assert.equal(await page.textContent('[data-home-address]'), core.groupAddress(core.toChecksumAddress(SNAP.address)));
-    await shot(page, '7-home-turkish');
+    await shot(page, '7-home-restored');
   });
   assert.deepEqual(problems, [], 'console/page errors');
   const foreign = requests.filter((r) => !r.url.startsWith(origin) && !r.url.startsWith('blob:') && !r.url.startsWith('data:'));

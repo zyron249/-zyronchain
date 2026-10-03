@@ -316,11 +316,16 @@ await test('web app manifest is valid and installable (name, scope, standalone, 
   assert.deepEqual(pngSize(join(app, 'icons', 'apple-touch-icon-180.png')), [180, 180]);
   for (const marker of ['TESTNET', 'Scam warning', 'No public RPC yet', 'unaudited', 'Add to Home Screen', 'Install app']) assert.ok(html.includes(marker), marker);
   const appJs = readFileSync(join(app, 'app.js'), 'utf8');
-  for (const marker of ['Ana Ekrana Ekle', 'Dolandırıcılık uyarısı', 'DENETLENMEDİ', 'herkese açık RPC yok']) assert.ok(appJs.includes(marker), marker);
+  // English-only UI: no language toggle, no second dictionary, no locale auto-detect, no non-English UI copy.
+  for (const banned of ['data-lang-toggle', 'navigator.language', "lang=\"tr\"", 'hreflang', 'Telefona', 'Türkçe']) {
+    assert.ok(!html.includes(banned), `index.html contains ${banned}`);
+    assert.ok(!appJs.includes(banned), `app.js contains ${banned}`);
+  }
+  assert.doesNotMatch(appJs, /\btr: \{/, 'second-language dictionary in app.js');
+  assert.doesNotMatch(html + appJs, /[çğışÇĞİŞ]/, 'non-English UI characters in the app');
   const keys = [...html.matchAll(/data-i18n="([^"]+)"[^>]*>([^<]*)</g)];
   const english = new Map();
-  for (const [, key, text] of keys) { if (english.has(key)) assert.equal(english.get(key), text, `i18n key ${key} reused with different text`); english.set(key, text); }
-  for (const key of english.keys()) assert.match(appJs, new RegExp(`^    ${key}: '`, 'm'), `Turkish string for ${key}`);
+  for (const [, key, text] of keys) { if (english.has(key)) assert.equal(english.get(key), text, `UI key ${key} reused with different text`); english.set(key, text); }
   assert.deepEqual(readdirSync(join(app, 'vendor')).sort(), ['LICENSES.txt', 'VENDOR.json', 'noble-scure.js', 'qr.js']);
 });
 
