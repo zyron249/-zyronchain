@@ -601,7 +601,7 @@
       el("p", { class: "fine", text: "Lifetime " + formatPoints(p.lifetimePoints) + " · off-chain · not ZYN" }),
       tierTrack(p)
     ]));
-    const visual = el("div", { class: "node-visual " + nodeMode(), "data-node": "1" }, [nodeArt(energy.current), chainTrack()]);
+    const visual = el("div", { class: "node-visual " + nodeMode(), "data-node": "1" }, [nodeArt(energy.current), buildersLayer(), chainTrack()]);
     const pillClass = "status-pill " + (state.running ? "on" : state.phase === "routing" ? "busy" : "");
     const ticks = el("div", { class: "tick-log", "data-ticks": "1" });
     fillTicks(ticks);
@@ -1340,6 +1340,67 @@
     track.setAttribute("data-snap", window.ZyronBlocks.nextSnap(track.getAttribute("data-snap")));
   }
 
+  // Builders beside the ring (frontend/builders.js): they swing while the node is RUNNING and each completed cycle
+  // sends a carved block to the head of the chain, where it snaps on. Optional, like the chain.
+  function buildersLayer() {
+    if (!window.ZyronBuilders) return null;
+    const layer = el("div", { class: "builders", "data-builders": "1", "data-builders-state": "idle", role: "img", "aria-label": window.ZyronBuilders.labelFor("idle") }, [window.ZyronBuilders.build(svg)]);
+    syncBuilders(layer);
+    return layer;
+  }
+
+  function syncBuilders(layer) {
+    if (!layer) return;
+    const next = window.ZyronBuilders.stateFor({
+      waking: state.wake.phase === "waking" || state.wake.phase === "stalled" || state.wake.phase === "updating",
+      banned: !!(player() && player().banned),
+      running: !!state.running,
+      energy: predictedEnergy().current
+    });
+    if (layer.getAttribute("data-builders-state") === next) return;
+    layer.setAttribute("data-builders-state", next);
+    layer.setAttribute("aria-label", window.ZyronBuilders.labelFor(next));
+  }
+
+  function trackDegrees(track) {
+    const match = /matrix\(([^)]+)\)/.exec(getComputedStyle(track).transform || "");
+    if (!match) return 0;
+    const parts = match[1].split(",").map(Number);
+    return (Math.atan2(parts[1], parts[0]) * 180) / Math.PI;
+  }
+
+  // A completed cycle: one builder's carved block flies to the chain head, then the chain snaps it on. Without
+  // motion (reduced motion, hidden page, no builders on screen) the snap happens at once.
+  function carveBlock() {
+    const builders = window.ZyronBuilders;
+    const layer = root.querySelector("[data-builders]");
+    const track = root.querySelector("[data-chain]");
+    const flights = layer && layer.querySelector("[data-builder-flights]");
+    const reduced = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    if (!builders || !flights || !track || reduced || document.visibilityState === "hidden" || layer.getAttribute("data-builders-state") !== "run" || typeof flights.animate !== "function") {
+      snapChain();
+      return;
+    }
+    state.builderTurn = ((state.builderTurn || 0) + 1) % builders.SPOTS.length;
+    const lap = window.ZyronBlocks ? window.ZyronBlocks.LAP_S : 10;
+    const path = builders.flightPath(builders.rockPoint(state.builderTurn), trackDegrees(track), lap, builders.FLIGHT_MS);
+    const block = builders.buildFlight(svg);
+    flights.append(block);
+    let done = false;
+    const land = function () {
+      if (done) return;
+      done = true;
+      block.remove();
+      snapChain();
+    };
+    const flight = block.animate(path.map(function (p) {
+      return { transform: "translate(" + p.x.toFixed(2) + "px, " + p.y.toFixed(2) + "px) scale(" + p.s.toFixed(2) + ")" };
+    }), { duration: builders.FLIGHT_MS, easing: "cubic-bezier(0.45, 0, 0.35, 1)", fill: "forwards" });
+    flight.onfinish = land;
+    flight.oncancel = land;
+    setTimeout(land, builders.FLIGHT_MS + 400);
+  }
+
   function nodeArt(energy) {
     return svg("svg", { viewBox: "0 0 220 220", class: "node-art" }, [
       svg("defs", {}, [
@@ -1435,6 +1496,7 @@
       visual.classList.remove("is-idle", "is-run", "is-routing", "is-down");
       visual.classList.add(nodeMode());
       syncChain(visual.querySelector("[data-chain]"));
+      syncBuilders(visual.querySelector("[data-builders]"));
     }
     syncChrome();
   }
@@ -1538,7 +1600,7 @@
           state.sessionCycles += 1;
           state.phase = state.running ? "running" : "idle";
           floatGain(res.gained || 0, res.energySpent || 1);
-          snapChain();
+          carveBlock();
           haptic("light");
           (res.achievementsUnlocked || []).forEach(function (id) { toast(achievementTitle(id) + " unlocked", "ok"); });
           if (res.referralQualified) toast("Referral qualified", "ok");
@@ -1987,7 +2049,7 @@
   setInterval(onTick, 250);
   setInterval(tickWake, 500);
 
-  // Pause decorative motion (the block chain) while Play Zyron is in the background.
+  // Pause decorative motion (block chain and builders) while Play Zyron is in the background.
   function syncHidden() {
     document.documentElement.classList.toggle("is-hidden", document.visibilityState === "hidden");
   }
