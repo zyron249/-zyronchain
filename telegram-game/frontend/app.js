@@ -601,7 +601,7 @@
       el("p", { class: "fine", text: "Lifetime " + formatPoints(p.lifetimePoints) + " · off-chain · not ZYN" }),
       tierTrack(p)
     ]));
-    const visual = el("div", { class: "node-visual " + nodeMode(), "data-node": "1" }, [nodeArt(energy.current)]);
+    const visual = el("div", { class: "node-visual " + nodeMode(), "data-node": "1" }, [nodeArt(energy.current), wolfTrack()]);
     const pillClass = "status-pill " + (state.running ? "on" : state.phase === "routing" ? "busy" : "");
     const ticks = el("div", { class: "tick-log", "data-ticks": "1" });
     fillTicks(ticks);
@@ -1301,6 +1301,36 @@
     });
   }
 
+  // Brand wolf that runs along the outer ring while the node is RUNNING (frontend/wolf.js). Optional: if the module
+  // failed to load the node art still renders without it.
+  const WOLF_RING_R = window.ZyronWolf ? window.ZyronWolf.RING.r : 92;
+
+  function wolfState() {
+    if (!window.ZyronWolf) return "hidden";
+    return window.ZyronWolf.stateFor({
+      waking: state.wake.phase === "waking" || state.wake.phase === "stalled" || state.wake.phase === "updating",
+      banned: !!(player() && player().banned),
+      running: !!state.running,
+      energy: predictedEnergy().current
+    });
+  }
+
+  function wolfTrack() {
+    if (!window.ZyronWolf) return null;
+    const track = el("div", { class: "wolf-track", "data-wolf": "1", "data-wolf-state": "idle", "aria-hidden": "true" }, [window.ZyronWolf.build(svg)]);
+    syncWolf(track);
+    return track;
+  }
+
+  // Sets the pose. Entering "run" aligns the lap with the run start so re-renders never make the wolf jump.
+  function syncWolf(track) {
+    if (!track) return;
+    const next = wolfState();
+    if (track.getAttribute("data-wolf-state") === next) return;
+    if (next === "run") track.style.animationDelay = window.ZyronWolf.lapDelay(state.wolfEpoch, Date.now());
+    track.setAttribute("data-wolf-state", next);
+  }
+
   function nodeArt(energy) {
     return svg("svg", { viewBox: "0 0 220 220", class: "node-art" }, [
       svg("defs", {}, [
@@ -1310,14 +1340,10 @@
         ])
       ]),
       svg("circle", { class: "glow", cx: "110", cy: "110", r: "78", fill: "url(#nodeGlow)" }),
-      svg("g", { class: "orbit slow" }, [
-        svg("circle", { cx: "110", cy: "110", r: "96", fill: "none", stroke: "rgba(44,104,173,0.6)", "stroke-width": "1.2", "stroke-dasharray": "2 9" })
-      ]),
+      // Outer dashed ring: the running wolf's track (frontend/wolf.js). Static, so the wolf carries the motion.
+      svg("circle", { class: "track-ring", cx: "110", cy: "110", r: String(WOLF_RING_R), fill: "none", stroke: "rgba(44,104,173,0.6)", "stroke-width": "1.2", "stroke-dasharray": "2 9" }),
       svg("g", { class: "orbit" }, [
-        svg("circle", { cx: "110", cy: "110", r: "78", fill: "none", stroke: "rgba(79,216,251,0.55)", "stroke-width": "1.6", "stroke-dasharray": "5 8" }),
-        svg("circle", { cx: "188", cy: "110", r: "5", fill: "#4fd8fb" }),
-        svg("circle", { cx: "110", cy: "32", r: "4", fill: "#0a9ff5" }),
-        svg("circle", { cx: "46", cy: "156", r: "3.5", fill: "#d8dce0" })
+        svg("circle", { cx: "110", cy: "110", r: "78", fill: "none", stroke: "rgba(79,216,251,0.55)", "stroke-width": "1.6", "stroke-dasharray": "5 8" })
       ]),
       svg("polygon", { class: "hex", points: hexPoints(110, 110, 54), fill: "rgba(7,13,24,0.94)", stroke: "#4fd8fb", "stroke-width": "2" }),
       svg("circle", { class: "core", cx: "110", cy: "110", r: "30", fill: "#0b1526", stroke: "#0a9ff5", "stroke-width": "2.4" }),
@@ -1399,6 +1425,7 @@
     if (visual) {
       visual.classList.remove("is-idle", "is-run", "is-routing", "is-down");
       visual.classList.add(nodeMode());
+      syncWolf(visual.querySelector("[data-wolf]"));
     }
     syncChrome();
   }
@@ -1471,6 +1498,7 @@
     state.looping = true;
     state.running = true;
     state.phase = "running";
+    state.wolfEpoch = Date.now();
     state.sessionPoints = 0;
     state.sessionCycles = 0;
     state.recentGains = [];
@@ -1948,6 +1976,13 @@
 
   setInterval(onTick, 250);
   setInterval(tickWake, 500);
+
+  // Pause decorative motion (the running wolf) while Play Zyron is in the background.
+  function syncHidden() {
+    document.documentElement.classList.toggle("is-hidden", document.visibilityState === "hidden");
+  }
+  document.addEventListener("visibilitychange", syncHidden);
+  syncHidden();
 
   if (!window.ZyronBoot) {
     state.blocked = "shell";

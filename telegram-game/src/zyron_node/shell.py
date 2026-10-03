@@ -20,6 +20,7 @@ STATIC_ASSETS = (
     "boot.js",
     "boot-recover.js",
     "wake.js",
+    "wolf.js",
     "styles.css",
     "logo.png",
     "points-mark-52.png",
