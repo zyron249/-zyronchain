@@ -165,47 +165,42 @@ button:active:not(:disabled) { transform: translateY(1px); }
 .node-visual.is-routing .core { filter: drop-shadow(0 0 10px var(--cyan)); }
 .node-visual.is-down .hex { stroke: var(--chrome-4); }
 .core-label { fill: var(--chrome-1); font-size: 18px; font-weight: 800; font-family: var(--font); }
-/* Running wolf on the outer orbit ring (frontend/wolf.js). The lap rotates an HTML layer (compositor-only);
- * the legs are transform keyframes inside a small SVG. Only data-wolf-state="run" animates. */
-.wolf-track {
+/* Block chain on the outer orbit ring (frontend/blocks.js). The lap rotates an HTML layer (compositor-only) and
+ * each block counter-rotates to stay upright; everything is transform-only. Only data-chain-state="run" moves.
+ * Idle, rest and reduced motion park the chain centred on the top of the ring (42.5deg = PARK_DEG). */
+.chain-track {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  transform: rotate(0deg);
+  transform: rotate(42.5deg);
   transform-origin: 50% 50%;
   backface-visibility: hidden;
 }
-.wolf-track[data-wolf-state="run"] { will-change: transform; animation: wolf-lap 10s linear infinite; }
-.wolf-track[data-wolf-state="hidden"] { display: none; }
-.wolf-art {
+.chain-track[data-chain-state="run"] { will-change: transform; animation: chain-lap 10s linear infinite; animation-delay: var(--chain-delay, 0s); }
+.chain-track[data-chain-state="hidden"] { display: none; }
+.chain-art {
   display: block;
   width: 100%;
   height: 100%;
   overflow: visible;
-  filter: drop-shadow(0 0 1.6px rgba(79, 216, 251, 0.55));
+  filter: drop-shadow(0 0 2px rgba(28, 203, 251, 0.6));
 }
-.wolf-trail { opacity: 0; transition: opacity 0.3s ease; }
-.wolf-track[data-wolf-state="run"] .wolf-trail { opacity: 1; }
-.wolf-track[data-wolf-state="rest"] .wolf-art { opacity: 0.55; filter: grayscale(0.6); }
-.wolf-track[data-wolf-state="run"] .wolf-fu { animation: wolf-fu 0.5s linear infinite; }
-.wolf-track[data-wolf-state="run"] .wolf-fl { animation: wolf-fl 0.5s linear infinite; }
-.wolf-track[data-wolf-state="run"] .wolf-hu { animation: wolf-hu 0.5s linear infinite; }
-.wolf-track[data-wolf-state="run"] .wolf-hl { animation: wolf-hl 0.5s linear infinite; }
-.wolf-track[data-wolf-state="run"] .wolf-f { animation-delay: -0.07s; }
-.wolf-track[data-wolf-state="run"] .wolf-bob { animation: wolf-bob 0.5s ease-in-out infinite; }
-.wolf-track[data-wolf-state="run"] .wolf-tail { animation: wolf-tail 0.5s ease-in-out infinite; }
-/* Calm pose at the top of the ring: standing, head up, tail low. */
-.wolf-track[data-wolf-state="idle"] .wolf-tail,
-.wolf-track[data-wolf-state="rest"] .wolf-tail { transform: rotate(-28deg); }
-html.is-hidden .wolf-track,
-html.is-hidden .wolf-track * { animation-play-state: paused !important; }
-@keyframes wolf-lap { to { transform: rotate(360deg); } }
-@keyframes wolf-fu { 0% { transform: rotate(-50deg); } 22% { transform: rotate(-18deg); } 45% { transform: rotate(28deg); } 65% { transform: rotate(42deg); } 85% { transform: rotate(-62deg); } 100% { transform: rotate(-50deg); } }
-@keyframes wolf-fl { 0% { transform: rotate(-6deg); } 22% { transform: rotate(0deg); } 45% { transform: rotate(10deg); } 65% { transform: rotate(78deg); } 85% { transform: rotate(92deg); } 100% { transform: rotate(-6deg); } }
-@keyframes wolf-hu { 0% { transform: rotate(38deg); } 20% { transform: rotate(12deg); } 45% { transform: rotate(-38deg); } 68% { transform: rotate(-30deg); } 85% { transform: rotate(8deg); } 100% { transform: rotate(38deg); } }
-@keyframes wolf-hl { 0% { transform: rotate(12deg); } 20% { transform: rotate(48deg); } 45% { transform: rotate(20deg); } 68% { transform: rotate(-4deg); } 85% { transform: rotate(-6deg); } 100% { transform: rotate(12deg); } }
-@keyframes wolf-bob { 0%, 100% { transform: translateY(-1.2px); } 30% { transform: translateY(0.6px); } 60% { transform: translateY(0.2px); } 80% { transform: translateY(-0.6px); } }
-@keyframes wolf-tail { 0%, 100% { transform: rotate(-4deg); } 50% { transform: rotate(6deg); } }
+.chain-upright { transform: rotate(-42.5deg); }
+.chain-flash { transform: scale(0); }
+.chain-track[data-chain-state="run"] .chain-upright { animation: chain-upright 10s linear infinite; animation-delay: var(--chain-delay, 0s); }
+.chain-track[data-chain-state="run"][data-snap="a"] .chain-pop { animation: chain-pop-a 0.52s cubic-bezier(0.2, 0.8, 0.3, 1.2); }
+.chain-track[data-chain-state="run"][data-snap="b"] .chain-pop { animation: chain-pop-b 0.52s cubic-bezier(0.2, 0.8, 0.3, 1.2); }
+.chain-track[data-chain-state="run"][data-snap="a"] .chain-flash { animation: chain-flash-a 0.52s ease-out; }
+.chain-track[data-chain-state="run"][data-snap="b"] .chain-flash { animation: chain-flash-b 0.52s ease-out; }
+.chain-track[data-chain-state="rest"] .chain-art { opacity: 0.5; filter: grayscale(0.6); }
+html.is-hidden .chain-track,
+html.is-hidden .chain-track * { animation-play-state: paused !important; }
+@keyframes chain-lap { from { transform: rotate(42.5deg); } to { transform: rotate(402.5deg); } }
+@keyframes chain-upright { from { transform: rotate(-42.5deg); } to { transform: rotate(-402.5deg); } }
+@keyframes chain-pop-a { 0% { transform: scale(0.35); } 55% { transform: scale(1.18); } 100% { transform: scale(1); } }
+@keyframes chain-pop-b { 0% { transform: scale(0.35); } 55% { transform: scale(1.18); } 100% { transform: scale(1); } }
+@keyframes chain-flash-a { 0% { transform: scale(0.4); } 40% { transform: scale(1.9); } 100% { transform: scale(0); } }
+@keyframes chain-flash-b { 0% { transform: scale(0.4); } 40% { transform: scale(1.9); } 100% { transform: scale(0); } }
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -542,13 +537,5 @@ html.is-hidden .wolf-track * { animation-play-state: paused !important; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
-  /* Static pose: RUNNING shows the wolf mid-stride at the top of the ring, every other state stands calmly. */
-  .wolf-track[data-wolf-state="run"] .wolf-fu.wolf-n { transform: rotate(-30deg); }
-  .wolf-track[data-wolf-state="run"] .wolf-fu.wolf-f { transform: rotate(20deg); }
-  .wolf-track[data-wolf-state="run"] .wolf-fl.wolf-n { transform: rotate(-4deg); }
-  .wolf-track[data-wolf-state="run"] .wolf-fl.wolf-f { transform: rotate(40deg); }
-  .wolf-track[data-wolf-state="run"] .wolf-hu.wolf-n { transform: rotate(30deg); }
-  .wolf-track[data-wolf-state="run"] .wolf-hu.wolf-f { transform: rotate(-20deg); }
-  .wolf-track[data-wolf-state="run"] .wolf-hl.wolf-n { transform: rotate(10deg); }
-  .wolf-track[data-wolf-state="run"] .wolf-hl.wolf-f { transform: rotate(20deg); }
+  /* The chain stays parked at the top of the ring (base transforms above); no snap flash. */
 }

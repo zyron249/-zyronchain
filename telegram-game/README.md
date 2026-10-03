@@ -118,7 +118,7 @@ The root ZyronChain pytest suite ignores this directory. Game CI is `.github/wor
 |---|---|
 | `src/zyron_node/` | API, bot, economy, RPC client |
 | `frontend/` | Mobile Mini App and admin page |
-| `frontend/wolf.js` | Running brand wolf on the home orbit ring: inline SVG, CSS-only motion, runs only while the node is RUNNING, static under reduced motion |
+| `frontend/blocks.js` | Block chain on the home orbit ring: glowing isometric blocks, inline SVG, transform-only CSS motion, moves only while the node is RUNNING, snaps a block per completed cycle, parked under reduced motion |
 | `migrations/` | PostgreSQL schema, including Season 0 |
 | `docs/L1_FINDINGS.md` | Phase 0 chain notes |
 | `docs/THREAT_MODEL.md` | Abuse cases and controls |
