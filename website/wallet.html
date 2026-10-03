@@ -14,7 +14,7 @@
   <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="ZyronChain" />
-  <meta property="og:title" content="ZyronChain Wallet Setup" />
+  <meta property="og:title" content="ZyronChain Desktop Wallet Setup" />
   <meta property="og:description" content="Generate a canonical encrypted ZyronChain keystore on your own machine." />
   <meta property="og:url" content="https://zyronchain.com/wallet.html" />
   <meta property="og:image" content="https://zyronchain.com/brand/og-image.jpg" />
@@ -23,16 +23,16 @@
   <meta property="og:image:alt" content="ZYRON CHAIN wolf and Z logo" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:image" content="https://zyronchain.com/brand/og-image.jpg" />
-  <title>ZyronChain — Wallet Setup</title>
+  <title>ZyronChain — Desktop Wallet Setup</title>
   <link rel="stylesheet" href="./styles.css?v=7da20ca69e2e" />
-  <link rel="stylesheet" href="./wallet.css?v=ef8b268394b9" />
+  <link rel="stylesheet" href="./wallet.css?v=d296afd496ea" />
   <link rel="stylesheet" href="./professional.css?v=7e63790227e5" />
   <link rel="stylesheet" href="./brand.css?v=2112331aba7a" />
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
     "@type": "WebPage",
-    "name": "ZyronChain Wallet Setup",
+    "name": "ZyronChain Desktop Wallet Setup",
     "url": "https://zyronchain.com/wallet.html",
     "description": "Generate a canonical encrypted ZyronChain keystore on your own machine. Local-only setup; no browser secrets.",
     "isPartOf": { "@type": "WebSite", "name": "ZyronChain", "url": "https://zyronchain.com/" },
@@ -54,7 +54,7 @@
   <aside class="network-notice" aria-label="Network activation notice">
     <div class="shell notice-inner">
       <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Mining is retired. Wallet RPC and value-bearing use remain activation gated.</p>
-      <a href="./index.html#status">View network status <span aria-hidden="true">→</span></a>
+      <a href="./index.html#network-status">View network status <span aria-hidden="true">→</span></a>
       <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Public tester guide <span aria-hidden="true">↗</span></a>
     </div>
   </aside>
@@ -70,7 +70,7 @@
         <a href="#check">Check address</a>
         <a href="#use">Use</a>
         <a href="#safety">Safety</a>
-        <a class="nav-install" href="./app/index.html">📱 Install on phone</a>
+        <a class="nav-install" href="./app/">Phone Wallet — Testnet</a>
       </nav>
       <a class="mini-button" href="./index.html">Back to ZyronChain</a>
     </div>
@@ -80,15 +80,15 @@
     <section class="wallet-hero shell">
       <div class="wallet-hero-copy">
         <div class="wallet-local-badge"><i></i> LOCAL-ONLY WALLET SETUP</div>
-        <h1>Create your <br /><em>ZyronChain wallet.</em></h1>
+        <h1>Desktop Wallet Setup <br /><em>for the canonical CLI.</em></h1>
         <p>Your wallet is a cryptographic identity, not a website account. This page prepares a local setup script. The private key, wallet password and encrypted keystore are created only on your computer.</p>
         <div class="wallet-hero-actions">
           <a class="primary-button" href="#create">Create locally →</a>
           <a class="secondary-button" href="#safety">Read security rules</a>
         </div>
-        <a class="phone-callout" href="./app/index.html">
-          <strong>📱 Install on phone</strong>
-          <span>New: a separate phone wallet app (iOS + Android, Add to Home Screen, works offline). Unlike this CLI page, it creates keys inside your phone's browser and stores them encrypted. Testnet only, unaudited.</span>
+        <a class="phone-callout" href="./app/">
+          <strong>Phone Wallet — Testnet</strong>
+          <span>A separate installable web app for iPhone and Android (Add to Home Screen, works offline). Unlike this CLI page, it creates keys inside the phone's browser and stores them as an encrypted vault. Testnet only, unaudited.</span>
         </a>
         <div class="wallet-boundary">
           <span>NO SECRET IN BROWSER</span>
@@ -119,10 +119,36 @@
         <li data-state="info"><span>IN REVIEW</span><strong>Stronger keystore (v2)</strong><p>scrypt N=2^17 with v1→v2 migration is implemented in draft PR #921. Until it is merged, new keystores use v1 (N=2^15), which will stay readable.</p></li>
         <li data-state="gated"><span>NOT LIVE</span><strong>Balance and transfers</strong><p>There is no public wallet RPC yet, so no balance can be shown and no transfer can be sent.</p></li>
         <li data-state="gated"><span>RETIRED</span><strong>Mining</strong><p>Mining is retired. There are no mining rewards to claim with a wallet.</p></li>
-        <li data-state="info"><span>IN PROGRESS</span><strong>Hardened page headers</strong><p>This page refuses to run inside a frame and sends no referrer. Server-side HSTS and framing headers are pending a hosting setting.</p></li>
+        <li data-state="ok"><span>WORKS NOW</span><strong>Hardened page headers</strong><p>The host sends HSTS, <code>frame-ancestors 'none'</code>, X-Frame-Options DENY, nosniff, Referrer-Policy and Permissions-Policy. The page also refuses to run inside a frame.</p></li>
         <li data-state="info"><span>DESIGN</span><strong>50,000,000 ZYN fixed supply</strong><p>The fixed-supply design is not yet activated on a public network.</p></li>
       </ul>
     </section>
+
+    <div class="shell wallet-netstatus">
+<!-- BEGIN NETWORK STATUS (generated by tools/site/network-status.mjs; edit the script, not this block) -->
+<section class="netstatus" id="network-status" aria-labelledby="network-status-title" data-network-status>
+  <div class="ns-head">
+    <h2 id="network-status-title">Network status</h2>
+    <p class="ns-sub">Static, published with this build from the repository. Not a live feed; this page never contacts validator RPC.</p>
+  </div>
+  <table class="ns-table">
+    <caption class="sr-only">ZyronChain network capabilities as of this build</caption>
+    <tbody>
+      <tr data-ns-row="governance"><th scope="row">Governance</th><td><span class="ns-state ns-gov"><span aria-hidden="true">◐</span> Authorized</span><span class="ns-note">Public testnet and mainnet authorized by governance. Activation is not allowed yet.</span></td></tr>
+      <tr data-ns-row="public-testnet"><th scope="row">Public testnet</th><td><span class="ns-state ns-off"><span aria-hidden="true">✕</span> Not activated</span><span class="ns-note">Authorized ≠ activated. A local devnet is not a hosted public testnet.</span></td></tr>
+      <tr data-ns-row="public-rpc"><th scope="row">Public RPC</th><td><span class="ns-state ns-off"><span aria-hidden="true">✕</span> Unavailable</span><span class="ns-note">No public wallet RPC is published.</span></td></tr>
+      <tr data-ns-row="explorer"><th scope="row">Explorer</th><td><span class="ns-state ns-off"><span aria-hidden="true">✕</span> Unavailable</span><span class="ns-note">No public block explorer is published.</span></td></tr>
+      <tr data-ns-row="wallet-creation"><th scope="row">Wallet creation</th><td><span class="ns-state ns-on"><span aria-hidden="true">✓</span> Available locally</span><span class="ns-note">Keys are created on your own device.</span></td></tr>
+      <tr data-ns-row="offline-signing"><th scope="row">Offline signing</th><td><span class="ns-state ns-on"><span aria-hidden="true">✓</span> Available</span><span class="ns-note">Can sign ≠ can broadcast.</span></td></tr>
+      <tr data-ns-row="broadcasting"><th scope="row">Broadcasting</th><td><span class="ns-state ns-off"><span aria-hidden="true">✕</span> Unavailable until activation</span><span class="ns-note">Signed transfers cannot be submitted to a public network yet.</span></td></tr>
+      <tr data-ns-row="mining"><th scope="row">Mining</th><td><span class="ns-state ns-retired"><span aria-hidden="true">—</span> Retired</span><span class="ns-note">Shut down on 2026-09-30. Do not run miner software.</span></td></tr>
+      <tr data-ns-row="token-sale"><th scope="row">Token sale</th><td><span class="ns-state ns-none"><span aria-hidden="true">—</span> None</span><span class="ns-note">No sale, no price, no market.</span></td></tr>
+    </tbody>
+  </table>
+  <p class="ns-foot">Source: docs/l1-launch-authorization.json (publicTestnetActivationAllowed=false, mainnetActivationAllowed=false).</p>
+</section>
+<!-- END NETWORK STATUS -->
+    </div>
 
     <section class="wallet-principles">
       <div class="shell wallet-principles-grid">
@@ -322,7 +348,7 @@ node dist/src/cli.js transfer \
     </div>
   </footer>
 
-  <script src="./release.js?v=f0bbd032d442"></script>
+  <script src="./release.js?v=b20013b415a9"></script>
   <script src="./wallet-core.js?v=7569203df024"></script>
   <script src="./wallet.js?v=bbc3c207984b"></script>
 </body>

@@ -4,21 +4,26 @@ Production static website for `https://zyronchain.com`. The website is intention
 
 ## Production surfaces
 
-- `index.html` — main ZyronChain product/protocol portal.
-- `styles.css` / `app.js` — shared responsive presentation, navigation and progressive enhancement.
+- `index.html` — main ZyronChain portal. Section order: status notice, hero ("Verifiable Layer-1 infrastructure"), what it is (with the short answers: is it live, can I use ZYN, can I create a wallet, can I run a validator, where is the code, what to test), how the protocol works, security principles, ZYN tokenomics (final fact vs proposed vs pending), wallet options, validator path, developer path (LOCAL DEVNET vs PUBLIC TESTNET), network status, open-source/docs links. It works without JavaScript.
+- `site.css` — canonical design tokens (surfaces, lines, blue/cyan, chrome, text, status colors, type scale, spacing, radius, shadows) and the shared components. The homepage uses only this file.
+- `styles.css` / `professional.css` / `brand.css` — legacy layers still used by the wallet, validator, legal and historical mining pages until they move to `site.css`.
+- `app.js` — progressive enhancement only (copy buttons for public commands, legacy menu toggle). No network, storage or analytics.
 - `brand.css` — ZYRON CHAIN theme layer (wolf + Z mark), loaded last on every page: near-black background with a pure-CSS network grid, chrome headings, electric-blue accents and glass cards. No remote fonts/scripts, no `data:` URIs. Palette and asset pipeline: [`tools/brand/README.md`](../tools/brand/README.md).
 - `brand/` — generated brand assets: header wordmark, hero banner (`zyron-banner-*.webp|jpg`, mobile crop `zyron-banner-m-*`), `og-image.jpg` (1200×630), `icon-512.png`, small favicons.
 - `brand-mark.png` — wolf + Z mark (transparent) for header, footer and wallet identity.
 - `favicon.ico` (16/32/48), `favicon-32.png`, `apple-touch-icon.png`, `icon-192.png` — browser and home-screen icons from the same mark.
 - `logo.svg` / `favicon.svg` — SVG wrappers (system-font wordmark + embedded raster mark).
-- `wallet.html` — local-first wallet onboarding and security education.
+- `wallet.html` — **Desktop Wallet Setup**: local-first wallet onboarding for the canonical CLI and security education. The installable **Phone Wallet — Testnet** is `app/`.
 - `wallet.js` — prepares pinned local wallet setup and backup-verify scripts, the address checker and transfer templates; it never generates, requests or uploads wallet secrets.
 - `wallet-core.js` — public-data helpers (address format, display-only checksum per `docs/ADDRESS_CHECKSUM.md`, public key → address derivation via Web Crypto SHA-256, ZYN/atoms conversion, the password-strength rule embedded into the local scripts). No key generation, signing or decryption.
 - `test-wallet-core.mjs` — `node website/test-wallet-core.mjs [--require-l1]`; proves the page's address rule equals the L1 (`l1/src/crypto.ts`) and that the restore test in the generated scripts decrypts a real L1 keystore.
 - `wallet.css` — wallet-specific presentation.
 - `validator.html` — browser-based validator configuration launchpad.
 - `mining.html` — **retired** (mining shut down by owner decision, 2026-09-30). Kept only as a historical, `noindex` record; it is no longer linked from the site navigation. Public downloads stay fail-closed.
-- Homepage tokenomics/market preview — shows the fixed 50M launch design under review and a deliberately disabled Buy/Sell surface. It must never accept funds or imply a quote asset/AMM is live before the corresponding protocol gates are closed.
+- Network status — a static, build-time component (`tools/site/network-status.mjs`) shared by the homepage, `wallet.html` and `app/`. It is never connected to validator RPC.
+- Build id and asset versions — `tools/site/stamp-site.mjs` appends `?v=<sha256[:12]>` to site CSS/JS links and writes the footer build id (the canonical release reference). CI runs it with `--check`.
+- Tests — `node tools/site/test-site.mjs` (English-only, network-status honesty, naming, mining retired, build id, SEO) and `node tools/site/test-layout.mjs` (headless Chrome: 320–1920 px and landscape, no-JS homepage, keyboard, reduced motion).
+- Homepage tokenomics — the 50M ZYN supply cap (a consensus constant) separated from the proposed allocation (under review) and pending governance, with a deliberately disabled Buy/Sell control. It must never accept funds or imply a quote asset/AMM is live before the corresponding protocol gates are closed.
 - `validator.js` — generates local operator shell scripts; it does not generate or upload validator private keys.
 - `validator.css` — launchpad-specific presentation.
 - `robots.txt` / `sitemap.xml` / `site-manifest.json` — production discovery/PWA metadata.
