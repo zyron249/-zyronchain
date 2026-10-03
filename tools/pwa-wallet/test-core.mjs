@@ -437,13 +437,14 @@ await test('web app manifest is valid and installable (name, scope, standalone, 
   assert.deepEqual(pngSize(join(app, 'icons', 'apple-touch-icon-180.png')), [180, 180]);
   for (const marker of ['TESTNET', 'Scam warning', 'No public RPC yet', 'unaudited', 'Add to Home Screen', 'Install app']) assert.ok(html.includes(marker), marker);
   const appJs = readFileSync(join(app, 'app.js'), 'utf8');
-  // English-only UI: no language toggle, no second dictionary, no locale auto-detect, no non-English UI copy.
-  for (const banned of ['data-lang-toggle', 'navigator.language', "lang=\"tr\"", 'hreflang', 'Telefona', 'Türkçe']) {
+  // English-only UI: no language toggle, no second dictionary, no locale auto-detect, no accented/non-English letters.
+  for (const banned of ['data-lang-toggle', 'navigator.language', 'navigator.languages', 'hreflang', 'Intl.DateTimeFormat().resolvedOptions']) {
     assert.ok(!html.includes(banned), `index.html contains ${banned}`);
     assert.ok(!appJs.includes(banned), `app.js contains ${banned}`);
   }
-  assert.doesNotMatch(appJs, /\btr: \{/, 'second-language dictionary in app.js');
-  assert.doesNotMatch(html + appJs, /[çğışÇĞİŞ]/, 'non-English UI characters in the app');
+  assert.deepEqual([...html.matchAll(/\blang="([^"]+)"/g)].map((m) => m[1]), ['en'], 'only lang="en"');
+  assert.doesNotMatch(appJs, /\b[a-z]{2}: \{\n/, 'no second-language dictionary in app.js');
+  assert.doesNotMatch(html + appJs, /[\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF\u0600-\u06FF]/, 'non-English letters in the app UI');
   const keys = [...html.matchAll(/data-i18n="([^"]+)"[^>]*>([^<]*)</g)];
   const english = new Map();
   for (const [, key, text] of keys) { if (english.has(key)) assert.equal(english.get(key), text, `UI key ${key} reused with different text`); english.set(key, text); }
