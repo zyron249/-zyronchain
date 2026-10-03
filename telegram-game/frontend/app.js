@@ -1206,8 +1206,8 @@
     return svg("svg", { viewBox: "0 0 220 220", class: "node-art" }, [
       svg("defs", {}, [
         svg("radialGradient", { id: "nodeGlow", cx: "50%", cy: "50%", r: "50%" }, [
-          svg("stop", { offset: "0", "stop-color": "#3ee0ff", "stop-opacity": "0.85" }),
-          svg("stop", { offset: "1", "stop-color": "#3ee0ff", "stop-opacity": "0" })
+          svg("stop", { offset: "0", "stop-color": "#4fd8fb", "stop-opacity": "0.85" }),
+          svg("stop", { offset: "1", "stop-color": "#4fd8fb", "stop-opacity": "0" })
         ])
       ]),
       svg("circle", { class: "glow", cx: "110", cy: "110", r: "78", fill: "url(#nodeGlow)" }),
@@ -1216,7 +1216,7 @@
       ]),
       svg("g", { class: "orbit" }, [
         svg("circle", { cx: "110", cy: "110", r: "78", fill: "none", stroke: "rgba(62,224,255,0.55)", "stroke-width": "1.6", "stroke-dasharray": "5 8" }),
-        svg("circle", { cx: "188", cy: "110", r: "5", fill: "#3ee0ff" }),
+        svg("circle", { cx: "188", cy: "110", r: "5", fill: "#4fd8fb" }),
         svg("circle", { cx: "110", cy: "32", r: "4", fill: "#9b8cff" }),
         svg("circle", { cx: "46", cy: "156", r: "3.5", fill: "#f3c56b" })
       ]),
@@ -1619,7 +1619,7 @@
       tg.MainButton.hide();
       return;
     }
-    const params = { color: "#3ee0ff", text_color: "#041018", is_visible: true, is_active: true };
+    const params = { color: "#1ccbfb", text_color: "#02050a", is_visible: true, is_active: true };
     if (state.running) {
       params.text = "Stop node";
       params.color = "#ff8d9a";
@@ -1676,17 +1676,9 @@
 
   function applyTheme() {
     if (!tg) return;
-    const theme = tg.themeParams || {};
-    const dark = !tg.colorScheme || tg.colorScheme === "dark";
-    const style = document.documentElement.style;
-    if (theme.button_color) style.setProperty("--accent", theme.button_color);
-    if (theme.button_text_color) style.setProperty("--accent-ink", theme.button_text_color);
-    if (dark) {
-      if (theme.bg_color) style.setProperty("--bg", theme.bg_color);
-      if (theme.text_color) style.setProperty("--ink", theme.text_color);
-      if (theme.hint_color) style.setProperty("--muted", theme.hint_color);
-    }
-    const header = dark && theme.bg_color ? theme.bg_color : "#070b14";
+    // ZYRON CHAIN brand: the app is dark-only and keeps its void background, electric-blue accent and
+    // chrome text in every Telegram theme; Telegram's own header/background are painted to match.
+    const header = "#03070f";
     try {
       if (tg.setHeaderColor) tg.setHeaderColor(header);
       if (tg.setBackgroundColor) tg.setBackgroundColor(header);
