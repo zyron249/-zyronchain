@@ -443,11 +443,15 @@ def test_shell_assets_are_versioned_and_stale_js_does_not_boot(client):
     assert "/assets/logo.png?v=" in stale.text
     assert "logo-panel" in stale.text
     frontend = Path("frontend/app.js").read_text(encoding="utf-8")
-    assert "/assets/logo.png?v=" in frontend
+    # Asset paths come from <meta name="zyron-assets"> ("/assets/" here, "./assets/" on the static host).
+    assert 'ASSETS + "logo.png?v="' in frontend
+    assert '|| "/assets/"' in frontend
     assert "logo-header" in frontend
     assert "logo-gate" in frontend
+    assert 'meta name="zyron-assets" content="/assets/"' in home.text
+    assert 'meta name="zyron-api" content=""' in home.text
     boot = Path("frontend/boot.js").read_text(encoding="utf-8")
-    assert "/assets/logo.png?v=" in boot
+    assert 'assets + "logo.png?v="' in boot
     assert "+url.hash" in stale.text
     recover = client.get(f"/assets/boot-recover.js?v={CLIENT_BUILD}")
     assert recover.status_code == 200

@@ -38,6 +38,8 @@ class Settings:
     telegram_bot_token: str
     telegram_bot_username: str
     webapp_url: str
+    miniapp_url: str
+    cors_origins: tuple[str, ...]
     admin_token: str
     init_data_max_age_seconds: int
     dev_auth_bypass: bool
@@ -60,6 +62,8 @@ class Settings:
             "redis": bool(self.redis_url),
             "botConfigured": bool(self.telegram_bot_token),
             "webappUrl": self.webapp_url,
+            "miniappUrl": self.miniapp_url,
+            "corsOrigins": list(self.cors_origins),
             "devAuthBypass": self.dev_auth_bypass,
             "rpcConfigured": bool(self.zyron_rpc_url),
             "rpcAllowRemote": self.zyron_rpc_allow_remote,
@@ -69,15 +73,62 @@ class Settings:
         }
 
 
+# Play Zyron is served from an always-on static host so it opens instantly even while the free API host sleeps.
+# Override with MINIAPP_URL; outside production the Mini App URL falls back to WEBAPP_URL (same-origin shell).
+DEFAULT_MINIAPP_URL = "https://zyron249.github.io/-zyronchain/"
+
+
+def _origin(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return ""
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme}://{parsed.hostname.lower()}{port}"
+
+
+def _miniapp_url(environment: str, webapp_url: str) -> str:
+    explicit = os.environ.get("MINIAPP_URL", "").strip()
+    if explicit:
+        return explicit
+    if environment == "production":
+        return DEFAULT_MINIAPP_URL
+    return webapp_url
+
+
+def _cors_origins(miniapp_url: str, webapp_url: str) -> tuple[str, ...]:
+    """Browser origins allowed to call the API cross-origin: the static Mini App host plus CORS_ORIGINS.
+
+    The API's own origin needs no CORS. Telegram clients load the Mini App page itself, so the page's origin
+    (the static host) is the only origin that calls the API. No wildcard is ever produced.
+    """
+    origins: list[str] = []
+    own = _origin(webapp_url)
+    for raw in [miniapp_url, *os.environ.get("CORS_ORIGINS", "").replace(";", ",").split(",")]:
+        raw = raw.strip()
+        if not raw:
+            continue
+        origin = _origin(raw)
+        if not origin:
+            raise ConfigError(f"CORS origin is not an http(s) URL: {raw}")
+        if origin != own and origin not in origins:
+            origins.append(origin)
+    return tuple(origins)
+
+
 def load_settings() -> Settings:
     redis = os.environ.get("REDIS_URL", "").strip()
+    environment = os.environ.get("ENVIRONMENT", "development").strip() or "development"
+    webapp_url = os.environ.get("WEBAPP_URL", "").strip()
+    miniapp_url = _miniapp_url(environment, webapp_url)
     return Settings(
-        environment=os.environ.get("ENVIRONMENT", "development").strip() or "development",
+        environment=environment,
         database_url=os.environ.get("DATABASE_URL", "").strip(),
         redis_url=redis or None,
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_bot_username=os.environ.get("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@"),
-        webapp_url=os.environ.get("WEBAPP_URL", "").strip(),
+        webapp_url=webapp_url,
+        miniapp_url=miniapp_url,
+        cors_origins=_cors_origins(miniapp_url, webapp_url),
         admin_token=os.environ.get("ADMIN_TOKEN", "").strip(),
         init_data_max_age_seconds=_int("INIT_DATA_MAX_AGE_SECONDS", 43_200),
         dev_auth_bypass=_bool("DEV_AUTH_BYPASS", False),
@@ -117,6 +168,10 @@ def validate_settings(settings: Settings) -> None:
             raise ConfigError("TELEGRAM_BOT_TOKEN is required in production")
         if not settings.webapp_url.startswith("https://"):
             raise ConfigError("WEBAPP_URL must be https in production")
+        if not settings.miniapp_url.startswith("https://"):
+            raise ConfigError("MINIAPP_URL must be https in production")
+        if any(not origin.startswith("https://") for origin in settings.cors_origins):
+            raise ConfigError("CORS origins must be https in production")
         if settings.referral_ip_salt in {"", "dev-salt-change-me"} or len(settings.referral_ip_salt) < 16:
             raise ConfigError("REFERRAL_IP_SALT must be a non-default value of at least 16 characters")
     if settings.allow_test_clock and settings.environment != "test":

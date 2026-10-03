@@ -5,25 +5,35 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
+{{EXTRA_HEAD}}
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#03070f" />
+  <meta name="theme-color" content="#02050a" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="robots" content="noindex" />
   <meta name="zyron-build" content="{{CLIENT_BUILD}}" />
   <meta name="zyron-shell" content="{{SHELL_ID}}" />
+  <meta name="zyron-api" content="{{API_BASE}}" />
+  <meta name="zyron-assets" content="{{ASSET_BASE}}" />
   <title>ZYRON NODE</title>
-  <link rel="stylesheet" href="/assets/styles.css?v={{CLIENT_BUILD}}" />
+  <link rel="icon" type="image/png" href="{{ASSET_BASE}}logo.png?v={{CLIENT_BUILD}}" />
+  <link rel="preload" as="image" href="{{ASSET_BASE}}logo.png?v={{CLIENT_BUILD}}" />
+  <link rel="stylesheet" href="{{ASSET_BASE}}styles.css?v={{CLIENT_BUILD}}" />
   <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
 </head>
 <body>
   <div id="app" class="shell">
-    <section class="gate gate-brand" aria-busy="true">
-      <img class="logo logo-gate" src="/assets/logo.png?v={{CLIENT_BUILD}}" alt="ZYRON" width="210" height="210" />
-      <p class="muted">Connecting…</p>
+    <section class="gate gate-brand splash" aria-busy="true" data-wake="connecting">
+      <img class="logo logo-gate" src="{{ASSET_BASE}}logo.png?v={{CLIENT_BUILD}}" alt="ZYRON" width="210" height="210" />
+      <p class="eyebrow">ZyronChain</p>
+      <h1 class="splash-title">ZYRON NODE</h1>
+      <p class="muted" role="status">Connecting…</p>
     </section>
   </div>
   <div id="toast-root" aria-live="polite"></div>
   <div id="modal-root"></div>
-  <script src="/assets/boot-recover.js?v={{CLIENT_BUILD}}"></script>
-  <script src="/assets/boot.js?v={{CLIENT_BUILD}}"></script>
-  <script src="/assets/app.js?v={{CLIENT_BUILD}}" defer></script>
+  <script src="{{ASSET_BASE}}boot-recover.js?v={{CLIENT_BUILD}}"></script>
+  <script src="{{ASSET_BASE}}wake.js?v={{CLIENT_BUILD}}"></script>
+  <script src="{{ASSET_BASE}}boot.js?v={{CLIENT_BUILD}}"></script>
+  <script src="{{ASSET_BASE}}app.js?v={{CLIENT_BUILD}}" defer></script>
 </body>
 </html>

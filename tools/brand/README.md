@@ -45,3 +45,4 @@ void background is `#c3ccd6`, muted `#9aa6b4` (≥ 7:1), both WCAG AA.
 | `website/apple-touch-icon.png` (180), `icon-192.png`, `brand/icon-512.png` | home screen / JSON-LD logo |
 | `website/app/icons/*` (192/512 any + maskable, 180 apple) | PWA wallet |
 | `telegram-game/frontend/logo.png` (420, transparent) | ZYRON NODE Mini App |
+| `telegram-game/frontend/points-mark-{52,104,156}.png` (transparent, tight crop) | Zyron Points mark in ZYRON NODE, 1x/2x/3x (`--points-only` rebuilds just these) |

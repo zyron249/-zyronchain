@@ -1,0 +1,73 @@
+name: ZYRON NODE static shell (GitHub Pages)
+
+# Play Zyron opens from this always-on static site, so the Mini App paints instantly even while the free
+# zyron-node API host is asleep. The page calls the API at https://zyron-node.onrender.com (CORS-allowed only
+# for this origin) and shows a "Waking server…" state until it answers. Pull requests build only; main deploys.
+
+on:
+  pull_request:
+    paths:
+      - 'telegram-game/frontend/**'
+      - 'telegram-game/scripts/build_static.py'
+      - 'telegram-game/src/zyron_node/shell.py'
+      - 'telegram-game/src/zyron_node/buildinfo.py'
+      - '.github/workflows/telegram-game-pages.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'telegram-game/frontend/**'
+      - 'telegram-game/scripts/build_static.py'
+      - 'telegram-game/src/zyron_node/shell.py'
+      - 'telegram-game/src/zyron_node/buildinfo.py'
+      - '.github/workflows/telegram-game-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-game-pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build static shell
+        run: python3 telegram-game/scripts/build_static.py --out _site --api https://zyron-node.onrender.com
+      - name: Check output
+        run: |
+          test -f _site/index.html
+          grep -q 'connect-src https://zyron-node.onrender.com;' _site/index.html
+          grep -q 'name="zyron-api" content="https://zyron-node.onrender.com"' _site/index.html
+          ! grep -q '{{' _site/index.html
+          node --check _site/assets/app.js
+          node --check _site/assets/wake.js
+          cat _site/build.txt
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
