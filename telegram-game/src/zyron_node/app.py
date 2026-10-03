@@ -16,6 +16,7 @@ from zyron_node.config import Settings, validate_settings
 from zyron_node.db import create_pool, migrate
 from zyron_node.logging_setup import setup_logging
 from zyron_node.rpc import ChainClient, httpx_fetch
+from zyron_node.shell import STATIC_ASSETS, render_index
 
 log = logging.getLogger("zyron_node")
 FRONTEND = Path(__file__).resolve().parents[2] / "frontend"
@@ -29,6 +30,16 @@ CSP = (
     "form-action 'self'; "
     "frame-ancestors 'self' https://web.telegram.org https://webk.telegram.org https://webz.telegram.org"
 )
+CORS_ALLOW_METHODS = "GET, POST"
+CORS_ALLOW_HEADERS = "Authorization, Content-Type, Accept"
+CORS_MAX_AGE = "600"
+
+
+def cors_path(path: str) -> bool:
+    """Player API and health checks only. Admin routes never answer cross-origin."""
+    if path in {"/healthz", "/readyz"}:
+        return True
+    return path.startswith("/api/") and not path.startswith("/api/admin")
 
 
 def stale_client_script() -> str:
@@ -101,18 +112,42 @@ def create_app(settings: Settings) -> FastAPI:
         redis_url=settings.redis_url,
     )
 
+    allow_headers = CORS_ALLOW_HEADERS + (", X-Dev-Telegram-Id" if settings.dev_auth_bypass else "")
+
     @app.middleware("http")
     async def guard(request, call_next):
+        path = request.url.path
+        origin = request.headers.get("origin", "")
+        cross = bool(origin) and cors_path(path)
+        allowed = cross and origin in settings.cors_origins
+        if request.method == "OPTIONS" and request.headers.get("access-control-request-method"):
+            if allowed:
+                preflight = Response(status_code=204)
+                preflight.headers["Access-Control-Allow-Origin"] = origin
+                preflight.headers["Access-Control-Allow-Methods"] = CORS_ALLOW_METHODS
+                preflight.headers["Access-Control-Allow-Headers"] = allow_headers
+                preflight.headers["Access-Control-Max-Age"] = CORS_MAX_AGE
+            else:
+                preflight = JSONResponse(error_payload("cors_origin", "Origin not allowed."), status_code=403)
+            preflight.headers["Vary"] = "Origin"
+            preflight.headers["X-Content-Type-Options"] = "nosniff"
+            preflight.headers["Cache-Control"] = "no-store"
+            return preflight
         length = request.headers.get("content-length")
         if length and length.isdigit() and int(length) > 16_384:
             return JSONResponse(error_payload("too_large", "Request is too large."), status_code=413)
         started = time.perf_counter()
         response = await call_next(request)
+        if cors_path(path):
+            response.headers["Vary"] = "Origin"
+        if allowed:
+            # No credentials mode: auth travels in the Authorization header (Telegram initData), never cookies.
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Expose-Headers"] = "Retry-After"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = CSP
         version = request.query_params.get("v", "")
-        path = request.url.path
         if path.startswith("/assets/") and version == CLIENT_BUILD and response.status_code == 200:
             response.headers["Cache-Control"] = "public, max-age=86400, immutable"
         else:
@@ -129,9 +164,9 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/")
     def index():
-        html = (FRONTEND / "index.html").read_text(encoding="utf-8")
-        html = html.replace("{{CLIENT_BUILD}}", CLIENT_BUILD).replace("{{SHELL_ID}}", SHELL_ID)
-        return HTMLResponse(html)
+        # Same-origin shell for links that still point at the API host. Play Zyron itself opens from the
+        # always-on static host (settings.miniapp_url), so a sleeping API no longer blocks the first paint.
+        return HTMLResponse(render_index())
 
     @app.get("/admin")
     def admin_page():
@@ -139,7 +174,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/assets/{name}")
     def asset(name: str, v: str = ""):
-        if name not in {"app.js", "admin.js", "styles.css", "boot.js", "logo.png", "boot-recover.js"}:
+        if name not in {*STATIC_ASSETS, "admin.js"}:
             return JSONResponse(error_payload("not_found", "Not found."), status_code=404)
         if name == "app.js" and v != CLIENT_BUILD:
             return Response(stale_client_script(), media_type="text/javascript")

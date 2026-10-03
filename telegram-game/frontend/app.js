@@ -2,6 +2,13 @@
   const SHELL = "tiers-ledger";
   const buildMeta = document.querySelector('meta[name="zyron-build"]');
   const BUILD = buildMeta ? buildMeta.getAttribute("content") || "" : "";
+  // Host layout. Same-origin: the API serves this page (API_BASE ""). Decoupled: an always-on static host serves
+  // the page and the API lives at API_BASE (an https origin), so the page paints before the API is awake.
+  const apiMeta = document.querySelector('meta[name="zyron-api"]');
+  const API_BASE = ((apiMeta && apiMeta.getAttribute("content")) || "").replace(/\/+$/, "");
+  const DECOUPLED = /^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(API_BASE) || /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(API_BASE);
+  const assetsMeta = document.querySelector('meta[name="zyron-assets"]');
+  const ASSETS = (assetsMeta && assetsMeta.getAttribute("content")) || "/assets/";
   const root = document.querySelector("#app");
   if (root) root.dataset.booted = "1";
   const toasts = document.querySelector("#toast-root");
@@ -34,6 +41,7 @@
     holdUntil: 0,
     blocked: "",
     devId: localStorage.getItem("zyronDevId") || "",
+    wake: { phase: "connecting", startedAt: Date.now(), attempt: 0, ready: false },
     bootAttempt: 0,
     introChecked: false,
     introStep: 0,
@@ -41,7 +49,6 @@
     activityBusy: false,
     boardBusy: false
   };
-  let coinSeq = 0;
   let chromeKey = "";
 
   const tg = window.Telegram && window.Telegram.WebApp;
@@ -96,7 +103,7 @@
     const timer = controller ? setTimeout(function () { controller.abort(); }, timeoutMs) : 0;
     let response;
     try {
-      response = await fetch(path, {
+      response = await fetch((DECOUPLED ? API_BASE : "") + path, {
         method: (options && options.method) || "GET",
         headers: headers,
         body: options && options.body ? JSON.stringify(options.body) : undefined,
@@ -203,7 +210,7 @@
     const previous = toasts.querySelector(".float-gain");
     if (previous) previous.remove();
     const node = el("div", { class: "float-gain" }, [
-      el("b", { text: "+" + formatPoints(amount) }),
+      el("b", { class: "gain-line" }, [pointsMark("md"), document.createTextNode("+" + formatPoints(amount))]),
       el("span", { text: spent ? "Zyron Points · −" + spent + " energy" : "Zyron Points" })
     ]);
     toasts.append(node);
@@ -312,10 +319,17 @@
     state.me = me;
     watchTier();
     state.energyReceivedAt = Date.now();
-    state.upgrades = await api("/api/upgrades", { timeoutMs: timeoutMs });
-    state.chests = await api("/api/chests", { timeoutMs: timeoutMs });
-    state.achievements = await api("/api/achievements", { timeoutMs: timeoutMs });
-    state.ranks = await api("/api/leaderboard?board=" + encodeURIComponent(state.board), { timeoutMs: timeoutMs });
+    // The rest of the session loads in parallel once the profile is known (one round trip instead of four).
+    const rest = await Promise.all([
+      api("/api/upgrades", { timeoutMs: timeoutMs }),
+      api("/api/chests", { timeoutMs: timeoutMs }),
+      api("/api/achievements", { timeoutMs: timeoutMs }),
+      api("/api/leaderboard?board=" + encodeURIComponent(state.board), { timeoutMs: timeoutMs })
+    ]);
+    state.upgrades = rest[0];
+    state.chests = rest[1];
+    state.achievements = rest[2];
+    state.ranks = rest[3];
     if (!state.introChecked) {
       state.introChecked = true;
       if (!localStorage.getItem("zyronNodeIntro")) state.introStep = 1;
@@ -356,18 +370,101 @@
     const size = variant === "header" ? 72 : variant === "panel" ? 156 : 210;
     return el("img", {
       class: "logo " + variantClass,
-      src: "/assets/logo.png?v=" + encodeURIComponent(BUILD),
+      src: ASSETS + "logo.png?v=" + encodeURIComponent(BUILD),
       alt: "ZYRON",
       width: size,
       height: size
     });
   }
 
+  function wakeCopy() {
+    const phase = state.wake.phase;
+    if (phase === "updating") return { title: "Game server is updating", text: "A new version is being deployed. Play Zyron continues by itself in a moment." };
+    if (phase === "stalled") return { title: "Still waking the server", text: "This is taking longer than usual. Play Zyron keeps retrying; you can also reload." };
+    if (phase === "waking") return { title: "Waking server…", text: "The game server sleeps when nobody plays and needs about 30–60 seconds to start. Your node is safe; nothing is lost." };
+    return { title: "Connecting…", text: "" };
+  }
+
   function connectingPanel() {
-    return el("section", { class: "gate gate-brand", "aria-busy": "true" }, [
+    const phase = state.wake.phase;
+    const copy = wakeCopy();
+    const waking = phase === "waking" || phase === "stalled" || phase === "updating";
+    const panel = el("section", { class: "gate gate-brand splash", "aria-busy": "true", "data-wake": phase }, [
       logoMark("gate"),
-      el("p", { class: "muted", text: "Connecting…" })
+      el("p", { class: "eyebrow", text: "ZyronChain" }),
+      el("h1", { class: "splash-title", text: "ZYRON NODE" }),
+      el("p", { class: waking ? "wake-title" : "muted", "data-wake-title": "1", role: "status", text: copy.title })
     ]);
+    if (waking) {
+      const pct = Math.round(window.ZyronWake ? window.ZyronWake.progressFor(Date.now() - state.wake.startedAt) * 100 : 0);
+      const fill = el("i");
+      fill.style.width = pct + "%"; // CSSOM, not a style attribute: allowed under style-src 'self'
+      const bar = el("div", { class: "wake-bar", role: "progressbar", "aria-label": "Server start-up", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(pct), "data-wake-bar": "1" }, [fill]);
+      panel.append(
+        bar,
+        el("p", { class: "fine", text: copy.text }),
+        el("p", { class: "wake-meta mono", "data-wake-meta": "1", text: wakeMeta() }),
+        el("button", { class: "ghost wake-wait", type: "button", disabled: "disabled", "data-wake-wait": "1", text: "Start node unlocks when the server is ready" })
+      );
+      if (phase === "stalled") {
+        panel.append(el("button", { class: "ghost", type: "button", text: "Reload", onclick: function () { replaceWithBuild(String(Date.now())); } }));
+      }
+    }
+    return panel;
+  }
+
+  function wakeMeta() {
+    const seconds = Math.max(0, Math.round((Date.now() - state.wake.startedAt) / 1000));
+    return seconds + " s · attempt " + Math.max(1, state.wake.attempt) + " · retrying automatically";
+  }
+
+  function tickWake() {
+    if (state.wake.ready && state.wake.phase !== "updating") return;
+    const policy = window.ZyronWake;
+    if (!policy) return;
+    if (state.wake.phase !== "updating") {
+      const next = policy.phaseFor(Date.now() - state.wake.startedAt);
+      if (next !== state.wake.phase) {
+        state.wake.phase = next;
+        if (!state.meta && !state.error) render();
+        return;
+      }
+    }
+    const bar = root.querySelector("[data-wake-bar]");
+    if (bar) {
+      const pct = Math.round(policy.progressFor(Date.now() - state.wake.startedAt) * 100);
+      bar.setAttribute("aria-valuenow", String(pct));
+      bar.firstChild.style.width = pct + "%";
+    }
+    const meta = root.querySelector("[data-wake-meta]");
+    if (meta) meta.textContent = wakeMeta();
+  }
+
+  async function waitForServer(token) {
+    if (state.wake.ready) return true;
+    const policy = window.ZyronWake;
+    if (!policy) return true;
+    const outcome = await policy.waitUntilAwake({
+      now: function () { return Date.now(); },
+      sleep: sleep,
+      cancelled: function () { return token !== bootToken; },
+      onAttempt: function (attempt) { state.wake.attempt = attempt; },
+      ping: async function (timeoutMs) {
+        const controller = new AbortController();
+        const timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+        try {
+          const response = await fetch((DECOUPLED ? API_BASE : "") + "/healthz?t=" + Date.now(), { cache: "no-store", signal: controller.signal });
+          if (!response.ok) return null;
+          return await response.json();
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+    });
+    if (outcome.phase !== "ready") return false;
+    state.wake.ready = true;
+    state.wake.phase = "ready";
+    return true;
   }
 
   function renderGate() {
@@ -498,7 +595,7 @@
     section.append(el("article", { class: "balance" }, [
       el("p", { class: "kicker", text: "Zyron Points" }),
       el("div", { class: "balance-row" }, [
-        coinIcon(42),
+        pointsMark("lg"),
         el("b", { "data-points": "1", text: formatPoints(p.points) })
       ]),
       el("p", { class: "fine", text: "Lifetime " + formatPoints(p.lifetimePoints) + " · off-chain · not ZYN" }),
@@ -966,7 +1063,7 @@
         el("span", { text: entry.displayName + (entry.you ? " · you" : "") + " · Lv " + entry.nodeLevel }),
         tierBadge(entry.tier, true)
       ]),
-      el("strong", { text: formatPoints(entry.score) })
+      el("strong", { class: "score" }, [pointsMark("sm"), document.createTextNode(formatPoints(entry.score))])
     ]);
   }
 
@@ -1169,7 +1266,9 @@
       const result = modal.result;
       sheet.append(
         el("p", { class: "eyebrow", text: result.replayed ? "Already collected" : result.title }),
-        el("div", { class: "reveal", text: result.replayed ? "Open" : "+" + formatPoints(result.gained) }),
+        result.replayed
+          ? el("div", { class: "reveal", text: "Open" })
+          : el("div", { class: "reveal" }, [pointsMark("md"), document.createTextNode("+" + formatPoints(result.gained))]),
         el("p", { text: result.replayed ? "This chest was already collected. Your balance was not changed." : "Zyron Points · " + result.detail }),
         el("p", { class: "fine", text: modal.count > 1 ? "Opened " + modal.index + " / " + modal.count + " · this batch +" + formatPoints(modal.total) : "Balance " + formatPoints(result.points) })
       );
@@ -1184,20 +1283,22 @@
     refresh().catch(fail);
   }
 
-  function coinIcon(size) {
-    const id = "cg" + (++coinSeq);
-    return svg("svg", { viewBox: "0 0 64 64", class: "coin", width: size || 28, height: size || 28 }, [
-      svg("defs", {}, [
-        svg("linearGradient", { id: id, x1: "0", y1: "0", x2: "0", y2: "1" }, [
-          svg("stop", { offset: "0", "stop-color": "#fff1c4" }),
-          svg("stop", { offset: "0.55", "stop-color": "#f3c56b" }),
-          svg("stop", { offset: "1", "stop-color": "#b7812e" })
-        ])
-      ]),
-      svg("circle", { cx: "32", cy: "32", r: "28", fill: "url(#" + id + ")", stroke: "#7af0ff", "stroke-width": "3" }),
-      svg("circle", { cx: "32", cy: "32", r: "21", fill: "none", stroke: "rgba(80,48,8,0.45)", "stroke-width": "1.5" }),
-      svg("path", { d: "M22 24h18l-12 10h12l-16 12", fill: "none", stroke: "#5a3a10", "stroke-width": "3.2", "stroke-linecap": "round", "stroke-linejoin": "round" })
-    ]);
+  // Zyron Points mark: the transparent ZyronChain wolf + Z (tight crop), 1x/2x/3x so it stays crisp on every
+  // screen. Decorative (alt=""): every use sits next to text that already says "Zyron Points" or a "+N" amount.
+  function pointsMark(variant) {
+    const v = "?v=" + encodeURIComponent(BUILD);
+    const size = variant === "lg" ? 52 : variant === "md" ? 30 : 16;
+    return el("img", {
+      class: "points-mark points-mark-" + (variant || "sm"),
+      src: ASSETS + "points-mark-52.png" + v,
+      srcset: ASSETS + "points-mark-52.png" + v + " 1x, " + ASSETS + "points-mark-104.png" + v + " 2x, " + ASSETS + "points-mark-156.png" + v + " 3x",
+      width: size,
+      height: size,
+      alt: "",
+      "aria-hidden": "true",
+      decoding: "async",
+      draggable: "false"
+    });
   }
 
   function nodeArt(energy) {
@@ -1210,16 +1311,16 @@
       ]),
       svg("circle", { class: "glow", cx: "110", cy: "110", r: "78", fill: "url(#nodeGlow)" }),
       svg("g", { class: "orbit slow" }, [
-        svg("circle", { cx: "110", cy: "110", r: "96", fill: "none", stroke: "rgba(155,140,255,0.45)", "stroke-width": "1.2", "stroke-dasharray": "2 9" })
+        svg("circle", { cx: "110", cy: "110", r: "96", fill: "none", stroke: "rgba(44,104,173,0.6)", "stroke-width": "1.2", "stroke-dasharray": "2 9" })
       ]),
       svg("g", { class: "orbit" }, [
-        svg("circle", { cx: "110", cy: "110", r: "78", fill: "none", stroke: "rgba(62,224,255,0.55)", "stroke-width": "1.6", "stroke-dasharray": "5 8" }),
+        svg("circle", { cx: "110", cy: "110", r: "78", fill: "none", stroke: "rgba(79,216,251,0.55)", "stroke-width": "1.6", "stroke-dasharray": "5 8" }),
         svg("circle", { cx: "188", cy: "110", r: "5", fill: "#4fd8fb" }),
-        svg("circle", { cx: "110", cy: "32", r: "4", fill: "#9b8cff" }),
-        svg("circle", { cx: "46", cy: "156", r: "3.5", fill: "#f3c56b" })
+        svg("circle", { cx: "110", cy: "32", r: "4", fill: "#0a9ff5" }),
+        svg("circle", { cx: "46", cy: "156", r: "3.5", fill: "#d8dce0" })
       ]),
-      svg("polygon", { class: "hex", points: hexPoints(110, 110, 54), fill: "rgba(8,14,28,0.92)", stroke: "#7af0ff", "stroke-width": "2" }),
-      svg("circle", { class: "core", cx: "110", cy: "110", r: "30", fill: "#10192c", stroke: "#f3c56b", "stroke-width": "2" }),
+      svg("polygon", { class: "hex", points: hexPoints(110, 110, 54), fill: "rgba(7,13,24,0.94)", stroke: "#4fd8fb", "stroke-width": "2" }),
+      svg("circle", { class: "core", cx: "110", cy: "110", r: "30", fill: "#0b1526", stroke: "#0a9ff5", "stroke-width": "2.4" }),
       svg("text", { class: "core-label", "data-core-energy": "1", x: "110", y: "116", "text-anchor": "middle", text: String(energy) })
     ]);
   }
@@ -1227,11 +1328,13 @@
   function chestArt(open) {
     return svg("svg", { viewBox: "0 0 120 96", class: "chest-art" + (open ? " is-open" : "") }, [
       svg("g", { class: "lid", transform: open ? "rotate(-22 60 42) translate(0 -8)" : null }, [
-        svg("path", { d: "M18 44 V32 Q18 14 60 14 Q102 14 102 32 V44 Z", fill: "#f3c56b", stroke: "#7af0ff", "stroke-width": "2" })
+        svg("path", { d: "M18 44 V32 Q18 14 60 14 Q102 14 102 32 V44 Z", fill: "#14243d", stroke: "#4fd8fb", "stroke-width": "2" }),
+        svg("path", { d: "M30 30 H90", stroke: "rgba(216,220,224,0.35)", "stroke-width": "2", "stroke-linecap": "round" })
       ]),
-      svg("rect", { x: "12", y: "42", width: "96", height: "42", rx: "8", fill: "#c9923a", stroke: "#7af0ff", "stroke-width": "2" }),
-      svg("circle", { cx: "60", cy: "62", r: "9", fill: "#fff1c4", stroke: "#5a3a10", "stroke-width": "2" }),
-      svg("path", { d: "M55 62h10", stroke: "#5a3a10", "stroke-width": "1.7", "stroke-linecap": "round" })
+      svg("rect", { x: "12", y: "42", width: "96", height: "42", rx: "8", fill: "#0b1526", stroke: "#4fd8fb", "stroke-width": "2" }),
+      svg("path", { d: "M12 56 H108", stroke: "rgba(79,216,251,0.25)", "stroke-width": "1.5" }),
+      svg("circle", { cx: "60", cy: "62", r: "9", fill: "#d8dce0", stroke: "#0a9ff5", "stroke-width": "2" }),
+      svg("path", { d: "M60 58v8", stroke: "#02050a", "stroke-width": "2", "stroke-linecap": "round" })
     ]);
   }
 
@@ -1620,8 +1723,8 @@
     const params = { color: "#1ccbfb", text_color: "#02050a", is_visible: true, is_active: true };
     if (state.running) {
       params.text = "Stop node";
-      params.color = "#ff8d9a";
-      params.text_color = "#2a0c14";
+      params.color = "#d8dce0";
+      params.text_color = "#02050a";
     } else if (state.tab === "chests" && readyChests().length) {
       params.text = "Open supply chest";
     } else if (state.tab !== "home") {
@@ -1660,6 +1763,8 @@
       if (tg.onEvent) {
         tg.onEvent("themeChanged", applyTheme);
         tg.onEvent("viewportChanged", syncViewport);
+        tg.onEvent("safeAreaChanged", syncViewport);
+        tg.onEvent("contentSafeAreaChanged", syncViewport);
       }
       if (tg.BackButton) {
         tg.BackButton.onClick(function () {
@@ -1676,10 +1781,11 @@
     if (!tg) return;
     // ZYRON CHAIN brand: the app is dark-only and keeps its void background, electric-blue accent and
     // chrome text in every Telegram theme; Telegram's own header/background are painted to match.
-    const header = "#03070f";
+    const header = "#02050a";
     try {
       if (tg.setHeaderColor) tg.setHeaderColor(header);
       if (tg.setBackgroundColor) tg.setBackgroundColor(header);
+      if (tg.setBottomBarColor) tg.setBottomBarColor(header);
     } catch (error) {
       try {
         if (tg.setHeaderColor) tg.setHeaderColor("bg_color");
@@ -1766,11 +1872,14 @@
     state.errorCode = "";
     state.holdUntil = 0;
     if (!state.me) render();
+    if (!(await waitForServer(token))) return;
+    if (token !== bootToken) return;
     let outcome;
     try {
       outcome = await policy.recoverBoot({
         shell: SHELL,
         build: BUILD,
+        decoupled: DECOUPLED,
         attempts: policy.ATTEMPTS,
         sleep: sleep,
         onRetry: function (attempt) {
@@ -1808,6 +1917,13 @@
       render();
       return;
     }
+    if (outcome.phase === "updating") {
+      // The static shell is newer or older than the API that is deploying. Wait, then try again.
+      state.wake.phase = "updating";
+      render();
+      setTimeout(function () { if (token === bootToken && !state.me) { state.wake.phase = "ready"; boot(); } }, 10000);
+      return;
+    }
     if (outcome.phase === "error") {
       fail(outcome.error);
       return;
@@ -1831,6 +1947,7 @@
   }
 
   setInterval(onTick, 250);
+  setInterval(tickWake, 500);
 
   if (!window.ZyronBoot) {
     state.blocked = "shell";

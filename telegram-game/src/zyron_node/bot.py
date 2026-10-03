@@ -144,7 +144,7 @@ def run_bot(stop: threading.Event) -> None:
         while not stop.is_set():
             if time.monotonic() >= next_menu:
                 try:
-                    sync_telegram_menu(token, settings.webapp_url)
+                    sync_telegram_menu(token, settings.miniapp_url)
                     log.info("telegram commands and Play Zyron menu button registered")
                     next_menu = time.monotonic() + MENU_REFRESH_OK_SECONDS
                 except Exception:  # noqa: BLE001 — keep polling; retry the versioned button
@@ -204,7 +204,7 @@ def handle_private_command(pool, settings, user: dict, command: str, argument: s
     except Exception:  # noqa: BLE001 — the chat should still get a safe reply
         log.warning("profile lookup failed")
         profile = None
-    reply = reply_for(command, argument, profile, settings.webapp_url)
+    reply = reply_for(command, argument, profile, settings.miniapp_url)
     if command == "invite" and profile:
         reply["text"] = "Invite operators with:\n" + invite_link(
             settings.telegram_bot_username, profile["player"]["referral"]["code"]

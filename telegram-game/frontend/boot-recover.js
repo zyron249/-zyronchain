@@ -34,7 +34,15 @@
     return !!(initData || devId);
   }
 
-  function classifyMeta(meta, shell, build) {
+  // Same-origin shell (served by the API): a different build means this page is an old copy, so reload it.
+  // Decoupled shell (served by the static host): the API deploys separately, so a different build is normal and
+  // only a different shell id (API shape) matters; that means the API is mid-deploy, so wait and retry.
+  function classifyMeta(meta, shell, build, decoupled) {
+    if (decoupled) {
+      if (!meta || !meta.clientBuild || !meta.shell) return "blocked";
+      if (meta.shell !== shell) return "updating";
+      return "continue";
+    }
     if (!meta || meta.shell !== shell || !meta.clientBuild) return "blocked";
     if (build && meta.clientBuild !== build) return "reload";
     return "continue";
@@ -77,8 +85,9 @@
     var attempts = env.attempts || ATTEMPTS;
     var retryOpts = { attempts: attempts, sleep: env.sleep, onRetry: env.onRetry };
     return withRetry(function () { return env.fetchMeta(); }, retryOpts).then(function (meta) {
-      var kind = classifyMeta(meta, env.shell, env.build);
+      var kind = classifyMeta(meta, env.shell, env.build, !!env.decoupled);
       if (kind === "blocked") return { phase: "blocked", meta: meta || null };
+      if (kind === "updating") return { phase: "updating", meta: meta };
       if (kind === "reload") return { phase: "reload", meta: meta, build: meta.clientBuild };
       return Promise.resolve(env.ensureAuth()).then(function (authed) {
         if (env.onMeta) env.onMeta(meta);

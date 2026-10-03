@@ -193,12 +193,29 @@ def og_image(banner: Image.Image) -> Image.Image:
     return out
 
 
+POINTS_MARK_PX = 52  # CSS px of the largest use (balance card); exported at 1x / 2x / 3x
+
+
+def game_points_marks(tight: Image.Image) -> None:
+    """Transparent wolf + Z mark that stands for Zyron Points in ZYRON NODE (replaces the old gold coin)."""
+    for scale in (1, 2, 3):
+        px = POINTS_MARK_PX * scale
+        img = resize_rgba(tight, (px, px))
+        if scale == 1:
+            img = img.filter(ImageFilter.UnsharpMask(radius=0.6, percent=60, threshold=1))
+        save_png(img, GAME / f"points-mark-{px}.png")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--extra-out", type=Path, default=None)
+    ap.add_argument("--points-only", action="store_true", help="only write the ZYRON NODE points marks")
     args = ap.parse_args()
 
     square = load("zyron-chain-logo-square.png")
+    if args.points_only:
+        game_points_marks(to_rgba(crop_mark(square, TIGHT_BOX)))
+        return
     banner = load("zyron-chain-banner.png")
 
     mark_black = crop_mark(square, MARK_BOX)            # 810x810, ring included, black background
@@ -254,6 +271,7 @@ def main() -> None:
 
     # ---- Telegram Mini App (ZYRON NODE) ----
     save_png(resize_rgba(mark, (420, 420)), GAME / "logo.png")
+    game_points_marks(tight)
 
     if args.extra_out:
         out = args.extra_out

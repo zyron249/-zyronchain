@@ -40,7 +40,8 @@ python -m zyron_node
 
 The API listens on `0.0.0.0:$PORT` (default 8000).
 
-- Mini App: `http://127.0.0.1:8000/`
+- Mini App (same-origin shell): `http://127.0.0.1:8000/`
+- Static shell against a local API: `python scripts/build_static.py --out /tmp/site --api http://127.0.0.1:8000`, serve `/tmp/site`, and start the API with `CORS_ORIGINS=http://127.0.0.1:<static port>`
 - Admin: `http://127.0.0.1:8000/admin`
 - Health: `/healthz` and `/readyz`
 
@@ -63,6 +64,42 @@ docker compose up --build
 Compose runs the API and the bot as separate containers. The `api` service overrides the image command so it does not start a second poller beside the `bot` service.
 
 The image default command is `scripts/start-web-and-bot.sh`. It starts `python -m zyron_node.bot` in the background and execs `python -m zyron_node` in the foreground, with the image `PYTHONPATH` and the rest of the container environment. On a single Render Free web service, leave Docker Command empty so that entrypoint runs both processes. Free web services still spin down after inactivity, so the bot polls only while the service is awake. A dedicated worker running `python -m zyron_node.bot`, with the web service on `python -m zyron_node`, is still the better split when a worker is available.
+
+## Hosting: instant open
+
+Render Free web services sleep after 15 minutes without inbound traffic and need 30–60 s to start. Play Zyron
+therefore opens from an always-on static host, and only the API runs on the `zyron-node` web service:
+
+| Piece | Where | Notes |
+|---|---|---|
+| Play Zyron shell (HTML, JS, CSS, images) | GitHub Pages, `https://zyron249.github.io/-zyronchain/` | Built by `scripts/build_static.py`, deployed by `.github/workflows/telegram-game-pages.yml` on merge to `main`. Never sleeps. |
+| Game API + bot | Render web service `zyron-node` (`https://zyron-node.onrender.com`) | Unchanged Docker service. Still serves `/` for older links. |
+| Keep-warm | `.github/workflows/telegram-game-keep-warm.yml` | Pings `/healthz` (no database) every 10 minutes. Best effort. |
+
+How a cold open looks: the branded splash paints from the static host at once; `frontend/wake.js` pings
+`/healthz` and, after 1.2 s without an answer, shows **Waking server…** with a progress bar, elapsed time and
+automatic retries. Start node and every other action stay disabled until the API answers. Nothing is ever
+sent to game endpoints before that.
+
+Security of the split:
+
+- The API sends CORS headers only to origins in `cors_origins`: the origin of `MINIAPP_URL` plus optional
+  `CORS_ORIGINS` (comma-separated, https in production, no wildcard). Admin routes never answer cross-origin.
+  No cookies or credentials mode; auth stays in the `Authorization: tma <initData>` header and the HMAC check
+  with the bot token stays server-side.
+- The static page carries a meta CSP: `default-src 'none'`, scripts from itself and `telegram.org`, and
+  `connect-src` limited to the API origin. It holds no secrets.
+- The bot points the menu button and every Play Zyron button at `MINIAPP_URL`. In production it defaults to the
+  GitHub Pages URL, so no Render environment change is needed. Set `MINIAPP_URL` only to move the shell.
+
+Telegram (BotFather) notes: menu and inline Play buttons are set by the bot itself on start. If a Main Mini App
+or a direct-link Mini App was configured in BotFather, update its URL there to
+`https://zyron249.github.io/-zyronchain/` (BotFather → `/mybots` → @ZyronNodeBot → Bot Settings → Configure Mini
+App / Menu Button). `/setdomain` is only for the Login Widget and is not needed.
+
+Budget: one always-on Free web service uses about 744 of the 750 free instance hours per Render workspace per
+month, so other Free web services in the same workspace would push the total over the limit. GitHub Actions
+minutes are free for public repositories; scheduled runs can be delayed by several minutes.
 
 ## Tests
 
