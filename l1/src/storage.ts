@@ -10,6 +10,8 @@ import { readBoundedFileBuffer } from "./bounded-file.js";
 import { assertBoundedCheckpointJsonStructure } from "./checkpoint-json-complexity.js";
 import { assertSigningJournalJsonComplexity } from "./signing-journal-json-complexity.js";
 import { ZyronChain } from "./chain.js";
+import { ConsensusStateStore } from "./consensus-state-store.js";
+import { V6_MAX_ROUND, safeVote, type V6Lock } from "./consensus-v6.js";
 import { StateV2DiskStore } from "./state-v2-store.js";
 import { stateV2TransactionKeyPreimages } from "./state-v2.js";
 import type { StateV2PortableBundleV1 } from "./state-v2-portable.js";
@@ -100,6 +102,39 @@ export interface SigningJournalCompactionFaultHooks {
 export interface SigningJournalOpenFaultHooks {
   afterFileSync?: () => void | Promise<void>;
   afterDirectorySync?: () => void | Promise<void>;
+}
+
+/** Protocol v6 journal steps (spec §6.1, row format v2 §9.2). */
+export type V6JournalStep = "block-proposal" | "proposal" | "prepare" | "lock" | "commit" | "timeout";
+const V6_JOURNAL_STEPS: ReadonlySet<string> = new Set(["block-proposal", "proposal", "prepare", "lock", "commit", "timeout"]);
+
+/**
+ * A v2 journal row. It deliberately has no `kind` key: binaries without v6
+ * support require kind in {attest, skip} and therefore refuse to open a journal
+ * containing v2 rows (a downgrade fails closed instead of forgetting locks).
+ */
+interface V6JournalRow {
+  v: 2;
+  height: number;
+  round: number;
+  step: V6JournalStep;
+  value: string;
+  lockRound?: number;
+}
+
+interface V6HeightJournal {
+  rows: Map<string, string>;
+  lock: V6Lock | null;
+  /** Highest round with an own prepare or commit row (-1 if none). */
+  maxVoteRound: number;
+  /** Highest round with an own timeout row (-1 if none). */
+  maxTimeoutRound: number;
+}
+
+function v6RowLine(row: V6JournalRow): string {
+  const ordered: Record<string, unknown> = { v: 2, height: row.height, round: row.round, step: row.step, value: row.value };
+  if (row.step === "lock") ordered.lockRound = row.lockRound;
+  return `${JSON.stringify(ordered)}\n`;
 }
 
 export function assertSigningJournalDurabilitySupported(platform = process.platform): void {
@@ -793,12 +828,20 @@ async function syncDirectoryTree(path: string): Promise<void> {
 
 export class SigningJournal {
   private readonly reservations = new Map<string, string>();
+  // Protocol v6 (F-01) rows, kept separately from the legacy attest/skip map.
+  private readonly legacyHeights = new Set<number>();
+  private readonly v6Heights = new Map<number, V6HeightJournal>();
+  private v6Rows: V6JournalRow[] = [];
   private persistenceFaulted = false;
   private closed = false;
+  /** v6 consensus-state files next to the journal (created lazily; unused by v1-v5). */
+  readonly consensusState: ConsensusStateStore;
   private constructor(
     readonly path: string,
     private readonly leaseDatabase: Database.Database
-  ) {}
+  ) {
+    this.consensusState = new ConsensusStateStore(dirname(path));
+  }
 
   static async open(
     dataDir: string,
@@ -809,11 +852,17 @@ export class SigningJournal {
     const leaseDatabase = acquireSigningJournalLease(join(dataDir, "signing-journal.lock.sqlite"));
     const journal = new SigningJournal(join(dataDir, "signing-journal.ndjson"), leaseDatabase);
     try {
+      let pendingLock: V6JournalRow | null = null;
       for await (const record of readLines(journal.path, MAX_SIGNING_LINE_BYTES, "Corrupt signing journal")) {
         const line = record.text;
         if (!line.trim()) continue;
         assertSigningJournalJsonComplexity(line);
         const parsed = JSON.parse(line) as Record<string, unknown>;
+        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && parsed.v === 2) {
+          pendingLock = journal.replayV6Row(parsed, pendingLock);
+          continue;
+        }
+        if (pendingLock) throw new Error("Torn protocol v6 lock/commit pair in signing journal");
         if (!Number.isSafeInteger(parsed.height) || !Number.isSafeInteger(parsed.round) ||
             (parsed.kind !== "attest" && parsed.kind !== "skip") ||
             typeof parsed.value !== "string" || !/^[0-9a-f]{64}$/.test(parsed.value)) {
@@ -823,8 +872,11 @@ export class SigningJournal {
         const reservation = `${parsed.kind}:${parsed.value}`;
         const previous = journal.reservations.get(key);
         if (previous && previous !== reservation) throw new Error("Conflicting signing journal history");
+        if (journal.v6Heights.has(parsed.height as number)) throw new Error("Mixed legacy and protocol v6 signing journal rows");
         journal.reservations.set(key, reservation);
+        journal.legacyHeights.add(parsed.height as number);
       }
+      if (pendingLock) throw new Error("Torn protocol v6 lock/commit pair in signing journal");
     } catch (error) {
       if (!isMissingFile(error)) {
         journal.close();
@@ -910,7 +962,12 @@ export class SigningJournal {
       if (height <= finalizedHeight) removedKeys.push(key);
       else retained.push({ key, height, round, kind, value });
     }
-    if (removedKeys.length === 0) return 0;
+    const retainedV6 = this.v6Rows.filter((row) => row.height > finalizedHeight);
+    const removedV6 = this.v6Rows.length - retainedV6.length;
+    if (removedKeys.length === 0 && removedV6 === 0) {
+      await this.pruneConsensusState(finalizedHeight);
+      return 0;
+    }
 
     retained.sort((left, right) => left.height - right.height || left.round - right.round || left.key.localeCompare(right.key));
     const temporary = `${this.path}.compact-${process.pid}-${randomBytes(8).toString("hex")}`;
@@ -925,6 +982,15 @@ export class SigningJournal {
             kind: entry.kind,
             value: entry.value
           })}\n`;
+          if (Buffer.byteLength(line, "utf8") > MAX_SIGNING_LINE_BYTES) {
+            throw new Error("Signing journal compaction entry exceeds line limit");
+          }
+          await handle.writeFile(line, "utf8");
+        }
+        // v2 rows keep their append order, so every lock row stays directly
+        // followed by its commit row.
+        for (const row of retainedV6) {
+          const line = v6RowLine(row);
           if (Buffer.byteLength(line, "utf8") > MAX_SIGNING_LINE_BYTES) {
             throw new Error("Signing journal compaction entry exceeds line limit");
           }
@@ -947,7 +1013,221 @@ export class SigningJournal {
     }
 
     for (const key of removedKeys) this.reservations.delete(key);
-    return removedKeys.length;
+    for (const height of [...this.legacyHeights]) if (height <= finalizedHeight) this.legacyHeights.delete(height);
+    for (const height of [...this.v6Heights.keys()]) if (height <= finalizedHeight) this.v6Heights.delete(height);
+    this.v6Rows = retainedV6;
+    await this.pruneConsensusState(finalizedHeight);
+    return removedKeys.length + removedV6;
+  }
+
+  // Consensus-state files are liveness aids, never safety state; a failed
+  // prune is retried at the next finalized height.
+  private async pruneConsensusState(finalizedHeight: number): Promise<void> {
+    try {
+      await this.consensusState.pruneThrough(finalizedHeight);
+    } catch {
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Protocol v6 rows (spec §6, §9.2)
+  // ---------------------------------------------------------------------------
+
+  private replayV6Row(parsed: Record<string, unknown>, pendingLock: V6JournalRow | null): V6JournalRow | null {
+    const step = parsed.step;
+    const expectedKeys = step === "lock"
+      ? ["v", "height", "round", "step", "value", "lockRound"]
+      : ["v", "height", "round", "step", "value"];
+    const keys = Object.keys(parsed);
+    if (keys.length !== expectedKeys.length || !expectedKeys.every((key) => Object.hasOwn(parsed, key)) ||
+        typeof step !== "string" || !V6_JOURNAL_STEPS.has(step) ||
+        !Number.isSafeInteger(parsed.height) || (parsed.height as number) < 1 ||
+        !Number.isSafeInteger(parsed.round) || (parsed.round as number) < 0 || (parsed.round as number) > V6_MAX_ROUND ||
+        typeof parsed.value !== "string" || !/^[0-9a-f]{64}$/.test(parsed.value) ||
+        (step === "lock" && parsed.lockRound !== parsed.round)) {
+      throw new Error("Corrupt signing journal entry");
+    }
+    const row: V6JournalRow = {
+      v: 2,
+      height: parsed.height as number,
+      round: parsed.round as number,
+      step: step as V6JournalStep,
+      value: parsed.value,
+      ...(step === "lock" ? { lockRound: parsed.round as number } : {})
+    };
+    if (pendingLock) {
+      if (row.step !== "commit" || row.height !== pendingLock.height || row.round !== pendingLock.round || row.value !== pendingLock.value) {
+        throw new Error("Torn protocol v6 lock/commit pair in signing journal");
+      }
+    }
+    if (this.legacyHeights.has(row.height)) throw new Error("Mixed legacy and protocol v6 signing journal rows");
+    const state = this.v6HeightState(row.height, true)!;
+    if (row.step === "lock") {
+      if (state.lock && (state.lock.round > row.round || (state.lock.round === row.round && state.lock.blockHash !== row.value))) {
+        throw new Error("Conflicting signing journal history");
+      }
+    } else {
+      const previous = state.rows.get(`${row.round}:${row.step}`);
+      if (previous !== undefined && previous !== row.value) throw new Error("Conflicting signing journal history");
+    }
+    this.applyV6Row(row);
+    return row.step === "lock" ? row : null;
+  }
+
+  private v6HeightState(height: number, create = false): V6HeightJournal | undefined {
+    let state = this.v6Heights.get(height);
+    if (!state && create) {
+      state = { rows: new Map(), lock: null, maxVoteRound: -1, maxTimeoutRound: -1 };
+      this.v6Heights.set(height, state);
+    }
+    return state;
+  }
+
+  private applyV6Row(row: V6JournalRow): void {
+    const state = this.v6HeightState(row.height, true)!;
+    if (row.step === "lock") {
+      state.lock = { round: row.round, blockHash: row.value };
+    } else {
+      state.rows.set(`${row.round}:${row.step}`, row.value);
+      if (row.step === "prepare" || row.step === "commit") state.maxVoteRound = Math.max(state.maxVoteRound, row.round);
+      if (row.step === "timeout") state.maxTimeoutRound = Math.max(state.maxTimeoutRound, row.round);
+    }
+    this.v6Rows.push(row);
+  }
+
+  private assertV6Writable(height: number, round: number, value: string): void {
+    if (this.closed) throw new Error("Signing journal is closed");
+    if (this.persistenceFaulted) throw new Error("Signing journal persistence fault requires validator restart");
+    if (!Number.isSafeInteger(height) || height < 1 || !Number.isSafeInteger(round) || round < 0 || round > V6_MAX_ROUND) {
+      throw new Error("Invalid signing slot");
+    }
+    if (!/^[0-9a-f]{64}$/.test(value)) throw new Error("Invalid signing hash");
+    // §6.2-7: one protocol per height.
+    if (this.legacyHeights.has(height)) throw new Error("Protocol v6 validator action refused: legacy journal rows exist at this height");
+  }
+
+  // §6.2-2: no proposal/prepare/commit at r after a timeout at r' >= r or a vote at a round > r.
+  private assertV6RoundOpen(state: V6HeightJournal | undefined, round: number): void {
+    if (!state) return;
+    if (state.maxTimeoutRound >= round) throw new Error("Protocol v6 validator action refused: round already timed out");
+    if (state.maxVoteRound > round) throw new Error("Protocol v6 validator action refused: a later round was already voted");
+  }
+
+  private async appendV6(rows: V6JournalRow[], faultHooks: SigningJournalFaultHooks): Promise<void> {
+    const text = rows.map(v6RowLine).join("");
+    for (const row of rows) {
+      if (Buffer.byteLength(v6RowLine(row), "utf8") > MAX_SIGNING_LINE_BYTES) throw new Error("Signing journal entry exceeds line limit");
+    }
+    try {
+      const handle = await open(this.path, "a", 0o600);
+      try {
+        // One write for all rows (the lock+commit pair is a single append, §9.1).
+        await handle.writeFile(text, "utf8");
+        await faultHooks.afterWrite?.();
+        await handle.sync();
+        await faultHooks.afterSync?.();
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      this.persistenceFaulted = true;
+      throw new Error("Signing journal persistence failed; validator restart required", { cause: error });
+    }
+    for (const row of rows) this.applyV6Row(row);
+  }
+
+  /**
+   * Reserve a block-proposal, proposal or timeout row (§6.1). Identical
+   * re-reservations are idempotent (deterministic signatures); a different
+   * value for the same (height, round, step) is refused.
+   */
+  async reserveV6(
+    height: number,
+    round: number,
+    step: "block-proposal" | "proposal" | "timeout",
+    value: string,
+    faultHooks: SigningJournalFaultHooks = {}
+  ): Promise<void> {
+    this.assertV6Writable(height, round, value);
+    const state = this.v6HeightState(height);
+    const existing = state?.rows.get(`${round}:${step}`);
+    if (existing === value) return;
+    if (existing !== undefined) throw new Error("Conflicting validator action prevented for consensus round");
+    if (step !== "timeout") this.assertV6RoundOpen(state, round);
+    await this.appendV6([{ v: 2, height, round, step, value }], faultHooks);
+  }
+
+  /** Reserve prepare(H, r) = blockHash, enforcing SAFE-VOTE against the persisted lock (§6.2-4). */
+  async reserveV6Prepare(
+    height: number,
+    round: number,
+    blockHash: string,
+    justifyRound: number,
+    faultHooks: SigningJournalFaultHooks = {}
+  ): Promise<void> {
+    this.assertV6Writable(height, round, blockHash);
+    if (!Number.isSafeInteger(justifyRound) || justifyRound < -1 || justifyRound >= round) throw new Error("Invalid v6 justify round");
+    const state = this.v6HeightState(height);
+    const existing = state?.rows.get(`${round}:prepare`);
+    if (existing === blockHash) return;
+    if (existing !== undefined) throw new Error("Conflicting validator action prevented for consensus round");
+    this.assertV6RoundOpen(state, round);
+    if (!safeVote(state?.lock ?? null, blockHash, justifyRound)) {
+      throw new Error("Protocol v6 prepare refused: conflicts with the validator's lock");
+    }
+    await this.appendV6([{ v: 2, height, round, step: "prepare", value: blockHash }], faultHooks);
+  }
+
+  /**
+   * Reserve lock(H) = (r, blockHash) and commit(H, r) = blockHash in one
+   * fsynced append (§9.1). The caller must have verified PrepareQC(H, r,
+   * blockHash) and persisted it before calling.
+   */
+  async reserveV6Commit(
+    height: number,
+    round: number,
+    blockHash: string,
+    faultHooks: SigningJournalFaultHooks = {}
+  ): Promise<void> {
+    this.assertV6Writable(height, round, blockHash);
+    const state = this.v6HeightState(height);
+    const existing = state?.rows.get(`${round}:commit`);
+    if (existing === blockHash) return;
+    if (existing !== undefined) throw new Error("Conflicting validator action prevented for consensus round");
+    this.assertV6RoundOpen(state, round);
+    const prepared = state?.rows.get(`${round}:prepare`);
+    if (prepared !== undefined && prepared !== blockHash) throw new Error("Protocol v6 commit refused: differs from own prepare vote");
+    const lock = state?.lock ?? null;
+    if (lock && (lock.round > round || (lock.round === round && lock.blockHash !== blockHash))) {
+      throw new Error("Protocol v6 commit refused: lock may not move backwards");
+    }
+    await this.appendV6([
+      { v: 2, height, round, step: "lock", value: blockHash, lockRound: round },
+      { v: 2, height, round, step: "commit", value: blockHash }
+    ], faultHooks);
+  }
+
+  v6Lock(height: number): V6Lock | null {
+    const lock = this.v6Heights.get(height)?.lock;
+    return lock ? { ...lock } : null;
+  }
+
+  v6Row(height: number, round: number, step: V6JournalStep): string | undefined {
+    return this.v6Heights.get(height)?.rows.get(`${round}:${step}`);
+  }
+
+  /** Highest own prepare/commit round and timeout round at a height (-1 when none). */
+  v6Rounds(height: number): { maxVoteRound: number; maxTimeoutRound: number } {
+    const state = this.v6Heights.get(height);
+    return { maxVoteRound: state?.maxVoteRound ?? -1, maxTimeoutRound: state?.maxTimeoutRound ?? -1 };
+  }
+
+  hasLegacyRows(height: number): boolean {
+    return this.legacyHeights.has(height);
+  }
+
+  hasV6Rows(height: number): boolean {
+    return this.v6Heights.has(height);
   }
 
   private async reserveChoice(
@@ -968,6 +1248,9 @@ export class SigningJournal {
     const existing = this.reservations.get(key);
     if (existing === reservation) return;
     if (existing) throw new Error("Conflicting validator action prevented for consensus round");
+    // §6.2-7: never mix legacy and v6 rows at one height (unreachable unless an
+    // operator crosses the activation boundary with the wrong binary).
+    if (this.v6Heights.has(height)) throw new Error("Legacy validator action refused: protocol v6 journal rows exist at this height");
 
     const line = `${JSON.stringify({ height, round, kind, value })}\n`;
     try {
@@ -989,6 +1272,7 @@ export class SigningJournal {
       throw new Error("Signing journal persistence failed; validator restart required", { cause: error });
     }
     this.reservations.set(key, reservation);
+    this.legacyHeights.add(height);
   }
 }
 
