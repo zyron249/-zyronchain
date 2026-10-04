@@ -593,7 +593,12 @@ def rights_report(token: str, community_chat: str, call) -> dict:
         me = call(token, "getMe", {}).get("result") or {}
         report["bot"] = {"username": me.get("username"), "readsAllGroupMessages": me.get("can_read_all_group_messages")}
         chat = call(token, "getChat", {"chat_id": community_chat}).get("result") or {}
-        report["group"] = {"id": chat.get("id"), "type": chat.get("type"), "title": chat.get("title")}
+        report["group"] = {
+            "id": chat.get("id"),
+            "type": chat.get("type"),
+            "title": chat.get("title"),
+            "description": chat.get("description"),
+        }
         perms = chat.get("permissions") or {}
         member = call(token, "getChatMember", {"chat_id": community_chat, "user_id": me.get("id")}).get("result") or {}
     except TelegramError as exc:
@@ -608,6 +613,7 @@ def rights_report(token: str, community_chat: str, call) -> dict:
         "canDeleteMessages": member.get("can_delete_messages"),
         "canPinMessages": member.get("can_pin_messages"),
         "canManageChat": member.get("can_manage_chat"),
+        "canChangeInfo": member.get("can_change_info"),
     }
 
     def allowed(flag: str) -> bool:
