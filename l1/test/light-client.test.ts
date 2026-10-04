@@ -153,7 +153,8 @@ test("light-client finality requires the certified predecessor round before acce
     round: 0,
     previousHash: anchor.blockHash,
     validatorPrivateKey: key,
-    validatorPublicKey: validators[index]!.publicKey
+    validatorPublicKey: validators[index]!.publicKey,
+    protocolVersion: 1
   }));
   let block = createSignedBlock({
     version: 2,

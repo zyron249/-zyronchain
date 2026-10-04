@@ -134,8 +134,10 @@ export function createRoundSkipVote(input: {
   previousHash: string;
   validatorPrivateKey: string;
   validatorPublicKey: string;
-  protocolVersion?: number;
+  /** Required (F-01 / spec §15-6): v1/v2 sign undomained, v3+ domain-separated. */
+  protocolVersion: number;
 }): RoundSkipVote {
+  assertExplicitProtocolVersion(input.protocolVersion);
   const unsigned = {
     validator: addressFromPublicKey(input.validatorPublicKey),
     publicKey: input.validatorPublicKey,
@@ -147,7 +149,7 @@ export function createRoundSkipVote(input: {
   return {
     ...unsigned,
     signature: signForProtocol(
-      input.protocolVersion ?? 1,
+      input.protocolVersion,
       "zyronchain/round-skip/v1",
       roundSkipPayload(unsigned),
       input.validatorPrivateKey
