@@ -1,7 +1,7 @@
 // F-01 phase 5: T6 (repeated-round-changes-bounded) and a per-PR chaos smoke
 // run of every scenario in support/v6-chaos.ts (n = 4, one seed each). The
-// many-seed runs (n = 2, 3, 4, 7) are produced by
-// /workspace/zyron-dev/f01-work/run-chaos.mjs (chaos-output.txt).
+// many-seed runs (n = 2, 3, 4, 7) call runChaos with more seeds per
+// scenario through the same entry point.
 import assert from "node:assert/strict";
 import test from "node:test";
 

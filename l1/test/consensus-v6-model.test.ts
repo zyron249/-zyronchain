@@ -14,7 +14,7 @@ import {
 } from "./support/consensus-v6-model.js";
 
 // Per-PR smoke size (§16.6); the nightly >= 10 000 run uses the same entry
-// point through ZYRON_V6_MODEL_SCHEDULES (see f01-work/run-model-check.mjs).
+// point through ZYRON_V6_MODEL_SCHEDULES.
 const SMOKE_SCHEDULES = Number(process.env.ZYRON_V6_MODEL_SCHEDULES ?? 2_000);
 
 interface ScriptNode {
