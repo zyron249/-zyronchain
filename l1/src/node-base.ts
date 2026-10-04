@@ -16,6 +16,7 @@ import { ConsensusStateStore } from "./consensus-state-store.js";
 import {
   CONSENSUS_V6_PROTOCOL_VERSION,
   V6_MAX_ROUND,
+  assertV6ProposalBlockIntegrity,
   V6_MIN_ACTIVATION_MARGIN_BLOCKS,
   ZERO_HASH,
   isConsensusV6,
@@ -586,9 +587,9 @@ export class NodeService {
   }
 
   private async v6StoreBlock(height: number, block: Block): Promise<void> {
-    const name = ConsensusStateStore.blockFile(height, block.hash);
-    if (await this.v6State.read(name) !== undefined) return;
-    await this.v6State.write(name, block);
+    // An intact copy is kept; a missing, corrupt or tampered file is replaced.
+    if (await this.v6ReadBlock(height, block.hash)) return;
+    await this.v6State.write(ConsensusStateStore.blockFile(height, block.hash), block);
   }
 
   private async v6ReadBlock(height: number, hash: string): Promise<Block | null> {
@@ -597,8 +598,7 @@ export class NodeService {
     if (raw === undefined) return null;
     try {
       validateBlockShape(raw);
-      if (raw.hash !== hash || blockHash(raw.header) !== hash || raw.header.height !== height ||
-          raw.header.version !== CONSENSUS_V6_PROTOCOL_VERSION) return null;
+      assertV6ProposalBlockIntegrity(raw, height, hash, this.store.chain.validatorsAt(height));
       return raw;
     } catch {
       return null;
@@ -654,6 +654,9 @@ export class NodeService {
           block.header.chainId !== chainId || block.header.version !== CONSENSUS_V6_PROTOCOL_VERSION) {
         throw new Error("v6 commit block does not match its prepare QC");
       }
+      // The QC binds only the header hash: the body and proposer signature
+      // must match too before the block is stored for later re-proposal.
+      assertV6ProposalBlockIntegrity(block, height, qc.blockHash, validators);
       await this.v6StoreBlock(height, block);
       await this.v6RecordQC(height, chainId, validators, qc);
       await journal.reserveV6Commit(height, qc.round, qc.blockHash);
