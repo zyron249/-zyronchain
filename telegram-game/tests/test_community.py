@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from tests.test_economy_and_auth import sign_init
@@ -147,6 +148,14 @@ def test_sunday_adds_weekly_summary_and_qualified_invites_only(client):
     lowered = text.lower()
     for word in BANNED_WORDS:
         assert word not in lowered
+    assert not re.search(r"\bmin(er|ers|ing)\b", lowered)
+
+
+def test_group_texts_never_use_the_retired_word():
+    source = Path("src/zyron_node/community.py").read_text(encoding="utf-8")
+    assert "POINTS_NOTICE)" not in source and "{POINTS_NOTICE}" not in source and "+ POINTS_NOTICE" not in source
+    assert not re.search(r"\bmin(er|ers|ing)\b", community.COMMUNITY_NOTICE.lower())
+    assert "off-chain" in community.COMMUNITY_NOTICE
 
 
 def test_banned_players_stay_off_the_board(client):

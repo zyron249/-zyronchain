@@ -17,7 +17,7 @@ from typing import Callable
 
 from psycopg.types.json import Jsonb
 
-from zyron_node.economy import ABUSE_REFERRAL_BLOCK, POINTS_NOTICE
+from zyron_node.economy import ABUSE_REFERRAL_BLOCK
 from zyron_node.telegram_api import TelegramError
 
 log = logging.getLogger("zyron_node.community")
@@ -42,6 +42,8 @@ COMMAND_COOLDOWN_SECONDS = 30
 STATS_CACHE_SECONDS = 60
 WALLET_URL = "https://zyronchain.com/app/"
 CHECKLIST_URL = "https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_LAUNCH_CHECKLIST.md"
+# Group posts use this instead of POINTS_NOTICE so the ZYRONCHAIN group never sees the retired word.
+COMMUNITY_NOTICE = "Zyron Points are off-chain gameplay points. There is no conversion rate to ZYN or Zyrum."
 NETWORK_STATUS = (
     "Network: ZyronChain public testnet is authorized but not activated yet. "
     "Today you can run the local devnet (cd l1 && npm run devnet) or try the phone wallet (testnet)."
@@ -209,7 +211,7 @@ def leaderboard_post(pool, now: datetime) -> tuple[str, dict] | None:
         parts.append(
             "\U0001f91d Weekly invite contest (qualified invites only)\n" + "\n".join(_lines(invites, "invites", "invite"))
         )
-    parts.append("Blocks are completed node cycles in ZYRON NODE. " + POINTS_NOTICE)
+    parts.append("Blocks are completed node cycles in ZYRON NODE. " + COMMUNITY_NOTICE)
     detail = {"daily": len(daily), "weekly": len(weekly), "invites": len(invites)}
     return "\n\n".join(parts), detail
 
@@ -303,7 +305,7 @@ def post_quiz(pool, settings, now: datetime, call, *, force: bool = False) -> di
         "\U0001f9e0 Weekly ZyronChain quiz: 3 questions.\n"
         f"Each correct answer earns {QUIZ_POINTS_PER_CORRECT} Zyron Points in ZYRON NODE "
         f"(max {QUIZ_MAX_POINTS} per quiz). One answer per question. Open the game once so points can be credited.\n"
-        + POINTS_NOTICE
+        + COMMUNITY_NOTICE
     )
     polls = []
     try:
@@ -545,7 +547,7 @@ def stats_text(pool, now: datetime) -> str:
         f"Players: {int(row['players']):,} · active today: {int(row['active_today']):,}\n"
         f"Blocks built today: {int(today):,} · all time: {int(row['blocks']):,}\n"
         f"Qualified invites: {int(invites):,}\n\n"
-        f"{NETWORK_STATUS}\n\n{POINTS_NOTICE}"
+        f"{NETWORK_STATUS}\n\n{COMMUNITY_NOTICE}"
     )
     _stats_cache["stats"] = (time.monotonic(), text)
     return text
