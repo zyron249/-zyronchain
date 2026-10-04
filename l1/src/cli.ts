@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import type { Multiaddr } from "@multiformats/multiaddr";
 
 import { V6_MIN_ACTIVATION_MARGIN_BLOCKS, isConsensusV6 } from "./consensus-v6.js";
+import { V6LeaderScheduler } from "./v6-scheduler.js";
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
 import { encryptPrivateKey, normalizePasswordFile } from "./keystore.js";
 import { readPrivateRegularFile } from "./local-security.js";
@@ -52,7 +53,7 @@ import {
   validateTransactionShape,
   type TransactionVersion
 } from "./transaction.js";
-import type { GenesisConfig, Validator, ValidatorApproval } from "./types.js";
+import type { Block, GenesisConfig, Validator, ValidatorApproval } from "./types.js";
 import { MAX_SUPPLY_ATOMS, type Address } from "./types.js";
 import { LocalValidatorSigner, RemoteValidatorSigner, type ValidatorSigner } from "./validator-signer.js";
 import {
@@ -500,11 +501,13 @@ async function runNode(args: string[]): Promise<void> {
     timers.add(timer);
   };
   let shuttingDown = false;
+  let v6Stop: () => void = () => {};
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`Received ${signal}; draining node services`);
     backgroundTasks.stopAccepting();
+    v6Stop();
     for (const timer of timers) clearInterval(timer);
     timers.clear();
     const rpcDrain = await drainHttpServer(server);
@@ -535,11 +538,34 @@ async function runNode(args: string[]): Promise<void> {
   }
 
   if (validatorSigner) {
+    const nextIsV6 = (): boolean => isConsensusV6(service.store.chain.protocolVersionAt(service.store.chain.height + 1));
+    // Legacy heights (v1/v2/v3/v5): unchanged fixed tick.
     schedule(() => {
+      if (nextIsV6()) return;
       backgroundTasks.run(() => produceFinalizedBlock(service, consensusPeers, validatorSigner)
         .then((block) => { if (block) console.log(`Finalized block ${block.header.height} ${block.hash}`); })
         .catch((error) => console.warn(`Validator round failed: ${safeError(error)}`)));
     }, BLOCK_INTERVAL_MS);
+    // Protocol v6 heights: event-driven leader scheduling (F-01 §3.3/§8.6),
+    // idle (3 s fallback poll) while the next height is legacy.
+    const v6Scheduler = new V6LeaderScheduler<Block>({
+      context: () => {
+        if (!nextIsV6()) return null;
+        const chain = service.store.chain;
+        const height = chain.height + 1;
+        return { tipTimestampMs: chain.tip.header.timestampMs, height, validators: chain.validatorsAt(height), publicKey: validatorSigner.publicKey };
+      },
+      attempt: async () => {
+        // Tracked so that shutdown drains an in-flight attempt.
+        let task: Promise<Block | null> | undefined;
+        if (!backgroundTasks.run(() => (task = produceFinalizedBlock(service, consensusPeers, validatorSigner)))) return null;
+        return task ?? null;
+      },
+      onResult: (block) => console.log(`Finalized block ${block.header.height} ${block.hash} (v6 round ${String(block.commitRound)})`),
+      onError: (error) => console.warn(`Validator v6 round failed: ${safeError(error)}`)
+    });
+    v6Scheduler.start();
+    v6Stop = () => v6Scheduler.stop();
   }
 
   schedule(() => {
