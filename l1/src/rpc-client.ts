@@ -15,7 +15,7 @@ export interface RpcResponseReadHooks {
 export function transactionVersionForProtocolVersion(protocolVersion: number): TransactionVersion {
   if (!Number.isSafeInteger(protocolVersion)) throw new Error("RPC returned invalid protocol status");
   if (protocolVersion === 1 || protocolVersion === 2) return 1;
-  if (protocolVersion === 3 || protocolVersion === 5) return 2;
+  if (protocolVersion === 3 || protocolVersion === 5 || protocolVersion === 6) return 2;
   throw new Error("RPC returned unsupported next protocol version");
 }
 

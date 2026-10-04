@@ -9,9 +9,18 @@ import { validateP2PChainIdentity, type P2PChainIdentity } from "./p2p.js";
 import { P2PPeerRateLimiter } from "./p2p-rate.js";
 import type { NodeIdentity } from "./peer-identity.js";
 import { validateTransactionShape } from "./transaction.js";
+import { validateBlockShape } from "./block.js";
+import { validateTimeoutResponseShape, type V6CommitRequest, type V6PrepareRequest, type V6TimeoutResponse, type V6Vote } from "./consensus-v6.js";
 import type { Block, BlockAttestation, RoundSkipVote, Transaction } from "./types.js";
 
 export const P2P_CONSENSUS_PROTOCOL = "/zyronchain/consensus/1.0.0";
+/**
+ * Protocol v6 consensus (F-01, spec §10): leader-pulled prepare, commit and
+ * timeout votes plus fetching a stored block for re-proposal. Finalized
+ * blocks and transactions keep travelling over 1.0.0 (kinds block/transaction),
+ * which also stays in use for legacy heights.
+ */
+export const P2P_CONSENSUS_V6_PROTOCOL = "/zyronchain/consensus/2.0.0";
 const MAX_CONSENSUS_FRAME_BYTES = 2_500_000;
 const P2P_CONSENSUS_TIMEOUT_MS = 8_000;
 const MAX_CONFIGURED_NATIVE_PEERS = 64;
@@ -37,6 +46,45 @@ const NATIVE_CONSENSUS_RESPONSE_MAX_BYTES = {
   block: 4 * 1024,
   transaction: 4 * 1024
 } as const;
+
+const NATIVE_CONSENSUS_V6_REQUEST_MAX_BYTES = {
+  prepare: 2_700_000, // block (<= 2.5 MB frame) + proposal + TC (<= 100 timeouts + QC)
+  commit: 2_600_000, // block + QC
+  timeout: 1_024,
+  block: 1_024
+} as const;
+
+const NATIVE_CONSENSUS_V6_RESPONSE_MAX_BYTES = {
+  prepare: 8 * 1024,
+  commit: 8 * 1024,
+  timeout: 128_000, // timeout vote + highQC (spec §16.4: ~55 kB at 100 validators)
+  block: 2_600_000
+} as const;
+
+const MAX_CONSENSUS_V6_FRAME_BYTES = Math.max(...Object.values(NATIVE_CONSENSUS_V6_REQUEST_MAX_BYTES));
+
+type ConsensusV6Kind = keyof typeof NATIVE_CONSENSUS_V6_REQUEST_MAX_BYTES;
+
+type ConsensusV6Request =
+  | { version: 2; identity: P2PChainIdentity; kind: "prepare"; request: V6PrepareRequest }
+  | { version: 2; identity: P2PChainIdentity; kind: "commit"; request: V6CommitRequest }
+  | { version: 2; identity: P2PChainIdentity; kind: "timeout"; height: number; round: number }
+  | { version: 2; identity: P2PChainIdentity; kind: "block"; height: number; blockHash: string };
+
+interface ConsensusV6Response {
+  version: 2;
+  identity: P2PChainIdentity;
+  kind: ConsensusV6Kind;
+  result: unknown;
+}
+
+export function nativeConsensusV6RequestMaxBytes(kind: ConsensusV6Kind): number {
+  return NATIVE_CONSENSUS_V6_REQUEST_MAX_BYTES[kind];
+}
+
+export function nativeConsensusV6ResponseMaxBytes(kind: ConsensusV6Kind): number {
+  return NATIVE_CONSENSUS_V6_RESPONSE_MAX_BYTES[kind];
+}
 
 type ConsensusRequest =
   | { version: 1; identity: P2PChainIdentity; kind: "attest"; block: Block }
@@ -169,6 +217,37 @@ export async function registerP2PConsensusProtocol(
       release?.();
     }
   }, { maxInboundStreams: 4, maxOutboundStreams: 4 });
+  // Protocol v6 (2.0.0) shares the per-peer inflight and rate limits.
+  await node.handle(P2P_CONSENSUS_V6_PROTOCOL, async (stream, connection) => {
+    let release: (() => void) | undefined;
+    let releaseFrame: (() => void) | undefined;
+    try {
+      if (connection.encryption !== "/noise") throw new Error("Native consensus requires authenticated Noise");
+      const peerId = connection.remotePeer.toString();
+      if (!rate.consume(peerId)) throw new Error("Native consensus rate limit exceeded");
+      release = inflight.enter(peerId);
+      const retained = await readP2PFrameRetained(stream, MAX_CONSENSUS_V6_FRAME_BYTES, P2P_CONSENSUS_TIMEOUT_MS);
+      releaseFrame = retained.release;
+      const request = parseConsensusV6Request(retained.value, service.status(), connection.remotePeer);
+      let result: unknown;
+      if (request.kind === "prepare") result = await service.v6Prepare(request.request);
+      else if (request.kind === "commit") result = await service.v6Commit(request.request);
+      else if (request.kind === "timeout") result = await service.v6Timeout(request.height, request.round);
+      else result = { block: await service.v6FetchBlock(request.height, request.blockHash) };
+      await writeP2PFrame(stream, {
+        version: 2,
+        identity: local,
+        kind: request.kind,
+        result
+      } satisfies ConsensusV6Response, nativeConsensusV6ResponseMaxBytes(request.kind), P2P_CONSENSUS_TIMEOUT_MS);
+      await stream.close({ signal: AbortSignal.timeout(P2P_CONSENSUS_TIMEOUT_MS) });
+    } catch (error) {
+      stream.abort(error instanceof Error ? error : new Error("Native consensus protocol failure"));
+    } finally {
+      releaseFrame?.();
+      release?.();
+    }
+  }, { maxInboundStreams: 4, maxOutboundStreams: 4 });
 }
 
 export class NativeConsensusPeerClient implements ConsensusPeerClient {
@@ -223,6 +302,79 @@ export class NativeConsensusPeerClient implements ConsensusPeerClient {
     return results.flatMap((result) => result.status === "fulfilled" && result.value.kind === "skip"
       ? [result.value.result as RoundSkipVote]
       : []);
+  }
+
+  async requestV6Prepare(request: V6PrepareRequest): Promise<V6Vote[]> {
+    return this.collectV6Votes({ version: 2, identity: localIdentity(this.identity, this.chain), kind: "prepare", request });
+  }
+
+  async requestV6Commit(request: V6CommitRequest): Promise<V6Vote[]> {
+    return this.collectV6Votes({ version: 2, identity: localIdentity(this.identity, this.chain), kind: "commit", request });
+  }
+
+  async requestV6Timeouts(height: number, round: number): Promise<V6TimeoutResponse[]> {
+    const request: ConsensusV6Request = { version: 2, identity: localIdentity(this.identity, this.chain), kind: "timeout", height, round };
+    const results = await collectNativeConsensusBounded(this.targets, (target, signal, deadlineMs) =>
+      this.requestV6(target, request, signal, deadlineMs));
+    return results.flatMap((result) => result.status === "fulfilled" ? [result.value.result as V6TimeoutResponse] : []);
+  }
+
+  /** Ask peers one at a time for a stored next-height block (the caller verifies the hash). */
+  async fetchV6Block(height: number, blockHash: string): Promise<Block | null> {
+    const request: ConsensusV6Request = { version: 2, identity: localIdentity(this.identity, this.chain), kind: "block", height, blockHash };
+    for (const target of this.targets) {
+      try {
+        const response = await this.requestV6(target, request);
+        const block = (response.result as { block: Block | null }).block;
+        if (block && block.hash === blockHash) return block;
+      } catch {
+        // try the next peer
+      }
+    }
+    return null;
+  }
+
+  private async collectV6Votes(request: ConsensusV6Request): Promise<V6Vote[]> {
+    const results = await collectNativeConsensusBounded(this.targets, (target, signal, deadlineMs) =>
+      this.requestV6(target, request, signal, deadlineMs));
+    return results.flatMap((result) => result.status === "fulfilled" ? [result.value.result as V6Vote] : []);
+  }
+
+  private async requestV6(
+    target: Parameters<Libp2p["dial"]>[0],
+    request: ConsensusV6Request,
+    signal?: AbortSignal,
+    deadlineMs?: number
+  ): Promise<ConsensusV6Response> {
+    const operationSignal = signal ?? AbortSignal.timeout(P2P_CONSENSUS_TIMEOUT_MS);
+    const timeout = (): number => {
+      if (deadlineMs === undefined) return P2P_CONSENSUS_TIMEOUT_MS;
+      const remaining = deadlineMs - Date.now();
+      if (remaining <= 0) throw new Error("Native consensus collection deadline exceeded");
+      return Math.max(1, remaining);
+    };
+    timeout();
+    const connection = await this.node.dial(target, { signal: operationSignal });
+    if (connection.encryption !== "/noise") {
+      connection.abort(new Error("Native consensus requires authenticated Noise"));
+      throw new Error("Native consensus requires authenticated Noise");
+    }
+    timeout();
+    const stream = await connection.newStream(P2P_CONSENSUS_V6_PROTOCOL, { signal: operationSignal });
+    let releaseFrame: (() => void) | undefined;
+    try {
+      await writeP2PFrame(stream, request, nativeConsensusV6RequestMaxBytes(request.kind), timeout());
+      const retained = await readP2PFrameRetained(stream, nativeConsensusV6ResponseMaxBytes(request.kind), timeout());
+      releaseFrame = retained.release;
+      const response = parseConsensusV6Response(retained.value, this.chain, connection.remotePeer, request.kind);
+      await stream.close({ signal: signal ?? AbortSignal.timeout(timeout()) });
+      return response;
+    } catch (error) {
+      stream.abort(error instanceof Error ? error : new Error("Native consensus protocol failure"));
+      throw error;
+    } finally {
+      releaseFrame?.();
+    }
   }
 
   async broadcastBlock(block: Block): Promise<void> {
@@ -329,6 +481,73 @@ function parseConsensusRequest(
     };
   }
   throw new Error("Unsupported native consensus request");
+}
+
+function parseConsensusV6Request(
+  value: unknown,
+  expected: NodeStatus,
+  remotePeer: Parameters<typeof validateP2PChainIdentity>[2]
+): ConsensusV6Request {
+  assertRecord(value, "native v6 consensus request");
+  const record = value as Record<string, unknown>;
+  if (record.version !== 2 || typeof record.kind !== "string" || !Object.hasOwn(NATIVE_CONSENSUS_V6_REQUEST_MAX_BYTES, record.kind)) {
+    throw new Error("Invalid native v6 consensus request");
+  }
+  const kind = record.kind as ConsensusV6Kind;
+  // Per-kind request limits (the frame reader enforces only the largest).
+  if (Buffer.byteLength(JSON.stringify(record), "utf8") > nativeConsensusV6RequestMaxBytes(kind)) throw new Error("Native v6 consensus request exceeds its kind limit");
+  const identity = validateP2PChainIdentity(record.identity, expected, remotePeer);
+  if (kind === "prepare" || kind === "commit") {
+    assertExactKeys(record, ["version", "identity", "kind", "request"], "native v6 consensus request");
+    assertRecord(record.request, `native v6 ${kind} request`);
+    // Full validation happens in NodeService.v6Prepare / v6Commit.
+    return kind === "prepare"
+      ? { version: 2, identity, kind, request: record.request as unknown as V6PrepareRequest }
+      : { version: 2, identity, kind, request: record.request as unknown as V6CommitRequest };
+  }
+  if (kind === "timeout") {
+    assertExactKeys(record, ["version", "identity", "kind", "height", "round"], "native v6 consensus request");
+    if (!Number.isSafeInteger(record.height) || Number(record.height) < 1 || !Number.isSafeInteger(record.round) || Number(record.round) < 0) {
+      throw new Error("Invalid native v6 timeout request");
+    }
+    return { version: 2, identity, kind, height: Number(record.height), round: Number(record.round) };
+  }
+  assertExactKeys(record, ["version", "identity", "kind", "height", "blockHash"], "native v6 consensus request");
+  if (!Number.isSafeInteger(record.height) || Number(record.height) < 1 || typeof record.blockHash !== "string") {
+    throw new Error("Invalid native v6 block request");
+  }
+  assertHex(record.blockHash, 32, "native v6 block hash");
+  return { version: 2, identity, kind: "block", height: Number(record.height), blockHash: record.blockHash };
+}
+
+function parseConsensusV6Response(
+  value: unknown,
+  expected: { chainId: string; genesisHash: string },
+  remotePeer: Parameters<typeof validateP2PChainIdentity>[2],
+  expectedKind: ConsensusV6Kind
+): ConsensusV6Response {
+  assertRecord(value, "native v6 consensus response");
+  const record = value as Record<string, unknown>;
+  assertExactKeys(record, ["version", "identity", "kind", "result"], "native v6 consensus response");
+  if (record.version !== 2 || record.kind !== expectedKind) throw new Error("Invalid native v6 consensus response");
+  const identity = validateP2PChainIdentity(record.identity, expected, remotePeer);
+  validateConsensusV6ResponseResultShape(expectedKind, record.result);
+  return { version: 2, identity, kind: expectedKind, result: record.result };
+}
+
+export function validateConsensusV6ResponseResultShape(kind: ConsensusV6Kind, value: unknown): void {
+  assertRecord(value, `native v6 consensus ${kind} result`);
+  if (kind === "prepare" || kind === "commit") {
+    // Same shape as a legacy attestation; signatures are verified by the leader.
+    validateConsensusResponseResultShape("attest", value);
+    return;
+  }
+  if (kind === "timeout") {
+    validateTimeoutResponseShape(value);
+    return;
+  }
+  assertExactKeys(value, ["block"], "native v6 consensus block result");
+  if (value.block !== null) validateBlockShape(value.block);
 }
 
 function parseConsensusResponse(

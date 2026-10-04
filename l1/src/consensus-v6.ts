@@ -476,13 +476,15 @@ export function validatePrepareRequestCertificates(
   request: V6PrepareRequest,
   validators: Validator[],
   chainId: string,
-  height: number
+  height: number,
+  options: { verifyProposalSignature?: boolean } = {}
 ): PrepareQC | null {
   const { proposal, block, tc } = request;
   validateProposalShape(proposal);
   if (proposal.chainId !== chainId) throw new Error("v6 proposal chain ID mismatch");
   if (proposal.height !== height) throw new Error("v6 proposal height mismatch");
-  verifyProposalSignature(proposal, validators);
+  // The leader checks its own request before signing (no signature yet).
+  if (options.verifyProposalSignature !== false) verifyProposalSignature(proposal, validators);
   if (block.hash !== proposal.blockHash) throw new Error("v6 proposal block hash mismatch");
   if (block.header.height !== height || block.header.chainId !== chainId) throw new Error("v6 proposal block target mismatch");
   if (block.header.round > proposal.round) throw new Error("v6 proposal block is from a later round");
