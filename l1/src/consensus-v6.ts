@@ -13,8 +13,9 @@
 //   TimeoutVote  {chainId, height, round, highQCRound, highQCHash}   zyronchain/round-timeout/v1
 // The block header keeps its v1 proposal domain (zyronchain/block-proposal/v1).
 import { assertHex, canonicalJson, sha256Hex } from "./codec.js";
-import { signCanonicalDomain, verifyCanonicalDomain } from "./crypto.js";
-import { expectedValidator, validatorQuorumSize } from "./block.js";
+import { addressFromPublicKey, signCanonicalDomain, verifyCanonicalDomain } from "./crypto.js";
+import { blockHash, expectedValidator, validatorQuorumSize } from "./block.js";
+import { merkleRoot } from "./merkle.js";
 import { assertAddress, assertExactKeys, assertPlainRecord } from "./transaction.js";
 import type { Address, Block, Validator } from "./types.js";
 
@@ -532,6 +533,37 @@ export function validateCommitCertificate(block: Block, validators: Validator[])
     votePayload(block.header.chainId, block.header.height, commitRound, block.hash),
     "Finality"
   );
+}
+
+/**
+ * Integrity of a v6 proposal block obtained outside a validated `prepare`
+ * request (commit request, consensus-state file, fetch by hash). The block
+ * hash covers only the header, so the body (transactions vs transactionRoot),
+ * the proposal-form envelope and the proposer signature are checked here;
+ * otherwise a stored or fetched copy with the right header and a different
+ * body would make every later re-proposal of it fail (liveness, §8.2).
+ * Chain-state validity is implied by the PrepareQC and re-checked by every
+ * validator when the block is re-proposed.
+ */
+export function assertV6ProposalBlockIntegrity(block: Block, height: number, hash: string, validators?: Validator[]): void {
+  if (block.hash !== hash || blockHash(block.header) !== hash || block.header.height !== height ||
+      block.header.version !== CONSENSUS_V6_PROTOCOL_VERSION) {
+    throw new Error("v6 block does not match the requested hash");
+  }
+  if (block.header.transactionRoot !== merkleRoot(block.transactions)) throw new Error("v6 block body does not match its header");
+  if (block.roundCertificate.length !== 0 || block.attestations.length !== 0 || block.commitRound !== null) {
+    throw new Error("v6 block is not in proposal form");
+  }
+  if (typeof block.signature !== "string" || typeof block.proposerPublicKey !== "string") throw new Error("v6 block is unsigned");
+  assertHex(block.signature, 64, "v6 block signature");
+  assertHex(block.proposerPublicKey, 64, "v6 block proposerPublicKey");
+  if (addressFromPublicKey(block.proposerPublicKey) !== block.header.proposer) throw new Error("v6 block proposer key mismatch");
+  if (validators && expectedValidator(validators, height, block.header.round).publicKey !== block.proposerPublicKey) {
+    throw new Error("v6 block proposer is not the origin-round leader");
+  }
+  if (!verifyCanonicalDomain("zyronchain/block-proposal/v1", block.header, block.signature, block.proposerPublicKey)) {
+    throw new Error("Invalid v6 block proposer signature");
+  }
 }
 
 /** Highest-round QC among verified candidates (ties: identical by L1, first wins). */

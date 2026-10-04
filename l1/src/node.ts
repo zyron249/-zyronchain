@@ -24,6 +24,7 @@ import {
 } from "./block.js";
 import {
   CONSENSUS_V6_PROTOCOL_VERSION,
+  assertV6ProposalBlockIntegrity,
   V6_COMMIT_VOTE_DOMAIN,
   V6_PREPARE_VOTE_DOMAIN,
   V6_TIMEOUT_GUARD_MS,
@@ -377,13 +378,14 @@ export class PeerClient extends BasePeerClient {
   }
 }
 
-/** Shape, hash and target check of a block fetched by hash for a v6 re-proposal. */
+/** Shape, hash, target and body/signature integrity of a block fetched by hash for a v6 re-proposal. */
 export function validateFetchedV6Block(value: unknown, height: number, hash: string): Block {
   validateBlockShape(value);
   if (value.hash !== hash || blockHash(value.header) !== hash || value.header.height !== height ||
       value.header.version !== CONSENSUS_V6_PROTOCOL_VERSION) {
     throw new Error("Fetched v6 block does not match the requested hash");
   }
+  assertV6ProposalBlockIntegrity(value, height, hash);
   return value;
 }
 
@@ -630,7 +632,11 @@ async function produceFinalizedBlockV6(
       block = await service.v6FetchBlock(height, hash);
       if (!block && peers.fetchV6Block) {
         const fetched = await peers.fetchV6Block(height, hash);
-        block = fetched ? validateFetchedV6Block(fetched, height, hash) : null;
+        try {
+          block = fetched ? validateFetchedV6Block(fetched, height, hash) : null;
+        } catch {
+          block = null;
+        }
       }
       if (!block) return null;
     } else {

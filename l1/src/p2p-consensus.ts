@@ -10,7 +10,7 @@ import { P2PPeerRateLimiter } from "./p2p-rate.js";
 import type { NodeIdentity } from "./peer-identity.js";
 import { validateTransactionShape } from "./transaction.js";
 import { validateBlockShape } from "./block.js";
-import { validateTimeoutResponseShape, type V6CommitRequest, type V6PrepareRequest, type V6TimeoutResponse, type V6Vote } from "./consensus-v6.js";
+import { assertV6ProposalBlockIntegrity, validateTimeoutResponseShape, type V6CommitRequest, type V6PrepareRequest, type V6TimeoutResponse, type V6Vote } from "./consensus-v6.js";
 import type { Block, BlockAttestation, RoundSkipVote, Transaction } from "./types.js";
 
 export const P2P_CONSENSUS_PROTOCOL = "/zyronchain/consensus/1.0.0";
@@ -326,7 +326,11 @@ export class NativeConsensusPeerClient implements ConsensusPeerClient {
       try {
         const response = await this.requestV6(target, request);
         const block = (response.result as { block: Block | null }).block;
-        if (block && block.hash === blockHash) return block;
+        if (block && block.hash === blockHash) {
+          // A peer serving the right header with another body is skipped.
+          assertV6ProposalBlockIntegrity(block, height, blockHash);
+          return block;
+        }
       } catch {
         // try the next peer
       }
