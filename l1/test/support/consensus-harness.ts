@@ -15,6 +15,7 @@ import { addressFromPublicKey, publicKeyFromPrivate } from "../../src/crypto.js"
 import { NodeService, type ConsensusPeerClient } from "../../src/node.js";
 import { ChainStore, SigningJournal } from "../../src/storage.js";
 import { createProtocolUpgrade, createProtocolUpgradeApproval } from "../../src/transaction.js";
+import type { V6CommitRequest, V6PrepareRequest, V6TimeoutResponse, V6Vote } from "../../src/consensus-v6.js";
 import type { Block, BlockAttestation, GenesisConfig, RoundSkipVote } from "../../src/types.js";
 
 export const ACTIVATION_HEIGHT = 101;
@@ -26,7 +27,7 @@ export interface TestNetworkConfig {
   genesis: GenesisConfig;
 }
 
-export function testNetwork(n: number, firstKeyByte: number, chainId: string): TestNetworkConfig {
+export function testNetwork(n: number, firstKeyByte: number, chainId: string, genesisTimestampMs = 1_700_000_000_000): TestNetworkConfig {
   const privateKeys = Array.from({ length: n }, (_, index) => (firstKeyByte + index).toString(16).padStart(64, "0"));
   const publicKeys = privateKeys.map(publicKeyFromPrivate);
   const oracle = publicKeyFromPrivate((firstKeyByte + 0x40).toString(16).padStart(64, "0"));
@@ -37,7 +38,7 @@ export function testNetwork(n: number, firstKeyByte: number, chainId: string): T
     publicKeys,
     genesis: {
       chainId,
-      timestampMs: 1_700_000_000_000,
+      timestampMs: genesisTimestampMs,
       validators: publicKeys.map((publicKey) => ({ address: addressFromPublicKey(publicKey), publicKey })),
       activityOracles: [oracle],
       activityPool: pool,
@@ -50,37 +51,50 @@ const prefixCache = new Map<string, Block[]>();
 
 /** Heights 1..100 finalized under v1, with protocolVersion active from height 101. */
 export function finalizedPrefix(network: TestNetworkConfig, protocolVersion: number): Block[] {
-  const cacheKey = `${network.chainId}:${network.privateKeys.length}:${protocolVersion}`;
+  return finalizedPrefixSchedule(network, protocolVersion === 1 ? [] : [{ protocolVersion, activationHeight: ACTIVATION_HEIGHT }]);
+}
+
+/**
+ * Heights 1..length finalized with the legacy rules of whatever version is
+ * active, after quorum-approved upgrades (nonces 1, 2, ...) included at
+ * heights 1, 2, ... that activate at the given heights.
+ */
+export function finalizedPrefixSchedule(
+  network: TestNetworkConfig,
+  upgrades: Array<{ protocolVersion: number; activationHeight: number }>,
+  length = ACTIVATION_HEIGHT - 1
+): Block[] {
+  const cacheKey = `${network.chainId}:${network.genesis.timestampMs}:${network.privateKeys.length}:${JSON.stringify(upgrades)}:${length}`;
   const cached = prefixCache.get(cacheKey);
   if (cached) return cached;
   const config = network.genesis;
   const chain = new ZyronChain(config);
-  const transactions = [];
-  if (protocolVersion !== 1) {
+  const upgradeTransactions = upgrades.map((upgrade, index) => {
     const proposal = {
       chainId: config.chainId,
-      nonce: 1,
+      nonce: index + 1,
       sender: config.validators[0]!.address,
-      activationHeight: ACTIVATION_HEIGHT,
-      protocolVersion
+      activationHeight: upgrade.activationHeight,
+      protocolVersion: upgrade.protocolVersion
     };
-    transactions.push(createProtocolUpgrade({
+    return createProtocolUpgrade({
       ...proposal,
-      approvals: network.privateKeys.map((key, index) => createProtocolUpgradeApproval(proposal, key, network.publicKeys[index]!)),
-      timestampMs: config.timestampMs + 10
-    }, network.privateKeys[0]!, network.publicKeys[0]!));
-  }
+      approvals: network.privateKeys.map((key, keyIndex) => createProtocolUpgradeApproval(proposal, key, network.publicKeys[keyIndex]!)),
+      timestampMs: config.timestampMs + 10 + index
+    }, network.privateKeys[0]!, network.publicKeys[0]!);
+  });
   const blocks: Block[] = [];
-  for (let height = 1; height < ACTIVATION_HEIGHT; height += 1) {
+  for (let height = 1; height <= length; height += 1) {
     const timestampMs = config.timestampMs + (height * 1_000);
     const proposer = expectedValidator(config.validators, height, 0);
     const proposerKey = network.privateKeys[network.publicKeys.indexOf(proposer.publicKey)]!;
-    let block = chain.produceBlock(height === 1 ? transactions : [], proposerKey, { timestampMs });
+    const transactions = upgradeTransactions[height - 1] ? [upgradeTransactions[height - 1]!] : [];
+    let block = chain.produceBlock(transactions, proposerKey, { timestampMs });
     for (const key of network.privateKeys) block = chain.attestBlock(block, key);
     chain.acceptBlock(block, timestampMs);
     blocks.push(block);
   }
-  assert.equal(chain.protocolVersionAt(ACTIVATION_HEIGHT), protocolVersion);
+  for (const upgrade of upgrades) assert.equal(chain.protocolVersionAt(upgrade.activationHeight), upgrade.protocolVersion);
   prefixCache.set(cacheKey, blocks);
   return blocks;
 }
@@ -174,6 +188,8 @@ export class MemoryNetwork {
   /** Awaited before a request is delivered (used to interleave actions deterministically). */
   beforeDeliver: (from: number, to: number, kind: MessageKind) => Promise<void> | void = () => {};
   readonly errors: Array<{ from: number; to: number; kind: MessageKind; message: string }> = [];
+  /** v6 requests as sent (prepare/commit), for replay in fault-point tests. */
+  readonly captured: Array<{ from: number; kind: MessageKind; request: unknown }> = [];
 
   constructor(readonly validators: Array<TestValidator | undefined>, private readonly clock: () => number) {
     this.online = validators.map((validator) => validator !== undefined);
@@ -209,7 +225,24 @@ export class MemoryNetwork {
         this.deliver(from, "skip", (target) => target.service.requestSkipVote(height, round, previousCertificate ?? [], this.clock())),
       broadcastBlock: async (block: Block): Promise<void> => {
         await this.deliver(from, "block", (target) => target.service.acceptFinalizedBlock(block));
+      },
+      requestV6Prepare: (request: V6PrepareRequest): Promise<V6Vote[]> =>
+        (this.captured.push({ from, kind: "v6-prepare", request: structuredClone(request) }), this.deliver(from, "v6-prepare", (target) => target.service.v6Prepare(structuredClone(request), this.clockFor(target.index)))),
+      requestV6Commit: (request: V6CommitRequest): Promise<V6Vote[]> =>
+        (this.captured.push({ from, kind: "v6-commit", request: structuredClone(request) }), this.deliver(from, "v6-commit", (target) => target.service.v6Commit(structuredClone(request), this.clockFor(target.index)))),
+      requestV6Timeouts: (height: number, round: number): Promise<V6TimeoutResponse[]> =>
+        this.deliver(from, "v6-timeout", (target) => target.service.v6Timeout(height, round, this.clockFor(target.index))),
+      fetchV6Block: async (height: number, blockHash: string): Promise<Block | null> => {
+        const found = await this.deliver(from, "v6-block", async (target) => target.service.v6FetchBlock(height, blockHash));
+        return found.find((block) => block !== null) ?? null;
       }
     };
+  }
+
+  /** Per-validator clock offsets (clock skew, T8). */
+  readonly skewMs = new Map<number, number>();
+
+  clockFor(index: number): number {
+    return this.clock() + (this.skewMs.get(index) ?? 0);
   }
 }

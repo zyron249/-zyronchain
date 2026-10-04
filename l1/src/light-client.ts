@@ -1,11 +1,12 @@
 import { blockHash, expectedValidator, validateAttestationQuorum, validateBlockShape, validateRoundCertificate } from "./block.js";
 import { assertHex } from "./codec.js";
+import { CONSENSUS_V6_PROTOCOL_VERSION, validateCommitCertificate } from "./consensus-v6.js";
 import { addressFromPublicKey, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
 import { protocolScheduleKey, validatorScheduleKey, verifySparseMerkleProof, type SparseMerkleProof } from "./state-v2.js";
 import { assertExactKeys, assertPlainRecord } from "./transaction.js";
 import type { Block, BlockAttestation, BlockHeader, RoundSkipVote, Validator } from "./types.js";
 
-export const LIGHT_CLIENT_SUPPORTED_PROTOCOL_VERSIONS = new Set([1, 2, 3, 5]);
+export const LIGHT_CLIENT_SUPPORTED_PROTOCOL_VERSIONS = new Set([1, 2, 3, 5, 6]);
 
 export interface LightClientAnchor {
   version: 1;
@@ -27,6 +28,23 @@ export interface LightFinalityProof {
   signature: string;
   roundCertificate: RoundSkipVote[];
   attestations: BlockAttestation[];
+}
+
+/**
+ * Protocol v6 finality proof (F-01): `attestations` are the q CommitVotes of
+ * round `commitRound` (domain zyronchain/commit-vote/v1) and the legacy round
+ * certificate is always empty. Legacy proofs (version 1) are unchanged and
+ * are refused for v6 anchors, and vice versa.
+ */
+export interface LightFinalityProofV6 {
+  version: 2;
+  header: BlockHeader;
+  hash: string;
+  proposerPublicKey: string;
+  signature: string;
+  roundCertificate: RoundSkipVote[];
+  attestations: BlockAttestation[];
+  commitRound: number;
 }
 
 /** Validate an independently obtained trust anchor before using it. */
@@ -82,10 +100,11 @@ export function validateLightClientAnchor(value: unknown): LightClientAnchor {
 export function verifyNextFinalizedHeader(anchorValue: unknown, proofValue: unknown): LightClientAnchor {
   const anchor = validateLightClientAnchor(anchorValue);
   assertPlainRecord(proofValue, "light finality proof");
-  assertExactKeys(proofValue, [
-    "version", "header", "hash", "proposerPublicKey", "signature", "roundCertificate", "attestations"
-  ], "light finality proof");
-  if (proofValue.version !== 1 || typeof proofValue.hash !== "string" ||
+  const v6 = anchor.protocolVersion === CONSENSUS_V6_PROTOCOL_VERSION;
+  assertExactKeys(proofValue, v6
+    ? ["version", "header", "hash", "proposerPublicKey", "signature", "roundCertificate", "attestations", "commitRound"]
+    : ["version", "header", "hash", "proposerPublicKey", "signature", "roundCertificate", "attestations"], "light finality proof");
+  if (proofValue.version !== (v6 ? 2 : 1) || typeof proofValue.hash !== "string" ||
       typeof proofValue.proposerPublicKey !== "string" || typeof proofValue.signature !== "string" ||
       !Array.isArray(proofValue.roundCertificate) || !Array.isArray(proofValue.attestations) ||
       proofValue.roundCertificate.length > anchor.validators.length || proofValue.attestations.length > anchor.validators.length) {
@@ -98,7 +117,8 @@ export function verifyNextFinalizedHeader(anchorValue: unknown, proofValue: unkn
     proposerPublicKey: proofValue.proposerPublicKey,
     signature: proofValue.signature,
     roundCertificate: proofValue.roundCertificate as RoundSkipVote[],
-    attestations: proofValue.attestations as BlockAttestation[]
+    attestations: proofValue.attestations as BlockAttestation[],
+    ...(v6 ? { commitRound: proofValue.commitRound as number } : {})
   };
   validateBlockShape(block);
   if (block.header.chainId !== anchor.chainId) throw new Error("Light-client chain ID mismatch");
@@ -118,8 +138,13 @@ export function verifyNextFinalizedHeader(anchorValue: unknown, proofValue: unkn
   if (!proposerSignatureValid) {
     throw new Error("Invalid light-client proposer signature");
   }
-  validateRoundCertificate(block, anchor.validators);
-  validateAttestationQuorum(block, anchor.validators);
+  if (v6) {
+    if (block.roundCertificate.length !== 0) throw new Error("Light-client v6 proof must not carry a round certificate");
+    validateCommitCertificate(block, anchor.validators);
+  } else {
+    validateRoundCertificate(block, anchor.validators);
+    validateAttestationQuorum(block, anchor.validators);
+  }
 
   return {
     ...anchor,
@@ -190,7 +215,7 @@ export function activateNextProtocolVersion(
 }
 
 function lightClientUsesStateV2(protocolVersion: number): boolean {
-  return protocolVersion === 2 || protocolVersion === 3 || protocolVersion === 5;
+  return protocolVersion === 2 || protocolVersion === 3 || protocolVersion === 5 || protocolVersion === 6;
 }
 
 function nextLightClientHeight(anchor: LightClientAnchor, label: string): number {

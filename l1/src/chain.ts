@@ -61,10 +61,12 @@ const MAX_BLOCK_BYTES = 2_000_000;
 export const MAX_BLOCK_TRANSACTION_BYTES = 1_500_000;
 export const MIN_VALIDATOR_UPDATE_DELAY = 100;
 export const MIN_PROTOCOL_UPDATE_DELAY = 100;
-export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1, 2, 3, 5]);
+// Protocol 6 (F-01) = the v5 state and transaction model with the locked
+// two-phase consensus of consensus-v6.ts. 4 remains unsupported.
+export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1, 2, 3, 5, 6]);
 
 export function protocolUsesStateV2(protocolVersion: number): boolean {
-  return protocolVersion === 2 || protocolVersion === 3 || protocolVersion === 5;
+  return protocolVersion === 2 || protocolVersion === 3 || protocolVersion === 5 || protocolVersion === 6;
 }
 
 interface AppliedTransition {

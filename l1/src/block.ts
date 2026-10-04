@@ -6,6 +6,7 @@ import {
   verifyCanonical,
   verifyCanonicalDomain
 } from "./crypto.js";
+import { CONSENSUS_V6_PROTOCOL_VERSION, V6_MAX_ROUND, validateCommitCertificate } from "./consensus-v6.js";
 import { merkleRoot } from "./merkle.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
 import type {
@@ -96,7 +97,7 @@ export function createUnsignedBlock(input: {
     proposer: addressFromPublicKey(input.proposerPublicKey)
   };
   const hash = blockHash(header);
-  return {
+  const block: Block = {
     header,
     transactions: input.transactions,
     hash,
@@ -105,6 +106,9 @@ export function createUnsignedBlock(input: {
     roundCertificate: structuredClone(input.roundCertificate ?? []),
     attestations: []
   };
+  // Protocol v6 blocks carry an explicit (initially empty) commit round.
+  if (input.version === CONSENSUS_V6_PROTOCOL_VERSION) block.commitRound = null;
+  return block;
 }
 
 export function attachBlockSignature(block: Block, signature: string): Block {
@@ -247,6 +251,18 @@ export function validateBlockEnvelope(
   )) {
     throw new Error("Invalid proposer signature");
   }
+  if (block.header.version === CONSENSUS_V6_PROTOCOL_VERSION) {
+    // Protocol v6 (F-01): round-change evidence travels in signed consensus
+    // messages, never in the block, and finality is the commit certificate
+    // over {chainId, height, commitRound, blockHash}.
+    if (block.roundCertificate.length !== 0) throw new Error("Protocol v6 blocks must not carry a round skip certificate");
+    if (requireFinality) {
+      validateCommitCertificate(block, validators);
+    } else if (block.commitRound !== null || block.attestations.length !== 0) {
+      throw new Error("Protocol v6 proposals must not carry a commit certificate");
+    }
+    return;
+  }
   validateRoundCertificate(block, validators);
   if (requireFinality) validateAttestationQuorum(block, validators);
 }
@@ -329,9 +345,24 @@ export function validateRoundSkipVote(
 
 export function validateBlockShape(value: unknown): asserts value is Block {
   assertPlainRecord(value, "block");
-  assertExactKeys(value, [
-    "header", "transactions", "hash", "proposerPublicKey", "signature", "roundCertificate", "attestations"
-  ], "block");
+  // Only protocol v6 blocks carry `commitRound`; every other version keeps the
+  // exact seven-key encoding.
+  const rawHeader = value.header;
+  const v6 = rawHeader !== null && typeof rawHeader === "object" && !Array.isArray(rawHeader) &&
+    (rawHeader as Record<string, unknown>).version === CONSENSUS_V6_PROTOCOL_VERSION;
+  if (v6) {
+    assertExactKeys(value, [
+      "header", "transactions", "hash", "proposerPublicKey", "signature", "roundCertificate", "attestations", "commitRound"
+    ], "block");
+    if (value.commitRound !== null && (!Number.isSafeInteger(value.commitRound) ||
+        (value.commitRound as number) < 0 || (value.commitRound as number) > V6_MAX_ROUND)) {
+      throw new Error("Invalid block commitRound");
+    }
+  } else {
+    assertExactKeys(value, [
+      "header", "transactions", "hash", "proposerPublicKey", "signature", "roundCertificate", "attestations"
+    ], "block");
+  }
   assertPlainRecord(value.header, "block header");
   assertExactKeys(value.header, [
     "version", "chainId", "height", "round", "previousHash", "timestampMs",
