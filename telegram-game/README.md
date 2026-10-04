@@ -65,6 +65,16 @@ Compose runs the API and the bot as separate containers. The `api` service overr
 
 The image default command is `scripts/start-web-and-bot.sh`. It starts `python -m zyron_node.bot` in the background and execs `python -m zyron_node` in the foreground, with the image `PYTHONPATH` and the rest of the container environment. On a single Render Free web service, leave Docker Command empty so that entrypoint runs both processes. Free web services still spin down after inactivity, so the bot polls only while the service is awake. A dedicated worker running `python -m zyron_node.bot`, with the web service on `python -m zyron_node`, is still the better split when a worker is available.
 
+
+## Reminder DMs
+
+The bot process runs a reminder loop every 90 seconds (`REMINDERS_ENABLED=0` turns it off).
+
+- **Energy full (primary):** each player's energy-full time is computed from the server regen model. The DM goes out once energy is full, one per refill cycle (nothing more until energy is spent and full again). No time-of-day window. Players active in the last 5 minutes, or who opened the app after it filled, are skipped.
+- **Daily chest (secondary):** at most once per 24h, 12:00–20:00 UTC, only for players idle for 12h–7 days who have not opened today's chest.
+- Only players who wrote to the bot privately or opened the Mini App with `allows_write_to_pm` get DMs. Every DM has **Play Zyron** and **Turn off reminders** buttons; `/reminders off|on` works too. A 403 marks the chat unreachable until the player writes to the bot again. Sends are paced at 20/s and honour 429 `retry_after`. A Postgres advisory lock keeps overlapping deploys from double-sending.
+- `GET /api/admin/reminders` (admin token) is a dry run: counts by reason plus the loop heartbeat, no sends. `POST /api/admin/reminders/test-owner` sends one marked test DM to the creator of `COMMUNITY_CHAT` (default `@zyronchain`) and nobody else.
+
 ## Hosting: instant open
 
 Render Free web services sleep after 15 minutes without inbound traffic and need 30–60 s to start. Play Zyron
