@@ -302,7 +302,11 @@ test("F-03 consensus skip-vote verification APIs reject calls without an explici
   };
   assert.doesNotThrow(() => validateBlockEnvelope(block, previous, config.validators, timestampMs, true, 1));
   const untypedEnvelope = validateBlockEnvelope as unknown as (...args: unknown[]) => void;
-  assert.throws(() => untypedEnvelope(block, previous, config.validators, timestampMs, true));
+  assert.throws(() => untypedEnvelope(block, previous, config.validators, timestampMs, true), /explicit protocol version/);
+  // An omitted finality mode must not silently disable the attestation quorum check.
+  const unattested = { ...block, attestations: [] };
+  assert.throws(() => untypedEnvelope(unattested, previous, config.validators, timestampMs, undefined, 1), /explicit finality mode/);
+  assert.throws(() => validateBlockEnvelope(unattested, previous, config.validators, timestampMs, true, 1), /Finality quorum not reached/);
 });
 
 test("F-03 only one block producer implementation is exported", () => {
