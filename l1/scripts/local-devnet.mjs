@@ -9,17 +9,21 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
-const allowed = new Set(['--check', '--help', '--local-v5']);
+const allowed = new Set(['--check', '--help', '--local-v5', '--v6']);
 if (args.some(arg => !allowed.has(arg))) {
-  console.error('Usage: npm run devnet [-- --check | --local-v5]');
+  console.error('Usage: npm run devnet [-- --check | --local-v5] [-- --v6]');
   process.exit(1);
 }
 if (args.includes('--check') && args.includes('--local-v5')) {
   console.error('--check and --local-v5 cannot be combined. The automated check stays on protocol v1; local mining rehearsal is interactive only and does not activate public mining.');
   process.exit(1);
 }
+if (args.includes('--v6') && args.includes('--local-v5')) {
+  console.error('--v6 and --local-v5 cannot be combined.');
+  process.exit(1);
+}
 if (args.includes('--help')) {
-  console.log('Start a fresh, loopback-only two-validator development chain. Ctrl+C stops both nodes.\n--check verifies transfer, quorum and restart, then removes the temporary chain.\n--local-v5 schedules protocol v5 on this disposable loopback chain after the verified transfer (100-block delay; ~50 minutes at the 30-second interval). It does not activate public mining, publish RPC, or flip launch flags.\nRequires Linux/macOS; on Windows run inside WSL2 on the Linux filesystem.');
+  console.log('Start a fresh, loopback-only two-validator development chain. Ctrl+C stops both nodes.\n--check verifies transfer, quorum and restart, then removes the temporary chain.\n--local-v5 schedules protocol v5 on this disposable loopback chain after the verified transfer (100-block delay; ~50 minutes at the 30-second interval). It does not activate public mining, publish RPC, or flip launch flags.\n--v6 (F-01 test mode) runs the same disposable loopback chain under consensus protocol v6: heights 1-100 are pre-built offline with a quorum-approved upgrade activating v6 at height 101, so both validators start at height 100 and every block they finalize uses v6. Devnet/test only; never use this on a live network.\nRequires Linux/macOS; on Windows run inside WSL2 on the Linux filesystem.');
   process.exit(0);
 }
 if (process.platform === 'win32') {
@@ -29,6 +33,8 @@ if (process.platform === 'win32') {
 
 const check = args.includes('--check');
 const localV5 = args.includes('--local-v5');
+const v6 = args.includes('--v6');
+const V6_ACTIVATION_HEIGHT = 101;
 const LOCAL_PROTOCOL_V5_DELAY = 100;
 const l1Root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cli = join(l1Root, 'dist/src/secure-cli.js');
@@ -75,7 +81,9 @@ function start(name, port, peerPort) {
   node.closed = new Promise(res => child.once('close', (code, signal) => { node.exit = { code, signal }; res(); }));
   child.once('error', error => { node.error = error; });
   for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => {
-    logs[name] = (logs[name] + chunk.toString('utf8')).slice(-128 * 1024);
+    const stamp = new Date().toISOString();
+    const text = chunk.toString('utf8').split('\n').map(line => (line ? `${stamp} ${line}` : line)).join('\n');
+    logs[name] = (logs[name] + text).slice(-128 * 1024);
     if (!check) process.stdout.write(`[${name}] ${chunk}`);
   });
   nodes.set(name, node);
@@ -127,6 +135,71 @@ async function waitFor(label, predicate, timeout = 120_000) {
 
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { interrupted = true; });
 
+// --v6 (F-01 test mode): MIN_PROTOCOL_UPDATE_DELAY is 100 blocks, so the v6
+// activation height cannot be reached quickly by a live chain. Heights 1-100
+// are built offline with the devnet keys (block 1 carries the quorum-approved
+// upgrade to v6 at height 101) and committed to both data directories before
+// the validators start. The keys are decrypted in this process only and never
+// printed.
+async function prebuildV6Prefix(keys) {
+  const dist = name => join(l1Root, 'dist/src', name);
+  const { ZyronChain } = await import(dist('chain.js'));
+  const { ChainStore } = await import(dist('storage.js'));
+  const { decryptPrivateKey } = await import(dist('keystore.js'));
+  const { createProtocolUpgrade, createProtocolUpgradeApproval } = await import(dist('transaction.js'));
+  const { expectedValidator } = await import(dist('block.js'));
+  const genesis = JSON.parse(await readFile(join(directory, 'genesis.json'), 'utf8'));
+  const privateKeys = new Map();
+  for (const name of ['a', 'b']) {
+    const password = (await readFile(passwordFile(name), 'utf8')).trim();
+    privateKeys.set(keys[name].publicKey, decryptPrivateKey(keys[name], password));
+  }
+  // Initiated by B so that A's nonce (asserted by the transfer stage) is unchanged.
+  const proposal = { chainId: genesis.chainId, nonce: 1, sender: keys.b.address, activationHeight: V6_ACTIVATION_HEIGHT, protocolVersion: 6 };
+  const upgrade = createProtocolUpgrade({
+    ...proposal,
+    approvals: ['a', 'b'].map(name => createProtocolUpgradeApproval(proposal, privateKeys.get(keys[name].publicKey), keys[name].publicKey)),
+    timestampMs: genesis.timestampMs + 1
+  }, privateKeys.get(keys.b.publicKey), keys.b.publicKey);
+  const chain = new ZyronChain(genesis);
+  const blocks = [];
+  for (let height = 1; height < V6_ACTIVATION_HEIGHT; height += 1) {
+    const timestampMs = genesis.timestampMs + (height * 10);
+    const proposer = expectedValidator(genesis.validators, height, 0);
+    let block = chain.produceBlock(height === 1 ? [upgrade] : [], privateKeys.get(proposer.publicKey), { timestampMs });
+    for (const key of privateKeys.values()) block = chain.attestBlock(block, key);
+    chain.acceptBlock(block, timestampMs);
+    blocks.push(block);
+  }
+  privateKeys.clear();
+  assert.equal(chain.protocolVersionAt(V6_ACTIVATION_HEIGHT), 6);
+  assert.equal(chain.protocolVersionAt(V6_ACTIVATION_HEIGHT - 1), 1);
+  for (const name of ['a', 'b']) {
+    const dataDirectory = join(directory, `data-${name}`);
+    await mkdir(dataDirectory, { mode: 0o700 });
+    const store = await ChainStore.open(genesis, dataDirectory);
+    for (const block of blocks) await store.commitFinalizedBlock(block);
+  }
+  console.log(`Protocol v6 test mode: heights 1-${V6_ACTIVATION_HEIGHT - 1} pre-built (protocol v1), v6 active from height ${V6_ACTIVATION_HEIGHT}.`);
+}
+
+// Every block finalized after activation is a v6 block with a commit certificate.
+async function verifyV6Blocks(portA, portB, height) {
+  const commitRounds = [];
+  for (const port of [portA, portB]) {
+    const { blocks } = await json(port, `/blocks?from=${V6_ACTIVATION_HEIGHT}&limit=${height - V6_ACTIVATION_HEIGHT + 1}`);
+    assert.equal(blocks.length, height - V6_ACTIVATION_HEIGHT + 1);
+    for (const block of blocks) {
+      assert.equal(block.header.version, 6, `height ${block.header.height} is not a v6 block`);
+      assert.ok(Number.isSafeInteger(block.commitRound) && block.commitRound >= block.header.round);
+      assert.deepEqual(block.roundCertificate, []);
+      assert.equal(block.attestations.length, 2);
+      if (port === portA) commitRounds.push(block.commitRound);
+    }
+  }
+  return { protocolVersion: 6, v6Heights: commitRounds.length, commitRounds };
+}
+
 try {
   const keys = {};
   const keyNames = localV5 ? ['a', 'b', 'oracle', 'miner'] : ['a', 'b', 'oracle'];
@@ -142,6 +215,7 @@ try {
     '--validator-public-key', keys.a.publicKey, '--validator-public-key', keys.b.publicKey,
     '--oracle-public-key', keys.oracle.publicKey, '--activity-pool', keys.oracle.address,
     '--allocation', `${keys.a.address}:100000000000`, '--allocation', `${keys.oracle.address}:100000000000`);
+  if (v6) await prebuildV6Prefix(keys);
   const portA = await freePort();
   const portB = await freePort(portA);
   start('a', portA, portB);
@@ -154,7 +228,13 @@ try {
     assert.equal(a.genesisHash, b.genesisHash);
     return a.height >= minimum && a.height === b.height && a.tipHash === b.tipHash ? { a, b } : false;
   };
-  const initial = await waitFor('initial finality', () => pair(1));
+  const initial = await waitFor('initial finality', () => pair(v6 ? V6_ACTIVATION_HEIGHT : 1));
+  if (v6) {
+    for (const port of [portA, portB]) {
+      const protocol = await json(port, '/protocol');
+      assert.equal(protocol.currentVersion, 6, 'v6 devnet must run consensus protocol v6');
+    }
+  }
   command('a', 'transfer', '--key', keyFile('a'), '--rpc', `http://127.0.0.1:${portA}`, '--chain-id', chainId,
     '--to', keys.b.address, '--amount-atoms', '100000000', '--fee-atoms', '1000');
   const transferred = await waitFor('transfer finalized by both validators', async () => {
@@ -264,8 +344,9 @@ See docs/PUBLIC_TEST.md and docs/PUBLIC_LAUNCH_CHECKLIST.md
     assert.equal(restored.a.height, recovered.a.height);
     assert.equal(restored.a.tipHash, recovered.a.tipHash);
     for (const port of [portA, portB]) assert.equal((await json(port, `/balance/${keys.b.address}`)).balanceAtoms, 100000000);
+    const v6Summary = v6 ? await verifyV6Blocks(portA, portB, restored.a.height) : {};
     console.log(JSON.stringify({ ok: true, chainId, validators: 2, host: '127.0.0.1', height: restored.a.height,
-      tipHash: restored.a.tipHash, transferVerified: true, quorumVerified: true, restartVerified: true }, null, 2));
+      tipHash: restored.a.tipHash, transferVerified: true, quorumVerified: true, restartVerified: true, ...v6Summary }, null, 2));
     finished = true;
   } else {
     console.log('Devnet is ready. Both validators remain running. Ctrl+C stops them. This chain has no real-value assets.');

@@ -19,6 +19,7 @@
     "build": "tsc --outDir dist",
     "devnet": "npm run build && node scripts/local-devnet.mjs",
     "devnet:check": "npm run build && node scripts/local-devnet.mjs --check",
+    "devnet:check:v6": "npm run build && node scripts/local-devnet.mjs --check --v6",
     "mine": "node scripts/mine.mjs",
     "mine:local": "npm run build && node scripts/local-devnet.mjs --local-v5",
     "bench:restart": "npm run build && node dist/bench/restart.js",
