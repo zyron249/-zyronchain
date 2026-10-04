@@ -79,6 +79,7 @@ Maintainer succession likewise cannot be satisfied by naming placeholder account
 | `docs/PUBLIC_TEST.md` | External tester walkthrough for the local public-test path |
 | `docs/PUBLIC_LAUNCH_CHECKLIST.md` | Ready-vs-blocked public mining / public-network launch map |
 | `CONTRIBUTING.md` | Tester and contributor rules |
+| `LICENSE`, `NOTICE` | Apache License 2.0 and attribution notice |
 | `.env.example` | Environment variable checklist (no secrets) |
 | `app.py`, `zyron/`, `templates/`, `static/` | Legacy Python/Flask compatibility testnet |
 | `tests/` | Legacy Python testnet tests |
@@ -87,3 +88,7 @@ Maintainer succession likewise cannot be satisfied by naming placeholder account
 ## Contributions and launch discipline
 
 Security and consensus changes must preserve deterministic replay and include regression evidence. How to run tests and what not to invent (chain IDs, RPC URLs, activation flags) is in [`CONTRIBUTING.md`](CONTRIBUTING.md). Security reports follow [`SECURITY.md`](SECURITY.md); maintainer/release continuity follows [`docs/L1_MAINTAINER_SUCCESSION.md`](docs/L1_MAINTAINER_SUCCESSION.md). Do not deploy generated keys, genesis files or operator secrets from this repository. Do not activate or advertise a value-bearing mainnet until the activation gates in the launch authorization/readiness policies are independently closed.
+
+## License
+
+ZyronChain is licensed under the [Apache License, Version 2.0](LICENSE). Copyright 2026 The ZyronChain Authors; see [`NOTICE`](NOTICE). Unless required by applicable law or agreed to in writing, the software is distributed on an "AS IS" basis, without warranties or conditions of any kind.
