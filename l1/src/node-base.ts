@@ -626,9 +626,14 @@ export class NodeService {
       const justify = validatePrepareRequestCertificates(request, validators, chainId, height);
       this.store.chain.validateProposal(request.block, nowMs);
       const { round, justifyRound } = request.proposal;
-      await this.v6StoreBlock(height, request.block);
       if (justify) await this.v6RecordQC(height, chainId, validators, justify);
       await journal.reserveV6Prepare(height, round, request.block.hash, justifyRound);
+      // Stored only once the journal accepted the vote (finding D-1): a refused
+      // request (equivocation, lock conflict, closed round) leaves no file, so
+      // at most one block per (H, r) is kept from prepare requests. Prepared
+      // blocks are liveness state only; a crash before this write merely
+      // loses the copy (the commit request carries the block again).
+      await this.v6StoreBlock(height, request.block);
       return {
         validator: member.address,
         publicKey: signer.publicKey,
@@ -793,7 +798,9 @@ export class NodeService {
     await this.v6StoreBlock(height, block);
     const name = ConsensusStateStore.proposalFile(height, round);
     const digest = proposalDigest(payload);
-    if (journal.v6Row(height, round, "proposal") !== digest) {
+    // Written only before the first proposal row of the round, so a refused
+    // conflicting attempt cannot overwrite the stored (already signed) proposal.
+    if (journal.v6Row(height, round, "proposal") === undefined) {
       await this.v6State.write(name, { payload, tc });
     }
     await journal.reserveV6(height, round, "proposal", digest);
