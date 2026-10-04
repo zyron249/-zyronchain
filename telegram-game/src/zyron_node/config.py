@@ -54,6 +54,8 @@ class Settings:
     host: str
     port: int
     cycle_min_interval_ms: int
+    reminders_enabled: bool = True
+    community_chat: str = "@zyronchain"
 
     def redacted(self) -> dict[str, object]:
         return {
@@ -70,6 +72,8 @@ class Settings:
             "trustedProxies": len(self.trusted_proxies),
             "host": self.host,
             "port": self.port,
+            "remindersEnabled": self.reminders_enabled,
+            "communityChat": self.community_chat,
         }
 
 
@@ -117,6 +121,16 @@ def _cors_origins(miniapp_url: str, webapp_url: str) -> tuple[str, ...]:
     return tuple(origins)
 
 
+def _community_chat(raw: str) -> str:
+    """The public ZYRONCHAIN group (t.me/zyronchain). Either @username or a numeric chat id."""
+    value = raw.strip() or "@zyronchain"
+    if value.startswith("@") and value[1:].replace("_", "").isalnum() and 5 <= len(value) <= 33:
+        return value
+    if value.lstrip("-").isdigit():
+        return value
+    raise ConfigError("COMMUNITY_CHAT must be @username or a numeric chat id")
+
+
 def load_settings() -> Settings:
     redis = os.environ.get("REDIS_URL", "").strip()
     environment = os.environ.get("ENVIRONMENT", "development").strip() or "development"
@@ -145,6 +159,8 @@ def load_settings() -> Settings:
         host=os.environ.get("HOST", "0.0.0.0").strip() or "0.0.0.0",
         port=_int("PORT", 8000),
         cycle_min_interval_ms=_int("CYCLE_MIN_INTERVAL_MS", 800),
+        reminders_enabled=_bool("REMINDERS_ENABLED", True),
+        community_chat=_community_chat(os.environ.get("COMMUNITY_CHAT", "")),
     )
 
 

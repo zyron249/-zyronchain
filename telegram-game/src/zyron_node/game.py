@@ -871,6 +871,21 @@ def remember_pending_referral(pool, telegram_id: int, code: str, now: datetime) 
 
 
 def ensure_player(conn, identity, ip_hash: str | None, now: datetime) -> dict:
+    player = _ensure_player(conn, identity, ip_hash, now)
+    if getattr(identity, "allows_write_to_pm", False):
+        # Telegram says the bot may DM this user; their private chat id equals their user id.
+        conn.execute(
+            """
+            UPDATE players SET chat_id = COALESCE(chat_id, telegram_id), reminders_unreachable_at = NULL
+            WHERE id = %s AND (chat_id IS NULL OR reminders_unreachable_at IS NOT NULL)
+            """,
+            (player["id"],),
+        )
+        player = reload_player(conn, player["id"])
+    return player
+
+
+def _ensure_player(conn, identity, ip_hash: str | None, now: datetime) -> dict:
     existing = conn.execute(
         "SELECT * FROM players WHERE telegram_id = %s FOR UPDATE",
         (identity.id,),

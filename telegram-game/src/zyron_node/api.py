@@ -42,6 +42,7 @@ from zyron_node.game import (
     upgrades_view,
 )
 from zyron_node.limits import RateLimitExceeded, hit
+from zyron_node import reminders, telegram_api
 
 
 def error_payload(code: str, message: str) -> dict:
@@ -359,6 +360,30 @@ def register_routes(app) -> None:
     def snapshot(request: Request):
         actor = require_admin(request)
         return export_snapshot(request.app.state.pool, actor, request_now(request))
+
+    @app.get("/api/admin/reminders")
+    def reminders_preview(request: Request):
+        """Dry run: counts of who would get a reminder now, plus the bot loop heartbeat. Sends nothing."""
+        require_admin(request)
+        return reminders.preview(request.app.state.pool, request_now(request))
+
+    @app.post("/api/admin/reminders/test-owner")
+    def reminders_test_owner(request: Request):
+        """Send one marked test reminder to the community group's creator only."""
+        require_admin(request)
+        settings = request.app.state.settings
+        if not settings.telegram_bot_token:
+            raise GameError("bot_unconfigured", "Bot token is not configured.", 503)
+        from zyron_node.bot import versioned_webapp_url
+
+        return reminders.send_owner_test(
+            request.app.state.pool,
+            settings.telegram_bot_token,
+            settings.community_chat,
+            versioned_webapp_url(settings.miniapp_url),
+            request_now(request),
+            telegram_api.call,
+        )
 
     @app.get("/api/admin/season/snapshots")
     def snapshots(request: Request):
