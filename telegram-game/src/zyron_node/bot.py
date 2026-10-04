@@ -1,7 +1,9 @@
-"""Telegram bot for /start /play /profile /rank /invite /reminders /help and the Play Zyron menu button.
+"""Telegram bot: /start /play /profile /rank /invite /stats /wallet /roadmap /reminders /help and the
+Play Zyron menu button.
 
-It also runs the reminder DM loop (energy full, daily chest). This process does not change group
-permissions, history, admins, or other bots.
+It also runs the reminder DM loop (energy full, daily chest) and the ZYRONCHAIN group features
+(builder boards, invite contest, weekly quiz, short-lived welcome notes). It never changes group
+permissions, members, admins, or other people's messages.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from zyron_node import reminders, telegram_api
+from zyron_node import community, reminders, telegram_api
 from zyron_node.auth import TelegramIdentity
 from zyron_node.buildinfo import CLIENT_BUILD
 from zyron_node.config import load_settings, validate_settings
@@ -33,11 +35,16 @@ COMMANDS = [
     {"command": "profile", "description": "Your node profile"},
     {"command": "rank", "description": "Leaderboard snapshot"},
     {"command": "invite", "description": "Your referral link"},
+    {"command": "stats", "description": "Game stats and network status (testnet)"},
+    {"command": "wallet", "description": "ZyronChain phone wallet (testnet)"},
+    {"command": "roadmap", "description": "What's done and what's next"},
     {"command": "reminders", "description": "Reminder DMs on or off"},
     {"command": "help", "description": "How the game works"},
 ]
 
 PRIVATE_COMMANDS = {"start", "play", "profile", "rank", "invite", "help"}
+INFO_COMMANDS = {"stats", "wallet", "roadmap"}
+ALLOWED_UPDATES = ["message", "callback_query", "poll_answer", "my_chat_member"]
 
 
 def parse_command(text: str) -> tuple[str, str]:
@@ -89,11 +96,11 @@ def reply_for(command: str, argument: str, profile: dict | None, webapp_url: str
             "and climb the season board.\n\n"
             f"{POINTS_NOTICE}"
         )
-        if command == "start" and argument:
+        if command == "start" and referral_code_from_param(argument.split()[0][:64] if argument else ""):
             text += "\n\nReferral noted if the code is valid."
     elif command == "help":
         text = (
-            "Commands: /play /profile /rank /invite /reminders /help\n\n"
+            "Commands: /play /profile /rank /invite /stats /wallet /roadmap /reminders /help\n\n"
             "Energy regenerates on server time. In the Mini App, Start node keeps cycling until energy runs out. "
             "Supply chests collect the daily streak, quests, and level rewards. "
             "Upgrades spend Zyron Points. "
@@ -150,6 +157,12 @@ def run_bot(stop: threading.Event) -> None:
             daemon=True,
         ).start()
         log.info("reminder loop started (every %ss)", reminders.CHECK_SECONDS)
+    threading.Thread(
+        target=community.community_loop,
+        args=(pool, settings, stop, telegram_call),
+        name="community",
+        daemon=True,
+    ).start()
     try:
         offset = None
         next_menu = 0.0
@@ -162,7 +175,7 @@ def run_bot(stop: threading.Event) -> None:
                 except Exception:  # noqa: BLE001 — keep polling; retry the versioned button
                     log.warning("telegram menu registration failed")
                     next_menu = time.monotonic() + MENU_REFRESH_RETRY_SECONDS
-            payload: dict = {"timeout": 25}
+            payload: dict = {"timeout": 25, "allowed_updates": ALLOWED_UPDATES}
             if offset is not None:
                 payload["offset"] = offset
             try:
@@ -184,14 +197,29 @@ def run_bot(stop: threading.Event) -> None:
 def handle_update(pool, settings, update: dict, call=None) -> None:
     invoke = call or telegram_call
     token = settings.telegram_bot_token
+    now = datetime.now(timezone.utc)
     callback = update.get("callback_query")
     if callback:
         handle_callback(pool, settings, callback, invoke)
+        return
+    if update.get("poll_answer"):
+        community.record_quiz_answer(pool, update["poll_answer"], now)
+        return
+    if update.get("my_chat_member"):
+        change = update["my_chat_member"]
+        log.info(
+            "bot membership in %s is now %s",
+            (change.get("chat") or {}).get("type"),
+            (change.get("new_chat_member") or {}).get("status"),
+        )
         return
     message = update.get("message") or {}
     text = message.get("text") or ""
     user = message.get("from") or {}
     chat = message.get("chat") or {}
+    if message.get("new_chat_members") and community.is_community_chat(chat, settings.community_chat):
+        community.welcome(pool, settings, message, now, invoke)
+        return
     if not user.get("id") or not chat.get("id"):
         return
     private = chat.get("type") == "private"
@@ -200,14 +228,22 @@ def handle_update(pool, settings, update: dict, call=None) -> None:
             reminders.record_chat(pool, int(user["id"]), int(chat["id"]))
         return
     command, argument = parse_command(text)
+    if command not in PRIVATE_COMMANDS | INFO_COMMANDS | {"reminders"}:
+        return
+    if not community.command_allowed(int(chat["id"]), command, private):
+        return
     if command == "reminders":
         reply = reminders_reply(pool, int(user["id"]), argument) if private else {
             "text": "Send /reminders to the bot in a private chat."
         }
-    elif command in PRIVATE_COMMANDS:
-        reply = handle_private_command(pool, settings, user, command, argument)
+    elif command == "stats":
+        reply = {"text": community.stats_text(pool, now)}
+    elif command == "wallet":
+        reply = community.wallet_reply()
+    elif command == "roadmap":
+        reply = community.roadmap_reply()
     else:
-        return
+        reply = handle_private_command(pool, settings, user, command, argument)
     if private:
         reminders.record_chat(pool, int(user["id"]), int(chat["id"]))
     reply["chat_id"] = chat["id"]

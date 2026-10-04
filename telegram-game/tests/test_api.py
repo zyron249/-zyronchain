@@ -348,8 +348,16 @@ def test_bot_commands_do_not_touch_groups():
     help_text = reply_for("help", "", None, "")["text"]
     assert "private key" in help_text
     source = Path("src/zyron_node/bot.py").read_text(encoding="utf-8")
-    for forbidden in ("banChatMember", "promoteChatMember", "setChatPermissions", "deleteMessage"):
-        assert forbidden not in source
+    group = Path("src/zyron_node/community.py").read_text(encoding="utf-8")
+    for forbidden in ("banChatMember", "promoteChatMember", "setChatPermissions", "restrictChatMember", "pinChatMessage"):
+        assert forbidden not in source and forbidden not in group
+    assert "deleteMessage" not in source
+    # The only deletion: the bot's own welcome notes, queued by welcome() into pending_deletes.
+    assert group.count('"deleteMessage"') == 1
+    deleter = group.split("def delete_due_welcomes", 1)[1].split("\ndef ", 1)[0]
+    assert '"deleteMessage"' in deleter
+    assert group.count("INSERT INTO pending_deletes") == 1
+    assert "INSERT INTO pending_deletes" in group.split("def welcome(", 1)[1].split("\ndef ", 1)[0]
     loop = source.split("while not stop.is_set():", 1)[1]
     assert "sync_telegram_menu" in loop
     assert "MENU_REFRESH_RETRY_SECONDS" in loop

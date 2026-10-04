@@ -48,7 +48,12 @@ def client(settings):
                         chain_cache,
                         rate_limits,
                         admin_audit,
-                        pending_referrals
+                        pending_referrals,
+                        bot_jobs,
+                        community_posts,
+                        quiz_answers,
+                        quiz_polls,
+                        pending_deletes
                     RESTART IDENTITY CASCADE
                     """
                 )

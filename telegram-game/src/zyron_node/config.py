@@ -56,6 +56,7 @@ class Settings:
     cycle_min_interval_ms: int
     reminders_enabled: bool = True
     community_chat: str = "@zyronchain"
+    community_posts_enabled: bool = True
 
     def redacted(self) -> dict[str, object]:
         return {
@@ -74,6 +75,7 @@ class Settings:
             "port": self.port,
             "remindersEnabled": self.reminders_enabled,
             "communityChat": self.community_chat,
+            "communityPostsEnabled": self.community_posts_enabled,
         }
 
 
@@ -161,6 +163,7 @@ def load_settings() -> Settings:
         cycle_min_interval_ms=_int("CYCLE_MIN_INTERVAL_MS", 800),
         reminders_enabled=_bool("REMINDERS_ENABLED", True),
         community_chat=_community_chat(os.environ.get("COMMUNITY_CHAT", "")),
+        community_posts_enabled=_bool("COMMUNITY_POSTS_ENABLED", True),
     )
 
 

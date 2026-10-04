@@ -42,11 +42,15 @@ from zyron_node.game import (
     upgrades_view,
 )
 from zyron_node.limits import RateLimitExceeded, hit
-from zyron_node import reminders, telegram_api
+from zyron_node import community, reminders, telegram_api
 
 
 def error_payload(code: str, message: str) -> dict:
     return {"error": {"code": code, "message": message}}
+
+
+class CommunityPostBody(BaseModel):
+    dryRun: bool = True
 
 
 class IdempotentBody(BaseModel):
@@ -384,6 +388,40 @@ def register_routes(app) -> None:
             request_now(request),
             telegram_api.call,
         )
+
+    @app.get("/api/admin/community")
+    def community_rights(request: Request):
+        """The bot's status and rights in the ZYRONCHAIN group, and anything missing for the group features."""
+        require_admin(request)
+        settings = request.app.state.settings
+        if not settings.telegram_bot_token:
+            raise GameError("bot_unconfigured", "Bot token is not configured.", 503)
+        report = community.rights_report(settings.telegram_bot_token, settings.community_chat, telegram_api.call)
+        with request.app.state.pool.connection() as conn:
+            posts = conn.execute(
+                "SELECT kind, period_key, status, created_at FROM community_posts WHERE kind <> 'welcome' "
+                "ORDER BY created_at DESC LIMIT 10"
+            ).fetchall()
+            job = conn.execute("SELECT last_run_at FROM bot_jobs WHERE name = 'reminders'").fetchone()
+        report["recentPosts"] = [
+            {"kind": p["kind"], "period": p["period_key"], "status": p["status"], "at": p["created_at"].isoformat()}
+            for p in posts
+        ]
+        report["botLoopLastRunAt"] = job["last_run_at"].isoformat() if job else None
+        return report
+
+    @app.post("/api/admin/community/leaderboard")
+    def community_leaderboard(request: Request, body: CommunityPostBody):
+        """Preview (dryRun) or post today's builder board once. Idempotent per UTC day; skips with no data."""
+        require_admin(request)
+        settings = request.app.state.settings
+        now = request_now(request)
+        if body.dryRun:
+            built = community.leaderboard_post(request.app.state.pool, now)
+            return {"dryRun": True, "hasData": built is not None, "text": built[0] if built else None}
+        if not settings.telegram_bot_token:
+            raise GameError("bot_unconfigured", "Bot token is not configured.", 503)
+        return community.post_leaderboard(request.app.state.pool, settings, now, telegram_api.call, force=True)
 
     @app.get("/api/admin/season/snapshots")
     def snapshots(request: Request):
