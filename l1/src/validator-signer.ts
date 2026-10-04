@@ -10,7 +10,23 @@ import {
   verifyCanonicalDomain
 } from "./crypto.js";
 
-export type ValidatorSigningIntent = "block-proposal" | "block-attestation" | "round-skip";
+export type ValidatorSigningIntent =
+  | "block-proposal" | "block-attestation" | "round-skip"
+  // Protocol v6 (F-01) consensus messages.
+  | "consensus-proposal" | "prepare-vote" | "commit-vote" | "round-timeout";
+
+export const CONSENSUS_V6_SIGNING_INTENTS: ReadonlySet<ValidatorSigningIntent> = new Set([
+  "consensus-proposal", "prepare-vote", "commit-vote", "round-timeout"
+]);
+
+export interface RemoteValidatorSignerOptions {
+  /**
+   * Allow protocol v6 consensus intents. Off by default: a remote signer that
+   * does not enforce the v6 journal rules (spec §6) must not be asked for v6
+   * signatures, so the client fails closed unless the operator opts in.
+   */
+  allowConsensusV6Intents?: boolean;
+}
 
 export interface ValidatorSigner {
   readonly publicKey: string;
@@ -25,6 +41,7 @@ export class LocalValidatorSigner implements ValidatorSigner {
   }
 
   async signCanonical(payload: unknown, intent: ValidatorSigningIntent, protocolVersion = 1): Promise<string> {
+    assertIntentProtocolVersion(intent, protocolVersion);
     return protocolVersion >= 3
       ? signCanonicalDomain(validatorSigningDomain(intent), payload, this.privateKey)
       : signCanonical(payload, this.privateKey);
@@ -42,12 +59,16 @@ export class RemoteValidatorSigner implements ValidatorSigner {
   private readonly endpoint: URL;
   private readonly bearerToken: string;
 
+  private readonly allowConsensusV6Intents: boolean;
+
   constructor(
     endpoint: string,
     publicKey: string,
     bearerToken?: string,
-    private readonly timeoutMs = 3_000
+    private readonly timeoutMs = 3_000,
+    options: RemoteValidatorSignerOptions = {}
   ) {
+    this.allowConsensusV6Intents = options.allowConsensusV6Intents === true;
     assertHex(publicKey, 64, "validator signer public key");
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) {
       throw new Error("Invalid validator signer timeout");
@@ -62,6 +83,10 @@ export class RemoteValidatorSigner implements ValidatorSigner {
   }
 
   async signCanonical(payload: unknown, intent: ValidatorSigningIntent, protocolVersion = 1): Promise<string> {
+    assertIntentProtocolVersion(intent, protocolVersion);
+    if (CONSENSUS_V6_SIGNING_INTENTS.has(intent) && !this.allowConsensusV6Intents) {
+      throw new Error("Remote validator signer is not enabled for protocol v6 consensus intents");
+    }
     const domain = protocolVersion >= 3 ? validatorSigningDomain(intent) : undefined;
     const response = await fetch(this.endpoint, {
       method: "POST",
@@ -106,6 +131,7 @@ export async function signWithValidator(
   intent: ValidatorSigningIntent,
   protocolVersion = 1
 ): Promise<string> {
+  assertIntentProtocolVersion(intent, protocolVersion);
   const signature = await signer.signCanonical(payload, intent, protocolVersion);
   assertHex(signature, 64, "validator signature");
   const valid = protocolVersion >= 3
@@ -117,11 +143,24 @@ export async function signWithValidator(
   return signature;
 }
 
+// v6 consensus messages exist only under protocol v6 and are always
+// domain-separated; signing one under a legacy (undomained) scheme would let
+// it collide with legacy payloads, so it is refused outright.
+function assertIntentProtocolVersion(intent: ValidatorSigningIntent, protocolVersion: number): void {
+  if (CONSENSUS_V6_SIGNING_INTENTS.has(intent) && protocolVersion !== 6) {
+    throw new Error("Protocol v6 consensus intents require protocol version 6");
+  }
+}
+
 export function validatorSigningDomain(intent: ValidatorSigningIntent): string {
   switch (intent) {
     case "block-proposal": return "zyronchain/block-proposal/v1";
     case "block-attestation": return "zyronchain/finality-attestation/v1";
     case "round-skip": return "zyronchain/round-skip/v1";
+    case "consensus-proposal": return "zyronchain/consensus-proposal/v1";
+    case "prepare-vote": return "zyronchain/prepare-vote/v1";
+    case "commit-vote": return "zyronchain/commit-vote/v1";
+    case "round-timeout": return "zyronchain/round-timeout/v1";
   }
 }
 

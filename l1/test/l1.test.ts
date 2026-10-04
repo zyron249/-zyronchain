@@ -486,7 +486,8 @@ test("a greater-than-two-thirds skip certificate safely unlocks the next propose
     round: 0,
     previousHash: chain.tip.hash,
     validatorPrivateKey: validatorOnePrivate,
-    validatorPublicKey: validatorOnePublic
+    validatorPublicKey: validatorOnePublic,
+    protocolVersion: 1
   });
   const voteTwo = createRoundSkipVote({
     chainId: genesis().chainId,
@@ -494,7 +495,8 @@ test("a greater-than-two-thirds skip certificate safely unlocks the next propose
     round: 0,
     previousHash: chain.tip.hash,
     validatorPrivateKey: validatorTwoPrivate,
-    validatorPublicKey: validatorTwoPublic
+    validatorPublicKey: validatorTwoPublic,
+    protocolVersion: 1
   });
   const proposal = chain.produceBlock([], validatorTwoPrivate, {
     round: 1,
@@ -3462,7 +3464,8 @@ test("four validators converge across 120 blocks with repeated proposer-failure 
       round: 0,
       previousHash: producer.tip.hash,
       validatorPrivateKey: validatorPrivates[index]!,
-      validatorPublicKey: validatorPublics[index]!
+      validatorPublicKey: validatorPublics[index]!,
+      protocolVersion: 1
     }));
     const proposerIndex = (height - 1 + round) % validatorPrivates.length;
     let block = producer.produceBlock([tx], validatorPrivates[proposerIndex]!, {

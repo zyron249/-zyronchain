@@ -143,6 +143,12 @@ export interface Block {
   signature: string | null;
   roundCertificate: RoundSkipVote[];
   attestations: BlockAttestation[];
+  /**
+   * Protocol v6 only (F-01): the round whose CommitVotes form `attestations`.
+   * Absent on every v1/v2/v3/v5 block (their encoding is unchanged); `null` on
+   * a v6 proposal that is not yet finalized.
+   */
+  commitRound?: number | null;
 }
 
 export interface BlockAttestation {

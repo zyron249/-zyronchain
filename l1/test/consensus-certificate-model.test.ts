@@ -126,7 +126,8 @@ test("valid one-validator finality and round-skip certificates remain accepted",
     round: 0,
     previousHash: block.header.previousHash,
     validatorPrivateKey: signer.privateKey,
-    validatorPublicKey: signer.publicKey
+    validatorPublicKey: signer.publicKey,
+    protocolVersion: 1
   });
   assert.doesNotThrow(() => validateRoundSkipQuorum(
     [vote],
