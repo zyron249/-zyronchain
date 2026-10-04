@@ -268,7 +268,7 @@ Every response advertises `x-zyron-rpc-version: 1`. Current clients send the sam
 | GET | `/status` | Chain ID, pinned genesis hash, height, tip hash |
 | GET | `/protocol` | Current and next-height protocol versions for transaction construction |
 | GET | `/healthz` | Lightweight node health and height |
-| GET | `/metrics` | Structured node height, mempool, validator-count and uptime metrics |
+| GET | `/metrics` | Structured node height, mempool, validator-count, uptime and consensus round-skip diagnostic (`roundSkipVotes`) metrics; field reference in `docs/L1_OPERATIONS_RUNBOOK.md` |
 | GET | `/blocks?from=1&limit=100` | Bounded finalized-block sync |
 | GET | `/balance/<address>` | Exact atom balance |
 | GET | `/nonce/<address>` | Confirmed account nonce |
