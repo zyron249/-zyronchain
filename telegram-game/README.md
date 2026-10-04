@@ -75,6 +75,18 @@ The bot process runs a reminder loop every 90 seconds (`REMINDERS_ENABLED=0` tur
 - Only players who wrote to the bot privately or opened the Mini App with `allows_write_to_pm` get DMs. Every DM has **Play Zyron** and **Turn off reminders** buttons; `/reminders off|on` works too. A 403 marks the chat unreachable until the player writes to the bot again. Sends are paced at 20/s and honour 429 `retry_after`. A Postgres advisory lock keeps overlapping deploys from double-sending.
 - `GET /api/admin/reminders` (admin token) is a dry run: counts by reason plus the loop heartbeat, no sends. `POST /api/admin/reminders/test-owner` sends one marked test DM to the creator of `COMMUNITY_CHAT` (default `@zyronchain`) and nobody else.
 
+
+## ZYRONCHAIN group features
+
+The bot process also runs a community loop every 15 seconds for `COMMUNITY_CHAT` (default `@zyronchain`; `COMMUNITY_POSTS_ENABLED=0` pauses scheduled posts):
+
+- **Daily builder board** at 12:00 UTC: yesterday's top block builders (completed node cycles, banned players excluded). Posted once per UTC day and skipped when there is no data.
+- **Sunday weekly summary:** the last 7 UTC days plus the **invite contest**. Only referrals the existing anti-abuse checks rewarded count (`status = 'rewarded'`, neither side banned or over the abuse threshold).
+- **Weekly quiz** on Wednesday at 16:00 UTC: 3 native, non-anonymous Telegram quiz polls drawn from a bank of true facts (50M ZYN cap, local keys, testnet only, open source, basics). Scoring is server-side from `poll_answer`: one attempt per user per question, 20 Zyron Points per correct answer, at most 60 per quiz, and only for existing game players. Polls are stopped after 6 days.
+- **Welcome note** for new members, with Play ZYRON NODE and Phone wallet (testnet) buttons. At most one every 90 seconds and 40 a day, and it deletes itself after 2 minutes. That self-deletion is the only message the bot ever deletes.
+- `/stats`, `/wallet`, `/roadmap` and `/help` are registered with `setMyCommands`. In groups each command answers at most once per 30 seconds.
+- `GET /api/admin/community` reports the bot's status and rights in the group and lists anything missing. Admin rights are not required: the bot only needs to send messages and polls. `POST /api/admin/community/leaderboard` with `{"dryRun": true}` previews the board; `{"dryRun": false}` posts it once for the UTC day.
+
 ## Hosting: instant open
 
 Render Free web services sleep after 15 minutes without inbound traffic and need 30–60 s to start. Play Zyron
