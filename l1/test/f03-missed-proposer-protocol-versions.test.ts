@@ -27,6 +27,7 @@ import {
   validateRoundSkipVote
 } from "../src/block.js";
 import { ZyronChain } from "../src/chain.js";
+import { MAX_LOGGED_ROUND_SKIP_EVENTS_PER_ROUND, RoundSkipVoteDiagnostics } from "../src/consensus-diagnostics.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import * as nodeBaseModule from "../src/node-base.js";
 import {
@@ -43,7 +44,7 @@ import { loadOrCreateNodeIdentity } from "../src/peer-identity.js";
 import { createP2PNode } from "../src/p2p.js";
 import { ChainStore, SigningJournal } from "../src/storage.js";
 import { createProtocolUpgrade, createProtocolUpgradeApproval } from "../src/transaction.js";
-import type { Block, GenesisConfig } from "../src/types.js";
+import type { Block, GenesisConfig, RoundSkipVote } from "../src/types.js";
 
 const PROTOCOL_VERSIONS = [1, 2, 3, 5] as const;
 const RECOVERY_ROUNDS = [1, 2] as const;
@@ -310,4 +311,120 @@ test("F-03 only one block producer implementation is exported", () => {
     baseProducer === undefined || baseProducer === produceFinalizedBlock,
     "node-base.ts must not carry a second, divergent produceFinalizedBlock implementation"
   );
+});
+
+// Compile-time guard (added with the fix; it cannot compile against the audited
+// signatures, which defaulted the version to 1). Never executed.
+function requiredProtocolVersionCompileTimeGuard(block: Block, previous: Block): void {
+  // @ts-expect-error protocolVersion is a required argument (F-03)
+  validateRoundSkipVote({}, [], "chain", 1, 0, "00".repeat(32));
+  // @ts-expect-error protocolVersion is a required argument (F-03)
+  validateRoundSkipQuorum([], [], "chain", 1, 0, "00".repeat(32));
+  // @ts-expect-error expectedProtocolVersion is a required argument (F-03)
+  validateBlockEnvelope(block, previous, [], 0, true);
+}
+void requiredProtocolVersionCompileTimeGuard;
+
+test("F-03 rejected skip votes are counted by reason and logged with bounded, non-sensitive diagnostics", () => {
+  const lines: string[] = [];
+  const diagnostics = new RoundSkipVoteDiagnostics((line) => lines.push(line));
+  const config = genesis();
+  const previous = createGenesisBlock(config, "0".repeat(64));
+  const vote = createRoundSkipVote({
+    chainId: config.chainId,
+    height: 1,
+    round: 0,
+    previousHash: previous.hash,
+    validatorPrivateKey: validatorPrivateKeys[0]!,
+    validatorPublicKey: validatorPublicKeys[0]!,
+    protocolVersion: 3
+  });
+  const total = MAX_LOGGED_ROUND_SKIP_EVENTS_PER_ROUND + 3;
+  for (let index = 0; index < total; index += 1) {
+    try {
+      validateRoundSkipVote(vote, config.validators, config.chainId, 1, 0, previous.hash, 1);
+      assert.fail("v3 vote must not verify under the legacy scheme");
+    } catch (error) {
+      diagnostics.recordRejectedVote({ height: 1, round: 0, protocolVersion: 1, vote, error });
+    }
+  }
+  diagnostics.recordRejectedVote({
+    height: 1,
+    round: 1,
+    protocolVersion: 3,
+    vote: { validator: "x\nforged log line", publicKey: vote.publicKey },
+    error: new Error("Invalid round skip vote fields\n" + "y".repeat(500))
+  });
+  diagnostics.recordQuorumFailure({ height: 1, round: 1, protocolVersion: 3, error: new Error("Round skip quorum not reached: 0/3") });
+
+  const metrics = diagnostics.metrics();
+  assert.equal(metrics.rejectedVotes, total + 1);
+  assert.equal(metrics.rejectedVotesByReason["invalid-signature"], total);
+  assert.equal(metrics.rejectedVotesByReason["malformed-vote"], 1);
+  assert.equal(metrics.quorumFailures, 1);
+  assert.equal(metrics.suppressedLogLines, total - MAX_LOGGED_ROUND_SKIP_EVENTS_PER_ROUND);
+  assert.equal(lines.length, MAX_LOGGED_ROUND_SKIP_EVENTS_PER_ROUND + 2);
+  assert.match(lines[0]!, new RegExp(`height=1 round=0 protocolVersion=1 validator=${vote.validator} reason=invalid-signature`));
+  for (const line of lines) {
+    assert.ok(!line.includes(vote.publicKey), "public keys must not be logged");
+    assert.ok(!line.includes(vote.signature), "signatures must not be logged");
+    assert.ok(!line.includes("\n"), "log lines must be single-line");
+    assert.ok(line.length < 400, "log lines must be bounded");
+  }
+  assert.match(lines[MAX_LOGGED_ROUND_SKIP_EVENTS_PER_ROUND]!, /validator=unknown reason=malformed-vote/);
+});
+
+test("F-03 producer surfaces rejected peer skip votes in node metrics instead of swallowing them", async (t) => {
+  const warnings: string[] = [];
+  t.mock.method(console, "warn", (line: unknown) => { warnings.push(String(line)); });
+  const config = genesis();
+  const online: Validator[] = [];
+  try {
+    for (const index of [1, 2, 3]) online.push(await openValidator(index, []));
+    const [producer, second, third] = online as [Validator, Validator, Validator];
+    const nowMs = config.timestampMs + BLOCK_INTERVAL_MS + ROUND_WINDOW_MS + 1_000;
+    // A vote from the offline round-0 proposer signed under the wrong scheme
+    // (domain-separated while protocol v1 is active) must be rejected and counted.
+    const forged = createRoundSkipVote({
+      chainId: config.chainId,
+      height: 1,
+      round: 0,
+      previousHash: producer.service.store.chain.tip.hash,
+      validatorPrivateKey: validatorPrivateKeys[0]!,
+      validatorPublicKey: validatorPublicKeys[0]!,
+      protocolVersion: 3
+    });
+    const peers: ConsensusPeerClient = {
+      requestRoundSkips: async (height: number, round: number, previousCertificate: RoundSkipVote[] = []) => [
+        forged,
+        await second.service.requestSkipVote(height, round, previousCertificate, nowMs),
+        await third.service.requestSkipVote(height, round, previousCertificate, nowMs)
+      ],
+      requestAttestations: async (block: Block) => [
+        await second.service.attestProposal(block, nowMs),
+        await third.service.attestProposal(block, nowMs)
+      ],
+      broadcastBlock: async (block: Block) => {
+        await second.service.acceptFinalizedBlock(block);
+        await third.service.acceptFinalizedBlock(block);
+      }
+    };
+    const block = await produceFinalizedBlock(producer.service, peers, validatorPrivateKeys[1]!, nowMs);
+    assert.ok(block);
+    assert.equal(block.header.round, 1);
+    assert.ok(!block.roundCertificate.some((vote) => vote.validator === forged.validator));
+    const metrics = producer.service.metrics(nowMs).roundSkipVotes;
+    assert.equal(metrics.rejectedVotes, 1);
+    assert.equal(metrics.rejectedVotesByReason["invalid-signature"], 1);
+    assert.equal(metrics.quorumFailures, 0);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, new RegExp(`Rejected round skip vote: height=1 round=0 protocolVersion=1 validator=${forged.validator} reason=invalid-signature`));
+    assert.ok(!warnings[0]!.includes(forged.signature));
+    assert.ok(!warnings[0]!.includes(forged.publicKey));
+  } finally {
+    for (const validator of online) {
+      validator.journal.close();
+      await rm(validator.directory, { recursive: true, force: true });
+    }
+  }
 });

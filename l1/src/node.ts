@@ -320,6 +320,10 @@ export async function produceFinalizedBlock(
   const signer = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
   const publicKey = signer.publicKey;
   const validators = chain.validatorsAt(chain.height + 1);
+  // Skip votes for height H+1 are signed under protocolVersionAt(H+1)
+  // (NodeService.requestSkipVote) and the finalized block is validated under
+  // the same version, so verification must use exactly that version (F-03).
+  const protocolVersion = chain.protocolVersionAt(chain.height + 1);
   const expected = expectedValidator(validators, chain.height + 1, round);
   if (expected.publicKey !== publicKey) return null;
 
@@ -347,10 +351,18 @@ export async function produceFinalizedBlock(
             chain.genesis.chainId,
             chain.height + 1,
             skippedRound,
-            chain.tip.hash
+            chain.tip.hash,
+            protocolVersion
           );
           unique.set(vote.validator, vote);
-        } catch {
+        } catch (error) {
+          service.roundSkipVoteDiagnostics.recordRejectedVote({
+            height: chain.height + 1,
+            round: skippedRound,
+            protocolVersion,
+            vote,
+            error
+          });
         }
       }
       const certificate = [...unique.values()];
@@ -361,9 +373,16 @@ export async function produceFinalizedBlock(
           chain.genesis.chainId,
           chain.height + 1,
           skippedRound,
-          chain.tip.hash
+          chain.tip.hash,
+          protocolVersion
         );
-      } catch {
+      } catch (error) {
+        service.roundSkipVoteDiagnostics.recordQuorumFailure({
+          height: chain.height + 1,
+          round: skippedRound,
+          protocolVersion,
+          error
+        });
         return null;
       }
       roundCertificate = certificate;
