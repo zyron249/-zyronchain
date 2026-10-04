@@ -202,8 +202,8 @@ export function validateBlockEnvelope(
   previous: Block,
   validators: Validator[],
   nowMs: number,
-  requireFinality = true,
-  expectedProtocolVersion = 1,
+  requireFinality: boolean,
+  expectedProtocolVersion: number,
   requireProposerSignature = true
 ): void {
   validateBlockShape(block);
@@ -265,8 +265,9 @@ export function validateRoundSkipQuorum(
   height: number,
   round: number,
   previousHash: string,
-  protocolVersion = 1
+  protocolVersion: number
 ): void {
+  assertExplicitProtocolVersion(protocolVersion);
   if (votes.length > validators.length) throw new Error("Round skip certificate exceeds active validator set");
   const allowed = new Map(validators.map((validator) => [validator.address, validator.publicKey]));
   const seen = new Set<string>();
@@ -288,8 +289,9 @@ export function validateRoundSkipVote(
   height: number,
   round: number,
   previousHash: string,
-  protocolVersion = 1
+  protocolVersion: number
 ): asserts vote is RoundSkipVote {
+  assertExplicitProtocolVersion(protocolVersion);
   assertPlainRecord(vote, "round skip vote");
   assertExactKeys(vote, ["validator", "publicKey", "chainId", "height", "round", "previousHash", "signature"], "round skip vote");
   if (typeof vote.validator !== "string" || typeof vote.publicKey !== "string" || typeof vote.chainId !== "string" ||
@@ -411,6 +413,15 @@ export function validateBlockAttestation(
     attestation.publicKey
   )) {
     throw new Error("Invalid validator attestation");
+  }
+}
+
+// Round-skip signatures are domain-separated from protocol v3 on, so verifying
+// under an assumed version silently rejects valid votes (F-03). Callers must
+// always pass the protocol version active at the vote's height.
+function assertExplicitProtocolVersion(protocolVersion: unknown): asserts protocolVersion is number {
+  if (typeof protocolVersion !== "number" || !Number.isSafeInteger(protocolVersion) || protocolVersion < 1) {
+    throw new Error("Round skip verification requires an explicit protocol version");
   }
 }
 

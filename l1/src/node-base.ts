@@ -6,13 +6,11 @@ import { canonicalJson, sha256Hex } from "./codec.js";
 import {
   attachBlockSignature,
   attestationPayload,
-  expectedValidator,
   roundSkipPayload,
-  validateBlockAttestation,
   validateBlockShape,
-  validateRoundSkipVote,
   validateRoundSkipQuorum
 } from "./block.js";
+import { RoundSkipVoteDiagnostics, type RoundSkipVoteDiagnosticsMetrics } from "./consensus-diagnostics.js";
 import { addressFromPublicKey } from "./crypto.js";
 import { Mempool } from "./mempool.js";
 import { PeerReputationStore } from "./peer-reputation.js";
@@ -29,7 +27,7 @@ import {
 import { FixedWindowLimiter } from "./rpc-rate-limit.js";
 import { ChainStore, SigningJournal } from "./storage.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
-import type { Address, Block, BlockAttestation, RoundSkipVote, Transaction } from "./types.js";
+import type { Block, BlockAttestation, RoundSkipVote, Transaction } from "./types.js";
 import { LocalValidatorSigner, signWithValidator, type ValidatorSigner } from "./validator-signer.js";
 
 const MAX_BODY_BYTES = 2_500_000;
@@ -94,6 +92,7 @@ export interface NodeMetrics extends NodeStatus {
   recoveredFromCheckpointHeight: number;
   recoveredStateV2FromCorruption: boolean;
   validatorClockHealthy: boolean;
+  roundSkipVotes: RoundSkipVoteDiagnosticsMetrics;
 }
 
 export interface RpcAdmissionMetrics {
@@ -266,6 +265,7 @@ export function rpcRateLimitIdentity(
 
 export class NodeService {
   readonly mempool = new Mempool();
+  readonly roundSkipVoteDiagnostics = new RoundSkipVoteDiagnostics();
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly startedAtMs = Date.now();
   private readonly validatorSigner: ValidatorSigner | undefined;
@@ -320,7 +320,8 @@ export class NodeService {
       persistenceHealthy: this.store.persistenceHealthy,
       recoveredFromCheckpointHeight: this.store.recoveredFromCheckpointHeight,
       recoveredStateV2FromCorruption: this.store.recoveredStateV2FromCorruption,
-      validatorClockHealthy: !this.validatorClockFaulted
+      validatorClockHealthy: !this.validatorClockFaulted,
+      roundSkipVotes: this.roundSkipVoteDiagnostics.metrics()
     };
   }
 
@@ -1060,76 +1061,6 @@ export function peerSyncProbeBatches(peers: readonly string[], groupOffset = 0):
     batches.push(ordered.slice(index, index + MAX_SYNC_PROBE_CONCURRENCY));
   }
   return batches;
-}
-
-export async function produceFinalizedBlock(
-  service: NodeService,
-  peers: ConsensusPeerClient,
-  validator: string | ValidatorSigner,
-  nowMs = Date.now()
-): Promise<Block | null> {
-  const chain = service.store.chain;
-  const elapsed = nowMs - chain.tip.header.timestampMs;
-  if (elapsed < BLOCK_INTERVAL_MS) return null;
-  const round = Math.max(0, Math.floor((elapsed - BLOCK_INTERVAL_MS) / ROUND_WINDOW_MS));
-  const signer = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
-  const publicKey = signer.publicKey;
-  const validators = chain.validatorsAt(chain.height + 1);
-  const expected = expectedValidator(validators, chain.height + 1, round);
-  if (expected.publicKey !== publicKey) return null;
-  let roundCertificate: RoundSkipVote[] = [];
-  if (round > 0) {
-    let previousCertificate: RoundSkipVote[] = [];
-    for (let skippedRound = 0; skippedRound < round; skippedRound += 1) {
-      const votes: RoundSkipVote[] = [];
-      try {
-        votes.push(await service.requestSkipVote(chain.height + 1, skippedRound, previousCertificate, nowMs));
-      } catch {}
-      votes.push(...await peers.requestRoundSkips(chain.height + 1, skippedRound, previousCertificate));
-      const unique = new Map<Address, RoundSkipVote>();
-      for (const vote of votes) {
-        try {
-          validateRoundSkipVote(vote, validators, chain.genesis.chainId, chain.height + 1, skippedRound, chain.tip.hash);
-          unique.set(vote.validator, vote);
-        } catch {}
-      }
-      const certificate = [...unique.values()];
-      try {
-        validateRoundSkipQuorum(certificate, validators, chain.genesis.chainId, chain.height + 1, skippedRound, chain.tip.hash);
-      } catch {
-        return null;
-      }
-      roundCertificate = certificate;
-      previousCertificate = certificate;
-    }
-  }
-  const transactions = chain.selectValidPending(service.mempool.values(), 10_000);
-  const unsignedProposal = chain.prepareBlock(transactions, publicKey, { round, timestampMs: nowMs, roundCertificate });
-  const proposal = await service.signPreparedProposal(unsignedProposal, nowMs);
-  chain.validatePreparedBlock(proposal, nowMs);
-  const attestations: BlockAttestation[] = [];
-  try {
-    attestations.push(await service.attestProposal(proposal, nowMs));
-  } catch (error) {
-    if (!/Validator signing is disabled/.test(safeError(error))) throw error;
-  }
-  attestations.push(...await peers.requestAttestations(proposal));
-  const byValidator = new Map<Address, BlockAttestation>();
-  for (const attestation of attestations) {
-    try {
-      validateBlockAttestation(proposal, attestation, validators);
-      byValidator.set(attestation.validator, attestation);
-    } catch {}
-  }
-  const withVotes = { ...proposal, attestations: [...byValidator.values()] };
-  try {
-    await service.acceptFinalizedBlock(withVotes);
-  } catch (error) {
-    if (/Finality quorum not reached/.test(safeError(error))) return null;
-    throw error;
-  }
-  await peers.broadcastBlock(withVotes);
-  return withVotes;
 }
 
 function parseStatus(value: unknown): NodeStatus {

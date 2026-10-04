@@ -99,7 +99,8 @@ test("round skip quorum rejects certificates larger than the active validator se
       "zyron-certificate-bounds-test",
       1,
       0,
-      TEST_HASH
+      TEST_HASH,
+      1
     ),
     /Round skip certificate exceeds active validator set/
   );
@@ -133,7 +134,8 @@ test("valid one-validator finality and round-skip certificates remain accepted",
     block.header.chainId,
     1,
     0,
-    block.header.previousHash
+    block.header.previousHash,
+    1
   ));
 });
 
