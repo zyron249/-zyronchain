@@ -206,6 +206,13 @@ export function validateBlockEnvelope(
   expectedProtocolVersion: number,
   requireProposerSignature = true
 ): void {
+  // Untyped callers that omit these arguments must fail closed: a missing
+  // finality mode must never silently skip the attestation quorum check, and a
+  // missing protocol version must never select legacy signature rules.
+  if (typeof requireFinality !== "boolean") throw new Error("Block envelope validation requires an explicit finality mode");
+  if (!Number.isSafeInteger(expectedProtocolVersion) || expectedProtocolVersion < 1) {
+    throw new Error("Block envelope validation requires an explicit protocol version");
+  }
   validateBlockShape(block);
   if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
   if (block.header.version !== expectedProtocolVersion) throw new Error("Unexpected protocol version");
