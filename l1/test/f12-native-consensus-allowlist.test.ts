@@ -57,7 +57,7 @@ test("F-12: allowlist parsing accepts peer ids only", async () => {
     const node = await createP2PNode(identity);
     try {
       const id = node.peerId.toString();
-      assert.deepEqual([...parseNativeConsensusPeerAllowlist([id, id])], [id]);
+      assert.deepEqual([...(parseNativeConsensusPeerAllowlist([id, id]) ?? [])], [id]);
       assert.equal(parseNativeConsensusPeerAllowlist([]), undefined);
       assert.throws(() => parseNativeConsensusPeerAllowlist(["not-a-peer-id"]), /Invalid --p2p-consensus-peer/);
     } finally {
