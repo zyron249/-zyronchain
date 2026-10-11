@@ -1,6 +1,7 @@
 import { assertHex, canonicalJson, sha256Hex } from "./codec.js";
 import {
   addressFromPublicKey,
+  assertValidPublicKey,
   signCanonical,
   signCanonicalDomain,
   verifyCanonical,
@@ -438,6 +439,7 @@ function validateValidator(value: Validator, seen: Set<string>): void {
   if (typeof value.publicKey !== "string") throw new Error("Invalid validator public key");
   assertHex(value.publicKey, 64, "validator publicKey");
   if (addressFromPublicKey(value.publicKey) !== value.address) throw new Error("Validator address/public key mismatch");
+  assertValidPublicKey(value.publicKey, "Validator public key");
   if (seen.has(value.address)) throw new Error("Duplicate validator");
   seen.add(value.address);
 }

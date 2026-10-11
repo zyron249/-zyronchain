@@ -11,7 +11,7 @@ import {
   validateBlockShape,
   validateRoundCertificate
 } from "./block.js";
-import { addressFromPublicKey, publicKeyFromPrivate, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
+import { addressFromPublicKey, assertValidPublicKey, publicKeyFromPrivate, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
 import {
   assertMiningClaimContext,
   assertMiningNotRetired,
@@ -615,10 +615,8 @@ export class ZyronChain {
           });
         } else if (tx.kind === "validator_update") {
           validateValidatorUpdateAuthorization(tx, currentValidators, this.height + 1, lastActivation);
-          lastActivation = tx.activationHeight;
         } else if (tx.kind === "protocol_upgrade") {
           validateProtocolUpgradeAuthorization(tx, currentValidators, this.height + 1, lastProtocolActivation);
-          lastProtocolActivation = tx.activationHeight;
         }
         const transactionBytes = Buffer.byteLength(canonicalJson(tx), "utf8") + (selected.length ? 1 : 0);
         if (selectedBytes + transactionBytes > maxTransactionBytes) continue;
@@ -633,6 +631,10 @@ export class ZyronChain {
           miningClaimSelected = true;
           miningClaimCount += 1;
         }
+        // F-06: advance the governance cursors only once the transaction has
+        // passed the byte budget and its state transition, i.e. is selected.
+        if (tx.kind === "validator_update") lastActivation = tx.activationHeight;
+        if (tx.kind === "protocol_upgrade") lastProtocolActivation = tx.activationHeight;
         selected.push(tx);
         selectedBytes += transactionBytes;
         seen.add(tx.txid);
@@ -775,6 +777,7 @@ function validateValidatorSchedule(value: unknown, genesisValidators: Validator[
       assertAddress(item.address);
       assertHex(item.publicKey, 64, "checkpoint validator public key");
       if (addressFromPublicKey(item.publicKey) !== item.address || seen.has(item.address)) throw new Error("Invalid checkpoint validator");
+      assertValidPublicKey(item.publicKey, "Checkpoint validator public key");
       seen.add(item.address);
       validators.push({ address: item.address, publicKey: item.publicKey });
     }
@@ -914,6 +917,7 @@ function validateGenesis(genesis: GenesisConfig): void {
     if (addressFromPublicKey(validator.publicKey) !== validator.address) {
       throw new Error("Validator address/public key mismatch");
     }
+    assertValidPublicKey(validator.publicKey, "Genesis validator public key");
     if (validators.has(validator.address)) throw new Error("Duplicate validator");
     validators.add(validator.address);
   }

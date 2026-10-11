@@ -1,7 +1,7 @@
 import { blockHash, expectedValidator, validateAttestationQuorum, validateBlockShape, validateRoundCertificate } from "./block.js";
 import { assertHex } from "./codec.js";
 import { CONSENSUS_V6_PROTOCOL_VERSION, validateCommitCertificate } from "./consensus-v6.js";
-import { addressFromPublicKey, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
+import { addressFromPublicKey, assertValidPublicKey, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
 import { protocolScheduleKey, validatorScheduleKey, verifySparseMerkleProof, type SparseMerkleProof } from "./state-v2.js";
 import { assertExactKeys, assertPlainRecord } from "./transaction.js";
 import type { Block, BlockAttestation, BlockHeader, RoundSkipVote, Validator } from "./types.js";
@@ -75,6 +75,7 @@ export function validateLightClientAnchor(value: unknown): LightClientAnchor {
     if (addressFromPublicKey(candidate.publicKey) !== candidate.address || seen.has(candidate.address)) {
       throw new Error("Invalid or duplicate light-client validator");
     }
+    assertValidPublicKey(candidate.publicKey, "Light-client validator public key");
     seen.add(candidate.address);
     return { address: candidate.address, publicKey: candidate.publicKey } as Validator;
   });
