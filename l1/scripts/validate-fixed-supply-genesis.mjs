@@ -3,7 +3,8 @@ import { resolve } from "node:path";
 
 import { readBoundedRegularControlFile } from "../dist/src/control-file.js";
 import { ZyronChain } from "../dist/src/chain.js";
-import { assertFixedSupplyGenesis } from "../dist/src/tokenomics.js";
+import { genesisConfigCommitment } from "../dist/src/block.js";
+import { assertFixedSupplyGenesis, FIXED_SUPPLY_LAUNCH_PROFILE } from "../dist/src/tokenomics.js";
 
 const MAX_GENESIS_BYTES = 256 * 1024;
 
@@ -34,9 +35,16 @@ const addresses = {
   ecosystemReserve: option("--ecosystem-reserve")
 };
 
+// A launch genesis must use the fixed-supply launch profile so that consensus
+// itself enforces these rules and the genesis hash binds the full configuration
+// (docs/GENESIS_CONFIG_BINDING.md).
+if (genesis === null || typeof genesis !== "object" || genesis.launchProfile !== FIXED_SUPPLY_LAUNCH_PROFILE) {
+  throw new Error(`Fixed-supply launch genesis must declare launchProfile "${FIXED_SUPPLY_LAUNCH_PROFILE}"`);
+}
 assertFixedSupplyGenesis(genesis, addresses);
-// Full consensus genesis validation, including the allocation-lock declaration.
-new ZyronChain(genesis);
+// Full consensus genesis validation, including the allocation-lock declaration
+// and the consensus launch-profile rules.
+const chain = new ZyronChain(genesis);
 
 console.log("Fixed-supply genesis validated.");
 console.log("Total supply: 50,000,000 ZYN");
@@ -45,3 +53,6 @@ console.log("Public distribution: 20,000,000 ZYN (40%)");
 console.log("Permanent-liquidity reserve: 20,000,000 ZYN (40%), on-chain locked: no outflow");
 console.log("Ecosystem reserve: 5,000,000 ZYN (10%)");
 console.log("Mining issuance headroom: 0 ZYN");
+console.log(`Launch profile: ${FIXED_SUPPLY_LAUNCH_PROFILE}`);
+console.log(`Genesis configuration commitment: ${genesisConfigCommitment(genesis)}`);
+console.log(`Genesis hash (chain identity): ${chain.genesisHash}`);
