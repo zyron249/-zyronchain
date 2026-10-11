@@ -128,7 +128,7 @@ A failure of any invariant freezes release and validator signing until independe
 - The mining tracker address cannot hold spendable value, originate transactions, receive transfers/activity rewards or receive a genesis allocation.
 - Transfers cannot create value.
 - Fees are burned under the current policy and do not become re-mineable.
-- Activity settlement can spend only an explicitly prefunded activity pool.
+- Activity settlement can spend only an explicitly prefunded activity pool, at most 10,000 ZYN per settlement, and only for the most recently closed 24-hour epoch, settled once and in increasing order (`docs/ACTIVITY_ORACLE_CAP.md`).
 - Transaction IDs and signatures bind the exact canonical transaction.
 - Mining work additionally binds chain, tip, target height, miner identity/account nonce and reward.
 - Sender nonces are sequential and chain-specific.

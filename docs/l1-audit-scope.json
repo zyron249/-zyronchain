@@ -25,6 +25,7 @@
     "launch-authorization-and-activation-gates"
   ],
   "criticalModules": [
+    "l1/src/activity.ts",
     "l1/src/block.ts",
     "l1/src/chain.ts",
     "l1/src/cli.ts",
@@ -54,6 +55,7 @@
   "securitySpecifications": [
     "SECURITY.md",
     "docs/L1_THREAT_MODEL.md",
+    "docs/ACTIVITY_ORACLE_CAP.md",
     "docs/MINING.md",
     "l1/MINING.md",
     "docs/CONSENSUS_CERTIFICATE_MODEL.md",
@@ -117,6 +119,11 @@
       "id": "SUPPLY-001",
       "statement": "Historical genesis-plus-mining issuance cannot exceed 50M ZYN, and transaction-fee burns never reopen mining headroom.",
       "primaryModules": ["l1/src/chain.ts", "l1/src/mining.ts", "l1/src/state.ts", "l1/src/state-v2.ts", "l1/src/types.ts"]
+    },
+    {
+      "id": "SUPPLY-002",
+      "statement": "An activity settlement pays at most 10,000 ZYN, settles only the most recently closed 24-hour epoch by block time, and epochs settle once and in strictly increasing order, so one oracle key moves at most 10,000 ZYN per epoch.",
+      "primaryModules": ["l1/src/activity.ts", "l1/src/chain.ts", "l1/src/state.ts", "l1/src/state-v2.ts", "l1/src/transaction.ts"]
     },
     {
       "id": "MINING-001",
