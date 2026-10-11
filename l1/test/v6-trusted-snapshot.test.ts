@@ -109,30 +109,30 @@ function portable(chain: ZyronChain, snapshot = chain.snapshot()) {
 }
 
 /** Ways a v6 tip's finality evidence can be wrong while header/proposer stay valid. */
-function forgedV6Tips(tip: Block, keys: string[]): Array<[string, Block]> {
+function forgedV6Tips(tip: Block, keys: string[]): Array<[string, Block, RegExp]> {
   const make = (mutate: (block: Block) => void): Block => {
     const copy = structuredClone(tip);
     mutate(copy);
     return copy;
   };
   return [
-    ["no commit votes", make((b) => { b.attestations = []; })],
-    ["missing commit round", make((b) => { b.commitRound = null; })],
-    ["vote by non-validator", make((b) => { b.attestations = [v6CommitVote(b, OUTSIDER)]; })],
+    ["no commit votes", make((b) => { b.attestations = []; }), /Finality quorum not reached: 0\/1/],
+    ["missing commit round", make((b) => { b.commitRound = null; }), /requires a commit round/],
+    ["vote by non-validator", make((b) => { b.attestations = [v6CommitVote(b, OUTSIDER)]; }), /Unknown Finality validator/],
     ["corrupted signature", make((b) => {
       b.attestations = b.attestations.map((vote) => ({ ...vote, signature: vote.signature.replace(/^./, (c) => (c === "0" ? "1" : "0")) }));
-    })],
-    ["vote for another block hash", make((b) => { b.attestations = keys.map((key) => v6CommitVote(b, key, 0, b.header.height, "ab".repeat(32))); })],
-    ["vote for another height", make((b) => { b.attestations = keys.map((key) => v6CommitVote(b, key, 0, b.header.height + 1)); })],
-    ["commit round differs from signed round", make((b) => { b.commitRound = 1; })],
-    ["duplicate votes", make((b) => { b.attestations = [b.attestations[0]!, b.attestations[0]!]; })],
+    }), /Invalid Finality signature/],
+    ["vote for another block hash", make((b) => { b.attestations = keys.map((key) => v6CommitVote(b, key, 0, b.header.height, "ab".repeat(32))); }), /Invalid Finality signature/],
+    ["vote for another height", make((b) => { b.attestations = keys.map((key) => v6CommitVote(b, key, 0, b.header.height + 1)); }), /Invalid Finality signature/],
+    ["commit round differs from signed round", make((b) => { b.commitRound = 1; }), /Invalid Finality signature/],
+    ["duplicate votes", make((b) => { b.attestations = [b.attestations[0]!, b.attestations[0]!]; }), /Finality exceeds active validator set|Duplicate Finality/],
     ["legacy attestation instead of commit certificate", make((b) => {
       b.commitRound = null;
       b.attestations = keys.map((key) => createBlockAttestation(b, key, pub(key))) as unknown as Block["attestations"];
-    })],
+    }), /requires a commit round/],
     ["round skip certificate on a v6 tip", make((b) => {
       b.roundCertificate = [{ validator: addr(keys[0]!), publicKey: pub(keys[0]!), signature: "00".repeat(64) }] as unknown as Block["roundCertificate"];
-    })]
+    }), /round skip/i]
   ];
 }
 
@@ -175,10 +175,10 @@ test("v6 tip with forged, insufficient or mismatched finality evidence is reject
   const keys = KEYS.slice(0, 1);
   const chain = chainAt(config, 6, keys);
   const base = chain.snapshot();
-  for (const [label, tip] of forgedV6Tips(chain.tip, keys)) {
+  for (const [label, tip, reason] of forgedV6Tips(chain.tip, keys)) {
     const forged = withTip(base, tip);
-    assert.throws(() => ZyronChain.fromTrustedSnapshot(config, forged, anchorOf(forged)), Error, `snapshot: ${label}`);
-    assert.throws(() => ZyronChain.fromTrustedPortableState(config, tip, portable(chain), anchorOf(forged)), Error, `portable: ${label}`);
+    assert.throws(() => ZyronChain.fromTrustedSnapshot(config, forged, anchorOf(forged)), reason, `snapshot: ${label}`);
+    assert.throws(() => ZyronChain.fromTrustedPortableState(config, tip, portable(chain), anchorOf(forged)), reason, `portable: ${label}`);
   }
 });
 
@@ -191,7 +191,7 @@ test("v6 tip header version must match the protocol schedule", () => {
   const tampered = structuredClone(snapshot);
   tampered.protocolSchedule = tampered.protocolSchedule.map((entry) =>
     entry.protocolVersion === 6 ? { ...entry, protocolVersion: 5 } : entry);
-  assert.throws(() => ZyronChain.fromTrustedSnapshot(config, tampered, anchorOf(tampered)));
+  assert.throws(() => ZyronChain.fromTrustedSnapshot(config, tampered, anchorOf(tampered)), /tip protocol version mismatch/);
 });
 
 test("v1-v5 trusted snapshot paths are unchanged", () => {
@@ -209,7 +209,7 @@ test("v1-v5 trusted snapshot paths are unchanged", () => {
     assert.throws(() => ZyronChain.fromTrustedSnapshot(config, missing, anchorOf(missing)), /attestation|quorum/i);
     // A v6-style commit certificate never finalizes a legacy tip.
     const v6Style = withTip(snapshot, { ...structuredClone(chain.tip), commitRound: 0, attestations: [v6CommitVote(chain.tip, keys[0]!)] });
-    assert.throws(() => ZyronChain.fromTrustedSnapshot(config, v6Style, anchorOf(v6Style)));
+    assert.throws(() => ZyronChain.fromTrustedSnapshot(config, v6Style, anchorOf(v6Style)), /Invalid block fields/);
   }
 });
 
@@ -243,13 +243,13 @@ test("forged v6 finality evidence is rejected by both installers without creatin
     const keys = KEYS.slice(0, 1);
     const chain = chainAt(config, 6, keys);
     let index = 0;
-    for (const [label, tip] of forgedV6Tips(chain.tip, keys)) {
+    for (const [label, tip, reason] of forgedV6Tips(chain.tip, keys)) {
       const forged = withTip(chain.snapshot(), tip);
       const target = join(root, `s${index}`);
-      await assert.rejects(() => ChainStore.installTrustedSnapshot(config, target, forged, anchorOf(forged)), Error, label);
+      await assert.rejects(() => ChainStore.installTrustedSnapshot(config, target, forged, anchorOf(forged)), reason, label);
       await assert.rejects(access(target));
       const portableTarget = join(root, `p${index}`);
-      await assert.rejects(() => ChainStore.installTrustedPortableState(config, portableTarget, tip, portable(chain), anchorOf(forged)), Error, label);
+      await assert.rejects(() => ChainStore.installTrustedPortableState(config, portableTarget, tip, portable(chain), anchorOf(forged)), reason, label);
       await assert.rejects(access(portableTarget));
       index += 1;
     }
@@ -426,8 +426,8 @@ test("v6 native p2p checkpoint and portable state sync verify, install and rejec
     await registerP2PStateProtocol(sourceNode, forgedIdentity, new NodeService(store));
     const forgedAddress = sourceNode.getMultiaddrs()[0];
     assert.ok(forgedAddress);
-    await assert.rejects(() => fetchTrustedSnapshotFromPeer(clientNode!, forgedAddress, clientIdentity, config, forgedAnchor));
-    await assert.rejects(() => fetchTrustedPortableStateFromPeer(clientNode!, forgedAddress, clientIdentity, config, forgedAnchor));
+    await assert.rejects(() => fetchTrustedSnapshotFromPeer(clientNode!, forgedAddress, clientIdentity, config, forgedAnchor), /Unknown Finality validator/);
+    await assert.rejects(() => fetchTrustedPortableStateFromPeer(clientNode!, forgedAddress, clientIdentity, config, forgedAnchor), (error: Error) => /Unknown Finality validator/.test(String((error.cause as Error | undefined)?.message ?? error.message)));
   } finally {
     await Promise.allSettled([sourceNode?.stop(), clientNode?.stop()]);
     await rm(root, { recursive: true, force: true });
