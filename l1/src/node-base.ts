@@ -342,6 +342,8 @@ export class NodeService {
   private lastValidatorClockMs: number | undefined;
   private validatorClockFaulted = false;
   private legacyCatchUp: LegacyRoundCatchUp | undefined;
+  private consensusQuorumFailure: { height: number; previousHash: string } | undefined;
+  private validatorSignerFailed = false;
   readonly readinessMaxTipAgeMs: number;
 
   constructor(
@@ -355,7 +357,29 @@ export class NodeService {
       throw new Error("Readiness tip-age bound must be an integer of at least one block interval");
     }
     this.readinessMaxTipAgeMs = maxTipAge;
-    this.validatorSigner = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
+    const signer = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
+    this.validatorSigner = signer ? this.observeSignerAvailability(signer) : undefined;
+  }
+
+  /**
+   * Readiness only (F-04): records whether the most recent signing request to
+   * the configured signer failed. Signatures, errors and call order are passed
+   * through unchanged; the journal reservation still precedes every call.
+   */
+  private observeSignerAvailability(signer: ValidatorSigner): ValidatorSigner {
+    return {
+      publicKey: signer.publicKey,
+      signCanonical: async (payload, intent, protocolVersion) => {
+        try {
+          const signature = await signer.signCanonical(payload, intent, protocolVersion);
+          this.validatorSignerFailed = false;
+          return signature;
+        } catch (error) {
+          this.validatorSignerFailed = true;
+          throw error;
+        }
+      }
+    };
   }
 
   status(): NodeStatus {
@@ -386,11 +410,31 @@ export class NodeService {
     if (!SUPPORTED_PROTOCOL_VERSIONS.has(chain.protocolVersionAt(chain.height + 1))) reasons.push("unsupported-next-protocol");
     if (nowMs - chain.tip.header.timestampMs > this.readinessMaxTipAgeMs) reasons.push("stale-tip");
     if (this.legacyRoundCatchUp(chain.height + 1, chain.tip.hash)?.catchingUp) reasons.push("consensus-catching-up");
+    const quorumFailure = this.consensusQuorumFailure;
+    if (quorumFailure && quorumFailure.height === chain.height + 1 && quorumFailure.previousHash === chain.tip.hash) {
+      reasons.push("consensus-quorum-unreachable");
+    }
+    if (this.validatorSignerFailed) reasons.push("validator-signer-unavailable");
     return {
       ready: reasons.length === 0,
       height: this.store.chain.height,
       reasons
     };
+  }
+
+  /**
+   * Readiness only (F-04): this validator's own consensus attempt for the
+   * tip (height - 1, previousHash) could not collect a quorum of votes. The
+   * record is ignored once the tip moves and is cleared by the next quorum
+   * this validator collects for the same tip.
+   */
+  recordConsensusQuorumFailure(height: number, previousHash: string): void {
+    this.consensusQuorumFailure = { height, previousHash };
+  }
+
+  recordConsensusQuorumReached(height: number, previousHash: string): void {
+    const failure = this.consensusQuorumFailure;
+    if (failure && failure.height === height && failure.previousHash === previousHash) this.consensusQuorumFailure = undefined;
   }
 
   /** Catch-up progress for (height, previousHash), or undefined if none is recorded for that tip. */

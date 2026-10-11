@@ -52,6 +52,8 @@ Provision the remote-signer token out of band as a regular `0600` secret file, r
 | `unsupported-next-protocol` | the protocol version scheduled for the next height is not supported by this binary; upgrade the binary |
 | `stale-tip` | no block finalized for longer than `--ready-max-tip-age-ms` (default 600000, at least one block interval): the network is stalled or this node is partitioned or behind |
 | `consensus-catching-up` | after a long stall this legacy validator is still rebuilding the skip-certificate chain up to the current round (bounded work per tick, see `docs/security/consensus-round-catchup-bound.md`); expected to clear on its own |
+| `consensus-quorum-unreachable` | this validator's latest own consensus attempt for the current tip (finality attestations, a round-skip certificate, or a v6 timeout/prepare/commit certificate) did not collect a quorum, typically because peers are unreachable; clears when this validator next collects a quorum for the tip or the tip advances. Check peer connectivity |
+| `validator-signer-unavailable` | the most recent request to the configured validator signer failed (remote signer down, refused, or misconfigured); clears on the next successful signature. Check the signer before the node misses its slots |
 
 A network-wide stall no longer becomes permanent after about 33 minutes: once enough validators are back, legacy production resumes automatically after the catch-up described above, and v6 resumes within a few rounds. `GET /metrics` is bounded structured JSON intended for a local collector. At minimum collect:
 
