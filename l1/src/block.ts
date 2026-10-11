@@ -219,7 +219,11 @@ export function validateBlockEnvelope(
   if (!Number.isSafeInteger(expectedProtocolVersion) || expectedProtocolVersion < 1) {
     throw new Error("Block envelope validation requires an explicit protocol version");
   }
-  validateBlockShape(block);
+  // F-11: structure and every O(1) authentication gate (proposer binding,
+  // proposer signature, round/finality certificates) run before the
+  // per-transaction signature verification at the end, so a forged block
+  // costs milliseconds instead of thousands of signature verifications.
+  validateBlockStructure(block);
   if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
   if (block.header.version !== expectedProtocolVersion) throw new Error("Unexpected protocol version");
   if (block.header.chainId !== previous.header.chainId) throw new Error("Wrong chain ID");
@@ -261,10 +265,12 @@ export function validateBlockEnvelope(
     } else if (block.commitRound !== null || block.attestations.length !== 0) {
       throw new Error("Protocol v6 proposals must not carry a commit certificate");
     }
+    validateBlockTransactions(block);
     return;
   }
   validateRoundCertificate(block, validators);
   if (requireFinality) validateAttestationQuorum(block, validators);
+  validateBlockTransactions(block);
 }
 
 export function validateRoundCertificate(block: Block, validators: Validator[]): void {
@@ -343,7 +349,33 @@ export function validateRoundSkipVote(
   }
 }
 
+/**
+ * Full structural validation of a block, including every transaction (txid and
+ * signature). Use this for blocks that are not about to be authenticated by
+ * {@link validateBlockEnvelope}.
+ */
 export function validateBlockShape(value: unknown): asserts value is Block {
+  validateBlockStructure(value);
+  validateBlockTransactions(value);
+}
+
+/**
+ * Verifies every transaction of a block (shape, txid and signature). This is
+ * the expensive part of block validation: O(transactions) secp256k1
+ * verifications.
+ */
+export function validateBlockTransactions(block: Block): void {
+  for (const tx of block.transactions) validateTransactionShape(tx);
+}
+
+/**
+ * Block structure without per-transaction verification (finding F-11): key
+ * sets, header field types, bounded counts, the canonical byte limit and the
+ * certificate entry formats. Untrusted entry points use this first so that the
+ * O(1) proposer and certificate gates in {@link validateBlockEnvelope} run
+ * before any transaction signature is verified.
+ */
+export function validateBlockStructure(value: unknown): asserts value is Block {
   assertPlainRecord(value, "block");
   // Only protocol v6 blocks carry `commitRound`; every other version keeps the
   // exact seven-key encoding.
@@ -393,7 +425,7 @@ export function validateBlockShape(value: unknown): asserts value is Block {
   // count-valid but oversized block from amplifying consensus CPU work.
   if (Buffer.byteLength(canonicalJson(value), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
 
-  for (const tx of value.transactions) validateTransactionShape(tx);
+  for (const tx of value.transactions) assertPlainRecord(tx, "transaction");
   for (const item of value.attestations) {
     assertPlainRecord(item, "block attestation");
     assertExactKeys(item, ["validator", "publicKey", "signature"], "block attestation");

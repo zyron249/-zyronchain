@@ -17,7 +17,8 @@ import {
   blockHash,
   expectedValidator,
   validateBlockAttestation,
-  validateBlockShape,
+  validateBlockStructure,
+  validateBlockTransactions,
   validateRoundSkipQuorum,
   validateRoundSkipVote,
   validatorQuorumSize
@@ -388,12 +389,14 @@ export class PeerClient extends BasePeerClient {
 
 /** Shape, hash, target and body/signature integrity of a block fetched by hash for a v6 re-proposal. */
 export function validateFetchedV6Block(value: unknown, height: number, hash: string): Block {
-  validateBlockShape(value);
+  // F-11: hash, body and proposer-signature integrity before the transactions.
+  validateBlockStructure(value);
   if (value.hash !== hash || blockHash(value.header) !== hash || value.header.height !== height ||
       value.header.version !== CONSENSUS_V6_PROTOCOL_VERSION) {
     throw new Error("Fetched v6 block does not match the requested hash");
   }
   assertV6ProposalBlockIntegrity(value, height, hash);
+  validateBlockTransactions(value);
   return value;
 }
 
