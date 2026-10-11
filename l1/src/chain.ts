@@ -22,6 +22,13 @@ import {
 } from "./mining.js";
 import { assertNoActivityPoolInflow, LedgerState, type LedgerSnapshot } from "./state.js";
 import {
+  allocationLockContext,
+  assertAllocationLockOutflow,
+  spendableAtoms,
+  validateAllocationLocks,
+  type AllocationLockContext
+} from "./allocation-locks.js";
+import {
   ACTIVITY_ORDER_MESSAGE,
   activityEpochWindowExpired,
   assertActivityEpochWindow,
@@ -247,6 +254,20 @@ export class ZyronChain {
     return this.stateV2 && protocolUsesStateV2(this.protocolVersionAt(this.height))
       ? stateV2Balance(this.stateV2, address)
       : this.requireLegacyState().balance(address);
+  }
+
+  /**
+   * Confirmed balance that `address` may move in the next block (allocation
+   * locks applied at the earliest next-block timestamp for `nowMs`). Equal to
+   * balance() for every account that is not locked.
+   */
+  spendableBalance(address: Address, nowMs = Date.now()): number {
+    return spendableAtoms(this.allocationLocksAt(this.nextBlockTimestampMs(nowMs)), address, this.balance(address));
+  }
+
+  /** Allocation-lock context for a block at `blockTimestampMs` (undefined without genesis locks). */
+  allocationLocksAt(blockTimestampMs: number): AllocationLockContext | undefined {
+    return allocationLockContext(this.genesis, blockTimestampMs);
   }
 
   nonce(address: Address): number {
@@ -488,6 +509,7 @@ export class ZyronChain {
       if (!Number.isSafeInteger(total) || this.balance(tx.sender) < total) {
         throw new Error("Insufficient balance");
       }
+      assertAllocationLockOutflow(this.allocationLocksAt(this.nextBlockTimestampMs(nowMs)), tx.sender, this.balance(tx.sender), total);
       return;
     }
     if (tx.kind === "activity_settlement") {
@@ -502,6 +524,9 @@ export class ZyronChain {
       if (settled(tx.epoch)) throw new Error("Activity epoch already settled");
       if (settled(tx.epoch + 1)) throw new Error(ACTIVITY_ORDER_MESSAGE);
       if (total > this.balance(this.genesis.activityPool)) throw new Error("Activity pool exhausted");
+      assertAllocationLockOutflow(
+        this.allocationLocksAt(this.nextBlockTimestampMs(nowMs)), tx.sender, this.balance(this.genesis.activityPool), total
+      );
       return;
     }
     if (tx.kind === "mining_claim") {
@@ -569,6 +594,7 @@ export class ZyronChain {
     const currentValidators = this.validatorsAt(this.height + 1);
     let miningClaimSelected = false;
     let miningClaimCount = this.miningClaimCount();
+    const locks = this.allocationLocksAt(blockTimestampMs);
     for (const tx of ordered) {
       if (selected.length >= limit) break;
       try {
@@ -599,9 +625,9 @@ export class ZyronChain {
         if (sparse) {
           sparse = tx.kind === "mining_claim"
             ? applyMiningClaimStateV2(sparse, tx)
-            : applyStateV2Transaction(sparse, tx, this.genesis.activityPool);
+            : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks);
         } else {
-          next!.apply(tx, this.genesis.activityPool);
+          next!.apply(tx, this.genesis.activityPool, locks);
         }
         if (tx.kind === "mining_claim") {
           miningClaimSelected = true;
@@ -634,6 +660,8 @@ export class ZyronChain {
     let lastProtocolActivation = this.lastProtocolActivationHeight();
     let miningClaimSeen = false;
     let miningClaimCount = this.miningClaimCount();
+    // On-chain allocation locks, evaluated at this block's own timestamp.
+    const locks = this.allocationLocksAt(blockTimestampMs);
     for (const tx of transactions) {
       if (tx.chainId !== this.genesis.chainId) throw new Error("Wrong transaction chain ID");
       if (seen.has(tx.txid)) throw new Error("Duplicate transaction in block");
@@ -668,9 +696,9 @@ export class ZyronChain {
       if (sparse) {
         sparse = tx.kind === "mining_claim"
           ? applyMiningClaimStateV2(sparse, tx)
-          : applyStateV2Transaction(sparse, tx, this.genesis.activityPool);
+          : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks);
       } else {
-        next!.apply(tx, this.genesis.activityPool);
+        next!.apply(tx, this.genesis.activityPool, locks);
       }
       if (tx.kind === "mining_claim") {
         miningClaimSeen = true;
@@ -863,7 +891,9 @@ function assertTransactionVersionForProtocol(tx: Transaction, protocolVersion: n
 function validateGenesis(genesis: GenesisConfig): void {
   assertPlainRecord(genesis, "genesis");
   assertExactKeys(genesis, [
-    "chainId", "timestampMs", "validators", "activityOracles", "activityPool", "allocations"
+    "chainId", "timestampMs", "validators", "activityOracles", "activityPool", "allocations",
+    // Optional: on-chain allocation locks (docs/ALLOCATION_LOCKS.md).
+    ...(Object.prototype.hasOwnProperty.call(genesis, "allocationLocks") ? ["allocationLocks"] : [])
   ], "genesis");
   if (typeof genesis.chainId !== "string" || !/^[a-z0-9-]{3,64}$/.test(genesis.chainId)) {
     throw new Error("Invalid chain ID");
@@ -919,6 +949,7 @@ function validateGenesis(genesis: GenesisConfig): void {
     if (allocated.has(allocation.address)) throw new Error("Duplicate genesis allocation");
     allocated.add(allocation.address);
   }
+  validateAllocationLocks(genesis);
 }
 
 function stateV2KeysForTransaction(tx: Transaction): string[] {
