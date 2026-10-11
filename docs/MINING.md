@@ -1,8 +1,10 @@
-# ZyronChain permissionless mining
+# ZyronChain permissionless mining (RETIRED)
+
+> **RETIRED (2026-09-30).** Mining has been shut down by owner decision for every ZyronChain genesis. Consensus rejects every `mining_claim` transaction on every protocol version, `npm run mine` exits with an error before reading keys or contacting an RPC, and `npm run mine:local` (`local-devnet.mjs --local-v5`) exits with an error. Nothing below is an instruction to mine; it is kept only as a historical record of the retired design and of the still-present (unpublished) packaging tooling.
 
 ## Status
 
-Permissionless ZYN issuance is implemented by the canonical Layer-1 binary under **protocol version 5**. Protocol v4 remains intentionally unsupported so existing fail-stop upgrade tests and historical compatibility contracts are preserved.
+Permissionless ZYN issuance was implemented by the canonical Layer-1 binary under **protocol version 5** and is now **retired**: consensus rejects every mining claim regardless of protocol version. Protocol v4 remains intentionally unsupported so existing fail-stop upgrade tests and historical compatibility contracts are preserved.
 
 This feature does **not** replace ZyronChain validator finality. Validators continue to propose, attest and finalize blocks. Miners independently perform proof-of-work to earn permissionless issuance claims, and a finalized block may include at most one valid mining claim.
 

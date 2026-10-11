@@ -5,11 +5,13 @@ Canonical implementation: standalone TypeScript L1 in `l1/`
 
 ## 1. Status and purpose
 
-ZyronChain is an account-based Layer-1 blockchain designed around deterministic execution, authenticated state, explicit protocol upgrades, permissionless proof-of-work issuance and fast quorum finality.
+> **Status update (2026-09-30): mining is retired.** The repository owner has shut down mining. No mining, local or public, may be run, and protocol-v5 proof-of-work issuance is no longer part of the launch design. Consensus rejects every `mining_claim` transaction for every genesis and protocol version (shape validation, mempool admission, block production, block validation and both state appliers), and the miner scripts are disabled. Section 9 and the other mining references below are kept as a historical record of the retired design.
+
+ZyronChain is an account-based Layer-1 blockchain designed around deterministic execution, authenticated state, explicit protocol upgrades and fast quorum finality. (Permissionless proof-of-work issuance was part of an earlier design and is now retired; see the status update above.)
 
 This paper describes the canonical TypeScript implementation. The historical Python/Flask Proof-of-Work testnet is retained only for compatibility and is not the target consensus network.
 
-Public-testnet and mainnet **governance authorization has been granted** by the repository owner and is recorded in `docs/l1-launch-authorization.json`. Authorization is not activation: public-testnet activation and value-bearing mainnet activation remain evidence-gated. This paper does not waive those gates. Final public genesis parameters, validator admission, mining calibration, activity-oracle governance and validator economics remain explicit launch decisions.
+Public-testnet and mainnet **governance authorization has been granted** by the repository owner and is recorded in `docs/l1-launch-authorization.json`. Authorization is not activation: public-testnet activation and value-bearing mainnet activation remain evidence-gated. This paper does not waive those gates. Final public genesis parameters, validator admission, activity-oracle governance and validator economics remain explicit launch decisions.
 
 ## 2. Design goals
 
@@ -19,7 +21,7 @@ ZyronChain prioritizes:
 - exact integer monetary accounting;
 - explicit chain/genesis/protocol identity;
 - finality with independently verifiable quorum evidence;
-- permissionless, deterministic ZYN issuance without a privileged mint key;
+- no privileged mint key (the former permissionless proof-of-work issuance goal is retired);
 - fail-closed protocol upgrades and rollback;
 - authenticated state proofs and bounded recovery;
 - validator anti-equivocation across crash/restart;
@@ -33,9 +35,9 @@ The design does not claim Bitcoin-equivalent decentralization or security maturi
 
 One ZYN equals 100,000,000 integer atoms. Consensus does not use floating-point balances.
 
-The immutable **maximum historical issuance is 50,000,000 ZYN**. Genesis allocations consume that cap atom-for-atom; the remaining issuance budget is available only through protocol-v5 mining. A zero-premine public profile can initialize required addresses with zero-value genesis allocations, creating no circulating ZYN at genesis.
+The immutable **maximum historical issuance is 50,000,000 ZYN**. Genesis allocations consume that cap atom-for-atom. The remaining budget was formerly reachable only through protocol-v5 mining; with mining retired, no issuance beyond genesis is possible. A zero-premine public profile can initialize required addresses with zero-value genesis allocations, creating no circulating ZYN at genesis.
 
-Protocol v5 introduces permissionless proof-of-work mining claims:
+Protocol v5 introduced permissionless proof-of-work mining claims (retired 2026-09-30; consensus now rejects them). The former parameters were:
 
 - initial reward: **6.25 ZYN** per successful finalized claim;
 - reward halving: every **4,000,000 successful finalized claims**;
@@ -80,7 +82,7 @@ Every non-genesis block commits to:
 
 Nodes strictly validate wire schemas and reject unknown fields, invalid integer ranges, oversized payloads, wrong proposer schedules, invalid transactions, inconsistent roots and insufficient finality.
 
-A finalized block is re-executed before durable acceptance. Under protocol v5, consensus additionally permits at most one valid mining claim in a block and independently recomputes its proof, target, tip binding, reward and historical issuance budget.
+A finalized block is re-executed before durable acceptance. Mining claims are rejected under every protocol version (mining retired 2026-09-30).
 
 ## 6. Consensus and finality
 
@@ -125,7 +127,9 @@ Protocol v3 activates domain-separated consensus, transaction and governance sig
 
 This cryptographic mechanism does not decide who should be a validator. Admission, independence requirements and emergency governance must be specified publicly before mainnet activation.
 
-## 9. Permissionless proof-of-work issuance
+## 9. Permissionless proof-of-work issuance (retired)
+
+> **Retired 2026-09-30.** This section describes the former protocol-v5 mining design for historical reference only. Mining has been shut down by owner decision; consensus now rejects every `mining_claim`, so none of the validation rules below can ever accept a claim.
 
 Mining is an **issuance mechanism**, not a replacement consensus chain-selection algorithm.
 
@@ -246,7 +250,7 @@ The network is not founder-independent until:
 - third parties can build, restore, rotate, upgrade, mine and release without private assistance;
 - genesis, mining rules and economics are immutable and publicly reproducible.
 
-Permissionless mining removes the need for a founder-controlled mint/distribution key, but it does not by itself remove validator or infrastructure control.
+Mining is retired, so it no longer contributes to decentralizing issuance; distribution and validator/infrastructure control must be addressed by other, explicitly reviewed mechanisms.
 
 The repository includes a public independent-operator challenge and maintainer/security succession policy. Their CI verifies policy/evidence shape, but deliberately does not claim that real independent custody or operator independence has already been achieved.
 
@@ -258,7 +262,7 @@ Governance authorization for both the public-testnet and mainnet network classes
 
 Public-testnet activation still requires independent operator deployment, multi-domain bootstrap/archive infrastructure, independent security review/retest, sustained adversarial Internet evidence, production signer custody and protected release/review policy. The connected Render Free profile is smoke-only; a separate hosted-duration evidence verifier is prepared for reviewed always-on infrastructure, but synthetic CI cannot satisfy the real uptime gate.
 
-Protocol-v5 mining code being present in a release **does not activate public mining**. The public network must first activate the reviewed protocol schedule and satisfy the launch gates. Testnet mining must collect real contention, stale-work, censorship, hardware-skew and RPC-abuse evidence before the 20-bit target or any future retarget policy is considered mainnet-ready.
+Mining is retired (2026-09-30) and is not a launch path. Activating protocol v5 does **not** enable mining: consensus rejects every `mining_claim` on every protocol version.
 
 A value-bearing mainnet additionally requires all public-testnet activation requirements plus immutable chain ID/genesis profile, zero-premine or explicitly disclosed allocation policy, mining/halving/target economics, oracle/validator-governance specifications, target-hardware State-v2 evidence, multi-region recovery/incident evidence and independent maintainer/security custody succession.
 

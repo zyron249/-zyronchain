@@ -29,7 +29,7 @@ Validator-set changes are protocol transactions, not single-admin actions. The i
 Requires Node.js 22 or newer. Validator nodes and the full storage/signing test
 suite require Linux or macOS with POSIX directory fsync. On Windows, use WSL2
 and clone into its Linux filesystem (for example `~/zyronchain`, not `/mnt/c`).
-Native Windows remains suitable for the miner and typechecking; it is not a
+Native Windows remains suitable for typechecking (the miner is retired); it is not a
 supported validator host.
 
 ```sh
@@ -56,7 +56,7 @@ full restart, then stops the processes and removes the successful temporary
 test chain. See [LOCAL_DEVNET.md](LOCAL_DEVNET.md) for Windows/WSL instructions,
 temporary-key handling, and GitHub Actions verification. External testers who
 want wallet, RPC, and token steps should use [docs/PUBLIC_TEST.md](../docs/PUBLIC_TEST.md).
-This local launcher is not a hosted public testnet. Default `npm run devnet` stays protocol v1. For a disposable loopback protocol-v5 mining rehearsal (100-block delay, not public mining) use `npm run mine:local` and [`docs/PUBLIC_LAUNCH_CHECKLIST.md`](../docs/PUBLIC_LAUNCH_CHECKLIST.md).
+This local launcher is not a hosted public testnet. Default `npm run devnet` stays protocol v1. Mining is retired (owner decision 2026-09-30): consensus rejects every `mining_claim`, and `npm run mine` / `npm run mine:local` exit with an error. See [`MINING.md`](MINING.md) and [`docs/PUBLIC_LAUNCH_CHECKLIST.md`](../docs/PUBLIC_LAUNCH_CHECKLIST.md).
 
 Generate one key file for each validator and another for the activity oracle. Key files are created mode `0600`. Prefer encrypted local keystores for operator-managed development keys; production validators should still use the remote-signer/HSM boundary.
 
