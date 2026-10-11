@@ -60,6 +60,7 @@
     "docs/L1_THREAT_MODEL.md",
     "docs/ACTIVITY_ORACLE_CAP.md",
     "docs/ALLOCATION_LOCKS.md",
+    "docs/GENESIS_CONFIG_BINDING.md",
     "docs/MINING.md",
     "l1/MINING.md",
     "docs/CONSENSUS_CERTIFICATE_MODEL.md",
