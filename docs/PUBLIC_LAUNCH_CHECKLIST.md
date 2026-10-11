@@ -74,7 +74,7 @@ Every public-testnet gate plus:
 | `immutable-mainnet-genesis-allocation` | Blocked — the fixed 50M 10/40/40/10 plan is encoded and validated (`npm run tokenomics:check`); real role addresses, founder vesting and liquidity locks still need owner input and on-chain enforcement |
 | `immutable-mining-reward-halving-cap-and-difficulty-policy` | Superseded — mining is retired; no reward, halving or difficulty policy applies and the 50M cap is fully allocated at genesis |
 | `validator-reward-inflation-and-fee-policy` | Blocked — no validator inflation is invented; fee burns stay burns |
-| `activity-oracle-production-governance` | Blocked — keep unfunded/disabled until independent oracles exist |
+| `activity-oracle-production-governance` | Blocked — consensus now caps oracle payouts at 10,000 ZYN per closed 24 h epoch, settled once and in order ([`ACTIVITY_ORACLE_CAP.md`](ACTIVITY_ORACLE_CAP.md)); m-of-n oracle approval and independent oracle custody are still missing, so keep unfunded/disabled until independent oracles exist |
 | `validator-admission-removal-governance` | Prepared as on-chain delayed quorum; public admission process not published |
 | `sustained-public-testnet-mining-finality-and-independent-retest` | Blocked — requires a real public testnet first |
 | `multi-region-disaster-recovery-and-incident-drills` | Prepared as CI rehearsals; real multi-region drills remain |
