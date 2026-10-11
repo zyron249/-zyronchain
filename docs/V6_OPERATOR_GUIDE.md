@@ -112,6 +112,7 @@ node dist/src/cli.js protocol-submit --proposal v6-upgrade.json --approval appro
 | `unsupported-next-protocol` | the binary does not support the protocol version scheduled for the next height | upgrade the binary (before A) |
 | `stale-tip` | finalized tip older than `--ready-max-tip-age-ms` (default 600,000 ms, `node-base.ts:102`) | finality-halt runbook (§5, §11) |
 | `consensus-catching-up` | **legacy only**: bounded skip-chain catch-up after a long stall (F-02) | wait; it does not apply at v6 heights |
+| `syncing` | a block sync is in progress towards a peer tip more than one block ahead (HTTP `syncFrom`/`syncAny` and native sync); lasts only while that sync runs | wait; if it recurs without progress, check the peer and `stale-tip` |
 
 There is no `no-peers` reason (F-04 residual). Monitor peer count separately.
 
