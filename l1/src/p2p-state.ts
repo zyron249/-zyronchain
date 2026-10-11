@@ -18,7 +18,12 @@ import {
   MAX_PORTABLE_STATE_NODES,
   type StateV2PortableBundleV1
 } from "./state-v2-portable.js";
-import { PortableStateResumeMismatchError, PortableStateResumeStore, type PortableStateResumeManifestV1 } from "./state-v2-resume.js";
+import {
+  discardPortableStateResumeDirectory,
+  PortableStateResumeMismatchError,
+  PortableStateResumeStore,
+  type PortableStateResumeManifestV1
+} from "./state-v2-resume.js";
 import type { TrustedSnapshotAnchor } from "./storage.js";
 import type { Block, GenesisConfig } from "./types.js";
 
@@ -350,8 +355,8 @@ async function openResumeDiscardingPeerMismatch(
     return await PortableStateResumeStore.open(resumeDir, manifest);
   } catch (error) {
     if (!(error instanceof PortableStateResumeMismatchError)) throw error;
-    console.warn("Discarding portable state staging from a peer whose unauthenticated manifest counts disagree; restarting the download");
-    await rm(resumeDir, { recursive: true, force: true });
+    console.warn(`Discarding untrusted portable state staging (${error.message}); restarting the download`);
+    await discardPortableStateResumeDirectory(resumeDir);
     return PortableStateResumeStore.open(resumeDir, manifest);
   }
 }

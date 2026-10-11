@@ -6,7 +6,7 @@
 // discarded and restarted instead of blocking honest peers forever.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readdir, rm, stat, unlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -160,6 +160,44 @@ test("F-09: staging left with a gap by an interrupted discard is discarded and t
       );
       assert.deepEqual(fetched.bundle, fixture.bundle);
     });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("F-09: a staged manifest whose first chunk is missing (gap) is discarded and the honest download completes", async () => {
+  const fixture = await createFixture("gap-with-manifest");
+  const resumeDir = join(fixture.root, "resume");
+  try {
+    const store = await PortableStateResumeStore.open(resumeDir, stagedManifest(fixture, { recordCount: 256 }));
+    await store.putRecords(0, Array.from({ length: 128 }, () => ({ hash: "00".repeat(32) })));
+    await store.putRecords(128, Array.from({ length: 128 }, () => ({ hash: "00".repeat(32) })));
+    await unlink(join(resumeDir, "records", "0.json"));
+    await assert.rejects(() => PortableStateResumeStore.open(resumeDir, stagedManifest(fixture, { recordCount: 256 })), /gap/);
+    await withHonestPeer(fixture, async (honestAddress) => {
+      const fetched = await fetchTrustedPortableStateFromAnyPeer(
+        fixture.clientNode, [honestAddress], fixture.clientIdentity, fixture.config, fixture.anchor, resumeDir
+      );
+      assert.deepEqual(fetched.bundle, fixture.bundle);
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("F-09: discard renames staging away atomically and the next open removes leftovers", async () => {
+  const fixture = await createFixture("atomic-discard");
+  const resumeDir = join(fixture.root, "resume");
+  try {
+    const store = await PortableStateResumeStore.open(resumeDir, stagedManifest(fixture));
+    await store.discard();
+    await assert.rejects(() => stat(resumeDir), { code: "ENOENT" });
+    // A crash after the rename but before the recursive delete finished.
+    const leftover = join(fixture.root, "resume.discard-interrupted");
+    await mkdir(join(leftover, "records"), { recursive: true });
+    await writeFile(join(leftover, "records", "128.json"), "{}\n");
+    await PortableStateResumeStore.open(resumeDir, stagedManifest(fixture));
+    assert.deepEqual((await readdir(fixture.root)).filter((name) => name.startsWith("resume")), ["resume"]);
   } finally {
     await fixture.close();
   }
