@@ -13,7 +13,9 @@ The founder allocation remains 5,000,000 ZYN. The deterministic reference schedu
 
 `l1/src/founder-vesting.ts` uses integer/BigInt arithmetic and regression tests pin boundary, monotonicity and cap behavior.
 
-**Important:** the arithmetic is implemented, but transaction-level consensus enforcement is still deliberately false in `docs/fixed-supply-launch-plan.json`. Enabling a live founder allocation before that enforcement exists is prohibited.
+Consensus now enforces the equivalent schedule measured in block timestamps from the genesis timestamp (365-day cliff, 1,095-day linear release) when the genesis declares `allocationLocks`; both forms share `linearCliffVestedAtoms` and agree exactly at the 30-second target. Timestamps are used for enforcement because honest validators bound them to their clocks, so block-rate changes cannot move the unlock date. The permanent-liquidity reserve is locked against every outflow. See [`ALLOCATION_LOCKS.md`](ALLOCATION_LOCKS.md).
+
+**Important:** `founderVestingConsensusEnforced` and the other activation gates in `docs/fixed-supply-launch-plan.json` intentionally stay `false` until the enforcement is independently audited and the owner signs off. Enabling a live founder allocation before then is prohibited.
 
 ## Permanent-liquidity AMM reference
 
@@ -38,7 +40,7 @@ Before the website Buy/Sell control can become live, all machine-readable activa
 
 The preferred production sequence is:
 
-1. consensus-enforce founder vesting;
+1. consensus-enforce founder vesting (implemented, awaiting independent audit: [`ALLOCATION_LOCKS.md`](ALLOCATION_LOCKS.md));
 2. freeze the quote-asset/bridge trust model;
 3. implement pool state and swap transaction types;
 4. prove reserve/supply/slippage invariants under replay and restart;

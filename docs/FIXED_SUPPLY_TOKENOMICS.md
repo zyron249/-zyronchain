@@ -40,7 +40,7 @@ Compatibility note: this is a consensus rule change. Any existing chain data tha
 
 ## Mainnet genesis ceremony: mandatory supply check
 
-Consensus enforces only that a genesis allocates at most 50,000,000 ZYN (and, with mining retired, nothing can be issued later). The rules "exactly 50,000,000 ZYN, split 5,000,000 / 20,000,000 / 20,000,000 / 5,000,000 across four distinct role addresses, and the activity pool is the ecosystem/community reserve" are enforced by the offline verifier `assertFixedSupplyGenesis`. Therefore the mainnet genesis ceremony **MUST** run `npm run tokenomics:check` against the final genesis file and the four role addresses, and the genesis **MUST NOT** be published, signed, or used to start any validator unless the command exits 0. The ceremony record must include the exact command, its output, the SHA-256 digest of the genesis file and the release commit it was built from. The same requirement is listed in [`PUBLIC_LAUNCH_CHECKLIST.md`](PUBLIC_LAUNCH_CHECKLIST.md) section 4.
+Consensus enforces only that a genesis allocates at most 50,000,000 ZYN (and, with mining retired, nothing can be issued later). The rules "exactly 50,000,000 ZYN, split 5,000,000 / 20,000,000 / 20,000,000 / 5,000,000 across four distinct role addresses, the activity pool is the ecosystem/community reserve, and `allocationLocks` names exactly the founder and permanent-liquidity allocations" are enforced by the offline verifier `assertFixedSupplyGenesis`. The genesis hash does not commit to configuration fields such as `allocationLocks`, so the published SHA-256 digest of the genesis file is what binds them. Therefore the mainnet genesis ceremony **MUST** run `npm run tokenomics:check` against the final genesis file and the four role addresses, and the genesis **MUST NOT** be published, signed, or used to start any validator unless the command exits 0. The ceremony record must include the exact command, its output, the SHA-256 digest of the genesis file and the release commit it was built from. The same requirement is listed in [`PUBLIC_LAUNCH_CHECKLIST.md`](PUBLIC_LAUNCH_CHECKLIST.md) section 4.
 
 Run it from the `l1/` directory:
 
@@ -76,7 +76,7 @@ The intended custody rule is:
 - then 36 months of linear vesting;
 - no unilateral early-unlock path.
 
-The amount and schedule are recorded here, but **the current L1 does not yet enforce founder vesting at consensus level**. The 5M founder allocation must not be treated as safely locked until a reviewed protocol-controlled vesting mechanism or equivalent audited custody construction exists and has regression tests.
+Consensus enforces this schedule when the genesis declares `allocationLocks.founderVesting` (required by `npm run tokenomics:check`): measured from the genesis timestamp at the including block's timestamp, nothing is spendable during the 365-day cliff, then the allocation is released linearly over 1,095 days; a transfer (amount plus fee) may never leave the founder account below the still-locked amount. There is no early-unlock path. See [`ALLOCATION_LOCKS.md`](ALLOCATION_LOCKS.md). The `founderVestingConsensusEnforced` flag in `fixed-supply-launch-plan.json` stays `false` until the mechanism is independently audited and the owner signs off.
 
 ## Permanent liquidity
 
@@ -86,7 +86,7 @@ The intended liquidity property is stronger than a temporary time lock: no found
 
 That AMM is **not implemented by this change**. ZyronChain currently has a native ZYN ledger but no audited native representation of USDC (or another quote asset) and no production bridge/custody mechanism. A website must not pretend to offer live ZYN/USDC trading until those components exist.
 
-The liquidity reserve therefore remains a disclosed genesis role, not a live pool.
+The liquidity reserve therefore remains a disclosed genesis role, not a live pool. Consensus locks it completely when the genesis declares `allocationLocks.permanentLiquidity` (required by `npm run tokenomics:check`): every outflow, including fees, is rejected forever, and inflows stay locked. Releasing any of it would need a future audited mechanism, a protocol upgrade and owner approval. See [`ALLOCATION_LOCKS.md`](ALLOCATION_LOCKS.md).
 
 ## Public distribution
 
@@ -101,11 +101,11 @@ Before enabling a public purchase surface, the project must freeze and review at
 - permanent LP ownership/burn mechanism;
 - front-running/MEV assumptions;
 - bridge or custody trust model, if any;
-- founder vesting enforcement;
+- independent audit of the founder vesting and liquidity lock enforcement ([`ALLOCATION_LOCKS.md`](ALLOCATION_LOCKS.md));
 - applicable legal/compliance requirements for a public token distribution.
 
 ## Activation discipline
 
 This design does not flip `publicTestnetActivationAllowed`, `mainnetActivationAllowed`, miner-publication flags, or website trading controls.
 
-The next engineering step is to implement and audit the missing on-chain vesting and two-asset liquidity primitive before any real-money buy/sell interface is enabled.
+On-chain founder vesting and the permanent-liquidity lock are implemented ([`ALLOCATION_LOCKS.md`](ALLOCATION_LOCKS.md)) and await independent audit. The next engineering step is the two-asset liquidity primitive, which must also be audited before any real-money buy/sell interface is enabled.

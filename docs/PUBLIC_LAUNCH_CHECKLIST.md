@@ -71,7 +71,7 @@ Every public-testnet gate plus:
 | Requirement ID | Status |
 |---|---|
 | `immutable-mainnet-chain-id` | Blocked — do not invent |
-| `immutable-mainnet-genesis-allocation` | Blocked — the fixed 50M 10/40/40/10 plan is encoded and validated (`npm run tokenomics:check`); real role addresses, founder vesting and liquidity locks still need owner input and on-chain enforcement |
+| `immutable-mainnet-genesis-allocation` | Blocked — the fixed 50M 10/40/40/10 plan is encoded and validated (`npm run tokenomics:check`); founder vesting (12-month cliff, 36-month linear) and the permanent-liquidity lock are enforced on-chain via genesis `allocationLocks`, required by `tokenomics:check` ([`ALLOCATION_LOCKS.md`](ALLOCATION_LOCKS.md)); real role addresses still need owner input, the enforcement needs independent audit, and the ceremony must pin the genesis file SHA-256 |
 | `immutable-mining-reward-halving-cap-and-difficulty-policy` | Superseded — mining is retired; no reward, halving or difficulty policy applies and the 50M cap is fully allocated at genesis |
 | `validator-reward-inflation-and-fee-policy` | Blocked — no validator inflation is invented; fee burns stay burns |
 | `activity-oracle-production-governance` | Blocked — consensus now caps oracle payouts at 10,000 ZYN per closed 24 h epoch, settled once and in order ([`ACTIVITY_ORACLE_CAP.md`](ACTIVITY_ORACLE_CAP.md)); m-of-n oracle approval and independent oracle custody are still missing, so keep unfunded/disabled until independent oracles exist |
@@ -83,7 +83,7 @@ Every public-testnet gate plus:
 
 ### Mainnet genesis ceremony: mandatory supply check
 
-Consensus accepts any genesis whose total is at most 50,000,000 ZYN; it does not by itself require that the genesis allocates exactly 50,000,000 ZYN to the four disclosed roles or that the activity pool is the ecosystem/community reserve. Those rules are enforced by the offline verifier, so the mainnet genesis ceremony **MUST** run `cd l1 && npm run tokenomics:check` against the final genesis file and the four role addresses (see [`FIXED_SUPPLY_TOKENOMICS.md`](FIXED_SUPPLY_TOKENOMICS.md#mainnet-genesis-ceremony-mandatory-supply-check)), and the genesis MUST NOT be published, signed or used to start a validator unless that command exits 0. Record the command, its output, the genesis SHA-256 digest and the release commit in the ceremony record.
+Consensus accepts any genesis whose total is at most 50,000,000 ZYN; it does not by itself require that the genesis allocates exactly 50,000,000 ZYN to the four disclosed roles that the activity pool is the ecosystem/community reserve, or that `allocationLocks` names the founder and permanent-liquidity allocations (without it, consensus does not lock them). Those rules are enforced by the offline verifier, so the mainnet genesis ceremony **MUST** run `cd l1 && npm run tokenomics:check` against the final genesis file and the four role addresses (see [`FIXED_SUPPLY_TOKENOMICS.md`](FIXED_SUPPLY_TOKENOMICS.md#mainnet-genesis-ceremony-mandatory-supply-check)), and the genesis MUST NOT be published, signed or used to start a validator unless that command exits 0. Record the command, its output, the genesis SHA-256 digest and the release commit in the ceremony record.
 
 Related issue: #261.
 
