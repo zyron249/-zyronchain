@@ -975,6 +975,16 @@ export class SigningJournal {
       let completedSlot = "";
       if (pendingLock) {
         completedSlot = `height ${pendingLock.height}, round ${pendingLock.round}`;
+        // Complete only a lock that reserveV6Commit could have written: the
+        // round was still open (no timeout at or above it, no later vote)
+        // and any own prepare at that round is for the same block. Anything
+        // else is not a torn append but inconsistent history: stay fatal.
+        const state = journal.v6Heights.get(pendingLock.height)!;
+        const prepared = state.rows.get(`${pendingLock.round}:prepare`);
+        if (state.maxTimeoutRound >= pendingLock.round || state.maxVoteRound > pendingLock.round ||
+            (prepared !== undefined && prepared !== pendingLock.value)) {
+          throw new Error("Torn protocol v6 lock/commit pair in signing journal");
+        }
         const commit: V6JournalRow = {
           v: 2, height: pendingLock.height, round: pendingLock.round, step: "commit", value: pendingLock.value
         };
