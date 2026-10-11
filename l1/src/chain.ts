@@ -157,6 +157,14 @@ export class ZyronChain {
     if (snapshot.tip.header.transactionRoot !== merkleRoot(snapshot.tip.transactions)) {
       throw new Error("Trusted checkpoint tip transaction root mismatch");
     }
+    // merkleRoot duplicates the last leaf of an odd level, so a body with its
+    // odd tail repeated keeps the same root. Live validation rejects that in
+    // applyTransactions; this path does not re-execute the tip, so check here.
+    const tipTxids = new Set<string>();
+    for (const tx of snapshot.tip.transactions) {
+      if (tipTxids.has(tx.txid)) throw new Error("Trusted checkpoint tip contains a duplicate transaction");
+      tipTxids.add(tx.txid);
+    }
 
     const validatorSchedule = validateValidatorSchedule(snapshot.validatorSchedule, genesis.validators);
     const protocolSchedule = validateProtocolSchedule(snapshot.protocolSchedule);
