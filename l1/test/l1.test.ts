@@ -3578,7 +3578,13 @@ test("chain store fails closed on a truncated or corrupt finalized block record"
     block = store.chain.attestBlock(block, validatorOnePrivate);
     block = store.chain.attestBlock(block, validatorTwoPrivate);
     await store.commitFinalizedBlock(block, 1_700_000_000_100);
+    // F-10: an unterminated, unparsable final record is a torn append that was
+    // never acknowledged; it is truncated and the finalized height is kept.
     await appendFile(join(directory, "blocks.ndjson"), "{\"header\":", "utf8");
+    const recovered = await ChainStore.open(genesis(), directory);
+    assert.equal(recovered.chain.height, 1);
+    // A terminated record that does not parse is corruption and stays fatal.
+    await appendFile(join(directory, "blocks.ndjson"), "{\"header\":\n", "utf8");
     await assert.rejects(() => ChainStore.open(genesis(), directory), /Corrupt stored block/);
   } finally {
     await rm(directory, { recursive: true, force: true });

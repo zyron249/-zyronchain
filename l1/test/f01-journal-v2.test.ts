@@ -154,12 +154,12 @@ test("journal v2: legacy and v6 rows never mix at one height (§6.2-7), live and
   });
 });
 
-test("journal v2: a torn lock/commit pair or a malformed v2 row fails stop on open (T10)", async () => {
+test("journal v2: a torn lock/commit pair or a malformed v2 row fails stop on open, a torn final append is dropped whole (T10, F-10)", async () => {
   const lock = JSON.stringify({ v: 2, height: 4, round: 1, step: "lock", value: A, lockRound: 1 });
   const commit = JSON.stringify({ v: 2, height: 4, round: 1, step: "commit", value: A });
   const cases: Array<[string, string, RegExp]> = [
     ["lock without commit", `${lock}\n`, /Torn protocol v6 lock\/commit pair/],
-    ["lock with a truncated commit", `${lock}\n${commit.slice(0, 30)}`, /Corrupt|JSON|Unexpected/],
+    ["lock with a truncated commit, terminated", `${lock}\n${commit.slice(0, 30)}\n`, /Corrupt|JSON|Unexpected/],
     ["lock followed by another row", `${lock}\n${JSON.stringify({ v: 2, height: 4, round: 1, step: "timeout", value: A })}\n`, /Torn/],
     ["commit for a different value", `${lock}\n${JSON.stringify({ v: 2, height: 4, round: 1, step: "commit", value: B })}\n`, /Torn/],
     ["lockRound mismatch", `${JSON.stringify({ v: 2, height: 4, round: 1, step: "lock", value: A, lockRound: 0 })}\n${commit}\n`, /Corrupt signing journal entry/],
@@ -174,6 +174,20 @@ test("journal v2: a torn lock/commit pair or a malformed v2 row fails stop on op
       await assert.rejects(() => SigningJournal.open(directory), pattern, name);
     });
   }
+  // F-10: an unterminated, unparsable commit is a torn final append. The lock
+  // and commit rows are one append, so neither was acknowledged: both are
+  // dropped durably and no lock is restored (no commit vote was ever signed).
+  await withDir(async (directory) => {
+    const prepare = JSON.stringify({ v: 2, height: 4, round: 1, step: "prepare", value: A });
+    await writeFile(join(directory, "signing-journal.ndjson"), `${prepare}\n${lock}\n${commit.slice(0, 30)}`);
+    const journal = await SigningJournal.open(directory);
+    try {
+      assert.equal(journal.v6Lock(4), null, "a torn lock/commit append must not restore a lock");
+    } finally {
+      journal.close();
+    }
+    assert.equal(await readFile(join(directory, "signing-journal.ndjson"), "utf8"), `${prepare}\n`);
+  });
   await withDir(async (directory) => {
     await writeFile(join(directory, "signing-journal.ndjson"), `${lock}\n${commit}\n`);
     const journal = await SigningJournal.open(directory);
