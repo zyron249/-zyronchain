@@ -57,6 +57,7 @@ class Settings:
     reminders_enabled: bool = True
     community_chat: str = "@zyronchain"
     community_posts_enabled: bool = True
+    team_telegram_ids: tuple[int, ...] = ()
 
     def redacted(self) -> dict[str, object]:
         return {
@@ -76,6 +77,7 @@ class Settings:
             "remindersEnabled": self.reminders_enabled,
             "communityChat": self.community_chat,
             "communityPostsEnabled": self.community_posts_enabled,
+            "teamAccounts": len(self.team_telegram_ids),
         }
 
 
@@ -164,7 +166,24 @@ def load_settings() -> Settings:
         reminders_enabled=_bool("REMINDERS_ENABLED", True),
         community_chat=_community_chat(os.environ.get("COMMUNITY_CHAT", "")),
         community_posts_enabled=_bool("COMMUNITY_POSTS_ENABLED", True),
+        team_telegram_ids=team_telegram_ids(),
     )
+
+
+def team_telegram_ids(raw: str | None = None) -> tuple[int, ...]:
+    """TEAM_TELEGRAM_IDS: comma- or space-separated Telegram user ids of team/project accounts.
+
+    Those players can still play but are left out of every leaderboard, group board, invite contest,
+    quiz reward and distribution export. The list only adds the flag; it never clears it.
+    """
+    value = os.environ.get("TEAM_TELEGRAM_IDS", "") if raw is None else raw
+    ids: list[int] = []
+    for token in value.replace(";", ",").replace(",", " ").split():
+        if not token.isdigit() or int(token) <= 0 or len(token) > 20:
+            raise ConfigError(f"TEAM_TELEGRAM_IDS has an invalid Telegram id: {token[:24]}")
+        if int(token) not in ids:
+            ids.append(int(token))
+    return tuple(ids)
 
 
 def validate_settings(settings: Settings) -> None:

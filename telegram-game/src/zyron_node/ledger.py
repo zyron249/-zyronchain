@@ -152,7 +152,8 @@ def distribution_cutoff(conn, cutoff: datetime, *, limit: int = 20000) -> dict:
 
     Lifetime points are the sum of ``points_earned`` and ``backfill_snapshot``
     rows with ``created_at <= cutoff``. Rank is that total, ties broken by
-    player id ascending — the same order as the all-time board.
+    player id ascending — the same order as the all-time board. Team accounts
+    are never reward-eligible and are left out.
     """
     rows = conn.execute(
         """
@@ -174,6 +175,7 @@ def distribution_cutoff(conn, cutoff: datetime, *, limit: int = 20000) -> dict:
             FROM totals t
             JOIN players p ON p.id = t.player_id
             WHERE t.lifetime_points > 0
+              AND p.team_account = FALSE
         )
         SELECT lifetime_points, id, telegram_id, display_name, rank
         FROM ranked
@@ -206,6 +208,7 @@ def distribution_cutoff(conn, cutoff: datetime, *, limit: int = 20000) -> dict:
         "automaticPayout": False,
         "conversionRate": None,
         "truncated": truncated,
+        "excludes": "Team accounts are not reward-eligible and are left out of this export.",
         "note": LEDGER_NOTE,
         "thresholds": threshold_payload(),
         "rows": standings,
@@ -244,6 +247,7 @@ def rank_reigns(conn, rank: int, as_of: datetime) -> list[dict]:
         FROM activity_ledger a
         JOIN players p ON p.id = a.player_id
         WHERE a.event_type = 'rank_snapshot'
+          AND p.team_account = FALSE
           AND COALESCE(a.metadata->>'board', 'alltime') = 'alltime'
           AND a.amount = %s
           AND a.created_at <= %s

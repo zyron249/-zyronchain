@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -14,6 +15,7 @@ from zyron_node.api import error_payload, install_error_handlers, register_route
 from zyron_node.buildinfo import CLIENT_BUILD, SHELL_ID
 from zyron_node.config import Settings, validate_settings
 from zyron_node.db import create_pool, migrate
+from zyron_node.game import sync_team_accounts
 from zyron_node.logging_setup import setup_logging
 from zyron_node.rpc import ChainClient, httpx_fetch
 from zyron_node.shell import STATIC_ASSETS, render_index
@@ -89,6 +91,7 @@ def create_app(settings: Settings) -> FastAPI:
     docs = None if settings.environment == "production" else "/docs"
     pool = create_pool(settings.database_url)
     migrate(pool)
+    sync_team_accounts(pool, settings.team_telegram_ids, datetime.now(timezone.utc))
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):

@@ -139,13 +139,13 @@ def link_markup(bot_username: str, wallet: bool = False) -> dict | None:
 # ---------------------------------------------------------------------------- boards
 
 def top_builders(conn, start: datetime, end: datetime, limit: int = BOARD_SIZE) -> list[dict]:
-    """Blocks built = completed node cycles in the window. Banned players are left out."""
+    """Blocks built = completed node cycles in the window. Banned players and team accounts are left out."""
     return conn.execute(
         """
         SELECT p.id, p.display_name, COUNT(*)::int AS blocks
         FROM point_ledger l JOIN players p ON p.id = l.player_id
         WHERE l.reason = 'cycle' AND l.amount > 0 AND l.created_at >= %s AND l.created_at < %s
-          AND p.banned = FALSE
+          AND p.banned = FALSE AND p.team_account = FALSE
         GROUP BY p.id, p.display_name
         ORDER BY blocks DESC, p.id ASC
         LIMIT %s
@@ -163,7 +163,7 @@ def top_inviters(conn, start: datetime, end: datetime, limit: int = INVITE_BOARD
         JOIN players p ON p.id = r.referrer_id
         JOIN players q ON q.id = r.referee_id
         WHERE r.status = 'rewarded' AND r.rewarded_at >= %s AND r.rewarded_at < %s
-          AND p.banned = FALSE AND q.banned = FALSE
+          AND p.banned = FALSE AND q.banned = FALSE AND p.team_account = FALSE
           AND p.abuse_score < %s AND q.abuse_score < %s
         GROUP BY p.id, p.display_name
         ORDER BY invites DESC, p.id ASC
@@ -377,10 +377,12 @@ def record_quiz_answer(pool, answer: dict, now: datetime) -> dict:
             if not correct:
                 return {"recorded": True, "correct": False, "points": 0}
             player = conn.execute(
-                "SELECT id, banned FROM players WHERE telegram_id = %s FOR UPDATE", (telegram_id,)
+                "SELECT id, banned, team_account FROM players WHERE telegram_id = %s FOR UPDATE", (telegram_id,)
             ).fetchone()
             if player is None or player["banned"]:
                 return {"recorded": True, "correct": True, "points": 0, "reason": "not_a_player"}
+            if player["team_account"]:
+                return {"recorded": True, "correct": True, "points": 0, "reason": "team_account"}
             earned = conn.execute(
                 """
                 SELECT COALESCE(SUM(a.points), 0)::int AS n FROM quiz_answers a

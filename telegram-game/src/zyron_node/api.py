@@ -38,6 +38,8 @@ from zyron_node.game import (
     resolve_flag,
     run_cycle,
     set_ban,
+    set_team,
+    list_team_accounts,
     unlink_wallet,
     upgrades_view,
 )
@@ -71,6 +73,10 @@ class ChestBody(BaseModel):
 
 class BanBody(BaseModel):
     banned: bool = True
+
+
+class TeamBody(BaseModel):
+    team: bool = True
 
 
 class WalletReleaseBody(BaseModel):
@@ -349,6 +355,16 @@ def register_routes(app) -> None:
     def ban(request: Request, player_id: int, body: BanBody):
         actor = require_admin(request)
         return set_ban(request.app.state.pool, player_id, body.banned, actor, request_now(request))
+
+    @app.post("/api/admin/players/{player_id}/team")
+    def team(request: Request, player_id: int, body: TeamBody):
+        actor = require_admin(request)
+        return set_team(request.app.state.pool, player_id, body.team, actor, request_now(request))
+
+    @app.get("/api/admin/team")
+    def team_list(request: Request):
+        require_admin(request)
+        return list_team_accounts(request.app.state.pool)
 
     @app.post("/api/admin/flags/{flag_id}/resolve")
     def flag_resolve(request: Request, flag_id: int):

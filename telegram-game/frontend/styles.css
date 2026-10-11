@@ -398,6 +398,7 @@ html.is-hidden .builders * { animation-play-state: paused !important; }
 .standing h2 { margin: 2px 0; font-size: 30px; letter-spacing: -0.03em; }
 .standing p { margin: 0; font-size: 15px; line-height: 1.4; }
 .board-note { margin: 0 0 8px; font-size: 14px; line-height: 1.45; color: var(--text); }
+.team-note { font-size: 13px; opacity: 0.85; }
 .lvl { color: var(--cyan); font-variant-numeric: tabular-nums; }
 .buy { width: 100%; margin-top: 10px; }
 .board-switch { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 10px; }
