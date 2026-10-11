@@ -934,6 +934,11 @@ function validateGenesis(genesis: GenesisConfig): void {
     oracles.add(oracle);
   }
   validateActivityOracleThreshold(genesis);
+  if (Object.prototype.hasOwnProperty.call(genesis, "activityOracleThreshold")) {
+    // An unusable key must never count toward n (m could become unreachable).
+    // Legacy genesis files keep the 64-hex check so existing chains still open.
+    for (const oracle of genesis.activityOracles) assertValidPublicKey(oracle, "Genesis activity oracle public key");
+  }
   assertAddress(genesis.activityPool);
   if (genesis.activityPool === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker cannot be the activity pool");
   if (!Array.isArray(genesis.allocations) || genesis.allocations.length === 0) {

@@ -38,6 +38,8 @@ The nonce, timestamp and submitter are deliberately not part of the payload. Ora
 - A genesis without `activityOracleThreshold` keeps the old behaviour: the single submitting oracle authorizes, and a settlement carrying `oracleApprovals` is rejected. This means existing chains accept exactly the transaction set they accepted before.
 - Legacy settlements keep their exact encoding and txid: `createActivitySettlement` omits the key unless approvals are given. Genesis hashes of existing genesis files are unchanged. Both are pinned by tests.
 - Nodes built before this change refuse a genesis that declares `activityOracleThreshold` (unknown genesis key), so old and new nodes cannot silently disagree on such a chain.
+- A genesis that declares `activityOracleThreshold` is bound into chain identity. Its genesis header carries the genesis-configuration commitment `SHA-256(canonicalJson({ domain: "zyronchain/genesis-config/v1", genesis }))` in the previous-hash slot instead of zeros (the same commitment the genesis-config-binding change uses for `launchProfile`). Two nodes that differ only in the threshold, or in any other genesis field, therefore have different genesis hashes and cannot peer, sync snapshots or checkpoints, or extend each other's blocks. Genesis files without a threshold keep the zero previous hash and their historical genesis hash. (Codex review finding P1 on PR #969.)
+- Under a threshold genesis every `activityOracles` entry must be a valid secp256k1 point (`assertValidPublicKey`, as for validator keys since F-05). An unusable key can therefore never count toward n and make m unreachable. Genesis files without a threshold keep the historical 64-byte-hex check so existing chains still open. (Codex review finding P2 on PR #969.)
 
 ### Where it is enforced
 
@@ -93,7 +95,7 @@ Operational guidance:
 
 ## Interaction with the genesis launch profile
 
-The open genesis-config-binding change (`launchProfile: "fixed-supply-v1"`) commits the full genesis object into the genesis hash. Once both changes are merged, `activityOracleThreshold` is therefore bound into chain identity, and a node with a different threshold cannot join the network. That profile should then also require `activityOracleThreshold >= 2`. This is deliberately not part of this change, to keep it independent of the profile. Merging both will need a small conflict resolution in `validateGenesis`, which lists the optional genesis keys.
+The open genesis-config-binding change (#961, `launchProfile: "fixed-supply-v1"`) commits the full genesis object into the genesis hash with the same commitment this change uses. After both merge, the genesis header should carry the commitment when either `launchProfile` or `activityOracleThreshold` is present; the two definitions are identical, so a fixed-supply genesis with a threshold gets one commitment either way. That profile should then also require `activityOracleThreshold >= 2`. This is deliberately not part of this change, to keep it independent of the profile. Merging both will need a small conflict resolution in `validateGenesis` (optional genesis keys), `createGenesisBlock` and `types.ts`; whichever merges second needs a rebase.
 
 ## Tests
 
@@ -105,3 +107,8 @@ The open genesis-config-binding change (`launchProfile: "fixed-supply-v1"`) comm
 - The cap, window and once-only rules are unchanged.
 - m=1 keeps single-oracle behaviour, and a legacy genesis rejects `oracleApprovals`.
 - Genesis threshold bounds, approval shape bounds, the pinned legacy genesis hash and settlement txids, and helper encoding equivalence.
+
+`l1/test/activity-oracle-threshold-identity.test.ts`:
+- Thresholds 1, 2 and 3 over the same oracles and allocations give four distinct genesis hashes (with the legacy genesis), and the genesis header carries the full-configuration commitment.
+- A block finalized on a threshold-1 genesis is refused by a threshold-2 node.
+- A threshold genesis refuses activity-oracle keys that are not secp256k1 points; a legacy genesis still accepts them (compatibility).

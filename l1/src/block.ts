@@ -27,13 +27,35 @@ export function blockHash(header: BlockHeader): string {
   return sha256Hex(canonicalJson(header));
 }
 
+/** Domain tag of the genesis-configuration commitment (same definition as PR #961, docs/GENESIS_CONFIG_BINDING.md). */
+export const GENESIS_CONFIG_COMMITMENT_DOMAIN = "zyronchain/genesis-config/v1";
+
+/**
+ * Commitment to the entire genesis configuration: SHA-256 over the canonical
+ * JSON (sorted keys, array order preserved) of `{ domain, genesis }`. The
+ * caller must pass a validated genesis.
+ */
+export function genesisConfigCommitment(genesis: GenesisConfig): string {
+  return sha256Hex(canonicalJson({ domain: GENESIS_CONFIG_COMMITMENT_DOMAIN, genesis }));
+}
+
+/**
+ * Genesis block. Legacy genesis files keep the historical header with a zero
+ * previous hash, so their genesis hash is unchanged. A genesis that declares
+ * `activityOracleThreshold` changes block validity, so its genesis header
+ * carries `genesisConfigCommitment(genesis)` in the previous-hash slot: the
+ * genesis hash (P2P chain identity, block 1's parent link, snapshots,
+ * checkpoints, store metadata) then commits to the threshold and every other
+ * genesis field, and nodes with different thresholds cannot peer as one chain.
+ */
 export function createGenesisBlock(genesis: GenesisConfig, stateRoot: string): Block {
+  const bindConfig = Object.prototype.hasOwnProperty.call(genesis, "activityOracleThreshold");
   const header: BlockHeader = {
     version: 1,
     chainId: genesis.chainId,
     height: 0,
     round: 0,
-    previousHash: "0".repeat(64),
+    previousHash: bindConfig ? genesisConfigCommitment(genesis) : "0".repeat(64),
     timestampMs: genesis.timestampMs,
     transactionRoot: merkleRoot([]),
     stateRoot,
