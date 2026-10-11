@@ -320,14 +320,12 @@ test("ALLOCATION-LOCKS: locks still apply after the node store is reopened", asy
     let block = first.chain.produceBlock([], key(VALIDATOR), { timestampMs: Date.now() });
     block = first.chain.attestBlock(block, key(VALIDATOR));
     await service.acceptFinalizedBlock(block);
-    await first.close?.();
     const reopened = await ChainStore.open(genesis, directory);
     assert.equal(reopened.chain.height, 1);
     assert.equal(reopened.chain.spendableBalance(addr(FOUNDER)), 0);
     assert.equal(reopened.chain.spendableBalance(addr(LIQUIDITY)), 0);
     assert.throws(() => reopened.chain.validatePending([transfer(genesis, FOUNDER, 1, 1, 0, 1)]), VESTING);
     assert.throws(() => reopened.chain.validatePending([transfer(genesis, LIQUIDITY, 1, 1, 0, 1)]), LIQUIDITY_LOCKED);
-    await reopened.close?.();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
