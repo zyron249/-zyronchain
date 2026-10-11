@@ -292,8 +292,8 @@ const INVALID_PROFILE_GENESIS: Record<string, () => ProfileGenesis> = {
     ...profileGenesis(),
     allocationLocks: { founderVesting: addr(LIQUIDITY), permanentLiquidity: addr(FOUNDER) }
   }),
-  "unknown launch profile": () => ({ ...profileGenesis(), launchProfile: "fixed-supply-v2" }),
-  "non-string launch profile": () => ({ ...profileGenesis(), launchProfile: 1 as unknown as string })
+  "unknown launch profile": () => ({ ...profileGenesis(), launchProfile: "fixed-supply-v2" }) as unknown as ProfileGenesis,
+  "non-string launch profile": () => ({ ...profileGenesis(), launchProfile: 1 }) as unknown as ProfileGenesis
 };
 
 test("fixed-supply profile genesis that breaks the launch rules is refused at construction", () => {
