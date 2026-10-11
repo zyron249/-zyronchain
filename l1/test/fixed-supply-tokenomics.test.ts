@@ -97,7 +97,8 @@ test("fixed-supply allocations can be embedded in an otherwise ordinary genesis 
     validators: [{ address: address(validatorPrivate), publicKey: validatorPublic }],
     activityOracles: [oraclePublic],
     activityPool: roles.ecosystemReserve,
-    allocations: buildFixedSupplyAllocations(roles)
+    allocations: buildFixedSupplyAllocations(roles),
+    allocationLocks: { founderVesting: roles.founder, permanentLiquidity: roles.liquidityReserve }
   };
   assert.equal(genesis.allocations.reduce((sum, item) => sum + item.amountAtoms, 0), MAX_SUPPLY_ATOMS);
 });
@@ -112,7 +113,8 @@ test("CRYPTO-REVIEW ZC-CRY-20260930-006: activity pool must be exactly the ecosy
     validators: [{ address: address(validatorPrivate), publicKey: validatorPublic }],
     activityOracles: [oraclePublic],
     activityPool,
-    allocations: buildFixedSupplyAllocations(roles)
+    allocations: buildFixedSupplyAllocations(roles),
+    allocationLocks: { founderVesting: roles.founder, permanentLiquidity: roles.liquidityReserve }
   });
   const forbidden = /must not be the founder, public-distribution, or permanent-liquidity/;
   assert.throws(() => assertFixedSupplyGenesis(base(roles.founder), roles), forbidden);

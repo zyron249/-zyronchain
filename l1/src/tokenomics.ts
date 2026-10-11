@@ -91,6 +91,20 @@ export function assertFixedSupplyGenesis(genesis: GenesisConfig, addresses: Fixe
   if (genesis.activityPool !== addresses.ecosystemReserve) {
     throw new Error("Fixed-supply activity pool must be the ecosystem/community allocation");
   }
+  // Owner-approved model: the founder allocation vests on-chain (12-month
+  // cliff, 36-month linear) and the permanent-liquidity reserve never sends.
+  // Consensus enforces both only when the genesis declares them, so a launch
+  // genesis must name exactly these two roles (docs/ALLOCATION_LOCKS.md).
+  const locks: unknown = (genesis as { allocationLocks?: unknown }).allocationLocks;
+  if (locks === null || typeof locks !== "object" || Array.isArray(locks)) {
+    throw new Error("Fixed-supply genesis must declare allocationLocks for the founder and permanent-liquidity allocations");
+  }
+  const keys = Object.keys(locks).sort();
+  const record = locks as Record<string, unknown>;
+  if (keys.length !== 2 || keys[0] !== "founderVesting" || keys[1] !== "permanentLiquidity" ||
+      record.founderVesting !== addresses.founder || record.permanentLiquidity !== addresses.liquidityReserve) {
+    throw new Error("Fixed-supply allocationLocks must name exactly the founder (founderVesting) and permanent-liquidity (permanentLiquidity) allocations");
+  }
 }
 
 export function fixedSupplyPlanAtoms(): Readonly<{

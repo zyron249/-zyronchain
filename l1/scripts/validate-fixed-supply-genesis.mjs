@@ -2,6 +2,7 @@
 import { resolve } from "node:path";
 
 import { readBoundedRegularControlFile } from "../dist/src/control-file.js";
+import { ZyronChain } from "../dist/src/chain.js";
 import { assertFixedSupplyGenesis } from "../dist/src/tokenomics.js";
 
 const MAX_GENESIS_BYTES = 256 * 1024;
@@ -34,11 +35,13 @@ const addresses = {
 };
 
 assertFixedSupplyGenesis(genesis, addresses);
+// Full consensus genesis validation, including the allocation-lock declaration.
+new ZyronChain(genesis);
 
 console.log("Fixed-supply genesis validated.");
 console.log("Total supply: 50,000,000 ZYN");
-console.log("Founder: 5,000,000 ZYN (10%)");
+console.log("Founder: 5,000,000 ZYN (10%), on-chain vesting: 12-month cliff, 36-month linear");
 console.log("Public distribution: 20,000,000 ZYN (40%)");
-console.log("Permanent-liquidity reserve: 20,000,000 ZYN (40%)");
+console.log("Permanent-liquidity reserve: 20,000,000 ZYN (40%), on-chain locked: no outflow");
 console.log("Ecosystem reserve: 5,000,000 ZYN (10%)");
 console.log("Mining issuance headroom: 0 ZYN");
