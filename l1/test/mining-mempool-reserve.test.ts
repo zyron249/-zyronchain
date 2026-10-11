@@ -69,7 +69,12 @@ function txBytes(tx: TransferTx | MiningClaimTx): number {
   return Buffer.byteLength(canonicalJson(tx), "utf8");
 }
 
-test("reserved mining capacity remains available when non-mining capacity is saturated", () => {
+// RETIRED (owner decision 2026-09-30): mining is shut down, so the mining
+// mempool reserve can never be occupied. The tests below previously proved
+// reserve isolation/bounding for claims; they now prove every claim is refused
+// by Mempool.add regardless of reserve configuration, with no effect on the
+// ordinary transfer pool.
+test("mining reserve cannot be occupied: claims are rejected even with free reserve capacity (mining retired)", () => {
   const mempool = new Mempool(2, 1);
   const firstTransfer = transfer(1);
   const secondTransfer = transfer(2);
@@ -79,45 +84,43 @@ test("reserved mining capacity remains available when non-mining capacity is sat
   mempool.add(secondTransfer);
   assert.equal(mempool.size, 2);
 
-  mempool.add(claim);
-  assert.equal(mempool.size, 3);
-  assert.ok(mempool.values().some((tx) => tx.txid === claim.txid));
+  assert.throws(() => mempool.add(claim), /Mining is retired/);
+  assert.equal(mempool.size, 2);
+  assert.ok(!mempool.values().some((tx) => tx.txid === claim.txid));
   assert.ok(mempool.values().some((tx) => tx.txid === firstTransfer.txid));
   assert.ok(mempool.values().some((tx) => tx.txid === secondTransfer.txid));
 });
 
-test("mining reserve stays bounded when a stronger claim replaces the weakest claim", () => {
+test("no mining claim is ever retained, so stronger-claim replacement cannot occur (mining retired)", () => {
   const mempool = new Mempool(1, 1);
   const normal = transfer(1);
   mempool.add(normal);
-  mempool.add(miningClaim(1));
+  assert.throws(() => mempool.add(miningClaim(1)), /Mining is retired/);
+  assert.throws(() => mempool.add(miningClaim(2)), /Mining is retired/);
 
-  try {
-    mempool.add(miningClaim(2));
-  } catch (error) {
-    assert.match(String(error), /Mining mempool full/);
-  }
-
-  assert.equal(mempool.size, 2);
+  assert.equal(mempool.size, 1);
   assert.ok(mempool.values().some((tx) => tx.txid === normal.txid));
-  assert.equal(mempool.values().filter((tx) => tx.kind === "mining_claim").length, 1);
+  assert.equal(mempool.values().filter((tx) => tx.kind === "mining_claim").length, 0);
 });
 
-test("custom mempool capacity remains a hard total cap unless a mining reserve is explicitly configured", () => {
+test("custom mempool capacity: claims are rejected as retired before any capacity accounting", () => {
   const mempool = new Mempool(1);
   mempool.add(transfer(1));
-  assert.throws(() => mempool.add(miningClaim(1)), /Mining mempool full/);
+  assert.throws(() => mempool.add(miningClaim(1)), /Mining is retired/);
   assert.equal(mempool.size, 1);
+  const empty = new Mempool(10, 2);
+  assert.throws(() => empty.add(miningClaim(1)), /Mining is retired/);
+  assert.equal(empty.size, 0);
 });
 
-test("occupancy accounting stays exact across remove prune and same-nonce replacements", () => {
+test("occupancy accounting stays exact across remove prune and same-nonce replacements (claims refused)", () => {
   const mempool = new Mempool(2, 1);
   const first = transfer(1);
   const second = transfer(2);
   const initialClaim = miningClaim(1);
   mempool.add(first);
   mempool.add(second);
-  mempool.add(initialClaim);
+  assert.throws(() => mempool.add(initialClaim), /Mining is retired/);
 
   mempool.remove([first.txid]);
   const third = transfer(3);
@@ -128,26 +131,17 @@ test("occupancy accounting stays exact across remove prune and same-nonce replac
 
   const replacement = transferReplacement(third);
   mempool.add(replacement);
-  const claimReplacement = strongerMiningReplacement(initialClaim);
-  mempool.add(claimReplacement);
+  assert.throws(() => mempool.add(strongerMiningReplacement(initialClaim)), /Mining is retired/);
 
-  assert.equal(mempool.size, 3);
+  assert.equal(mempool.size, 2);
   const values = mempool.values();
-  assert.deepEqual(
-    new Set(values.filter((tx) => tx.kind !== "mining_claim").map((tx) => tx.txid)),
-    new Set([replacement.txid, fourth.txid])
-  );
-  assert.deepEqual(
-    values.filter((tx) => tx.kind === "mining_claim").map((tx) => tx.txid),
-    [claimReplacement.txid]
-  );
+  assert.deepEqual(new Set(values.map((tx) => tx.txid)), new Set([replacement.txid, fourth.txid]));
+  assert.equal(values.filter((tx) => tx.kind === "mining_claim").length, 0);
 
   assert.throws(() => mempool.add(transfer(5)), /Mempool full/);
-  const strongerIndependentClaim = { ...miningClaim(9), height: claimReplacement.height + 1 };
-  mempool.add(strongerIndependentClaim);
-  assert.equal(mempool.size, 3);
-  assert.equal(mempool.values().filter((tx) => tx.kind === "mining_claim").length, 1);
-  assert.ok(mempool.values().some((tx) => tx.txid === strongerIndependentClaim.txid));
+  const strongerIndependentClaim = { ...miningClaim(9), height: 2 };
+  assert.throws(() => mempool.add(strongerIndependentClaim), /Mining is retired/);
+  assert.equal(mempool.size, 2);
 });
 
 test("non-mining retained bytes fail closed before the entry-count cap", () => {
@@ -207,7 +201,7 @@ test("non-mining byte accounting is released by removal and stays exact across r
   assert.equal(mempool.values()[0]?.txid, replacement.txid);
 });
 
-test("mining retained-byte reserve is isolated from saturated non-mining bytes", () => {
+test("mining retained-byte reserve stays empty: claims are refused even with byte budget available (mining retired)", () => {
   const normal = transfer(1);
   const firstClaim = miningClaim(1);
   const strongerClaim = { ...miningClaim(2), height: firstClaim.height + 1 };
@@ -217,10 +211,10 @@ test("mining retained-byte reserve is isolated from saturated non-mining bytes",
   mempool.add(normal);
   assert.throws(() => mempool.add(transfer(2)), /Mempool full/);
 
-  mempool.add(firstClaim);
-  mempool.add(strongerClaim);
+  assert.throws(() => mempool.add(firstClaim), /Mining is retired/);
+  assert.throws(() => mempool.add(strongerClaim), /Mining is retired/);
 
   const values = mempool.values();
-  assert.equal(values.filter((tx) => tx.kind !== "mining_claim").length, 1);
-  assert.deepEqual(values.filter((tx) => tx.kind === "mining_claim").map((tx) => tx.txid), [strongerClaim.txid]);
+  assert.equal(values.length, 1);
+  assert.equal(values[0]?.txid, normal.txid);
 });

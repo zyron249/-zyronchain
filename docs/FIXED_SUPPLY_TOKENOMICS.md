@@ -20,13 +20,17 @@ The intended genesis allocation is:
 
 `l1/src/tokenomics.ts` encodes these amounts and fails closed if the four disclosed role addresses are duplicated, malformed, reserved, missing, or assigned the wrong amount.
 
-## Mining retirement for the fixed-supply launch
+## Mining retirement (all genesis configurations)
 
-The current codebase still contains protocol-v5 mining code for historical/local-rehearsal compatibility. The fixed-supply launch does **not** depend on deleting that code to prevent issuance.
+Owner decision (2026-09-30): mining is shut down for **every** genesis, not only the fixed-supply one.
 
-A genesis that allocates the full 50,000,000 ZYN consumes the entire consensus supply ceiling. The existing mining schedule therefore returns a next reward of zero and rejects every mining claim with the maximum historical issuance reached. No later fee burn reopens issuance headroom.
+Consensus now rejects `mining_claim` transactions explicitly and fail-closed on every path: transaction shape validation (so gossip and block decoding refuse them), mempool admission, `Mempool.add`, block production and pending selection, block/proposal validation, and both the legacy `LedgerState` and State-v2 appliers. The rejection does not depend on protocol version or on the genesis supply. `miningRewardAtoms` always returns 0; the historical 6.25 ZYN / 4,000,000-claim schedule is kept only as `historicalMiningRewardAtoms` for reference and never authorizes issuance.
 
-This property is pinned by `l1/test/fixed-supply-tokenomics.test.ts`.
+Independently, a genesis that allocates the full 50,000,000 ZYN would also exhaust the historical schedule, and no fee burn reopens headroom.
+
+The packaged miner (`npm run mine`) and the local rehearsal (`npm run mine:local`) are disabled and exit non-zero. These properties are pinned by `l1/test/mining*.test.ts`, `l1/test/local-mining-path.test.ts` and `l1/test/fixed-supply-tokenomics.test.ts`.
+
+Compatibility note: this is a consensus rule change. Any existing chain data that contains a finalized mining claim (for example a local protocol-v5 rehearsal chain) will no longer validate or replay; such chains must be discarded.
 
 Before any value-bearing launch, the final genesis must be independently checked with:
 
