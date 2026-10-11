@@ -221,3 +221,31 @@ test("ALLOCATION-LOCKS appliers: malformed allocationLocks fail closed at genesi
   assert.doesNotThrow(() => validateAllocationLocks(base));
   assert.doesNotThrow(() => new ZyronChain(base));
 });
+
+test("ALLOCATION-LOCKS appliers: the fixed-supply launch check requires exactly the founder and liquidity locks", async () => {
+  const { assertFixedSupplyGenesis, buildFixedSupplyAllocations } = await import("../src/tokenomics.js");
+  const roles = { founder: addr(FOUNDER), publicDistribution: addr(ALICE), liquidityReserve: addr(LIQUIDITY), ecosystemReserve: addr(POOL) };
+  const base = {
+    chainId: "zyron-lock-tokenomics",
+    timestampMs: G,
+    validators: [{ address: addr(VALIDATOR), publicKey: pub(VALIDATOR) }],
+    activityOracles: [pub(ORACLE)],
+    activityPool: roles.ecosystemReserve,
+    allocations: buildFixedSupplyAllocations(roles)
+  };
+  const locks = { founderVesting: roles.founder, permanentLiquidity: roles.liquidityReserve };
+  assert.doesNotThrow(() => assertFixedSupplyGenesis({ ...base, allocationLocks: locks } as GenesisConfig, roles));
+  assert.doesNotThrow(() => new ZyronChain({ ...base, allocationLocks: locks } as GenesisConfig));
+  for (const bad of [
+    undefined,
+    null,
+    { founderVesting: roles.founder },
+    { ...locks, extra: roles.publicDistribution },
+    { founderVesting: roles.publicDistribution, permanentLiquidity: roles.liquidityReserve },
+    { founderVesting: roles.founder, permanentLiquidity: roles.publicDistribution },
+    { founderVesting: roles.liquidityReserve, permanentLiquidity: roles.founder }
+  ]) {
+    const candidate = (bad === undefined ? { ...base } : { ...base, allocationLocks: bad }) as unknown as GenesisConfig;
+    assert.throws(() => assertFixedSupplyGenesis(candidate, roles), /allocationLocks/);
+  }
+});

@@ -28,7 +28,8 @@ const genesis: GenesisConfig = {
   validators: [{ address: addr(75), publicKey: pub(75) }],
   activityOracles: [pub(76)],
   activityPool: roles.ecosystemReserve,
-  allocations: buildFixedSupplyAllocations(roles)
+  allocations: buildFixedSupplyAllocations(roles),
+  allocationLocks: { founderVesting: roles.founder, permanentLiquidity: roles.liquidityReserve }
 };
 const alice = addr(77);
 
