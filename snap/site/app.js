@@ -2,6 +2,9 @@
 // Plain browser JS, no build step. NOT deployed; see ../README.md.
 'use strict';
 
+// Public wallet testnet RPC (no value). Must match the RPC the Snap was built with.
+const TESTNET_RPC_URL = 'https://zyron-wallet-testnet-rpc.onrender.com';
+
 // Local dev: the Snap served by `mm-snap serve/watch`. After an npm release
 // (not done yet) this would become 'npm:@zyronchain/metamask-snap'.
 const SNAP_ID = 'local:http://localhost:8080';
@@ -51,9 +54,28 @@ document.getElementById('sign').addEventListener('click', () => run(async () => 
     feeAtoms: Number(value('feeAtoms')),
   };
   const { transaction: signed } = await invokeSnap('zyron_signTransaction', { transaction });
-  // No public RPC exists yet, so nothing is submitted. With a node you
-  // operate yourself, this object is the exact body the l1 node accepts at
-  // POST <your-node>/tx (with the x-zyron-rpc-version header; see
-  // l1/src/cli.ts submitTransfer). There is no public endpoint to use.
-  return { note: 'Signed only; NOT broadcast (no public RPC yet).', signed };
+  // Signed only. zyron_sendTransfer is the method that submits to the testnet.
+  return { note: 'Signed only; not broadcast.', signed };
+}));
+
+document.getElementById('balance').addEventListener('click', () => run(() =>
+  invokeSnap('zyron_getBalance')));
+
+document.getElementById('faucet').addEventListener('click', () => run(async () => {
+  const { address } = await invokeSnap('zyron_getAddress');
+  const response = await fetch(`${TESTNET_RPC_URL}/faucet`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ address }),
+  });
+  return response.json();
+}));
+
+document.getElementById('send').addEventListener('click', () => run(() => {
+  const receiver = document.getElementById('sendReceiver').value.trim();
+  const amount = document.getElementById('sendAmount').value.trim();
+  if (!/^\d+(\.\d{1,8})?$/.test(amount)) throw new Error('Amount: up to 8 decimals');
+  const [whole, fraction = ''] = amount.split('.');
+  const amountAtoms = Number(whole) * 100000000 + Number(fraction.padEnd(8, '0'));
+  return invokeSnap('zyron_sendTransfer', { receiver, amountAtoms });
 }));

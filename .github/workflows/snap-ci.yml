@@ -8,6 +8,7 @@ on:
       - 'l1/package.json'
       - 'l1/package-lock.json'
       - 'l1/tsconfig.json'
+      - 'l1/scripts/public-testnet-rpc.mjs'
       - '.github/workflows/snap-ci.yml'
   push:
     branches:
@@ -18,6 +19,7 @@ on:
       - 'l1/package.json'
       - 'l1/package-lock.json'
       - 'l1/tsconfig.json'
+      - 'l1/scripts/public-testnet-rpc.mjs'
       - '.github/workflows/snap-ci.yml'
 
 permissions:
@@ -64,3 +66,22 @@ jobs:
       - name: Test (snaps-jest + l1 oracle)
         working-directory: snap
         run: npx jest --runInBand --ci
+      # End to end: the real L1 validator behind the wallet testnet gateway on
+      # loopback; the Snap bundle is rebuilt to point at it (after the manifest
+      # check above, which uses the default public URL).
+      - name: Start wallet testnet RPC (loopback, no value)
+        run: |
+          npm --prefix l1 rebuild better-sqlite3
+          PORT=8788 node l1/scripts/public-testnet-rpc.mjs > "${RUNNER_TEMP}/wallet-testnet-rpc.log" 2>&1 &
+          for attempt in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8788/health && exit 0
+            sleep 1
+          done
+          cat "${RUNNER_TEMP}/wallet-testnet-rpc.log"
+          exit 1
+      - name: Testnet e2e (derive, faucet, balance, send, finalized)
+        working-directory: snap
+        env:
+          ZYRON_TESTNET_RPC_URL: http://127.0.0.1:8788
+          ZYRON_E2E_RPC_URL: http://127.0.0.1:8788
+        run: npm run build && npx jest --runInBand --ci test/testnet.e2e.test.ts

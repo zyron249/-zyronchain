@@ -1,6 +1,7 @@
 import type { Json, OnRpcRequestHandler } from '@metamask/snaps-sdk';
 import type { JSXElement } from '@metamask/snaps-sdk/jsx';
 import {
+  InternalError,
   InvalidParamsError,
   MethodNotFoundError,
   UnauthorizedError,
@@ -15,6 +16,7 @@ import {
 } from './constants';
 import type { Account } from './keys';
 import { getAccount, withAccountKey } from './keys';
+import { RpcError, TESTNET_RPC_URL, getAccountState, getStatus, submitTransfer } from './rpc';
 import { MessageConfirmation, TransferConfirmation } from './ui';
 import { parseMessageRequest, signMessagePayload } from './zyron/message';
 import {
@@ -42,11 +44,12 @@ function validated<Result>(action: () => Result): Result {
 }
 
 /**
- * `zyron_getAddress` accepts no parameters (undefined, {} or []).
+ * Methods without parameters accept undefined, {} or [].
  *
  * @param params - Request params.
+ * @param method - Method name for the error.
  */
-function assertNoParams(params: unknown): void {
+function assertNoParams(params: unknown, method = 'This method'): void {
   if (params === undefined) {
     return;
   }
@@ -61,7 +64,7 @@ function assertNoParams(params: unknown): void {
   ) {
     return;
   }
-  throw new InvalidParamsError('zyron_getAddress takes no parameters');
+  throw new InvalidParamsError(`${method} takes no parameters`);
 }
 
 /**
@@ -91,6 +94,44 @@ function assertSameAccount(expected: Account, actual: Account): void {
   }
 }
 
+/**
+ * Maps testnet RPC failures to a JSON-RPC internal error with a clear message.
+ *
+ * @param action - RPC action.
+ * @returns The action result.
+ */
+async function withRpc<Result>(action: () => Promise<Result>): Promise<Result> {
+  try {
+    return await action();
+  } catch (error) {
+    if (error instanceof RpcError) {
+      throw new InternalError(error.message);
+    }
+    throw error;
+  }
+}
+
+/**
+ * `zyron_sendTransfer` params: exactly { receiver, amountAtoms, feeAtoms? }.
+ * Chain ID, nonce and transaction version come from the testnet RPC.
+ *
+ * @param params - Untrusted params.
+ * @returns Parsed request.
+ */
+function parseSendRequest(params: unknown): { receiver: unknown; amountAtoms: unknown; feeAtoms: unknown } {
+  assertPlainRecord(params, 'params');
+  for (const key of Object.keys(params)) {
+    if (!['receiver', 'amountAtoms', 'feeAtoms'].includes(key)) {
+      throw new TransactionRequestError(`Unknown zyron_sendTransfer field "${key}"`);
+    }
+  }
+  return {
+    receiver: params.receiver,
+    amountAtoms: params.amountAtoms,
+    feeAtoms: Object.hasOwn(params, 'feeAtoms') ? params.feeAtoms : 0,
+  };
+}
+
 export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => {
   // Defence in depth: MetaMask already enforces endowment:rpc.allowedOrigins.
   if (!ALLOWED_ORIGINS.includes(origin)) {
@@ -99,7 +140,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
 
   switch (request.method) {
     case RPC_METHODS.getAddress: {
-      assertNoParams(request.params);
+      assertNoParams(request.params, 'zyron_getAddress');
       const account = await getAccount();
       return {
         address: account.address,
@@ -145,6 +186,70 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
           signature: signMessagePayload(payload, privateKey),
         };
       });
+    }
+
+    case RPC_METHODS.getBalance: {
+      assertNoParams(request.params, 'zyron_getBalance');
+      const account = await getAccount();
+      const [status, state] = await withRpc(async () =>
+        Promise.all([getStatus(), getAccountState(account.address)]),
+      );
+      return {
+        network: 'testnet',
+        valueBearing: false,
+        rpcUrl: TESTNET_RPC_URL,
+        chainId: status.chainId,
+        genesisHash: status.genesisHash,
+        height: state.height,
+        address: account.address,
+        balanceAtoms: state.balanceAtoms,
+        nonce: state.nonce,
+      };
+    }
+
+    case RPC_METHODS.sendTransfer: {
+      const request_ = validated(() => parseSendRequest(request.params));
+      const account = await getAccount();
+      const [status, state] = await withRpc(async () =>
+        Promise.all([getStatus(), getAccountState(account.address)]),
+      );
+      const unsigned = validated(() =>
+        parseTransferRequest(
+          {
+            kind: 'transfer',
+            version: status.transactionVersion,
+            chainId: status.chainId,
+            nonce: state.nonce + 1,
+            receiver: request_.receiver,
+            amountAtoms: request_.amountAtoms,
+            feeAtoms: request_.feeAtoms,
+          },
+          account,
+          Date.now(),
+        ),
+      );
+      if (unsigned.amountAtoms + unsigned.feeAtoms > state.balanceAtoms) {
+        throw new InvalidParamsError('Insufficient testnet balance for amount plus fee');
+      }
+      await confirmOrReject(
+        <TransferConfirmation
+          origin={origin}
+          tx={unsigned}
+          submitTo={TESTNET_RPC_URL}
+          balanceAtoms={state.balanceAtoms}
+        />,
+      );
+      const transaction = await withAccountKey((privateKey, signer) => {
+        assertSameAccount(account, signer);
+        return signTransfer(unsigned, privateKey);
+      });
+      const txid = await withRpc(async () => submitTransfer(transaction));
+      return {
+        network: 'testnet',
+        chainId: status.chainId,
+        txid,
+        transaction,
+      } as unknown as Json;
     }
 
     default:

@@ -62,8 +62,23 @@ export const CHAIN_ID_PATTERN = /^[a-z0-9-]{3,64}$/u;
 
 export const ADDRESS_PATTERN = /^ZYN[0-9a-f]{40}$/u;
 
+/**
+ * The Snap signs only for test networks: a chain ID whose dash-separated parts
+ * include "testnet" or "devnet". There is no ZyronChain mainnet, and this
+ * unaudited Snap must not be usable for one.
+ */
+export const TEST_CHAIN_ID_PATTERN = /(^|-)(testnet|devnet)(-|$)/u;
+
+/** Chain ID of the public wallet testnet (docs/WALLET_TESTNET_RPC.md). No value. */
+export const TESTNET_CHAIN_ID = 'zyron-wallet-testnet-1';
+
+/** Default public wallet testnet RPC (Render free web service). */
+export const DEFAULT_TESTNET_RPC_URL = 'https://zyron-wallet-testnet-rpc.onrender.com';
+
 export const RPC_METHODS = {
   getAddress: 'zyron_getAddress',
   signTransaction: 'zyron_signTransaction',
   signMessage: 'zyron_signMessage',
+  getBalance: 'zyron_getBalance',
+  sendTransfer: 'zyron_sendTransfer',
 } as const;

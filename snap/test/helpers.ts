@@ -10,7 +10,7 @@ export const DEV_ORIGIN = 'http://localhost:8000';
 export const VECTORS = vectorsFile.vectors;
 export const PRIMARY = VECTORS[0]!;
 export const RECEIVER = `ZYN${'ab'.repeat(20)}`;
-export const CHAIN_ID = 'zyron-snap-test-1';
+export const CHAIN_ID = 'zyron-snap-testnet-1';
 
 type OracleResponse<T> = { ok: true; value: T } | { ok: false; error: string };
 

@@ -8,8 +8,8 @@ import { formatZyn } from './zyron/transfer';
 const NotAuditedBanner = () => (
   <Banner title="Unaudited testnet Snap" severity="warning">
     <Text>
-      This Snap is not audited and not listed. Use testnet funds only. It never
-      broadcasts: the signed result is returned to the requesting site.
+      This Snap is not audited and not listed. Testnet only: test ZYN has no
+      value and the testnet can be reset at any time.
     </Text>
   </Banner>
 );
@@ -17,13 +17,29 @@ const NotAuditedBanner = () => (
 export const TransferConfirmation = ({
   origin,
   tx,
+  submitTo,
+  balanceAtoms,
 }: {
   origin: string;
   tx: UnsignedTransfer;
+  submitTo?: string;
+  balanceAtoms?: number;
 }) => (
   <Box>
-    <Heading>Sign ZyronChain transfer</Heading>
+    <Heading>{submitTo ? 'Send testnet ZYN' : 'Sign ZyronChain transfer'}</Heading>
     <NotAuditedBanner />
+    {submitTo ? (
+      <Row label="Submitted to">
+        <Text>{submitTo}</Text>
+      </Row>
+    ) : (
+      <Text>Signed only. The requesting site decides where to submit it.</Text>
+    )}
+    {balanceAtoms === undefined ? null : (
+      <Row label="Testnet balance">
+        <Text>{`${formatZyn(balanceAtoms)} test ZYN`}</Text>
+      </Row>
+    )}
     <Row label="Requested by">
       <Text>{origin}</Text>
     </Row>

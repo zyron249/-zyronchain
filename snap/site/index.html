@@ -19,9 +19,9 @@
   <h1>ZyronChain MetaMask Snap – developer demo</h1>
   <p class="warn">
     <strong>Local development page only. Not deployed to zyronchain.com.</strong>
-    The Snap is <strong>not audited, not listed, testnet-only</strong>. There is
-    <strong>no public ZyronChain RPC yet</strong>, so this page never broadcasts
-    anything: signed transactions are only displayed.
+    The Snap is <strong>not audited, not listed, testnet-only</strong>. Section 3
+    uses the public wallet testnet RPC. Test ZYN has no value and the testnet
+    can be reset at any time.
   </p>
 
   <fieldset>
@@ -39,8 +39,18 @@
   </fieldset>
 
   <fieldset>
-    <legend>3. Sign a transfer (offline)</legend>
-    <p>Nonce and chain ID must be entered by hand: without a public RPC the page cannot look them up.</p>
+    <legend>3. Wallet testnet (no value)</legend>
+    <p>The Snap reads chain ID, nonce and balance from the testnet RPC and submits after you confirm.</p>
+    <button id="balance" type="button">zyron_getBalance</button>
+    <button id="faucet" type="button">Get 100 test ZYN (faucet)</button>
+    <label>Receiver <input id="sendReceiver" placeholder="ZYN + 40 lowercase hex" autocomplete="off"></label>
+    <label>Amount (test ZYN) <input id="sendAmount" type="number" min="0.00000001" step="any" value="1"></label>
+    <button id="send" type="button">zyron_sendTransfer</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>4. Sign a transfer only (offline)</legend>
+    <p>Nonce and chain ID are entered by hand. Only testnet/devnet chain IDs are signed.</p>
     <label>Chain ID <input id="chainId" value="zyron-devnet-1" autocomplete="off"></label>
     <label>Tx version <select id="version"><option value="2">2 (protocol ≥ 3)</option><option value="1">1 (protocol 1–2)</option></select></label>
     <label>Nonce (account nonce + 1) <input id="nonce" type="number" min="1" value="1"></label>

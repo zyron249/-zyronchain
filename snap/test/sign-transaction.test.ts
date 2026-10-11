@@ -166,6 +166,13 @@ describe('zyron_signTransaction', () => {
     await expectRejected(baseTransfer({ chainId }), /Invalid chainId/u);
   });
 
+  it.each([['zyron-mainnet-1'], ['zyron-l1'], ['zyronchain'], ['zyron-testnetwork-1']])(
+    'refuses to sign for a non-test chain ID (%s)',
+    async (chainId) => {
+      await expectRejected(baseTransfer({ chainId }), /signs only for testnet\/devnet chain IDs/u);
+    },
+  );
+
   it('rejects a missing chainId', async () => {
     const { chainId: _omit, ...rest } = baseTransfer();
     await expectRejected(rest, /Missing transaction field "chainId"/u);

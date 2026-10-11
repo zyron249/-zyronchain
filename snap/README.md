@@ -1,6 +1,6 @@
 # ZyronChain MetaMask Snap
 
-> **Status: NOT AUDITED · NOT LISTED · TESTNET-ONLY · NO PUBLIC RPC YET.**
+> **Status: NOT AUDITED · NOT LISTED · TESTNET-ONLY (test ZYN has no value).**
 > Do not use with real value. This Snap cannot be installed in regular
 > MetaMask (it uses a protected, key-management permission and is not on the
 > MetaMask allowlist); it runs only in **MetaMask Flask** for development.
@@ -18,8 +18,15 @@ The Snap:
 - signs canonical l1 `transfer` transactions **offline** after an explicit
   confirmation dialog, returning the signed transaction in exact l1 format;
 - signs domain-separated off-chain messages;
-- **never broadcasts** and has **no network access**. There is no public
-  ZyronChain RPC endpoint, and none is assumed anywhere in this code.
+- signs **only for testnet/devnet chain IDs** (a chain ID part equal to
+  `testnet` or `devnet`); there is no ZyronChain mainnet;
+- talks to exactly one network endpoint, the public **wallet testnet RPC**
+  (`zyron-wallet-testnet-1`, see `docs/WALLET_TESTNET_RPC.md`), to read balance
+  and nonce and to submit a transfer the user has confirmed. The URL is fixed at
+  build time (`ZYRON_TESTNET_RPC_URL`, default
+  `https://zyron-wallet-testnet-rpc.onrender.com`; HTTPS only, or loopback for
+  development). The Snap refuses an RPC that does not report that chain ID and
+  `valueBearing: false`.
 
 Built from the official `@metamask/template-snap-monorepo` Snap package layout
 (TypeScript, `@metamask/snaps-sdk` 12.0.1, the newest platform version production MetaMask supports, `@metamask/snaps-cli`, `@metamask/snaps-jest`).
@@ -61,8 +68,23 @@ nonce, tx version and sender. Declining returns `4001`.
 Result: `{ "transaction": TransferTx }`, the exact l1 object
 (`kind, version, chainId, nonce, sender, receiver, amountAtoms, feeAtoms,
 timestampMs, publicKey, signature, txid`). A node operator can submit it
-to their own node at `POST <node>/tx`, the same way the l1 CLI `transfer` command does (`submitTransfer` in `l1/src/cli.ts`).
-**No public node exists yet.**
+to a node at `POST <node>/tx`, the same way the l1 CLI `transfer` command does (`submitTransfer` in `l1/src/cli.ts`),
+or use `zyron_sendTransfer` to submit to the wallet testnet.
+
+### `zyron_getBalance`
+
+No params. Returns the Snap account's testnet state from the RPC:
+`{ network: "testnet", valueBearing: false, rpcUrl, chainId, genesisHash, height, address, balanceAtoms, nonce }`.
+
+### `zyron_sendTransfer`
+
+Params: exactly `{ receiver, amountAtoms, feeAtoms? }` (`feeAtoms` defaults to
+0). The Snap reads chain ID, transaction version and nonce from the testnet RPC,
+checks the balance covers amount + fee, shows the confirmation dialog (with the
+RPC URL and current testnet balance), signs after approval and submits to
+`POST <rpc>/tx`. Returns `{ network: "testnet", chainId, txid, transaction }`.
+Declining returns `4001` and submits nothing. The transfer is finalized in the
+next block (about 30 seconds).
 
 ### `zyron_signMessage` (optional)
 
@@ -110,9 +132,10 @@ m / 44' / 249249' / 0' / 0 / 0      curve: secp256k1
   public data only, and derives the secret key again only after the user
   approves.
 - **Minimal permissions.** `snap_dialog`, `snap_getBip32Entropy` (single path),
-  `endowment:rpc` with `allowedOrigins` only (no `dapps: true`, no Snap-to-Snap).
-  **No `endowment:network-access`**: signing is fully offline. The origin allowlist is
-  enforced again in code.
+  `endowment:rpc` with `allowedOrigins` only (no `dapps: true`, no Snap-to-Snap),
+  and `endowment:network-access`, used only for the single build-time testnet
+  RPC URL. The key never leaves the Snap; only public addresses and signed
+  transfers are sent. The origin allowlist is enforced again in code.
 - **What the user approves.** Every signature needs a `snap_dialog` confirmation
   showing the exact values that get signed. Nothing is signed blind; there is no
   "sign arbitrary hash" method.
@@ -157,8 +180,8 @@ python3 -m http.server 8000 --directory site
 
 Open <http://localhost:8000>, click **Connect Snap**, approve the install in
 Flask (it shows the requested permissions and the derivation path), then use
-**zyron_getAddress** and **zyron_signTransaction**. The page only displays the
-signed transaction and never submits it.
+**zyron_getAddress**, **zyron_getBalance**, the faucet button and **zyron_sendTransfer** (testnet), or
+**zyron_signTransaction** (signed only, not broadcast).
 
 `npm run build` rewrites `snap.manifest.json` `source.shasum`. Commit the
 updated manifest (CI fails if it is stale).
@@ -178,6 +201,20 @@ See [`site/app.js`](site/app.js) for the full demo, including EIP-6963 provider
 discovery and transfer signing. The live website is intentionally untouched.
 
 ## Tests
+
+End to end against a live wallet testnet RPC (the real L1 validator behind
+`l1/scripts/public-testnet-rpc.mjs`):
+
+```bash
+PORT=8788 node ../l1/scripts/public-testnet-rpc.mjs &      # or any deployed testnet RPC
+ZYRON_TESTNET_RPC_URL=http://127.0.0.1:8788 npm run build
+ZYRON_E2E_RPC_URL=http://127.0.0.1:8788 npx jest test/testnet.e2e.test.ts
+npm run build   # restore the default URL and committed manifest shasum
+```
+
+It derives the phone-wallet address, funds it from the faucet, reads the
+balance through the Snap, sends a confirmed transfer and waits until both
+balances and the nonce change on chain. CI runs it on every Snap change.
 
 `npm test` (Jest + `@metamask/snaps-jest`, running the built bundle in the Snaps
 simulator). The tests compare against the **real l1 code**: `test/l1-oracle.mjs`
@@ -215,8 +252,9 @@ loads the compiled `l1/dist` in a child process.
    (name must equal `proposedName`, "ZyronChain"; audit report link; support
    contact). It needs at least two approvals from the MetaMask Snaps team. Every new
    version must be re-submitted ([docs](https://docs.metamask.io/snaps/how-to/get-allowlisted/)).
-7. **Public network**: a public ZyronChain testnet RPC with nonce/balance
-   lookup. Until then, dapps must supply `nonce` and `chainId` themselves and
-   broadcast through their own node. The public testnet is currently blocked at
-   the activation gate (see `docs/STANDALONE_L1_READINESS.md`).
+7. **Network**: the wallet testnet RPC (`docs/WALLET_TESTNET_RPC.md`) covers
+   testnet balance, nonce and submit. It is a single-validator, no-value
+   testnet on a free host that resets on restart. A listed release must not
+   imply anything beyond that; the gated public testnet is separate (see
+   `docs/STANDALONE_L1_READINESS.md`).
 8. Only then integrate into zyronchain.com (switch from Flask to regular MetaMask).

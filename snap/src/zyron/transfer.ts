@@ -13,6 +13,7 @@ import {
   CHAIN_ID_PATTERN,
   MAX_SUPPLY_ATOMS,
   MINING_TRACKER_ADDRESS,
+  TEST_CHAIN_ID_PATTERN,
   TRANSFER_SIGNING_DOMAIN_V2,
 } from '../constants';
 import { canonicalJson, sha256Hex } from './codec';
@@ -154,6 +155,11 @@ export function parseTransferRequest(
   if (typeof chainId !== 'string' || !CHAIN_ID_PATTERN.test(chainId)) {
     throw new TransactionRequestError(
       'Invalid chainId: must match ^[a-z0-9-]{3,64}$ (l1 genesis rule)',
+    );
+  }
+  if (!TEST_CHAIN_ID_PATTERN.test(chainId)) {
+    throw new TransactionRequestError(
+      'Invalid chainId: this unaudited Snap signs only for testnet/devnet chain IDs',
     );
   }
   if (typeof nonce !== 'number' || !Number.isSafeInteger(nonce) || nonce < 1) {

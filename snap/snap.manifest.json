@@ -1,13 +1,13 @@
 {
   "version": "0.1.0",
-  "description": "ZyronChain (testnet-only, unaudited): derive a ZyronChain address and sign L1 transfers offline.",
+  "description": "ZyronChain testnet (no value, unaudited): derive a ZyronChain address, read testnet balances and send test transfers.",
   "proposedName": "ZyronChain",
   "repository": {
     "type": "git",
     "url": "https://github.com/zyron249/-zyronchain.git"
   },
   "source": {
-    "shasum": "2LWbNdoddrmHwfEPJ6TOG/JqZQ6rLQUMWxCi7GOpAus=",
+    "shasum": "3TwP++/OR+pq46SSrG85bz25pVZRarNxNdn4cX6tAH8=",
     "location": {
       "npm": {
         "filePath": "dist/bundle.js",
@@ -21,6 +21,7 @@
     "endowment:rpc": {
       "allowedOrigins": ["https://zyronchain.com", "http://localhost:8000"]
     },
+    "endowment:network-access": {},
     "snap_dialog": {},
     "snap_getBip32Entropy": [
       {

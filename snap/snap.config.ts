@@ -1,8 +1,18 @@
 import type { SnapConfig } from '@metamask/snaps-cli';
 import { resolve } from 'path';
 
+const DEFAULT_TESTNET_RPC_URL = 'https://zyron-wallet-testnet-rpc.onrender.com';
+const testnetRpcUrl = process.env.ZYRON_TESTNET_RPC_URL ?? DEFAULT_TESTNET_RPC_URL;
+// HTTPS only, except a loopback RPC for local development and tests.
+if (!/^(https:\/\/[a-z0-9.-]+|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)\/?$/u.test(testnetRpcUrl)) {
+  throw new Error(`ZYRON_TESTNET_RPC_URL must be https (or http on localhost): ${testnetRpcUrl}`);
+}
+
 const config: SnapConfig = {
   input: resolve(__dirname, 'src/index.tsx'),
+  environment: {
+    ZYRON_TESTNET_RPC_URL: testnetRpcUrl,
+  },
   server: {
     port: 8080,
   },
