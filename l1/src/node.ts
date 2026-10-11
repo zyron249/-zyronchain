@@ -57,7 +57,15 @@ export const MAX_HTTP_CONSENSUS_OUTBOUND_CONCURRENCY = 8;
 export const MAX_HTTP_CONSENSUS_OUTSTANDING = 32;
 export const MAX_HTTP_ATTESTATION_RESPONSE_BYTES = 8_192;
 export const MAX_HTTP_ROUND_SKIP_RESPONSE_BYTES = 16_384;
+/**
+ * Legacy (v1-v5) skip-certificate rounds one producer call may work on (F-02).
+ * Reaching round R needs a quorum skip certificate for every round 0..R-1, so
+ * after a long stall the chain is extended by at most this many rounds per
+ * tick (and remembered between ticks) instead of being refused.
+ */
 export const MAX_CONSENSUS_ROUND_CATCHUP = 64;
+/** Wall-time budget for one catching-up producer call (half a legacy tick). */
+export const MAX_CONSENSUS_CATCHUP_WORK_MS = 15_000;
 export const MAX_HTTP_V6_VOTE_RESPONSE_BYTES = 8_192;
 export const MAX_HTTP_V6_TIMEOUT_RESPONSE_BYTES = 128_000;
 export const MAX_HTTP_V6_BLOCK_RESPONSE_BYTES = 2_600_000;
@@ -399,9 +407,18 @@ export function validateFetchedV6Block(value: unknown, height: number, hash: str
  * NodeService clock watermark and making an older captured proposal timestamp
  * look like a physical clock rollback.
  *
- * Round catch-up is explicitly bounded before any skip-vote signing or peer
- * request. A clock fault or stale tip that derives a larger round fails closed;
- * the validator never clamps to a different round/proposer.
+ * Legacy round catch-up does bounded work per call (F-02). The target round
+ * is always the wall-clock round; the validator never clamps to a different
+ * round/proposer. The skip-certificate chain 0..round-1 is built incrementally:
+ * the highest verified certificate for the current tip is kept in the
+ * NodeService, and one call adds at most MAX_CONSENSUS_ROUND_CATCHUP rounds.
+ * While more than that is missing ("catching up", reported by /readyz), every
+ * validator extends its chain so that whichever validator is the proposer
+ * when the chain reaches the wall-clock round can propose immediately. Within
+ * one call's reach only the expected proposer works, as before. Each skip
+ * vote still requires its round deadline to have elapsed on the signer's own
+ * clock and a quorum certificate for the previous round, so a forward clock
+ * fault cannot make honest peers skip rounds that are still live.
  *
  * Tests that explicitly inject `nowMs` retain deterministic fixed-clock
  * behavior inside the supported catch-up window.
@@ -425,32 +442,51 @@ export async function produceFinalizedBlock(
   const elapsed = consensusNowMs - chain.tip.header.timestampMs;
   if (elapsed < BLOCK_INTERVAL_MS) return null;
   const round = Math.max(0, Math.floor((elapsed - BLOCK_INTERVAL_MS) / ROUND_WINDOW_MS));
-  if (!Number.isSafeInteger(round) || round > MAX_CONSENSUS_ROUND_CATCHUP) return null;
+  if (!Number.isSafeInteger(round)) return null;
   const signer = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
   const publicKey = signer.publicKey;
-  const validators = chain.validatorsAt(chain.height + 1);
+  const height = chain.height + 1;
+  const tipHash = chain.tip.hash;
+  const validators = chain.validatorsAt(height);
   // Skip votes for height H+1 are signed under protocolVersionAt(H+1)
   // (NodeService.requestSkipVote) and the finalized block is validated under
   // the same version, so verification must use exactly that version (F-03).
-  const protocolVersion = chain.protocolVersionAt(chain.height + 1);
-  const expected = expectedValidator(validators, chain.height + 1, round);
-  if (expected.publicKey !== publicKey) return null;
+  const protocolVersion = chain.protocolVersionAt(height);
+  const isProposer = expectedValidator(validators, height, round).publicKey === publicKey;
 
-  let roundCertificate: RoundSkipVote[] = [];
-  if (round > 0) {
-    let previousCertificate: RoundSkipVote[] = [];
-    for (let skippedRound = 0; skippedRound < round; skippedRound += 1) {
+  // Resume from the highest certificate already collected for this tip (F-02).
+  const progress = service.legacyRoundCatchUp(height, tipHash);
+  const firstRound = progress ? progress.certifiedRound + 1 : 0;
+  if (firstRound > round) return null; // a quorum already skipped this round
+  const catchingUp = round - firstRound > MAX_CONSENSUS_ROUND_CATCHUP;
+  service.recordLegacyRoundCatchUp({
+    height,
+    previousHash: tipHash,
+    certifiedRound: firstRound - 1,
+    certificate: progress?.certificate ?? [],
+    catchingUp
+  });
+  if (!catchingUp && !isProposer) return null;
+  const lastSkippedRound = catchingUp ? firstRound + MAX_CONSENSUS_ROUND_CATCHUP - 1 : round - 1;
+
+  let roundCertificate: RoundSkipVote[] = progress?.certificate ?? [];
+  {
+    let previousCertificate: RoundSkipVote[] = roundCertificate;
+    const catchUpWorkDeadline = performance.now() + MAX_CONSENSUS_CATCHUP_WORK_MS;
+    for (let skippedRound = firstRound; skippedRound <= lastSkippedRound; skippedRound += 1) {
+      // Catch-up work also stays within a wall-time budget per call (slow peers).
+      if (catchingUp && skippedRound > firstRound && performance.now() > catchUpWorkDeadline) break;
       const votes: RoundSkipVote[] = [];
       try {
         votes.push(await service.requestSkipVote(
-          chain.height + 1,
+          height,
           skippedRound,
           previousCertificate,
           signingNowMs()
         ));
       } catch {
       }
-      votes.push(...await peers.requestRoundSkips(chain.height + 1, skippedRound, previousCertificate));
+      votes.push(...await peers.requestRoundSkips(height, skippedRound, previousCertificate));
       const unique = new Map<Address, RoundSkipVote>();
       for (const vote of votes) {
         try {
@@ -458,15 +494,15 @@ export async function produceFinalizedBlock(
             vote,
             validators,
             chain.genesis.chainId,
-            chain.height + 1,
+            height,
             skippedRound,
-            chain.tip.hash,
+            tipHash,
             protocolVersion
           );
           unique.set(vote.validator, vote);
         } catch (error) {
           service.roundSkipVoteDiagnostics.recordRejectedVote({
-            height: chain.height + 1,
+            height: height,
             round: skippedRound,
             protocolVersion,
             vote,
@@ -480,14 +516,14 @@ export async function produceFinalizedBlock(
           certificate,
           validators,
           chain.genesis.chainId,
-          chain.height + 1,
+          height,
           skippedRound,
-          chain.tip.hash,
+          tipHash,
           protocolVersion
         );
       } catch (error) {
         service.roundSkipVoteDiagnostics.recordQuorumFailure({
-          height: chain.height + 1,
+          height: height,
           round: skippedRound,
           protocolVersion,
           error
@@ -496,8 +532,12 @@ export async function produceFinalizedBlock(
       }
       roundCertificate = certificate;
       previousCertificate = certificate;
+      service.recordLegacyRoundCatchUp({ height, previousHash: tipHash, certifiedRound: skippedRound, certificate, catchingUp });
     }
   }
+  if (catchingUp) return null; // the wall-clock round is still out of this call's reach
+  if (chain.tip.hash !== tipHash) return null; // a block was finalized meanwhile
+  if (round === 0) roundCertificate = [];
 
   // Select against the exact timestamp the proposal will carry (activity
   // settlement windows depend on block time).

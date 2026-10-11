@@ -951,7 +951,7 @@ test("finalized block write uncertainty fail-stops before live state advances", 
     );
 
     const service = new NodeService(store);
-    assert.deepEqual(service.readiness(), {
+    assert.deepEqual(service.readiness(genesis().timestampMs + 1_000), {
       ready: false,
       height: 0,
       reasons: ["persistence-unhealthy"]
@@ -969,10 +969,12 @@ test("finalized block write uncertainty fail-stops before live state advances", 
     assert.deepEqual(await liveness.json(), { ok: true, height: 0 });
     const readiness = await fetch(`${base}/readyz`);
     assert.equal(readiness.status, 503);
+    // The fixture genesis is years old in wall-clock time, so the stalled
+    // chain is also reported (F-04).
     assert.deepEqual(await readiness.json(), {
       ready: false,
       height: 0,
-      reasons: ["persistence-unhealthy"]
+      reasons: ["persistence-unhealthy", "stale-tip"]
     });
     await new Promise<void>((resolveClose, reject) =>
       server.close((error) => error ? reject(error) : resolveClose())
@@ -1863,7 +1865,7 @@ test("validator signing fail-stops after a backward wall-clock jump until proces
       /Validator clock moved backwards beyond the safety tolerance/
     );
     assert.equal(service.metrics(nowMs).validatorClockHealthy, false);
-    assert.deepEqual(service.readiness(), {
+    assert.deepEqual(service.readiness(nowMs), {
       ready: false,
       height: 0,
       reasons: ["validator-clock-unhealthy"]
@@ -1962,9 +1964,11 @@ test("RPC exposes liveness, readiness, and metrics while enforcing per-client re
     assert.deepEqual(await health.json(), { ok: true, height: 0 });
     assert.equal(health.headers.get("x-ratelimit-limit"), "3");
 
+    // The fixture genesis is years old in wall-clock time: readiness reports
+    // the stalled chain (F-04); the 200 path is covered by f04-readiness-consensus.
     const readiness = await fetch(`${base}/readyz`);
-    assert.equal(readiness.status, 200);
-    assert.deepEqual(await readiness.json(), { ready: true, height: 0, reasons: [] });
+    assert.equal(readiness.status, 503);
+    assert.deepEqual(await readiness.json(), { ready: false, height: 0, reasons: ["stale-tip"] });
 
     const metrics = await fetch(`${base}/metrics`);
     assert.equal(metrics.status, 200);
