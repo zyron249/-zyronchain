@@ -24,7 +24,9 @@ A settlement is valid only if all of the following hold (in addition to the exis
 
 1. **Cap:** the sum of its entries is at most 10,000 ZYN.
 2. **Window:** the including block's timestamp lies in epoch `e + 1`, so only the most recently closed epoch can be settled. A current or future epoch is rejected ("not closed yet"); an older epoch is rejected ("settlement window has closed").
-3. **Once, in order:** epoch `e` is not already settled, and epoch `e + 1` is not settled. Settled epochs therefore form a strictly increasing sequence.
+3. **Once, in order:** epoch `e` is not already settled, and epoch `e + 1` is not settled.
+
+Settled epochs form a strictly increasing sequence. This follows from rule 2 alone: block timestamps strictly increase, so the most recently closed epoch never moves backwards, and every earlier settlement was for an epoch at or below the current one. The `e + 1` check is defence in depth in the state appliers, which have no block timestamp.
 
 Because every epoch settles at most once and only during the following 24 h, the per-settlement cap is also the per-epoch cap. Missed epochs are forfeited rather than carried over, so idle time never builds up headroom that a compromised key could take in one burst. The activity being rewarded is not lost: a later settlement may reward activity from earlier periods, still within its own cap; the epoch number is a rate-limit slot, not a receipt identifier.
 
@@ -44,8 +46,8 @@ Block timestamps must increase and may be at most 120 s ahead of a validator's c
 | Chain mempool admission (`validateMempoolAdmission`) | yes | yes (earliest next-block time) | yes |
 | Pending selection (`selectValidPending`, given the proposal's exact timestamp) | yes | yes | yes |
 | Block production, proposal, prepared-block and finalized-block validation (`validateAndApply`, using the block's own timestamp; legacy and v6) | yes | yes | yes |
-| Legacy applier `LedgerState.apply` | yes | - | yes |
-| State-v2 applier `applyStateV2Transaction` | yes | - | yes |
+| Legacy applier `LedgerState.apply` | yes | - | once + adjacent order |
+| State-v2 applier `applyStateV2Transaction` | yes | - | once + adjacent order |
 
 The state appliers have no block context, so the window is enforced on the chain paths, which every block goes through. Nodes drop mempool settlements whose window has closed (`isActivitySettlementExpired`, judged against the earliest possible next-block time) so a stale settlement cannot pin the pool nonce.
 

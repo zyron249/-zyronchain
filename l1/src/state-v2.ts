@@ -499,7 +499,7 @@ export function applyStateV2Transaction(
     if (tx.sender !== activityPool) throw new Error("Invalid activity pool sender");
     for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, activityPool);
     if (state.get(activityEpochKey(tx.epoch)) !== undefined) throw new Error("Activity epoch already settled");
-    // Strictly increasing epochs (see LedgerState.applyActivity).
+    // Adjacent-order defence in depth (see LedgerState.applyActivity).
     if (state.get(activityEpochKey(tx.epoch + 1)) !== undefined) throw new Error(ACTIVITY_ORDER_MESSAGE);
     requireStateV2Nonce(state, activityPool, tx.nonce);
     const total = assertActivitySettlementWithinCap(tx.entries);
