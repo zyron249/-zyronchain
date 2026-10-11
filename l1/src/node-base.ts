@@ -719,7 +719,10 @@ export class NodeService {
       return {
         validator: member.address,
         publicKey: signer.publicKey,
-        signature: await signWithValidator(signer, votePayload(chainId, height, round, request.block.hash), "prepare-vote", CONSENSUS_V6_PROTOCOL_VERSION)
+        signature: await signWithValidator(
+          signer, votePayload(chainId, height, round, request.block.hash), "prepare-vote", CONSENSUS_V6_PROTOCOL_VERSION,
+          { justify: justify ?? null }
+        )
       };
     });
   }
@@ -751,7 +754,9 @@ export class NodeService {
       return {
         validator: member.address,
         publicKey: signer.publicKey,
-        signature: await signWithValidator(signer, votePayload(chainId, height, qc.round, qc.blockHash), "commit-vote", CONSENSUS_V6_PROTOCOL_VERSION)
+        signature: await signWithValidator(
+          signer, votePayload(chainId, height, qc.round, qc.blockHash), "commit-vote", CONSENSUS_V6_PROTOCOL_VERSION, { qc }
+        )
       };
     });
   }
@@ -819,7 +824,7 @@ export class NodeService {
           validator: member.address,
           publicKey: signer.publicKey,
           ...payload,
-          signature: await signWithValidator(signer, timeoutPayload(payload), "round-timeout", CONSENSUS_V6_PROTOCOL_VERSION)
+          signature: await signWithValidator(signer, timeoutPayload(payload), "round-timeout", CONSENSUS_V6_PROTOCOL_VERSION, { highQC })
         },
         highQC
       };
@@ -887,7 +892,10 @@ export class NodeService {
       await this.v6State.write(name, { payload, tc });
     }
     await journal.reserveV6(height, round, "proposal", digest);
-    const signature = await signWithValidator(signer, proposalPayload(payload), "consensus-proposal", CONSENSUS_V6_PROTOCOL_VERSION);
+    const signature = await signWithValidator(
+      signer, proposalPayload(payload), "consensus-proposal", CONSENSUS_V6_PROTOCOL_VERSION,
+      { justify: justifyRound === -1 ? null : tc?.highQC ?? null }
+    );
     return { proposal: { ...payload, signature }, block, tc };
   }
 
