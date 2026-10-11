@@ -58,6 +58,15 @@ interface ChunkIndex { start: number; length: number }
  * files are never node state: the complete bundle still has to pass the
  * external checkpoint anchor and Merkle/finality validation before publish.
  */
+/**
+ * The staged manifest is for the same anchored checkpoint but disagrees on
+ * fields a peer supplies without authentication (record/key counts). The
+ * staging was produced by an untrusted peer and can be discarded (F-09).
+ */
+export class PortableStateResumeMismatchError extends Error {}
+
+const ANCHORED_MANIFEST_FIELDS = ["version", "chainId", "genesisHash", "tipHash", "snapshotSha256", "height", "stateRoot", "tip"] as const;
+
 export class PortableStateResumeStore {
   private constructor(
     readonly dataDir: string,
@@ -86,6 +95,12 @@ export class PortableStateResumeStore {
     try {
       const existing = parseManifestEnvelope(await readPortableStateResumeFile(path, 3_000_000));
       if (canonicalJson(existing.manifest) !== canonicalJson(manifest)) {
+        const sameCheckpoint = ANCHORED_MANIFEST_FIELDS.every(
+          (field) => canonicalJson(existing.manifest[field]) === canonicalJson(manifest[field])
+        );
+        if (sameCheckpoint) {
+          throw new PortableStateResumeMismatchError("Portable state resume manifest counts differ from the staged peer manifest");
+        }
         throw new Error("Portable state resume manifest does not match requested checkpoint");
       }
     } catch (error) {
