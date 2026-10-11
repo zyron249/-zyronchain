@@ -1,0 +1,37 @@
+# Render Blueprint for the ZyronChain WALLET TESTNET RPC (no value).
+#
+# This file is intentionally NOT at the repo root: the existing Render services
+# (website, Telegram game) are managed in the dashboard, and a root render.yaml
+# could be mistaken for their config. Connect it in the Render dashboard with
+# New > Blueprint, Blueprint path "deploy/render/wallet-testnet-rpc.yaml".
+# It defines one new free web service and touches nothing else.
+services:
+  - type: web
+    name: zyron-wallet-testnet-rpc
+    runtime: node
+    plan: free
+    region: ohio
+    branch: main
+    rootDir: l1
+    buildCommand: npm ci && npm run build
+    startCommand: node scripts/public-testnet-rpc.mjs
+    healthCheckPath: /health
+    autoDeploy: true
+    buildFilter:
+      paths:
+        - src/**
+        - scripts/public-testnet-rpc.mjs
+        - package.json
+        - package-lock.json
+        - tsconfig.json
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: ZYRON_TRUST_PROXY
+        value: "1"
+      - key: ZYRON_TESTNET_CHAIN_ID
+        value: zyron-wallet-testnet-1
+      # Testnet-only secret so the validator and faucet keys survive restarts.
+      # Never reuse any mainnet or allocation key material here.
+      - key: ZYRON_TESTNET_SEED
+        generateValue: true
