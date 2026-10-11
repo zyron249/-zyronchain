@@ -2,13 +2,15 @@
 
 Status: **audit preparation only**. This package does not claim that an independent security audit has occurred and does not itself activate public testnet, public mining or mainnet.
 
+> **Mining retired; supply is fully allocated at genesis** (owner decision 2026-09-30, confirmed 2026-10-11). Consensus rejects every `mining_claim` transaction under every protocol version (v1, v2, v3, v5 and v6) on every path: transaction shape validation, mempool admission, block production, block and proposal validation, and both the legacy and State-v2 appliers. The total supply is fixed at 50,000,000 ZYN and the intended launch genesis allocates all of it (5,000,000 founder / 20,000,000 public distribution / 20,000,000 permanent-liquidity reserve / 5,000,000 ecosystem/community reserve); nothing can be issued after genesis and fees are burned. See [`FIXED_SUPPLY_TOKENOMICS.md`](FIXED_SUPPLY_TOKENOMICS.md). References below to protocol-v5 mining, mining rewards, miners or mining issuance describe the former design and are kept as a historical record and as audit scope for proving that the rejection holds; they do not describe a live issuance path.
+
 ## Audit target
 
 The canonical consensus implementation is the standalone TypeScript L1 under `l1/`. The historical Python/Flask network is not part of the consensus audit target except where an auditor explicitly chooses to examine migration or operator-confusion risk.
 
 The machine-readable scope is `docs/l1-audit-scope.json`. CI validates that every security invariant points only to an explicitly listed critical module and produces a commit-bound manifest containing SHA-256 digests for every critical module, security specification, independent verifier input and required evidence/control workflow.
 
-Protocol v5 permissionless proof-of-work issuance is part of the audit target. It does **not** replace the permissioned validator finality layer: miners compete for ZYN issuance while validators still propose, attest and finalize blocks. Protocol v4 remains intentionally unsupported/fail-stop.
+Mining is retired: the audit target for protocol-v5 proof-of-work issuance is now the proof that every `mining_claim` is rejected on every path and protocol version, and that no ZYN can be issued after genesis. The historical design description follows. It does **not** replace the permissioned validator finality layer: miners compete for ZYN issuance while validators still propose, attest and finalize blocks. Protocol v4 remains intentionally unsupported/fail-stop.
 
 ## Required independent review
 

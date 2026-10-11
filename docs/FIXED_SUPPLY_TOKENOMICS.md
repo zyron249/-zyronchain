@@ -22,7 +22,7 @@ The intended genesis allocation is:
 
 ## Mining retirement (all genesis configurations)
 
-Owner decision (2026-09-30): mining is shut down for **every** genesis, not only the fixed-supply one.
+Owner decision (2026-09-30, confirmed 2026-10-11): mining is shut down for **every** genesis, not only the fixed-supply one.
 
 Consensus now rejects `mining_claim` transactions explicitly and fail-closed on every path: transaction shape validation (so gossip and block decoding refuse them), mempool admission, `Mempool.add`, block production and pending selection, block/proposal validation, and both the legacy `LedgerState` and State-v2 appliers. The rejection does not depend on protocol version or on the genesis supply. `miningRewardAtoms` always returns 0; the historical 6.25 ZYN / 4,000,000-claim schedule is kept only as `historicalMiningRewardAtoms` for reference and never authorizes issuance.
 
@@ -38,7 +38,11 @@ The packaged miner (`npm run mine`) and the local rehearsal (`npm run mine:local
 
 Compatibility note: this is a consensus rule change. Any existing chain data that contains a finalized mining claim (for example a local protocol-v5 rehearsal chain) will no longer validate or replay; such chains must be discarded.
 
-Before any value-bearing launch, the final genesis must be independently checked with:
+## Mainnet genesis ceremony: mandatory supply check
+
+Consensus enforces only that a genesis allocates at most 50,000,000 ZYN (and, with mining retired, nothing can be issued later). The rules "exactly 50,000,000 ZYN, split 5,000,000 / 20,000,000 / 20,000,000 / 5,000,000 across four distinct role addresses, and the activity pool is the ecosystem/community reserve" are enforced by the offline verifier `assertFixedSupplyGenesis`. Therefore the mainnet genesis ceremony **MUST** run `npm run tokenomics:check` against the final genesis file and the four role addresses, and the genesis **MUST NOT** be published, signed, or used to start any validator unless the command exits 0. The ceremony record must include the exact command, its output, the SHA-256 digest of the genesis file and the release commit it was built from. The same requirement is listed in [`PUBLIC_LAUNCH_CHECKLIST.md`](PUBLIC_LAUNCH_CHECKLIST.md) section 4.
+
+Run it from the `l1/` directory:
 
 ```sh
 cd l1
@@ -54,7 +58,7 @@ No private keys belong in the repository.
 
 ## Activity airdrop (ecosystem/community pool only)
 
-Owner decision (2026-09-30): the Proof-of-Activity airdrop is paid **only** from the 5,000,000 ZYN ecosystem/community reserve.
+Owner decision (2026-09-30, confirmed 2026-10-11): the Proof-of-Activity airdrop is paid **only** from the 5,000,000 ZYN ecosystem/community reserve.
 
 `assertFixedSupplyGenesis` (and therefore `npm run tokenomics:check`) fails closed unless the genesis `activityPool` is exactly the ecosystem/community reserve address; the founder, public-distribution and permanent-liquidity addresses are rejected explicitly.
 

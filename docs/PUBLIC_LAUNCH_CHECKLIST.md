@@ -6,7 +6,7 @@ Machine-readable authority: [`l1-launch-authorization.json`](l1-launch-authoriza
 Human policy: [`L1_LAUNCH_AUTHORIZATION.md`](L1_LAUNCH_AUTHORIZATION.md).  
 A–Z engineering gate: [`STANDALONE_L1_READINESS.md`](STANDALONE_L1_READINESS.md).  
 Local tester path: [`PUBLIC_TEST.md`](PUBLIC_TEST.md).  
-Mining: **retired** by owner decision (2026-09-30). The former local path `cd l1 && npm run mine:local` now exits with an error; [`../l1/MINING.md`](../l1/MINING.md) is a retired record.
+Mining: **retired** by owner decision (2026-09-30, confirmed 2026-10-11). The former local path `cd l1 && npm run mine:local` now exits with an error; [`../l1/MINING.md`](../l1/MINING.md) is a retired record.
 
 `publicTestnetActivationAllowed` and `mainnetActivationAllowed` remain **false**. This checklist does not close those flags.
 
@@ -38,7 +38,7 @@ Authorization (`*Authorized=true`) is not activation. Green CI is not activation
 
 ## 2. Mining is retired
 
-Owner decision (2026-09-30): mining is shut down for every genesis. Consensus rejects `mining_claim` transactions on every path (shape validation, mempool admission, block production, block validation, and both the legacy and State-v2 state appliers), independent of protocol version. Protocol v5 no longer enables issuance.
+Owner decision (2026-09-30, confirmed 2026-10-11): mining is shut down for every genesis. Consensus rejects `mining_claim` transactions on every path (shape validation, mempool admission, block production, block validation, and both the legacy and State-v2 state appliers), independent of protocol version. Protocol v5 no longer enables issuance.
 
 - `npm run mine:local` (`local-devnet.mjs --local-v5`) exits non-zero; `--check` stays on the protocol-v1 transfer/quorum/restart path.
 - `npm run mine` exits non-zero before reading keys, passwords, or contacting any RPC.
@@ -80,6 +80,10 @@ Every public-testnet gate plus:
 | `multi-region-disaster-recovery-and-incident-drills` | Prepared as CI rehearsals; real multi-region drills remain |
 | `independent-maintainer-and-security-custody-succession-evidence` | Blocked — same humans/credentials problem |
 | `protected-release-tag-and-branch-review-policy` | Blocked — platform settings + independently reproducible artifacts |
+
+### Mainnet genesis ceremony: mandatory supply check
+
+Consensus accepts any genesis whose total is at most 50,000,000 ZYN; it does not by itself require that the genesis allocates exactly 50,000,000 ZYN to the four disclosed roles or that the activity pool is the ecosystem/community reserve. Those rules are enforced by the offline verifier, so the mainnet genesis ceremony **MUST** run `cd l1 && npm run tokenomics:check` against the final genesis file and the four role addresses (see [`FIXED_SUPPLY_TOKENOMICS.md`](FIXED_SUPPLY_TOKENOMICS.md#mainnet-genesis-ceremony-mandatory-supply-check)), and the genesis MUST NOT be published, signed or used to start a validator unless that command exits 0. Record the command, its output, the genesis SHA-256 digest and the release commit in the ceremony record.
 
 Related issue: #261.
 

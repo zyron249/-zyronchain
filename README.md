@@ -30,7 +30,7 @@ That command is the supported public-test surface today: local-only RPC on `127.
 
 - Tester walkthrough (wallet, tokens, RPC, limitations): [Public tester guide](docs/PUBLIC_TEST.md)
 - Public-launch ready-vs-blocked map: [Public launch checklist](docs/PUBLIC_LAUNCH_CHECKLIST.md)
-- Mining: **retired** by owner decision (2026-09-30). Consensus rejects every `mining_claim` for every genesis, and `npm run mine` / `npm run mine:local` exit with an error. Do not mine; see [`l1/MINING.md`](l1/MINING.md).
+- Mining: **retired** by owner decision (2026-09-30, confirmed 2026-10-11). Consensus rejects every `mining_claim` for every genesis, and `npm run mine` / `npm run mine:local` exit with an error. Do not mine; see [`l1/MINING.md`](l1/MINING.md).
 - Local launcher details: [`l1/LOCAL_DEVNET.md`](l1/LOCAL_DEVNET.md)
 - Contribution and secret rules: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Environment variable checklist (not auto-loaded): [`.env.example`](.env.example)
