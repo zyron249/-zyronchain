@@ -14,6 +14,7 @@ import {
 import { addressFromPublicKey, publicKeyFromPrivate, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
 import {
   assertMiningClaimContext,
+  assertMiningNotRetired,
   MINING_PROTOCOL_VERSION,
   MINING_TRACKER_ADDRESS,
   miningRewardAtoms as scheduledMiningRewardAtoms,
@@ -481,6 +482,7 @@ export class ZyronChain {
       return;
     }
     if (tx.kind === "mining_claim") {
+      assertMiningNotRetired();
       if (tx.nonce !== this.nonce(tx.sender) + 1) throw new Error("Mining claim nonce must be next confirmed nonce");
       assertMiningClaimContext(tx, {
         nextHeight: this.height + 1,
@@ -814,6 +816,8 @@ function assertTransactionVersionForProtocol(tx: Transaction, protocolVersion: n
   if (tx.version !== expected) {
     throw new Error(`Transaction version ${tx.version} is not valid under protocol version ${protocolVersion}`);
   }
+  // Mining is retired for every genesis and every protocol version.
+  if (tx.kind === "mining_claim") assertMiningNotRetired();
   if (tx.kind === "mining_claim" && protocolVersion < MINING_PROTOCOL_VERSION) {
     throw new Error(`Mining claims require protocol version ${MINING_PROTOCOL_VERSION}`);
   }
@@ -888,6 +892,7 @@ function stateV2KeysForTransaction(tx: Transaction): string[] {
 }
 
 function applyMiningClaimStateV2(state: SparseMerkleState, tx: MiningClaimTx): SparseMerkleState {
+  assertMiningNotRetired();
   if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
   const minerNonce = stateV2Nonce(state, tx.sender);
   if (tx.nonce !== minerNonce + 1) throw new Error("Invalid nonce");

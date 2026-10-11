@@ -70,7 +70,12 @@ function finalizedBlock(): Block {
   };
 }
 
-test("finalization prunes losing mining claims for the old tip without pruning unrelated transactions", async () => {
+// RETIRED (owner decision 2026-09-30): mining claims can no longer enter the
+// mempool at all, so there are no stale claims to prune. This test previously
+// proved losing claims were pruned on finalization; it now proves the node
+// mempool refuses every claim (stale tip and next tip) while ordinary transfers
+// still flow through finalization unaffected.
+test("node mempool refuses mining claims for any tip (mining retired) and finalization keeps unrelated transactions", async () => {
   let height = 0;
   let tipHash = oldTipHash;
   const confirmedNonces = new Map<string, number>();
@@ -91,10 +96,10 @@ test("finalization prunes losing mining claims for the old tip without pruning u
   const staleTwo = miningClaim(minerTwo, "6", 1, oldTipHash);
   const unrelatedTransfer = transfer();
 
-  service.mempool.add(staleOne);
-  service.mempool.add(staleTwo);
+  assert.throws(() => service.mempool.add(staleOne), /Mining is retired/);
+  assert.throws(() => service.mempool.add(staleTwo), /Mining is retired/);
   service.mempool.add(unrelatedTransfer);
-  assert.equal(service.mempool.size, 3);
+  assert.equal(service.mempool.size, 1);
 
   await service.acceptFinalizedBlock(finalizedBlock());
 
@@ -103,7 +108,7 @@ test("finalization prunes losing mining claims for the old tip without pruning u
   assert.deepEqual(remaining.map((tx) => tx.txid), [unrelatedTransfer.txid]);
 
   const nextTipClaim = miningClaim(minerOne, "7", 2, finalizedTipHash);
-  service.mempool.add(nextTipClaim);
-  assert.equal(service.mempool.size, 2);
-  assert.ok(service.mempool.values().some((tx) => tx.txid === nextTipClaim.txid));
+  assert.throws(() => service.mempool.add(nextTipClaim), /Mining is retired/);
+  assert.equal(service.mempool.size, 1);
+  assert.ok(!service.mempool.values().some((tx) => tx.kind === "mining_claim"));
 });
