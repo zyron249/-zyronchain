@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { createBlockAttestation, createSignedBlock } from "../src/block.js";
+import { createBlockAttestation, createSignedBlock, createUnsignedBlock } from "../src/block.js";
 import { isConsensusV6, signV6, V6_COMMIT_VOTE_DOMAIN, votePayload } from "../src/consensus-v6.js";
 import { ZyronChain } from "../src/chain.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
@@ -141,7 +141,19 @@ function assertRejectedEverywhere(chain: ZyronChain, tx: Transaction, blockTime:
     proposerPublicKey: pub(VALIDATOR)
   });
   assert.throws(() => chain.validateProposal(smuggled, blockTime), error, "proposal validation");
-  assert.throws(() => chain.validatePreparedUnsignedBlock(smuggled, blockTime), error, "prepared validation");
+  const unsigned = createUnsignedBlock({
+    version,
+    chainId: genesis.chainId,
+    height: chain.height + 1,
+    round: 0,
+    previousHash: chain.tip.hash,
+    timestampMs: blockTime,
+    transactions: [tx],
+    stateRoot: "00".repeat(32),
+    proposerPublicKey: pub(VALIDATOR),
+    roundCertificate: []
+  });
+  assert.throws(() => chain.validatePreparedUnsignedBlock(unsigned, blockTime), error, "prepared validation");
   if (isConsensusV6(version)) {
     smuggled.commitRound = 0;
     smuggled.attestations = [{
@@ -235,7 +247,9 @@ test("ALLOCATION-LOCKS: the whole founder balance is spendable once the schedule
   const genesis = lockedGenesis("zyron-founder-end");
   const chain = new ZyronChain(genesis);
   const g = genesis.timestampMs;
-  assert.equal(vestedAt(CLIFF_MS + LINEAR_MS - 1), FOUNDER_ATOMS - 1);
+  // One millisecond before the end, one millisecond's release is still locked.
+  assert.equal(vestedAt(CLIFF_MS + LINEAR_MS - 1), FOUNDER_ATOMS - Math.ceil(FOUNDER_ATOMS / LINEAR_MS));
+  assert.equal(vestedAt(CLIFF_MS + LINEAR_MS), FOUNDER_ATOMS);
   assertRejectedEverywhere(chain, transfer(genesis, FOUNDER, 1, FOUNDER_ATOMS, 0, 1), g + CLIFF_MS + LINEAR_MS - 1, VESTING);
   assertAcceptedEverywhere(chain, transfer(genesis, FOUNDER, 1, FOUNDER_ATOMS - 1, 1, 1), g + CLIFF_MS + LINEAR_MS);
   assert.equal(chain.balance(addr(FOUNDER)), 0);

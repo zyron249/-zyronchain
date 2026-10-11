@@ -408,6 +408,11 @@ export class NodeService {
       if (required > BigInt(this.store.chain.balance(tx.sender))) {
         throw new Error("Pending transfers exceed confirmed balance");
       }
+      // Allocation locks: the sender's aggregate pending spend must also fit
+      // its unlocked balance (consensus re-checks every block).
+      if (required > BigInt(this.store.chain.spendableBalance(tx.sender))) {
+        throw new Error("Pending transfers exceed unlocked balance");
+      }
     }
     if (tx.nonce === stateNonce + 1) this.store.chain.validatePending([tx]);
     this.mempool.add(tx);
