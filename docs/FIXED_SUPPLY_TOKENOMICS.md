@@ -28,6 +28,12 @@ Consensus now rejects `mining_claim` transactions explicitly and fail-closed on 
 
 Independently, a genesis that allocates the full 50,000,000 ZYN would also exhaust the historical schedule, and no fee burn reopens headroom.
 
+The rejection also covers protocol v6 (the locked two-phase consensus): v6 blocks are decoded and validated through the same transaction shape check and state appliers, so a v6 proposal, prepared block or commit that carries a `mining_claim` is refused before any state transition. `l1/test/fixed-supply-genesis-invariants.test.ts` exercises protocols v1, v2, v3, v5 and v6 on every path, proves that a genuine proof of work after v5 or v6 activation mints nothing, and proves that a fully allocated genesis holds exactly 50,000,000 ZYN and never grows.
+
+### Historical chain replay
+
+The rejection is unconditional rather than gated by an activation height. This is safe because no shipped chain data contains a finalized mining claim: mining could only run after an on-chain protocol-v5 upgrade, no public network ever activated it, and no fixture, checkpoint or genesis profile in this repository contains a `mining_claim`. A private chain that did finalize a mining claim would no longer replay and must be restarted from a new genesis.
+
 The packaged miner (`npm run mine`) and the local rehearsal (`npm run mine:local`) are disabled and exit non-zero. These properties are pinned by `l1/test/mining*.test.ts`, `l1/test/local-mining-path.test.ts` and `l1/test/fixed-supply-tokenomics.test.ts`.
 
 Compatibility note: this is a consensus rule change. Any existing chain data that contains a finalized mining claim (for example a local protocol-v5 rehearsal chain) will no longer validate or replay; such chains must be discarded.

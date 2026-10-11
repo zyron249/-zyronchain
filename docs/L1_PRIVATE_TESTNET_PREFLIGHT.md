@@ -1,5 +1,7 @@
 # Standalone L1 private-testnet internal preflight
 
+> Mining is retired: consensus rejects every `mining_claim` under every protocol version (including v6), and the full 50,000,000 ZYN supply is allocated at genesis. References to protocol-v5 mining below describe the former design and its historical gates.
+
 Status: **internal engineering preflight only**. Passing this preflight does not itself grant public-testnet/mainnet governance authorization, does not activate either network class, does not activate public mining, and does not authorize validator admission, production key creation or external deployment. Global network-class authorization is recorded separately in `docs/l1-launch-authorization.json`.
 
 ## Purpose

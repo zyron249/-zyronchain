@@ -1,5 +1,7 @@
 # Mining mempool security policy
 
+> **Retired.** Mining is retired and the full 50,000,000 ZYN supply is allocated at genesis. `Mempool.add` and chain admission now reject every `mining_claim`, so the mining subpool described below always stays empty. The text is kept as a record of the former policy.
+
 Protocol-v5 mining claims are consensus transactions, but their mempool policy is deliberately separated from ordinary transaction pressure.
 
 ## Bounded reserved capacity
