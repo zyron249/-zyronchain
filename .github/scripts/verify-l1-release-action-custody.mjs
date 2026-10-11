@@ -1,12 +1,28 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 
 const CHECKOUT_SHA = '3d3c42e5aac5ba805825da76410c181273ba90b1';
 const SETUP_NODE_SHA = '820762786026740c76f36085b0efc47a31fe5020';
 const UPLOAD_ARTIFACT_SHA = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a';
 const ATTEST_SHA = '1e69f48acb82d1966a394da916b4c1698aa569d6';
 
-const workflow = await readFile(new URL('../workflows/l1-release.yml', import.meta.url), 'utf8');
+// F-08: required commands must be effective steps. Comments are stripped
+// before matching, and steps that can be skipped or ignored are refused, so a
+// commented-out, conditional or continue-on-error step no longer satisfies a
+// substring check.
+export function stripYamlComments(text) {
+  return text
+    .split('\n')
+    .filter((line) => !/^\s*#/.test(line))
+    .map((line) => line.replace(/\s+#(?![^'"]*['"]\s*$).*$/, ''))
+    .join('\n');
+}
+
+export function verifyL1ReleaseWorkflow(rawWorkflow) {
+const workflow = stripYamlComments(rawWorkflow);
+if (/^\s*continue-on-error\s*:/m.test(workflow)) throw new Error('Release workflow steps must not continue on error');
+if (/^\s+(?:-\s+)?if\s*:/m.test(workflow)) throw new Error('Release workflow steps and jobs must not be conditional');
 
 const requireExactRef = (action, expected) => {
   const refs = [...workflow.matchAll(new RegExp(`actions/${action}@([0-9a-f]{40})`, 'g'))].map((m) => m[1]);
@@ -40,4 +56,14 @@ for (const required of [
   if (!workflow.includes(required)) throw new Error(`Required release security invariant missing: ${required}`);
 }
 
-console.log('l1-release-action-custody: ok');
+for (const required of ['npm run typecheck', 'npm test']) {
+  if (!new RegExp(`^\\s+(?:-\\s+)?run:\\s*(?:\\|\\s*\\n(?:\\s+.*\\n)*?\\s+)?${required.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm').test(workflow)) {
+    throw new Error(`Required release step is not an effective run step: ${required}`);
+  }
+}
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  verifyL1ReleaseWorkflow(await readFile(new URL('../workflows/l1-release.yml', import.meta.url), 'utf8'));
+  console.log('l1-release-action-custody: ok');
+}
