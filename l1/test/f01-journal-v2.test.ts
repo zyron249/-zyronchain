@@ -159,6 +159,9 @@ test("journal v2: a torn lock/commit pair or a malformed v2 row fails stop on op
   const commit = JSON.stringify({ v: 2, height: 4, round: 1, step: "commit", value: A });
   const cases: Array<[string, string, RegExp]> = [
     ["lock followed by a legacy row", `${lock}\n${JSON.stringify({ height: 5, round: 0, kind: "attest", value: A })}\n`, /Torn protocol v6 lock\/commit pair/],
+    ["lone trailing lock after a timeout at its round", `${JSON.stringify({ v: 2, height: 4, round: 1, step: "timeout", value: A })}\n${lock}\n`, /Torn protocol v6 lock\/commit pair/],
+    ["lone trailing lock below a later vote", `${JSON.stringify({ v: 2, height: 4, round: 2, step: "prepare", value: A })}\n${lock}\n`, /Torn protocol v6 lock\/commit pair/],
+    ["lone trailing lock for another block than its own prepare", `${JSON.stringify({ v: 2, height: 4, round: 1, step: "prepare", value: B })}\n${lock}\n`, /Torn protocol v6 lock\/commit pair/],
     ["lone trailing lock below an existing lock", `${lock}\n${commit}\n${JSON.stringify({ v: 2, height: 4, round: 0, step: "lock", value: B, lockRound: 0 })}\n`, /Conflicting signing journal history/],
     ["lock with a truncated commit, terminated", `${lock}\n${commit.slice(0, 30)}\n`, /Corrupt|JSON|Unexpected/],
     ["lock followed by another row", `${lock}\n${JSON.stringify({ v: 2, height: 4, round: 1, step: "timeout", value: A })}\n`, /Torn/],
