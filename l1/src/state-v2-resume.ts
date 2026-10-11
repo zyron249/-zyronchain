@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { canonicalJson, sha256Hex } from "./codec.js";
 import {
@@ -59,13 +59,65 @@ interface ChunkIndex { start: number; length: number }
  * external checkpoint anchor and Merkle/finality validation before publish.
  */
 /**
- * The staged manifest is for the same anchored checkpoint but disagrees on
- * fields a peer supplies without authentication (record/key counts). The
- * staging was produced by an untrusted peer and can be discarded (F-09).
+ * The staging directory is for the same requested checkpoint but disagrees
+ * with the current peer on a peer-supplied field, or is internally
+ * inconsistent (for example a gap left by an interrupted discard). Staging is
+ * untrusted download state produced by some peer, so it can be discarded and
+ * the download restarted (F-09).
  */
 export class PortableStateResumeMismatchError extends Error {}
 
-const ANCHORED_MANIFEST_FIELDS = ["version", "chainId", "genesisHash", "tipHash", "snapshotSha256", "height", "stateRoot", "tip"] as const;
+/**
+ * Only these fields name the requested checkpoint: the local chain identity
+ * and the operator's external anchor. Height, state root, the tip body and the
+ * record/key counts are supplied by a peer and are authenticated only when the
+ * complete bundle passes anchored validation, so a disagreement on them is a
+ * peer mismatch, never a different checkpoint (F-09 residual).
+ */
+const CHECKPOINT_IDENTITY_FIELDS = ["version", "chainId", "genesisHash", "tipHash", "snapshotSha256"] as const;
+const DISCARD_SUFFIX = ".discard-";
+
+/**
+ * Discard a staging directory crash-safely: it is first renamed away in one
+ * atomic step, so an interruption can never leave a partly deleted staging
+ * directory at its original path; leftovers are removed by the next open.
+ */
+export async function discardPortableStateResumeDirectory(dataDir: string): Promise<void> {
+  const tombstone = `${dataDir}${DISCARD_SUFFIX}${randomUUID()}`;
+  try {
+    await rename(dataDir, tombstone);
+  } catch (error) {
+    if (isMissingFile(error)) return;
+    throw error;
+  }
+  await syncDirectoryBestEffort(dirname(dataDir));
+  await rm(tombstone, { recursive: true, force: true });
+}
+
+async function removeDiscardLeftovers(dataDir: string): Promise<void> {
+  const prefix = `${basename(dataDir)}${DISCARD_SUFFIX}`;
+  let names: string[];
+  try {
+    names = await readdir(dirname(dataDir));
+  } catch (error) {
+    if (isMissingFile(error)) return;
+    throw error;
+  }
+  for (const name of names) {
+    if (name.startsWith(prefix)) await rm(join(dirname(dataDir), name), { recursive: true, force: true });
+  }
+}
+
+async function syncDirectoryBestEffort(path: string): Promise<void> {
+  try {
+    const handle = await open(path, constants.O_RDONLY);
+    try { await handle.sync(); } finally { await handle.close(); }
+  } catch {
+    // The rename itself is atomic; a lost rename only means the staging is
+    // found again and re-validated on the next open.
+  }
+}
+
 
 export class PortableStateResumeStore {
   private constructor(
@@ -79,6 +131,7 @@ export class PortableStateResumeStore {
 
   static async open(dataDir: string, manifest: PortableStateResumeManifestV1): Promise<PortableStateResumeStore> {
     validateManifest(manifest);
+    await removeDiscardLeftovers(dataDir);
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     await assertRealDirectory(dataDir);
     const recordsDir = join(dataDir, RECORDS_DIR);
@@ -95,16 +148,21 @@ export class PortableStateResumeStore {
     try {
       const existing = parseManifestEnvelope(await readPortableStateResumeFile(path, 3_000_000));
       if (canonicalJson(existing.manifest) !== canonicalJson(manifest)) {
-        const sameCheckpoint = ANCHORED_MANIFEST_FIELDS.every(
+        const sameCheckpoint = CHECKPOINT_IDENTITY_FIELDS.every(
           (field) => canonicalJson(existing.manifest[field]) === canonicalJson(manifest[field])
         );
         if (sameCheckpoint) {
-          throw new PortableStateResumeMismatchError("Portable state resume manifest counts differ from the staged peer manifest");
+          throw new PortableStateResumeMismatchError("Portable state resume manifest differs from the staged peer manifest");
         }
         throw new Error("Portable state resume manifest does not match requested checkpoint");
       }
     } catch (error) {
       if (!isMissingFile(error)) throw error;
+      // Chunks without a manifest are orphans of an interrupted discard (or
+      // an older binary's in-place delete): never adopt them.
+      if ((await readdir(recordsDir)).length > 0 || (await readdir(keysDir)).length > 0) {
+        throw new PortableStateResumeMismatchError("Portable state resume staging has chunks but no manifest");
+      }
       await atomicWrite(path, manifestEnvelope(manifest), tempDir);
     }
     const records = await scanProgress(join(dataDir, RECORDS_DIR), manifest.recordCount, MAX_PORTABLE_STATE_NODES);
@@ -168,7 +226,7 @@ export class PortableStateResumeStore {
   }
 
   async discard(): Promise<void> {
-    await rm(this.dataDir, { recursive: true, force: true });
+    await discardPortableStateResumeDirectory(this.dataDir);
   }
 
   private async put(directory: string, progress: number, total: number, start: number, items: unknown[]): Promise<number> {
@@ -223,6 +281,9 @@ async function scanProgress(directory: string, total: number, absoluteMax: numbe
   let progress = 0;
   const chunks: ChunkIndex[] = [];
   for (const start of starts) {
+    // A missing range is what an interrupted delete leaves behind: discardable.
+    // Overlaps and corrupt chunk files stay fatal.
+    if (start > progress) throw new PortableStateResumeMismatchError("Portable state resume chunks contain a gap");
     if (start !== progress) throw new Error("Portable state resume chunks contain a gap, overlap, or unexpected file");
     const chunk = parseChunkEnvelope(await readPortableStateResumeFile(join(directory, `${start}.json`), MAX_RESUME_CHUNK_FILE_BYTES));
     if (chunk.start !== start || chunk.items.length < 1 || start + chunk.items.length > total) {
