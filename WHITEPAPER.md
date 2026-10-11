@@ -35,9 +35,9 @@ The design does not claim Bitcoin-equivalent decentralization or security maturi
 
 One ZYN equals 100,000,000 integer atoms. Consensus does not use floating-point balances.
 
-The immutable **maximum historical issuance is 50,000,000 ZYN**. Genesis allocations consume that cap atom-for-atom. The remaining budget was formerly reachable only through protocol-v5 mining; with mining retired, no issuance beyond genesis is possible. A zero-premine public profile can initialize required addresses with zero-value genesis allocations, creating no circulating ZYN at genesis.
+The immutable **total supply is 50,000,000 ZYN**, and the intended launch genesis allocates all of it: 5,000,000 ZYN founder allocation (10%), 20,000,000 ZYN public distribution (40%), 20,000,000 ZYN permanent-liquidity reserve (40%) and 5,000,000 ZYN ecosystem/community reserve (10%), as specified in [`docs/FIXED_SUPPLY_TOKENOMICS.md`](docs/FIXED_SUPPLY_TOKENOMICS.md) and checked by `npm run tokenomics:check`. Mining is retired, so there is no issuance after genesis under any protocol version (including v6): total supply can only stay equal or shrink through fee burns. The remaining budget of a genesis that allocates less than the cap was formerly reachable only through protocol-v5 mining and is now permanently unreachable.
 
-Protocol v5 introduced permissionless proof-of-work mining claims (retired 2026-09-30; consensus now rejects them). The former parameters were:
+Protocol v5 introduced permissionless proof-of-work mining claims (retired 2026-09-30; consensus now rejects them under every protocol version, including v6). The former parameters were:
 
 - initial reward: **6.25 ZYN** per successful finalized claim;
 - reward halving: every **4,000,000 successful finalized claims**;
@@ -65,7 +65,7 @@ Accounts use addresses derived from secp256k1 public keys. Transactions bind:
 
 Protocol v3 and later domain-separated transaction formats use fixed signing domains so a signature authorized for one transaction, governance action or consensus intent cannot be replayed as another. Protocol v5 adds the `mining_claim` transaction kind, which is version-2 signed and carries a tip-bound proof-of-work solution plus the deterministic protocol reward.
 
-The mempool bounds capacity, serialized bytes, sender nonce windows and conflicts. Admission reserves pending sender balance where applicable and block selection respects nonce order and the transaction-byte budget. Mining claims are revalidated against the current finalized tip and issuance counter; stale claims fail closed. Local fee and replacement policy must not silently become a consensus rule.
+The mempool bounds capacity, serialized bytes, sender nonce windows and conflicts. Admission reserves pending sender balance where applicable and block selection respects nonce order and the transaction-byte budget. Mining claims are retired and are rejected outright at shape validation, mempool admission and block validation (historically they were revalidated against the current finalized tip and issuance counter). Local fee and replacement policy must not silently become a consensus rule.
 
 ## 5. Blocks and execution
 
@@ -94,9 +94,9 @@ If the proposer misses its deadline, validators may sign a round-skip vote. A la
 
 A persistent signing journal reserves validator action before local or remote signing and prevents attestation/skip conflicts for the same `(height, round)` across restart and uncertain signer outcomes.
 
-Safety depends on the quorum fault assumption. Liveness stops if insufficient validators can communicate. Validator participation and canonical-chain selection are therefore not currently permissionless. Protocol-v5 mining is permissionless only in the narrower, explicit sense that any valid key holder may compete for issuance without validator membership or a privileged mint credential.
+Safety depends on the quorum fault assumption. Liveness stops if insufficient validators can communicate. Validator participation and canonical-chain selection are therefore not currently permissionless. Protocol-v5 mining (now retired) was permissionless only in the narrower, explicit sense that any valid key holder could compete for issuance without validator membership or a privileged mint credential.
 
-Mining hash power does **not** choose the canonical chain or scheduled proposer. Validators may censor mining claims they have received, just as they can censor ordinary transactions; this is a material threat-model limitation, not something proof-of-work issuance alone removes.
+Mining hash power never chose the canonical chain or scheduled proposer; with mining retired it plays no role at all.
 
 ## 7. Authenticated State-v2
 
@@ -123,7 +123,7 @@ Validator-set updates and protocol changes are transactions authorized by a stri
 
 They require delayed activation of at least 100 blocks. Finalized history reconstructs identical schedules after restart.
 
-Protocol v3 activates domain-separated consensus, transaction and governance signatures while retaining State-v2. Protocol v5 retains those protections and adds permissionless proof-of-work issuance. Protocol v4 remains deliberately unsupported so an accidental v4 activation still fails closed. Other unsupported active versions fail closed. Authorized rollback schedules are executable and tested across durable restart.
+Protocol v3 activates domain-separated consensus, transaction and governance signatures while retaining State-v2. Protocol v5 retains those protections and added permissionless proof-of-work issuance, which is now retired: consensus rejects mining claims under protocols v1, v2, v3, v5 and v6. Protocol v4 remains deliberately unsupported so an accidental v4 activation still fails closed. Other unsupported active versions fail closed. Authorized rollback schedules are executable and tested across durable restart.
 
 This cryptographic mechanism does not decide who should be a validator. Admission, independence requirements and emergency governance must be specified publicly before mainnet activation.
 
@@ -264,6 +264,6 @@ Public-testnet activation still requires independent operator deployment, multi-
 
 Mining is retired (2026-09-30) and is not a launch path. Activating protocol v5 does **not** enable mining: consensus rejects every `mining_claim` on every protocol version.
 
-A value-bearing mainnet additionally requires all public-testnet activation requirements plus immutable chain ID/genesis profile, zero-premine or explicitly disclosed allocation policy, mining/halving/target economics, oracle/validator-governance specifications, target-hardware State-v2 evidence, multi-region recovery/incident evidence and independent maintainer/security custody succession.
+A value-bearing mainnet additionally requires all public-testnet activation requirements plus immutable chain ID/genesis profile, the disclosed fixed 50,000,000 ZYN genesis allocation with published role addresses and enforced founder vesting and liquidity locks, oracle/validator-governance specifications, target-hardware State-v2 evidence, multi-region recovery/incident evidence and independent maintainer/security custody succession.
 
 The authoritative checklist is [`docs/STANDALONE_L1_READINESS.md`](docs/STANDALONE_L1_READINESS.md); launch authorization is [`docs/L1_LAUNCH_AUTHORIZATION.md`](docs/L1_LAUNCH_AUTHORIZATION.md); the threat assumptions are [`docs/L1_THREAT_MODEL.md`](docs/L1_THREAT_MODEL.md); mining mechanics are [`docs/MINING.md`](docs/MINING.md).

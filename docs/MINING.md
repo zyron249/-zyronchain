@@ -18,7 +18,7 @@ Public-network activation remains evidence-gated. Mining code existing in the bi
 - Halving interval: **4,000,000 successful finalized mining claims**.
 - At the current 30-second block cadence, a fully occupied four-million-claim era is approximately 3.8 years.
 - Genesis allocations reduce the remaining mining budget atom-for-atom.
-- A public zero-premine profile can use only zero-value genesis allocations; those entries initialize required addresses without creating circulating ZYN.
+- Superseded: the zero-premine profile is no longer the launch plan. The full 50,000,000 ZYN is allocated at genesis (see `docs/FIXED_SUPPLY_TOKENOMICS.md`).
 - Transaction fees remain burned. Burned ZYN does not reopen mining headroom.
 
 The protocol tracks the number of finalized mining claims in a consensus-owned reserved account:

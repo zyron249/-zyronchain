@@ -54,13 +54,13 @@ Tracked in `docs/l1-launch-authorization.json` and expanded in `STANDALONE_L1_RE
 | 1 | `independent-operators-deploy-from-release-artifacts-without-founder-assistance` | Prepared / Blocked | Challenge format and synthetic vectors exist (`independenceProven=false` by design). No reviewed external operator evidence |
 | 2 | `bootstrap-archive-monitoring-across-independent-failure-domains` | Blocked | No published public bootstrap/archive set. Labels are not failure domains |
 | 3 | `independent-consensus-cryptography-network-audit-and-retest` | Prepared / Blocked | Project audit pack exists. Independent review and remediations are not closed |
-| 4 | `independent-protocol-v5-mining-issuance-audit-and-retest` | Blocked | Protocol-v5 mining adds issuance/consensus scope. No independent mining audit/retest |
+| 4 | `independent-protocol-v5-mining-issuance-audit-and-retest` | Blocked | Mining is retired; the audit must now confirm that `mining_claim` is rejected on every path and protocol version (v1-v6) and that supply cannot grow past genesis |
 | 5 | `sustained-independent-operator-internet-adversarial-soak` | Blocked | Render Free is smoke-only (issue #249). Synthetic soak verifier keeps real evidence false |
 | 6 | `production-hsm-or-audited-signer-custody-and-cross-host-rotation` | Prepared / Blocked | Remote-signer boundary exists. Production HSM/audited custody is external |
 | 7 | `protected-branch-independent-review-repository-policy` | Blocked | Repository *settings* (protected branch / required review) cannot be proven by docs alone |
 | 8 | `target-hardware-state-v2-scale-and-recovery-measurements` | Prepared / Blocked | CI 100k-account regression is not release-hardware evidence |
 | 9 | `independent-maintainer-and-security-custody-succession-evidence` | Prepared / Blocked | Policy requires ≥2 independent custodians. Placeholder names do not satisfy it |
-| 10 | `mining-contention-calibration-and-inclusion-fairness-evidence` | Blocked | Need heterogeneous miners, stale-tip races, inclusion/censorship, RPC abuse, and a reviewed 20-bit vs retarget decision |
+| 10 | `mining-contention-calibration-and-inclusion-fairness-evidence` | Superseded | Mining is retired, so there is no mining contention to calibrate |
 
 Until every row is independently closed, `publicTestnetActivationAllowed` must remain `false`. Related issues: #260 (public-testnet evidence), #249 (Render Free uptime), #390 / #892 (miner publication).
 
@@ -71,8 +71,8 @@ Every public-testnet gate plus:
 | Requirement ID | Status |
 |---|---|
 | `immutable-mainnet-chain-id` | Blocked — do not invent |
-| `immutable-mainnet-genesis-allocation` | Blocked — zero-premine or explicit disclosure, not improvised |
-| `immutable-mining-reward-halving-cap-and-difficulty-policy` | Prepared in code (6.25 ZYN / 4e6 claims / 50M cap / 20-bit); not frozen as a mainnet policy |
+| `immutable-mainnet-genesis-allocation` | Blocked — the fixed 50M 10/40/40/10 plan is encoded and validated (`npm run tokenomics:check`); real role addresses, founder vesting and liquidity locks still need owner input and on-chain enforcement |
+| `immutable-mining-reward-halving-cap-and-difficulty-policy` | Superseded — mining is retired; no reward, halving or difficulty policy applies and the 50M cap is fully allocated at genesis |
 | `validator-reward-inflation-and-fee-policy` | Blocked — no validator inflation is invented; fee burns stay burns |
 | `activity-oracle-production-governance` | Blocked — keep unfunded/disabled until independent oracles exist |
 | `validator-admission-removal-governance` | Prepared as on-chain delayed quorum; public admission process not published |
