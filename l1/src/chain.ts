@@ -70,6 +70,7 @@ import type {
   ValidatorSetUpdateTx
 } from "./types.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
+import { CONSENSUS_V6_PROTOCOL_VERSION } from "./consensus-v6.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
 export const MAX_BLOCK_TRANSACTION_BYTES = 1_500_000;
@@ -545,7 +546,7 @@ export class ZyronChain {
       validateValidatorUpdateAuthorization(tx, validators, this.height + 1, this.lastValidatorActivationHeight());
       return;
     }
-    validateProtocolUpgradeAuthorization(tx, validators, this.height + 1, this.lastProtocolActivationHeight());
+    validateProtocolUpgradeAuthorization(tx, validators, this.height + 1, this.lastProtocolActivationHeight(), this.lastScheduledProtocolVersion());
   }
 
   selectValidPending(
@@ -591,6 +592,7 @@ export class ZyronChain {
     let selectedBytes = 0;
     let lastActivation = this.lastValidatorActivationHeight();
     let lastProtocolActivation = this.lastProtocolActivationHeight();
+    let lastProtocolVersion = this.lastScheduledProtocolVersion();
     const currentValidators = this.validatorsAt(this.height + 1);
     let miningClaimSelected = false;
     let miningClaimCount = this.miningClaimCount();
@@ -616,7 +618,7 @@ export class ZyronChain {
         } else if (tx.kind === "validator_update") {
           validateValidatorUpdateAuthorization(tx, currentValidators, this.height + 1, lastActivation);
         } else if (tx.kind === "protocol_upgrade") {
-          validateProtocolUpgradeAuthorization(tx, currentValidators, this.height + 1, lastProtocolActivation);
+          validateProtocolUpgradeAuthorization(tx, currentValidators, this.height + 1, lastProtocolActivation, lastProtocolVersion);
         }
         const transactionBytes = Buffer.byteLength(canonicalJson(tx), "utf8") + (selected.length ? 1 : 0);
         if (selectedBytes + transactionBytes > maxTransactionBytes) continue;
@@ -634,7 +636,10 @@ export class ZyronChain {
         // F-06: advance the governance cursors only once the transaction has
         // passed the byte budget and its state transition, i.e. is selected.
         if (tx.kind === "validator_update") lastActivation = tx.activationHeight;
-        if (tx.kind === "protocol_upgrade") lastProtocolActivation = tx.activationHeight;
+        if (tx.kind === "protocol_upgrade") {
+          lastProtocolActivation = tx.activationHeight;
+          lastProtocolVersion = tx.protocolVersion;
+        }
         selected.push(tx);
         selectedBytes += transactionBytes;
         seen.add(tx.txid);
@@ -660,6 +665,7 @@ export class ZyronChain {
     const currentValidators = this.validatorsAt(blockHeight);
     let lastActivation = this.lastValidatorActivationHeight();
     let lastProtocolActivation = this.lastProtocolActivationHeight();
+    let lastProtocolVersion = this.lastScheduledProtocolVersion();
     let miningClaimSeen = false;
     let miningClaimCount = this.miningClaimCount();
     // On-chain allocation locks, evaluated at this block's own timestamp.
@@ -692,8 +698,9 @@ export class ZyronChain {
         validateValidatorUpdateAuthorization(tx, currentValidators, blockHeight, lastActivation);
         lastActivation = tx.activationHeight;
       } else if (tx.kind === "protocol_upgrade") {
-        validateProtocolUpgradeAuthorization(tx, currentValidators, blockHeight, lastProtocolActivation);
+        validateProtocolUpgradeAuthorization(tx, currentValidators, blockHeight, lastProtocolActivation, lastProtocolVersion);
         lastProtocolActivation = tx.activationHeight;
+        lastProtocolVersion = tx.protocolVersion;
       }
       if (sparse) {
         sparse = tx.kind === "mining_claim"
@@ -743,6 +750,11 @@ export class ZyronChain {
 
   private lastProtocolActivationHeight(): number {
     return Math.max(...this.protocolSchedule.keys());
+  }
+
+  /** Version of the latest scheduled protocol entry (active or pending). */
+  private lastScheduledProtocolVersion(): number {
+    return this.protocolSchedule.get(this.lastProtocolActivationHeight())!;
   }
 
   private governanceSnapshot(): import("./state-v2.js").StateV2GovernanceSnapshot {
@@ -796,6 +808,7 @@ function validateProtocolSchedule(value: unknown): Map<number, number> {
   if (!Array.isArray(value) || value.length < 1) throw new Error("Invalid checkpoint protocol schedule");
   const result = new Map<number, number>();
   let previousHeight = -1;
+  let previousVersion = 0;
   for (const candidate of value) {
     assertPlainRecord(candidate, "checkpoint protocol schedule entry");
     assertExactKeys(candidate, ["activationHeight", "protocolVersion"], "checkpoint protocol schedule entry");
@@ -804,8 +817,10 @@ function validateProtocolSchedule(value: unknown): Map<number, number> {
         !Number.isSafeInteger(candidate.protocolVersion) || protocolVersion < 1 || protocolVersion > 65_535) {
       throw new Error("Invalid checkpoint protocol schedule");
     }
+    assertNoProtocolDowngradeFromV6(previousVersion, protocolVersion, "Invalid checkpoint protocol schedule: downgrade from protocol v6");
     result.set(Number(candidate.activationHeight), protocolVersion);
     previousHeight = Number(candidate.activationHeight);
+    previousVersion = protocolVersion;
   }
   if (result.get(0) !== 1) throw new Error("Checkpoint protocol schedule does not start at genesis");
   return result;
@@ -851,16 +866,33 @@ function validateValidatorUpdateAuthorization(
   if (valid < quorum) throw new Error(`Validator update quorum not reached: ${valid}/${quorum}`);
 }
 
+/**
+ * P0-03: once protocol v6 (locked two-phase consensus, F-01) is scheduled or
+ * active, the schedule may never move back below the latest scheduled
+ * version. Activation heights strictly increase, so any later entry takes
+ * effect after v6 has activated; returning to the legacy single-phase
+ * protocol would reinstate the F-01 split on a live v6 chain and abandon v6
+ * locks (F01_CONSENSUS_DESIGN section 12.4: rollback only before activation).
+ * Schedules that never reach v6 are unchanged, so historical validation of
+ * legacy chains is byte-for-byte identical.
+ */
+function assertNoProtocolDowngradeFromV6(scheduledVersion: number, nextVersion: number, error: string): void {
+  if (scheduledVersion >= CONSENSUS_V6_PROTOCOL_VERSION && nextVersion < scheduledVersion) throw new Error(error);
+}
+
 function validateProtocolUpgradeAuthorization(
   tx: ProtocolUpgradeTx,
   currentValidators: Validator[],
   blockHeight: number,
-  lastActivationHeight: number
+  lastActivationHeight: number,
+  lastScheduledVersion: number
 ): void {
   if (tx.activationHeight < blockHeight + MIN_PROTOCOL_UPDATE_DELAY) {
     throw new Error("Protocol upgrade activation is too soon");
   }
   if (tx.activationHeight <= lastActivationHeight) throw new Error("Protocol activation height must increase");
+  assertNoProtocolDowngradeFromV6(lastScheduledVersion, tx.protocolVersion,
+    `Protocol downgrade refused: version ${tx.protocolVersion} after protocol v${lastScheduledVersion} is scheduled`);
   const allowed = new Map(currentValidators.map((validator) => [validator.address, validator.publicKey]));
   if (!allowed.has(tx.sender)) throw new Error("Protocol upgrade initiator is not active");
   const payload = protocolUpgradeApprovalPayload(tx);
