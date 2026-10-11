@@ -27,13 +27,35 @@ export function blockHash(header: BlockHeader): string {
   return sha256Hex(canonicalJson(header));
 }
 
+/** Domain tag of the genesis-configuration commitment (docs/GENESIS_CONFIG_BINDING.md). */
+export const GENESIS_CONFIG_COMMITMENT_DOMAIN = "zyronchain/genesis-config/v1";
+
+/**
+ * Commitment to the entire genesis configuration: SHA-256 over the canonical
+ * JSON (sorted keys, array order preserved) of `{ domain, genesis }`. Every
+ * genesis field is included, so validators (and their order), activity
+ * oracles, the activity pool, allocations, `allocationLocks` and the launch
+ * profile itself are bound. The caller must pass a validated genesis.
+ */
+export function genesisConfigCommitment(genesis: GenesisConfig): string {
+  return sha256Hex(canonicalJson({ domain: GENESIS_CONFIG_COMMITMENT_DOMAIN, genesis }));
+}
+
+/**
+ * Genesis block. Legacy genesis files (no `launchProfile`) keep the historical
+ * header with a zero previous hash, so their genesis hash is unchanged. Under
+ * a launch profile the previous-hash slot of the genesis header carries
+ * `genesisConfigCommitment(genesis)`, so the genesis hash (and therefore the
+ * P2P chain identity, block 1's parent link, store metadata and light-client
+ * anchors) commits to the full configuration without changing the header shape.
+ */
 export function createGenesisBlock(genesis: GenesisConfig, stateRoot: string): Block {
   const header: BlockHeader = {
     version: 1,
     chainId: genesis.chainId,
     height: 0,
     round: 0,
-    previousHash: "0".repeat(64),
+    previousHash: genesis.launchProfile === undefined ? "0".repeat(64) : genesisConfigCommitment(genesis),
     timestampMs: genesis.timestampMs,
     transactionRoot: merkleRoot([]),
     stateRoot,
