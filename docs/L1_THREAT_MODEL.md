@@ -129,6 +129,7 @@ A failure of any invariant freezes release and validator signing until independe
 - Transfers cannot create value.
 - Fees are burned under the current policy and do not become re-mineable.
 - Activity settlement can spend only an explicitly prefunded activity pool, at most 10,000 ZYN per settlement, and only for the most recently closed 24-hour epoch, settled once and in increasing order (`docs/ACTIVITY_ORACLE_CAP.md`).
+- When genesis declares `allocationLocks`, the founder allocation cannot be spent before its 365-day cliff and then only as it vests linearly over 1,095 days (by block timestamp), and the permanent-liquidity reserve can never send (`docs/ALLOCATION_LOCKS.md`).
 - Transaction IDs and signatures bind the exact canonical transaction.
 - Mining work additionally binds chain, tip, target height, miner identity/account nonce and reward.
 - Sender nonces are sequential and chain-specific.
