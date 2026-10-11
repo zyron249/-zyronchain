@@ -39,7 +39,18 @@ Provision the remote-signer token out of band as a regular `0600` secret file, r
 
 ## 3. Required health telemetry
 
-`GET /healthz` is process liveness only. `GET /readyz` returns `503` and machine-readable reasons when persistence is unhealthy or validator signing has fail-stopped after a clock rollback; remove an unready node from service and investigate rather than restarting blindly. `GET /metrics` is bounded structured JSON intended for a local collector. At minimum collect:
+`GET /healthz` is process liveness only. `GET /readyz` returns `503` and machine-readable reasons; remove an unready node from service and investigate rather than restarting blindly. Reasons:
+
+| Reason | Meaning |
+|---|---|
+| `persistence-unhealthy` | durable chain writes have fail-stopped; restart required |
+| `signing-journal-unhealthy` | the validator signing journal has fail-stopped |
+| `validator-clock-unhealthy` | validator signing fail-stopped after a clock rollback; restart only after clock repair |
+| `unsupported-next-protocol` | the protocol version scheduled for the next height is not supported by this binary; upgrade the binary |
+| `stale-tip` | no block finalized for longer than `--ready-max-tip-age-ms` (default 600000, at least one block interval): the network is stalled or this node is partitioned or behind |
+| `consensus-catching-up` | after a long stall this legacy validator is still rebuilding the skip-certificate chain up to the current round (bounded work per tick, see `docs/security/consensus-round-catchup-bound.md`); expected to clear on its own |
+
+A network-wide stall no longer becomes permanent after about 33 minutes: once enough validators are back, legacy production resumes automatically after the catch-up described above, and v6 resumes within a few rounds. `GET /metrics` is bounded structured JSON intended for a local collector. At minimum collect:
 
 | Field | Meaning | Alert use |
 |---|---|---|
