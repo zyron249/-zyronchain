@@ -18,7 +18,7 @@ import {
   MAX_PORTABLE_STATE_NODES,
   type StateV2PortableBundleV1
 } from "./state-v2-portable.js";
-import { PortableStateResumeStore, type PortableStateResumeManifestV1 } from "./state-v2-resume.js";
+import { PortableStateResumeMismatchError, PortableStateResumeStore, type PortableStateResumeManifestV1 } from "./state-v2-resume.js";
 import type { TrustedSnapshotAnchor } from "./storage.js";
 import type { Block, GenesisConfig } from "./types.js";
 
@@ -276,8 +276,8 @@ async function fetchTrustedPortableState(
       manifestReply.release();
     }
   })();
-  const resume = resumeDir ? await PortableStateResumeStore.open(resumeDir, {
-    version: 1,
+  const resumeManifest = resumeDir ? {
+    version: 1 as const,
     chainId: expected.chainId,
     genesisHash: expected.genesisHash,
     tipHash: anchor.tipHash,
@@ -287,7 +287,8 @@ async function fetchTrustedPortableState(
     recordCount: manifest.recordCount,
     keyCount: manifest.keyCount,
     tip: manifest.tip
-  }) : undefined;
+  } : undefined;
+  const resume = resumeDir && resumeManifest ? await openResumeDiscardingPeerMismatch(resumeDir, resumeManifest) : undefined;
   const records: unknown[] = [];
   for (let start = resume?.nextRecordStart() ?? 0; start < manifest.recordCount;) {
     const limit = Math.min(MAX_STATE_RECORDS_PER_CHUNK, manifest.recordCount - start);
@@ -333,6 +334,27 @@ async function fetchTrustedPortableState(
 }
 
 class PortableStateAssemblyError extends Error {}
+
+/**
+ * F-09: the record/key counts in a peer manifest are not authenticated by the
+ * anchor. A staging directory left by an earlier peer whose counts disagree
+ * with this peer's (same anchored checkpoint) is untrusted download state, so
+ * it is discarded and restarted instead of blocking every later peer. A
+ * staging directory for a different checkpoint stays fatal.
+ */
+async function openResumeDiscardingPeerMismatch(
+  resumeDir: string,
+  manifest: Parameters<typeof PortableStateResumeStore.open>[1]
+): Promise<PortableStateResumeStore> {
+  try {
+    return await PortableStateResumeStore.open(resumeDir, manifest);
+  } catch (error) {
+    if (!(error instanceof PortableStateResumeMismatchError)) throw error;
+    console.warn("Discarding portable state staging from a peer whose unauthenticated manifest counts disagree; restarting the download");
+    await rm(resumeDir, { recursive: true, force: true });
+    return PortableStateResumeStore.open(resumeDir, manifest);
+  }
+}
 
 async function selectPortableState(
   cache: Map<string, CachedPortableState>,
