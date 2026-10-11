@@ -56,6 +56,6 @@ test("available founder amount cannot exceed vested minus already claimed", () =
 
 test("vesting rejects malformed heights and unsafe atom amounts", () => {
   assert.throws(() => founderVestedAtomsAtHeight(-1), /Invalid height/);
-  assert.throws(() => founderVestedAtomsAtHeight(Number.MAX_SAFE_INTEGER, 1), /cliff height overflow/);
+  assert.throws(() => founderVestedAtomsAtHeight(1, Number.MAX_SAFE_INTEGER), /cliff height overflow/);
   assert.throws(() => founderVestedAtomsAtHeight(1, 0, Number.MAX_SAFE_INTEGER + 1), /Invalid atom amount/);
 });
