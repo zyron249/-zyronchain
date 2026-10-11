@@ -53,7 +53,7 @@ Nothing about supply, allocations, the vesting schedule (365-day cliff, 1,095-da
 
 - **Opt-in.** A launch genesis that omits `launchProfile` still gets the legacy behaviour (no binding, no consensus launch rules). The ceremony therefore still has to verify the published file; `tokenomics:check` now fails closed without the profile. Operators should check that the published genesis hash matches what their node reports.
 - **The previous-hash slot is overloaded at height 0.** Tools that assume the genesis `previousHash` is all zeros will see a non-zero value for profile chains. No code in this repository makes that assumption.
-- **The profile is static.** Changing validators or oracles after genesis still happens through the existing on-chain mechanisms (`validator_update`); the binding covers the starting configuration only.
+- **The profile is static.** The validator set can change after genesis through the existing on-chain `validator_update` transaction; the binding covers the starting configuration only. The activity-oracle set cannot change after genesis: there is no oracle-update transaction (transaction kinds are `transfer`, `activity_settlement`, `mining_claim`, `validator_update` and `protocol_upgrade`), and settlements are authorized against the immutable `genesis.activityOracles`. Replacing a compromised oracle key therefore requires a new protocol mechanism (consensus change, owner approval) or a new chain. Until then, the per-epoch cap (10,000 ZYN per closed 24 h epoch) and, once merged, the m-of-n threshold (#969) bound the damage from one compromised key.
 - **Not yet independently reviewed or audited.**
 
 ## Tests
