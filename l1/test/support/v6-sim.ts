@@ -167,6 +167,16 @@ export class SignatureLedger {
     for (const vote of block.attestations) this.vote("commit", vote, block.header.height, block.commitRound, block.hash);
   }
 
+  /** Every recorded (step, height, round) -> values of one signer (for journal cross-checks). */
+  signedBy(publicKey: string): Array<{ step: string; height: number; round: number; values: string[] }> {
+    const result: Array<{ step: string; height: number; round: number; values: string[] }> = [];
+    for (const [key, values] of this.entries) {
+      const [signer, step, height, round] = key.split("|") as [string, string, string, string];
+      if (signer === publicKey) result.push({ step, height: Number(height), round: Number(round), values: [...values] });
+    }
+    return result;
+  }
+
   /** Keys with more than one signed value (double-signs), optionally restricted to some signers. */
   conflicts(signers?: Set<string>): LedgerConflict[] {
     const result: LedgerConflict[] = [];
@@ -234,8 +244,12 @@ export interface V6SimOptions {
   /** Periodic block sync between reachable validators (the CLI's peer sync), default 10 s. */
   syncIntervalMs?: number;
   /** Byzantine equivocating leader: `twin` shares the key of `index` with a separate journal. */
-  byzantine?: { index: number; twin: TestValidator; sideA: Set<number> };
+  byzantine?: SimByzantine;
+  /** Several equivocating leaders (up to f); combined with `byzantine` if both are given. */
+  byzantines?: SimByzantine[];
 }
+
+export interface SimByzantine { index: number; twin: TestValidator; sideA: Set<number> }
 
 /**
  * Validators driven by V6LeaderScheduler instances on a virtual clock. The
@@ -252,7 +266,10 @@ export class V6Sim {
   readonly errors: string[] = [];
   readonly restarts: Array<{ index: number; atMs: number; lock: string | null }> = [];
   linkDown: (from: number, to: number, kind: MessageKind, nowMs: number) => boolean = () => false;
-  private twinMemory: MemoryNetwork | undefined;
+  /** Called after restart() reopened a validator from its directory, before its scheduler starts. */
+  onReopen: (index: number, validator: TestValidator) => void | Promise<void> = () => {};
+  private readonly byzantineList: SimByzantine[];
+  private readonly twinMemories = new Map<number, MemoryNetwork>();
 
   constructor(readonly options: V6SimOptions) {
     const { validators, network } = options;
@@ -264,12 +281,17 @@ export class V6Sim {
     (options.skewMs ?? []).forEach((skew, index) => this.memory.skewMs.set(index, skew));
     this.ledger = new SignatureLedger(network.chainId, (height) => validators[0]!.service.store.chain.validatorsAt(height));
     this.schedulers = validators.map(() => undefined);
-    if (options.byzantine) {
-      const { index, twin, sideA } = options.byzantine;
-      this.twinMemory = new MemoryNetwork(validators.map((validator, item) => item === index ? twin : validator), () => this.time.nowMs);
-      this.twinMemory.drop = (from, to, kind) => (from === index && sideA.has(to)) || this.linkDown(from, to, kind, this.time.nowMs);
-      (options.skewMs ?? []).forEach((skew, item) => this.twinMemory!.skewMs.set(item, skew));
-      this.memory.drop = (from, to, kind) => (from === index && kind.startsWith("v6-") && kind !== "v6-timeout" && kind !== "v6-block" && !sideA.has(to)) ||
+    this.byzantineList = [...(options.byzantine ? [options.byzantine] : []), ...(options.byzantines ?? [])];
+    for (const { index, twin, sideA } of this.byzantineList) {
+      const twinMemory = new MemoryNetwork(validators.map((validator, item) => item === index ? twin : validator), () => this.time.nowMs);
+      twinMemory.drop = (from, to, kind) => (from === index && sideA.has(to)) || this.linkDown(from, to, kind, this.time.nowMs);
+      (options.skewMs ?? []).forEach((skew, item) => twinMemory.skewMs.set(item, skew));
+      this.twinMemories.set(index, twinMemory);
+    }
+    if (this.byzantineList.length) {
+      const list = this.byzantineList;
+      this.memory.drop = (from, to, kind) =>
+        list.some(({ index, sideA }) => from === index && kind.startsWith("v6-") && kind !== "v6-timeout" && kind !== "v6-block" && !sideA.has(to)) ||
         this.linkDown(from, to, kind, this.time.nowMs);
     }
     const syncInterval = options.syncIntervalMs ?? 10_000;
@@ -306,17 +328,18 @@ export class V6Sim {
   private async attempt(index: number, nowMs: number): Promise<Block | null> {
     const validator = this.validators[index]!;
     const key = this.options.network.privateKeys[index]!;
-    const byzantine = this.options.byzantine;
+    const byzantine = this.byzantineList.find((item) => item.index === index);
+    const twinMemory = byzantine ? this.twinMemories.get(index) : undefined;
     let block: Block | null = null;
     try {
       block = await produceFinalizedBlock(validator.service, this.ledger.wrap(this.memory.peersFor(index)), key, nowMs);
     } catch (error) {
       this.errors.push(`v${index} attempt: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (byzantine && byzantine.index === index && this.twinMemory) {
+    if (byzantine && twinMemory) {
       // The twin proposes its own value for the same slot to the other side.
       try {
-        const twinBlock = await produceFinalizedBlock(byzantine.twin.service, this.ledger.wrap(this.twinMemory.peersFor(index)), key, nowMs + 1);
+        const twinBlock = await produceFinalizedBlock(byzantine.twin.service, this.ledger.wrap(twinMemory.peersFor(index)), key, nowMs + 1);
         block ??= twinBlock;
       } catch (error) {
         this.errors.push(`twin attempt: ${error instanceof Error ? error.message : String(error)}`);
@@ -383,6 +406,7 @@ export class V6Sim {
     const reopened = await openValidator(this.options.network, index, this.options.prefix, old.directory);
     this.validators[index] = reopened;
     this.memory.online[index] = true;
+    await this.onReopen(index, reopened);
     this.restarts.push({ index, atMs: this.time.nowMs, lock: lock ? `${lock.round}:${lock.blockHash.slice(0, 12)}` : null });
     await this.syncAll();
     const scheduler = this.scheduler(index);
@@ -393,7 +417,7 @@ export class V6Sim {
   /** The CLI's periodic sync: pull finalized blocks from any reachable peer that is ahead. */
   async syncAll(): Promise<void> {
     const targets: Array<[number, TestValidator]> = this.validators.map((validator, index) => [index, validator]);
-    if (this.options.byzantine) targets.push([this.options.byzantine.index, this.options.byzantine.twin]);
+    for (const { index, twin } of this.byzantineList) targets.push([index, twin]);
     for (const [index, validator] of targets) {
       if (!this.memory.online[index]) continue;
       for (let from = 0; from < this.validators.length; from += 1) {
