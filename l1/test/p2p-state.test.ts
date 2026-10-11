@@ -20,6 +20,7 @@ import {
 import { createP2PNode } from "../src/p2p.js";
 import { loadOrCreateNodeIdentity } from "../src/peer-identity.js";
 import { createStateV2PortableBundle, type StateV2PortableBundleV1 } from "../src/state-v2-portable.js";
+import { PortableStateResumeStore } from "../src/state-v2-resume.js";
 import { ChainStore, type TrustedSnapshotAnchor } from "../src/storage.js";
 import { createProtocolUpgrade, createProtocolUpgradeApproval } from "../src/transaction.js";
 import type { Block, GenesisConfig } from "../src/types.js";
@@ -300,6 +301,73 @@ test("portable State-v2 failover recovers from a poisoned pinned peer using an i
 });
 
 interface RequestShape { kind: "manifest" | "records" | "keys"; start: number; limit: number }
+
+test("F-09: a forged resume manifest from a failed peer does not block an honest peer", async () => {
+  const fixture = await createFixture("manifest-poison");
+  const honestIdentity = await loadOrCreateNodeIdentity(join(fixture.root, "honest"));
+  const honestNode = await createP2PNode(honestIdentity, { listen: ["/ip4/127.0.0.1/tcp/0"] });
+  const resumeDir = join(fixture.root, "manifest-poison-resume");
+  try {
+    // The first peer authenticates tip, height and root correctly but forges
+    // the unauthenticated counts, so its manifest is persisted, then it fails
+    // with a plain transport error before any record arrives.
+    await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+      const request = await readRequest(stream);
+      if (request.kind !== "manifest") {
+        stream.abort(new Error("injected transport failure after a forged manifest"));
+        return;
+      }
+      await writeP2PFrame(stream, {
+        version: 1, identity: peerIdentity(fixture), tipHash: fixture.anchor.tipHash,
+        snapshotSha256: fixture.anchor.snapshotSha256, height: fixture.tip.header.height,
+        stateRoot: fixture.bundle.root, recordCount: fixture.bundle.records.length + 5,
+        keyCount: fixture.bundle.keyPreimages.length + 5, tip: fixture.tip
+      }, 2_500_000, 5_000);
+      await stream.close();
+    });
+    await registerP2PStateProtocol(honestNode, honestIdentity, new NodeService(fixture.store));
+    const honestAddress = honestNode.getMultiaddrs()[0];
+    assert.ok(honestAddress);
+    const fetched = await fetchTrustedPortableStateFromAnyPeer(
+      fixture.clientNode,
+      [fixture.address, honestAddress],
+      fixture.clientIdentity,
+      fixture.config,
+      fixture.anchor,
+      resumeDir
+    );
+    assert.equal(fetched.tip.hash, fixture.anchor.tipHash);
+    assert.equal(fetched.bundle.root, fixture.bundle.root);
+    // A later run against only the honest peer also succeeds (no stuck staging).
+    const again = await fetchTrustedPortableStateFromAnyPeer(
+      fixture.clientNode, [honestAddress], fixture.clientIdentity, fixture.config, fixture.anchor, resumeDir
+    );
+    assert.equal(again.bundle.root, fixture.bundle.root);
+  } finally {
+    await honestNode.stop();
+    await fixture.close();
+  }
+});
+
+test("F-09: a resume directory staged for a different checkpoint stays fatal", async () => {
+  const fixture = await createFixture("resume-identity");
+  const resumeDir = join(fixture.root, "identity-resume");
+  try {
+    const manifest = {
+      version: 1 as const, chainId: fixture.config.chainId, genesisHash: fixture.store.chain.genesisHash,
+      tipHash: fixture.anchor.tipHash, snapshotSha256: fixture.anchor.snapshotSha256,
+      height: fixture.tip.header.height, stateRoot: fixture.bundle.root,
+      recordCount: fixture.bundle.records.length, keyCount: fixture.bundle.keyPreimages.length, tip: fixture.tip
+    };
+    await PortableStateResumeStore.open(resumeDir, manifest);
+    await assert.rejects(
+      () => PortableStateResumeStore.open(resumeDir, { ...manifest, snapshotSha256: "ab".repeat(32) }),
+      /does not match requested checkpoint/
+    );
+  } finally {
+    await fixture.close();
+  }
+});
 
 async function readRequest(stream: Parameters<typeof readP2PFrame>[0]): Promise<RequestShape> {
   const value = await readP2PFrame(stream, 4_096, 5_000) as Record<string, unknown>;
