@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { canonicalJson, compareCanonicalStrings } from "./codec.js";
 import { assertMiningNotRetired, MINING_TRACKER_ADDRESS } from "./mining.js";
+import { ACTIVITY_ORDER_MESSAGE, assertActivitySettlementWithinCap } from "./activity.js";
 import { assertNoActivityPoolInflow, LedgerState, type LedgerSnapshot } from "./state.js";
 import { MAX_SUPPLY_ATOMS, type Address, type Transaction, type Validator } from "./types.js";
 
@@ -498,12 +499,10 @@ export function applyStateV2Transaction(
     if (tx.sender !== activityPool) throw new Error("Invalid activity pool sender");
     for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, activityPool);
     if (state.get(activityEpochKey(tx.epoch)) !== undefined) throw new Error("Activity epoch already settled");
+    // Strictly increasing epochs (see LedgerState.applyActivity).
+    if (state.get(activityEpochKey(tx.epoch + 1)) !== undefined) throw new Error(ACTIVITY_ORDER_MESSAGE);
     requireStateV2Nonce(state, activityPool, tx.nonce);
-    const total = tx.entries.reduce((sum, entry) => {
-      const next = sum + entry.amountAtoms;
-      if (!Number.isSafeInteger(next)) throw new Error("Activity total overflow");
-      return next;
-    }, 0);
+    const total = assertActivitySettlementWithinCap(tx.entries);
     let next = debitStateV2(state, activityPool, total);
     for (const entry of tx.entries) next = creditStateV2(next, entry.receiver, entry.amountAtoms);
     next = setStateV2Nonce(next, activityPool, tx.nonce);

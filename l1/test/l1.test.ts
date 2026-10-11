@@ -390,28 +390,31 @@ test("state root detects transaction/state tampering", () => {
 
 test("activity settlement debits a finite pool and cannot replay an epoch", () => {
   const chain = new ZyronChain(genesis());
+  // Epoch 0 (the first 24 h after genesis) is settleable only once it has
+  // closed, by a block timestamped inside epoch 1 (ZC-CRY-20260930-010).
+  const epochOneMs = genesis().timestampMs + 86_400_000;
   const settlement = createActivitySettlement(
     {
       chainId: genesis().chainId,
       nonce: 1,
       sender: activityPool,
-      epoch: 7,
+      epoch: 0,
       entries: [
         { receiver: bob, amountAtoms: 10_000_000 },
         { receiver: alice, amountAtoms: 20_000_000 }
       ],
-      receiptRoot: sha256Hex("activity-epoch-7"),
-      timestampMs: 1_700_000_000_100
+      receiptRoot: sha256Hex("activity-epoch-0"),
+      timestampMs: epochOneMs + 100
     },
     oraclePrivate,
     oraclePublic
   );
   let block = chain.produceBlock([settlement], validatorOnePrivate, {
-    timestampMs: 1_700_000_000_200
+    timestampMs: epochOneMs + 200
   });
   block = chain.attestBlock(block, validatorOnePrivate);
   block = chain.attestBlock(block, validatorTwoPrivate);
-  chain.acceptBlock(block, 1_700_000_000_200);
+  chain.acceptBlock(block, epochOneMs + 200);
 
   assert.equal(chain.getState().balance(bob), 10_000_000);
   assert.equal(chain.getState().balance(activityPool), 4_970_000_000);
@@ -423,7 +426,7 @@ test("activity settlement debits a finite pool and cannot replay an epoch", () =
   );
   assert.throws(
     () => chain.produceBlock([replayWithNextNonce], validatorTwoPrivate, {
-      timestampMs: 1_700_000_000_300
+      timestampMs: epochOneMs + 300
     }),
     /already settled/
   );
@@ -734,7 +737,7 @@ test("protocol v2 drops the legacy ledger shadow and serves pending/query paths 
         chainId: genesis().chainId,
         nonce: 1,
         sender: activityPool,
-        epoch: 77,
+        epoch: 0,
         entries: [{ receiver: bob, amountAtoms: 1 }],
         receiptRoot: sha256Hex("v2-hot-path-activity"),
         timestampMs: genesis().timestampMs + 10_201
@@ -742,7 +745,8 @@ test("protocol v2 drops the legacy ledger shadow and serves pending/query paths 
       oraclePrivate,
       oraclePublic
     );
-    store.chain.validateMempoolAdmission(activity);
+    // Admitted inside epoch 0's settlement window (the day after genesis).
+    store.chain.validateMempoolAdmission(activity, genesis().timestampMs + 86_400_000 + 10_201);
     assert.deepEqual(store.chain.selectValidPending([pending], 10).map((tx) => tx.txid), [pending.txid]);
   } finally {
     await rm(directory, { recursive: true, force: true });

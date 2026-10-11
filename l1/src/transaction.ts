@@ -7,6 +7,7 @@ import {
   verifyCanonicalDomain
 } from "./crypto.js";
 import { MINING_RETIRED_MESSAGE, MINING_TRACKER_ADDRESS } from "./mining.js";
+import { assertActivitySettlementWithinCap } from "./activity.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import type {
   ActivityEntry,
@@ -303,6 +304,7 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
       throw new Error("Invalid activity settlement size");
     }
     for (const entry of tx.entries) validateActivityEntry(entry);
+    assertActivitySettlementWithinCap(tx.entries);
   } else if (tx.kind === "mining_claim") {
     if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     if (tx.version !== 2) throw new Error("Mining claim requires transaction version 2");
