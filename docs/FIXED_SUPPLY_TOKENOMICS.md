@@ -42,6 +42,16 @@ npm run tokenomics:check -- \
 
 No private keys belong in the repository.
 
+## Activity airdrop (ecosystem/community pool only)
+
+Owner decision (2026-09-30): the Proof-of-Activity airdrop is paid **only** from the 5,000,000 ZYN ecosystem/community reserve.
+
+`assertFixedSupplyGenesis` (and therefore `npm run tokenomics:check`) fails closed unless the genesis `activityPool` is exactly the ecosystem/community reserve address; the founder, public-distribution and permanent-liquidity addresses are rejected explicitly.
+
+Consensus treats the activity pool as outflow-only: transfers and activity-settlement entries that credit the activity pool are rejected at mempool admission, block validation and state application (legacy and State-v2 appliers). Because the pool starts with exactly 5,000,000 ZYN and can never be refilled, cumulative activity airdrops can never exceed 5,000,000 ZYN. This is pinned by `l1/test/activity-airdrop-cap.test.ts` and `l1/test/fixed-supply-tokenomics.test.ts`.
+
+Residual risk: any single genesis activity oracle key can still settle the entire remaining pool balance in one batch; oracle custody, per-epoch caps, and multi-oracle thresholds are open review items (internal crypto review finding ZC-CRY-20260930-010, documented on branch `audit/crypto-review-20260930`).
+
 ## Founder allocation
 
 The founder allocation is **5,000,000 ZYN (10%)**.
