@@ -172,6 +172,8 @@ export interface SigningJournalCompactionFaultHooks {
 export interface SigningJournalOpenFaultHooks {
   afterFileSync?: () => void | Promise<void>;
   afterDirectorySync?: () => void | Promise<void>;
+  /** After the tail repair write (re-termination or lone-lock completion), before its fsync. */
+  afterTailRepairWrite?: () => void | Promise<void>;
 }
 
 /** Protocol v6 journal steps (spec §6.1, row format v2 §9.2). */
@@ -258,6 +260,8 @@ export interface FinalizedBlockFaultHooks {
 export interface FinalizedLogOpenFaultHooks {
   afterFileSync?: () => void | Promise<void>;
   afterDirectorySync?: () => void | Promise<void>;
+  /** After the tail repair write (re-termination or lone-lock completion), before its fsync. */
+  afterTailRepairWrite?: () => void | Promise<void>;
 }
 
 export class ChainStore {
@@ -989,16 +993,41 @@ export class SigningJournal {
         journal.reservations.set(key, reservation);
         journal.legacyHeights.add(parsed.height as number);
       }
-      if (pendingLock) throw new Error("Torn protocol v6 lock/commit pair in signing journal");
-      if (reterminate) {
-        // The complete final row lost only its newline; terminate it so the
-        // next append starts a new line (F-10).
+      // P0-03: the replay ended on a lone lock row. Lock and commit rows are
+      // written by one append (section 9.1) and nothing is appended after a
+      // pair until it is fsynced, so a lock row is the final record only when
+      // power was lost inside that append (the commit row never reached the
+      // disk) or, if fsync ordering was violated, after it. Either way the
+      // lock is kept and the pair is completed with the matching commit
+      // reservation. A reservation without a signature is an ordinary state
+      // (crash after fsync, before signing); keeping both rows never forgets
+      // a lock or a possibly released commit vote, so it cannot permit a
+      // conflicting vote, and it restores liveness instead of fail-stopping
+      // forever. A lock row that is not the final record stays fatal above.
+      let completion = "";
+      let completedSlot = "";
+      if (pendingLock) {
+        completedSlot = `height ${pendingLock.height}, round ${pendingLock.round}`;
+        const commit: V6JournalRow = {
+          v: 2, height: pendingLock.height, round: pendingLock.round, step: "commit", value: pendingLock.value
+        };
+        pendingLock = journal.replayV6Row({ ...commit }, pendingLock);
+        if (pendingLock) throw new Error("Torn protocol v6 lock/commit pair in signing journal");
+        completion = v6RowLine(commit);
+      }
+      if (reterminate || completion) {
+        // A complete final row that lost only its newline is terminated so the
+        // next append starts a new line (F-10); a lone lock row is completed.
         const handle = await open(journal.path, "a", 0o600);
         try {
-          await handle.writeFile("\n", "utf8");
+          await handle.writeFile(`${reterminate ? "\n" : ""}${completion}`, "utf8");
+          await faultHooks.afterTailRepairWrite?.();
           await handle.sync();
         } finally {
           await handle.close();
+        }
+        if (completion) {
+          console.warn(`Completed a lone trailing protocol v6 lock row with its commit reservation (${completedSlot}) in ${journal.path}`);
         }
       }
     } catch (error) {
