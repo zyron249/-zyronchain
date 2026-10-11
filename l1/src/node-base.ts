@@ -10,6 +10,8 @@ import {
   expectedValidator,
   roundSkipPayload,
   validateBlockShape,
+  validateBlockStructure,
+  validateBlockTransactions,
   validateRoundSkipQuorum
 } from "./block.js";
 import { ConsensusStateStore } from "./consensus-state-store.js";
@@ -490,7 +492,9 @@ export class NodeService {
     return this.exclusive(async () => {
       if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
       this.assertValidatorClock(nowMs);
-      validateBlockShape(value);
+      // F-11: structure only; validateProposal authenticates the proposer
+      // before any transaction signature is verified.
+      validateBlockStructure(value);
       const block = value as Block;
       this.assertLegacyConsensusHeight(block.header.height);
       this.store.chain.validateProposal(block, nowMs);
@@ -584,7 +588,10 @@ export class NodeService {
 
   async acceptFinalizedBlock(value: unknown): Promise<void> {
     return this.exclusive(async () => {
-      validateBlockShape(value);
+      // F-11: structure only; commitFinalizedBlock validates the envelope,
+      // which checks the proposer and the finality certificate before any
+      // transaction signature.
+      validateBlockStructure(value);
       const block = value as Block;
       await this.store.commitFinalizedBlock(block);
       await this.signingJournal?.compactThrough(this.store.chain.height);
@@ -694,7 +701,7 @@ export class NodeService {
       this.assertValidatorClock(nowMs);
       assertPlainRecord(value, "v6 prepare request");
       assertExactKeys(value, ["proposal", "block", "tc"], "v6 prepare request");
-      validateBlockShape(value.block);
+      validateBlockStructure(value.block); // F-11: validateProposal verifies transactions last
       const request = value as unknown as V6PrepareRequest;
       const { height, chainId, validators } = this.v6Context();
       const member = this.v6Member(validators, signer);
@@ -724,7 +731,7 @@ export class NodeService {
       this.assertValidatorClock(nowMs);
       assertPlainRecord(value, "v6 commit request");
       assertExactKeys(value, ["qc", "block"], "v6 commit request");
-      validateBlockShape(value.block);
+      validateBlockStructure(value.block); // F-11: transactions are verified after the QC and integrity checks
       const { height, chainId, validators } = this.v6Context();
       const member = this.v6Member(validators, signer);
       validatePrepareQC(value.qc, validators, chainId, height);
@@ -737,6 +744,7 @@ export class NodeService {
       // The QC binds only the header hash: the body and proposer signature
       // must match too before the block is stored for later re-proposal.
       assertV6ProposalBlockIntegrity(block, height, qc.blockHash, validators);
+      validateBlockTransactions(block);
       await this.v6StoreBlock(height, block);
       await this.v6RecordQC(height, chainId, validators, qc);
       await journal.reserveV6Commit(height, qc.round, qc.blockHash);

@@ -9,7 +9,7 @@ import { validateP2PChainIdentity, type P2PChainIdentity } from "./p2p.js";
 import { P2PPeerRateLimiter } from "./p2p-rate.js";
 import type { NodeIdentity } from "./peer-identity.js";
 import { validateTransactionShape } from "./transaction.js";
-import { validateBlockShape } from "./block.js";
+import { validateBlockStructure } from "./block.js";
 import { assertV6ProposalBlockIntegrity, validateTimeoutResponseShape, type V6CommitRequest, type V6PrepareRequest, type V6TimeoutResponse, type V6Vote } from "./consensus-v6.js";
 import type { Block, BlockAttestation, RoundSkipVote, Transaction } from "./types.js";
 
@@ -551,7 +551,9 @@ export function validateConsensusV6ResponseResultShape(kind: ConsensusV6Kind, va
     return;
   }
   assertExactKeys(value, ["block"], "native v6 consensus block result");
-  if (value.block !== null) validateBlockShape(value.block);
+  // Structure only (F-11): the caller authenticates the fetched block by hash,
+  // body and proposer signature before verifying its transactions.
+  if (value.block !== null) validateBlockStructure(value.block);
 }
 
 function parseConsensusResponse(
