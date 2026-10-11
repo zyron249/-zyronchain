@@ -25,7 +25,7 @@ Authorization (`*Authorized=true`) is not activation. Green CI is not activation
 | Surface | Status | How | What it is not |
 |---|---|---|---|
 | Local two-validator public-test | Ready | `cd l1 && npm ci && npm run devnet` | Not a hosted testnet. Fresh `zyron-local-<hex>` every run. RPC on `127.0.0.1` only |
-| Automated local check | Ready (known-flaky) | `npm run devnet:check` | The `local-devnet` CI job has timed out on some hosts after quorum-loss recovery |
+| Automated local check | Ready (known-flaky on v1) | `npm run devnet:check`, `npm run devnet:check:v6` | `local-devnet` (v1) passes about 50% of the time because of the legacy F-01 split; `local-devnet-v6` runs the same check on protocol v6. Neither is a required check. See [`L1_TEST_RELIABILITY.md`](L1_TEST_RELIABILITY.md) |
 | Local protocol-v5 mining rehearsal | Retired | `cd l1 && npm run mine:local` exits non-zero | Mining is shut down for every genesis |
 | Packaged miner | Retired | `npm run mine` exits non-zero before reading keys | Consensus rejects every `mining_claim` |
 | In-process mining regression | Ready (rejection tests) | `cd l1 && npm test` (includes `test/mining*.ts`) | Now asserts mining claims are rejected on every consensus path |
@@ -99,7 +99,7 @@ This pass did **not** write exploits, PoCs, or attack procedures. Findings are f
 | Medium | Miners following website/`MINING.md` `127.0.0.1:9137` against default `npm run devnet` would hash forever on protocol v1 or hit the wrong port | Superseded: mining retired (2026-09-30); `mine` and `mine:local` fail closed |
 | Low | Packaged miner and CLI treat DNS name `localhost` as loopback for plaintext HTTP | Residual DNS-rebinding class; prefer literal `127.0.0.1` / `::1`. Shared helper tests pin `localhost`; left unchanged this pass |
 | Low | Interactive local-devnet retains encrypted keystores **and** password files in one `0700` directory | Documented development-only; do not reuse on any public network |
-| Low | `npm run devnet:check` / `local-devnet` CI job is known-flaky on view-change recovery | Documented in `PUBLIC_TEST.md`; not hidden |
+| Low | `npm run devnet:check` / `local-devnet` CI job is known-flaky (legacy protocol-v1 F-01 split, about 50% pass) | Documented in [`L1_TEST_RELIABILITY.md`](L1_TEST_RELIABILITY.md); not hidden; v6 devnet runs in `local-devnet-v6` |
 | Low | State-v2 cache identity test used a same-length rewrite (`before`/`after!`) that can keep size+mtime+ctime identical on coarse-timestamp filesystems | Test now mutates to a different size so the fail-closed check is deterministic |
 | Info | RPC default bind is `127.0.0.1`. Non-loopback listen fail-closes without consensus auth **and** `--rpc-trusted-proxy` | Keep |
 | Info | Miner profile `l1/miner-network-profile.json` has `publicMiningActivated=false` and null RPC/genesis | Keep |
