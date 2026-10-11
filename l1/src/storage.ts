@@ -78,6 +78,76 @@ interface BoundedLine {
   terminated: boolean;
 }
 
+/**
+ * Finding F-10: a power loss or host crash during an append can leave a torn
+ * trailing record (no terminating newline, not parsable). Appends are fsynced
+ * before their effect is acknowledged (a journal reservation before its
+ * signature is released, a block line before the block is applied), so such a
+ * record was never acknowledged and is safe to drop. Only the unterminated
+ * final record qualifies; a terminated corrupt line, or corruption before the
+ * tail, stays fatal.
+ */
+function isTornTrailingRecord(record: BoundedLine): boolean {
+  if (record.terminated) return false;
+  try {
+    JSON.parse(record.text);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** Truncate an append log to `length` bytes durably and log what was dropped. */
+async function truncateTornTail(path: string, length: number, droppedBytes: number, label: string): Promise<void> {
+  const handle = await open(path, "r+");
+  try {
+    await handle.truncate(length);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await syncDirectory(dirname(path));
+  console.warn(`Dropped a torn trailing ${label} record (${droppedBytes} bytes, never acknowledged) at byte ${length} of ${path}`);
+}
+
+/**
+ * Repairs the framing of the signing journal tail before replay (F-10).
+ * A torn trailing record is truncated; when it was the commit row of a v6
+ * lock/commit pair (one append), the lock row of that append is dropped too.
+ * Returns true when the final record is complete but lost its newline: it is
+ * kept and must be re-terminated once replay has accepted it.
+ */
+async function repairSigningJournalTail(path: string): Promise<boolean> {
+  let offset = 0;
+  let previous: { start: number; text: string } | undefined;
+  let last: { start: number; record: BoundedLine } | undefined;
+  try {
+    for await (const record of readLines(path, MAX_SIGNING_LINE_BYTES, "Corrupt signing journal")) {
+      if (record.text.trim()) {
+        if (last) previous = { start: last.start, text: last.record.text };
+        last = { start: offset, record };
+      }
+      offset += record.serializedBytes;
+    }
+  } catch (error) {
+    if (isMissingFile(error)) return false;
+    throw error;
+  }
+  if (!last || last.record.terminated) return false;
+  if (!isTornTrailingRecord(last.record)) return true;
+  let cut = last.start;
+  if (previous) {
+    try {
+      const row = JSON.parse(previous.text) as Record<string, unknown>;
+      if (row !== null && typeof row === "object" && row.v === 2 && row.step === "lock") cut = previous.start;
+    } catch {
+      // A corrupt terminated line stays fatal in replay.
+    }
+  }
+  await truncateTornTail(path, cut, offset - cut, "signing journal");
+  return false;
+}
+
 export interface RecoveryCheckpointFaultHooks {
   afterTemporarySync?: () => void | Promise<void>;
   afterRename?: () => void | Promise<void>;
@@ -278,6 +348,9 @@ export class ChainStore {
       }
     }
     replay ??= await replayStoredBlocks(genesis, blocksPath);
+    if (replay.tornTailBytes > 0) {
+      await truncateTornTail(blocksPath, replay.offset, replay.tornTailBytes, "finalized block log");
+    }
     let stateV2Store: StateV2DiskStore;
     let recoveredStateV2FromCorruption = false;
     try {
@@ -853,6 +926,13 @@ export class SigningJournal {
     const journal = new SigningJournal(join(dataDir, "signing-journal.ndjson"), leaseDatabase);
     try {
       let pendingLock: V6JournalRow | null = null;
+      let reterminate = false;
+      try {
+        reterminate = await repairSigningJournalTail(journal.path);
+      } catch (error) {
+        journal.close();
+        throw error;
+      }
       for await (const record of readLines(journal.path, MAX_SIGNING_LINE_BYTES, "Corrupt signing journal")) {
         const line = record.text;
         if (!line.trim()) continue;
@@ -877,6 +957,17 @@ export class SigningJournal {
         journal.legacyHeights.add(parsed.height as number);
       }
       if (pendingLock) throw new Error("Torn protocol v6 lock/commit pair in signing journal");
+      if (reterminate) {
+        // The complete final row lost only its newline; terminate it so the
+        // next append starts a new line (F-10).
+        const handle = await open(journal.path, "a", 0o600);
+        try {
+          await handle.writeFile("\n", "utf8");
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+      }
     } catch (error) {
       if (!isMissingFile(error)) {
         journal.close();
@@ -1388,6 +1479,7 @@ async function replayStoredBlocks(
   blockRanges: StoredBlockRange[];
   recoveredHeight: number;
   appendNeedsDelimiter: boolean;
+  tornTailBytes: number;
 }> {
   const chain = loaded?.chain ?? new ZyronChain(genesis);
   const checkpoint = loaded?.checkpoint;
@@ -1397,6 +1489,7 @@ async function replayStoredBlocks(
   let layoutDetermined = checkpoint?.version !== 2;
   let checkpointBoundaryBytes = checkpoint?.blockFileBytes ?? 0;
   let lastLineTerminated = true;
+  let tornTailBytes = 0;
   const blockRanges: StoredBlockRange[] = [];
   for await (const record of readLines(blocksPath, MAX_STORED_BLOCK_LINE_BYTES, "Stored block exceeds line limit")) {
     const line = record.text;
@@ -1405,6 +1498,12 @@ async function replayStoredBlocks(
     if (!line.trim()) {
       offset += record.serializedBytes;
       continue;
+    }
+    if (isTornTrailingRecord(record)) {
+      // F-10: never-acknowledged torn final append; ChainStore.open truncates it.
+      tornTailBytes = record.serializedBytes;
+      lastLineTerminated = true;
+      break;
     }
     let parsed: unknown;
     if (checkpoint?.version === 2 && !layoutDetermined) {
@@ -1478,7 +1577,8 @@ async function replayStoredBlocks(
     offset,
     blockRanges,
     recoveredHeight: checkpoint?.height ?? 0,
-    appendNeedsDelimiter: offset > 0 && !lastLineTerminated
+    appendNeedsDelimiter: offset > 0 && !lastLineTerminated,
+    tornTailBytes
   };
 }
 
