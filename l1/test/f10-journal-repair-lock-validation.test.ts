@@ -80,7 +80,8 @@ test("F-10: a genuinely torn lock/commit append is still dropped whole (prefix, 
     ["single byte of the commit", Buffer.from(commit.slice(0, 1))],
     ["commit without its closing brace", Buffer.from(commit.slice(0, -1))],
     ["zero fill", Buffer.alloc(40)],
-    ["commit prefix then zero fill", Buffer.concat([Buffer.from(commit.slice(0, 25)), Buffer.alloc(40)])]
+    ["commit prefix then zero fill", Buffer.concat([Buffer.from(commit.slice(0, 25)), Buffer.alloc(40)])],
+    ["whole commit without newline, then zero fill", Buffer.concat([Buffer.from(commit), Buffer.alloc(40)])]
   ];
   for (const [name, tail] of tails) {
     await withJournalFile(Buffer.concat([Buffer.from(`${prepare}\n${lock}\n`), tail]), async (directory, path) => {

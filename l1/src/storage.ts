@@ -175,7 +175,7 @@ function assertTornV6CommitOfLock(lockText: string, tornText: string): void {
   if (`${lockText}\n` !== lock) throw new Error("Corrupt signing journal entry");
   const commit = v6RowLine({ v: 2, height: height as number, round: round as number, step: "commit", value });
   const torn = tornText.replace(/\0+$/, "");
-  if (!commit.startsWith(torn) || torn.length >= commit.length - 1) {
+  if (!commit.startsWith(torn)) {
     throw new Error("Torn protocol v6 lock/commit pair in signing journal");
   }
 }
