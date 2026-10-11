@@ -247,11 +247,19 @@ test("FIXED-SUPPLY (c): the activity pool is outflow-only and cumulative airdrop
     receiptRoot: "00".repeat(32), timestampMs: genesis.timestampMs + epoch * 1_000 + 1
   }, key(ORACLE), pub(ORACLE));
   // A settlement cannot route funds back into the pool either.
-  assert.throws(() => chain.validatePending([settle(0, 1, 1, pool)]), POOL_INFLOW);
+  // (Evaluated inside epoch 0's settlement window, the day after genesis.)
+  assert.throws(() => chain.validatePending([settle(0, 1, 1, pool)], genesis.timestampMs + 86_400_000 + 60_000), POOL_INFLOW);
 
-  finalize(chain, [settle(0, 1, 5_000_000 * ZYN)], genesis.timestampMs + 1_000);
+  // ZC-CRY-20260930-010: one settlement can no longer move the whole pool;
+  // the pool drains only through >= 500 capped (10,000 ZYN) closed 24 h epochs.
+  const EPOCH_MS = 86_400_000;
+  const CAP = 10_000 * ZYN;
+  const windowOf = (epoch: number) => genesis.timestampMs + (epoch + 1) * EPOCH_MS + 60_000;
+  assert.throws(() => finalize(chain, [settle(0, 1, 5_000_000 * ZYN)], windowOf(0)), /per-epoch activity cap/);
+  const epochs = (5_000_000 * ZYN) / CAP;
+  for (let epoch = 0; epoch < epochs; epoch += 1) finalize(chain, [settle(epoch, epoch + 1, CAP)], windowOf(epoch));
   assert.equal(chain.balance(pool), 0);
   assert.equal(chain.balance(addr(ALICE)), 5_000_000 * ZYN);
-  assert.throws(() => chain.validatePending([settle(1, 2, 1)]));
+  assert.throws(() => chain.validatePending([settle(epochs, epochs + 1, 1)], windowOf(epochs)), /Activity pool exhausted/);
   assert.equal(chain.totalSupplyAtoms(), MAX_SUPPLY_ATOMS);
 });

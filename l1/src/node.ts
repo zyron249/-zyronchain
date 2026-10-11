@@ -499,7 +499,9 @@ export async function produceFinalizedBlock(
     }
   }
 
-  const transactions = chain.selectValidPending(service.mempool.values(), 10_000);
+  // Select against the exact timestamp the proposal will carry (activity
+  // settlement windows depend on block time).
+  const transactions = chain.selectValidPending(service.mempool.values(), 10_000, undefined, consensusNowMs);
   const unsignedProposal = chain.prepareBlock(transactions, publicKey, {
     round,
     timestampMs: consensusNowMs,
@@ -645,10 +647,11 @@ async function produceFinalizedBlockV6(
         block = await service.v6FetchBlock(height, ownHash);
         if (!block) return null;
       } else {
-        const transactions = chain.selectValidPending(service.mempool.values(), 10_000);
+        const blockTimestampMs = Math.max(consensusNowMs, tipTimestampMs + 1);
+        const transactions = chain.selectValidPending(service.mempool.values(), 10_000, undefined, blockTimestampMs);
         const unsigned = chain.prepareBlock(transactions, signer.publicKey, {
           round,
-          timestampMs: Math.max(consensusNowMs, tipTimestampMs + 1)
+          timestampMs: blockTimestampMs
         });
         block = await service.v6SignFreshBlock(unsigned, signingNowMs());
       }

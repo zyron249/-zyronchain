@@ -521,6 +521,9 @@ export class NodeService {
       const nextMiningPreviousHash = this.store.chain.tip.hash;
       this.mempool.prune((tx) =>
         tx.nonce <= this.store.chain.nonce(tx.sender) ||
+        // An activity settlement whose epoch window has closed can never be
+        // included again; drop it so it does not pin the pool nonce.
+        (tx.kind === "activity_settlement" && this.store.chain.isActivitySettlementExpired(tx)) ||
         (tx.kind === "mining_claim" &&
           (tx.height !== nextMiningHeight || tx.previousHash !== nextMiningPreviousHash))
       );

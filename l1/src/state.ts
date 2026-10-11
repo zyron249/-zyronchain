@@ -1,5 +1,6 @@
 import { canonicalJson, compareCanonicalStrings, sha256Hex } from "./codec.js";
 import { assertMiningNotRetired, MINING_TRACKER_ADDRESS } from "./mining.js";
+import { ACTIVITY_ORDER_MESSAGE, assertActivitySettlementWithinCap } from "./activity.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import { assertAddress, assertExactKeys, assertPlainRecord } from "./transaction.js";
 import type { ActivitySettlementTx, Address, GenesisConfig, MiningClaimTx, ProtocolUpgradeTx, Transaction, TransferTx, ValidatorSetUpdateTx } from "./types.js";
@@ -156,12 +157,11 @@ export class LedgerState {
       throw new Error("Mining tracker address is protocol-reserved");
     }
     if (this.settledActivityEpochs.has(tx.epoch)) throw new Error("Activity epoch already settled");
+    // Epochs settle in strictly increasing order: by induction no epoch above
+    // the latest settled one exists, so checking epoch + 1 is sufficient.
+    if (this.settledActivityEpochs.has(tx.epoch + 1)) throw new Error(ACTIVITY_ORDER_MESSAGE);
     this.requireNonce(activityPool, tx.nonce);
-    const total = tx.entries.reduce((sum, entry) => {
-      const next = sum + entry.amountAtoms;
-      if (!Number.isSafeInteger(next)) throw new Error("Activity total overflow");
-      return next;
-    }, 0);
+    const total = assertActivitySettlementWithinCap(tx.entries);
     if (this.balance(activityPool) < total) throw new Error("Activity pool exhausted");
     this.debit(activityPool, total);
     for (const entry of tx.entries) this.credit(entry.receiver, entry.amountAtoms);
