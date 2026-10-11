@@ -20,6 +20,18 @@ export interface GenesisConfig {
   activityOracles: string[];
   activityPool: Address;
   allocations: Allocation[];
+  /**
+   * Optional on-chain allocation locks (docs/ALLOCATION_LOCKS.md). Absent on
+   * genesis files that predate them; behaviour is then unchanged.
+   */
+  allocationLocks?: AllocationLocks;
+}
+
+export interface AllocationLocks {
+  /** Founder allocation: 365-day cliff, then 1,095-day linear release from the genesis timestamp. */
+  founderVesting: Address;
+  /** Permanent-liquidity reserve: no outflow, ever (inflows allowed). */
+  permanentLiquidity: Address;
 }
 
 export interface TransferTx {
