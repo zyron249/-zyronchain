@@ -196,6 +196,8 @@ Disable the compromised signer without deleting its journal, preserve HSM/signer
 
 ### Disk/state corruption
 
+Power loss or a host crash during an append can leave a torn final record (no trailing newline, not valid JSON) in `signing-journal.ndjson` or `blocks.ndjson`. Every append is fsynced before it takes effect (a journal reservation before its signature is released, a block line before the block is applied), so such a record was never acknowledged. On startup the node truncates it durably and logs `Dropped a torn trailing ... record`; for a torn protocol v6 lock/commit append the lock row of that same append is dropped with it. A final journal row that is complete but lost only its newline is kept and re-terminated. Anything else stays fatal: a terminated line that does not parse, corruption before the last record, or a parsable but invalid row. Do not edit those files by hand: preserve copies, investigate the storage, and for the block log restore to a new directory from an independently anchored checkpoint. Treat repeated torn-record warnings as a storage or power-path fault.
+
 If `persistenceHealthy` becomes false, stop signing and restart only after preserving forensic copies. Derived State-v2 corruption may be quarantined and rebuilt only after authoritative finalized history/checkpoint replay succeeds. If finalized/pruned authoritative material is corrupt, restore to a new directory from an independently anchored checkpoint; never patch hashes or records in place.
 
 ### Network/eclipse suspicion
