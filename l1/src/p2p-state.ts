@@ -3,7 +3,7 @@ import type { Libp2p } from "libp2p";
 import { lstat, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import { validateBlockShape } from "./block.js";
+import { blockHash, validateBlockShape } from "./block.js";
 import { canonicalJsonDigest } from "./codec.js";
 import { ZyronChain } from "./chain.js";
 import type { NodeService } from "./node.js";
@@ -16,6 +16,8 @@ import {
   createStateV2PortableBundle,
   MAX_PORTABLE_STATE_KEYS,
   MAX_PORTABLE_STATE_NODES,
+  parsePortableStateKeyPreimage,
+  parsePortableStateNodeRecord,
   type StateV2PortableBundleV1
 } from "./state-v2-portable.js";
 import {
@@ -543,7 +545,10 @@ function parseManifest(
   if (!value.tip || typeof value.tip !== "object" || Array.isArray(value.tip)) throw new Error("Invalid state manifest tip");
   validateBlockShape(value.tip);
   const tip = value.tip as unknown as Block;
-  if (tip.hash !== anchor.tipHash || tip.header.height !== Number(value.height) || tip.header.stateRoot !== value.stateRoot) {
+  // The header must hash to the anchored tip hash, which binds height and
+  // state root to the operator's anchor before anything is staged (F-09).
+  if (tip.hash !== anchor.tipHash || blockHash(tip.header) !== anchor.tipHash ||
+      tip.header.height !== Number(value.height) || tip.header.stateRoot !== value.stateRoot) {
     throw new Error("State manifest tip does not match anchored metadata");
   }
   return {
@@ -567,8 +572,16 @@ function parseChunk(
       value.kind !== kind || value.start !== start || !Array.isArray(value.items) || value.items.length !== limit) {
     throw new Error("Invalid state chunk");
   }
+  const identity = validateP2PChainIdentity(value.identity, expected, remotePeer);
+  // F-09(b): reject invalid items in the chunk that carries them instead of
+  // after the whole claimed transfer (bounded per chunk by the frame limit).
+  // Validation only: the retained decoded items are passed on without a copy.
+  for (const item of value.items) {
+    if (kind === "records") parsePortableStateNodeRecord(item);
+    else parsePortableStateKeyPreimage(item);
+  }
   return {
-    version: 1, identity: validateP2PChainIdentity(value.identity, expected, remotePeer), tipHash: value.tipHash,
+    version: 1, identity, tipHash: value.tipHash,
     snapshotSha256: value.snapshotSha256, kind, start, items: value.items
   };
 }

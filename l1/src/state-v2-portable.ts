@@ -1,5 +1,6 @@
 import { canonicalJson } from "./codec.js";
 import {
+  assertStateV2NodeRecordSelfConsistent,
   reconstructStateV2PortableView,
   SparseMerkleState,
   stateV2FromLedgerSnapshot,
@@ -67,10 +68,7 @@ export function validateStateV2PortableBundle(
     throw new Error("Invalid portable State v2 bundle");
   }
   const records = value.records.map(parseNodeRecord);
-  const keyPreimages = value.keyPreimages.map((key) => {
-    if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new Error("Invalid portable State v2 key preimage");
-    return key;
-  });
+  const keyPreimages = value.keyPreimages.map(parsePortableStateKeyPreimage);
   const state = SparseMerkleState.fromNodeRecords(expectedRoot, records);
   const reachableHashes = state.reachableNodeHashes();
   if (reachableHashes.size !== records.length) throw new Error("Portable State v2 bundle contains unreachable nodes");
@@ -85,6 +83,23 @@ export function validateStateV2PortableBundle(
     state,
     view
   };
+}
+
+/** Shape-checks one untrusted key preimage (also used per state-sync chunk). */
+export function parsePortableStateKeyPreimage(key: unknown): string {
+  if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new Error("Invalid portable State v2 key preimage");
+  return key;
+}
+
+/**
+ * Shape-checks one untrusted node record and its position-independent hash
+ * self-consistency, so a state-sync client can reject a bad chunk as soon as
+ * it arrives (F-09(b)). Root reachability is still checked on the full bundle.
+ */
+export function parsePortableStateNodeRecord(value: unknown): StateV2NodeRecord {
+  const record = parseNodeRecord(value);
+  assertStateV2NodeRecordSelfConsistent(record);
+  return record;
 }
 
 function copyNodeRecord(record: StateV2NodeRecord): StateV2NodeRecord {
