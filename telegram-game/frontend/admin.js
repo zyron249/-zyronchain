@@ -132,11 +132,16 @@
     box.append(el("h2", { text: "Players" }));
     result.players.forEach(function (player) {
       box.append(el("div", { class: "row" }, [
-        el("span", { text: player.displayName + " · tg " + player.telegramId + " · " + player.referralCode + " · " + player.points + " pts" }),
+        el("span", { text: player.displayName + " · tg " + player.telegramId + " · " + player.referralCode + " · " + player.points + " pts" + (player.teamAccount ? " · team (not ranked)" : "") }),
         el("button", {
           class: "ghost",
           text: player.banned ? "Unban" : "Ban",
           onclick: function () { setBan(player.id, !player.banned); }
+        }),
+        el("button", {
+          class: "ghost",
+          text: player.teamAccount ? "Unmark team" : "Mark team",
+          onclick: function () { setTeam(player.id, !player.teamAccount); }
         })
       ]));
     });
@@ -144,6 +149,10 @@
 
   function setBan(id, banned) {
     api("/api/admin/players/" + id + "/ban", { method: "POST", body: { banned: banned } }).then(boot).catch(showError);
+  }
+
+  function setTeam(id, team) {
+    api("/api/admin/players/" + id + "/team", { method: "POST", body: { team: team } }).then(boot).catch(showError);
   }
 
   function resolveFlag(id) {

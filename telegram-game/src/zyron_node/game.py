@@ -44,10 +44,12 @@ from zyron_node.economy import (
     streak_reward,
     upgrade_cost,
 )
+from zyron_node.config import team_telegram_ids
 from zyron_node.rpc import valid_watch_address
 
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 KEY_RE_SOURCE = r"^[A-Za-z0-9_.:-]{8,80}$"
+TEAM_ACCOUNT_NOTE = "Team account, not ranked"
 CHEST_ID_RE = re.compile(r"^(daily|quest:[a-z0-9_]+|level:[1-9][0-9]?)$")
 
 
@@ -502,6 +504,7 @@ def scores_cte(extra_sql: str) -> str:
                 ROW_NUMBER() OVER (ORDER BY s.score DESC, p.id ASC)::int AS rank
             FROM scores s
             JOIN players p ON p.id = s.player_id
+            WHERE p.team_account = FALSE
         )
     """
 
@@ -554,24 +557,26 @@ def leaderboard_view(pool, player_id: int, board: str, now: datetime, limit: int
         ).fetchone()
         score, rank = score_and_rank(conn, player_id, extra, params)
         me_row = conn.execute(
-            "SELECT display_name, node_level, lifetime_points FROM players WHERE id = %s",
+            "SELECT display_name, node_level, lifetime_points, team_account FROM players WHERE id = %s",
             (player_id,),
         ).fetchone()
         lifetime = int(me_row["lifetime_points"]) if me_row else 0
+        team = bool(me_row["team_account"]) if me_row else False
         above = None
-        if rank > 1:
+        if rank > 1 and not team:
             above_rows = conn.execute(ranked_sql(extra, "WHERE rank = %s"), (*params, rank - 1)).fetchall()
             if above_rows:
                 above = rank_entry(above_rows[0], player_id)
         distribution = tier_distribution(conn)
-        on_board = score > 0
+        on_board = score > 0 and not team
         me = {
-            "rank": rank,
+            "rank": None if team else rank,
             "score": score,
             "displayName": (me_row["display_name"] if me_row else None) or "Operator",
             "nodeLevel": int(me_row["node_level"]) if me_row else 1,
             "lifetimePoints": lifetime,
             "onBoard": on_board,
+            "teamAccount": team,
         }
         me.update(tier_view(lifetime))
     population = int(population_row["n"]) if population_row else 0
@@ -586,7 +591,7 @@ def leaderboard_view(pool, player_id: int, board: str, now: datetime, limit: int
         "tierDistribution": distribution,
         "race": {
             "tier": tier_race_line(lifetime),
-            "above": above_race_line(score, on_board, above),
+            "above": TEAM_ACCOUNT_NOTE if team else above_race_line(score, on_board, above),
         },
         "serverTime": iso(now),
     }
@@ -627,6 +632,7 @@ def export_snapshot(pool, actor: str, now: datetime) -> dict:
                        COALESCE(SUM(l.amount) FILTER (WHERE l.amount > 0), 0)::bigint AS season_points
                 FROM players p
                 LEFT JOIN point_ledger l ON l.player_id = p.id AND l.season_id = %s
+                WHERE p.team_account = FALSE
                 GROUP BY p.id
                 HAVING COALESCE(SUM(l.amount) FILTER (WHERE l.amount > 0), 0) > 0
                 ORDER BY season_points DESC, p.id ASC
@@ -648,6 +654,7 @@ def export_snapshot(pool, actor: str, now: datetime) -> dict:
                 "note": POINTS_NOTICE + " This snapshot is not a payout and does not transfer ZYN or Zyrum.",
                 "conversionRate": None,
                 "automaticPayout": False,
+                "excludes": "Team accounts are not ranked and are left out of this snapshot.",
                 "truncated": len(rows) >= 5000,
                 "standings": [
                     {
@@ -703,6 +710,7 @@ def admin_overview(pool) -> dict:
             SELECT
                 (SELECT COUNT(*) FROM players) AS players,
                 (SELECT COUNT(*) FROM players WHERE banned) AS banned,
+                (SELECT COUNT(*) FROM players WHERE team_account) AS team_accounts,
                 (SELECT COALESCE(SUM(points), 0) FROM players) AS points_outstanding,
                 (SELECT COUNT(*) FROM abuse_flags WHERE resolved_at IS NULL) AS open_flags,
                 (SELECT COUNT(*) FROM referrals WHERE status = 'rewarded') AS qualified_referrals,
@@ -722,6 +730,7 @@ def admin_overview(pool) -> dict:
     return {
         "players": int(counts["players"]),
         "banned": int(counts["banned"]),
+        "teamAccounts": int(counts["team_accounts"]),
         "pointsOutstanding": int(counts["points_outstanding"]),
         "openFlags": int(counts["open_flags"]),
         "qualifiedReferrals": int(counts["qualified_referrals"]),
@@ -752,7 +761,7 @@ def admin_search(pool, query: str) -> dict:
         rows = conn.execute(
             """
             SELECT id, telegram_id, username, display_name, referral_code, points, lifetime_points, node_level,
-                   banned, abuse_score, wallet_address, created_at
+                   banned, abuse_score, wallet_address, created_at, team_account
             FROM players
             WHERE telegram_id::text = %s
                OR referral_code = %s
@@ -766,7 +775,7 @@ def admin_search(pool, query: str) -> dict:
             rows = conn.execute(
                 """
                 SELECT id, telegram_id, username, display_name, referral_code, points, lifetime_points, node_level,
-                       banned, abuse_score, wallet_address, created_at
+                       banned, abuse_score, wallet_address, created_at, team_account
                 FROM players
                 WHERE username ILIKE %s
                 ORDER BY id ASC
@@ -785,6 +794,51 @@ def set_ban(pool, player_id: int, banned: bool, actor: str, now: datetime) -> di
             audit(conn, actor, "player.ban" if banned else "player.unban", {"playerId": player_id}, now)
             player = reload_player(conn, player_id)
             return public_admin_player(player)
+
+
+def set_team(pool, player_id: int, team: bool, actor: str, now: datetime) -> dict:
+    """Mark or clear a team/project account. Team accounts keep playing but are never ranked or reward-eligible."""
+    with pool.connection() as conn:
+        with conn.transaction():
+            lock_player(conn, player_id)
+            conn.execute(
+                "UPDATE players SET team_account = %s, team_marked_at = CASE WHEN %s::boolean THEN %s::timestamptz ELSE NULL END WHERE id = %s",
+                (team, team, now, player_id),
+            )
+            audit(conn, actor, "player.team" if team else "player.unteam", {"playerId": player_id}, now)
+            return public_admin_player(reload_player(conn, player_id))
+
+
+def list_team_accounts(pool) -> dict:
+    with pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, telegram_id, username, display_name, referral_code, points, lifetime_points, node_level,
+                   banned, abuse_score, wallet_address, created_at, team_account
+            FROM players WHERE team_account = TRUE ORDER BY id ASC LIMIT 100
+            """
+        ).fetchall()
+    return {"players": [public_admin_player(row) for row in rows]}
+
+
+def sync_team_accounts(pool, telegram_ids, now: datetime) -> int:
+    """Flag players listed in TEAM_TELEGRAM_IDS. Only adds the flag; the admin endpoint clears it."""
+    ids = [int(value) for value in telegram_ids]
+    if not ids:
+        return 0
+    with pool.connection() as conn:
+        with conn.transaction():
+            rows = conn.execute(
+                """
+                UPDATE players SET team_account = TRUE, team_marked_at = %s
+                WHERE telegram_id = ANY(%s) AND team_account = FALSE
+                RETURNING id
+                """,
+                (now, ids),
+            ).fetchall()
+            for row in rows:
+                audit(conn, "env:TEAM_TELEGRAM_IDS", "player.team", {"playerId": int(row["id"])}, now)
+            return len(rows)
 
 
 def resolve_flag(pool, flag_id: int, actor: str, now: datetime) -> dict:
@@ -913,6 +967,11 @@ def _ensure_player(conn, identity, ip_hash: str | None, now: datetime) -> dict:
             start_param = "ref_" + pending["referral_code"]
 
     player = insert_player(conn, identity, ip_hash, now)
+    if int(identity.id) in team_telegram_ids():
+        conn.execute(
+            "UPDATE players SET team_account = TRUE, team_marked_at = %s WHERE id = %s",
+            (now, player["id"]),
+        )
     conn.execute("DELETE FROM pending_referrals WHERE telegram_id = %s", (identity.id,))
     add_signup_burst_if_needed(conn, player, ip_hash, now)
     maybe_attach_referral(conn, player, start_param, ip_hash, now, fresh=True)
@@ -1554,11 +1613,12 @@ def build_context(conn, player, levels: dict[str, int], now: datetime) -> dict[s
 
 def build_profile(conn, player, levels: dict[str, int], now: datetime, bot_username: str) -> dict:
     season = active_season(conn)
+    team = bool(player.get("team_account"))
     ranks = {}
     for board in ("daily", "weekly", "season", "alltime"):
         extra, params = score_filter(board, now, season)
         score, rank = score_and_rank(conn, int(player["id"]), extra, params)
-        ranks[board] = {"rank": rank, "score": score}
+        ranks[board] = {"rank": None if team else rank, "score": score}
     invited = conn.execute(
         "SELECT COUNT(*) AS n FROM referrals WHERE referrer_id = %s",
         (player["id"],),
@@ -1591,6 +1651,8 @@ def build_profile(conn, player, levels: dict[str, int], now: datetime, bot_usern
             },
             "walletAddress": player["wallet_address"],
             "banned": bool(player["banned"]),
+            "teamAccount": team,
+            "teamNote": TEAM_ACCOUNT_NOTE if team else None,
             "rank": ranks,
             **tier_view(int(player["lifetime_points"])),
             "referral": {
@@ -1943,6 +2005,7 @@ def public_admin_player(row) -> dict:
         "tier": public_tier(tier_for(int(row["lifetime_points"]))) if row.get("lifetime_points") is not None else None,
         "nodeLevel": int(row["node_level"]),
         "banned": bool(row["banned"]),
+        "teamAccount": bool(row.get("team_account")),
         "abuseScore": int(row["abuse_score"]),
         "walletAddress": row["wallet_address"],
         "createdAt": iso(row["created_at"]),

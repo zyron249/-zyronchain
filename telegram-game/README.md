@@ -87,6 +87,13 @@ The bot process also runs a community loop every 15 seconds for `COMMUNITY_CHAT`
 - `/stats`, `/wallet`, `/roadmap` and `/help` are registered with `setMyCommands`. In groups each command answers at most once per 30 seconds.
 - `GET /api/admin/community` reports the bot's status and rights in the group and lists anything missing. Admin rights are not required: the bot only needs to send messages and polls. `POST /api/admin/community/leaderboard` with `{"dryRun": true}` previews the board; `{"dryRun": false}` posts it once for the UTC day.
 
+## Team accounts
+
+Team/project accounts (`players.team_account`, migration `006_team_accounts.sql`) can play but are never ranked or
+reward-eligible: they are filtered from the in-app boards, group boards, invite contest, quiz rewards, the season
+snapshot and the activity-ledger cutoff. Mark them with `TEAM_TELEGRAM_IDS` or `POST /api/admin/players/{id}/team`
+(see `docs/ADMIN.md`). Their app shows "Team account, not ranked".
+
 ## Hosting: instant open
 
 Render Free web services sleep after 15 minutes without inbound traffic and need 30–60 s to start. Play Zyron

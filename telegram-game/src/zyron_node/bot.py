@@ -21,7 +21,14 @@ from zyron_node.buildinfo import CLIENT_BUILD
 from zyron_node.config import load_settings, validate_settings
 from zyron_node.db import create_pool, migrate
 from zyron_node.economy import POINTS_NOTICE
-from zyron_node.game import invite_link, leaderboard_view, open_session, referral_code_from_param, remember_pending_referral
+from zyron_node.game import (
+    invite_link,
+    leaderboard_view,
+    open_session,
+    referral_code_from_param,
+    remember_pending_referral,
+    sync_team_accounts,
+)
 from zyron_node.logging_setup import setup_logging
 
 log = logging.getLogger("zyron_node.bot")
@@ -148,6 +155,7 @@ def run_bot(stop: threading.Event) -> None:
         raise SystemExit("TELEGRAM_BOT_TOKEN is required to run the bot")
     pool = create_pool(settings.database_url)
     migrate(pool)
+    sync_team_accounts(pool, settings.team_telegram_ids, datetime.now(timezone.utc))
     token = settings.telegram_bot_token
     if settings.reminders_enabled:
         threading.Thread(

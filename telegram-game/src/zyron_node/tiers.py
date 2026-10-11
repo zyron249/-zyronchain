@@ -167,7 +167,7 @@ def point_word(amount: int, *, lifetime: bool = False) -> str:
 
 
 def tier_distribution(conn) -> list[dict]:
-    """Count operators currently in each named tier. Players below Bronze are omitted."""
+    """Count operators currently in each named tier. Players below Bronze and team accounts are omitted."""
     specs = list(TIERS)
     selects: list[str] = []
     params: list[int] = []
@@ -181,7 +181,7 @@ def tier_distribution(conn) -> list[dict]:
         else:
             selects.append(f"COUNT(*) FILTER (WHERE lifetime_points >= %s)::int AS {spec.id}")
             params.append(spec.min_lifetime_points)
-    row = conn.execute(f"SELECT {', '.join(selects)} FROM players", params).fetchone()
+    row = conn.execute(f"SELECT {', '.join(selects)} FROM players WHERE team_account = FALSE", params).fetchone()
     return [
         {
             "id": spec.id,

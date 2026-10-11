@@ -629,7 +629,7 @@
     section.append(todayCard(energy));
     section.append(el("div", { class: "chips" }, [
       chip("Level", progress.atMax ? p.level + " · max" : p.level + " · " + progress.into + "/" + progress.target),
-      chip("Rank", "#" + p.rank.season.rank + " season"),
+      p.teamAccount ? chip("Rank", "Team · not ranked") : chip("Rank", "#" + p.rank.season.rank + " season"),
       chip("Streak", p.streak.count + " days"),
       chip("Network Power", formatPoints(p.networkPower))
     ]));
@@ -989,6 +989,9 @@
     const neighbors = ranks.neighbors || [];
     const population = typeof ranks.population === "number" ? ranks.population : entries.length;
     wrap.append(standingCard(me, population));
+    if (me.teamAccount) {
+      wrap.append(el("p", { class: "board-note team-note", text: "Team account, not ranked. You can keep playing; this account is left out of leaderboards and rewards." }));
+    }
     if (ranks.race) {
       wrap.append(el("p", { class: "race-line", text: ranks.race.tier }));
       wrap.append(el("p", { class: "race-line", text: ranks.race.above }));
@@ -1000,6 +1003,10 @@
         el("p", { text: "You are here with " + formatPoints(me.score) + " Zyron Points. Run the node and your row will be the first real one. Empty places are not filled with other operators." }),
         el("button", { class: "primary", text: "Start node", onclick: focusRun })
       ]));
+      return wrap;
+    }
+    if (me.teamAccount) {
+      entries.forEach(function (entry) { wrap.append(rankRow(entry)); });
       return wrap;
     }
     if (population === 1 && me.onBoard) {
@@ -1031,6 +1038,13 @@
   }
 
   function standingCard(me, population) {
+    if (me.teamAccount) {
+      return el("article", { class: "standing" }, [
+        el("p", { class: "kicker", text: "Your standing" }),
+        el("h2", { text: "Team account" }),
+        el("p", { text: "Team account, not ranked" })
+      ]);
+    }
     const placed = me.onBoard && me.score > 0;
     const headline = placed ? "#" + me.rank : "Not ranked yet";
     const detail = placed
