@@ -127,7 +127,7 @@ for (const resumable of [false, true]) {
   });
 }
 
-test("F-09(b): a leaf whose hash does not match its key and value is rejected at the first chunk", async () => {
+test("F-09(b): a leaf whose value hash does not match its value is rejected at the first chunk", async () => {
   const fixture = await createFixture("early-leaf-hash");
   try {
     const leaf = fixture.bundle.records.find((record) => record.kind === "leaf");
@@ -136,7 +136,7 @@ test("F-09(b): a leaf whose hash does not match its key and value is rejected at
       Array.from({ length: limit }, () => ({ ...leaf, valueJson: `${leaf.valueJson} ` })));
     await assert.rejects(
       () => fetchTrustedPortableStateFromPeer(fixture.clientNode, fixture.address, fixture.clientIdentity, fixture.config, fixture.anchor),
-      /Portable State v2 leaf hash mismatch/
+      /Portable State v2 leaf value hash mismatch/
     );
     assert.equal(served.recordRequests(), 1);
   } finally {
