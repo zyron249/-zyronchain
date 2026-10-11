@@ -98,7 +98,7 @@ test("fixed-supply allocations can be embedded in an otherwise ordinary genesis 
   assert.equal(genesis.allocations.reduce((sum, item) => sum + item.amountAtoms, 0), MAX_SUPPLY_ATOMS);
 });
 
-test("CRYPTO-REVIEW ZC-CRY-20260930-006: activity pool cannot be the founder or permanent-liquidity allocation", async () => {
+test("CRYPTO-REVIEW ZC-CRY-20260930-006: activity pool must be exactly the ecosystem/community allocation", async () => {
   const { assertFixedSupplyGenesis } = await import("../src/tokenomics.js");
   const validatorPublic = publicKeyFromPrivate(validatorPrivate);
   const oraclePublic = publicKeyFromPrivate(oraclePrivate);
@@ -110,9 +110,10 @@ test("CRYPTO-REVIEW ZC-CRY-20260930-006: activity pool cannot be the founder or 
     activityPool,
     allocations: buildFixedSupplyAllocations(roles)
   });
-  assert.throws(() => assertFixedSupplyGenesis(base(roles.founder), roles), /must not be the founder or permanent-liquidity/);
-  assert.throws(() => assertFixedSupplyGenesis(base(roles.liquidityReserve), roles), /must not be the founder or permanent-liquidity/);
-  assert.throws(() => assertFixedSupplyGenesis(base(address(oraclePrivate)), roles), /public-distribution or ecosystem/);
-  assert.doesNotThrow(() => assertFixedSupplyGenesis(base(roles.publicDistribution), roles));
+  const forbidden = /must not be the founder, public-distribution, or permanent-liquidity/;
+  assert.throws(() => assertFixedSupplyGenesis(base(roles.founder), roles), forbidden);
+  assert.throws(() => assertFixedSupplyGenesis(base(roles.publicDistribution), roles), forbidden);
+  assert.throws(() => assertFixedSupplyGenesis(base(roles.liquidityReserve), roles), forbidden);
+  assert.throws(() => assertFixedSupplyGenesis(base(address(oraclePrivate)), roles), /must be the ecosystem\/community allocation/);
   assert.doesNotThrow(() => assertFixedSupplyGenesis(base(roles.ecosystemReserve), roles));
 });
