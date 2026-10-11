@@ -140,3 +140,25 @@ for (const version of [5, 6]) {
     );
   });
 }
+
+// merkleRoot duplicates the last leaf of an odd level, so [a, b, c] and
+// [a, b, c, c] share a root (the CVE-2012-2459 shape). Live block validation
+// rejects the duplicate in applyTransactions, but the snapshot path does not
+// re-execute the tip, so it must reject duplicate transactions explicitly.
+for (const version of [1, 2, 3, 5, 6]) {
+  test(`v${version}: trusted snapshot rejects a tip body with a duplicated odd tail (same Merkle root)`, () => {
+    const { config, chain } = chainAt(version);
+    finalize(chain, [
+      transfer(config, version, 1, 1),
+      transfer(config, version, 2, 2),
+      transfer(config, version, 3, 3)
+    ], config.timestampMs + 200_000);
+    const snapshot = chain.snapshot();
+    const tampered = structuredClone(snapshot);
+    tampered.tip.transactions.push(structuredClone(tampered.tip.transactions[2]!));
+    assert.throws(
+      () => ZyronChain.fromTrustedSnapshot(config, tampered, anchor(tampered, tampered.tip.hash)),
+      /Trusted checkpoint tip contains a duplicate transaction/
+    );
+  });
+}
