@@ -6,7 +6,7 @@ Machine-readable authority: [`l1-launch-authorization.json`](l1-launch-authoriza
 Human policy: [`L1_LAUNCH_AUTHORIZATION.md`](L1_LAUNCH_AUTHORIZATION.md).  
 A–Z engineering gate: [`STANDALONE_L1_READINESS.md`](STANDALONE_L1_READINESS.md).  
 Local tester path: [`PUBLIC_TEST.md`](PUBLIC_TEST.md).  
-Local mining path: [`../l1/MINING.md`](../l1/MINING.md) and `cd l1 && npm run mine:local`.
+Mining: **retired** by owner decision (2026-09-30, confirmed 2026-10-11). The former local path `cd l1 && npm run mine:local` now exits with an error; [`../l1/MINING.md`](../l1/MINING.md) is a retired record.
 
 `publicTestnetActivationAllowed` and `mainnetActivationAllowed` remain **false**. This checklist does not close those flags.
 
@@ -26,42 +26,24 @@ Authorization (`*Authorized=true`) is not activation. Green CI is not activation
 |---|---|---|---|
 | Local two-validator public-test | Ready | `cd l1 && npm ci && npm run devnet` | Not a hosted testnet. Fresh `zyron-local-<hex>` every run. RPC on `127.0.0.1` only |
 | Automated local check | Ready (known-flaky) | `npm run devnet:check` | The `local-devnet` CI job has timed out on some hosts after quorum-loss recovery |
-| Local protocol-v5 mining rehearsal | Ready (slow by design) | `cd l1 && npm run mine:local` | Schedules v5 on **this** disposable loopback chain after a 100-block delay (~50 minutes). Does not activate public mining |
-| Packaged miner against an already-v5 loopback RPC | Ready | `npm run mine -- --genesis … --rpc http://127.0.0.1:<printed-port>` | Default `npm run devnet` stays protocol v1; claims will not finalize there |
-| In-process mining regression | Ready | `cd l1 && npm test` (includes `test/mining*.ts`) | In-memory 100 empty blocks; not Internet mining evidence |
-| Website / wallet / mining / validator pages | Ready (docs only) | `python3 -m http.server 8080 --directory website` | No browser custody, no download CTA, no public RPC |
+| Local protocol-v5 mining rehearsal | Retired | `cd l1 && npm run mine:local` exits non-zero | Mining is shut down for every genesis |
+| Packaged miner | Retired | `npm run mine` exits non-zero before reading keys | Consensus rejects every `mining_claim` |
+| In-process mining regression | Ready (rejection tests) | `cd l1 && npm test` (includes `test/mining*.ts`) | Now asserts mining claims are rejected on every consensus path |
+| Website / wallet / validator pages | Ready (docs only) | `python3 -m http.server 8080 --directory website` | No browser custody, no download CTA, no public RPC |
 | Legacy Python/Flask node | Legacy only | [`LEGACY_PYTHON_TESTNET.md`](LEGACY_PYTHON_TESTNET.md) | Not the canonical chain. Binds `0.0.0.0` in `app.py` for that archived stack |
 | Public L1 RPC / explorer / faucet / bootstrap | Blocked | — | Do not invent hosts or chain IDs |
 | Public mining / one-click miner download | Blocked | website `publicMiningActivated: false` | Release-candidate workflows stay `publicationAllowed=false` |
 | Public testnet activation | Blocked | `publicTestnetActivationAllowed=false` | See section 3 |
 | Mainnet activation | Blocked | `mainnetActivationAllowed=false` | See section 4 |
 
-## 2. Honest local mining path
+## 2. Mining is retired
 
-Default genesis always starts at protocol version 1 (`ZyronChain` sets `protocolSchedule(0)=1`). Protocol v5 is the mining issuance version. A 100-block quorum-approved delay (`MIN_PROTOCOL_UPDATE_DELAY`) is a consensus rule, not a launcher convenience.
+Owner decision (2026-09-30, confirmed 2026-10-11): mining is shut down for every genesis. Consensus rejects `mining_claim` transactions on every path (shape validation, mempool admission, block production, block validation, and both the legacy and State-v2 state appliers), independent of protocol version. Protocol v5 no longer enables issuance.
 
-```sh
-cd l1
-npm ci
-npm run mine:local
-```
-
-That command:
-
-1. starts the same loopback two-validator network as `npm run devnet`;
-2. verifies a 1 ZYN transfer;
-3. creates an encrypted miner wallet under the temporary `0700` directory;
-4. has both local validators approve a protocol-v5 upgrade at `height + 1 + 100`;
-5. prints the real RPC port, genesis path, miner key paths, activation height, and an estimated wait;
-6. keeps `publicMiningActivated=false` and does not publish anything.
-
-Until `GET /protocol` shows `nextVersion >= 5`, `npm run mine` prints `Mining is gated` and `--once` exits 2.
-
-Do **not** treat `http://127.0.0.1:9137` as the local-devnet RPC. The launcher picks free loopback ports. `9137` is only the CLI default if you start a node yourself with `--port 9137`.
-
-Remote miner RPC must be HTTPS. Plain HTTP is accepted only for loopback. Hash power does not choose the canonical fork.
-
-`--check` (CI) and `--local-v5` cannot be combined. The automated job must stay on the faster protocol-v1 transfer/quorum/restart path.
+- `npm run mine:local` (`local-devnet.mjs --local-v5`) exits non-zero; `--check` stays on the protocol-v1 transfer/quorum/restart path.
+- `npm run mine` exits non-zero before reading keys, passwords, or contacting any RPC.
+- `l1/miner-network-profile.json` keeps `publicMiningActivated=false`.
+- The miner packaging/release tooling and workflows still exist in the repository; removing them is a separate, pending owner decision. Nothing may be published from them.
 
 ## 3. Public-testnet activation gates
 
@@ -72,13 +54,13 @@ Tracked in `docs/l1-launch-authorization.json` and expanded in `STANDALONE_L1_RE
 | 1 | `independent-operators-deploy-from-release-artifacts-without-founder-assistance` | Prepared / Blocked | Challenge format and synthetic vectors exist (`independenceProven=false` by design). No reviewed external operator evidence |
 | 2 | `bootstrap-archive-monitoring-across-independent-failure-domains` | Blocked | No published public bootstrap/archive set. Labels are not failure domains |
 | 3 | `independent-consensus-cryptography-network-audit-and-retest` | Prepared / Blocked | Project audit pack exists. Independent review and remediations are not closed |
-| 4 | `independent-protocol-v5-mining-issuance-audit-and-retest` | Blocked | Protocol-v5 mining adds issuance/consensus scope. No independent mining audit/retest |
+| 4 | `independent-protocol-v5-mining-issuance-audit-and-retest` | Blocked | Mining is retired; the audit must now confirm that `mining_claim` is rejected on every path and protocol version (v1-v6) and that supply cannot grow past genesis |
 | 5 | `sustained-independent-operator-internet-adversarial-soak` | Blocked | Render Free is smoke-only (issue #249). Synthetic soak verifier keeps real evidence false |
 | 6 | `production-hsm-or-audited-signer-custody-and-cross-host-rotation` | Prepared / Blocked | Remote-signer boundary exists. Production HSM/audited custody is external |
 | 7 | `protected-branch-independent-review-repository-policy` | Blocked | Repository *settings* (protected branch / required review) cannot be proven by docs alone |
 | 8 | `target-hardware-state-v2-scale-and-recovery-measurements` | Prepared / Blocked | CI 100k-account regression is not release-hardware evidence |
 | 9 | `independent-maintainer-and-security-custody-succession-evidence` | Prepared / Blocked | Policy requires ≥2 independent custodians. Placeholder names do not satisfy it |
-| 10 | `mining-contention-calibration-and-inclusion-fairness-evidence` | Blocked | Need heterogeneous miners, stale-tip races, inclusion/censorship, RPC abuse, and a reviewed 20-bit vs retarget decision |
+| 10 | `mining-contention-calibration-and-inclusion-fairness-evidence` | Superseded | Mining is retired, so there is no mining contention to calibrate |
 
 Until every row is independently closed, `publicTestnetActivationAllowed` must remain `false`. Related issues: #260 (public-testnet evidence), #249 (Render Free uptime), #390 / #892 (miner publication).
 
@@ -89,15 +71,19 @@ Every public-testnet gate plus:
 | Requirement ID | Status |
 |---|---|
 | `immutable-mainnet-chain-id` | Blocked — do not invent |
-| `immutable-mainnet-genesis-allocation` | Blocked — zero-premine or explicit disclosure, not improvised |
-| `immutable-mining-reward-halving-cap-and-difficulty-policy` | Prepared in code (6.25 ZYN / 4e6 claims / 50M cap / 20-bit); not frozen as a mainnet policy |
+| `immutable-mainnet-genesis-allocation` | Blocked — the fixed 50M 10/40/40/10 plan is encoded and validated (`npm run tokenomics:check`); founder vesting (12-month cliff, 36-month linear) and the permanent-liquidity lock are enforced on-chain via genesis `allocationLocks`, required by `tokenomics:check` ([`ALLOCATION_LOCKS.md`](ALLOCATION_LOCKS.md)); real role addresses still need owner input, the enforcement needs independent audit, and the ceremony must pin the genesis file SHA-256 |
+| `immutable-mining-reward-halving-cap-and-difficulty-policy` | Superseded — mining is retired; no reward, halving or difficulty policy applies and the 50M cap is fully allocated at genesis |
 | `validator-reward-inflation-and-fee-policy` | Blocked — no validator inflation is invented; fee burns stay burns |
-| `activity-oracle-production-governance` | Blocked — keep unfunded/disabled until independent oracles exist |
+| `activity-oracle-production-governance` | Blocked — consensus now caps oracle payouts at 10,000 ZYN per closed 24 h epoch, settled once and in order ([`ACTIVITY_ORACLE_CAP.md`](ACTIVITY_ORACLE_CAP.md)); m-of-n oracle approval and independent oracle custody are still missing, so keep unfunded/disabled until independent oracles exist |
 | `validator-admission-removal-governance` | Prepared as on-chain delayed quorum; public admission process not published |
 | `sustained-public-testnet-mining-finality-and-independent-retest` | Blocked — requires a real public testnet first |
 | `multi-region-disaster-recovery-and-incident-drills` | Prepared as CI rehearsals; real multi-region drills remain |
 | `independent-maintainer-and-security-custody-succession-evidence` | Blocked — same humans/credentials problem |
 | `protected-release-tag-and-branch-review-policy` | Blocked — platform settings + independently reproducible artifacts |
+
+### Mainnet genesis ceremony: mandatory supply check
+
+Consensus accepts any genesis whose total is at most 50,000,000 ZYN; it does not by itself require that the genesis allocates exactly 50,000,000 ZYN to the four disclosed roles that the activity pool is the ecosystem/community reserve, or that `allocationLocks` names the founder and permanent-liquidity allocations (without it, consensus does not lock them). Those rules are enforced by the offline verifier, so the mainnet genesis ceremony **MUST** run `cd l1 && npm run tokenomics:check` against the final genesis file and the four role addresses (see [`FIXED_SUPPLY_TOKENOMICS.md`](FIXED_SUPPLY_TOKENOMICS.md#mainnet-genesis-ceremony-mandatory-supply-check)), and the genesis MUST NOT be published, signed or used to start a validator unless that command exits 0. Record the command, its output, the genesis SHA-256 digest and the release commit in the ceremony record.
 
 Related issue: #261.
 
@@ -110,7 +96,7 @@ This pass did **not** write exploits, PoCs, or attack procedures. Findings are f
 | High (gate) | Public testnet/mainnet/mining activation evidence is absent | Keep all activation and publication flags false |
 | High (gate) | No independent cryptography/consensus/network/**mining** audit/retest | Stop-ship for public mining |
 | Medium | Machine-readable authorization previously omitted mining, capacity, and succession gates that `STANDALONE_L1_READINESS.md` already required | Aligned in `l1-launch-authorization.json` without flipping activation flags |
-| Medium | Miners following website/`MINING.md` `127.0.0.1:9137` against default `npm run devnet` would hash forever on protocol v1 or hit the wrong port | Honest `mine:local` path + docs/website corrections |
+| Medium | Miners following website/`MINING.md` `127.0.0.1:9137` against default `npm run devnet` would hash forever on protocol v1 or hit the wrong port | Superseded: mining retired (2026-09-30); `mine` and `mine:local` fail closed |
 | Low | Packaged miner and CLI treat DNS name `localhost` as loopback for plaintext HTTP | Residual DNS-rebinding class; prefer literal `127.0.0.1` / `::1`. Shared helper tests pin `localhost`; left unchanged this pass |
 | Low | Interactive local-devnet retains encrypted keystores **and** password files in one `0700` directory | Documented development-only; do not reuse on any public network |
 | Low | `npm run devnet:check` / `local-devnet` CI job is known-flaky on view-change recovery | Documented in `PUBLIC_TEST.md`; not hidden |

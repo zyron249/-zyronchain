@@ -40,7 +40,8 @@ python -m zyron_node
 
 The API listens on `0.0.0.0:$PORT` (default 8000).
 
-- Mini App: `http://127.0.0.1:8000/`
+- Mini App (same-origin shell): `http://127.0.0.1:8000/`
+- Static shell against a local API: `python scripts/build_static.py --out /tmp/site --api http://127.0.0.1:8000`, serve `/tmp/site`, and start the API with `CORS_ORIGINS=http://127.0.0.1:<static port>`
 - Admin: `http://127.0.0.1:8000/admin`
 - Health: `/healthz` and `/readyz`
 
@@ -64,6 +65,72 @@ Compose runs the API and the bot as separate containers. The `api` service overr
 
 The image default command is `scripts/start-web-and-bot.sh`. It starts `python -m zyron_node.bot` in the background and execs `python -m zyron_node` in the foreground, with the image `PYTHONPATH` and the rest of the container environment. On a single Render Free web service, leave Docker Command empty so that entrypoint runs both processes. Free web services still spin down after inactivity, so the bot polls only while the service is awake. A dedicated worker running `python -m zyron_node.bot`, with the web service on `python -m zyron_node`, is still the better split when a worker is available.
 
+
+## Reminder DMs
+
+The bot process runs a reminder loop every 90 seconds (`REMINDERS_ENABLED=0` turns it off).
+
+- **Energy full (primary):** each player's energy-full time is computed from the server regen model. The DM goes out once energy is full, one per refill cycle (nothing more until energy is spent and full again). No time-of-day window. Players active in the last 5 minutes, or who opened the app after it filled, are skipped.
+- **Daily chest (secondary):** at most once per 24h, 12:00–20:00 UTC, only for players idle for 12h–7 days who have not opened today's chest.
+- Only players who wrote to the bot privately or opened the Mini App with `allows_write_to_pm` get DMs. Every DM has **Play Zyron** and **Turn off reminders** buttons; `/reminders off|on` works too. A 403 marks the chat unreachable until the player writes to the bot again. Sends are paced at 20/s and honour 429 `retry_after`. A Postgres advisory lock keeps overlapping deploys from double-sending.
+- `GET /api/admin/reminders` (admin token) is a dry run: counts by reason plus the loop heartbeat, no sends. `POST /api/admin/reminders/test-owner` sends one marked test DM to the creator of `COMMUNITY_CHAT` (default `@zyronchain`) and nobody else.
+
+
+## ZYRONCHAIN group features
+
+The bot process also runs a community loop every 15 seconds for `COMMUNITY_CHAT` (default `@zyronchain`; `COMMUNITY_POSTS_ENABLED=0` pauses scheduled posts):
+
+- **Daily builder board** at 12:00 UTC: yesterday's top block builders (completed node cycles, banned players excluded). Posted once per UTC day and skipped when there is no data.
+- **Sunday weekly summary:** the last 7 UTC days plus the **invite contest**. Only referrals the existing anti-abuse checks rewarded count (`status = 'rewarded'`, neither side banned or over the abuse threshold).
+- **Weekly quiz** on Wednesday at 16:00 UTC: 3 native, non-anonymous Telegram quiz polls drawn from a bank of true facts (50M ZYN cap, local keys, testnet only, open source, basics). Scoring is server-side from `poll_answer`: one attempt per user per question, 20 Zyron Points per correct answer, at most 60 per quiz, and only for existing game players. Polls are stopped after 6 days.
+- **Welcome note** for new members, with Play ZYRON NODE and Phone wallet (testnet) buttons. At most one every 90 seconds and 40 a day, and it deletes itself after 2 minutes. That self-deletion is the only message the bot ever deletes.
+- `/stats`, `/wallet`, `/roadmap` and `/help` are registered with `setMyCommands`. In groups each command answers at most once per 30 seconds.
+- `GET /api/admin/community` reports the bot's status and rights in the group and lists anything missing. Admin rights are not required: the bot only needs to send messages and polls. `POST /api/admin/community/leaderboard` with `{"dryRun": true}` previews the board; `{"dryRun": false}` posts it once for the UTC day.
+
+## Team accounts
+
+Team/project accounts (`players.team_account`, migration `006_team_accounts.sql`) can play but are never ranked or
+reward-eligible: they are filtered from the in-app boards, group boards, invite contest, quiz rewards, the season
+snapshot and the activity-ledger cutoff. Mark them with `TEAM_TELEGRAM_IDS` or `POST /api/admin/players/{id}/team`
+(see `docs/ADMIN.md`). Their app shows "Team account, not ranked".
+
+## Hosting: instant open
+
+Render Free web services sleep after 15 minutes without inbound traffic and need 30–60 s to start. Play Zyron
+therefore opens from an always-on static host, and only the API runs on the `zyron-node` web service:
+
+| Piece | Where | Notes |
+|---|---|---|
+| Play Zyron shell (HTML, JS, CSS, images) | GitHub Pages, `https://zyron249.github.io/-zyronchain/` | Built by `scripts/build_static.py`, deployed by `.github/workflows/telegram-game-pages.yml` on merge to `main`. Never sleeps. |
+| Game API + bot | Render web service `zyron-node` (`https://zyron-node.onrender.com`) | Unchanged Docker service. Still serves `/` for older links. |
+| Keep-warm | `.github/workflows/telegram-game-keep-warm.yml` | Pings `/healthz` (no database) every 10 minutes. Best effort. |
+
+How a cold open looks: the branded splash paints from the static host at once; `frontend/wake.js` pings
+`/healthz` and, after 1.2 s without an answer, shows **Waking server…** with a progress bar, elapsed time and
+automatic retries. Start node and every other action stay disabled until the API answers. Nothing is ever
+sent to game endpoints before that.
+
+Security of the split:
+
+- The API sends CORS headers only to origins in `cors_origins`: the origin of `MINIAPP_URL` plus optional
+  `CORS_ORIGINS` (comma-separated, https in production, no wildcard). Admin routes never answer cross-origin.
+  No cookies or credentials mode; auth stays in the `Authorization: tma <initData>` header and the HMAC check
+  with the bot token stays server-side.
+- The static page carries a meta CSP: `default-src 'none'`, scripts from itself and `telegram.org`, and
+  `connect-src` limited to the API origin. It holds no secrets.
+- The bot points the menu button and every Play Zyron button at `MINIAPP_URL`. On any hosted deployment
+  (`ENVIRONMENT=production`, or any Render service, which always sets `RENDER=true`) it defaults to the GitHub
+  Pages URL, so no Render environment change is needed. Set `MINIAPP_URL` only to move the shell.
+
+Telegram (BotFather) notes: menu and inline Play buttons are set by the bot itself on start. If a Main Mini App
+or a direct-link Mini App was configured in BotFather, update its URL there to
+`https://zyron249.github.io/-zyronchain/` (BotFather → `/mybots` → @ZyronNodeBot → Bot Settings → Configure Mini
+App / Menu Button). `/setdomain` is only for the Login Widget and is not needed.
+
+Budget: one always-on Free web service uses about 744 of the 750 free instance hours per Render workspace per
+month, so other Free web services in the same workspace would push the total over the limit. GitHub Actions
+minutes are free for public repositories; scheduled runs can be delayed by several minutes.
+
 ## Tests
 
 ```sh
@@ -80,6 +147,8 @@ The root ZyronChain pytest suite ignores this directory. Game CI is `.github/wor
 |---|---|
 | `src/zyron_node/` | API, bot, economy, RPC client |
 | `frontend/` | Mobile Mini App and admin page |
+| `frontend/blocks.js` | Block chain on the home orbit ring: glowing isometric blocks, inline SVG, transform-only CSS motion, moves only while the node is RUNNING, snaps a block per completed cycle, parked under reduced motion |
+| `frontend/builders.js` | Builders beside the orbit ring: flat-vector characters with helmet lights and pickaxes that swing while the node is RUNNING; each completed cycle sends a carved block to the head of the chain |
 | `migrations/` | PostgreSQL schema, including Season 0 |
 | `docs/L1_FINDINGS.md` | Phase 0 chain notes |
 | `docs/THREAT_MODEL.md` | Abuse cases and controls |

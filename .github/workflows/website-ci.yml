@@ -4,11 +4,15 @@ on:
   pull_request:
     paths:
       - 'website/**'
+      - 'tools/site/**'
+      - 'docs/l1-launch-authorization.json'
       - '.github/workflows/website-ci.yml'
   push:
     branches: [main]
     paths:
       - 'website/**'
+      - 'tools/site/**'
+      - 'docs/l1-launch-authorization.json'
       - '.github/workflows/website-ci.yml'
 
 permissions:
@@ -17,7 +21,7 @@ permissions:
 jobs:
   production-website:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -32,8 +36,22 @@ jobs:
         run: |
           node --check website/app.js
           node --check website/release.js
+          node --check website/wallet-core.js
           node --check website/wallet.js
           node --check website/validator.js
+          node --check website/app/app.js
+          node --check website/app/zyron-wallet-core.js
+          node --check website/app/sw.js
+          node --check website/app/vendor/noble-scure.js
+          node --check website/app/vendor/qr.js
+      - name: Wallet derivation vectors and generated-script tests
+        run: node website/test-wallet-core.mjs
+      - name: Static network status component is current (build-time, never live RPC)
+        run: node tools/site/network-status.mjs --check
+      - name: Site CSS/JS references carry current content versions
+        run: node tools/site/stamp-site.mjs --check
+      - name: Site regression tests (English-only, network-status honesty, naming, mining retired, build id, SEO)
+        run: node tools/site/test-site.mjs
       - name: Verify production website, wallet and validator contracts
         shell: bash
         run: |
@@ -44,7 +62,7 @@ jobs:
 
           const required = [
             'website/index.html',
-            'website/styles.css',
+            'website/site.css',
             'website/app.js',
             'website/release.js',
             'website/README.md',
@@ -52,12 +70,17 @@ jobs:
             'website/sitemap.xml',
             'website/favicon.svg',
             'website/logo.svg',
-            'website/zyron-gold.png',
             'website/brand-mark.png',
+            'website/brand/zyron-wordmark.png',
+            'website/brand/zyron-banner-1600.jpg',
+            'website/brand/zyron-banner-1600.webp',
+            'website/brand/og-image.jpg',
+            'website/brand/icon-512.png',
+            'website/favicon.ico',
             'website/favicon-32.png',
             'website/apple-touch-icon.png',
             'website/icon-192.png',
-            'website/site.webmanifest',
+            'website/site-manifest.json',
             'website/wallet.html',
             'website/wallet.css',
             'website/wallet.js',
@@ -74,7 +97,7 @@ jobs:
           }
 
           const html = fs.readFileSync('website/index.html', 'utf8');
-          const css = fs.readFileSync('website/styles.css', 'utf8');
+          const siteCss = fs.readFileSync('website/site.css', 'utf8');
           const js = fs.readFileSync('website/app.js', 'utf8');
           const releaseJs = fs.readFileSync('website/release.js', 'utf8');
           const walletHtml = fs.readFileSync('website/wallet.html', 'utf8');
@@ -89,7 +112,7 @@ jobs:
           const sitemap = fs.readFileSync('website/sitemap.xml', 'utf8');
           const favicon = fs.readFileSync('website/favicon.svg', 'utf8');
           const logo = fs.readFileSync('website/logo.svg', 'utf8');
-          const manifest = JSON.parse(fs.readFileSync('website/site.webmanifest', 'utf8'));
+          const manifest = JSON.parse(fs.readFileSync('website/site-manifest.json', 'utf8'));
 
           const releaseMatch = releaseJs.match(/const RELEASE_REF = '([0-9a-f]{40})';/);
           if (!releaseMatch) throw new Error('Canonical website release reference is missing or malformed');
@@ -102,12 +125,13 @@ jobs:
           execFileSync('git', ['merge-base', '--is-ancestor', releaseRef, 'HEAD'], { stdio: 'ignore' });
 
           for (const marker of [
-            './styles.css',
+            './site.css',
             './app.js',
             './favicon-32.png',
             './apple-touch-icon.png',
             './brand-mark.png',
-            './zyron-gold.png',
+            './brand/zyron-banner-1600.jpg',
+            'https://zyronchain.com/brand/og-image.jpg',
             './wallet.html',
             './validator.html',
             'ZyronChain',
@@ -119,21 +143,37 @@ jobs:
             'not a hosted testnet',
             '50M ZYN',
             'Create a wallet',
-            'No analytics cookies'
+            'No analytics cookies',
+            'Verifiable Layer-1 infrastructure',
+            'Phone Wallet — Testnet',
+            'Desktop Wallet Setup',
+            'Validator Launchpad',
+            'Buy / Sell not activated'
           ]) {
             if (!html.includes(marker)) throw new Error(`Website HTML missing required marker: ${marker}`);
           }
+          // Homepage information architecture: sections appear in this order.
+          const order = ['id="overview"', 'id="protocol"', 'id="security"', 'id="zyn"', 'id="wallets"', 'id="validators"', 'id="developers"', 'id="network-status"', 'id="docs"'];
+          const positions = order.map((marker) => html.indexOf(marker));
+          if (positions.some((p) => p < 0) || positions.some((p, i) => i > 0 && p < positions[i - 1])) {
+            throw new Error(`Homepage sections missing or out of order: ${order.join(' > ')}`);
+          }
+          if (/<button[^>]*>\s*Buy \/ Sell not activated/.test(html) && !/<button[^>]*disabled[^>]*>\s*Buy \/ Sell not activated/.test(html)) {
+            throw new Error('Buy / Sell control must stay disabled');
+          }
+          if (/mining\.html/.test(html + walletHtml + validatorHtml)) throw new Error('The retired mining page must not be linked');
           if (/\bV[1-9]\b/.test(html)) {
             throw new Error('Homepage validator visualization must not look like protocol-version labels');
           }
 
           for (const marker of [
-            './styles.css',
+            './site.css',
             './wallet.css',
             './release.js',
             './wallet.js',
             './brand-mark.png',
-            'ZyronChain Wallet Setup',
+            'Desktop Wallet Setup',
+            'Phone Wallet — Testnet',
             'LOCAL-ONLY WALLET SETUP',
             'NO SECRET IN BROWSER',
             'PRIVATE KEY STAYS LOCAL',
@@ -146,6 +186,7 @@ jobs:
           }
 
           for (const marker of [
+            './site.css',
             './validator.css',
             './release.js',
             './validator.js',
@@ -162,13 +203,14 @@ jobs:
             if (!validatorHtml.includes(marker)) throw new Error(`Validator launchpad missing required marker: ${marker}`);
           }
 
-          const walletReleaseIndex = walletHtml.indexOf('<script src="./release.js"></script>');
-          const walletLauncherIndex = walletHtml.indexOf('<script src="./wallet.js"></script>');
+          const scriptAt = (source, file) => source.search(new RegExp(`<script src="\\./${file.replace('.', '\\.')}(\\?v=[0-9a-f]{12})?"></script>`));
+          const walletReleaseIndex = scriptAt(walletHtml, 'release.js');
+          const walletLauncherIndex = scriptAt(walletHtml, 'wallet.js');
           if (walletReleaseIndex < 0 || walletLauncherIndex < 0 || walletReleaseIndex > walletLauncherIndex) {
             throw new Error('Wallet must load canonical release metadata before wallet.js');
           }
-          const validatorReleaseIndex = validatorHtml.indexOf('<script src="./release.js"></script>');
-          const validatorLauncherIndex = validatorHtml.indexOf('<script src="./validator.js"></script>');
+          const validatorReleaseIndex = scriptAt(validatorHtml, 'release.js');
+          const validatorLauncherIndex = scriptAt(validatorHtml, 'validator.js');
           if (validatorReleaseIndex < 0 || validatorLauncherIndex < 0 || validatorReleaseIndex > validatorLauncherIndex) {
             throw new Error('Validator must load canonical release metadata before validator.js');
           }
@@ -215,10 +257,12 @@ jobs:
           for (const loc of [
             '<loc>https://zyronchain.com/</loc>',
             '<loc>https://zyronchain.com/wallet.html</loc>',
-            '<loc>https://zyronchain.com/validator.html</loc>',
-            '<loc>https://zyronchain.com/mining.html</loc>'
+            '<loc>https://zyronchain.com/validator.html</loc>'
           ]) {
             if (!sitemap.includes(loc)) throw new Error(`sitemap.xml missing ${loc}`);
+          }
+          if (sitemap.includes('mining.html') || !miningHtml.includes('<meta name="robots" content="noindex" />')) {
+            throw new Error('The retired mining page must stay noindex and out of the sitemap');
           }
 
           if (!favicon.includes('<svg') || !favicon.includes('ZyronChain')) {
@@ -228,8 +272,9 @@ jobs:
             throw new Error('ZyronChain production logo contract is invalid');
           }
           for (const file of [
-            'website/zyron-gold.png',
             'website/brand-mark.png',
+            'website/brand/zyron-wordmark.png',
+            'website/brand/icon-512.png',
             'website/favicon-32.png',
             'website/apple-touch-icon.png',
             'website/icon-192.png'
@@ -247,7 +292,7 @@ jobs:
             throw new Error('Web manifest contract is invalid');
           }
 
-          if (!css.includes('@media (max-width: 720px)') || !css.includes('@media (prefers-reduced-motion: reduce)')) {
+          if (!siteCss.includes('@media (max-width: 720px)') || !siteCss.includes('@media (prefers-reduced-motion: reduce)')) {
             throw new Error('Website responsive/accessibility boundaries are missing');
           }
           if (!walletCss.includes('@media (max-width: 720px)') || !walletCss.includes('@media (prefers-reduced-motion: reduce)')) {
@@ -257,7 +302,14 @@ jobs:
             throw new Error('Validator launchpad mobile boundary is missing');
           }
 
-          const allStaticCss = [css, walletCss, validatorCss, miningCss].join('\n');
+          const allStaticCss = [siteCss, walletCss, validatorCss, miningCss].join('\n');
+          // One canonical token system: the retired layers must not come back.
+          for (const legacy of ['styles.css', 'professional.css', 'brand.css', 'home.css', 'hologram.css']) {
+            if (fs.existsSync(path.join('website', legacy))) throw new Error(`Retired stylesheet website/${legacy} is back; use site.css tokens`);
+          }
+          for (const [file, source] of [['wallet.css', walletCss], ['validator.css', validatorCss], ['mining.css', miningCss]]) {
+            if (/:root\s*\{/.test(source)) throw new Error(`${file} must not define its own :root tokens (site.css owns them)`);
+          }
           const definedCssVars = new Set([...allStaticCss.matchAll(/--([a-z0-9-]+)\s*:/gi)].map((match) => match[1]));
           const usedCssVars = new Set([...allStaticCss.matchAll(/var\(--([a-z0-9-]+)/gi)].map((match) => match[1]));
           const missingCssVars = [...usedCssVars].filter((name) => !definedCssVars.has(name));
@@ -291,7 +343,7 @@ jobs:
                 continue;
               }
               if (!href.startsWith('./')) continue;
-              const [relative, fragment] = href.split('#', 2);
+              const [relative, fragment] = href.replace(/\?v=[0-9a-f]{12}(?=#|$)/, '').split('#', 2);
               const targetName = relative === './' || relative === './index.html' ? 'index.html' : relative.slice(2);
               const targetPath = path.join('website', targetName);
               if (!fs.existsSync(targetPath)) throw new Error(`${file} has broken local link: ${href}`);
@@ -307,7 +359,7 @@ jobs:
             for (const match of source.matchAll(/\bsrc=["']([^"']+)["']/gi)) {
               const src = match[1];
               if (!src.startsWith('./')) continue;
-              const targetPath = path.join('website', src.slice(2));
+              const targetPath = path.join('website', src.slice(2).replace(/\?v=[0-9a-f]{12}$/, ''));
               if (!fs.existsSync(targetPath)) throw new Error(`${file} has broken local asset: ${src}`);
             }
           }
@@ -316,7 +368,40 @@ jobs:
             throw new Error('Main browser JavaScript must not bind to validator RPC');
           }
 
-          for (const [name, source] of [['release', releaseJs], ['wallet', walletJs], ['validator', validatorJs]]) {
+          const walletCoreJs = fs.readFileSync('website/wallet-core.js', 'utf8');
+          if (scriptAt(walletHtml, 'wallet-core.js') < 0 || scriptAt(walletHtml, 'wallet-core.js') > scriptAt(walletHtml, 'wallet.js')) {
+            throw new Error('Wallet must load wallet-core.js before wallet.js');
+          }
+          for (const [name, source] of [['wallet.js', walletJs], ['wallet-core.js', walletCoreJs]]) {
+            // Browser wallet code may hash public data only: no key generation, signing, encryption or key import.
+            if (/getRandomValues|generateKey|importKey|deriveKey|deriveBits|subtle\.(sign|encrypt|decrypt|wrapKey|unwrapKey)|secp256k1\.sign|FileReader/.test(source)) {
+              throw new Error(`${name} must not generate, import, sign with or decrypt key material in the browser`);
+            }
+          }
+          // Browser key handling is allowed ONLY inside the phone wallet app (website/app/**), which is a
+          // deliberate, owner-approved exception: keys are generated with crypto.getRandomValues, kept in memory
+          // only while unlocked and persisted solely as a scrypt + AES-256-GCM vault. That app has its own,
+          // stricter CI (website-pwa-wallet.yml: CSP, SRI, no network APIs, l1 equality, browser tests).
+          // Every other browser script on the site must stay free of key generation, signing, decryption and storage.
+          const walkJs = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) return full === path.join('website', 'app') ? [] : walkJs(full);
+            return entry.name.endsWith('.js') ? [full] : [];
+          });
+          for (const file of walkJs('website')) {
+            const source = fs.readFileSync(file, 'utf8');
+            if (/getRandomValues|generateKey|importKey|deriveKey|deriveBits|subtle\.(sign|encrypt|decrypt|wrapKey|unwrapKey)|secp256k1\.sign|FileReader/.test(source)) {
+              throw new Error(`${file}: browser key material handling is only allowed in website/app/** (PWA wallet exception)`);
+            }
+            if (/indexedDB|localStorage|sessionStorage/.test(source)) {
+              throw new Error(`${file}: browser storage is only allowed in website/app/** (encrypted PWA vault)`);
+            }
+          }
+          for (const required of ['website/app/index.html', 'website/app/app.js', 'website/app/zyron-wallet-core.js', 'website/app/sw.js', 'website/app/manifest.json', 'website/app/vendor/VENDOR.json']) {
+            if (!fs.existsSync(required)) throw new Error(`Missing PWA wallet file: ${required}`);
+          }
+
+          for (const [name, source] of [['release', releaseJs], ['wallet', walletJs], ['wallet-core', walletCoreJs], ['validator', validatorJs]]) {
             if (/fetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(/.test(source)) {
               throw new Error(`${name} browser JavaScript must remain offline-only`);
             }
@@ -335,13 +420,24 @@ jobs:
           for (const marker of [
             'git clone https://github.com/zyron249/-zyronchain.git',
             'checkout --detach',
-            'keygen --out wallet.json --password-file wallet.password',
-            'chmod 600 wallet.json wallet.password',
-            'Read-Host "Choose wallet password (12+ chars)" -AsSecureString',
+            'keygen --out wallet.json --password-file "$PASSWORD_FILE"',
+            'keygen --out wallet.json --password-file $PasswordFile',
+            'trap cleanup_secret EXIT',
+            'shred -u',
+            'Remove-PasswordFile',
+            'ZYRON_WALLET_PASSWORD',
+            'PASSWORD_CHECK_JS',
+            'chmod 600 wallet.json',
+            'Read-PlainSecure "Choose wallet password (12+ chars)"',
+            '-AsSecureString',
             'navigator.clipboard',
             'new Blob'
           ]) {
             if (!walletJs.includes(marker)) throw new Error(`Wallet launcher missing security invariant: ${marker}`);
+          }
+          // Generated wallet scripts must never persist a password file next to the keystore.
+          if (/>\s*wallet\.password\b/.test(walletJs) || /Password file:/.test(walletJs) || /WriteAllText\(\(Join-Path \(Get-Location\) "wallet\.password"\)/.test(walletJs)) {
+            throw new Error('Wallet scripts must not leave wallet.password on disk');
           }
 
           for (const marker of [
@@ -391,3 +487,11 @@ jobs:
 
           console.log(`website-wallet-validator-contract-ok release=${releaseRef}`);
           NODE
+      - name: Install pinned browser tooling
+        working-directory: tools/pwa-wallet
+        run: npm ci
+      - name: Site layout tests (headless Chrome, 320-1920 px + landscape, no-JS, keyboard, reduced motion)
+        run: |
+          CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          export CHROME_PATH
+          node tools/site/test-layout.mjs

@@ -32,14 +32,28 @@ node dist/src/cli.js node --genesis genesis.json --data ./data \
   --validator-public-key <PINNED_VALIDATOR_PUBLIC_KEY> \
   --p2p-listen /ip4/0.0.0.0/tcp/9140 \
   --p2p-peer /ip4/<BOOTSTRAP_IP>/tcp/9140/p2p/<PINNED_PEER_ID> \
-  --p2p-peer-group <PINNED_PEER_ID>=<INDEPENDENT_FAILURE_DOMAIN>
+  --p2p-peer-group <PINNED_PEER_ID>=<INDEPENDENT_FAILURE_DOMAIN> \
+  --p2p-consensus-peer <OTHER_VALIDATOR_PEER_ID>
 ```
+
+Repeat `--p2p-consensus-peer` for every peer that may deliver native consensus messages (each other validator and any block relay you operate). Without it the node accepts native consensus messages from any peer that knows the public chain identity and logs a startup warning; with it, consensus requests from other peers are refused before any validation work, while transaction gossip stays open.
 
 Provision the remote-signer token out of band as a regular `0600` secret file, rotate it under the signer provider's audited procedure, and never place it in command-line values, environment variables, logs, images or repository content. Use multiple bootstrap peers sourced from independent operators/failure domains. Do not invent failure-domain labels to satisfy diversity selection.
 
 ## 3. Required health telemetry
 
-`GET /healthz` is process liveness only. `GET /readyz` returns `503` and machine-readable reasons when persistence is unhealthy or validator signing has fail-stopped after a clock rollback; remove an unready node from service and investigate rather than restarting blindly. `GET /metrics` is bounded structured JSON intended for a local collector. At minimum collect:
+`GET /healthz` is process liveness only. `GET /readyz` returns `503` and machine-readable reasons; remove an unready node from service and investigate rather than restarting blindly. Reasons:
+
+| Reason | Meaning |
+|---|---|
+| `persistence-unhealthy` | durable chain writes have fail-stopped; restart required |
+| `signing-journal-unhealthy` | the validator signing journal has fail-stopped |
+| `validator-clock-unhealthy` | validator signing fail-stopped after a clock rollback; restart only after clock repair |
+| `unsupported-next-protocol` | the protocol version scheduled for the next height is not supported by this binary; upgrade the binary |
+| `stale-tip` | no block finalized for longer than `--ready-max-tip-age-ms` (default 600000, at least one block interval): the network is stalled or this node is partitioned or behind |
+| `consensus-catching-up` | after a long stall this legacy validator is still rebuilding the skip-certificate chain up to the current round (bounded work per tick, see `docs/security/consensus-round-catchup-bound.md`); expected to clear on its own |
+
+A network-wide stall no longer becomes permanent after about 33 minutes: once enough validators are back, legacy production resumes automatically after the catch-up described above, and v6 resumes within a few rounds. `GET /metrics` is bounded structured JSON intended for a local collector. At minimum collect:
 
 | Field | Meaning | Alert use |
 |---|---|---|
@@ -55,12 +69,43 @@ Provision the remote-signer token out of band as a regular `0600` secret file, r
 | `validatorCount` | active/next validator-set size | topology/config sanity |
 | `persistenceHealthy` | process may continue durable commits | **page immediately if false** |
 | `validatorClockHealthy` | validator signing clock has not moved backward beyond tolerance | **page immediately if false; restart only after clock repair** |
+| `roundSkipVotes.rejectedVotes`, `roundSkipVotes.rejectedVotesByReason.*` | cumulative round-skip votes this node discarded while assembling a fallback-round certificate as proposer, by reason | alert on any `invalid-signature`, `unknown-voter` or `missing-protocol-version` increase; see "Consensus round-skip diagnostics" below |
+| `roundSkipVotes.quorumFailures` | cumulative attempts in which this node, as fallback-round proposer, could not assemble a skip quorum for a preceding round | correlate with `finalizedBlockAgeSeconds`; repeated increases at a stalled height indicate a view-change stall |
+| `roundSkipVotes.suppressedLogLines` | round-skip diagnostic log lines dropped by the per-round log cap | evidence that the warn log is incomplete for a round; read counters instead |
 | `firstStoredHeight` | local history-retention boundary | archival/pruning verification |
 | `recoveredFromCheckpointHeight` | startup recovery fast-path evidence | recovery audit |
 | `recoveredStateV2FromCorruption` | derived state was quarantined/rebuilt | investigate disk/state integrity |
 | `uptimeSeconds` | current process lifetime | restart-loop detection |
 
 Infrastructure collectors must also record process RSS/CPU, disk free space/latency/errors, network connections/traffic, signer latency/error rate and independent peer count/failure-domain distribution.
+
+### Consensus round-skip diagnostics (`roundSkipVotes`)
+
+When the round-0 proposer for a height misses its slot, the fallback-round proposer collects signed round-skip votes for every preceding round and must reach a strictly-greater-than-2/3 skip quorum before it may propose. Each vote is verified under the protocol version active at the proposed height (`protocolVersionAt(H+1)`); from protocol v3 onward skip votes are signed with that version's domain separation. Votes that fail verification are discarded and recorded in `GET /metrics` under `roundSkipVotes`:
+
+| Field | Contents |
+|---|---|
+| `rejectedVotes` | total discarded skip votes (sum of all reasons) |
+| `rejectedVotesByReason.invalid-signature` | signature does not verify under the active protocol version's signing domain |
+| `rejectedVotesByReason.unknown-voter` | voter is not in the validator set for the proposed height |
+| `rejectedVotesByReason.mismatched-vote` | vote is for a different chain, height, round or previous block hash than the round being certified |
+| `rejectedVotesByReason.missing-protocol-version` | verification was invoked without an explicit protocol version (fail-closed guard; indicates a software defect) |
+| `rejectedVotesByReason.malformed-vote` | any other structural rejection |
+| `quorumFailures` | fallback-round proposal attempts abandoned because the valid skip votes for a preceding round did not reach quorum |
+| `suppressedLogLines` | diagnostic warn lines dropped by the log-rate cap |
+
+The counters are per process, cumulative since start and not persisted; they reset on restart. They are only incremented on the node that is the expected proposer for a fallback round (round 1 or later), so a healthy network with no missed proposers reports all zeros.
+
+Each rejection and each quorum failure may also emit one warn line (`Rejected round skip vote: ...` or `Round skip certificate incomplete: ...`). Logging is rate-capped: at most 4 warn lines per (height, round), with at most 128 (height, round) keys tracked at a time (the oldest key is evicted first). Lines beyond the cap are counted in `suppressedLogLines` instead of being written. A log line contains only the height, round, protocol version, the voter's validator address (or `unknown` if the field is not a well-formed address), the rejection reason and a sanitized error message truncated to 160 printable characters. Public keys, signatures and raw vote payloads are never logged. Diagnostics never affect consensus progress.
+
+Operator guidance:
+
+- A rising `invalid-signature` count under protocol v3 or later almost always means a protocol-version mismatch: a peer is signing under a different version than the one activated at this height (it has not applied the governance `protocol_upgrade`, runs a release that predates it, or is on a different chain configuration). Compare `GET /protocol` across validators before suspecting key compromise; under v1/v2 it more likely indicates a misconfigured or rotated validator key.
+- A rising `unknown-voter` count means peers are answering with a key that is not in the validator set for the proposed height: check validator-set transitions, key rotation state and peer configuration.
+- A rising `mismatched-vote` count means peers are voting for a different previous block hash or round: the voter is lagging, ahead, or on a different tip. Compare finalized tips at the same height; disagreement is a page-level event (see below).
+- Any `missing-protocol-version` increase is a software defect, not a network condition. Preserve logs and report it.
+- Repeated `quorumFailures` with a rising `finalizedBlockAgeSeconds` at one height means the network cannot certify the missed round. Check how many validators are reachable and healthy. If enough validators are healthy but the stall persists, validators may have split between attesting the round-0 proposal and voting to skip it (audit finding F-01); the warn line then shows `Round skip quorum not reached: k/n`. Preserve signing journals, metrics and logs and escalate. Never edit, truncate or delete a signing journal to restore liveness: the journal is the equivocation guard.
+- An increase in `suppressedLogLines` means the warn log under-reports that round; use the counters as the source of truth.
 
 ### Provisional testnet SLO/alerts
 
@@ -75,6 +120,7 @@ These are engineering rehearsal thresholds, not a mainnet governance decision:
 - Never raise the frame budget, stream caps or timeouts during an incident merely to restore liveness. Preserve metrics/logs, isolate abusive peers at the network edge under the reviewed policy, and investigate before a controlled restart.
 - Page if `persistenceHealthy` or `validatorClockHealthy` is false, the process repeatedly restarts, or derived-state corruption recovery occurs unexpectedly.
 - Page if independently observed finalized tips disagree at the same height.
+- Alert on any increase of `roundSkipVotes.rejectedVotesByReason.invalid-signature`, `unknown-voter` or `missing-protocol-version`; page when `roundSkipVotes.quorumFailures` keeps increasing while finalized block age exceeds four expected block intervals.
 - Warn when finalized block age exceeds two expected block intervals; page when it exceeds four. Diagnose quorum/partition/signer health before taking action.
 - Warn before disk capacity can reach exhaustion within the operator's measured growth window; page on filesystem I/O/fsync errors.
 - Alert on sustained peer diversity collapse (all usable peers in one operator/provider/subnet failure domain).
@@ -135,6 +181,7 @@ Record drill duration, software SHA, checkpoint anchors and all deviations. Run 
 1. Stop automated restart loops; preserve logs and exact node/signer state.
 2. Compare height/tip across independent operators and failure domains.
 3. Check signer availability, validator-set schedule, protocol activation height and clock health.
+   Read `roundSkipVotes` in `GET /metrics` and the `Round skip certificate incomplete` warn lines on the fallback-round proposer to see whether the missed round cannot be certified and why (see "Consensus round-skip diagnostics").
 4. Do **not** delete journals, lower quorum rules, fabricate skip votes, or adopt an untrusted checkpoint.
 5. Recover failed nodes from the last independently anchored checkpoint and validated suffix if storage is suspect.
 6. Resume signing only after operators agree on the last finalized tip and the incident commander records the recovery decision.
@@ -148,6 +195,8 @@ Treat this as a critical consensus incident. Freeze signing/upgrade automation, 
 Disable the compromised signer without deleting its journal, preserve HSM/signer audit logs, and use the existing quorum-authorized delayed validator-set rotation procedure from an uncompromised environment. Emergency timing/admission rules are governance decisions and must not be improvised by node software.
 
 ### Disk/state corruption
+
+Power loss or a host crash during an append can leave a torn final record (no trailing newline, not valid JSON) in `signing-journal.ndjson` or `blocks.ndjson`. Every append is fsynced before it takes effect (a journal reservation before its signature is released, a block line before the block is applied), so such a record was never acknowledged. On startup the node truncates it durably and logs `Dropped a torn trailing ... record`; for a torn protocol v6 lock/commit append the lock row of that same append is dropped with it. A final journal row that is complete but lost only its newline is kept and re-terminated. Anything else stays fatal: a terminated line that does not parse, corruption before the last record, or a parsable but invalid row. Do not edit those files by hand: preserve copies, investigate the storage, and for the block log restore to a new directory from an independently anchored checkpoint. Treat repeated torn-record warnings as a storage or power-path fault.
 
 If `persistenceHealthy` becomes false, stop signing and restart only after preserving forensic copies. Derived State-v2 corruption may be quarantined and rebuilt only after authoritative finalized history/checkpoint replay succeeds. If finalized/pruned authoritative material is corrupt, restore to a new directory from an independently anchored checkpoint; never patch hashes or records in place.
 

@@ -8,12 +8,12 @@ The metric is **lifetime Zyron Points** (`players.lifetime_points`). That counte
 
 Thresholds live in `src/zyron_node/tiers.py`:
 
-| Tier | Turkish | Lifetime Zyron Points |
-|---|---|---:|
-| Bronze | Bronz | 250 |
-| Silver | Gümüş | 2,500 |
-| Gold | Altın | 15,000 |
-| Diamond | Elmas | 60,000 |
+| Tier | Lifetime Zyron Points |
+|---|---:|
+| Bronze | 250 |
+| Silver | 2,500 |
+| Gold | 15,000 |
+| Diamond | 60,000 |
 
 Below 250 the operator is unranked. A new operator earns 1 point per cycle and starts with 100 energy, so Bronze is past the first full cell plus the day-1 chest, not a single tap. Silver is about ten times that. Gold and Diamond stay high because cycle reward is capped at 250.
 

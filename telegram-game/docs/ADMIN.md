@@ -9,6 +9,7 @@ The API is disabled with HTTP 503 when `ADMIN_TOKEN` is empty. In production the
 - Overview: operators, outstanding points, open flags, active season.
 - Search by Telegram id, username, or referral code.
 - Ban or unban. Banned operators cannot cycle, upgrade, claim, or link.
+- Mark or unmark a team account (`POST /api/admin/players/{id}/team` with `{"team": true|false}`; `GET /api/admin/team` lists them). Team accounts can still play, but they are left out of the in-app leaderboards, the daily and weekly group boards, the invite contest, quiz rewards, the season snapshot and the distribution cutoff/ledger exports. Their app shows "Team account, not ranked". `TEAM_TELEGRAM_IDS` (comma-separated Telegram ids) adds the flag on every startup.
 - Resolve a flag. Resolving subtracts that flag's weight from the abuse score and does not delete points.
 - Export a Season snapshot. The file has `conversionRate: null` and `automaticPayout: false`. It omits Telegram ids.
 - Export a distribution cutoff from the activity ledger (`GET /api/admin/ledger/cutoff` or `cutoff.csv`). This file is also not a payout. It includes Telegram ids, lifetime points, tier, and rank at the cutoff so a later distribution can be checked. See `docs/TIERS.md`.

@@ -5,11 +5,19 @@ on:
     paths:
       - 'website/**'
       - '.github/workflows/website-release-pin-ci.yml'
+      - 'l1/**'
+      - 'WHITEPAPER.md'
+      - 'docs/L1_THREAT_MODEL.md'
+      - 'docs/STANDALONE_L1_READINESS.md'
   push:
     branches: [main]
     paths:
       - 'website/**'
       - '.github/workflows/website-release-pin-ci.yml'
+      - 'l1/**'
+      - 'WHITEPAPER.md'
+      - 'docs/L1_THREAT_MODEL.md'
+      - 'docs/STANDALONE_L1_READINESS.md'
 
 permissions:
   contents: read
@@ -29,6 +37,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
         shell: bash
         run: |
           set -euo pipefail
@@ -40,7 +49,26 @@ jobs:
 
           git cat-file -e "${RELEASE_REF}^{commit}"
 
+          # The pin is enforced when the website itself changes. A change that
+          # touches only canonical L1/security paths cannot also move the pin to
+          # its own base without rewriting the website in every L1 PR, so it is
+          # reported as release-pin drift (warning + job summary) instead.
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            CHANGE_BASE="$PR_BASE_SHA"
+          else
+            CHANGE_BASE="$PUSH_BEFORE_SHA"
+          fi
+          WEBSITE_CHANGED=1
+          if [[ "$CHANGE_BASE" =~ ^[0-9a-f]{40}$ && ! "$CHANGE_BASE" =~ ^0{40}$ ]]; then
+            git cat-file -e "${CHANGE_BASE}^{commit}"
+            if ! WEBSITE_DIFF="$(git diff --name-only "$CHANGE_BASE"..HEAD -- 'website/**')"; then
+              echo "Unable to determine website changes against $CHANGE_BASE" >&2
+              exit 1
+            fi
+            [[ -n "$WEBSITE_DIFF" ]] || WEBSITE_CHANGED=0
+          fi
+
+          if [[ "$EVENT_NAME" == "pull_request" && "$WEBSITE_CHANGED" == "1" ]]; then
             if [[ ! "$PR_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
               echo "Missing pull-request base SHA" >&2
               exit 1
@@ -51,11 +79,25 @@ jobs:
             fi
           fi
 
-          CHANGED_L1="$(git diff --name-only "$RELEASE_REF"..HEAD -- 'l1/**' 'WHITEPAPER.md' 'docs/L1_THREAT_MODEL.md' 'docs/STANDALONE_L1_READINESS.md' || true)"
-          if [[ -n "$CHANGED_L1" ]]; then
-            echo "Website pin does not cover canonical L1/security changes:" >&2
-            printf '%s\n' "$CHANGED_L1" >&2
+          if ! CHANGED_L1="$(git diff --name-only "$RELEASE_REF"..HEAD -- 'l1/**' 'WHITEPAPER.md' 'docs/L1_THREAT_MODEL.md' 'docs/STANDALONE_L1_READINESS.md')"; then
+            echo "Unable to compare the website pin $RELEASE_REF with HEAD" >&2
             exit 1
+          fi
+          if [[ -n "$CHANGED_L1" ]]; then
+            if [[ "$WEBSITE_CHANGED" == "1" ]]; then
+              echo "Website pin does not cover canonical L1/security changes:" >&2
+              printf '%s\n' "$CHANGED_L1" >&2
+              exit 1
+            fi
+            DRIFT_COUNT="$(printf '%s\n' "$CHANGED_L1" | wc -l | tr -d ' ')"
+            echo "::warning title=Website release pin drift::website/release.js pins $RELEASE_REF; $DRIFT_COUNT canonical L1/security file(s) changed since. The next website change must move the pin."
+            {
+              echo "### Website release pin drift"
+              echo "website/release.js pins \`$RELEASE_REF\`. Canonical L1/security files changed since then:"
+              echo '```'
+              printf '%s\n' "$CHANGED_L1"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
           node <<'NODE'

@@ -38,6 +38,8 @@ class Settings:
     telegram_bot_token: str
     telegram_bot_username: str
     webapp_url: str
+    miniapp_url: str
+    cors_origins: tuple[str, ...]
     admin_token: str
     init_data_max_age_seconds: int
     dev_auth_bypass: bool
@@ -52,6 +54,10 @@ class Settings:
     host: str
     port: int
     cycle_min_interval_ms: int
+    reminders_enabled: bool = True
+    community_chat: str = "@zyronchain"
+    community_posts_enabled: bool = True
+    team_telegram_ids: tuple[int, ...] = ()
 
     def redacted(self) -> dict[str, object]:
         return {
@@ -60,24 +66,89 @@ class Settings:
             "redis": bool(self.redis_url),
             "botConfigured": bool(self.telegram_bot_token),
             "webappUrl": self.webapp_url,
+            "miniappUrl": self.miniapp_url,
+            "corsOrigins": list(self.cors_origins),
             "devAuthBypass": self.dev_auth_bypass,
             "rpcConfigured": bool(self.zyron_rpc_url),
             "rpcAllowRemote": self.zyron_rpc_allow_remote,
             "trustedProxies": len(self.trusted_proxies),
             "host": self.host,
             "port": self.port,
+            "remindersEnabled": self.reminders_enabled,
+            "communityChat": self.community_chat,
+            "communityPostsEnabled": self.community_posts_enabled,
+            "teamAccounts": len(self.team_telegram_ids),
         }
+
+
+# Play Zyron is served from an always-on static host so it opens instantly even while the free API host sleeps.
+# Override with MINIAPP_URL; outside production the Mini App URL falls back to WEBAPP_URL (same-origin shell).
+DEFAULT_MINIAPP_URL = "https://zyron249.github.io/-zyronchain/"
+
+
+def _origin(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return ""
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme}://{parsed.hostname.lower()}{port}"
+
+
+def _miniapp_url(environment: str, webapp_url: str) -> str:
+    """Play Zyron URL for the bot buttons. Any hosted deployment (production, or any Render service, which
+    always sets RENDER=true) uses the always-on static shell; local runs and tests keep the same-origin shell."""
+    explicit = os.environ.get("MINIAPP_URL", "").strip()
+    if explicit:
+        return explicit
+    if environment == "production" or os.environ.get("RENDER", "").strip().lower() == "true":
+        return DEFAULT_MINIAPP_URL
+    return webapp_url
+
+
+def _cors_origins(miniapp_url: str, webapp_url: str) -> tuple[str, ...]:
+    """Browser origins allowed to call the API cross-origin: the static Mini App host plus CORS_ORIGINS.
+
+    The API's own origin needs no CORS. Telegram clients load the Mini App page itself, so the page's origin
+    (the static host) is the only origin that calls the API. No wildcard is ever produced.
+    """
+    origins: list[str] = []
+    own = _origin(webapp_url)
+    for raw in [miniapp_url, *os.environ.get("CORS_ORIGINS", "").replace(";", ",").split(",")]:
+        raw = raw.strip()
+        if not raw:
+            continue
+        origin = _origin(raw)
+        if not origin:
+            raise ConfigError(f"CORS origin is not an http(s) URL: {raw}")
+        if origin != own and origin not in origins:
+            origins.append(origin)
+    return tuple(origins)
+
+
+def _community_chat(raw: str) -> str:
+    """The public ZYRONCHAIN group (t.me/zyronchain). Either @username or a numeric chat id."""
+    value = raw.strip() or "@zyronchain"
+    if value.startswith("@") and value[1:].replace("_", "").isalnum() and 5 <= len(value) <= 33:
+        return value
+    if value.lstrip("-").isdigit():
+        return value
+    raise ConfigError("COMMUNITY_CHAT must be @username or a numeric chat id")
 
 
 def load_settings() -> Settings:
     redis = os.environ.get("REDIS_URL", "").strip()
+    environment = os.environ.get("ENVIRONMENT", "development").strip() or "development"
+    webapp_url = os.environ.get("WEBAPP_URL", "").strip()
+    miniapp_url = _miniapp_url(environment, webapp_url)
     return Settings(
-        environment=os.environ.get("ENVIRONMENT", "development").strip() or "development",
+        environment=environment,
         database_url=os.environ.get("DATABASE_URL", "").strip(),
         redis_url=redis or None,
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_bot_username=os.environ.get("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@"),
-        webapp_url=os.environ.get("WEBAPP_URL", "").strip(),
+        webapp_url=webapp_url,
+        miniapp_url=miniapp_url,
+        cors_origins=_cors_origins(miniapp_url, webapp_url),
         admin_token=os.environ.get("ADMIN_TOKEN", "").strip(),
         init_data_max_age_seconds=_int("INIT_DATA_MAX_AGE_SECONDS", 43_200),
         dev_auth_bypass=_bool("DEV_AUTH_BYPASS", False),
@@ -92,7 +163,27 @@ def load_settings() -> Settings:
         host=os.environ.get("HOST", "0.0.0.0").strip() or "0.0.0.0",
         port=_int("PORT", 8000),
         cycle_min_interval_ms=_int("CYCLE_MIN_INTERVAL_MS", 800),
+        reminders_enabled=_bool("REMINDERS_ENABLED", True),
+        community_chat=_community_chat(os.environ.get("COMMUNITY_CHAT", "")),
+        community_posts_enabled=_bool("COMMUNITY_POSTS_ENABLED", True),
+        team_telegram_ids=team_telegram_ids(),
     )
+
+
+def team_telegram_ids(raw: str | None = None) -> tuple[int, ...]:
+    """TEAM_TELEGRAM_IDS: comma- or space-separated Telegram user ids of team/project accounts.
+
+    Those players can still play but are left out of every leaderboard, group board, invite contest,
+    quiz reward and distribution export. The list only adds the flag; it never clears it.
+    """
+    value = os.environ.get("TEAM_TELEGRAM_IDS", "") if raw is None else raw
+    ids: list[int] = []
+    for token in value.replace(";", ",").replace(",", " ").split():
+        if not token.isdigit() or int(token) <= 0 or len(token) > 20:
+            raise ConfigError(f"TEAM_TELEGRAM_IDS has an invalid Telegram id: {token[:24]}")
+        if int(token) not in ids:
+            ids.append(int(token))
+    return tuple(ids)
 
 
 def validate_settings(settings: Settings) -> None:
@@ -117,6 +208,10 @@ def validate_settings(settings: Settings) -> None:
             raise ConfigError("TELEGRAM_BOT_TOKEN is required in production")
         if not settings.webapp_url.startswith("https://"):
             raise ConfigError("WEBAPP_URL must be https in production")
+        if not settings.miniapp_url.startswith("https://"):
+            raise ConfigError("MINIAPP_URL must be https in production")
+        if any(not origin.startswith("https://") for origin in settings.cors_origins):
+            raise ConfigError("CORS origins must be https in production")
         if settings.referral_ip_salt in {"", "dev-salt-change-me"} or len(settings.referral_ip_salt) < 16:
             raise ConfigError("REFERRAL_IP_SALT must be a non-default value of at least 16 characters")
     if settings.allow_test_clock and settings.environment != "test":

@@ -29,7 +29,7 @@ Validator-set changes are protocol transactions, not single-admin actions. The i
 Requires Node.js 22 or newer. Validator nodes and the full storage/signing test
 suite require Linux or macOS with POSIX directory fsync. On Windows, use WSL2
 and clone into its Linux filesystem (for example `~/zyronchain`, not `/mnt/c`).
-Native Windows remains suitable for the miner and typechecking; it is not a
+Native Windows remains suitable for typechecking (the miner is retired); it is not a
 supported validator host.
 
 ```sh
@@ -56,7 +56,7 @@ full restart, then stops the processes and removes the successful temporary
 test chain. See [LOCAL_DEVNET.md](LOCAL_DEVNET.md) for Windows/WSL instructions,
 temporary-key handling, and GitHub Actions verification. External testers who
 want wallet, RPC, and token steps should use [docs/PUBLIC_TEST.md](../docs/PUBLIC_TEST.md).
-This local launcher is not a hosted public testnet. Default `npm run devnet` stays protocol v1. For a disposable loopback protocol-v5 mining rehearsal (100-block delay, not public mining) use `npm run mine:local` and [`docs/PUBLIC_LAUNCH_CHECKLIST.md`](../docs/PUBLIC_LAUNCH_CHECKLIST.md).
+This local launcher is not a hosted public testnet. Default `npm run devnet` stays protocol v1. Mining is retired (owner decision 2026-09-30, confirmed 2026-10-11): consensus rejects every `mining_claim`, and `npm run mine` / `npm run mine:local` exit with an error. See [`MINING.md`](MINING.md) and [`docs/PUBLIC_LAUNCH_CHECKLIST.md`](../docs/PUBLIC_LAUNCH_CHECKLIST.md).
 
 Generate one key file for each validator and another for the activity oracle. Key files are created mode `0600`. Prefer encrypted local keystores for operator-managed development keys; production validators should still use the remote-signer/HSM boundary.
 
@@ -133,6 +133,16 @@ independent operator name), not a trust credential. Native selection will avoid 
 peers from the same IPv4 `/24`/DNS host **or** the same named failure domain in the same
 diversity round. Do not fabricate labels merely to satisfy the selector; source ASN/provider
 ownership independently when preparing a production peer set.
+
+Native consensus messages (legacy `attest`/`skip`/`block` and every protocol v6 kind) are
+authenticated by Noise but, by default, accepted from any peer that presents the public chain
+identity. Validators should restrict them with one `--p2p-consensus-peer <PeerId>` per peer that
+may deliver consensus messages (normally every other validator and any block relay you operate).
+Consensus requests from other peers are then refused before any validation work; transaction
+gossip stays open. A validator that listens on native P2P without an allowlist logs a warning at
+startup. Independently of the allowlist, every untrusted block is authenticated (expected proposer,
+proposer signature, round/finality certificate) before any transaction signature is verified, so a
+forged block is rejected without per-transaction signature work.
 
 Keep wallet/public HTTP RPC and validator networking as separate security surfaces. A normal
 validator should leave `--host 127.0.0.1` for RPC and expose only its native P2P TCP port to
@@ -268,7 +278,7 @@ Every response advertises `x-zyron-rpc-version: 1`. Current clients send the sam
 | GET | `/status` | Chain ID, pinned genesis hash, height, tip hash |
 | GET | `/protocol` | Current and next-height protocol versions for transaction construction |
 | GET | `/healthz` | Lightweight node health and height |
-| GET | `/metrics` | Structured node height, mempool, validator-count and uptime metrics |
+| GET | `/metrics` | Structured node height, mempool, validator-count, uptime and consensus round-skip diagnostic (`roundSkipVotes`) metrics; field reference in `docs/L1_OPERATIONS_RUNBOOK.md` |
 | GET | `/blocks?from=1&limit=100` | Bounded finalized-block sync |
 | GET | `/balance/<address>` | Exact atom balance |
 | GET | `/nonce/<address>` | Confirmed account nonce |

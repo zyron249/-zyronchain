@@ -61,6 +61,8 @@ Zyron Points are not ZYN and not Zyrum. There is no conversion rate and no autom
 
 **Admin token leak.** The token is not in the repository. The dashboard keeps it in `sessionStorage`. Snapshots omit Telegram ids. Audit rows record ban, resolve, release, snapshot, and close actions.
 
+**Cross-origin shell.** Play Zyron's HTML/JS is served from a static host (GitHub Pages) and calls the API cross-origin. The API answers CORS only for the configured static origin (exact match, no wildcard, https in production) and never for `/api/admin/*`. There is no credentials mode: the only credential is the `Authorization: tma <initData>` header, which another origin cannot read from Telegram, and which the server still verifies. A compromised static host could serve hostile JavaScript to players, so deployments come only from `main` through the `github-pages` environment; the page itself stores no secrets and the game never asks for keys or seed phrases.
+
 **Logging.** Logs are JSON on stdout. They include method, path, and status. They do not include initData, the bot token, or the admin token.
 
 **Group administration.** The bot sets its own commands and the Play Zyron menu button. It does not change group permissions, history, admins, or other bots.

@@ -22,6 +22,11 @@ python -m unittest -v test_verify_vector.py
 python verify_vector.py ../test-vectors/light-client-v1.json
 ```
 
+Protocol v6 (the F-01 locked two-phase consensus) is not implemented by this
+verifier yet. It fails closed on v6 anchors, protocol transitions to v6 and
+v6-shaped finality proofs (`python -m unittest -v test_protocol_v6_fail_closed.py`);
+use the TypeScript light client for v6 until the port lands.
+
 Passing this verifier means the supplied proof is consistent with its supplied
 anchor. It does not make that anchor trustworthy. A production light client must
 obtain the chain/genesis identity, finalized checkpoint and validator set through

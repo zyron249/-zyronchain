@@ -15,6 +15,8 @@ For public testnet, this preserves the independent-operator, infrastructure-dive
 
 For mainnet, it additionally preserves immutable chain identity/genesis allocation, immutable mining reward/halving/cap/difficulty policy, validator/economic/oracle governance, sustained public-testnet mining evidence, multi-region recovery drills, independent succession/custody evidence, and protected release/tag/branch review.
 
+Mining is retired and the full 50,000,000 ZYN supply is allocated at genesis. The mining-related requirement IDs are kept unchanged in the machine-readable file; for mining they now mean evidence that `mining_claim` stays rejected on every path and protocol version and that supply never grows.
+
 The operator-facing ready-vs-blocked map is [`PUBLIC_LAUNCH_CHECKLIST.md`](PUBLIC_LAUNCH_CHECKLIST.md). That checklist does not waive any gate and does not flip activation flags.
 
 This separation prevents a governance authorization from being misrepresented as technical certification. No testnet balance becomes economically valuable merely because authorization exists, and no mainnet genesis may be improvised from development allocations.

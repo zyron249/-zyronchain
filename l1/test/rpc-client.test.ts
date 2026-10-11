@@ -15,7 +15,9 @@ test("protocol versions map to the canonical transaction signing format", () => 
   assert.equal(transactionVersionForProtocolVersion(2), 1);
   assert.equal(transactionVersionForProtocolVersion(3), 2);
   assert.equal(transactionVersionForProtocolVersion(5), 2);
-  for (const unsupported of [0, 4, 6, 65_535, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1]) {
+  // F-01: protocol v6 keeps the v2 transaction format (only consensus changes).
+  assert.equal(transactionVersionForProtocolVersion(6), 2);
+  for (const unsupported of [0, 4, 7, 65_535, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1]) {
     assert.throws(() => transactionVersionForProtocolVersion(unsupported), /invalid protocol status|unsupported next protocol version/);
   }
 });

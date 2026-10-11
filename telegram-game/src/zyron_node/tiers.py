@@ -27,15 +27,14 @@ from dataclasses import dataclass
 class TierSpec:
     id: str
     label: str
-    label_tr: str
     min_lifetime_points: int
 
 
 TIERS: tuple[TierSpec, ...] = (
-    TierSpec("bronze", "Bronze", "Bronz", 250),
-    TierSpec("silver", "Silver", "Gümüş", 2_500),
-    TierSpec("gold", "Gold", "Altın", 15_000),
-    TierSpec("diamond", "Diamond", "Elmas", 60_000),
+    TierSpec("bronze", "Bronze", 250),
+    TierSpec("silver", "Silver", 2_500),
+    TierSpec("gold", "Gold", 15_000),
+    TierSpec("diamond", "Diamond", 60_000),
 )
 
 TIER_METRIC = "lifetimePoints"
@@ -74,7 +73,6 @@ def public_tier(spec: TierSpec | None) -> dict | None:
     return {
         "id": spec.id,
         "label": spec.label,
-        "labelTr": spec.label_tr,
         "minLifetimePoints": spec.min_lifetime_points,
     }
 
@@ -138,7 +136,7 @@ def tier_race_line(lifetime_points: int) -> str:
     if nxt is None and current is not None:
         return f"{current['label']} is the top tier. {points_phrase(lifetime_points)} earned."
     if current is None and nxt is not None:
-        return f"{points_phrase(progress['pointsToNext'])} to {nxt['label']} ({nxt['labelTr']})."
+        return f"{points_phrase(progress['pointsToNext'])} to {nxt['label']}."
     if current is None or nxt is None:
         return "Tier progress is unavailable."
     return f"{points_phrase(progress['pointsToNext'])} from {current['label']} to {nxt['label']}."
@@ -169,7 +167,7 @@ def point_word(amount: int, *, lifetime: bool = False) -> str:
 
 
 def tier_distribution(conn) -> list[dict]:
-    """Count operators currently in each named tier. Players below Bronze are omitted."""
+    """Count operators currently in each named tier. Players below Bronze and team accounts are omitted."""
     specs = list(TIERS)
     selects: list[str] = []
     params: list[int] = []
@@ -183,13 +181,12 @@ def tier_distribution(conn) -> list[dict]:
         else:
             selects.append(f"COUNT(*) FILTER (WHERE lifetime_points >= %s)::int AS {spec.id}")
             params.append(spec.min_lifetime_points)
-    row = conn.execute(f"SELECT {', '.join(selects)} FROM players", params).fetchone()
+    row = conn.execute(f"SELECT {', '.join(selects)} FROM players WHERE team_account = FALSE", params).fetchone()
     return [
         {
             "id": spec.id,
             "label": spec.label,
-            "labelTr": spec.label_tr,
-            "minLifetimePoints": spec.min_lifetime_points,
+                "minLifetimePoints": spec.min_lifetime_points,
             "players": int(row[spec.id] or 0),
         }
         for spec in specs

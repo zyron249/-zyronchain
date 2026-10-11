@@ -1,5 +1,7 @@
 import { canonicalJson, compareCanonicalStrings, sha256Hex } from "./codec.js";
-import { MINING_TRACKER_ADDRESS } from "./mining.js";
+import { assertMiningNotRetired, MINING_TRACKER_ADDRESS } from "./mining.js";
+import { ACTIVITY_ORDER_MESSAGE, assertActivitySettlementWithinCap } from "./activity.js";
+import { assertAllocationLockOutflow, type AllocationLockContext } from "./allocation-locks.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import { assertAddress, assertExactKeys, assertPlainRecord } from "./transaction.js";
 import type { ActivitySettlementTx, Address, GenesisConfig, MiningClaimTx, ProtocolUpgradeTx, Transaction, TransferTx, ValidatorSetUpdateTx } from "./types.js";
@@ -112,9 +114,16 @@ export class LedgerState {
     return this.settledActivityEpochs.has(epoch);
   }
 
-  apply(tx: Transaction, activityPool: Address): void {
-    if (tx.kind === "transfer") this.applyTransfer(tx);
-    else if (tx.kind === "activity_settlement") this.applyActivity(tx, activityPool);
+  /**
+   * `locks` carries the genesis allocation locks evaluated at the including
+   * block's timestamp; chain paths always pass it (undefined only when the
+   * genesis declares no locks). See allocation-locks.ts.
+   */
+  apply(tx: Transaction, activityPool: Address, locks?: AllocationLockContext): void {
+    if (tx.kind === "transfer") {
+      assertNoActivityPoolInflow(tx.receiver, activityPool);
+      this.applyTransfer(tx, locks);
+    } else if (tx.kind === "activity_settlement") this.applyActivity(tx, activityPool, locks);
     else if (tx.kind === "mining_claim") this.applyMining(tx);
     else if (tx.kind === "validator_update") this.applyValidatorUpdate(tx);
     else this.applyProtocolUpgrade(tx);
@@ -133,7 +142,7 @@ export class LedgerState {
     };
   }
 
-  private applyTransfer(tx: TransferTx): void {
+  private applyTransfer(tx: TransferTx, locks: AllocationLockContext | undefined): void {
     if (tx.sender === MINING_TRACKER_ADDRESS || tx.receiver === MINING_TRACKER_ADDRESS) {
       throw new Error("Mining tracker address is protocol-reserved");
     }
@@ -142,24 +151,28 @@ export class LedgerState {
     if (!Number.isSafeInteger(total) || this.balance(tx.sender) < total) {
       throw new Error("Insufficient balance");
     }
+    assertAllocationLockOutflow(locks, tx.sender, this.balance(tx.sender), total);
     this.debit(tx.sender, total);
     this.credit(tx.receiver, tx.amountAtoms);
     this.setNonce(tx.sender, tx.nonce);
   }
 
-  private applyActivity(tx: ActivitySettlementTx, activityPool: Address): void {
+  private applyActivity(tx: ActivitySettlementTx, activityPool: Address, locks: AllocationLockContext | undefined): void {
     if (tx.sender !== activityPool) throw new Error("Invalid activity pool sender");
+    for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, activityPool);
     if (tx.entries.some((entry) => entry.receiver === MINING_TRACKER_ADDRESS)) {
       throw new Error("Mining tracker address is protocol-reserved");
     }
     if (this.settledActivityEpochs.has(tx.epoch)) throw new Error("Activity epoch already settled");
+    // Defence in depth for epoch ordering: never settle an epoch below an
+    // adjacent settled one. Full ordering comes from the chain-level window
+    // (only the most recently closed epoch is settleable), which this applier
+    // cannot see because it has no block timestamp.
+    if (this.settledActivityEpochs.has(tx.epoch + 1)) throw new Error(ACTIVITY_ORDER_MESSAGE);
     this.requireNonce(activityPool, tx.nonce);
-    const total = tx.entries.reduce((sum, entry) => {
-      const next = sum + entry.amountAtoms;
-      if (!Number.isSafeInteger(next)) throw new Error("Activity total overflow");
-      return next;
-    }, 0);
+    const total = assertActivitySettlementWithinCap(tx.entries);
     if (this.balance(activityPool) < total) throw new Error("Activity pool exhausted");
+    assertAllocationLockOutflow(locks, activityPool, this.balance(activityPool), total);
     this.debit(activityPool, total);
     for (const entry of tx.entries) this.credit(entry.receiver, entry.amountAtoms);
     this.setNonce(activityPool, tx.nonce);
@@ -167,6 +180,7 @@ export class LedgerState {
   }
 
   private applyMining(tx: MiningClaimTx): void {
+    assertMiningNotRetired();
     if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     this.requireNonce(tx.sender, tx.nonce);
     const nextSupply = this.totalSupplyAtoms() + tx.rewardAtoms;
@@ -217,4 +231,12 @@ export class LedgerState {
     account.nonce = nonce;
     this.accounts.set(address, account);
   }
+}
+
+/**
+ * The activity pool is outflow-only: cumulative activity settlements can never
+ * exceed the pool's genesis allocation (ZC-CRY-20260930-006).
+ */
+export function assertNoActivityPoolInflow(receiver: Address, activityPool: Address): void {
+  if (receiver === activityPool) throw new Error("Activity pool cannot receive funds");
 }

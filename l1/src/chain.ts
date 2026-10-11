@@ -11,15 +11,29 @@ import {
   validateBlockShape,
   validateRoundCertificate
 } from "./block.js";
-import { addressFromPublicKey, publicKeyFromPrivate, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
+import { addressFromPublicKey, assertValidPublicKey, publicKeyFromPrivate, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
 import {
   assertMiningClaimContext,
+  assertMiningNotRetired,
   MINING_PROTOCOL_VERSION,
   MINING_TRACKER_ADDRESS,
   miningRewardAtoms as scheduledMiningRewardAtoms,
   miningWorkHash
 } from "./mining.js";
-import { LedgerState, type LedgerSnapshot } from "./state.js";
+import { assertNoActivityPoolInflow, LedgerState, type LedgerSnapshot } from "./state.js";
+import {
+  allocationLockContext,
+  assertAllocationLockOutflow,
+  spendableAtoms,
+  validateAllocationLocks,
+  type AllocationLockContext
+} from "./allocation-locks.js";
+import {
+  ACTIVITY_ORDER_MESSAGE,
+  activityEpochWindowExpired,
+  assertActivityEpochWindow,
+  assertActivitySettlementWithinCap
+} from "./activity.js";
 import {
   SparseMerkleState,
   accountKey,
@@ -61,10 +75,12 @@ const MAX_BLOCK_BYTES = 2_000_000;
 export const MAX_BLOCK_TRANSACTION_BYTES = 1_500_000;
 export const MIN_VALIDATOR_UPDATE_DELAY = 100;
 export const MIN_PROTOCOL_UPDATE_DELAY = 100;
-export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1, 2, 3, 5]);
+// Protocol 6 (F-01) = the v5 state and transaction model with the locked
+// two-phase consensus of consensus-v6.ts. 4 remains unsupported.
+export const SUPPORTED_PROTOCOL_VERSIONS = new Set([1, 2, 3, 5, 6]);
 
 export function protocolUsesStateV2(protocolVersion: number): boolean {
-  return protocolVersion === 2 || protocolVersion === 3 || protocolVersion === 5;
+  return protocolVersion === 2 || protocolVersion === 3 || protocolVersion === 5 || protocolVersion === 6;
 }
 
 interface AppliedTransition {
@@ -240,6 +256,20 @@ export class ZyronChain {
       : this.requireLegacyState().balance(address);
   }
 
+  /**
+   * Confirmed balance that `address` may move in the next block (allocation
+   * locks applied at the earliest next-block timestamp for `nowMs`). Equal to
+   * balance() for every account that is not locked.
+   */
+  spendableBalance(address: Address, nowMs = Date.now()): number {
+    return spendableAtoms(this.allocationLocksAt(this.nextBlockTimestampMs(nowMs)), address, this.balance(address));
+  }
+
+  /** Allocation-lock context for a block at `blockTimestampMs` (undefined without genesis locks). */
+  allocationLocksAt(blockTimestampMs: number): AllocationLockContext | undefined {
+    return allocationLockContext(this.genesis, blockTimestampMs);
+  }
+
   nonce(address: Address): number {
     return this.stateV2 && protocolUsesStateV2(this.protocolVersionAt(this.height))
       ? stateV2Nonce(this.stateV2, address)
@@ -372,7 +402,7 @@ export class ZyronChain {
       throw new Error("Public key is not the expected proposer");
     }
     const timestampMs = options.timestampMs ?? Math.max(Date.now(), this.tip.header.timestampMs + 1);
-    const next = this.validateAndApply(transactions, this.state, this.height + 1);
+    const next = this.validateAndApply(transactions, this.state, this.height + 1, timestampMs);
     const block = createUnsignedBlock({
       version: protocolVersion,
       chainId: this.genesis.chainId,
@@ -394,7 +424,7 @@ export class ZyronChain {
     assertSupportedProtocolVersion(protocolVersion);
     validateBlockEnvelope(block, this.tip, this.validatorsAt(block.header.height), nowMs, false, protocolVersion, false);
     if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
-    const next = this.validateAndApply(block.transactions, this.state, block.header.height);
+    const next = this.validateAndApply(block.transactions, this.state, block.header.height, block.header.timestampMs);
     if (block.header.stateRoot !== stateRootForProtocol(protocolVersion, next)) throw new Error("State root mismatch");
   }
 
@@ -435,7 +465,7 @@ export class ZyronChain {
     const validators = this.validatorsAt(block.header.height);
     validateBlockEnvelope(block, this.tip, validators, nowMs, true, protocolVersion);
     if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
-    const next = this.validateAndApply(block.transactions, this.state, block.header.height);
+    const next = this.validateAndApply(block.transactions, this.state, block.header.height, block.header.timestampMs);
     if (block.header.stateRoot !== stateRootForProtocol(protocolVersion, next)) throw new Error("State root mismatch");
     return next;
   }
@@ -445,38 +475,62 @@ export class ZyronChain {
     assertSupportedProtocolVersion(protocolVersion);
     validateBlockEnvelope(block, this.tip, this.validatorsAt(block.header.height), nowMs, false, protocolVersion);
     if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
-    const next = this.validateAndApply(block.transactions, this.state, block.header.height);
+    const next = this.validateAndApply(block.transactions, this.state, block.header.height, block.header.timestampMs);
     if (block.header.stateRoot !== stateRootForProtocol(protocolVersion, next)) throw new Error("State root mismatch");
   }
 
-  validatePending(transactions: Transaction[]): void {
-    this.validateAndApply(transactions, this.state, this.height + 1);
+  /** Earliest timestamp the next block can carry (block time must increase). */
+  private nextBlockTimestampMs(nowMs = Date.now()): number {
+    return Math.max(nowMs, this.tip.header.timestampMs + 1);
   }
 
-  validateMempoolAdmission(tx: Transaction): void {
+  validatePending(transactions: Transaction[], blockTimestampMs = this.nextBlockTimestampMs()): void {
+    this.validateAndApply(transactions, this.state, this.height + 1, blockTimestampMs);
+  }
+
+  /**
+   * True when no future block can include this activity settlement any more
+   * (its epoch's settlement window closed before the earliest possible next
+   * block timestamp). Used for mempool pruning only; never for block validity.
+   */
+  isActivitySettlementExpired(tx: Transaction): boolean {
+    return tx.kind === "activity_settlement" &&
+      activityEpochWindowExpired(tx.epoch, this.genesis.timestampMs, this.tip.header.timestampMs + 1);
+  }
+
+  validateMempoolAdmission(tx: Transaction, nowMs = Date.now()): void {
     if (tx.chainId !== this.genesis.chainId) throw new Error("Wrong transaction chain ID");
     validateTransactionShape(tx);
     const protocolVersion = this.protocolVersionAt(this.height + 1);
     assertTransactionVersionForProtocol(tx, protocolVersion);
     if (tx.kind === "transfer") {
+      assertNoActivityPoolInflow(tx.receiver, this.genesis.activityPool);
       const total = tx.amountAtoms + tx.feeAtoms;
       if (!Number.isSafeInteger(total) || this.balance(tx.sender) < total) {
         throw new Error("Insufficient balance");
       }
+      assertAllocationLockOutflow(this.allocationLocksAt(this.nextBlockTimestampMs(nowMs)), tx.sender, this.balance(tx.sender), total);
       return;
     }
     if (tx.kind === "activity_settlement") {
       if (!this.genesis.activityOracles.includes(tx.publicKey)) throw new Error("Unauthorized activity oracle");
       if (tx.sender !== this.genesis.activityPool) throw new Error("Invalid activity pool sender");
-      const settled = this.stateV2 && protocolUsesStateV2(this.protocolVersionAt(this.height))
-        ? stateV2ActivityEpochSettled(this.stateV2, tx.epoch)
-        : this.requireLegacyState().isActivityEpochSettled(tx.epoch);
-      if (settled) throw new Error("Activity epoch already settled");
-      const total = tx.entries.reduce((sum, entry) => sum + BigInt(entry.amountAtoms), 0n);
-      if (total > BigInt(this.balance(this.genesis.activityPool))) throw new Error("Activity pool exhausted");
+      for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, this.genesis.activityPool);
+      const total = assertActivitySettlementWithinCap(tx.entries);
+      assertActivityEpochWindow(tx.epoch, this.genesis.timestampMs, this.nextBlockTimestampMs(nowMs));
+      const settled = (epoch: number) => this.stateV2 && protocolUsesStateV2(this.protocolVersionAt(this.height))
+        ? stateV2ActivityEpochSettled(this.stateV2, epoch)
+        : this.requireLegacyState().isActivityEpochSettled(epoch);
+      if (settled(tx.epoch)) throw new Error("Activity epoch already settled");
+      if (settled(tx.epoch + 1)) throw new Error(ACTIVITY_ORDER_MESSAGE);
+      if (total > this.balance(this.genesis.activityPool)) throw new Error("Activity pool exhausted");
+      assertAllocationLockOutflow(
+        this.allocationLocksAt(this.nextBlockTimestampMs(nowMs)), tx.sender, this.balance(this.genesis.activityPool), total
+      );
       return;
     }
     if (tx.kind === "mining_claim") {
+      assertMiningNotRetired();
       if (tx.nonce !== this.nonce(tx.sender) + 1) throw new Error("Mining claim nonce must be next confirmed nonce");
       assertMiningClaimContext(tx, {
         nextHeight: this.height + 1,
@@ -497,7 +551,8 @@ export class ZyronChain {
   selectValidPending(
     transactions: Transaction[],
     limit: number,
-    maxTransactionBytes = MAX_BLOCK_TRANSACTION_BYTES
+    maxTransactionBytes = MAX_BLOCK_TRANSACTION_BYTES,
+    blockTimestampMs = this.nextBlockTimestampMs()
   ): Transaction[] {
     if (!Number.isSafeInteger(limit) || limit < 0 || limit > 10_000) {
       throw new Error("Invalid pending selection limit");
@@ -539,13 +594,17 @@ export class ZyronChain {
     const currentValidators = this.validatorsAt(this.height + 1);
     let miningClaimSelected = false;
     let miningClaimCount = this.miningClaimCount();
+    const locks = this.allocationLocksAt(blockTimestampMs);
     for (const tx of ordered) {
       if (selected.length >= limit) break;
       try {
         if (tx.chainId !== this.genesis.chainId || seen.has(tx.txid)) continue;
         validateTransactionShape(tx);
         assertTransactionVersionForProtocol(tx, protocolVersion);
-        if (tx.kind === "activity_settlement" && !this.genesis.activityOracles.includes(tx.publicKey)) continue;
+        if (tx.kind === "activity_settlement") {
+          if (!this.genesis.activityOracles.includes(tx.publicKey)) continue;
+          assertActivityEpochWindow(tx.epoch, this.genesis.timestampMs, blockTimestampMs);
+        }
         if (tx.kind === "mining_claim") {
           if (miningClaimSelected) continue;
           assertMiningClaimContext(tx, {
@@ -556,24 +615,26 @@ export class ZyronChain {
           });
         } else if (tx.kind === "validator_update") {
           validateValidatorUpdateAuthorization(tx, currentValidators, this.height + 1, lastActivation);
-          lastActivation = tx.activationHeight;
         } else if (tx.kind === "protocol_upgrade") {
           validateProtocolUpgradeAuthorization(tx, currentValidators, this.height + 1, lastProtocolActivation);
-          lastProtocolActivation = tx.activationHeight;
         }
         const transactionBytes = Buffer.byteLength(canonicalJson(tx), "utf8") + (selected.length ? 1 : 0);
         if (selectedBytes + transactionBytes > maxTransactionBytes) continue;
         if (sparse) {
           sparse = tx.kind === "mining_claim"
             ? applyMiningClaimStateV2(sparse, tx)
-            : applyStateV2Transaction(sparse, tx, this.genesis.activityPool);
+            : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks);
         } else {
-          next!.apply(tx, this.genesis.activityPool);
+          next!.apply(tx, this.genesis.activityPool, locks);
         }
         if (tx.kind === "mining_claim") {
           miningClaimSelected = true;
           miningClaimCount += 1;
         }
+        // F-06: advance the governance cursors only once the transaction has
+        // passed the byte budget and its state transition, i.e. is selected.
+        if (tx.kind === "validator_update") lastActivation = tx.activationHeight;
+        if (tx.kind === "protocol_upgrade") lastProtocolActivation = tx.activationHeight;
         selected.push(tx);
         selectedBytes += transactionBytes;
         seen.add(tx.txid);
@@ -584,7 +645,12 @@ export class ZyronChain {
     return selected;
   }
 
-  private validateAndApply(transactions: Transaction[], startingState: LedgerState | undefined, blockHeight: number): AppliedTransition {
+  private validateAndApply(
+    transactions: Transaction[],
+    startingState: LedgerState | undefined,
+    blockHeight: number,
+    blockTimestampMs: number
+  ): AppliedTransition {
     const protocolVersion = this.protocolVersionAt(blockHeight);
     const next = protocolVersion === 1 ? this.legacyStateForTransition(startingState).clone() : startingState;
     let sparse = protocolUsesStateV2(protocolVersion)
@@ -596,6 +662,8 @@ export class ZyronChain {
     let lastProtocolActivation = this.lastProtocolActivationHeight();
     let miningClaimSeen = false;
     let miningClaimCount = this.miningClaimCount();
+    // On-chain allocation locks, evaluated at this block's own timestamp.
+    const locks = this.allocationLocksAt(blockTimestampMs);
     for (const tx of transactions) {
       if (tx.chainId !== this.genesis.chainId) throw new Error("Wrong transaction chain ID");
       if (seen.has(tx.txid)) throw new Error("Duplicate transaction in block");
@@ -606,6 +674,11 @@ export class ZyronChain {
         if (!this.genesis.activityOracles.includes(tx.publicKey)) {
           throw new Error("Unauthorized activity oracle");
         }
+        // ZC-CRY-20260930-010: only the most recently closed epoch, judged by
+        // this block's own timestamp. Since block time increases, this alone
+        // makes settled epochs strictly increasing; the cap and the
+        // once-only/adjacent-order checks are in the appliers.
+        assertActivityEpochWindow(tx.epoch, this.genesis.timestampMs, blockTimestampMs);
       }
       if (tx.kind === "mining_claim") {
         if (miningClaimSeen) throw new Error("Block contains more than one mining claim");
@@ -625,9 +698,9 @@ export class ZyronChain {
       if (sparse) {
         sparse = tx.kind === "mining_claim"
           ? applyMiningClaimStateV2(sparse, tx)
-          : applyStateV2Transaction(sparse, tx, this.genesis.activityPool);
+          : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks);
       } else {
-        next!.apply(tx, this.genesis.activityPool);
+        next!.apply(tx, this.genesis.activityPool, locks);
       }
       if (tx.kind === "mining_claim") {
         miningClaimSeen = true;
@@ -704,6 +777,7 @@ function validateValidatorSchedule(value: unknown, genesisValidators: Validator[
       assertAddress(item.address);
       assertHex(item.publicKey, 64, "checkpoint validator public key");
       if (addressFromPublicKey(item.publicKey) !== item.address || seen.has(item.address)) throw new Error("Invalid checkpoint validator");
+      assertValidPublicKey(item.publicKey, "Checkpoint validator public key");
       seen.add(item.address);
       validators.push({ address: item.address, publicKey: item.publicKey });
     }
@@ -810,6 +884,8 @@ function assertTransactionVersionForProtocol(tx: Transaction, protocolVersion: n
   if (tx.version !== expected) {
     throw new Error(`Transaction version ${tx.version} is not valid under protocol version ${protocolVersion}`);
   }
+  // Mining is retired for every genesis and every protocol version.
+  if (tx.kind === "mining_claim") assertMiningNotRetired();
   if (tx.kind === "mining_claim" && protocolVersion < MINING_PROTOCOL_VERSION) {
     throw new Error(`Mining claims require protocol version ${MINING_PROTOCOL_VERSION}`);
   }
@@ -818,7 +894,9 @@ function assertTransactionVersionForProtocol(tx: Transaction, protocolVersion: n
 function validateGenesis(genesis: GenesisConfig): void {
   assertPlainRecord(genesis, "genesis");
   assertExactKeys(genesis, [
-    "chainId", "timestampMs", "validators", "activityOracles", "activityPool", "allocations"
+    "chainId", "timestampMs", "validators", "activityOracles", "activityPool", "allocations",
+    // Optional: on-chain allocation locks (docs/ALLOCATION_LOCKS.md).
+    ...(Object.prototype.hasOwnProperty.call(genesis, "allocationLocks") ? ["allocationLocks"] : [])
   ], "genesis");
   if (typeof genesis.chainId !== "string" || !/^[a-z0-9-]{3,64}$/.test(genesis.chainId)) {
     throw new Error("Invalid chain ID");
@@ -839,6 +917,7 @@ function validateGenesis(genesis: GenesisConfig): void {
     if (addressFromPublicKey(validator.publicKey) !== validator.address) {
       throw new Error("Validator address/public key mismatch");
     }
+    assertValidPublicKey(validator.publicKey, "Genesis validator public key");
     if (validators.has(validator.address)) throw new Error("Duplicate validator");
     validators.add(validator.address);
   }
@@ -874,6 +953,7 @@ function validateGenesis(genesis: GenesisConfig): void {
     if (allocated.has(allocation.address)) throw new Error("Duplicate genesis allocation");
     allocated.add(allocation.address);
   }
+  validateAllocationLocks(genesis);
 }
 
 function stateV2KeysForTransaction(tx: Transaction): string[] {
@@ -884,6 +964,7 @@ function stateV2KeysForTransaction(tx: Transaction): string[] {
 }
 
 function applyMiningClaimStateV2(state: SparseMerkleState, tx: MiningClaimTx): SparseMerkleState {
+  assertMiningNotRetired();
   if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
   const minerNonce = stateV2Nonce(state, tx.sender);
   if (tx.nonce !== minerNonce + 1) throw new Error("Invalid nonce");

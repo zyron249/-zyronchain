@@ -9,8 +9,13 @@ const workflows = [
     requireFetchDepthZero: true,
     requiredCommands: [
       'node --check website/app.js',
-      'website-wallet-validator-contract-ok'
+      'website-wallet-validator-contract-ok',
+      'node website/test-wallet-core.mjs'
     ]
+  },
+  {
+    path: '.github/workflows/website-wallet-l1-crosscheck.yml',
+    requiredCommands: ['node website/test-wallet-core.mjs --require-l1']
   },
   {
     path: '.github/workflows/miner-website-promotion-binding.yml',

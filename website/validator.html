@@ -3,34 +3,37 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#080808" />
-  <meta name="description" content="Configure a ZyronChain validator safely in the browser and run it locally without exposing private keys." />
+  <meta name="theme-color" content="#02050a" />
+  <meta name="description" content="Operator checklist and local command builder for running a ZyronChain validator. Keys stay on your machine; nothing is uploaded. Public testnet not activated." />
   <meta name="referrer" content="no-referrer" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'" />
   <link rel="canonical" href="https://zyronchain.com/validator.html" />
+  <link rel="icon" href="./favicon.ico" sizes="16x16 32x32 48x48" />
   <link rel="icon" href="./favicon-32.png" type="image/png" sizes="32x32" />
   <link rel="icon" href="./icon-192.png" type="image/png" sizes="192x192" />
   <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
-  <link rel="manifest" href="./site.webmanifest" />
+  <link rel="manifest" href="./site-manifest.json" />
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="ZyronChain" />
-  <meta property="og:title" content="ZyronChain Validator Launchpad" />
-  <meta property="og:description" content="Configure a ZyronChain validator safely in the browser and run it locally without exposing private keys." />
+  <meta property="og:title" content="ZyronChain — Validator Launchpad" />
+  <meta property="og:description" content="Operator checklist and local command builder for running a ZyronChain validator. Keys stay on your machine; nothing is uploaded. Public testnet not activated." />
   <meta property="og:url" content="https://zyronchain.com/validator.html" />
-  <meta property="og:image" content="https://zyronchain.com/brand-mark.png" />
+  <meta property="og:image" content="https://zyronchain.com/brand/og-image.jpg" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="ZYRON CHAIN wolf and Z logo" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:image" content="https://zyronchain.com/brand-mark.png" />
-  <title>ZyronChain Validator Launchpad</title>
-  <link rel="stylesheet" href="./styles.css" />
-  <link rel="stylesheet" href="./validator.css" />
-  <link rel="stylesheet" href="./professional.css" />
+  <meta name="twitter:image" content="https://zyronchain.com/brand/og-image.jpg" />
+  <title>ZyronChain — Validator Launchpad</title>
+  <link rel="stylesheet" href="./site.css?v=99006be00a32" />
+  <link rel="stylesheet" href="./validator.css?v=f3d9d16fb94f" />
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
     "@type": "WebPage",
     "name": "ZyronChain Validator Launchpad",
     "url": "https://zyronchain.com/validator.html",
-    "description": "Configure a ZyronChain validator safely in the browser and run it locally without exposing private keys.",
+    "description": "Operator checklist and local command builder for running a ZyronChain validator. Keys stay on your machine; nothing is uploaded. Public testnet not activated.",
     "isPartOf": { "@type": "WebSite", "name": "ZyronChain", "url": "https://zyronchain.com/" },
     "publisher": {
       "@type": "Organization",
@@ -46,30 +49,41 @@
   </script>
 </head>
 <body class="validator-page">
-  <a class="skip-link" href="#main">Skip to validator launchpad</a>
-  <aside class="network-notice" aria-label="Network activation notice">
-    <div class="shell notice-inner">
-      <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. Mining is retired. Wallet RPC and value-bearing use remain activation gated.</p>
-      <a href="./index.html#status">View network status <span aria-hidden="true">→</span></a>
-      <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Public tester guide <span aria-hidden="true">↗</span></a>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <aside class="status-notice" aria-label="Network status notice">
+    <div class="wrap status-notice-inner">
+      <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated: no public RPC, explorer, balances or broadcasting yet. Mining is retired. There is no token sale.</p>
+      <a href="./#network-status">Network status <span aria-hidden="true">→</span></a>
     </div>
   </aside>
   <div class="page-noise" aria-hidden="true"></div>
   <div class="page-glow glow-one" aria-hidden="true"></div>
 
-  <header class="site-header launchpad-header">
-    <div class="shell header-inner">
-      <a class="brand-logo-link" href="./" aria-label="ZyronChain home">
-        <img class="brand-logo brand-mark" src="./brand-mark.png" alt="ZyronChain" width="320" height="320" />
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="./" aria-label="ZyronChain home">
+        <img class="brand-mark" src="./brand-mark.png" alt="" width="192" height="192" /><img class="brand-wordmark" src="./brand/zyron-wordmark.png" alt="ZyronChain" width="712" height="80" />
       </a>
-      <nav class="launchpad-nav" aria-label="Validator navigation">
-        <a href="#identity">Identity</a>
-        <a href="#network">Network</a>
-        <a href="#safety">Safety</a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="./#overview">Overview</a>
+        <a href="./#protocol">Protocol</a>
+        <a href="./#zyn">ZYN</a>
+        <a href="./#security">Security</a>
+        <a href="./#developers">Developers</a>
+        <a href="./#network-status">Network</a>
+        <a class="nav-wallet" href="./#wallets">Wallet</a>
       </nav>
-      <a class="button button-secondary button-small" href="./">Back to site</a>
+      <a class="header-source" href="https://github.com/zyron249/-zyronchain" rel="noopener noreferrer">Source</a>
     </div>
   </header>
+  <nav class="page-nav" aria-label="On this page">
+    <div class="wrap">
+      <a href="#identity">Identity</a>
+      <a href="#network">Network</a>
+      <a href="#operator-checklist">Checklist</a>
+      <a href="#safety">Safety</a>
+    </div>
+  </nav>
 
   <main id="main">
     <section class="launchpad-hero shell">
@@ -218,6 +232,24 @@
       </div>
     </section>
 
+    <section class="shell safety-section" id="operator-checklist" aria-labelledby="operator-checklist-title">
+      <div class="section-kicker">Operator checklist</div>
+      <h2 id="operator-checklist-title">Before you run a validator.</h2>
+      <p class="checklist-intro">An operator-assistance tool, not a one-click validator. Every step runs on your machine; nothing is uploaded.</p>
+      <div class="safety-grid checklist-grid">
+        <article><b>01</b><strong>Hardware and OS</strong><p>A 64-bit Linux or macOS host (Windows via WSL2) with Node.js 22 or 24, a persistent disk and a stable connection. No official minimum is published yet: target-hardware measurements are an open activation requirement.</p></article>
+        <article><b>02</b><strong>Canonical repository</strong><p>Clone only <code>github.com/zyron249/-zyronchain</code> and check out the exact release commit shown above. The scripts verify the commit with <code>git cat-file -e</code> before building.</p></article>
+        <article><b>03</b><strong>Identity setup</strong><p>The identity script creates an encrypted validator keystore locally (<code>chmod 600</code>). Share only the address, public key and PeerId. Never send the keystore or its password.</p></article>
+        <article><b>04</b><strong>Genesis verification</strong><p>Every validator must use byte-identical genesis. Compare its SHA-256 with the coordinator over a second channel. The start script refuses genesis with placeholder values.</p></article>
+        <article><b>05</b><strong>Peers and bootstrap</strong><p>List explicit peers as multiaddrs with the expected <code>/p2p/&lt;PeerId&gt;</code> suffix, so a wrong host cannot impersonate a validator.</p></article>
+        <article><b>06</b><strong>Firewall</strong><p>Open only the P2P TCP port to the other validators. Keep everything else closed.</p></article>
+        <article><b>07</b><strong>Public vs private RPC</strong><p>Consensus RPC binds to <code>127.0.0.1</code> and must never be exposed to the Internet. A public interface, if ever offered, must be a separate bounded read-only gateway.</p></article>
+        <article><b>08</b><strong>Activation status</strong><p>Public testnet: authorized by governance, not activated. Only friends/private, non-value testnets can be run today.</p></article>
+        <article><b>09</b><strong>Recovery</strong><p>Back up the encrypted keystore and its password separately and offline. Rehearse a restore before relying on it. Losing both means losing the identity.</p></article>
+      </div>
+      <p class="checklist-links"><a href="https://github.com/zyron249/-zyronchain/blob/main/docs/L1_OPERATIONS_RUNBOOK.md" rel="noopener noreferrer">Operations runbook</a> · <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/L1_PRIVATE_TESTNET_PREFLIGHT.md" rel="noopener noreferrer">Private testnet preflight</a> · <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/L1_NODE_IDENTITY_CUSTODY.md" rel="noopener noreferrer">Node identity custody</a> · <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/DISASTER_RECOVERY_REHEARSAL.md" rel="noopener noreferrer">Disaster recovery rehearsal</a></p>
+    </section>
+
     <section class="shell safety-section" id="safety">
       <div class="section-kicker">Operator safety</div>
       <h2>What the website deliberately cannot do.</h2>
@@ -230,14 +262,43 @@
     </section>
   </main>
 
-  <footer class="site-footer shell">
-    <div class="footer-brand"><img class="brand-mark" src="./brand-mark.png" alt="ZyronChain" width="320" height="320" /><p>Open-source Layer-1 engineering. No presale. No investment promises.</p></div>
-    <div class="footer-links"><a href="./">Home</a><a href="./privacy.html">Privacy</a><a href="./terms.html">Terms</a><a href="https://x.com/Zyronchain" target="_blank" rel="noreferrer noopener">X / Twitter</a><a href="https://t.me/zyronchain" target="_blank" rel="noreferrer noopener">Telegram</a><a href="https://github.com/zyron249/-zyronchain" target="_blank" rel="noreferrer noopener">GitHub</a><a href="https://github.com/zyron249/-zyronchain/blob/main/SECURITY.md" target="_blank" rel="noreferrer noopener">Security</a></div>
-    <div class="footer-meta"><span>© <span data-year></span> ZyronChain</span><span>No analytics cookies</span></div>
+  <footer class="site-footer">
+    <div class="wrap footer-grid">
+      <div class="footer-brand">
+        <img class="brand-mark" src="./brand-mark.png" alt="" width="192" height="192" loading="lazy" />
+        <p>Open-source Layer-1. Local keys, verifiable rules, explicit network state.</p>
+      </div>
+      <nav class="footer-col" aria-label="Protocol">
+        <strong>Protocol</strong>
+        <a href="./#overview">Overview</a>
+        <a href="./#protocol">How it works</a>
+        <a href="./#zyn">ZYN</a>
+        <a href="./#security">Security</a>
+        <a href="./#network-status">Network status</a>
+      </nav>
+      <nav class="footer-col" aria-label="Use">
+        <strong>Use</strong>
+        <a href="./app/">Phone Wallet — Testnet</a>
+        <a href="./wallet.html">Desktop Wallet Setup</a>
+        <a href="./validator.html">Validator Launchpad</a>
+        <a href="./#developers">Developers</a>
+      </nav>
+      <nav class="footer-col" aria-label="Source and community">
+        <strong>Source</strong>
+        <a href="https://github.com/zyron249/-zyronchain" rel="noopener noreferrer">GitHub</a>
+        <a href="https://github.com/zyron249/-zyronchain/issues" rel="noopener noreferrer">Issues</a>
+        <a href="https://x.com/Zyronchain" rel="noopener noreferrer">X</a>
+        <a href="https://t.me/zyronchain" rel="noopener noreferrer">Telegram</a>
+      </nav>
+    </div>
+    <div class="wrap footer-bottom">
+      <span>© ZyronChain · Open source · No analytics cookies</span>
+      <span><a href="./privacy.html">Privacy</a> · <a href="./terms.html">Terms</a> · <span class="build" data-site-build>Build 5e1f305e</span></span>
+    </div>
   </footer>
 
-  <script src="./app.js"></script>
-  <script src="./release.js"></script>
-  <script src="./validator.js"></script>
+  <script src="./app.js?v=dbeb603ee988"></script>
+  <script src="./release.js?v=f4a2fa3ffd0d"></script>
+  <script src="./validator.js?v=98c1ad06b849"></script>
 </body>
 </html>

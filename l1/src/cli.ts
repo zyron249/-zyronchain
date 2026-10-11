@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Multiaddr } from "@multiformats/multiaddr";
 
-import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
+import { V6_MIN_ACTIVATION_MARGIN_BLOCKS, isConsensusV6 } from "./consensus-v6.js";
+import { V6LeaderScheduler } from "./v6-scheduler.js";
+import { addressFromPublicKey, assertValidPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
 import { encryptPrivateKey, normalizePasswordFile } from "./keystore.js";
 import { readPrivateRegularFile } from "./local-security.js";
 import { readCliCheckpointSnapshotAnchoredUtf8, readCliGenesisUtf8 } from "./cli-recovery-file.js";
@@ -28,7 +30,7 @@ import { createP2PNode, registerP2PIdentityProtocol } from "./p2p.js";
 import { registerP2PSyncProtocol, syncP2PFrom } from "./p2p-sync.js";
 import { fetchTrustedSnapshotFromPeer, registerP2PCheckpointProtocol } from "./p2p-checkpoint.js";
 import { fetchTrustedPortableStateFromAnyPeer, MAX_STATE_SYNC_PEERS, registerP2PStateProtocol } from "./p2p-state.js";
-import { NativeConsensusPeerClient, registerP2PConsensusProtocol } from "./p2p-consensus.js";
+import { NativeConsensusPeerClient, parseNativeConsensusPeerAllowlist, registerP2PConsensusProtocol } from "./p2p-consensus.js";
 import { BackgroundTaskTracker, drainHttpServer } from "./node-lifecycle.js";
 import { discoverNativePeersFrom, registerP2PDiscoveryProtocol } from "./p2p-discovery.js";
 import { assertSafeDiscoveredPeer, NativePeerPool } from "./p2p-peer-pool.js";
@@ -51,7 +53,7 @@ import {
   validateTransactionShape,
   type TransactionVersion
 } from "./transaction.js";
-import type { GenesisConfig, Validator, ValidatorApproval } from "./types.js";
+import type { Block, GenesisConfig, Validator, ValidatorApproval } from "./types.js";
 import { MAX_SUPPLY_ATOMS, type Address } from "./types.js";
 import { LocalValidatorSigner, RemoteValidatorSigner, type ValidatorSigner } from "./validator-signer.js";
 import {
@@ -288,7 +290,8 @@ async function runNode(args: string[]): Promise<void> {
   assertKnownOptions(args, new Set([
     "--genesis", "--data", "--host", "--port", "--peer", "--advertise-peer", "--validator-key", "--peer-token-file",
     "--trusted-peer-public-key", "--rpc-trusted-proxy", "--p2p-listen", "--p2p-peer", "--p2p-peer-group", "--validator-signer-url",
-    "--validator-public-key", "--validator-signer-token-file"
+    "--validator-public-key", "--validator-signer-token-file", "--validator-signer-allow-v6", "--ready-max-tip-age-ms",
+    "--p2p-consensus-peer"
   ]));
   const genesisPath = option(args, "--genesis");
   const dataDir = option(args, "--data");
@@ -302,6 +305,11 @@ async function runNode(args: string[]): Promise<void> {
   const nativeListen = options(args, "--p2p-listen").map(parseNativeListenAddress);
   const nativePeers = options(args, "--p2p-peer").map(parseNativePeerAddress);
   if (nativePeers.length > 64) throw new Error("Too many configured native peers");
+  // F-12: optional allowlist of PeerIds that may deliver native consensus messages.
+  const consensusPeerAllowlist = parseNativeConsensusPeerAllowlist(options(args, "--p2p-consensus-peer"));
+  if (consensusPeerAllowlist && nativeListen.length === 0 && nativePeers.length === 0) {
+    throw new Error("--p2p-consensus-peer requires native P2P (--p2p-listen or --p2p-peer)");
+  }
   const nativePeerGroups = new Map<string, string>();
   const configuredNativePeerIds = new Set(nativePeers.map(nativePeerId));
   for (const value of options(args, "--p2p-peer-group")) {
@@ -333,10 +341,22 @@ async function runNode(args: string[]): Promise<void> {
   const validatorSignerToken = validatorSignerTokenPath
     ? await readAuthToken(resolve(validatorSignerTokenPath), "Validator signer")
     : undefined;
+  // Protocol v6 intents are refused by a remote signer unless explicitly
+  // enabled (F-01 §16.9-7): the signer does not enforce the §6 journal rules
+  // itself, so only the node's journal protects against conflicting votes.
+  const signerAllowV6 = option(args, "--validator-signer-allow-v6");
+  if (signerAllowV6 !== undefined && signerAllowV6 !== "true" && signerAllowV6 !== "false") {
+    throw new Error("--validator-signer-allow-v6 must be true or false");
+  }
+  if (signerAllowV6 !== undefined && !validatorSignerUrl) {
+    throw new Error("--validator-signer-allow-v6 requires --validator-signer-url");
+  }
   const validatorSigner: ValidatorSigner | undefined = privateKey
     ? new LocalValidatorSigner(privateKey)
     : validatorSignerUrl && validatorPublicKey && validatorSignerToken
-      ? new RemoteValidatorSigner(validatorSignerUrl, validatorPublicKey, validatorSignerToken)
+      ? new RemoteValidatorSigner(validatorSignerUrl, validatorPublicKey, validatorSignerToken, undefined, {
+        allowConsensusV6Intents: signerAllowV6 === "true"
+      })
       : undefined;
   const journal = validatorSigner ? await SigningJournal.open(resolvedDataDir) : undefined;
   if (validatorSigner) {
@@ -345,9 +365,20 @@ async function runNode(args: string[]): Promise<void> {
       console.warn("Validator key is not active at the next height; it will not sign until a scheduled set activates it.");
     }
   }
+  {
+    const nextHeight = store.chain.height + 1;
+    const validatorCount = store.chain.validatorsAt(nextHeight).length;
+    if (isConsensusV6(store.chain.protocolVersionAt(nextHeight)) && validatorCount < 4) {
+      // F-01 §16.9: v6 with n < 4 tolerates no faulty validator (f = 0).
+      console.warn(`Protocol v6 consensus with ${validatorCount} validator(s) tolerates no faulty or offline validator; use at least 4.`);
+    }
+  }
   const peerTokenPath = option(args, "--peer-token-file");
   const peerAuthToken = peerTokenPath ? await readAuthToken(resolve(peerTokenPath), "Peer") : undefined;
-  const service = new NodeService(store, journal, validatorSigner);
+  const readyMaxTipAgeText = option(args, "--ready-max-tip-age-ms");
+  const service = new NodeService(store, journal, validatorSigner, {
+    readinessMaxTipAgeMs: readyMaxTipAgeText === undefined ? undefined : parseSafeInteger(readyMaxTipAgeText, "ready-max-tip-age-ms")
+  });
   const advertisedPeerUrls = options(args, "--advertise-peer");
   const trustedPeerPublicKeys = options(args, "--trusted-peer-public-key");
   assertSafeRpcBinding(
@@ -387,7 +418,10 @@ async function runNode(args: string[]): Promise<void> {
     await registerP2PSyncProtocol(nativeNode, identity, service);
     await registerP2PCheckpointProtocol(nativeNode, identity, service);
     await registerP2PStateProtocol(nativeNode, identity, service);
-    await registerP2PConsensusProtocol(nativeNode, identity, service);
+    await registerP2PConsensusProtocol(nativeNode, identity, service, { consensusPeerAllowlist });
+    if (validatorSigner && nativeListen.length && !consensusPeerAllowlist) {
+      console.warn("Native consensus accepts messages from any peer; set --p2p-consensus-peer <PeerId> for each validator peer to restrict it");
+    }
     await registerP2PDiscoveryProtocol(nativeNode, identity, service.status(), () =>
       nativePeerPool.snapshot().filter((peer) => {
         try { assertSafeDiscoveredPeer(peer); return true; } catch { return false; }
@@ -434,7 +468,23 @@ async function runNode(args: string[]): Promise<void> {
     ],
     broadcastBlock: async (block) => {
       await Promise.allSettled([peers.broadcastBlock(block), nativeConsensus.broadcastBlock(block)]);
-    }
+    },
+    // Protocol v6 (F-01): votes from both transports are merged; the leader
+    // de-duplicates and verifies every vote before counting it.
+    requestV6Prepare: async (request) => [
+      ...await peers.requestV6Prepare(request),
+      ...await nativeConsensus.requestV6Prepare(request)
+    ],
+    requestV6Commit: async (request) => [
+      ...await peers.requestV6Commit(request),
+      ...await nativeConsensus.requestV6Commit(request)
+    ],
+    requestV6Timeouts: async (height, round) => [
+      ...await peers.requestV6Timeouts(height, round),
+      ...await nativeConsensus.requestV6Timeouts(height, round)
+    ],
+    fetchV6Block: async (height, blockHash) =>
+      await peers.fetchV6Block(height, blockHash) ?? await nativeConsensus.fetchV6Block(height, blockHash)
   } : peers;
 
   const server = createRpcServer(service, {
@@ -463,11 +513,13 @@ async function runNode(args: string[]): Promise<void> {
     timers.add(timer);
   };
   let shuttingDown = false;
+  let v6Stop: () => void = () => {};
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`Received ${signal}; draining node services`);
     backgroundTasks.stopAccepting();
+    v6Stop();
     for (const timer of timers) clearInterval(timer);
     timers.clear();
     const rpcDrain = await drainHttpServer(server);
@@ -498,11 +550,34 @@ async function runNode(args: string[]): Promise<void> {
   }
 
   if (validatorSigner) {
+    const nextIsV6 = (): boolean => isConsensusV6(service.store.chain.protocolVersionAt(service.store.chain.height + 1));
+    // Legacy heights (v1/v2/v3/v5): unchanged fixed tick.
     schedule(() => {
+      if (nextIsV6()) return;
       backgroundTasks.run(() => produceFinalizedBlock(service, consensusPeers, validatorSigner)
         .then((block) => { if (block) console.log(`Finalized block ${block.header.height} ${block.hash}`); })
         .catch((error) => console.warn(`Validator round failed: ${safeError(error)}`)));
     }, BLOCK_INTERVAL_MS);
+    // Protocol v6 heights: event-driven leader scheduling (F-01 §3.3/§8.6),
+    // idle (3 s fallback poll) while the next height is legacy.
+    const v6Scheduler = new V6LeaderScheduler<Block>({
+      context: () => {
+        if (!nextIsV6()) return null;
+        const chain = service.store.chain;
+        const height = chain.height + 1;
+        return { tipTimestampMs: chain.tip.header.timestampMs, height, validators: chain.validatorsAt(height), publicKey: validatorSigner.publicKey };
+      },
+      attempt: async () => {
+        // Tracked so that shutdown drains an in-flight attempt.
+        let task: Promise<Block | null> | undefined;
+        if (!backgroundTasks.run(() => (task = produceFinalizedBlock(service, consensusPeers, validatorSigner)))) return null;
+        return task ?? null;
+      },
+      onResult: (block) => console.log(`Finalized block ${block.header.height} ${block.hash} (v6 round ${String(block.commitRound)})`),
+      onError: (error) => console.warn(`Validator v6 round failed: ${safeError(error)}`)
+    });
+    v6Scheduler.start();
+    v6Stop = () => v6Scheduler.stop();
   }
 
   schedule(() => {
@@ -685,6 +760,10 @@ async function createProtocolProposalFile(args: string[]): Promise<void> {
   }
   if (activationHeight < Number(status.height) + 1 + MIN_PROTOCOL_UPDATE_DELAY) {
     throw new Error(`Activation height must be at least ${Number(status.height) + 1 + MIN_PROTOCOL_UPDATE_DELAY}`);
+  }
+  // F-01 §16.9-9 (policy, not consensus): v6 needs time for every operator to upgrade.
+  if (isConsensusV6(protocolVersion) && activationHeight < Number(status.height) + 1 + V6_MIN_ACTIVATION_MARGIN_BLOCKS) {
+    throw new Error(`Protocol v6 activation height must be at least ${Number(status.height) + 1 + V6_MIN_ACTIVATION_MARGIN_BLOCKS}`);
   }
   const proposal: ProtocolProposal = {
     transactionVersion,
@@ -938,6 +1017,7 @@ async function readValidatorProposal(path: string): Promise<ValidatorProposal> {
     }
     assertAddress(record.address);
     if (addressFromPublicKey(record.publicKey) !== record.address) throw new Error("Proposal validator address mismatch");
+    assertValidPublicKey(record.publicKey, "Proposal validator public key");
     return { address: record.address, publicKey: record.publicKey };
   });
   return {
@@ -1007,7 +1087,7 @@ function usage(): void {
   console.log("Usage:");
   console.log("  zyron-l1 keygen --out validator-key.json [--password-file password.txt]");
   console.log("  zyron-l1 genesis --out genesis.json --chain-id zyron-devnet-1 --validator-public-key <hex> --oracle-public-key <hex> --activity-pool <address> --allocation <address:atoms>");
-  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json | --validator-signer-url https://signer/sign --validator-public-key <hex> --validator-signer-token-file signer-token.txt] [--peer https://node:9137] [--rpc-trusted-proxy <ip> ...] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>]");
+  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json | --validator-signer-url https://signer/sign --validator-public-key <hex> --validator-signer-token-file signer-token.txt [--validator-signer-allow-v6 true|false]] [--peer https://node:9137] [--rpc-trusted-proxy <ip> ...] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>] [--ready-max-tip-age-ms 600000] [--p2p-consensus-peer <PeerId> ...]");
   console.log("  zyron-l1 transfer --key wallet-key.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms <n> [--fee-atoms <n>]");
   console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");
   console.log("  zyron-l1 validator-approve --proposal update.json --key validator.json --out approval.json");

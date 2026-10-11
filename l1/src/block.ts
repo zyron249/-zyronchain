@@ -6,6 +6,7 @@ import {
   verifyCanonical,
   verifyCanonicalDomain
 } from "./crypto.js";
+import { CONSENSUS_V6_PROTOCOL_VERSION, V6_MAX_ROUND, validateCommitCertificate } from "./consensus-v6.js";
 import { merkleRoot } from "./merkle.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
 import type {
@@ -96,7 +97,7 @@ export function createUnsignedBlock(input: {
     proposer: addressFromPublicKey(input.proposerPublicKey)
   };
   const hash = blockHash(header);
-  return {
+  const block: Block = {
     header,
     transactions: input.transactions,
     hash,
@@ -105,6 +106,9 @@ export function createUnsignedBlock(input: {
     roundCertificate: structuredClone(input.roundCertificate ?? []),
     attestations: []
   };
+  // Protocol v6 blocks carry an explicit (initially empty) commit round.
+  if (input.version === CONSENSUS_V6_PROTOCOL_VERSION) block.commitRound = null;
+  return block;
 }
 
 export function attachBlockSignature(block: Block, signature: string): Block {
@@ -134,8 +138,10 @@ export function createRoundSkipVote(input: {
   previousHash: string;
   validatorPrivateKey: string;
   validatorPublicKey: string;
-  protocolVersion?: number;
+  /** Required (F-01 / spec §15-6): v1/v2 sign undomained, v3+ domain-separated. */
+  protocolVersion: number;
 }): RoundSkipVote {
+  assertExplicitProtocolVersion(input.protocolVersion);
   const unsigned = {
     validator: addressFromPublicKey(input.validatorPublicKey),
     publicKey: input.validatorPublicKey,
@@ -147,7 +153,7 @@ export function createRoundSkipVote(input: {
   return {
     ...unsigned,
     signature: signForProtocol(
-      input.protocolVersion ?? 1,
+      input.protocolVersion,
       "zyronchain/round-skip/v1",
       roundSkipPayload(unsigned),
       input.validatorPrivateKey
@@ -202,11 +208,22 @@ export function validateBlockEnvelope(
   previous: Block,
   validators: Validator[],
   nowMs: number,
-  requireFinality = true,
-  expectedProtocolVersion = 1,
+  requireFinality: boolean,
+  expectedProtocolVersion: number,
   requireProposerSignature = true
 ): void {
-  validateBlockShape(block);
+  // Untyped callers that omit these arguments must fail closed: a missing
+  // finality mode must never silently skip the attestation quorum check, and a
+  // missing protocol version must never select legacy signature rules.
+  if (typeof requireFinality !== "boolean") throw new Error("Block envelope validation requires an explicit finality mode");
+  if (!Number.isSafeInteger(expectedProtocolVersion) || expectedProtocolVersion < 1) {
+    throw new Error("Block envelope validation requires an explicit protocol version");
+  }
+  // F-11: structure and every O(1) authentication gate (proposer binding,
+  // proposer signature, round/finality certificates) run before the
+  // per-transaction signature verification at the end, so a forged block
+  // costs milliseconds instead of thousands of signature verifications.
+  validateBlockStructure(block);
   if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
   if (block.header.version !== expectedProtocolVersion) throw new Error("Unexpected protocol version");
   if (block.header.chainId !== previous.header.chainId) throw new Error("Wrong chain ID");
@@ -238,8 +255,22 @@ export function validateBlockEnvelope(
   )) {
     throw new Error("Invalid proposer signature");
   }
+  if (block.header.version === CONSENSUS_V6_PROTOCOL_VERSION) {
+    // Protocol v6 (F-01): round-change evidence travels in signed consensus
+    // messages, never in the block, and finality is the commit certificate
+    // over {chainId, height, commitRound, blockHash}.
+    if (block.roundCertificate.length !== 0) throw new Error("Protocol v6 blocks must not carry a round skip certificate");
+    if (requireFinality) {
+      validateCommitCertificate(block, validators);
+    } else if (block.commitRound !== null || block.attestations.length !== 0) {
+      throw new Error("Protocol v6 proposals must not carry a commit certificate");
+    }
+    validateBlockTransactions(block);
+    return;
+  }
   validateRoundCertificate(block, validators);
   if (requireFinality) validateAttestationQuorum(block, validators);
+  validateBlockTransactions(block);
 }
 
 export function validateRoundCertificate(block: Block, validators: Validator[]): void {
@@ -265,8 +296,9 @@ export function validateRoundSkipQuorum(
   height: number,
   round: number,
   previousHash: string,
-  protocolVersion = 1
+  protocolVersion: number
 ): void {
+  assertExplicitProtocolVersion(protocolVersion);
   if (votes.length > validators.length) throw new Error("Round skip certificate exceeds active validator set");
   const allowed = new Map(validators.map((validator) => [validator.address, validator.publicKey]));
   const seen = new Set<string>();
@@ -288,8 +320,9 @@ export function validateRoundSkipVote(
   height: number,
   round: number,
   previousHash: string,
-  protocolVersion = 1
+  protocolVersion: number
 ): asserts vote is RoundSkipVote {
+  assertExplicitProtocolVersion(protocolVersion);
   assertPlainRecord(vote, "round skip vote");
   assertExactKeys(vote, ["validator", "publicKey", "chainId", "height", "round", "previousHash", "signature"], "round skip vote");
   if (typeof vote.validator !== "string" || typeof vote.publicKey !== "string" || typeof vote.chainId !== "string" ||
@@ -316,11 +349,52 @@ export function validateRoundSkipVote(
   }
 }
 
+/**
+ * Full structural validation of a block, including every transaction (txid and
+ * signature). Use this for blocks that are not about to be authenticated by
+ * {@link validateBlockEnvelope}.
+ */
 export function validateBlockShape(value: unknown): asserts value is Block {
+  validateBlockStructure(value);
+  validateBlockTransactions(value);
+}
+
+/**
+ * Verifies every transaction of a block (shape, txid and signature). This is
+ * the expensive part of block validation: O(transactions) secp256k1
+ * verifications.
+ */
+export function validateBlockTransactions(block: Block): void {
+  for (const tx of block.transactions) validateTransactionShape(tx);
+}
+
+/**
+ * Block structure without per-transaction verification (finding F-11): key
+ * sets, header field types, bounded counts, the canonical byte limit and the
+ * certificate entry formats. Untrusted entry points use this first so that the
+ * O(1) proposer and certificate gates in {@link validateBlockEnvelope} run
+ * before any transaction signature is verified.
+ */
+export function validateBlockStructure(value: unknown): asserts value is Block {
   assertPlainRecord(value, "block");
-  assertExactKeys(value, [
-    "header", "transactions", "hash", "proposerPublicKey", "signature", "roundCertificate", "attestations"
-  ], "block");
+  // Only protocol v6 blocks carry `commitRound`; every other version keeps the
+  // exact seven-key encoding.
+  const rawHeader = value.header;
+  const v6 = rawHeader !== null && typeof rawHeader === "object" && !Array.isArray(rawHeader) &&
+    (rawHeader as Record<string, unknown>).version === CONSENSUS_V6_PROTOCOL_VERSION;
+  if (v6) {
+    assertExactKeys(value, [
+      "header", "transactions", "hash", "proposerPublicKey", "signature", "roundCertificate", "attestations", "commitRound"
+    ], "block");
+    if (value.commitRound !== null && (!Number.isSafeInteger(value.commitRound) ||
+        (value.commitRound as number) < 0 || (value.commitRound as number) > V6_MAX_ROUND)) {
+      throw new Error("Invalid block commitRound");
+    }
+  } else {
+    assertExactKeys(value, [
+      "header", "transactions", "hash", "proposerPublicKey", "signature", "roundCertificate", "attestations"
+    ], "block");
+  }
   assertPlainRecord(value.header, "block header");
   assertExactKeys(value.header, [
     "version", "chainId", "height", "round", "previousHash", "timestampMs",
@@ -351,7 +425,7 @@ export function validateBlockShape(value: unknown): asserts value is Block {
   // count-valid but oversized block from amplifying consensus CPU work.
   if (Buffer.byteLength(canonicalJson(value), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
 
-  for (const tx of value.transactions) validateTransactionShape(tx);
+  for (const tx of value.transactions) assertPlainRecord(tx, "transaction");
   for (const item of value.attestations) {
     assertPlainRecord(item, "block attestation");
     assertExactKeys(item, ["validator", "publicKey", "signature"], "block attestation");
@@ -411,6 +485,15 @@ export function validateBlockAttestation(
     attestation.publicKey
   )) {
     throw new Error("Invalid validator attestation");
+  }
+}
+
+// Round-skip signatures are domain-separated from protocol v3 on, so verifying
+// under an assumed version silently rejects valid votes (F-03). Callers must
+// always pass the protocol version active at the vote's height.
+function assertExplicitProtocolVersion(protocolVersion: unknown): asserts protocolVersion is number {
+  if (typeof protocolVersion !== "number" || !Number.isSafeInteger(protocolVersion) || protocolVersion < 1) {
+    throw new Error("Round skip verification requires an explicit protocol version");
   }
 }
 

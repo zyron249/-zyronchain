@@ -348,8 +348,16 @@ def test_bot_commands_do_not_touch_groups():
     help_text = reply_for("help", "", None, "")["text"]
     assert "private key" in help_text
     source = Path("src/zyron_node/bot.py").read_text(encoding="utf-8")
-    for forbidden in ("banChatMember", "promoteChatMember", "setChatPermissions", "deleteMessage"):
-        assert forbidden not in source
+    group = Path("src/zyron_node/community.py").read_text(encoding="utf-8")
+    for forbidden in ("banChatMember", "promoteChatMember", "setChatPermissions", "restrictChatMember", "pinChatMessage"):
+        assert forbidden not in source and forbidden not in group
+    assert "deleteMessage" not in source
+    # The only deletion: the bot's own welcome notes, queued by welcome() into pending_deletes.
+    assert group.count('"deleteMessage"') == 1
+    deleter = group.split("def delete_due_welcomes", 1)[1].split("\ndef ", 1)[0]
+    assert '"deleteMessage"' in deleter
+    assert group.count("INSERT INTO pending_deletes") == 1
+    assert "INSERT INTO pending_deletes" in group.split("def welcome(", 1)[1].split("\ndef ", 1)[0]
     loop = source.split("while not stop.is_set():", 1)[1]
     assert "sync_telegram_menu" in loop
     assert "MENU_REFRESH_RETRY_SECONDS" in loop
@@ -443,11 +451,15 @@ def test_shell_assets_are_versioned_and_stale_js_does_not_boot(client):
     assert "/assets/logo.png?v=" in stale.text
     assert "logo-panel" in stale.text
     frontend = Path("frontend/app.js").read_text(encoding="utf-8")
-    assert "/assets/logo.png?v=" in frontend
+    # Asset paths come from <meta name="zyron-assets"> ("/assets/" here, "./assets/" on the static host).
+    assert 'ASSETS + "logo.png?v="' in frontend
+    assert '|| "/assets/"' in frontend
     assert "logo-header" in frontend
     assert "logo-gate" in frontend
+    assert 'meta name="zyron-assets" content="/assets/"' in home.text
+    assert 'meta name="zyron-api" content=""' in home.text
     boot = Path("frontend/boot.js").read_text(encoding="utf-8")
-    assert "/assets/logo.png?v=" in boot
+    assert 'assets + "logo.png?v="' in boot
     assert "+url.hash" in stale.text
     recover = client.get(f"/assets/boot-recover.js?v={CLIENT_BUILD}")
     assert recover.status_code == 200

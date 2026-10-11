@@ -23,6 +23,7 @@ const activityPool = addressFromPublicKey(publicKeyFromPrivate("04".padStart(64,
 const alicePrivate = "05".padStart(64, "0");
 const alicePublic = publicKeyFromPrivate(alicePrivate);
 const alice = addressFromPublicKey(alicePublic);
+const bob = addressFromPublicKey(publicKeyFromPrivate("06".padStart(64, "0")));
 
 function genesis(): GenesisConfig {
   return {
@@ -83,11 +84,25 @@ test("two validators finalize and converge using native authenticated consensus 
     assert.equal(skipVotes.length, 1);
     assert.equal(skipVotes[0]?.publicKey, publicKeyFromPrivate(remoteKey));
 
-    const transaction = createTransfer({
+    // CRYPTO-REVIEW (ZC-CRY-20260930-006): the activity pool is outflow-only, so a
+    // gossiped transfer into it must not be admitted by the remote mempool.
+    const poolInflow = createTransfer({
       chainId: config.chainId,
       nonce: 1,
       sender: alice,
       receiver: activityPool,
+      amountAtoms: 10,
+      feeAtoms: 1,
+      timestampMs: config.timestampMs + BLOCK_INTERVAL_MS + 1
+    }, alicePrivate, alicePublic);
+    await peers.broadcastTransaction(poolInflow);
+    assert.equal(remote.mempool.size, 0);
+
+    const transaction = createTransfer({
+      chainId: config.chainId,
+      nonce: 1,
+      sender: alice,
+      receiver: bob,
       amountAtoms: 10,
       feeAtoms: 1,
       timestampMs: config.timestampMs + BLOCK_INTERVAL_MS + 1

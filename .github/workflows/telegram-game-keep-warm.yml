@@ -1,0 +1,40 @@
+name: ZYRON NODE keep-warm
+
+# Render Free web services sleep after 15 minutes without inbound HTTP traffic and take 30-60 s to start.
+# This pings the cheap, database-free /healthz endpoint every 10 minutes so the API (and the Telegram bot
+# long-poll that runs in the same container) is usually awake. It is best effort: GitHub may delay or skip
+# scheduled runs under load, and disables schedules in repositories with no activity for 60 days. The static
+# Play Zyron shell handles a cold API on its own with a "Waking server…" state.
+# Budget: one always-on Free web service is about 744 h of the 750 free instance hours per workspace per month;
+# Actions minutes are free for public repositories.
+
+on:
+  schedule:
+    - cron: '7-59/10 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: telegram-game-keep-warm
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Ping /healthz
+        run: |
+          url="https://zyron-node.onrender.com/healthz"
+          for attempt in 1 2 3; do
+            out=$(curl -sS -o body.json -w '%{http_code} %{time_total}' --max-time 90 "$url" || echo "000 0")
+            echo "attempt $attempt: HTTP/time $out"
+            if [ "${out%% *}" = "200" ] && grep -q '"ok":true' body.json; then
+              cat body.json; echo
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::warning::zyron-node /healthz did not answer 200 after 3 attempts"
+          exit 1

@@ -17,7 +17,9 @@
     logo.alt = "ZYRON";
     logo.width = 156;
     logo.height = 156;
-    logo.src = "/assets/logo.png?v=" + encodeURIComponent(build);
+    var assetsMeta = document.querySelector('meta[name="zyron-assets"]');
+    var assets = (assetsMeta && assetsMeta.getAttribute("content")) || "/assets/";
+    logo.src = assets + "logo.png?v=" + encodeURIComponent(build);
     var title = document.createElement("h1");
     title.textContent = "ZYRON NODE did not finish loading";
     var copy = document.createElement("p");

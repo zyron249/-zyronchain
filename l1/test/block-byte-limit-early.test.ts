@@ -50,7 +50,7 @@ test("oversized count-valid block fails before envelope semantics and crypto", (
   };
 
   assert.throws(
-    () => validateBlockEnvelope(block, previousBlock(), [], 2, false),
+    () => validateBlockEnvelope(block, previousBlock(), [], 2, false, 1),
     /Block exceeds byte limit/
   );
 });

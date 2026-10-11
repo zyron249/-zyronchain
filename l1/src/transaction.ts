@@ -1,12 +1,14 @@
 import { assertHex, canonicalJson, sha256Hex } from "./codec.js";
 import {
   addressFromPublicKey,
+  assertValidPublicKey,
   signCanonical,
   signCanonicalDomain,
   verifyCanonical,
   verifyCanonicalDomain
 } from "./crypto.js";
-import { MINING_TRACKER_ADDRESS } from "./mining.js";
+import { MINING_RETIRED_MESSAGE, MINING_TRACKER_ADDRESS } from "./mining.js";
+import { assertActivitySettlementWithinCap } from "./activity.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import type {
   ActivityEntry,
@@ -211,6 +213,10 @@ export function createActivitySettlement(
   return { ...withSignature, txid: sha256Hex(canonicalJson(withSignature)) };
 }
 
+/**
+ * @deprecated Mining is retired and consensus rejects every mining claim. This
+ * signer is kept only so tests can prove that rejection on every path.
+ */
 export function createMiningClaim(
   input: Omit<UnsignedMiningClaim, "kind" | "version" | "publicKey" | "feeAtoms">,
   privateKeyHex: string,
@@ -252,6 +258,8 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
       "kind", "version", "chainId", "nonce", "sender", "height", "previousHash", "rewardAtoms",
       "workNonce", "feeAtoms", "timestampMs", "publicKey", "signature", "txid"
     ], "mining claim");
+    // Mining is retired for every genesis: a well-formed claim is still refused.
+    throw new Error(MINING_RETIRED_MESSAGE);
   } else if (value.kind === "validator_update") {
     assertExactKeys(value, [
       "kind", "version", "chainId", "nonce", "sender", "activationHeight", "validators", "approvals",
@@ -297,6 +305,7 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
       throw new Error("Invalid activity settlement size");
     }
     for (const entry of tx.entries) validateActivityEntry(entry);
+    assertActivitySettlementWithinCap(tx.entries);
   } else if (tx.kind === "mining_claim") {
     if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     if (tx.version !== 2) throw new Error("Mining claim requires transaction version 2");
@@ -430,6 +439,7 @@ function validateValidator(value: Validator, seen: Set<string>): void {
   if (typeof value.publicKey !== "string") throw new Error("Invalid validator public key");
   assertHex(value.publicKey, 64, "validator publicKey");
   if (addressFromPublicKey(value.publicKey) !== value.address) throw new Error("Validator address/public key mismatch");
+  assertValidPublicKey(value.publicKey, "Validator public key");
   if (seen.has(value.address)) throw new Error("Duplicate validator");
   seen.add(value.address);
 }

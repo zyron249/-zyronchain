@@ -20,6 +20,18 @@ export interface GenesisConfig {
   activityOracles: string[];
   activityPool: Address;
   allocations: Allocation[];
+  /**
+   * Optional on-chain allocation locks (docs/ALLOCATION_LOCKS.md). Absent on
+   * genesis files that predate them; behaviour is then unchanged.
+   */
+  allocationLocks?: AllocationLocks;
+}
+
+export interface AllocationLocks {
+  /** Founder allocation: 365-day cliff, then 1,095-day linear release from the genesis timestamp. */
+  founderVesting: Address;
+  /** Permanent-liquidity reserve: no outflow, ever (inflows allowed). */
+  permanentLiquidity: Address;
 }
 
 export interface TransferTx {
@@ -143,6 +155,12 @@ export interface Block {
   signature: string | null;
   roundCertificate: RoundSkipVote[];
   attestations: BlockAttestation[];
+  /**
+   * Protocol v6 only (F-01): the round whose CommitVotes form `attestations`.
+   * Absent on every v1/v2/v3/v5 block (their encoding is unchanged); `null` on
+   * a v6 proposal that is not yet finalized.
+   */
+  commitRound?: number | null;
 }
 
 export interface BlockAttestation {

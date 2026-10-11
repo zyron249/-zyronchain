@@ -1,0 +1,49 @@
+name: Website Wallet L1 Cross-check
+
+# Proves the browser address rules in website/wallet-core.js equal the L1
+# implementation and that the restore test embedded in the generated wallet
+# scripts works against a real L1 keystore.
+on:
+  pull_request:
+    paths:
+      - 'website/wallet.js'
+      - 'website/wallet-core.js'
+      - 'website/test-wallet-core.mjs'
+      - 'l1/src/crypto.ts'
+      - 'l1/src/keystore.ts'
+      - 'l1/src/codec.ts'
+      - '.github/workflows/website-wallet-l1-crosscheck.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'website/wallet.js'
+      - 'website/wallet-core.js'
+      - 'website/test-wallet-core.mjs'
+      - 'l1/src/crypto.ts'
+      - 'l1/src/keystore.ts'
+      - 'l1/src/codec.ts'
+      - '.github/workflows/website-wallet-l1-crosscheck.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  wallet-l1-crosscheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+      - name: Build L1
+        working-directory: l1
+        run: |
+          npm ci
+          npm run build
+      - name: Cross-check wallet page against the L1
+        run: node website/test-wallet-core.mjs --require-l1

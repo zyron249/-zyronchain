@@ -48,7 +48,7 @@ def test_tier_thresholds_follow_lifetime_points_and_do_not_reset():
     assert held["ceiling"] is None
     assert held["pointsToNext"] == 0
     assert held["ratio"] == 1.0
-    assert "250 lifetime Zyron Points to Bronze (Bronz)." == tier_race_line(0)
+    assert "250 lifetime Zyron Points to Bronze." == tier_race_line(0)
     assert "2250 lifetime Zyron Points from Bronze to Silver." == tier_race_line(250)
     assert tier_race_line(60_000).startswith("Diamond is the top tier.")
 
@@ -78,7 +78,7 @@ def test_profile_and_board_expose_tier_fields(client):
     assert meta["tierThresholds"] == player["thresholds"]
     board = client.get("/api/leaderboard?board=alltime", headers=headers).json()
     assert board["thresholds"][0]["minLifetimePoints"] == 250
-    assert board["race"]["tier"] == "250 lifetime Zyron Points to Bronze (Bronz)."
+    assert board["race"]["tier"] == "250 lifetime Zyron Points to Bronze."
     assert board["race"]["above"] == "No operator is ahead of you on this board yet."
     assert board["above"] is None
     assert {row["id"]: row["players"] for row in board["tierDistribution"]} == {

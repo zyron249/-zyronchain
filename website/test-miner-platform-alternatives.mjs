@@ -15,7 +15,8 @@ if (/data-miner-platform="(?:windows|macos|linux)"[^>]+href=/s.test(html)) throw
 if (!html.includes('operating system still requires user consent')) throw new Error('manual platform UX must preserve explicit execution-consent boundary');
 if (!html.includes('protocol v1')) throw new Error('mining page must warn that default devnet stays protocol v1');
 if (html.includes('http://127.0.0.1:9137')) throw new Error('mining page must not present 9137 as a copy-paste local-devnet RPC');
-if (!app.includes('enabled: false') || !app.includes('publicMiningActivated: false')) throw new Error('website miner activation must remain fail-closed');
-if (!app.includes('assets: Object.freeze({ windows: null, macos: null, linux: null })')) throw new Error('website miner assets must remain null');
+// Mining is retired (2026-09-30): the site script carries no miner distribution, download or activation logic at all.
+if (/MINER_DISTRIBUTION|ZyronMiner|releases\/download|Download Zyron Miner|location\.assign/.test(app)) throw new Error('website script must not carry any miner download path (mining is retired)');
+if (!html.includes('Mining is retired') || !/<meta name="robots" content="noindex"/.test(html)) throw new Error('historical mining page must be marked retired and noindex');
 if (/fetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(/.test(app)) throw new Error('website miner UX must not fetch activation/distribution state');
 console.log('manual miner platform alternatives remain fail-closed');

@@ -30,7 +30,7 @@ That command is the supported public-test surface today: local-only RPC on `127.
 
 - Tester walkthrough (wallet, tokens, RPC, limitations): [Public tester guide](docs/PUBLIC_TEST.md)
 - Public-launch ready-vs-blocked map: [Public launch checklist](docs/PUBLIC_LAUNCH_CHECKLIST.md)
-- Local mining rehearsal (loopback protocol-v5 schedule only): `cd l1 && npm run mine:local`
+- Mining: **retired** by owner decision (2026-09-30, confirmed 2026-10-11). Consensus rejects every `mining_claim` for every genesis, and `npm run mine` / `npm run mine:local` exit with an error. Do not mine; see [`l1/MINING.md`](l1/MINING.md).
 - Local launcher details: [`l1/LOCAL_DEVNET.md`](l1/LOCAL_DEVNET.md)
 - Contribution and secret rules: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Environment variable checklist (not auto-loaded): [`.env.example`](.env.example)
@@ -77,8 +77,9 @@ Maintainer succession likewise cannot be satisfied by naming placeholder account
 | `l1/` | Canonical standalone L1 |
 | `docs/` | Readiness, threat model, audits and operational evidence |
 | `docs/PUBLIC_TEST.md` | External tester walkthrough for the local public-test path |
-| `docs/PUBLIC_LAUNCH_CHECKLIST.md` | Ready-vs-blocked public mining / public-network launch map |
+| `docs/PUBLIC_LAUNCH_CHECKLIST.md` | Ready-vs-blocked public-network launch map (mining retired) |
 | `CONTRIBUTING.md` | Tester and contributor rules |
+| `LICENSE`, `NOTICE` | Apache License 2.0 and attribution notice |
 | `.env.example` | Environment variable checklist (no secrets) |
 | `app.py`, `zyron/`, `templates/`, `static/` | Legacy Python/Flask compatibility testnet |
 | `tests/` | Legacy Python testnet tests |
@@ -87,3 +88,7 @@ Maintainer succession likewise cannot be satisfied by naming placeholder account
 ## Contributions and launch discipline
 
 Security and consensus changes must preserve deterministic replay and include regression evidence. How to run tests and what not to invent (chain IDs, RPC URLs, activation flags) is in [`CONTRIBUTING.md`](CONTRIBUTING.md). Security reports follow [`SECURITY.md`](SECURITY.md); maintainer/release continuity follows [`docs/L1_MAINTAINER_SUCCESSION.md`](docs/L1_MAINTAINER_SUCCESSION.md). Do not deploy generated keys, genesis files or operator secrets from this repository. Do not activate or advertise a value-bearing mainnet until the activation gates in the launch authorization/readiness policies are independently closed.
+
+## License
+
+ZyronChain is licensed under the [Apache License, Version 2.0](LICENSE). Copyright 2026 The ZyronChain Authors; see [`NOTICE`](NOTICE). Unless required by applicable law or agreed to in writing, the software is distributed on an "AS IS" basis, without warranties or conditions of any kind.

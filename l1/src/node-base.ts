@@ -6,13 +6,43 @@ import { canonicalJson, sha256Hex } from "./codec.js";
 import {
   attachBlockSignature,
   attestationPayload,
+  blockHash,
   expectedValidator,
   roundSkipPayload,
-  validateBlockAttestation,
   validateBlockShape,
-  validateRoundSkipVote,
+  validateBlockStructure,
+  validateBlockTransactions,
   validateRoundSkipQuorum
 } from "./block.js";
+import { ConsensusStateStore } from "./consensus-state-store.js";
+import {
+  CONSENSUS_V6_PROTOCOL_VERSION,
+  V6_MAX_ROUND,
+  assertV6ProposalBlockIntegrity,
+  V6_MIN_ACTIVATION_MARGIN_BLOCKS,
+  ZERO_HASH,
+  isConsensusV6,
+  maxQC,
+  proposalDigest,
+  proposalPayload,
+  timeoutAllowedAt,
+  timeoutDigest,
+  timeoutPayload,
+  validatePrepareQC,
+  validatePrepareRequestCertificates,
+  validateTimeoutCertificate,
+  votePayload,
+  type PrepareQC,
+  type TimeoutCertificate,
+  type V6CommitRequest,
+  type V6PrepareRequest,
+  type V6ProposalPayload,
+  type V6TimeoutPayload,
+  type V6TimeoutResponse,
+  type V6Vote
+} from "./consensus-v6.js";
+import { RoundSkipVoteDiagnostics, type RoundSkipVoteDiagnosticsMetrics } from "./consensus-diagnostics.js";
+import { SUPPORTED_PROTOCOL_VERSIONS } from "./chain.js";
 import { addressFromPublicKey } from "./crypto.js";
 import { Mempool } from "./mempool.js";
 import { PeerReputationStore } from "./peer-reputation.js";
@@ -29,7 +59,7 @@ import {
 import { FixedWindowLimiter } from "./rpc-rate-limit.js";
 import { ChainStore, SigningJournal } from "./storage.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
-import type { Address, Block, BlockAttestation, RoundSkipVote, Transaction } from "./types.js";
+import type { Block, BlockAttestation, RoundSkipVote, Transaction, Validator } from "./types.js";
 import { LocalValidatorSigner, signWithValidator, type ValidatorSigner } from "./validator-signer.js";
 
 const MAX_BODY_BYTES = 2_500_000;
@@ -64,6 +94,32 @@ export const MAX_RPC_FORWARDED_HOPS = 16;
 const DEFAULT_CONSENSUS_INFLIGHT_PER_PEER = 4;
 export const BLOCK_INTERVAL_MS = 30_000;
 export const ROUND_WINDOW_MS = 30_000;
+/**
+ * Default readiness bound on the finalized tip age (F-04). A healthy network
+ * finalizes a block every BLOCK_INTERVAL_MS; a tip older than this means the
+ * node is stalled or partitioned and must not be reported as ready.
+ */
+export const DEFAULT_READINESS_MAX_TIP_AGE_MS = 10 * 60_000;
+
+export interface NodeServiceOptions {
+  /** Finalized-tip age above which /readyz reports `stale-tip` (default DEFAULT_READINESS_MAX_TIP_AGE_MS). */
+  readinessMaxTipAgeMs?: number | undefined;
+}
+
+/**
+ * Legacy (protocol v1-v5) skip-certificate catch-up progress for one tip
+ * (F-02). Memory only: after a restart the chain is rebuilt, and the durable
+ * skip reservations in the signing journal make re-signing idempotent.
+ */
+export interface LegacyRoundCatchUp {
+  height: number;
+  previousHash: string;
+  /** Highest round with a verified quorum skip certificate, or -1. */
+  certifiedRound: number;
+  certificate: RoundSkipVote[];
+  /** True while the wall-clock round is more than one tick's work ahead of certifiedRound. */
+  catchingUp: boolean;
+}
 export const MAX_VALIDATOR_CLOCK_ROLLBACK_MS = 1_000;
 
 export interface NodeStatus {
@@ -94,6 +150,7 @@ export interface NodeMetrics extends NodeStatus {
   recoveredFromCheckpointHeight: number;
   recoveredStateV2FromCorruption: boolean;
   validatorClockHealthy: boolean;
+  roundSkipVotes: RoundSkipVoteDiagnosticsMetrics;
 }
 
 export interface RpcAdmissionMetrics {
@@ -137,7 +194,19 @@ export interface ConsensusPeerClient {
   requestAttestations(block: Block): Promise<BlockAttestation[]>;
   requestRoundSkips(height: number, round: number, previousCertificate?: RoundSkipVote[]): Promise<RoundSkipVote[]>;
   broadcastBlock(block: Block): Promise<void>;
+  // Protocol v6 (F-01). Optional so legacy-only clients keep compiling; a
+  // client without them simply contributes no v6 votes.
+  requestV6Prepare?(request: V6PrepareRequest): Promise<V6Vote[]>;
+  requestV6Commit?(request: V6CommitRequest): Promise<V6Vote[]>;
+  requestV6Timeouts?(height: number, round: number): Promise<V6TimeoutResponse[]>;
+  fetchV6Block?(height: number, blockHash: string): Promise<Block | null>;
 }
+
+/** Result of loading the leader's stored proposal for a round (§6.4). */
+export type V6StoredProposal =
+  | { status: "none" }
+  | { status: "unavailable" }
+  | { status: "ok"; request: V6PrepareRequest };
 
 export function assertSafeRpcBinding(
   host: string,
@@ -266,17 +335,26 @@ export function rpcRateLimitIdentity(
 
 export class NodeService {
   readonly mempool = new Mempool();
+  readonly roundSkipVoteDiagnostics = new RoundSkipVoteDiagnostics();
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly startedAtMs = Date.now();
   private readonly validatorSigner: ValidatorSigner | undefined;
   private lastValidatorClockMs: number | undefined;
   private validatorClockFaulted = false;
+  private legacyCatchUp: LegacyRoundCatchUp | undefined;
+  readonly readinessMaxTipAgeMs: number;
 
   constructor(
     readonly store: ChainStore,
     private readonly signingJournal?: SigningJournal,
-    validator?: string | ValidatorSigner
+    validator?: string | ValidatorSigner,
+    options: NodeServiceOptions = {}
   ) {
+    const maxTipAge = options.readinessMaxTipAgeMs ?? DEFAULT_READINESS_MAX_TIP_AGE_MS;
+    if (!Number.isSafeInteger(maxTipAge) || maxTipAge < BLOCK_INTERVAL_MS) {
+      throw new Error("Readiness tip-age bound must be an integer of at least one block interval");
+    }
+    this.readinessMaxTipAgeMs = maxTipAge;
     this.validatorSigner = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
   }
 
@@ -297,15 +375,47 @@ export class NodeService {
     };
   }
 
-  readiness(): NodeReadiness {
+  readiness(nowMs = Date.now()): NodeReadiness {
     const reasons: string[] = [];
     if (!this.store.persistenceHealthy) reasons.push("persistence-unhealthy");
     if (this.signingJournal && !this.signingJournal.persistenceHealthy) reasons.push("signing-journal-unhealthy");
     if (this.validatorClockFaulted) reasons.push("validator-clock-unhealthy");
+    // Consensus progress (F-04): a node that cannot finalize the next height
+    // is not ready, even though the process and its storage are healthy.
+    const chain = this.store.chain;
+    if (!SUPPORTED_PROTOCOL_VERSIONS.has(chain.protocolVersionAt(chain.height + 1))) reasons.push("unsupported-next-protocol");
+    if (nowMs - chain.tip.header.timestampMs > this.readinessMaxTipAgeMs) reasons.push("stale-tip");
+    if (this.legacyRoundCatchUp(chain.height + 1, chain.tip.hash)?.catchingUp) reasons.push("consensus-catching-up");
     return {
       ready: reasons.length === 0,
       height: this.store.chain.height,
       reasons
+    };
+  }
+
+  /** Catch-up progress for (height, previousHash), or undefined if none is recorded for that tip. */
+  legacyRoundCatchUp(height: number, previousHash: string): LegacyRoundCatchUp | undefined {
+    const progress = this.legacyCatchUp;
+    if (!progress || progress.height !== height || progress.previousHash !== previousHash) return undefined;
+    return progress;
+  }
+
+  /**
+   * Record legacy catch-up progress. Only a certificate for a higher round
+   * replaces a recorded one for the same tip (the chain is monotone).
+   */
+  recordLegacyRoundCatchUp(progress: LegacyRoundCatchUp): void {
+    const current = this.legacyRoundCatchUp(progress.height, progress.previousHash);
+    if (current && current.certifiedRound > progress.certifiedRound) {
+      current.catchingUp = progress.catchingUp;
+      return;
+    }
+    this.legacyCatchUp = {
+      height: progress.height,
+      previousHash: progress.previousHash,
+      certifiedRound: progress.certifiedRound,
+      certificate: structuredClone(progress.certificate),
+      catchingUp: progress.catchingUp
     };
   }
 
@@ -320,7 +430,8 @@ export class NodeService {
       persistenceHealthy: this.store.persistenceHealthy,
       recoveredFromCheckpointHeight: this.store.recoveredFromCheckpointHeight,
       recoveredStateV2FromCorruption: this.store.recoveredStateV2FromCorruption,
-      validatorClockHealthy: !this.validatorClockFaulted
+      validatorClockHealthy: !this.validatorClockFaulted,
+      roundSkipVotes: this.roundSkipVoteDiagnostics.metrics()
     };
   }
 
@@ -347,6 +458,12 @@ export class NodeService {
     validateTransactionShape(value);
     const tx = value as Transaction;
     if (tx.chainId !== this.store.chain.genesis.chainId) throw new Error("Wrong transaction chain ID");
+    // F-01 §16.9-9: mempool policy only (block validity is unchanged, so old
+    // and new binaries agree on blocks that carry such an upgrade).
+    if (tx.kind === "protocol_upgrade" && isConsensusV6(tx.protocolVersion) &&
+        tx.activationHeight < this.store.chain.height + 1 + V6_MIN_ACTIVATION_MARGIN_BLOCKS) {
+      throw new Error(`Protocol v6 upgrade activation must be at least ${V6_MIN_ACTIVATION_MARGIN_BLOCKS} blocks ahead (node policy)`);
+    }
     const stateNonce = this.store.chain.nonce(tx.sender);
     if (tx.nonce <= stateNonce || tx.nonce > stateNonce + 64) throw new Error("Transaction nonce outside mempool window");
     this.store.chain.validateMempoolAdmission(tx);
@@ -360,6 +477,11 @@ export class NodeService {
       if (required > BigInt(this.store.chain.balance(tx.sender))) {
         throw new Error("Pending transfers exceed confirmed balance");
       }
+      // Allocation locks: the sender's aggregate pending spend must also fit
+      // its unlocked balance (consensus re-checks every block).
+      if (required > BigInt(this.store.chain.spendableBalance(tx.sender))) {
+        throw new Error("Pending transfers exceed unlocked balance");
+      }
     }
     if (tx.nonce === stateNonce + 1) this.store.chain.validatePending([tx]);
     this.mempool.add(tx);
@@ -370,8 +492,11 @@ export class NodeService {
     return this.exclusive(async () => {
       if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
       this.assertValidatorClock(nowMs);
-      validateBlockShape(value);
+      // F-11: structure only; validateProposal authenticates the proposer
+      // before any transaction signature is verified.
+      validateBlockStructure(value);
       const block = value as Block;
+      this.assertLegacyConsensusHeight(block.header.height);
       this.store.chain.validateProposal(block, nowMs);
       const publicKey = this.validatorSigner.publicKey;
       const validator = this.store.chain.validatorsAt(block.header.height).find((item) => item.publicKey === publicKey);
@@ -394,6 +519,7 @@ export class NodeService {
     return this.exclusive(async () => {
       if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
       this.assertValidatorClock(nowMs);
+      this.assertLegacyConsensusHeight(block.header.height);
       this.store.chain.validatePreparedUnsignedBlock(block, nowMs);
       if (block.proposerPublicKey !== this.validatorSigner.publicKey) throw new Error("Configured validator is not the block proposer");
       await this.signingJournal.reserveAttestation(block.header.height, block.header.round, block.hash);
@@ -417,6 +543,7 @@ export class NodeService {
       if (!Number.isSafeInteger(height) || height !== chain.height + 1 || !Number.isSafeInteger(round) || round < 0) {
         throw new Error("Invalid round skip request");
       }
+      this.assertLegacyConsensusHeight(height);
       const deadline = chain.tip.header.timestampMs + BLOCK_INTERVAL_MS + ((round + 1) * ROUND_WINDOW_MS);
       if (nowMs < deadline) throw new Error("Round skip deadline has not elapsed");
       if (round === 0 && previousCertificate.length !== 0) {
@@ -461,7 +588,10 @@ export class NodeService {
 
   async acceptFinalizedBlock(value: unknown): Promise<void> {
     return this.exclusive(async () => {
-      validateBlockShape(value);
+      // F-11: structure only; commitFinalizedBlock validates the envelope,
+      // which checks the proposer and the finality certificate before any
+      // transaction signature.
+      validateBlockStructure(value);
       const block = value as Block;
       await this.store.commitFinalizedBlock(block);
       await this.signingJournal?.compactThrough(this.store.chain.height);
@@ -470,10 +600,329 @@ export class NodeService {
       const nextMiningPreviousHash = this.store.chain.tip.hash;
       this.mempool.prune((tx) =>
         tx.nonce <= this.store.chain.nonce(tx.sender) ||
+        // An activity settlement whose epoch window has closed can never be
+        // included again; drop it so it does not pin the pool nonce.
+        (tx.kind === "activity_settlement" && this.store.chain.isActivitySettlementExpired(tx)) ||
         (tx.kind === "mining_claim" &&
           (tx.height !== nextMiningHeight || tx.previousHash !== nextMiningPreviousHash))
       );
     });
+  }
+
+  // Legacy attest/skip messages are never signed at a protocol v6 height: they
+  // would not count there, and a legacy journal row would block the v6 rows of
+  // that height (§6.2-7). Unreachable for v1-v5 heights.
+  private assertLegacyConsensusHeight(height: unknown): void {
+    if (Number.isSafeInteger(height) && (height as number) >= 0 &&
+        isConsensusV6(this.store.chain.protocolVersionAt(height as number))) {
+      throw new Error("Legacy consensus messages are not accepted at protocol v6 heights");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Protocol v6 (F-01): locked two-phase consensus handlers (spec §3.4, §6, §9)
+  // ---------------------------------------------------------------------------
+
+  private requireV6Signing(): { journal: SigningJournal; signer: ValidatorSigner } {
+    if (!this.signingJournal || !this.validatorSigner) throw new Error("Validator signing is disabled");
+    return { journal: this.signingJournal, signer: this.validatorSigner };
+  }
+
+  private v6Context(): { height: number; chainId: string; validators: Validator[] } {
+    const chain = this.store.chain;
+    const height = chain.height + 1;
+    if (!isConsensusV6(chain.protocolVersionAt(height))) throw new Error("Protocol v6 consensus is not active at the next height");
+    return { height, chainId: chain.genesis.chainId, validators: chain.validatorsAt(height) };
+  }
+
+  private v6Member(validators: Validator[], signer: ValidatorSigner): Validator {
+    const member = validators.find((validator) => validator.publicKey === signer.publicKey);
+    if (!member) throw new Error("Configured validator key is not in genesis");
+    return member;
+  }
+
+  private get v6State(): ConsensusStateStore {
+    if (!this.signingJournal) throw new Error("Validator signing is disabled");
+    return this.signingJournal.consensusState;
+  }
+
+  /** The verified highQC persisted for a height (null if none, lost or invalid). */
+  private async v6HighQC(height: number, chainId: string, validators: Validator[]): Promise<PrepareQC | null> {
+    const raw = await this.v6State.read(ConsensusStateStore.heightFile(height));
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const highQC = (raw as Record<string, unknown>).highQC;
+    if (highQC === null || highQC === undefined) return null;
+    try {
+      validatePrepareQC(highQC, validators, chainId, height);
+      return highQC;
+    } catch {
+      return null;
+    }
+  }
+
+  // highQC is liveness state (§4.5): it is reported in timeouts. It is written
+  // before the lock row so that highQC.round >= lock.round holds (§8.2).
+  private async v6RecordQC(height: number, chainId: string, validators: Validator[], qc: PrepareQC): Promise<void> {
+    const current = await this.v6HighQC(height, chainId, validators);
+    if (current && current.round >= qc.round) return;
+    await this.v6State.write(ConsensusStateStore.heightFile(height), { highQC: qc });
+  }
+
+  private async v6StoreBlock(height: number, block: Block): Promise<void> {
+    // An intact copy is kept; a missing, corrupt or tampered file is replaced.
+    if (await this.v6ReadBlock(height, block.hash)) return;
+    await this.v6State.write(ConsensusStateStore.blockFile(height, block.hash), block);
+  }
+
+  private async v6ReadBlock(height: number, hash: string): Promise<Block | null> {
+    if (!this.signingJournal || !/^[0-9a-f]{64}$/.test(hash)) return null;
+    const raw = await this.v6State.read(ConsensusStateStore.blockFile(height, hash));
+    if (raw === undefined) return null;
+    try {
+      validateBlockShape(raw);
+      assertV6ProposalBlockIntegrity(raw, height, hash, this.store.chain.validatorsAt(height));
+      return raw;
+    } catch {
+      return null;
+    }
+  }
+
+  /** `block` request: serve a block this validator stored for the next height (re-proposal of M, §8.2). */
+  async v6FetchBlock(height: number, hash: string): Promise<Block | null> {
+    if (!Number.isSafeInteger(height) || height !== this.store.chain.height + 1) return null;
+    if (!isConsensusV6(this.store.chain.protocolVersionAt(height))) return null;
+    return this.v6ReadBlock(height, hash);
+  }
+
+  /** PREPARE (§3.4): validate the proposal and its certificates, apply SAFE-VOTE via the journal, sign. */
+  async v6Prepare(value: unknown, nowMs = Date.now()): Promise<V6Vote> {
+    return this.exclusive(async () => {
+      const { journal, signer } = this.requireV6Signing();
+      this.assertValidatorClock(nowMs);
+      assertPlainRecord(value, "v6 prepare request");
+      assertExactKeys(value, ["proposal", "block", "tc"], "v6 prepare request");
+      validateBlockStructure(value.block); // F-11: validateProposal verifies transactions last
+      const request = value as unknown as V6PrepareRequest;
+      const { height, chainId, validators } = this.v6Context();
+      const member = this.v6Member(validators, signer);
+      const justify = validatePrepareRequestCertificates(request, validators, chainId, height);
+      this.store.chain.validateProposal(request.block, nowMs);
+      const { round, justifyRound } = request.proposal;
+      if (justify) await this.v6RecordQC(height, chainId, validators, justify);
+      await journal.reserveV6Prepare(height, round, request.block.hash, justifyRound);
+      // Stored only once the journal accepted the vote (finding D-1): a refused
+      // request (equivocation, lock conflict, closed round) leaves no file, so
+      // at most one block per (H, r) is kept from prepare requests. Prepared
+      // blocks are liveness state only; a crash before this write merely
+      // loses the copy (the commit request carries the block again).
+      await this.v6StoreBlock(height, request.block);
+      return {
+        validator: member.address,
+        publicKey: signer.publicKey,
+        signature: await signWithValidator(signer, votePayload(chainId, height, round, request.block.hash), "prepare-vote", CONSENSUS_V6_PROTOCOL_VERSION)
+      };
+    });
+  }
+
+  /** COMMIT (§3.4): verify the PrepareQC, persist it, append lock+commit atomically, sign. */
+  async v6Commit(value: unknown, nowMs = Date.now()): Promise<V6Vote> {
+    return this.exclusive(async () => {
+      const { journal, signer } = this.requireV6Signing();
+      this.assertValidatorClock(nowMs);
+      assertPlainRecord(value, "v6 commit request");
+      assertExactKeys(value, ["qc", "block"], "v6 commit request");
+      validateBlockStructure(value.block); // F-11: transactions are verified after the QC and integrity checks
+      const { height, chainId, validators } = this.v6Context();
+      const member = this.v6Member(validators, signer);
+      validatePrepareQC(value.qc, validators, chainId, height);
+      const qc = value.qc;
+      const block = value.block;
+      if (block.hash !== qc.blockHash || blockHash(block.header) !== block.hash || block.header.height !== height ||
+          block.header.chainId !== chainId || block.header.version !== CONSENSUS_V6_PROTOCOL_VERSION) {
+        throw new Error("v6 commit block does not match its prepare QC");
+      }
+      // The QC binds only the header hash: the body and proposer signature
+      // must match too before the block is stored for later re-proposal.
+      assertV6ProposalBlockIntegrity(block, height, qc.blockHash, validators);
+      validateBlockTransactions(block);
+      await this.v6StoreBlock(height, block);
+      await this.v6RecordQC(height, chainId, validators, qc);
+      await journal.reserveV6Commit(height, qc.round, qc.blockHash);
+      return {
+        validator: member.address,
+        publicKey: signer.publicKey,
+        signature: await signWithValidator(signer, votePayload(chainId, height, qc.round, qc.blockHash), "commit-vote", CONSENSUS_V6_PROTOCOL_VERSION)
+      };
+    });
+  }
+
+  /**
+   * TIMEOUT (§3.4, R5): permitted once per (H, r) from roundEnd - guard on,
+   * whatever was signed earlier in round r. It reports the validator's highQC
+   * (-1 <= highQCRound <= r). The payload and QC are stored before the journal
+   * row, so retries return the identical vote.
+   */
+  async v6Timeout(height: number, round: number, nowMs = Date.now()): Promise<V6TimeoutResponse> {
+    return this.exclusive(async () => {
+      const { journal, signer } = this.requireV6Signing();
+      this.assertValidatorClock(nowMs);
+      if (!Number.isSafeInteger(round) || round < 0 || round > V6_MAX_ROUND) throw new Error("Invalid v6 timeout request");
+      const context = this.v6Context();
+      if (height !== context.height) throw new Error("Invalid v6 timeout request");
+      const { chainId, validators } = context;
+      const member = this.v6Member(validators, signer);
+      if (nowMs < timeoutAllowedAt(this.store.chain.tip.header.timestampMs, round)) {
+        throw new Error("Round timeout deadline has not elapsed");
+      }
+      const name = ConsensusStateStore.timeoutFile(height, round);
+      const existing = journal.v6Row(height, round, "timeout");
+      let payload: V6TimeoutPayload | undefined;
+      let highQC: PrepareQC | null = null;
+      if (existing !== undefined) {
+        const stored = await this.v6State.read(name);
+        try {
+          assertPlainRecord(stored, "stored timeout");
+          assertExactKeys(stored, ["payload", "highQC"], "stored timeout");
+          const candidate = timeoutPayload(stored.payload as V6TimeoutPayload);
+          if (timeoutDigest(candidate) !== existing) throw new Error("stored timeout does not match the journal");
+          if (candidate.highQCRound >= 0) {
+            validatePrepareQC(stored.highQC, validators, chainId, height);
+            if (stored.highQC.round !== candidate.highQCRound || stored.highQC.blockHash !== candidate.highQCHash) {
+              throw new Error("stored timeout QC mismatch");
+            }
+            highQC = stored.highQC;
+          }
+          payload = candidate;
+        } catch {
+          payload = undefined;
+        }
+        if (!payload) throw new Error("Stored timeout vote is unavailable");
+      } else {
+        const rounds = journal.v6Rounds(height);
+        if (rounds.maxVoteRound > round || rounds.maxTimeoutRound > round) {
+          throw new Error("Validator has already moved past this round");
+        }
+        highQC = await this.v6HighQC(height, chainId, validators);
+        if (highQC && highQC.round > round) throw new Error("Validator holds a QC above the requested round");
+        payload = {
+          chainId,
+          height,
+          round,
+          highQCRound: highQC?.round ?? -1,
+          highQCHash: highQC?.blockHash ?? ZERO_HASH
+        };
+        await this.v6State.write(name, { payload, highQC });
+        await journal.reserveV6(height, round, "timeout", timeoutDigest(payload));
+      }
+      return {
+        vote: {
+          validator: member.address,
+          publicKey: signer.publicKey,
+          ...payload,
+          signature: await signWithValidator(signer, timeoutPayload(payload), "round-timeout", CONSENSUS_V6_PROTOCOL_VERSION)
+        },
+        highQC
+      };
+    });
+  }
+
+  /** Own block-proposal row for a round at the next height, if any (leader restart, §6.4). */
+  v6OwnBlockProposal(round: number): string | undefined {
+    return this.signingJournal?.v6Row(this.store.chain.height + 1, round, "block-proposal");
+  }
+
+  /** Leader: sign a fresh block header for its round (journal block-proposal row first). */
+  async v6SignFreshBlock(block: Block, nowMs = Date.now()): Promise<Block> {
+    return this.exclusive(async () => {
+      const { journal, signer } = this.requireV6Signing();
+      this.assertValidatorClock(nowMs);
+      const { height } = this.v6Context();
+      if (block.header.height !== height) throw new Error("v6 block is not for the next height");
+      this.store.chain.validatePreparedUnsignedBlock(block, nowMs);
+      if (block.proposerPublicKey !== signer.publicKey) throw new Error("Configured validator is not the block proposer");
+      await journal.reserveV6(height, block.header.round, "block-proposal", block.hash);
+      const signed = attachBlockSignature(
+        block,
+        await signWithValidator(signer, block.header, "block-proposal", CONSENSUS_V6_PROTOCOL_VERSION)
+      );
+      await this.v6StoreBlock(height, signed);
+      return signed;
+    });
+  }
+
+  /**
+   * Leader: sign the Proposal of its round (PROPOSE, §3.4). The pending
+   * proposal (payload + TC) and block are persisted before the journal row;
+   * a retry with the same inputs re-signs the identical proposal.
+   */
+  async v6SignProposal(input: { round: number; block: Block; tc: TimeoutCertificate | null }, nowMs = Date.now()): Promise<V6PrepareRequest> {
+    return this.exclusive(async () => this.v6SignProposalLocked(input, nowMs));
+  }
+
+  private async v6SignProposalLocked(
+    input: { round: number; block: Block; tc: TimeoutCertificate | null },
+    nowMs: number
+  ): Promise<V6PrepareRequest> {
+    const { journal, signer } = this.requireV6Signing();
+    this.assertValidatorClock(nowMs);
+    const { height, chainId, validators } = this.v6Context();
+    const { round, block, tc } = input;
+    if (expectedValidator(validators, height, round).publicKey !== signer.publicKey) {
+      throw new Error("Configured validator is not the round leader");
+    }
+    const justifyRound = round === 0 || tc === null ? -1 : validateTimeoutCertificate(tc, validators, chainId, height, round - 1);
+    const payload: V6ProposalPayload = { chainId, height, round, blockHash: block.hash, justifyRound };
+    // Verify the complete request as a validator would before committing to it.
+    const unsignedRequest: V6PrepareRequest = { proposal: { ...payload, signature: "0".repeat(128) }, block, tc };
+    validatePrepareRequestCertificates(unsignedRequest, validators, chainId, height, { verifyProposalSignature: false });
+    if (justifyRound === -1 && journal.v6Row(height, round, "block-proposal") !== block.hash) {
+      throw new Error("Unjustified v6 proposal must carry this leader's own fresh block");
+    }
+    await this.v6StoreBlock(height, block);
+    const name = ConsensusStateStore.proposalFile(height, round);
+    const digest = proposalDigest(payload);
+    // Written only before the first proposal row of the round, so a refused
+    // conflicting attempt cannot overwrite the stored (already signed) proposal.
+    if (journal.v6Row(height, round, "proposal") === undefined) {
+      await this.v6State.write(name, { payload, tc });
+    }
+    await journal.reserveV6(height, round, "proposal", digest);
+    const signature = await signWithValidator(signer, proposalPayload(payload), "consensus-proposal", CONSENSUS_V6_PROTOCOL_VERSION);
+    return { proposal: { ...payload, signature }, block, tc };
+  }
+
+  /** Leader restart / same-round retry: the stored proposal of a round, re-signed identically (§6.4). */
+  async v6StoredProposal(round: number, nowMs = Date.now()): Promise<V6StoredProposal> {
+    return this.exclusive(async () => {
+      const { journal } = this.requireV6Signing();
+      const { height, chainId, validators } = this.v6Context();
+      const digest = journal.v6Row(height, round, "proposal");
+      if (digest === undefined) return { status: "none" };
+      try {
+        const stored = await this.v6State.read(ConsensusStateStore.proposalFile(height, round));
+        assertPlainRecord(stored, "stored proposal");
+        assertExactKeys(stored, ["payload", "tc"], "stored proposal");
+        const payload = proposalPayload(stored.payload as V6ProposalPayload);
+        if (proposalDigest(payload) !== digest || payload.height !== height || payload.round !== round || payload.chainId !== chainId) {
+          return { status: "unavailable" };
+        }
+        const block = await this.v6ReadBlock(height, payload.blockHash);
+        if (!block) return { status: "unavailable" };
+        const tc = stored.tc === null ? null : stored.tc as TimeoutCertificate;
+        if (tc !== null) validateTimeoutCertificate(tc, validators, chainId, height, round - 1);
+        return { status: "ok", request: await this.v6SignProposalLocked({ round, block, tc }, nowMs) };
+      } catch {
+        return { status: "unavailable" };
+      }
+    });
+  }
+
+  /** v6 diagnostics for metrics (never secrets). */
+  v6Metrics(): { height: number; lockRound: number; maxVoteRound: number; maxTimeoutRound: number } | null {
+    const height = this.store.chain.height + 1;
+    if (!isConsensusV6(this.store.chain.protocolVersionAt(height)) || !this.signingJournal) return null;
+    const rounds = this.signingJournal.v6Rounds(height);
+    return { height, lockRound: this.signingJournal.v6Lock(height)?.round ?? -1, ...rounds };
   }
 
   private assertValidatorClock(nowMs: number): void {
@@ -669,8 +1118,12 @@ async function route(
     return writeJson(response, readiness.ready ? 200 : 503, readiness);
   }
   if (request.method === "GET" && url.pathname === "/metrics") {
+    // consensusV6 appears only while protocol v6 governs the next height, so
+    // legacy /metrics output is unchanged.
+    const consensusV6 = service.v6Metrics();
     return writeJson(response, 200, {
       ...service.metrics(),
+      ...(consensusV6 ? { consensusV6 } : {}),
       rpc: {
         ...rpcAdmission?.metrics(),
         ...bodyReservation?.metrics(),
@@ -725,6 +1178,29 @@ async function route(
       return writeJson(response, 200, {
         vote: await service.requestSkipVote(Number(body.height), Number(body.round), body.previousCertificate as RoundSkipVote[])
       });
+    } finally {
+      release();
+    }
+  }
+  if (request.method === "POST" && (url.pathname === "/v6/prepare" || url.pathname === "/v6/commit" ||
+      url.pathname === "/v6/timeout" || url.pathname === "/v6/block")) {
+    preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);
+    const body = await readJsonBody(request, bodyReservation);
+    const release = enterConsensusRequest(
+      request, url.pathname, body, peerAuthToken, peerRequestAuthenticator, consensusInflight
+    );
+    try {
+      if (url.pathname === "/v6/prepare") return writeJson(response, 200, { vote: await service.v6Prepare(body) });
+      if (url.pathname === "/v6/commit") return writeJson(response, 200, { vote: await service.v6Commit(body) });
+      assertPlainRecord(body, "v6 request");
+      if (url.pathname === "/v6/timeout") {
+        assertExactKeys(body, ["height", "round"], "v6 timeout request");
+        if (!Number.isSafeInteger(body.height) || !Number.isSafeInteger(body.round)) throw new Error("Invalid v6 timeout request");
+        return writeJson(response, 200, await service.v6Timeout(Number(body.height), Number(body.round)), 256_000);
+      }
+      assertExactKeys(body, ["height", "blockHash"], "v6 block request");
+      if (!Number.isSafeInteger(body.height) || typeof body.blockHash !== "string") throw new Error("Invalid v6 block request");
+      return writeJson(response, 200, { block: await service.v6FetchBlock(Number(body.height), body.blockHash) }, MAX_BODY_BYTES + 64_000);
     } finally {
       release();
     }
@@ -1060,76 +1536,6 @@ export function peerSyncProbeBatches(peers: readonly string[], groupOffset = 0):
     batches.push(ordered.slice(index, index + MAX_SYNC_PROBE_CONCURRENCY));
   }
   return batches;
-}
-
-export async function produceFinalizedBlock(
-  service: NodeService,
-  peers: ConsensusPeerClient,
-  validator: string | ValidatorSigner,
-  nowMs = Date.now()
-): Promise<Block | null> {
-  const chain = service.store.chain;
-  const elapsed = nowMs - chain.tip.header.timestampMs;
-  if (elapsed < BLOCK_INTERVAL_MS) return null;
-  const round = Math.max(0, Math.floor((elapsed - BLOCK_INTERVAL_MS) / ROUND_WINDOW_MS));
-  const signer = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
-  const publicKey = signer.publicKey;
-  const validators = chain.validatorsAt(chain.height + 1);
-  const expected = expectedValidator(validators, chain.height + 1, round);
-  if (expected.publicKey !== publicKey) return null;
-  let roundCertificate: RoundSkipVote[] = [];
-  if (round > 0) {
-    let previousCertificate: RoundSkipVote[] = [];
-    for (let skippedRound = 0; skippedRound < round; skippedRound += 1) {
-      const votes: RoundSkipVote[] = [];
-      try {
-        votes.push(await service.requestSkipVote(chain.height + 1, skippedRound, previousCertificate, nowMs));
-      } catch {}
-      votes.push(...await peers.requestRoundSkips(chain.height + 1, skippedRound, previousCertificate));
-      const unique = new Map<Address, RoundSkipVote>();
-      for (const vote of votes) {
-        try {
-          validateRoundSkipVote(vote, validators, chain.genesis.chainId, chain.height + 1, skippedRound, chain.tip.hash);
-          unique.set(vote.validator, vote);
-        } catch {}
-      }
-      const certificate = [...unique.values()];
-      try {
-        validateRoundSkipQuorum(certificate, validators, chain.genesis.chainId, chain.height + 1, skippedRound, chain.tip.hash);
-      } catch {
-        return null;
-      }
-      roundCertificate = certificate;
-      previousCertificate = certificate;
-    }
-  }
-  const transactions = chain.selectValidPending(service.mempool.values(), 10_000);
-  const unsignedProposal = chain.prepareBlock(transactions, publicKey, { round, timestampMs: nowMs, roundCertificate });
-  const proposal = await service.signPreparedProposal(unsignedProposal, nowMs);
-  chain.validatePreparedBlock(proposal, nowMs);
-  const attestations: BlockAttestation[] = [];
-  try {
-    attestations.push(await service.attestProposal(proposal, nowMs));
-  } catch (error) {
-    if (!/Validator signing is disabled/.test(safeError(error))) throw error;
-  }
-  attestations.push(...await peers.requestAttestations(proposal));
-  const byValidator = new Map<Address, BlockAttestation>();
-  for (const attestation of attestations) {
-    try {
-      validateBlockAttestation(proposal, attestation, validators);
-      byValidator.set(attestation.validator, attestation);
-    } catch {}
-  }
-  const withVotes = { ...proposal, attestations: [...byValidator.values()] };
-  try {
-    await service.acceptFinalizedBlock(withVotes);
-  } catch (error) {
-    if (/Finality quorum not reached/.test(safeError(error))) return null;
-    throw error;
-  }
-  await peers.broadcastBlock(withVotes);
-  return withVotes;
 }
 
 function parseStatus(value: unknown): NodeStatus {

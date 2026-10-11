@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/l1-release.yml'
       - '.github/scripts/verify-l1-release-action-custody.mjs'
+      - '.github/scripts/test-l1-release-action-custody-mutations.mjs'
       - '.github/workflows/l1-release-action-custody-policy.yml'
   push:
     branches:
@@ -12,6 +13,7 @@ on:
     paths:
       - '.github/workflows/l1-release.yml'
       - '.github/scripts/verify-l1-release-action-custody.mjs'
+      - '.github/scripts/test-l1-release-action-custody-mutations.mjs'
       - '.github/workflows/l1-release-action-custody-policy.yml'
 
 permissions:
@@ -27,3 +29,5 @@ jobs:
           persist-credentials: false
       - name: Verify release action custody
         run: node .github/scripts/verify-l1-release-action-custody.mjs
+      - name: Verify the release policy rejects ineffective steps
+        run: node .github/scripts/test-l1-release-action-custody-mutations.mjs

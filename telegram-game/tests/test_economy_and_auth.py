@@ -26,8 +26,11 @@ from zyron_node.rpc import ChainClient, RpcError, format_zyn, summarize_blocks, 
 BOT = "123456:TEST_TOKEN_NOT_A_SECRET"
 
 
-def sign_init(user_id, auth_date, token=BOT, start_param=None, username="ada"):
-    user = json.dumps({"id": user_id, "first_name": "Ada", "username": username}, separators=(",", ":"))
+def sign_init(user_id, auth_date, token=BOT, start_param=None, username="ada", pm=False):
+    fields_user = {"id": user_id, "first_name": "Ada", "username": username}
+    if pm:
+        fields_user["allows_write_to_pm"] = True
+    user = json.dumps(fields_user, separators=(",", ":"))
     fields = {"auth_date": str(auth_date), "user": user}
     if start_param:
         fields["start_param"] = start_param

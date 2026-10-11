@@ -390,28 +390,31 @@ test("state root detects transaction/state tampering", () => {
 
 test("activity settlement debits a finite pool and cannot replay an epoch", () => {
   const chain = new ZyronChain(genesis());
+  // Epoch 0 (the first 24 h after genesis) is settleable only once it has
+  // closed, by a block timestamped inside epoch 1 (ZC-CRY-20260930-010).
+  const epochOneMs = genesis().timestampMs + 86_400_000;
   const settlement = createActivitySettlement(
     {
       chainId: genesis().chainId,
       nonce: 1,
       sender: activityPool,
-      epoch: 7,
+      epoch: 0,
       entries: [
         { receiver: bob, amountAtoms: 10_000_000 },
         { receiver: alice, amountAtoms: 20_000_000 }
       ],
-      receiptRoot: sha256Hex("activity-epoch-7"),
-      timestampMs: 1_700_000_000_100
+      receiptRoot: sha256Hex("activity-epoch-0"),
+      timestampMs: epochOneMs + 100
     },
     oraclePrivate,
     oraclePublic
   );
   let block = chain.produceBlock([settlement], validatorOnePrivate, {
-    timestampMs: 1_700_000_000_200
+    timestampMs: epochOneMs + 200
   });
   block = chain.attestBlock(block, validatorOnePrivate);
   block = chain.attestBlock(block, validatorTwoPrivate);
-  chain.acceptBlock(block, 1_700_000_000_200);
+  chain.acceptBlock(block, epochOneMs + 200);
 
   assert.equal(chain.getState().balance(bob), 10_000_000);
   assert.equal(chain.getState().balance(activityPool), 4_970_000_000);
@@ -423,7 +426,7 @@ test("activity settlement debits a finite pool and cannot replay an epoch", () =
   );
   assert.throws(
     () => chain.produceBlock([replayWithNextNonce], validatorTwoPrivate, {
-      timestampMs: 1_700_000_000_300
+      timestampMs: epochOneMs + 300
     }),
     /already settled/
   );
@@ -486,7 +489,8 @@ test("a greater-than-two-thirds skip certificate safely unlocks the next propose
     round: 0,
     previousHash: chain.tip.hash,
     validatorPrivateKey: validatorOnePrivate,
-    validatorPublicKey: validatorOnePublic
+    validatorPublicKey: validatorOnePublic,
+    protocolVersion: 1
   });
   const voteTwo = createRoundSkipVote({
     chainId: genesis().chainId,
@@ -494,7 +498,8 @@ test("a greater-than-two-thirds skip certificate safely unlocks the next propose
     round: 0,
     previousHash: chain.tip.hash,
     validatorPrivateKey: validatorTwoPrivate,
-    validatorPublicKey: validatorTwoPublic
+    validatorPublicKey: validatorTwoPublic,
+    protocolVersion: 1
   });
   const proposal = chain.produceBlock([], validatorTwoPrivate, {
     round: 1,
@@ -732,7 +737,7 @@ test("protocol v2 drops the legacy ledger shadow and serves pending/query paths 
         chainId: genesis().chainId,
         nonce: 1,
         sender: activityPool,
-        epoch: 77,
+        epoch: 0,
         entries: [{ receiver: bob, amountAtoms: 1 }],
         receiptRoot: sha256Hex("v2-hot-path-activity"),
         timestampMs: genesis().timestampMs + 10_201
@@ -740,7 +745,8 @@ test("protocol v2 drops the legacy ledger shadow and serves pending/query paths 
       oraclePrivate,
       oraclePublic
     );
-    store.chain.validateMempoolAdmission(activity);
+    // Admitted inside epoch 0's settlement window (the day after genesis).
+    store.chain.validateMempoolAdmission(activity, genesis().timestampMs + 86_400_000 + 10_201);
     assert.deepEqual(store.chain.selectValidPending([pending], 10).map((tx) => tx.txid), [pending.txid]);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -945,7 +951,7 @@ test("finalized block write uncertainty fail-stops before live state advances", 
     );
 
     const service = new NodeService(store);
-    assert.deepEqual(service.readiness(), {
+    assert.deepEqual(service.readiness(genesis().timestampMs + 1_000), {
       ready: false,
       height: 0,
       reasons: ["persistence-unhealthy"]
@@ -963,10 +969,12 @@ test("finalized block write uncertainty fail-stops before live state advances", 
     assert.deepEqual(await liveness.json(), { ok: true, height: 0 });
     const readiness = await fetch(`${base}/readyz`);
     assert.equal(readiness.status, 503);
+    // The fixture genesis is years old in wall-clock time, so the stalled
+    // chain is also reported (F-04).
     assert.deepEqual(await readiness.json(), {
       ready: false,
       height: 0,
-      reasons: ["persistence-unhealthy"]
+      reasons: ["persistence-unhealthy", "stale-tip"]
     });
     await new Promise<void>((resolveClose, reject) =>
       server.close((error) => error ? reject(error) : resolveClose())
@@ -1857,7 +1865,7 @@ test("validator signing fail-stops after a backward wall-clock jump until proces
       /Validator clock moved backwards beyond the safety tolerance/
     );
     assert.equal(service.metrics(nowMs).validatorClockHealthy, false);
-    assert.deepEqual(service.readiness(), {
+    assert.deepEqual(service.readiness(nowMs), {
       ready: false,
       height: 0,
       reasons: ["validator-clock-unhealthy"]
@@ -1956,9 +1964,11 @@ test("RPC exposes liveness, readiness, and metrics while enforcing per-client re
     assert.deepEqual(await health.json(), { ok: true, height: 0 });
     assert.equal(health.headers.get("x-ratelimit-limit"), "3");
 
+    // The fixture genesis is years old in wall-clock time: readiness reports
+    // the stalled chain (F-04); the 200 path is covered by f04-readiness-consensus.
     const readiness = await fetch(`${base}/readyz`);
-    assert.equal(readiness.status, 200);
-    assert.deepEqual(await readiness.json(), { ready: true, height: 0, reasons: [] });
+    assert.equal(readiness.status, 503);
+    assert.deepEqual(await readiness.json(), { ready: false, height: 0, reasons: ["stale-tip"] });
 
     const metrics = await fetch(`${base}/metrics`);
     assert.equal(metrics.status, 200);
@@ -3462,7 +3472,8 @@ test("four validators converge across 120 blocks with repeated proposer-failure 
       round: 0,
       previousHash: producer.tip.hash,
       validatorPrivateKey: validatorPrivates[index]!,
-      validatorPublicKey: validatorPublics[index]!
+      validatorPublicKey: validatorPublics[index]!,
+      protocolVersion: 1
     }));
     const proposerIndex = (height - 1 + round) % validatorPrivates.length;
     let block = producer.produceBlock([tx], validatorPrivates[proposerIndex]!, {
@@ -3567,7 +3578,13 @@ test("chain store fails closed on a truncated or corrupt finalized block record"
     block = store.chain.attestBlock(block, validatorOnePrivate);
     block = store.chain.attestBlock(block, validatorTwoPrivate);
     await store.commitFinalizedBlock(block, 1_700_000_000_100);
+    // F-10: an unterminated, unparsable final record is a torn append that was
+    // never acknowledged; it is truncated and the finalized height is kept.
     await appendFile(join(directory, "blocks.ndjson"), "{\"header\":", "utf8");
+    const recovered = await ChainStore.open(genesis(), directory);
+    assert.equal(recovered.chain.height, 1);
+    // A terminated record that does not parse is corruption and stays fatal.
+    await appendFile(join(directory, "blocks.ndjson"), "{\"header\":\n", "utf8");
     await assert.rejects(() => ChainStore.open(genesis(), directory), /Corrupt stored block/);
   } finally {
     await rm(directory, { recursive: true, force: true });

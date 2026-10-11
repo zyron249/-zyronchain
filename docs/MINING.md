@@ -1,8 +1,10 @@
-# ZyronChain permissionless mining
+# ZyronChain permissionless mining (RETIRED)
+
+> **RETIRED (2026-09-30).** Owner decision confirmed 2026-10-11. Mining has been shut down by owner decision for every ZyronChain genesis. Consensus rejects every `mining_claim` transaction on every protocol version, `npm run mine` exits with an error before reading keys or contacting an RPC, and `npm run mine:local` (`local-devnet.mjs --local-v5`) exits with an error. Nothing below is an instruction to mine; it is kept only as a historical record of the retired design and of the still-present (unpublished) packaging tooling.
 
 ## Status
 
-Permissionless ZYN issuance is implemented by the canonical Layer-1 binary under **protocol version 5**. Protocol v4 remains intentionally unsupported so existing fail-stop upgrade tests and historical compatibility contracts are preserved.
+Permissionless ZYN issuance was implemented by the canonical Layer-1 binary under **protocol version 5** and is now **retired**: consensus rejects every mining claim regardless of protocol version. Protocol v4 remains intentionally unsupported so existing fail-stop upgrade tests and historical compatibility contracts are preserved.
 
 This feature does **not** replace ZyronChain validator finality. Validators continue to propose, attest and finalize blocks. Miners independently perform proof-of-work to earn permissionless issuance claims, and a finalized block may include at most one valid mining claim.
 
@@ -16,7 +18,7 @@ Public-network activation remains evidence-gated. Mining code existing in the bi
 - Halving interval: **4,000,000 successful finalized mining claims**.
 - At the current 30-second block cadence, a fully occupied four-million-claim era is approximately 3.8 years.
 - Genesis allocations reduce the remaining mining budget atom-for-atom.
-- A public zero-premine profile can use only zero-value genesis allocations; those entries initialize required addresses without creating circulating ZYN.
+- Superseded: the zero-premine profile is no longer the launch plan. The full 50,000,000 ZYN is allocated at genesis (see `docs/FIXED_SUPPLY_TOKENOMICS.md`).
 - Transaction fees remain burned. Burned ZYN does not reopen mining headroom.
 
 The protocol tracks the number of finalized mining claims in a consensus-owned reserved account:

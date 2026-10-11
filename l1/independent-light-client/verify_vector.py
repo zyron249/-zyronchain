@@ -31,6 +31,10 @@ BRANCH_DOMAIN = b"ZyronChain/state-v2/branch\x00"
 BLOCK_PROPOSAL_DOMAIN = "zyronchain/block-proposal/v1"
 FINALITY_ATTESTATION_DOMAIN = "zyronchain/finality-attestation/v1"
 ROUND_SKIP_DOMAIN = "zyronchain/round-skip/v1"
+# Protocol v6 (F-01 locked two-phase consensus, CommitVote certificates with a
+# commitRound) is deliberately not implemented here yet: v6 anchors, transitions
+# and proofs fail closed (test_protocol_v6_fail_closed.py). Follow-up: port the
+# TypeScript verifyNextFinalizedHeader v6 rules.
 SUPPORTED_PROTOCOL_VERSIONS = frozenset((1, 2, 3, 5))
 STATE_V2_PROTOCOL_VERSIONS = frozenset((2, 3, 5))
 

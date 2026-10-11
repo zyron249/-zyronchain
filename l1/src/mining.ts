@@ -5,6 +5,20 @@ import { ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, type Address, type MiningClaimTx } fro
 export const MINING_PROTOCOL_VERSION = 5;
 
 /**
+ * Owner decision 2026-09-30: mining is shut down for EVERY genesis. Consensus
+ * rejects `mining_claim` transactions on all paths (shape validation, mempool,
+ * block validation, block production, legacy and State-v2 appliers), fail-closed.
+ * The work/schedule helpers below are kept only so historical encodings and
+ * rejection tests remain reproducible; they can never mint.
+ */
+export const MINING_RETIRED = true as const;
+export const MINING_RETIRED_MESSAGE = "Mining is retired: mining_claim transactions are rejected by consensus";
+
+export function assertMiningNotRetired(): void {
+  if (MINING_RETIRED) throw new Error(MINING_RETIRED_MESSAGE);
+}
+
+/**
  * Consensus-owned zero-balance account used only as a persistent mining-claim
  * counter. No private key controls this address and ordinary transactions are
  * never allowed to spend from it.
@@ -100,8 +114,19 @@ export function cumulativeMiningIssuanceAtoms(claimCount: number, genesisSupplyA
   return issued;
 }
 
-/** Reward for the next successful claim under the immutable 50M historical cap. */
+/**
+ * Reward for the next successful claim. Mining is retired, so this is always 0.
+ * The historical schedule remains available as historicalMiningRewardAtoms.
+ */
 export function miningRewardAtoms(claimCount: number, genesisSupplyAtoms = 0): number {
+  assertClaimCount(claimCount);
+  assertGenesisSupply(genesisSupplyAtoms);
+  if (MINING_RETIRED) return 0;
+  return historicalMiningRewardAtoms(claimCount, genesisSupplyAtoms);
+}
+
+/** Historical (pre-retirement) schedule; never used to authorize issuance. */
+export function historicalMiningRewardAtoms(claimCount: number, genesisSupplyAtoms = 0): number {
   assertClaimCount(claimCount);
   assertGenesisSupply(genesisSupplyAtoms);
   const issued = cumulativeMiningIssuanceAtoms(claimCount, genesisSupplyAtoms);
@@ -116,6 +141,7 @@ export function assertMiningClaimContext(
   tx: MiningClaimTx,
   input: { nextHeight: number; previousHash: string; claimCount: number; genesisSupplyAtoms: number }
 ): void {
+  assertMiningNotRetired();
   if (tx.height !== input.nextHeight) throw new Error("Mining claim targets wrong block height");
   if (tx.previousHash !== input.previousHash) throw new Error("Mining claim targets stale previous hash");
   const expectedReward = miningRewardAtoms(input.claimCount, input.genesisSupplyAtoms);

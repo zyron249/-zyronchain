@@ -23,6 +23,7 @@ class TelegramIdentity:
     username: str | None
     display_name: str
     start_param: str | None
+    allows_write_to_pm: bool = False
 
 
 def verify_init_data(init_data: str, bot_token: str, now: datetime, max_age_seconds: int) -> TelegramIdentity:
@@ -78,6 +79,7 @@ def verify_init_data(init_data: str, bot_token: str, now: datetime, max_age_seco
         username=username,
         display_name=display or "Operator",
         start_param=start_param,
+        allows_write_to_pm=user.get("allows_write_to_pm") is True,
     )
 
 
