@@ -1,6 +1,6 @@
 # ZyronChain permissionless mining (RETIRED)
 
-> **RETIRED (2026-09-30).** Mining has been shut down by owner decision for every ZyronChain genesis. Consensus rejects every `mining_claim` transaction on every protocol version, `npm run mine` exits with an error before reading keys or contacting an RPC, and `npm run mine:local` (`local-devnet.mjs --local-v5`) exits with an error. Nothing below is an instruction to mine; it is kept only as a historical record of the retired design and of the still-present (unpublished) packaging tooling.
+> **RETIRED (2026-09-30).** Owner decision confirmed 2026-10-11. Mining has been shut down by owner decision for every ZyronChain genesis. Consensus rejects every `mining_claim` transaction on every protocol version, `npm run mine` exits with an error before reading keys or contacting an RPC, and `npm run mine:local` (`local-devnet.mjs --local-v5`) exits with an error. Nothing below is an instruction to mine; it is kept only as a historical record of the retired design and of the still-present (unpublished) packaging tooling.
 
 ## Status
 

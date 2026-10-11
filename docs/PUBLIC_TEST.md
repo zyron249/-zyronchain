@@ -96,7 +96,7 @@ Do not expose validator RPC to the Internet. Non-loopback RPC fails closed unles
 
 ## Mining (retired)
 
-Mining is **retired** by owner decision (2026-09-30). Consensus rejects every `mining_claim` transaction for every genesis, on every protocol version (default `npm run devnet` runs protocol v1, and no protocol version re-enables mining). There is no local or public mining path:
+Mining is **retired** by owner decision (2026-09-30, confirmed 2026-10-11). Consensus rejects every `mining_claim` transaction for every genesis, on every protocol version (default `npm run devnet` runs protocol v1, and no protocol version re-enables mining). There is no local or public mining path:
 
 - `npm run mine` (the packaged miner) exits non-zero before reading keys or contacting an RPC;
 - `npm run mine:local` / `npm run devnet -- --local-v5` exits non-zero;

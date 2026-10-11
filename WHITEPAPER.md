@@ -5,7 +5,7 @@ Canonical implementation: standalone TypeScript L1 in `l1/`
 
 ## 1. Status and purpose
 
-> **Status update (2026-09-30): mining is retired.** The repository owner has shut down mining. No mining, local or public, may be run, and protocol-v5 proof-of-work issuance is no longer part of the launch design. Consensus rejects every `mining_claim` transaction for every genesis and protocol version (shape validation, mempool admission, block production, block validation and both state appliers), and the miner scripts are disabled. Section 9 and the other mining references below are kept as a historical record of the retired design.
+> **Status update (2026-09-30, confirmed 2026-10-11): mining is retired.** The repository owner has shut down mining. No mining, local or public, may be run, and protocol-v5 proof-of-work issuance is no longer part of the launch design. Consensus rejects every `mining_claim` transaction for every genesis and protocol version (shape validation, mempool admission, block production, block validation and both state appliers), and the miner scripts are disabled. Section 9 and the other mining references below are kept as a historical record of the retired design.
 
 ZyronChain is an account-based Layer-1 blockchain designed around deterministic execution, authenticated state, explicit protocol upgrades and fast quorum finality. (Permissionless proof-of-work issuance was part of an earlier design and is now retired; see the status update above.)
 

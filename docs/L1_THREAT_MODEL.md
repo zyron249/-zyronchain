@@ -4,6 +4,8 @@ Status: **pre-public-testnet security specification**
 Scope: canonical TypeScript implementation in `l1/`  
 Non-goal: this document does not authorize a public testnet, mainnet genesis, token sale, public mining activation or validator admission.
 
+> **Mining retired; supply is fully allocated at genesis** (owner decision 2026-09-30, confirmed 2026-10-11). Consensus rejects every `mining_claim` transaction under every protocol version (v1, v2, v3, v5 and v6) on every path: transaction shape validation, mempool admission, block production, block and proposal validation, and both the legacy and State-v2 appliers. The total supply is fixed at 50,000,000 ZYN and the intended launch genesis allocates all of it (5,000,000 founder / 20,000,000 public distribution / 20,000,000 permanent-liquidity reserve / 5,000,000 ecosystem/community reserve); nothing can be issued after genesis and fees are burned. See [`FIXED_SUPPLY_TOKENOMICS.md`](FIXED_SUPPLY_TOKENOMICS.md). References below to protocol-v5 mining, mining rewards, miners or mining issuance describe the former design and are kept as a historical record and as audit scope for proving that the rejection holds; they do not describe a live issuance path.
+
 ## 1. Protected assets
 
 The system must preserve:
@@ -26,7 +28,7 @@ ZyronChain currently uses a permissioned validator set for block proposal and fi
 
 For `N` active validators, finality and governance require `floor(2N/3)+1` unique valid signatures. Safety assumes an adversary cannot obtain a finality quorum. Liveness assumes enough honest validators remain online and can communicate within the documented timing model.
 
-Protocol v5 additionally permits **permissionless proof-of-work ZYN issuance claims**. Mining is not the chain-selection algorithm: hash power does not select the proposer, replace validator attestations or determine the canonical fork. Any key holder may compete to earn a mining claim, but validators still decide which valid transactions are ordered into finalized blocks.
+Historical (mining retired, see the banner above): protocol v5 was designed to permit **permissionless proof-of-work ZYN issuance claims**; consensus now rejects every such claim. Mining is not the chain-selection algorithm: hash power does not select the proposer, replace validator attestations or determine the canonical fork. Any key holder may compete to earn a mining claim, but validators still decide which valid transactions are ordered into finalized blocks.
 
 This is therefore not proof-of-stake or Nakamoto proof-of-work consensus, and validator admission is not permissionless. Validator count alone is not decentralization. Operators sharing an owner, cloud, network, jurisdiction, signer or recovery process may fail as one domain.
 
