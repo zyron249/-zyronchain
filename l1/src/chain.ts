@@ -645,7 +645,9 @@ export class ZyronChain {
           throw new Error("Unauthorized activity oracle");
         }
         // ZC-CRY-20260930-010: only the most recently closed epoch, judged by
-        // this block's own timestamp (cap and ordering are in the appliers).
+        // this block's own timestamp. Since block time increases, this alone
+        // makes settled epochs strictly increasing; the cap and the
+        // once-only/adjacent-order checks are in the appliers.
         assertActivityEpochWindow(tx.epoch, this.genesis.timestampMs, blockTimestampMs);
       }
       if (tx.kind === "mining_claim") {

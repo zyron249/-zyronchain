@@ -157,8 +157,10 @@ export class LedgerState {
       throw new Error("Mining tracker address is protocol-reserved");
     }
     if (this.settledActivityEpochs.has(tx.epoch)) throw new Error("Activity epoch already settled");
-    // Epochs settle in strictly increasing order: by induction no epoch above
-    // the latest settled one exists, so checking epoch + 1 is sufficient.
+    // Defence in depth for epoch ordering: never settle an epoch below an
+    // adjacent settled one. Full ordering comes from the chain-level window
+    // (only the most recently closed epoch is settleable), which this applier
+    // cannot see because it has no block timestamp.
     if (this.settledActivityEpochs.has(tx.epoch + 1)) throw new Error(ACTIVITY_ORDER_MESSAGE);
     this.requireNonce(activityPool, tx.nonce);
     const total = assertActivitySettlementWithinCap(tx.entries);
