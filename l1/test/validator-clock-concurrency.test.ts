@@ -75,7 +75,11 @@ test("production block signing refreshes local clock after concurrent signing ad
   }
 });
 
-test("excessive forward round catch-up fails closed before peer consensus work", async () => {
+// F-02: a round beyond one call's catch-up reach used to be refused forever
+// (permanent halt after ~33 min without a block). It now does bounded skip
+// work per call and still never clamps to a different round/proposer: no
+// proposal, attestation or broadcast happens before the wall-clock round.
+test("forward round catch-up beyond one call's reach does bounded skip work and never proposes early", async () => {
   const dir = await mkdtemp(join(tmpdir(), "zyron-round-catchup-bound-"));
   try {
     const service = new NodeService(
@@ -99,14 +103,22 @@ test("excessive forward round catch-up fails closed before peer consensus work",
         broadcasts += 1;
       }
     };
-    const tooFarNowMs = genesisTimestamp + BLOCK_INTERVAL_MS + ROUND_WINDOW_MS * (MAX_CONSENSUS_ROUND_CATCHUP + 1);
-    const block = await produceFinalizedBlock(service, peers, validatorPrivate, tooFarNowMs);
+    const farNowMs = genesisTimestamp + BLOCK_INTERVAL_MS + ROUND_WINDOW_MS * (MAX_CONSENSUS_ROUND_CATCHUP + 1);
+    const block = await produceFinalizedBlock(service, peers, validatorPrivate, farNowMs);
     assert.equal(block, null);
-    assert.equal(skipRequests, 0);
+    assert.equal(skipRequests, MAX_CONSENSUS_ROUND_CATCHUP);
     assert.equal(attestationRequests, 0);
     assert.equal(broadcasts, 0);
     assert.equal(service.status().height, 0);
-    assert.deepEqual(service.readiness(), { ready: true, height: 0, reasons: [] });
+    assert.equal(service.legacyRoundCatchUp(1, service.store.chain.tip.hash)?.certifiedRound, MAX_CONSENSUS_ROUND_CATCHUP - 1);
+    assert.deepEqual(service.readiness(farNowMs), { ready: false, height: 0, reasons: ["stale-tip", "consensus-catching-up"] });
+
+    // The next call reaches the wall-clock round and proposes exactly that round.
+    const next = await produceFinalizedBlock(service, peers, validatorPrivate, farNowMs);
+    assert.ok(next);
+    assert.equal(next.header.round, MAX_CONSENSUS_ROUND_CATCHUP + 1);
+    assert.equal(skipRequests, MAX_CONSENSUS_ROUND_CATCHUP + 1);
+    assert.deepEqual(service.readiness(farNowMs), { ready: true, height: 1, reasons: [] });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -125,7 +137,7 @@ test("real signer-clock rollback beyond one second still fails closed until rest
       service.requestSkipVote(1, 0, [], proposalNowMs),
       /Validator clock moved backwards beyond the safety tolerance/
     );
-    assert.deepEqual(service.readiness(), {
+    assert.deepEqual(service.readiness(proposalNowMs), {
       ready: false,
       height: 0,
       reasons: ["validator-clock-unhealthy"]

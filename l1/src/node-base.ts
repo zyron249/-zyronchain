@@ -40,6 +40,7 @@ import {
   type V6Vote
 } from "./consensus-v6.js";
 import { RoundSkipVoteDiagnostics, type RoundSkipVoteDiagnosticsMetrics } from "./consensus-diagnostics.js";
+import { SUPPORTED_PROTOCOL_VERSIONS } from "./chain.js";
 import { addressFromPublicKey } from "./crypto.js";
 import { Mempool } from "./mempool.js";
 import { PeerReputationStore } from "./peer-reputation.js";
@@ -91,6 +92,32 @@ export const MAX_RPC_FORWARDED_HOPS = 16;
 const DEFAULT_CONSENSUS_INFLIGHT_PER_PEER = 4;
 export const BLOCK_INTERVAL_MS = 30_000;
 export const ROUND_WINDOW_MS = 30_000;
+/**
+ * Default readiness bound on the finalized tip age (F-04). A healthy network
+ * finalizes a block every BLOCK_INTERVAL_MS; a tip older than this means the
+ * node is stalled or partitioned and must not be reported as ready.
+ */
+export const DEFAULT_READINESS_MAX_TIP_AGE_MS = 10 * 60_000;
+
+export interface NodeServiceOptions {
+  /** Finalized-tip age above which /readyz reports `stale-tip` (default DEFAULT_READINESS_MAX_TIP_AGE_MS). */
+  readinessMaxTipAgeMs?: number | undefined;
+}
+
+/**
+ * Legacy (protocol v1-v5) skip-certificate catch-up progress for one tip
+ * (F-02). Memory only: after a restart the chain is rebuilt, and the durable
+ * skip reservations in the signing journal make re-signing idempotent.
+ */
+export interface LegacyRoundCatchUp {
+  height: number;
+  previousHash: string;
+  /** Highest round with a verified quorum skip certificate, or -1. */
+  certifiedRound: number;
+  certificate: RoundSkipVote[];
+  /** True while the wall-clock round is more than one tick's work ahead of certifiedRound. */
+  catchingUp: boolean;
+}
 export const MAX_VALIDATOR_CLOCK_ROLLBACK_MS = 1_000;
 
 export interface NodeStatus {
@@ -312,12 +339,20 @@ export class NodeService {
   private readonly validatorSigner: ValidatorSigner | undefined;
   private lastValidatorClockMs: number | undefined;
   private validatorClockFaulted = false;
+  private legacyCatchUp: LegacyRoundCatchUp | undefined;
+  readonly readinessMaxTipAgeMs: number;
 
   constructor(
     readonly store: ChainStore,
     private readonly signingJournal?: SigningJournal,
-    validator?: string | ValidatorSigner
+    validator?: string | ValidatorSigner,
+    options: NodeServiceOptions = {}
   ) {
+    const maxTipAge = options.readinessMaxTipAgeMs ?? DEFAULT_READINESS_MAX_TIP_AGE_MS;
+    if (!Number.isSafeInteger(maxTipAge) || maxTipAge < BLOCK_INTERVAL_MS) {
+      throw new Error("Readiness tip-age bound must be an integer of at least one block interval");
+    }
+    this.readinessMaxTipAgeMs = maxTipAge;
     this.validatorSigner = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
   }
 
@@ -338,15 +373,47 @@ export class NodeService {
     };
   }
 
-  readiness(): NodeReadiness {
+  readiness(nowMs = Date.now()): NodeReadiness {
     const reasons: string[] = [];
     if (!this.store.persistenceHealthy) reasons.push("persistence-unhealthy");
     if (this.signingJournal && !this.signingJournal.persistenceHealthy) reasons.push("signing-journal-unhealthy");
     if (this.validatorClockFaulted) reasons.push("validator-clock-unhealthy");
+    // Consensus progress (F-04): a node that cannot finalize the next height
+    // is not ready, even though the process and its storage are healthy.
+    const chain = this.store.chain;
+    if (!SUPPORTED_PROTOCOL_VERSIONS.has(chain.protocolVersionAt(chain.height + 1))) reasons.push("unsupported-next-protocol");
+    if (nowMs - chain.tip.header.timestampMs > this.readinessMaxTipAgeMs) reasons.push("stale-tip");
+    if (this.legacyRoundCatchUp(chain.height + 1, chain.tip.hash)?.catchingUp) reasons.push("consensus-catching-up");
     return {
       ready: reasons.length === 0,
       height: this.store.chain.height,
       reasons
+    };
+  }
+
+  /** Catch-up progress for (height, previousHash), or undefined if none is recorded for that tip. */
+  legacyRoundCatchUp(height: number, previousHash: string): LegacyRoundCatchUp | undefined {
+    const progress = this.legacyCatchUp;
+    if (!progress || progress.height !== height || progress.previousHash !== previousHash) return undefined;
+    return progress;
+  }
+
+  /**
+   * Record legacy catch-up progress. Only a certificate for a higher round
+   * replaces a recorded one for the same tip (the chain is monotone).
+   */
+  recordLegacyRoundCatchUp(progress: LegacyRoundCatchUp): void {
+    const current = this.legacyRoundCatchUp(progress.height, progress.previousHash);
+    if (current && current.certifiedRound > progress.certifiedRound) {
+      current.catchingUp = progress.catchingUp;
+      return;
+    }
+    this.legacyCatchUp = {
+      height: progress.height,
+      previousHash: progress.previousHash,
+      certifiedRound: progress.certifiedRound,
+      certificate: structuredClone(progress.certificate),
+      catchingUp: progress.catchingUp
     };
   }
 
