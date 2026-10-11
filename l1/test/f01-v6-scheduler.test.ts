@@ -227,7 +227,10 @@ test("F-01 v6 T13 control: the same transient fault under the legacy fixed 30 s 
 test("F-01 local-devnet --v6 is a test-only mode: refuses --local-v5, default devnet:check stays protocol v1", async () => {
   const refused = spawnSync(process.execPath, ["scripts/local-devnet.mjs", "--check", "--v6", "--local-v5"], { encoding: "utf8", windowsHide: true });
   assert.notEqual(refused.status, 0);
-  assert.match(refused.stderr, /cannot be combined/);
+  // Mining is retired: --local-v5 is refused outright (with or without --v6)
+  // before the former "--v6 and --local-v5 cannot be combined" check could run.
+  assert.match(refused.stderr, /--local-v5 \(local mining rehearsal\) is retired/);
+  assert.equal(refused.stdout, "");
   const help = spawnSync(process.execPath, ["scripts/local-devnet.mjs", "--help"], { encoding: "utf8", windowsHide: true });
   assert.equal(help.status, 0);
   assert.match(help.stdout, /--v6 \(F-01 test mode\)/);
