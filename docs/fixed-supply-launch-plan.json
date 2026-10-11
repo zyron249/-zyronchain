@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "status": "implementation-gated",
+  "symbol": "ZYN",
+  "totalSupply": "50000000",
+  "allocations": {
+    "founder": { "amount": "5000000", "shareBps": 1000 },
+    "publicDistribution": { "amount": "20000000", "shareBps": 4000 },
+    "permanentLiquidityReserve": { "amount": "20000000", "shareBps": 4000 },
+    "ecosystemCommunity": { "amount": "5000000", "shareBps": 1000 }
+  },
+  "founderVesting": {
+    "basis": "block-height",
+    "targetBlockSeconds": 30,
+    "cliffBlocks": 1051200,
+    "linearVestingBlocks": 3153600,
+    "earlyUnlockAllowed": false,
+    "consensusEnforcementImplemented": false
+  },
+  "amm": {
+    "model": "constant-product-x*y=k",
+    "feeBps": 30,
+    "lpTokens": false,
+    "adminLiquidityWithdrawal": false,
+    "quoteAsset": null,
+    "productionImplementationActivated": false
+  },
+  "sale": {
+    "websiteTradingActivated": false,
+    "custodialFounderReceiptOfBuyerFunds": false,
+    "buyerFundsTarget": "permanent-liquidity-pool",
+    "productionImplementationActivated": false
+  },
+  "activationGates": {
+    "founderVestingConsensusEnforced": false,
+    "quoteAssetTrustModelFrozen": false,
+    "ammConsensusImplementedAndAudited": false,
+    "permanentLiquidityMechanismAudited": false,
+    "independentSecurityRetestPassed": false,
+    "legalComplianceReviewed": false
+  }
+}
