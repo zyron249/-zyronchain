@@ -30,7 +30,7 @@ import { createP2PNode, registerP2PIdentityProtocol } from "./p2p.js";
 import { registerP2PSyncProtocol, syncP2PFrom } from "./p2p-sync.js";
 import { fetchTrustedSnapshotFromPeer, registerP2PCheckpointProtocol } from "./p2p-checkpoint.js";
 import { fetchTrustedPortableStateFromAnyPeer, MAX_STATE_SYNC_PEERS, registerP2PStateProtocol } from "./p2p-state.js";
-import { NativeConsensusPeerClient, registerP2PConsensusProtocol } from "./p2p-consensus.js";
+import { NativeConsensusPeerClient, parseNativeConsensusPeerAllowlist, registerP2PConsensusProtocol } from "./p2p-consensus.js";
 import { BackgroundTaskTracker, drainHttpServer } from "./node-lifecycle.js";
 import { discoverNativePeersFrom, registerP2PDiscoveryProtocol } from "./p2p-discovery.js";
 import { assertSafeDiscoveredPeer, NativePeerPool } from "./p2p-peer-pool.js";
@@ -290,7 +290,8 @@ async function runNode(args: string[]): Promise<void> {
   assertKnownOptions(args, new Set([
     "--genesis", "--data", "--host", "--port", "--peer", "--advertise-peer", "--validator-key", "--peer-token-file",
     "--trusted-peer-public-key", "--rpc-trusted-proxy", "--p2p-listen", "--p2p-peer", "--p2p-peer-group", "--validator-signer-url",
-    "--validator-public-key", "--validator-signer-token-file", "--validator-signer-allow-v6", "--ready-max-tip-age-ms"
+    "--validator-public-key", "--validator-signer-token-file", "--validator-signer-allow-v6", "--ready-max-tip-age-ms",
+    "--p2p-consensus-peer"
   ]));
   const genesisPath = option(args, "--genesis");
   const dataDir = option(args, "--data");
@@ -304,6 +305,11 @@ async function runNode(args: string[]): Promise<void> {
   const nativeListen = options(args, "--p2p-listen").map(parseNativeListenAddress);
   const nativePeers = options(args, "--p2p-peer").map(parseNativePeerAddress);
   if (nativePeers.length > 64) throw new Error("Too many configured native peers");
+  // F-12: optional allowlist of PeerIds that may deliver native consensus messages.
+  const consensusPeerAllowlist = parseNativeConsensusPeerAllowlist(options(args, "--p2p-consensus-peer"));
+  if (consensusPeerAllowlist && nativeListen.length === 0 && nativePeers.length === 0) {
+    throw new Error("--p2p-consensus-peer requires native P2P (--p2p-listen or --p2p-peer)");
+  }
   const nativePeerGroups = new Map<string, string>();
   const configuredNativePeerIds = new Set(nativePeers.map(nativePeerId));
   for (const value of options(args, "--p2p-peer-group")) {
@@ -412,7 +418,10 @@ async function runNode(args: string[]): Promise<void> {
     await registerP2PSyncProtocol(nativeNode, identity, service);
     await registerP2PCheckpointProtocol(nativeNode, identity, service);
     await registerP2PStateProtocol(nativeNode, identity, service);
-    await registerP2PConsensusProtocol(nativeNode, identity, service);
+    await registerP2PConsensusProtocol(nativeNode, identity, service, { consensusPeerAllowlist });
+    if (validatorSigner && nativeListen.length && !consensusPeerAllowlist) {
+      console.warn("Native consensus accepts messages from any peer; set --p2p-consensus-peer <PeerId> for each validator peer to restrict it");
+    }
     await registerP2PDiscoveryProtocol(nativeNode, identity, service.status(), () =>
       nativePeerPool.snapshot().filter((peer) => {
         try { assertSafeDiscoveredPeer(peer); return true; } catch { return false; }
@@ -1077,7 +1086,7 @@ function usage(): void {
   console.log("Usage:");
   console.log("  zyron-l1 keygen --out validator-key.json [--password-file password.txt]");
   console.log("  zyron-l1 genesis --out genesis.json --chain-id zyron-devnet-1 --validator-public-key <hex> --oracle-public-key <hex> --activity-pool <address> --allocation <address:atoms>");
-  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json | --validator-signer-url https://signer/sign --validator-public-key <hex> --validator-signer-token-file signer-token.txt [--validator-signer-allow-v6 true|false]] [--peer https://node:9137] [--rpc-trusted-proxy <ip> ...] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>] [--ready-max-tip-age-ms 600000]");
+  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json | --validator-signer-url https://signer/sign --validator-public-key <hex> --validator-signer-token-file signer-token.txt [--validator-signer-allow-v6 true|false]] [--peer https://node:9137] [--rpc-trusted-proxy <ip> ...] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>] [--ready-max-tip-age-ms 600000] [--p2p-consensus-peer <PeerId> ...]");
   console.log("  zyron-l1 transfer --key wallet-key.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms <n> [--fee-atoms <n>]");
   console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");
   console.log("  zyron-l1 validator-approve --proposal update.json --key validator.json --out approval.json");

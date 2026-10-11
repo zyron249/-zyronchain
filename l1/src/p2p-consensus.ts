@@ -1,4 +1,5 @@
 import type { Libp2p } from "libp2p";
+import { peerIdFromString } from "@libp2p/peer-id";
 
 import { assertHex } from "./codec.js";
 import { ConsensusOperationBudget } from "./consensus-operation-budget.js";
@@ -174,10 +175,49 @@ export async function collectNativeConsensusBounded<T, U>(
   return results.filter((result): result is PromiseSettledResult<U> => result !== undefined);
 }
 
+/** Upper bound on operator-configured native consensus peers (F-12). */
+export const MAX_NATIVE_CONSENSUS_ALLOWLIST = 256;
+
+/**
+ * Parses `--p2p-consensus-peer <PeerId>` values (finding F-12). Returns
+ * undefined when none are configured (open native consensus, as before).
+ */
+export function parseNativeConsensusPeerAllowlist(values: readonly string[]): ReadonlySet<string> | undefined {
+  if (values.length === 0) return undefined;
+  if (values.length > MAX_NATIVE_CONSENSUS_ALLOWLIST) throw new Error("Too many --p2p-consensus-peer values");
+  const allowed = new Set<string>();
+  for (const value of values) {
+    let canonical: string;
+    try {
+      canonical = peerIdFromString(value).toString();
+    } catch {
+      throw new Error("Invalid --p2p-consensus-peer PeerId");
+    }
+    if (canonical !== value) throw new Error("Invalid --p2p-consensus-peer PeerId");
+    allowed.add(canonical);
+  }
+  return allowed;
+}
+
+export interface P2PConsensusProtocolOptions {
+  /**
+   * Finding F-12: when set, only these PeerIds may deliver consensus messages
+   * (legacy attest/skip/block and every v6 kind). Other peers are refused
+   * before their request is read or any validation work is done. Transaction
+   * gossip remains open to every authenticated peer.
+   */
+  consensusPeerAllowlist?: ReadonlySet<string> | undefined;
+}
+
+function consensusPeerAllowed(options: P2PConsensusProtocolOptions, peerId: string): boolean {
+  return options.consensusPeerAllowlist === undefined || options.consensusPeerAllowlist.has(peerId);
+}
+
 export async function registerP2PConsensusProtocol(
   node: Libp2p,
   identity: NodeIdentity,
-  service: NodeService
+  service: NodeService,
+  options: P2PConsensusProtocolOptions = {}
 ): Promise<void> {
   const local = localIdentity(identity, service.status());
   validateP2PChainIdentity(local, service.status(), node.peerId);
@@ -194,6 +234,9 @@ export async function registerP2PConsensusProtocol(
       const retained = await readP2PFrameRetained(stream, MAX_CONSENSUS_FRAME_BYTES, P2P_CONSENSUS_TIMEOUT_MS);
       releaseFrame = retained.release;
       const request = parseConsensusRequest(retained.value, service.status(), connection.remotePeer);
+      if (request.kind !== "transaction" && !consensusPeerAllowed(options, peerId)) {
+        throw new Error("Native consensus peer is not allowlisted");
+      }
       let result: unknown;
       if (request.kind === "attest") result = await service.attestProposal(request.block);
       else if (request.kind === "skip") result = await service.requestSkipVote(request.height, request.round, request.previousCertificate);
@@ -224,6 +267,8 @@ export async function registerP2PConsensusProtocol(
     try {
       if (connection.encryption !== "/noise") throw new Error("Native consensus requires authenticated Noise");
       const peerId = connection.remotePeer.toString();
+      // Every v6 kind is a consensus message: refuse before reading the frame.
+      if (!consensusPeerAllowed(options, peerId)) throw new Error("Native consensus peer is not allowlisted");
       if (!rate.consume(peerId)) throw new Error("Native consensus rate limit exceeded");
       release = inflight.enter(peerId);
       const retained = await readP2PFrameRetained(stream, MAX_CONSENSUS_V6_FRAME_BYTES, P2P_CONSENSUS_TIMEOUT_MS);

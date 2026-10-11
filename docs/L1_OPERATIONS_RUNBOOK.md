@@ -32,8 +32,11 @@ node dist/src/cli.js node --genesis genesis.json --data ./data \
   --validator-public-key <PINNED_VALIDATOR_PUBLIC_KEY> \
   --p2p-listen /ip4/0.0.0.0/tcp/9140 \
   --p2p-peer /ip4/<BOOTSTRAP_IP>/tcp/9140/p2p/<PINNED_PEER_ID> \
-  --p2p-peer-group <PINNED_PEER_ID>=<INDEPENDENT_FAILURE_DOMAIN>
+  --p2p-peer-group <PINNED_PEER_ID>=<INDEPENDENT_FAILURE_DOMAIN> \
+  --p2p-consensus-peer <OTHER_VALIDATOR_PEER_ID>
 ```
+
+Repeat `--p2p-consensus-peer` for every peer that may deliver native consensus messages (each other validator and any block relay you operate). Without it the node accepts native consensus messages from any peer that knows the public chain identity and logs a startup warning; with it, consensus requests from other peers are refused before any validation work, while transaction gossip stays open.
 
 Provision the remote-signer token out of band as a regular `0600` secret file, rotate it under the signer provider's audited procedure, and never place it in command-line values, environment variables, logs, images or repository content. Use multiple bootstrap peers sourced from independent operators/failure domains. Do not invent failure-domain labels to satisfy diversity selection.
 

@@ -134,6 +134,16 @@ peers from the same IPv4 `/24`/DNS host **or** the same named failure domain in 
 diversity round. Do not fabricate labels merely to satisfy the selector; source ASN/provider
 ownership independently when preparing a production peer set.
 
+Native consensus messages (legacy `attest`/`skip`/`block` and every protocol v6 kind) are
+authenticated by Noise but, by default, accepted from any peer that presents the public chain
+identity. Validators should restrict them with one `--p2p-consensus-peer <PeerId>` per peer that
+may deliver consensus messages (normally every other validator and any block relay you operate).
+Consensus requests from other peers are then refused before any validation work; transaction
+gossip stays open. A validator that listens on native P2P without an allowlist logs a warning at
+startup. Independently of the allowlist, every untrusted block is authenticated (expected proposer,
+proposer signature, round/finality certificate) before any transaction signature is verified, so a
+forged block is rejected without per-transaction signature work.
+
 Keep wallet/public HTTP RPC and validator networking as separate security surfaces. A normal
 validator should leave `--host 127.0.0.1` for RPC and expose only its native P2P TCP port to
 other nodes. If an RPC listener must bind non-loopback, the CLI fails closed unless consensus
