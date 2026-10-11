@@ -11,7 +11,8 @@ import test from "node:test";
 
 import { canonicalJson, sha256Hex } from "../src/codec.js";
 import { ZyronChain } from "../src/chain.js";
-import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
+import { addressFromPublicKey, isValidPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
+import { validateLightClientAnchor } from "../src/light-client.js";
 import {
   createProtocolUpgrade,
   createProtocolUpgradeApproval,
@@ -114,6 +115,27 @@ test("F-05: a trusted checkpoint schedule with an off-curve key is rejected", ()
   };
   assert.doesNotThrow(() => open(goodSchedule));
   assert.throws(() => open(badSchedule), /not a valid secp256k1 point|Invalid checkpoint validator/);
+});
+
+test("F-05: light-client anchors refuse off-curve validator keys, and the key predicate is strict", () => {
+  const anchor = {
+    version: 1,
+    chainId: "zyron-f05-test",
+    genesisHash: "11".repeat(32),
+    height: 100,
+    blockHash: "22".repeat(32),
+    stateRoot: "33".repeat(32),
+    timestampMs: T0,
+    protocolVersion: 5,
+    validators: [validator(7), validator(8)]
+  };
+  assert.doesNotThrow(() => validateLightClientAnchor(anchor));
+  assert.throws(() => validateLightClientAnchor({ ...anchor, validators: [validator(7), offCurveValidator()] }), /not a valid secp256k1 point/);
+  assert.equal(isValidPublicKey(onePublic), true);
+  assert.equal(isValidPublicKey(offCurveValidator().publicKey), false);
+  assert.equal(isValidPublicKey("00".repeat(64)), false);
+  assert.equal(isValidPublicKey(onePublic.toUpperCase()), false);
+  assert.equal(isValidPublicKey(onePublic.slice(0, 64)), false);
 });
 
 test("F-06: a validator_update skipped for size does not exclude a later valid one", () => {

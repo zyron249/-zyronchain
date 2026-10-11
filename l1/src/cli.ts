@@ -6,7 +6,7 @@ import type { Multiaddr } from "@multiformats/multiaddr";
 
 import { V6_MIN_ACTIVATION_MARGIN_BLOCKS, isConsensusV6 } from "./consensus-v6.js";
 import { V6LeaderScheduler } from "./v6-scheduler.js";
-import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
+import { addressFromPublicKey, assertValidPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
 import { encryptPrivateKey, normalizePasswordFile } from "./keystore.js";
 import { readPrivateRegularFile } from "./local-security.js";
 import { readCliCheckpointSnapshotAnchoredUtf8, readCliGenesisUtf8 } from "./cli-recovery-file.js";
@@ -1017,6 +1017,7 @@ async function readValidatorProposal(path: string): Promise<ValidatorProposal> {
     }
     assertAddress(record.address);
     if (addressFromPublicKey(record.publicKey) !== record.address) throw new Error("Proposal validator address mismatch");
+    assertValidPublicKey(record.publicKey, "Proposal validator public key");
     return { address: record.address, publicKey: record.publicKey };
   });
   return {

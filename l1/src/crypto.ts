@@ -16,6 +16,26 @@ export function addressFromPublicKey(publicKeyHex: string): Address {
   return `ZYN${digest.slice(0, 40)}`;
 }
 
+/**
+ * True when `publicKeyHex` is a 64-byte uncompressed x||y encoding of a point
+ * on secp256k1 (the format produced by `publicKeyFromPrivate`). Membership
+ * boundaries use this so that a key that can never sign cannot be counted in
+ * a validator quorum denominator (F-05).
+ */
+export function isValidPublicKey(publicKeyHex: string): boolean {
+  if (typeof publicKeyHex !== "string" || !/^[0-9a-f]{128}$/.test(publicKeyHex)) return false;
+  try {
+    secp256k1.Point.fromHex(`04${publicKeyHex}`).assertValidity();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function assertValidPublicKey(publicKeyHex: string, label: string): void {
+  if (!isValidPublicKey(publicKeyHex)) throw new Error(`${label} is not a valid secp256k1 point`);
+}
+
 export function generatePrivateKey(): string {
   while (true) {
     const candidate = randomBytes(32);
