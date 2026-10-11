@@ -160,7 +160,19 @@ for (const version of [1, 2, 3, 5, 6]) {
       });
       assert.throws(() => validateBlockShape(smuggled), OVER_CAP);
       assert.throws(() => chain.validateProposal(smuggled, blockTime), OVER_CAP);
-      smuggled.attestations.push(createBlockAttestation(smuggled, key(VALIDATOR), pub(VALIDATOR)));
+      // Give the block a genuine finality certificate for its protocol, so the
+      // only remaining reason to refuse it is the drain itself (finality and
+      // proposer checks run before transaction checks, finding F-11).
+      if (isConsensusV6(version)) {
+        smuggled.commitRound = 0;
+        smuggled.attestations = [{
+          validator: addr(VALIDATOR),
+          publicKey: pub(VALIDATOR),
+          signature: signV6(V6_COMMIT_VOTE_DOMAIN, votePayload(smuggled.header.chainId, smuggled.header.height, 0, smuggled.hash), key(VALIDATOR))
+        }];
+      } else {
+        smuggled.attestations.push(createBlockAttestation(smuggled, key(VALIDATOR), pub(VALIDATOR)));
+      }
       assert.throws(() => chain.acceptBlock(smuggled, blockTime), OVER_CAP);
     }
     assert.equal(chain.height, heightBefore);
