@@ -35,12 +35,16 @@ jobs:
         run: npm test
       - name: Audit runtime dependencies
         run: npm audit --omit=dev --audit-level=high
-      - name: Verify deterministic release tarball
+      - name: Verify reproducible build and release tarball
         run: |
+          # Two clean builds must produce byte-identical tarballs.
           first=$(mktemp -d)
           second=$(mktemp -d)
+          rm -rf dist
           npm run build
           npm pack --ignore-scripts --pack-destination "$first" >/dev/null
+          rm -rf dist
+          npm run build
           npm pack --ignore-scripts --pack-destination "$second" >/dev/null
           cmp "$first"/zyronchain-l1-*.tgz "$second"/zyronchain-l1-*.tgz
           mkdir -p rehearsal-release

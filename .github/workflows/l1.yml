@@ -59,11 +59,17 @@ jobs:
         run: npm run typecheck
       - name: Test
         run: npm test
-      - name: Verify reproducible release package
+      - name: Verify reproducible build and release package
         run: |
+          # Two clean builds must produce byte-identical packages; packing one
+          # dist/ twice would only prove repeatable packaging.
           first=$(mktemp -d)
           second=$(mktemp -d)
+          rm -rf dist
+          npm run build
           npm pack --ignore-scripts --pack-destination "$first" >/dev/null
+          rm -rf dist
+          npm run build
           npm pack --ignore-scripts --pack-destination "$second" >/dev/null
           cmp "$first"/zyronchain-l1-*.tgz "$second"/zyronchain-l1-*.tgz
       - name: Verify runtime SBOM generation
