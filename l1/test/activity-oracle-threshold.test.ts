@@ -28,12 +28,15 @@ import { addressFromPublicKey, publicKeyFromPrivate, signCanonical, signCanonica
 import { LedgerState } from "../src/state.js";
 import { applyStateV2Transaction, stateV2FromLedgerSnapshot } from "../src/state-v2.js";
 import {
+  activitySettlementApprovalPayload,
+  ACTIVITY_SETTLEMENT_APPROVAL_DOMAIN,
+  createActivityOracleApproval,
   createActivitySettlement,
   createProtocolUpgrade,
   createProtocolUpgradeApproval,
   validateTransactionShape
 } from "../src/transaction.js";
-import { ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, type ActivityEntry, type GenesisConfig, type Transaction } from "../src/types.js";
+import { ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, type ActivityEntry, type Address, type GenesisConfig, type Transaction } from "../src/types.js";
 
 const ZYN = ATOMS_PER_ZYN;
 const EPOCH_MS = 86_400_000;
@@ -116,7 +119,7 @@ function chainAtVersion(genesis: GenesisConfig, version: number): ZyronChain {
   return chain;
 }
 
-interface Payload { chainId: string; sender: string; epoch: number; entries: ActivityEntry[]; receiptRoot: string }
+interface Payload { chainId: string; sender: Address; epoch: number; entries: ActivityEntry[]; receiptRoot: string }
 
 function payloadOf(genesis: GenesisConfig, epoch: number, amountAtoms: number): Payload {
   return {
@@ -178,8 +181,9 @@ const sparseApply = (genesis: GenesisConfig, tx: Transaction) =>
     stateV2FromLedgerSnapshot(LedgerState.fromGenesis(genesis).snapshot()), tx, genesis.activityPool, undefined, genesis
   );
 
-function smuggledBlock(chain: ZyronChain, genesis: GenesisConfig, version: number, tx: Transaction, timestampMs: number) {
-  const block = createSignedBlock({
+/** A proposer-signed block carrying `tx` (no finality certificate yet). */
+function smuggledProposal(chain: ZyronChain, genesis: GenesisConfig, version: number, tx: Transaction, timestampMs: number) {
+  return createSignedBlock({
     version,
     chainId: genesis.chainId,
     height: chain.height + 1,
@@ -191,6 +195,10 @@ function smuggledBlock(chain: ZyronChain, genesis: GenesisConfig, version: numbe
     proposerPrivateKey: key(VALIDATOR),
     proposerPublicKey: pub(VALIDATOR)
   });
+}
+
+/** Gives a proposal a genuine finality certificate for its protocol. */
+function withFinality(block: ReturnType<typeof createSignedBlock>, version: number) {
   if (isConsensusV6(version)) {
     block.commitRound = 0;
     block.attestations = [{
@@ -215,9 +223,10 @@ function assertRejectedEverywhere(
   assert.throws(() => chain.produceBlock([tx], key(VALIDATOR), { timestampMs: blockTime }), expected, `${label}: produceBlock`);
   assert.throws(() => ledgerApply(genesis, tx), expected, `${label}: LedgerState.apply`);
   assert.throws(() => sparseApply(genesis, tx), expected, `${label}: applyStateV2Transaction`);
-  const block = smuggledBlock(chain, genesis, version, tx, blockTime);
-  assert.throws(() => chain.validateProposal(block, blockTime), expected, `${label}: validateProposal`);
-  assert.throws(() => chain.acceptBlock(block, blockTime), expected, `${label}: acceptBlock`);
+  const proposal = smuggledProposal(chain, genesis, version, tx, blockTime);
+  assert.throws(() => chain.validateProposal(proposal, blockTime), expected, `${label}: validateProposal`);
+  // With a genuine certificate the only remaining reason to refuse it is the settlement.
+  assert.throws(() => chain.acceptBlock(withFinality(proposal, version), blockTime), expected, `${label}: acceptBlock`);
   assert.equal(chain.height, height);
 }
 
@@ -381,4 +390,23 @@ test("ORACLE-MOFN: legacy genesis hash and legacy settlement encoding are unchan
   assert.equal(createActivitySettlement(input, key(O1), pub(O1), 1).txid, "47653779356838c9881dd9e1435f1661845cbd68541a9009d63bd61f819caf11");
   assert.equal(createActivitySettlement(input, key(O1), pub(O1), 2).txid, "d9a6bb6066e8c5956798b9ca8bdf833335edfd5b7ed0f00798652c1bf3c1cee2");
   assert.equal(Object.hasOwn(createActivitySettlement(input, key(O1), pub(O1), 2), "oracleApprovals"), false);
+});
+
+test("ORACLE-MOFN: library helpers match the canonical approval and settlement encoding", () => {
+  assert.equal(ACTIVITY_SETTLEMENT_APPROVAL_DOMAIN, APPROVAL_DOMAIN);
+  const genesis = thresholdGenesis("zyron-mofn-helpers", 2);
+  const payload = payloadOf(genesis, 0, CAP);
+  assert.equal(canonicalJson(activitySettlementApprovalPayload(payload)), canonicalJson(payload));
+  const viaHelper = createActivityOracleApproval(payload, key(O2), pub(O2));
+  assert.deepEqual(viaHelper, approval(O2, payload));
+  for (const txVersion of [1, 2] as const) {
+    const local = settlement(genesis, { txVersion, approvals: [viaHelper] });
+    const library = createActivitySettlement({
+      chainId: genesis.chainId, nonce: 1, sender: genesis.activityPool, epoch: 0,
+      entries: payload.entries, receiptRoot: payload.receiptRoot, oracleApprovals: [viaHelper],
+      timestampMs: genesis.timestampMs + 1
+    }, key(O1), pub(O1), txVersion);
+    assert.deepEqual(library, local);
+    validateTransactionShape(library);
+  }
 });

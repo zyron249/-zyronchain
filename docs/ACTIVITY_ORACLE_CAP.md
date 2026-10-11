@@ -59,7 +59,7 @@ The oracle must sign epoch `e` and submit it during epoch `e + 1` (after `genesi
 
 ## Not covered (open)
 
-- **m-of-n oracle approval.** A settlement still carries one oracle signature. Requiring several independent oracle approvals needs a new transaction format (approvals inside the settlement, as for `validator_update`) and a threshold in genesis. It is tracked as a launch item; until then the cap limits the damage of a single compromised key.
+- **m-of-n oracle approval.** Implemented as an opt-in genesis parameter (`activityOracleThreshold`), see `ACTIVITY_ORACLE_GOVERNANCE.md`. A genesis without it keeps single-oracle settlements; the cap above applies in both cases.
 - **Oracle custody and governance** (`activity-oracle-production-governance` in `PUBLIC_LAUNCH_CHECKLIST.md`) stay blocked until independent oracles exist.
 - The constants are pre-genesis policy. Changing them later is a consensus change.
 

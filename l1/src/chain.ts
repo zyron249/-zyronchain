@@ -20,6 +20,7 @@ import {
   miningRewardAtoms as scheduledMiningRewardAtoms,
   miningWorkHash
 } from "./mining.js";
+import { assertActivitySettlementAuthorized, validateActivityOracleThreshold } from "./activity-oracle.js";
 import { assertNoActivityPoolInflow, LedgerState, type LedgerSnapshot } from "./state.js";
 import {
   allocationLockContext,
@@ -513,7 +514,7 @@ export class ZyronChain {
       return;
     }
     if (tx.kind === "activity_settlement") {
-      if (!this.genesis.activityOracles.includes(tx.publicKey)) throw new Error("Unauthorized activity oracle");
+      assertActivitySettlementAuthorized(tx, this.genesis);
       if (tx.sender !== this.genesis.activityPool) throw new Error("Invalid activity pool sender");
       for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, this.genesis.activityPool);
       const total = assertActivitySettlementWithinCap(tx.entries);
@@ -602,7 +603,7 @@ export class ZyronChain {
         validateTransactionShape(tx);
         assertTransactionVersionForProtocol(tx, protocolVersion);
         if (tx.kind === "activity_settlement") {
-          if (!this.genesis.activityOracles.includes(tx.publicKey)) continue;
+          assertActivitySettlementAuthorized(tx, this.genesis);
           assertActivityEpochWindow(tx.epoch, this.genesis.timestampMs, blockTimestampMs);
         }
         if (tx.kind === "mining_claim") {
@@ -623,9 +624,9 @@ export class ZyronChain {
         if (sparse) {
           sparse = tx.kind === "mining_claim"
             ? applyMiningClaimStateV2(sparse, tx)
-            : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks);
+            : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks, this.genesis);
         } else {
-          next!.apply(tx, this.genesis.activityPool, locks);
+          next!.apply(tx, this.genesis.activityPool, locks, this.genesis);
         }
         if (tx.kind === "mining_claim") {
           miningClaimSelected = true;
@@ -671,9 +672,8 @@ export class ZyronChain {
       validateTransactionShape(tx);
       assertTransactionVersionForProtocol(tx, protocolVersion);
       if (tx.kind === "activity_settlement") {
-        if (!this.genesis.activityOracles.includes(tx.publicKey)) {
-          throw new Error("Unauthorized activity oracle");
-        }
+        // Registered submitter plus, under a genesis threshold, m-of-n approvals.
+        assertActivitySettlementAuthorized(tx, this.genesis);
         // ZC-CRY-20260930-010: only the most recently closed epoch, judged by
         // this block's own timestamp. Since block time increases, this alone
         // makes settled epochs strictly increasing; the cap and the
@@ -698,9 +698,9 @@ export class ZyronChain {
       if (sparse) {
         sparse = tx.kind === "mining_claim"
           ? applyMiningClaimStateV2(sparse, tx)
-          : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks);
+          : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks, this.genesis);
       } else {
-        next!.apply(tx, this.genesis.activityPool, locks);
+        next!.apply(tx, this.genesis.activityPool, locks, this.genesis);
       }
       if (tx.kind === "mining_claim") {
         miningClaimSeen = true;
@@ -896,7 +896,9 @@ function validateGenesis(genesis: GenesisConfig): void {
   assertExactKeys(genesis, [
     "chainId", "timestampMs", "validators", "activityOracles", "activityPool", "allocations",
     // Optional: on-chain allocation locks (docs/ALLOCATION_LOCKS.md).
-    ...(Object.prototype.hasOwnProperty.call(genesis, "allocationLocks") ? ["allocationLocks"] : [])
+    ...(Object.prototype.hasOwnProperty.call(genesis, "allocationLocks") ? ["allocationLocks"] : []),
+    // Optional: m-of-n activity-oracle approval (docs/ACTIVITY_ORACLE_GOVERNANCE.md).
+    ...(Object.prototype.hasOwnProperty.call(genesis, "activityOracleThreshold") ? ["activityOracleThreshold"] : [])
   ], "genesis");
   if (typeof genesis.chainId !== "string" || !/^[a-z0-9-]{3,64}$/.test(genesis.chainId)) {
     throw new Error("Invalid chain ID");
@@ -931,6 +933,7 @@ function validateGenesis(genesis: GenesisConfig): void {
     if (oracles.has(oracle)) throw new Error("Duplicate activity oracle");
     oracles.add(oracle);
   }
+  validateActivityOracleThreshold(genesis);
   assertAddress(genesis.activityPool);
   if (genesis.activityPool === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker cannot be the activity pool");
   if (!Array.isArray(genesis.allocations) || genesis.allocations.length === 0) {

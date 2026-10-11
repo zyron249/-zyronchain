@@ -25,6 +25,13 @@ export interface GenesisConfig {
    * genesis files that predate them; behaviour is then unchanged.
    */
   allocationLocks?: AllocationLocks;
+  /**
+   * Optional m-of-n activity-oracle approval (docs/ACTIVITY_ORACLE_GOVERNANCE.md):
+   * a settlement needs approvals from at least this many distinct keys of
+   * `activityOracles`. Absent on genesis files that predate it; behaviour,
+   * transaction encoding and genesis hash are then unchanged (single oracle).
+   */
+  activityOracleThreshold?: number;
 }
 
 export interface AllocationLocks {
@@ -54,6 +61,12 @@ export interface ActivityEntry {
   amountAtoms: number;
 }
 
+/** Signature by one registered activity oracle over the canonical settlement payload. */
+export interface ActivityOracleApproval {
+  publicKey: string;
+  signature: string;
+}
+
 export interface ActivitySettlementTx {
   kind: "activity_settlement";
   version: 1 | 2;
@@ -63,6 +76,11 @@ export interface ActivitySettlementTx {
   epoch: number;
   entries: ActivityEntry[];
   receiptRoot: string;
+  /**
+   * Present only under a genesis with `activityOracleThreshold`; the key is
+   * omitted entirely otherwise, so legacy settlements keep their exact encoding.
+   */
+  oracleApprovals?: ActivityOracleApproval[];
   feeAtoms: 0;
   timestampMs: number;
   publicKey: string;
