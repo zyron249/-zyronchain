@@ -30,8 +30,16 @@ export interface RemoteValidatorSignerOptions {
 
 export interface ValidatorSigner {
   readonly publicKey: string;
-  signCanonical(payload: unknown, intent: ValidatorSigningIntent, protocolVersion?: number): Promise<string>;
+  /**
+   * `context` carries the evidence a v6-aware remote signer verifies before
+   * signing (journal v2 rules at the custody boundary, P0-09): `{ justify }`
+   * for prepare votes and proposals, `{ qc }` for commit votes and
+   * `{ highQC }` for timeouts. It is never part of the signed payload.
+   */
+  signCanonical(payload: unknown, intent: ValidatorSigningIntent, protocolVersion?: number, context?: V6SigningContext): Promise<string>;
 }
+
+export type V6SigningContext = Readonly<Record<string, unknown>>;
 
 export class LocalValidatorSigner implements ValidatorSigner {
   readonly publicKey: string;
@@ -40,7 +48,7 @@ export class LocalValidatorSigner implements ValidatorSigner {
     this.publicKey = publicKeyFromPrivate(privateKey);
   }
 
-  async signCanonical(payload: unknown, intent: ValidatorSigningIntent, protocolVersion = 1): Promise<string> {
+  async signCanonical(payload: unknown, intent: ValidatorSigningIntent, protocolVersion = 1, _context?: V6SigningContext): Promise<string> {
     assertIntentProtocolVersion(intent, protocolVersion);
     return protocolVersion >= 3
       ? signCanonicalDomain(validatorSigningDomain(intent), payload, this.privateKey)
@@ -82,7 +90,7 @@ export class RemoteValidatorSigner implements ValidatorSigner {
     this.bearerToken = bearerToken;
   }
 
-  async signCanonical(payload: unknown, intent: ValidatorSigningIntent, protocolVersion = 1): Promise<string> {
+  async signCanonical(payload: unknown, intent: ValidatorSigningIntent, protocolVersion = 1, context?: V6SigningContext): Promise<string> {
     assertIntentProtocolVersion(intent, protocolVersion);
     if (CONSENSUS_V6_SIGNING_INTENTS.has(intent) && !this.allowConsensusV6Intents) {
       throw new Error("Remote validator signer is not enabled for protocol v6 consensus intents");
@@ -96,7 +104,7 @@ export class RemoteValidatorSigner implements ValidatorSigner {
         authorization: `Bearer ${this.bearerToken}`
       },
       body: JSON.stringify(domain
-        ? { version: 2, intent, domain, payload }
+        ? { version: 2, intent, domain, payload, ...(context === undefined ? {} : { context }) }
         : { version: 1, intent, payload }),
       signal: AbortSignal.timeout(this.timeoutMs),
       redirect: "error"
@@ -129,10 +137,11 @@ export async function signWithValidator(
   signer: ValidatorSigner,
   payload: unknown,
   intent: ValidatorSigningIntent,
-  protocolVersion = 1
+  protocolVersion = 1,
+  context?: V6SigningContext
 ): Promise<string> {
   assertIntentProtocolVersion(intent, protocolVersion);
-  const signature = await signer.signCanonical(payload, intent, protocolVersion);
+  const signature = await signer.signCanonical(payload, intent, protocolVersion, context);
   assertHex(signature, 64, "validator signature");
   const valid = protocolVersion >= 3
     ? verifyCanonicalDomain(validatorSigningDomain(intent), payload, signature, signer.publicKey)

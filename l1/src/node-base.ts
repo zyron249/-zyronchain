@@ -100,6 +100,12 @@ export const ROUND_WINDOW_MS = 30_000;
  * node is stalled or partitioned and must not be reported as ready.
  */
 export const DEFAULT_READINESS_MAX_TIP_AGE_MS = 10 * 60_000;
+/**
+ * F-04: while a block sync is in progress, a node that knows a peer is more
+ * than this many blocks ahead reports `syncing`. One block of lag is normal
+ * propagation delay and must not flap readiness.
+ */
+export const READINESS_MAX_SYNC_LAG_BLOCKS = 1;
 
 export interface NodeServiceOptions {
   /** Finalized-tip age above which /readyz reports `stale-tip` (default DEFAULT_READINESS_MAX_TIP_AGE_MS). */
@@ -342,6 +348,8 @@ export class NodeService {
   private lastValidatorClockMs: number | undefined;
   private validatorClockFaulted = false;
   private legacyCatchUp: LegacyRoundCatchUp | undefined;
+  private readonly activeSyncTargets = new Map<number, number>();
+  private nextSyncHandle = 0;
   readonly readinessMaxTipAgeMs: number;
 
   constructor(
@@ -386,11 +394,35 @@ export class NodeService {
     if (!SUPPORTED_PROTOCOL_VERSIONS.has(chain.protocolVersionAt(chain.height + 1))) reasons.push("unsupported-next-protocol");
     if (nowMs - chain.tip.header.timestampMs > this.readinessMaxTipAgeMs) reasons.push("stale-tip");
     if (this.legacyRoundCatchUp(chain.height + 1, chain.tip.hash)?.catchingUp) reasons.push("consensus-catching-up");
+    if (this.knownSyncTargetHeight() - chain.height > READINESS_MAX_SYNC_LAG_BLOCKS) reasons.push("syncing");
     return {
       ready: reasons.length === 0,
       height: this.store.chain.height,
       reasons
     };
+  }
+
+  /**
+   * Record that a block sync towards `targetHeight` (a peer's reported tip)
+   * has started. The returned function ends it and must be called in a
+   * `finally`. The target only influences readiness while the sync runs, so
+   * a peer that overstates its height cannot leave the node not-ready after
+   * the sync attempt ends (F-04).
+   */
+  beginSync(targetHeight: number): () => void {
+    if (!Number.isSafeInteger(targetHeight) || targetHeight < 0) return () => undefined;
+    const handle = this.nextSyncHandle;
+    this.nextSyncHandle += 1;
+    this.activeSyncTargets.set(handle, targetHeight);
+    return () => {
+      this.activeSyncTargets.delete(handle);
+    };
+  }
+
+  private knownSyncTargetHeight(): number {
+    let highest = -1;
+    for (const target of this.activeSyncTargets.values()) if (target > highest) highest = target;
+    return highest;
   }
 
   /** Catch-up progress for (height, previousHash), or undefined if none is recorded for that tip. */
@@ -719,7 +751,10 @@ export class NodeService {
       return {
         validator: member.address,
         publicKey: signer.publicKey,
-        signature: await signWithValidator(signer, votePayload(chainId, height, round, request.block.hash), "prepare-vote", CONSENSUS_V6_PROTOCOL_VERSION)
+        signature: await signWithValidator(
+          signer, votePayload(chainId, height, round, request.block.hash), "prepare-vote", CONSENSUS_V6_PROTOCOL_VERSION,
+          { justify: justify ?? null }
+        )
       };
     });
   }
@@ -751,7 +786,9 @@ export class NodeService {
       return {
         validator: member.address,
         publicKey: signer.publicKey,
-        signature: await signWithValidator(signer, votePayload(chainId, height, qc.round, qc.blockHash), "commit-vote", CONSENSUS_V6_PROTOCOL_VERSION)
+        signature: await signWithValidator(
+          signer, votePayload(chainId, height, qc.round, qc.blockHash), "commit-vote", CONSENSUS_V6_PROTOCOL_VERSION, { qc }
+        )
       };
     });
   }
@@ -819,7 +856,7 @@ export class NodeService {
           validator: member.address,
           publicKey: signer.publicKey,
           ...payload,
-          signature: await signWithValidator(signer, timeoutPayload(payload), "round-timeout", CONSENSUS_V6_PROTOCOL_VERSION)
+          signature: await signWithValidator(signer, timeoutPayload(payload), "round-timeout", CONSENSUS_V6_PROTOCOL_VERSION, { highQC })
         },
         highQC
       };
@@ -887,7 +924,10 @@ export class NodeService {
       await this.v6State.write(name, { payload, tc });
     }
     await journal.reserveV6(height, round, "proposal", digest);
-    const signature = await signWithValidator(signer, proposalPayload(payload), "consensus-proposal", CONSENSUS_V6_PROTOCOL_VERSION);
+    const signature = await signWithValidator(
+      signer, proposalPayload(payload), "consensus-proposal", CONSENSUS_V6_PROTOCOL_VERSION,
+      { justify: justifyRound === -1 ? null : tc?.highQC ?? null }
+    );
     return { proposal: { ...payload, signature }, block, tc };
   }
 
@@ -1256,17 +1296,22 @@ export class PeerClient {
       throw new Error("Peer chain identity mismatch");
     }
     let accepted = 0;
-    while (service.status().height < remoteStatus.height) {
-      const from = service.status().height + 1;
-      const leasedBlocks = await getJsonRetained(`${base}/blocks?from=${from}&limit=${MAX_SYNC_BLOCKS}`, MAX_SYNC_RESPONSE_BYTES, parsePeerBlockBatch);
-      try {
-        for (const block of leasedBlocks.value) {
-          await service.acceptFinalizedBlock(block);
-          accepted += 1;
+    const endSync = service.beginSync(remoteStatus.height);
+    try {
+      while (service.status().height < remoteStatus.height) {
+        const from = service.status().height + 1;
+        const leasedBlocks = await getJsonRetained(`${base}/blocks?from=${from}&limit=${MAX_SYNC_BLOCKS}`, MAX_SYNC_RESPONSE_BYTES, parsePeerBlockBatch);
+        try {
+          for (const block of leasedBlocks.value) {
+            await service.acceptFinalizedBlock(block);
+            accepted += 1;
+          }
+        } finally {
+          leasedBlocks.release();
         }
-      } finally {
-        leasedBlocks.release();
       }
+    } finally {
+      endSync();
     }
     return accepted;
   }
@@ -1384,6 +1429,8 @@ export class PeerClient {
       this.syncCursor = selectedGroupIndex < 0 || groups.length === 0 ? 0 : (selectedGroupIndex + 1) % groups.length;
 
       let progressed = false;
+      // The candidate's first block already verified against the local tip.
+      const endSync = service.beginSync(candidate.height);
       try {
         let poisoned = false;
         for (const block of candidate.blocks) {
@@ -1403,6 +1450,7 @@ export class PeerClient {
           await this.peerReputation?.recordSuccess(candidate.peer, Date.now());
         }
       } finally {
+        endSync();
         candidate.release();
       }
       if (!progressed || service.status().height <= startHeight) break;

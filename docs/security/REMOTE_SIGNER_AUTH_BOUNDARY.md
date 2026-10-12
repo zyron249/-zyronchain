@@ -9,3 +9,5 @@ Remote signer responses remain independently constrained: redirects are rejected
 Regression coverage includes the reusable client boundary and the legacy monolithic integration fixtures. Test fixtures use explicit non-production bearer credentials; there is no production test-only bypass or unauthenticated loopback fallback.
 
 This client-side authentication requirement does not establish production validator custody. Public-testnet activation still requires real HSM or independently audited remote-signer custody, credential/token policy, cross-host rotation/recovery, and independent operational evidence. It does not alter public-mining, public-testnet, or mainnet activation gates.
+
+Protocol v6 intents stay refused by the client unless `allowConsensusV6Intents` is set. The reference signer that enforces the v6 journal rules at the custody boundary is described in [`REMOTE_SIGNER_V6_JOURNAL.md`](REMOTE_SIGNER_V6_JOURNAL.md).

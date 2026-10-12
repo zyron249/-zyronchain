@@ -180,5 +180,5 @@ reproduced by running the same triple again.
 - Mixed versions are modelled as late nodes running the same binary. Old
   binaries are covered by the T10 downgrade guard and the earlier F-01
   old-binary activation check, not by this suite.
-- Remote signers (P0-09) and real clock steps are out of scope.
+- Real clock steps are out of scope. Remote signers are covered separately by the reference signer's own journal v2 rules ([`security/REMOTE_SIGNER_V6_JOURNAL.md`](security/REMOTE_SIGNER_V6_JOURNAL.md), P0-09; pending owner approval), not by this suite.
 - Results are AI-generated engineering evidence, not an independent audit.

@@ -66,7 +66,7 @@ Every debit path receives the lock context:
 
 ## Launch ceremony: pin the genesis file digest
 
-The genesis block hash commits to the chain ID, the genesis timestamp and the initial state root, but **not** to configuration fields such as `validators`, `activityOracles`, `activityPool` or `allocationLocks`. Two genesis files that differ only in those fields produce the same genesis hash. The launch ceremony must therefore publish and pin the SHA-256 digest of the exact genesis file, every operator must verify it before starting a node, and `npm run tokenomics:check` must pass on that file (see [`FIXED_SUPPLY_TOKENOMICS.md`](FIXED_SUPPLY_TOKENOMICS.md) and [`PUBLIC_LAUNCH_CHECKLIST.md`](PUBLIC_LAUNCH_CHECKLIST.md)).
+For a legacy genesis (no `launchProfile`) the genesis block hash commits to the chain ID, the genesis timestamp and the initial state root, but **not** to configuration fields such as `validators`, `activityOracles`, `activityPool` or `allocationLocks`. A launch genesis should declare `launchProfile: "fixed-supply-v1"`: its genesis hash then commits to the entire configuration, and consensus refuses it unless `allocationLocks` is present and the 50M 10/40/40/10 split holds (see [`GENESIS_CONFIG_BINDING.md`](GENESIS_CONFIG_BINDING.md)). The launch ceremony must still publish and pin the SHA-256 digest of the exact genesis file and its genesis hash, every operator must verify them before starting a node, and `npm run tokenomics:check` (which requires the profile) must pass on that file (see [`FIXED_SUPPLY_TOKENOMICS.md`](FIXED_SUPPLY_TOKENOMICS.md) and [`PUBLIC_LAUNCH_CHECKLIST.md`](PUBLIC_LAUNCH_CHECKLIST.md)).
 
 ## Tests
 

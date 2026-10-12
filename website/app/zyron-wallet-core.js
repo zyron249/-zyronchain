@@ -361,6 +361,49 @@
     ];
   }
 
+  // ---------- game wallet link (ZYRON NODE, testnet) ----------
+  // Signs only the exact server template below, so a link request can never carry arbitrary text or a transaction.
+  // Signature: l1 signCanonical over canonicalJson({ domain: LINK_SIGNING_DOMAIN, payload: { message } }).
+  // The proof holds the nonce, the public key and the signature only; never a key or a recovery phrase.
+  const LINK_SIGNING_DOMAIN = 'zyronchain/game/wallet-link/v1';
+  const LINK_NETWORK = 'zyron-wallet-testnet-1';
+  const LINK_RETURN_URL = 'https://t.me/ZyronNodeBot';
+  const LINK_MESSAGE_RE = new RegExp('^ZYRON NODE wallet link \\(TESTNET\\)\\nTelegram user: ([1-9][0-9]{0,15})\\nNetwork: ' + LINK_NETWORK +
+    '\\nNonce: ([0-9a-f]{32})\\nIssued: (\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z)\\nExpires: (\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z)' +
+    '\\nSigning proves you hold this testnet address\\. It is not a transaction: it moves no funds,\\ngrants no tokens and cannot be used on-chain\\.$');
+  function base64UrlToText(value) {
+    if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,1400}$/.test(value)) throw new Error('Link request is malformed');
+    const binary = atob(value.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((value.length + 3) % 4));
+    return new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+  }
+  function textToBase64Url(text) {
+    let binary = '';
+    for (const byte of encoder.encode(text)) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function parseLinkMessage(message, nowMs) {
+    const match = typeof message === 'string' ? LINK_MESSAGE_RE.exec(message) : null;
+    if (!match) throw new Error('This is not a ZYRON NODE wallet link request. Nothing was signed.');
+    const issuedMs = Date.parse(match[3]);
+    const expiresMs = Date.parse(match[4]);
+    if (!(expiresMs > issuedMs) || expiresMs - issuedMs > 30 * 60 * 1000) throw new Error('Link request has an invalid validity window');
+    const now = typeof nowMs === 'number' ? nowMs : Date.now();
+    if (now >= expiresMs) throw new Error('This link request expired. Start Connect wallet again in ZYRON NODE.');
+    return { message, telegramUser: match[1], network: LINK_NETWORK, nonce: match[2], issued: match[3], expires: match[4], expiresMs };
+  }
+  // Accepts a location hash like "#link=<base64url(message)>".
+  function parseLinkHash(hash, nowMs) {
+    const match = /^#link=([A-Za-z0-9_-]+)$/.exec(String(hash || ''));
+    if (!match) return null;
+    return parseLinkMessage(base64UrlToText(match[1]), nowMs);
+  }
+  function signLinkProof(request, account, nowMs) {
+    const checked = parseLinkMessage(request.message, nowMs); // re-check right before signing
+    if (!PUBLIC_KEY_RE.test(account.publicKey) || addressFromPublicKey(account.publicKey) !== account.address) throw new Error('Account key does not match its address');
+    const signature = signCanonical({ domain: LINK_SIGNING_DOMAIN, payload: { message: checked.message } }, account.privateKey);
+    return { proof: 'zyronlink1.' + checked.nonce + '.' + account.publicKey + '.' + signature, address: account.address, signature };
+  }
+
   // Refuse to run when the vendored crypto is missing, incomplete or produces wrong results.
   const SELF_TEST = { phrase: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about', address: 'ZYN16623f437e90cb7216ce70746f642717cc8b531f' };
   async function selfTest() {
@@ -382,6 +425,7 @@
     wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress,
     passwordStrength, normalizePhrase, generateEntropy, entropyToPhrase, phraseToEntropy, deriveAccount,
     createVault, openVault, assertVaultShape, parseVault, zynToAtoms, atomsToZyn, buildTransfer, describeTransfer, signTransfer, verifyCanonical,
+    LINK_SIGNING_DOMAIN, LINK_NETWORK, LINK_RETURN_URL, parseLinkMessage, parseLinkHash, signLinkProof, textToBase64Url,
     selfTest
   });
   root.ZyronAppCore = api;
