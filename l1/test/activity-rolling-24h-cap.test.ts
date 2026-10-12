@@ -133,12 +133,13 @@ for (const version of [1, 3, 6]) {
     finalize(chain, [settlement(genesis, 1, 2, 4_000 * ZYN, txVersion)], boundary(genesis, 2));
     // Epoch 2 is settleable from boundary(3); the previous payout (epoch 1, 4,000 ZYN)
     // was at boundary(2), exactly 24 h earlier, so a full epoch is allowed again.
-    finalize(chain, [settlement(genesis, 2, 3, CAP, txVersion)], boundary(genesis, 3));
-    // Epoch 3 one millisecond before 24 h after the last full payout: nothing is left.
-    assert.throws(() => chain.validatePending([settlement(genesis, 3, 4, 1, txVersion)], boundary(genesis, 4) - 1), ROLLING);
-    // A zero-amount settlement is still allowed and never widens the window.
-    finalize(chain, [settlement(genesis, 3, 4, 0, txVersion)], boundary(genesis, 4) - 1);
-    finalize(chain, [settlement(genesis, 4, 5, CAP, txVersion)], boundary(genesis, 5));
+    // Settle it one minute later so that the next epoch opens less than 24 h after it.
+    finalize(chain, [settlement(genesis, 2, 3, CAP, txVersion)], boundary(genesis, 3) + 60_000);
+    // Epoch 3 opens at boundary(4), 23 h 59 min after the full payout: nothing is left.
+    assert.throws(() => chain.validatePending([settlement(genesis, 3, 4, 1, txVersion)], boundary(genesis, 4)), ROLLING);
+    assert.throws(() => chain.produceBlock([settlement(genesis, 3, 4, 1, txVersion)], key(VALIDATOR), { timestampMs: boundary(genesis, 4) }), ROLLING);
+    // Epoch 3 is forfeited; epoch 4 opens more than 24 h after the full payout.
+    finalize(chain, [settlement(genesis, 4, 4, CAP, txVersion)], boundary(genesis, 5));
     assert.equal(POOL - chain.balance(genesis.activityPool), 30_000 * ZYN);
     assert.equal(totalSupply(chain, genesis), MAX_SUPPLY_ATOMS);
   });
@@ -189,3 +190,45 @@ test("ROLLING-24H: the window-record addresses are protocol-reserved under the l
     assert.throws(() => new ZyronChain(bad));
   }
 });
+
+for (const version of [1, 3]) {
+  test(`ROLLING-24H (v${version}): the window record survives a node restart`, async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { ChainStore } = await import("../src/storage.js");
+    const { NodeService } = await import("../src/node.js");
+    const genesis = genesisFor(`zyron-rolling-restart-v${version}`, true);
+    const txVersion = version >= 3 ? 2 : 1;
+    const directory = await mkdtemp(join(tmpdir(), "zyron-rolling-restart-"));
+    try {
+      const store = await ChainStore.open(genesis, directory);
+      const service = new NodeService(store);
+      const finalizeAt = async (txs: Parameters<ZyronChain["produceBlock"]>[0], timestampMs: number) => {
+        let block = store.chain.produceBlock(txs, key(VALIDATOR), { timestampMs });
+        block = store.chain.attestBlock(block, key(VALIDATOR));
+        await service.acceptFinalizedBlock(block);
+      };
+      if (version !== 1) {
+        const input = { chainId: genesis.chainId, nonce: 1, sender: addr(VALIDATOR), activationHeight: 101, protocolVersion: version };
+        const upgrade = createProtocolUpgrade({
+          ...input,
+          approvals: [createProtocolUpgradeApproval(input, key(VALIDATOR), pub(VALIDATOR))],
+          timestampMs: genesis.timestampMs + 10
+        }, key(VALIDATOR), pub(VALIDATOR));
+        for (let height = 1; height <= 100; height += 1) {
+          await finalizeAt(height === 1 ? [upgrade] : [], genesis.timestampMs + height * 1_000);
+        }
+      }
+      await finalizeAt([settlement(genesis, 0, 1, CAP, txVersion)], boundary(genesis, 2) - 1);
+      const reopened = await ChainStore.open(genesis, directory);
+      {
+        assert.equal(reopened.chain.protocolVersionAt(reopened.chain.height + 1), version);
+        assert.throws(() => reopened.chain.validatePending([settlement(genesis, 1, 2, 1, txVersion)], boundary(genesis, 2)), ROLLING);
+        reopened.chain.validatePending([settlement(genesis, 1, 2, CAP, txVersion)], boundary(genesis, 3) - 1);
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
