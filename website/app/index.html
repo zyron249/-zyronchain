@@ -13,13 +13,13 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Zyron Wallet" />
   <meta name="format-detection" content="telephone=no" />
-  <meta name="zyron-build" content="app=21c3d430e399b033;release=5e1f305e36b8f95260ced9bf4ab2d67941410ec3" />
+  <meta name="zyron-build" content="app=dc1cc7239a600669;release=cd9729b4952df8f85993c1927fde58e3189b7044" />
   <title>ZyronChain Wallet (testnet)</title>
   <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys are generated and encrypted on this device. No public RPC; sign locally, nothing is broadcast." />
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="icon" type="image/png" sizes="192x192" href="/app/icons/icon-192.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/app/icons/apple-touch-icon-180.png" />
-  <link rel="stylesheet" href="/app/app.css?v=b1551d90d0ac" integrity="sha384-b3X01nqxSyVjzOhaPi6Sb5qBd6IoYeS0TuRT7blypTEjLC37uCB4qLmjchQeLg7s" />
+  <link rel="stylesheet" href="/app/app.css?v=99198c6f810c" integrity="sha384-OiZfEqsyeFkF5p2iMCSZ+JCdZp5ujhwZW28+Y/x7qur1MVHVflK9X6uT1HUP7pFZ" />
 </head>
 <body>
   <div class="app" id="app">
@@ -260,6 +260,39 @@
       <p class="hint badtext" data-review-error aria-live="polite"></p>
     </section>
 
+    <!-- GAME WALLET LINK (ZYRON NODE, testnet) -->
+    <section class="screen" data-screen="link" hidden>
+      <p class="eyebrow">ZYRON NODE · TESTNET</p>
+      <h2 data-i18n="linkTitle">Connect this wallet to ZYRON NODE?</h2>
+      <p class="hint" data-i18n="linkLead">ZYRON NODE asks you to sign the exact text below. Signing proves you hold this testnet address. It is not a transaction: no funds move, no tokens are granted and nothing is broadcast.</p>
+      <dl class="kv">
+        <div><dt>Address</dt><dd class="address-raw" data-link-address></dd></div>
+        <div><dt>Network</dt><dd data-link-network></dd></div>
+        <div><dt>Expires</dt><dd data-link-expires></dd></div>
+      </dl>
+      <p class="label-small" data-i18n="linkExact">Exact text to sign</p>
+      <pre data-link-message></pre>
+      <p class="notice scam" data-i18n="linkNever">Only the proof code below leaves this device: a nonce, your public key and a signature. Your recovery phrase, password and private key are never shared.</p>
+      <div data-link-confirm-box>
+        <label class="check"><input type="checkbox" data-link-ack /> <span data-i18n="linkAck">I started Connect wallet in ZYRON NODE myself and I checked the text.</span></label>
+        <div class="actions">
+          <button class="primary" type="button" data-link-sign disabled data-i18n="linkSign">Approve and sign</button>
+          <button type="button" data-link-cancel data-i18n="linkCancel">Reject</button>
+        </div>
+      </div>
+      <div class="tx-out" data-link-out hidden>
+        <p class="notice ok" data-i18n="linkDone">Signed on this device. Copy the proof code, go back to ZYRON NODE and paste it.</p>
+        <pre data-link-proof></pre>
+        <div class="actions">
+          <button class="primary" type="button" data-link-copy data-i18n="linkCopy">Copy proof code</button>
+          <a class="button" data-link-return href="https://t.me/ZyronNodeBot" rel="noopener noreferrer" data-i18n="linkReturn">Back to Telegram</a>
+        </div>
+        <p class="hint" data-link-copy-result aria-live="polite"></p>
+        <div class="actions"><button type="button" data-link-done data-i18n="done">Done</button></div>
+      </div>
+      <p class="hint badtext" data-link-error aria-live="polite"></p>
+    </section>
+
     <!-- DELETE -->
     <section class="screen" data-screen="delete" hidden>
       <h2 data-i18n="deleteTitle">Delete wallet from this device?</h2>
@@ -334,7 +367,7 @@
   </div>
   <script src="/app/vendor/noble-scure.js?v=db17e57ac525" integrity="sha384-cuU0s9lNqS3x5BaAT/+Pw2HWGeDECS/7vJIW3pRyX/FwGELSKmzYnnmYM53om5iC"></script>
   <script src="/app/vendor/qr.js?v=df7e5ee0f9db" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
-  <script src="/app/zyron-wallet-core.js?v=527c72cc63ac" integrity="sha384-1uh5NljLmhaFu2/UERMIr6MzjgRHPaH0x1Gkmkyb/oIrgwBhMeTWRFzuiqLSId0U"></script>
-  <script src="/app/app.js?v=dda463d0a93a" integrity="sha384-aXxN60/Nin6gYTgVoMz/eof4OqJPX7BZGA9sQlPLcyscjgmbPtsiv58mP1eA//Ie"></script>
+  <script src="/app/zyron-wallet-core.js?v=cbd30fccb01e" integrity="sha384-WbWqxJS7Av62pZPmCgd0E5fS2d3ZYnNm+VwHvZ8IiGTSyocZvE9gOD261825+H2u"></script>
+  <script src="/app/app.js?v=3858be2cd80c" integrity="sha384-1b18kpOgy4HSSwljuT0xpLHaM5eh6wqCa7E9UdaX9oa3HcttLp6c3olgeeQYHYFv"></script>
 </body>
 </html>

@@ -581,3 +581,42 @@ html.is-hidden .builders * { animation-play-state: paused !important; }
   /* The chain stays parked at the top of the ring (base transforms above); no snap flash.
    * Builders hold a static pose: pickaxe raised while RUNNING, down when idle, slumped when out of energy. */
 }
+
+/* Upgrades tab: upgrade tree, free daily chest odds, builder cosmetics (all off-chain). */
+.upg-head { display: grid; gap: 8px; }
+.upg-head > .fine { margin: 0; }
+.upg-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.upg-title h2 { margin: 2px 0 0; background: var(--chrome); -webkit-background-clip: text; background-clip: text; color: transparent; letter-spacing: 0.04em; }
+.upg-balance { display: flex; align-items: center; gap: 8px; }
+.upg-balance b { font-size: 24px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.upg-balance span { color: var(--muted); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
+.upg-cap { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+.upg-cap .fine { margin: 0; }
+.upg-cap .module-top span { color: var(--text); font-size: 13px; }
+.tree-card { display: grid; gap: 8px; border-color: var(--line-strong); }
+.tree-card .module-top { justify-content: flex-start; }
+.tree-card .module-top strong { flex: 1; color: var(--ink); }
+.tree-icon { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--cyan); background: radial-gradient(circle at 30% 25%, rgba(79, 216, 251, 0.28), rgba(10, 159, 245, 0.08)); box-shadow: inset 0 0 0 1px var(--line-strong), 0 0 14px rgba(10, 159, 245, 0.25); }
+.pips { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; }
+.pips i { display: block; height: 6px; border-radius: 3px; background: rgba(120, 175, 255, 0.14); }
+.pips i.on { background: linear-gradient(90deg, var(--blue), var(--cyan)); box-shadow: 0 0 8px rgba(79, 216, 251, 0.5); }
+.tree-facts { display: flex; flex-wrap: wrap; gap: 6px; }
+.tree-facts span { font-size: 12px; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text); background: rgba(5, 10, 20, 0.6); }
+.tree-facts .tree-stat { color: var(--cyan); border-color: var(--line-strong); font-variant-numeric: tabular-nums; }
+.tree-card .buy { width: 100%; margin-top: 2px; }
+.tree-card .buy.is-locked { filter: saturate(0.4) brightness(0.75); }
+.odds { display: grid; gap: 4px; margin-top: 8px; }
+.odds-row { display: flex; justify-content: space-between; padding: 6px 10px; border-radius: 8px; background: rgba(10, 159, 245, 0.06); border: 1px solid var(--line); font-size: 13px; color: var(--text); }
+.odds-row b { color: var(--cyan); font-variant-numeric: tabular-nums; }
+.odds-row.cosmetic b { color: var(--chrome-1); }
+.odds-card .ghost { width: 100%; margin-top: 8px; }
+.odds-status { color: var(--cyan); }
+.collection { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
+.cos { display: grid; gap: 3px; padding: 8px; border-radius: 10px; border: 1px dashed var(--line); font-size: 11px; color: var(--muted); }
+.cos strong { font-size: 12px; color: var(--chrome-3); }
+.cos.owned { border-style: solid; border-color: var(--line-strong); box-shadow: var(--glow); }
+.cos.owned strong { color: var(--ink); }
+.bonus-line { color: var(--cyan); font-weight: 600; }
+.wolf-badge { margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-size: 10px; letter-spacing: 0.08em; color: #02050a; background: var(--chrome); }
+.builders.cos-bright_lamps .builder-lamp-glow { opacity: 0.85; r: 4; }
+.builders.cos-blue_picks .builder-arm polygon:nth-child(2) { fill: var(--cyan); }

@@ -154,11 +154,15 @@ test("journal v2: legacy and v6 rows never mix at one height (§6.2-7), live and
   });
 });
 
-test("journal v2: a torn lock/commit pair or a malformed v2 row fails stop on open, a torn final append is dropped whole (T10, F-10)", async () => {
+test("journal v2: a torn lock/commit pair or a malformed v2 row fails stop on open, a torn final append is dropped whole, a lone trailing lock is completed (T10, F-10, P0-03)", async () => {
   const lock = JSON.stringify({ v: 2, height: 4, round: 1, step: "lock", value: A, lockRound: 1 });
   const commit = JSON.stringify({ v: 2, height: 4, round: 1, step: "commit", value: A });
   const cases: Array<[string, string, RegExp]> = [
-    ["lock without commit", `${lock}\n`, /Torn protocol v6 lock\/commit pair/],
+    ["lock followed by a legacy row", `${lock}\n${JSON.stringify({ height: 5, round: 0, kind: "attest", value: A })}\n`, /Torn protocol v6 lock\/commit pair/],
+    ["lone trailing lock after a timeout at its round", `${JSON.stringify({ v: 2, height: 4, round: 1, step: "timeout", value: A })}\n${lock}\n`, /Torn protocol v6 lock\/commit pair/],
+    ["lone trailing lock below a later vote", `${JSON.stringify({ v: 2, height: 4, round: 2, step: "prepare", value: A })}\n${lock}\n`, /Torn protocol v6 lock\/commit pair/],
+    ["lone trailing lock for another block than its own prepare", `${JSON.stringify({ v: 2, height: 4, round: 1, step: "prepare", value: B })}\n${lock}\n`, /Torn protocol v6 lock\/commit pair/],
+    ["lone trailing lock below an existing lock", `${lock}\n${commit}\n${JSON.stringify({ v: 2, height: 4, round: 0, step: "lock", value: B, lockRound: 0 })}\n`, /Conflicting signing journal history/],
     ["lock with a truncated commit, terminated", `${lock}\n${commit.slice(0, 30)}\n`, /Corrupt|JSON|Unexpected/],
     ["lock followed by another row", `${lock}\n${JSON.stringify({ v: 2, height: 4, round: 1, step: "timeout", value: A })}\n`, /Torn/],
     ["commit for a different value", `${lock}\n${JSON.stringify({ v: 2, height: 4, round: 1, step: "commit", value: B })}\n`, /Torn/],
@@ -187,6 +191,19 @@ test("journal v2: a torn lock/commit pair or a malformed v2 row fails stop on op
       journal.close();
     }
     assert.equal(await readFile(join(directory, "signing-journal.ndjson"), "utf8"), `${prepare}\n`);
+  });
+  // P0-03: a lone trailing lock row (power loss inside the lock+commit
+  // append) keeps the lock and is completed with its commit reservation.
+  await withDir(async (directory) => {
+    await writeFile(join(directory, "signing-journal.ndjson"), `${lock}\n`);
+    const journal = await SigningJournal.open(directory);
+    try {
+      assert.deepEqual(journal.v6Lock(4), { round: 1, blockHash: A });
+      assert.equal(journal.v6Row(4, 1, "commit"), A);
+    } finally {
+      journal.close();
+    }
+    assert.equal(await readFile(join(directory, "signing-journal.ndjson"), "utf8"), `${lock}\n${commit}\n`);
   });
   await withDir(async (directory) => {
     await writeFile(join(directory, "signing-journal.ndjson"), `${lock}\n${commit}\n`);
