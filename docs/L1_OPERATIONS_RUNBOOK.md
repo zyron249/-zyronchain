@@ -52,6 +52,7 @@ Provision the remote-signer token out of band as a regular `0600` secret file, r
 | `unsupported-next-protocol` | the protocol version scheduled for the next height is not supported by this binary; upgrade the binary |
 | `stale-tip` | no block finalized for longer than `--ready-max-tip-age-ms` (default 600000, at least one block interval): the network is stalled or this node is partitioned or behind |
 | `consensus-catching-up` | after a long stall this legacy validator is still rebuilding the skip-certificate chain up to the current round (bounded work per tick, see `docs/security/consensus-round-catchup-bound.md`); expected to clear on its own |
+| `syncing` | a block sync is in progress towards a peer tip more than one block ahead of the local tip (`READINESS_MAX_SYNC_LAG_BLOCKS`); one block of lag is normal propagation and stays ready. The reason only lasts while that sync runs, so a peer that overstates its height cannot keep the node unready; expected to clear when the node catches up |
 
 A network-wide stall no longer becomes permanent after about 33 minutes: once enough validators are back, legacy production resumes automatically after the catch-up described above, and v6 resumes within a few rounds. `GET /metrics` is bounded structured JSON intended for a local collector. At minimum collect:
 

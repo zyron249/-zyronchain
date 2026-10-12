@@ -32,6 +32,7 @@ from zyron_node.game import (
     observe_chain,
     open_chest,
     open_session,
+    purchase_tree,
     purchase_upgrade,
     quests_view,
     release_wallet_claim,
@@ -61,6 +62,10 @@ class IdempotentBody(BaseModel):
 
 class UpgradeBody(IdempotentBody):
     module: str = Field(min_length=2, max_length=32)
+
+
+class TreeBody(IdempotentBody):
+    upgrade: str = Field(min_length=3, max_length=20, pattern=r"^[a-z]+$")
 
 
 class WalletBody(IdempotentBody):
@@ -234,6 +239,17 @@ def register_routes(app) -> None:
         limit_user(request, identity.id, "upgrade", 30, 60, now)
         player = _player_id(request, identity, ip_hash, now)
         return purchase_upgrade(request.app.state.pool, player, body.module, body.idempotencyKey, now)
+
+    @app.post("/api/tree/upgrade")
+    def tree_upgrade(request: Request, body: TreeBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        # Per account: a burst limit and an hourly limit. Retries with the same idempotencyKey replay the stored
+        # result and never spend twice.
+        limit_user(request, identity.id, "tree", 20, 60, now)
+        limit_user(request, identity.id, "treehour", 120, 3600, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return purchase_tree(request.app.state.pool, player, body.upgrade, body.idempotencyKey, now)
 
     @app.get("/api/upgrades")
     def upgrades(request: Request):
