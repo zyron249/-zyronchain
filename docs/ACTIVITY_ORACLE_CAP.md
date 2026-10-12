@@ -32,8 +32,14 @@ Because every epoch settles at most once and only during the following 24 h, the
 
 ## Bounds
 
-- A single oracle key can move at most 10,000 ZYN per 24 h, at most 0.2% of the 5,000,000 ZYN pool.
-- Paying out the full pool takes at least 500 epochs (about 500 days).
+The cap is per fixed epoch, not per rolling 24 h window. This is intentional: the rule is "each closed epoch once, in order", which keeps validation stateless with respect to earlier block times.
+
+- A single oracle key can move at most 10,000 ZYN per epoch (0.2% of the 5,000,000 ZYN pool).
+- Inside any rolling 24 h window it can move at most 20,000 ZYN: epoch e can be settled at the last millisecond of epoch e + 1 and epoch e + 1 at the first millisecond of epoch e + 2, but epoch e + 2 cannot be settled before the next boundary, 24 h later. More generally, any window of length W pays at most (ceil(W / 24 h) + 1) x 10,000 ZYN.
+- The long-run average is at most 10,000 ZYN per day. Paying out the full pool takes at least 500 epochs, so it cannot complete earlier than 500 days after genesis.
+- Monitoring and incident response should assume the 20,000 ZYN worst case for any single day. A rolling-window rule would be a consensus and tokenomics change and needs explicit owner approval.
+
+`l1/test/activity-oracle-epoch-bound.test.ts` pins these bounds.
 - Cumulative payouts never exceed the pool's genesis balance (outflow-only pool, unchanged).
 
 Block timestamps must increase and may be at most 120 s ahead of a validator's clock, so a proposer cannot open a future window early in any meaningful way, and an oracle key alone cannot influence block time.

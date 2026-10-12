@@ -11,6 +11,7 @@ import {
   validateBlockShape,
   validateRoundCertificate
 } from "./block.js";
+import { CONSENSUS_V6_PROTOCOL_VERSION, isConsensusV6, validateCommitCertificate } from "./consensus-v6.js";
 import { addressFromPublicKey, assertValidPublicKey, publicKeyFromPrivate, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
 import {
   assertMiningClaimContext,
@@ -181,6 +182,12 @@ export class ZyronChain {
     };
     const protocolVersion = chain.protocolVersionAt(snapshot.height);
     assertSupportedProtocolVersion(protocolVersion);
+    // The finality rule is selected by the governed protocol version at the tip
+    // height, so a v6 header must never be checked under a legacy schedule (or
+    // the reverse). Legacy (v1-v5) headers under a legacy schedule are untouched.
+    if ((snapshot.tip.header.version === CONSENSUS_V6_PROTOCOL_VERSION) !== isConsensusV6(protocolVersion)) {
+      throw new Error("Trusted checkpoint tip protocol version mismatch");
+    }
     const sparse = protocolUsesStateV2(protocolVersion) ? stateV2FromLedgerSnapshot(state.snapshot(), governance) : undefined;
     const stateRoot = protocolVersion === 1 ? state.root() : sparse!.root();
     if (snapshot.tip.header.stateRoot !== stateRoot) throw new Error("Trusted checkpoint state root mismatch");
@@ -197,8 +204,20 @@ export class ZyronChain {
           !proposerSignatureValid) {
         throw new Error("Invalid checkpoint proposer signature");
       }
-      validateRoundCertificate(snapshot.tip, validators);
-      validateAttestationQuorum(snapshot.tip, validators);
+      if (isConsensusV6(protocolVersion)) {
+        // Protocol v6 (F-01) finality is the commit certificate, never legacy
+        // attestations. Apply exactly the rule live block acceptance uses
+        // (validateBlock with requireFinality): no round skip certificate in the
+        // block, and >= q distinct CommitVotes over {chainId, height,
+        // commitRound, blockHash} from validatorsAt(height).
+        if (snapshot.tip.roundCertificate.length !== 0) {
+          throw new Error("Protocol v6 blocks must not carry a round skip certificate");
+        }
+        validateCommitCertificate(snapshot.tip, validators);
+      } else {
+        validateRoundCertificate(snapshot.tip, validators);
+        validateAttestationQuorum(snapshot.tip, validators);
+      }
     }
 
     chain.state = protocolUsesStateV2(protocolVersion) ? undefined : state;
