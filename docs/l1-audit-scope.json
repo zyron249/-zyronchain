@@ -27,6 +27,7 @@
   ],
   "criticalModules": [
     "l1/src/activity.ts",
+    "l1/src/activity-oracle.ts",
     "l1/src/allocation-locks.ts",
     "l1/src/block.ts",
     "l1/src/chain.ts",
@@ -64,6 +65,7 @@
     "SECURITY.md",
     "docs/L1_THREAT_MODEL.md",
     "docs/ACTIVITY_ORACLE_CAP.md",
+    "docs/ACTIVITY_ORACLE_GOVERNANCE.md",
     "docs/ALLOCATION_LOCKS.md",
     "docs/GENESIS_CONFIG_BINDING.md",
     "docs/FIXED_SUPPLY_TOKENOMICS.md",
@@ -183,6 +185,11 @@
       "id": "SUPPLY-002",
       "statement": "An activity settlement pays at most 10,000 ZYN, settles only the most recently closed 24-hour epoch by block time, and epochs settle once and in strictly increasing order, so one oracle key moves at most 10,000 ZYN per epoch.",
       "primaryModules": ["l1/src/activity.ts", "l1/src/chain.ts", "l1/src/state.ts", "l1/src/state-v2.ts", "l1/src/transaction.ts"]
+    },
+    {
+      "id": "SUPPLY-004",
+      "statement": "When genesis declares activityOracleThreshold m, an activity settlement is valid on every path only with signatures from at least m distinct registered oracle keys over the canonical payload {chainId, sender, epoch, entries, receiptRoot}; without it, settlements carrying oracleApprovals are rejected and single-oracle behaviour is unchanged.",
+      "primaryModules": ["l1/src/activity-oracle.ts", "l1/src/transaction.ts", "l1/src/chain.ts", "l1/src/state.ts", "l1/src/state-v2.ts", "l1/src/types.ts"]
     },
     {
       "id": "SUPPLY-003",

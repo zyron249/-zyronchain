@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { canonicalJson, compareCanonicalStrings } from "./codec.js";
 import { assertMiningNotRetired, MINING_TRACKER_ADDRESS } from "./mining.js";
 import { ACTIVITY_ORDER_MESSAGE, assertActivitySettlementWithinCap } from "./activity.js";
+import { assertActivitySettlementAuthorized, type ActivityOracleSet } from "./activity-oracle.js";
 import { assertAllocationLockOutflow, type AllocationLockContext } from "./allocation-locks.js";
 import { assertNoActivityPoolInflow, LedgerState, type LedgerSnapshot } from "./state.js";
 import { MAX_SUPPLY_ATOMS, type Address, type Transaction, type Validator } from "./types.js";
@@ -484,13 +485,15 @@ export function updateStateV2FromTransaction(
 /**
  * Apply protocol-v2 ledger semantics directly to authenticated state.
  * `locks`: genesis allocation locks at the including block's timestamp (see
- * LedgerState.apply and allocation-locks.ts).
+ * LedgerState.apply and allocation-locks.ts). `oracles`: genesis activity-oracle
+ * keys and optional m-of-n threshold (see LedgerState.apply and activity-oracle.ts).
  */
 export function applyStateV2Transaction(
   state: SparseMerkleState,
   tx: Transaction,
   activityPool: Address,
-  locks?: AllocationLockContext
+  locks?: AllocationLockContext,
+  oracles?: ActivityOracleSet
 ): SparseMerkleState {
   if (tx.kind === "transfer") {
     assertNoActivityPoolInflow(tx.receiver, activityPool);
@@ -505,6 +508,7 @@ export function applyStateV2Transaction(
     return setStateV2Nonce(next, tx.sender, tx.nonce);
   }
   if (tx.kind === "activity_settlement") {
+    if (oracles) assertActivitySettlementAuthorized(tx, oracles);
     if (tx.sender !== activityPool) throw new Error("Invalid activity pool sender");
     for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, activityPool);
     if (state.get(activityEpochKey(tx.epoch)) !== undefined) throw new Error("Activity epoch already settled");

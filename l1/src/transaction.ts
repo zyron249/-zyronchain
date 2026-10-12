@@ -12,6 +12,7 @@ import { assertActivitySettlementWithinCap } from "./activity.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import type {
   ActivityEntry,
+  ActivityOracleApproval,
   ActivitySettlementTx,
   Address,
   MiningClaimTx,
@@ -32,6 +33,10 @@ export type TransactionVersion = 1 | 2;
 
 const VALIDATOR_SET_APPROVAL_DOMAIN = "zyronchain/validator-set-approval/v1";
 const PROTOCOL_UPGRADE_APPROVAL_DOMAIN = "zyronchain/protocol-upgrade-approval/v1";
+/** Domain of m-of-n activity-oracle approvals (docs/ACTIVITY_ORACLE_GOVERNANCE.md). */
+export const ACTIVITY_SETTLEMENT_APPROVAL_DOMAIN = "zyronchain/activity-settlement-approval/v1";
+/** Upper bound on `oracleApprovals` entries in one settlement. */
+export const MAX_ACTIVITY_ORACLE_APPROVALS = 100;
 
 function txSigningPayload(
   tx: Transaction | UnsignedTransfer | UnsignedSettlement | UnsignedMiningClaim | UnsignedValidatorUpdate | UnsignedProtocolUpgrade
@@ -186,6 +191,56 @@ export function createTransfer(
   return { ...withSignature, txid: sha256Hex(canonicalJson(withSignature)) };
 }
 
+/**
+ * Canonical payload every approving oracle signs for an activity settlement:
+ * what is paid, to whom, from which pool, for which epoch, on which chain.
+ * Nonce, timestamp and submitter are deliberately excluded so oracles can sign
+ * independently; an epoch settles at most once, so an approval cannot be
+ * replayed into a second payout.
+ */
+export function activitySettlementApprovalPayload(input: {
+  chainId: string;
+  sender: Address;
+  epoch: number;
+  entries: readonly ActivityEntry[];
+  receiptRoot: string;
+}): unknown {
+  return {
+    chainId: input.chainId,
+    sender: input.sender,
+    epoch: input.epoch,
+    entries: input.entries.map((entry) => ({ receiver: entry.receiver, amountAtoms: entry.amountAtoms })),
+    receiptRoot: input.receiptRoot
+  };
+}
+
+export function createActivityOracleApproval(
+  input: Parameters<typeof activitySettlementApprovalPayload>[0],
+  oraclePrivateKey: string,
+  oraclePublicKey: string
+): ActivityOracleApproval {
+  return {
+    publicKey: oraclePublicKey,
+    signature: signCanonicalDomain(
+      ACTIVITY_SETTLEMENT_APPROVAL_DOMAIN,
+      activitySettlementApprovalPayload(input),
+      oraclePrivateKey
+    )
+  };
+}
+
+export function verifyActivityOracleApprovalSignature(
+  tx: ActivitySettlementTx,
+  approval: ActivityOracleApproval
+): boolean {
+  return verifyCanonicalDomain(
+    ACTIVITY_SETTLEMENT_APPROVAL_DOMAIN,
+    activitySettlementApprovalPayload(tx),
+    approval.signature,
+    approval.publicKey
+  );
+}
+
 export function createActivitySettlement(
   input: Omit<UnsignedSettlement, "kind" | "version" | "publicKey" | "feeAtoms">,
   privateKeyHex: string,
@@ -204,6 +259,14 @@ export function createActivitySettlement(
       amountAtoms: entry.amountAtoms
     })),
     receiptRoot: input.receiptRoot,
+    // The key exists only when approvals are supplied, so a legacy settlement
+    // keeps its exact signed bytes and txid.
+    ...(input.oracleApprovals === undefined ? {} : {
+      oracleApprovals: input.oracleApprovals.map((approval) => ({
+        publicKey: approval.publicKey,
+        signature: approval.signature
+      }))
+    }),
     feeAtoms: 0,
     timestampMs: input.timestampMs,
     publicKey
@@ -251,6 +314,8 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
   } else if (value.kind === "activity_settlement") {
     assertExactKeys(value, [
       "kind", "version", "chainId", "nonce", "sender", "epoch", "entries", "receiptRoot",
+      // Optional m-of-n approvals (docs/ACTIVITY_ORACLE_GOVERNANCE.md).
+      ...(Object.prototype.hasOwnProperty.call(value, "oracleApprovals") ? ["oracleApprovals"] : []),
       "feeAtoms", "timestampMs", "publicKey", "signature", "txid"
     ], "activity settlement");
   } else if (value.kind === "mining_claim") {
@@ -306,6 +371,13 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
     }
     for (const entry of tx.entries) validateActivityEntry(entry);
     assertActivitySettlementWithinCap(tx.entries);
+    if (Object.prototype.hasOwnProperty.call(tx, "oracleApprovals")) {
+      if (!Array.isArray(tx.oracleApprovals) || tx.oracleApprovals.length === 0 ||
+          tx.oracleApprovals.length > MAX_ACTIVITY_ORACLE_APPROVALS) {
+        throw new Error("Invalid activity oracle approvals");
+      }
+      for (const approval of tx.oracleApprovals) validateActivityOracleApproval(approval);
+    }
   } else if (tx.kind === "mining_claim") {
     if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     if (tx.version !== 2) throw new Error("Mining claim requires transaction version 2");
@@ -452,6 +524,16 @@ function validateValidatorApproval(value: ValidatorApproval): void {
   assertHex(value.publicKey, 64, "validator approval publicKey");
   assertHex(value.signature, 64, "validator approval signature");
   if (addressFromPublicKey(value.publicKey) !== value.validator) throw new Error("Validator approval address mismatch");
+}
+
+function validateActivityOracleApproval(value: ActivityOracleApproval): void {
+  assertPlainRecord(value, "activity oracle approval");
+  assertExactKeys(value, ["publicKey", "signature"], "activity oracle approval");
+  if (typeof value.publicKey !== "string" || typeof value.signature !== "string") {
+    throw new Error("Invalid activity oracle approval");
+  }
+  assertHex(value.publicKey, 64, "activity oracle approval publicKey");
+  assertHex(value.signature, 64, "activity oracle approval signature");
 }
 
 function validateActivityEntry(entry: ActivityEntry): void {
