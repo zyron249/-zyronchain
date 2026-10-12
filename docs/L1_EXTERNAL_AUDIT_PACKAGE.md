@@ -34,7 +34,8 @@ At minimum, an external review should independently analyze:
 16. Render/hosting-profile assumptions, including why the Free profile is smoke-only and why sustained uptime evidence requires reviewed always-on infrastructure;
 17. hosted duration-soak evidence semantics, including monotonic finality, memory/readiness/fault bounds and the rule that synthetic vectors cannot prove real uptime;
 18. security disclosure, maintainer/release/domain/checkpoint succession and founder-exit assumptions, including whether any unique personal credential or founder-only private context remains operationally necessary;
-19. launch authorization versus activation gating, including verification that governance authorization does not waive independent mining calibration/retest, audit, operator, custody, genesis/economics or infrastructure requirements.
+19. launch authorization versus activation gating, including verification that governance authorization does not waive independent mining calibration/retest, audit, operator, custody, genesis/economics or infrastructure requirements;
+20. protocol-v6 locked two-phase consensus (merged, not active on any network): prepare/commit/timeout signing domains, prepare and timeout certificates, the SAFE-VOTE lock rule, signing-journal v2 rows and consensus-state files, the event-driven scheduler, and the v5-to-v6 activation boundary, against [`consensus/V6_CONSENSUS_SPEC.md`](consensus/V6_CONSENSUS_SPEC.md), [`V6_SAFETY_PROOF_OBLIGATIONS.md`](V6_SAFETY_PROOF_OBLIGATIONS.md) and [`V6_OPERATOR_GUIDE.md`](V6_OPERATOR_GUIDE.md).
 
 ## Reproduction baseline
 
@@ -64,7 +65,8 @@ A packaged release must contain `scripts/mine.mjs` and `MINING.md`; the miner de
 
 - exact GitHub commit checked out by the job;
 - audit-scope SHA-256;
-- path, byte count and SHA-256 for each critical source/specification/verifier/control file, including the mining module and packaged miner;
+- path, byte count and SHA-256 for each critical source/specification/verifier/control file, including the protocol-v6 consensus modules, the mining module (retired; kept to prove rejection) and packaged miner;
+- path, byte count and SHA-256 for each regression test file listed in the scope's `regressionTests` (protocol-v6 consensus, fault-injection, fixed-supply, mining-retirement and allocation-lock tests);
 - public security/succession, launch-authorization, mining and hosting-policy files;
 - release-artifact operator rehearsal, independent-operator challenge, State-v2 scale evidence and hosted duration-soak tooling/workflows/test vectors;
 - L1 package name/version and Node engine policy;

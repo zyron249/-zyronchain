@@ -675,6 +675,7 @@ async function createValidatorProposalFile(args: string[]): Promise<void> {
   if (!validatorPublicKeys.length) throw new Error("At least one --validator-public-key is required");
   const validators = validatorPublicKeys.map((key) => {
     if (!/^[0-9a-f]{128}$/.test(key)) throw new Error("Invalid validator public key");
+    assertValidPublicKey(key, "Validator public key");
     return { address: addressFromPublicKey(key), publicKey: key };
   });
   const status = await fetchJson(`${rpc}/status`) as { chainId?: unknown; height?: unknown };

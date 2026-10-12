@@ -25,7 +25,7 @@ Authorization (`*Authorized=true`) is not activation. Green CI is not activation
 | Surface | Status | How | What it is not |
 |---|---|---|---|
 | Local two-validator public-test | Ready | `cd l1 && npm ci && npm run devnet` | Not a hosted testnet. Fresh `zyron-local-<hex>` every run. RPC on `127.0.0.1` only |
-| Automated local check | Ready (known-flaky) | `npm run devnet:check` | The `local-devnet` CI job has timed out on some hosts after quorum-loss recovery |
+| Automated local check | Ready (known-flaky on v1) | `npm run devnet:check`, `npm run devnet:check:v6` | `local-devnet` (v1) passes about 50% of the time because of the legacy F-01 split; `local-devnet-v6` runs the same check on protocol v6. Neither is a required check. See [`L1_TEST_RELIABILITY.md`](L1_TEST_RELIABILITY.md) |
 | Local protocol-v5 mining rehearsal | Retired | `cd l1 && npm run mine:local` exits non-zero | Mining is shut down for every genesis |
 | Packaged miner | Retired | `npm run mine` exits non-zero before reading keys | Consensus rejects every `mining_claim` |
 | In-process mining regression | Ready (rejection tests) | `cd l1 && npm test` (includes `test/mining*.ts`) | Now asserts mining claims are rejected on every consensus path |
@@ -74,7 +74,7 @@ Every public-testnet gate plus:
 | `immutable-mainnet-genesis-allocation` | Blocked — the fixed 50M 10/40/40/10 plan is encoded and validated (`npm run tokenomics:check`); founder vesting (12-month cliff, 36-month linear) and the permanent-liquidity lock are enforced on-chain via genesis `allocationLocks`, required by `tokenomics:check` ([`ALLOCATION_LOCKS.md`](ALLOCATION_LOCKS.md)); real role addresses still need owner input, the enforcement needs independent audit, and the ceremony must pin the genesis file SHA-256 |
 | `immutable-mining-reward-halving-cap-and-difficulty-policy` | Superseded — mining is retired; no reward, halving or difficulty policy applies and the 50M cap is fully allocated at genesis |
 | `validator-reward-inflation-and-fee-policy` | Blocked — no validator inflation is invented; fee burns stay burns |
-| `activity-oracle-production-governance` | Blocked — consensus now caps oracle payouts at 10,000 ZYN per closed 24 h epoch, settled once and in order ([`ACTIVITY_ORACLE_CAP.md`](ACTIVITY_ORACLE_CAP.md)); m-of-n oracle approval exists as an opt-in genesis threshold ([`ACTIVITY_ORACLE_GOVERNANCE.md`](ACTIVITY_ORACLE_GOVERNANCE.md)) but m, n and the key holders are not chosen, and independent oracle custody is still missing, so keep unfunded/disabled until independent oracles exist |
+| `activity-oracle-production-governance` | Blocked — consensus now caps oracle payouts at 10,000 ZYN per closed 24 h epoch, settled once and in order (at most 20,000 ZYN in any rolling 24 h window) ([`ACTIVITY_ORACLE_CAP.md`](ACTIVITY_ORACLE_CAP.md)); m-of-n oracle approval exists as an opt-in genesis threshold ([`ACTIVITY_ORACLE_GOVERNANCE.md`](ACTIVITY_ORACLE_GOVERNANCE.md)) but m, n and the key holders are not chosen, and independent oracle custody is still missing, so keep unfunded/disabled until independent oracles exist |
 | `validator-admission-removal-governance` | Prepared as on-chain delayed quorum; public admission process not published |
 | `sustained-public-testnet-mining-finality-and-independent-retest` | Blocked — requires a real public testnet first |
 | `multi-region-disaster-recovery-and-incident-drills` | Prepared as CI rehearsals; real multi-region drills remain |
@@ -99,7 +99,7 @@ This pass did **not** write exploits, PoCs, or attack procedures. Findings are f
 | Medium | Miners following website/`MINING.md` `127.0.0.1:9137` against default `npm run devnet` would hash forever on protocol v1 or hit the wrong port | Superseded: mining retired (2026-09-30); `mine` and `mine:local` fail closed |
 | Low | Packaged miner and CLI treat DNS name `localhost` as loopback for plaintext HTTP | Residual DNS-rebinding class; prefer literal `127.0.0.1` / `::1`. Shared helper tests pin `localhost`; left unchanged this pass |
 | Low | Interactive local-devnet retains encrypted keystores **and** password files in one `0700` directory | Documented development-only; do not reuse on any public network |
-| Low | `npm run devnet:check` / `local-devnet` CI job is known-flaky on view-change recovery | Documented in `PUBLIC_TEST.md`; not hidden |
+| Low | `npm run devnet:check` / `local-devnet` CI job is known-flaky (legacy protocol-v1 F-01 split, about 50% pass) | Documented in [`L1_TEST_RELIABILITY.md`](L1_TEST_RELIABILITY.md); not hidden; v6 devnet runs in `local-devnet-v6` |
 | Low | State-v2 cache identity test used a same-length rewrite (`before`/`after!`) that can keep size+mtime+ctime identical on coarse-timestamp filesystems | Test now mutates to a different size so the fail-closed check is deterministic |
 | Info | RPC default bind is `127.0.0.1`. Non-loopback listen fail-closes without consensus auth **and** `--rpc-trusted-proxy` | Keep |
 | Info | Miner profile `l1/miner-network-profile.json` has `publicMiningActivated=false` and null RPC/genesis | Keep |
