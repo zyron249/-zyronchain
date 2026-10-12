@@ -580,7 +580,7 @@
       wrap.append(el("p", { class: "run-chip", "data-run-chip": "1", text: "Node running · this pass +" + formatPoints(state.sessionPoints) }));
     }
     if (state.tab === "home") wrap.append(home());
-    if (state.tab === "node") wrap.append(nodeView());
+    if (state.tab === "node") wrap.append(upgradesView());
     if (state.tab === "chests") wrap.append(chestsView());
     if (state.tab === "board") wrap.append(boardView());
     if (state.tab === "intel") wrap.append(intelView());
@@ -593,7 +593,7 @@
     const progress = moduleProgress();
     const section = el("section", { class: "home-grid", "data-live": "1" });
     section.append(el("article", { class: "balance" }, [
-      el("p", { class: "kicker", text: "Zyron Points" }),
+      el("p", { class: "kicker" }, [document.createTextNode("Zyron Points"), ((p.cosmetics || []).indexOf("wolf_badge") >= 0) ? el("span", { class: "wolf-badge", text: "Wolf operator" }) : null]),
       el("div", { class: "balance-row" }, [
         pointsMark("lg"),
         el("b", { "data-points": "1", text: formatPoints(p.points) })
@@ -828,6 +828,140 @@
     return el("article", { class: "chip" }, [el("span", { text: label }), el("b", { text: value })]);
   }
 
+  function upgradesView() {
+    const data = state.upgrades || {};
+    const daily = data.dailyPoints || (player() && player().dailyPoints) || null;
+    const wrap = el("section", { class: "stack", "data-upgrades": "1" });
+    const head = el("article", { class: "card upg-head" }, [
+      el("div", { class: "upg-title" }, [
+        el("div", {}, [
+          el("p", { class: "eyebrow", text: "Upgrade tree" }),
+          el("h2", { text: "Upgrades" })
+        ]),
+        el("div", { class: "upg-balance" }, [
+          pointsMark("md"),
+          el("b", { "data-upg-points": "1", text: formatPoints(data.points != null ? data.points : player().points) }),
+          el("span", { text: "off-chain" })
+        ])
+      ]),
+      el("p", { class: "fine", text: "Spend off-chain Zyron Points. Costs and effects are checked on the server. Gameplay only, no conversion." })
+    ]);
+    if (daily) {
+      const ratio = daily.cap ? Math.min(1, daily.used / daily.cap) : 0;
+      const bar = el("div", { class: "bar" }, [el("i")]);
+      bar.firstChild.style.width = (ratio * 100) + "%";
+      head.append(el("div", { class: "upg-cap" }, [
+        el("div", { class: "module-top" }, [
+          el("span", { text: "Today's play limit" }),
+          el("b", { class: "lvl", text: formatPoints(daily.used) + " / " + formatPoints(daily.cap) })
+        ]),
+        bar,
+        el("p", { class: "fine", text: "Cycles and the chest bonus share this limit. Upgrades reach it sooner, never past it. Resets 00:00 UTC." })
+      ]));
+    }
+    wrap.append(head);
+    (data.tree || []).forEach(function (item) { wrap.append(treeCard(item)); });
+    [chestOddsCard(), collectionCard(), nodeView()].forEach(function (node) { if (node) wrap.append(node); });
+    return wrap;
+  }
+
+  function treeCard(item) {
+    const maxed = item.nextCost == null;
+    const pips = el("div", { class: "pips", "aria-label": "Level " + item.level + " of " + item.maxLevel });
+    for (let i = 0; i < item.maxLevel; i += 1) pips.append(el("i", { class: i < item.level ? "on" : "" }));
+    const stat = item.stat || {};
+    const unit = stat.unit ? " " + stat.unit : "";
+    const statText = maxed || stat.next == null
+      ? stat.label + " " + formatPoints(stat.current) + unit + " · max level"
+      : stat.label + " " + formatPoints(stat.current) + " → " + formatPoints(stat.next) + unit;
+    const busy = state.busyModule === "tree:" + item.id;
+    const label = maxed ? "Max level" : (busy ? "Upgrading…" : (item.affordable ? "Upgrade · " + formatPoints(item.nextCost) : "Need " + formatPoints(item.nextCost)));
+    return el("article", { class: "module-card tree-card tree-" + item.id, "data-tree": item.id }, [
+      el("div", { class: "module-top" }, [
+        el("span", { class: "tree-icon", "aria-hidden": "true" }, [treeIcon(item.id)]),
+        el("strong", { text: item.title }),
+        el("b", { class: "lvl", text: "Lv " + item.level + "/" + item.maxLevel })
+      ]),
+      pips,
+      el("p", { text: item.summary }),
+      el("div", { class: "tree-facts" }, [
+        el("span", { class: "tree-effect", text: item.effect }),
+        el("span", { class: "tree-stat", text: statText })
+      ]),
+      el("p", { class: "fine", text: maxed ? "All " + item.maxLevel + " levels installed." : "Next level costs " + formatPoints(item.nextCost) + " off-chain points" + (item.level + 1 < item.maxLevel ? " · then " + formatPoints(item.costs[item.level + 1]) : "") + "." }),
+      el("button", {
+        class: "primary buy" + (item.affordable && !maxed ? "" : " is-locked"),
+        text: label,
+        disabled: maxed || !item.affordable || state.busy ? "disabled" : null,
+        onclick: function () { onTree(item); }
+      })
+    ]);
+  }
+
+  function treeIcon(id) {
+    const common = { viewBox: "0 0 24 24", width: "22", height: "22", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round" };
+    if (id === "capacity") return svg("svg", common, [svg("rect", { x: "3", y: "7", width: "16", height: "10", rx: "2" }), svg("path", { d: "M21 10v4M7 10v4M11 10v4M15 10v4" })]);
+    if (id === "recovery") return svg("svg", common, [svg("path", { d: "M13 2 5 13h6l-1 9 8-11h-6l1-9z" })]);
+    return svg("svg", common, [svg("path", { d: "M14 4l6 6M4 20l9-9M12 3c3 0 6 1 9 4-3-1-6-1-8 1" }), svg("rect", { x: "2.5", y: "15.5", width: "5", height: "5", rx: "1" })]);
+  }
+
+  function chestOdds() {
+    return (state.upgrades && state.upgrades.chest) || null;
+  }
+
+  function oddsTable(chest) {
+    const table = el("div", { class: "odds", "data-odds": "1" });
+    (chest.odds || []).forEach(function (row) {
+      table.append(el("div", { class: "odds-row" + (row.cosmetic ? " cosmetic" : "") }, [
+        el("span", { text: row.label }),
+        el("b", { text: row.percent + "%" })
+      ]));
+    });
+    return table;
+  }
+
+  function chestOddsCard() {
+    const chest = chestOdds();
+    if (!chest) return null;
+    const today = chest.today;
+    let status = "Opens with your daily supply chest, once per UTC day.";
+    if (today) status = "Today's roll: " + (today.cosmetic ? today.cosmetic.title : "+" + formatPoints(today.points) + " off-chain points") + ". Next roll after 00:00 UTC.";
+    else if (chest.openedToday) status = "Today's daily chest is already open. Next roll after 00:00 UTC.";
+    const card = el("article", { class: "card odds-card" }, [
+      el("div", { class: "module-top" }, [
+        el("strong", { text: "Free daily chest" }),
+        el("b", { class: "lvl", text: "Free · 1 per day" })
+      ]),
+      el("p", { class: "fine", text: "On top of your streak reward, the daily chest rolls one bonus. These odds are fixed on the server. Chests are never sold." }),
+      oddsTable(chest),
+      el("p", { class: "fine", text: "If you already own every cosmetic, that slot pays +" + chest.duplicatePoints + " off-chain points instead." }),
+      el("p", { class: "fine odds-status", text: status })
+    ]);
+    if (!chest.openedToday) {
+      card.append(el("button", { class: "ghost", text: "Open daily chest", disabled: state.busy ? "disabled" : null, onclick: function () { openChests(["daily"]); } }));
+    }
+    return card;
+  }
+
+  function collectionCard() {
+    const items = (state.upgrades && state.upgrades.cosmetics) || [];
+    if (!items.length) return null;
+    const grid = el("div", { class: "collection" });
+    items.forEach(function (item) {
+      grid.append(el("div", { class: "cos" + (item.owned ? " owned" : "") }, [
+        el("strong", { text: item.title }),
+        el("span", { text: item.owned ? item.detail : "Locked · daily chest" })
+      ]));
+    });
+    return el("article", { class: "card" }, [
+      el("div", { class: "module-top" }, [
+        el("strong", { text: "Builder cosmetics" }),
+        el("b", { class: "lvl", text: items.filter(function (i) { return i.owned; }).length + "/" + items.length })
+      ]),
+      grid
+    ]);
+  }
+
   function nodeView() {
     const wrap = el("section", { class: "stack" }, [
       el("article", { class: "card" }, [
@@ -867,8 +1001,15 @@
     const opened = (state.chests && state.chests.opened) || [];
     wrap.append(el("article", { class: "card" }, [
       el("h2", { text: "Supply chests" }),
-      el("p", { class: "fine", text: "Fixed Zyron Points rewards. Not a random draw, and not ZYN. Daily supply is the login streak. Quest and level chests pay what the server already tracks." })
+      el("p", { class: "fine", text: "Off-chain Zyron Points only, not ZYN. Daily supply pays the login streak plus one free bonus roll with the odds below. Quest and level chests pay fixed amounts the server already tracks." })
     ]));
+    const odds = chestOdds();
+    if (odds) {
+      wrap.append(el("details", { class: "info card" }, [
+        el("summary", { text: "Daily chest bonus odds" }),
+        oddsTable(odds)
+      ]));
+    }
     if (!ready.length) {
       wrap.append(el("article", { class: "empty" }, [
         el("h2", { text: "Nothing to unseal yet" }),
@@ -1210,7 +1351,7 @@
 
   function nav() {
     const bar = el("nav", { class: "tabs" });
-    [["home", "Home", iconHome], ["node", "Node", iconNode], ["chests", "Chests", iconChest], ["board", "Rank", iconRank], ["intel", "Intel", iconInfo]].forEach(function (item) {
+    [["home", "Home", iconHome], ["node", "Upgrades", iconNode], ["chests", "Chests", iconChest], ["board", "Rank", iconRank], ["intel", "Intel", iconInfo]].forEach(function (item) {
       const button = el("button", {
         class: "tab" + (state.tab === item[0] ? " active" : ""),
         onclick: function () { go(item[0]); }
@@ -1283,12 +1424,25 @@
         result.replayed
           ? el("div", { class: "reveal", text: "Open" })
           : el("div", { class: "reveal" }, [pointsMark("md"), document.createTextNode("+" + formatPoints(result.gained))]),
-        el("p", { text: result.replayed ? "This chest was already collected. Your balance was not changed." : "Zyron Points · " + result.detail }),
+        el("p", { text: result.replayed ? "This chest was already collected. Your balance was not changed." : "Zyron Points · " + result.detail })
+      );
+      const bonus = bonusLine(result);
+      if (bonus) sheet.append(bonus);
+      sheet.append(
         el("p", { class: "fine", text: modal.count > 1 ? "Opened " + modal.index + " / " + modal.count + " · this batch +" + formatPoints(modal.total) : "Balance " + formatPoints(result.points) })
       );
       if (modal.index >= modal.count) sheet.append(el("button", { class: "primary", text: "Collect", onclick: closeModal }));
     }
     return el("div", { class: "modal-back" }, [sheet]);
+  }
+
+  function bonusLine(result) {
+    const bonus = result && !result.replayed ? result.bonus : null;
+    if (!bonus) return null;
+    let text = "Bonus roll: +" + formatPoints(bonus.points) + " off-chain points";
+    if (bonus.cosmetic) text = "Bonus roll: " + bonus.cosmetic.title + " unlocked";
+    else if (bonus.duplicate) text = "Bonus roll: cosmetic set complete, +" + formatPoints(bonus.points) + " off-chain points";
+    return el("p", { class: "bonus-line", "data-bonus": "1", text: text + " · streak +" + formatPoints(result.streakPoints || 0) });
   }
 
   function closeModal() {
@@ -1358,7 +1512,9 @@
   // sends a carved block to the head of the chain, where it snaps on. Optional, like the chain.
   function buildersLayer() {
     if (!window.ZyronBuilders) return null;
-    const layer = el("div", { class: "builders", "data-builders": "1", "data-builders-state": "idle", role: "img", "aria-label": window.ZyronBuilders.labelFor("idle") }, [window.ZyronBuilders.build(svg)]);
+    const owned = (player() && player().cosmetics) || [];
+    const cos = owned.map(function (id) { return " cos-" + id.replace(/[^a-z0-9_]/g, ""); }).join("");
+    const layer = el("div", { class: "builders" + cos, "data-builders": "1", "data-builders-state": "idle", role: "img", "aria-label": window.ZyronBuilders.labelFor("idle") }, [window.ZyronBuilders.build(svg)]);
     syncBuilders(layer);
     return layer;
   }
@@ -1631,6 +1787,11 @@
             toast("Energy spent. The cell is recharging.");
             break;
           }
+          if (error.code === "daily_cap") {
+            state.phase = "idle";
+            toast("Today's off-chain point limit is reached. It resets at 00:00 UTC.");
+            break;
+          }
           failed = error;
           break;
         }
@@ -1723,6 +1884,23 @@
       .then(function (res) {
         absorbTier(res);
         toast(module.title + " installed", "ok");
+        haptic("success");
+        (res.achievementsUnlocked || []).forEach(function (id) { toast(achievementTitle(id) + " unlocked", "ok"); });
+        return refresh();
+      })
+      .catch(fail);
+  }
+
+  function onTree(item) {
+    if (state.busy) return;
+    state.busy = true;
+    state.busyModule = "tree:" + item.id;
+    haptic("light");
+    render();
+    api("/api/tree/upgrade", { method: "POST", body: { upgrade: item.id, idempotencyKey: key("tree") } })
+      .then(function (res) {
+        absorbTier(res);
+        toast(item.title + " · level " + res.level, "ok");
         haptic("success");
         (res.achievementsUnlocked || []).forEach(function (id) { toast(achievementTitle(id) + " unlocked", "ok"); });
         return refresh();

@@ -114,9 +114,15 @@ export async function syncP2PFrom(
       }
       if (response.blocks.length === 0) throw new Error("Native sync peer omitted required finalized blocks");
       if (response.blocks.length > MAX_SYNC_BLOCKS) throw new Error("Native sync peer exceeded block batch limit");
-      for (const block of response.blocks) {
-        await service.acceptFinalizedBlock(block);
-        accepted += 1;
+      // F-04: report `syncing` while this batch is applied towards the peer's tip.
+      const endSync = service.beginSync(response.status.height);
+      try {
+        for (const block of response.blocks) {
+          await service.acceptFinalizedBlock(block);
+          accepted += 1;
+        }
+      } finally {
+        endSync();
       }
       if (service.status().height >= response.status.height) {
         if (service.status().tipHash !== response.status.tipHash) throw new Error("Native sync peer advertised a false tip");

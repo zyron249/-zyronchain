@@ -11,6 +11,7 @@ import {
   validateBlockShape,
   validateRoundCertificate
 } from "./block.js";
+import { CONSENSUS_V6_PROTOCOL_VERSION, isConsensusV6, validateCommitCertificate } from "./consensus-v6.js";
 import { addressFromPublicKey, assertValidPublicKey, publicKeyFromPrivate, verifyCanonical, verifyCanonicalDomain } from "./crypto.js";
 import {
   assertMiningClaimContext,
@@ -20,6 +21,7 @@ import {
   miningRewardAtoms as scheduledMiningRewardAtoms,
   miningWorkHash
 } from "./mining.js";
+import { merkleRoot } from "./merkle.js";
 import { assertNoActivityPoolInflow, LedgerState, type LedgerSnapshot } from "./state.js";
 import {
   allocationLockContext,
@@ -147,6 +149,22 @@ export class ZyronChain {
         snapshot.tip.hash !== anchor.tipHash || blockHash(snapshot.tip.header) !== snapshot.tip.hash) {
       throw new Error("Trusted checkpoint tip mismatch");
     }
+    // The tip hash and its finality certificate authenticate only the header.
+    // Bind the tip body to header.transactionRoot exactly as live block
+    // validation does, so a pinned snapshot cannot pair a certified header
+    // with a different transaction list that this node would then store and
+    // serve as its tip.
+    if (snapshot.tip.header.transactionRoot !== merkleRoot(snapshot.tip.transactions)) {
+      throw new Error("Trusted checkpoint tip transaction root mismatch");
+    }
+    // merkleRoot duplicates the last leaf of an odd level, so a body with its
+    // odd tail repeated keeps the same root. Live validation rejects that in
+    // applyTransactions; this path does not re-execute the tip, so check here.
+    const tipTxids = new Set<string>();
+    for (const tx of snapshot.tip.transactions) {
+      if (tipTxids.has(tx.txid)) throw new Error("Trusted checkpoint tip contains a duplicate transaction");
+      tipTxids.add(tx.txid);
+    }
 
     const validatorSchedule = validateValidatorSchedule(snapshot.validatorSchedule, genesis.validators);
     const protocolSchedule = validateProtocolSchedule(snapshot.protocolSchedule);
@@ -164,6 +182,12 @@ export class ZyronChain {
     };
     const protocolVersion = chain.protocolVersionAt(snapshot.height);
     assertSupportedProtocolVersion(protocolVersion);
+    // The finality rule is selected by the governed protocol version at the tip
+    // height, so a v6 header must never be checked under a legacy schedule (or
+    // the reverse). Legacy (v1-v5) headers under a legacy schedule are untouched.
+    if ((snapshot.tip.header.version === CONSENSUS_V6_PROTOCOL_VERSION) !== isConsensusV6(protocolVersion)) {
+      throw new Error("Trusted checkpoint tip protocol version mismatch");
+    }
     const sparse = protocolUsesStateV2(protocolVersion) ? stateV2FromLedgerSnapshot(state.snapshot(), governance) : undefined;
     const stateRoot = protocolVersion === 1 ? state.root() : sparse!.root();
     if (snapshot.tip.header.stateRoot !== stateRoot) throw new Error("Trusted checkpoint state root mismatch");
@@ -180,8 +204,20 @@ export class ZyronChain {
           !proposerSignatureValid) {
         throw new Error("Invalid checkpoint proposer signature");
       }
-      validateRoundCertificate(snapshot.tip, validators);
-      validateAttestationQuorum(snapshot.tip, validators);
+      if (isConsensusV6(protocolVersion)) {
+        // Protocol v6 (F-01) finality is the commit certificate, never legacy
+        // attestations. Apply exactly the rule live block acceptance uses
+        // (validateBlock with requireFinality): no round skip certificate in the
+        // block, and >= q distinct CommitVotes over {chainId, height,
+        // commitRound, blockHash} from validatorsAt(height).
+        if (snapshot.tip.roundCertificate.length !== 0) {
+          throw new Error("Protocol v6 blocks must not carry a round skip certificate");
+        }
+        validateCommitCertificate(snapshot.tip, validators);
+      } else {
+        validateRoundCertificate(snapshot.tip, validators);
+        validateAttestationQuorum(snapshot.tip, validators);
+      }
     }
 
     chain.state = protocolUsesStateV2(protocolVersion) ? undefined : state;
