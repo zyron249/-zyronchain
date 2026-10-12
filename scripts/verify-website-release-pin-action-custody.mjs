@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 const workflowPath = '.github/workflows/website-release-pin-ci.yml';
-const text = readFileSync(workflowPath, 'utf8');
+
+export function verifyWebsiteReleasePinWorkflow(text) {
 const required = [
   'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
   'fetch-depth: 0',
@@ -31,11 +33,28 @@ if (!checkoutStep.includes('persist-credentials: false')) throw new Error('check
 if (!checkoutStep.includes('fetch-depth: 0')) throw new Error('release-pin gate requires full history');
 
 // F-07: the gate must fail closed when git diff fails, and every path it
-// compares must also trigger the workflow on pull requests and on main.
-if (/\|\|\s*true\b/.test(text)) throw new Error('release-pin gate must not swallow command failures with || true');
-const diffLine = text.match(/git diff --name-only[^\n]*?--((?:\s+'[^']+')+)/);
-if (!diffLine) throw new Error('release-pin gate must compare canonical paths with git diff --name-only');
-const comparedPaths = [...diffLine[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+// compares (in every git diff, F-07 residual) must also trigger the workflow on
+// pull requests and on main.
+if (/\|\|\s*(?:true\b|:(?=\s|\)|;|$)|exit\s+0\b)/m.test(text)) {
+  throw new Error('release-pin gate must not swallow command failures (|| true, || :, || exit 0)');
+}
+if (!text.includes('set -euo pipefail')) throw new Error('release-pin gate shell must use set -euo pipefail');
+const diffCommands = [...text.matchAll(/\$\(git diff --name-only ([^\n]*)\)"/g)];
+if (diffCommands.length < 1) throw new Error('release-pin gate must compare canonical paths with git diff --name-only');
+const comparedPaths = [];
+for (const command of diffCommands) {
+  // Only refs and quoted pathspecs: nothing inside the substitution may run
+  // after git diff or change its exit status.
+  const parsed = command[1].match(/^"\$[A-Z0-9_]+"\.\.HEAD --((?:\s+'[^']+')+)$/);
+  if (!parsed) throw new Error(`release-pin gate git diff must compare refs and quoted paths only: ${command[1]}`);
+  comparedPaths.push(...[...parsed[1].matchAll(/'([^']+)'/g)].map((m) => m[1]));
+}
+for (const command of text.matchAll(/git diff --name-only/g)) {
+  const line = text.slice(text.lastIndexOf('\n', command.index) + 1, text.indexOf('\n', command.index));
+  if (!/^\s*if ! [A-Z0-9_]+="\$\(git diff --name-only /.test(line)) {
+    throw new Error('release-pin gate git diff must run as `if ! VAR="$(git diff ...)"; then` so a failure stops the job');
+  }
+}
 const triggerPaths = (event) => {
   const block = text.match(new RegExp(`\\n  ${event}:\\n[\\s\\S]*?\\n    paths:\\n((?:      - '[^']+'\\n)+)`));
   if (!block) throw new Error(`release-pin gate ${event} trigger paths missing`);
@@ -48,4 +67,9 @@ for (const event of ['pull_request', 'push']) {
   }
 }
 
-console.log('website-release-pin-action-custody-ok');
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  verifyWebsiteReleasePinWorkflow(readFileSync(workflowPath, 'utf8'));
+  console.log('website-release-pin-action-custody-ok');
+}
