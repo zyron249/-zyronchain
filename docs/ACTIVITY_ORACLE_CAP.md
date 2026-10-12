@@ -26,20 +26,31 @@ A settlement is valid only if all of the following hold (in addition to the exis
 2. **Window:** the including block's timestamp lies in epoch `e + 1`, so only the most recently closed epoch can be settled. A current or future epoch is rejected ("not closed yet"); an older epoch is rejected ("settlement window has closed").
 3. **Once, in order:** epoch `e` is not already settled, and epoch `e + 1` is not settled.
 
-Settled epochs form a strictly increasing sequence. This follows from rule 2 alone: block timestamps strictly increase, so the most recently closed epoch never moves backwards, and every earlier settlement was for an epoch at or below the current one. The `e + 1` check is defence in depth in the state appliers, which have no block timestamp.
+Settled epochs form a strictly increasing sequence. This follows from rule 2 alone: block timestamps strictly increase, so the most recently closed epoch never moves backwards, and every earlier settlement was for an epoch at or below the current one. The `e + 1` check is defence in depth in the state appliers.
 
 Because every epoch settles at most once and only during the following 24 h, the per-settlement cap is also the per-epoch cap. Missed epochs are forfeited rather than carried over, so idle time never builds up headroom that a compromised key could take in one burst. The activity being rewarded is not lost: a later settlement may reward activity from earlier periods, still within its own cap; the epoch number is a rate-limit slot, not a receipt identifier.
 
+## Rolling 24 h cap (fixed-supply-v1)
+
+Owner rule: at most 10,000 ZYN of activity settlements per 24 hours. A genesis with `launchProfile: "fixed-supply-v1"` enforces it as a consensus rule from genesis:
+
+4. **Rolling window:** the settlements whose block timestamps lie within any 24 h window sum to at most 10,000 ZYN. Concretely, a settlement of amount `a` in a block at time `t` is rejected when the previous settlement (time `t0`, amount `a0`) satisfies `t - t0 < 24 h` and `a0 + a > 10,000 ZYN`. Two settlements exactly 24 h apart are in different windows.
+
+Checking only the previous settlement is enough. By rule 2 each 24 h epoch of block time contains at most one settlement, so a window of 24 h or less contains at most two settlements, and they are consecutive.
+
+The previous settlement's block timestamp and amount are consensus state. They are stored as the nonces of two protocol-reserved, zero-balance accounts (`ZYN000…0001` for the timestamp, `ZYN000…0002` for the amount). The accounts hold no balance, so total supply and allocations are unchanged. Both state representations commit them like any other account, so snapshots, checkpoints, state sync and restarts carry the record. Under the profile, transfers, settlement entries and genesis allocations to these addresses are rejected.
+
+The rule is checked in both state appliers (block validation and block production) using the including block's timestamp, and at mempool admission using the earliest possible next block time. A settlement that is too early for the rolling window is rejected, not queued, and must be resubmitted later in its epoch window.
+
+A genesis without a launch profile keeps rules 1-3 only. This is deliberate, so that existing development and test chains do not fork. On those chains two adjacent epochs can be settled either side of an epoch boundary: up to 20,000 ZYN inside one 24 h window, while the long-run average is still at most 10,000 ZYN per day. A public launch uses `fixed-supply-v1`, so this does not apply to it.
+
 ## Bounds
 
-The cap is per fixed epoch, not per rolling 24 h window. This is intentional: the rule is "each closed epoch once, in order", which keeps validation stateless with respect to earlier block times.
-
-- A single oracle key can move at most 10,000 ZYN per epoch (0.2% of the 5,000,000 ZYN pool).
-- Inside any rolling 24 h window it can move at most 20,000 ZYN: epoch e can be settled at the last millisecond of epoch e + 1 and epoch e + 1 at the first millisecond of epoch e + 2, but epoch e + 2 cannot be settled before the next boundary, 24 h later. More generally, any window of length W pays at most (ceil(W / 24 h) + 1) x 10,000 ZYN.
+- A single oracle key (or, with `activityOracleThreshold`, a threshold of oracle keys) can move at most 10,000 ZYN per epoch (0.2% of the 5,000,000 ZYN pool).
+- Under `fixed-supply-v1`: at most 10,000 ZYN inside any 24 h window.
 - The long-run average is at most 10,000 ZYN per day. Paying out the full pool takes at least 500 epochs, so it cannot complete earlier than 500 days after genesis.
-- Monitoring and incident response should assume the 20,000 ZYN worst case for any single day. A rolling-window rule would be a consensus and tokenomics change and needs explicit owner approval.
 
-`l1/test/activity-oracle-epoch-bound.test.ts` pins these bounds.
+`l1/test/activity-rolling-24h-cap.test.ts` pins the rolling cap (protocol v1, v3 and v6, both appliers, reserved addresses, restart). `l1/test/activity-oracle-epoch-bound.test.ts` pins the per-epoch behaviour of a genesis without a launch profile.
 - Cumulative payouts never exceed the pool's genesis balance (outflow-only pool, unchanged).
 
 Block timestamps must increase and may be at most 120 s ahead of a validator's clock, so a proposer cannot open a future window early in any meaningful way, and an oracle key alone cannot influence block time.

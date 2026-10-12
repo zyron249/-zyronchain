@@ -33,6 +33,12 @@ import {
 } from "./allocation-locks.js";
 import {
   ACTIVITY_ORDER_MESSAGE,
+  ACTIVITY_WINDOW_AMOUNT_ADDRESS,
+  ACTIVITY_WINDOW_RESERVED_MESSAGE,
+  ACTIVITY_WINDOW_TIME_ADDRESS,
+  activityRollingWindowEnforced,
+  assertActivityRollingWindow,
+  isActivityWindowAddress,
   activityEpochWindowExpired,
   assertActivityEpochWindow,
   assertActivitySettlementWithinCap
@@ -359,7 +365,7 @@ export class ZyronChain {
   stateV2SemanticKeyPreimagesForBlock(block: Block): string[] {
     const keys = new Set(this.stateV2SemanticKeys ?? stateV2KeyPreimages(this.requireLegacyState().snapshot(), this.governanceSnapshot()));
     for (const tx of block.transactions) {
-      for (const key of stateV2KeysForTransaction(tx)) keys.add(key);
+      for (const key of stateV2KeysForTransaction(tx, this.genesis)) keys.add(key);
     }
     return [...keys].sort();
   }
@@ -484,7 +490,7 @@ export class ZyronChain {
     } else {
       const keys = new Set(this.stateV2SemanticKeys ?? stateV2KeyPreimages(this.requireLegacyState().snapshot(), this.governanceSnapshot()));
       for (const tx of block.transactions) {
-        for (const key of stateV2KeysForTransaction(tx)) keys.add(key);
+        for (const key of stateV2KeysForTransaction(tx, this.genesis)) keys.add(key);
       }
       this.state = undefined;
       this.stateV2 = next.sparse?.persistenceCheckpoint();
@@ -541,8 +547,10 @@ export class ZyronChain {
     validateTransactionShape(tx);
     const protocolVersion = this.protocolVersionAt(this.height + 1);
     assertTransactionVersionForProtocol(tx, protocolVersion);
+    const rollingWindow = activityRollingWindowEnforced(this.genesis);
     if (tx.kind === "transfer") {
       assertNoActivityPoolInflow(tx.receiver, this.genesis.activityPool);
+      if (rollingWindow && isActivityWindowAddress(tx.receiver)) throw new Error(ACTIVITY_WINDOW_RESERVED_MESSAGE);
       const total = tx.amountAtoms + tx.feeAtoms;
       if (!Number.isSafeInteger(total) || this.balance(tx.sender) < total) {
         throw new Error("Insufficient balance");
@@ -561,6 +569,16 @@ export class ZyronChain {
         : this.requireLegacyState().isActivityEpochSettled(epoch);
       if (settled(tx.epoch)) throw new Error("Activity epoch already settled");
       if (settled(tx.epoch + 1)) throw new Error(ACTIVITY_ORDER_MESSAGE);
+      if (rollingWindow) {
+        // Rolling 24 h cap (activity.ts), judged at the earliest next block time.
+        if (tx.entries.some((entry) => isActivityWindowAddress(entry.receiver))) {
+          throw new Error(ACTIVITY_WINDOW_RESERVED_MESSAGE);
+        }
+        assertActivityRollingWindow({
+          timestampMs: this.nonce(ACTIVITY_WINDOW_TIME_ADDRESS),
+          amountAtoms: this.nonce(ACTIVITY_WINDOW_AMOUNT_ADDRESS)
+        }, this.nextBlockTimestampMs(nowMs), total);
+      }
       if (total > this.balance(this.genesis.activityPool)) throw new Error("Activity pool exhausted");
       assertAllocationLockOutflow(
         this.allocationLocksAt(this.nextBlockTimestampMs(nowMs)), tx.sender, this.balance(this.genesis.activityPool), total
@@ -1025,6 +1043,9 @@ function validateGenesis(genesis: GenesisConfig): void {
     assertExactKeys(allocation, ["address", "amountAtoms"], "allocation");
     assertAddress(allocation.address);
     if (allocation.address === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker cannot receive a genesis allocation");
+    if (hasLaunchProfile && isActivityWindowAddress(allocation.address)) {
+      throw new Error("Activity window record address cannot receive a genesis allocation");
+    }
     if (!Number.isSafeInteger(allocation.amountAtoms) || allocation.amountAtoms < 0) {
       throw new Error("Invalid genesis allocation");
     }
@@ -1041,9 +1062,17 @@ function validateGenesis(genesis: GenesisConfig): void {
   if (hasLaunchProfile) assertFixedSupplyLaunchProfile(genesis);
 }
 
-function stateV2KeysForTransaction(tx: Transaction): string[] {
+function stateV2KeysForTransaction(tx: Transaction, genesis: GenesisConfig): string[] {
   if (tx.kind === "mining_claim") {
     return [accountKey(tx.sender), accountKey(MINING_TRACKER_ADDRESS)].sort();
+  }
+  if (tx.kind === "activity_settlement" && activityRollingWindowEnforced(genesis)) {
+    // The rolling 24 h window record (activity.ts) is written by every settlement.
+    return [
+      ...stateV2TransactionKeyPreimages(tx),
+      accountKey(ACTIVITY_WINDOW_TIME_ADDRESS),
+      accountKey(ACTIVITY_WINDOW_AMOUNT_ADDRESS)
+    ].sort();
   }
   return stateV2TransactionKeyPreimages(tx);
 }

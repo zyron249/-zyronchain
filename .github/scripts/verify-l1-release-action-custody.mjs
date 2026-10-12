@@ -21,8 +21,13 @@ export function stripYamlComments(text) {
 
 export function verifyL1ReleaseWorkflow(rawWorkflow) {
 const workflow = stripYamlComments(rawWorkflow);
-if (/^\s*continue-on-error\s*:/m.test(workflow)) throw new Error('Release workflow steps must not continue on error');
+if (/^\s*(?:-\s+)?continue-on-error\s*:/m.test(workflow)) throw new Error('Release workflow steps must not continue on error');
 if (/^\s+(?:-\s+)?if\s*:/m.test(workflow)) throw new Error('Release workflow steps and jobs must not be conditional');
+// F-08 residual: a shell line that ends the step early makes every later
+// required command unreachable.
+if (/^\s*(?:exit|return)\b/m.test(workflow) || /(?:&&|\|\||;)\s*exit\s+0\b/.test(workflow)) {
+  throw new Error('Release workflow steps must not exit early');
+}
 
 const requireExactRef = (action, expected) => {
   const refs = [...workflow.matchAll(new RegExp(`actions/${action}@([0-9a-f]{40})`, 'g'))].map((m) => m[1]);
@@ -56,8 +61,25 @@ for (const required of [
   if (!workflow.includes(required)) throw new Error(`Required release security invariant missing: ${required}`);
 }
 
-for (const required of ['npm run typecheck', 'npm test']) {
-  if (!new RegExp(`^\\s+(?:-\\s+)?run:\\s*(?:\\|\\s*\\n(?:\\s+.*\\n)*?\\s+)?${required.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm').test(workflow)) {
+// Line-based (no backtracking): a required command must be the whole value of
+// a run step or a whole line of a `run: |` block.
+const effectiveRunCommands = new Set();
+{
+  const lines = workflow.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = lines[i].match(/^(\s+)(?:-\s+)?run:\s*(.*?)\s*$/);
+    if (!m) continue;
+    if (m[2] !== '|') { effectiveRunCommands.add(m[2]); continue; }
+    const indent = m[1].length;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      if (lines[j].trim() === '') continue;
+      if (lines[j].length - lines[j].trimStart().length <= indent) break;
+      effectiveRunCommands.add(lines[j].trim());
+    }
+  }
+}
+for (const required of ['npm run typecheck', 'npm test', 'npm audit --omit=dev --audit-level=high']) {
+  if (!effectiveRunCommands.has(required)) {
     throw new Error(`Required release step is not an effective run step: ${required}`);
   }
 }

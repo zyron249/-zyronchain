@@ -128,7 +128,7 @@ A failure of any invariant freezes release and validator signing until independe
 - The mining tracker address cannot hold spendable value, originate transactions, receive transfers/activity rewards or receive a genesis allocation.
 - Transfers cannot create value.
 - Fees are burned under the current policy and do not become re-mineable.
-- Activity settlement can spend only an explicitly prefunded activity pool, at most 10,000 ZYN per settlement, and only for the most recently closed 24-hour epoch, settled once and in increasing order. Because the window is a fixed epoch, two adjacent epochs can be settled around a boundary, so the worst case for any rolling 24 h window is 20,000 ZYN (`docs/ACTIVITY_ORACLE_CAP.md`).
+- Activity settlement can spend only an explicitly prefunded activity pool, at most 10,000 ZYN per settlement, and only for the most recently closed 24-hour epoch, settled once and in increasing order. Under `launchProfile: "fixed-supply-v1"` consensus also caps the settlements inside any rolling 24 h window at 10,000 ZYN. A genesis without a launch profile keeps the per-epoch rule only, where two adjacent epochs settled around a boundary can pay 20,000 ZYN within 24 h (`docs/ACTIVITY_ORACLE_CAP.md`).
 - When genesis declares `allocationLocks`, the founder allocation cannot be spent before its 365-day cliff and then only as it vests linearly over 1,095 days (by block timestamp), and the permanent-liquidity reserve can never send (`docs/ALLOCATION_LOCKS.md`).
 - Transaction IDs and signatures bind the exact canonical transaction.
 - Mining work additionally binds chain, tip, target height, miner identity/account nonce and reward.

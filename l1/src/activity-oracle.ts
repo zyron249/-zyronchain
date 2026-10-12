@@ -6,7 +6,9 @@ import type { ActivitySettlementTx, GenesisConfig } from "./types.js";
  * optional m-of-n threshold, both from genesis. See
  * docs/ACTIVITY_ORACLE_GOVERNANCE.md.
  */
-export type ActivityOracleSet = Pick<GenesisConfig, "activityOracles" | "activityOracleThreshold">;
+export type ActivityOracleSet = Pick<GenesisConfig, "activityOracles" | "activityOracleThreshold"> &
+  // The launch profile selects the rolling 24 h activity cap (activity.ts).
+  Partial<Pick<GenesisConfig, "launchProfile">>;
 
 export const UNAUTHORIZED_ACTIVITY_ORACLE_MESSAGE = "Unauthorized activity oracle";
 export const ACTIVITY_APPROVALS_WITHOUT_THRESHOLD_MESSAGE =
