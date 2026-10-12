@@ -107,6 +107,8 @@ export async function writeP2PFrame(
 export interface RetainedP2PFrame {
   value: unknown;
   release: () => void;
+  /** Encoded body length of the frame in bytes. */
+  bytes: number;
 }
 
 export async function readP2PFrame(
@@ -208,6 +210,7 @@ export async function readP2PFrameRetained(
     let released = false;
     return {
       value: decoded,
+      bytes: expectedBytes!,
       release: () => {
         if (released) return;
         released = true;

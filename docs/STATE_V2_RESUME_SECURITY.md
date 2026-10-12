@@ -13,6 +13,13 @@ Portable State-v2 resume files are untrusted download staging, not authoritative
 - Existing manifest/chunk checksums, exact chunk ranges, chain/genesis/tip/snapshot identity and authenticated Merkle-state validation remain unchanged.
 - Atomic staging publication continues to use an owner-only temporary file, file fsync, rename and parent-directory fsync.
 
+## Transfer bounds (peer-supplied data)
+
+- The manifest tip is compared with the operator's anchor (tip hash, header hash, height, state root) before the tip block is fully validated, so a forged tip costs one hash, not one signature check per transaction.
+- Each chunk's records and key preimages are validated when the chunk arrives (F-09(b)).
+- One attempt against one peer stops after `MAX_STATE_SYNC_TOTAL_BYTES` (4 GiB) of responses or `MAX_STATE_SYNC_DURATION_MS` (6 hours), whichever comes first. A spent budget is not retried against the same peer; the multi-peer fetch moves on to the next peer. An honest transfer at the protocol maxima (2,000,000 records, 1,000,000 key preimages) stays well below both. The overshoot is at most one response frame (20 MiB for records).
+- Residual risk: within these bounds a peer can still serve a self-consistent tree that only fails the final anchored validation. Sync only from peers you selected, and keep state sync an operator-initiated action.
+
 ## Evidence
 
 `l1/test/state-v2-resume-security.test.ts` covers exact-boundary reads, initial oversize rejection, concurrent growth, path replacement and symlink rejection.
