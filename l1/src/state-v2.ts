@@ -2,7 +2,16 @@ import { createHash } from "node:crypto";
 
 import { canonicalJson, compareCanonicalStrings } from "./codec.js";
 import { assertMiningNotRetired, MINING_TRACKER_ADDRESS } from "./mining.js";
-import { ACTIVITY_ORDER_MESSAGE, assertActivitySettlementWithinCap } from "./activity.js";
+import {
+  ACTIVITY_ORDER_MESSAGE,
+  ACTIVITY_WINDOW_AMOUNT_ADDRESS,
+  ACTIVITY_WINDOW_RESERVED_MESSAGE,
+  ACTIVITY_WINDOW_TIME_ADDRESS,
+  activityRollingWindowEnforced,
+  assertActivityRollingWindow,
+  assertActivitySettlementWithinCap,
+  isActivityWindowAddress
+} from "./activity.js";
 import { assertActivitySettlementAuthorized, type ActivityOracleSet } from "./activity-oracle.js";
 import { assertAllocationLockOutflow, type AllocationLockContext } from "./allocation-locks.js";
 import { assertNoActivityPoolInflow, LedgerState, type LedgerSnapshot } from "./state.js";
@@ -495,8 +504,10 @@ export function applyStateV2Transaction(
   locks?: AllocationLockContext,
   oracles?: ActivityOracleSet
 ): SparseMerkleState {
+  const rollingWindow = activityRollingWindowEnforced(oracles);
   if (tx.kind === "transfer") {
     assertNoActivityPoolInflow(tx.receiver, activityPool);
+    if (rollingWindow && isActivityWindowAddress(tx.receiver)) throw new Error(ACTIVITY_WINDOW_RESERVED_MESSAGE);
     requireStateV2Nonce(state, tx.sender, tx.nonce);
     const total = tx.amountAtoms + tx.feeAtoms;
     if (!Number.isSafeInteger(total)) throw new Error("Insufficient balance");
@@ -516,12 +527,26 @@ export function applyStateV2Transaction(
     if (state.get(activityEpochKey(tx.epoch + 1)) !== undefined) throw new Error(ACTIVITY_ORDER_MESSAGE);
     requireStateV2Nonce(state, activityPool, tx.nonce);
     const total = assertActivitySettlementWithinCap(tx.entries);
+    if (rollingWindow) {
+      // Rolling 24 h cap under fixed-supply-v1 (see activity.ts).
+      if (tx.entries.some((entry) => isActivityWindowAddress(entry.receiver))) {
+        throw new Error(ACTIVITY_WINDOW_RESERVED_MESSAGE);
+      }
+      assertActivityRollingWindow({
+        timestampMs: stateV2Nonce(state, ACTIVITY_WINDOW_TIME_ADDRESS),
+        amountAtoms: stateV2Nonce(state, ACTIVITY_WINDOW_AMOUNT_ADDRESS)
+      }, locks?.blockTimestampMs, total);
+    }
     const poolBalance = stateV2Balance(state, activityPool);
     if (poolBalance < total) throw new Error("Insufficient balance");
     assertAllocationLockOutflow(locks, activityPool, poolBalance, total);
     let next = debitStateV2(state, activityPool, total);
     for (const entry of tx.entries) next = creditStateV2(next, entry.receiver, entry.amountAtoms);
     next = setStateV2Nonce(next, activityPool, tx.nonce);
+    if (rollingWindow) {
+      next = setStateV2Nonce(next, ACTIVITY_WINDOW_TIME_ADDRESS, locks!.blockTimestampMs);
+      next = setStateV2Nonce(next, ACTIVITY_WINDOW_AMOUNT_ADDRESS, total);
+    }
     return next.set(activityEpochKey(tx.epoch), { settled: true });
   }
   if (tx.kind === "mining_claim") {

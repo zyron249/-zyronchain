@@ -1,14 +1,14 @@
-// Characterization of the activity-oracle rate limit (independent retest,
-// round 2, ORACLE boundary burst). The cap is per closed fixed 24 h epoch, not
-// per rolling 24 h window: epoch e settles once, in order, only in a block
-// timestamped inside epoch e + 1. Two adjacent epochs can therefore be settled
-// one millisecond apart around an epoch boundary (2 x 10,000 ZYN), but the next
-// epoch cannot be settled until the following boundary, so:
+// Characterization of the activity-oracle per-epoch rule for a genesis WITHOUT
+// a launch profile (independent retest, round 2, ORACLE boundary burst). There
+// the cap is per closed fixed 24 h epoch: epoch e settles once, in order, only
+// in a block timestamped inside epoch e + 1, so two adjacent epochs can be
+// settled one millisecond apart around an epoch boundary (2 x 10,000 ZYN):
 //   - any 24 h window pays at most 20,000 ZYN;
 //   - any window of length W pays at most (ceil(W / 24 h) + 1) x 10,000 ZYN;
 //   - the long-run average stays at most 10,000 ZYN per day.
-// See docs/ACTIVITY_ORACLE_CAP.md ("Bounds"). Changing this to a rolling
-// window is a consensus and tokenomics change and is not made here.
+// This is kept unchanged so existing chains do not fork. A genesis with
+// `launchProfile: "fixed-supply-v1"` additionally enforces the rolling 24 h
+// cap of 10,000 ZYN (activity-rolling-24h-cap.test.ts, docs/ACTIVITY_ORACLE_CAP.md).
 import assert from "node:assert/strict";
 import test from "node:test";
 

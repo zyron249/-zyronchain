@@ -1,6 +1,15 @@
 import { canonicalJson, compareCanonicalStrings, sha256Hex } from "./codec.js";
 import { assertMiningNotRetired, MINING_TRACKER_ADDRESS } from "./mining.js";
-import { ACTIVITY_ORDER_MESSAGE, assertActivitySettlementWithinCap } from "./activity.js";
+import {
+  ACTIVITY_ORDER_MESSAGE,
+  ACTIVITY_WINDOW_AMOUNT_ADDRESS,
+  ACTIVITY_WINDOW_RESERVED_MESSAGE,
+  ACTIVITY_WINDOW_TIME_ADDRESS,
+  activityRollingWindowEnforced,
+  assertActivityRollingWindow,
+  assertActivitySettlementWithinCap,
+  isActivityWindowAddress
+} from "./activity.js";
 import { assertActivitySettlementAuthorized, type ActivityOracleSet } from "./activity-oracle.js";
 import { assertAllocationLockOutflow, type AllocationLockContext } from "./allocation-locks.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
@@ -124,12 +133,14 @@ export class LedgerState {
    * that omit it get the historical applier, which never checked the signer.
    */
   apply(tx: Transaction, activityPool: Address, locks?: AllocationLockContext, oracles?: ActivityOracleSet): void {
+    const rollingWindow = activityRollingWindowEnforced(oracles);
     if (tx.kind === "transfer") {
       assertNoActivityPoolInflow(tx.receiver, activityPool);
+      if (rollingWindow && isActivityWindowAddress(tx.receiver)) throw new Error(ACTIVITY_WINDOW_RESERVED_MESSAGE);
       this.applyTransfer(tx, locks);
     } else if (tx.kind === "activity_settlement") {
       if (oracles) assertActivitySettlementAuthorized(tx, oracles);
-      this.applyActivity(tx, activityPool, locks);
+      this.applyActivity(tx, activityPool, locks, rollingWindow);
     }
     else if (tx.kind === "mining_claim") this.applyMining(tx);
     else if (tx.kind === "validator_update") this.applyValidatorUpdate(tx);
@@ -164,7 +175,12 @@ export class LedgerState {
     this.setNonce(tx.sender, tx.nonce);
   }
 
-  private applyActivity(tx: ActivitySettlementTx, activityPool: Address, locks: AllocationLockContext | undefined): void {
+  private applyActivity(
+    tx: ActivitySettlementTx,
+    activityPool: Address,
+    locks: AllocationLockContext | undefined,
+    rollingWindow = false
+  ): void {
     if (tx.sender !== activityPool) throw new Error("Invalid activity pool sender");
     for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, activityPool);
     if (tx.entries.some((entry) => entry.receiver === MINING_TRACKER_ADDRESS)) {
@@ -178,12 +194,25 @@ export class LedgerState {
     if (this.settledActivityEpochs.has(tx.epoch + 1)) throw new Error(ACTIVITY_ORDER_MESSAGE);
     this.requireNonce(activityPool, tx.nonce);
     const total = assertActivitySettlementWithinCap(tx.entries);
+    if (rollingWindow) {
+      if (tx.entries.some((entry) => isActivityWindowAddress(entry.receiver))) {
+        throw new Error(ACTIVITY_WINDOW_RESERVED_MESSAGE);
+      }
+      assertActivityRollingWindow({
+        timestampMs: this.nonce(ACTIVITY_WINDOW_TIME_ADDRESS),
+        amountAtoms: this.nonce(ACTIVITY_WINDOW_AMOUNT_ADDRESS)
+      }, locks?.blockTimestampMs, total);
+    }
     if (this.balance(activityPool) < total) throw new Error("Activity pool exhausted");
     assertAllocationLockOutflow(locks, activityPool, this.balance(activityPool), total);
     this.debit(activityPool, total);
     for (const entry of tx.entries) this.credit(entry.receiver, entry.amountAtoms);
     this.setNonce(activityPool, tx.nonce);
     this.settledActivityEpochs.add(tx.epoch);
+    if (rollingWindow) {
+      this.setNonce(ACTIVITY_WINDOW_TIME_ADDRESS, locks!.blockTimestampMs);
+      this.setNonce(ACTIVITY_WINDOW_AMOUNT_ADDRESS, total);
+    }
   }
 
   private applyMining(tx: MiningClaimTx): void {
