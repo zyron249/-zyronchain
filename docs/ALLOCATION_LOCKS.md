@@ -72,3 +72,18 @@ For a legacy genesis (no `launchProfile`) the genesis block hash commits to the 
 
 - `l1/test/allocation-locks.test.ts`: every chain path under v1/v2/v3/v5/v6, including proposer-signed and finalized blocks that smuggle a locked spend; founder spends at height 1 and exactly at the cliff; exact vested amount accepted at mid-linear and one more atom (fee counted) rejected; 1 ms and 1 day linear boundaries; the full balance after the schedule ends; the liquidity reserve refusing every outflow including after 100 years while accepting inflows; node mempool rejection of single and aggregate spends; locks after a store reopen.
 - `l1/test/allocation-locks-appliers.test.ts`: raw appliers, arithmetic agreement with the block-height schedule, flooring, saturation and bad input, lock helpers, nine malformed `allocationLocks` variants and the fixed-supply launch check.
+- `l1/test/allocation-lock-bypass-paths.test.ts` (P0-07): the locks hold on every path that builds node state other than live block-by-block validation. The attack artifacts are blocks finalized under a lock-free "twin" genesis that has the same chain ID and genesis hash (founder spend before the cliff, liquidity spend, a founder spend stamped one day after the cliff, and a post-cliff overspend by one atom). After each path the node must refuse them in mempool admission, `acceptBlock` and `commitFinalizedBlock`, and the founder and liquidity balances must be unchanged.
+
+| Path | v1 | v5 | v6 |
+|---|---|---|---|
+| Live chain (baseline, plus twin-genesis control that accepts the founder block) | yes | yes | yes |
+| Full finalized-log replay, including a violating block appended to `blocks.ndjson` | yes | yes | yes |
+| P2P block sync from a twin-genesis peer (the follower applies the honest prefix and refuses the violating block) | yes | yes | yes |
+| Trusted snapshot restore (`fromTrustedSnapshot`) | yes | yes | todo, #963 |
+| Trusted snapshot install and reopen of the installed node, plus a violating block appended after the checkpoint | n/a (requires State v2) | yes | todo, #963 |
+| Recovery-checkpoint reopen (v1: unpruned checkpoint; v5: pruned history, no full-replay fallback) with a violating block appended | yes | yes | todo, #963 |
+| P2P checkpoint transfer, then install | n/a (requires State v2) | yes | todo, #963 |
+| Portable State-v2 install, and P2P portable state sync then install | n/a | yes | todo, #963 |
+| State-v2 store rebuild on reopen (corrupted root metadata) | n/a | yes | covered by replay |
+
+Trust assumption: a trusted snapshot or portable state is authoritative for the state it pins. If an operator pins the anchor of a tip finalized on a twin chain that already moved locked funds, the install accepts that state, because the pre-tip state is not available to re-check. Honest validators running the published genesis never finalize such a block, so this requires a broken validator supermajority plus a wrong anchor; the ceremony pins the genesis digest, and `launchProfile` genesis binding (#961) makes a twin genesis a different chain.
