@@ -22,7 +22,7 @@ import { createP2PNode } from "../src/p2p.js";
 import { loadOrCreateNodeIdentity } from "../src/peer-identity.js";
 import { createStateV2PortableBundle, type StateV2PortableBundleV1 } from "../src/state-v2-portable.js";
 import { ChainStore, type TrustedSnapshotAnchor } from "../src/storage.js";
-import { createProtocolUpgrade, createProtocolUpgradeApproval } from "../src/transaction.js";
+import { createProtocolUpgrade, createProtocolUpgradeApproval, createTransfer } from "../src/transaction.js";
 import type { Block, GenesisConfig } from "../src/types.js";
 
 const validatorPrivate = "21".padStart(64, "0");
@@ -214,6 +214,84 @@ test("F-09(b): a manifest whose tip header does not hash to the anchored tip has
     await assert.rejects(() => stat(join(resumeDir, "manifest.json")), { code: "ENOENT" });
   } finally {
     await fixture.close();
+  }
+});
+
+// Round 3 (portable state sync): the manifest's cheap anchor comparison must run
+// before the expensive tip block validation (transaction signatures).
+test("state sync: a forged manifest tip is rejected by the anchor comparison before its transactions are verified", async () => {
+  const fixture = await createFixture("manifest-cheap-first");
+  try {
+    await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+      const request = await readRequest(stream);
+      if (request.kind === "manifest") {
+        const tip = structuredClone(fixture.tip);
+        const transfer = createTransfer({
+          chainId: fixture.config.chainId, nonce: 1, sender: validator, receiver: activityPool,
+          amountAtoms: 1, feeAtoms: 0, timestampMs: fixture.config.timestampMs + 1
+        }, validatorPrivate, validatorPublic);
+        // A transaction whose signature no longer verifies, in a tip that does not hash to the anchor.
+        tip.transactions = [{ ...transfer, amountAtoms: 2 }];
+        tip.hash = "ff".repeat(32);
+        await writeP2PFrame(stream, manifestFrame(fixture, { tip }), 2_500_000, 5_000);
+        await stream.close();
+        return;
+      }
+      await writeFixtureResponse(stream, fixture, request);
+    });
+    await assert.rejects(
+      () => fetchTrustedPortableStateFromPeer(fixture.clientNode, fixture.address, fixture.clientIdentity, fixture.config, fixture.anchor),
+      /State manifest tip does not match anchored metadata/
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+// F-09(b) residual (round 3): a peer that keeps serving self-consistent data
+// must not be able to hold a state sync beyond a cumulative byte budget or an
+// overall time limit.
+test("F-09(b): state sync stops at the cumulative byte budget", async () => {
+  const fixture = await createFixture("byte-budget");
+  try {
+    let chunkRequests = 0;
+    await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+      const request = await readRequest(stream);
+      if (request.kind !== "manifest") chunkRequests += 1;
+      await writeFixtureResponse(stream, fixture, request);
+    });
+    await assert.rejects(
+      () => fetchTrustedPortableStateFromPeer(fixture.clientNode, fixture.address, fixture.clientIdentity, fixture.config, fixture.anchor, { maxTotalBytes: 1 }),
+      /State sync byte budget exceeded/
+    );
+    assert.equal(chunkRequests, 0, "the manifest alone exhausts a 1-byte budget");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("F-09(b): state sync stops at the overall time limit", async () => {
+  const fixture = await createFixture("time-limit");
+  try {
+    await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+      const request = await readRequest(stream);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      await writeFixtureResponse(stream, fixture, request);
+    });
+    await assert.rejects(
+      () => fetchTrustedPortableStateFromPeer(fixture.clientNode, fixture.address, fixture.clientIdentity, fixture.config, fixture.anchor, { maxDurationMs: 10 }),
+      /State sync time limit exceeded/
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("F-09(b): the default state-sync budgets are bounded and positive", async () => {
+  const module = await import("../src/p2p-state.js") as Record<string, unknown>;
+  for (const name of ["MAX_STATE_SYNC_TOTAL_BYTES", "MAX_STATE_SYNC_DURATION_MS"]) {
+    const value = module[name];
+    assert.ok(Number.isSafeInteger(value) && (value as number) > 0, name);
   }
 });
 
