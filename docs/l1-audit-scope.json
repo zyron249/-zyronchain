@@ -2,12 +2,13 @@
   "scopeVersion": 1,
   "status": "pre-public-testnet-external-audit-preparation",
   "canonicalImplementation": "l1/",
-  "supportedProtocolVersions": [1, 2, 3, 5],
+  "supportedProtocolVersions": [1, 2, 3, 5, 6],
   "reviewAreas": [
     "consensus-finality-view-change",
+    "protocol-v6-locked-two-phase-consensus-and-timeout-certificates",
     "transaction-governance-signing-domains",
-    "permissionless-mining-issuance-and-supply-cap",
-    "mining-mempool-contention-and-censorship-boundary",
+    "fixed-supply-genesis-retired-mining-and-supply-cap",
+    "retired-mining-claim-rejection-on-all-paths-and-versions",
     "cryptographic-primitives-and-key-boundaries",
     "durable-storage-replay-and-checkpoint-trust",
     "authenticated-state-v2",
@@ -31,6 +32,8 @@
     "l1/src/chain.ts",
     "l1/src/cli.ts",
     "l1/src/codec.ts",
+    "l1/src/consensus-state-store.ts",
+    "l1/src/consensus-v6.ts",
     "l1/src/crypto.ts",
     "l1/src/founder-vesting.ts",
     "l1/src/light-client.ts",
@@ -52,6 +55,7 @@
     "l1/src/tokenomics.ts",
     "l1/src/transaction.ts",
     "l1/src/types.ts",
+    "l1/src/v6-scheduler.ts",
     "l1/src/validator-signer.ts",
     "l1/scripts/mine.mjs"
   ],
@@ -60,9 +64,13 @@
     "docs/L1_THREAT_MODEL.md",
     "docs/ACTIVITY_ORACLE_CAP.md",
     "docs/ALLOCATION_LOCKS.md",
+    "docs/FIXED_SUPPLY_TOKENOMICS.md",
     "docs/MINING.md",
     "l1/MINING.md",
     "docs/CONSENSUS_CERTIFICATE_MODEL.md",
+    "docs/consensus/V6_CONSENSUS_SPEC.md",
+    "docs/V6_SAFETY_PROOF_OBLIGATIONS.md",
+    "docs/V6_OPERATOR_GUIDE.md",
     "docs/L1_OPERATIONS_RUNBOOK.md",
     "docs/STANDALONE_L1_READINESS.md",
     "docs/L1_CI_EVIDENCE.md",
@@ -88,16 +96,55 @@
     "l1/independent-light-client/test_verify_vector.py",
     "l1/test-vectors/light-client-v1.json"
   ],
+  "regressionTests": [
+    "l1/test/consensus-v6-model.test.ts",
+    "l1/test/consensus-v6-primitives.test.ts",
+    "l1/test/f01-journal-v2.test.ts",
+    "l1/test/f01-legacy-split-characterization.test.ts",
+    "l1/test/f01-v6-block-integrity.test.ts",
+    "l1/test/f01-v6-boundary.test.ts",
+    "l1/test/f01-v6-chaos.test.ts",
+    "l1/test/f01-v6-consensus.test.ts",
+    "l1/test/f01-v6-prepare-storage.test.ts",
+    "l1/test/f01-v6-scheduler.test.ts",
+    "l1/test/f01-v6-transport.test.ts",
+    "l1/test/f11-v6-cheap-checks-first.test.ts",
+    "l1/test/v6-fault-crash-points.test.ts",
+    "l1/test/v6-fault-harness-selftest.test.ts",
+    "l1/test/v6-fault-n2-n7.test.ts",
+    "l1/test/v6-fault-rollback.test.ts",
+    "l1/test/v6-fault-scenarios.test.ts",
+    "l1/test/v6-fault-seeds.test.ts",
+    "l1/test/v6-fault-state-sync.test.ts",
+    "l1/test/fixed-supply-genesis-invariants.test.ts",
+    "l1/test/fixed-supply-tokenomics.test.ts",
+    "l1/test/supply-invariant.test.ts",
+    "l1/test/mining-admission.test.ts",
+    "l1/test/mining-mempool-finalization.test.ts",
+    "l1/test/allocation-locks.test.ts",
+    "l1/test/allocation-locks-appliers.test.ts",
+    "l1/test/founder-vesting.test.ts"
+  ],
   "securityInvariants": [
     {
       "id": "CONS-001",
-      "statement": "Finalized non-genesis blocks require unique configured-validator attestations at floor(2N/3)+1 quorum.",
+      "statement": "At protocol versions 1, 2, 3 and 5, finalized non-genesis blocks require unique configured-validator attestations at floor(2N/3)+1 quorum.",
       "primaryModules": ["l1/src/block.ts", "l1/src/chain.ts"]
     },
     {
       "id": "CONS-002",
       "statement": "A non-zero consensus round requires sequential predecessor skip-quorum evidence; rounds cannot be jumped without certified evidence.",
       "primaryModules": ["l1/src/block.ts", "l1/src/node.ts", "l1/src/node-base.ts"]
+    },
+    {
+      "id": "CONS-003",
+      "statement": "At protocol-v6 heights a block is final only with floor(2N/3)+1 distinct configured-validator commit votes for one (chainId, height, commitRound, blockHash) under the commit-vote signing domain; v6 blocks carry an empty roundCertificate and legacy attestations are rejected.",
+      "primaryModules": ["l1/src/consensus-v6.ts", "l1/src/block.ts", "l1/src/chain.ts", "l1/src/light-client.ts"]
+    },
+    {
+      "id": "CONS-004",
+      "statement": "A protocol-v6 round change requires a timeout certificate of quorum timeout votes for the previous round that carries the maximum reported prepare QC; a validator prepare-votes only its locked block or a proposal justified by a strictly higher-round prepare QC (SAFE-VOTE), and the next leader must re-propose the block of that QC.",
+      "primaryModules": ["l1/src/consensus-v6.ts", "l1/src/node.ts", "l1/src/node-base.ts", "l1/src/v6-scheduler.ts"]
     },
     {
       "id": "SIGN-001",
@@ -108,6 +155,11 @@
       "id": "SIGN-002",
       "statement": "Signing-journal compaction removes only reservations at or below the durably finalized height and atomically persists retained reservations before reducing in-memory anti-equivocation state; persistence ambiguity fail-stops validator signing.",
       "primaryModules": ["l1/src/storage.ts", "l1/src/node-base.ts"]
+    },
+    {
+      "id": "SIGN-003",
+      "statement": "Protocol-v6 validators durably reserve at most one value per (height, round, step) in signing-journal v2 rows before signing, persist the lock and commit rows in one fsynced append after the prepare QC file, never lower a lock, and may always sign one timeout per round after an earlier prepare or commit; legacy binaries fail closed on v2 rows.",
+      "primaryModules": ["l1/src/storage.ts", "l1/src/consensus-state-store.ts", "l1/src/consensus-v6.ts", "l1/src/node-base.ts"]
     },
     {
       "id": "CHAIN-001",
@@ -121,8 +173,8 @@
     },
     {
       "id": "SUPPLY-001",
-      "statement": "Historical genesis-plus-mining issuance cannot exceed 50M ZYN, and transaction-fee burns never reopen mining headroom.",
-      "primaryModules": ["l1/src/chain.ts", "l1/src/mining.ts", "l1/src/state.ts", "l1/src/state-v2.ts", "l1/src/types.ts"]
+      "statement": "Total issuance is fixed at genesis and can never exceed 50M ZYN: no post-genesis issuance path exists (mining is retired under every protocol version), and transaction-fee burns permanently reduce supply without creating issuance headroom.",
+      "primaryModules": ["l1/src/chain.ts", "l1/src/mining.ts", "l1/src/state.ts", "l1/src/state-v2.ts", "l1/src/tokenomics.ts", "l1/src/types.ts"]
     },
     {
       "id": "SUPPLY-002",
@@ -136,12 +188,12 @@
     },
     {
       "id": "MINING-001",
-      "statement": "Protocol-v5 mining claims bind proof of work to chain identity, exact next height, current finalized tip, miner identity and account nonce, and the deterministic scheduled reward.",
+      "statement": "Mining is retired: every mining_claim transaction is rejected under protocol versions 1, 2, 3, 5 and 6 by transaction validation, mempool admission, block production, block and proposal validation and both the legacy and State-v2 appliers; the former protocol-v5 proof-of-work binding is historical audit context only.",
       "primaryModules": ["l1/src/mining.ts", "l1/src/transaction.ts", "l1/src/chain.ts"]
     },
     {
       "id": "MINING-002",
-      "statement": "At most one mining claim can finalize per block, the reserved mining tracker remains zero-balance and non-spendable, and public mining claims cannot consume an unbounded mempool share.",
+      "statement": "No mining claim can be admitted to the mempool or finalized in any block, the scheduled mining reward is always zero, and the reserved mining tracker remains zero-balance and non-spendable.",
       "primaryModules": ["l1/src/chain.ts", "l1/src/mempool.ts", "l1/src/mining.ts", "l1/src/state.ts", "l1/src/state-v2.ts"]
     },
     {
