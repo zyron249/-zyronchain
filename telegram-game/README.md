@@ -66,6 +66,10 @@ Compose runs the API and the bot as separate containers. The `api` service overr
 The image default command is `scripts/start-web-and-bot.sh`. It starts `python -m zyron_node.bot` in the background and execs `python -m zyron_node` in the foreground, with the image `PYTHONPATH` and the rest of the container environment. On a single Render Free web service, leave Docker Command empty so that entrypoint runs both processes. Free web services still spin down after inactivity, so the bot polls only while the service is awake. A dedicated worker running `python -m zyron_node.bot`, with the web service on `python -m zyron_node`, is still the better split when a worker is available.
 
 
+## Upgrades tab
+
+Players spend off-chain Zyron Points on a three-branch upgrade tree (Energy capacity, Recovery speed, Builder efficiency; 10 levels each, rising costs) through `POST /api/tree/upgrade` (idempotent, 20/min and 120/h per account). The free daily chest now adds one bonus roll with fixed odds shown in the UI (55% +5, 25% +10, 12% +20, 3% +50, 5% builder cosmetic). Node cycles and that bonus share a per-UTC-day limit of 59,808 points, the pre-tree ceiling, so upgrades cannot raise daily issuance. Math and cost tables: `docs/ECONOMY.md`.
+
 ## Reminder DMs
 
 The bot process runs a reminder loop every 90 seconds (`REMINDERS_ENABLED=0` turns it off).

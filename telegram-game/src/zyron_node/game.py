@@ -23,6 +23,16 @@ from zyron_node.tiers import (
 )
 from zyron_node.economy import (
     ABUSE_REFERRAL_BLOCK,
+    COSMETIC_DUPLICATE_POINTS,
+    COSMETICS,
+    COSMETICS_BY_ID,
+    DAILY_PLAY_POINTS_CAP,
+    TREE,
+    TREE_ORDER,
+    chest_odds,
+    chest_outcome_for,
+    module_total,
+    tree_cost,
     MODULE_ORDER,
     MODULES,
     POINTS_NOTICE,
@@ -51,6 +61,12 @@ ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 KEY_RE_SOURCE = r"^[A-Za-z0-9_.:-]{8,80}$"
 TEAM_ACCOUNT_NOTE = "Team account, not ranked"
 CHEST_ID_RE = re.compile(r"^(daily|quest:[a-z0-9_]+|level:[1-9][0-9]?)$")
+DAILY_CAP_MESSAGE = "Today's off-chain point limit is reached. It resets at 00:00 UTC."
+
+
+def _chest_roll() -> int:
+    """Uniform roll in [0, 1000) for the free daily chest bonus. Tests replace this."""
+    return secrets.randbelow(1000)
 
 
 class GameError(Exception):
@@ -99,7 +115,10 @@ def run_cycle(pool, player_id: int, key: str, now: datetime, *, min_interval_ms:
                     )
             if int(player["energy"]) < 1:
                 raise GameError("no_energy", "Energy is empty. It regenerates on server time.", 409)
-            reward = cycle_reward(levels, int(player["streak_count"]))
+            remaining = DAILY_PLAY_POINTS_CAP - play_points_used(player, now)
+            if remaining <= 0:
+                raise GameError("daily_cap", DAILY_CAP_MESSAGE, 409)
+            reward = min(cycle_reward(levels, int(player["streak_count"])), remaining)
             season = active_season(conn)
             season_id = season["id"] if season else None
             before_lifetime = int(player["lifetime_points"])
@@ -118,6 +137,7 @@ def run_cycle(pool, player_id: int, key: str, now: datetime, *, min_interval_ms:
             ).fetchone()
             if updated is None:
                 raise GameError("no_energy", "Energy is empty. It regenerates on server time.", 409)
+            record_play_points(conn, player_id, reward, now)
             player = reload_player(conn, player_id)
             quests, achievements = sync_rewards(conn, player, levels, now, season_id, include_quests=False)
             qualified = qualify_referral(conn, player_id, now, min_cycles, min_age, season_id)
@@ -133,6 +153,7 @@ def run_cycle(pool, player_id: int, key: str, now: datetime, *, min_interval_ms:
                 "questsCompleted": quests,
                 "achievementsUnlocked": achievements,
                 "referralQualified": qualified,
+                "dailyPoints": daily_points_view(player, now),
                 "serverTime": iso(now),
             }
             attach_tier(response, player, before_lifetime)
@@ -189,6 +210,61 @@ def purchase_upgrade(pool, player_id: int, module: str, key: str, now: datetime)
             return response
 
 
+def purchase_tree(pool, player_id: int, branch: str, key: str, now: datetime) -> dict:
+    """Buy one level of an upgrade-tree branch. Burns Zyron Points; never mints them."""
+    require_key(key)
+    if branch not in TREE:
+        raise GameError("bad_upgrade", "Unknown upgrade.", 400)
+    with pool.connection() as conn:
+        with conn.transaction():
+            player = lock_player(conn, player_id)
+            replay = replay_of(conn, player_id, "tree", key)
+            if replay:
+                return replay
+            reject_if_banned(player)
+            levels = load_levels(conn, player_id)
+            # Bank regen earned at the old rate before capacity or recovery changes.
+            player = persist_energy(conn, player, levels, now)
+            spec = TREE[branch]
+            if levels[branch] >= spec.max_level:
+                raise GameError("max_level", f"{spec.title} is already at maximum level.", 409)
+            cost = tree_cost(branch, levels[branch])
+            if int(player["points"]) < cost:
+                raise GameError("insufficient_points", "Not enough Zyron Points for that upgrade.", 409)
+            season = active_season(conn)
+            season_id = season["id"] if season else None
+            before_lifetime = int(player["lifetime_points"])
+            apply_points(conn, player_id, -cost, "upgrade", f"tree:{player_id}:{key}", season_id, now)
+            levels[branch] += 1
+            conn.execute(
+                """
+                INSERT INTO player_upgrades (player_id, module, level) VALUES (%s, %s, %s)
+                ON CONFLICT (player_id, module) DO UPDATE SET level = EXCLUDED.level
+                """,
+                (player_id, branch, levels[branch]),
+            )
+            log_event(conn, player_id, "upgrade_tree", None, {"branch": branch, "level": levels[branch], "spent": cost}, now)
+            player = reload_player(conn, player_id)
+            quests, achievements = sync_rewards(conn, player, levels, now, season_id, include_quests=False)
+            player = reload_player(conn, player_id)
+            response = {
+                "replayed": False,
+                "upgrade": branch,
+                "level": levels[branch],
+                "maxLevel": spec.max_level,
+                "spent": cost,
+                "points": int(player["points"]),
+                "energy": energy_view(player, levels, now),
+                "cycleReward": cycle_reward(levels, int(player["streak_count"])),
+                "questsCompleted": quests,
+                "achievementsUnlocked": achievements,
+                "serverTime": iso(now),
+            }
+            attach_tier(response, player, before_lifetime)
+            store_idempotency(conn, player_id, "tree", key, response, now)
+            return response
+
+
 def claim_streak(pool, player_id: int, now: datetime) -> dict:
     with pool.connection() as conn:
         with conn.transaction():
@@ -225,6 +301,9 @@ def claim_streak(pool, player_id: int, now: datetime) -> dict:
                     """,
                     (new_count, now.date(), longest, player_id),
                 )
+                bonus = roll_daily_bonus(conn, player_id, now, season_id)
+            else:
+                bonus = None
             player = reload_player(conn, player_id)
             quests, achievements = sync_rewards(conn, player, levels, now, season_id, include_quests=False)
             player = reload_player(conn, player_id)
@@ -232,6 +311,7 @@ def claim_streak(pool, player_id: int, now: datetime) -> dict:
                 "replayed": False,
                 "claimed": grant,
                 "gained": gained,
+                "bonus": bonus,
                 "streak": int(player["streak_count"]),
                 "longest": int(player["longest_streak"]),
                 "points": int(player["points"]),
@@ -398,6 +478,25 @@ def upgrades_view(pool, player_id: int, now: datetime) -> dict:
                         "preview": module_preview(levels, module, streak),
                     }
                 )
+            tree = []
+            for branch in TREE_ORDER:
+                spec = TREE[branch]
+                level = levels[branch]
+                nxt = None if level >= spec.max_level else tree_cost(branch, level)
+                tree.append(
+                    {
+                        "id": branch,
+                        "title": spec.title,
+                        "summary": spec.summary,
+                        "effect": spec.effect,
+                        "level": level,
+                        "maxLevel": spec.max_level,
+                        "nextCost": nxt,
+                        "affordable": nxt is not None and int(player["points"]) >= nxt,
+                        "costs": [tree_cost(branch, n) for n in range(spec.max_level)],
+                        "stat": tree_stat(levels, branch, streak),
+                    }
+                )
             return {
                 "points": int(player["points"]),
                 "nodeLevel": node_level(levels),
@@ -406,7 +505,155 @@ def upgrades_view(pool, player_id: int, now: datetime) -> dict:
                 "energyMax": max_energy(levels),
                 "regenSeconds": regen_interval_seconds(levels),
                 "modules": modules,
+                "tree": tree,
+                "dailyPoints": daily_points_view(player, now),
+                "chest": daily_chest_view(conn, player, now),
+                "cosmetics": cosmetics_view(conn, player_id),
             }
+
+
+def tree_stat(levels: dict[str, int], branch: str, streak_count: int) -> dict:
+    """Current and next-level value of the stat a branch changes, computed with the real formulas."""
+    bumped = dict(levels)
+    if bumped[branch] < TREE[branch].max_level:
+        bumped[branch] += 1
+    if branch == "capacity":
+        label, now_value, next_value, unit = "Max energy", max_energy(levels), max_energy(bumped), ""
+    elif branch == "recovery":
+        label, now_value, next_value, unit = "Regen", regen_interval_seconds(levels), regen_interval_seconds(bumped), "s per energy"
+    else:
+        label, now_value, next_value, unit = "Per cycle", cycle_reward(levels, streak_count), cycle_reward(bumped, streak_count), "off-chain pts"
+    return {
+        "label": label,
+        "current": now_value,
+        "next": None if levels[branch] >= TREE[branch].max_level else next_value,
+        "unit": unit,
+    }
+
+
+def play_points_used(player, now: datetime) -> int:
+    if player.get("play_points_day") == now.date():
+        return int(player.get("play_points_today") or 0)
+    return 0
+
+
+def record_play_points(conn, player_id: int, amount: int, now: datetime) -> None:
+    conn.execute(
+        """
+        UPDATE players
+        SET play_points_today = CASE WHEN play_points_day = %s THEN play_points_today ELSE 0 END + %s,
+            play_points_day = %s
+        WHERE id = %s
+        """,
+        (now.date(), int(amount), now.date(), player_id),
+    )
+
+
+def daily_points_view(player, now: datetime) -> dict:
+    used = play_points_used(player, now)
+    return {
+        "used": used,
+        "cap": DAILY_PLAY_POINTS_CAP,
+        "remaining": max(0, DAILY_PLAY_POINTS_CAP - used),
+        "resetsAt": iso(utc_day_bounds(now)[1]),
+    }
+
+
+def owned_cosmetics(conn, player_id: int) -> set[str]:
+    return {
+        row["cosmetic_id"]
+        for row in conn.execute(
+            "SELECT cosmetic_id FROM player_cosmetics WHERE player_id = %s",
+            (player_id,),
+        ).fetchall()
+    }
+
+
+def cosmetics_view(conn, player_id: int) -> list[dict]:
+    owned = owned_cosmetics(conn, player_id)
+    return [{"id": item.id, "title": item.title, "detail": item.detail, "owned": item.id in owned} for item in COSMETICS]
+
+
+def bonus_view(row) -> dict:
+    cosmetic = COSMETICS_BY_ID.get(row["cosmetic_id"]) if row["cosmetic_id"] else None
+    return {
+        "day": row["day"].isoformat(),
+        "outcome": row["outcome"],
+        "points": int(row["points"]),
+        "cosmetic": None if cosmetic is None else {"id": cosmetic.id, "title": cosmetic.title, "detail": cosmetic.detail},
+        "duplicate": bool(row["duplicate"]),
+    }
+
+
+def daily_chest_view(conn, player, now: datetime) -> dict:
+    row = conn.execute(
+        "SELECT * FROM daily_chest_rolls WHERE player_id = %s AND day = %s",
+        (player["id"], now.date()),
+    ).fetchone()
+    return {
+        "odds": chest_odds(),
+        "duplicatePoints": COSMETIC_DUPLICATE_POINTS,
+        "openedToday": player["streak_last_date"] == now.date(),
+        "today": None if row is None else bonus_view(row),
+        "resetsAt": iso(utc_day_bounds(now)[1]),
+    }
+
+
+def roll_daily_bonus(conn, player_id: int, now: datetime, season_id: int | None) -> dict:
+    """Roll the free daily chest bonus once per operator per UTC day. Never re-rolled, never sold."""
+    day = now.date()
+    existing = conn.execute(
+        "SELECT * FROM daily_chest_rolls WHERE player_id = %s AND day = %s",
+        (player_id, day),
+    ).fetchone()
+    if existing is not None:
+        return bonus_view(existing)
+    roll = int(_chest_roll())
+    outcome = chest_outcome_for(roll)
+    points = outcome.points
+    cosmetic_id = None
+    duplicate = False
+    if outcome.cosmetic:
+        owned = owned_cosmetics(conn, player_id)
+        missing = [item for item in COSMETICS if item.id not in owned]
+        if missing:
+            cosmetic_id = missing[roll % len(missing)].id
+        else:
+            duplicate = True
+            points = COSMETIC_DUPLICATE_POINTS
+    player = reload_player(conn, player_id)
+    paid = min(points, max(0, DAILY_PLAY_POINTS_CAP - play_points_used(player, now)))
+    if paid > 0:
+        if apply_points(conn, player_id, paid, "chest_bonus", f"chestbonus:{player_id}:{day.isoformat()}", season_id, now):
+            record_play_points(conn, player_id, paid, now)
+        else:
+            paid = 0
+    if cosmetic_id:
+        conn.execute(
+            """
+            INSERT INTO player_cosmetics (player_id, cosmetic_id, source, acquired_at)
+            VALUES (%s, %s, 'daily_chest', %s)
+            ON CONFLICT DO NOTHING
+            """,
+            (player_id, cosmetic_id, now),
+        )
+    row = conn.execute(
+        """
+        INSERT INTO daily_chest_rolls (player_id, day, roll, outcome, points, cosmetic_id, duplicate, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (player_id, day, roll, outcome.id, paid, cosmetic_id, duplicate, now),
+    ).fetchone()
+    log_event(
+        conn,
+        player_id,
+        "chest_bonus",
+        paid if paid > 0 else None,
+        {"outcome": outcome.id, "cosmetic": cosmetic_id, "duplicate": duplicate},
+        now,
+    )
+    return bonus_view(row)
 
 
 def quests_view(pool, player_id: int, now: datetime, *, claim: bool) -> dict:
@@ -1136,7 +1383,9 @@ def open_daily_chest(pool, player_id: int, now: datetime) -> dict:
     result = claim_streak(pool, player_id, now)
     points, lifetime = balances(pool, player_id)
     replayed = bool(result["replayed"])
-    gained = 0 if replayed else int(result["gained"])
+    bonus = result.get("bonus")
+    bonus_points = int(bonus["points"]) if bonus else 0
+    gained = 0 if replayed else int(result["gained"]) + bonus_points
     if gained > 0:
         with pool.connection() as conn:
             with conn.transaction():
@@ -1149,6 +1398,8 @@ def open_daily_chest(pool, player_id: int, now: datetime) -> dict:
         "replayed": replayed,
         "opened": True,
         "gained": gained,
+        "streakPoints": 0 if replayed else int(result["gained"]),
+        "bonus": bonus,
         "points": points,
         "lifetimePoints": lifetime,
         "achievementsUnlocked": [] if replayed else list(result.get("achievementsUnlocked") or []),
@@ -1348,7 +1599,7 @@ def assemble_chests(conn, player, levels: dict[str, int], now: datetime) -> dict
         "daily",
         "daily",
         "Daily supply",
-        f"Login streak · day {streak_day}",
+        f"Login streak · day {streak_day} · plus a free bonus roll",
         daily_reward,
         ready=not claimed_today,
         opened=claimed_today,
@@ -1396,7 +1647,7 @@ def assemble_chests(conn, player, levels: dict[str, int], now: datetime) -> dict
             tag="Level",
         )
         (opened if card["opened"] else ready).append(card)
-    total = sum(levels.values())
+    total = module_total(levels)
     max_total = sum(spec.max_level for spec in MODULES.values())
     if total < max_total:
         into = total % 4
@@ -1653,6 +1904,8 @@ def build_profile(conn, player, levels: dict[str, int], now: datetime, bot_usern
             "banned": bool(player["banned"]),
             "teamAccount": team,
             "teamNote": TEAM_ACCOUNT_NOTE if team else None,
+            "cosmetics": sorted(owned_cosmetics(conn, int(player["id"]))),
+            "dailyPoints": daily_points_view(player, now),
             "rank": ranks,
             **tier_view(int(player["lifetime_points"])),
             "referral": {
