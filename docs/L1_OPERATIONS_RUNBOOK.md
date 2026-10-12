@@ -38,6 +38,8 @@ node dist/src/cli.js node --genesis genesis.json --data ./data \
 
 Repeat `--p2p-consensus-peer` for every peer that may deliver native consensus messages (each other validator and any block relay you operate). Without it the node accepts native consensus messages from any peer that knows the public chain identity and logs a startup warning; with it, consensus requests from other peers are refused before any validation work, while transaction gossip stays open.
 
+Accepted risk (owner decision pending, F-12): the allowlist stays opt-in by default. Without it, any peer that knows the public chain identity can make a validator spend block-validation work on native consensus requests (bounded by the per-message size limits and cheap checks first). Validators on a public network should always set `--p2p-consensus-peer`.
+
 Provision the remote-signer token out of band as a regular `0600` secret file, rotate it under the signer provider's audited procedure, and never place it in command-line values, environment variables, logs, images or repository content. Use multiple bootstrap peers sourced from independent operators/failure domains. Do not invent failure-domain labels to satisfy diversity selection.
 
 ## 3. Required health telemetry

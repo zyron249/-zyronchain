@@ -40,6 +40,32 @@ const P2P_STATE_TIMEOUT_MS = 8_000;
 const P2P_STATE_RETRIES = 2;
 const P2P_STATE_MIN_REQUEST_INTERVAL_MS = 50;
 export const MAX_STATE_SYNC_PEERS = 8;
+/**
+ * F-09(b) residual: cumulative bounds for one state-sync attempt against one
+ * peer. A peer can keep serving self-consistent data that only fails the final
+ * anchored validation; these bound the bytes and time it can make the client
+ * spend. An honest transfer at the protocol maxima (2,000,000 records,
+ * 1,000,000 key preimages) stays well below both.
+ */
+export const MAX_STATE_SYNC_TOTAL_BYTES = 4 * 1024 * 1024 * 1024;
+export const MAX_STATE_SYNC_DURATION_MS = 6 * 60 * 60 * 1000;
+
+export interface StateSyncLimits {
+  /** Cumulative response bytes for one attempt (default MAX_STATE_SYNC_TOTAL_BYTES). */
+  maxTotalBytes?: number;
+  /** Overall wall-clock time for one attempt (default MAX_STATE_SYNC_DURATION_MS). */
+  maxDurationMs?: number;
+}
+
+function resolveStateSyncLimits(limits: StateSyncLimits = {}): Required<StateSyncLimits> {
+  const maxTotalBytes = limits.maxTotalBytes ?? MAX_STATE_SYNC_TOTAL_BYTES;
+  const maxDurationMs = limits.maxDurationMs ?? MAX_STATE_SYNC_DURATION_MS;
+  if (!Number.isSafeInteger(maxTotalBytes) || maxTotalBytes < 1 || maxTotalBytes > MAX_STATE_SYNC_TOTAL_BYTES ||
+      !Number.isSafeInteger(maxDurationMs) || maxDurationMs < 1 || maxDurationMs > MAX_STATE_SYNC_DURATION_MS) {
+    throw new Error("Invalid state sync limits");
+  }
+  return { maxTotalBytes, maxDurationMs };
+}
 
 export type StateRequestKind = "manifest" | "records" | "keys";
 
@@ -171,9 +197,10 @@ export async function fetchTrustedPortableStateFromPeer(
   target: Parameters<Libp2p["dial"]>[0],
   identity: NodeIdentity,
   genesis: GenesisConfig,
-  anchor: TrustedSnapshotAnchor
+  anchor: TrustedSnapshotAnchor,
+  limits?: StateSyncLimits
 ): Promise<TrustedPortableStateTransfer> {
-  return fetchTrustedPortableState(node, target, identity, genesis, anchor);
+  return fetchTrustedPortableState(node, target, identity, genesis, anchor, undefined, limits);
 }
 
 /** Same trust model as the in-memory fetch, with crash-safe untrusted chunk staging. */
@@ -183,10 +210,11 @@ export async function fetchTrustedPortableStateResumableFromPeer(
   identity: NodeIdentity,
   genesis: GenesisConfig,
   anchor: TrustedSnapshotAnchor,
-  resumeDir: string
+  resumeDir: string,
+  limits?: StateSyncLimits
 ): Promise<TrustedPortableStateTransfer> {
   if (resumeDir.length < 1) throw new Error("Portable state resume directory is required");
-  return fetchTrustedPortableState(node, target, identity, genesis, anchor, resumeDir);
+  return fetchTrustedPortableState(node, target, identity, genesis, anchor, resumeDir, limits);
 }
 
 /**
@@ -201,18 +229,19 @@ export async function fetchTrustedPortableStateFromAnyPeer(
   identity: NodeIdentity,
   genesis: GenesisConfig,
   anchor: TrustedSnapshotAnchor,
-  resumeDir: string
+  resumeDir: string,
+  limits?: StateSyncLimits
 ): Promise<TrustedPortableStateTransfer> {
   if (targets.length < 1 || targets.length > MAX_STATE_SYNC_PEERS) throw new Error("Invalid portable state peer count");
   let lastError: unknown;
   for (const target of targets) {
     try {
-      return await fetchTrustedPortableState(node, target, identity, genesis, anchor, resumeDir);
+      return await fetchTrustedPortableState(node, target, identity, genesis, anchor, resumeDir, limits);
     } catch (error) {
       lastError = error;
       if (!(error instanceof PortableStateAssemblyError)) continue;
       try {
-        return await fetchTrustedPortableState(node, target, identity, genesis, anchor, resumeDir);
+        return await fetchTrustedPortableState(node, target, identity, genesis, anchor, resumeDir, limits);
       } catch (retryError) {
         lastError = retryError;
       }
@@ -227,9 +256,13 @@ async function fetchTrustedPortableState(
   identity: NodeIdentity,
   genesis: GenesisConfig,
   anchor: TrustedSnapshotAnchor,
-  resumeDir?: string
+  resumeDir?: string,
+  limits?: StateSyncLimits
 ): Promise<TrustedPortableStateTransfer> {
   assertAnchor(anchor);
+  const { maxTotalBytes, maxDurationMs } = resolveStateSyncLimits(limits);
+  const deadline = Date.now() + maxDurationMs;
+  let receivedBytes = 0;
   const expectedChain = new ZyronChain(genesis);
   const expected = { chainId: genesis.chainId, genesisHash: expectedChain.genesisHash };
   const local = localIdentity(identity, expected);
@@ -239,6 +272,7 @@ async function fetchTrustedPortableState(
   const request = async (kind: StateRequestKind, start: number, limit: number): Promise<{ value: unknown; remotePeer: PeerId; release: () => void }> => {
     const delay = P2P_STATE_MIN_REQUEST_INTERVAL_MS - (Date.now() - lastRequestAt);
     if (delay > 0) await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    if (Date.now() >= deadline) throw new Error("State sync time limit exceeded");
     lastRequestAt = Date.now();
     let lastError: unknown;
     for (let attempt = 0; attempt <= P2P_STATE_RETRIES; attempt += 1) {
@@ -262,12 +296,27 @@ async function fetchTrustedPortableState(
           P2P_STATE_TIMEOUT_MS
         );
         releaseFrame = retained.release;
+        receivedBytes += retained.bytes;
+        if (receivedBytes > maxTotalBytes) {
+          retained.release();
+          releaseFrame = undefined;
+          stream.abort(new Error("State sync byte budget exceeded"));
+          throw new StateSyncLimitError("State sync byte budget exceeded");
+        }
+        if (Date.now() >= deadline) {
+          retained.release();
+          releaseFrame = undefined;
+          stream.abort(new Error("State sync time limit exceeded"));
+          throw new StateSyncLimitError("State sync time limit exceeded");
+        }
         await stream.close({ signal: AbortSignal.timeout(P2P_STATE_TIMEOUT_MS) });
         const reply = { value: retained.value, remotePeer: connection.remotePeer, release: retained.release };
         releaseFrame = undefined;
         return reply;
       } catch (error) {
         releaseFrame?.();
+        // A spent budget is final for this attempt; never retry past it.
+        if (error instanceof StateSyncLimitError) throw error;
         lastError = error;
         stream?.abort(error instanceof Error ? error : new Error("State transfer failed"));
       }
@@ -341,6 +390,8 @@ async function fetchTrustedPortableState(
 }
 
 class PortableStateAssemblyError extends Error {}
+
+class StateSyncLimitError extends Error {}
 
 /**
  * F-09: the record/key counts in a peer manifest are not authenticated by the
@@ -543,14 +594,20 @@ function parseManifest(
   }
   const identity = validateP2PChainIdentity(value.identity, expected, remotePeer);
   if (!value.tip || typeof value.tip !== "object" || Array.isArray(value.tip)) throw new Error("Invalid state manifest tip");
-  validateBlockShape(value.tip);
-  const tip = value.tip as unknown as Block;
-  // The header must hash to the anchored tip hash, which binds height and
-  // state root to the operator's anchor before anything is staged (F-09).
-  if (tip.hash !== anchor.tipHash || blockHash(tip.header) !== anchor.tipHash ||
-      tip.header.height !== Number(value.height) || tip.header.stateRoot !== value.stateRoot) {
+  const candidate = value.tip as Record<string, unknown>;
+  const header = candidate.header;
+  if (!header || typeof header !== "object" || Array.isArray(header)) throw new Error("Invalid state manifest tip");
+  const headerRecord = header as Record<string, unknown>;
+  // Cheap checks first (round 3): the header must hash to the anchored tip hash,
+  // which binds height and state root to the operator's anchor before anything
+  // is staged (F-09). Only a tip that matches the anchor gets the full block
+  // validation, which verifies every transaction signature.
+  if (candidate.hash !== anchor.tipHash || blockHash(header as Block["header"]) !== anchor.tipHash ||
+      headerRecord.height !== Number(value.height) || headerRecord.stateRoot !== value.stateRoot) {
     throw new Error("State manifest tip does not match anchored metadata");
   }
+  validateBlockShape(value.tip);
+  const tip = value.tip as unknown as Block;
   return {
     version: 1, identity, tipHash: value.tipHash, snapshotSha256: value.snapshotSha256,
     height: Number(value.height), stateRoot: value.stateRoot, recordCount: Number(value.recordCount),
