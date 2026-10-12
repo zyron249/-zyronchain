@@ -1,6 +1,7 @@
 import { canonicalJson, compareCanonicalStrings, sha256Hex } from "./codec.js";
 import { assertMiningNotRetired, MINING_TRACKER_ADDRESS } from "./mining.js";
 import { ACTIVITY_ORDER_MESSAGE, assertActivitySettlementWithinCap } from "./activity.js";
+import { assertActivitySettlementAuthorized, type ActivityOracleSet } from "./activity-oracle.js";
 import { assertAllocationLockOutflow, type AllocationLockContext } from "./allocation-locks.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import { assertAddress, assertExactKeys, assertPlainRecord } from "./transaction.js";
@@ -118,12 +119,18 @@ export class LedgerState {
    * `locks` carries the genesis allocation locks evaluated at the including
    * block's timestamp; chain paths always pass it (undefined only when the
    * genesis declares no locks). See allocation-locks.ts.
+   * `oracles` carries the genesis activity-oracle keys and optional m-of-n
+   * threshold; chain paths always pass it (activity-oracle.ts). Direct callers
+   * that omit it get the historical applier, which never checked the signer.
    */
-  apply(tx: Transaction, activityPool: Address, locks?: AllocationLockContext): void {
+  apply(tx: Transaction, activityPool: Address, locks?: AllocationLockContext, oracles?: ActivityOracleSet): void {
     if (tx.kind === "transfer") {
       assertNoActivityPoolInflow(tx.receiver, activityPool);
       this.applyTransfer(tx, locks);
-    } else if (tx.kind === "activity_settlement") this.applyActivity(tx, activityPool, locks);
+    } else if (tx.kind === "activity_settlement") {
+      if (oracles) assertActivitySettlementAuthorized(tx, oracles);
+      this.applyActivity(tx, activityPool, locks);
+    }
     else if (tx.kind === "mining_claim") this.applyMining(tx);
     else if (tx.kind === "validator_update") this.applyValidatorUpdate(tx);
     else this.applyProtocolUpgrade(tx);
