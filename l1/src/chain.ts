@@ -72,6 +72,7 @@ import type {
   ValidatorSetUpdateTx
 } from "./types.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
+import { assertFixedSupplyLaunchProfile, FIXED_SUPPLY_LAUNCH_PROFILE } from "./tokenomics.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
 export const MAX_BLOCK_TRANSACTION_BYTES = 1_500_000;
@@ -963,8 +964,14 @@ function validateGenesis(genesis: GenesisConfig): void {
   assertExactKeys(genesis, [
     "chainId", "timestampMs", "validators", "activityOracles", "activityPool", "allocations",
     // Optional: on-chain allocation locks (docs/ALLOCATION_LOCKS.md).
-    ...(Object.prototype.hasOwnProperty.call(genesis, "allocationLocks") ? ["allocationLocks"] : [])
+    ...(Object.prototype.hasOwnProperty.call(genesis, "allocationLocks") ? ["allocationLocks"] : []),
+    // Optional: launch profile (docs/GENESIS_CONFIG_BINDING.md).
+    ...(Object.prototype.hasOwnProperty.call(genesis, "launchProfile") ? ["launchProfile"] : [])
   ], "genesis");
+  const hasLaunchProfile = Object.prototype.hasOwnProperty.call(genesis, "launchProfile");
+  if (hasLaunchProfile && genesis.launchProfile !== FIXED_SUPPLY_LAUNCH_PROFILE) {
+    throw new Error("Unsupported genesis launch profile");
+  }
   if (typeof genesis.chainId !== "string" || !/^[a-z0-9-]{3,64}$/.test(genesis.chainId)) {
     throw new Error("Invalid chain ID");
   }
@@ -1021,6 +1028,9 @@ function validateGenesis(genesis: GenesisConfig): void {
     allocated.add(allocation.address);
   }
   validateAllocationLocks(genesis);
+  // Under the fixed-supply launch profile the launch rules are consensus rules:
+  // allocationLocks present, exactly 50M ZYN, 5M / 20M / 20M / 5M roles.
+  if (hasLaunchProfile) assertFixedSupplyLaunchProfile(genesis);
 }
 
 function stateV2KeysForTransaction(tx: Transaction): string[] {

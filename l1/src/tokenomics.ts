@@ -11,6 +11,9 @@ export const PUBLIC_DISTRIBUTION_ATOMS = PUBLIC_DISTRIBUTION_ZYN * ATOMS_PER_ZYN
 export const LIQUIDITY_RESERVE_ATOMS = LIQUIDITY_RESERVE_ZYN * ATOMS_PER_ZYN;
 export const ECOSYSTEM_RESERVE_ATOMS = ECOSYSTEM_RESERVE_ZYN * ATOMS_PER_ZYN;
 
+/** Genesis `launchProfile` value that makes the fixed-supply rules consensus rules. */
+export const FIXED_SUPPLY_LAUNCH_PROFILE = "fixed-supply-v1";
+
 export const FOUNDER_CLIFF_MONTHS = 12;
 export const FOUNDER_LINEAR_VESTING_MONTHS = 36;
 
@@ -105,6 +108,39 @@ export function assertFixedSupplyGenesis(genesis: GenesisConfig, addresses: Fixe
       record.founderVesting !== addresses.founder || record.permanentLiquidity !== addresses.liquidityReserve) {
     throw new Error("Fixed-supply allocationLocks must name exactly the founder (founderVesting) and permanent-liquidity (permanentLiquidity) allocations");
   }
+}
+
+/**
+ * Consensus check for a genesis that declares `launchProfile: "fixed-supply-v1"`
+ * (docs/GENESIS_CONFIG_BINDING.md). The four role addresses are derived from
+ * the genesis itself: founder = `allocationLocks.founderVesting`, permanent
+ * liquidity = `allocationLocks.permanentLiquidity`, ecosystem/community =
+ * `activityPool`, public distribution = the one remaining allocation. The
+ * genesis must then pass `assertFixedSupplyGenesis` (exactly four accounts,
+ * 5M / 20M / 20M / 5M, exactly 50,000,000 ZYN, locks on the founder and the
+ * permanent-liquidity allocation).
+ */
+export function assertFixedSupplyLaunchProfile(genesis: GenesisConfig): void {
+  const locks: unknown = (genesis as { allocationLocks?: unknown }).allocationLocks;
+  if (locks === null || typeof locks !== "object" || Array.isArray(locks)) {
+    throw new Error("Fixed-supply genesis must declare allocationLocks for the founder and permanent-liquidity allocations");
+  }
+  const { founderVesting, permanentLiquidity } = locks as Record<string, unknown>;
+  if (typeof founderVesting !== "string" || typeof permanentLiquidity !== "string") {
+    throw new Error("Fixed-supply allocationLocks must name exactly the founder (founderVesting) and permanent-liquidity (permanentLiquidity) allocations");
+  }
+  if (!Array.isArray(genesis.allocations)) throw new Error("Fixed-supply genesis requires exactly four disclosed allocation accounts");
+  const roleAddresses = new Set<string>([founderVesting, permanentLiquidity, genesis.activityPool]);
+  const remaining = genesis.allocations.filter((allocation) => !roleAddresses.has(allocation.address));
+  if (roleAddresses.size !== 3 || remaining.length !== 1 || genesis.allocations.length !== 4) {
+    throw new Error("Fixed-supply genesis requires exactly four disclosed allocation accounts");
+  }
+  assertFixedSupplyGenesis(genesis, {
+    founder: founderVesting as Address,
+    publicDistribution: remaining[0]!.address,
+    liquidityReserve: permanentLiquidity as Address,
+    ecosystemReserve: genesis.activityPool
+  });
 }
 
 export function fixedSupplyPlanAtoms(): Readonly<{
