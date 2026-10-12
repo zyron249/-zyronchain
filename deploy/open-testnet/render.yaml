@@ -1,0 +1,21 @@
+# ZyronChain open TESTNET (tokens have no value) on a Render free web service.
+# Use as a Blueprint with path deploy/open-testnet/render.yaml. Free instances
+# have no persistent disk and sleep when idle, so every cold start creates a
+# NEW test genesis (new genesis hash). Clients must treat a genesis-hash change
+# as a network reset. Not a mainnet profile; never put mainnet keys here.
+services:
+  - type: web
+    name: zyron-open-testnet
+    runtime: node
+    plan: free
+    region: ohio
+    branch: main
+    autoDeploy: false
+    buildCommand: cd l1 && npm ci && npm run build
+    startCommand: cd l1 && node scripts/open-testnet.mjs run --dir /tmp/zyron-open-testnet --host 0.0.0.0 --init-if-missing
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: ZYRON_TESTNET_CHAIN_ID
+        value: zyron-open-testnet-render-1
