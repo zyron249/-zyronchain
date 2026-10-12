@@ -844,6 +844,25 @@ function buildEmptyHashes(): string[] {
   return hashes;
 }
 
+/**
+ * Position-independent self-consistency of one portable node record, used to
+ * reject untrusted state-sync chunks early (F-09(b)). A leaf must commit to
+ * its own value; a branch with two children must hash to them. A leaf's node
+ * hash (compressed to its depth) and a branch with an empty child depend on
+ * tree position and are checked only by the final root-anchored validation.
+ */
+export function assertStateV2NodeRecordSelfConsistent(record: StateV2NodeRecord): void {
+  if (record.kind === "leaf") {
+    if (hashWithDomain(VALUE_DOMAIN, Buffer.from(record.valueJson, "utf8")) !== record.valueHash) {
+      throw new Error("Portable State v2 leaf value hash mismatch");
+    }
+    return;
+  }
+  if (record.leftHash !== null && record.rightHash !== null && branchHash(record.leftHash, record.rightHash) !== record.hash) {
+    throw new Error("Portable State v2 branch hash mismatch");
+  }
+}
+
 function leafHash(keyHash: string, valueHash: string): string {
   return hashWithDomain(LEAF_DOMAIN, Buffer.from(keyHash, "hex"), Buffer.from(valueHash, "hex"));
 }
