@@ -58,6 +58,7 @@
     "l1/src/types.ts",
     "l1/src/v6-scheduler.ts",
     "l1/src/validator-signer.ts",
+    "l1/src/remote-signer-service.ts",
     "l1/scripts/mine.mjs"
   ],
   "securitySpecifications": [
@@ -79,6 +80,7 @@
     "docs/L1_CI_EVIDENCE.md",
     "docs/L1_KEY_ROTATION_REHEARSAL.md",
     "docs/SIGNING_JOURNAL_COMPACTION.md",
+    "docs/security/REMOTE_SIGNER_V6_JOURNAL.md",
     "docs/L1_EXTERNAL_AUDIT_PACKAGE.md",
     "docs/L1_PRIVATE_TESTNET_PREFLIGHT.md",
     "docs/L1_MAINTAINER_SUCCESSION.md",
@@ -152,7 +154,7 @@
     {
       "id": "SIGN-001",
       "statement": "Validator signing reserves durable anti-equivocation state before local or remote signing output is requested.",
-      "primaryModules": ["l1/src/storage.ts", "l1/src/node.ts", "l1/src/node-base.ts", "l1/src/validator-signer.ts"]
+      "primaryModules": ["l1/src/storage.ts", "l1/src/node.ts", "l1/src/node-base.ts", "l1/src/validator-signer.ts", "l1/src/remote-signer-service.ts"]
     },
     {
       "id": "SIGN-002",
