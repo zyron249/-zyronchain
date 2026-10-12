@@ -133,3 +133,17 @@ Lighthouse 12 removed the PWA category, so installability is checked with Chrome
 2. After changing a library version: `node build-vendor.mjs` (commit the bundle + `VENDOR.json`).
 3. After any change under `website/app/`: `node stamp-app.mjs` (rewrites the SRI hashes and the SW asset list and version).
 4. Run `node test-core.mjs --require-l1` and `node test-browser.mjs`. CI runs `--check` for both scripts.
+
+## ZYRON NODE wallet link (testnet)
+The ZYRON NODE Mini App can ask this wallet to prove that a player holds a testnet address.
+- The Mini App opens `https://zyronchain.com/app/#link=<base64url(message)>`. The hash never reaches a server; the app
+  drops it from the address bar after reading it.
+- The wallet signs **only** the exact server template (`parseLinkMessage`): title with `TESTNET`, Telegram user id,
+  network `zyron-wallet-testnet-1`, a 32-hex nonce, issue and expiry times (max 30 min), and a fixed "not a transaction"
+  notice. Anything else, including an expired request, is refused before anything is shown as signable.
+- After unlock, the link screen shows the address, network, expiry and the exact text; signing needs a deliberate checkbox.
+- Signature: l1 `signCanonical` over `canonicalJson({ domain: "zyronchain/game/wallet-link/v1", payload: { message } })`
+  (secp256k1, SHA-256 prehash, compact, low-S), a domain that can never be confused with a transaction.
+- Output: a proof code `zyronlink1.<nonce>.<publicKey64>.<signature64>` to copy back into ZYRON NODE. Telegram's
+  `startapp` deep link holds at most 64 characters, so the proof cannot ride a link back; the "Back to Telegram" link is
+  the fixed `https://t.me/ZyronNodeBot`. The app still makes no network requests (CSP `connect-src 'none'`).

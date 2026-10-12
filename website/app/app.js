@@ -57,7 +57,8 @@
     meterFair: 'Strength: acceptable (about {bits} bits).',
     meterStrong: 'Strength: strong (about {bits} bits).',
     localOffline: 'Local wallet · Offline ready',
-    localOnly: 'Local wallet'
+    localOnly: 'Local wallet',
+    msgLinkWaiting: 'ZYRON NODE asked to connect this wallet (testnet). Unlock to review the exact text before anything is signed.'
   };
   for (const element of $$('[data-i18n]')) {
     const key = element.dataset.i18n;
@@ -86,7 +87,8 @@
     wordTimer: 0,
     clipboardTimer: 0,
     installPrompt: null,
-    rejectedVault: false
+    rejectedVault: false,
+    linkRequest: null // ZYRON NODE wallet link request from the URL hash (public text only)
   };
 
   // ---------------- IndexedDB (encrypted vault only) ----------------
@@ -230,6 +232,8 @@
     clearPending();
     state.unsigned = null;
     state.lastTx = null;
+    $('[data-link-proof]').textContent = '';
+    $('[data-link-out]').hidden = true;
     $('[data-tx-out]').hidden = true;
     $('[data-tx-json]').textContent = '';
     $('[data-review-rows]').textContent = '';
@@ -287,6 +291,7 @@
 
   // ---------------- home ----------------
   function showHome() {
+    if (state.linkRequest) return showLink();
     const address = state.account.address;
     $('[data-home-address]').textContent = core.groupAddress(core.toChecksumAddress(address));
     $('[data-home-raw]').textContent = address;
@@ -606,6 +611,66 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
 
+  // ---------------- ZYRON NODE wallet link: exact text -> deliberate approval -> local signature -> copy proof ----------------
+  function showLink() {
+    const request = state.linkRequest;
+    try {
+      core.parseLinkMessage(request.message);
+    } catch (error) {
+      state.linkRequest = null;
+      setMessage('[data-copy-result]', errorText(error), 'bad');
+      return showHome();
+    }
+    $('[data-link-address]').textContent = state.account.address;
+    $('[data-link-network]').textContent = request.network + ' (testnet)';
+    $('[data-link-expires]').textContent = request.expires;
+    $('[data-link-message]').textContent = request.message;
+    $('[data-link-ack]').checked = false;
+    $('[data-link-sign]').disabled = true;
+    $('[data-link-confirm-box]').hidden = false;
+    $('[data-link-out]').hidden = true;
+    setMessage('[data-link-error]', '', '');
+    show('link');
+    touch();
+  }
+  function leaveLink() {
+    state.linkRequest = null;
+    $('[data-link-proof]').textContent = '';
+    $('[data-link-out]').hidden = true;
+    if (state.account) showHome(); else lock();
+  }
+  $('[data-link-ack]').addEventListener('change', (event) => { $('[data-link-sign]').disabled = !event.target.checked; });
+  $('[data-link-sign]').addEventListener('click', () => {
+    if (!state.account) return lock();
+    if (!state.linkRequest || !$('[data-link-ack]').checked) return;
+    try {
+      const signed = core.signLinkProof(state.linkRequest, state.account);
+      $('[data-link-proof]').textContent = signed.proof;
+      $('[data-link-confirm-box]').hidden = true;
+      $('[data-link-out]').hidden = false;
+      setMessage('[data-link-copy-result]', '', '');
+    } catch (error) {
+      setMessage('[data-link-error]', errorText(error), 'bad');
+    }
+  });
+  $('[data-link-cancel]').addEventListener('click', leaveLink);
+  $('[data-link-done]').addEventListener('click', leaveLink);
+  $('[data-link-copy]').addEventListener('click', async () => {
+    const proof = $('[data-link-proof]').textContent;
+    if (proof) setMessage('[data-link-copy-result]', (await copyText(proof)) ? t('msgCopied') : t('msgCopyFailed'), '');
+  });
+  function readLinkRequest() {
+    if (!/^#link=/.test(window.location.hash)) return;
+    try {
+      state.linkRequest = core.parseLinkHash(window.location.hash);
+    } catch (error) {
+      state.linkRequest = null;
+      setMessage('[data-unlock-result]', errorText(error), 'bad');
+    }
+    // The request is public text; drop it from the address bar so a reload does not repeat it.
+    history.replaceState(null, '', window.location.pathname);
+  }
+
   // ---------------- converter ----------------
   $('[data-conv-zyn]').addEventListener('input', () => {
     try { const atoms = core.zynToAtoms($('[data-conv-zyn]').value); $('[data-conv-atoms]').value = String(atoms); setMessage('[data-conv-result]', '1 ZYN = 100,000,000 atoms', ''); }
@@ -699,7 +764,7 @@
         registration.update().catch(() => {});
       });
       $('[data-update-now]').addEventListener('click', () => {
-        if (state.pending || state.unsigned || state.lastTx) { $('[data-update-hint]').hidden = false; return; }
+        if (state.pending || state.unsigned || state.lastTx || state.linkRequest) { $('[data-update-hint]').hidden = false; return; }
         if (!registration.waiting) return;
         updateRequested = true;
         $('[data-update-now]').disabled = true;
@@ -759,7 +824,9 @@
       $('[data-rejected-delete]').disabled = false;
       return;
     }
-    lock();
+    readLinkRequest();
+    const linkError = $('[data-unlock-result]').textContent;
+    lock(state.linkRequest ? t('msgLinkWaiting') : linkError);
   }
   start();
 })();

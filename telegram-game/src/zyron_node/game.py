@@ -366,7 +366,7 @@ def link_wallet(pool, player_id: int, address: str, key: str, now: datetime) -> 
                 except UniqueViolation as exc:
                     raise GameError("address_taken", "That address is already linked to another operator.", 409) from exc
             conn.execute(
-                "UPDATE players SET wallet_address = %s, wallet_linked_at = %s WHERE id = %s",
+                "UPDATE players SET wallet_address = %s, wallet_linked_at = %s, wallet_verified_at = NULL WHERE id = %s",
                 (address, now, player_id),
             )
             conn.execute(
@@ -409,7 +409,7 @@ def unlink_wallet(pool, player_id: int, key: str, now: datetime) -> dict:
                 return response
             enforce_wallet_churn(conn, player_id, now)
             conn.execute(
-                "UPDATE players SET wallet_address = NULL, wallet_linked_at = NULL WHERE id = %s",
+                "UPDATE players SET wallet_address = NULL, wallet_linked_at = NULL, wallet_verified_at = NULL WHERE id = %s",
                 (player_id,),
             )
             conn.execute(
@@ -1121,7 +1121,7 @@ def release_wallet_claim(pool, address: str, actor: str, now: datetime) -> dict:
     with pool.connection() as conn:
         with conn.transaction():
             conn.execute("DELETE FROM wallet_claims WHERE address = %s", (address,))
-            conn.execute("UPDATE players SET wallet_address = NULL, wallet_linked_at = NULL WHERE wallet_address = %s", (address,))
+            conn.execute("UPDATE players SET wallet_address = NULL, wallet_linked_at = NULL, wallet_verified_at = NULL WHERE wallet_address = %s", (address,))
             audit(conn, actor, "wallet.release", {"address": address}, now)
             return {"address": address, "released": True}
 
@@ -1901,6 +1901,7 @@ def build_profile(conn, player, levels: dict[str, int], now: datetime, bot_usern
                 "calendar": list(STREAK_CALENDAR),
             },
             "walletAddress": player["wallet_address"],
+            "walletVerified": bool(player["wallet_address"] and player.get("wallet_verified_at")),
             "banned": bool(player["banned"]),
             "teamAccount": team,
             "teamNote": TEAM_ACCOUNT_NOTE if team else None,
