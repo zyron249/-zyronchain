@@ -64,7 +64,7 @@ The current validator set is run by the project from one host, so it is **not** 
 
 1. Run `npm run testnet:open:smoke` on your Linux/macOS host to confirm your environment.
 2. Generate a validator key with `node dist/src/cli.js keygen` and share **only** the public key and address (open a GitHub issue titled `Open testnet validator: <name>`).
-3. The existing validators add you through the on-chain validator-update governance flow (`propose-validators` / approvals, activation at least the minimum update delay ahead). Your node then syncs from a published peer URL and starts signing at the activation height.
+3. The existing validators add you through the on-chain validator-update governance flow (`validator-proposal`, `validator-approve`, `validator-submit`; activation at least the minimum update delay ahead). Your node then syncs from a published peer URL and starts signing at the activation height.
 4. Keep your key and signing journal on durable local storage; never run two copies of one validator key.
 
 Never send a private key, password file or signer token to anyone, including project maintainers.
