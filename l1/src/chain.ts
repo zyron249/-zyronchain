@@ -21,6 +21,7 @@ import {
   miningRewardAtoms as scheduledMiningRewardAtoms,
   miningWorkHash
 } from "./mining.js";
+import { merkleRoot } from "./merkle.js";
 import { assertNoActivityPoolInflow, LedgerState, type LedgerSnapshot } from "./state.js";
 import {
   allocationLockContext,
@@ -147,6 +148,22 @@ export class ZyronChain {
     if (snapshot.tip.header.chainId !== snapshot.chainId || snapshot.tip.header.height !== snapshot.height ||
         snapshot.tip.hash !== anchor.tipHash || blockHash(snapshot.tip.header) !== snapshot.tip.hash) {
       throw new Error("Trusted checkpoint tip mismatch");
+    }
+    // The tip hash and its finality certificate authenticate only the header.
+    // Bind the tip body to header.transactionRoot exactly as live block
+    // validation does, so a pinned snapshot cannot pair a certified header
+    // with a different transaction list that this node would then store and
+    // serve as its tip.
+    if (snapshot.tip.header.transactionRoot !== merkleRoot(snapshot.tip.transactions)) {
+      throw new Error("Trusted checkpoint tip transaction root mismatch");
+    }
+    // merkleRoot duplicates the last leaf of an odd level, so a body with its
+    // odd tail repeated keeps the same root. Live validation rejects that in
+    // applyTransactions; this path does not re-execute the tip, so check here.
+    const tipTxids = new Set<string>();
+    for (const tx of snapshot.tip.transactions) {
+      if (tipTxids.has(tx.txid)) throw new Error("Trusted checkpoint tip contains a duplicate transaction");
+      tipTxids.add(tx.txid);
     }
 
     const validatorSchedule = validateValidatorSchedule(snapshot.validatorSchedule, genesis.validators);
