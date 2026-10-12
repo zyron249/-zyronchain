@@ -531,8 +531,10 @@ export async function produceFinalizedBlock(
           protocolVersion,
           error
         });
+        service.recordConsensusQuorumFailure(height, tipHash);
         return null;
       }
+      service.recordConsensusQuorumReached(height, tipHash);
       roundCertificate = certificate;
       previousCertificate = certificate;
       service.recordLegacyRoundCatchUp({ height, previousHash: tipHash, certifiedRound: skippedRound, certificate, catchingUp });
@@ -573,7 +575,10 @@ export async function produceFinalizedBlock(
   try {
     await service.acceptFinalizedBlock(withVotes);
   } catch (error) {
-    if (/Finality quorum not reached/.test(safeError(error))) return null;
+    if (/Finality quorum not reached/.test(safeError(error))) {
+      service.recordConsensusQuorumFailure(height, tipHash);
+      return null;
+    }
     throw error;
   }
   await peers.broadcastBlock(withVotes);
@@ -669,7 +674,11 @@ async function produceFinalizedBlockV6(
       }
       responses.push(...await (peers.requestV6Timeouts?.(height, round - 1) ?? Promise.resolve([])));
       tc = assembleTimeoutCertificate(responses, validators, chainId, height, round - 1);
-      if (!tc) return null;
+      if (!tc) {
+        service.recordConsensusQuorumFailure(height, chain.tip.hash);
+        return null;
+      }
+      service.recordConsensusQuorumReached(height, chain.tip.hash);
     }
     let block: Block | null;
     if (tc?.highQC) {
@@ -710,7 +719,11 @@ async function produceFinalizedBlockV6(
   }
   prepareResponses.push(...await (peers.requestV6Prepare?.(request) ?? Promise.resolve([])));
   const prepareVotes = uniqueValidVotes(prepareResponses, validators, V6_PREPARE_VOTE_DOMAIN, chainId, height, round, hash);
-  if (prepareVotes.length < quorum) return null;
+  if (prepareVotes.length < quorum) {
+    service.recordConsensusQuorumFailure(height, chain.tip.hash);
+    return null;
+  }
+  service.recordConsensusQuorumReached(height, chain.tip.hash);
   const qc: PrepareQC = { chainId, height, round, blockHash: hash, votes: prepareVotes };
 
   const commitRequest: V6CommitRequest = { qc, block: request.block };
@@ -721,7 +734,10 @@ async function produceFinalizedBlockV6(
   }
   commitResponses.push(...await (peers.requestV6Commit?.(commitRequest) ?? Promise.resolve([])));
   const commitVotes = uniqueValidVotes(commitResponses, validators, V6_COMMIT_VOTE_DOMAIN, chainId, height, round, hash);
-  if (commitVotes.length < quorum) return null;
+  if (commitVotes.length < quorum) {
+    service.recordConsensusQuorumFailure(height, chain.tip.hash);
+    return null;
+  }
 
   const finalized: Block = { ...request.block, attestations: commitVotes, commitRound: round };
   if (service.status().height < height) await service.acceptFinalizedBlock(finalized);
