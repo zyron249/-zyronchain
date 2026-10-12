@@ -137,15 +137,47 @@ async function repairSigningJournalTail(path: string): Promise<boolean> {
   if (!isTornTrailingRecord(last.record)) return true;
   let cut = last.start;
   if (previous) {
+    let row: unknown;
     try {
-      const row = JSON.parse(previous.text) as Record<string, unknown>;
-      if (row !== null && typeof row === "object" && row.v === 2 && row.step === "lock") cut = previous.start;
+      row = JSON.parse(previous.text);
     } catch {
       // A corrupt terminated line stays fatal in replay.
+    }
+    if (isV6LockRowCandidate(row)) {
+      // The lock row is dropped with the torn tail only when both are the
+      // single lock+commit append this binary writes (reserveV6Commit): the
+      // lock row byte-for-byte as v6RowLine serializes it, and the torn tail
+      // a prefix of that lock's own commit row, possibly followed by zero
+      // fill. Anything else is corruption before the tail: fail stop and
+      // leave the file untouched.
+      assertTornV6CommitOfLock(previous.text, last.record.text);
+      cut = previous.start;
     }
   }
   await truncateTornTail(path, cut, offset - cut, "signing journal");
   return false;
+}
+
+function isV6LockRowCandidate(row: unknown): row is Record<string, unknown> {
+  return row !== null && typeof row === "object" && !Array.isArray(row) &&
+    (row as Record<string, unknown>).v === 2 && (row as Record<string, unknown>).step === "lock";
+}
+
+function assertTornV6CommitOfLock(lockText: string, tornText: string): void {
+  const row = JSON.parse(lockText) as Record<string, unknown>;
+  const { height, round, value } = row;
+  if (!Number.isSafeInteger(height) || (height as number) < 1 ||
+      !Number.isSafeInteger(round) || (round as number) < 0 || (round as number) > V6_MAX_ROUND ||
+      typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error("Corrupt signing journal entry");
+  }
+  const lock = v6RowLine({ v: 2, height: height as number, round: round as number, step: "lock", value, lockRound: round as number });
+  if (`${lockText}\n` !== lock) throw new Error("Corrupt signing journal entry");
+  const commit = v6RowLine({ v: 2, height: height as number, round: round as number, step: "commit", value });
+  const torn = tornText.replace(/\0+$/, "");
+  if (!commit.startsWith(torn)) {
+    throw new Error("Torn protocol v6 lock/commit pair in signing journal");
+  }
 }
 
 export interface RecoveryCheckpointFaultHooks {

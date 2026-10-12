@@ -32,6 +32,15 @@ export interface GenesisConfig {
    * transaction encoding and genesis hash are then unchanged (single oracle).
    */
   activityOracleThreshold?: number;
+  /**
+   * Optional launch profile (docs/GENESIS_CONFIG_BINDING.md). Absent on every
+   * genesis that predates it; its genesis hash and rules are then unchanged.
+   * "fixed-supply-v1": the genesis hash commits to the entire genesis
+   * configuration, and the genesis is refused unless `allocationLocks` is
+   * present, exactly 50,000,000 ZYN is allocated and the four roles hold
+   * 5M / 20M / 20M / 5M.
+   */
+  launchProfile?: "fixed-supply-v1";
 }
 
 export interface AllocationLocks {
