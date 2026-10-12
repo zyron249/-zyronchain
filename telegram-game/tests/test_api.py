@@ -255,26 +255,29 @@ def test_supply_chests_pay_streak_and_quest_once(client):
     assert sealed["level:2"]["target"] == 4
     opened = client.post("/api/chests/open", json={"id": "daily"}, headers=headers)
     assert opened.status_code == 200, opened.text
-    assert opened.json()["gained"] == 10
+    # Day-1 streak (10) plus the free bonus roll (pinned to +5 in conftest).
+    assert opened.json()["gained"] == 15
+    assert opened.json()["streakPoints"] == 10
+    assert opened.json()["bonus"]["points"] == 5
     assert opened.json()["replayed"] is False
-    assert opened.json()["points"] == 10
+    assert opened.json()["points"] == 15
     again = client.post("/api/chests/open", json={"id": "daily"}, headers=headers)
     assert again.json()["replayed"] is True
     assert again.json()["gained"] == 0
-    assert again.json()["points"] == 10
+    assert again.json()["points"] == 15
     quests = client.get("/api/chests", headers=headers).json()
     quest_ready = {item["id"]: item for item in quests["ready"]}
     assert quest_ready["quest:daily_login"]["reward"] == 15
     claimed = client.post("/api/chests/open", json={"id": "quest:daily_login"}, headers=headers)
     assert claimed.status_code == 200, claimed.text
     assert claimed.json()["gained"] == 15
-    assert claimed.json()["points"] == 25
+    assert claimed.json()["points"] == 30
     replay = client.post("/api/chests/open", json={"id": "daily"}, headers=headers)
     assert replay.json()["replayed"] is True
     assert replay.json()["gained"] == 0
-    assert replay.json()["points"] == 25
+    assert replay.json()["points"] == 30
     synced = client.post("/api/quests/sync", headers=headers)
-    assert synced.json()["points"] == 25
+    assert synced.json()["points"] == 30
     sealed_open = client.post("/api/chests/open", json={"id": "quest:daily_cycles"}, headers=headers)
     assert sealed_open.status_code == 409
     assert client.post("/api/chests/open", json={"id": "loot"}, headers=headers).status_code == 422
