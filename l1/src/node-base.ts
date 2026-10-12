@@ -377,9 +377,11 @@ export class NodeService {
   private observeSignerAvailability(signer: ValidatorSigner): ValidatorSigner {
     return {
       publicKey: signer.publicKey,
-      signCanonical: async (payload, intent, protocolVersion) => {
+      // Every argument (including the v6 signing context checked by a remote
+      // signer, P0-09) is forwarded unchanged.
+      signCanonical: async (payload, intent, protocolVersion, context) => {
         try {
-          const signature = await signer.signCanonical(payload, intent, protocolVersion);
+          const signature = await signer.signCanonical(payload, intent, protocolVersion, context);
           this.validatorSignerFailed = false;
           return signature;
         } catch (error) {
