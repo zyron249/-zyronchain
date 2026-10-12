@@ -35,19 +35,20 @@ const scopeBytes = await readFile(scopePath);
 const scope = JSON.parse(scopeBytes.toString("utf8"));
 exactKeys(scope, [
   "scopeVersion", "status", "canonicalImplementation", "supportedProtocolVersions", "reviewAreas",
-  "criticalModules", "securitySpecifications", "independentVerification", "securityInvariants",
+  "criticalModules", "securitySpecifications", "independentVerification", "regressionTests", "securityInvariants",
   "requiredCommands", "evidenceScenarios", "externalGates", "deliberatelyExcludedDecisions"
 ], "audit scope");
 assert.equal(scope.scopeVersion, 1, "Unsupported audit scope version");
 assert.equal(scope.status, "pre-public-testnet-external-audit-preparation");
 assert.equal(scope.canonicalImplementation, "l1/");
-assert.deepEqual(scope.supportedProtocolVersions, [1, 2, 3, 5], "Audit scope protocol matrix is stale");
+assert.deepEqual(scope.supportedProtocolVersions, [1, 2, 3, 5, 6], "Audit scope protocol matrix is stale");
 
 for (const [label, values] of [
   ["reviewAreas", scope.reviewAreas],
   ["criticalModules", scope.criticalModules],
   ["securitySpecifications", scope.securitySpecifications],
   ["independentVerification", scope.independentVerification],
+  ["regressionTests", scope.regressionTests],
   ["requiredCommands", scope.requiredCommands],
   ["evidenceScenarios", scope.evidenceScenarios],
   ["externalGates", scope.externalGates],
@@ -66,6 +67,10 @@ for (const invariant of scope.securityInvariants) {
   assert.ok(invariant.statement.length >= 40, `Security invariant ${invariant.id} is underspecified`);
   uniqueStrings(invariant.primaryModules, `${invariant.id}.primaryModules`);
   for (const path of invariant.primaryModules) referencedModules.add(path);
+}
+
+for (const path of scope.regressionTests) {
+  assert.match(path, /^l1\/test\/[A-Za-z0-9_.-]+\.test\.ts$/, `Regression test path must be an L1 test file: ${path}`);
 }
 
 const criticalSet = new Set(scope.criticalModules);
@@ -128,6 +133,7 @@ const paths = [...new Set([
   ...scope.criticalModules,
   ...scope.securitySpecifications,
   ...scope.independentVerification,
+  ...scope.regressionTests,
   "l1/package.json",
   "l1/package-lock.json",
   ...requiredControlFiles
@@ -168,6 +174,7 @@ const pack = {
     reviewAreas: scope.reviewAreas.length,
     securityInvariants: scope.securityInvariants.length,
     criticalModules: scope.criticalModules.length,
+    regressionTests: scope.regressionTests.length,
     evidenceScenarios: scope.evidenceScenarios.length,
     externalGates: scope.externalGates.length
   },

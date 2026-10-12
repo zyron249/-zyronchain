@@ -228,7 +228,7 @@ requireText(operationsRunbook, "## 8. Disaster-recovery evidence checklist", "op
 
 const auditScope = JSON.parse(contents.get("docs/l1-audit-scope.json"));
 assert.equal(auditScope.status, "pre-public-testnet-external-audit-preparation");
-assert.deepEqual(auditScope.supportedProtocolVersions, [1, 2, 3, 5], "Audit scope protocol matrix is stale");
+assert.deepEqual(auditScope.supportedProtocolVersions, [1, 2, 3, 5, 6], "Audit scope protocol matrix is stale");
 for (const gate of [
   "independent-consensus-cryptography-network-audit",
   "independent-mining-contention-target-calibration-review",

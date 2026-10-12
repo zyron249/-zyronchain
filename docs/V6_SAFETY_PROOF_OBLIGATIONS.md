@@ -22,7 +22,8 @@ Notation: `n` validators at height `H` (`validatorsAt(H)`), quorum
 
 ## 1. Fault model and assumptions
 
-- **A1 Signatures.** Ed25519/secp signatures are unforgeable. Every v6 message
+- **A1 Signatures.** secp256k1 ECDSA signatures (the only validator
+  signature scheme, `l1/src/crypto.ts`) are unforgeable. Every v6 message
   is domain separated (proposal, prepare vote, commit vote, timeout) and bound
   to `{chainId, height, round, ...}`.
 - **A2 Faults.** At most `f` validators are faulty at a height. A validator is

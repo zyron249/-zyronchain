@@ -65,3 +65,12 @@ def client(settings):
                     """
                 )
         yield test_client
+
+
+@pytest.fixture(autouse=True)
+def fixed_chest_roll(monkeypatch):
+    """Pin the free daily chest bonus roll so payouts are deterministic (roll 0 -> +5). Tests may override."""
+    from zyron_node import game
+
+    monkeypatch.setattr(game, "_chest_roll", lambda: 0)
+    return game

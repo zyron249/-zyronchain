@@ -172,6 +172,8 @@ export interface SigningJournalCompactionFaultHooks {
 export interface SigningJournalOpenFaultHooks {
   afterFileSync?: () => void | Promise<void>;
   afterDirectorySync?: () => void | Promise<void>;
+  /** After the tail repair write (re-termination or lone-lock completion), before its fsync. */
+  afterTailRepairWrite?: () => void | Promise<void>;
 }
 
 /** Protocol v6 journal steps (spec §6.1, row format v2 §9.2). */
@@ -258,6 +260,8 @@ export interface FinalizedBlockFaultHooks {
 export interface FinalizedLogOpenFaultHooks {
   afterFileSync?: () => void | Promise<void>;
   afterDirectorySync?: () => void | Promise<void>;
+  /** After the tail repair write (re-termination or lone-lock completion), before its fsync. */
+  afterTailRepairWrite?: () => void | Promise<void>;
 }
 
 export class ChainStore {
@@ -551,6 +555,19 @@ export class ChainStore {
       throw new Error("Interrupted pruning must be completed before publishing another recovery checkpoint");
     }
     if (this.chain.height !== this.persistedHeight) throw new Error("Cannot checkpoint non-durable chain state");
+    return this.publishVerifiedRecoveryCheckpoint(faultHooks);
+  }
+
+  /**
+   * Write-verify-swap: the new checkpoint is written to a temporary file, read
+   * back through the exact startup verification path (and any extra check the
+   * caller supplies), and only then atomically renamed over the previous one.
+   * A checkpoint that does not verify never replaces the last verified anchor.
+   */
+  private async publishVerifiedRecoveryCheckpoint(
+    faultHooks: RecoveryCheckpointFaultHooks = {},
+    extraVerification?: (loaded: LoadedRecoveryCheckpoint) => Promise<void>
+  ): Promise<{ height: number; tipHash: string; snapshotSha256: string }> {
     const snapshot = this.chain.snapshot();
     const snapshotSha256 = sha256Hex(canonicalJson(snapshot));
     let checkpoint: RecoveryCheckpoint;
@@ -582,7 +599,20 @@ export class ChainStore {
       };
     }
     const path = join(this.dataDir, "recovery-checkpoint.json");
-    await writeCheckpointFile(path, checkpoint, faultHooks);
+    const genesis = this.chain.genesis;
+    await writeCheckpointFile(path, checkpoint, faultHooks, async (temporaryPath) => {
+      let loaded: LoadedRecoveryCheckpoint;
+      try {
+        loaded = await loadRecoveryCheckpointFile(genesis, temporaryPath);
+      } catch (error) {
+        throw new Error("Recovery checkpoint failed verification; previous checkpoint kept", { cause: error });
+      }
+      if (loaded.checkpoint.height !== checkpoint.height || loaded.checkpoint.tipHash !== checkpoint.tipHash ||
+          loaded.checkpoint.snapshotSha256 !== snapshotSha256) {
+        throw new Error("Recovery checkpoint failed verification; previous checkpoint kept");
+      }
+      await extraVerification?.(loaded);
+    });
     return { height: checkpoint.height, tipHash: checkpoint.tipHash, snapshotSha256 };
   }
 
@@ -611,12 +641,17 @@ export class ChainStore {
       // First publish and re-read a normal checkpoint against the currently
       // retained log. Pruning is allowed only after that local finality anchor has
       // independently survived the same startup verification path.
-      await this.writeRecoveryCheckpoint();
-      const loaded = await loadRecoveryCheckpoint(this.chain.genesis, this.dataDir);
-      if (!loaded) throw new Error("Verified recovery checkpoint unavailable for pruning");
-      const verified = await replayStoredBlocks(this.chain.genesis, blocksPath, loaded);
-      if (verified.count !== this.persistedHeight || verified.chain.tip.hash !== this.chain.tip.hash) {
-        throw new Error("Recovery checkpoint did not reproduce durable finalized tip");
+      // The new checkpoint replaces the previous one only after it verifies, so
+      // a failed prune can never leave the data directory without a valid anchor.
+      try {
+        await this.publishVerifiedRecoveryCheckpoint({}, async (loaded) => {
+          const verified = await replayStoredBlocks(this.chain.genesis, blocksPath, loaded);
+          if (verified.count !== this.persistedHeight || verified.chain.tip.hash !== this.chain.tip.hash) {
+            throw new Error("Recovery checkpoint did not reproduce durable finalized tip");
+          }
+        });
+      } catch (error) {
+        throw new Error("Verified recovery checkpoint unavailable for pruning", { cause: error });
       }
     } else if (this.pendingPruneThroughHeight > this.persistedHeight) {
       throw new Error("Interrupted prune boundary is invalid for durable finalized tip");
@@ -832,7 +867,8 @@ async function writeHistoryRetention(dataDir: string, marker: HistoryRetentionV1
 async function writeCheckpointFile(
   path: string,
   checkpoint: RecoveryCheckpoint,
-  faultHooks: RecoveryCheckpointFaultHooks = {}
+  faultHooks: RecoveryCheckpointFaultHooks = {},
+  verifyBeforeRename?: (temporaryPath: string) => Promise<void>
 ): Promise<void> {
   const temporary = `${path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
   let renamed = false;
@@ -845,6 +881,7 @@ async function writeCheckpointFile(
       await handle.close();
     }
     await faultHooks.afterTemporarySync?.();
+    await verifyBeforeRename?.(temporary);
     await rename(temporary, path);
     renamed = true;
     await faultHooks.afterRename?.();
@@ -956,16 +993,51 @@ export class SigningJournal {
         journal.reservations.set(key, reservation);
         journal.legacyHeights.add(parsed.height as number);
       }
-      if (pendingLock) throw new Error("Torn protocol v6 lock/commit pair in signing journal");
-      if (reterminate) {
-        // The complete final row lost only its newline; terminate it so the
-        // next append starts a new line (F-10).
+      // P0-03: the replay ended on a lone lock row. Lock and commit rows are
+      // written by one append (section 9.1) and nothing is appended after a
+      // pair until it is fsynced, so a lock row is the final record only when
+      // power was lost inside that append (the commit row never reached the
+      // disk) or, if fsync ordering was violated, after it. Either way the
+      // lock is kept and the pair is completed with the matching commit
+      // reservation. A reservation without a signature is an ordinary state
+      // (crash after fsync, before signing); keeping both rows never forgets
+      // a lock or a possibly released commit vote, so it cannot permit a
+      // conflicting vote, and it restores liveness instead of fail-stopping
+      // forever. A lock row that is not the final record stays fatal above.
+      let completion = "";
+      let completedSlot = "";
+      if (pendingLock) {
+        completedSlot = `height ${pendingLock.height}, round ${pendingLock.round}`;
+        // Complete only a lock that reserveV6Commit could have written: the
+        // round was still open (no timeout at or above it, no later vote)
+        // and any own prepare at that round is for the same block. Anything
+        // else is not a torn append but inconsistent history: stay fatal.
+        const state = journal.v6Heights.get(pendingLock.height)!;
+        const prepared = state.rows.get(`${pendingLock.round}:prepare`);
+        if (state.maxTimeoutRound >= pendingLock.round || state.maxVoteRound > pendingLock.round ||
+            (prepared !== undefined && prepared !== pendingLock.value)) {
+          throw new Error("Torn protocol v6 lock/commit pair in signing journal");
+        }
+        const commit: V6JournalRow = {
+          v: 2, height: pendingLock.height, round: pendingLock.round, step: "commit", value: pendingLock.value
+        };
+        pendingLock = journal.replayV6Row({ ...commit }, pendingLock);
+        if (pendingLock) throw new Error("Torn protocol v6 lock/commit pair in signing journal");
+        completion = v6RowLine(commit);
+      }
+      if (reterminate || completion) {
+        // A complete final row that lost only its newline is terminated so the
+        // next append starts a new line (F-10); a lone lock row is completed.
         const handle = await open(journal.path, "a", 0o600);
         try {
-          await handle.writeFile("\n", "utf8");
+          await handle.writeFile(`${reterminate ? "\n" : ""}${completion}`, "utf8");
+          await faultHooks.afterTailRepairWrite?.();
           await handle.sync();
         } finally {
           await handle.close();
+        }
+        if (completion) {
+          console.warn(`Completed a lone trailing protocol v6 lock row with its commit reservation (${completedSlot}) in ${journal.path}`);
         }
       }
     } catch (error) {
@@ -1389,83 +1461,88 @@ interface LoadedRecoveryCheckpoint {
 
 async function loadRecoveryCheckpoint(genesis: GenesisConfig, dataDir: string): Promise<LoadedRecoveryCheckpoint | undefined> {
   try {
-    const checkpointBytes = await readBoundedFileBuffer(
-      join(dataDir, "recovery-checkpoint.json"),
-      MAX_RECOVERY_CHECKPOINT_FILE_BYTES,
-      "Recovery checkpoint"
-    );
-    assertBoundedCheckpointJsonStructure(checkpointBytes);
-    const value = JSON.parse(checkpointBytes.toString("utf8")) as unknown;
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid recovery checkpoint");
-    const record = value as Record<string, unknown>;
-    const commonValid = typeof record.chainId === "string" && typeof record.genesisHash === "string" &&
-      typeof record.tipHash === "string" && typeof record.snapshotSha256 === "string" &&
-      Number.isSafeInteger(record.height) && Number(record.height) >= 0 &&
-      Number.isSafeInteger(record.blockFileBytes) && Number(record.blockFileBytes) >= 0;
-    if (!commonValid) {
-      throw new Error("Invalid recovery checkpoint");
-    }
-    let checkpoint: RecoveryCheckpoint;
-    if (record.version === 1) {
-      const expectedKeys = [
-        "version", "chainId", "genesisHash", "height", "tipHash", "blockFileBytes", "snapshotSha256", "snapshot"
-      ].sort().join(",");
-      if (Object.keys(record).sort().join(",") !== expectedKeys) throw new Error("Invalid recovery checkpoint");
-      checkpoint = record as unknown as RecoveryCheckpointV1;
-    } else if (record.version === 2) {
-      const expectedKeys = [
-        "version", "chainId", "genesisHash", "height", "tipHash", "stateV2Root", "retainedFromHeight",
-        "blockFileBytes", "transition", "snapshotSha256", "snapshot"
-      ].sort().join(",");
-      const transition = record.transition;
-      const transitionValid = transition === null || (
-        typeof transition === "object" && !Array.isArray(transition) && transition !== null &&
-        Object.keys(transition).sort().join(",") === "blockFileBytes,fromHeight" &&
-        Number.isSafeInteger((transition as Record<string, unknown>).fromHeight) &&
-        Number((transition as Record<string, unknown>).fromHeight) >= 1 &&
-        Number.isSafeInteger((transition as Record<string, unknown>).blockFileBytes) &&
-        Number((transition as Record<string, unknown>).blockFileBytes) >= 0
-      );
-      if (Object.keys(record).sort().join(",") !== expectedKeys || typeof record.stateV2Root !== "string" ||
-          !/^[0-9a-f]{64}$/.test(record.stateV2Root) || !Number.isSafeInteger(record.retainedFromHeight) ||
-          Number(record.retainedFromHeight) < 1 || Number(record.retainedFromHeight) > Number(record.height) + 1 ||
-          !transitionValid) {
-        throw new Error("Invalid recovery checkpoint");
-      }
-      checkpoint = record as unknown as RecoveryCheckpointV2;
-      if (checkpoint.transition && (checkpoint.transition.fromHeight >= checkpoint.retainedFromHeight ||
-          checkpoint.transition.fromHeight > checkpoint.height)) {
-        throw new Error("Invalid recovery checkpoint transition");
-      }
-    } else {
-      throw new Error("Invalid recovery checkpoint version");
-    }
-    if (checkpoint.chainId !== genesis.chainId || checkpoint.height !== (checkpoint.snapshot as { height?: unknown }).height ||
-        checkpoint.tipHash !== (checkpoint.snapshot as { tip?: { hash?: unknown } }).tip?.hash) {
-      throw new Error("Recovery checkpoint metadata mismatch");
-    }
-    const chain = ZyronChain.fromTrustedSnapshot(genesis, checkpoint.snapshot, {
-      tipHash: checkpoint.tipHash,
-      snapshotSha256: checkpoint.snapshotSha256
-    });
-    if (checkpoint.genesisHash !== chain.genesisHash) throw new Error("Recovery checkpoint genesis mismatch");
-    if (checkpoint.height === 0 && checkpoint.blockFileBytes !== 0) throw new Error("Invalid genesis recovery boundary");
-    if (checkpoint.version === 2) {
-      const stateV2 = chain.stateV2ForPersistence();
-      if (!stateV2 || checkpoint.stateV2Root !== stateV2.root() || checkpoint.stateV2Root !== chain.tip.header.stateRoot) {
-        throw new Error("Recovery checkpoint State v2 root mismatch");
-      }
-      if (checkpoint.retainedFromHeight === checkpoint.height + 1 && checkpoint.blockFileBytes !== 0) {
-        throw new Error("Invalid empty retained-history boundary");
-      }
-    }
-    return { checkpoint, chain };
+    return await loadRecoveryCheckpointFile(genesis, join(dataDir, "recovery-checkpoint.json"));
   } catch (error) {
     if (isMissingFile(error)) return undefined;
     // Recovery metadata is an optimization, never the authority. Corrupt or
     // partially published metadata safely disables it and full replay takes over.
     return undefined;
   }
+}
+
+/** Reads and fully verifies one recovery checkpoint file; throws on any defect. */
+async function loadRecoveryCheckpointFile(genesis: GenesisConfig, path: string): Promise<LoadedRecoveryCheckpoint> {
+  const checkpointBytes = await readBoundedFileBuffer(
+    path,
+    MAX_RECOVERY_CHECKPOINT_FILE_BYTES,
+    "Recovery checkpoint"
+  );
+  assertBoundedCheckpointJsonStructure(checkpointBytes);
+  const value = JSON.parse(checkpointBytes.toString("utf8")) as unknown;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid recovery checkpoint");
+  const record = value as Record<string, unknown>;
+  const commonValid = typeof record.chainId === "string" && typeof record.genesisHash === "string" &&
+    typeof record.tipHash === "string" && typeof record.snapshotSha256 === "string" &&
+    Number.isSafeInteger(record.height) && Number(record.height) >= 0 &&
+    Number.isSafeInteger(record.blockFileBytes) && Number(record.blockFileBytes) >= 0;
+  if (!commonValid) {
+    throw new Error("Invalid recovery checkpoint");
+  }
+  let checkpoint: RecoveryCheckpoint;
+  if (record.version === 1) {
+    const expectedKeys = [
+      "version", "chainId", "genesisHash", "height", "tipHash", "blockFileBytes", "snapshotSha256", "snapshot"
+    ].sort().join(",");
+    if (Object.keys(record).sort().join(",") !== expectedKeys) throw new Error("Invalid recovery checkpoint");
+    checkpoint = record as unknown as RecoveryCheckpointV1;
+  } else if (record.version === 2) {
+    const expectedKeys = [
+      "version", "chainId", "genesisHash", "height", "tipHash", "stateV2Root", "retainedFromHeight",
+      "blockFileBytes", "transition", "snapshotSha256", "snapshot"
+    ].sort().join(",");
+    const transition = record.transition;
+    const transitionValid = transition === null || (
+      typeof transition === "object" && !Array.isArray(transition) && transition !== null &&
+      Object.keys(transition).sort().join(",") === "blockFileBytes,fromHeight" &&
+      Number.isSafeInteger((transition as Record<string, unknown>).fromHeight) &&
+      Number((transition as Record<string, unknown>).fromHeight) >= 1 &&
+      Number.isSafeInteger((transition as Record<string, unknown>).blockFileBytes) &&
+      Number((transition as Record<string, unknown>).blockFileBytes) >= 0
+    );
+    if (Object.keys(record).sort().join(",") !== expectedKeys || typeof record.stateV2Root !== "string" ||
+        !/^[0-9a-f]{64}$/.test(record.stateV2Root) || !Number.isSafeInteger(record.retainedFromHeight) ||
+        Number(record.retainedFromHeight) < 1 || Number(record.retainedFromHeight) > Number(record.height) + 1 ||
+        !transitionValid) {
+      throw new Error("Invalid recovery checkpoint");
+    }
+    checkpoint = record as unknown as RecoveryCheckpointV2;
+    if (checkpoint.transition && (checkpoint.transition.fromHeight >= checkpoint.retainedFromHeight ||
+        checkpoint.transition.fromHeight > checkpoint.height)) {
+      throw new Error("Invalid recovery checkpoint transition");
+    }
+  } else {
+    throw new Error("Invalid recovery checkpoint version");
+  }
+  if (checkpoint.chainId !== genesis.chainId || checkpoint.height !== (checkpoint.snapshot as { height?: unknown }).height ||
+      checkpoint.tipHash !== (checkpoint.snapshot as { tip?: { hash?: unknown } }).tip?.hash) {
+    throw new Error("Recovery checkpoint metadata mismatch");
+  }
+  const chain = ZyronChain.fromTrustedSnapshot(genesis, checkpoint.snapshot, {
+    tipHash: checkpoint.tipHash,
+    snapshotSha256: checkpoint.snapshotSha256
+  });
+  if (checkpoint.genesisHash !== chain.genesisHash) throw new Error("Recovery checkpoint genesis mismatch");
+  if (checkpoint.height === 0 && checkpoint.blockFileBytes !== 0) throw new Error("Invalid genesis recovery boundary");
+  if (checkpoint.version === 2) {
+    const stateV2 = chain.stateV2ForPersistence();
+    if (!stateV2 || checkpoint.stateV2Root !== stateV2.root() || checkpoint.stateV2Root !== chain.tip.header.stateRoot) {
+      throw new Error("Recovery checkpoint State v2 root mismatch");
+    }
+    if (checkpoint.retainedFromHeight === checkpoint.height + 1 && checkpoint.blockFileBytes !== 0) {
+      throw new Error("Invalid empty retained-history boundary");
+    }
+  }
+  return { checkpoint, chain };
 }
 
 async function replayStoredBlocks(

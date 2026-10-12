@@ -25,6 +25,7 @@ for (const file of ['vendor/noble-scure.js', 'vendor/qr.js', 'zyron-wallet-core.
 const core = globalThis.ZyronAppCore;
 const V = globalThis.ZyronVendor;
 const PASSWORD = 'correct horse battery staple';
+const LINK_VECTOR_SIGNATURE = '5842cdffa0b26d57b399e5ca91432c747e6f335b18f556b0aad19d5826af2e81433265dcfec137121a884b777b4b2b2f43f60673e8a4127b259204a0e7dc5bcb';
 
 // Public BIP-39 test phrases. Expected values are copied from the MetaMask Snap's vectors
 // (PR #922, snap/test/vectors.json @ 9fc138583ebe9f1a7cc3e57e17e2eeee13f7ed94, derived with @metamask/key-tree).
@@ -254,7 +255,7 @@ await test('recovery phrase UX: privacy screen first, words hidden by default, n
   assert.match(html, /JavaScript cannot guarantee that memory is erased/);
   // copy is only offered for the address and a signed transfer
   const copyButtons = [...html.matchAll(/<button\b[^>]*>[^<]*<\/button>/g)].map((m) => m[0]).filter((b) => /copy/i.test(b)).map((b) => b.match(/data-([a-z-]+)/)[1]).sort();
-  assert.deepEqual(copyButtons, ['copy-address', 'copy-plain', 'tx-copy']);
+  assert.deepEqual(copyButtons, ['copy-address', 'copy-plain', 'link-copy', 'tx-copy']);
   assert.ok(appJs.includes("msgCopied: 'Copied. Clipboard will be cleared automatically.'"));
 });
 
@@ -357,6 +358,47 @@ if (existsSync(join(l1Dist, 'transaction.js'))) {
 } else {
   console.log('skip - l1 equality (l1/dist not built)');
 }
+
+await test('ZYRON NODE wallet link: exact template only, expiry enforced, proof verifies and holds no secrets', async () => {
+  const entropy = core.phraseToEntropy('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+  const account = await core.deriveAccount(entropy);
+  const message = [
+    'ZYRON NODE wallet link (TESTNET)', 'Telegram user: 4242', 'Network: zyron-wallet-testnet-1',
+    'Nonce: 0123456789abcdef0123456789abcdef', 'Issued: 2026-10-12T05:00:00Z', 'Expires: 2026-10-12T05:10:00Z',
+    'Signing proves you hold this testnet address. It is not a transaction: it moves no funds,',
+    'grants no tokens and cannot be used on-chain.'
+  ].join('\n');
+  const now = Date.parse('2026-10-12T05:01:00Z');
+  const request = core.parseLinkHash('#link=' + core.textToBase64Url(message), now);
+  assert.equal(request.nonce, '0123456789abcdef0123456789abcdef');
+  assert.equal(request.telegramUser, '4242');
+  const signed = core.signLinkProof(request, account, now);
+  const [prefix, nonce, publicKey, signature] = signed.proof.split('.');
+  assert.equal(prefix, 'zyronlink1');
+  assert.equal(nonce, request.nonce);
+  assert.equal(publicKey, account.publicKey);
+  assert.equal(core.addressFromPublicKey(publicKey), account.address);
+  assert.ok(core.verifyCanonical({ domain: 'zyronchain/game/wallet-link/v1', payload: { message } }, signature, publicKey));
+  assert.ok(!core.verifyCanonical({ domain: 'zyronchain/game/wallet-link/v1', payload: { message: message + ' ' } }, signature, publicKey));
+  // Fixed vector shared with telegram-game/tests/test_wallet_proof.py (deterministic RFC 6979 signature).
+  assert.equal(signature, LINK_VECTOR_SIGNATURE);
+  const privHex = V.bytesToHex(account.privateKey);
+  assert.ok(!signed.proof.includes(privHex), 'proof never contains the private key');
+  assert.throws(() => core.signLinkProof(request, account, Date.parse('2026-10-12T05:10:00Z')), /expired/);
+  for (const bad of [message.replace('TESTNET', 'MAINNET'), message.replace('zyron-wallet-testnet-1', 'zyron-mainnet-1'),
+    message + '\nSend 100 ZYN', '{"kind":"transfer"}', message.replace('Nonce: 0123', 'Nonce: XYZ3')]) {
+    assert.throws(() => core.parseLinkMessage(bad, now), /not a ZYRON NODE wallet link request/);
+  }
+  assert.equal(core.parseLinkHash('#link=%%%', now), null);
+  assert.throws(() => core.parseLinkHash('#link=' + core.textToBase64Url('hello'), now), /not a ZYRON NODE/);
+  assert.equal(core.parseLinkHash('#other', now), null);
+  const appJs = readFileSync(join(app, 'app.js'), 'utf8');
+  const html = readFileSync(join(app, 'index.html'), 'utf8');
+  assert.match(html, /data-link-sign disabled/, 'link approval starts disabled');
+  assert.match(appJs, /if \(!state\.linkRequest \|\| !\$\('\[data-link-ack\]'\)\.checked\) return;/);
+  assert.match(html, /href="https:\/\/t\.me\/ZyronNodeBot"/, 'return target is fixed, never taken from the request');
+  core.wipe(entropy, account.privateKey);
+});
 
 await test('static scan: app code makes no network requests and has no eval/inline code; CSP is strict; SRI is complete', () => {
   const html = readFileSync(join(app, 'index.html'), 'utf8');
