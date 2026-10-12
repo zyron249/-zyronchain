@@ -6,6 +6,23 @@ This timeout does not skip or filter security, consensus, finality, recovery, mi
 
 If a legitimate regression needs more than ten minutes, the test should be decomposed or moved to a dedicated bounded evidence workflow rather than weakening the canonical timeout.
 
-The `local-devnet` CI job remains known-flaky on some hosts during view-change recovery after quorum loss. Interactive `npm run devnet` does not exercise that path.
+## Devnet CI jobs and the known protocol-v1 flake
+
+| Job | Command | Protocol | Required check | Expected result |
+|---|---|---|---|---|
+| `local-devnet` | `npm run devnet:check` | v1 | no | Known flake, about 50% pass |
+| `local-devnet-v6` | `npm run devnet:check:v6` | v6 | no (candidate after at least 20 stable runs) | Pass |
+
+`local-devnet` runs the two-validator chain on protocol v1, which still has the legacy F-01 consensus split (see [`V6_SAFETY_PROOF_OBLIGATIONS.md`](V6_SAFETY_PROOF_OBLIGATIONS.md) and the F-01 entries in [`L1_OPERATIONS_RUNBOOK.md`](L1_OPERATIONS_RUNBOOK.md)). Whether a run passes depends on which validator starts its round timer first. A controlled A/B on the same CI image gave 13/27 passes before the F-01 fix and 12/27 after, which is no statistical difference: the F-01 change did not cause it, and only activating v6 removes it. The fix lives in protocol v6, which `local-devnet-v6` exercises.
+
+The known flake fails with exactly one of these messages, in `local-devnet` or in the artifact operator rehearsal that starts the same v1 devnet:
+
+- `Timed out: transfer finalized by both validators`
+- `Timed out: finality resumes after validator restart`
+- `did not converge at height`
+
+Rerun the failed job once and note it on the pull request. Any other failure message is a real regression and must be investigated. The job emits a warning annotation on failure that points here.
+
+The test, its timeouts and the v1 harness startup order are deliberately unchanged: loosening them would hide the F-01 split instead of fixing it. The required checks are `l1` (Node 22 and 24), `dependency-audit`, `test` (Python 3.11 and 3.12) and `independent-light-client`. Neither devnet job is required. Interactive `npm run devnet` runs the same v1 path and may also need a restart.
 
 Same-inode State-v2 cache mutation tests must change file size. Same-length writes can keep `size+mtimeMs+ctimeMs` identical on coarse-timestamp filesystems and produce a false pass.
