@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZyronChain TESTNET explorer — tokens have no value</title>
+<style>
+body{font:15px/1.45 system-ui,sans-serif;margin:0;background:#0d1117;color:#e6edf3}
+header{background:#b91c1c;color:#fff;padding:10px 16px;font-weight:700;text-align:center}
+main{max-width:1000px;margin:auto;padding:16px}
+h1{font-size:22px}h2{font-size:17px;margin-top:28px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{border-bottom:1px solid #30363d;padding:5px;text-align:left;word-break:break-all}
+code,.mono{font-family:ui-monospace,monospace}
+input{width:420px;max-width:100%;padding:6px;background:#161b22;color:#e6edf3;border:1px solid #30363d}
+button{padding:6px 12px;cursor:pointer}
+.box{background:#161b22;border:1px solid #30363d;padding:12px;border-radius:6px}
+</style>
+</head>
+<body>
+<header>TESTNET — tokens have no value. Test ZYN cannot be bought, sold or redeemed. The network may be reset. Not audited.</header>
+<main>
+<h1>ZyronChain open testnet</h1>
+<div class="box" id="summary">Loading…</div>
+<h2>Faucet</h2>
+<div class="box">
+<p>Get 100 test ZYN (one request per address per day). Create an address with <code>node dist/src/cli.js keygen</code> from the <code>l1/</code> directory.</p>
+<input id="addr" placeholder="ZYN followed by 40 hex characters" maxlength="43"> <button id="drip">Request test ZYN</button>
+<p id="dripResult" class="mono"></p>
+</div>
+<h2>Look up an account</h2>
+<div class="box"><input id="lookup" placeholder="ZYN…" maxlength="43"> <button id="go">Look up</button><p id="acct" class="mono"></p></div>
+<h2>Validators</h2>
+<table id="validators"><tr><th>Validator</th><th>Up</th><th>Ready</th><th>Height</th></tr></table>
+<h2>Latest blocks</h2>
+<table id="blocks"><tr><th>Height</th><th>Hash</th><th>Time (UTC)</th><th>Protocol</th><th>Signatures</th><th>Txs</th></tr></table>
+<p>API: <code>GET /api</code> lists every public endpoint. Join as a validator: see <code>docs/OPEN_TESTNET.md</code> in the ZyronChain repository.</p>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const ADDRESS = /^ZYN[0-9a-f]{40}$/;
+function row(table, cells) { const tr = document.createElement("tr"); for (const c of cells) { const td = document.createElement("td"); td.textContent = String(c); tr.appendChild(td); } table.appendChild(tr); }
+function clear(table) { while (table.rows.length > 1) table.deleteRow(1); }
+async function getJson(path) { const r = await fetch(path); return r.json(); }
+async function refresh() {
+  try {
+    const s = await getJson("/status");
+    $("summary").textContent = `Chain ${s.chainId} · height ${s.height} · protocol v${s.protocolVersion} · ${s.validatorCount} validators · genesis ${s.genesisHash} · ${s.notice}`;
+    const h = await getJson("/health");
+    clear($("validators")); for (const v of h.validators) row($("validators"), [v.name, v.up ? "yes" : "no", v.ready ? "yes" : "no", v.height ?? "-"]);
+    const b = await getJson("/blocks?limit=15");
+    clear($("blocks")); for (const blk of b.blocks.reverse()) row($("blocks"), [blk.height, blk.hash, new Date(blk.timestampMs).toISOString(), blk.version, blk.attestations, blk.transactions.length]);
+  } catch (e) { $("summary").textContent = "Gateway unreachable: " + e.message; }
+}
+$("drip").onclick = async () => {
+  const address = $("addr").value.trim();
+  if (!ADDRESS.test(address)) { $("dripResult").textContent = "Invalid address"; return; }
+  const r = await fetch("/faucet", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ address }) });
+  const j = await r.json(); $("dripResult").textContent = r.ok ? `Sent. txid ${j.txid}` : `Error: ${j.error}`;
+};
+$("go").onclick = async () => {
+  const address = $("lookup").value.trim();
+  if (!ADDRESS.test(address)) { $("acct").textContent = "Invalid address"; return; }
+  const j = await getJson("/account/" + address);
+  $("acct").textContent = j.error ? j.error : `${(j.balanceAtoms / 1e8).toFixed(8)} test ZYN · nonce ${j.nonce}`;
+};
+refresh(); setInterval(refresh, 10000);
+</script>
+</body>
+</html>

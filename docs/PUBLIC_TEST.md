@@ -4,7 +4,7 @@ Status: **local public test only**. There is **no hosted public L1 RPC**, explor
 
 Governance authorization exists (`publicTestnetAuthorized=true` in [`l1-launch-authorization.json`](l1-launch-authorization.json)). Activation does not: `publicTestnetActivationAllowed=false`. Do not treat this guide as a live public testnet.
 
-The only supported way for an external tester to exercise the **canonical** chain today is the loopback two-validator network in `l1/`.
+An open, no-value testnet profile now exists: see [OPEN_TESTNET.md](OPEN_TESTNET.md). Otherwise, the only supported way for an external tester to exercise the **canonical** chain today is the loopback two-validator network in `l1/`.
 
 ## What you can test today
 
