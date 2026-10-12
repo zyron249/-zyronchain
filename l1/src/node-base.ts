@@ -350,6 +350,8 @@ export class NodeService {
   private legacyCatchUp: LegacyRoundCatchUp | undefined;
   private readonly activeSyncTargets = new Map<number, number>();
   private nextSyncHandle = 0;
+  private consensusQuorumFailure: { height: number; previousHash: string } | undefined;
+  private validatorSignerFailed = false;
   readonly readinessMaxTipAgeMs: number;
 
   constructor(
@@ -363,7 +365,31 @@ export class NodeService {
       throw new Error("Readiness tip-age bound must be an integer of at least one block interval");
     }
     this.readinessMaxTipAgeMs = maxTipAge;
-    this.validatorSigner = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
+    const signer = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
+    this.validatorSigner = signer ? this.observeSignerAvailability(signer) : undefined;
+  }
+
+  /**
+   * Readiness only (F-04): records whether the most recent signing request to
+   * the configured signer failed. Signatures, errors and call order are passed
+   * through unchanged; the journal reservation still precedes every call.
+   */
+  private observeSignerAvailability(signer: ValidatorSigner): ValidatorSigner {
+    return {
+      publicKey: signer.publicKey,
+      // Every argument (including the v6 signing context checked by a remote
+      // signer, P0-09) is forwarded unchanged.
+      signCanonical: async (payload, intent, protocolVersion, context) => {
+        try {
+          const signature = await signer.signCanonical(payload, intent, protocolVersion, context);
+          this.validatorSignerFailed = false;
+          return signature;
+        } catch (error) {
+          this.validatorSignerFailed = true;
+          throw error;
+        }
+      }
+    };
   }
 
   status(): NodeStatus {
@@ -395,6 +421,11 @@ export class NodeService {
     if (nowMs - chain.tip.header.timestampMs > this.readinessMaxTipAgeMs) reasons.push("stale-tip");
     if (this.legacyRoundCatchUp(chain.height + 1, chain.tip.hash)?.catchingUp) reasons.push("consensus-catching-up");
     if (this.knownSyncTargetHeight() - chain.height > READINESS_MAX_SYNC_LAG_BLOCKS) reasons.push("syncing");
+    const quorumFailure = this.consensusQuorumFailure;
+    if (quorumFailure && quorumFailure.height === chain.height + 1 && quorumFailure.previousHash === chain.tip.hash) {
+      reasons.push("consensus-quorum-unreachable");
+    }
+    if (this.validatorSignerFailed) reasons.push("validator-signer-unavailable");
     return {
       ready: reasons.length === 0,
       height: this.store.chain.height,
@@ -423,6 +454,21 @@ export class NodeService {
     let highest = -1;
     for (const target of this.activeSyncTargets.values()) if (target > highest) highest = target;
     return highest;
+  }
+
+  /**
+   * Readiness only (F-04): this validator's own consensus attempt for the
+   * tip (height - 1, previousHash) could not collect a quorum of votes. The
+   * record is ignored once the tip moves and is cleared by the next quorum
+   * this validator collects for the same tip.
+   */
+  recordConsensusQuorumFailure(height: number, previousHash: string): void {
+    this.consensusQuorumFailure = { height, previousHash };
+  }
+
+  recordConsensusQuorumReached(height: number, previousHash: string): void {
+    const failure = this.consensusQuorumFailure;
+    if (failure && failure.height === height && failure.previousHash === previousHash) this.consensusQuorumFailure = undefined;
   }
 
   /** Catch-up progress for (height, previousHash), or undefined if none is recorded for that tip. */

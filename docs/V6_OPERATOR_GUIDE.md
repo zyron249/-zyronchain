@@ -113,8 +113,10 @@ node dist/src/cli.js protocol-submit --proposal v6-upgrade.json --approval appro
 | `stale-tip` | finalized tip older than `--ready-max-tip-age-ms` (default 600,000 ms, `node-base.ts:102`) | finality-halt runbook (§5, §11) |
 | `consensus-catching-up` | **legacy only**: bounded skip-chain catch-up after a long stall (F-02) | wait; it does not apply at v6 heights |
 | `syncing` | a block sync is in progress towards a peer tip more than one block ahead (HTTP `syncFrom`/`syncAny` and native sync); lasts only while that sync runs | wait; if it recurs without progress, check the peer and `stale-tip` |
+| `consensus-quorum-unreachable` | this validator, as leader, could not form a TC, prepare QC or commit certificate for the current tip | check peer connectivity; clears at the next quorum or when the tip advances |
+| `validator-signer-unavailable` | the last signing request to the configured signer failed | check the remote signer; clears on the next successful signature |
 
-There is no `no-peers` reason (F-04 residual). Monitor peer count separately.
+There is no peer-count reason: lost peers show up as `consensus-quorum-unreachable` on a validator whose own attempt failed, and as `stale-tip` elsewhere. Monitor peer count separately.
 
 ## 5. Prepare / commit / timeout diagnostics
 
