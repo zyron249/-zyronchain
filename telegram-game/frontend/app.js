@@ -1287,15 +1287,83 @@
     ]);
   }
 
+  var WALLET_APP_URL = "https://zyronchain.com/app/";
+
+  function walletLinkUrl(message) {
+    var bytes = new TextEncoder().encode(message);
+    var binary = "";
+    bytes.forEach(function (b) { binary += String.fromCharCode(b); });
+    return WALLET_APP_URL + "#link=" + btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
   function walletCard(p) {
-    const input = el("input", { class: "wallet-input", placeholder: "ZYN + 40 lowercase hex", value: p.walletAddress || "", spellcheck: "false", autocapitalize: "off" });
+    var status = p.walletAddress
+      ? (p.walletVerified ? "Verified testnet address" : "Watch-only address (not verified)")
+      : "No wallet connected";
     const card = el("article", { class: "card" }, [
-      el("h2", { text: "Watch-only wallet" }),
-      el("p", { class: "fine", text: "Paste a public ZYN address. ZYRON NODE never asks for a seed phrase or private key, and it cannot move funds. An on-chain balance is ZYN, not Zyron Points." })
+      el("h2", { text: "Connect wallet · testnet" }),
+      el("p", { class: "fine", text: "Link your ZyronChain testnet address by signing a one-time message in the ZyronChain phone wallet. This is testnet only: no funds move and no tokens are granted. ZYRON NODE never asks for a seed phrase, recovery phrase or private key." }),
+      el("p", { class: "mono", text: status + (p.walletAddress ? " · " + p.walletAddress : "") })
     ]);
-    card.append(input, el("button", { class: "primary", text: "Link address", onclick: function () { onLink(input.value.trim()); } }));
+    if (p.walletVerified) card.append(el("p", { class: "fine", text: "Verified wallet badge unlocked. It is cosmetic only and adds no Zyron Points." }));
+    const ch = state.walletChallenge;
+    if (!ch) {
+      card.append(el("button", { class: "primary", text: p.walletVerified ? "Connect a different wallet" : "Connect wallet", onclick: onWalletChallenge }));
+    } else {
+      const link = walletLinkUrl(ch.message);
+      const proof = el("textarea", { class: "wallet-input", rows: "3", placeholder: "Paste the proof code (starts with zyronlink1.)", spellcheck: "false", autocapitalize: "off" });
+      proof.value = state.walletProof || "";
+      proof.addEventListener("input", function () { state.walletProof = proof.value; });
+      card.append(
+        el("p", { class: "fine", text: "1. Open the wallet, unlock it and check the exact text. 2. Approve and copy the proof code. 3. Come back here and paste it. Expires " + new Date(ch.expiresAt).toLocaleTimeString() + "." }),
+        el("pre", { class: "fine mono", text: ch.message }),
+        el("div", { class: "actions" }, [
+          el("button", { class: "primary", text: "Open ZyronChain wallet", onclick: function () { openExternal(link); } }),
+          el("button", { class: "ghost", text: "Copy wallet link", onclick: function () { copyText(link); } })
+        ]),
+        proof,
+        el("div", { class: "actions" }, [
+          el("button", { class: "primary", text: "Verify and link", onclick: function () { onWalletVerify(proof.value.trim()); } }),
+          el("button", { class: "ghost", text: "Cancel", onclick: function () { state.walletChallenge = null; state.walletProof = ""; render(); } })
+        ])
+      );
+    }
     if (p.walletAddress) card.append(el("button", { class: "ghost buy", text: "Unlink", onclick: onUnlink }));
+    const watch = el("input", { class: "wallet-input", placeholder: "ZYN + 40 lowercase hex", value: p.walletVerified ? "" : (p.walletAddress || ""), spellcheck: "false", autocapitalize: "off" });
+    card.append(el("details", {}, [
+      el("summary", { text: "Watch-only address instead (no signature, not verified)" }),
+      el("p", { class: "fine", text: "Paste a public ZYN address to follow it. A watch-only address gives no badge, and a verified owner can take it over." }),
+      watch,
+      el("button", { class: "ghost", text: "Link watch address", onclick: function () { onLink(watch.value.trim()); } })
+    ]));
     return card;
+  }
+
+  function openExternal(url) {
+    if (tg && typeof tg.openLink === "function") tg.openLink(url);
+    else window.open(url, "_blank", "noopener");
+  }
+
+  function onWalletChallenge() {
+    api("/api/wallet/challenge", { method: "POST" })
+      .then(function (res) { state.walletChallenge = res; state.walletProof = ""; render(); })
+      .catch(fail);
+  }
+
+  function onWalletVerify(proof) {
+    if (!/^zyronlink1\./.test(proof)) { toast("Paste the whole proof code from the wallet", "err"); return; }
+    api("/api/wallet/verify", { method: "POST", body: { proof: proof } })
+      .then(function (res) {
+        state.walletChallenge = null;
+        state.walletProof = "";
+        toast(res.badge && res.badge.new ? "Wallet verified · badge unlocked" : "Wallet verified", "ok");
+        haptic("success");
+        return refresh();
+      })
+      .catch(function (error) {
+        if (error && /^challenge_/.test(error.code || "") || (error && error.code === "bad_signature")) state.walletChallenge = null;
+        fail(error);
+      });
   }
 
   function achievementCard() {
