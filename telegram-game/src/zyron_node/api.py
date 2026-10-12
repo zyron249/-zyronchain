@@ -46,6 +46,7 @@ from zyron_node.game import (
 )
 from zyron_node.limits import RateLimitExceeded, hit
 from zyron_node import community, reminders, telegram_api
+from zyron_node.wallet_proof import issue_challenge, verify_proof
 
 
 def error_payload(code: str, message: str) -> dict:
@@ -70,6 +71,10 @@ class TreeBody(IdempotentBody):
 
 class WalletBody(IdempotentBody):
     address: str = Field(min_length=43, max_length=43)
+
+
+class WalletProofBody(BaseModel):
+    proof: str = Field(min_length=20, max_length=320)
 
 
 class ChestBody(BaseModel):
@@ -336,6 +341,22 @@ def register_routes(app) -> None:
         limit_user(request, identity.id, "wallet", 5, 3600, now)
         player = _player_id(request, identity, ip_hash, now)
         return link_wallet(request.app.state.pool, player, body.address.strip(), body.idempotencyKey, now)
+
+    @app.post("/api/wallet/challenge")
+    def wallet_challenge(request: Request):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "wallet_challenge", 10, 3600, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return issue_challenge(request.app.state.pool, player, identity.id, now)
+
+    @app.post("/api/wallet/verify")
+    def wallet_verify(request: Request, body: WalletProofBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "wallet_verify", 10, 3600, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return verify_proof(request.app.state.pool, player, identity.id, body.proof, now)
 
     @app.post("/api/wallet/unlink")
     def wallet_unlink(request: Request, body: IdempotentBody):

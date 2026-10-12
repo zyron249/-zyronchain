@@ -71,6 +71,13 @@ button.danger { border-color: var(--bad); color: #ffd6d0; background: #2a1411; }
 button:disabled { opacity: .45; cursor: not-allowed; }
 .actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 4px; }
 .actions button { flex: 1 1 160px; }
+a.button {
+  font: 600 15px/1.2 system-ui, -apple-system, sans-serif; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; min-height: 46px; cursor: pointer;
+}
+a.button { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; text-align: center; }
+.actions a.button { flex: 1 1 160px; }
+[data-link-message], [data-link-proof] { white-space: pre-wrap; word-break: break-all; }
 .row { display: flex; gap: 10px; align-items: center; }
 .row.between { justify-content: space-between; }
 .row.two { align-items: flex-start; }
