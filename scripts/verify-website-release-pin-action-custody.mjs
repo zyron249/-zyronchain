@@ -38,7 +38,9 @@ if (!checkoutStep.includes('fetch-depth: 0')) throw new Error('release-pin gate 
 if (/\|\|\s*(?:true\b|:(?=\s|\)|;|$)|exit\s+0\b)/m.test(text)) {
   throw new Error('release-pin gate must not swallow command failures (|| true, || :, || exit 0)');
 }
-if (!text.includes('set -euo pipefail')) throw new Error('release-pin gate shell must use set -euo pipefail');
+// Round-4 PR984: the strict mode must be an effective shell line, not text in a
+// comment or a longer line.
+if (!/^[ \t]*set -euo pipefail[ \t]*$/m.test(text)) throw new Error('release-pin gate shell must use set -euo pipefail');
 const diffCommands = [...text.matchAll(/\$\(git diff --name-only ([^\n]*)\)"/g)];
 if (diffCommands.length < 1) throw new Error('release-pin gate must compare canonical paths with git diff --name-only');
 const comparedPaths = [];
@@ -55,10 +57,28 @@ for (const command of text.matchAll(/git diff --name-only/g)) {
     throw new Error('release-pin gate git diff must run as `if ! VAR="$(git diff ...)"; then` so a failure stops the job');
   }
 }
+// Round-4 PR984: line-based and scoped to the event's own block. The previous
+// regex could run past an event whose `paths:` directly follows it and read
+// the next event's list instead.
 const triggerPaths = (event) => {
-  const block = text.match(new RegExp(`\\n  ${event}:\\n[\\s\\S]*?\\n    paths:\\n((?:      - '[^']+'\\n)+)`));
-  if (!block) throw new Error(`release-pin gate ${event} trigger paths missing`);
-  return new Set([...block[1].matchAll(/- '([^']+)'/g)].map((m) => m[1]));
+  const lines = text.split('\n');
+  const start = lines.findIndex((line) => line === `  ${event}:`);
+  if (start < 0) throw new Error(`release-pin gate ${event} trigger paths missing`);
+  let end = start + 1;
+  while (end < lines.length && (lines[end].trim() === '' || /^ {3,}\S/.test(lines[end]))) end += 1;
+  const block = lines.slice(start + 1, end);
+  const pathsAt = block.findIndex((line) => line === '    paths:');
+  if (pathsAt < 0 || block.filter((line) => /^ {4}paths:/.test(line)).length !== 1) {
+    throw new Error(`release-pin gate ${event} trigger paths missing`);
+  }
+  const paths = new Set();
+  for (const line of block.slice(pathsAt + 1)) {
+    const item = line.match(/^      - '([^']+)'$/);
+    if (!item) break;
+    paths.add(item[1]);
+  }
+  if (paths.size === 0) throw new Error(`release-pin gate ${event} trigger paths missing`);
+  return paths;
 };
 for (const event of ['pull_request', 'push']) {
   const paths = triggerPaths(event);

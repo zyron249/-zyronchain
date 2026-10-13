@@ -26,7 +26,14 @@ const websiteMutations = {
     replaceOnce(website, "'docs/STANDALONE_L1_READINESS.md')", "'docs/STANDALONE_L1_READINESS.md' || :)"),
   'diff failure masked with exit 0':
     replaceOnce(website, "'docs/STANDALONE_L1_READINESS.md')", "'docs/STANDALONE_L1_READINESS.md' || exit 0)"),
-  'pipefail removed': replaceOnce(website, 'set -euo pipefail', 'set -eu')
+  'pipefail removed': replaceOnce(website, 'set -euo pipefail', 'set -eu'),
+  // Round-4 independent retest (PR984): each of these was accepted before.
+  'l1/** removed from the pull_request trigger only': replaceOnce(website, "      - 'l1/**'\n", ''),
+  'l1/** removed from the push trigger only': (() => {
+    const push = website.indexOf('  push:');
+    return website.slice(0, push) + replaceOnce(website.slice(push), "      - 'l1/**'\n", '');
+  })(),
+  'pipefail only in a comment': replaceOnce(website, 'set -euo pipefail', '# set -euo pipefail\n          set -eu')
 };
 for (const [name, mutated] of Object.entries(websiteMutations)) {
   assert.notEqual(mutated, website, `mutation has no effect: ${name}`);
@@ -40,7 +47,13 @@ const releaseMutations = {
     replaceOnce(release, '- name: Test\n        run: npm test', '- continue-on-error: true\n        name: Test\n        run: npm test'),
   'test command after exit 0': replaceOnce(release, 'run: npm test', 'run: |\n          exit 0\n          npm test'),
   'condition as the first step property':
-    replaceOnce(release, '- name: Test\n        run: npm test', "- if: ${{ false }}\n        name: Test\n        run: npm test")
+    replaceOnce(release, '- name: Test\n        run: npm test', "- if: ${{ false }}\n        name: Test\n        run: npm test"),
+  // Round-4 independent retest (PR984): each of these was accepted before.
+  'audit printed from a heredoc': replaceOnce(release, 'run: npm audit --omit=dev --audit-level=high',
+    "run: |\n          cat <<'AUDIT_TEXT'\n          npm audit --omit=dev --audit-level=high\n          AUDIT_TEXT"),
+  'test command after builtin exit 0': replaceOnce(release, 'run: npm test', 'run: |\n          builtin exit 0\n          npm test'),
+  'test command after command exit 0': replaceOnce(release, 'run: npm test', 'run: |\n          command exit 0\n          npm test'),
+  'test command after a separator and builtin exit': replaceOnce(release, 'run: npm test', 'run: true; builtin exit 0; npm test')
 };
 for (const [name, mutated] of Object.entries(releaseMutations)) {
   assert.throws(() => verifyL1ReleaseWorkflow(mutated), Error, `release mutation must be rejected: ${name}`);

@@ -25,9 +25,15 @@ if (/^\s*(?:-\s+)?continue-on-error\s*:/m.test(workflow)) throw new Error('Relea
 if (/^\s+(?:-\s+)?if\s*:/m.test(workflow)) throw new Error('Release workflow steps and jobs must not be conditional');
 // F-08 residual: a shell line that ends the step early makes every later
 // required command unreachable.
-if (/^\s*(?:exit|return)\b/m.test(workflow) || /(?:&&|\|\||;)\s*exit\s+0\b/.test(workflow)) {
+// Round-4 PR984: also through the `builtin` / `command` wrappers (and the
+// same after a separator).
+const EARLY_EXIT = /(?:^|&&|\|\||;|\(|\{)\s*(?:(?:builtin|command|eval)\s+)*(?:exit|return|logout)\b/m;
+if (EARLY_EXIT.test(workflow)) {
   throw new Error('Release workflow steps must not exit early');
 }
+// Round-4 PR984: a heredoc turns the lines below it into data, so a required
+// command inside one would be printed, not run. Run blocks must not use them.
+if (/<<-?\s*['"]?[A-Za-z_]/.test(workflow)) throw new Error('Release workflow steps must not use heredocs');
 
 const requireExactRef = (action, expected) => {
   const refs = [...workflow.matchAll(new RegExp(`actions/${action}@([0-9a-f]{40})`, 'g'))].map((m) => m[1]);
