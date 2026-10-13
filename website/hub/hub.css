@@ -53,3 +53,10 @@
   .hub *, .hub *::before, .hub *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
 .hub h1[tabindex="-1"]:focus, .hub h2[tabindex="-1"]:focus { outline: none; }
+.hub-steps { padding-left: 1.2em; }
+.hub-steps li { margin-bottom: var(--s-3); }
+.hub-code-row { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-2); }
+.hub-input { min-height: 44px; min-width: 0; width: 12ch; padding: 0 var(--s-3); border-radius: var(--r-1); border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink); font: 600 var(--fs-1)/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.hub-input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.hub-error { color: var(--danger); min-height: 1em; }
+.hub-error:empty { display: none; }

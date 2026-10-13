@@ -1,6 +1,6 @@
 # ZYRON HUB architecture
 
-Status: **Phase 0 (audit) and Phase 1 (static Hub interface) implemented.** Phases 2-6 are designs only.
+Status: **Phases 0, 1 and 2 implemented.** Phase 2 is the read-only Telegram web sign-in (section 4). Phases 3-6 are designs only.
 
 ZYRON HUB (`website/hub/`, served at `https://zyronchain.com/hub/`) is one entry point to the ZyronChain ecosystem: wallet, the ZYRON NODE game, network state, launch status and, later, node monitoring. A single portal does **not** mean a single security domain. Each layer keeps its own boundary, and the Hub links between them rather than merging them.
 
@@ -52,7 +52,17 @@ Hard rules for every phase: total supply is fixed at 50,000,000 ZYN; no `mining_
 - **Hub:** a static page with no keys and no browser storage (the site CI forbids `localStorage`/`indexedDB` and key APIs outside `website/app/`). It may read only `https://zyron-node.onrender.com` and `https://zyron-wallet-testnet-rpc.onrender.com`, with `credentials: 'omit'`. It writes remote data with `textContent` only, and it refuses an RPC status that does not declare `valueBearing: false`.
 - **Game:** owns Points and player state. Points have no conversion rate to ZYN.
 
-## 4. Phase 2 design: secure Telegram web login (not implemented)
+## 4. Phase 2: secure Telegram web login (implemented: option B, read-only)
+
+Implemented in `telegram-game/src/zyron_node/web_login.py`, migration `009_web_login.sql`, and the routes `POST /api/web/login/start`, `POST /api/web/login/finish`, `GET /api/web/me` and `POST /api/web/logout`, tested by `tests/test_web_login.py`:
+- The browser gets a public `loginId` and a private `secret` (valid 120 s). The deep link `t.me/ZyronNodeBot?start=web_<loginId>` is confirmed by the bot from the authenticated Telegram update, which sends an 8-character one-time code (valid 120 s) to that private chat only. Group chats never get a code. A second confirmation burns the request.
+- `finish` needs `loginId` + `secret` + `code`. Every attempt is committed; the request is burned on success, after 5 wrong codes, or on expiry.
+- Session: 256-bit token, 30 minutes, kept in browser memory only and sent as `Authorization: zws <token>`. No cookies, so no CSRF surface. Logout revokes it. Only SHA-256 hashes of the secret, code and token are stored.
+- `/api/web/me` reads in a `READ ONLY` transaction (no energy persist, no rewards) and returns only the session owner's profile, points, energy, level, upgrades, achievements, ranks, invites and wallet-link status. Browser-supplied ids are ignored. Gameplay stays in Telegram.
+- Rate limits: start 10 per IP per 10 min (600 globally), finish 20 per IP per 10 min, reads 120 per IP and 30 per account per minute.
+- CORS: hosted deployments add `https://zyronchain.com` next to the Mini App origin and any `CORS_ORIGINS` (`config.HUB_ORIGIN`). No credentials mode.
+
+Original design notes:
 
 Goal: show a player's own game data in the Hub without trusting any client-supplied id.
 

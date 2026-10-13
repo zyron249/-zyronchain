@@ -47,6 +47,7 @@ from zyron_node.game import (
 from zyron_node.limits import RateLimitExceeded, hit
 from zyron_node import community, reminders, telegram_api
 from zyron_node.wallet_proof import issue_challenge, verify_proof
+from zyron_node import web_login
 
 
 def error_payload(code: str, message: str) -> dict:
@@ -75,6 +76,12 @@ class WalletBody(IdempotentBody):
 
 class WalletProofBody(BaseModel):
     proof: str = Field(min_length=20, max_length=320)
+
+
+class WebFinishBody(BaseModel):
+    loginId: str = Field(min_length=32, max_length=32, pattern=r"^[0-9a-f]{32}$")
+    secret: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    code: str = Field(min_length=8, max_length=12)
 
 
 class ChestBody(BaseModel):
@@ -377,6 +384,42 @@ def register_routes(app) -> None:
         address = row["wallet_address"] if row else None
         panel = request.app.state.chain.panel(address, now)
         return observe_chain(request.app.state.pool, player_id, panel, now)
+
+    # ZYRON HUB read-only web sign-in (see web_login.py). No cookies: the session token travels in the
+    # Authorization header, so cross-site requests cannot ride on it (no CSRF surface). Identity comes only from
+    # the bot's authenticated Telegram update, never from the browser.
+    def web_ip(request: Request) -> str:
+        return hash_ip(client_ip(request), request.app.state.settings.referral_ip_salt)
+
+    @app.post("/api/web/login/start")
+    def web_login_start(request: Request):
+        now = request_now(request)
+        ip = web_ip(request)
+        hit(request.app.state.pool, f"ip:{ip}:webstart", 10, 600, now)
+        hit(request.app.state.pool, "global:webstart", 600, 600, now)
+        return web_login.start_login(request.app.state.pool, now, request.app.state.settings.telegram_bot_username)
+
+    @app.post("/api/web/login/finish")
+    def web_login_finish(request: Request, body: WebFinishBody):
+        now = request_now(request)
+        ip = web_ip(request)
+        hit(request.app.state.pool, f"ip:{ip}:webfinish", 20, 600, now)
+        return web_login.finish_login(request.app.state.pool, body.loginId, body.secret, body.code, now)
+
+    @app.get("/api/web/me")
+    def web_me(request: Request):
+        now = request_now(request)
+        ip = web_ip(request)
+        hit(request.app.state.pool, f"ip:{ip}:webread", 120, 60, now)
+        telegram_id = web_login.session_telegram_id(request.app.state.pool, request.headers.get("authorization", ""), now)
+        limit_user(request, telegram_id, "webme", 30, 60, now)
+        return web_login.web_profile(request.app.state.pool, telegram_id, now, request.app.state.settings.telegram_bot_username)
+
+    @app.post("/api/web/logout")
+    def web_logout(request: Request):
+        now = request_now(request)
+        hit(request.app.state.pool, f"ip:{web_ip(request)}:weblogout", 30, 600, now)
+        return web_login.revoke(request.app.state.pool, request.headers.get("authorization", ""), now)
 
     @app.get("/api/admin/overview")
     def overview(request: Request):

@@ -53,7 +53,9 @@ def client(settings):
                         community_posts,
                         quiz_answers,
                         quiz_polls,
-                        pending_deletes
+                        pending_deletes,
+                        web_logins,
+                        web_sessions
                     RESTART IDENTITY CASCADE
                     """
                 )
