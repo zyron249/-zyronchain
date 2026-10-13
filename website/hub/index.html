@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#02050a" />
+  <title>ZYRON HUB — ZyronChain ecosystem</title>
+  <meta name="description" content="ZYRON HUB: one place for the ZyronChain phone wallet, the ZYRON NODE game, network state and launch status. Testnet only; no value-bearing network is active." />
+  <meta name="referrer" content="no-referrer" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src https://zyron-node.onrender.com https://zyron-wallet-testnet-rpc.onrender.com; manifest-src 'self'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'" />
+  <link rel="canonical" href="https://zyronchain.com/hub/" />
+  <link rel="icon" href="../favicon-32.png" type="image/png" sizes="32x32" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="stylesheet" href="../site.css?v=99006be00a32" />
+  <link rel="stylesheet" href="./hub.css?v=161d5e6ac3d8" />
+</head>
+<body class="hub">
+  <a class="skip-link" href="#hub-main">Skip to content</a>
+  <header class="hub-top">
+    <a class="brand" href="../" aria-label="ZyronChain home">
+      <img class="brand-mark" src="../brand-mark.png" alt="" width="192" height="192" /><img class="brand-wordmark" src="../brand/zyron-wordmark.png" alt="ZyronChain" width="712" height="80" />
+    </a>
+    <span class="hub-badge">HUB · testnet only</span>
+  </header>
+
+  <div class="hub-shell">
+    <nav class="hub-nav" aria-label="Hub sections">
+      <a href="#overview" data-nav="overview"><span aria-hidden="true">◆</span> Overview</a>
+      <a href="#wallet" data-nav="wallet"><span aria-hidden="true">◇</span> Wallet</a>
+      <a href="#node" data-nav="node"><span aria-hidden="true">▣</span> ZYRON NODE</a>
+      <a href="#my-nodes" data-nav="my-nodes"><span aria-hidden="true">▤</span> My Nodes</a>
+      <a href="#network" data-nav="network"><span aria-hidden="true">◎</span> Network</a>
+      <a href="#activity" data-nav="activity"><span aria-hidden="true">≡</span> Activity</a>
+      <a href="#staking" data-nav="staking"><span aria-hidden="true">▥</span> Staking</a>
+      <a href="#security" data-nav="security"><span aria-hidden="true">◈</span> Security</a>
+      <a href="#settings" data-nav="settings"><span aria-hidden="true">⚙</span> Settings</a>
+    </nav>
+
+    <main id="hub-main" class="hub-main" tabindex="-1">
+      <p class="hub-banner" role="note"><strong>No value-bearing network is active.</strong> Mainnet is not activated. Everything here is testnet or game data: test ZYN has no value, and Zyron Points are off-chain game points with no conversion to ZYN.</p>
+
+      <section id="overview" class="hub-section" aria-labelledby="h-overview" data-section>
+        <p class="eyebrow">Overview</p>
+        <h1 id="h-overview">ZYRON HUB</h1>
+        <p class="lead">One entry point to the ZyronChain ecosystem. Each service keeps its own security boundary: the Hub shows public status and links you to the right app; it never holds keys and never signs.</p>
+        <div class="hub-grid">
+          <article class="panel">
+            <span class="tag tag-final">Live · testnet</span>
+            <h2>Phone Wallet</h2>
+            <p>Create, restore, lock and unlock a testnet wallet. Keys stay encrypted on your device.</p>
+            <a class="btn btn-primary" href="../app/">Open Phone Wallet</a>
+          </article>
+          <article class="panel">
+            <span class="tag tag-final">Live · game</span>
+            <h2>ZYRON NODE</h2>
+            <p>The Telegram game: run a virtual node, upgrade builders, earn off-chain Zyron Points.</p>
+            <p class="hub-live" data-out="overview-game" aria-live="polite">Game status: checking…</p>
+            <a class="btn" href="https://t.me/ZyronNodeBot" rel="noopener noreferrer">Open @ZyronNodeBot</a>
+          </article>
+          <article class="panel">
+            <span class="tag tag-review">Testnet · no value</span>
+            <h2>Wallet testnet</h2>
+            <p class="hub-live" data-out="overview-rpc" aria-live="polite">Testnet status: checking…</p>
+            <a class="btn btn-quiet" href="#network">Network details</a>
+          </article>
+          <article class="panel">
+            <span class="tag tag-pending">Not activated</span>
+            <h2>Mainnet</h2>
+            <p>Governance authorization exists, but activation is gated on open readiness requirements. See <a href="#network">Network</a>.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="wallet" class="hub-section" aria-labelledby="h-wallet" data-section>
+        <p class="eyebrow">Wallet</p>
+        <h2 id="h-wallet">ZYN wallet</h2>
+        <p>The wallet is a separate installable app with its own, stricter rules: it makes no network requests (<code>connect-src 'none'</code>), and the key vault is encrypted with scrypt and AES-256-GCM on your device. The Hub deliberately does not embed it, so a bug in the Hub can never reach your keys.</p>
+        <dl class="hub-list">
+          <div class="hub-row"><dt>Create / restore wallet</dt><dd><span class="state state-ok">In Phone Wallet</span></dd></div>
+          <div class="hub-row"><dt>Lock / unlock</dt><dd><span class="state state-ok">In Phone Wallet</span></dd></div>
+          <div class="hub-row"><dt>Show address and QR code</dt><dd><span class="state state-ok">In Phone Wallet</span></dd></div>
+          <div class="hub-row"><dt>Sign testnet transfers offline</dt><dd><span class="state state-ok">In Phone Wallet</span></dd></div>
+          <div class="hub-row"><dt>Link wallet to the game (signed proof)</dt><dd><span class="state state-ok">Via Telegram game</span></dd></div>
+          <div class="hub-row"><dt>Balance in the Hub</dt><dd><span class="state state-off">Not available</span> <span class="hub-why">Needs a read-only lookup design (Phase 3). The testnet resets, so balances are not durable.</span></dd></div>
+          <div class="hub-row"><dt>Mainnet ZYN</dt><dd><span class="state state-off">Not available</span> <span class="hub-why">Mainnet is not activated.</span></dd></div>
+        </dl>
+        <p><a class="btn btn-primary" href="../app/">Open Phone Wallet</a> <a class="btn btn-quiet" href="../wallet.html">Desktop Wallet Setup</a></p>
+      </section>
+
+      <section id="node" class="hub-section" aria-labelledby="h-node" data-section>
+        <p class="eyebrow">ZYRON NODE</p>
+        <h2 id="h-node">Virtual node game</h2>
+        <p>ZYRON NODE is a Telegram Mini App. Node cycles are fictional; they are not blockchain validation and do not create ZYN.</p>
+        <dl class="hub-list" data-out="game-meta" aria-live="polite">
+          <div class="hub-row"><dt>Game service</dt><dd>Checking…</dd></div>
+        </dl>
+        <p class="hub-note">Your own progress (points, level, builders) is only shown inside Telegram for now. Web sign-in with Telegram is planned (Phase 2) and is not available yet.</p>
+        <p><a class="btn btn-primary" href="https://t.me/ZyronNodeBot" rel="noopener noreferrer">Play in Telegram</a> <button class="btn" type="button" disabled>Sign in with Telegram (coming in Phase 2)</button></p>
+      </section>
+
+      <section id="my-nodes" class="hub-section" aria-labelledby="h-my-nodes" data-section>
+        <p class="eyebrow">My Nodes</p>
+        <h2 id="h-my-nodes">Real blockchain nodes</h2>
+        <p><span class="state state-off">Not available yet</span> No public validator network is running, and the Hub must never talk to a validator's consensus RPC. Read-only monitoring through a separate status gateway is planned (Phase 4).</p>
+        <p>Today you can run a private local devnet from source and read the operator guide.</p>
+        <p><a class="btn" href="../validator.html">Validator Launchpad</a> <a class="btn btn-quiet" href="https://github.com/zyron249/-zyronchain/blob/main/l1/LOCAL_DEVNET.md" rel="noopener noreferrer">Local devnet guide</a></p>
+      </section>
+
+      <section id="network" class="hub-section" aria-labelledby="h-network" data-section>
+        <p class="eyebrow">Network</p>
+        <h2 id="h-network">Network state</h2>
+        <h3>Wallet testnet (live read)</h3>
+        <p class="hub-note">A single no-value test service for the wallets. It runs on a free host that sleeps when idle and may come back as a fresh chain, so heights and balances can reset. It is not the public testnet.</p>
+        <dl class="hub-list" data-out="rpc-status" aria-live="polite">
+          <div class="hub-row"><dt>Wallet testnet</dt><dd>Checking…</dd></div>
+        </dl>
+        <p><button class="btn btn-quiet" type="button" data-action="refresh">Refresh live data</button></p>
+        <h3>Launch flags</h3>
+      <!-- launch-flags:start (generated by tools/site/build-hub.mjs from docs/l1-launch-authorization.json) -->
+      <p class="hub-note">Source: <code>docs/l1-launch-authorization.json</code> · status <code>governance-authorization-granted-activation-gated</code>. Authorization does not waive readiness gates.</p>
+      <dl class="hub-list">
+        <div class="hub-row" data-flag="publicTestnetAuthorized"><dt>Public testnet authorized by governance</dt><dd><span class="state state-ok">Yes</span></dd></div>
+        <div class="hub-row" data-flag="publicTestnetActivationAllowed"><dt>Public testnet activation allowed</dt><dd><span class="state state-off">No</span></dd></div>
+        <div class="hub-row" data-flag="mainnetAuthorized"><dt>Mainnet authorized by governance</dt><dd><span class="state state-ok">Yes</span></dd></div>
+        <div class="hub-row" data-flag="mainnetActivationAllowed"><dt>Mainnet activation allowed</dt><dd><span class="state state-off">No</span></dd></div>
+      </dl>
+      <details class="hub-details"><summary>Open public testnet requirements (10)</summary>
+        <ul>
+          <li><code>independent-operators-deploy-from-release-artifacts-without-founder-assistance</code></li>
+          <li><code>bootstrap-archive-monitoring-across-independent-failure-domains</code></li>
+          <li><code>independent-consensus-cryptography-network-audit-and-retest</code></li>
+          <li><code>independent-protocol-v5-mining-issuance-audit-and-retest</code></li>
+          <li><code>sustained-independent-operator-internet-adversarial-soak</code></li>
+          <li><code>production-hsm-or-audited-signer-custody-and-cross-host-rotation</code></li>
+          <li><code>protected-branch-independent-review-repository-policy</code></li>
+          <li><code>target-hardware-state-v2-scale-and-recovery-measurements</code></li>
+          <li><code>independent-maintainer-and-security-custody-succession-evidence</code></li>
+          <li><code>mining-contention-calibration-and-inclusion-fairness-evidence</code></li>
+        </ul></details>
+      <details class="hub-details"><summary>Open mainnet requirements (12)</summary>
+        <ul>
+          <li><code>all-public-testnet-activation-requirements-closed-with-evidence</code></li>
+          <li><code>immutable-mainnet-chain-id</code></li>
+          <li><code>immutable-mainnet-genesis-allocation</code></li>
+          <li><code>immutable-mining-reward-halving-cap-and-difficulty-policy</code></li>
+          <li><code>validator-reward-inflation-and-fee-policy</code></li>
+          <li><code>activity-oracle-production-governance</code></li>
+          <li><code>validator-admission-removal-governance</code></li>
+          <li><code>target-hardware-state-v2-scale-and-recovery-measurements</code></li>
+          <li><code>sustained-public-testnet-mining-finality-and-independent-retest</code></li>
+          <li><code>multi-region-disaster-recovery-and-incident-drills</code></li>
+          <li><code>independent-maintainer-and-security-custody-succession-evidence</code></li>
+          <li><code>protected-release-tag-and-branch-review-policy</code></li>
+        </ul></details>
+      <!-- launch-flags:end -->
+        <h3>Supply</h3>
+        <p>Total supply is fixed at 50,000,000 ZYN at genesis. Mining is retired and the protocol cannot create new ZYN. Fees are burned, not paid out.</p>
+      </section>
+
+      <section id="activity" class="hub-section" aria-labelledby="h-activity" data-section>
+        <p class="eyebrow">Activity</p>
+        <h2 id="h-activity">Your activity</h2>
+        <p><span class="state state-off">Not available yet</span> Your game history needs a signed-in session, and web sign-in is not built yet (Phase 2). Inside the Telegram game, the activity ledger is already available.</p>
+      </section>
+
+      <section id="staking" class="hub-section" aria-labelledby="h-staking" data-section>
+        <p class="eyebrow">Staking</p>
+        <h2 id="h-staking">Staking</h2>
+        <p><span class="state state-off">Not supported by the protocol</span> The ZyronChain protocol has no staking or delegation today. Validators are admitted by a signed validator-set update approved by existing validators, not by locking ZYN.</p>
+        <ul>
+          <li>No block rewards exist: supply is fixed and nothing is minted.</li>
+          <li>Any future staking would need a protocol upgrade, an independent audit and a governance decision, and could only pay from already existing ZYN.</li>
+        </ul>
+        <p><button class="btn" type="button" disabled>Stake (not available)</button></p>
+      </section>
+
+      <section id="security" class="hub-section" aria-labelledby="h-security" data-section>
+        <p class="eyebrow">Security</p>
+        <h2 id="h-security">Security</h2>
+        <ul class="hub-checks">
+          <li>Never share your recovery phrase. Nobody from ZyronChain will ask for it, in Telegram or anywhere else.</li>
+          <li>This Hub stores nothing in your browser and holds no keys.</li>
+          <li>The only live requests from this page are public status reads from the game service and the wallet testnet.</li>
+          <li>There is no token sale. Anyone offering ZYN for money is not ZyronChain.</li>
+          <li>Linking a wallet to the game only proves you hold the key; it never moves funds.</li>
+        </ul>
+        <p><a class="btn btn-quiet" href="https://github.com/zyron249/-zyronchain/blob/main/SECURITY.md" rel="noopener noreferrer">Security policy</a></p>
+      </section>
+
+      <section id="settings" class="hub-section" aria-labelledby="h-settings" data-section>
+        <p class="eyebrow">Settings</p>
+        <h2 id="h-settings">Settings</h2>
+        <p>The Hub follows your system settings for dark mode and reduced motion, and keeps no preferences in your browser.</p>
+        <label class="hub-toggle"><input type="checkbox" data-setting="auto" /> Refresh live data every minute (this visit only)</label>
+      </section>
+
+      <footer class="hub-foot">
+        <p>English only · open source · <a href="https://github.com/zyron249/-zyronchain" rel="noopener noreferrer">GitHub</a> · <a href="../privacy.html">Privacy</a> · <a href="../terms.html">Terms</a></p>
+      </footer>
+    </main>
+  </div>
+  <script src="./hub.js?v=387bfca403d0"></script>
+</body>
+</html>
