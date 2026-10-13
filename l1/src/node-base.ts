@@ -63,6 +63,10 @@ import type { Block, BlockAttestation, RoundSkipVote, Transaction, Validator } f
 import { LocalValidatorSigner, signWithValidator, type ValidatorSigner } from "./validator-signer.js";
 
 const MAX_BODY_BYTES = 2_500_000;
+/** Consensus phases whose quorum readiness tracks (F-04); later phases rank higher. */
+export type ConsensusQuorumPhase = "round" | "prepare" | "commit";
+const CONSENSUS_QUORUM_PHASE_RANK: Readonly<Record<ConsensusQuorumPhase, number>> = { round: 0, prepare: 1, commit: 2 };
+
 export const MAX_RPC_JSON_NESTING_DEPTH = 64;
 export const MAX_RPC_JSON_STRUCTURAL_TOKENS = 250_000;
 export const MAX_PEER_RESPONSE_JSON_NESTING_DEPTH = 64;
@@ -350,7 +354,7 @@ export class NodeService {
   private legacyCatchUp: LegacyRoundCatchUp | undefined;
   private readonly activeSyncTargets = new Map<number, number>();
   private nextSyncHandle = 0;
-  private consensusQuorumFailure: { height: number; previousHash: string } | undefined;
+  private consensusQuorumFailure: { height: number; previousHash: string; phase: number } | undefined;
   private validatorSignerFailed = false;
   readonly readinessMaxTipAgeMs: number;
 
@@ -462,13 +466,22 @@ export class NodeService {
    * record is ignored once the tip moves and is cleared by the next quorum
    * this validator collects for the same tip.
    */
-  recordConsensusQuorumFailure(height: number, previousHash: string): void {
-    this.consensusQuorumFailure = { height, previousHash };
+  recordConsensusQuorumFailure(height: number, previousHash: string, phase: ConsensusQuorumPhase = "round"): void {
+    this.consensusQuorumFailure = { height, previousHash, phase: CONSENSUS_QUORUM_PHASE_RANK[phase] };
   }
 
-  recordConsensusQuorumReached(height: number, previousHash: string): void {
+  /**
+   * Clears a recorded failure for the same tip only when the quorum reached is
+   * for the same or a later phase (round-4 PR981): a v6 prepare quorum on a
+   * retry says nothing about the commit quorum that failed before, so it must
+   * not make the node look ready while the commit phase is still unproven.
+   */
+  recordConsensusQuorumReached(height: number, previousHash: string, phase: ConsensusQuorumPhase = "round"): void {
     const failure = this.consensusQuorumFailure;
-    if (failure && failure.height === height && failure.previousHash === previousHash) this.consensusQuorumFailure = undefined;
+    if (failure && failure.height === height && failure.previousHash === previousHash &&
+        CONSENSUS_QUORUM_PHASE_RANK[phase] >= failure.phase) {
+      this.consensusQuorumFailure = undefined;
+    }
   }
 
   /** Catch-up progress for (height, previousHash), or undefined if none is recorded for that tip. */
