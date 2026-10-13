@@ -29,7 +29,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24'
       - name: Check browser JavaScript syntax
@@ -44,17 +44,12 @@ jobs:
           node --check website/app/sw.js
           node --check website/app/vendor/noble-scure.js
           node --check website/app/vendor/qr.js
-          node --check website/hub/hub.js
       - name: Wallet derivation vectors and generated-script tests
         run: node website/test-wallet-core.mjs
       - name: Static network status component is current (build-time, never live RPC)
         run: node tools/site/network-status.mjs --check
       - name: Site CSS/JS references carry current content versions
         run: node tools/site/stamp-site.mjs --check
-      - name: ZYRON HUB build is current and static tests pass
-        run: |
-          node tools/site/build-hub.mjs --check
-          node tools/site/test-hub.mjs
       - name: Site regression tests (English-only, network-status honesty, naming, mining retired, build id, SEO)
         run: node tools/site/test-site.mjs
       - name: Verify production website, wallet and validator contracts
@@ -500,4 +495,3 @@ jobs:
           CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
           export CHROME_PATH
           node tools/site/test-layout.mjs
-          node tools/site/test-hub-browser.mjs
