@@ -8,6 +8,7 @@ import {
   activityRollingWindowEnforced,
   assertActivityRollingWindow,
   assertActivitySettlementWithinCap,
+  assertNoActivityPoolDirectDebit,
   isActivityWindowAddress
 } from "./activity.js";
 import { assertActivitySettlementAuthorized, type ActivityOracleSet } from "./activity-oracle.js";
@@ -136,6 +137,7 @@ export class LedgerState {
     const rollingWindow = activityRollingWindowEnforced(oracles);
     if (tx.kind === "transfer") {
       assertNoActivityPoolInflow(tx.receiver, activityPool);
+      assertNoActivityPoolDirectDebit(tx.sender, activityPool, oracles);
       if (rollingWindow && isActivityWindowAddress(tx.receiver)) throw new Error(ACTIVITY_WINDOW_RESERVED_MESSAGE);
       this.applyTransfer(tx, locks);
     } else if (tx.kind === "activity_settlement") {

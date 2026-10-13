@@ -89,6 +89,24 @@ export function activityRollingWindowEnforced(genesis: { readonly launchProfile?
   return genesis?.launchProfile === ACTIVITY_ROLLING_WINDOW_PROFILE;
 }
 
+export const ACTIVITY_POOL_DEBIT_MESSAGE = "Activity pool can only be debited by activity settlements";
+
+/**
+ * Under `launchProfile: "fixed-supply-v1"` the ecosystem/activity-pool reserve
+ * may leave the pool only through authorized activity settlements (m-of-n
+ * oracle, per-epoch and rolling 24 h caps). Any other debit signed by the pool
+ * key (a plain transfer, including a fee-only one) is refused, so holding the
+ * pool key gives no withdrawal path. Genesis files without the profile keep
+ * the historical behaviour (existing chains do not fork).
+ */
+export function assertNoActivityPoolDirectDebit(
+  sender: string,
+  activityPool: string,
+  genesis: { readonly launchProfile?: string } | undefined
+): void {
+  if (activityRollingWindowEnforced(genesis) && sender === activityPool) throw new Error(ACTIVITY_POOL_DEBIT_MESSAGE);
+}
+
 export function isActivityWindowAddress(address: string): boolean {
   return address === ACTIVITY_WINDOW_TIME_ADDRESS || address === ACTIVITY_WINDOW_AMOUNT_ADDRESS;
 }

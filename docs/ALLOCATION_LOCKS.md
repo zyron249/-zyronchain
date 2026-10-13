@@ -87,3 +87,15 @@ For a legacy genesis (no `launchProfile`) the genesis block hash commits to the 
 | State-v2 store rebuild on reopen (corrupted root metadata) | n/a | yes | covered by replay |
 
 Trust assumption: a trusted snapshot or portable state is authoritative for the state it pins. If an operator pins the anchor of a tip finalized on a twin chain that already moved locked funds, the install accepts that state, because the pre-tip state is not available to re-check. Honest validators running the published genesis never finalize such a block, so this requires a broken validator supermajority plus a wrong anchor; the ceremony pins the genesis digest, and `launchProfile` genesis binding (#961) makes a twin genesis a different chain.
+
+## Ecosystem / activity-pool reserve (fixed-supply-v1)
+
+Under `launchProfile: "fixed-supply-v1"` the activity pool (the 5M ZYN
+ecosystem/community allocation) can only be debited by authorized activity
+settlements (m-of-n oracle approval, per-epoch cap and the rolling
+10,000 ZYN / 24 h window). Any other debit signed by the pool key, such as a
+plain transfer or a fee-only transfer, is refused by consensus: in mempool admission,
+block production and validation, and both state appliers used for replay.
+Holding the pool key therefore gives no withdrawal path. Genesis files without
+the launch profile keep the historical behaviour. Regression test:
+`l1/test/activity-pool-direct-debit.test.ts`.

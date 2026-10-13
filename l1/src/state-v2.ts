@@ -10,6 +10,7 @@ import {
   activityRollingWindowEnforced,
   assertActivityRollingWindow,
   assertActivitySettlementWithinCap,
+  assertNoActivityPoolDirectDebit,
   isActivityWindowAddress
 } from "./activity.js";
 import { assertActivitySettlementAuthorized, type ActivityOracleSet } from "./activity-oracle.js";
@@ -507,6 +508,7 @@ export function applyStateV2Transaction(
   const rollingWindow = activityRollingWindowEnforced(oracles);
   if (tx.kind === "transfer") {
     assertNoActivityPoolInflow(tx.receiver, activityPool);
+    assertNoActivityPoolDirectDebit(tx.sender, activityPool, oracles);
     if (rollingWindow && isActivityWindowAddress(tx.receiver)) throw new Error(ACTIVITY_WINDOW_RESERVED_MESSAGE);
     requireStateV2Nonce(state, tx.sender, tx.nonce);
     const total = tx.amountAtoms + tx.feeAtoms;

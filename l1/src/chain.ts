@@ -38,6 +38,7 @@ import {
   ACTIVITY_WINDOW_TIME_ADDRESS,
   activityRollingWindowEnforced,
   assertActivityRollingWindow,
+  assertNoActivityPoolDirectDebit,
   isActivityWindowAddress,
   activityEpochWindowExpired,
   assertActivityEpochWindow,
@@ -550,6 +551,7 @@ export class ZyronChain {
     const rollingWindow = activityRollingWindowEnforced(this.genesis);
     if (tx.kind === "transfer") {
       assertNoActivityPoolInflow(tx.receiver, this.genesis.activityPool);
+      assertNoActivityPoolDirectDebit(tx.sender, this.genesis.activityPool, this.genesis);
       if (rollingWindow && isActivityWindowAddress(tx.receiver)) throw new Error(ACTIVITY_WINDOW_RESERVED_MESSAGE);
       const total = tx.amountAtoms + tx.feeAtoms;
       if (!Number.isSafeInteger(total) || this.balance(tx.sender) < total) {
