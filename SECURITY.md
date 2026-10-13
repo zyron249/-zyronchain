@@ -77,4 +77,4 @@ Founder disappearance is not an emergency authorization mechanism. Public histor
 
 ## Scope and launch status
 
-A green CI run, security response, community review, bug-bounty report or policy check does not authorize a value-bearing network or mainnet, and is not a substitute for an independent audit. Current launch gates remain authoritative in `docs/STANDALONE_L1_READINESS.md` and `docs/L1_THREAT_MODEL.md`.
+A green CI run, security response, community review, bug-bounty report or policy check does not authorize a public testnet or mainnet that carries value, and is not a substitute for an independent audit. Current launch gates remain authoritative in `docs/STANDALONE_L1_READINESS.md` and `docs/L1_THREAT_MODEL.md`.
