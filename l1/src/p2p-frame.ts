@@ -104,6 +104,18 @@ export async function writeP2PFrame(
   }
 }
 
+/**
+ * Optional per-transfer accounting for an inbound frame (F-09(b) round-4
+ * residual). `admit` sees the declared body length before any body byte is
+ * buffered; `record` sees every byte received after the 4-byte header as it
+ * arrives, including bytes of frames that later fail to decode. Either may
+ * throw to stop the read.
+ */
+export interface P2PFrameTransferMeter {
+  admit?(declaredBodyBytes: number): void;
+  record(receivedBytes: number): void;
+}
+
 export interface RetainedP2PFrame {
   value: unknown;
   release: () => void;
@@ -129,7 +141,8 @@ export async function readP2PFrameRetained(
   stream: Stream,
   maxBytes: number,
   timeoutMs: number,
-  budget: P2PFrameByteBudget = inboundFrameBudget
+  budget: P2PFrameByteBudget = inboundFrameBudget,
+  meter?: P2PFrameTransferMeter
 ): Promise<RetainedP2PFrame> {
   assertFrameLimits(maxBytes, timeoutMs);
   stream.inactivityTimeout = timeoutMs;
@@ -152,6 +165,9 @@ export async function readP2PFrameRetained(
       // envelope, so reject allocation-amplifying chunks before parsing.
       const bytes = chunk.subarray();
       if (bytes.byteLength > maxBytes + 4) throw new Error("P2P transport chunk exceeds frame limit");
+      // Count every byte after the 4-byte header toward the caller's transfer
+      // budget as it arrives, so failed or rejected frames are not free.
+      if (meter) meter.record(bytes.length - Math.min(4 - headerBytes, bytes.length));
       if (decodedFrame) {
         if (bytes.length > 0) throw new Error("Trailing bytes in P2P frame");
         continue;
@@ -165,6 +181,7 @@ export async function readP2PFrameRetained(
         if (headerBytes === 4) {
           expectedBytes = header.readUInt32BE(0);
           if (expectedBytes < 1 || expectedBytes > maxBytes) throw new Error("Invalid P2P frame length");
+          meter?.admit?.(expectedBytes);
           bodyRelease = budget.reserve(expectedBytes);
           body = Buffer.allocUnsafe(expectedBytes);
         }

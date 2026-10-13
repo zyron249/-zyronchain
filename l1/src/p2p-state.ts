@@ -50,6 +50,9 @@ export const MAX_STATE_SYNC_PEERS = 8;
 export const MAX_STATE_SYNC_TOTAL_BYTES = 4 * 1024 * 1024 * 1024;
 export const MAX_STATE_SYNC_DURATION_MS = 6 * 60 * 60 * 1000;
 
+const STATE_SYNC_BYTE_BUDGET_MESSAGE = "State sync byte budget exceeded";
+const STATE_SYNC_TIME_LIMIT_MESSAGE = "State sync time limit exceeded";
+
 export interface StateSyncLimits {
   /** Cumulative response bytes for one attempt (default MAX_STATE_SYNC_TOTAL_BYTES). */
   maxTotalBytes?: number;
@@ -261,7 +264,82 @@ async function fetchTrustedPortableState(
 ): Promise<TrustedPortableStateTransfer> {
   assertAnchor(anchor);
   const { maxTotalBytes, maxDurationMs } = resolveStateSyncLimits(limits);
+  // One deadline for the whole attempt. The timer aborts any in-flight dial,
+  // stream open, write, read or close, and every await boundary below re-checks
+  // the wall clock, so neither a slow nor a failing peer can extend the attempt
+  // past it (round-4 PR986 residual).
   const deadline = Date.now() + maxDurationMs;
+  const deadlineController = new AbortController();
+  const deadlineTimer = setTimeout(
+    () => deadlineController.abort(new StateSyncLimitError(STATE_SYNC_TIME_LIMIT_MESSAGE)),
+    maxDurationMs
+  );
+  try {
+    return await fetchTrustedPortableStateWithinLimits(
+      node, target, identity, genesis, anchor, resumeDir,
+      { maxTotalBytes, deadline, deadlineSignal: deadlineController.signal }
+    );
+  } finally {
+    clearTimeout(deadlineTimer);
+  }
+}
+
+interface ActiveStateSyncLimits {
+  maxTotalBytes: number;
+  /** Wall-clock deadline (Date.now() milliseconds) of this attempt. */
+  deadline: number;
+  /** Aborted by a timer when the deadline passes. */
+  deadlineSignal: AbortSignal;
+}
+
+/**
+ * Settle with `operation`, or reject with the deadline error as soon as
+ * `signal` aborts. A value that arrives after the deadline is handed to
+ * `onLate` so retained resources (frame byte budget, streams) are released.
+ */
+function untilDeadline<T>(operation: Promise<T>, signal: AbortSignal, onLate?: (value: T) => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      reject(signal.reason instanceof Error ? signal.reason : new StateSyncLimitError(STATE_SYNC_TIME_LIMIT_MESSAGE));
+    };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    operation.then((value) => {
+      signal.removeEventListener("abort", onAbort);
+      if (settled) {
+        onLate?.(value);
+        return;
+      }
+      settled = true;
+      resolve(value);
+    }, (error: unknown) => {
+      signal.removeEventListener("abort", onAbort);
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
+  });
+}
+
+async function fetchTrustedPortableStateWithinLimits(
+  node: Libp2p,
+  target: Parameters<Libp2p["dial"]>[0],
+  identity: NodeIdentity,
+  genesis: GenesisConfig,
+  anchor: TrustedSnapshotAnchor,
+  resumeDir: string | undefined,
+  limits: ActiveStateSyncLimits
+): Promise<TrustedPortableStateTransfer> {
+  const { maxTotalBytes, deadline, deadlineSignal } = limits;
+  const assertWithinDeadline = () => {
+    if (deadlineSignal.aborted || Date.now() >= deadline) throw new StateSyncLimitError(STATE_SYNC_TIME_LIMIT_MESSAGE);
+  };
+  const operationSignal = () => AbortSignal.any([AbortSignal.timeout(P2P_STATE_TIMEOUT_MS), deadlineSignal]);
+  // Cumulative body bytes received from this peer in this attempt, including
+  // bytes of responses that failed to decode or validate and were retried.
   let receivedBytes = 0;
   const expectedChain = new ZyronChain(genesis);
   const expected = { chainId: genesis.chainId, genesisHash: expectedChain.genesisHash };
@@ -271,54 +349,68 @@ async function fetchTrustedPortableState(
   let lastRequestAt = 0;
   const request = async (kind: StateRequestKind, start: number, limit: number): Promise<{ value: unknown; remotePeer: PeerId; release: () => void }> => {
     const delay = P2P_STATE_MIN_REQUEST_INTERVAL_MS - (Date.now() - lastRequestAt);
-    if (delay > 0) await new Promise<void>((resolve) => setTimeout(resolve, delay));
-    if (Date.now() >= deadline) throw new Error("State sync time limit exceeded");
+    if (delay > 0) await untilDeadline(new Promise<void>((resolve) => setTimeout(resolve, delay)), deadlineSignal);
+    assertWithinDeadline();
     lastRequestAt = Date.now();
     let lastError: unknown;
     for (let attempt = 0; attempt <= P2P_STATE_RETRIES; attempt += 1) {
+      // Never start a retry after the deadline.
+      assertWithinDeadline();
       let stream: Awaited<ReturnType<Awaited<ReturnType<typeof node.dial>>["newStream"]>> | undefined;
       let releaseFrame: (() => void) | undefined;
       try {
-        const connection = await node.dial(target, { signal: AbortSignal.timeout(P2P_STATE_TIMEOUT_MS) });
+        const connection = await untilDeadline(node.dial(target, { signal: operationSignal() }), deadlineSignal);
         if (connection.encryption !== "/noise") {
           connection.abort(new Error("State transfer requires authenticated Noise"));
           throw new Error("State transfer requires authenticated Noise");
         }
-        stream = await connection.newStream(P2P_STATE_PROTOCOL, { signal: AbortSignal.timeout(P2P_STATE_TIMEOUT_MS) });
+        stream = await untilDeadline(
+          connection.newStream(P2P_STATE_PROTOCOL, { signal: operationSignal() }),
+          deadlineSignal,
+          (late) => late.abort(new StateSyncLimitError(STATE_SYNC_TIME_LIMIT_MESSAGE))
+        );
         const body: StateRequest = {
           version: 1, identity: local, tipHash: anchor.tipHash, snapshotSha256: anchor.snapshotSha256,
           kind, start, limit
         };
-        await writeP2PFrame(stream, body, MAX_STATE_REQUEST_BYTES, P2P_STATE_TIMEOUT_MS);
-        const retained = await readP2PFrameRetained(
+        await untilDeadline(writeP2PFrame(stream, body, MAX_STATE_REQUEST_BYTES, P2P_STATE_TIMEOUT_MS), deadlineSignal);
+        const attemptStartBytes = receivedBytes;
+        const retained = await untilDeadline(readP2PFrameRetained(
           stream,
           stateResponseMaxBytes(kind),
-          P2P_STATE_TIMEOUT_MS
-        );
+          P2P_STATE_TIMEOUT_MS,
+          undefined,
+          {
+            // Refuse a frame whose declared length cannot fit before buffering it.
+            admit: (declared) => {
+              if (attemptStartBytes > maxTotalBytes - declared) throw new StateSyncLimitError(STATE_SYNC_BYTE_BUDGET_MESSAGE);
+            },
+            // Charge bytes as they arrive, whether or not the frame later decodes.
+            record: (bytes) => {
+              receivedBytes += bytes;
+              if (receivedBytes > maxTotalBytes) throw new StateSyncLimitError(STATE_SYNC_BYTE_BUDGET_MESSAGE);
+            }
+          }
+        ), deadlineSignal, (late) => late.release());
         releaseFrame = retained.release;
-        receivedBytes += retained.bytes;
-        if (receivedBytes > maxTotalBytes) {
-          retained.release();
-          releaseFrame = undefined;
-          stream.abort(new Error("State sync byte budget exceeded"));
-          throw new StateSyncLimitError("State sync byte budget exceeded");
-        }
-        if (Date.now() >= deadline) {
-          retained.release();
-          releaseFrame = undefined;
-          stream.abort(new Error("State sync time limit exceeded"));
-          throw new StateSyncLimitError("State sync time limit exceeded");
-        }
-        await stream.close({ signal: AbortSignal.timeout(P2P_STATE_TIMEOUT_MS) });
+        assertWithinDeadline();
+        await untilDeadline(stream.close({ signal: operationSignal() }), deadlineSignal);
+        // The close is an await boundary too: re-check before handing data on.
+        assertWithinDeadline();
         const reply = { value: retained.value, remotePeer: connection.remotePeer, release: retained.release };
         releaseFrame = undefined;
         return reply;
-      } catch (error) {
+      } catch (caught) {
         releaseFrame?.();
-        // A spent budget is final for this attempt; never retry past it.
+        // A deadline that passed while an operation failed for another reason
+        // (for example an aborted dial) is still the deadline.
+        const error = !(caught instanceof StateSyncLimitError) && (deadlineSignal.aborted || Date.now() >= deadline)
+          ? new StateSyncLimitError(STATE_SYNC_TIME_LIMIT_MESSAGE, { cause: caught })
+          : caught;
+        stream?.abort(error instanceof Error ? error : new Error("State transfer failed"));
+        // A spent budget or deadline is final for this attempt; never retry past it.
         if (error instanceof StateSyncLimitError) throw error;
         lastError = error;
-        stream?.abort(error instanceof Error ? error : new Error("State transfer failed"));
       }
     }
     throw lastError instanceof Error ? lastError : new Error("State transfer failed after bounded retries");
@@ -386,6 +478,8 @@ async function fetchTrustedPortableState(
     await resume?.discard();
     throw new PortableStateAssemblyError("Portable state assembly failed anchored validation", { cause: error });
   }
+  // Success is reported only within the whole-fetch deadline.
+  assertWithinDeadline();
   return { tip: structuredClone(manifest.tip), bundle: structuredClone(bundle) };
 }
 
