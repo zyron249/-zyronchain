@@ -164,10 +164,11 @@ export async function readP2PFrameRetained(
       // single chunk can never exceed the complete 4-byte header + max body
       // envelope, so reject allocation-amplifying chunks before parsing.
       const bytes = chunk.subarray();
-      if (bytes.byteLength > maxBytes + 4) throw new Error("P2P transport chunk exceeds frame limit");
       // Count every byte after the 4-byte header toward the caller's transfer
-      // budget as it arrives, so failed or rejected frames are not free.
+      // budget as it arrives, before any rejection path, so failed, oversized
+      // or otherwise rejected frames are not free.
       if (meter) meter.record(bytes.length - Math.min(4 - headerBytes, bytes.length));
+      if (bytes.byteLength > maxBytes + 4) throw new Error("P2P transport chunk exceeds frame limit");
       if (decodedFrame) {
         if (bytes.length > 0) throw new Error("Trailing bytes in P2P frame");
         continue;

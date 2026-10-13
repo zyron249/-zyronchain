@@ -478,9 +478,11 @@ async function fetchTrustedPortableStateWithinLimits(
     await resume?.discard();
     throw new PortableStateAssemblyError("Portable state assembly failed anchored validation", { cause: error });
   }
-  // Success is reported only within the whole-fetch deadline.
+  const result = { tip: structuredClone(manifest.tip), bundle: structuredClone(bundle) };
+  // Success is reported only within the whole-fetch deadline; the copy above
+  // is synchronous and can be long at the protocol maxima, so check after it.
   assertWithinDeadline();
-  return { tip: structuredClone(manifest.tip), bundle: structuredClone(bundle) };
+  return result;
 }
 
 class PortableStateAssemblyError extends Error {}
