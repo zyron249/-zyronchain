@@ -640,6 +640,29 @@ export function protocolScheduleKey(activationHeight: number): string {
   return `protocol-schedule:${activationHeight}`;
 }
 
+/**
+ * Untrusted-input pre-check for a portable key preimage (round-4 PR980): only
+ * the semantic key families that {@link reconstructStateV2PortableView}
+ * accepts, with canonical decimal heights. Run per state-sync chunk so an
+ * unknown key rejects at the first chunk that carries it.
+ */
+export function assertStateV2SemanticKeyShape(key: string): void {
+  if (key.startsWith("account:")) {
+    if (key.length === "account:".length) throw new Error("Invalid State v2 account key");
+    return;
+  }
+  if (key.startsWith("activity-epoch:")) { parseSemanticHeight(key.slice("activity-epoch:".length), "activity epoch"); return; }
+  if (key.startsWith("validator-schedule:")) {
+    parseSemanticHeight(key.slice("validator-schedule:".length), "validator activation height");
+    return;
+  }
+  if (key.startsWith("protocol-schedule:")) {
+    parseSemanticHeight(key.slice("protocol-schedule:".length), "protocol activation height");
+    return;
+  }
+  throw new Error("Unknown State v2 semantic key");
+}
+
 function parseSemanticHeight(value: string, name: string): number {
   if (!/^(0|[1-9][0-9]*)$/.test(value)) throw new Error(`Invalid State v2 ${name}`);
   const parsed = Number(value);

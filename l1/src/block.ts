@@ -380,6 +380,26 @@ export function validateRoundSkipVote(
  * signature). Use this for blocks that are not about to be authenticated by
  * {@link validateBlockEnvelope}.
  */
+/**
+ * O(1) self-authentication of a block that does not need the validator set
+ * (round-4 PR980): header hash, transaction Merkle root over the body, and the
+ * proposer signature by the key whose address the header names. Used where a
+ * peer supplies a block whose header is already pinned (anchored state-sync
+ * tip) so a forged signature or body rejects before any further download.
+ */
+export function validateBlockSelfAuthentication(block: Block): void {
+  if (block.hash !== blockHash(block.header)) throw new Error("Block hash mismatch");
+  if (block.header.transactionRoot !== merkleRoot(block.transactions)) throw new Error("Transaction Merkle root mismatch");
+  if (block.header.height === 0) return;
+  if (!block.proposerPublicKey || !block.signature) throw new Error("Missing proposer signature");
+  assertHex(block.proposerPublicKey, 64, "proposerPublicKey");
+  assertHex(block.signature, 64, "block signature");
+  if (addressFromPublicKey(block.proposerPublicKey) !== block.header.proposer) throw new Error("Unexpected proposer public key");
+  if (!verifyForProtocol(block.header.version, "zyronchain/block-proposal/v1", block.header, block.signature, block.proposerPublicKey)) {
+    throw new Error("Invalid proposer signature");
+  }
+}
+
 export function validateBlockShape(value: unknown): asserts value is Block {
   validateBlockStructure(value);
   validateBlockTransactions(value);
