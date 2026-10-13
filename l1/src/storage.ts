@@ -972,6 +972,10 @@ export class SigningJournal {
   private readonly reservations = new Map<string, string>();
   // Protocol v6 (F-01) rows, kept separately from the legacy attest/skip map.
   private readonly legacyHeights = new Set<number>();
+  // Heights at which a legacy block proposal or attestation was released by a
+  // signer that has no round-keyed reservation for it (remote signer). They
+  // are journaled so a v6 action at the same height is refused across restart.
+  private readonly legacyMarks = new Set<number>();
   private readonly v6Heights = new Map<number, V6HeightJournal>();
   private v6Rows: V6JournalRow[] = [];
   private persistenceFaulted = false;
@@ -1012,6 +1016,16 @@ export class SigningJournal {
           continue;
         }
         if (pendingLock) throw new Error("Torn protocol v6 lock/commit pair in signing journal");
+        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && parsed.kind === "legacy") {
+          const keys = Object.keys(parsed).sort().join(",");
+          if (keys !== "height,kind" || !Number.isSafeInteger(parsed.height) || (parsed.height as number) < 1) {
+            throw new Error("Corrupt signing journal entry");
+          }
+          if (journal.v6Heights.has(parsed.height as number)) throw new Error("Mixed legacy and protocol v6 signing journal rows");
+          journal.legacyMarks.add(parsed.height as number);
+          journal.legacyHeights.add(parsed.height as number);
+          continue;
+        }
         if (!Number.isSafeInteger(parsed.height) || !Number.isSafeInteger(parsed.round) ||
             (parsed.kind !== "attest" && parsed.kind !== "skip") ||
             typeof parsed.value !== "string" || !/^[0-9a-f]{64}$/.test(parsed.value)) {
@@ -1159,7 +1173,9 @@ export class SigningJournal {
     }
     const retainedV6 = this.v6Rows.filter((row) => row.height > finalizedHeight);
     const removedV6 = this.v6Rows.length - retainedV6.length;
-    if (removedKeys.length === 0 && removedV6 === 0) {
+    const retainedMarks = [...this.legacyMarks].filter((height) => height > finalizedHeight).sort((a, b) => a - b);
+    const removedMarks = this.legacyMarks.size - retainedMarks.length;
+    if (removedKeys.length === 0 && removedV6 === 0 && removedMarks === 0) {
       await this.pruneConsensusState(finalizedHeight);
       return 0;
     }
@@ -1182,6 +1198,7 @@ export class SigningJournal {
           }
           await handle.writeFile(line, "utf8");
         }
+        for (const height of retainedMarks) await handle.writeFile(`${JSON.stringify({ height, kind: "legacy" })}\n`, "utf8");
         // v2 rows keep their append order, so every lock row stays directly
         // followed by its commit row.
         for (const row of retainedV6) {
@@ -1209,10 +1226,11 @@ export class SigningJournal {
 
     for (const key of removedKeys) this.reservations.delete(key);
     for (const height of [...this.legacyHeights]) if (height <= finalizedHeight) this.legacyHeights.delete(height);
+    for (const height of [...this.legacyMarks]) if (height <= finalizedHeight) this.legacyMarks.delete(height);
     for (const height of [...this.v6Heights.keys()]) if (height <= finalizedHeight) this.v6Heights.delete(height);
     this.v6Rows = retainedV6;
     await this.pruneConsensusState(finalizedHeight);
-    return removedKeys.length + removedV6;
+    return removedKeys.length + removedV6 + removedMarks;
   }
 
   // Consensus-state files are liveness aids, never safety state; a failed
@@ -1423,6 +1441,37 @@ export class SigningJournal {
 
   hasV6Rows(height: number): boolean {
     return this.v6Heights.has(height);
+  }
+
+  /**
+   * Durably record that a legacy block proposal or attestation is about to be
+   * signed at this height (no round-keyed reservation exists for those). Must
+   * complete before the signature is released; afterwards every protocol v6
+   * action at this height is refused, including after restart (§6.2-7).
+   */
+  async reserveLegacyHeight(height: number, faultHooks: SigningJournalFaultHooks = {}): Promise<void> {
+    if (this.closed) throw new Error("Signing journal is closed");
+    if (this.persistenceFaulted) throw new Error("Signing journal persistence fault requires validator restart");
+    if (!Number.isSafeInteger(height) || height < 1) throw new Error("Invalid signing slot");
+    if (this.v6Heights.has(height)) throw new Error("Legacy validator action refused: protocol v6 journal rows exist at this height");
+    if (this.legacyHeights.has(height)) return;
+    const line = `${JSON.stringify({ height, kind: "legacy" })}\n`;
+    try {
+      const handle = await open(this.path, "a", 0o600);
+      try {
+        await handle.writeFile(line, "utf8");
+        await faultHooks.afterWrite?.();
+        await handle.sync();
+        await faultHooks.afterSync?.();
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      this.persistenceFaulted = true;
+      throw new Error("Signing journal persistence failed; validator restart required", { cause: error });
+    }
+    this.legacyMarks.add(height);
+    this.legacyHeights.add(height);
   }
 
   private async reserveChoice(

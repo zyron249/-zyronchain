@@ -186,6 +186,11 @@ export class ReferenceRemoteSigner {
         throw new RemoteSignerRefusal("Invalid round skip payload");
       }
       await this.journal.reserveSkip(height as number, round as number, previousHash);
+    } else {
+      // block-proposal / block-attestation carry no round: persist a height
+      // high-water marker before releasing the signature so a v6 action at
+      // this height is refused, also after restart (round-4 PR974 finding).
+      await this.journal.reserveLegacyHeight(height as number);
     }
   }
 
