@@ -13,7 +13,7 @@ const releasePrefix = `https://github.com/zyron249/-zyronchain/releases/download
 const blobPrefix = `https://github.com/zyron249/-zyronchain/blob/${sourceCommit}/`;
 
 const active = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   releaseVersion,
   sourceCommit,
   publicMiningActivated: true,
