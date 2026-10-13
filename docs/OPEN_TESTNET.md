@@ -60,7 +60,7 @@ The directory holds plaintext **test** validator and faucet keys. Keep it outsid
 
 ## Join as a validator (volunteers)
 
-The current validator set is run by the project from one host, so it is **not** yet an independent-operator network. Volunteers help close that gap:
+The current validator set is run by the project from one host, so it is **not** yet an independent-operator network. Volunteers help close that gap. **Volunteer validators cannot join yet:** no persistent, publicly reachable bootstrap host or peer URL exists, so step 3 is not possible today. Full guide: [`VALIDATOR_VOLUNTEERS.md`](VALIDATOR_VOLUNTEERS.md).
 
 1. Run `npm run testnet:open:smoke` on your Linux/macOS host to confirm your environment.
 2. Generate a validator key with `node dist/src/cli.js keygen` and share **only** the public key and address (open a GitHub issue titled `Open testnet validator: <name>`).
