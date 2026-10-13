@@ -10,13 +10,13 @@ const requireMatch = (pattern, message) => {
 
 requireMatch(/actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\s+# v7\.0\.1/, 'clock supervisor checkout must use reviewed immutable v7.0.1 SHA');
 requireMatch(/persist-credentials:\s*false/, 'clock supervisor checkout must disable credential persistence');
-requireMatch(/actions\/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1\s+# v7\.0\.0/, 'clock supervisor setup-node must use reviewed immutable v7.0.0 SHA');
+requireMatch(/actions\/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1\s+# v7\.1\.0/, 'clock supervisor setup-node must use reviewed immutable v7.1.0 SHA');
 requireMatch(/node-version:\s*24\b/, 'clock supervisor must remain on Node 24');
 requireMatch(/npm ci && npm run build/, 'clock supervisor must use locked install and canonical build');
 requireMatch(/render-clock-supervisor-rehearsal\.mjs/, 'clock-fault rehearsal is missing');
 requireMatch(/render-clock-failstop-supervisor\.mjs --smoke/, 'supervised launcher smoke is missing');
 requireMatch(/render-clock-failstop-supervisor\.mjs --test-recovery-once/, 'same-data recovery rehearsal is missing');
-requireMatch(/actions\/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9\s+# v7\.0\.1/, 'clock supervisor upload-artifact must use reviewed immutable v7.0.1 SHA');
+requireMatch(/actions\/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9\s+# v7\.0\.2/, 'clock supervisor upload-artifact must use reviewed immutable v7.0.2 SHA');
 requireMatch(/name:\s*l1-render-clock-supervisor-\$\{\{ github\.sha \}\}-\$\{\{ github\.run_attempt \}\}/, 'clock supervisor artifact must be commit/run-attempt bound');
 requireMatch(/if-no-files-found:\s*error/, 'clock supervisor evidence upload must fail closed');
 requireMatch(/retention-days:\s*90\b/, 'clock supervisor evidence retention must remain 90 days');
