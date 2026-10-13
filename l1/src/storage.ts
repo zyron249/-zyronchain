@@ -117,7 +117,19 @@ async function truncateTornTail(path: string, length: number, droppedBytes: numb
  * Returns true when the final record is complete but lost its newline: it is
  * kept and must be re-terminated once replay has accepted it.
  */
-async function repairSigningJournalTail(path: string): Promise<boolean> {
+interface SigningJournalTailRepair {
+  /** A complete final row lost only its newline (F-10). */
+  reterminate: boolean;
+  /**
+   * A trailing lock row followed by a torn prefix of its own commit row. The
+   * lock and the torn tail are truncated only after replay has validated the
+   * whole history including that lock (round-4 PR967/PR979): an inconsistent
+   * lock is corruption and must fail stop, not be hidden by the repair.
+   */
+  lockDrop?: { cut: number; tornStart: number; droppedBytes: number };
+}
+
+async function repairSigningJournalTail(path: string): Promise<SigningJournalTailRepair> {
   let offset = 0;
   let previous: { start: number; text: string } | undefined;
   let last: { start: number; record: BoundedLine } | undefined;
@@ -130,11 +142,11 @@ async function repairSigningJournalTail(path: string): Promise<boolean> {
       offset += record.serializedBytes;
     }
   } catch (error) {
-    if (isMissingFile(error)) return false;
+    if (isMissingFile(error)) return { reterminate: false };
     throw error;
   }
-  if (!last || last.record.terminated) return false;
-  if (!isTornTrailingRecord(last.record)) return true;
+  if (!last || last.record.terminated) return { reterminate: false };
+  if (!isTornTrailingRecord(last.record)) return { reterminate: true };
   let cut = last.start;
   if (previous) {
     let row: unknown;
@@ -152,10 +164,11 @@ async function repairSigningJournalTail(path: string): Promise<boolean> {
       // leave the file untouched.
       assertTornV6CommitOfLock(previous.text, last.record.text);
       cut = previous.start;
+      return { reterminate: false, lockDrop: { cut, tornStart: last.start, droppedBytes: offset - cut } };
     }
   }
   await truncateTornTail(path, cut, offset - cut, "signing journal");
-  return false;
+  return { reterminate: false };
 }
 
 function isV6LockRowCandidate(row: unknown): row is Record<string, unknown> {
@@ -1001,44 +1014,24 @@ export class SigningJournal {
       let pendingLock: V6JournalRow | null = null;
       let reterminate = false;
       try {
-        reterminate = await repairSigningJournalTail(journal.path);
+        const repair = await repairSigningJournalTail(journal.path);
+        reterminate = repair.reterminate;
+        if (repair.lockDrop) {
+          // Validate the full history including the trailing lock before the
+          // repair removes anything (round-4 PR967/PR979). A probe instance
+          // keeps the real journal's in-memory state clean; inconsistent
+          // history fails stop with the file bytes untouched.
+          const probe = new SigningJournal(journal.path, leaseDatabase);
+          const probeLock = await probe.replayRows(repair.lockDrop.tornStart);
+          if (!probeLock) throw new Error("Torn protocol v6 lock/commit pair in signing journal");
+          probe.assertTornAppendLock(probeLock);
+          await truncateTornTail(journal.path, repair.lockDrop.cut, repair.lockDrop.droppedBytes, "signing journal");
+        }
       } catch (error) {
         journal.close();
         throw error;
       }
-      for await (const record of readLines(journal.path, MAX_SIGNING_LINE_BYTES, "Corrupt signing journal")) {
-        const line = record.text;
-        if (!line.trim()) continue;
-        assertSigningJournalJsonComplexity(line);
-        const parsed = JSON.parse(line) as Record<string, unknown>;
-        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && parsed.v === 2) {
-          pendingLock = journal.replayV6Row(parsed, pendingLock);
-          continue;
-        }
-        if (pendingLock) throw new Error("Torn protocol v6 lock/commit pair in signing journal");
-        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && parsed.kind === "legacy") {
-          const keys = Object.keys(parsed).sort().join(",");
-          if (keys !== "height,kind" || !Number.isSafeInteger(parsed.height) || (parsed.height as number) < 1) {
-            throw new Error("Corrupt signing journal entry");
-          }
-          if (journal.v6Heights.has(parsed.height as number)) throw new Error("Mixed legacy and protocol v6 signing journal rows");
-          journal.legacyMarks.add(parsed.height as number);
-          journal.legacyHeights.add(parsed.height as number);
-          continue;
-        }
-        if (!Number.isSafeInteger(parsed.height) || !Number.isSafeInteger(parsed.round) ||
-            (parsed.kind !== "attest" && parsed.kind !== "skip") ||
-            typeof parsed.value !== "string" || !/^[0-9a-f]{64}$/.test(parsed.value)) {
-          throw new Error("Corrupt signing journal entry");
-        }
-        const key = `${parsed.height}:${parsed.round}`;
-        const reservation = `${parsed.kind}:${parsed.value}`;
-        const previous = journal.reservations.get(key);
-        if (previous && previous !== reservation) throw new Error("Conflicting signing journal history");
-        if (journal.v6Heights.has(parsed.height as number)) throw new Error("Mixed legacy and protocol v6 signing journal rows");
-        journal.reservations.set(key, reservation);
-        journal.legacyHeights.add(parsed.height as number);
-      }
+      pendingLock = await journal.replayRows();
       // P0-03: the replay ended on a lone lock row. Lock and commit rows are
       // written by one append (section 9.1) and nothing is appended after a
       // pair until it is fsynced, so a lock row is the final record only when
@@ -1058,12 +1051,7 @@ export class SigningJournal {
         // round was still open (no timeout at or above it, no later vote)
         // and any own prepare at that round is for the same block. Anything
         // else is not a torn append but inconsistent history: stay fatal.
-        const state = journal.v6Heights.get(pendingLock.height)!;
-        const prepared = state.rows.get(`${pendingLock.round}:prepare`);
-        if (state.maxTimeoutRound >= pendingLock.round || state.maxVoteRound > pendingLock.round ||
-            (prepared !== undefined && prepared !== pendingLock.value)) {
-          throw new Error("Torn protocol v6 lock/commit pair in signing journal");
-        }
+        journal.assertTornAppendLock(pendingLock);
         const commit: V6JournalRow = {
           v: 2, height: pendingLock.height, round: pendingLock.round, step: "commit", value: pendingLock.value
         };
@@ -1125,6 +1113,63 @@ export class SigningJournal {
       this.leaseDatabase.exec("ROLLBACK");
     } finally {
       this.leaseDatabase.close();
+    }
+  }
+
+  /** Replay journal rows (only those starting before byte offset stopAt, if given). Returns a trailing unpaired lock. */
+  private async replayRows(stopAt?: number): Promise<V6JournalRow | null> {
+    let pendingLock: V6JournalRow | null = null;
+    let offset = 0;
+    for await (const record of readLines(this.path, MAX_SIGNING_LINE_BYTES, "Corrupt signing journal")) {
+      if (stopAt !== undefined && offset >= stopAt) break;
+      offset += record.serializedBytes;
+      const line = record.text;
+      if (!line.trim()) continue;
+      assertSigningJournalJsonComplexity(line);
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && parsed.v === 2) {
+        pendingLock = this.replayV6Row(parsed, pendingLock);
+        continue;
+      }
+      if (pendingLock) throw new Error("Torn protocol v6 lock/commit pair in signing journal");
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && parsed.kind === "legacy") {
+        const keys = Object.keys(parsed).sort().join(",");
+        if (keys !== "height,kind" || !Number.isSafeInteger(parsed.height) || (parsed.height as number) < 1) {
+          throw new Error("Corrupt signing journal entry");
+        }
+        if (this.v6Heights.has(parsed.height as number)) throw new Error("Mixed legacy and protocol v6 signing journal rows");
+        this.legacyMarks.add(parsed.height as number);
+        this.legacyHeights.add(parsed.height as number);
+        continue;
+      }
+      if (!Number.isSafeInteger(parsed.height) || !Number.isSafeInteger(parsed.round) ||
+          (parsed.kind !== "attest" && parsed.kind !== "skip") ||
+          typeof parsed.value !== "string" || !/^[0-9a-f]{64}$/.test(parsed.value)) {
+        throw new Error("Corrupt signing journal entry");
+      }
+      const key = `${parsed.height}:${parsed.round}`;
+      const reservation = `${parsed.kind}:${parsed.value}`;
+      const previous = this.reservations.get(key);
+      if (previous && previous !== reservation) throw new Error("Conflicting signing journal history");
+      if (this.v6Heights.has(parsed.height as number)) throw new Error("Mixed legacy and protocol v6 signing journal rows");
+      this.reservations.set(key, reservation);
+      this.legacyHeights.add(parsed.height as number);
+    }
+    return pendingLock;
+  }
+
+  /**
+   * A trailing lock without its commit is only a torn reserveV6Commit append
+   * when this binary could have written it: the round was still open (no
+   * timeout at or above it, no later vote) and any own prepare at that round
+   * is for the same block. Anything else is inconsistent history.
+   */
+  private assertTornAppendLock(pendingLock: V6JournalRow): void {
+    const state = this.v6Heights.get(pendingLock.height)!;
+    const prepared = state.rows.get(`${pendingLock.round}:prepare`);
+    if (state.maxTimeoutRound >= pendingLock.round || state.maxVoteRound > pendingLock.round ||
+        (prepared !== undefined && prepared !== pendingLock.value)) {
+      throw new Error("Torn protocol v6 lock/commit pair in signing journal");
     }
   }
 
@@ -1278,6 +1323,16 @@ export class SigningJournal {
     if (row.step === "lock") {
       if (state.lock && (state.lock.round > row.round || (state.lock.round === row.round && state.lock.blockHash !== row.value))) {
         throw new Error("Conflicting signing journal history");
+      }
+      // reserveV6Commit only writes a lock in an open round that agrees with
+      // the own prepare there (assertV6RoundOpen); any other lock row is
+      // history this binary cannot have written (round-4 PR967).
+      const prepared = state.rows.get(`${row.round}:prepare`);
+      if (state.maxTimeoutRound >= row.round || state.maxVoteRound > row.round ||
+          (prepared !== undefined && prepared !== row.value)) {
+        // Same message as the lone-lock completion check: a lock/commit pair
+        // that no reserveV6Commit append can have produced.
+        throw new Error("Torn protocol v6 lock/commit pair in signing journal");
       }
     } else {
       const previous = state.rows.get(`${row.round}:${row.step}`);
