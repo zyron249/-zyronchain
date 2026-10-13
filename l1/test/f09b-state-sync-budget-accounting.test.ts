@@ -20,6 +20,7 @@ import { canonicalJson, sha256Hex } from "../src/codec.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import {
   fetchTrustedPortableStateFromPeer,
+  MAX_STATE_MANIFEST_BYTES,
   MAX_STATE_SYNC_DURATION_MS,
   type StateSyncLimits
 } from "../src/p2p-state.js";
@@ -140,6 +141,8 @@ interface TransportHooks {
   beforeRead?: (request: RequestShape) => Promise<void>;
   /** May replace the encoded response body. */
   body?: (body: Buffer, request: RequestShape) => Buffer;
+  /** May replace the transport chunks (default: the 4-byte header, then the body). */
+  chunks?: (header: Buffer, body: Buffer, request: RequestShape) => Buffer[] | undefined;
   /** Runs on every close of the client stream (1 = request half-close, 2 = close after the response). */
   close?: (request: RequestShape, closes: number) => Promise<void> | void;
 }
@@ -180,6 +183,11 @@ function transport(hooks: TransportHooks = {}): { stats: TransportStats; fetch: 
               body = hooks.body?.(body, request!) ?? body;
               const header = Buffer.alloc(4);
               header.writeUInt32BE(body.length, 0);
+              const chunks = hooks.chunks?.(header, body, request!);
+              if (chunks) {
+                for (const chunk of chunks) yield chunk;
+                return;
+              }
               yield header;
               stats.bodyBytes += body.length;
               yield body;
@@ -271,5 +279,48 @@ test("round-4 PR986: the whole-fetch deadline is checked after the final close a
     await assert.rejects(() => probe.fetch(), /State sync time limit exceeded/);
   } finally {
     Date.now = realNow;
+  }
+});
+
+test("round-4 PR986 follow-up: oversized transport chunks count toward the transfer byte budget", async () => {
+  const baseline = transport();
+  await baseline.fetch();
+  const limit = baseline.stats.bodyBytes;
+  const attempts = new Map<string, number>();
+  // The first two answers to every request are one transport chunk larger
+  // than the frame envelope, which the frame reader rejects outright; the
+  // third answer is honest. The rejected bytes were still received.
+  const probe = transport({
+    chunks(header, body, request) {
+      const key = `${request.kind}:${request.start}`;
+      const attempt = (attempts.get(key) ?? 0) + 1;
+      attempts.set(key, attempt);
+      if (attempt >= 3) return undefined;
+      const oversized = Buffer.alloc(MAX_STATE_MANIFEST_BYTES + 5, 0x20);
+      header.copy(oversized, 0);
+      return [oversized];
+    }
+  });
+  await assert.rejects(() => probe.fetch({ maxTotalBytes: limit }), /State sync byte budget exceeded/);
+  assert.equal(probe.stats.requests.length, 1, "the first oversized response already exceeds the budget");
+});
+
+test("round-4 PR986 follow-up: the deadline is checked after the result is copied", async () => {
+  // Advance the wall clock while the final result is copied (a synchronous
+  // step that can be long at the protocol maxima); no production function is replaced.
+  const realNow = Date.now;
+  const realClone = globalThis.structuredClone;
+  let offset = 0;
+  Date.now = () => realNow() + offset;
+  globalThis.structuredClone = ((value: unknown, options?: StructuredSerializeOptions) => {
+    const copy = realClone(value, options);
+    if (value && typeof value === "object" && "keyPreimages" in value) offset = MAX_STATE_SYNC_DURATION_MS + 1_000;
+    return copy;
+  }) as typeof structuredClone;
+  try {
+    await assert.rejects(() => transport().fetch(), /State sync time limit exceeded/);
+  } finally {
+    Date.now = realNow;
+    globalThis.structuredClone = realClone;
   }
 });
