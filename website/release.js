@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const RELEASE_REF = '03840cf2b2916c79f16d2b2bcb3380bfcdc38270';
+  const RELEASE_REF = 'bcecf589505e535a86a5bd16959a3480f8c72d20';
   if (!/^[0-9a-f]{40}$/.test(RELEASE_REF)) {
     throw new Error('Invalid ZyronChain canonical release reference');
   }

@@ -84,6 +84,9 @@ class Settings:
 # Play Zyron is served from an always-on static host so it opens instantly even while the free API host sleeps.
 # Override with MINIAPP_URL; outside production the Mini App URL falls back to WEBAPP_URL (same-origin shell).
 DEFAULT_MINIAPP_URL = "https://zyron249.github.io/-zyronchain/"
+# ZYRON HUB (static site) reads /api/meta and the read-only /api/web/* routes. Added on hosted deployments next to
+# MINIAPP_URL and CORS_ORIGINS, so no Render environment change is needed.
+HUB_ORIGIN = "https://zyronchain.com"
 
 
 def _origin(url: str) -> str:
@@ -105,7 +108,7 @@ def _miniapp_url(environment: str, webapp_url: str) -> str:
     return webapp_url
 
 
-def _cors_origins(miniapp_url: str, webapp_url: str) -> tuple[str, ...]:
+def _cors_origins(miniapp_url: str, webapp_url: str, hosted: bool = False) -> tuple[str, ...]:
     """Browser origins allowed to call the API cross-origin: the static Mini App host plus CORS_ORIGINS.
 
     The API's own origin needs no CORS. Telegram clients load the Mini App page itself, so the page's origin
@@ -113,7 +116,7 @@ def _cors_origins(miniapp_url: str, webapp_url: str) -> tuple[str, ...]:
     """
     origins: list[str] = []
     own = _origin(webapp_url)
-    for raw in [miniapp_url, *os.environ.get("CORS_ORIGINS", "").replace(";", ",").split(",")]:
+    for raw in [miniapp_url, *([HUB_ORIGIN] if hosted else []), *os.environ.get("CORS_ORIGINS", "").replace(";", ",").split(",")]:
         raw = raw.strip()
         if not raw:
             continue
@@ -148,7 +151,10 @@ def load_settings() -> Settings:
         telegram_bot_username=os.environ.get("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@"),
         webapp_url=webapp_url,
         miniapp_url=miniapp_url,
-        cors_origins=_cors_origins(miniapp_url, webapp_url),
+        cors_origins=_cors_origins(
+            miniapp_url, webapp_url,
+            hosted=environment == "production" or os.environ.get("RENDER", "").strip().lower() == "true",
+        ),
         admin_token=os.environ.get("ADMIN_TOKEN", "").strip(),
         init_data_max_age_seconds=_int("INIT_DATA_MAX_AGE_SECONDS", 43_200),
         dev_auth_bypass=_bool("DEV_AUTH_BYPASS", False),

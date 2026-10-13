@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from zyron_node import web_login
 from zyron_node import community, reminders, telegram_api
 from zyron_node.auth import TelegramIdentity
 from zyron_node.buildinfo import CLIENT_BUILD
@@ -240,7 +241,12 @@ def handle_update(pool, settings, update: dict, call=None) -> None:
         return
     if not community.command_allowed(int(chat["id"]), command, private):
         return
-    if command == "reminders":
+    web_login_id = web_login.login_id_from_param(argument) if command == "start" else None
+    if web_login_id:
+        # The Telegram id comes from the authenticated bot update; the code goes only to this private chat.
+        reply = web_login.bot_confirm(pool, int(user["id"]), web_login_id, now) if private else {"ok": False}
+        reply = {"text": reply["text"] if private else "Open the sign-in link in a private chat with the bot."}
+    elif command == "reminders":
         reply = reminders_reply(pool, int(user["id"]), argument) if private else {
             "text": "Send /reminders to the bot in a private chat."
         }

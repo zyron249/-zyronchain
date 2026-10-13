@@ -36,7 +36,16 @@ const test = async (name, fn) => { await fn(); passed += 1; console.log(`ok - ${
 const META = { name: 'ZYRON NODE', clientBuild: 'fixture.1', season: { id: 1, name: 'Season 0', status: 'active' }, pointsNotice: 'Zyron Points are off-chain gameplay points.' };
 const STATUS = { network: 'testnet', valueBearing: false, chainId: 'zyron-wallet-testnet-1', height: 42, genesisHash: 'ab'.repeat(32), notice: 'Test ZYN has no value.' };
 const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
-async function open(viewport, { meta = META, status = STATUS, fail = false } = {}) {
+const WEB = {
+  readOnly: true,
+  profile: { displayName: 'Fixture Player', level: 4, tier: { label: 'Bronze' }, cycleCount: 77, teamAccount: false },
+  points: { balance: 1234, lifetime: 2000 }, energy: { current: 12, max: 50 },
+  upgrades: [{ name: 'CPU', level: 3, maxLevel: 20 }],
+  achievements: { unlocked: 1, total: 2, items: [{ title: 'First cycle', unlocked: true, current: 1, target: 1 }, { title: '<b>x</b>', unlocked: false, current: 3, target: 10 }] },
+  rank: { daily: { rank: 5, score: 40 }, weekly: { rank: null, score: 0 }, season: { rank: 9, score: 400 }, alltime: { rank: 12, score: 2000 } },
+  invites: { invited: 2, qualified: 1 }, wallet: { linked: true, verified: true }
+};
+async function open(viewport, { meta = META, status = STATUS, fail = false, web = null } = {}) {
   const mobile = viewport.width < 760;
   const context = await browser.newContext({ viewport, isMobile: mobile, hasTouch: mobile });
   // Every other external request is blocked, so the test can never reach a real service.
@@ -45,6 +54,7 @@ async function open(viewport, { meta = META, status = STATUS, fail = false } = {
     if (fail) return route.fulfill({ status: 503, headers: cors, body: '{}' });
     if (u === 'https://zyron-node.onrender.com/api/meta') return route.fulfill({ status: 200, headers: cors, body: JSON.stringify(meta) });
     if (u === 'https://zyron-wallet-testnet-rpc.onrender.com/status') return route.fulfill({ status: 200, headers: cors, body: JSON.stringify(status) });
+    if (web && u.startsWith('https://zyron-node.onrender.com/api/web/')) return web(route);
     return route.abort();
   });
   const page = await context.newPage();
@@ -110,6 +120,52 @@ try {
     await page.waitForFunction(() => document.activeElement && document.activeElement.id === 'h-staking');
     assert.equal(await page.getAttribute('[data-nav="staking"]', 'aria-current'), 'page');
     assert.ok(await page.isVisible('#staking')); assert.ok(!(await page.isVisible('#overview')));
+    await context.close();
+  });
+
+  await test('web sign-in: one-time code flow, read-only profile rendered as text, token only in headers, sign out', async () => {
+    const seen = [];
+    const web = (route) => {
+      const r = route.request();
+      const path = new URL(r.url()).pathname;
+      seen.push({ path, method: r.method(), auth: r.headers().authorization || null, body: r.postData() });
+      if (path === '/api/web/login/start') return route.fulfill({ status: 200, headers: cors, body: JSON.stringify({ loginId: 'a'.repeat(32), secret: 'b'.repeat(64), botLink: `https://t.me/ZyronNodeBot?start=web_${'a'.repeat(32)}`, expiresAt: new Date(Date.now() + 120000).toISOString(), ttlSeconds: 120 }) });
+      if (path === '/api/web/login/finish') {
+        const body = JSON.parse(r.postData());
+        if (body.code !== 'ABCDEFGH') return route.fulfill({ status: 400, headers: cors, body: JSON.stringify({ error: { code: 'login_code', message: 'That code is not correct.' } }) });
+        return route.fulfill({ status: 200, headers: cors, body: JSON.stringify({ token: 'c'.repeat(64), ttlSeconds: 1800 }) });
+      }
+      if (path === '/api/web/me') return route.fulfill({ status: 200, headers: cors, body: JSON.stringify(WEB) });
+      if (path === '/api/web/logout') return route.fulfill({ status: 200, headers: cors, body: '{"ok":true}' });
+      return route.abort();
+    };
+    const { context, page, errors } = await open({ width: 390, height: 844 }, { web });
+    await page.goto(base + '#node', { waitUntil: 'load' });
+    await page.click('[data-action="signin-start"]');
+    await page.waitForSelector('[data-signin-step]:not([hidden])');
+    assert.equal(await page.getAttribute('[data-signin-link]', 'href'), `https://t.me/ZyronNodeBot?start=web_${'a'.repeat(32)}`);
+    await page.fill('#signin-code', 'zzzz-zzzz');
+    await page.click('[data-action="signin-finish"]');
+    await page.waitForFunction(() => /not correct/.test(document.querySelector('[data-signin-error]').textContent));
+    await page.fill('#signin-code', 'abcd-efgh');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('[data-profile]:not([hidden])');
+    const prof = await page.textContent('[data-out="web-profile"]');
+    for (const s of ['Fixture Player', '1234', '12 / 50', 'Bronze', 'Verified (testnet)', '2 invited']) assert.ok(prof.includes(s), s);
+    if (shots) await page.screenshot({ path: join(shots, 'hub-signed-in-mobile.png'), fullPage: true });
+    await page.goto(base + '#activity');
+    assert.match(await page.textContent('[data-out="web-rank"]'), /#5/);
+    assert.equal(await page.locator('[data-out="web-achievements"] b').count(), 0, 'remote titles stay text');
+    const me = seen.find((x) => x.path === '/api/web/me');
+    assert.equal(me.auth, `zws ${'c'.repeat(64)}`);
+    assert.ok(!page.url().includes('c'.repeat(64)), 'token never in the URL');
+    assert.deepEqual(await context.cookies(), [], 'no cookies');
+    assert.equal(await page.evaluate(() => { try { return localStorage.length + sessionStorage.length; } catch (_) { return 0; } }), 0);
+    await page.goto(base + '#node');
+    await page.click('[data-action="signout"]');
+    await page.waitForSelector('[data-signin]:not([hidden])');
+    assert.ok(seen.some((x) => x.path === '/api/web/logout' && x.auth === `zws ${'c'.repeat(64)}`));
+    assert.deepEqual(errors.filter((e) => !/400/.test(e)), []);
     await context.close();
   });
 

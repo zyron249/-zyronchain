@@ -86,7 +86,7 @@ def test_production_points_play_zyron_at_the_static_host(monkeypatch):
     settings = _production(monkeypatch)
     validate_settings(settings)
     assert settings.miniapp_url == DEFAULT_MINIAPP_URL
-    assert settings.cors_origins == (STATIC_ORIGIN,)
+    assert settings.cors_origins == (STATIC_ORIGIN, "https://zyronchain.com")
     url = menu_button_payload(settings.miniapp_url)["menu_button"]["web_app"]["url"]
     assert url.startswith(DEFAULT_MINIAPP_URL) and url.endswith("v=" + CLIENT_BUILD)
     bot = Path("src/zyron_node/bot.py").read_text(encoding="utf-8")
@@ -112,7 +112,7 @@ def test_render_deployment_uses_the_static_shell_even_without_production(monkeyp
     monkeypatch.setenv("RENDER", "true")
     settings = load_settings()
     assert settings.miniapp_url == DEFAULT_MINIAPP_URL
-    assert settings.cors_origins == (STATIC_ORIGIN,)
+    assert settings.cors_origins == (STATIC_ORIGIN, "https://zyronchain.com")
     monkeypatch.setenv("RENDER", "")
     local = load_settings()
     assert local.miniapp_url == "https://zyron-node.onrender.com/"

@@ -27,10 +27,15 @@ test('strict CSP: no inline code, connect-src limited to the two public status o
   assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>|\son[a-z]+=|style="/i, 'no inline script, handlers or styles');
 });
 
-test('only the two read-only endpoints are fetched; no keys, signing, storage or HTML injection', () => {
-  const urls = [...js.matchAll(/https:\/\/[^'"\s]+/g)].map((m) => m[0]).sort();
-  assert.deepEqual(urls, ['https://zyron-node.onrender.com/api/meta', 'https://zyron-wallet-testnet-rpc.onrender.com/status']);
-  assert.doesNotMatch(js, /getRandomValues|generateKey|importKey|deriveKey|subtle\.|secp256k1|mnemonic|privateKey|localStorage|sessionStorage|indexedDB|document\.cookie|innerHTML|outerHTML|insertAdjacentHTML|eval\(|new Function|method:\s*'POST'/i);
+test('only the game API and the wallet testnet are contacted; no keys, signing, storage or HTML injection', () => {
+  const urls = [...js.matchAll(/https:\/\/[^'"`\s]+/g)].map((m) => m[0]).filter((u) => !u.startsWith('https:\\/')).sort();
+  assert.deepEqual(urls, ['https://zyron-node.onrender.com', 'https://zyron-wallet-testnet-rpc.onrender.com/status']);
+  const paths = [...js.matchAll(/\$\{GAME_API\}(\/api\/[a-z/]+)/g)].map((m) => m[1]).sort();
+  assert.deepEqual([...new Set(paths)], ['/api/meta', '/api/web/login/finish', '/api/web/login/start', '/api/web/logout', '/api/web/me']);
+  assert.doesNotMatch(js, /getRandomValues|generateKey|importKey|deriveKey|subtle\.|secp256k1|mnemonic|privateKey|localStorage|sessionStorage|indexedDB|document\.cookie|innerHTML|outerHTML|insertAdjacentHTML|eval\(|new Function|credentials:\s*'include'/i);
+  // Gameplay stays in Telegram: the Hub never calls a game action route.
+  assert.doesNotMatch(js, /\/api\/(cycle|upgrade|tree|chests|streak|quests|wallet|referral)\b/);
+  assert.match(js, /BOT_LINK = \/\^https:\\\/\\\/t\\\.me\\\/ZyronNodeBot/, 'bot link from the API is validated before use');
   assert.match(js, /credentials: 'omit'/);
   assert.match(js, /valueBearing !== false/, 'refuses to show a status that is not declared no-value');
 });
@@ -56,7 +61,9 @@ test('English only, honest wording, no forbidden terms', () => {
   assert.match(visible, /Mainnet is not activated/);
   assert.match(visible, /no conversion to ZYN/);
   assert.match(visible, /50,000,000 ZYN/);
-  for (const label of ['Sign in with Telegram (coming in Phase 2)', 'Stake (not available)']) assert.ok(html.includes(`disabled>${label}</button>`), label);
+  assert.ok(html.includes('disabled>Stake (not available)</button>'));
+  assert.match(html, /data-action="signin-start">Sign in with Telegram</);
+  assert.match(visible, /Gameplay stays in Telegram/);
 });
 
 test('launch flags block is generated from docs/l1-launch-authorization.json', () => {

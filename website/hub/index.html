@@ -12,7 +12,7 @@
   <link rel="icon" href="../favicon-32.png" type="image/png" sizes="32x32" />
   <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
   <link rel="stylesheet" href="../site.css?v=99006be00a32" />
-  <link rel="stylesheet" href="./hub.css?v=161d5e6ac3d8" />
+  <link rel="stylesheet" href="./hub.css?v=c3c1a5b16b9c" />
 </head>
 <body class="hub">
   <a class="skip-link" href="#hub-main">Skip to content</a>
@@ -94,8 +94,29 @@
         <dl class="hub-list" data-out="game-meta" aria-live="polite">
           <div class="hub-row"><dt>Game service</dt><dd>Checking…</dd></div>
         </dl>
-        <p class="hub-note">Your own progress (points, level, builders) is only shown inside Telegram for now. Web sign-in with Telegram is planned (Phase 2) and is not available yet.</p>
-        <p><a class="btn btn-primary" href="https://t.me/ZyronNodeBot" rel="noopener noreferrer">Play in Telegram</a> <button class="btn" type="button" disabled>Sign in with Telegram (coming in Phase 2)</button></p>
+        <h3>Your progress (read-only)</h3>
+        <div class="panel hub-signin" data-signin aria-live="polite">
+          <p data-signin-state>Sign in with Telegram to see your own points, energy, level, upgrades, achievements, rank, invites and wallet link status. Gameplay stays in Telegram.</p>
+          <p><button class="btn btn-primary" type="button" data-action="signin-start">Sign in with Telegram</button></p>
+          <div data-signin-step hidden>
+            <ol class="hub-steps">
+              <li><a class="btn" data-signin-link href="https://t.me/ZyronNodeBot" rel="noopener noreferrer">Open @ZyronNodeBot</a> and press Start. The bot sends you a one-time code.</li>
+              <li><label for="signin-code">Type the code here</label>
+                <span class="hub-code-row"><input id="signin-code" class="hub-input" type="text" inputmode="text" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" maxlength="9" placeholder="ABCD-EFGH" />
+                <button class="btn btn-primary" type="button" data-action="signin-finish">Confirm</button></span></li>
+            </ol>
+            <p class="hub-note" data-signin-timer></p>
+          </div>
+          <p class="hub-error" data-signin-error role="alert"></p>
+          <p class="hub-note">The session lives only in this tab's memory for 30 minutes and ends when you close or reload the page. Never share the code.</p>
+        </div>
+        <div data-profile hidden>
+          <dl class="hub-list" data-out="web-profile"></dl>
+          <h3>Upgrades</h3>
+          <dl class="hub-list" data-out="web-upgrades"></dl>
+          <p><button class="btn btn-quiet" type="button" data-action="signin-refresh">Refresh</button> <button class="btn btn-quiet" type="button" data-action="signout">Sign out</button></p>
+        </div>
+        <p><a class="btn" href="https://t.me/ZyronNodeBot" rel="noopener noreferrer">Play in Telegram</a></p>
       </section>
 
       <section id="my-nodes" class="hub-section" aria-labelledby="h-my-nodes" data-section>
@@ -160,7 +181,13 @@
       <section id="activity" class="hub-section" aria-labelledby="h-activity" data-section>
         <p class="eyebrow">Activity</p>
         <h2 id="h-activity">Your activity</h2>
-        <p><span class="state state-off">Not available yet</span> Your game history needs a signed-in session, and web sign-in is not built yet (Phase 2). Inside the Telegram game, the activity ledger is already available.</p>
+        <p data-activity-empty>Sign in under <a href="#node">ZYRON NODE</a> to see your ranks and achievements here. The full activity ledger is in the Telegram game.</p>
+        <div data-activity hidden>
+          <h3>Leaderboard rank</h3>
+          <dl class="hub-list" data-out="web-rank"></dl>
+          <h3>Achievements</h3>
+          <dl class="hub-list" data-out="web-achievements"></dl>
+        </div>
       </section>
 
       <section id="staking" class="hub-section" aria-labelledby="h-staking" data-section>
@@ -180,7 +207,7 @@
         <ul class="hub-checks">
           <li>Never share your recovery phrase. Nobody from ZyronChain will ask for it, in Telegram or anywhere else.</li>
           <li>This Hub stores nothing in your browser and holds no keys.</li>
-          <li>The only live requests from this page are public status reads from the game service and the wallet testnet.</li>
+          <li>This page talks only to the game service and the wallet testnet. Web sign-in is read-only and uses a one-time code sent to you by @ZyronNodeBot.</li>
           <li>There is no token sale. Anyone offering ZYN for money is not ZyronChain.</li>
           <li>Linking a wallet to the game only proves you hold the key; it never moves funds.</li>
         </ul>
@@ -199,6 +226,6 @@
       </footer>
     </main>
   </div>
-  <script src="./hub.js?v=387bfca403d0"></script>
+  <script src="./hub.js?v=b570b796665d"></script>
 </body>
 </html>
