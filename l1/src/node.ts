@@ -720,10 +720,10 @@ async function produceFinalizedBlockV6(
   prepareResponses.push(...await (peers.requestV6Prepare?.(request) ?? Promise.resolve([])));
   const prepareVotes = uniqueValidVotes(prepareResponses, validators, V6_PREPARE_VOTE_DOMAIN, chainId, height, round, hash);
   if (prepareVotes.length < quorum) {
-    service.recordConsensusQuorumFailure(height, chain.tip.hash);
+    service.recordConsensusQuorumFailure(height, chain.tip.hash, "prepare");
     return null;
   }
-  service.recordConsensusQuorumReached(height, chain.tip.hash);
+  service.recordConsensusQuorumReached(height, chain.tip.hash, "prepare");
   const qc: PrepareQC = { chainId, height, round, blockHash: hash, votes: prepareVotes };
 
   const commitRequest: V6CommitRequest = { qc, block: request.block };
@@ -735,7 +735,7 @@ async function produceFinalizedBlockV6(
   commitResponses.push(...await (peers.requestV6Commit?.(commitRequest) ?? Promise.resolve([])));
   const commitVotes = uniqueValidVotes(commitResponses, validators, V6_COMMIT_VOTE_DOMAIN, chainId, height, round, hash);
   if (commitVotes.length < quorum) {
-    service.recordConsensusQuorumFailure(height, chain.tip.hash);
+    service.recordConsensusQuorumFailure(height, chain.tip.hash, "commit");
     return null;
   }
 
