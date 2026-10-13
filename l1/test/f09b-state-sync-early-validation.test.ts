@@ -6,6 +6,7 @@
 // chunk; the manifest tip header must hash to the anchored tip hash.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -216,6 +217,92 @@ test("F-09(b): a manifest whose tip header does not hash to the anchored tip has
     await fixture.close();
   }
 });
+
+// Round-4 independent retest (PR980, Medium x3): these invalid inputs were only
+// rejected after the whole claimed transfer had been downloaded.
+for (const kind of ["bad-json-leaf", "noncanonical-leaf"] as const) {
+  test(`round-4 PR980: a ${kind} with a recomputed value hash is rejected at the first chunk`, async () => {
+    const fixture = await createFixture(`r4-${kind}`);
+    try {
+      const leaf = fixture.bundle.records.find((record) => record.kind === "leaf");
+      assert.ok(leaf && leaf.kind === "leaf");
+      const valueJson = kind === "bad-json-leaf" ? "x".repeat(32) : `${leaf.valueJson} `;
+      const valueHash = createHash("sha256").update("ZyronChain/state-v2/value\0").update(valueJson).digest("hex");
+      const served = await serveBadRecords(fixture, 640, (_start, limit) =>
+        Array.from({ length: limit }, () => ({ ...leaf, valueJson, valueHash })));
+      await assert.rejects(
+        () => fetchTrustedPortableStateFromPeer(fixture.clientNode, fixture.address, fixture.clientIdentity, fixture.config, fixture.anchor),
+        /portable State v2 leaf value/i
+      );
+      assert.equal(served.recordRequests(), 1);
+    } finally {
+      await fixture.close();
+    }
+  });
+}
+
+test("round-4 PR980: an unknown semantic key preimage is rejected at the first key chunk", async () => {
+  const fixture = await createFixture("r4-unknown-key");
+  let keyRequests = 0;
+  try {
+    await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+      const request = await readRequest(stream);
+      if (request.kind === "manifest") {
+        await writeP2PFrame(stream, manifestFrame(fixture, { keyCount: 5_000 }), 2_500_000, 5_000);
+        await stream.close();
+        return;
+      }
+      if (request.kind === "keys") {
+        keyRequests += 1;
+        await writeChunk(stream, fixture, request, Array.from({ length: request.limit }, (_, i) => `unknown:${request.start + i}`));
+        return;
+      }
+      await writeFixtureResponse(stream, fixture, request);
+    });
+    await assert.rejects(
+      () => fetchTrustedPortableStateFromPeer(fixture.clientNode, fixture.address, fixture.clientIdentity, fixture.config, fixture.anchor),
+      /Unknown State v2 semantic key/
+    );
+    assert.equal(keyRequests, 1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+for (const kind of ["tip-signature", "tip-body"] as const) {
+  test(`round-4 PR980: an anchored tip header with a bad ${kind === "tip-signature" ? "signature" : "body"} is rejected before any chunk`, async () => {
+    const fixture = await createFixture(`r4-${kind}`);
+    const resumeDir = join(fixture.root, "resume");
+    let chunkRequests = 0;
+    try {
+      const tip = structuredClone(fixture.tip);
+      if (kind === "tip-signature") tip.signature = "00".repeat(64);
+      else {
+        tip.transactions = [createTransfer({
+          chainId: fixture.config.chainId, nonce: 1, sender: validator, receiver: fixture.config.activityPool!,
+          amountAtoms: 1, feeAtoms: 0, timestampMs: fixture.config.timestampMs + 1
+        }, validatorPrivate, validatorPublic)];
+      }
+      await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+        const request = await readRequest(stream);
+        if (request.kind === "manifest") {
+          await writeP2PFrame(stream, manifestFrame(fixture, { tip }), 2_500_000, 5_000);
+          await stream.close();
+          return;
+        }
+        chunkRequests += 1;
+        await writeFixtureResponse(stream, fixture, request);
+      });
+      await assert.rejects(
+        () => fetchTrustedPortableStateResumableFromPeer(fixture.clientNode, fixture.address, fixture.clientIdentity, fixture.config, fixture.anchor, resumeDir),
+        kind === "tip-signature" ? /Invalid proposer signature/ : /Transaction Merkle root mismatch/
+      );
+      assert.equal(chunkRequests, 0);
+    } finally {
+      await fixture.close();
+    }
+  });
+}
 
 // Round 3 (portable state sync): the manifest's cheap anchor comparison must run
 // before the expensive tip block validation (transaction signatures).

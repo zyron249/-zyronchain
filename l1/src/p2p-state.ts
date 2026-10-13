@@ -3,7 +3,7 @@ import type { Libp2p } from "libp2p";
 import { lstat, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import { blockHash, validateBlockShape } from "./block.js";
+import { blockHash, validateBlockSelfAuthentication, validateBlockShape, validateBlockStructure, validateBlockTransactions } from "./block.js";
 import { canonicalJsonDigest } from "./codec.js";
 import { ZyronChain } from "./chain.js";
 import type { NodeService } from "./node.js";
@@ -606,7 +606,11 @@ function parseManifest(
       headerRecord.height !== Number(value.height) || headerRecord.stateRoot !== value.stateRoot) {
     throw new Error("State manifest tip does not match anchored metadata");
   }
-  validateBlockShape(value.tip);
+  // Round-4 PR980: then the O(1) body binding and proposer signature, before
+  // the per-transaction signatures and long before any record is requested.
+  validateBlockStructure(value.tip);
+  validateBlockSelfAuthentication(value.tip);
+  validateBlockTransactions(value.tip);
   const tip = value.tip as unknown as Block;
   return {
     version: 1, identity, tipHash: value.tipHash, snapshotSha256: value.snapshotSha256,

@@ -1,6 +1,7 @@
 import { canonicalJson } from "./codec.js";
 import {
   assertStateV2NodeRecordSelfConsistent,
+  assertStateV2SemanticKeyShape,
   reconstructStateV2PortableView,
   SparseMerkleState,
   stateV2FromLedgerSnapshot,
@@ -88,6 +89,7 @@ export function validateStateV2PortableBundle(
 /** Shape-checks one untrusted key preimage (also used per state-sync chunk). */
 export function parsePortableStateKeyPreimage(key: unknown): string {
   if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new Error("Invalid portable State v2 key preimage");
+  assertStateV2SemanticKeyShape(key);
   return key;
 }
 
@@ -99,7 +101,30 @@ export function parsePortableStateKeyPreimage(key: unknown): string {
 export function parsePortableStateNodeRecord(value: unknown): StateV2NodeRecord {
   const record = parseNodeRecord(value);
   assertStateV2NodeRecordSelfConsistent(record);
+  if (record.kind === "leaf") assertCanonicalLeafValueJson(record.valueJson);
   return record;
+}
+
+/**
+ * Round-4 PR980: a leaf whose valueJson is not JSON, or not the canonical
+ * encoding the writer produces, can never be part of a valid state. Reject it
+ * at the chunk that carries it (the hash self-consistency check alone accepts
+ * any bytes whose hash the peer recomputed).
+ */
+function assertCanonicalLeafValueJson(valueJson: string): void {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(valueJson);
+  } catch {
+    throw new Error("Invalid portable State v2 leaf value");
+  }
+  let canonical: string;
+  try {
+    canonical = canonicalJson(parsed);
+  } catch {
+    throw new Error("Invalid portable State v2 leaf value");
+  }
+  if (canonical !== valueJson) throw new Error("Noncanonical portable State v2 leaf value");
 }
 
 function copyNodeRecord(record: StateV2NodeRecord): StateV2NodeRecord {
