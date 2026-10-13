@@ -18,7 +18,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
       - name: Verify succession policy twice
@@ -41,7 +41,7 @@ jobs:
           sha256sum maintainer-succession.json l1-maintainer-succession.json > SHA256SUMS
           cat maintainer-succession.json
       - name: Upload succession-policy evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: l1-maintainer-succession-${{ github.sha }}-${{ github.run_attempt }}
           path: |

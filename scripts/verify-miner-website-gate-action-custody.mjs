@@ -7,7 +7,7 @@ const workflow = fs.readFileSync(workflowPath, 'utf8');
 const required = [
   'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
   'persist-credentials: false',
-  'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
+  'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1',
   "node-version: '24'",
   // Mining is retired (owner decision 2026-09-30): the gate must assert the retired, distribution-free state.
   'Mining is retired',

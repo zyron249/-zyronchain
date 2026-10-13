@@ -8,7 +8,7 @@ const workflow = await readFile(workflowPath, 'utf8');
 const required = [
   ['reviewed checkout SHA', 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'],
   ['checkout credential isolation', 'persist-credentials: false'],
-  ['reviewed setup-node SHA', 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'],
+  ['reviewed setup-node SHA', 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'],
   ['Node 24 evidence runtime', 'node-version: 24'],
   ['locked install', 'run: npm ci'],
   ['canonical build', 'run: npm run build'],
@@ -17,7 +17,7 @@ const required = [
   ['normalized evidence', 'normalize-state-v2-scale-evidence.mjs'],
   ['commit-bound archive', 'archive-ci-evidence.mjs'],
   ['SHA-256 manifest', 'sha256sum raw.json result.json evidence.json > SHA256SUMS'],
-  ['reviewed upload-artifact SHA', 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'],
+  ['reviewed upload-artifact SHA', 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'],
   ['commit/run-attempt artifact identity', 'name: l1-state-v2-scale-${{ github.sha }}-${{ github.run_attempt }}'],
   ['fail on missing evidence', 'if-no-files-found: error'],
   ['90 day retention', 'retention-days: 90']

@@ -3,8 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 const CHECKOUT_SHA = '3d3c42e5aac5ba805825da76410c181273ba90b1';
-const SETUP_NODE_SHA = '820762786026740c76f36085b0efc47a31fe5020';
-const UPLOAD_ARTIFACT_SHA = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a';
+const SETUP_NODE_SHA = '949feb2413d6458794dcd2491c4babbbce0c15c1';
+const UPLOAD_ARTIFACT_SHA = 'cf430e030ddbb5b0abf93d22962f4752f3646cd9';
 const ATTEST_SHA = '1e69f48acb82d1966a394da916b4c1698aa569d6';
 
 // F-08: required commands must be effective steps. Comments are stripped

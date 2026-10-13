@@ -10,12 +10,12 @@ const requireMatch = (pattern, message) => {
 
 requireMatch(/actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\s+# v7\.0\.1/, 'gateway red-team checkout must use reviewed immutable v7.0.1 SHA');
 requireMatch(/persist-credentials:\s*false/, 'gateway red-team checkout must disable credential persistence');
-requireMatch(/actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020\s+# v7\.0\.0/, 'gateway red-team setup-node must use reviewed immutable v7.0.0 SHA');
+requireMatch(/actions\/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1\s+# v7\.1\.0/, 'gateway red-team setup-node must use reviewed immutable v7.1.0 SHA');
 requireMatch(/node-version:\s*24\b/, 'gateway red-team must remain on Node 24');
 requireMatch(/working-directory:\s*l1[\s\S]*?run:\s*npm ci/, 'gateway red-team must use locked dependency install');
 requireMatch(/Build canonical L1[\s\S]*?run:\s*npm run build/, 'gateway red-team canonical build is missing');
 requireMatch(/render-gateway-redteam\.mjs/, 'controlled gateway burst rehearsal is missing');
-requireMatch(/actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a\s+# v7\.0\.1/, 'gateway red-team upload-artifact must use reviewed immutable v7.0.1 SHA');
+requireMatch(/actions\/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9\s+# v7\.0\.2/, 'gateway red-team upload-artifact must use reviewed immutable v7.0.2 SHA');
 requireMatch(/name:\s*l1-render-gateway-redteam-\$\{\{ github\.sha \}\}-\$\{\{ github\.run_attempt \}\}/, 'gateway red-team artifact must be commit/run-attempt bound');
 requireMatch(/if-no-files-found:\s*error/, 'gateway red-team evidence upload must fail closed');
 requireMatch(/retention-days:\s*90\b/, 'gateway red-team evidence retention must remain 90 days');
