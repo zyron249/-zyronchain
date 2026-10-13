@@ -13,6 +13,20 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
+    # The libp2p packages share types from @libp2p/interface. Bumping them
+    # one at a time breaks typecheck or duplicates the interface package
+    # (see #800, #801, #803), so they are updated together.
+    groups:
+      libp2p:
+        patterns:
+          - "libp2p"
+          - "@libp2p/*"
+          - "@chainsafe/libp2p-*"
+    ignore:
+      # @types/node must match the Node.js majors CI runs on (22 and 24).
+      # A newer major types APIs the runtime does not have (see #802).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "pip"
     directory: "/l1/independent-light-client"
