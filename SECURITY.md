@@ -5,7 +5,8 @@
 - The canonical chain is the standalone TypeScript L1 under `l1/`. The historical Python/Flask network is legacy compatibility software. Do not confuse it with the canonical chain.
 - A public **no-value testnet** runs the L1 (`docs/OPEN_TESTNET.md`). There is no mainnet. Test ZYN has no value.
 - **ZyronChain has not had a professional security audit.** All reviews so far are self-reviews and AI-assisted reviews. They are not audits. Do not rely on this code to protect anything of value.
-- The project has no budget for a paid audit. Community review is welcome; see [`BUG_BOUNTY.md`](BUG_BOUNTY.md).
+- The project has no budget for a paid audit. Community review is welcome; see [`BUG_BOUNTY.md`](BUG_BOUNTY.md) for scope, severity tiers and rules.
+- **No bug-bounty rewards are currently offered.** `BUG_BOUNTY.md` describes a planned program; reward amounts are not set and will be announced separately before any mainnet launch. Until then, nothing in this repository is an offer of payment.
 
 ## Supported versions
 
