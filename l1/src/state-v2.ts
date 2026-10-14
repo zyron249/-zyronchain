@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJson, compareCanonicalStrings } from "./codec.js";
+import { addressFromPublicKey } from "./crypto.js";
 import { assertMiningNotRetired, MINING_TRACKER_ADDRESS } from "./mining.js";
 import {
   ACTIVITY_ORDER_MESSAGE,
@@ -387,28 +388,19 @@ export function reconstructStateV2PortableView(
 
     if (key.startsWith("account:")) {
       const address = key.slice("account:".length) as Address;
-      assertExactPortableRecord(value, ["balanceAtoms", "nonce"], "State v2 account value");
-      if (!Number.isSafeInteger(value.balanceAtoms) || Number(value.balanceAtoms) < 0 ||
-          !Number.isSafeInteger(value.nonce) || Number(value.nonce) < 0) {
-        throw new Error("Invalid State v2 account value");
-      }
+      assertStateV2AccountValue(value);
       accounts.push({ address, balanceAtoms: Number(value.balanceAtoms), nonce: Number(value.nonce) });
     } else if (key.startsWith("activity-epoch:")) {
       const epoch = parseSemanticHeight(key.slice("activity-epoch:".length), "activity epoch");
-      assertExactPortableRecord(value, ["settled"], "State v2 activity value");
-      if (value.settled !== true) throw new Error("Invalid State v2 activity value");
+      assertStateV2ActivityValue(value);
       epochs.push(epoch);
     } else if (key.startsWith("validator-schedule:")) {
       const activationHeight = parseSemanticHeight(key.slice("validator-schedule:".length), "validator activation height");
-      assertExactPortableRecord(value, ["validators"], "State v2 validator schedule value");
-      if (!Array.isArray(value.validators)) throw new Error("Invalid State v2 validator schedule value");
+      assertStateV2ValidatorScheduleValue(value);
       validatorSchedule.push({ activationHeight, validators: structuredClone(value.validators) as Validator[] });
     } else if (key.startsWith("protocol-schedule:")) {
       const activationHeight = parseSemanticHeight(key.slice("protocol-schedule:".length), "protocol activation height");
-      assertExactPortableRecord(value, ["protocolVersion"], "State v2 protocol schedule value");
-      if (!Number.isSafeInteger(value.protocolVersion) || Number(value.protocolVersion) < 1) {
-        throw new Error("Invalid State v2 protocol schedule value");
-      }
+      assertStateV2ProtocolScheduleValue(value);
       protocolSchedule.push({ activationHeight, protocolVersion: Number(value.protocolVersion) });
     } else {
       throw new Error("Unknown State v2 semantic key");
@@ -646,6 +638,82 @@ export function protocolScheduleKey(activationHeight: number): string {
  * accepts, with canonical decimal heights. Run per state-sync chunk so an
  * unknown key rejects at the first chunk that carries it.
  */
+// The value schema of each semantic key type. Shared by the final portable
+// view reconstruction and the per-chunk state-sync check, so the two cannot
+// drift apart.
+function assertStateV2AccountValue(value: unknown): asserts value is { balanceAtoms: number; nonce: number } {
+  assertExactPortableRecord(value, ["balanceAtoms", "nonce"], "State v2 account value");
+  if (!Number.isSafeInteger(value.balanceAtoms) || Number(value.balanceAtoms) < 0 ||
+      !Number.isSafeInteger(value.nonce) || Number(value.nonce) < 0) {
+    throw new Error("Invalid State v2 account value");
+  }
+}
+
+function assertStateV2ActivityValue(value: unknown): asserts value is { settled: true } {
+  assertExactPortableRecord(value, ["settled"], "State v2 activity value");
+  if (value.settled !== true) throw new Error("Invalid State v2 activity value");
+}
+
+function assertStateV2ValidatorScheduleValue(value: unknown): asserts value is { validators: unknown[] } {
+  assertExactPortableRecord(value, ["validators"], "State v2 validator schedule value");
+  if (!Array.isArray(value.validators)) throw new Error("Invalid State v2 validator schedule value");
+}
+
+function assertStateV2ProtocolScheduleValue(value: unknown): asserts value is { protocolVersion: number } {
+  assertExactPortableRecord(value, ["protocolVersion"], "State v2 protocol schedule value");
+  if (!Number.isSafeInteger(value.protocolVersion) || Number(value.protocolVersion) < 1) {
+    throw new Error("Invalid State v2 protocol schedule value");
+  }
+}
+
+/**
+ * R5-998-M1: a leaf record does not carry its semantic key, so before the key
+ * preimages arrive a state-sync client can only require that a leaf value is
+ * valid for at least one semantic key type. The field sets of the types are
+ * disjoint, so the exact field set selects the only candidate schema. The
+ * binding of each value to its own key type is still checked by
+ * reconstructStateV2PortableView during the final anchored assembly.
+ */
+export function assertStateV2LeafValueSchema(value: unknown): void {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
+    const fields = Object.keys(value).sort().join(",");
+    if (fields === "balanceAtoms,nonce") assertStateV2AccountValue(value);
+    else if (fields === "settled") assertStateV2ActivityValue(value);
+    else if (fields === "validators") {
+      assertStateV2ValidatorScheduleValue(value);
+      assertPortableValidatorList(value.validators);
+    } else if (fields === "protocolVersion") {
+      assertStateV2ProtocolScheduleValue(value);
+      if (value.protocolVersion > MAX_PORTABLE_PROTOCOL_VERSION) throw new Error("protocol version out of range");
+    } else throw new Error("unknown field set");
+  } catch (cause) {
+    throw new Error("Invalid portable State v2 leaf value schema", { cause });
+  }
+}
+
+// Codex review of #1010: the per-chunk check also applies the bounds that
+// checkpoint validation (chain.ts validateValidatorSchedule /
+// validateProtocolSchedule) requires of every schedule entry, so such a leaf
+// is rejected in its chunk too. The curve check of each public key stays with
+// checkpoint validation (the address derivation already binds the key).
+const MAX_PORTABLE_PROTOCOL_VERSION = 65_535;
+const MAX_PORTABLE_SCHEDULE_VALIDATORS = 100;
+
+function assertPortableValidatorList(validators: unknown[]): void {
+  if (validators.length < 1 || validators.length > MAX_PORTABLE_SCHEDULE_VALIDATORS) throw new Error("validator count out of range");
+  const seen = new Set<string>();
+  for (const item of validators) {
+    assertExactPortableRecord(item, ["address", "publicKey"], "State v2 validator");
+    if (typeof item.address !== "string" || !/^ZYN[0-9a-f]{40}$/.test(item.address) ||
+        typeof item.publicKey !== "string" || !/^[0-9a-f]{128}$/.test(item.publicKey) ||
+        addressFromPublicKey(item.publicKey) !== item.address || seen.has(item.address)) {
+      throw new Error("Invalid State v2 validator");
+    }
+    seen.add(item.address);
+  }
+}
+
 export function assertStateV2SemanticKeyShape(key: string): void {
   if (key.startsWith("account:")) {
     if (key.length === "account:".length) throw new Error("Invalid State v2 account key");
