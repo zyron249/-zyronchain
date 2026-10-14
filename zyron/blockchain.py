@@ -971,24 +971,29 @@ class Blockchain:
         block_transactions = list(selected_transactions)
         miner_payment_atoms = current_reward_atoms + total_fees_atoms
 
-        if miner_payment_atoms > 0:
-            reward_tx = Transaction(
-                "SYSTEM",
-                miner_address,
-                amount_atoms=miner_payment_atoms,
-                fee_atoms=0,
-                nonce=0
-            )
-            block_transactions.append(reward_tx.to_dict())
-
-        new_difficulty = self.calculate_expected_difficulty(self.chain)
-        self.difficulty = new_difficulty
-
         latest_block = self.get_latest_block()
         block_timestamp_ms = max(
             time.time_ns() // 1_000_000,
             int(float(latest_block.timestamp) * 1000) + 1
         )
+
+        if miner_payment_atoms > 0:
+            # The reward transaction takes the block's own timestamp. Block
+            # timestamps strictly increase along the chain, so two rewards to
+            # the same miner for the same amount can never share a txid, even
+            # when both blocks are built within the same millisecond.
+            reward_tx = Transaction(
+                "SYSTEM",
+                miner_address,
+                amount_atoms=miner_payment_atoms,
+                fee_atoms=0,
+                nonce=0,
+                timestamp_ms=block_timestamp_ms
+            )
+            block_transactions.append(reward_tx.to_dict())
+
+        new_difficulty = self.calculate_expected_difficulty(self.chain)
+        self.difficulty = new_difficulty
 
         block = Block(
             len(self.chain),
