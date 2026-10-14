@@ -214,8 +214,11 @@ test("R5-998-M1: every honest leaf passes the per-chunk check, and invalid value
     '{"validators":{}}', '{"validators":"x"}', '{"validators":[],"x":1}',
     '{"protocolVersion":0}', '{"protocolVersion":1.5}', '{"protocolVersion":"2"}', '{"protocolVersion":2,"x":1}'
   ]) {
+    // Values the canonical encoder already refuses (non-integer or unsafe
+    // numbers) fail with the canonical-encoding error; every other one with
+    // the schema error.
     assert.throws(() => parsePortableStateNodeRecord(withLeafValue(valueJson)(leaf)),
-      /Invalid portable State v2 leaf value schema/, valueJson);
+      /^Error: Invalid portable State v2 leaf value( schema)?$/, valueJson);
   }
   for (const valueJson of ['{"balanceAtoms":0,"nonce":0}', '{"settled":true}', '{"validators":[]}', '{"protocolVersion":1}']) {
     assert.doesNotThrow(() => parsePortableStateNodeRecord(withLeafValue(valueJson)(leaf)), valueJson);
