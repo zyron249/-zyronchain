@@ -33,7 +33,14 @@ const websiteMutations = {
     const push = website.indexOf('  push:');
     return website.slice(0, push) + replaceOnce(website.slice(push), "      - 'l1/**'\n", '');
   })(),
-  'pipefail only in a comment': replaceOnce(website, 'set -euo pipefail', '# set -euo pipefail\n          set -eu')
+  'pipefail only in a comment': replaceOnce(website, 'set -euo pipefail', '# set -euo pipefail\n          set -eu'),
+  // Round-5 (Codex review of #997): each of these was accepted before.
+  'pipefail only inside a heredoc body': replaceOnce(website, 'set -euo pipefail',
+    "cat <<'STRICT'\n          set -euo pipefail\n          STRICT\n          set -eu"),
+  'pipefail set after the first gate command': replaceOnce(website, 'set -euo pipefail\n',
+    'true\n          set -euo pipefail\n'),
+  'pipefail switched off again later': replaceOnce(website, "          node <<'NODE'", "          set +o pipefail\n          node <<'NODE'"),
+  'errexit switched off again later': replaceOnce(website, "          node <<'NODE'", "          set +e\n          node <<'NODE'")
 };
 for (const [name, mutated] of Object.entries(websiteMutations)) {
   assert.notEqual(mutated, website, `mutation has no effect: ${name}`);
@@ -53,7 +60,22 @@ const releaseMutations = {
     "run: |\n          cat <<'AUDIT_TEXT'\n          npm audit --omit=dev --audit-level=high\n          AUDIT_TEXT"),
   'test command after builtin exit 0': replaceOnce(release, 'run: npm test', 'run: |\n          builtin exit 0\n          npm test'),
   'test command after command exit 0': replaceOnce(release, 'run: npm test', 'run: |\n          command exit 0\n          npm test'),
-  'test command after a separator and builtin exit': replaceOnce(release, 'run: npm test', 'run: true; builtin exit 0; npm test')
+  'test command after a separator and builtin exit': replaceOnce(release, 'run: npm test', 'run: true; builtin exit 0; npm test'),
+  // Round-5 (Codex review of #997): each of these was accepted before.
+  'test command after single-quoted eval exit': replaceOnce(release, 'run: npm test', "run: |\n          eval 'exit 0'\n          npm test"),
+  'test command after double-quoted eval exit': replaceOnce(release, 'run: npm test', 'run: |\n          eval "exit 0"\n          npm test'),
+  'test command after a computed eval': replaceOnce(release, 'run: npm test', 'run: |\n          eval "$(printf ex)it 0"\n          npm test'),
+  'test command after a quoted exit name': replaceOnce(release, 'run: npm test', "run: |\n          'exit' 0\n          npm test"),
+  'test command after a split-quoted exit name': replaceOnce(release, 'run: npm test', "run: |\n          e''xit 0\n          npm test"),
+  'test command after a backslash-escaped exit name': replaceOnce(release, 'run: npm test', 'run: |\n          \\exit 0\n          npm test'),
+  'audit printed from a heredoc with a numeric delimiter': replaceOnce(release, 'run: npm audit --omit=dev --audit-level=high',
+    'run: |\n          cat <<9\n          npm audit --omit=dev --audit-level=high\n          9'),
+  'audit printed from a heredoc with a quoted numeric delimiter': replaceOnce(release, 'run: npm audit --omit=dev --audit-level=high',
+    "run: |\n          cat <<'9'\n          npm audit --omit=dev --audit-level=high\n          9"),
+  'audit printed from a heredoc with a backslash-quoted delimiter': replaceOnce(release, 'run: npm audit --omit=dev --audit-level=high',
+    'run: |\n          cat <<\\AUDIT\n          npm audit --omit=dev --audit-level=high\n          AUDIT'),
+  'audit printed from a heredoc with a punctuation delimiter': replaceOnce(release, 'run: npm audit --omit=dev --audit-level=high',
+    'run: |\n          cat <<-.END\n          npm audit --omit=dev --audit-level=high\n          .END')
 };
 for (const [name, mutated] of Object.entries(releaseMutations)) {
   assert.throws(() => verifyL1ReleaseWorkflow(mutated), Error, `release mutation must be rejected: ${name}`);
