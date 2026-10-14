@@ -55,7 +55,19 @@ const websiteMutations = {
   'errexit switched off through a variable command name': replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          S=set\n          $S +e\n'),
   'pipefail switched off with shopt -o -u': replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          shopt -o -u pipefail\n'),
   'gate ends early with exit 0 before its checks': replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          exit 0\n'),
-  'gate ends early with exec true before its checks': replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          exec true\n')
+  'gate ends early with exec true before its checks': replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          exec true\n'),
+  // Same class, other command positions (accepted by the first fix for the
+  // second Codex review of #1009).
+  'gate ends early through a variable command after a separator':
+    replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          X=exit\n          true; $X 0\n'),
+  'gate ends early through a braced variable command name':
+    replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          X=exit\n          ${X} 0\n'),
+  'gate ends early through a variable command after a [[ ]] test':
+    replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          X=exit\n          [[ -n "$X" ]] && $X 0\n'),
+  'gate ends early through a backtick command name':
+    replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          `printf %s ex it` 0\n'),
+  'gate ends early through a command-substitution command name':
+    replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          $(printf %s ex it) 0\n')
 };
 for (const [name, mutated] of Object.entries(websiteMutations)) {
   assert.notEqual(mutated, website, `mutation has no effect: ${name}`);
