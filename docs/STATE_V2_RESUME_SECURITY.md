@@ -17,7 +17,9 @@ Portable State-v2 resume files are untrusted download staging, not authoritative
 
 - The manifest tip is compared with the operator's anchor (tip hash, header hash, height, state root) before the tip block is fully validated, so a forged tip costs one hash, not one signature check per transaction.
 - Each chunk's records and key preimages are validated when the chunk arrives (F-09(b)).
-- One attempt against one peer stops after `MAX_STATE_SYNC_TOTAL_BYTES` (4 GiB) of responses or `MAX_STATE_SYNC_DURATION_MS` (6 hours), whichever comes first. A spent budget is not retried against the same peer; the multi-peer fetch moves on to the next peer. An honest transfer at the protocol maxima (2,000,000 records, 1,000,000 key preimages) stays well below both. The overshoot is at most one response frame (20 MiB for records).
+- One attempt against one peer stops after `MAX_STATE_SYNC_TOTAL_BYTES` (4 GiB) of responses or `MAX_STATE_SYNC_DURATION_MS` (6 hours), whichever comes first. A spent budget is not retried against the same peer; the multi-peer fetch moves on to the next peer. An honest transfer at the protocol maxima (2,000,000 records, 1,000,000 key preimages) stays well below both. A frame whose declared length would not fit in the remaining budget is refused before its body is buffered.
+- The byte budget counts every response body byte as it arrives, including bytes of responses that fail to decode or validate and are retried; failed frames are not free (round-4 retest on #986).
+- The deadline is enforced by a timer that interrupts an in-flight dial, stream open, write, read or close; no retry starts after it, and it is checked again after the final stream close and after the final anchored assembly before a transfer is reported as successful.
 - Residual risk: within these bounds a peer can still serve a self-consistent tree that only fails the final anchored validation. Sync only from peers you selected, and keep state sync an operator-initiated action.
 
 ## Evidence

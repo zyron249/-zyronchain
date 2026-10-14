@@ -1,11 +1,13 @@
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { resolve } from "node:path";
 
 export const MAX_PRIVATE_FILE_BYTES = 64 * 1024;
 
-type PrivateFileStat = Awaited<ReturnType<FileHandle["stat"]>>;
+// Metadata from a non-bigint FileHandle.stat(). Named explicitly: the
+// overload-derived ReturnType differs between @types/node releases.
+type PrivateFileStat = Stats;
 export type PrivateFileSnapshotDisposition = "exact" | "hardlink-metadata" | "changed";
 
 interface OpenedPrivateFile {
