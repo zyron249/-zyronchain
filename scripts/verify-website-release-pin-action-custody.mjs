@@ -41,6 +41,35 @@ if (/\|\|\s*(?:true\b|:(?=\s|\)|;|$)|exit\s+0\b)/m.test(text)) {
 // Round-4 PR984: the strict mode must be an effective shell line, not text in a
 // comment or a longer line.
 if (!/^[ \t]*set -euo pipefail[ \t]*$/m.test(text)) throw new Error('release-pin gate shell must use set -euo pipefail');
+// Round-5 (Codex review of #997): a matching line can still be heredoc data
+// (`cat <<'STRICT'` ... `STRICT`) or come after commands that already ran
+// without it. Every run block that holds the gate's git diff must start with
+// the strict-mode line, before any heredoc can open, and must not switch
+// errexit or pipefail off again later.
+{
+  const lines = text.split('\n');
+  let gateBlocks = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = lines[i].match(/^(\s+)(?:-\s+)?run:\s*(.*?)\s*$/);
+    if (!m || m[2] !== '|') continue;
+    const indent = m[1].length;
+    const body = [];
+    for (let j = i + 1; j < lines.length; j += 1) {
+      if (lines[j].trim() !== '' && lines[j].length - lines[j].trimStart().length <= indent) break;
+      body.push(lines[j]);
+    }
+    if (!body.some((line) => line.includes('git diff --name-only'))) continue;
+    gateBlocks += 1;
+    const first = body.find((line) => line.trim() !== '');
+    if (first === undefined || first.trim() !== 'set -euo pipefail') {
+      throw new Error('release-pin gate run block must start with set -euo pipefail');
+    }
+    if (body.some((line) => /(?:^|[;&|({]|\s)(?:set\s+\+|shopt\s+-u)/.test(line))) {
+      throw new Error('release-pin gate must not switch strict mode off (set +..., shopt -u)');
+    }
+  }
+  if (gateBlocks === 0) throw new Error('release-pin gate run block missing');
+}
 const diffCommands = [...text.matchAll(/\$\(git diff --name-only ([^\n]*)\)"/g)];
 if (diffCommands.length < 1) throw new Error('release-pin gate must compare canonical paths with git diff --name-only');
 const comparedPaths = [];

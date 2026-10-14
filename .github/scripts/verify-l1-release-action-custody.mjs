@@ -27,13 +27,26 @@ if (/^\s+(?:-\s+)?if\s*:/m.test(workflow)) throw new Error('Release workflow ste
 // required command unreachable.
 // Round-4 PR984: also through the `builtin` / `command` wrappers (and the
 // same after a separator).
-const EARLY_EXIT = /(?:^|&&|\|\||;|\(|\{)\s*(?:(?:builtin|command|eval)\s+)*(?:exit|return|logout)\b/m;
-if (EARLY_EXIT.test(workflow)) {
+// Round-5 (Codex review of #997): bash removes quotes and backslashes before
+// it looks a command name up, so `'exit' 0`, `e''xit 0`, `\exit 0` and the
+// payload of `eval 'exit 0'` all still end the step. The scan also runs on a
+// copy with quote and backslash characters removed, and `exec` (which replaces
+// the shell, ending the step with the new program's status) counts as an exit.
+const EARLY_EXIT = /(?:^|&&|\|\||;|\(|\{)\s*(?:(?:builtin|command|eval)\s+)*(?:exit|return|logout|exec)\b/m;
+const dequoted = workflow.replace(/['"\\]/g, '');
+if (EARLY_EXIT.test(workflow) || EARLY_EXIT.test(dequoted)) {
   throw new Error('Release workflow steps must not exit early');
 }
+// Round-5 (Codex review of #997): an `eval` payload can be computed at run time
+// (`eval "$(printf ex)it 0"`), so no text check can prove it harmless. The
+// release workflow has no use for it.
+if (/(?:^|[\s;&|(){}`])eval(?=\s|$)/m.test(dequoted)) throw new Error('Release workflow steps must not use eval');
 // Round-4 PR984: a heredoc turns the lines below it into data, so a required
 // command inside one would be printed, not run. Run blocks must not use them.
-if (/<<-?\s*['"]?[A-Za-z_]/.test(workflow)) throw new Error('Release workflow steps must not use heredocs');
+// Round-5 (Codex review of #997): any heredoc operator is refused, whatever
+// its delimiter (`<<9`, `<<'9'`, `<<\AUDIT`, `<<-.END`); only the here-string
+// operator `<<<` (which reads no following lines) is left alone.
+if (/(?<!<)<<(?!<)/.test(workflow)) throw new Error('Release workflow steps must not use heredocs');
 
 const requireExactRef = (action, expected) => {
   const refs = [...workflow.matchAll(new RegExp(`actions/${action}@([0-9a-f]{40})`, 'g'))].map((m) => m[1]);

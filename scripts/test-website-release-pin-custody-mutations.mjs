@@ -68,6 +68,7 @@ const releaseMutations = {
   'test command after a quoted exit name': replaceOnce(release, 'run: npm test', "run: |\n          'exit' 0\n          npm test"),
   'test command after a split-quoted exit name': replaceOnce(release, 'run: npm test', "run: |\n          e''xit 0\n          npm test"),
   'test command after a backslash-escaped exit name': replaceOnce(release, 'run: npm test', 'run: |\n          \\exit 0\n          npm test'),
+  'test command after exec true': replaceOnce(release, 'run: npm test', 'run: |\n          exec true\n          npm test'),
   'audit printed from a heredoc with a numeric delimiter': replaceOnce(release, 'run: npm audit --omit=dev --audit-level=high',
     'run: |\n          cat <<9\n          npm audit --omit=dev --audit-level=high\n          9'),
   'audit printed from a heredoc with a quoted numeric delimiter': replaceOnce(release, 'run: npm audit --omit=dev --audit-level=high',
