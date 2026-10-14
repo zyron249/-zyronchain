@@ -41,6 +41,85 @@ if (/\|\|\s*(?:true\b|:(?=\s|\)|;|$)|exit\s+0\b)/m.test(text)) {
 // Round-4 PR984: the strict mode must be an effective shell line, not text in a
 // comment or a longer line.
 if (!/^[ \t]*set -euo pipefail[ \t]*$/m.test(text)) throw new Error('release-pin gate shell must use set -euo pipefail');
+// Round-5 (Codex review of #997): a matching line can still be heredoc data
+// (`cat <<'STRICT'` ... `STRICT`) or come after commands that already ran
+// without it. Every run block that holds the gate's git diff must start with
+// the strict-mode line, before any heredoc can open, and must not switch
+// errexit or pipefail off again later.
+{
+  const lines = text.split('\n');
+  let gateBlocks = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = lines[i].match(/^(\s+)(?:-\s+)?run:\s*(.*?)\s*$/);
+    if (!m || m[2] !== '|') continue;
+    const indent = m[1].length;
+    const body = [];
+    for (let j = i + 1; j < lines.length; j += 1) {
+      if (lines[j].trim() !== '' && lines[j].length - lines[j].trimStart().length <= indent) break;
+      body.push(lines[j]);
+    }
+    if (!body.some((line) => line.includes('git diff --name-only'))) continue;
+    gateBlocks += 1;
+    const first = body.find((line) => line.trim() !== '');
+    if (first === undefined || first.trim() !== 'set -euo pipefail') {
+      throw new Error('release-pin gate run block must start with set -euo pipefail');
+    }
+    // Round-5 (Codex review of #1009): bash removes quotes and backslashes
+    // before it looks a command name up (`s''et +e`, `\set +e`), so the scan
+    // runs on a copy without them. ANSI-C / locale quoting (`$'set'`,
+    // `$'\163et'`) and `eval` (whose payload can be computed at run time)
+    // could spell any command and are refused in the gate block.
+    if (body.some((line) => /\$['"]/.test(line))) {
+      throw new Error("release-pin gate must not use $'...' or $\"...\" quoting");
+    }
+    const dequoted = body.map((line) => line.replace(/['"\\]/g, ''));
+    if (dequoted.some((line) => /(?:^|[;&|(){}`]|\s)eval(?=\s|$)/.test(line))) {
+      throw new Error('release-pin gate must not use eval');
+    }
+    if (dequoted.some((line) => /(?:^|[;&|({]|\s)(?:set\s+\+|shopt\s+-u)/.test(line))) {
+      throw new Error('release-pin gate must not switch strict mode off (set +..., shopt -u)');
+    }
+    // Round-5 (second Codex review of #1009): bash joins a backslash-newline
+    // before it splits words (`se\` + `t +e`), any `+x` operand of `set`
+    // switches that option off (`set -u +e`), and `shopt -o -u` does the same
+    // for pipefail. The gate refuses line continuations, any `+letter` operand
+    // and `shopt`, a command name taken from a variable (`$S +e`, `$X 0`), and
+    // any way of ending the step early other than `exit 1`.
+    // This block stays a denylist (the gate script is free-form); the release
+    // workflow, whose run steps are fixed, is checked against an allowlist.
+    if (body.some((line) => /\\\s*$/.test(line))) {
+      throw new Error('release-pin gate must not use line continuations');
+    }
+    if (dequoted.some((line) => /(?:^|\s)\+[A-Za-z]/.test(line))) {
+      throw new Error('release-pin gate must not switch shell options off (+e, +o, ...)');
+    }
+    if (dequoted.some((line) => /(?:^|[\s;&|(){}`])shopt(?=\s|$)/.test(line))) {
+      throw new Error('release-pin gate must not use shopt');
+    }
+    // Command position: the start of a line, or after `;`, `&`, `|`, `(`,
+    // `)`, `{`, `then`, `do`, `else` or `!`. A command name that starts with an
+    // expansion (`$S +e`, `$X 0`, `"$S" +e`, `${S} +e`, `$(echo exit) 0`) or a
+    // backtick substitution (`` `echo exit` 0 ``) is computed at run time and
+    // refused. The scan runs on a copy where the inside of every quoted string
+    // is masked (only a leading `$` is kept, so `"$S" +e` is still caught while
+    // `echo "...; $COUNT ..."` is not) and every `[[ ... ]]` test is dropped
+    // (its operands are not commands). A backtick after `(` is not checked: it
+    // is the gate's own JavaScript template literal, and `(...)` is a subshell.
+    const masked = body.map((line) => line
+      .replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, (q) => `${q[0]}${q[1] === '$' ? '$' : ''}_${q[0]}`)
+      .replace(/\[\[.*?\]\]/g, ' true ')
+      .trim());
+    if (masked.some((line) => /(?:^|[;&|(){]|\b(?:then|do|else)\b|!)\s*['"]?\$[\w{(@*#?$!-]/.test(line) ||
+        /(?:^|[;&|{]|\b(?:then|do|else)\b|!)\s*['"]?`/.test(line))) {
+      throw new Error('release-pin gate must not take a command name from a variable or a substitution');
+    }
+    if (dequoted.some((line) => /(?:^|[\s;&|(){}`])(?:return|logout|exec)(?=\s|;|$)/.test(line) ||
+        /(?:^|[\s;&|(){}`])exit(?=\s|;|$)(?!\s+1(?:\s|;|$))/.test(line))) {
+      throw new Error('release-pin gate may only end early with exit 1');
+    }
+  }
+  if (gateBlocks === 0) throw new Error('release-pin gate run block missing');
+}
 const diffCommands = [...text.matchAll(/\$\(git diff --name-only ([^\n]*)\)"/g)];
 if (diffCommands.length < 1) throw new Error('release-pin gate must compare canonical paths with git diff --name-only');
 const comparedPaths = [];

@@ -27,13 +27,30 @@ if (/^\s+(?:-\s+)?if\s*:/m.test(workflow)) throw new Error('Release workflow ste
 // required command unreachable.
 // Round-4 PR984: also through the `builtin` / `command` wrappers (and the
 // same after a separator).
-const EARLY_EXIT = /(?:^|&&|\|\||;|\(|\{)\s*(?:(?:builtin|command|eval)\s+)*(?:exit|return|logout)\b/m;
-if (EARLY_EXIT.test(workflow)) {
+// Round-5 (Codex review of #997): bash removes quotes and backslashes before
+// it looks a command name up, so `'exit' 0`, `e''xit 0`, `\exit 0` and the
+// payload of `eval 'exit 0'` all still end the step. The scan also runs on a
+// copy with quote and backslash characters removed, and `exec` (which replaces
+// the shell, ending the step with the new program's status) counts as an exit.
+// Round-5 (Codex review of #1009): ANSI-C (`$'...'`) and locale (`$"..."`)
+// quoting can spell any word, including escapes such as `$'\145xit'`, and the
+// release workflow does not use either form, so both are refused outright.
+if (/\$['"]/.test(workflow)) throw new Error("Release workflow steps must not use $'...' or $\"...\" quoting");
+const EARLY_EXIT = /(?:^|&&|\|\||;|\(|\{)\s*(?:(?:builtin|command|eval)\s+)*(?:exit|return|logout|exec)\b/m;
+const dequoted = workflow.replace(/['"\\]/g, '');
+if (EARLY_EXIT.test(workflow) || EARLY_EXIT.test(dequoted)) {
   throw new Error('Release workflow steps must not exit early');
 }
+// Round-5 (Codex review of #997): an `eval` payload can be computed at run time
+// (`eval "$(printf ex)it 0"`), so no text check can prove it harmless. The
+// release workflow has no use for it.
+if (/(?:^|[\s;&|(){}`])eval(?=\s|$)/m.test(dequoted)) throw new Error('Release workflow steps must not use eval');
 // Round-4 PR984: a heredoc turns the lines below it into data, so a required
 // command inside one would be printed, not run. Run blocks must not use them.
-if (/<<-?\s*['"]?[A-Za-z_]/.test(workflow)) throw new Error('Release workflow steps must not use heredocs');
+// Round-5 (Codex review of #997): any heredoc operator is refused, whatever
+// its delimiter (`<<9`, `<<'9'`, `<<\AUDIT`, `<<-.END`); only the here-string
+// operator `<<<` (which reads no following lines) is left alone.
+if (/(?<!<)<<(?!<)/.test(workflow)) throw new Error('Release workflow steps must not use heredocs');
 
 const requireExactRef = (action, expected) => {
   const refs = [...workflow.matchAll(new RegExp(`actions/${action}@([0-9a-f]{40})`, 'g'))].map((m) => m[1]);
@@ -69,18 +86,60 @@ for (const required of [
 
 // Line-based (no backtracking): a required command must be the whole value of
 // a run step or a whole line of a `run: |` block.
+// Round-5 (second Codex review of #1009): a text scan cannot model every way
+// bash can spell `exit` (line continuations, variable command names, ...), so
+// the release run steps are an exact allowlist: every run value and every line
+// of a `run: |` block must be one of RELEASE_RUN_LINES, a `run:` mapping may
+// only set the working directory, no `run` key may appear in any other form,
+// and no step or default may choose its own `shell`.
+const RELEASE_RUN_LINES = new Set([
+  'npm ci',
+  'npm run typecheck',
+  'npm test',
+  'npm audit --omit=dev --audit-level=high',
+  'npm run build',
+  'mkdir -p release',
+  'npm pack --ignore-scripts --pack-destination release',
+  'npm sbom --omit=dev --sbom-format=spdx > release/SBOM.spdx.json',
+  'cd release',
+  'sha256sum SBOM.spdx.json zyronchain-l1-*.tgz > SHA256SUMS'
+]);
+if (/^\s*(?:-\s+)?['"]?shell['"]?\s*:/m.test(workflow) || /[{,]\s*['"]?shell['"]?\s*:/.test(workflow)) {
+  throw new Error('Release workflow steps must not choose their own shell');
+}
 const effectiveRunCommands = new Set();
 {
   const lines = workflow.split('\n');
+  const allowed = (command) => {
+    if (!RELEASE_RUN_LINES.has(command)) throw new Error(`Release workflow run command is not allowlisted: ${command}`);
+    effectiveRunCommands.add(command);
+  };
   for (let i = 0; i < lines.length; i += 1) {
-    const m = lines[i].match(/^(\s+)(?:-\s+)?run:\s*(.*?)\s*$/);
-    if (!m) continue;
-    if (m[2] !== '|') { effectiveRunCommands.add(m[2]); continue; }
+    const m = lines[i].match(/^(\s+)(?:-\s+)?run:(?:\s+(.*?))?\s*$/);
+    if (!m) {
+      if (/['"]?\brun['"]?\s*:/.test(lines[i])) throw new Error(`Release workflow run key in an unsupported form: ${lines[i].trim()}`);
+      continue;
+    }
+    const value = m[2] ?? '';
     const indent = m[1].length;
+    const body = [];
     for (let j = i + 1; j < lines.length; j += 1) {
       if (lines[j].trim() === '') continue;
       if (lines[j].length - lines[j].trimStart().length <= indent) break;
-      effectiveRunCommands.add(lines[j].trim());
+      body.push(lines[j].trim());
+    }
+    if (value === '') {
+      // `defaults: run:` mapping: only the working directory may be set.
+      if (body.length !== 1 || body[0] !== 'working-directory: l1') {
+        throw new Error('Release workflow run defaults may only set working-directory: l1');
+      }
+      i += body.length;
+    } else if (value === '|') {
+      if (body.length === 0) throw new Error('Release workflow run block is empty');
+      for (const line of body) allowed(line);
+      i += body.length;
+    } else {
+      allowed(value);
     }
   }
 }
