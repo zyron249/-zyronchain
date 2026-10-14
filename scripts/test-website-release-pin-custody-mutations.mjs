@@ -15,7 +15,9 @@ assert.doesNotThrow(() => verifyL1ReleaseWorkflow(release), 'the real release wo
 
 const replaceOnce = (text, from, to) => {
   assert.ok(text.includes(from), `mutation anchor missing: ${from}`);
-  return text.replace(from, to);
+  // A function replacement keeps `to` literal: a string replacement would expand
+  // `$'`, `$&` and similar patterns, which shell mutations contain.
+  return text.replace(from, () => to);
 };
 
 const websiteMutations = {
@@ -40,7 +42,13 @@ const websiteMutations = {
   'pipefail set after the first gate command': replaceOnce(website, 'set -euo pipefail\n',
     'true\n          set -euo pipefail\n'),
   'pipefail switched off again later': replaceOnce(website, "          node <<'NODE'", "          set +o pipefail\n          node <<'NODE'"),
-  'errexit switched off again later': replaceOnce(website, "          node <<'NODE'", "          set +e\n          node <<'NODE'")
+  'errexit switched off again later': replaceOnce(website, "          node <<'NODE'", "          set +e\n          node <<'NODE'"),
+  // Round-5 (Codex review of #1009): shell-equivalent spellings of `set +e`.
+  'errexit switched off with a split-quoted set': replaceOnce(website, 'set -euo pipefail\n', "set -euo pipefail\n          s''et +e\n"),
+  'errexit switched off with an ANSI-C quoted set': replaceOnce(website, 'set -euo pipefail\n', "set -euo pipefail\n          $'set' +e\n"),
+  'errexit switched off with a backslash-escaped set': replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          \\set +e\n'),
+  'errexit switched off with an ANSI-C escaped set': replaceOnce(website, 'set -euo pipefail\n', "set -euo pipefail\n          $'\\163et' +e\n"),
+  'errexit switched off through eval': replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          eval "$(printf s)et +e"\n')
 };
 for (const [name, mutated] of Object.entries(websiteMutations)) {
   assert.notEqual(mutated, website, `mutation has no effect: ${name}`);
@@ -68,6 +76,10 @@ const releaseMutations = {
   'test command after a quoted exit name': replaceOnce(release, 'run: npm test', "run: |\n          'exit' 0\n          npm test"),
   'test command after a split-quoted exit name': replaceOnce(release, 'run: npm test', "run: |\n          e''xit 0\n          npm test"),
   'test command after a backslash-escaped exit name': replaceOnce(release, 'run: npm test', 'run: |\n          \\exit 0\n          npm test'),
+  // Round-5 (Codex review of #1009): ANSI-C and locale quoting.
+  'test command after an ANSI-C quoted exit name': replaceOnce(release, 'run: npm test', "run: |\n          $'exit' 0\n          npm test"),
+  'test command after an ANSI-C escaped exit name': replaceOnce(release, 'run: npm test', "run: |\n          $'\\145xit' 0\n          npm test"),
+  'test command after a locale-quoted exit name': replaceOnce(release, 'run: npm test', 'run: |\n          $"exit" 0\n          npm test'),
   'test command after exec true': replaceOnce(release, 'run: npm test', 'run: |\n          exec true\n          npm test'),
   'audit printed from a heredoc with a numeric delimiter': replaceOnce(release, 'run: npm audit --omit=dev --audit-level=high',
     'run: |\n          cat <<9\n          npm audit --omit=dev --audit-level=high\n          9'),
