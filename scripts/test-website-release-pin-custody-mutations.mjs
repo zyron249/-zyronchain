@@ -67,7 +67,25 @@ const websiteMutations = {
   'gate ends early through a backtick command name':
     replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          `printf %s ex it` 0\n'),
   'gate ends early through a command-substitution command name':
-    replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          $(printf %s ex it) 0\n')
+    replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          $(printf %s ex it) 0\n'),
+  // Round-6 independent retest (PR1009, R6-1009-L1): each of these was accepted
+  // by the denylist. The gate workflow is now pinned byte-for-byte, so any
+  // change at all is refused until the pinned digest is updated in review.
+  'gate step ignores its own failure': replaceOnce(website, '        shell: bash', '        continue-on-error: true\n        shell: bash'),
+  'gate job ignores its own failure': replaceOnce(website, '    runs-on:', '    continue-on-error: true\n    runs-on:'),
+  'gate step skipped with if: false': replaceOnce(website, '        shell: bash', '        if: false\n        shell: bash'),
+  'gate step skipped with an expression': replaceOnce(website, '        shell: bash', '        if: ${{ false }}\n        shell: bash'),
+  'gate step skipped through a YAML anchor alias':
+    replaceOnce(replaceOnce(website, 'permissions:\n', 'x-skip: &skip false\npermissions:\n'), '        shell: bash', '        if: *skip\n        shell: bash'),
+  'negative l1 path in the triggers': website.replaceAll("      - 'l1/**'\n", "      - 'l1/**'\n      - '!l1/**'\n"),
+  'gate run by a custom shell that ignores the script': replaceOnce(website, 'shell: bash', 'shell: true {0}'),
+  'gate wrapped in a double-quoted heredoc': replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          cat <<"EOF"\n') + '          EOF\n',
+  'gate wrapped in a tab-stripped heredoc': replaceOnce(website, 'set -euo pipefail\n', "set -euo pipefail\n          cat <<-'X_1'\n") + '          X_1\n',
+  'gate wrapped in an escaped heredoc': replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          cat <<\\EOF\n') + '          EOF\n',
+  'gate defined as a function and skipped by true ||':
+    replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          gate() {\n') + '          }\n          true || gate\n',
+  'git shadowed by a shell function': replaceOnce(website, 'set -euo pipefail\n', 'set -euo pipefail\n          git() { :; }\n'),
+  'trailing whitespace only': website.replace(/\n$/, '\n\n')
 };
 for (const [name, mutated] of Object.entries(websiteMutations)) {
   assert.notEqual(mutated, website, `mutation has no effect: ${name}`);
