@@ -38,7 +38,7 @@
     "@libp2p/peer-id": "6.0.16",
     "@libp2p/tcp": "11.0.29",
     "@multiformats/multiaddr": "13.0.3",
-    "@noble/curves": "2.3.0",
+    "@noble/curves": "2.4.0",
     "better-sqlite3": "13.0.3",
     "libp2p": "3.3.12"
   },
