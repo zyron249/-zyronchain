@@ -220,8 +220,39 @@ test("R5-998-M1: every honest leaf passes the per-chunk check, and invalid value
     assert.throws(() => parsePortableStateNodeRecord(withLeafValue(valueJson)(leaf)),
       /^Error: Invalid portable State v2 leaf value( schema)?$/, valueJson);
   }
-  for (const valueJson of ['{"balanceAtoms":0,"nonce":0}', '{"settled":true}', '{"validators":[]}', '{"protocolVersion":1}']) {
+  for (const valueJson of ['{"balanceAtoms":0,"nonce":0}', '{"settled":true}', '{"protocolVersion":1}', '{"protocolVersion":65535}']) {
     assert.doesNotThrow(() => parsePortableStateNodeRecord(withLeafValue(valueJson)(leaf)), valueJson);
+  }
+});
+
+// Codex review of #1010 (P2 x2): a validator-schedule leaf must carry 1 to 100
+// well-formed, distinct validators whose address derives from the public key,
+// and a protocol-schedule leaf a version of at most 65,535, as checkpoint
+// validation requires; otherwise the rest of the transfer was still fetched.
+test("R5-998-M1: validator-schedule and protocol-schedule leaves are held to the checkpoint bounds per chunk", async () => {
+  const leaf = fixture.bundle.records.find((record) => record.kind === "leaf") as LeafRecord;
+  const real = { address: validator, publicKey: validatorPublic };
+  const other = { address: addressFromPublicKey(publicKeyFromPrivate("34".padStart(64, "0"))), publicKey: publicKeyFromPrivate("34".padStart(64, "0")) };
+  const value = (validators: unknown) => canonicalJson({ validators });
+  for (const [name, valueJson] of [
+    ["empty validator list", value([])],
+    ["non-object validator", value([1])],
+    ["validator with an extra field", value([{ ...real, weight: 1 }])],
+    ["validator missing its public key", value([{ address: real.address }])],
+    ["validator with a malformed address", value([{ ...real, address: "ZYN" + "g".repeat(40) }])],
+    ["validator with a malformed public key", value([{ ...real, publicKey: "zz".repeat(32) }])],
+    ["validator whose address does not derive from its key", value([{ address: other.address, publicKey: real.publicKey }])],
+    ["duplicate validator", value([real, real])],
+    ["101 validators", value(Array.from({ length: 101 }, () => real))],
+    ["protocol version above 65535", '{"protocolVersion":65536}']
+  ] as const) {
+    const outcome = await transferWithTamperedLeaf(`codex-${name.replaceAll(" ", "-")}`, withLeafValue(valueJson));
+    assert.ok(outcome.seenBad, name);
+    assert.match(String((outcome.error as Error | undefined)?.message), /Invalid portable State v2 leaf value schema/, name);
+    assert.equal(outcome.afterBad, 0, `${name}: no response may be requested after the offending chunk`);
+  }
+  for (const validators of [[real], [real, other]]) {
+    assert.doesNotThrow(() => parsePortableStateNodeRecord(withLeafValue(value(validators))(leaf)), JSON.stringify(validators));
   }
 });
 
