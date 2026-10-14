@@ -22,6 +22,11 @@ export function stripYamlComments(text) {
 export function verifyL1ReleaseWorkflow(rawWorkflow) {
 const workflow = stripYamlComments(rawWorkflow);
 if (/^\s*(?:-\s+)?continue-on-error\s*:/m.test(workflow)) throw new Error('Release workflow steps must not continue on error');
+// Round-6 independent retest (PR1009, Info): a zero or non-numeric timeout
+// must not be able to cut a step or job short.
+for (const m of workflow.matchAll(/^\s*(?:-\s+)?timeout-minutes\s*:\s*(.*?)\s*$/gm)) {
+  if (!/^[1-9][0-9]*$/.test(m[1])) throw new Error(`Release workflow timeout-minutes must be a positive integer: ${m[1]}`);
+}
 if (/^\s+(?:-\s+)?if\s*:/m.test(workflow)) throw new Error('Release workflow steps and jobs must not be conditional');
 // F-08 residual: a shell line that ends the step early makes every later
 // required command unreachable.

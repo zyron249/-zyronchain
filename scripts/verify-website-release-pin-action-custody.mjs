@@ -1,10 +1,27 @@
 #!/usr/bin/env node
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 const workflowPath = '.github/workflows/website-release-pin-ci.yml';
 
+// Round-6 independent retest (R6-1009-L1): the denylist below cannot cover
+// every YAML and shell spelling that skips or neuters the gate (step or job
+// continue-on-error, `if: false`, anchors, negative trigger paths, custom
+// shells, heredoc or function wrapping, command shadowing). The gate workflow
+// is therefore pinned byte-for-byte: any change to it is refused until this
+// digest is updated, and this file is under the custody policy's own triggers,
+// so the change is reviewed together with the verifier and its mutation tests.
+// The structural checks below still run, so a new pinned version must also
+// pass them.
+export const WEBSITE_RELEASE_PIN_WORKFLOW_SHA256 =
+  'a487ed9fd0d04073f4892eff62fe2094071b29c27e0588cb6131846c78411b5a';
+
 export function verifyWebsiteReleasePinWorkflow(text) {
+const digest = createHash('sha256').update(text, 'utf8').digest('hex');
+if (digest !== WEBSITE_RELEASE_PIN_WORKFLOW_SHA256) {
+  throw new Error(`website release-pin workflow is not the reviewed version (sha256 ${digest}); update WEBSITE_RELEASE_PIN_WORKFLOW_SHA256 only together with a review of the gate`);
+}
 const required = [
   'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
   'fetch-depth: 0',
