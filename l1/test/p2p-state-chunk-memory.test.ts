@@ -13,7 +13,8 @@ test("State-v2 chunk parsing reuses the retained decoded graph without a full cl
 
 test("State-v2 callers keep the retained frame until each chunk is persisted or consumed", async () => {
   const source = await readFile(join(process.cwd(), "src", "p2p-state.ts"), "utf8");
-  const recordLoop = source.match(/for \(let start = resume\?\.nextRecordStart\(\)[\s\S]*?\n  }\n  const keys:/);
+  // R6-1010-M1: records are fetched root first (from the end of the list).
+  const recordLoop = source.match(/for \(let start = resume\?\.nextRecordSuffixStart\(\)[\s\S]*?\n  }\n  anchored\.finish/);
   const keyLoop = source.match(/for \(let start = resume\?\.nextKeyStart\(\)[\s\S]*?\n  }\n  if \(!resume/);
   for (const loop of [recordLoop, keyLoop]) {
     assert.ok(loop, "State-v2 chunk loop must remain present");

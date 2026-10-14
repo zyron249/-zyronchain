@@ -26,6 +26,7 @@ import {
   PortableStateResumeStore,
   type PortableStateResumeManifestV1
 } from "./state-v2-resume.js";
+import { StateV2AnchoredRecordStream, type StateV2NodeRecord } from "./state-v2.js";
 import type { TrustedSnapshotAnchor } from "./storage.js";
 import type { Block, GenesisConfig } from "./types.js";
 
@@ -436,20 +437,58 @@ async function fetchTrustedPortableStateWithinLimits(
     keyCount: manifest.keyCount,
     tip: manifest.tip
   } : undefined;
-  const resume = resumeDir && resumeManifest ? await openResumeDiscardingPeerMismatch(resumeDir, resumeManifest) : undefined;
-  const records: unknown[] = [];
-  for (let start = resume?.nextRecordStart() ?? 0; start < manifest.recordCount;) {
-    const limit = Math.min(MAX_STATE_RECORDS_PER_CHUNK, manifest.recordCount - start);
-    const reply = await request("records", start, limit);
+  let resume = resumeDir && resumeManifest ? await openResumeDiscardingPeerMismatch(resumeDir, resumeManifest) : undefined;
+  // R6-1010-M1: records are fetched from the end of the post-order list (the
+  // root first), so every record is checked against the anchored state root in
+  // the chunk that carries it. A partial staging written in the old ascending
+  // order cannot be checked that way and is discarded (untrusted download state).
+  if (resume && resumeDir && resumeManifest && resume.nextRecordStart() > 0 && resume.nextRecordStart() < manifest.recordCount) {
+    console.warn("Discarding ascending portable state staging; records are now staged root first");
+    await discardPortableStateResumeDirectory(resumeDir);
+    resume = await PortableStateResumeStore.open(resumeDir, resumeManifest);
+  }
+  let anchored = new StateV2AnchoredRecordStream(manifest.stateRoot);
+  const acceptFromEnd = (items: readonly unknown[]) => {
+    for (let index = items.length - 1; index >= 0; index -= 1) anchored.accept(items[index] as StateV2NodeRecord);
+  };
+  // Records staged by an earlier attempt came from some peer: re-check them
+  // against the anchored root, from the end, before fetching more, and
+  // discard the staging (untrusted download state) if they do not match.
+  if (resume && resumeDir && resumeManifest) {
     try {
-      const chunk = parseChunk(reply.value, expected, reply.remotePeer, anchor, "records", start, limit);
-      if (resume) await resume.putRecords(start, chunk.items);
-      else records.push(...chunk.items);
-      start += chunk.items.length;
+      const recordSuffix = resume.nextRecordSuffixStart();
+      for (let end = manifest.recordCount; end > recordSuffix;) {
+        const limit = Math.min(MAX_STATE_RECORDS_PER_CHUNK, end - recordSuffix);
+        const staged = await resume.records(end - limit, limit);
+        for (const item of staged) parsePortableStateNodeRecord(item);
+        acceptFromEnd(staged);
+        end -= limit;
+      }
+    } catch (error) {
+      console.warn(`Discarding portable state staging that does not match the anchored root (${(error as Error).message})`);
+      await discardPortableStateResumeDirectory(resumeDir);
+      resume = await PortableStateResumeStore.open(resumeDir, resumeManifest);
+      anchored = new StateV2AnchoredRecordStream(manifest.stateRoot);
+    }
+  }
+  const recordChunks: unknown[][] = [];
+  for (let start = resume?.nextRecordSuffixStart() ?? manifest.recordCount; start > 0;) {
+    const limit = Math.min(MAX_STATE_RECORDS_PER_CHUNK, start);
+    const reply = await request("records", start - limit, limit);
+    try {
+      const chunk = parseChunk(reply.value, expected, reply.remotePeer, anchor, "records", start - limit, limit);
+      acceptFromEnd(chunk.items);
+      if (resume) await resume.putRecordsBefore(start - limit, chunk.items);
+      else recordChunks.push(chunk.items);
+      start -= chunk.items.length;
     } finally {
       reply.release();
     }
   }
+  anchored.finish(manifest.recordCount);
+  const records: unknown[] = [];
+  for (let index = recordChunks.length - 1; index >= 0; index -= 1) records.push(...recordChunks[index]!);
+  recordChunks.length = 0;
   const keys: unknown[] = [];
   for (let start = resume?.nextKeyStart() ?? 0; start < manifest.keyCount;) {
     const limit = Math.min(MAX_STATE_KEYS_PER_CHUNK, manifest.keyCount - start);

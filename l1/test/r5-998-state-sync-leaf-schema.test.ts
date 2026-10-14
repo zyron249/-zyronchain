@@ -339,3 +339,203 @@ async function createFixture(name: string) {
     }
   };
 }
+
+// R6-1010-M1 (independent retest, round 6; Medium per AI review, resource): the
+// residual above let a peer substitute a well-formed value of another semantic
+// type, or alter a valid value, and still make the client download the whole
+// transfer before the final anchored assembly rejected it. Records are now
+// fetched from the root down and every record is checked against the anchored
+// state root (its hash and its position) in the chunk that carries it, so no
+// further chunk may be requested after a record that does not belong to the
+// anchored tree, even when the peer recomputes every ancestor hash.
+const R6_EMPTY_HASHES = (() => {
+  const domain = (name: string) => Buffer.from(`ZyronChain/state-v2/${name}\0`, "utf8");
+  const hashes: string[] = new Array(257);
+  hashes[256] = createHash("sha256").update(domain("empty-leaf")).digest("hex");
+  for (let depth = 255; depth >= 0; depth -= 1) hashes[depth] = r6Branch(hashes[depth + 1]!, hashes[depth + 1]!);
+  return hashes;
+})();
+
+function r6Branch(left: string, right: string): string {
+  return createHash("sha256").update(Buffer.from("ZyronChain/state-v2/branch\0", "utf8"))
+    .update(Buffer.from(left, "hex")).update(Buffer.from(right, "hex")).digest("hex");
+}
+
+function r6LeafAtDepth(keyHash: string, valueHash: string, depth: number): string {
+  const key = Buffer.from(keyHash, "hex");
+  let hash = createHash("sha256").update(Buffer.from("ZyronChain/state-v2/leaf\0", "utf8"))
+    .update(key).update(Buffer.from(valueHash, "hex")).digest("hex");
+  for (let cursor = 255; cursor >= depth; cursor -= 1) {
+    const bit = (key[Math.floor(cursor / 8)]! >> (7 - (cursor % 8))) & 1;
+    hash = bit === 0 ? r6Branch(hash, R6_EMPTY_HASHES[cursor + 1]!) : r6Branch(R6_EMPTY_HASHES[cursor + 1]!, hash);
+  }
+  return hash;
+}
+
+type R6Record = StateV2PortableBundleV1["records"][number];
+
+/** The honest records with one leaf value changed and, optionally, every ancestor hash recomputed. */
+function r6Tampered(valueJson: string, { recomputeAncestors = false, late = false } = {}): { records: R6Record[]; changed: Set<number> } {
+  const records = structuredClone(fixture.bundle.records) as R6Record[];
+  const index = new Map(records.map((record, at) => [record.hash, at]));
+  const depth = new Map<number, number>();
+  const parent = new Map<number, number>();
+  const visit = (hash: string | null, at: number, from: number | undefined) => {
+    if (hash === null) return;
+    const position = index.get(hash);
+    assert.ok(position !== undefined);
+    depth.set(position, at);
+    if (from !== undefined) parent.set(position, from);
+    const record = records[position]!;
+    if (record.kind === "branch") { visit(record.leftHash, at + 1, position); visit(record.rightHash, at + 1, position); }
+  };
+  visit(fixture.bundle.root, 0, undefined);
+  const leafAt = records.findIndex((record, at) => record.kind === "leaf" &&
+    JSON.parse(record.valueJson).balanceAtoms !== undefined && (!late || at >= MAX_STATE_RECORDS_PER_CHUNK * 9));
+  assert.ok(leafAt >= 0);
+  const changed = new Set<number>([leafAt]);
+  const leaf = withLeafValue(valueJson)(records[leafAt] as LeafRecord);
+  records[leafAt] = leaf;
+  if (recomputeAncestors) {
+    let oldHash = leaf.hash;
+    let newHash = r6LeafAtDepth(leaf.keyHash, leaf.valueHash, depth.get(leafAt)!);
+    leaf.hash = newHash;
+    for (let at = parent.get(leafAt); at !== undefined; at = parent.get(at)) {
+      const branch = records[at] as Extract<R6Record, { kind: "branch" }>;
+      if (branch.leftHash === oldHash) branch.leftHash = newHash;
+      else branch.rightHash = newHash;
+      oldHash = branch.hash;
+      const d = depth.get(at)!;
+      newHash = r6Branch(branch.leftHash ?? R6_EMPTY_HASHES[d + 1]!, branch.rightHash ?? R6_EMPTY_HASHES[d + 1]!);
+      branch.hash = newHash;
+      changed.add(at);
+    }
+  }
+  return { records, changed };
+}
+
+async function r6Transfer(name: string, records: R6Record[], changed: Set<number>, { disk = false } = {}) {
+  let seenBad = false;
+  let afterBad = 0;
+  const counts = { manifest: 0, records: 0, keys: 0 };
+  await fixture.sourceNode.unhandle(P2P_STATE_PROTOCOL);
+  await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+    const request = await readRequest(stream);
+    if (seenBad) afterBad += 1;
+    counts[request.kind] += 1;
+    if (request.kind !== "records") {
+      await writeFixtureResponse(stream, fixture, request);
+      return;
+    }
+    for (let at = request.start; at < request.start + request.limit; at += 1) if (changed.has(at)) seenBad = true;
+    await writeChunk(stream, fixture, request, records.slice(request.start, request.start + request.limit));
+  });
+  let error: unknown;
+  try {
+    if (disk) {
+      await fetchTrustedPortableStateResumableFromPeer(fixture.clientNode, fixture.address, fixture.clientIdentity,
+        fixture.config, fixture.anchor, join(fixture.root, `resume-r6-${name}`));
+    } else {
+      await fetchTrustedPortableStateFromPeer(fixture.clientNode, fixture.address, fixture.clientIdentity,
+        fixture.config, fixture.anchor);
+    }
+  } catch (caught) {
+    error = caught;
+  }
+  return { seenBad, afterBad, counts, error };
+}
+
+for (const disk of [false, true]) {
+  for (const [name, valueJson, options] of [
+    ["a well-formed value of another semantic type", '{"settled":true}', {}],
+    ["an altered valid account value", '{"balanceAtoms":7,"nonce":3}', {}],
+    ["an altered value behind nine honest chunks", '{"balanceAtoms":7,"nonce":3}', { late: true }],
+    ["another semantic type with every ancestor hash recomputed", '{"settled":true}', { recomputeAncestors: true }],
+    ["an altered value with every ancestor hash recomputed", '{"balanceAtoms":7,"nonce":3}', { recomputeAncestors: true, late: true }]
+  ] as const) {
+    test(`R6-1010-M1: ${name} is rejected against the anchored root in its chunk (${disk ? "disk" : "memory"})`, async () => {
+      const { records, changed } = r6Tampered(valueJson, options);
+      const outcome = await r6Transfer(`${disk ? "d" : "m"}-${name.replaceAll(" ", "-")}`, records, changed, { disk });
+      assert.ok(outcome.seenBad, name);
+      assert.match(String((outcome.error as Error | undefined)?.message),
+        /Portable State v2 record does not match the anchored state root/, name);
+      assert.equal(outcome.afterBad, 0, `${name}: no response may be requested after the offending chunk`);
+      assert.equal(outcome.counts.keys, 0, JSON.stringify(outcome.counts));
+    });
+  }
+}
+
+test("R6-1010-M1: an honest transfer still succeeds in both modes after root-anchored checking", async () => {
+  for (const disk of [false, true]) {
+    const outcome = await r6Transfer(`honest-${disk}`, fixture.bundle.records, new Set(), { disk });
+    assert.equal(outcome.error, undefined, String(outcome.error));
+  }
+});
+
+test("R6-1010-M1: an interrupted disk transfer resumes root first without re-fetching staged chunks, and bad staging is discarded", async () => {
+  const total = Math.ceil(fixture.bundle.records.length / MAX_STATE_RECORDS_PER_CHUNK);
+  const resumeDir = join(fixture.root, "resume-r6-interrupted");
+  let served = 0;
+  const starts: number[] = [];
+  await fixture.sourceNode.unhandle(P2P_STATE_PROTOCOL);
+  await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+    const request = await readRequest(stream);
+    if (request.kind === "records") {
+      starts.push(request.start);
+      served += 1;
+      if (served > 3) { stream.abort(new Error("peer went away")); return; }
+    }
+    await writeFixtureResponse(stream, fixture, request);
+  });
+  await assert.rejects(() => fetchTrustedPortableStateResumableFromPeer(fixture.clientNode, fixture.address,
+    fixture.clientIdentity, fixture.config, fixture.anchor, resumeDir));
+  // Root first: the first request is for the last chunk of the post-order list.
+  assert.equal(starts[0], fixture.bundle.records.length - MAX_STATE_RECORDS_PER_CHUNK);
+  assert.ok(starts[1]! < starts[0]!);
+
+  let records = 0;
+  await fixture.sourceNode.unhandle(P2P_STATE_PROTOCOL);
+  await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+    const request = await readRequest(stream);
+    if (request.kind === "records") records += 1;
+    await writeFixtureResponse(stream, fixture, request);
+  });
+  const resumed = await fetchTrustedPortableStateResumableFromPeer(fixture.clientNode, fixture.address,
+    fixture.clientIdentity, fixture.config, fixture.anchor, resumeDir);
+  assert.deepEqual(resumed.bundle, fixture.bundle);
+  assert.equal(records, total - 3, "the three staged chunks are not fetched again");
+
+  // Staging whose root-first records were altered on disk is re-checked
+  // against the anchored root, discarded, and the download restarts.
+  const dir = join(fixture.root, "resume-r6-tampered");
+  served = 0;
+  starts.length = 0;
+  await fixture.sourceNode.unhandle(P2P_STATE_PROTOCOL);
+  await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+    const request = await readRequest(stream);
+    if (request.kind === "records" && ++served > 2) { stream.abort(new Error("peer went away")); return; }
+    await writeFixtureResponse(stream, fixture, request);
+  });
+  await assert.rejects(() => fetchTrustedPortableStateResumableFromPeer(fixture.clientNode, fixture.address,
+    fixture.clientIdentity, fixture.config, fixture.anchor, dir));
+  const { readdir: list, readFile: load, writeFile: save } = await import("node:fs/promises");
+  const staged = (await list(join(dir, "records-root-first"))).sort();
+  assert.equal(staged.length, 2);
+  const file = join(dir, "records-root-first", staged[0]!);
+  const envelope = JSON.parse(await load(file, "utf8"));
+  const leafIndex = envelope.items.findIndex((item: { kind: string }) => item.kind === "leaf");
+  envelope.items[leafIndex] = withLeafValue('{"settled":true}')(envelope.items[leafIndex]);
+  const body = { version: 1, start: envelope.start, items: envelope.items };
+  await save(file, `${canonicalJson({ ...body, checksum: sha256Hex(canonicalJson(body)) })}\n`);
+  records = 0;
+  await fixture.sourceNode.unhandle(P2P_STATE_PROTOCOL);
+  await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+    const request = await readRequest(stream);
+    if (request.kind === "records") records += 1;
+    await writeFixtureResponse(stream, fixture, request);
+  });
+  const restarted = await fetchTrustedPortableStateResumableFromPeer(fixture.clientNode, fixture.address,
+    fixture.clientIdentity, fixture.config, fixture.anchor, dir);
+  assert.deepEqual(restarted.bundle, fixture.bundle);
+  assert.equal(records, total, "the tampered staging is discarded and every chunk fetched again");
+});
