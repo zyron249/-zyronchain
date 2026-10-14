@@ -79,6 +79,44 @@ if (!/^[ \t]*set -euo pipefail[ \t]*$/m.test(text)) throw new Error('release-pin
     if (dequoted.some((line) => /(?:^|[;&|({]|\s)(?:set\s+\+|shopt\s+-u)/.test(line))) {
       throw new Error('release-pin gate must not switch strict mode off (set +..., shopt -u)');
     }
+    // Round-5 (second Codex review of #1009): bash joins a backslash-newline
+    // before it splits words (`se\` + `t +e`), any `+x` operand of `set`
+    // switches that option off (`set -u +e`), and `shopt -o -u` does the same
+    // for pipefail. The gate refuses line continuations, any `+letter` operand
+    // and `shopt`, a command name taken from a variable (`$S +e`, `$X 0`), and
+    // any way of ending the step early other than `exit 1`.
+    // This block stays a denylist (the gate script is free-form); the release
+    // workflow, whose run steps are fixed, is checked against an allowlist.
+    if (body.some((line) => /\\\s*$/.test(line))) {
+      throw new Error('release-pin gate must not use line continuations');
+    }
+    if (dequoted.some((line) => /(?:^|\s)\+[A-Za-z]/.test(line))) {
+      throw new Error('release-pin gate must not switch shell options off (+e, +o, ...)');
+    }
+    if (dequoted.some((line) => /(?:^|[\s;&|(){}`])shopt(?=\s|$)/.test(line))) {
+      throw new Error('release-pin gate must not use shopt');
+    }
+    // Command position: the start of a line, or after `;`, `&`, `|`, `(`,
+    // `)`, `{`, `then`, `do`, `else` or `!`. A command name that starts with an
+    // expansion (`$S +e`, `$X 0`, `"$S" +e`, `${S} +e`, `$(echo exit) 0`) or a
+    // backtick substitution (`` `echo exit` 0 ``) is computed at run time and
+    // refused. The scan runs on a copy where the inside of every quoted string
+    // is masked (only a leading `$` is kept, so `"$S" +e` is still caught while
+    // `echo "...; $COUNT ..."` is not) and every `[[ ... ]]` test is dropped
+    // (its operands are not commands). A backtick after `(` is not checked: it
+    // is the gate's own JavaScript template literal, and `(...)` is a subshell.
+    const masked = body.map((line) => line
+      .replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, (q) => `${q[0]}${q[1] === '$' ? '$' : ''}_${q[0]}`)
+      .replace(/\[\[.*?\]\]/g, ' true ')
+      .trim());
+    if (masked.some((line) => /(?:^|[;&|(){]|\b(?:then|do|else)\b|!)\s*['"]?\$[\w{(@*#?$!-]/.test(line) ||
+        /(?:^|[;&|{]|\b(?:then|do|else)\b|!)\s*['"]?`/.test(line))) {
+      throw new Error('release-pin gate must not take a command name from a variable or a substitution');
+    }
+    if (dequoted.some((line) => /(?:^|[\s;&|(){}`])(?:return|logout|exec)(?=\s|;|$)/.test(line) ||
+        /(?:^|[\s;&|(){}`])exit(?=\s|;|$)(?!\s+1(?:\s|;|$))/.test(line))) {
+      throw new Error('release-pin gate may only end early with exit 1');
+    }
   }
   if (gateBlocks === 0) throw new Error('release-pin gate run block missing');
 }

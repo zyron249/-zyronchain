@@ -86,18 +86,60 @@ for (const required of [
 
 // Line-based (no backtracking): a required command must be the whole value of
 // a run step or a whole line of a `run: |` block.
+// Round-5 (second Codex review of #1009): a text scan cannot model every way
+// bash can spell `exit` (line continuations, variable command names, ...), so
+// the release run steps are an exact allowlist: every run value and every line
+// of a `run: |` block must be one of RELEASE_RUN_LINES, a `run:` mapping may
+// only set the working directory, no `run` key may appear in any other form,
+// and no step or default may choose its own `shell`.
+const RELEASE_RUN_LINES = new Set([
+  'npm ci',
+  'npm run typecheck',
+  'npm test',
+  'npm audit --omit=dev --audit-level=high',
+  'npm run build',
+  'mkdir -p release',
+  'npm pack --ignore-scripts --pack-destination release',
+  'npm sbom --omit=dev --sbom-format=spdx > release/SBOM.spdx.json',
+  'cd release',
+  'sha256sum SBOM.spdx.json zyronchain-l1-*.tgz > SHA256SUMS'
+]);
+if (/^\s*(?:-\s+)?['"]?shell['"]?\s*:/m.test(workflow) || /[{,]\s*['"]?shell['"]?\s*:/.test(workflow)) {
+  throw new Error('Release workflow steps must not choose their own shell');
+}
 const effectiveRunCommands = new Set();
 {
   const lines = workflow.split('\n');
+  const allowed = (command) => {
+    if (!RELEASE_RUN_LINES.has(command)) throw new Error(`Release workflow run command is not allowlisted: ${command}`);
+    effectiveRunCommands.add(command);
+  };
   for (let i = 0; i < lines.length; i += 1) {
-    const m = lines[i].match(/^(\s+)(?:-\s+)?run:\s*(.*?)\s*$/);
-    if (!m) continue;
-    if (m[2] !== '|') { effectiveRunCommands.add(m[2]); continue; }
+    const m = lines[i].match(/^(\s+)(?:-\s+)?run:(?:\s+(.*?))?\s*$/);
+    if (!m) {
+      if (/['"]?\brun['"]?\s*:/.test(lines[i])) throw new Error(`Release workflow run key in an unsupported form: ${lines[i].trim()}`);
+      continue;
+    }
+    const value = m[2] ?? '';
     const indent = m[1].length;
+    const body = [];
     for (let j = i + 1; j < lines.length; j += 1) {
       if (lines[j].trim() === '') continue;
       if (lines[j].length - lines[j].trimStart().length <= indent) break;
-      effectiveRunCommands.add(lines[j].trim());
+      body.push(lines[j].trim());
+    }
+    if (value === '') {
+      // `defaults: run:` mapping: only the working directory may be set.
+      if (body.length !== 1 || body[0] !== 'working-directory: l1') {
+        throw new Error('Release workflow run defaults may only set working-directory: l1');
+      }
+      i += body.length;
+    } else if (value === '|') {
+      if (body.length === 0) throw new Error('Release workflow run block is empty');
+      for (const line of body) allowed(line);
+      i += body.length;
+    } else {
+      allowed(value);
     }
   }
 }
