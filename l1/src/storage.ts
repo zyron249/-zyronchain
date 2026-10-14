@@ -111,11 +111,13 @@ async function truncateTornTail(path: string, length: number, droppedBytes: numb
 }
 
 /**
- * Repairs the framing of the signing journal tail before replay (F-10).
- * A torn trailing record is truncated; when it was the commit row of a v6
- * lock/commit pair (one append), the lock row of that append is dropped too.
- * Returns true when the final record is complete but lost its newline: it is
- * kept and must be re-terminated once replay has accepted it.
+ * Plans the framing repair of the signing journal tail before replay (F-10).
+ * It never modifies the file. A torn trailing record is reported for
+ * truncation (tailDrop); when it was the commit row of a v6 lock/commit pair
+ * (one append), the lock row of that append is dropped too (lockDrop). The
+ * caller truncates only after a probe replay has validated the history it
+ * keeps. `reterminate` is set when the final record is complete but lost its
+ * newline: it is kept and must be re-terminated once replay has accepted it.
  */
 interface SigningJournalTailRepair {
   /** A complete final row lost only its newline (F-10). */
@@ -127,6 +129,12 @@ interface SigningJournalTailRepair {
    * lock is corruption and must fail stop, not be hidden by the repair.
    */
   lockDrop?: { cut: number; tornStart: number; droppedBytes: number };
+  /**
+   * Any other torn trailing record. It is truncated only after replay has
+   * validated the whole history before it (round-5 R5-995-L1): a journal that
+   * fails stop on inconsistent history must stay byte-for-byte unchanged.
+   */
+  tailDrop?: { cut: number; droppedBytes: number };
 }
 
 async function repairSigningJournalTail(path: string): Promise<SigningJournalTailRepair> {
@@ -167,8 +175,7 @@ async function repairSigningJournalTail(path: string): Promise<SigningJournalTai
       return { reterminate: false, lockDrop: { cut, tornStart: last.start, droppedBytes: offset - cut } };
     }
   }
-  await truncateTornTail(path, cut, offset - cut, "signing journal");
-  return { reterminate: false };
+  return { reterminate: false, tailDrop: { cut, droppedBytes: offset - cut } };
 }
 
 function isV6LockRowCandidate(row: unknown): row is Record<string, unknown> {
@@ -1026,6 +1033,15 @@ export class SigningJournal {
           if (!probeLock) throw new Error("Torn protocol v6 lock/commit pair in signing journal");
           probe.assertTornAppendLock(probeLock);
           await truncateTornTail(journal.path, repair.lockDrop.cut, repair.lockDrop.droppedBytes, "signing journal");
+        } else if (repair.tailDrop) {
+          // Same rule for every other torn tail (round-5 R5-995-L1): replay
+          // everything before the tail on a probe first, so inconsistent or
+          // corrupt history fails stop before the repair removes a byte. The
+          // real replay below runs on the repaired file and repeats every
+          // check, including the lone-lock completion rules.
+          const probe = new SigningJournal(journal.path, leaseDatabase);
+          await probe.replayRows(repair.tailDrop.cut);
+          await truncateTornTail(journal.path, repair.tailDrop.cut, repair.tailDrop.droppedBytes, "signing journal");
         }
       } catch (error) {
         journal.close();
