@@ -1,0 +1,307 @@
+// R5-998-M1 (independent retest, round 5; Medium per AI review, resource): a
+// leaf value with canonical JSON and a recomputed value hash, but an unknown
+// field, a missing field, a wrong type or an unknown account type, was only
+// rejected at the final anchored assembly, so a peer could make a client
+// download the whole transfer (bounded by the #1006 byte budget) first. The
+// leaf-value schema must be checked in the chunk that carries the leaf, and no
+// further chunk may be requested after it. Cases follow the independent
+// retest's honest-prefix reproduction (honest transfer, one tampered leaf).
+import assert from "node:assert/strict";
+import test, { after, before } from "node:test";
+import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { canonicalJson, sha256Hex } from "../src/codec.js";
+import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
+import { readP2PFrame, writeP2PFrame } from "../src/p2p-frame.js";
+import {
+  fetchTrustedPortableStateFromPeer,
+  fetchTrustedPortableStateResumableFromPeer,
+  MAX_STATE_RECORDS_PER_CHUNK,
+  P2P_STATE_PROTOCOL,
+  stateResponseMaxBytes
+} from "../src/p2p-state.js";
+import { createP2PNode } from "../src/p2p.js";
+import { loadOrCreateNodeIdentity } from "../src/peer-identity.js";
+import {
+  createStateV2PortableBundle,
+  parsePortableStateNodeRecord,
+  type StateV2PortableBundleV1
+} from "../src/state-v2-portable.js";
+import { ChainStore, type TrustedSnapshotAnchor } from "../src/storage.js";
+import { createProtocolUpgrade, createProtocolUpgradeApproval } from "../src/transaction.js";
+import type { Address, Block, GenesisConfig } from "../src/types.js";
+
+const validatorPrivate = "31".padStart(64, "0");
+const validatorPublic = publicKeyFromPrivate(validatorPrivate);
+const validator = addressFromPublicKey(validatorPublic);
+const oraclePublic = publicKeyFromPrivate("32".padStart(64, "0"));
+const activityPool = addressFromPublicKey(publicKeyFromPrivate("33".padStart(64, "0")));
+// Enough accounts for well over ten record chunks, so a "late" tampered leaf
+// sits behind an honest prefix of at least nine chunks.
+const EXTRA_ACCOUNTS = 1_400;
+
+function genesis(): GenesisConfig {
+  return {
+    chainId: "zyron-state-sync-leaf-schema-1",
+    timestampMs: 1_700_000_000_000,
+    validators: [{ address: validator, publicKey: validatorPublic }],
+    activityOracles: [oraclePublic],
+    activityPool,
+    allocations: [
+      { address: activityPool, amountAtoms: 1_000_000 },
+      ...Array.from({ length: EXTRA_ACCOUNTS }, (_, index) => ({
+        address: `ZYN${(index + 1).toString(16).padStart(40, "0")}` as Address,
+        amountAtoms: 0
+      }))
+    ]
+  };
+}
+
+async function advanceToStateV2(store: ChainStore): Promise<void> {
+  const config = genesis();
+  const proposal = { chainId: config.chainId, nonce: 1, sender: validator, activationHeight: 101, protocolVersion: 2 };
+  const upgrade = createProtocolUpgrade({
+    ...proposal,
+    approvals: [createProtocolUpgradeApproval(proposal, validatorPrivate, validatorPublic)],
+    timestampMs: config.timestampMs + 1
+  }, validatorPrivate, validatorPublic);
+  for (let height = 1; height <= 101; height += 1) {
+    let block = store.chain.produceBlock(height === 1 ? [upgrade] : [], validatorPrivate, {
+      timestampMs: config.timestampMs + (height * 100)
+    });
+    block = store.chain.attestBlock(block, validatorPrivate);
+    await store.commitFinalizedBlock(block, config.timestampMs + (height * 100));
+  }
+}
+
+function portableFixture(store: ChainStore): { anchor: TrustedSnapshotAnchor; tip: Block; bundle: StateV2PortableBundleV1 } {
+  const snapshot = store.chain.snapshot();
+  const state = store.chain.stateV2ForPersistence();
+  assert.ok(state);
+  return {
+    anchor: { tipHash: snapshot.tip.hash, snapshotSha256: sha256Hex(canonicalJson(snapshot)) },
+    tip: snapshot.tip,
+    bundle: createStateV2PortableBundle(state, snapshot.state, {
+      validatorSchedule: snapshot.validatorSchedule,
+      protocolSchedule: snapshot.protocolSchedule
+    })
+  };
+}
+
+interface RequestShape { kind: "manifest" | "records" | "keys"; start: number; limit: number }
+type Fixture = Awaited<ReturnType<typeof createFixture>>;
+type LeafRecord = Extract<StateV2PortableBundleV1["records"][number], { kind: "leaf" }>;
+
+function withLeafValue(valueJson: string): (record: LeafRecord) => LeafRecord {
+  return (record) => ({
+    ...record,
+    valueJson,
+    valueHash: createHash("sha256").update("ZyronChain/state-v2/value\0").update(valueJson).digest("hex")
+  });
+}
+
+let fixture: Fixture;
+before(async () => { fixture = await createFixture("leaf-schema"); });
+after(async () => { await fixture?.close(); });
+
+/**
+ * Serves the honest transfer with one tampered leaf (the first leaf, or the
+ * first leaf after nine honest record chunks) and counts every request the
+ * client makes after the chunk that carried it.
+ */
+async function transferWithTamperedLeaf(
+  name: string,
+  change: ((record: LeafRecord) => LeafRecord) | undefined,
+  { late = false, disk = false } = {}
+) {
+  const records = fixture.bundle.records;
+  const badAt = records.findIndex((record, index) => record.kind === "leaf" && (!late || index >= MAX_STATE_RECORDS_PER_CHUNK * 9));
+  assert.ok(badAt >= 0, "fixture has a leaf at the requested position");
+  let seenBad = false;
+  let afterBad = 0;
+  const counts = { manifest: 0, records: 0, keys: 0 };
+  await fixture.sourceNode.unhandle(P2P_STATE_PROTOCOL);
+  await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+    const request = await readRequest(stream);
+    if (seenBad) afterBad += 1;
+    counts[request.kind] += 1;
+    if (request.kind === "manifest") {
+      await writeFixtureResponse(stream, fixture, request);
+      return;
+    }
+    const source = request.kind === "records" ? records : fixture.bundle.keyPreimages;
+    const items: unknown[] = source.slice(request.start, request.start + request.limit);
+    if (change && request.kind === "records" && request.start <= badAt && badAt < request.start + request.limit) {
+      items[badAt - request.start] = change(structuredClone(records[badAt] as LeafRecord));
+      seenBad = true;
+    }
+    await writeP2PFrame(stream, {
+      version: 1, identity: peerIdentity(fixture), tipHash: fixture.anchor.tipHash,
+      snapshotSha256: fixture.anchor.snapshotSha256, kind: request.kind, start: request.start, items
+    }, stateResponseMaxBytes(request.kind), 5_000);
+    await stream.close();
+  });
+  let error: unknown;
+  let result: Awaited<ReturnType<typeof fetchTrustedPortableStateFromPeer>> | undefined;
+  try {
+    result = disk
+      ? await fetchTrustedPortableStateResumableFromPeer(fixture.clientNode, fixture.address, fixture.clientIdentity,
+        fixture.config, fixture.anchor, join(fixture.root, `resume-${name}`))
+      : await fetchTrustedPortableStateFromPeer(fixture.clientNode, fixture.address, fixture.clientIdentity,
+        fixture.config, fixture.anchor);
+  } catch (caught) {
+    error = caught;
+  }
+  return { badAt, seenBad, afterBad, counts, error, result };
+}
+
+test("R5-998-M1: the fixture spans more than ten record chunks and an honest transfer succeeds", async () => {
+  assert.ok(fixture.bundle.records.length > MAX_STATE_RECORDS_PER_CHUNK * 10, `records=${fixture.bundle.records.length}`);
+  const outcome = await transferWithTamperedLeaf("honest", undefined);
+  assert.equal(outcome.error, undefined);
+  assert.equal(outcome.result?.tip.hash, fixture.anchor.tipHash);
+});
+
+const SCHEMA_CASES = [
+  ["an unknown field", '{"balanceAtoms":0,"nonce":0,"surprise":1}'],
+  ["a missing field", '{"balanceAtoms":0}'],
+  ["a wrong type", '{"balanceAtoms":"0","nonce":0}'],
+  ["an unknown account type", '{"balanceAtoms":0,"nonce":0,"type":"alien"}']
+] as const;
+
+for (const [name, valueJson] of SCHEMA_CASES) {
+  test(`R5-998-M1: a leaf value with ${name} is rejected in its chunk, with no further request`, async () => {
+    const outcome = await transferWithTamperedLeaf(name.replaceAll(" ", "-"), withLeafValue(valueJson));
+    assert.ok(outcome.seenBad);
+    assert.match(String((outcome.error as Error | undefined)?.message), /Invalid portable State v2 leaf value schema/);
+    assert.equal(outcome.afterBad, 0, "no response may be requested after the offending chunk");
+  });
+}
+
+test("R5-998-M1: a schema-invalid leaf after nine honest record chunks is rejected in its chunk", async () => {
+  const outcome = await transferWithTamperedLeaf("late-unknown", withLeafValue('{"balanceAtoms":0,"nonce":0,"surprise":1}'), { late: true });
+  assert.ok(outcome.seenBad);
+  assert.ok(outcome.badAt >= MAX_STATE_RECORDS_PER_CHUNK * 9);
+  assert.match(String((outcome.error as Error | undefined)?.message), /Invalid portable State v2 leaf value schema/);
+  assert.equal(outcome.afterBad, 0, "no response may be requested after the offending chunk");
+  assert.ok(outcome.counts.records >= 10 && outcome.counts.keys === 0, JSON.stringify(outcome.counts));
+});
+
+for (const late of [false, true]) {
+  test(`R5-998-M1: a disk-staged transfer rejects a schema-invalid ${late ? "late " : ""}leaf in its chunk`, async () => {
+    const outcome = await transferWithTamperedLeaf(`disk-${late ? "late" : "first"}`,
+      withLeafValue('{"balanceAtoms":0,"nonce":0,"surprise":1}'), { late, disk: true });
+    assert.ok(outcome.seenBad);
+    assert.match(String((outcome.error as Error | undefined)?.message), /Invalid portable State v2 leaf value schema/);
+    assert.equal(outcome.afterBad, 0, "no response may be requested after the offending chunk");
+  });
+}
+
+test("R5-998-M1: every honest leaf passes the per-chunk check, and invalid values of every semantic type fail it", () => {
+  const leaf = fixture.bundle.records.find((record) => record.kind === "leaf") as LeafRecord;
+  for (const record of fixture.bundle.records) assert.doesNotThrow(() => parsePortableStateNodeRecord(record));
+  const kinds = new Set(fixture.bundle.records.filter((record) => record.kind === "leaf")
+    .map((record) => Object.keys(JSON.parse((record as LeafRecord).valueJson)).sort().join(",")));
+  for (const shape of ["balanceAtoms,nonce", "protocolVersion", "validators"]) assert.ok(kinds.has(shape), `fixture has a ${shape} leaf`);
+  for (const valueJson of [
+    "null", "1", '"x"', "[]", "{}", "true",
+    '{"balanceAtoms":-1,"nonce":0}', '{"balanceAtoms":1.5,"nonce":0}', '{"balanceAtoms":0,"nonce":-1}',
+    '{"balanceAtoms":9007199254740992,"nonce":0}', '{"balanceAtoms":0,"nonce":"0"}', '{"nonce":0}',
+    '{"settled":false}', '{"settled":1}', '{"settled":true,"x":1}',
+    '{"validators":{}}', '{"validators":"x"}', '{"validators":[],"x":1}',
+    '{"protocolVersion":0}', '{"protocolVersion":1.5}', '{"protocolVersion":"2"}', '{"protocolVersion":2,"x":1}'
+  ]) {
+    assert.throws(() => parsePortableStateNodeRecord(withLeafValue(valueJson)(leaf)),
+      /Invalid portable State v2 leaf value schema/, valueJson);
+  }
+  for (const valueJson of ['{"balanceAtoms":0,"nonce":0}', '{"settled":true}', '{"validators":[]}', '{"protocolVersion":1}']) {
+    assert.doesNotThrow(() => parsePortableStateNodeRecord(withLeafValue(valueJson)(leaf)), valueJson);
+  }
+});
+
+// Residual (documented): a value that is valid for another semantic type (for
+// example an activity value under an account key) cannot be bound to its key
+// before the key preimages arrive; it is still rejected fail-closed by the
+// final anchored assembly, within the #1006 byte budget.
+test("R5-998-M1 residual: a well-formed value of another semantic type still fails closed at final assembly", async () => {
+  const outcome = await transferWithTamperedLeaf("cross-type", withLeafValue('{"settled":true}'));
+  assert.ok(outcome.seenBad);
+  assert.ok(outcome.error instanceof Error);
+  assert.equal(outcome.result, undefined);
+});
+
+async function readRequest(stream: Parameters<typeof readP2PFrame>[0]): Promise<RequestShape> {
+  const value = await readP2PFrame(stream, 4_096, 5_000) as Record<string, unknown>;
+  assert.ok(value.kind === "manifest" || value.kind === "records" || value.kind === "keys");
+  assert.ok(Number.isSafeInteger(value.start));
+  assert.ok(Number.isSafeInteger(value.limit));
+  return { kind: value.kind, start: Number(value.start), limit: Number(value.limit) };
+}
+
+async function writeFixtureResponse(
+  stream: Parameters<typeof writeP2PFrame>[0],
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  request: RequestShape
+): Promise<void> {
+  if (request.kind === "manifest") {
+    await writeP2PFrame(stream, {
+      version: 1, identity: peerIdentity(fixture), tipHash: fixture.anchor.tipHash,
+      snapshotSha256: fixture.anchor.snapshotSha256, height: fixture.tip.header.height,
+      stateRoot: fixture.bundle.root, recordCount: fixture.bundle.records.length,
+      keyCount: fixture.bundle.keyPreimages.length, tip: fixture.tip
+    }, 2_500_000, 5_000);
+    await stream.close();
+    return;
+  }
+  const source = request.kind === "records" ? fixture.bundle.records : fixture.bundle.keyPreimages;
+  await writeChunk(stream, fixture, request, source.slice(request.start, request.start + request.limit));
+}
+
+async function writeChunk(
+  stream: Parameters<typeof writeP2PFrame>[0],
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  request: RequestShape,
+  items: unknown[]
+): Promise<void> {
+  await writeP2PFrame(stream, {
+    version: 1, identity: peerIdentity(fixture), tipHash: fixture.anchor.tipHash,
+    snapshotSha256: fixture.anchor.snapshotSha256, kind: request.kind,
+    start: request.start, items
+  }, 20 * 1024 * 1024, 5_000);
+  await stream.close();
+}
+
+function peerIdentity(fixture: Awaited<ReturnType<typeof createFixture>>) {
+  return {
+    version: 1 as const,
+    nodeId: fixture.sourceIdentity.nodeId,
+    publicKey: fixture.sourceIdentity.publicKey,
+    chainId: fixture.config.chainId,
+    genesisHash: fixture.store.chain.genesisHash
+  };
+}
+
+async function createFixture(name: string) {
+  const root = await mkdtemp(join(tmpdir(), `zyron-leaf-schema-${name}-`));
+  const config = genesis();
+  const sourceDir = join(root, "source");
+  const store = await ChainStore.open(config, sourceDir);
+  await advanceToStateV2(store);
+  const { anchor, tip, bundle } = portableFixture(store);
+  const sourceIdentity = await loadOrCreateNodeIdentity(sourceDir);
+  const clientIdentity = await loadOrCreateNodeIdentity(join(root, "client"));
+  const sourceNode = await createP2PNode(sourceIdentity, { listen: ["/ip4/127.0.0.1/tcp/0"] });
+  const clientNode = await createP2PNode(clientIdentity);
+  const address = sourceNode.getMultiaddrs()[0];
+  assert.ok(address);
+  return {
+    root, config, store, anchor, tip, bundle, sourceIdentity, clientIdentity, sourceNode, clientNode, address,
+    close: async () => {
+      await Promise.allSettled([sourceNode.stop(), clientNode.stop()]);
+      await rm(root, { recursive: true, force: true });
+    }
+  };
+}
