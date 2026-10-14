@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJson, compareCanonicalStrings } from "./codec.js";
+import { addressFromPublicKey } from "./crypto.js";
 import { assertMiningNotRetired, MINING_TRACKER_ADDRESS } from "./mining.js";
 import {
   ACTIVITY_ORDER_MESSAGE,
@@ -679,11 +680,37 @@ export function assertStateV2LeafValueSchema(value: unknown): void {
     const fields = Object.keys(value).sort().join(",");
     if (fields === "balanceAtoms,nonce") assertStateV2AccountValue(value);
     else if (fields === "settled") assertStateV2ActivityValue(value);
-    else if (fields === "validators") assertStateV2ValidatorScheduleValue(value);
-    else if (fields === "protocolVersion") assertStateV2ProtocolScheduleValue(value);
-    else throw new Error("unknown field set");
+    else if (fields === "validators") {
+      assertStateV2ValidatorScheduleValue(value);
+      assertPortableValidatorList(value.validators);
+    } else if (fields === "protocolVersion") {
+      assertStateV2ProtocolScheduleValue(value);
+      if (value.protocolVersion > MAX_PORTABLE_PROTOCOL_VERSION) throw new Error("protocol version out of range");
+    } else throw new Error("unknown field set");
   } catch (cause) {
     throw new Error("Invalid portable State v2 leaf value schema", { cause });
+  }
+}
+
+// Codex review of #1010: the per-chunk check also applies the bounds that
+// checkpoint validation (chain.ts validateValidatorSchedule /
+// validateProtocolSchedule) requires of every schedule entry, so such a leaf
+// is rejected in its chunk too. The curve check of each public key stays with
+// checkpoint validation (the address derivation already binds the key).
+const MAX_PORTABLE_PROTOCOL_VERSION = 65_535;
+const MAX_PORTABLE_SCHEDULE_VALIDATORS = 100;
+
+function assertPortableValidatorList(validators: unknown[]): void {
+  if (validators.length < 1 || validators.length > MAX_PORTABLE_SCHEDULE_VALIDATORS) throw new Error("validator count out of range");
+  const seen = new Set<string>();
+  for (const item of validators) {
+    assertExactPortableRecord(item, ["address", "publicKey"], "State v2 validator");
+    if (typeof item.address !== "string" || !/^ZYN[0-9a-f]{40}$/.test(item.address) ||
+        typeof item.publicKey !== "string" || !/^[0-9a-f]{128}$/.test(item.publicKey) ||
+        addressFromPublicKey(item.publicKey) !== item.address || seen.has(item.address)) {
+      throw new Error("Invalid State v2 validator");
+    }
+    seen.add(item.address);
   }
 }
 
