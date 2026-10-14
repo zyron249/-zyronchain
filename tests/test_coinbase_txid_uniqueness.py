@@ -90,3 +90,24 @@ def test_reorg_with_same_millisecond_blocks_recovers_orphaned_transaction(frozen
         pending.get("txid") == tx.txid
         for pending in chain.pending_transactions
     )
+
+
+def test_block_timestamps_strictly_increase_past_float_roundtrip_boundary(monkeypatch):
+    """R6-1011-L1 (round-6 independent retest of #1011): the next block's
+    lower bound came from a float round-trip of the previous block's seconds
+    timestamp. At 2147483648002 ms, int(float(ts) * 1000) loses a millisecond,
+    so with a frozen clock the next block reused the previous timestamp and
+    the reward txid repeated. The bound must use the integer milliseconds."""
+    frozen_ns = 2_147_483_648_000 * 1_000_000
+    monkeypatch.setattr(time, "time_ns", lambda: frozen_ns)
+    chain = Blockchain()
+    miner = Wallet()
+
+    for _ in range(6):
+        chain.mine_pending_transactions(miner.address)
+
+    stamps = [block.timestamp_ms for block in chain.chain[1:]]
+    assert all(later > earlier for earlier, later in zip(stamps, stamps[1:])), stamps
+    reward_txids = [_reward_tx(block)["txid"] for block in chain.chain[1:]]
+    assert len(set(reward_txids)) == len(reward_txids)
+    assert chain.is_chain_valid() is True
