@@ -91,3 +91,93 @@ test("PR981: a prepare quorum still clears an earlier prepare-quorum failure", a
     await closeValidators(validators);
   }
 });
+
+// Round-5 (Codex review of #996, P2): a failure recorded for the same tip by a
+// later attempt that stopped at an earlier phase (prepare or timeout) replaced
+// the stored commit rank, so the next prepare quorum cleared it and /readyz
+// reported ready while the commit phase was still unproven. A failure for the
+// same tip keeps the highest phase recorded so far.
+test("Round-5: a lower-phase failure on the same tip does not downgrade a recorded commit failure", async () => {
+  const network = testNetwork(4, 0x5d, "f04-phase-downgrade-unit", T);
+  const prefix = finalizedPrefix(network, 6);
+  const validators: TestValidator[] = [];
+  try {
+    for (let index = 0; index < 4; index += 1) validators.push(await openValidator(network, index, prefix));
+    const service = validators[0]!.service;
+    const tip = service.store.chain.tip;
+    const height = tip.header.height + 1;
+    const now = roundStart(tip.header.timestampMs, 0) + 100;
+    for (const lower of ["prepare", "round"] as const) {
+      service.recordConsensusQuorumFailure(height, tip.hash, "commit");
+      service.recordConsensusQuorumFailure(height, tip.hash, lower);
+      service.recordConsensusQuorumReached(height, tip.hash, lower);
+      assert.deepEqual(service.readiness(now).reasons, [QUORUM], `a ${lower} failure must not downgrade the commit failure`);
+      service.recordConsensusQuorumReached(height, tip.hash, "prepare");
+      service.recordConsensusQuorumReached(height, tip.hash, "round");
+      assert.deepEqual(service.readiness(now).reasons, [QUORUM], "only a commit-phase quorum (or a new tip) clears it");
+      service.recordConsensusQuorumReached(height, tip.hash, "commit");
+      assert.deepEqual(service.readiness(now).reasons, []);
+    }
+    // A failure for a different tip still replaces the record outright.
+    service.recordConsensusQuorumFailure(height, tip.hash, "commit");
+    service.recordConsensusQuorumFailure(height + 1, "00".repeat(32), "prepare");
+    assert.deepEqual(service.readiness(now).reasons, [], "a record for another tip does not affect this tip");
+  } finally {
+    await closeValidators(validators);
+  }
+});
+
+test("Round-5: commit failure, then prepare failure, then a prepare quorum on retry stays not-ready", async () => {
+  const network = testNetwork(4, 0x5e, "f04-phase-downgrade-v6", T);
+  const prefix = finalizedPrefix(network, 6);
+  const validators: TestValidator[] = [];
+  try {
+    for (let index = 0; index < 4; index += 1) validators.push(await openValidator(network, index, prefix));
+    let clock = 0;
+    const memory = new MemoryNetwork(validators, () => clock);
+    const height = validators[0]!.service.store.chain.height + 1;
+    const leader = proposerIndex(network, height, 0);
+    const service = validators[leader]!.service;
+    clock = roundStart(service.store.chain.tip.header.timestampMs, 0) + 100;
+    const peers = memory.peersFor(leader) as ConsensusPeerClient;
+
+    // 1) prepare QC forms, commit quorum fails.
+    memory.drop = (_from, _to, kind) => kind === "v6-commit";
+    assert.equal(await produceFinalizedBlock(service, peers, network.privateKeys[leader]!, clock), null);
+    assert.deepEqual(service.readiness(clock).reasons, [QUORUM]);
+
+    // 2) a retry cannot even form the prepare quorum.
+    memory.drop = (_from, _to, kind) => kind === "v6-prepare" || kind === "v6-commit";
+    assert.equal(await produceFinalizedBlock(service, peers, network.privateKeys[leader]!, clock), null);
+    assert.deepEqual(service.readiness(clock).reasons, [QUORUM]);
+
+    // 3) the next retry forms the prepare quorum again; observe readiness while
+    // the commit requests are still outstanding.
+    memory.drop = (_from, _to, kind) => kind === "v6-commit";
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const requestCommit = peers.requestV6Commit!.bind(peers);
+    peers.requestV6Commit = async (request) => { entered(); await gate; return requestCommit(request); };
+    const retry = produceFinalizedBlock(service, peers, network.privateKeys[leader]!, clock);
+    let during: string[];
+    try {
+      await waiting;
+      during = service.readiness(clock).reasons;
+    } finally {
+      release();
+      await retry;
+    }
+    assert.deepEqual(during, [QUORUM], "a prepare quorum after a downgraded failure must not report ready");
+    assert.deepEqual(service.readiness(clock).reasons, [QUORUM]);
+
+    // 4) a full commit quorum finalizes the height and readiness recovers.
+    memory.drop = () => false;
+    peers.requestV6Commit = requestCommit;
+    assert.ok(await produceFinalizedBlock(service, peers, network.privateKeys[leader]!, clock));
+    assert.deepEqual(service.readiness(clock).reasons, []);
+  } finally {
+    await closeValidators(validators);
+  }
+});
