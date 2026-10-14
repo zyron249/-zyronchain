@@ -972,10 +972,14 @@ class Blockchain:
         miner_payment_atoms = current_reward_atoms + total_fees_atoms
 
         latest_block = self.get_latest_block()
-        block_timestamp_ms = max(
-            time.time_ns() // 1_000_000,
-            int(float(latest_block.timestamp) * 1000) + 1
-        )
+        # R6-1011-L1: take the previous block's integer milliseconds when it
+        # has them. A float seconds round-trip can lose a millisecond (for
+        # example at 2147483648002 ms), which let the next block reuse the
+        # previous timestamp and its reward reuse the previous txid.
+        previous_ms = getattr(latest_block, "timestamp_ms", None)
+        if isinstance(previous_ms, bool) or not isinstance(previous_ms, int):
+            previous_ms = round(float(latest_block.timestamp) * 1000)
+        block_timestamp_ms = max(time.time_ns() // 1_000_000, previous_ms + 1)
 
         if miner_payment_atoms > 0:
             # The reward transaction takes the block's own timestamp. Block

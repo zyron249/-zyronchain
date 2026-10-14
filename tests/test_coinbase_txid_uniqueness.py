@@ -100,6 +100,7 @@ def test_block_timestamps_strictly_increase_past_float_roundtrip_boundary(monkey
     the reward txid repeated. The bound must use the integer milliseconds."""
     frozen_ns = 2_147_483_648_000 * 1_000_000
     monkeypatch.setattr(time, "time_ns", lambda: frozen_ns)
+    monkeypatch.setattr(time, "time", lambda: frozen_ns / 1_000_000_000)
     chain = Blockchain()
     miner = Wallet()
 
