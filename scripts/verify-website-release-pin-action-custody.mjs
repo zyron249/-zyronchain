@@ -64,7 +64,19 @@ if (!/^[ \t]*set -euo pipefail[ \t]*$/m.test(text)) throw new Error('release-pin
     if (first === undefined || first.trim() !== 'set -euo pipefail') {
       throw new Error('release-pin gate run block must start with set -euo pipefail');
     }
-    if (body.some((line) => /(?:^|[;&|({]|\s)(?:set\s+\+|shopt\s+-u)/.test(line))) {
+    // Round-5 (Codex review of #1009): bash removes quotes and backslashes
+    // before it looks a command name up (`s''et +e`, `\set +e`), so the scan
+    // runs on a copy without them. ANSI-C / locale quoting (`$'set'`,
+    // `$'\163et'`) and `eval` (whose payload can be computed at run time)
+    // could spell any command and are refused in the gate block.
+    if (body.some((line) => /\$['"]/.test(line))) {
+      throw new Error("release-pin gate must not use $'...' or $\"...\" quoting");
+    }
+    const dequoted = body.map((line) => line.replace(/['"\\]/g, ''));
+    if (dequoted.some((line) => /(?:^|[;&|(){}`]|\s)eval(?=\s|$)/.test(line))) {
+      throw new Error('release-pin gate must not use eval');
+    }
+    if (dequoted.some((line) => /(?:^|[;&|({]|\s)(?:set\s+\+|shopt\s+-u)/.test(line))) {
       throw new Error('release-pin gate must not switch strict mode off (set +..., shopt -u)');
     }
   }

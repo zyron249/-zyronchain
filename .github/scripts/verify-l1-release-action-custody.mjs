@@ -32,6 +32,10 @@ if (/^\s+(?:-\s+)?if\s*:/m.test(workflow)) throw new Error('Release workflow ste
 // payload of `eval 'exit 0'` all still end the step. The scan also runs on a
 // copy with quote and backslash characters removed, and `exec` (which replaces
 // the shell, ending the step with the new program's status) counts as an exit.
+// Round-5 (Codex review of #1009): ANSI-C (`$'...'`) and locale (`$"..."`)
+// quoting can spell any word, including escapes such as `$'\145xit'`, and the
+// release workflow does not use either form, so both are refused outright.
+if (/\$['"]/.test(workflow)) throw new Error("Release workflow steps must not use $'...' or $\"...\" quoting");
 const EARLY_EXIT = /(?:^|&&|\|\||;|\(|\{)\s*(?:(?:builtin|command|eval)\s+)*(?:exit|return|logout|exec)\b/m;
 const dequoted = workflow.replace(/['"\\]/g, '');
 if (EARLY_EXIT.test(workflow) || EARLY_EXIT.test(dequoted)) {
