@@ -134,7 +134,10 @@ const releaseMutations = {
   'audit printed from a heredoc with a backslash-quoted delimiter': replaceOnce(release, 'run: npm audit --omit=dev --audit-level=high',
     'run: |\n          cat <<\\AUDIT\n          npm audit --omit=dev --audit-level=high\n          AUDIT'),
   'audit printed from a heredoc with a punctuation delimiter': replaceOnce(release, 'run: npm audit --omit=dev --audit-level=high',
-    'run: |\n          cat <<-.END\n          npm audit --omit=dev --audit-level=high\n          .END')
+    'run: |\n          cat <<-.END\n          npm audit --omit=dev --audit-level=high\n          .END'),
+  // Round-6 independent retest (PR1009, Info): a zero step timeout.
+  'audit step with a zero timeout': replaceOnce(release, '        run: npm audit --omit=dev --audit-level=high',
+    '        timeout-minutes: 0\n        run: npm audit --omit=dev --audit-level=high')
 };
 for (const [name, mutated] of Object.entries(releaseMutations)) {
   assert.throws(() => verifyL1ReleaseWorkflow(mutated), Error, `release mutation must be rejected: ${name}`);
