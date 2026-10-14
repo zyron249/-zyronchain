@@ -471,3 +471,71 @@ test("R6-1010-M1: an honest transfer still succeeds in both modes after root-anc
     assert.equal(outcome.error, undefined, String(outcome.error));
   }
 });
+
+test("R6-1010-M1: an interrupted disk transfer resumes root first without re-fetching staged chunks, and bad staging is discarded", async () => {
+  const total = Math.ceil(fixture.bundle.records.length / MAX_STATE_RECORDS_PER_CHUNK);
+  const resumeDir = join(fixture.root, "resume-r6-interrupted");
+  let served = 0;
+  const starts: number[] = [];
+  await fixture.sourceNode.unhandle(P2P_STATE_PROTOCOL);
+  await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+    const request = await readRequest(stream);
+    if (request.kind === "records") {
+      starts.push(request.start);
+      served += 1;
+      if (served > 3) { stream.abort(new Error("peer went away")); return; }
+    }
+    await writeFixtureResponse(stream, fixture, request);
+  });
+  await assert.rejects(() => fetchTrustedPortableStateResumableFromPeer(fixture.clientNode, fixture.address,
+    fixture.clientIdentity, fixture.config, fixture.anchor, resumeDir));
+  // Root first: the first request is for the last chunk of the post-order list.
+  assert.equal(starts[0], fixture.bundle.records.length - MAX_STATE_RECORDS_PER_CHUNK);
+  assert.ok(starts[1]! < starts[0]!);
+
+  let records = 0;
+  await fixture.sourceNode.unhandle(P2P_STATE_PROTOCOL);
+  await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+    const request = await readRequest(stream);
+    if (request.kind === "records") records += 1;
+    await writeFixtureResponse(stream, fixture, request);
+  });
+  const resumed = await fetchTrustedPortableStateResumableFromPeer(fixture.clientNode, fixture.address,
+    fixture.clientIdentity, fixture.config, fixture.anchor, resumeDir);
+  assert.deepEqual(resumed.bundle, fixture.bundle);
+  assert.equal(records, total - 3, "the three staged chunks are not fetched again");
+
+  // Staging whose root-first records were altered on disk is re-checked
+  // against the anchored root, discarded, and the download restarts.
+  const dir = join(fixture.root, "resume-r6-tampered");
+  served = 0;
+  starts.length = 0;
+  await fixture.sourceNode.unhandle(P2P_STATE_PROTOCOL);
+  await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+    const request = await readRequest(stream);
+    if (request.kind === "records" && ++served > 2) { stream.abort(new Error("peer went away")); return; }
+    await writeFixtureResponse(stream, fixture, request);
+  });
+  await assert.rejects(() => fetchTrustedPortableStateResumableFromPeer(fixture.clientNode, fixture.address,
+    fixture.clientIdentity, fixture.config, fixture.anchor, dir));
+  const { readdir: list, readFile: load, writeFile: save } = await import("node:fs/promises");
+  const staged = (await list(join(dir, "records-root-first"))).sort();
+  assert.equal(staged.length, 2);
+  const file = join(dir, "records-root-first", staged[0]!);
+  const envelope = JSON.parse(await load(file, "utf8"));
+  const leafIndex = envelope.items.findIndex((item: { kind: string }) => item.kind === "leaf");
+  envelope.items[leafIndex] = withLeafValue('{"settled":true}')(envelope.items[leafIndex]);
+  const body = { version: 1, start: envelope.start, items: envelope.items };
+  await save(file, `${canonicalJson({ ...body, checksum: sha256Hex(canonicalJson(body)) })}\n`);
+  records = 0;
+  await fixture.sourceNode.unhandle(P2P_STATE_PROTOCOL);
+  await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
+    const request = await readRequest(stream);
+    if (request.kind === "records") records += 1;
+    await writeFixtureResponse(stream, fixture, request);
+  });
+  const restarted = await fetchTrustedPortableStateResumableFromPeer(fixture.clientNode, fixture.address,
+    fixture.clientIdentity, fixture.config, fixture.anchor, dir);
+  assert.deepEqual(restarted.bundle, fixture.bundle);
+  assert.equal(records, total, "the tampered staging is discarded and every chunk fetched again");
+});

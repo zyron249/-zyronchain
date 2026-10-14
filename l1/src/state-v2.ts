@@ -975,3 +975,57 @@ function bitAt(bytes: Buffer, depth: number): 0 | 1 {
   const byte = bytes[Math.floor(depth / 8)]!;
   return ((byte >> (7 - (depth % 8))) & 1) as 0 | 1;
 }
+
+/**
+ * R6-1010-M1: root-anchored, incremental check of untrusted state-sync node
+ * records. The portable record list is a post-order walk (children before
+ * their parent, the root last), so a client that reads it from the end sees
+ * every record after its parent. Starting from the anchored state root at
+ * depth 0, each record must be a child some already-accepted branch still
+ * expects; it is then fully re-hashed at that depth (a leaf compressed to its
+ * position, a branch with empty-subtree hashes for missing children) and must
+ * reproduce the expected hash. A record that is not part of the anchored tree,
+ * whatever hashes the peer recomputed around it, is therefore rejected in the
+ * chunk that carries it. The set of outstanding hashes holds at most one
+ * pending sibling per tree level plus the current children (bounded by the
+ * tree depth). The final anchored assembly still runs on the complete bundle.
+ */
+export class StateV2AnchoredRecordStream {
+  private readonly expected = new Map<string, number>();
+  private accepted = 0;
+
+  constructor(root: string) {
+    if (!/^[0-9a-f]{64}$/.test(root)) throw new Error("Invalid State v2 root");
+    this.expected.set(root, 0);
+  }
+
+  /** Accept the next record in reverse post-order (root first). */
+  accept(record: StateV2NodeRecord): void {
+    try {
+      const depth = this.expected.get(record.hash);
+      if (depth === undefined) throw new Error("record is not an outstanding child of the anchored tree");
+      this.expected.delete(record.hash);
+      const node = nodeFromRecord(record, depth);
+      if (node.kind === "branch") {
+        if (node.left === undefined && node.right === undefined) throw new Error("empty branch");
+        for (const child of [node.left, node.right]) {
+          if (!child) continue;
+          if (this.expected.has(child.hash)) throw new Error("duplicate child hash");
+          this.expected.set(child.hash, depth + 1);
+        }
+      }
+      this.accepted += 1;
+    } catch (cause) {
+      throw new Error("Portable State v2 record does not match the anchored state root", { cause });
+    }
+  }
+
+  /** Every expected record arrived and no other one did. */
+  finish(total: number): void {
+    if (this.expected.size !== 0 || this.accepted !== total) {
+      throw new Error("Portable State v2 record does not match the anchored state root", {
+        cause: new Error("records missing from the anchored tree")
+      });
+    }
+  }
+}

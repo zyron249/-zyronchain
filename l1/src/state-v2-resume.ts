@@ -13,6 +13,12 @@ import type { Block } from "./types.js";
 
 const MANIFEST_FILE = "manifest.json";
 const RECORDS_DIR = "records";
+// R6-1010-M1: a state-sync client stages records root first (from the end of
+// the post-order list) so each record is checked against the anchored root as
+// it arrives. Those chunks form a contiguous suffix and live in their own
+// directory, so an ascending staging with a missing chunk is never mistaken
+// for one.
+const ROOT_FIRST_RECORDS_DIR = "records-root-first";
 const KEYS_DIR = "keys";
 const TEMP_DIR = ".tmp";
 const MAX_RESUME_CHUNK_FILE_BYTES = 20 * 1024 * 1024;
@@ -124,6 +130,8 @@ export class PortableStateResumeStore {
     readonly dataDir: string,
     readonly manifest: PortableStateResumeManifestV1,
     private recordProgress: number,
+    private recordSuffixStart: number,
+    private recordDir: string,
     private keyProgress: number,
     private readonly recordChunks: ChunkIndex[],
     private readonly keyChunks: ChunkIndex[]
@@ -137,9 +145,12 @@ export class PortableStateResumeStore {
     const recordsDir = join(dataDir, RECORDS_DIR);
     const keysDir = join(dataDir, KEYS_DIR);
     const tempDir = join(dataDir, TEMP_DIR);
+    const rootFirstDir = join(dataDir, ROOT_FIRST_RECORDS_DIR);
     await mkdir(recordsDir, { recursive: true, mode: 0o700 });
+    await mkdir(rootFirstDir, { recursive: true, mode: 0o700 });
     await mkdir(keysDir, { recursive: true, mode: 0o700 });
     await assertRealDirectory(recordsDir);
+    await assertRealDirectory(rootFirstDir);
     await assertRealDirectory(keysDir);
     await rm(tempDir, { recursive: true, force: true });
     await mkdir(tempDir, { mode: 0o700 });
@@ -160,15 +171,28 @@ export class PortableStateResumeStore {
       if (!isMissingFile(error)) throw error;
       // Chunks without a manifest are orphans of an interrupted discard (or
       // an older binary's in-place delete): never adopt them.
-      if ((await readdir(recordsDir)).length > 0 || (await readdir(keysDir)).length > 0) {
+      if ((await readdir(recordsDir)).length > 0 || (await readdir(rootFirstDir)).length > 0 ||
+          (await readdir(keysDir)).length > 0) {
         throw new PortableStateResumeMismatchError("Portable state resume staging has chunks but no manifest");
       }
       await atomicWrite(path, manifestEnvelope(manifest), tempDir);
     }
-    const records = await scanProgress(join(dataDir, RECORDS_DIR), manifest.recordCount, MAX_PORTABLE_STATE_NODES);
+    const records = await scanProgress(recordsDir, manifest.recordCount, MAX_PORTABLE_STATE_NODES);
+    const rootFirst = await scanSuffix(rootFirstDir, manifest.recordCount, MAX_PORTABLE_STATE_NODES);
+    if (records.chunks.length > 0 && rootFirst.chunks.length > 0) {
+      throw new PortableStateResumeMismatchError("Portable state resume staging mixes record orders");
+    }
     const keys = await scanProgress(join(dataDir, KEYS_DIR), manifest.keyCount, MAX_PORTABLE_STATE_KEYS);
+    if (rootFirst.chunks.length > 0) {
+      return new PortableStateResumeStore(
+        dataDir, structuredClone(manifest), rootFirst.start === 0 ? manifest.recordCount : 0, rootFirst.start,
+        ROOT_FIRST_RECORDS_DIR, keys.progress, rootFirst.chunks, keys.chunks
+      );
+    }
     return new PortableStateResumeStore(
-      dataDir, structuredClone(manifest), records.progress, keys.progress, records.chunks, keys.chunks
+      dataDir, structuredClone(manifest), records.progress,
+      records.progress === manifest.recordCount ? 0 : manifest.recordCount,
+      RECORDS_DIR, keys.progress, records.chunks, keys.chunks
     );
   }
 
@@ -189,11 +213,28 @@ export class PortableStateResumeStore {
   }
 
   nextRecordStart(): number { return this.recordProgress; }
+  /** R6-1010-M1: start of the root-first staged suffix (record count when none, 0 when complete). */
+  nextRecordSuffixStart(): number { return this.recordSuffixStart; }
   nextKeyStart(): number { return this.keyProgress; }
 
   async putRecords(start: number, items: unknown[]): Promise<void> {
+    if (this.recordDir !== RECORDS_DIR) throw new Error("Portable state resume chunk is not the exact next range");
     this.recordProgress = await this.put(RECORDS_DIR, this.recordProgress, this.manifest.recordCount, start, items);
     this.recordChunks.push({ start, length: items.length });
+    if (this.recordProgress === this.manifest.recordCount) this.recordSuffixStart = 0;
+  }
+
+  /** R6-1010-M1: stage the record chunk that ends exactly where the root-first suffix starts. */
+  async putRecordsBefore(start: number, items: unknown[]): Promise<void> {
+    if (this.recordProgress !== 0 || !Array.isArray(items) || items.length < 1 ||
+        !Number.isSafeInteger(start) || start < 0 || start + items.length !== this.recordSuffixStart) {
+      throw new Error("Portable state resume chunk is not the exact next range");
+    }
+    await this.put(ROOT_FIRST_RECORDS_DIR, start, this.manifest.recordCount, start, items);
+    this.recordDir = ROOT_FIRST_RECORDS_DIR;
+    this.recordChunks.unshift({ start, length: items.length });
+    this.recordSuffixStart = start;
+    if (start === 0) this.recordProgress = this.manifest.recordCount;
   }
 
   async putKeys(start: number, items: unknown[]): Promise<void> {
@@ -202,6 +243,10 @@ export class PortableStateResumeStore {
   }
 
   async records(start: number, limit: number): Promise<unknown[]> {
+    if (this.recordDir === ROOT_FIRST_RECORDS_DIR) {
+      if (start < this.recordSuffixStart) throw new Error("Portable state resume read range is incomplete");
+      return readRange(join(this.dataDir, ROOT_FIRST_RECORDS_DIR), this.recordChunks, this.manifest.recordCount, start, limit);
+    }
     return readRange(join(this.dataDir, RECORDS_DIR), this.recordChunks, this.manifest.recordCount, start, limit);
   }
 
@@ -215,7 +260,7 @@ export class PortableStateResumeStore {
 
   async bundle(): Promise<StateV2PortableBundleV1> {
     if (!this.complete()) throw new Error("Portable state resume is incomplete");
-    const records = await collectItems(join(this.dataDir, RECORDS_DIR), this.manifest.recordCount);
+    const records = await collectItems(join(this.dataDir, this.recordDir), this.manifest.recordCount);
     const keyPreimages = await collectItems(join(this.dataDir, KEYS_DIR), this.manifest.keyCount);
     return {
       version: 1,
@@ -293,6 +338,25 @@ async function scanProgress(directory: string, total: number, absoluteMax: numbe
     progress += chunk.items.length;
   }
   return { progress, chunks };
+}
+
+/** R6-1010-M1: root-first record chunks must be a contiguous suffix ending at the record count. */
+async function scanSuffix(directory: string, total: number, absoluteMax: number): Promise<{ start: number; chunks: ChunkIndex[] }> {
+  const starts = (await readdir(directory)).map(parseChunkFilename).sort((a, b) => a - b);
+  if (starts.length > absoluteMax) throw new Error("Portable state resume contains too many chunks");
+  const chunks: ChunkIndex[] = [];
+  let cursor = starts[0] ?? total;
+  for (const start of starts) {
+    if (start !== cursor) throw new PortableStateResumeMismatchError("Portable state resume chunks contain a gap");
+    const chunk = parseChunkEnvelope(await readPortableStateResumeFile(join(directory, `${start}.json`), MAX_RESUME_CHUNK_FILE_BYTES));
+    if (chunk.start !== start || chunk.items.length < 1 || start + chunk.items.length > total) {
+      throw new Error("Invalid portable state resume chunk range");
+    }
+    chunks.push({ start, length: chunk.items.length });
+    cursor += chunk.items.length;
+  }
+  if (cursor !== total) throw new PortableStateResumeMismatchError("Portable state resume chunks contain a gap");
+  return { start: starts[0] ?? total, chunks };
 }
 
 async function readRange(
