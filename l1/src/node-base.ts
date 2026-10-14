@@ -465,9 +465,18 @@ export class NodeService {
    * tip (height - 1, previousHash) could not collect a quorum of votes. The
    * record is ignored once the tip moves and is cleared by the next quorum
    * this validator collects for the same tip.
+   *
+   * Round-5 (Codex review of #996): a later failure for the same tip keeps the
+   * highest phase recorded so far. A retry that stops at the prepare or
+   * timeout phase says nothing new about the commit quorum that already
+   * failed, so it must not lower the record to a rank its next prepare or
+   * timeout quorum could clear.
    */
   recordConsensusQuorumFailure(height: number, previousHash: string, phase: ConsensusQuorumPhase = "round"): void {
-    this.consensusQuorumFailure = { height, previousHash, phase: CONSENSUS_QUORUM_PHASE_RANK[phase] };
+    const previous = this.consensusQuorumFailure;
+    const sameTip = previous !== undefined && previous.height === height && previous.previousHash === previousHash;
+    const rank = CONSENSUS_QUORUM_PHASE_RANK[phase];
+    this.consensusQuorumFailure = { height, previousHash, phase: sameTip ? Math.max(previous.phase, rank) : rank };
   }
 
   /**
