@@ -21,6 +21,18 @@ export function stripYamlComments(text) {
 
 export function verifyL1ReleaseWorkflow(rawWorkflow) {
 const workflow = stripYamlComments(rawWorkflow);
+// Round-6 independent retest (PR1013, Info): YAML reads a quoted key
+// ("timeout-minutes", 'if'), an escaped one ("timeout\x2dminutes"), an
+// explicit one (`? if`) and one behind a tag, anchor or alias (`!!str if`,
+// `&a if`, `*a`) as the same key as its plain spelling, so the line checks
+// below would not see it. The release workflow writes every key plainly, so
+// any other key form, and any node that starts with a tag, anchor or alias,
+// is refused.
+if (/^[ \t]*(?:-[ \t]+)*(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\n]|'')*')[ \t]*:/m.test(workflow)) {
+  throw new Error('Release workflow keys must not be quoted');
+}
+if (/^[ \t]*(?:-[ \t]+)*\?(?:[ \t]|$)/m.test(workflow)) throw new Error('Release workflow must not use explicit (?) keys');
+if (/^[ \t]*(?:-[ \t]+)*[!&*]/m.test(workflow)) throw new Error('Release workflow keys must not carry a tag, anchor or alias');
 if (/^\s*(?:-\s+)?continue-on-error\s*:/m.test(workflow)) throw new Error('Release workflow steps must not continue on error');
 // Round-6 independent retest (PR1009, Info): a zero or non-numeric timeout
 // must not be able to cut a step or job short.
