@@ -500,13 +500,20 @@ class Blockchain:
     def is_valid_genesis_block(self, genesis_block):
         expected_genesis = self.create_genesis_block()
 
+        # R8-1025-L1: also require version and recalculated hash. The prior
+        # check compared only a subset of fields and the stored hash bytes, so
+        # an in-memory genesis could claim CURRENT_VERSION (and disagreeing
+        # timestamp_ms) while still validating. Non-genesis blocks already
+        # require hash == calculate_hash().
         return (
             genesis_block.index == expected_genesis.index
             and genesis_block.timestamp == expected_genesis.timestamp
             and genesis_block.transactions == expected_genesis.transactions
             and genesis_block.previous_hash == expected_genesis.previous_hash
             and genesis_block.difficulty == expected_genesis.difficulty
+            and genesis_block.version == expected_genesis.version
             and genesis_block.hash == expected_genesis.hash
+            and genesis_block.hash == genesis_block.calculate_hash()
         )
 
     def is_valid_chain(self, chain_to_validate):
