@@ -599,6 +599,12 @@ class Blockchain:
             if current.version == Block.CURRENT_VERSION:
                 if not isinstance(current.timestamp_ms, int) or isinstance(current.timestamp_ms, bool):
                     return False
+                # R7b-1020-L1: the float timestamp of a current-version block is
+                # derived from timestamp_ms and is not hashed, while ordering
+                # uses timestamp_ms. Refuse a block whose two representations
+                # disagree instead of validating on either one.
+                if current.timestamp != current.timestamp_ms / 1000:
+                    return False
                 if current.merkle_root != current.calculate_merkle_root():
                     return False
 
