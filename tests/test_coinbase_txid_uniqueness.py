@@ -187,3 +187,65 @@ def test_honest_mining_after_large_legacy_tip(monkeypatch):
         f"honest legacy-to-current rejected: legacy={legacy.timestamp} "
         f"current_ms={current.timestamp_ms} current={current.timestamp}"
     )
+
+
+def test_current_block_float_timestamp_must_match_integer_milliseconds(monkeypatch):
+    """R7b-1020-L1: a current-version block's float timestamp is derived from
+    timestamp_ms and is not hashed. Validation orders current blocks on
+    timestamp_ms, so an in-memory block whose float seconds disagree with its
+    integer milliseconds must be rejected rather than validated on either.
+    """
+    from zyron.block import Block
+
+    legacy_seconds = 2147483648.0
+    base_ms = round(legacy_seconds * 1000)
+    monkeypatch.setattr(time, "time", lambda: legacy_seconds + 10)
+    monkeypatch.setattr(time, "time_ns", lambda: int((legacy_seconds + 10) * 1_000_000_000))
+
+    chain = Blockchain()
+    legacy_reward = Transaction(
+        "SYSTEM",
+        "ZYN" + format(1, "040x"),
+        amount_atoms=50 * Transaction.ATOMS_PER_ZYN,
+        fee_atoms=0,
+        timestamp_ms=base_ms - 5,
+    )
+    legacy = Block(
+        len(chain.chain),
+        [legacy_reward.to_dict()],
+        chain.chain[-1].hash,
+        difficulty=chain.calculate_expected_difficulty(chain.chain),
+        version=Block.LEGACY_VERSION,
+        timestamp=legacy_seconds,
+        timestamp_ms=None,
+    )
+    del legacy.timestamp_ms
+    legacy.mine()
+    chain.chain.append(legacy)
+
+    current_reward = Transaction(
+        "SYSTEM",
+        "ZYN" + format(2, "040x"),
+        amount_atoms=50 * Transaction.ATOMS_PER_ZYN,
+        fee_atoms=0,
+        timestamp_ms=base_ms - 1000,
+    )
+    current = Block(
+        len(chain.chain),
+        [current_reward.to_dict()],
+        legacy.hash,
+        difficulty=chain.calculate_expected_difficulty(chain.chain),
+        version=Block.CURRENT_VERSION,
+        timestamp_ms=base_ms + 1,
+    )
+    current.mine()
+    chain.chain.append(current)
+    assert chain.is_chain_valid() is True
+
+    original_hash = current.hash
+    current.timestamp = legacy_seconds - 1  # older than its predecessor
+    assert current.calculate_hash() == original_hash
+    assert chain.is_chain_valid() is False
+
+    current.timestamp = (base_ms + 1) / 1000
+    assert chain.is_chain_valid() is True
