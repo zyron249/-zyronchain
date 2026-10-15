@@ -1020,6 +1020,11 @@ export class StateV2AnchoredRecordStream {
     }
   }
 
+  /** Hashes still expected (used by tests to check the depth bound). */
+  outstandingCount(): number {
+    return this.expected.size;
+  }
+
   /** Every expected record arrived and no other one did. */
   finish(total: number): void {
     if (this.expected.size !== 0 || this.accepted !== total) {
