@@ -26,8 +26,35 @@ const mutations = {
   // same key, so these were accepted before.
   'test step allowed to fail under a quoted key': replaceOnce(workflow, '        run: npm test', '        "continue-on-error": true\n        run: npm test'),
   'test step made conditional under a quoted key': replaceOnce(workflow, '        run: npm test', "        'if': false\n        run: npm test"),
-  'test step with a zero timeout under a quoted key': replaceOnce(workflow, '        run: npm test', '        "timeout-minutes": 0\n        run: npm test')
+  'test step with a zero timeout under a quoted key': replaceOnce(workflow, '        run: npm test', '        "timeout-minutes": 0\n        run: npm test'),
+  // Round-7 independent retest (PR1016, Medium): flow-style steps put keys
+  // inside `{...}`, so the line-start quoted/tag/explicit checks miss them.
+  'attest step as flow map with if:false': (() => {
+    const start = workflow.indexOf('      - name: Attest release');
+    const end = workflow.indexOf('      - name: Upload release', start);
+    assert.ok(start >= 0 && end > start, 'attest/upload anchors missing');
+    return workflow.slice(0, start)
+      + '      - {name: Attest release tarball, if: false, uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6, with: {subject-path: l1/release/SBOM.spdx.json}}\n'
+      + workflow.slice(end);
+  })(),
+  'attest step as flow map with quoted timeout-minutes:0': (() => {
+    const start = workflow.indexOf('      - name: Attest release');
+    const end = workflow.indexOf('      - name: Upload release', start);
+    assert.ok(start >= 0 && end > start, 'attest/upload anchors missing');
+    return workflow.slice(0, start)
+      + '      - {name: Attest release tarball, "timeout-minutes": 0, uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6, with: {subject-path: l1/release/SBOM.spdx.json}}\n'
+      + workflow.slice(end);
+  })(),
+  'attest step as flow map with continue-on-error:true': (() => {
+    const start = workflow.indexOf('      - name: Attest release');
+    const end = workflow.indexOf('      - name: Upload release', start);
+    assert.ok(start >= 0 && end > start, 'attest/upload anchors missing');
+    return workflow.slice(0, start)
+      + '      - {name: Attest release tarball, continue-on-error: true, uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6, with: {subject-path: l1/release/SBOM.spdx.json}}\n'
+      + workflow.slice(end);
+  })()
 };
+
 for (const [name, mutated] of Object.entries(mutations)) {
   assert.throws(() => verifyL1ReleaseWorkflow(mutated), Error, `mutation must be rejected: ${name}`);
 }
