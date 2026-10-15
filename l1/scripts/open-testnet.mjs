@@ -9,10 +9,18 @@
 //   node scripts/open-testnet.mjs run  --dir <secret dir> [--port 10000] [--host 127.0.0.1] [--init-if-missing]
 //   node scripts/open-testnet.mjs smoke            (disposable end-to-end check)
 //
+// Persistence for hosts without a disk: with ZYRON_TESTNET_STATE_SECRET set, the
+// gateway serves GET /state/snapshot, an AES-256-GCM sealed bundle (genesis,
+// TEST keys, finalized blocks). `run --init-if-missing --restore-url <url>`
+// restores a missing directory from such a bundle (re-validating every block)
+// before falling back to a fresh genesis.
+//
 // <secret dir> holds plaintext TEST validator/faucet keys (mode 0600) and the
 // chain data. It must live outside the repository and must never be shared.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { createServer } from "node:http";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -37,6 +45,8 @@ const DAY_MS = 86_400_000;
 const ADDRESS_PATTERN = /^ZYN[0-9a-f]{40}$/;
 const MAX_BODY_BYTES = 8 * 1024;
 const NOTICE = "TESTNET — tokens have no value. ZyronChain open testnet: test ZYN cannot be bought or sold, is not redeemable for mainnet ZYN, and the network may be reset at any time. Not audited.";
+const SNAPSHOT_MAGIC = "ZYRON-OPEN-TESTNET-STATE-V1";
+const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 const RESERVED_CHAIN_IDS = new Set(["zyron-mainnet-1", "zyron-public-testnet-1"]);
 
 const [command, ...rest] = process.argv.slice(2);
@@ -65,6 +75,60 @@ async function readSecret(path) {
   const info = await stat(path);
   assert.equal(info.mode & 0o077, 0, `${path} must not be readable by group/other`);
   return JSON.parse(await readFile(path, "utf8"));
+}
+
+// ---- sealed state snapshots (TEST keys + public blocks) ---------------------------
+function snapshotKey(secret) {
+  assert.ok(typeof secret === "string" && secret.length >= 32, "ZYRON_TESTNET_STATE_SECRET must be at least 32 characters");
+  return createHash("sha256").update(`zyron-open-testnet-state\0${secret}`).digest();
+}
+export function sealSnapshot(bundle, secret) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", snapshotKey(secret), iv);
+  cipher.setAAD(Buffer.from(SNAPSHOT_MAGIC));
+  const body = Buffer.concat([cipher.update(gzipSync(Buffer.from(JSON.stringify(bundle)))), cipher.final()]);
+  return Buffer.concat([Buffer.from(`${SNAPSHOT_MAGIC}\n`), iv, cipher.getAuthTag(), body]);
+}
+export function openSnapshot(bytes, secret) {
+  const header = Buffer.from(`${SNAPSHOT_MAGIC}\n`);
+  assert.ok(bytes.length > header.length + 28 && bytes.length <= MAX_SNAPSHOT_BYTES, "snapshot size out of range");
+  assert.ok(bytes.subarray(0, header.length).equals(header), "not an open-testnet state snapshot");
+  const iv = bytes.subarray(header.length, header.length + 12);
+  const tag = bytes.subarray(header.length + 12, header.length + 28);
+  const decipher = createDecipheriv("aes-256-gcm", snapshotKey(secret), iv);
+  decipher.setAAD(Buffer.from(SNAPSHOT_MAGIC));
+  decipher.setAuthTag(tag);
+  const plain = Buffer.concat([decipher.update(bytes.subarray(header.length + 28)), decipher.final()]);
+  return JSON.parse(gunzipSync(plain, { maxOutputLength: MAX_SNAPSHOT_BYTES * 4 }).toString("utf8"));
+}
+// Rebuilds a network directory from a snapshot bundle. Every block is replayed
+// through ChainStore validation; keys must match the genesis validator set.
+export async function restoreNetwork(dir, bundle, expectedChainId) {
+  assert.equal(bundle?.format, SNAPSHOT_MAGIC, "unknown snapshot format");
+  const { genesis, network, keys, blocks } = bundle;
+  assertTestnetChainId(genesis.chainId);
+  if (expectedChainId) assert.equal(genesis.chainId, expectedChainId, "snapshot is for another chain ID");
+  assert.equal(network.chainId, genesis.chainId);
+  assert.equal(new ZyronChain(genesis).genesisHash, network.genesisHash, "snapshot genesis hash mismatch");
+  for (const [index, name] of VALIDATOR_NAMES.entries()) assert.equal(publicKeyFromPrivate(keys[name]), genesis.validators[index].publicKey, `snapshot key ${name} does not match genesis`);
+  assert.equal(addressFromPublicKey(publicKeyFromPrivate(keys.faucet)), network.faucetAddress, "snapshot faucet key mismatch");
+  assert.ok(Array.isArray(blocks) && blocks.length >= V6_ACTIVATION_HEIGHT - 1, "snapshot has too few blocks");
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmod(dir, 0o700);
+  await mkdir(join(dir, "keys"), { mode: 0o700 });
+  for (const [name, privateKey] of Object.entries(keys)) {
+    assert.ok(/^[a-z0-9]{1,16}$/.test(name), "invalid key name");
+    await writeSecret(join(dir, "keys", `${name}.json`), { privateKey });
+  }
+  await writeFile(join(dir, "genesis.json"), `${JSON.stringify(genesis, null, 2)}\n`, { mode: 0o644, flag: "wx" });
+  for (const name of VALIDATOR_NAMES) {
+    const data = join(dir, `data-${name}`);
+    await mkdir(data, { mode: 0o700 });
+    const store = await ChainStore.open(genesis, data);
+    for (const block of blocks) await store.commitFinalizedBlock(block);
+  }
+  await writeFile(join(dir, "network.json"), `${JSON.stringify(network, null, 2)}\n`, { mode: 0o644, flag: "wx" });
+  return { chainId: genesis.chainId, genesisHash: network.genesisHash, height: blocks.length };
 }
 
 // ---- init: fresh TEST keys, fixed-supply-v1 genesis, v6 prefix ----------------
@@ -134,7 +198,7 @@ export async function initNetwork(dir, chainId) {
 }
 
 // ---- run: validators + gateway ---------------------------------------------------
-export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true } = {}) {
+export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" } } = {}) {
   const genesisPath = join(dir, "genesis.json");
   const genesis = JSON.parse(await readFile(genesisPath, "utf8"));
   assertTestnetChainId(genesis.chainId);
@@ -218,7 +282,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       network: "testnet", valueBearing: false, notice: NOTICE, chainId, genesisHash: status.body.genesisHash,
       launchProfile: genesis.launchProfile, height: status.body.height, tipHash: status.body.tipHash,
       protocolVersion: nextProtocol, transactionVersion: nextProtocol >= 3 ? 2 : 1, blockIntervalSeconds: 30,
-      validatorCount: genesis.validators.length,
+      validatorCount: genesis.validators.length, persistence,
       faucet: { address: faucet.address, dripZyn: FAUCET_DRIP_ATOMS / ATOMS_PER_ZYN, perAddressPerDay: 1 }
     };
     statusCacheAt = Date.now();
@@ -245,8 +309,25 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     write: new WindowLimiter(Number(process.env.ZYRON_RPC_TX_PER_MINUTE ?? 10), 60_000),
     faucetIp: new WindowLimiter(5, DAY_MS),
     faucetAddress: new WindowLimiter(1, DAY_MS),
-    faucetGlobal: new WindowLimiter(200, 3_600_000, 1)
+    faucetGlobal: new WindowLimiter(200, 3_600_000, 1),
+    snapshot: new WindowLimiter(30, 3_600_000, 1)
   };
+  let snapshotCache; let snapshotCacheAt = 0;
+  async function buildSnapshot() {
+    if (snapshotCache && Date.now() - snapshotCacheAt < 60_000) return snapshotCache;
+    const tip = (await chainStatus()).height;
+    const blocks = [];
+    while (blocks.length < tip) {
+      const result = await anyNode(`/blocks?from=${blocks.length + 1}&limit=100`);
+      if (result.status !== 200 || !Array.isArray(result.body?.blocks) || result.body.blocks.length === 0) throw new Error("snapshot block read failed");
+      for (const block of result.body.blocks) { if (block.header.height === blocks.length + 1 && blocks.length < tip) blocks.push(block); }
+    }
+    const keys = {};
+    for (const name of [...VALIDATOR_NAMES, "oracle", "founder", "faucet", "liquidity", "ecosystem"]) keys[name] = (await readSecret(join(dir, "keys", `${name}.json`))).privateKey;
+    const sealed = sealSnapshot({ format: SNAPSHOT_MAGIC, createdAtMs: Date.now(), genesis, network: info, keys, blocks }, stateSecret);
+    snapshotCache = { sealed, height: tip }; snapshotCacheAt = Date.now();
+    return snapshotCache;
+  }
   // The tunnel/proxy in front of the gateway connects from loopback; only then
   // is a forwarded client address trusted.
   function clientIp(request) {
@@ -280,6 +361,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   }
 
   const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "600" };
+  const PEER_RPC = { "x-zyron-rpc-version": "1" };
   const SECURITY = { "x-content-type-options": "nosniff", "x-zyron-network": "testnet-no-value", "referrer-policy": "no-referrer" };
   function sendJson(response, code, body, extra = {}) {
     const payload = `${JSON.stringify(body, null, 2)}\n`;
@@ -332,8 +414,28 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
+        // Read-only peer surface for volunteer follower nodes (`node --peer <gateway>/peer`):
+        // raw /status and /blocks only. Validator P2P write paths are never exposed.
+        if (path === "/peer/status") {
+          const result = await anyNode("/status");
+          return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? result.body : { error: "node unavailable" }, PEER_RPC);
+        }
+        if (path === "/peer/blocks") {
+          const from = Number.parseInt(url.searchParams.get("from") ?? "", 10);
+          const limit = Math.min(100, Math.max(1, Number.parseInt(url.searchParams.get("limit") ?? "100", 10) || 100));
+          if (!Number.isSafeInteger(from) || from < 1) return sendJson(response, 400, { error: "from must be a positive integer" });
+          const result = await anyNode(`/blocks?from=${from}&limit=${limit}`);
+          return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? result.body : { error: "node unavailable" }, PEER_RPC);
+        }
+        if (path === "/state/snapshot" && stateSecret) {
+          const snapshotRate = limits.snapshot.take("global");
+          if (!snapshotRate.allowed) return limited(response, snapshotRate);
+          const { sealed, height } = await buildSnapshot();
+          response.writeHead(200, { ...SECURITY, "content-type": "application/octet-stream", "cache-control": "no-store", "content-length": sealed.length, "x-zyron-snapshot-height": String(height), "x-zyron-genesis-hash": info.genesisHash });
+          return response.end(sealed);
+        }
         if (path === "/" || path === "/explorer") return sendHtml(response);
-        if (path === "/api" ) return sendJson(response, 200, { name: "ZyronChain open TESTNET RPC", ...(await chainStatus()), endpoints: ["GET /health", "GET /status", "GET /network", "GET /genesis", "GET /account/{address}", "GET /balance/{address}", "GET /nonce/{address}", "GET /blocks?from=&limit=", "GET /block/{height}", "POST /tx", "POST /faucet {address}"] });
+        if (path === "/api" ) return sendJson(response, 200, { name: "ZyronChain open TESTNET RPC", ...(await chainStatus()), endpoints: ["GET /health", "GET /status", "GET /network", "GET /genesis", "GET /account/{address}", "GET /balance/{address}", "GET /nonce/{address}", "GET /blocks?from=&limit=", "GET /block/{height}", "GET /peer/status", "GET /peer/blocks?from=&limit=", "POST /tx", "POST /faucet {address}"] });
         if (path === "/status" || path === "/chain") return sendJson(response, 200, await chainStatus());
         if (path === "/network") return sendJson(response, 200, info);
         if (path === "/genesis") return sendJson(response, 200, { network: "testnet", valueBearing: false, genesisHash: info.genesisHash, genesis });
@@ -419,7 +521,8 @@ async function smoke() {
   let network;
   try {
     const info = await initNetwork(join(dir, "net"), "zyron-smoke-testnet-1");
-    network = await runNetwork(join(dir, "net"), { gatewayPort: 0, basePort: 19300 + Math.floor(Math.random() * 500) * 4, log: false });
+    var smokeSecret = randomBytes(32).toString("base64");
+    network = await runNetwork(join(dir, "net"), { gatewayPort: 0, basePort: 19300 + Math.floor(Math.random() * 500) * 4, log: false, stateSecret: smokeSecret });
     const base = `http://127.0.0.1:${network.port}`;
     const get = async (p) => { const r = await fetch(base + p); return { status: r.status, body: r.headers.get("content-type")?.includes("json") ? await r.json() : await r.text() }; };
     const post = async (p, b) => { const r = await fetch(base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }); return { status: r.status, body: await r.json() }; };
@@ -436,6 +539,11 @@ async function smoke() {
     const block = (await get(`/block/${V6_ACTIVATION_HEIGHT}`)).body;
     assert.equal(block.version, 6);
     assert.equal((await post("/block", {})).status, 404);
+    const peerStatus = await fetch(`${base}/peer/status`);
+    assert.equal(peerStatus.headers.get("x-zyron-rpc-version"), "1");
+    assert.deepEqual(Object.keys(await peerStatus.json()).sort(), ["chainId", "genesisHash", "height", "tipHash"]);
+    assert.equal((await (await fetch(`${base}/peer/blocks?from=1&limit=2`)).json()).blocks.length, 2);
+    assert.equal((await post("/peer/block", {})).status, 404);
     const alice = newAccount(); const bob = newAccount();
     const drip = await post("/faucet", { address: alice.address });
     assert.equal(drip.status, 200, JSON.stringify(drip.body));
@@ -451,7 +559,20 @@ async function smoke() {
     await until("finality with v2 stopped", async () => (await get("/status")).body.height >= before + 2, 360_000);
     network.startValidator("v2");
     const rejoined = await until("v2 rejoins the tip", async () => { const h = (await get("/status")).body.height; return (await allAt(h)) ? h : false; }, 360_000);
-    console.log(JSON.stringify({ ok: true, chainId: info.chainId, genesisHash: info.genesisHash, protocolVersion: 6, faucetTxid: drip.body.txid, transferTxid: tx.txid, heightAfterRestart: rejoined }, null, 2));
+    // Sealed snapshot -> restore into a fresh directory -> same chain resumes.
+    const snapshotResponse = await fetch(`${base}/state/snapshot`);
+    assert.equal(snapshotResponse.status, 200);
+    const sealed = Buffer.from(await snapshotResponse.arrayBuffer());
+    assert.throws(() => openSnapshot(sealed, "x".repeat(40)));
+    const snapHeight = Number(snapshotResponse.headers.get("x-zyron-snapshot-height"));
+    await network.shutdown(); network = undefined;
+    const restored = await restoreNetwork(join(dir, "restored"), openSnapshot(sealed, smokeSecret), info.chainId);
+    assert.equal(restored.genesisHash, info.genesisHash);
+    network = await runNetwork(join(dir, "restored"), { gatewayPort: 0, basePort: 19300 + Math.floor(Math.random() * 500) * 4, log: false, stateSecret: smokeSecret, persistence: { mode: "snapshot-restore" } });
+    const base2 = `http://127.0.0.1:${network.port}`;
+    await until("restored chain finalizes past the snapshot", async () => { const s = await (await fetch(`${base2}/status`)).json(); return s.genesisHash === info.genesisHash && s.height > snapHeight; }, 360_000);
+    assert.equal((await (await fetch(`${base2}/account/${bob.address}`)).json()).balanceAtoms, 25 * ATOMS_PER_ZYN);
+    console.log(JSON.stringify({ ok: true, snapshotHeight: snapHeight, chainId: info.chainId, genesisHash: info.genesisHash, protocolVersion: 6, faucetTxid: drip.body.txid, transferTxid: tx.txid, heightAfterRestart: rejoined }, null, 2));
   } finally {
     if (network) await network.shutdown();
     await rm(dir, { recursive: true, force: true });
@@ -467,11 +588,33 @@ if (command === "init") {
   // --init-if-missing is for hosts without a persistent disk (for example a
   // free web service): a missing directory gets a fresh TEST genesis, so every
   // cold start is a new network with a new genesis hash.
+  const stateSecret = process.env.ZYRON_TESTNET_STATE_SECRET || undefined;
+  let persistence = { mode: "local-disk" };
   if (rest.includes("--init-if-missing")) {
     const exists = await stat(join(dir, "network.json")).then(() => true, () => false);
-    if (!exists) console.log(JSON.stringify(await initNetwork(dir, option("--chain-id", process.env.ZYRON_TESTNET_CHAIN_ID ?? DEFAULT_CHAIN_ID))));
+    const chainId = option("--chain-id", process.env.ZYRON_TESTNET_CHAIN_ID ?? DEFAULT_CHAIN_ID);
+    const restoreUrl = option("--restore-url", process.env.ZYRON_TESTNET_STATE_URL || undefined);
+    if (!exists && restoreUrl && stateSecret) {
+      try {
+        const response = await fetch(restoreUrl, { redirect: "follow", signal: AbortSignal.timeout(180_000) });
+        if (response.status === 404) console.log("no state snapshot published yet; creating a fresh TEST genesis");
+        else {
+          assert.equal(response.status, 200, `snapshot download returned ${response.status}`);
+          const restored = await restoreNetwork(dir, openSnapshot(Buffer.from(await response.arrayBuffer()), stateSecret), chainId);
+          persistence = { mode: "snapshot-restore", restoredHeight: restored.height, restoredAtMs: Date.now() };
+          console.log(`restored ${restored.chainId} genesis ${restored.genesisHash} at height ${restored.height}`);
+        }
+      } catch (error) {
+        console.error(`STATE RESTORE FAILED (${error instanceof Error ? error.message : String(error)}); creating a fresh TEST genesis`);
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+    if (!(await stat(join(dir, "network.json")).then(() => true, () => false))) {
+      console.log(JSON.stringify(await initNetwork(dir, chainId)));
+      persistence = { mode: exists ? "local-disk" : "fresh-genesis", createdAtMs: Date.now() };
+    }
   }
-  const network = await runNetwork(dir, { host: option("--host", "127.0.0.1"), gatewayPort: Number(option("--port", process.env.PORT ?? "10000")), basePort: Number(option("--validator-base-port", "9300")) });
+  const network = await runNetwork(dir, { stateSecret, persistence, host: option("--host", "127.0.0.1"), gatewayPort: Number(option("--port", process.env.PORT ?? "10000")), basePort: Number(option("--validator-base-port", "9300")) });
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { void network.shutdown().then(() => process.exit(0)); });
 } else if (command === "smoke") {
   await smoke();

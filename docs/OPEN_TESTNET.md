@@ -56,15 +56,22 @@ The directory holds plaintext **test** validator and faucet keys. Keep it outsid
 
 ### Free hosting profile
 
-[`deploy/open-testnet/render.yaml`](../deploy/open-testnet/render.yaml) runs the same profile on a Render **free** web service. Free instances have no persistent disk and sleep when idle: every cold start creates a new genesis. This is acceptable for a no-value testnet and must be stated wherever the URL is published.
+[`deploy/open-testnet/render.yaml`](../deploy/open-testnet/render.yaml) runs the same profile on a Render **free** web service with no persistent disk. State survives restarts through sealed snapshots:
+
+- With `ZYRON_TESTNET_STATE_SECRET` set (Render generates it; it is stored nowhere else), the gateway serves `GET /state/snapshot`: genesis, TEST keys and all finalized blocks, gzip + AES-256-GCM. Rate limited to 30 per hour.
+- [`deploy/open-testnet/snapshot-keeper.sh`](../deploy/open-testnet/snapshot-keeper.sh) runs on an always-on machine. Every 10 minutes it downloads the snapshot and publishes it as the `state.enc` asset of the `open-testnet-state` prerelease. It also keeps a per-genesis copy. Its polling keeps the free instance from idling.
+- On a cold start, `run --init-if-missing --restore-url <asset>` decrypts the snapshot, checks the genesis hash and keys, replays every block through normal validation, and resumes the same chain. A fresh genesis is created only if no snapshot exists or the restore fails, and the failure is logged.
+- `GET /status` reports `persistence.mode` (`snapshot-restore`, `fresh-genesis` or `local-disk`).
+
+Limits: up to about 10 minutes of the newest blocks can be lost on an unplanned restart, and they are produced again from that height. Validator signing journals are not part of the snapshot. This is acceptable only because the network has no value.
 
 ## Join as a validator (volunteers)
 
-The current validator set is run by the project from one host, so it is **not** yet an independent-operator network. Volunteers help close that gap. **Volunteer validators cannot join yet:** no persistent, publicly reachable bootstrap host or peer URL exists, so step 3 is not possible today. Full guide: [`VALIDATOR_VOLUNTEERS.md`](VALIDATOR_VOLUNTEERS.md).
+The current validator set is run by the project from one host, so it is **not** yet an independent-operator network. Volunteers help close that gap. **Follower nodes can join now:** sync from the public peer endpoint `https://zyron-open-testnet.onrender.com/peer` with the genesis from `GET /genesis` (see the guide). **Validator activation is not possible yet:** the hosted validators are on loopback and only expose a read-only peer surface, so a volunteer cannot exchange v6 consensus messages with them. Full guide: [`VALIDATOR_VOLUNTEERS.md`](VALIDATOR_VOLUNTEERS.md).
 
 1. Run `npm run testnet:open:smoke` on your Linux/macOS host to confirm your environment.
 2. Generate a validator key with `node dist/src/cli.js keygen` and share **only** the public key and address (open a GitHub issue titled `Open testnet validator: <name>`).
-3. The existing validators add you through the on-chain validator-update governance flow (`validator-proposal`, `validator-approve`, `validator-submit`; activation at least the minimum update delay ahead). Your node then syncs from a published peer URL and starts signing at the activation height.
+3. The existing validators add you through the on-chain validator-update governance flow (`validator-proposal`, `validator-approve`, `validator-submit`; activation at least the minimum update delay ahead). Your node syncs from the peer endpoint and would start signing at the activation height. This step waits on a reachable consensus endpoint for the hosted validators.
 4. Keep your key and signing journal on durable local storage; never run two copies of one validator key.
 
 Never send a private key, password file or signer token to anyone, including project maintainers.
