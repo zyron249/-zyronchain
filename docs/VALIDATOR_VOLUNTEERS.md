@@ -10,19 +10,12 @@ The open testnet runs the canonical TypeScript L1 with protocol v6 (locked two-p
 
 Running a testnet validator earns nothing. Test ZYN has no value, and validators get no reward.
 
-## Current limitation: the hosted testnet resets
+## Current status
 
-The public instance at https://zyron-open-testnet.onrender.com runs on a **free** hosting plan. Free instances have no persistent disk and sleep when idle. **Every cold start creates a new genesis** with a new genesis hash. When that happens:
+The hosted network at https://zyron-open-testnet.onrender.com runs on a free plan without a disk. Its state persists through sealed snapshots that are restored on every cold start (see `docs/OPEN_TESTNET.md`). Check `GET /status` for `chainId`, `genesisHash`, `height` and `persistence`. A genesis-hash change means a reset, and it is announced if it ever happens.
 
-- all balances, blocks and transactions are gone;
-- the validator set goes back to the 4 project validators, so a volunteer validator added through governance would no longer be part of the new network;
-- the first request after idle time can take a while.
-
-Check `/status` (`chainId`, `genesisHash`, `height`) to see which network you are on.
-
-In addition, the hosted profile keeps validator ports on loopback and exposes only the public gateway. A volunteer node needs a published peer URL to sync from. **Volunteer validators cannot join yet.** No peer URL has been published, and step 4 below cannot be completed until a persistent, publicly reachable bootstrap host exists. This page will be updated when one does.
-
-Until then, the most useful things volunteers can do are steps 1 to 3: check that the software builds and runs on your hardware, run your own copy of the network, and register a validator key so that you can be added as soon as a persistent network exists.
+- **Available now:** run a follower node that syncs and verifies the hosted chain (step 4a).
+- **Not yet:** validator activation. The hosted validators listen on loopback and expose only a read-only peer surface (`/peer/status`, `/peer/blocks`). A volunteer validator cannot exchange v6 consensus messages with them yet. Register your key now (step 3) so that you can be added when a consensus endpoint exists.
 
 ## Requirements
 
@@ -68,10 +61,23 @@ Open a GitHub issue titled `Open testnet validator: <your handle>`. Include **on
 
 **Never send a private key, a key file, a password file or a signer token to anyone, including project maintainers.** Nobody from the project will ever ask for them.
 
-### 4. Activation (once a persistent network and peer URL exist)
+### 4a. Run a follower node against the hosted testnet
+
+```sh
+cd -- -zyronchain/l1
+curl -s https://zyron-open-testnet.onrender.com/genesis | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify(JSON.parse(s).genesis,null,2)))' > "$HOME/zyron-open-testnet-genesis.json"
+mkdir -m 700 -p "$HOME/zyron-follower"
+node dist/src/cli.js node --genesis "$HOME/zyron-open-testnet-genesis.json" --data "$HOME/zyron-follower" \
+  --host 127.0.0.1 --port 9137 --peer https://zyron-open-testnet.onrender.com/peer
+curl -s -H 'x-zyron-rpc-version: 1' http://127.0.0.1:9137/status   # height should track the public /status
+```
+
+Your node re-validates every block and certificate itself. It holds no keys and signs nothing. If the node reports a genesis mismatch, the hosted network was reset: download the genesis again and use a new data directory.
+
+### 4. Activation (once the hosted validators have a consensus endpoint)
 
 1. The existing validators add your key through the on-chain validator-update governance flow (`validator-proposal`, `validator-approve`, `validator-submit`). Activation is set at least the minimum update delay ahead.
-2. Your node syncs from the published peer URL (not yet available) and starts signing at the activation height.
+2. Your node syncs from the peer endpoint and starts signing at the activation height. This needs two-way consensus connectivity, which is not available yet.
 
 ### 5. Operating rules
 
