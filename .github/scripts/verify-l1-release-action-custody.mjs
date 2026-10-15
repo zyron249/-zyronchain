@@ -33,6 +33,10 @@ if (/^[ \t]*(?:-[ \t]+)*(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\n]|'')*')[ \t]*:/m.test(w
 }
 if (/^[ \t]*(?:-[ \t]+)*\?(?:[ \t]|$)/m.test(workflow)) throw new Error('Release workflow must not use explicit (?) keys');
 if (/^[ \t]*(?:-[ \t]+)*[!&*]/m.test(workflow)) throw new Error('Release workflow keys must not carry a tag, anchor or alias');
+// Round-7 independent retest (PR1016, Medium): a flow-style sequence entry
+// (`- {if: false, ...}`) puts keys inside braces, so the line-start checks
+// above never see them. The release workflow is written in block style only.
+if (/^[ \t]*-[ \t]*\{/m.test(workflow)) throw new Error('Release workflow steps must not use flow-style mappings');
 if (/^\s*(?:-\s+)?continue-on-error\s*:/m.test(workflow)) throw new Error('Release workflow steps must not continue on error');
 // Round-6 independent retest (PR1009, Info): a zero or non-numeric timeout
 // must not be able to cut a step or job short.
