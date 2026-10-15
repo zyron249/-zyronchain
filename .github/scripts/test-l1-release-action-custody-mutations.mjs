@@ -52,6 +52,51 @@ const mutations = {
     return workflow.slice(0, start)
       + '      - {name: Attest release tarball, continue-on-error: true, uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6, with: {subject-path: l1/release/SBOM.spdx.json}}\n'
       + workflow.slice(end);
+  })(),
+  // Round-7b independent retest (PR1019, Medium): YAML lets the flow mapping
+  // of a sequence entry start on the line after a lone `-` (optionally after a
+  // comment), and a whole steps list can be a flow sequence, so `- {` alone
+  // did not catch them. Each of these really sets the control on the step.
+  ...Object.fromEntries([
+    ['if: false', 'if'],
+    ['continue-on-error: true', 'continue-on-error'],
+    ['timeout-minutes: 0', 'timeout-minutes']
+  ].flatMap(([control, label]) => {
+    const start = workflow.indexOf('      - name: Attest release');
+    const end = workflow.indexOf('      - name: Upload release', start);
+    assert.ok(start >= 0 && end > start, 'attest/upload anchors missing');
+    const step = (dash) => workflow.slice(0, start)
+      + dash
+      + `        { name: Attest release tarball, ${control},\n`
+      + '          uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6,\n'
+      + '          with: { subject-path: l1/release/SBOM.spdx.json }\n'
+      + '        }\n\n'
+      + workflow.slice(end);
+    return [
+      [`attest step as flow map after a lone dash with ${label}`, step('      -\n')],
+      [`attest step as flow map after a dash and comment with ${label}`, step('      - # attest\n')]
+    ];
+  })),
+  'whole steps list as a flow sequence with if:false on the test step': (() => {
+    const start = workflow.indexOf('    steps:\n');
+    assert.ok(start >= 0, 'steps anchor missing');
+    const entry = (fields, run) => `      { ${fields},\n        run: ${run}\n      },\n`;
+    return workflow.slice(0, start)
+      + '    steps: [\n'
+      + '      { name: Checkout code,\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1,\n        with: {\n          persist-credentials: false\n        }\n      },\n'
+      + '      { name: Set up Node.js,\n        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1\n      },\n'
+      + entry('name: Install', 'npm ci')
+      + entry('name: Typecheck', 'npm run typecheck')
+      + entry('name: Test, if: false', 'npm test')
+      + entry('name: Audit', 'npm audit --omit=dev --audit-level=high')
+      + entry('name: Build', 'npm run build')
+      + entry('name: Release dir', 'mkdir -p release')
+      + entry('name: Pack', 'npm pack --ignore-scripts --pack-destination release')
+      + entry('name: SBOM', 'npm sbom --omit=dev --sbom-format=spdx > release/SBOM.spdx.json')
+      + entry('name: Checksums, working-directory: l1/release', 'sha256sum SBOM.spdx.json zyronchain-l1-*.tgz > SHA256SUMS')
+      + '      { name: Attest,\n        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6\n      },\n'
+      + '      { name: Upload,\n        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9\n      }\n'
+      + '    ]\n';
   })()
 };
 
