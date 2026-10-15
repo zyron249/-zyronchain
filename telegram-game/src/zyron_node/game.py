@@ -78,12 +78,39 @@ class GameError(Exception):
         super().__init__(message)
 
 
+# Halloween 2026 seasonal badge: cosmetic only, zero points, granted once on the first session inside the window
+# (2026-10-15 00:00 to 2026-11-01 00:00 America/New_York, end exclusive). Never part of the daily chest pool.
+SEASON_BADGE_ID = "halloween_2026"
+SEASON_BADGE_START = datetime(2026, 10, 15, 4, 0, tzinfo=timezone.utc)
+SEASON_BADGE_END = datetime(2026, 11, 1, 4, 0, tzinfo=timezone.utc)
+
+
+def season_badge_open(now: datetime) -> bool:
+    return SEASON_BADGE_START <= now < SEASON_BADGE_END
+
+
+def grant_season_badge(conn, player, now: datetime) -> bool:
+    if not season_badge_open(now) or player.get("banned"):
+        return False
+    row = conn.execute(
+        """
+        INSERT INTO player_cosmetics (player_id, cosmetic_id, source, acquired_at)
+        VALUES (%s, %s, 'season', %s)
+        ON CONFLICT DO NOTHING
+        RETURNING cosmetic_id
+        """,
+        (player["id"], SEASON_BADGE_ID, now),
+    ).fetchone()
+    return row is not None
+
+
 def open_session(pool, identity, ip_hash: str | None, now: datetime, bot_username: str) -> dict:
     with pool.connection() as conn:
         with conn.transaction():
             player = ensure_player(conn, identity, ip_hash, now)
             levels = load_levels(conn, player["id"])
             player = persist_energy(conn, player, levels, now)
+            grant_season_badge(conn, player, now)
             level = node_level(levels)
             if level != player["node_level"]:
                 conn.execute("UPDATE players SET node_level = %s WHERE id = %s", (level, player["id"]))

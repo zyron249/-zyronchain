@@ -593,7 +593,7 @@
     const progress = moduleProgress();
     const section = el("section", { class: "home-grid", "data-live": "1" });
     section.append(el("article", { class: "balance" }, [
-      el("p", { class: "kicker" }, [document.createTextNode("Zyron Points"), ((p.cosmetics || []).indexOf("wolf_badge") >= 0) ? el("span", { class: "wolf-badge", text: "Wolf operator" }) : null]),
+      el("p", { class: "kicker" }, [document.createTextNode("Zyron Points"), ((p.cosmetics || []).indexOf("wolf_badge") >= 0) ? el("span", { class: "wolf-badge", text: "Wolf operator" }) : null, ((p.cosmetics || []).indexOf("halloween_2026") >= 0) ? el("span", { class: "halloween-badge", title: "Cosmetic only, no points", text: "Halloween 2026" }) : null]),
       el("div", { class: "balance-row" }, [
         pointsMark("lg"),
         el("b", { "data-points": "1", text: formatPoints(p.points) })

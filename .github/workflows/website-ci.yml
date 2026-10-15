@@ -39,6 +39,7 @@ jobs:
           node --check website/wallet-core.js
           node --check website/wallet.js
           node --check website/validator.js
+          node --check website/season.js
           node --check website/app/app.js
           node --check website/app/zyron-wallet-core.js
           node --check website/app/sw.js
@@ -50,6 +51,8 @@ jobs:
         run: node tools/site/network-status.mjs --check
       - name: Site CSS/JS references carry current content versions
         run: node tools/site/stamp-site.mjs --check
+      - name: Seasonal theme date gating and overrides (Halloween 2026)
+        run: node --test tools/site/test-season.mjs
       - name: Site regression tests (English-only, network-status honesty, naming, mining retired, build id, SEO)
         run: node tools/site/test-site.mjs
       - name: Verify production website, wallet and validator contracts
@@ -495,3 +498,4 @@ jobs:
           CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
           export CHROME_PATH
           node tools/site/test-layout.mjs
+          node tools/site/test-season-browser.mjs

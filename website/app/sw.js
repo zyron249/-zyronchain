@@ -13,9 +13,9 @@
 'use strict';
 
 // BEGIN GENERATED (tools/pwa-wallet/stamp-app.mjs)
-const VERSION = 'a36b531a6b7c74d8';
+const VERSION = '2c6f673e1200d310';
 const ASSETS = {
-  "./index.html": "36ad7bcad254de9a059858c83edf3b9062cf3a1295a1b360cc888bfe38576078",
+  "./index.html": "15a5594f8bb55b23c22db74794697e0f42f06f4bb0076b32b4e4eaab5522eaac",
   "./manifest.json": "3ab5a6037d573313f52f8aa6102591c4e6c539681eff81aea0afb1220c17c01a",
   "./icons/icon-192.png": null,
   "./icons/apple-touch-icon-180.png": null,
