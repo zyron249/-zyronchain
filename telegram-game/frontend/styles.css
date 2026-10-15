@@ -620,3 +620,35 @@ html.is-hidden .builders * { animation-play-state: paused !important; }
 .wolf-badge { margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-size: 10px; letter-spacing: 0.08em; color: #02050a; background: var(--chrome); }
 .builders.cos-bright_lamps .builder-lamp-glow { opacity: 0.85; r: 4; }
 .builders.cos-blue_picks .builder-arm polygon:nth-child(2) { fill: var(--cyan); }
+
+/* ---- Halloween 2026 seasonal theme (season.js) ---- */
+.season-layer { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 15; contain: strict; }
+.season-layer * { pointer-events: none; }
+.season-witch, .season-bat { position: absolute; left: 0; will-change: transform; opacity: 0; }
+.season-witch svg, .season-bat svg { display: block; filter: drop-shadow(0 0 5px rgba(10, 159, 245, .7)); }
+.season-witch svg { width: 80px; height: 50px; }
+@media (max-width: 600px) { .season-witch svg { width: 60px; height: 38px; } }
+.season-witch-1 { top: 9vh; animation: season-fly 26s linear 0.5s infinite; }
+.season-witch-2 { top: 22vh; animation: season-fly-back 34s linear 15s infinite; }
+.season-witch-2 svg { transform: scaleX(-1) scale(.8); }
+.season-bat-1 { top: 5vh; animation: season-bat 14s ease-in-out 0s infinite; }
+.season-bat-2 { top: 13vh; animation: season-bat 17s ease-in-out 4s infinite; }
+.season-bat-3 { top: 30vh; animation: season-bat 19s ease-in-out 8s infinite; }
+.season-bat-4 { top: 18vh; animation: season-bat 22s ease-in-out 11s infinite; }
+.season-bat svg { animation: season-flap .35s ease-in-out infinite alternate; transform-origin: 50% 40%; }
+@keyframes season-fly { 0% { transform: translate(-80px, 0) rotate(-4deg); opacity: 0; } 4% { opacity: .9; } 50% { transform: translate(50vw, -3vh) rotate(3deg); } 70% { transform: translate(calc(100vw + 80px), 1vh); opacity: .9; } 71%, 100% { transform: translate(calc(100vw + 80px), 1vh); opacity: 0; } }
+@keyframes season-fly-back { 0% { transform: translate(calc(100vw + 80px), 0); opacity: 0; } 4% { opacity: .75; } 60% { transform: translate(-80px, -4vh); opacity: .75; } 61%, 100% { transform: translate(-80px, -4vh); opacity: 0; } }
+@keyframes season-bat { 0% { transform: translate(-30px, 0); opacity: 0; } 5% { opacity: .8; } 25% { transform: translate(25vw, 3vh); } 50% { transform: translate(55vw, -2vh); opacity: .8; } 60%, 100% { transform: translate(calc(100vw + 30px), 2vh); opacity: 0; } }
+@keyframes season-flap { from { transform: scaleY(1); } to { transform: scaleY(.55); } }
+@media (prefers-reduced-motion: reduce) { .season-layer { display: none; } }
+.builder-hat { display: none; }
+.season-halloween .builder-hat { display: inline; }
+.builder-hat polygon { stroke: #ff8a1f; stroke-width: 0.5; }
+.builder-hat .hat-band { fill: #ff8a1f; stroke: none; }
+/* pumpkin / lantern skins on the chain blocks and carved blocks */
+.season-halloween .chain-art .face-top, .season-halloween .builders-art .face-top { fill: #ffb25c; }
+.season-halloween .chain-art .face-left, .season-halloween .builders-art .face-left { fill: #ff8a1f; }
+.season-halloween .chain-art .face-right, .season-halloween .builders-art .face-right { fill: #8a3b00; }
+.season-halloween .chain-art .chain-lead .face-top { fill: #ffd08a; }
+.season-halloween .chain-art .chain-halo { stroke: #ff8a1f; }
+.halloween-badge { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px; font-size: 11px; color: #ffcf99; border: 1px solid rgba(255, 138, 31, .6); }

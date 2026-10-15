@@ -22,6 +22,7 @@ STATIC_ASSETS = (
     "wake.js",
     "blocks.js",
     "builders.js",
+    "season.js",
     "styles.css",
     "logo.png",
     "points-mark-52.png",

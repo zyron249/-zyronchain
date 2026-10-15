@@ -88,9 +88,9 @@
     var outline = [[0, -s], [w, -h], [w, h], [0, s], [-w, h], [-w, -h]];
     return [
       ["polygon", { class: "chain-halo", points: pts(outline), fill: "none", stroke: C.glow, "stroke-width": lead ? "3.4" : "2.4", "stroke-opacity": lead ? "0.45" : "0.28", "stroke-linejoin": "round" }, []],
-      ["polygon", { points: pts(top), fill: C.chrome1 }, []],
-      ["polygon", { points: pts(left), fill: lead ? C.chrome2 : C.chrome3 }, []],
-      ["polygon", { points: pts(right), fill: C.dark }, []],
+      ["polygon", { class: "face-top", points: pts(top), fill: C.chrome1 }, []],
+      ["polygon", { class: "face-left", points: pts(left), fill: lead ? C.chrome2 : C.chrome3 }, []],
+      ["polygon", { class: "face-right", points: pts(right), fill: C.dark }, []],
       // circuit detail on the dark face
       ["path", { d: "M" + fmt(w * 0.3) + " " + fmt(s * 0.32) + " L" + fmt(w * 0.62) + " " + fmt(s * 0.12) + " L" + fmt(w * 0.62) + " " + fmt(-s * 0.12), fill: "none", stroke: C.blue, "stroke-width": "0.9", "stroke-linecap": "round" }, []],
       ["polygon", { points: pts(outline), fill: "none", stroke: C.cyan, "stroke-width": "0.9", "stroke-linejoin": "round" }, []],

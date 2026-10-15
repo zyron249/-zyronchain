@@ -71,9 +71,9 @@
     var h = s / 2;
     function p(list) { return list.map(function (q) { return fmt(q[0]) + "," + fmt(q[1]); }).join(" "); }
     return [
-      poly(p([[0, -s], [w, -h], [0, 0], [-w, -h]]), C.chrome1),
-      poly(p([[-w, -h], [0, 0], [0, s], [-w, h]]), C.chrome3),
-      poly(p([[0, 0], [w, -h], [w, h], [0, s]]), C.dark),
+      poly(p([[0, -s], [w, -h], [0, 0], [-w, -h]]), C.chrome1, { class: "face-top" }),
+      poly(p([[-w, -h], [0, 0], [0, s], [-w, h]]), C.chrome3, { class: "face-left" }),
+      poly(p([[0, 0], [w, -h], [w, h], [0, s]]), C.dark, { class: "face-right" }),
       poly(p([[0, -s], [w, -h], [w, h], [0, s], [-w, h], [-w, -h]]), "none", { stroke: C.cyan, "stroke-width": "0.7", "stroke-linejoin": "round" })
     ];
   }
@@ -133,6 +133,12 @@
         poly("-4.4,-28.6 6.8,-28.6 6.6,-27.6 -4.4,-27.8", C.chrome2),
         ["circle", { class: "builder-lamp-glow", cx: "5.2", cy: "-30.3", r: "2.8", fill: C.glow, opacity: "0.35" }, []],
         ["circle", { cx: "5.2", cy: "-30.3", r: "1.2", fill: C.cyan }, []],
+        // seasonal witch hat (styles.css shows it only under html.season-halloween; hidden otherwise)
+        ["g", { class: "builder-hat" }, [
+          poly("-6.4,-31.4 7.6,-31.4 7,-30.2 -5.8,-30.2", C.dark),
+          poly("-3.4,-31.4 4.6,-31.4 1.4,-38.6 -2.6,-41.4 -1.2,-38", C.dark),
+          poly("-3,-32.8 4.1,-32.8 3.8,-31.8 -2.8,-31.8", C.chrome2, { class: "hat-band" })
+        ]],
         // arm and pickaxe rotate at the shoulder; rotation 0 points the pickaxe straight ahead
         ["g", { transform: "translate(1 -21)" }, [
           ["g", { class: "builder-arm" }, [
