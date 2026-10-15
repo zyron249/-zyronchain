@@ -159,7 +159,9 @@ const releaseMutations = {
   'audit step allowed to fail under a single-quoted key': atAuditStep("'continue-on-error': true"),
   'audit step made conditional under a single-quoted key': atAuditStep("'if': false"),
   'audit step made conditional under a double-quoted key': atAuditStep('"if": ${{ false }}'),
-  'audit step made conditional under a tagged key': atAuditStep('!!str if: false')
+  'audit step made conditional under a tagged key': atAuditStep('!!str if: false'),
+  'audit step made conditional under an anchored key': atAuditStep('&k if: false'),
+  'audit step made conditional under an alias key': atAuditStep('env:\n          X: &k if\n        *k : false')
 };
 const acceptedReleaseMutations = Object.entries(releaseMutations)
   .filter(([, mutated]) => { try { verifyL1ReleaseWorkflow(mutated); return true; } catch { return false; } })
