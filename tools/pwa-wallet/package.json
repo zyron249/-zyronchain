@@ -8,11 +8,11 @@
     "check": "node build-vendor.mjs --check"
   },
   "dependencies": {
-    "@noble/curves": "2.3.0",
-    "@noble/hashes": "2.3.0",
-    "@scure/base": "2.3.0",
-    "@scure/bip32": "2.3.0",
-    "@scure/bip39": "2.3.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@scure/base": "2.4.0",
+    "@scure/bip32": "2.4.0",
+    "@scure/bip39": "2.4.0",
     "qr": "0.6.0"
   },
   "devDependencies": {
