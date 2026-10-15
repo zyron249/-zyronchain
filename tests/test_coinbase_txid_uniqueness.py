@@ -112,3 +112,23 @@ def test_block_timestamps_strictly_increase_past_float_roundtrip_boundary(monkey
     reward_txids = [_reward_tx(block)["txid"] for block in chain.chain[1:]]
     assert len(set(reward_txids)) == len(reward_txids)
     assert chain.is_chain_valid() is True
+
+
+@pytest.mark.parametrize("frozen_ms", [9_007_199_254_740_988, 9_007_199_254_740_992])
+def test_chain_validation_orders_blocks_by_integer_milliseconds(monkeypatch, frozen_ms):
+    """R6b-1015-L1 (round-6 independent retest of #1015): validation compared
+    float seconds, and near 2**53 ms two consecutive integer timestamps map to
+    the same float, so the node rejected its own honestly mined chain. Block
+    order must be checked on the integer milliseconds."""
+    frozen_ns = frozen_ms * 1_000_000
+    monkeypatch.setattr(time, "time_ns", lambda: frozen_ns)
+    monkeypatch.setattr(time, "time", lambda: frozen_ns / 1_000_000_000)
+    chain = Blockchain()
+    miner = Wallet()
+
+    for _ in range(4):
+        chain.mine_pending_transactions(miner.address)
+
+    stamps = [block.timestamp_ms for block in chain.chain[1:]]
+    assert all(later > earlier for earlier, later in zip(stamps, stamps[1:])), stamps
+    assert chain.is_chain_valid() is True

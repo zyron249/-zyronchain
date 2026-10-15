@@ -566,7 +566,21 @@ class Blockchain:
             if current.difficulty > self.max_difficulty:
                 return False
 
-            if current.timestamp <= previous.timestamp:
+            # R6b-1015-L1: when both blocks carry integer milliseconds, order
+            # them on those. Near 2**53 ms two consecutive integer timestamps
+            # map to the same float seconds value, and the float comparison
+            # rejected an honestly mined chain. Legacy blocks without
+            # timestamp_ms keep the float comparison, so existing chains
+            # validate exactly as before.
+            current_ms = getattr(current, "timestamp_ms", None)
+            previous_ms = getattr(previous, "timestamp_ms", None)
+            if (
+                isinstance(current_ms, int) and not isinstance(current_ms, bool)
+                and isinstance(previous_ms, int) and not isinstance(previous_ms, bool)
+            ):
+                if current_ms <= previous_ms:
+                    return False
+            elif current.timestamp <= previous.timestamp:
                 return False
 
             if current.timestamp > time.time() + self.MAX_FUTURE_BLOCK_TIME:
