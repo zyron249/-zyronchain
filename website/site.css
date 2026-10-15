@@ -124,6 +124,9 @@ pre code { background: none; border: 0; padding: 0; overflow-wrap: normal; }
 .hero { position: relative; border-bottom: 1px solid var(--line); }
 .hero-banner { position: relative; max-width: 1680px; margin-inline: auto; aspect-ratio: 1600 / 533; overflow: hidden; }
 .hero-banner img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.hero-chain { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; mix-blend-mode: screen; opacity: 0; transition: opacity 1.2s ease; }
+.hero-chain.is-on { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .hero-chain { display: none; } }
 .hero-banner::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, transparent 55%, var(--bg) 100%); }
 .hero-inner { position: relative; padding-block: var(--s-5) var(--s-7); }
 .eyebrow, .kicker { font: 600 var(--fs-0)/1.3 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--cyan); margin: 0 0 var(--s-3); }
