@@ -249,3 +249,32 @@ def test_current_block_float_timestamp_must_match_integer_milliseconds(monkeypat
 
     current.timestamp = (base_ms + 1) / 1000
     assert chain.is_chain_valid() is True
+
+
+def test_genesis_claiming_current_version_must_match_expected_and_hash():
+    """R8-1025-L1: genesis validation must not accept an in-memory genesis that
+    claims CURRENT_VERSION (or otherwise disagrees with the expected genesis)
+    while keeping the stored hash bytes. Non-genesis blocks already require
+    hash == calculate_hash(); genesis must do the same and match version.
+    """
+    from zyron.block import Block
+
+    chain = Blockchain()
+    genesis = chain.chain[0]
+    assert genesis.version == Block.LEGACY_VERSION
+    assert chain.is_chain_valid() is True
+
+    original_hash = genesis.hash
+    genesis.version = Block.CURRENT_VERSION
+    genesis.timestamp_ms = round(float(genesis.timestamp) * 1000) + 1000
+    # Mutating version/timestamp_ms changes the digest, but the stored hash
+    # field is left alone — the previous genesis check only compared that
+    # stored field to the expected genesis hash.
+    assert genesis.calculate_hash() != original_hash
+    assert chain.is_chain_valid() is False
+
+    # Restoring the fields must bring validation back.
+    genesis.version = Block.LEGACY_VERSION
+    if hasattr(genesis, "timestamp_ms"):
+        del genesis.timestamp_ms
+    assert chain.is_chain_valid() is True
