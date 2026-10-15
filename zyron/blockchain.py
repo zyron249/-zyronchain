@@ -572,13 +572,20 @@ class Blockchain:
             # rejected an honestly mined chain. Legacy blocks without
             # timestamp_ms keep the float comparison, so existing chains
             # validate exactly as before.
+            # R7-1017-L1: when only the newer block carries integer milliseconds
+            # (honest mining after a legacy tip), derive previous_ms the same
+            # way mine_pending_transactions does. Float seconds can still be
+            # equal after previous_ms+1 near 2**53.
             current_ms = getattr(current, "timestamp_ms", None)
             previous_ms = getattr(previous, "timestamp_ms", None)
-            if (
-                isinstance(current_ms, int) and not isinstance(current_ms, bool)
-                and isinstance(previous_ms, int) and not isinstance(previous_ms, bool)
-            ):
+            current_has_ms = isinstance(current_ms, int) and not isinstance(current_ms, bool)
+            previous_has_ms = isinstance(previous_ms, int) and not isinstance(previous_ms, bool)
+            if current_has_ms and previous_has_ms:
                 if current_ms <= previous_ms:
+                    return False
+            elif current_has_ms:
+                derived_previous_ms = round(float(previous.timestamp) * 1000)
+                if current_ms <= derived_previous_ms:
                     return False
             elif current.timestamp <= previous.timestamp:
                 return False
