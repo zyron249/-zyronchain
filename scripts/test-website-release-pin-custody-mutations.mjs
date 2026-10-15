@@ -92,6 +92,10 @@ for (const [name, mutated] of Object.entries(websiteMutations)) {
   assert.throws(() => verifyWebsiteReleasePinWorkflow(mutated), Error, `website mutation must be rejected: ${name}`);
 }
 
+// Insert one property line into the release job, or into the audit step.
+const atJob = (line) => replaceOnce(release, '    runs-on: ubuntu-latest\n', `    runs-on: ubuntu-latest\n    ${line}\n`);
+const atAuditStep = (line) => replaceOnce(release, '        run: npm audit --omit=dev --audit-level=high',
+  `        ${line}\n        run: npm audit --omit=dev --audit-level=high`);
 const releaseMutations = {
   'audit printed instead of run':
     replaceOnce(release, 'run: npm audit --omit=dev --audit-level=high', 'run: echo npm audit --omit=dev --audit-level=high'),
@@ -137,9 +141,28 @@ const releaseMutations = {
     'run: |\n          cat <<-.END\n          npm audit --omit=dev --audit-level=high\n          .END'),
   // Round-6 independent retest (PR1009, Info): a zero step timeout.
   'audit step with a zero timeout': replaceOnce(release, '        run: npm audit --omit=dev --audit-level=high',
-    '        timeout-minutes: 0\n        run: npm audit --omit=dev --audit-level=high')
+    '        timeout-minutes: 0\n        run: npm audit --omit=dev --audit-level=high'),
+  // Round-6 independent retest (PR1013, Info): YAML reads a quoted, escaped,
+  // explicit (`? key`) or tagged key as the same key, so these spellings of
+  // timeout-minutes, continue-on-error and if were accepted before. The release
+  // workflow uses none of these key forms, so they are refused outright.
+  'job with a zero timeout under a double-quoted key': atJob('"timeout-minutes": 0'),
+  'job with a zero timeout under a single-quoted key': atJob("'timeout-minutes': 0"),
+  'job made conditional under a double-quoted key': atJob('"if": false'),
+  'job allowed to fail under a single-quoted key': atJob("'continue-on-error': true"),
+  'audit step with a zero timeout under a double-quoted key': atAuditStep('"timeout-minutes": 0'),
+  'audit step with a zero timeout under a single-quoted key': atAuditStep("'timeout-minutes': 0"),
+  'audit step with a zero timeout under an escaped double-quoted key': atAuditStep('"timeout\\x2dminutes": 0'),
+  'audit step with a zero timeout under an explicit key': atAuditStep('? timeout-minutes\n        : 0'),
+  'audit step with a zero timeout under a tagged key': atAuditStep('!!str timeout-minutes: 0'),
+  'audit step allowed to fail under a double-quoted key': atAuditStep('"continue-on-error": true'),
+  'audit step allowed to fail under a single-quoted key': atAuditStep("'continue-on-error': true"),
+  'audit step made conditional under a single-quoted key': atAuditStep("'if': false"),
+  'audit step made conditional under a double-quoted key': atAuditStep('"if": ${{ false }}'),
+  'audit step made conditional under a tagged key': atAuditStep('!!str if: false')
 };
-for (const [name, mutated] of Object.entries(releaseMutations)) {
-  assert.throws(() => verifyL1ReleaseWorkflow(mutated), Error, `release mutation must be rejected: ${name}`);
-}
+const acceptedReleaseMutations = Object.entries(releaseMutations)
+  .filter(([, mutated]) => { try { verifyL1ReleaseWorkflow(mutated); return true; } catch { return false; } })
+  .map(([name]) => name);
+assert.deepEqual(acceptedReleaseMutations, [], `release mutations must be rejected: ${acceptedReleaseMutations.join('; ')}`);
 console.log(`ci-verifier-mutations: ok (${Object.keys(websiteMutations).length + Object.keys(releaseMutations).length} mutations rejected)`);

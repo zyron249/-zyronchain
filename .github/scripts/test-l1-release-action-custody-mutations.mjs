@@ -21,7 +21,12 @@ const mutations = {
   'test step allowed to fail': replaceOnce(workflow, '        run: npm test', '        continue-on-error: true\n        run: npm test'),
   'test step made conditional': replaceOnce(workflow, '        run: npm test', "        if: ${{ false }}\n        run: npm test"),
   'audit removed': replaceOnce(workflow, 'npm audit --omit=dev --audit-level=high', 'echo audit'),
-  'credential persistence enabled': replaceOnce(workflow, 'persist-credentials: false', 'persist-credentials: true')
+  'credential persistence enabled': replaceOnce(workflow, 'persist-credentials: false', 'persist-credentials: true'),
+  // Round-6 independent retest (PR1013, Info): YAML reads a quoted key as the
+  // same key, so these were accepted before.
+  'test step allowed to fail under a quoted key': replaceOnce(workflow, '        run: npm test', '        "continue-on-error": true\n        run: npm test'),
+  'test step made conditional under a quoted key': replaceOnce(workflow, '        run: npm test', "        'if': false\n        run: npm test"),
+  'test step with a zero timeout under a quoted key': replaceOnce(workflow, '        run: npm test', '        "timeout-minutes": 0\n        run: npm test')
 };
 for (const [name, mutated] of Object.entries(mutations)) {
   assert.throws(() => verifyL1ReleaseWorkflow(mutated), Error, `mutation must be rejected: ${name}`);
