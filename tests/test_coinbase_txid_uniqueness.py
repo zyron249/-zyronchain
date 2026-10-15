@@ -132,3 +132,58 @@ def test_chain_validation_orders_blocks_by_integer_milliseconds(monkeypatch, fro
     stamps = [block.timestamp_ms for block in chain.chain[1:]]
     assert all(later > earlier for earlier, later in zip(stamps, stamps[1:])), stamps
     assert chain.is_chain_valid() is True
+
+
+
+
+def test_honest_mining_after_large_legacy_tip(monkeypatch):
+    """R7-1017-L1: mining after a large legacy tip must still validate.
+
+    Near 2**53, float seconds can stay equal when the integer millisecond
+    advances by one. Validation must derive previous_ms the same way mining
+    does when only the new block carries timestamp_ms.
+    """
+    from zyron.block import Block
+
+    base_ms = (2**53) - 4
+    legacy_seconds = base_ms / 1000
+    # Keep wall-clock ahead of the legacy tip so future-time checks pass while
+    # building the tip; freeze at the tip when mining the current block.
+    monkeypatch.setattr(time, "time", lambda: legacy_seconds + 10_000)
+    monkeypatch.setattr(time, "time_ns", lambda: int((legacy_seconds + 10_000) * 1_000_000_000))
+
+    chain = Blockchain()
+    miner = Wallet()
+    receiver = "ZYN" + format(1, "040x")
+    reward = Transaction(
+        "SYSTEM",
+        receiver,
+        amount_atoms=50 * Transaction.ATOMS_PER_ZYN,
+        fee_atoms=0,
+        timestamp_ms=base_ms,
+    )
+    legacy = Block(
+        len(chain.chain),
+        [reward.to_dict()],
+        chain.chain[-1].hash,
+        difficulty=chain.calculate_expected_difficulty(chain.chain),
+        version=Block.LEGACY_VERSION,
+        timestamp=legacy_seconds,
+        timestamp_ms=None,
+    )
+    del legacy.timestamp_ms
+    legacy.mine()
+    chain.chain.append(legacy)
+    assert chain.is_chain_valid() is True
+
+    monkeypatch.setattr(time, "time", lambda: legacy_seconds)
+    monkeypatch.setattr(time, "time_ns", lambda: int(legacy_seconds * 1_000_000_000))
+    chain.mine_pending_transactions(miner.address)
+    current = chain.chain[-1]
+    assert isinstance(current.timestamp_ms, int)
+    assert current.timestamp_ms == round(legacy_seconds * 1000) + 1
+    assert current.timestamp <= legacy.timestamp  # float seconds collide
+    assert chain.is_chain_valid() is True, (
+        f"honest legacy-to-current rejected: legacy={legacy.timestamp} "
+        f"current_ms={current.timestamp_ms} current={current.timestamp}"
+    )
