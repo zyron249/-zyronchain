@@ -37,6 +37,14 @@ if (/^[ \t]*(?:-[ \t]+)*[!&*]/m.test(workflow)) throw new Error('Release workflo
 // (`- {if: false, ...}`) puts keys inside braces, so the line-start checks
 // above never see them. The release workflow is written in block style only.
 if (/^[ \t]*-[ \t]*\{/m.test(workflow)) throw new Error('Release workflow steps must not use flow-style mappings');
+// Round-7b independent retest (PR1019, Medium): YAML also lets that flow
+// mapping start on the line after a lone `-` (or after `- # comment`), and a
+// whole steps list can be a flow sequence (`steps: [ {...} ]`), so keys inside
+// the braces still escaped the line-start checks. The release workflow is
+// block style only: apart from plain `${{ name }}` expression references, it
+// must not contain any flow collection indicator at all.
+const withoutExpressions = workflow.replace(/\$\{\{[ \t]*[A-Za-z_][A-Za-z0-9_.-]*[ \t]*\}\}/g, '');
+if (/[{}[\]]/.test(withoutExpressions)) throw new Error('Release workflow must not use flow-style mappings or sequences');
 if (/^\s*(?:-\s+)?continue-on-error\s*:/m.test(workflow)) throw new Error('Release workflow steps must not continue on error');
 // Round-6 independent retest (PR1009, Info): a zero or non-numeric timeout
 // must not be able to cut a step or job short.
