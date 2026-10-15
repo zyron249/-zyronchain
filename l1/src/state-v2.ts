@@ -986,33 +986,38 @@ function bitAt(bytes: Buffer, depth: number): 0 | 1 {
  * position, a branch with empty-subtree hashes for missing children) and must
  * reproduce the expected hash. A record that is not part of the anchored tree,
  * whatever hashes the peer recomputed around it, is therefore rejected in the
- * chunk that carries it. The set of outstanding hashes holds at most one
- * pending sibling per tree level plus the current children (bounded by the
- * tree depth). The final anchored assembly still runs on the complete bundle.
+ * chunk that carries it.
+ * R6b-1014-M1: records must also arrive in exact reverse post-order (a node,
+ * then its right subtree, then its left subtree), which is the only order an
+ * honest peer serves. The expected hashes form a stack: accepting a branch
+ * pushes its left child and then its right child, and the next record must be
+ * the top of the stack. A peer that reorders genuine records (for example
+ * breadth first) is rejected at the first record out of order, and the stack
+ * holds at most one pending left sibling per tree level plus the current
+ * children, so it never grows beyond the tree depth. The final anchored
+ * assembly still runs on the complete bundle.
  */
 export class StateV2AnchoredRecordStream {
-  private readonly expected = new Map<string, number>();
+  private readonly expected: Array<{ hash: string; depth: number }> = [];
   private accepted = 0;
 
   constructor(root: string) {
     if (!/^[0-9a-f]{64}$/.test(root)) throw new Error("Invalid State v2 root");
-    this.expected.set(root, 0);
+    this.expected.push({ hash: root, depth: 0 });
   }
 
   /** Accept the next record in reverse post-order (root first). */
   accept(record: StateV2NodeRecord): void {
     try {
-      const depth = this.expected.get(record.hash);
-      if (depth === undefined) throw new Error("record is not an outstanding child of the anchored tree");
-      this.expected.delete(record.hash);
-      const node = nodeFromRecord(record, depth);
+      const next = this.expected.pop();
+      if (next === undefined) throw new Error("record is not part of the anchored tree");
+      if (record.hash !== next.hash) throw new Error("record is not the next node of the anchored tree in reverse post-order");
+      const node = nodeFromRecord(record, next.depth);
       if (node.kind === "branch") {
         if (node.left === undefined && node.right === undefined) throw new Error("empty branch");
-        for (const child of [node.left, node.right]) {
-          if (!child) continue;
-          if (this.expected.has(child.hash)) throw new Error("duplicate child hash");
-          this.expected.set(child.hash, depth + 1);
-        }
+        if (node.left && node.right && node.left.hash === node.right.hash) throw new Error("duplicate child hash");
+        if (node.left) this.expected.push({ hash: node.left.hash, depth: next.depth + 1 });
+        if (node.right) this.expected.push({ hash: node.right.hash, depth: next.depth + 1 });
       }
       this.accepted += 1;
     } catch (cause) {
@@ -1022,12 +1027,12 @@ export class StateV2AnchoredRecordStream {
 
   /** Hashes still expected (used by tests to check the depth bound). */
   outstandingCount(): number {
-    return this.expected.size;
+    return this.expected.length;
   }
 
   /** Every expected record arrived and no other one did. */
   finish(total: number): void {
-    if (this.expected.size !== 0 || this.accepted !== total) {
+    if (this.expected.length !== 0 || this.accepted !== total) {
       throw new Error("Portable State v2 record does not match the anchored state root", {
         cause: new Error("records missing from the anchored tree")
       });
