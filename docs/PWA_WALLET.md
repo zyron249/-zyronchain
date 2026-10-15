@@ -66,8 +66,8 @@ CLI keystore v2, and a 2–4 s unlock on a mid-range phone is acceptable for a w
 - **SRI** on every script and on the stylesheet.
 - **Vendored libraries** in `website/app/vendor/` are built reproducibly by `tools/pwa-wallet/build-vendor.mjs`
   from exact pinned versions:
-  - `@noble/curves` 2.3.0, `@noble/hashes` 2.3.0, `@scure/base` 2.3.0, `@scure/bip32` 2.3.0, `@scure/bip39` 2.3.0
-    (the same noble versions and tarball integrity as `l1/`)
+  - `@noble/curves` 2.4.0, `@noble/hashes` 2.4.0, `@scure/base` 2.4.0, `@scure/bip32` 2.4.0, `@scure/bip39` 2.4.0
+    (the same `@noble/curves` and `@noble/hashes` tarball integrity as `l1/`)
   - `qr` 0.6.0 (encoder only)
   
   `VENDOR.json` records the npm integrity and the bundle hashes, and `LICENSES.txt` holds the MIT/Apache licenses.
