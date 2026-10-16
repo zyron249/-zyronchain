@@ -2,10 +2,9 @@
 // Static, build-time Network Status component for zyronchain.com.
 //
 // The same markup is injected between markers into every page that shows network state (home, Desktop Wallet
-// Setup, Phone Wallet). It is generated from repository facts at build time and is NEVER connected to validator
-// RPC or any live feed. The governance row is read from docs/l1-launch-authorization.json; every other row is a
-// deliberate, reviewed statement. If the authorization file ever allows activation, this script refuses to run
-// until a human updates the rows below (fail closed instead of silently publishing stale "Not activated" text).
+// Setup, Phone Wallet). Governance rows are generated from docs/l1-launch-authorization.json at build time.
+// A separate progressive script (website/network-live.js) may poll the documented open-testnet gateway
+// /readyz — that never flips activation flags and never claims mainnet or live trading.
 //
 //   node tools/site/network-status.mjs          -> rewrite pages in place
 //   node tools/site/network-status.mjs --check  -> fail if any page is stale (CI)
@@ -26,15 +25,42 @@ const governance = auth.publicTestnetAuthorized && auth.mainnetAuthorized
     ? { value: 'Authorized (public testnet)', note: 'Public testnet authorized by governance. Activation is not allowed yet.' }
     : { value: 'Not authorized', note: 'No governance authorization recorded.' };
 
-// kind: on = available, off = unavailable / not active, gov = authorized but gated, retired, none.
+// Documented no-value open testnet (docs/OPEN_TESTNET.md). Formal activation flags stay false.
+export const OPEN_TESTNET_GATEWAY = 'https://zyron-open-testnet.onrender.com';
+
+// kind: on = available, off = unavailable / not active, gov = authorized but gated / open no-value, retired, none.
 export const ROWS = [
   { key: 'governance', label: 'Governance', kind: 'gov', ...governance },
-  { key: 'public-testnet', label: 'Public testnet', kind: 'off', value: 'Not activated', note: 'Authorized ≠ activated. A local devnet is not a hosted public testnet.' },
-  { key: 'public-rpc', label: 'Public RPC', kind: 'off', value: 'Unavailable', note: 'No public wallet RPC is published.' },
-  { key: 'explorer', label: 'Explorer', kind: 'off', value: 'Unavailable', note: 'No public block explorer is published.' },
+  {
+    key: 'public-testnet',
+    label: 'Public testnet',
+    kind: 'gov',
+    value: 'Open no-value profile',
+    note: 'Unaudited hosted profile (docs/OPEN_TESTNET.md). Formal activation flags remain false. Free host may sleep when idle.'
+  },
+  {
+    key: 'public-rpc',
+    label: 'Public RPC',
+    kind: 'gov',
+    value: 'Open testnet gateway',
+    note: 'No-value test ZYN only. Mainnet is off. Trading is not enabled. Gateway URL is shown in the readiness probe below.'
+  },
+  {
+    key: 'explorer',
+    label: 'Explorer',
+    kind: 'gov',
+    value: 'Open testnet page',
+    note: 'Explorer and faucet live on the same no-value gateway. Formal activation remains gated.'
+  },
   { key: 'wallet-creation', label: 'Wallet creation', kind: 'on', value: 'Available locally', note: 'Keys are created on your own device.' },
-  { key: 'offline-signing', label: 'Offline signing', kind: 'on', value: 'Available', note: 'Can sign ≠ can broadcast.' },
-  { key: 'broadcasting', label: 'Broadcasting', kind: 'off', value: 'Unavailable until activation', note: 'Signed transfers cannot be submitted to a public network yet.' },
+  { key: 'offline-signing', label: 'Offline signing', kind: 'on', value: 'Available', note: 'Can sign ≠ can broadcast to mainnet.' },
+  {
+    key: 'broadcasting',
+    label: 'Broadcasting',
+    kind: 'gov',
+    value: 'Testnet transfers only',
+    note: 'Signed transfers may be submitted to the open no-value gateway only. Mainnet broadcasting remains unavailable.'
+  },
   { key: 'mining', label: 'Mining', kind: 'retired', value: 'Retired', note: 'Shut down on 2026-09-30. Do not run miner software.' },
   { key: 'token-sale', label: 'Token sale', kind: 'none', value: 'None', note: 'No sale, no price, no market.' }
 ];
@@ -48,7 +74,7 @@ export function render() {
     '<section class="netstatus" id="network-status" aria-labelledby="network-status-title" data-network-status>',
     '  <div class="ns-head">',
     '    <h2 id="network-status-title">Network status</h2>',
-    '    <p class="ns-sub">Static, published with this build from the repository. Not a live feed; this page never contacts validator RPC.</p>',
+    '    <p class="ns-sub">Repository facts below are static. A progressive script may poll the documented open-testnet gateway <code>/readyz</code> (no-value only). This page does not claim that mainnet exists or that trading is enabled.</p>',
     '  </div>',
     '  <table class="ns-table">',
     '    <caption class="sr-only">ZyronChain network capabilities as of this build</caption>',
@@ -56,7 +82,13 @@ export function render() {
     rows,
     '    </tbody>',
     '  </table>',
-    '  <p class="ns-foot">Source: docs/l1-launch-authorization.json (publicTestnetActivationAllowed=false, mainnetActivationAllowed=false).</p>',
+    '  <div class="ns-live" data-ns-live aria-live="polite">',
+    '    <p class="ns-live-label">Open-testnet readiness probe</p>',
+    `    <p class="ns-live-endpoint">Gateway: <a href="${esc(OPEN_TESTNET_GATEWAY)}" rel="noopener noreferrer">${esc(OPEN_TESTNET_GATEWAY)}</a> (Render free plan; may sleep when idle)</p>`,
+    '    <p class="ns-live-state" data-ns-live-state>Enable JavaScript to refresh <code>/readyz</code>, or open the gateway link.</p>',
+    '    <p class="ns-live-detail" data-ns-live-detail></p>',
+    '  </div>',
+    '  <p class="ns-foot">Source: docs/l1-launch-authorization.json (publicTestnetActivationAllowed=false, mainnetActivationAllowed=false) and docs/OPEN_TESTNET.md.</p>',
     '</section>',
     '<!-- END NETWORK STATUS -->'
   ].join('\n');

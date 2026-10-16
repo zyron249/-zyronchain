@@ -28,8 +28,8 @@ test('English only: every page, script and stylesheet (no other-language letters
 
 test('network status: the same honest rows on home, Desktop Wallet Setup and Phone Wallet', () => {
   const expected = new Map([
-    ['governance', null], ['public-testnet', 'Not activated'], ['public-rpc', 'Unavailable'], ['explorer', 'Unavailable'],
-    ['wallet-creation', 'Available locally'], ['offline-signing', 'Available'], ['broadcasting', 'Unavailable until activation'],
+    ['governance', null], ['public-testnet', 'Open no-value profile'], ['public-rpc', 'Open testnet gateway'], ['explorer', 'Open testnet page'],
+    ['wallet-creation', 'Available locally'], ['offline-signing', 'Available'], ['broadcasting', 'Testnet transfers only'],
     ['mining', 'Retired'], ['token-sale', 'None']
   ]);
   assert.deepEqual(ROWS.map((r) => r.key), [...expected.keys()]);
@@ -38,7 +38,13 @@ test('network status: the same honest rows on home, Desktop Wallet Setup and Pho
     const html = read(page);
     assert.equal((html.match(/data-network-status/g) || []).length, 1, `${page}: one status component`);
     for (const row of ROWS) assert.ok(html.includes(`data-ns-row="${row.key}"`) && html.includes(row.value), `${page}: ${row.key}`);
-    assert.ok(html.includes('Not a live feed; this page never contacts validator RPC.'), `${page}: static disclaimer`);
+    assert.ok(html.includes('does not claim that mainnet exists or that trading is enabled'), `${page}: honesty disclaimer`);
+    assert.ok(html.includes('data-ns-live'), `${page}: live probe shell`);
+    assert.ok(html.includes('zyron-open-testnet.onrender.com'), `${page}: documented gateway`);
+    const block = html.match(/<!-- BEGIN NETWORK STATUS[\s\S]*?<!-- END NETWORK STATUS -->/)[0];
+    const plain = block.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').replace(/\b(no|not|never|without)\s+(a\s+|an\s+|the\s+)?[\w-]+/gi, ' ');
+    assert.doesNotMatch(plain, /\b(mainnet|public testnet|testnet) (is )?(now )?(live|launched|activated)\b/i, `${page}: no network-live claim`);
+    assert.doesNotMatch(plain, /\blive trading\b/i, `${page}: no live-trading claim`);
   }
 });
 
