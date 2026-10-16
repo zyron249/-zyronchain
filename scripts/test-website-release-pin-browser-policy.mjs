@@ -9,6 +9,12 @@
 // connect-src on the pages that must not make network requests at all.
 // Round-12 adds the HTML context: the only CSP tag must be an active element
 // of <head> placed before any script, stylesheet, comment or raw-text element.
+// Round-13 adds whitespace: HTML and CSP separate tags, attributes and
+// directive tokens only with ASCII whitespace (TAB, LF, FF, CR, SPACE). Other
+// Unicode spaces that JavaScript's \s accepts (U+00A0, U+000B, U+2003, U+FEFF)
+// are ordinary text to a browser: before the CSP tag they close <head>, inside
+// the tag they break the meta element, and inside the policy they turn a
+// directive into an unknown name that the browser ignores.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -73,6 +79,18 @@ const moveCsp = (html, anchor, replacement, before = false) => {
   return without.replace(anchor, () => (before ? `${tag}\n${replacement}` : `${replacement}\n  ${tag}`));
 };
 
+// Insert `text` immediately before the CSP tag.
+const beforeCsp = (html, text) => {
+  const tag = cspTag(html);
+  return html.replace(tag, () => `${text}${tag}`);
+};
+const editCsp = (html, edit) => {
+  const tag = cspTag(html);
+  const edited = edit(tag);
+  assert.notEqual(edited, tag, 'CSP tag mutation did not change the tag');
+  return html.replace(tag, () => edited);
+};
+
 const mutations = {
   'look-alike host that starts with the open-testnet origin': onPage('index.html', (html) =>
     mustChange(html, `connect-src ${OPEN};`, `connect-src ${OPEN}.attacker.example;`)),
@@ -112,6 +130,20 @@ const mutations = {
     assert.ok(body, 'mutation anchor missing: <body>');
     return moveCsp(html, body[0], body[0]);
   }),
+  // Round-13: non-ASCII or non-HTML whitespace. Each of these passes a check
+  // built on JavaScript \s, while a browser does not apply the reviewed policy.
+  'no-break space (U+00A0) before the CSP tag': onPage('index.html', (html) => beforeCsp(html, '\u00a0')),
+  'vertical tab (U+000B) before the CSP tag': onPage('wallet.html', (html) => beforeCsp(html, '\u000b')),
+  'em space (U+2003) before the CSP tag': onPage('validator.html', (html) => beforeCsp(html, '\u2003')),
+  'zero-width no-break space (U+FEFF) before the CSP tag': onPage('mining.html', (html) => beforeCsp(html, '\ufeff')),
+  'no-break space between <meta and http-equiv': onPage('index.html', (html) =>
+    editCsp(html, (tag) => tag.replace('<meta http-equiv=', '<meta\u00a0http-equiv='))),
+  'no-break space between the http-equiv and content attributes': onPage('wallet.html', (html) =>
+    editCsp(html, (tag) => tag.replace('" content="', '"\u00a0content="'))),
+  'no-break space as the directive-name separator (directive ignored by browsers)': onPage('index.html', (html) =>
+    mustChange(html, "default-src 'self';", "default-src\u00a0'self';")),
+  'em space as the directive-name separator on a no-network page': onPage('mining.html', (html) =>
+    mustChange(html, "connect-src 'none';", "connect-src\u2003'none';")),
 };
 
 const accepted = [];
