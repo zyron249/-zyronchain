@@ -53,6 +53,24 @@ const mustChange = (html, from, to) => {
   return html.replace(from, () => to);
 };
 
+const cspTag = (html) => {
+  const match = html.match(/<meta http-equiv="Content-Security-Policy"[^>]*>/);
+  assert.ok(match, 'CSP meta tag anchor missing');
+  return match[0];
+};
+const wrapCsp = (html, open, close) => {
+  const tag = cspTag(html);
+  return html.replace(tag, () => `${open}${tag}${close}`);
+};
+// Remove the CSP tag and re-insert it after (or, with `before`, just before)
+// the anchor, optionally replacing the anchor with `replacement`.
+const moveCsp = (html, anchor, replacement, before = false) => {
+  const tag = cspTag(html);
+  const without = html.replace(tag, '');
+  assert.ok(without.includes(anchor), `mutation anchor missing: ${anchor}`);
+  return without.replace(anchor, () => (before ? `${tag}\n${replacement}` : `${replacement}\n  ${tag}`));
+};
+
 const mutations = {
   'look-alike host that starts with the open-testnet origin': onPage('index.html', (html) =>
     mustChange(html, `connect-src ${OPEN};`, `connect-src ${OPEN}.attacker.example;`)),
@@ -75,6 +93,23 @@ const mutations = {
     mustChange(html, "script-src 'self';", "script-src 'self' 'unsafe-inline';")),
   'object-src widened': onPage('wallet.html', (html) =>
     mustChange(html, "object-src 'none';", "object-src 'none' https://attacker.example;")),
+  // Round-12: the only CSP tag must be an active element of <head>. HTML
+  // parsing ignores a tag inside a comment or raw-text element, ignores a CSP
+  // meta outside <head>, and a policy delivered after a script or stylesheet
+  // does not cover what was already loaded.
+  'sole CSP tag inside an HTML comment': onPage('index.html', (html) => wrapCsp(html, '<!-- ', ' -->')),
+  'sole CSP tag inside the title element': onPage('wallet.html', (html) => wrapCsp(html, '<title>', '</title>')),
+  'sole CSP tag inside noscript': onPage('validator.html', (html) => wrapCsp(html, '<noscript>', '</noscript>')),
+  'sole CSP tag inside a template': onPage('mining.html', (html) => wrapCsp(html, '<template>', '</template>')),
+  'sole CSP tag inside a textarea': onPage('index.html', (html) => wrapCsp(html, '<textarea>', '</textarea>')),
+  'CSP tag after an inline script in head': onPage('wallet.html', (html) => moveCsp(html, '<head>', '<head>\n  <script>fetch("https://attacker.example/")</script>')),
+  'CSP tag after a stylesheet in head': onPage('index.html', (html) => moveCsp(html, '<head>', '<head>\n  <link rel="stylesheet" href="https://attacker.example/x.css" />')),
+  'CSP tag moved to the end of head': onPage('validator.html', (html) => moveCsp(html, '</head>', '</head>', true)),
+  'CSP tag moved into body': onPage('mining.html', (html) => {
+    const body = html.match(/<body\b[^>]*>/);
+    assert.ok(body, 'mutation anchor missing: <body>');
+    return moveCsp(html, body[0], body[0]);
+  }),
 };
 
 const accepted = [];
