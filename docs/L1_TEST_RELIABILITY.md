@@ -8,10 +8,10 @@ If a legitimate regression needs more than ten minutes, the test should be decom
 
 ## Devnet CI jobs and the known protocol-v1 flake
 
-| Job | Command | Protocol | Required check | Expected result |
+| Job (check name) | Command | Protocol | Required check | Expected result |
 |---|---|---|---|---|
-| `local-devnet` | `npm run devnet:check` | v1 | no | Known flake, about 50% pass |
-| `local-devnet-v6` | `npm run devnet:check:v6` | v6 | no (candidate after at least 20 stable runs) | Pass |
+| `local-devnet (protocol v1, informational, known F-01 flake)` | `npm run devnet:check` | v1 | no, informational | Known flake, about 50% pass (54/118 job attempts, 2026-10-13..16) |
+| `local-devnet-v6` | `npm run devnet:check:v6` | v6 | no; candidate (owner setting) | Pass: 117/118 job attempts over 98 runs, 2026-10-13..16; the one failure was a genuine TypeScript build break on a dependency PR |
 
 `local-devnet` runs the two-validator chain on protocol v1, which still has the legacy F-01 consensus split (see [`V6_SAFETY_PROOF_OBLIGATIONS.md`](V6_SAFETY_PROOF_OBLIGATIONS.md) and the F-01 entries in [`L1_OPERATIONS_RUNBOOK.md`](L1_OPERATIONS_RUNBOOK.md)). Whether a run passes depends on which validator starts its round timer first. A controlled A/B on the same CI image gave 13/27 passes before the F-01 fix and 12/27 after, which is no statistical difference: the F-01 change did not cause it, and only activating v6 removes it. The fix lives in protocol v6, which `local-devnet-v6` exercises.
 
@@ -21,7 +21,11 @@ The known flake fails with exactly one of these messages, in `local-devnet` or i
 - `Timed out: finality resumes after validator restart`
 - `did not converge at height`
 
-Rerun the failed job once and note it on the pull request. Any other failure message is a real regression and must be investigated. The job emits a warning annotation on failure that points here.
+Rerun the failed job once and note it on the pull request. Any other failure message is a real regression and must be investigated.
+
+The job's last step, `scripts/classify-devnet-v1-result.mjs`, runs after the devnet step whatever its result and only explains it; it never changes the job result. A failure with one of the two `local-devnet` messages above gets a warning annotation "Known protocol-v1 flake (F-01), not a regression". Any other failure, or a "success" without the devnet summary, gets an error annotation "NOT the known F-01 flake", and the classify step fails as well. A pass gets a notice that the job is informational. Each outcome is also written to the job summary, and on failure the step prints the last 200 lines of both validator logs so the stall can be analysed from the job log. Neither devnet job uses `continue-on-error`: a v1 failure stays visible as a failed informational job instead of being hidden. `l1/test/devnet-v1-informational-ci.test.ts` pins the classifier and these workflow properties.
+
+Recommendation (P1-04): make `local-devnet-v6` a required check. That is a branch-protection setting the owner controls; this repository does not change it.
 
 The test, its timeouts and the v1 harness startup order are deliberately unchanged: loosening them would hide the F-01 split instead of fixing it. The required checks are `l1` (Node 22 and 24), `dependency-audit`, `test` (Python 3.11 and 3.12) and `independent-light-client`. Neither devnet job is required. Interactive `npm run devnet` runs the same v1 path and may also need a restart.
 

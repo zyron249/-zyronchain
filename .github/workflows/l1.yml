@@ -11,7 +11,15 @@ permissions:
   contents: read
 
 jobs:
+  # Protocol v1 devnet: INFORMATIONAL, not a required check (backlog P1-04).
+  # Protocol v1 keeps the legacy F-01 split, so this job passes about half the
+  # time (A/B: 13/27 before the F-01 fix, 12/27 after; 54/118 job attempts on
+  # 2026-10-13..16). The test, its timeouts and the harness are not weakened.
+  # The classify step only explains the result: a known F-01 stall becomes a
+  # warning, any other failure an error (real regression). The F-01 fix is
+  # protocol v6, run by local-devnet-v6. See docs/L1_TEST_RELIABILITY.md.
   local-devnet:
+    name: local-devnet (protocol v1, informational, known F-01 flake)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -30,24 +38,23 @@ jobs:
           cache-dependency-path: l1/package-lock.json
       - name: Install locked dependencies
         run: npm ci
-      - name: Verify live two-validator local devnet
-        run: npm run devnet:check
-      # Informational, not a required check. Protocol v1 has the legacy F-01
-      # split, so this job passes about half the time (A/B: 13/27 before the
-      # F-01 fix, 12/27 after). The test is not weakened; see
-      # docs/L1_TEST_RELIABILITY.md.
-      - name: Annotate known legacy v1 flake (F-01)
-        if: failure()
-        run: >-
-          echo "::warning title=Known protocol-v1 flake (F-01)::local-devnet runs protocol v1, which has the
-          legacy F-01 split and passes about 50% of the time. It is not a required check. Only the messages
-          'Timed out: transfer finalized by both validators', 'Timed out: finality resumes after validator restart'
-          and 'did not converge at height' are the known flake; any other failure is a real regression.
-          The v6 devnet runs in the local-devnet-v6 job. See docs/L1_TEST_RELIABILITY.md."
+      - name: Verify live two-validator local devnet (protocol v1)
+        id: devnet
+        shell: bash
+        run: npm run devnet:check 2>&1 | tee "$RUNNER_TEMP/local-devnet-v1.log"
+      - name: Classify protocol-v1 devnet result (F-01)
+        if: always()
+        shell: bash
+        env:
+          DEVNET_OUTCOME: ${{ steps.devnet.outcome }}
+        run: node scripts/classify-devnet-v1-result.mjs "$RUNNER_TEMP/local-devnet-v1.log" "$DEVNET_OUTCOME"
 
   # Same disposable two-validator loopback chain under consensus protocol v6
-  # (F-01 fix). Not a required check yet: it becomes a candidate once it has
-  # been stable over at least 20 runs (backlog P1-04).
+  # (F-01 fix). Not a required check yet (branch protection is an owner
+  # setting). Stability evidence for P1-04: 117 of 118 job attempts passed over
+  # 98 workflow runs on 2026-10-13..16; the one failure was a genuine TypeScript
+  # build break on a dependency PR. Keep the job id stable: it is the candidate
+  # required check.
   local-devnet-v6:
     runs-on: ubuntu-latest
     timeout-minutes: 10
