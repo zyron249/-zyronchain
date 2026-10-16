@@ -22,7 +22,17 @@ export function clientAddressBucket(value: string): string | undefined {
   if (isIP(mapped) === 4) return mapped;
   if (normalized.includes("%") || isIP(normalized) !== 6) return undefined;
   try {
-    return `ipv6:${ipv6Prefix64(normalized)}/64`;
+    // Canonical form (WHATWG URL host serializer): every IPv4-mapped spelling
+    // (dotted, hexadecimal, expanded) becomes ::ffff:<hex>:<hex>. Those
+    // addresses all share one /64, so they are bucketed as their IPv4 address.
+    const canonical = new URL(`http://[${normalized}]/`).hostname.slice(1, -1);
+    const mappedHex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(canonical);
+    if (mappedHex) {
+      const high = Number.parseInt(mappedHex[1]!, 16);
+      const low = Number.parseInt(mappedHex[2]!, 16);
+      return [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
+    }
+    return `ipv6:${ipv6Prefix64(canonical)}/64`;
   } catch {
     return undefined;
   }
