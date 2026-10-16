@@ -55,6 +55,17 @@ test("one /64 cannot multiply its quota or fill the tracked-identity table", () 
   assert.equal(limiter.consume(rpcRateLimitIdentity("198.51.100.20", undefined, []), 1_001).allowed, true);
 });
 
+test("every IPv4-mapped IPv6 spelling buckets as its IPv4 address, not as one shared /64", () => {
+  for (const spelling of ["::ffff:192.0.2.1", "::ffff:c000:0201", "::ffff:c000:201", "0:0:0:0:0:ffff:c000:201", "::FFFF:C000:201", "[::ffff:c000:201]"]) {
+    assert.equal(clientAddressBucket(spelling), "192.0.2.1", spelling);
+  }
+  assert.equal(clientAddressBucket("::ffff:c000:202"), "192.0.2.2");
+  // Node RPC: direct and forwarded hex-mapped clients stay per IPv4 address.
+  assert.equal(rpcRateLimitIdentity("::ffff:c000:201", undefined, []), "192.0.2.1");
+  assert.equal(rpcRateLimitIdentity("10.0.0.2", "::ffff:c000:202", ["10.0.0.2"]), "192.0.2.2");
+  assert.notEqual(rpcRateLimitIdentity("::ffff:c000:201", undefined, []), rpcRateLimitIdentity("::ffff:c000:202", undefined, []));
+});
+
 test("clientAddressBucket accepts only IP literals", () => {
   assert.equal(clientAddressBucket("198.51.100.7"), "198.51.100.7");
   assert.equal(clientAddressBucket(" ::FFFF:198.51.100.7 "), "198.51.100.7");
