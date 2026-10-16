@@ -23,7 +23,12 @@ The known flake fails with exactly one of these messages, in `local-devnet` or i
 
 Rerun the failed job once and note it on the pull request. Any other failure message is a real regression and must be investigated.
 
-The job's last step, `scripts/classify-devnet-v1-result.mjs`, runs after the devnet step whatever its result and only explains it; it never changes the job result. A failure with one of the two `local-devnet` messages above gets a warning annotation "Known protocol-v1 flake (F-01), not a regression". Any other failure, or a "success" without the devnet summary, gets an error annotation "NOT the known F-01 flake", and the classify step fails as well. A pass gets a notice that the job is informational. Each outcome is also written to the job summary, and on failure the step prints the last 200 lines of both validator logs so the stall can be analysed from the job log. Neither devnet job uses `continue-on-error`: a v1 failure stays visible as a failed informational job instead of being hidden. `l1/test/devnet-v1-informational-ci.test.ts` pins the classifier and these workflow properties.
+The job's last step, `scripts/classify-devnet-v1-result.mjs`, runs after the devnet step whatever its result and only explains it; it never changes the job result. A failure counts as the known flake only when the whole v1 stall signature is present:
+1. The harness timed out with one of the two `local-devnet` messages above, with no wrapped assertion. Only a connection error from a restarting peer is allowed.
+2. `last-status` shows both validators at the same height H with the same tip.
+3. Both validator logs show the protocol-v1 round-skip quorum failing at height H+1, and neither validator finalized a block above H.
+
+That failure gets a warning annotation "Known protocol-v1 flake (F-01), not a regression". Any other failure gets an error annotation "NOT the known F-01 flake" and the classify step fails as well. This includes a timeout caused by a wrong balance or nonce, a chain that kept finalizing, diverged validators, or missing validator logs. A "success" without the devnet summary is treated the same way. A pass gets a notice that the job is informational. Each outcome is also written to the job summary, and on failure the step prints the last 200 lines of both validator logs so the stall can be analysed from the job log. Neither devnet job uses `continue-on-error`: a v1 failure stays visible as a failed informational job instead of being hidden. `l1/test/devnet-v1-informational-ci.test.ts` pins the classifier and these workflow properties.
 
 Recommendation (P1-04): make `local-devnet-v6` a required check. That is a branch-protection setting the owner controls; this repository does not change it.
 

@@ -4,9 +4,10 @@
 // exit status and this script only explains it.
 //
 // Protocol v1 keeps the legacy F-01 consensus split, so the two-validator v1
-// devnet stalls in about half of the runs. Exactly two timeout messages from
-// scripts/local-devnet.mjs are that known stall. Any other failure is reported
-// as a real regression, and this script then exits non-zero as well.
+// devnet stalls in about half of the runs. Only a failure that matches the
+// full stall signature below is reported as that known flake. Any other
+// failure is reported as a real regression, and this script then exits
+// non-zero as well.
 // The F-01 fix is protocol v6, which the `local-devnet-v6` job exercises.
 // See docs/L1_TEST_RELIABILITY.md.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
@@ -26,7 +27,46 @@ export function firstErrorMessage(text) {
   return match ? match[1] : null;
 }
 
-export function classifyDevnetV1Result(text, outcome) {
+// The known v1 stall has one signature, and every part of it must be present:
+// 1. the harness timed out with one of the two known labels and no wrapped
+//    assertion (only a connection error from a restarting peer is allowed);
+// 2. last-status shows both validators at the same height H with the same tip
+//    (stalled and agreeing: no split, no progress beyond H);
+// 3. every validator log shows the v1 round-skip quorum failing at height H+1
+//    ("Round skip certificate incomplete: height=H+1 ... quorum not reached")
+//    and no validator finalized a block above H.
+// A timeout caused by wrong balances, a wrong nonce or a diverged chain fails
+// at least one of these checks and is reported as a regression.
+const STALL = /^Timed out: (transfer finalized by both validators|finality resumes after validator restart)(?: \((?:fetch failed|[^()]*ECONNREFUSED[^()]*)\))? last-status=(\[.*\])$/;
+
+export function knownStallEvidence(error, validatorLogs) {
+  if (error === null) return { ok: false, reason: 'no error message found' };
+  const match = error.match(STALL);
+  if (!match) return { ok: false, reason: 'not a bare known timeout (a wrapped assertion or another message)' };
+  let status;
+  try { status = JSON.parse(match[2]); } catch { return { ok: false, reason: 'last-status is not parseable' }; }
+  if (!Array.isArray(status) || status.length !== 2 || status.some(item => !item || typeof item !== 'object' ||
+      !Number.isSafeInteger(item.height) || typeof item.tipHash !== 'string')) {
+    return { ok: false, reason: 'last-status does not show both validators' };
+  }
+  const [a, b] = status;
+  if (a.height !== b.height || a.tipHash !== b.tipHash || a.chainId !== b.chainId) {
+    return { ok: false, reason: 'validators disagree in last-status (height, tip or chain)' };
+  }
+  const logs = Object.values(validatorLogs ?? {});
+  if (logs.length !== 2) return { ok: false, reason: 'validator logs are not available' };
+  const next = a.height + 1;
+  const skip = new RegExp(`Round skip certificate incomplete: height=${next} round=\\d+ protocolVersion=1 error=Round skip quorum not reached`);
+  for (const log of logs) {
+    if (!skip.test(log)) return { ok: false, reason: `a validator log has no protocol-v1 round-skip quorum failure at height ${next}` };
+    for (const finalized of log.matchAll(/Finalized block (\d+) /g)) {
+      if (Number(finalized[1]) > a.height) return { ok: false, reason: `a validator finalized block ${finalized[1]} above the stalled height ${a.height}` };
+    }
+  }
+  return { ok: true, label: match[1], height: a.height };
+}
+
+export function classifyDevnetV1Result(text, outcome, validatorLogs) {
   const log = String(text ?? '');
   if (outcome === 'success') {
     if (!/"ok": true/.test(log) || !/"restartVerified": true/.test(log)) {
@@ -41,13 +81,14 @@ export function classifyDevnetV1Result(text, outcome) {
       message: `The devnet step outcome was "${outcome}". See ${DOCS}.` };
   }
   const error = firstErrorMessage(log);
-  const known = error !== null && KNOWN_V1_FLAKE_MESSAGES.some(message => error.startsWith(message));
-  if (known) {
+  const evidence = knownStallEvidence(error, validatorLogs);
+  const shown = (error ?? 'no error message found').replace(/ last-status=.*$/, '').slice(0, 160);
+  if (evidence.ok) {
     return { kind: 'known-flake', level: 'warning', title: 'Known protocol-v1 flake (F-01), not a regression', error,
-      message: `local-devnet runs protocol v1, which has the legacy F-01 split and passes about 50% of the time. This failure ("${error.slice(0, 160)}") is the known v1 stall. It is informational and not a required check; local-devnet-v6 runs the F-01 fix. See ${DOCS}.` };
+      message: `local-devnet runs protocol v1, which has the legacy F-01 split and passes about 50% of the time. This failure ("${shown}") matches the known v1 stall: both validators agree at height ${evidence.height} and the round-skip quorum fails at height ${evidence.height + 1}. It is informational and not a required check; local-devnet-v6 runs the F-01 fix. See ${DOCS}.` };
   }
   return { kind: 'regression', level: 'error', title: 'Protocol-v1 devnet: NOT the known F-01 flake', error,
-    message: `This failure ("${(error ?? 'no error message found').slice(0, 160)}") is not one of the known protocol-v1 timeout messages. Treat it as a real regression and investigate. See ${DOCS}.` };
+    message: `This failure ("${shown}") does not match the known protocol-v1 stall (${evidence.reason}). Treat it as a real regression and investigate. See ${DOCS}.` };
 }
 
 // GitHub workflow commands must not contain raw newlines, % or :: in the title.
@@ -71,25 +112,28 @@ export function summaryMarkdown(result, outcome) {
   ].join('\n');
 }
 
-function tail(path, lines) {
-  return readFileSync(path, 'utf8').split('\n').slice(-lines).join('\n');
-}
-
 async function main() {
   const [logPath, outcome = process.env.DEVNET_OUTCOME ?? 'failure'] = process.argv.slice(2);
   const text = logPath && existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
-  const result = classifyDevnetV1Result(text, outcome);
-  console.log(annotation(result));
-  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summaryMarkdown(result, outcome));
-  // Diagnostics only: print the end of each retained validator log so a stall
-  // can be analysed from the job log. The devnet chain is disposable.
+  // The harness keeps its disposable chain directory (with a.log and b.log)
+  // whenever --check fails.
   const retained = text.match(/^Development data retained at (\S+);/m);
-  if (outcome === 'failure' && retained) {
+  const validatorLogs = {};
+  if (retained) {
     for (const name of ['a', 'b']) {
       const path = join(retained[1], `${name}.log`);
-      if (!existsSync(path)) continue;
+      if (existsSync(path)) validatorLogs[name] = readFileSync(path, 'utf8');
+    }
+  }
+  const result = classifyDevnetV1Result(text, outcome, validatorLogs);
+  console.log(annotation(result));
+  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summaryMarkdown(result, outcome));
+  // Diagnostics only: print the end of each validator log so a stall can be
+  // analysed from the job log. The devnet chain is disposable.
+  if (outcome === 'failure') {
+    for (const [name, log] of Object.entries(validatorLogs)) {
       console.log(`::group::validator ${name} log (last 200 lines)`);
-      console.log(tail(path, 200));
+      console.log(log.split('\n').slice(-200).join('\n'));
       console.log('::endgroup::');
     }
   }
