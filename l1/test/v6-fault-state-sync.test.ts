@@ -2,10 +2,9 @@
 // (public API: ChainStore.installTrustedSnapshot with an external anchor),
 // then the recovered validator takes part in v6 consensus again.
 //
-// Marked todo until NEW-R1 is fixed (PR #963): on main, trusted snapshots of
-// protocol v6 tips are validated with the legacy attestation rule and are
-// refused, so the install step fails. The block-sync recovery path is
-// covered by the prolonged-outage-sync scenario (v6-fault-scenarios.test.ts).
+// Enabled after NEW-R1 / #963: v6 trusted-snapshot tips are verified with the
+// commit certificate. The block-sync recovery path remains covered by the
+// prolonged-outage-sync scenario (v6-fault-scenarios.test.ts).
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -17,9 +16,9 @@ import { ChainStore } from "../src/storage.js";
 import { closeValidators, finalizedPrefix, openValidator, testNetwork, type TestValidator } from "./support/consensus-harness.js";
 import { V6Sim } from "./support/v6-sim.js";
 
+// NEW-R1 / #963 is on main (v6 trusted-snapshot tips use commit certificates), so this path runs.
 test("P0-03 v6 state sync: a validator offline for many heights recovers from an anchored v6 snapshot and finalizes again (n=4)", {
-  timeout: 300_000,
-  todo: "requires the NEW-R1 fix (v6 checkpoint tips verified with the commit certificate, PR #963)"
+  timeout: 300_000
 }, async () => {
   const network = testNetwork(4, 0xd1, "zyron-v6fault-state-sync");
   const prefix = finalizedPrefix(network, 6);
