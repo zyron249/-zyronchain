@@ -79,12 +79,24 @@ For a legacy genesis (no `launchProfile`) the genesis block hash commits to the 
 | Live chain (baseline, plus twin-genesis control that accepts the founder block) | yes | yes | yes |
 | Full finalized-log replay, including a violating block appended to `blocks.ndjson` | yes | yes | yes |
 | P2P block sync from a twin-genesis peer (the follower applies the honest prefix and refuses the violating block) | yes | yes | yes |
-| Trusted snapshot restore (`fromTrustedSnapshot`) | yes | yes | todo, #963 |
-| Trusted snapshot install and reopen of the installed node, plus a violating block appended after the checkpoint | n/a (requires State v2) | yes | todo, #963 |
-| Recovery-checkpoint reopen (v1: unpruned checkpoint; v5: pruned history, no full-replay fallback) with a violating block appended | yes | yes | todo, #963 |
-| P2P checkpoint transfer, then install | n/a (requires State v2) | yes | todo, #963 |
-| Portable State-v2 install, and P2P portable state sync then install | n/a | yes | todo, #963 |
-| State-v2 store rebuild on reopen (corrupted root metadata) | n/a | yes | covered by replay |
+| Trusted snapshot restore (`fromTrustedSnapshot`) | yes | yes | yes |
+| Trusted snapshot install and reopen of the installed node, plus a violating block appended after the checkpoint | n/a (requires State v2) | yes | yes |
+| Recovery-checkpoint reopen (v1: unpruned checkpoint; v5: pruned history, no full-replay fallback) with a violating block appended | yes | yes | yes |
+| P2P checkpoint transfer, then install | n/a (requires State v2) | yes | yes |
+| Portable State-v2 install, and P2P portable state sync then install | n/a | yes | yes |
+| State-v2 store rebuild on reopen (corrupted root metadata) | n/a | yes | yes |
+
+The v6 rows were `test.todo` until v6 trusted-snapshot tips became verifiable with the commit certificate (#963); they now run the same assertions as v5.
+
+- `l1/test/p0-07-vesting-clock-light-client.test.ts` (P0-07 follow-ups, v1/v5/v6): the vesting clock and light-client behaviour described in the two sections below. A vested founder spend stamped more than 120 s ahead of the verifier clock is refused by `acceptBlock`, `validateFinalizedBlock` and a durable store (also after restart); exactly 120 s ahead is accepted; a spend stamped at the cliff is refused even with the verifier clock 120 s behind; mempool admission ignores the transaction timestamp; the light client accepts a quorum-signed header that a full node refuses.
+
+### Vesting clock
+
+Vesting is evaluated at the block's own timestamp. Every verifier refuses a block stamped more than 120 s after its local clock (`Block time too far in future`, `block.ts`), and block timestamps must strictly increase. A proposer can therefore move a founder unlock forward by at most 120 s relative to honest verifiers' clocks, and only for amounts that are vested at the stamped time. Mempool admission and `spendableBalance()` use the earliest next-block time derived from the node clock (`max(now, tip + 1 ms)`), never the transaction's own `timestampMs`. A node whose clock runs fast accepts correspondingly earlier; operators must keep clocks synchronised (NTP), as the runbook already requires for consensus.
+
+### Light clients
+
+The light client (`l1/src/light-client.ts`) verifies a finalized header against an independently trusted anchor: chain ID, height and previous-hash continuity, proposer signature and the legacy round/attestation quorum or the v6 commit certificate of the anchored validator set, plus State-v2 inclusion proofs against the header's state root. It does not execute transactions and has no local clock, so it does not enforce allocation locks or the 120 s future bound itself. If the trusted validator quorum finalizes a block that spends locked funds (for example because it runs a lock-free twin genesis), the light client follows that header and reports the resulting balances. This is the usual light-client trust model: the guarantee is "a quorum of the trusted validator set signed this", not "this block is valid". Mitigations are honest, independent validators running the published genesis, the pinned genesis digest, and `launchProfile: "fixed-supply-v1"` (the genesis hash then commits to `allocationLocks`, so an anchor taken from the published genesis cannot belong to a lock-free twin chain, although the quorum can still sign an invalid block). Applications that need execution guarantees should run a full node.
 
 Trust assumption: a trusted snapshot or portable state is authoritative for the state it pins. If an operator pins the anchor of a tip finalized on a twin chain that already moved locked funds, the install accepts that state, because the pre-tip state is not available to re-check. Honest validators running the published genesis never finalize such a block, so this requires a broken validator supermajority plus a wrong anchor; the ceremony pins the genesis digest, and `launchProfile` genesis binding (#961) makes a twin genesis a different chain.
 
