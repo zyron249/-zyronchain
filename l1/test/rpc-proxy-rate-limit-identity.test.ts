@@ -85,7 +85,9 @@ test("equivalent IPv6 client spellings share one canonical rate-limit identity",
     "2001:0db8:0000:0000:0000:0000:0000:0007",
     trusted
   );
-  assert.equal(compressed, "2001:db8::7");
+  // P1-02: IPv6 clients are bucketed per /64 (rpc-client-identity.test.ts),
+  // so both spellings map to the same canonical /64 bucket.
+  assert.equal(compressed, "ipv6:2001:0db8:0000:0000/64");
   assert.equal(expanded, compressed);
 });
 

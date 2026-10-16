@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { ZyronChain } from "../dist/src/chain.js";
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "../dist/src/crypto.js";
 import { createTransfer } from "../dist/src/transaction.js";
+import { gatewayClientIdentity } from "../dist/src/rpc-client-identity.js";
 
 export const DEFAULT_CHAIN_ID = "zyron-wallet-testnet-1";
 const ATOMS_PER_ZYN = 100_000_000;
@@ -176,13 +177,12 @@ const limits = {
   faucetGlobal: new WindowLimiter(200, 60 * 60 * 1000, 1)
 };
 
+// Rate-limit identity (P1-02). ZYRON_TRUST_PROXY=1 means the service runs
+// behind Render's Cloudflare edge, which sets CF-Connecting-IP; the leftmost
+// X-Forwarded-For entry is client-supplied text and is never used. IPv6
+// clients share one bucket per /64.
 function clientIp(request) {
-  if (trustProxy) {
-    const forwarded = request.headers["x-forwarded-for"];
-    const first = typeof forwarded === "string" ? forwarded.split(",")[0].trim() : "";
-    if (first && first.length <= 64) return first;
-  }
-  return request.socket.remoteAddress ?? "unknown";
+  return gatewayClientIdentity(request.socket.remoteAddress, request.headers, { trustCloudflareConnectingIp: trustProxy });
 }
 
 // ---- faucet ----------------------------------------------------------------

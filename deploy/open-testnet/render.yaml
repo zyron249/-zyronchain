@@ -24,3 +24,10 @@ services:
         value: zyron-open-testnet-render-1
       - key: ZYRON_TESTNET_STATE_SECRET
         generateValue: true
+      # Render serves web services through Cloudflare, which sets
+      # CF-Connecting-IP to the real client; the gateway uses it as the
+      # rate-limit identity. Without it every client would share the Render
+      # proxy's bucket. Never set this where clients can reach the gateway
+      # without passing through Cloudflare.
+      - key: ZYRON_TRUST_CF_CONNECTING_IP
+        value: "1"

@@ -35,6 +35,7 @@ const { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } = await
 const { createProtocolUpgrade, createProtocolUpgradeApproval, createTransfer } = await import(dist("transaction.js"));
 const { expectedValidator } = await import(dist("block.js"));
 const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist("tokenomics.js"));
+const { gatewayClientIdentity } = await import(dist("rpc-client-identity.js"));
 
 export const DEFAULT_CHAIN_ID = "zyron-open-testnet-1";
 const VALIDATOR_NAMES = ["v1", "v2", "v3", "v4"];
@@ -328,17 +329,15 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     snapshotCache = { sealed, height: tip }; snapshotCacheAt = Date.now();
     return snapshotCache;
   }
-  // The tunnel/proxy in front of the gateway connects from loopback; only then
-  // is a forwarded client address trusted.
+  // Rate-limit identity (P1-02). ZYRON_TRUST_CF_CONNECTING_IP=1 (Render, whose
+  // Cloudflare edge sets CF-Connecting-IP): that header. Otherwise, from a
+  // loopback tunnel/proxy: the rightmost X-Forwarded-For entry, which that
+  // proxy appended. The client-supplied leftmost entry is never used, and
+  // anything malformed fails closed to the proxy's shared bucket. IPv6
+  // clients share one bucket per /64.
+  const trustCloudflareConnectingIp = process.env.ZYRON_TRUST_CF_CONNECTING_IP === "1";
   function clientIp(request) {
-    const remote = request.socket.remoteAddress ?? "unknown";
-    const loopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
-    const forwarded = request.headers["cf-connecting-ip"] ?? request.headers["x-forwarded-for"];
-    if (loopback && typeof forwarded === "string") {
-      const first = forwarded.split(",")[0].trim();
-      if (first && first.length <= 64) return first;
-    }
-    return remote;
+    return gatewayClientIdentity(request.socket.remoteAddress, request.headers, { trustCloudflareConnectingIp });
   }
 
   let faucetQueue = Promise.resolve(); let lastFaucetNonce = 0; let lastFaucetNonceAt = 0;
