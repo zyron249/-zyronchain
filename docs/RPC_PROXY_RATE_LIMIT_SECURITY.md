@@ -13,6 +13,7 @@ Standalone ZyronChain RPC rate limiting must distinguish public clients even whe
 - Missing, malformed, array-valued, empty, over-bound, or fully trusted forwarded chains fail closed to a shared `proxy:<transport-ip>` bucket rather than trusting attacker-controlled text.
 - IPv4-mapped IPv6 addresses are normalized to their IPv4 form before comparison and bucketing.
 - Valid IPv6 addresses must be canonicalized before trusted-proxy membership checks and rate-limit bucketing, so equivalent expanded/compressed textual forms consume the same identity quota.
+- After canonicalization, IPv6 client identities (direct or forwarded) are bucketed per /64 (`ipv6:<first four hextets>/64`), so one end site cannot multiply its quota with distinct /128 addresses (P1-02, `docs/RPC_LIMITS_REVIEW.md`). IPv4 identities stay per address; the `proxy:<transport-ip>` fail-closed bucket is unchanged.
 - Invalid forwarded hops continue to fail closed to the canonical `proxy:<transport-ip>` bucket; canonicalization must not turn malformed text into an admitted client identity.
 - The bounded RPC identity limiter from issue #288 remains independent: unseen identities beyond its tracked-identity cap still share the fail-closed overflow quota rather than evicting live client state.
 

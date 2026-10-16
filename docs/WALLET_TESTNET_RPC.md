@@ -48,7 +48,12 @@ with origin `null`; nothing uses cookies).
 Everything else returns `404`; consensus endpoints (`/block`, `/proposal/*`,
 `/round/*`, `/v6/*`) and `/blocks`, `/peers`, `/metrics` are not exposed.
 
-Limits per client IP (from `X-Forwarded-For` when `ZYRON_TRUST_PROXY=1`):
+Limits per client (IPv4 address or IPv6 /64). With `ZYRON_TRUST_PROXY=1`
+(Render, which serves web services through Cloudflare) the client is taken from
+the `CF-Connecting-IP` header that the edge sets; the client-supplied leftmost
+`X-Forwarded-For` entry is never used, and a request without a valid header
+shares the proxy's bucket. Never set `ZYRON_TRUST_PROXY=1` where clients can
+reach the service without passing through Cloudflare. Limits:
 120 reads/min, 10 transaction submits/min, 5 faucet requests/day, one faucet
 drip per address per day, 200 faucet drips per hour in total. Request bodies are
 capped at 8 KB.

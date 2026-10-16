@@ -56,6 +56,7 @@ import {
   type NodeIdentity,
   type SignedPeerRecord
 } from "./peer-identity.js";
+import { clientAddressBucket } from "./rpc-client-identity.js";
 import { FixedWindowLimiter } from "./rpc-rate-limit.js";
 import { ChainStore, SigningJournal } from "./storage.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
@@ -301,6 +302,15 @@ function forwardedHopCountWithinBound(value: string): boolean {
   return true;
 }
 
+/**
+ * P1-02: rate-limit bucket of a resolved client address. IPv4 stays per
+ * address; IPv6 is bucketed per /64, so one end site cannot multiply its
+ * quota or fill the limiter's tracked-identity table with distinct /128s.
+ */
+function rpcClientBucket(address: string): string {
+  return clientAddressBucket(address) ?? address;
+}
+
 function rpcRateLimitIdentityFromSet(
   remoteAddress: string | undefined,
   forwardedFor: string | string[] | undefined,
@@ -313,8 +323,8 @@ function rpcRateLimitIdentityFromSet(
   } catch {
     return "unknown";
   }
-  if (trusted.size === 0) return remote;
-  if (!trusted.has(remote)) return remote;
+  if (trusted.size === 0) return rpcClientBucket(remote);
+  if (!trusted.has(remote)) return rpcClientBucket(remote);
   if (typeof forwardedFor !== "string" || forwardedFor.length === 0) return `proxy:${remote}`;
   if (!forwardedHopCountWithinBound(forwardedFor)) return `proxy:${remote}`;
   const chain = forwardedFor.split(",").map((item) => item.trim());
@@ -326,7 +336,7 @@ function rpcRateLimitIdentityFromSet(
     } catch {
       return `proxy:${remote}`;
     }
-    if (!trusted.has(hop)) return hop;
+    if (!trusted.has(hop)) return rpcClientBucket(hop);
   }
   return `proxy:${remote}`;
 }

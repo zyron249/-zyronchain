@@ -27,6 +27,10 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
+      # Render serves web services through Cloudflare, which sets
+      # CF-Connecting-IP; with ZYRON_TRUST_PROXY=1 the gateway uses that header
+      # (never the client-supplied leftmost X-Forwarded-For entry) as the
+      # rate-limit identity.
       - key: ZYRON_TRUST_PROXY
         value: "1"
       - key: ZYRON_TESTNET_CHAIN_ID
