@@ -17,8 +17,8 @@ export function enforceCanonicalCliSecurityPolicy(argv: readonly string[], env: 
 
   for (const rpc of optionValues(argv, "--rpc")) normalizeSecureRpcUrl(rpc);
 
-  if (command === "keygen" && optionValues(argv, "--password-file").length !== 1) {
-    throw new Error("keygen requires --password-file; new plaintext private-key files are disabled");
+  if (command === "keygen" && optionValues(argv, "--password-file").length !== 1 && !argv.includes("--password-prompt")) {
+    throw new Error("keygen requires --password-file or --password-prompt; new plaintext private-key files are disabled");
   }
 
   for (const name of PRIVATE_FILE_OPTIONS) {
