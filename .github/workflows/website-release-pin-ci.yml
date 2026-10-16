@@ -103,14 +103,18 @@ jobs:
           node <<'NODE'
           const fs = require('node:fs');
           const pages = ['website/index.html', 'website/wallet.html', 'website/validator.html', 'website/mining.html'];
+          const openProbePages = new Set(['website/index.html', 'website/wallet.html']);
           for (const page of pages) {
             const html = fs.readFileSync(page, 'utf8');
+            const connect = openProbePages.has(page)
+              ? 'connect-src https://zyron-open-testnet.onrender.com'
+              : "connect-src 'none'";
             for (const marker of [
               'http-equiv="Content-Security-Policy"',
               "default-src 'self'",
               "script-src 'self'",
               "style-src 'self'",
-              "connect-src 'none'",
+              connect,
               "object-src 'none'",
               "base-uri 'none'",
               "frame-src 'none'",

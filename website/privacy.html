@@ -83,7 +83,7 @@
 
       <h2>1. What the site and its apps collect</h2>
       <ul>
-        <li><strong>No wallet secrets.</strong> No page asks for, receives or stores a recovery phrase, private key, wallet password or keystore. Pages cannot make network requests from script (<code>connect-src 'none'</code>).</li>
+        <li><strong>No wallet secrets.</strong> No page asks for, receives or stores a recovery phrase, private key, wallet password or keystore. The Phone Wallet keeps <code>connect-src 'none'</code>. The homepage and Desktop Wallet Setup may poll only the documented no-value open-testnet gateway for readiness status.</li>
         <li><strong>No accounts, analytics, advertising or tracking.</strong> No cookies are set, and no analytics or telemetry scripts are loaded.</li>
         <li><strong>Desktop Wallet Setup and Validator Launchpad</strong> build scripts in your browser. What you type (labels, genesis, peers) stays in the page and is not sent anywhere.</li>
       </ul>
@@ -143,7 +143,6 @@
     </div>
   </footer>
 
-  <script src="./network-live.js?v=973be713febb" defer></script>
   <script src="./app.js?v=dbeb603ee988"></script>
 </body>
 </html>
