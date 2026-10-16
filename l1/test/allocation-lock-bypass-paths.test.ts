@@ -234,7 +234,6 @@ async function withRoot(name: string, run: (root: string) => Promise<void>): Pro
 }
 
 const STATE_V2 = (version: number) => version >= 2;
-const SNAPSHOT_TODO = "v6 trusted snapshots are rejected on main (NEW-R1); enable once #963 (fix/v6-snapshot-commit-certificate) merges";
 
 for (const version of [1, 5, 6]) {
   test(`v${version}: baseline: the live chain refuses every lock-violating twin block`, () => {
@@ -298,14 +297,6 @@ for (const version of [1, 5, 6]) {
       }
     });
   });
-
-  if (version === 6) {
-    test.todo(`v6: trusted snapshot install keeps the locks (${SNAPSHOT_TODO})`);
-    test.todo(`v6: P2P checkpoint transfer keeps the locks (${SNAPSHOT_TODO})`);
-    test.todo(`v6: portable State-v2 install and P2P state sync keep the locks (${SNAPSHOT_TODO})`);
-    test.todo(`v6: recovery-checkpoint reopen over pruned history keeps the locks (${SNAPSHOT_TODO})`);
-    continue;
-  }
 
   if (version === 1) {
     test("v1: trusted snapshot restore keeps the locks; on-disk install and P2P checkpoints require State v2", async () => {
