@@ -10,4 +10,8 @@ This hardening does not authorize miner publication, public mining, public testn
 
 The gate compares each page's Content-Security-Policy directive by directive with an exact source list instead of searching for substrings. Each page must carry exactly one CSP meta tag in the reviewed form, with no repeated directive and no directive outside the reviewed set. `connect-src` must be exactly `https://zyron-open-testnet.onrender.com` on `website/index.html` and `website/wallet.html` (the open-testnet status probe) and exactly `'none'` on `website/validator.html` and `website/mining.html`. `scripts/test-website-release-pin-browser-policy.mjs` runs the gate's inline program against copies of the real pages and must see it refuse a look-alike host, extra or wildcard connect sources, a duplicate directive placed first, a second CSP meta tag and widened `script-src`/`object-src`. The Website Release Pin Action Custody Policy CI runs these tests and also triggers on `website/*.html`.
 
+## Browser policy: active CSP tag in `<head>` (round 12)
+
+An exact policy is only useful if the browser applies it. The gate also requires that the CSP meta tag is an active element of `<head>` that comes before anything the page loads: only the doctype, `<html lang="en">`, `<head>`, other `<meta>` tags and a plain `<title>` may precede it. A CSP tag inside an HTML comment, `<title>`, `<noscript>`, `<template>` or `<textarea>`, a tag outside `<head>`, or a tag placed after a script or stylesheet is refused. The same mutation test covers each of these cases.
+
 Any change to `.github/workflows/website-release-pin-ci.yml` must update `WEBSITE_RELEASE_PIN_WORKFLOW_SHA256` in the same pull request, and the custody policy job must be green before merge.

@@ -123,6 +123,15 @@ jobs:
             if (metas.length !== 1) throw new Error(`${page} must carry exactly one CSP meta tag (found ${metas.length})`);
             const content = metas[0][0].match(/^<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]*)"\s*\/?>$/);
             if (!content) throw new Error(`${page} CSP meta tag is not in the reviewed form: ${metas[0][0]}`);
+            // The tag must be an active element of <head> that applies before
+            // anything loads: only the doctype, <html>, <head>, other <meta>
+            // tags and a plain <title> may precede it. Browsers ignore a CSP
+            // tag inside a comment or raw-text element or outside <head>, and
+            // a policy placed after a script or stylesheet does not cover it.
+            const headPrefix = /^<!doctype html>\s*<html lang="en">\s*<head>\s*(?:(?:<meta(?:\s+[a-z:-]+="[^"<>]*")+\s*\/?>|<title>[^<>]*<\/title>)\s*)*$/i;
+            if (!headPrefix.test(html.slice(0, metas[0].index))) {
+              throw new Error(`${page} CSP meta tag must be in <head> before any comment, script, stylesheet or raw-text element`);
+            }
             const csp = new Map();
             for (const part of content[1].split(';')) {
               const tokens = part.trim().split(/\s+/).filter(Boolean);
