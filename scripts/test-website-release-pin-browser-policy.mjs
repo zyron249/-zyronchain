@@ -7,6 +7,8 @@
 // open-testnet origin, an extra connect source, a duplicate directive placed
 // first (browsers honour the first one), a second CSP meta tag, and an open
 // connect-src on the pages that must not make network requests at all.
+// Round-12 adds the HTML context: the only CSP tag must be an active element
+// of <head> placed before any script, stylesheet, comment or raw-text element.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
