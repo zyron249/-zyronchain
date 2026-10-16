@@ -92,7 +92,7 @@ The v6 rows were `test.todo` until v6 trusted-snapshot tips became verifiable wi
 
 ### Vesting clock
 
-Vesting is evaluated at the block's own timestamp. Every verifier refuses a block stamped more than 120 s after its local clock (`Block time too far in future`, `block.ts`), and block timestamps must strictly increase. A proposer can therefore move a founder unlock forward by at most 120 s relative to honest verifiers' clocks, and only for amounts that are vested at the stamped time. Mempool admission and `spendableBalance()` use the earliest next-block time derived from the node clock (`max(now, tip + 1 ms)`), never the transaction's own `timestampMs`. A node whose clock runs fast accepts correspondingly earlier; operators must keep clocks synchronised (NTP), as the runbook already requires for consensus.
+Vesting is evaluated at the block's own timestamp. Every verifier refuses a block stamped more than 120 s after its local clock (`Block time too far in future`, `block.ts`), and block timestamps must strictly increase. A proposer can therefore move a founder unlock forward by at most 120 s relative to honest verifiers' clocks, and only for amounts that are vested at the stamped time. Mempool admission and `spendableBalance()` use the earliest next-block time derived from the node clock (`max(now, tip + 1 ms)`), never the transaction's own `timestampMs`. A node whose clock runs fast accepts correspondingly earlier; operators should keep node clocks synchronised (for example with NTP).
 
 ### Light clients
 
