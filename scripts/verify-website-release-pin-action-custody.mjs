@@ -15,7 +15,7 @@ const workflowPath = '.github/workflows/website-release-pin-ci.yml';
 // The structural checks below still run, so a new pinned version must also
 // pass them.
 export const WEBSITE_RELEASE_PIN_WORKFLOW_SHA256 =
-  'a961e1b3acd7778a4092a8f9d2666e4b25809cbaa739114db4523ce548ca5e1d';
+  '6bb3ae463a7ae6caeea4ee016000420ace53622c1ad2b94b1a3bf4c9a3f856dd';
 
 export function verifyWebsiteReleasePinWorkflow(text) {
 const digest = createHash('sha256').update(text, 'utf8').digest('hex');
@@ -38,6 +38,8 @@ const required = [
   'CSP repeats directive',
   // Round-12: the CSP tag must be an active element of <head>.
   'CSP meta tag must be in <head> before any comment, script, stylesheet or raw-text element',
+  // Round-13: structural checks use HTML/CSP ASCII whitespace, not JavaScript \s.
+  'so every structural check below uses [\\t\\n\\f\\r ]',
   'Homepage mining retirement disclosure missing',
   'Homepage still advertises retired mining'
 ];

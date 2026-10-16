@@ -14,4 +14,8 @@ The gate compares each page's Content-Security-Policy directive by directive wit
 
 An exact policy is only useful if the browser applies it. The gate also requires that the CSP meta tag is an active element of `<head>` that comes before anything the page loads: only the doctype, `<html lang="en">`, `<head>`, other `<meta>` tags and a plain `<title>` may precede it. A CSP tag inside an HTML comment, `<title>`, `<noscript>`, `<template>` or `<textarea>`, a tag outside `<head>`, or a tag placed after a script or stylesheet is refused. The same mutation test covers each of these cases.
 
+## Browser policy: HTML whitespace only (round 13)
+
+HTML separates tags and attributes, and CSP separates directive names and sources, only with ASCII whitespace: TAB, LF, FF, CR and SPACE. JavaScript's `\s` also matches other characters such as U+00A0 (no-break space), U+000B (vertical tab), U+2003 (em space) and U+FEFF, which a browser reads as text. Before the CSP tag such a character closes `<head>`; inside the tag it breaks the meta element; inside the policy it turns a directive into an unknown name that the browser ignores. In each case the browser does not apply the reviewed policy. The gate's structural checks therefore use `[\t\n\f\r ]` instead of `\s`, and the mutation test covers these characters before the tag, inside the tag and as the directive separator.
+
 Any change to `.github/workflows/website-release-pin-ci.yml` must update `WEBSITE_RELEASE_PIN_WORKFLOW_SHA256` in the same pull request, and the custody policy job must be green before merge.
