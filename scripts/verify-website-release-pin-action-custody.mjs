@@ -15,7 +15,7 @@ const workflowPath = '.github/workflows/website-release-pin-ci.yml';
 // The structural checks below still run, so a new pinned version must also
 // pass them.
 export const WEBSITE_RELEASE_PIN_WORKFLOW_SHA256 =
-  'a487ed9fd0d04073f4892eff62fe2094071b29c27e0588cb6131846c78411b5a';
+  'd0e59540d1656fc071d9519f050ec3bc652655d703f1b6736aa2cd76676d7b44';
 
 export function verifyWebsiteReleasePinWorkflow(text) {
 const digest = createHash('sha256').update(text, 'utf8').digest('hex');
@@ -31,7 +31,11 @@ const required = [
   'git cat-file -e',
   'Website release pin is stale:',
   'CHANGED_L1=',
-  "connect-src 'none'",
+  // Round-11: exact per-directive CSP comparison (no substring markers).
+  "'connect-src': openProbePages.has(page) ? 'https://zyron-open-testnet.onrender.com' : \"'none'\"",
+  'must carry exactly one CSP meta tag',
+  'CSP directives are not the reviewed set',
+  'CSP repeats directive',
   'Homepage mining retirement disclosure missing',
   'Homepage still advertises retired mining'
 ];

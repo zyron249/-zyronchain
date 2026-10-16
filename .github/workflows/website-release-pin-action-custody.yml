@@ -7,6 +7,8 @@ on:
       - '.github/workflows/website-release-pin-action-custody.yml'
       - 'scripts/verify-website-release-pin-action-custody.mjs'
       - 'scripts/test-website-release-pin-custody-mutations.mjs'
+      - 'scripts/test-website-release-pin-browser-policy.mjs'
+      - 'website/*.html'
       - '.github/workflows/l1-release.yml'
       - '.github/scripts/verify-l1-release-action-custody.mjs'
   push:
@@ -16,6 +18,8 @@ on:
       - '.github/workflows/website-release-pin-action-custody.yml'
       - 'scripts/verify-website-release-pin-action-custody.mjs'
       - 'scripts/test-website-release-pin-custody-mutations.mjs'
+      - 'scripts/test-website-release-pin-browser-policy.mjs'
+      - 'website/*.html'
       - '.github/workflows/l1-release.yml'
       - '.github/scripts/verify-l1-release-action-custody.mjs'
 
@@ -35,3 +39,5 @@ jobs:
         run: node scripts/verify-website-release-pin-action-custody.mjs
       - name: Verifier mutation tests
         run: node scripts/test-website-release-pin-custody-mutations.mjs
+      - name: Browser-policy gate CSP mutation tests
+        run: node scripts/test-website-release-pin-browser-policy.mjs
