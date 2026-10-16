@@ -217,6 +217,18 @@ main > .section:last-child { padding-bottom: var(--s-8); }
 .ns-off { color: var(--danger); border-color: rgba(255, 157, 143, .45); }
 .ns-gov { color: var(--warn); border-color: rgba(255, 196, 102, .45); }
 .ns-retired, .ns-none { color: var(--muted); }
+.ns-live { margin-top: var(--s-4); padding: var(--s-3) var(--s-4); border: 1px solid var(--line); border-radius: var(--r-2); background: var(--panel); }
+.ns-live-label { margin: 0 0 var(--s-1); font: 600 11px/1.3 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink); }
+.ns-live-endpoint { margin: 0 0 var(--s-2); color: var(--muted); font-size: var(--fs-0); overflow-wrap: anywhere; }
+.ns-live-endpoint a { color: var(--text); }
+.ns-live-state { margin: 0 0 4px; font: 600 var(--fs-0)/1.4 var(--mono); }
+.ns-live-detail { margin: 0; color: var(--muted); font-size: var(--fs-0); }
+.ns-live[data-ns-live-kind="ok"] .ns-live-state { color: var(--ok); }
+.ns-live[data-ns-live-kind="degraded"] .ns-live-state,
+.ns-live[data-ns-live-kind="warn"] .ns-live-state { color: var(--warn); }
+.ns-live[data-ns-live-kind="offline"] .ns-live-state,
+.ns-live[data-ns-live-kind="bad"] .ns-live-state { color: var(--danger); }
+.ns-live[data-ns-live-kind="pending"] .ns-live-state { color: var(--muted); }
 @media (max-width: 560px) {
   .ns-table th { display: block; width: auto; padding-bottom: 2px; }
   .ns-table td { display: block; border-top: 0; padding-top: 0; }

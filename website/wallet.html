@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#02050a" />
   <meta name="description" content="Create an encrypted ZyronChain keystore on your own machine with the open-source CLI. Keys and passwords never enter this web page." />
   <meta name="referrer" content="no-referrer" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://zyron-open-testnet.onrender.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'" />
   <link rel="canonical" href="https://zyronchain.com/wallet.html" />
   <link rel="icon" href="./favicon.ico" sizes="16x16 32x32 48x48" />
   <link rel="icon" href="./favicon-32.png" type="image/png" sizes="32x32" />
@@ -24,7 +24,7 @@
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:image" content="https://zyronchain.com/brand/og-image.jpg" />
   <title>ZyronChain — Desktop Wallet Setup</title>
-  <link rel="stylesheet" href="./site.css?v=b622b255142f" />
+  <link rel="stylesheet" href="./site.css?v=7d42555bf97b" />
   <link rel="stylesheet" href="./wallet.css?v=ed5b73cd590f" />
   <script type="application/ld+json">
   {
@@ -51,7 +51,7 @@
   <a class="skip-link" href="#main">Skip to content</a>
   <aside class="status-notice" aria-label="Network status notice">
     <div class="wrap status-notice-inner">
-      <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated: no public RPC, explorer, balances or broadcasting yet. Mining is retired. There is no token sale.</p>
+      <p><strong>Public testnet governance authorized.</strong> Authorized does not mean activated. An unaudited no-value open testnet gateway may be reachable (free host can sleep when idle). Formal activation flags remain false. No mainnet and no live trading. Mining is retired. There is no token sale.</p>
       <a href="./#network-status">Network status <span aria-hidden="true">→</span></a>
     </div>
   </aside>
@@ -137,23 +137,29 @@
 <section class="netstatus" id="network-status" aria-labelledby="network-status-title" data-network-status>
   <div class="ns-head">
     <h2 id="network-status-title">Network status</h2>
-    <p class="ns-sub">Static, published with this build from the repository. Not a live feed; this page never contacts validator RPC.</p>
+    <p class="ns-sub">Repository facts below are static. A progressive script may poll the documented open-testnet gateway <code>/readyz</code> (no-value only). This page does not claim that mainnet exists or that trading is enabled.</p>
   </div>
   <table class="ns-table">
     <caption class="sr-only">ZyronChain network capabilities as of this build</caption>
     <tbody>
       <tr data-ns-row="governance"><th scope="row">Governance</th><td><span class="ns-state ns-gov"><span aria-hidden="true">◐</span> Authorized</span><span class="ns-note">Public testnet and mainnet authorized by governance. Activation is not allowed yet.</span></td></tr>
-      <tr data-ns-row="public-testnet"><th scope="row">Public testnet</th><td><span class="ns-state ns-off"><span aria-hidden="true">✕</span> Not activated</span><span class="ns-note">Authorized ≠ activated. A local devnet is not a hosted public testnet.</span></td></tr>
-      <tr data-ns-row="public-rpc"><th scope="row">Public RPC</th><td><span class="ns-state ns-off"><span aria-hidden="true">✕</span> Unavailable</span><span class="ns-note">No public wallet RPC is published.</span></td></tr>
-      <tr data-ns-row="explorer"><th scope="row">Explorer</th><td><span class="ns-state ns-off"><span aria-hidden="true">✕</span> Unavailable</span><span class="ns-note">No public block explorer is published.</span></td></tr>
+      <tr data-ns-row="public-testnet"><th scope="row">Public testnet</th><td><span class="ns-state ns-gov"><span aria-hidden="true">◐</span> Open no-value profile</span><span class="ns-note">Unaudited hosted profile (docs/OPEN_TESTNET.md). Formal activation flags remain false. Free host may sleep when idle.</span></td></tr>
+      <tr data-ns-row="public-rpc"><th scope="row">Public RPC</th><td><span class="ns-state ns-gov"><span aria-hidden="true">◐</span> Open testnet gateway</span><span class="ns-note">No-value test ZYN only. Mainnet is off. Trading is not enabled. Gateway URL is shown in the readiness probe below.</span></td></tr>
+      <tr data-ns-row="explorer"><th scope="row">Explorer</th><td><span class="ns-state ns-gov"><span aria-hidden="true">◐</span> Open testnet page</span><span class="ns-note">Explorer and faucet live on the same no-value gateway. Formal activation remains gated.</span></td></tr>
       <tr data-ns-row="wallet-creation"><th scope="row">Wallet creation</th><td><span class="ns-state ns-on"><span aria-hidden="true">✓</span> Available locally</span><span class="ns-note">Keys are created on your own device.</span></td></tr>
-      <tr data-ns-row="offline-signing"><th scope="row">Offline signing</th><td><span class="ns-state ns-on"><span aria-hidden="true">✓</span> Available</span><span class="ns-note">Can sign ≠ can broadcast.</span></td></tr>
-      <tr data-ns-row="broadcasting"><th scope="row">Broadcasting</th><td><span class="ns-state ns-off"><span aria-hidden="true">✕</span> Unavailable until activation</span><span class="ns-note">Signed transfers cannot be submitted to a public network yet.</span></td></tr>
+      <tr data-ns-row="offline-signing"><th scope="row">Offline signing</th><td><span class="ns-state ns-on"><span aria-hidden="true">✓</span> Available</span><span class="ns-note">Can sign ≠ can broadcast to mainnet.</span></td></tr>
+      <tr data-ns-row="broadcasting"><th scope="row">Broadcasting</th><td><span class="ns-state ns-gov"><span aria-hidden="true">◐</span> Testnet transfers only</span><span class="ns-note">Signed transfers may be submitted to the open no-value gateway only. Mainnet broadcasting remains unavailable.</span></td></tr>
       <tr data-ns-row="mining"><th scope="row">Mining</th><td><span class="ns-state ns-retired"><span aria-hidden="true">—</span> Retired</span><span class="ns-note">Shut down on 2026-09-30. Do not run miner software.</span></td></tr>
       <tr data-ns-row="token-sale"><th scope="row">Token sale</th><td><span class="ns-state ns-none"><span aria-hidden="true">—</span> None</span><span class="ns-note">No sale, no price, no market.</span></td></tr>
     </tbody>
   </table>
-  <p class="ns-foot">Source: docs/l1-launch-authorization.json (publicTestnetActivationAllowed=false, mainnetActivationAllowed=false).</p>
+  <div class="ns-live" data-ns-live aria-live="polite">
+    <p class="ns-live-label">Open-testnet readiness probe</p>
+    <p class="ns-live-endpoint">Gateway: <a href="https://zyron-open-testnet.onrender.com" rel="noopener noreferrer">https://zyron-open-testnet.onrender.com</a> (Render free plan; may sleep when idle)</p>
+    <p class="ns-live-state" data-ns-live-state>Enable JavaScript to refresh <code>/readyz</code>, or open the gateway link.</p>
+    <p class="ns-live-detail" data-ns-live-detail></p>
+  </div>
+  <p class="ns-foot">Source: docs/l1-launch-authorization.json (publicTestnetActivationAllowed=false, mainnetActivationAllowed=false) and docs/OPEN_TESTNET.md.</p>
 </section>
 <!-- END NETWORK STATUS -->
     </div>
@@ -270,7 +276,7 @@
         <span>04 / USE</span>
         <h2>Sign locally. <br />Submit deliberately.</h2>
         <p>The canonical CLI can submit signed transfers to a wallet-facing RPC endpoint. Public wallet RPC is not currently published, so the example stays activation-gated instead of silently pointing users at validator infrastructure.</p>
-        <p>The honest way to exercise a transfer today is local, not a hosted testnet: <code>cd l1 &amp;&amp; npm ci &amp;&amp; npm run devnet</code>. Follow the public tester guide for loopback RPC, wallet creation and the printed disposable keys. This website does not publish a public RPC, explorer or faucet.</p>
+        <p>The safest way to exercise a transfer locally is still <code>cd l1 &amp;&amp; npm ci &amp;&amp; npm run devnet</code> (that path is not a hosted testnet). An unaudited no-value open testnet gateway may also be reachable when the free host is awake; see docs/OPEN_TESTNET.md and the Network status live probe. No mainnet and no live trading.</p>
         <a class="wallet-doc-link" href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" target="_blank" rel="noopener noreferrer">Read docs/PUBLIC_TEST.md <span aria-hidden="true">↗</span></a>
       </div>
 
@@ -379,12 +385,13 @@ node dist/src/cli.js transfer \
     </div>
     <div class="wrap footer-bottom">
       <span>© ZyronChain · Open source · No analytics cookies</span>
-      <span><a href="./privacy.html">Privacy</a> · <a href="./terms.html">Terms</a> · <span class="build" data-site-build>Build 2ee734a9</span></span>
+      <span><a href="./privacy.html">Privacy</a> · <a href="./terms.html">Terms</a> · <span class="build" data-site-build>Build c545a6cd</span></span>
     </div>
   </footer>
 
-  <script src="./release.js?v=323f5b91912e"></script>
+  <script src="./release.js?v=9338ec7ae278"></script>
   <script src="./wallet-core.js?v=7569203df024"></script>
   <script src="./wallet.js?v=bbc3c207984b"></script>
+  <script src="./network-live.js?v=973be713febb" defer></script>
 </body>
 </html>

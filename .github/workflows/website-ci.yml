@@ -35,6 +35,7 @@ jobs:
       - name: Check browser JavaScript syntax
         run: |
           node --check website/app.js
+          node --check website/network-live.js
           node --check website/release.js
           node --check website/wallet-core.js
           node --check website/wallet.js
@@ -55,7 +56,9 @@ jobs:
       - name: Seasonal theme date gating and overrides (Halloween 2026)
         run: node --test tools/site/test-season.mjs tools/site/test-hero-chain.mjs
       - name: Site regression tests (English-only, network-status honesty, naming, mining retired, build id, SEO)
-        run: node tools/site/test-site.mjs
+        run: |
+          node tools/site/test-site.mjs
+          node tools/site/test-network-live.mjs
       - name: Verify production website, wallet and validator contracts
         shell: bash
         run: |

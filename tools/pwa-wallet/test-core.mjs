@@ -260,10 +260,12 @@ await test('recovery phrase UX: privacy screen first, words hidden by default, n
 });
 
 await test('network status component: static, honest rows, identical everywhere it is used', async () => {
-  const { ROWS, render } = await import(pathToFileURL(join(repo, 'tools', 'site', 'network-status.mjs')).href);
-  const expected = { governance: 'Authorized', 'public-testnet': 'Not activated', 'public-rpc': 'Unavailable', explorer: 'Unavailable', 'wallet-creation': 'Available locally', 'offline-signing': 'Available', broadcasting: 'Unavailable until activation', mining: 'Retired', 'token-sale': 'None' };
+  const { ROWS, render, OPEN_TESTNET_GATEWAY } = await import(pathToFileURL(join(repo, 'tools', 'site', 'network-status.mjs')).href);
+  const expected = { governance: 'Authorized', 'public-testnet': 'Open no-value profile', 'public-rpc': 'Open testnet gateway', explorer: 'Open testnet page', 'wallet-creation': 'Available locally', 'offline-signing': 'Available', broadcasting: 'Testnet transfers only', mining: 'Retired', 'token-sale': 'None' };
   assert.deepEqual(Object.fromEntries(ROWS.map((r) => [r.key, r.value])), expected);
   const block = render();
+  assert.ok(block.includes(OPEN_TESTNET_GATEWAY));
+  assert.ok(block.includes('data-ns-live'));
   for (const page of ['website/app/index.html', 'website/index.html', 'website/wallet.html']) {
     const file = join(repo, page);
     if (!existsSync(file)) continue;
@@ -272,8 +274,8 @@ await test('network status component: static, honest rows, identical everywhere 
     const got = html.match(/<!-- BEGIN NETWORK STATUS[\s\S]*?<!-- END NETWORK STATUS -->/)[0].split('\n').map((l) => l.trim()).join('\n');
     assert.equal(got, block.split('\n').map((l) => l.trim()).join('\n'), `${page} network status is stale`);
   }
-  assert.doesNotMatch(block, /mainnet (is )?live|activated public testnet|public rpc: available|buy now|price target|\$\s?\d/i);
-  assert.doesNotMatch(block, /https?:\/\/(?!github\.com)/, 'no endpoints');
+  assert.doesNotMatch(block, /mainnet (is )?live|activated public testnet|public rpc: available|buy now|price target|\$\s?\d|live trading/i);
+  assert.doesNotMatch(block, new RegExp(String.raw`https?:\/\/(?!github\.com|zyron-open-testnet\.onrender\.com)`), 'only documented open-testnet gateway or github');
 });
 
 await test('display checksum vectors (docs/ADDRESS_CHECKSUM.md) and password rule equal website/wallet-core.js', async () => {
