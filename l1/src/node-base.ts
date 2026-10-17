@@ -22,7 +22,6 @@ import {
   V6_MIN_ACTIVATION_MARGIN_BLOCKS,
   ZERO_HASH,
   isConsensusV6,
-  maxQC,
   proposalDigest,
   proposalPayload,
   timeoutAllowedAt,

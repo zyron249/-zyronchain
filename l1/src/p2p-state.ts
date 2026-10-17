@@ -1,6 +1,6 @@
 import type { PeerId } from "@libp2p/interface";
 import type { Libp2p } from "libp2p";
-import { lstat, mkdir, readdir, rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { blockHash, validateBlockSelfAuthentication, validateBlockShape, validateBlockStructure, validateBlockTransactions } from "./block.js";
