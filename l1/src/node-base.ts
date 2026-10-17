@@ -103,6 +103,13 @@ export const MAX_RPC_RATE_LIMIT_EXEMPT_ADDRESSES = 16;
  * download the largest /blocks response (about 20 MB) at about 0.35 MB/s.
  */
 export const DEFAULT_RPC_SOCKET_IDLE_TIMEOUT_MS = 60_000;
+/**
+ * P1-02-L3: absolute deadline for a response that holds bytes in the response
+ * budget. A reader that makes occasional progress never trips the idle
+ * timeout, so the response is aborted (and its reservation released) after
+ * this long regardless.
+ */
+export const DEFAULT_RPC_RESPONSE_DEADLINE_MS = 60_000;
 export const MAX_RPC_FORWARDED_HOPS = 16;
 const DEFAULT_CONSENSUS_INFLIGHT_PER_PEER = 4;
 export const BLOCK_INTERVAL_MS = 30_000;
@@ -212,6 +219,8 @@ export interface RpcServerOptions {
   submitRequestsPerWindow?: number;
   /** P1-02-L3: idle socket timeout (default DEFAULT_RPC_SOCKET_IDLE_TIMEOUT_MS). */
   socketIdleTimeoutMs?: number;
+  /** P1-02-L3: absolute deadline for a budgeted response (default DEFAULT_RPC_RESPONSE_DEADLINE_MS). */
+  responseDeadlineMs?: number;
 }
 
 export interface PeerRequestCredentials {
@@ -266,7 +275,18 @@ function normalizeProxyAddress(address: string): string {
   const normalized = address.toLowerCase().replace(/^\[|\]$/g, "");
   const ipv4Mapped = normalized.startsWith("::ffff:") ? normalized.slice(7) : normalized;
   if (isIP(ipv4Mapped) === 4) return ipv4Mapped;
-  if (isIP(normalized) === 6) return canonicalizeIpv6Address(normalized);
+  if (isIP(normalized) === 6) {
+    const canonical = canonicalizeIpv6Address(normalized);
+    // Every IPv4-mapped spelling (hexadecimal, expanded) compares as its IPv4
+    // address, the form Node reports for a mapped peer after normalization.
+    const mappedHex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(canonical);
+    if (mappedHex) {
+      const high = Number.parseInt(mappedHex[1]!, 16);
+      const low = Number.parseInt(mappedHex[2]!, 16);
+      return [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
+    }
+    return canonical;
+  }
   throw new Error("Trusted RPC proxy must be an IP address");
 }
 
@@ -1175,6 +1195,10 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
     options.socketIdleTimeoutMs ?? DEFAULT_RPC_SOCKET_IDLE_TIMEOUT_MS,
     "RPC socket idle timeout"
   );
+  const responseDeadlineMs = boundedPositiveInteger(
+    options.responseDeadlineMs ?? DEFAULT_RPC_RESPONSE_DEADLINE_MS,
+    "RPC response deadline"
+  );
   const trustedProxyAddresses = normalizeTrustedProxyAddresses(options.trustedProxyAddresses ?? []);
   const rateLimitExempt = normalizeRateLimitExemptAddresses(options.rateLimitExemptAddresses ?? [], trustedProxyAddresses);
   const handleRequest = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
@@ -1261,6 +1285,7 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
   };
   const server = createServer((request, response) => {
     rpcResponseBudgets.set(response, rpcResponseBudget);
+    rpcResponseDeadlines.set(response, responseDeadlineMs);
     let release: () => void;
     try {
       release = rpcAdmission.enter();
@@ -2176,8 +2201,21 @@ function writeJson(
     throw error;
   }
   if (release) {
-    response.once("finish", release);
-    response.once("close", release);
+    const releaseReservation = release;
+    const deadlineMs = rpcResponseDeadlines.get(response) ?? DEFAULT_RPC_RESPONSE_DEADLINE_MS;
+    const deadline = setTimeout(() => {
+      // P1-02-L3: abort a response still unsent at the absolute deadline;
+      // destroying the socket emits "close", which releases the reservation.
+      response.destroy();
+      releaseReservation();
+    }, deadlineMs);
+    deadline.unref();
+    const done = (): void => {
+      clearTimeout(deadline);
+      releaseReservation();
+    };
+    response.once("finish", done);
+    response.once("close", done);
   }
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -2425,6 +2463,7 @@ export class RpcResponseByteBudget {
 }
 
 const rpcResponseBudgets = new WeakMap<ServerResponse, RpcResponseByteBudget>();
+const rpcResponseDeadlines = new WeakMap<ServerResponse, number>();
 
 export class RpcRequestBodyReservation {
   private readonly releases: Array<() => void> = [];

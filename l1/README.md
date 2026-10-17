@@ -158,7 +158,8 @@ A co-located gateway that enforces its own per-client limits can be exempted wit
 testnet gateways use it so their traffic does not share one 127.0.0.1 quota with peer traffic).
 `--rpc-submit-per-minute <n>` adds an optional per-client `POST /tx` window (transaction gossip
 from peers counts against it too, so size it above the expected relay rate). Idle RPC sockets are
-closed after 60 seconds, which also releases the response bytes of a reader that stopped reading.
+closed after 60 seconds and any response still unsent after 60 seconds is aborted, which releases the
+response bytes held by a slow or stalled reader.
 Native P2P performs no automatic
 UPnP/NAT port mapping: an operator behind NAT must explicitly forward the selected TCP P2P port
 or use a publicly reachable host. Do not forward the loopback validator RPC port merely to make
