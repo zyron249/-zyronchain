@@ -42,10 +42,10 @@ const P2P_STATE_RETRIES = 2;
 const P2P_STATE_MIN_REQUEST_INTERVAL_MS = 50;
 export const MAX_STATE_SYNC_PEERS = 8;
 /**
- * F-09(b) residual: cumulative bounds for one state-sync attempt against one
- * peer. A peer can keep serving self-consistent data that only fails the final
- * anchored validation; these bound the bytes and time it can make the client
- * spend. An honest transfer at the protocol maxima (2,000,000 records,
+ * F-09(b): cumulative bounds for one state-sync attempt against one peer.
+ * Every record and key preimage is checked against the anchored state root as
+ * it arrives (P1-08), so these mainly bound slow or stalling peers and wasted
+ * retries; they cap the bytes and time a peer can make the client spend. An honest transfer at the protocol maxima (2,000,000 records,
  * 1,000,000 key preimages) stays well below both.
  */
 export const MAX_STATE_SYNC_TOTAL_BYTES = 4 * 1024 * 1024 * 1024;
@@ -559,8 +559,9 @@ class PortableStateAssemblyError extends Error {}
 class StateSyncLimitError extends Error {}
 
 /**
- * F-09: the record/key counts in a peer manifest are not authenticated by the
- * anchor. A staging directory left by an earlier peer whose counts disagree
+ * F-09: the record/key counts in a peer manifest are only authenticated by the
+ * anchored root once the records arrive (P1-08), after the staging manifest is
+ * written. A staging directory left by an earlier peer whose counts disagree
  * with this peer's (same anchored checkpoint) is untrusted download state, so
  * it is discarded and restarted instead of blocking every later peer. A
  * staging directory for a different checkpoint stays fatal.
