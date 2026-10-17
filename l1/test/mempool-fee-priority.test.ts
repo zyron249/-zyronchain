@@ -116,6 +116,19 @@ test("an authorized protocol transaction lifts its sender's nonce predecessors a
   assert.deepEqual(chain.selectValidPending([rich1, rich2, update, cheap], 2).map((tx) => tx.txid), [cheap.txid, update.txid]);
 });
 
+test("every authorized protocol transaction in a lane lifts its own predecessors, not only the first", () => {
+  const chain = new ZyronChain(governanceGenesis());
+  const first = validatorUpdate(low, 1, 150, 101);
+  const cheap = transfer(low, 2, 1);
+  const second = validatorUpdate(low, 3, 250, 103);
+  const rich1 = transfer(high, 1, 100);
+  const rich2 = transfer(high, 2, 100);
+  assert.deepEqual(
+    chain.selectValidPending([rich1, rich2, second, cheap, first], 3).map((tx) => tx.txid),
+    [first.txid, cheap.txid, second.txid]
+  );
+});
+
 test("an unauthorized protocol transaction does not lift its sender's predecessors", () => {
   const chain = new ZyronChain(governanceGenesis());
   const cheap = transfer(low, 1, 1);
