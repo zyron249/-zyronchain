@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
-import { createRpcServer, NodeService } from "../src/node-base.js";
+import { createRpcServer, NodeService, rpcRateLimitIdentity } from "../src/node-base.js";
 import { ChainStore } from "../src/storage.js";
 import type { GenesisConfig } from "../src/types.js";
 
@@ -32,6 +32,7 @@ type Options = NonNullable<Parameters<typeof createRpcServer>[1]> & {
   rateLimitExemptAddresses?: string[];
   submitRequestsPerWindow?: number;
   socketIdleTimeoutMs?: number;
+  responseDeadlineMs?: number;
 };
 
 function genesis(): GenesisConfig {
@@ -189,4 +190,48 @@ test("P1-02-L3: the node RPC sets a finite socket idle timeout by default", asyn
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+// Review feedback on #1038: an accepted hexadecimal IPv4-mapped spelling must
+// match the address Node reports (::ffff:127.0.0.1, normalized to 127.0.0.1).
+test("P1-02-M3: hexadecimal IPv4-mapped exempt and trusted-proxy addresses match the reported peer", async () => {
+  await withServer({ requestsPerWindow: 2, rateLimitExemptAddresses: ["::ffff:7f00:1"] }, async (port) => {
+    const statuses: number[] = [];
+    for (let index = 0; index < 4; index += 1) statuses.push((await call(port, "GET", "/status")).status);
+    assert.deepEqual(statuses, [200, 200, 200, 200]);
+  });
+  assert.equal(rpcRateLimitIdentity("127.0.0.1", "198.51.100.7", ["::ffff:7f00:1"]), "198.51.100.7");
+  assert.equal(rpcRateLimitIdentity("::ffff:127.0.0.1", "198.51.100.7", ["::FFFF:7F00:0001"]), "198.51.100.7");
+  assert.equal(rpcRateLimitIdentity("10.0.0.1", "::ffff:c000:201", ["10.0.0.1"]), "192.0.2.1");
+});
+
+// Review feedback on #1038: the idle timeout is not an absolute bound, so a
+// reader that makes occasional progress could keep its reservation. Budgeted
+// responses also have an absolute deadline.
+test("P1-02-L3: a budgeted response is aborted at the absolute deadline even when the socket is not idle-timed out", async () => {
+  const payload = "x".repeat(15_000_000);
+  await withServer(
+    { maxInflightResponseBytes: 18_000_000, socketIdleTimeoutMs: 600_000, responseDeadlineMs: 1_000, rateLimitExemptAddresses: ["127.0.0.1"] },
+    async (port) => {
+      const stalled = connect(port, "127.0.0.1");
+      stalled.pause();
+      stalled.write("GET /blocks?from=1&limit=1 HTTP/1.1\r\nHost: node\r\n\r\n");
+      try {
+        await sleep(300);
+        assert.equal((await call(port, "GET", "/status")).status, 503);
+        const deadline = Date.now() + 10_000;
+        let status = 503;
+        while (Date.now() < deadline && status === 503) {
+          await sleep(250);
+          status = (await call(port, "GET", "/status")).status;
+        }
+        assert.equal(status, 200, "response budget still held past the absolute response deadline");
+      } finally {
+        stalled.destroy();
+      }
+    },
+    (service) => {
+      (service as unknown as { blocks: () => Promise<unknown[]> }).blocks = async () => [{ pad: payload }];
+    }
+  );
 });
