@@ -152,7 +152,14 @@ mode every request must originate from a configured proxy socket address and car
 `x-forwarded-proto: https` assertion; direct, plaintext and spoofed-proxy requests are rejected.
 Put public wallet RPC behind that separately rate-limited TLS reverse proxy rather than exposing
 validator RPC directly. Prefer binding RPC to loopback and proxying locally whenever deployment
-topology permits. Native P2P performs no automatic
+topology permits. Every RPC client has a per-client window (600 requests per minute; IPv6 per /64).
+A co-located gateway that enforces its own per-client limits can be exempted with repeated
+`--rpc-rate-limit-exempt <loopback-ip>` (loopback addresses only, never a trusted proxy; the public
+testnet gateways use it so their traffic does not share one 127.0.0.1 quota with peer traffic).
+`--rpc-submit-per-minute <n>` adds an optional per-client `POST /tx` window (transaction gossip
+from peers counts against it too, so size it above the expected relay rate). Idle RPC sockets are
+closed after 60 seconds, which also releases the response bytes of a reader that stopped reading.
+Native P2P performs no automatic
 UPnP/NAT port mapping: an operator behind NAT must explicitly forward the selected TCP P2P port
 or use a publicly reachable host. Do not forward the loopback validator RPC port merely to make
 P2P reachable.
