@@ -26,7 +26,7 @@ import {
   PortableStateResumeStore,
   type PortableStateResumeManifestV1
 } from "./state-v2-resume.js";
-import { StateV2AnchoredRecordStream, type StateV2NodeRecord } from "./state-v2.js";
+import { StateV2AnchoredRecordStream, type StateV2AnchoredKeyPreimageStream, type StateV2NodeRecord } from "./state-v2.js";
 import type { TrustedSnapshotAnchor } from "./storage.js";
 import type { Block, GenesisConfig } from "./types.js";
 
@@ -489,12 +489,40 @@ async function fetchTrustedPortableStateWithinLimits(
   const records: unknown[] = [];
   for (let index = recordChunks.length - 1; index >= 0; index -= 1) records.push(...recordChunks[index]!);
   recordChunks.length = 0;
+  // P1-08 (F-09(b) residual): the record count is authenticated by the
+  // anchored stream above (no record outside the anchored tree is accepted and
+  // finish() requires every one of them). The complete anchored tree also fixes
+  // the key-preimage set, so a manifest key count that differs from the number
+  // of anchored leaves is rejected before any key is requested, and every key
+  // preimage must hash to a distinct anchored leaf key in the chunk that
+  // carries it.
+  const anchoredKeys = anchored.keyPreimageStream();
+  if (manifest.keyCount !== anchoredKeys.total) {
+    throw new Error("State manifest key count does not match the anchored state root");
+  }
+  const acceptKeys = (items: readonly unknown[], into: StateV2AnchoredKeyPreimageStream) => {
+    for (const item of items) into.accept(parsePortableStateKeyPreimage(item));
+  };
+  // Keys staged by an earlier attempt are untrusted download state too.
+  if (resume && resume.nextKeyStart() > 0) {
+    try {
+      for (let start = 0; start < resume.nextKeyStart();) {
+        const limit = Math.min(MAX_STATE_KEYS_PER_CHUNK, resume.nextKeyStart() - start);
+        acceptKeys(await resume.keys(start, limit), anchoredKeys);
+        start += limit;
+      }
+    } catch (error) {
+      await resume.discard();
+      throw new PortableStateAssemblyError("Staged portable state key preimages do not match the anchored state root", { cause: error });
+    }
+  }
   const keys: unknown[] = [];
   for (let start = resume?.nextKeyStart() ?? 0; start < manifest.keyCount;) {
     const limit = Math.min(MAX_STATE_KEYS_PER_CHUNK, manifest.keyCount - start);
     const reply = await request("keys", start, limit);
     try {
       const chunk = parseChunk(reply.value, expected, reply.remotePeer, anchor, "keys", start, limit);
+      acceptKeys(chunk.items, anchoredKeys);
       if (resume) await resume.putKeys(start, chunk.items);
       else keys.push(...chunk.items);
       start += chunk.items.length;
@@ -505,6 +533,8 @@ async function fetchTrustedPortableStateWithinLimits(
   if (!resume && (records.length !== manifest.recordCount || keys.length !== manifest.keyCount)) {
     throw new Error("State transfer chunk counts changed during transfer");
   }
+  // Every anchored leaf received exactly one key preimage (P1-08).
+  anchoredKeys.finish();
   const bundle = resume ? await resume.bundle() : {
     version: 1 as const,
     root: manifest.stateRoot,

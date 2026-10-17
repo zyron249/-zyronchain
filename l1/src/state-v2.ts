@@ -1000,6 +1000,10 @@ function bitAt(bytes: Buffer, depth: number): 0 | 1 {
 export class StateV2AnchoredRecordStream {
   private readonly expected: Array<{ hash: string; depth: number }> = [];
   private accepted = 0;
+  // P1-08: key hashes of the accepted (anchored) leaves. They authenticate the
+  // key-preimage count and every key preimage once the tree is complete.
+  private readonly leafKeyHashes = new Set<string>();
+  private finished = false;
 
   constructor(root: string) {
     if (!/^[0-9a-f]{64}$/.test(root)) throw new Error("Invalid State v2 root");
@@ -1018,6 +1022,9 @@ export class StateV2AnchoredRecordStream {
         if (node.left && node.right && node.left.hash === node.right.hash) throw new Error("duplicate child hash");
         if (node.left) this.expected.push({ hash: node.left.hash, depth: next.depth + 1 });
         if (node.right) this.expected.push({ hash: node.right.hash, depth: next.depth + 1 });
+      } else if (record.kind === "leaf") {
+        if (this.leafKeyHashes.has(record.keyHash)) throw new Error("duplicate leaf key hash");
+        this.leafKeyHashes.add(record.keyHash);
       }
       this.accepted += 1;
     } catch (cause) {
@@ -1036,6 +1043,50 @@ export class StateV2AnchoredRecordStream {
       throw new Error("Portable State v2 record does not match the anchored state root", {
         cause: new Error("records missing from the anchored tree")
       });
+    }
+    this.finished = true;
+  }
+
+  /**
+   * P1-08 (F-09(b) residual): once every anchored record arrived, the leaves
+   * fix the exact key-preimage set. The returned stream checks each untrusted
+   * key preimage against it as it arrives, so the peer-supplied key count and
+   * every key preimage are authenticated by the anchored state root rather than
+   * only by the final assembly. Call at most once, after finish().
+   */
+  keyPreimageStream(): StateV2AnchoredKeyPreimageStream {
+    if (!this.finished) throw new Error("Anchored State v2 records are incomplete");
+    this.finished = false;
+    return new StateV2AnchoredKeyPreimageStream(this.leafKeyHashes);
+  }
+}
+
+/**
+ * P1-08: authenticated key-preimage check for state sync. `total` is the number
+ * of anchored leaves, the only key-preimage count an honest peer can serve.
+ * Each accepted preimage must hash to a still-unclaimed anchored leaf key, so
+ * uncommitted and duplicate preimages are rejected in the chunk that carries
+ * them. The set is consumed as preimages arrive, so memory does not grow.
+ */
+export class StateV2AnchoredKeyPreimageStream {
+  readonly total: number;
+  private accepted = 0;
+
+  constructor(private readonly remaining: Set<string>) {
+    this.total = remaining.size;
+  }
+
+  accept(key: string): void {
+    if (!this.remaining.delete(stateV2KeyHash(key))) {
+      throw new Error("State v2 key preimage is not committed by the anchored state root (or is a duplicate)");
+    }
+    this.accepted += 1;
+  }
+
+  /** Every anchored leaf has exactly one preimage. */
+  finish(): void {
+    if (this.remaining.size !== 0 || this.accepted !== this.total) {
+      throw new Error("State v2 key preimages missing for anchored leaves");
     }
   }
 }
