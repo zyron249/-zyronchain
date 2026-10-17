@@ -56,7 +56,7 @@ import {
   type NodeIdentity,
   type SignedPeerRecord
 } from "./peer-identity.js";
-import { clientAddressBucket } from "./rpc-client-identity.js";
+import { clientAddressBucket, isLoopbackAddress } from "./rpc-client-identity.js";
 import { FixedWindowLimiter } from "./rpc-rate-limit.js";
 import { ChainStore, SigningJournal } from "./storage.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
@@ -95,6 +95,21 @@ export const MAX_SMALL_RPC_RESPONSE_SERIALIZATION_BYTES = 4_000_000;
 export const RPC_MAX_HEADERS = 64;
 export const RPC_MAX_REQUESTS_PER_SOCKET = 100;
 export const MAX_RPC_TRUSTED_PROXIES = 16;
+export const MAX_RPC_RATE_LIMIT_EXEMPT_ADDRESSES = 16;
+/**
+ * P1-02-L3: idle socket timeout. A reader that stops reading would otherwise
+ * hold its response bytes in the node-wide response budget indefinitely.
+ * Closing the idle socket releases the reservation. 60 s still lets a peer
+ * download the largest /blocks response (about 20 MB) at about 0.35 MB/s.
+ */
+export const DEFAULT_RPC_SOCKET_IDLE_TIMEOUT_MS = 60_000;
+/**
+ * P1-02-L3: absolute deadline for a response that holds bytes in the response
+ * budget. A reader that makes occasional progress never trips the idle
+ * timeout, so the response is aborted (and its reservation released) after
+ * this long regardless.
+ */
+export const DEFAULT_RPC_RESPONSE_DEADLINE_MS = 60_000;
 export const MAX_RPC_FORWARDED_HOPS = 16;
 const DEFAULT_CONSENSUS_INFLIGHT_PER_PEER = 4;
 export const BLOCK_INTERVAL_MS = 30_000;
@@ -193,6 +208,19 @@ export interface RpcServerOptions {
   onTransactionAccepted?: (transaction: Transaction) => void | Promise<void>;
   requestsPerWindow?: number;
   windowMs?: number;
+  /**
+   * P1-02-M3: exact loopback addresses (127.0.0.0/8 or ::1) whose direct
+   * requests skip the per-client window, for a co-located gateway that
+   * enforces its own per-client limits (the public testnet gateways). Never a
+   * trusted proxy. Concurrency, body and response budgets still apply.
+   */
+  rateLimitExemptAddresses?: string[];
+  /** P1-02-L2: optional per-client POST /tx window, counted before the body is read. Off by default. */
+  submitRequestsPerWindow?: number;
+  /** P1-02-L3: idle socket timeout (default DEFAULT_RPC_SOCKET_IDLE_TIMEOUT_MS). */
+  socketIdleTimeoutMs?: number;
+  /** P1-02-L3: absolute deadline for a budgeted response (default DEFAULT_RPC_RESPONSE_DEADLINE_MS). */
+  responseDeadlineMs?: number;
 }
 
 export interface PeerRequestCredentials {
@@ -247,7 +275,18 @@ function normalizeProxyAddress(address: string): string {
   const normalized = address.toLowerCase().replace(/^\[|\]$/g, "");
   const ipv4Mapped = normalized.startsWith("::ffff:") ? normalized.slice(7) : normalized;
   if (isIP(ipv4Mapped) === 4) return ipv4Mapped;
-  if (isIP(normalized) === 6) return canonicalizeIpv6Address(normalized);
+  if (isIP(normalized) === 6) {
+    const canonical = canonicalizeIpv6Address(normalized);
+    // Every IPv4-mapped spelling (hexadecimal, expanded) compares as its IPv4
+    // address, the form Node reports for a mapped peer after normalization.
+    const mappedHex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(canonical);
+    if (mappedHex) {
+      const high = Number.parseInt(mappedHex[1]!, 16);
+      const low = Number.parseInt(mappedHex[2]!, 16);
+      return [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
+    }
+    return canonical;
+  }
   throw new Error("Trusted RPC proxy must be an IP address");
 }
 
@@ -260,6 +299,56 @@ function normalizeTrustedProxyAddresses(addresses: readonly string[]): ReadonlyS
 
 export function assertRpcTrustedProxyConfiguration(addresses: readonly string[]): void {
   normalizeTrustedProxyAddresses(addresses);
+}
+
+function normalizeRateLimitExemptAddresses(
+  addresses: readonly string[],
+  trusted: ReadonlySet<string>
+): ReadonlySet<string> {
+  if (addresses.length > MAX_RPC_RATE_LIMIT_EXEMPT_ADDRESSES) {
+    throw new Error("Too many RPC rate-limit exempt addresses");
+  }
+  const exempt = new Set<string>();
+  for (const address of addresses) {
+    let normalized: string;
+    try {
+      normalized = normalizeProxyAddress(address);
+    } catch {
+      throw new Error("RPC rate-limit exempt address must be a loopback IP address");
+    }
+    if (!isLoopbackAddress(normalized)) {
+      throw new Error("RPC rate-limit exempt address must be a loopback IP address");
+    }
+    if (trusted.has(normalized)) {
+      throw new Error("A trusted RPC proxy cannot be rate-limit exempt");
+    }
+    exempt.add(normalized);
+  }
+  return exempt;
+}
+
+export function assertRpcRateLimitExemptConfiguration(
+  addresses: readonly string[],
+  trustedProxyAddresses: readonly string[]
+): void {
+  normalizeRateLimitExemptAddresses(addresses, normalizeTrustedProxyAddresses(trustedProxyAddresses));
+}
+
+function requestPathname(target: string | undefined): string {
+  try {
+    return new URL(target ?? "/", "http://node.invalid").pathname;
+  } catch {
+    return "";
+  }
+}
+
+function isRateLimitExemptRequest(remoteAddress: string | undefined, exempt: ReadonlySet<string>): boolean {
+  if (exempt.size === 0 || remoteAddress === undefined) return false;
+  try {
+    return exempt.has(normalizeProxyAddress(remoteAddress));
+  } catch {
+    return false;
+  }
 }
 
 function isTrustedHttpsProxyRequestFromSet(
@@ -1096,7 +1185,22 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
     options.maxInflightResponseBytes ?? DEFAULT_RPC_MAX_INFLIGHT_RESPONSE_BYTES
   );
   const limiter = new FixedWindowLimiter(requestsPerWindow, windowMs);
+  const submitRequestsPerWindow = options.submitRequestsPerWindow === undefined
+    ? undefined
+    : boundedPositiveInteger(options.submitRequestsPerWindow, "RPC submit requests per window");
+  const submitLimiter = submitRequestsPerWindow === undefined
+    ? undefined
+    : new FixedWindowLimiter(submitRequestsPerWindow, windowMs);
+  const socketIdleTimeoutMs = boundedPositiveInteger(
+    options.socketIdleTimeoutMs ?? DEFAULT_RPC_SOCKET_IDLE_TIMEOUT_MS,
+    "RPC socket idle timeout"
+  );
+  const responseDeadlineMs = boundedPositiveInteger(
+    options.responseDeadlineMs ?? DEFAULT_RPC_RESPONSE_DEADLINE_MS,
+    "RPC response deadline"
+  );
   const trustedProxyAddresses = normalizeTrustedProxyAddresses(options.trustedProxyAddresses ?? []);
+  const rateLimitExempt = normalizeRateLimitExemptAddresses(options.rateLimitExemptAddresses ?? [], trustedProxyAddresses);
   const handleRequest = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const bodyReservation = new RpcRequestBodyReservation(rpcBodyBudget);
     response.setHeader("x-zyron-rpc-version", String(RPC_API_VERSION));
@@ -1109,17 +1213,29 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
       writeJson(response, 403, { error: "RPC request did not arrive through the configured HTTPS proxy" });
       return;
     }
-    const rate = limiter.consume(rpcRateLimitIdentityFromSet(
-      request.socket.remoteAddress,
-      request.headers["x-forwarded-for"],
-      trustedProxyAddresses
-    ), Date.now());
-    response.setHeader("x-ratelimit-limit", String(requestsPerWindow));
-    response.setHeader("x-ratelimit-remaining", String(rate.remaining));
-    if (!rate.allowed) {
-      response.setHeader("retry-after", String(Math.max(1, Math.ceil(rate.retryAfterMs / 1_000))));
-      writeJson(response, 429, { error: "Rate limit exceeded" });
-      return;
+    if (!isRateLimitExemptRequest(request.socket.remoteAddress, rateLimitExempt)) {
+      const identity = rpcRateLimitIdentityFromSet(
+        request.socket.remoteAddress,
+        request.headers["x-forwarded-for"],
+        trustedProxyAddresses
+      );
+      const now = Date.now();
+      const rate = limiter.consume(identity, now);
+      response.setHeader("x-ratelimit-limit", String(requestsPerWindow));
+      response.setHeader("x-ratelimit-remaining", String(rate.remaining));
+      if (!rate.allowed) {
+        response.setHeader("retry-after", String(Math.max(1, Math.ceil(rate.retryAfterMs / 1_000))));
+        writeJson(response, 429, { error: "Rate limit exceeded" });
+        return;
+      }
+      if (submitLimiter && request.method === "POST" && requestPathname(request.url) === "/tx") {
+        const submit = submitLimiter.consume(identity, now);
+        if (!submit.allowed) {
+          response.setHeader("retry-after", String(Math.max(1, Math.ceil(submit.retryAfterMs / 1_000))));
+          writeJson(response, 429, { error: "Transaction submit rate limit exceeded" });
+          return;
+        }
+      }
     }
     const requestedRpcVersion = request.headers["x-zyron-rpc-version"];
     if (requestedRpcVersion !== undefined && requestedRpcVersion !== String(RPC_API_VERSION)) {
@@ -1169,6 +1285,7 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
   };
   const server = createServer((request, response) => {
     rpcResponseBudgets.set(response, rpcResponseBudget);
+    rpcResponseDeadlines.set(response, responseDeadlineMs);
     let release: () => void;
     try {
       release = rpcAdmission.enter();
@@ -1186,6 +1303,7 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
   server.headersTimeout = 10_000;
   server.requestTimeout = 15_000;
   server.keepAliveTimeout = 5_000;
+  server.timeout = socketIdleTimeoutMs;
   server.maxHeadersCount = RPC_MAX_HEADERS;
   server.maxRequestsPerSocket = RPC_MAX_REQUESTS_PER_SOCKET;
   return server;
@@ -2085,6 +2203,18 @@ function writeJson(
   if (release) {
     response.once("finish", release);
     response.once("close", release);
+    // P1-02-L3: abort a response still unsent at the absolute deadline;
+    // destroying the socket emits "close", which releases the reservation
+    // (release is idempotent).
+    const releaseReservation = release;
+    const deadline = setTimeout(() => {
+      response.destroy();
+      releaseReservation();
+    }, rpcResponseDeadlines.get(response) ?? DEFAULT_RPC_RESPONSE_DEADLINE_MS);
+    deadline.unref();
+    const clearDeadline = (): void => clearTimeout(deadline);
+    response.once("finish", clearDeadline);
+    response.once("close", clearDeadline);
   }
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -2332,6 +2462,7 @@ export class RpcResponseByteBudget {
 }
 
 const rpcResponseBudgets = new WeakMap<ServerResponse, RpcResponseByteBudget>();
+const rpcResponseDeadlines = new WeakMap<ServerResponse, number>();
 
 export class RpcRequestBodyReservation {
   private readonly releases: Array<() => void> = [];

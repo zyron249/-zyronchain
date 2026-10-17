@@ -107,7 +107,11 @@ function startValidator() {
     "--data", dataDir,
     "--host", "127.0.0.1",
     "--port", String(nodePort),
-    "--validator-key", keyPath
+    "--validator-key", keyPath,
+    // P1-02-M3: the validator is reachable only over loopback by this gateway,
+    // which enforces the public per-client limits; without the exemption all
+    // public traffic shared one node RPC quota for 127.0.0.1.
+    "--rpc-rate-limit-exempt", "127.0.0.1"
   ], { cwd: l1Root, stdio: ["ignore", "inherit", "inherit"] });
   child.once("exit", (code, signal) => {
     if (shuttingDown) return;
@@ -130,8 +134,15 @@ async function nodeFetch(path, init = {}) {
 
 let statusCache;
 let statusCacheAt = 0;
-async function chainStatus() {
-  if (statusCache && Date.now() - statusCacheAt < 1_000) return statusCache;
+let statusInFlight;
+// P1-02-L1: /health is not rate limited; concurrent requests share one
+// in-flight node status check instead of each fanning out on a cache miss.
+function chainStatus() {
+  if (statusCache && Date.now() - statusCacheAt < 1_000) return Promise.resolve(statusCache);
+  statusInFlight ??= fetchChainStatus().finally(() => { statusInFlight = undefined; });
+  return statusInFlight;
+}
+async function fetchChainStatus() {
   const [status, protocol] = await Promise.all([nodeFetch("/status"), nodeFetch("/protocol")]);
   if (status.status !== 200) throw new Error("node not ready");
   const nextProtocol = protocol.status === 200 ? protocol.body.nextVersion : 1;
@@ -392,6 +403,20 @@ async function smokeTest() {
   assert.equal((await get("/balance/not-an-address")).status, 400);
   assert.equal((await get("/blocks")).status, 404, "node-internal endpoints must not be exposed");
   assert.equal((await post("/block", {})).status, 404, "consensus endpoints must not be exposed");
+  // P1-02-M3: neither unthrottled /health nor reads beyond 600/min in
+  // aggregate (several clients, each within the per-client limit) may exhaust
+  // the validator's node RPC capacity for the gateway.
+  let healthFlood = 0;
+  await Promise.all(Array.from({ length: 32 }, async () => { while (healthFlood < 800) { healthFlood += 1; await (await fetch(`${base}/health`)).arrayBuffer(); } }));
+  const readStatuses = {}; let readIndex = 0;
+  await Promise.all(Array.from({ length: 32 }, async () => {
+    while (readIndex < 400) {
+      const client = `198.51.100.${10 + (readIndex % 4)}`; readIndex += 1;
+      const code = (await fetch(`${base}/balance/${faucet.address}`, { headers: { "x-forwarded-for": client } })).status;
+      readStatuses[code] = (readStatuses[code] ?? 0) + 1;
+    }
+  }));
+  assert.deepEqual(readStatuses, { 200: 400 }, "reads within each client's limit must not hit the validator's rate limit");
 
   const alice = account("smoke-alice-" + Date.now());
   const bob = account("smoke-bob-" + Date.now());

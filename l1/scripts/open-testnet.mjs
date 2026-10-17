@@ -216,7 +216,12 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   function startValidator(name) {
     const index = VALIDATOR_NAMES.indexOf(name);
     const args = [dist("cli.js"), "node", "--genesis", genesisPath, "--data", join(dir, `data-${name}`),
-      "--host", "127.0.0.1", "--port", String(ports[index]), "--validator-key", join(dir, "keys", `${name}.json`)];
+      "--host", "127.0.0.1", "--port", String(ports[index]), "--validator-key", join(dir, "keys", `${name}.json`),
+      // P1-02-M3: the validators are reachable only over loopback, by this
+      // gateway (which enforces the public per-client limits) and by each
+      // other. Without the exemption every public request and all peer traffic
+      // shared one node RPC quota for 127.0.0.1.
+      "--rpc-rate-limit-exempt", "127.0.0.1"];
     for (const [i, port] of ports.entries()) if (i !== index) args.push("--peer", `http://127.0.0.1:${port}`);
     const child = spawn(process.execPath, args, { cwd: l1Root, stdio: ["ignore", "pipe", "pipe"] });
     const prefix = `[${name}] `;
@@ -263,6 +268,19 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       try { const result = await nodeFetch(node.port, path, init); if (result.status < 500) return result; last = result; } catch (error) { last = { status: 502, body: { error: "node unavailable" } }; }
     }
     return last ?? { status: 502, body: { error: "no validator available" } };
+  }
+  // P1-02-L1: GET /health is not rate limited (the platform health check uses
+  // it), so the validator fan-out is cached for HEALTH_CACHE_MS and concurrent
+  // requests share one in-flight check.
+  const HEALTH_CACHE_MS = 2_000;
+  let healthCache; let healthCacheAt = 0; let healthInFlight;
+  function cachedValidatorStatuses() {
+    if (healthCache && Date.now() - healthCacheAt < HEALTH_CACHE_MS) return Promise.resolve(healthCache);
+    healthInFlight ??= validatorStatuses().then((validators) => {
+      healthCache = { validators, checkedAtMs: Date.now() }; healthCacheAt = healthCache.checkedAtMs;
+      return healthCache;
+    }).finally(() => { healthInFlight = undefined; });
+    return healthInFlight;
   }
   async function validatorStatuses() {
     return Promise.all(VALIDATOR_NAMES.map(async (name) => {
@@ -404,12 +422,12 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       const ip = clientIp(request);
       if (request.method === "GET") {
         if (path === "/health" || path === "/healthz" || path === "/readyz") {
-          const validators = await validatorStatuses();
+          const { validators, checkedAtMs } = await cachedValidatorStatuses();
           const up = validators.filter((v) => v.up);
           const heights = up.map((v) => v.height);
           const quorum = Math.floor((2 * genesis.validators.length) / 3) + 1;
           const ok = up.length >= quorum;
-          return sendJson(response, ok ? 200 : 503, { ok, network: "testnet", valueBearing: false, chainId, quorum, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, validators });
+          return sendJson(response, ok ? 200 : 503, { ok, network: "testnet", valueBearing: false, chainId, quorum, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
@@ -543,6 +561,23 @@ async function smoke() {
     assert.deepEqual(Object.keys(await peerStatus.json()).sort(), ["chainId", "genesisHash", "height", "tipHash"]);
     assert.equal((await (await fetch(`${base}/peer/blocks?from=1&limit=2`)).json()).blocks.length, 2);
     assert.equal((await post("/peer/block", {})).status, 404);
+    // P1-02-M3 / L1: GET /health stays unthrottled for platform health checks,
+    // so it is cached and must not exhaust the validators' node RPC capacity;
+    // and public reads beyond 600/min in aggregate (several clients, each
+    // within the gateway's per-client limit) must not starve the validators.
+    const healthBurst = await Promise.all(Array.from({ length: 32 }, () => get("/health")));
+    assert.ok(healthBurst.every((r) => r.status === 200 && Number.isSafeInteger(r.body.checkedAtMs)), "health burst");
+    assert.ok(new Set(healthBurst.map((r) => r.body.checkedAtMs)).size <= 2, "concurrent /health requests must share one cached validator check");
+    let healthFlood = 0;
+    await Promise.all(Array.from({ length: 32 }, async () => { while (healthFlood < 800) { healthFlood += 1; await (await fetch(`${base}/health`)).arrayBuffer(); } }));
+    const readAs = async (client) => (await fetch(`${base}/balance/${info.faucetAddress}`, { headers: { "x-forwarded-for": client } })).status;
+    const readStatuses = {}; let readIndex = 0;
+    await Promise.all(Array.from({ length: 32 }, async () => {
+      while (readIndex < 800) { const client = `198.51.100.${10 + (readIndex % 4)}`; readIndex += 1; const code = await readAs(client); readStatuses[code] = (readStatuses[code] ?? 0) + 1; }
+    }));
+    assert.deepEqual(readStatuses, { 200: 800 }, "reads within each client's limit must not hit the validators' rate limit");
+    assert.equal((await get(`/balance/${info.faucetAddress}`)).status, 200);
+    assert.ok((await network.validatorStatuses()).every((v) => v.up && v.ready), "validators must stay ready under gateway load");
     const alice = newAccount(); const bob = newAccount();
     const drip = await post("/faucet", { address: alice.address });
     assert.equal(drip.status, 200, JSON.stringify(drip.body));

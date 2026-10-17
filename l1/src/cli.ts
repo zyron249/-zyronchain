@@ -15,6 +15,7 @@ import { readCliCheckpointSnapshotAnchoredUtf8, readCliGenesisUtf8 } from "./cli
 import { readCliGovernanceArtifactUtf8 } from "./cli-governance-file.js";
 import { readOperatorAuthToken, readOperatorPrivateKey } from "./operator-secrets.js";
 import {
+  assertRpcRateLimitExemptConfiguration,
   assertSafeRpcBinding,
   BLOCK_INTERVAL_MS,
   createRpcServer,
@@ -311,7 +312,7 @@ async function runNode(args: string[]): Promise<void> {
     "--genesis", "--data", "--host", "--port", "--peer", "--advertise-peer", "--validator-key", "--peer-token-file",
     "--trusted-peer-public-key", "--rpc-trusted-proxy", "--p2p-listen", "--p2p-peer", "--p2p-peer-group", "--validator-signer-url",
     "--validator-public-key", "--validator-signer-token-file", "--validator-signer-allow-v6", "--ready-max-tip-age-ms",
-    "--p2p-consensus-peer"
+    "--p2p-consensus-peer", "--rpc-rate-limit-exempt", "--rpc-submit-per-minute"
   ]));
   const genesisPath = option(args, "--genesis");
   const dataDir = option(args, "--data");
@@ -321,6 +322,17 @@ async function runNode(args: string[]): Promise<void> {
   const host = option(args, "--host") ?? "127.0.0.1";
   const port = parsePort(option(args, "--port") ?? "9137");
   const trustedProxyAddresses = options(args, "--rpc-trusted-proxy");
+  // P1-02-M3: loopback addresses of a co-located gateway that enforces its own
+  // per-client limits; P1-02-L2: optional per-client POST /tx window.
+  const rateLimitExemptAddresses = options(args, "--rpc-rate-limit-exempt");
+  assertRpcRateLimitExemptConfiguration(rateLimitExemptAddresses, trustedProxyAddresses);
+  const submitPerMinuteText = option(args, "--rpc-submit-per-minute");
+  const submitRequestsPerWindow = submitPerMinuteText === undefined
+    ? undefined
+    : parseSafeInteger(submitPerMinuteText, "rpc-submit-per-minute");
+  if (submitRequestsPerWindow !== undefined && submitRequestsPerWindow < 1) {
+    throw new Error("--rpc-submit-per-minute must be at least 1");
+  }
   const peerUrls = options(args, "--peer");
   const nativeListen = options(args, "--p2p-listen").map(parseNativeListenAddress);
   const nativePeers = options(args, "--p2p-peer").map(parseNativePeerAddress);
@@ -513,6 +525,8 @@ async function runNode(args: string[]): Promise<void> {
     peerDirectory,
     ...(trustedPeerPublicKeys.length ? { trustedPeerPublicKeys } : {}),
     ...(trustedProxyAddresses.length ? { trustedProxyAddresses } : {}),
+    ...(rateLimitExemptAddresses.length ? { rateLimitExemptAddresses } : {}),
+    ...(submitRequestsPerWindow !== undefined ? { submitRequestsPerWindow } : {}),
     onTransactionAccepted: async (transaction) => {
       await Promise.allSettled([
         peers.broadcastTransaction(transaction),
@@ -1244,7 +1258,7 @@ function usage(): void {
   console.log("Usage:");
   console.log("  zyron-l1 keygen --out validator-key.json (--password-file password.txt | --password-prompt)");
   console.log("  zyron-l1 genesis --out genesis.json --chain-id zyron-devnet-1 --validator-public-key <hex> --oracle-public-key <hex> --activity-pool <address> --allocation <address:atoms>");
-  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json | --validator-signer-url https://signer/sign --validator-public-key <hex> --validator-signer-token-file signer-token.txt [--validator-signer-allow-v6 true|false]] [--peer https://node:9137] [--rpc-trusted-proxy <ip> ...] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>] [--ready-max-tip-age-ms 600000] [--p2p-consensus-peer <PeerId> ...]");
+  console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json | --validator-signer-url https://signer/sign --validator-public-key <hex> --validator-signer-token-file signer-token.txt [--validator-signer-allow-v6 true|false]] [--peer https://node:9137] [--rpc-trusted-proxy <ip> ...] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>] [--ready-max-tip-age-ms 600000] [--p2p-consensus-peer <PeerId> ...] [--rpc-rate-limit-exempt <loopback-ip> ...] [--rpc-submit-per-minute <n>]");
   console.log("  zyron-l1 transfer --key wallet-key.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms <n> [--fee-atoms <n>]");
   console.log("  zyron-l1 keygen --out wallet.json --password-prompt     (interactive; no password file is written)");
   console.log("  zyron-l1 keystore-verify --key wallet.json            (password: ZYRON_KEYSTORE_PASSWORD_FILE, ZYRON_KEYSTORE_PASSWORD or a terminal prompt; prints only public data)");
