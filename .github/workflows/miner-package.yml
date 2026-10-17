@@ -75,6 +75,9 @@ jobs:
         run: node scripts/test-miner-package-materializer-posix.mjs
       - name: Build runtime
         run: npm run build
+      - name: Alias 127.0.0.2 on loopback for real-socket RPC identity tests (macOS)
+        if: runner.os == 'macOS'
+        run: sudo ifconfig lo0 alias 127.0.0.2 up
       - name: Run full L1 regression suite on durability-capable runners
         if: runner.os != 'Windows'
         run: npm test
