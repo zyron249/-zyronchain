@@ -18,8 +18,7 @@ import {
   assertMiningNotRetired,
   MINING_PROTOCOL_VERSION,
   MINING_TRACKER_ADDRESS,
-  miningRewardAtoms as scheduledMiningRewardAtoms,
-  miningWorkHash
+  miningRewardAtoms as scheduledMiningRewardAtoms
 } from "./mining.js";
 import { assertActivitySettlementAuthorized, validateActivityOracleThreshold } from "./activity-oracle.js";
 import { merkleRoot } from "./merkle.js";
@@ -619,25 +618,7 @@ export class ZyronChain {
         maxTransactionBytes > MAX_BLOCK_TRANSACTION_BYTES) {
       throw new Error("Invalid pending byte limit");
     }
-    const ordered = transactions
-      .map((tx) => ({
-        tx: structuredClone(tx),
-        miningHash: tx.kind === "mining_claim" ? miningWorkHash(tx) : null
-      }))
-      .sort((left, right) => {
-        if (left.miningHash !== null || right.miningHash !== null) {
-          if (left.miningHash === null) return 1;
-          if (right.miningHash === null) return -1;
-          const workOrder = compareCanonicalStrings(left.miningHash, right.miningHash);
-          if (workOrder) return workOrder;
-        }
-        return compareCanonicalStrings(left.tx.sender, right.tx.sender) ||
-          left.tx.nonce - right.tx.nonce ||
-          right.tx.feeAtoms - left.tx.feeAtoms ||
-          left.tx.timestampMs - right.tx.timestampMs ||
-          compareCanonicalStrings(left.tx.txid, right.tx.txid);
-      })
-      .map((entry) => entry.tx);
+    const ordered = orderPendingByFeePriority(transactions.map((tx) => structuredClone(tx)));
     const protocolVersion = this.protocolVersionAt(this.height + 1);
     assertSupportedProtocolVersion(protocolVersion);
     const next = protocolVersion === 1 ? this.legacyStateForTransition().clone() : undefined;
@@ -1095,4 +1076,88 @@ function applyMiningClaimStateV2(state: SparseMerkleState, tx: MiningClaimTx): S
     nonce: trackerNonce + 1
   });
   return next;
+}
+
+/**
+ * Proposer-local mempool ordering (external reviewer note EXT-01).
+ *
+ * Block validity never depended on this order; it only decides which valid
+ * pending transactions a proposer packs first. The previous order (sender
+ * address, then nonce) let lexicographically small addresses always win,
+ * independent of the fee they paid.
+ *
+ * Order now:
+ *  1. Zero-fee protocol transactions (activity settlements, validator and
+ *     protocol governance) before transfers, so fee bidding cannot starve them.
+ *  2. Among per-sender queue heads, highest feeAtoms first.
+ *  3. Ties: earlier timestampMs, then txid, then sender (canonical order).
+ * Each sender's transactions keep ascending nonce order (same-nonce
+ * alternatives: higher fee first), so nonce sequencing is preserved. The
+ * result is a pure function of the input set, so it stays deterministic.
+ */
+export function orderPendingByFeePriority(transactions: Transaction[]): Transaction[] {
+  const priorityClass = (tx: Transaction): number => (tx.kind === "transfer" ? 1 : 0);
+  const headBefore = (left: Transaction, right: Transaction): boolean => {
+    const cls = priorityClass(left) - priorityClass(right);
+    if (cls) return cls < 0;
+    if (left.feeAtoms !== right.feeAtoms) return left.feeAtoms > right.feeAtoms;
+    if (left.timestampMs !== right.timestampMs) return left.timestampMs < right.timestampMs;
+    const byTxid = compareCanonicalStrings(left.txid, right.txid);
+    if (byTxid) return byTxid < 0;
+    return compareCanonicalStrings(left.sender, right.sender) < 0;
+  };
+  const queues = new Map<string, Transaction[]>();
+  for (const tx of transactions) {
+    const queue = queues.get(tx.sender);
+    if (queue) queue.push(tx);
+    else queues.set(tx.sender, [tx]);
+  }
+  const lanes: Array<{ queue: Transaction[]; index: number }> = [];
+  for (const queue of queues.values()) {
+    queue.sort((left, right) =>
+      left.nonce - right.nonce ||
+      right.feeAtoms - left.feeAtoms ||
+      left.timestampMs - right.timestampMs ||
+      compareCanonicalStrings(left.txid, right.txid));
+    lanes.push({ queue, index: 0 });
+  }
+  // Binary heap of lanes keyed by their current head.
+  const before = (a: number, b: number): boolean =>
+    headBefore(lanes[a]!.queue[lanes[a]!.index]!, lanes[b]!.queue[lanes[b]!.index]!);
+  const heap: number[] = [];
+  const swap = (i: number, j: number): void => { const t = heap[i]!; heap[i] = heap[j]!; heap[j] = t; };
+  const up = (i: number): void => {
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (!before(heap[i]!, heap[parent]!)) return;
+      swap(i, parent);
+      i = parent;
+    }
+  };
+  const down = (i: number): void => {
+    for (;;) {
+      const l = 2 * i + 1;
+      const r = l + 1;
+      let best = i;
+      if (l < heap.length && before(heap[l]!, heap[best]!)) best = l;
+      if (r < heap.length && before(heap[r]!, heap[best]!)) best = r;
+      if (best === i) return;
+      swap(i, best);
+      i = best;
+    }
+  };
+  for (let lane = 0; lane < lanes.length; lane += 1) { heap.push(lane); up(heap.length - 1); }
+  const ordered: Transaction[] = [];
+  while (heap.length) {
+    const lane = lanes[heap[0]!]!;
+    ordered.push(lane.queue[lane.index]!);
+    lane.index += 1;
+    if (lane.index < lane.queue.length) {
+      down(0);
+    } else {
+      const last = heap.pop()!;
+      if (heap.length) { heap[0] = last; down(0); }
+    }
+  }
+  return ordered;
 }
