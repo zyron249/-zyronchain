@@ -216,7 +216,12 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   function startValidator(name) {
     const index = VALIDATOR_NAMES.indexOf(name);
     const args = [dist("cli.js"), "node", "--genesis", genesisPath, "--data", join(dir, `data-${name}`),
-      "--host", "127.0.0.1", "--port", String(ports[index]), "--validator-key", join(dir, "keys", `${name}.json`)];
+      "--host", "127.0.0.1", "--port", String(ports[index]), "--validator-key", join(dir, "keys", `${name}.json`),
+      // P1-02-M3: the validators are reachable only over loopback, by this
+      // gateway (which enforces the public per-client limits) and by each
+      // other. Without the exemption every public request and all peer traffic
+      // shared one node RPC quota for 127.0.0.1.
+      "--rpc-rate-limit-exempt", "127.0.0.1"];
     for (const [i, port] of ports.entries()) if (i !== index) args.push("--peer", `http://127.0.0.1:${port}`);
     const child = spawn(process.execPath, args, { cwd: l1Root, stdio: ["ignore", "pipe", "pipe"] });
     const prefix = `[${name}] `;
@@ -263,6 +268,19 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       try { const result = await nodeFetch(node.port, path, init); if (result.status < 500) return result; last = result; } catch (error) { last = { status: 502, body: { error: "node unavailable" } }; }
     }
     return last ?? { status: 502, body: { error: "no validator available" } };
+  }
+  // P1-02-L1: GET /health is not rate limited (the platform health check uses
+  // it), so the validator fan-out is cached for HEALTH_CACHE_MS and concurrent
+  // requests share one in-flight check.
+  const HEALTH_CACHE_MS = 2_000;
+  let healthCache; let healthCacheAt = 0; let healthInFlight;
+  function cachedValidatorStatuses() {
+    if (healthCache && Date.now() - healthCacheAt < HEALTH_CACHE_MS) return Promise.resolve(healthCache);
+    healthInFlight ??= validatorStatuses().then((validators) => {
+      healthCache = { validators, checkedAtMs: Date.now() }; healthCacheAt = healthCache.checkedAtMs;
+      return healthCache;
+    }).finally(() => { healthInFlight = undefined; });
+    return healthInFlight;
   }
   async function validatorStatuses() {
     return Promise.all(VALIDATOR_NAMES.map(async (name) => {
@@ -404,12 +422,12 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       const ip = clientIp(request);
       if (request.method === "GET") {
         if (path === "/health" || path === "/healthz" || path === "/readyz") {
-          const validators = await validatorStatuses();
+          const { validators, checkedAtMs } = await cachedValidatorStatuses();
           const up = validators.filter((v) => v.up);
           const heights = up.map((v) => v.height);
           const quorum = Math.floor((2 * genesis.validators.length) / 3) + 1;
           const ok = up.length >= quorum;
-          return sendJson(response, ok ? 200 : 503, { ok, network: "testnet", valueBearing: false, chainId, quorum, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, validators });
+          return sendJson(response, ok ? 200 : 503, { ok, network: "testnet", valueBearing: false, chainId, quorum, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
@@ -548,7 +566,7 @@ async function smoke() {
     // and public reads beyond 600/min in aggregate (several clients, each
     // within the gateway's per-client limit) must not starve the validators.
     const healthBurst = await Promise.all(Array.from({ length: 32 }, () => get("/health")));
-    assert.ok(healthBurst.every((r) => r.status === 200), "health burst");
+    assert.ok(healthBurst.every((r) => r.status === 200 && Number.isSafeInteger(r.body.checkedAtMs)), "health burst");
     assert.ok(new Set(healthBurst.map((r) => r.body.checkedAtMs)).size <= 2, "concurrent /health requests must share one cached validator check");
     let healthFlood = 0;
     await Promise.all(Array.from({ length: 32 }, async () => { while (healthFlood < 800) { healthFlood += 1; await (await fetch(`${base}/health`)).arrayBuffer(); } }));

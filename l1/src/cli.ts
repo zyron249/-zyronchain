@@ -15,6 +15,7 @@ import { readCliCheckpointSnapshotAnchoredUtf8, readCliGenesisUtf8 } from "./cli
 import { readCliGovernanceArtifactUtf8 } from "./cli-governance-file.js";
 import { readOperatorAuthToken, readOperatorPrivateKey } from "./operator-secrets.js";
 import {
+  assertRpcRateLimitExemptConfiguration,
   assertSafeRpcBinding,
   BLOCK_INTERVAL_MS,
   createRpcServer,
@@ -311,7 +312,7 @@ async function runNode(args: string[]): Promise<void> {
     "--genesis", "--data", "--host", "--port", "--peer", "--advertise-peer", "--validator-key", "--peer-token-file",
     "--trusted-peer-public-key", "--rpc-trusted-proxy", "--p2p-listen", "--p2p-peer", "--p2p-peer-group", "--validator-signer-url",
     "--validator-public-key", "--validator-signer-token-file", "--validator-signer-allow-v6", "--ready-max-tip-age-ms",
-    "--p2p-consensus-peer"
+    "--p2p-consensus-peer", "--rpc-rate-limit-exempt", "--rpc-submit-per-minute"
   ]));
   const genesisPath = option(args, "--genesis");
   const dataDir = option(args, "--data");
@@ -321,6 +322,17 @@ async function runNode(args: string[]): Promise<void> {
   const host = option(args, "--host") ?? "127.0.0.1";
   const port = parsePort(option(args, "--port") ?? "9137");
   const trustedProxyAddresses = options(args, "--rpc-trusted-proxy");
+  // P1-02-M3: loopback addresses of a co-located gateway that enforces its own
+  // per-client limits; P1-02-L2: optional per-client POST /tx window.
+  const rateLimitExemptAddresses = options(args, "--rpc-rate-limit-exempt");
+  assertRpcRateLimitExemptConfiguration(rateLimitExemptAddresses, trustedProxyAddresses);
+  const submitPerMinuteText = option(args, "--rpc-submit-per-minute");
+  const submitRequestsPerWindow = submitPerMinuteText === undefined
+    ? undefined
+    : parseSafeInteger(submitPerMinuteText, "rpc-submit-per-minute");
+  if (submitRequestsPerWindow !== undefined && submitRequestsPerWindow < 1) {
+    throw new Error("--rpc-submit-per-minute must be at least 1");
+  }
   const peerUrls = options(args, "--peer");
   const nativeListen = options(args, "--p2p-listen").map(parseNativeListenAddress);
   const nativePeers = options(args, "--p2p-peer").map(parseNativePeerAddress);
@@ -513,6 +525,8 @@ async function runNode(args: string[]): Promise<void> {
     peerDirectory,
     ...(trustedPeerPublicKeys.length ? { trustedPeerPublicKeys } : {}),
     ...(trustedProxyAddresses.length ? { trustedProxyAddresses } : {}),
+    ...(rateLimitExemptAddresses.length ? { rateLimitExemptAddresses } : {}),
+    ...(submitRequestsPerWindow !== undefined ? { submitRequestsPerWindow } : {}),
     onTransactionAccepted: async (transaction) => {
       await Promise.allSettled([
         peers.broadcastTransaction(transaction),

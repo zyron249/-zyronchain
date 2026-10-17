@@ -47,9 +47,22 @@ export interface GatewayClientIdentityOptions {
   trustCloudflareConnectingIp: boolean;
 }
 
-function isLoopback(address: string): boolean {
-  const normalized = address.toLowerCase();
-  return normalized === "::1" || normalized === "127.0.0.1" || normalized === "::ffff:127.0.0.1";
+/**
+ * True for every loopback address in any IP-literal spelling: 127.0.0.0/8
+ * (also IPv4-mapped, dotted or hexadecimal) and ::1. All of them are the same
+ * local trust boundary (R14-1037-L1: a local proxy on 127.0.0.2 or a
+ * non-canonical spelling must not lose its appended X-Forwarded-For entry).
+ */
+export function isLoopbackAddress(address: string): boolean {
+  const bucket = clientAddressBucket(address);
+  if (bucket === undefined) return false;
+  if (isIP(bucket) === 4) return bucket.startsWith("127.");
+  const normalized = address.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
+  try {
+    return new URL(`http://[${normalized}]/`).hostname === "[::1]";
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -77,7 +90,7 @@ export function gatewayClientIdentity(
     const client = typeof edge === "string" ? clientAddressBucket(edge) : undefined;
     return client ?? `proxy:${remote}`;
   }
-  if (!isLoopback(remoteAddress)) return remote;
+  if (!isLoopbackAddress(remoteAddress)) return remote;
   const forwarded = headers["x-forwarded-for"];
   if (typeof forwarded !== "string" || forwarded.length === 0 || forwarded.length > MAX_GATEWAY_FORWARDED_HEADER_CHARS) {
     return `proxy:${remote}`;
