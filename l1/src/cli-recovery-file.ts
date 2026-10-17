@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { readBoundedFileBuffer, readBoundedUtf8File, type BoundedFileFaultHooks } from "./bounded-file.js";
+import { readBoundedFileBuffer, type BoundedFileFaultHooks } from "./bounded-file.js";
 import { assertBoundedCheckpointJsonStructure } from "./checkpoint-json-complexity.js";
 import { readBoundedRegularControlFile } from "./control-file.js";
 
