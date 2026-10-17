@@ -10,11 +10,16 @@ import { postAllowingEarlyClose } from "./support/http-post.js";
 
 // Larger than loopback socket buffers, so the client is still writing when the
 // response arrives (asserted below, the scenario is not vacuous).
-const LARGE_BODY_BYTES = 64 * 1024 * 1024;
+const LARGE_BODY_BYTES = 32 * 1024 * 1024;
 const REFUSAL_BODY = '{"error":"Peer authentication required"}';
 const REFUSAL =
   "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nconnection: keep-alive\r\n" +
   `content-length: ${Buffer.byteLength(REFUSAL_BODY)}\r\n\r\n${REFUSAL_BODY}`;
+
+// Which of these surfaces first depends on platform and timing; any of them is a rejection.
+function isConnectionClosedError(error: NodeJS.ErrnoException): boolean {
+  return ["ECONNRESET", "EPIPE", "ECANCELED"].includes(error.code ?? "");
+}
 
 async function withRawServer(onConnection: (socket: Socket) => void, run: (port: number) => Promise<void>): Promise<void> {
   const sockets = new Set<Socket>();
@@ -58,7 +63,7 @@ test("early refusal: a server reset while the body is still being written keeps 
       assert.equal(writeFinishedAtResponseEnd, false, "the body write must still be pending when the response ends");
       assert.equal(result.status, 401);
       assert.equal(result.body, REFUSAL_BODY);
-      assert.match(result.earlyClose ?? "", /^(read|write|socket) (ECONNRESET|EPIPE)$/);
+      assert.match(result.earlyClose ?? "", /^(read|write|socket) (ECONNRESET|EPIPE|ECANCELED)$/);
     });
     // Give any late socket error a chance to surface.
     await new Promise((done) => setTimeout(done, 50));
@@ -102,7 +107,7 @@ test("early refusal: a reset before any response still rejects", async () => {
   }, async (port) => {
     await assert.rejects(
       postAllowingEarlyClose(port, "/v6/commit", Buffer.alloc(LARGE_BODY_BYTES, 0x61)),
-      (error: NodeJS.ErrnoException) => error.code === "ECONNRESET" || error.code === "EPIPE"
+      isConnectionClosedError
     );
   });
 });
@@ -117,7 +122,7 @@ test("early refusal: a reset in the middle of the response still rejects", async
   }, async (port) => {
     await assert.rejects(
       postAllowingEarlyClose(port, "/v6/commit", Buffer.alloc(LARGE_BODY_BYTES, 0x61)),
-      (error: NodeJS.ErrnoException) => error.code === "ECONNRESET" || error.code === "EPIPE"
+      isConnectionClosedError
     );
   });
 });

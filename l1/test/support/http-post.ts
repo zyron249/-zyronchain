@@ -15,7 +15,7 @@
 //   has settled, so callers do not tear the server down mid-write;
 // - keeps its own 'error' listener on the socket for the whole request, so a
 //   socket error can never become an uncaughtException;
-// - tolerates ECONNRESET/EPIPE only after the complete response was received
+// - tolerates ECONNRESET/EPIPE/ECANCELED only after the complete response was received
 //   (the expected early close after a refusal). Any error before that, an
 //   incomplete response, or any other error code still rejects.
 import { Agent, request as httpRequest, type ClientRequest, type IncomingHttpHeaders } from "node:http";
@@ -28,7 +28,8 @@ export interface PostResult {
   earlyClose?: string;
 }
 
-const EARLY_CLOSE_CODES = new Set(["ECONNRESET", "EPIPE"]);
+// ECANCELED: the pending body write was cancelled because the connection closed.
+const EARLY_CLOSE_CODES = new Set(["ECONNRESET", "EPIPE", "ECANCELED"]);
 
 export function postAllowingEarlyClose(
   port: number,
