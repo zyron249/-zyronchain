@@ -169,7 +169,10 @@ test("F-09(b): an invalid key preimage is rejected at the first key chunk", asyn
     await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
       const request = await readRequest(stream);
       if (request.kind === "manifest") {
-        await writeP2PFrame(stream, manifestFrame(fixture, { keyCount: 5_000 }), 2_500_000, 5_000);
+        // P1-08: the key count is authenticated by the anchored tree and an inflated one is
+        // now rejected before any key request (p1-08-authenticated-counts.test.ts), so the
+        // per-chunk preimage check is exercised with the anchored count.
+        await writeP2PFrame(stream, manifestFrame(fixture), 2_500_000, 5_000);
         await stream.close();
         return;
       }
@@ -248,7 +251,10 @@ test("round-4 PR980: an unknown semantic key preimage is rejected at the first k
     await fixture.sourceNode.handle(P2P_STATE_PROTOCOL, async (stream) => {
       const request = await readRequest(stream);
       if (request.kind === "manifest") {
-        await writeP2PFrame(stream, manifestFrame(fixture, { keyCount: 5_000 }), 2_500_000, 5_000);
+        // P1-08: the key count is authenticated by the anchored tree and an inflated one is
+        // now rejected before any key request (p1-08-authenticated-counts.test.ts), so the
+        // per-chunk preimage check is exercised with the anchored count.
+        await writeP2PFrame(stream, manifestFrame(fixture), 2_500_000, 5_000);
         await stream.close();
         return;
       }
