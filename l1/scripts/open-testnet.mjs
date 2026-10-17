@@ -543,6 +543,23 @@ async function smoke() {
     assert.deepEqual(Object.keys(await peerStatus.json()).sort(), ["chainId", "genesisHash", "height", "tipHash"]);
     assert.equal((await (await fetch(`${base}/peer/blocks?from=1&limit=2`)).json()).blocks.length, 2);
     assert.equal((await post("/peer/block", {})).status, 404);
+    // P1-02-M3 / L1: GET /health stays unthrottled for platform health checks,
+    // so it is cached and must not exhaust the validators' node RPC capacity;
+    // and public reads beyond 600/min in aggregate (several clients, each
+    // within the gateway's per-client limit) must not starve the validators.
+    const healthBurst = await Promise.all(Array.from({ length: 32 }, () => get("/health")));
+    assert.ok(healthBurst.every((r) => r.status === 200), "health burst");
+    assert.ok(new Set(healthBurst.map((r) => r.body.checkedAtMs)).size <= 2, "concurrent /health requests must share one cached validator check");
+    let healthFlood = 0;
+    await Promise.all(Array.from({ length: 32 }, async () => { while (healthFlood < 800) { healthFlood += 1; await (await fetch(`${base}/health`)).arrayBuffer(); } }));
+    const readAs = async (client) => (await fetch(`${base}/balance/${info.faucetAddress}`, { headers: { "x-forwarded-for": client } })).status;
+    const readStatuses = {}; let readIndex = 0;
+    await Promise.all(Array.from({ length: 32 }, async () => {
+      while (readIndex < 800) { const client = `198.51.100.${10 + (readIndex % 4)}`; readIndex += 1; const code = await readAs(client); readStatuses[code] = (readStatuses[code] ?? 0) + 1; }
+    }));
+    assert.deepEqual(readStatuses, { 200: 800 }, "reads within each client's limit must not hit the validators' rate limit");
+    assert.equal((await get(`/balance/${info.faucetAddress}`)).status, 200);
+    assert.ok((await network.validatorStatuses()).every((v) => v.up && v.ready), "validators must stay ready under gateway load");
     const alice = newAccount(); const bob = newAccount();
     const drip = await post("/faucet", { address: alice.address });
     assert.equal(drip.status, 200, JSON.stringify(drip.body));

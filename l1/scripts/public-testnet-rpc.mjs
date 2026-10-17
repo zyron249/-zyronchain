@@ -392,6 +392,20 @@ async function smokeTest() {
   assert.equal((await get("/balance/not-an-address")).status, 400);
   assert.equal((await get("/blocks")).status, 404, "node-internal endpoints must not be exposed");
   assert.equal((await post("/block", {})).status, 404, "consensus endpoints must not be exposed");
+  // P1-02-M3: neither unthrottled /health nor reads beyond 600/min in
+  // aggregate (several clients, each within the per-client limit) may exhaust
+  // the validator's node RPC capacity for the gateway.
+  let healthFlood = 0;
+  await Promise.all(Array.from({ length: 32 }, async () => { while (healthFlood < 800) { healthFlood += 1; await (await fetch(`${base}/health`)).arrayBuffer(); } }));
+  const readStatuses = {}; let readIndex = 0;
+  await Promise.all(Array.from({ length: 32 }, async () => {
+    while (readIndex < 400) {
+      const client = `198.51.100.${10 + (readIndex % 4)}`; readIndex += 1;
+      const code = (await fetch(`${base}/balance/${faucet.address}`, { headers: { "x-forwarded-for": client } })).status;
+      readStatuses[code] = (readStatuses[code] ?? 0) + 1;
+    }
+  }));
+  assert.deepEqual(readStatuses, { 200: 400 }, "reads within each client's limit must not hit the validator's rate limit");
 
   const alice = account("smoke-alice-" + Date.now());
   const bob = account("smoke-bob-" + Date.now());
