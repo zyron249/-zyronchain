@@ -60,9 +60,7 @@ import {
   assertAddress,
   assertExactKeys,
   assertPlainRecord,
-  protocolUpgradeApprovalPayload,
   validateTransactionShape,
-  validatorUpdateApprovalPayload,
   verifyProtocolUpgradeApprovalSignature,
   verifyValidatorUpdateApprovalSignature
 } from "./transaction.js";
