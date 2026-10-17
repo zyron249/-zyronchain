@@ -12,9 +12,13 @@ import { postAllowingEarlyClose } from "./support/http-post.js";
 // response arrives (asserted below, the scenario is not vacuous).
 const LARGE_BODY_BYTES = 32 * 1024 * 1024;
 const REFUSAL_BODY = '{"error":"Peer authentication required"}';
-const REFUSAL =
-  "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nconnection: keep-alive\r\n" +
-  `content-length: ${Buffer.byteLength(REFUSAL_BODY)}\r\n\r\n${REFUSAL_BODY}`;
+function refusal(connection: "keep-alive" | "close"): string {
+  return "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\n" +
+    `connection: ${connection}\r\ncontent-length: ${Buffer.byteLength(REFUSAL_BODY)}\r\n\r\n${REFUSAL_BODY}`;
+}
+const REFUSAL = refusal("keep-alive");
+// A hang here would mean the helper waits forever for a body the server will never read.
+const NO_HANG = { timeout: 15_000 };
 
 // Which of these surfaces first depends on platform and timing; any of them is a rejection.
 function isConnectionClosedError(error: NodeJS.ErrnoException): boolean {
@@ -100,6 +104,27 @@ test("early refusal: the helper resolves only after the body write has settled, 
     assert.equal(result.body, REFUSAL_BODY);
   });
 });
+
+for (const [name, connection] of [
+  ["Connection: close, then a clean half-close", "close"],
+  ["keep-alive, then a clean FIN", "keep-alive"]
+] as const) {
+  test(`early refusal: ${name} without reading the body resolves with the refusal instead of hanging`, NO_HANG, async () => {
+    await withRawServer((socket) => {
+      socket.once("data", () => {
+        // Never read the body; answer, then end our side cleanly (FIN, no reset).
+        socket.pause();
+        socket.write(refusal(connection));
+        socket.end();
+      });
+    }, async (port) => {
+      const result = await postAllowingEarlyClose(port, "/tx", Buffer.alloc(LARGE_BODY_BYTES, 0x61));
+      assert.equal(result.status, 401);
+      assert.equal(result.body, REFUSAL_BODY);
+      assert.match(result.earlyClose ?? "", /^server closed \((connection: close|FIN)\)$|^(read|write|socket) (ECONNRESET|EPIPE|ECANCELED)$/);
+    });
+  });
+}
 
 test("early refusal: a reset before any response still rejects", async () => {
   await withRawServer((socket) => {

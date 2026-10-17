@@ -12,13 +12,16 @@
 //
 // This helper:
 // - resolves only once the full response has been received AND the body write
-//   has settled, so callers do not tear the server down mid-write;
+//   has settled, so callers do not tear the server down mid-write. If the
+//   server signals that it will not read the rest of the body (Connection:
+//   close, FIN or a closed socket) after a complete response, the upload is
+//   aborted and recorded as an early close instead of waiting forever;
 // - keeps its own 'error' listener on the socket for the whole request, so a
 //   socket error can never become an uncaughtException;
 // - tolerates ECONNRESET/EPIPE/ECANCELED only after the complete response was received
 //   (the expected early close after a refusal). Any error before that, an
 //   incomplete response, or any other error code still rejects.
-import { Agent, request as httpRequest, type ClientRequest, type IncomingHttpHeaders } from "node:http";
+import { Agent, request as httpRequest, type ClientRequest, type IncomingHttpHeaders, type IncomingMessage } from "node:http";
 
 export interface PostResult {
   status: number;
@@ -45,6 +48,10 @@ export function postAllowingEarlyClose(
     let result: PostResult | undefined;
     let writeSettled = false;
     let done = false;
+    // Set once the server has said it will not read the rest of the body:
+    // "Connection: close" on the response, a FIN, or a closed socket.
+    let serverClosed: string | undefined;
+    let incoming: IncomingMessage | undefined;
     const settle = (error?: Error): void => {
       if (done) return;
       if (error === undefined && (result === undefined || !writeSettled)) return;
@@ -52,6 +59,17 @@ export function postAllowingEarlyClose(
       agent.destroy();
       if (error !== undefined) reject(error);
       else resolveResult(result!);
+    };
+    // After a complete response from a server that is closing, stop waiting
+    // for the unread body: record the early close and abort the upload.
+    const abandonUpload = (): void => {
+      if (done || result === undefined || serverClosed === undefined) return;
+      if (!writeSettled) {
+        result.earlyClose ??= serverClosed;
+        writeSettled = true;
+        request.destroy();
+      }
+      settle();
     };
     const onError = (error: NodeJS.ErrnoException): void => {
       if (done) return;
@@ -66,18 +84,37 @@ export function postAllowingEarlyClose(
     const request = httpRequest(
       { host: "127.0.0.1", port, path, method: "POST", agent, headers: { "content-type": "application/json", ...headers } },
       (response) => {
+        incoming = response;
         const chunks: Buffer[] = [];
         response.on("data", (chunk: Buffer) => chunks.push(chunk));
         // An incomplete response (socket closed mid-response) errors here and rejects.
         response.on("error", onError);
         response.on("end", () => {
           result = { status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8"), headers: response.headers };
+          if (/(?:^|,)\s*close\s*(?:,|$)/i.test(String(response.headers.connection ?? ""))) serverClosed ??= "server closed (connection: close)";
           settle();
+          abandonUpload();
         });
       }
     );
     request.on("error", onError);
-    request.on("socket", (socket) => socket.on("error", onError));
+    request.on("socket", (socket) => {
+      socket.on("error", onError);
+      socket.once("end", () => {
+        serverClosed ??= "server closed (FIN)";
+        abandonUpload();
+      });
+    });
+    request.on("close", () => {
+      if (done) return;
+      serverClosed ??= "socket closed";
+      // A complete response may still be delivering its 'end'; that handler settles.
+      if (result === undefined && incoming?.complete !== true) {
+        settle(new Error("connection closed before a complete response"));
+        return;
+      }
+      abandonUpload();
+    });
     request.on("finish", () => {
       // Node also emits 'finish' when the last body write failed; that is a
       // write error, not a completed write.
