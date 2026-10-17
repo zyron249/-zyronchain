@@ -2201,21 +2201,20 @@ function writeJson(
     throw error;
   }
   if (release) {
+    response.once("finish", release);
+    response.once("close", release);
+    // P1-02-L3: abort a response still unsent at the absolute deadline;
+    // destroying the socket emits "close", which releases the reservation
+    // (release is idempotent).
     const releaseReservation = release;
-    const deadlineMs = rpcResponseDeadlines.get(response) ?? DEFAULT_RPC_RESPONSE_DEADLINE_MS;
     const deadline = setTimeout(() => {
-      // P1-02-L3: abort a response still unsent at the absolute deadline;
-      // destroying the socket emits "close", which releases the reservation.
       response.destroy();
       releaseReservation();
-    }, deadlineMs);
+    }, rpcResponseDeadlines.get(response) ?? DEFAULT_RPC_RESPONSE_DEADLINE_MS);
     deadline.unref();
-    const done = (): void => {
-      clearTimeout(deadline);
-      releaseReservation();
-    };
-    response.once("finish", done);
-    response.once("close", done);
+    const clearDeadline = (): void => clearTimeout(deadline);
+    response.once("finish", clearDeadline);
+    response.once("close", clearDeadline);
   }
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
