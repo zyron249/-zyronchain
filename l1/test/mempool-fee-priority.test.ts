@@ -4,7 +4,7 @@ import test from "node:test";
 import { canonicalJson } from "../src/codec.js";
 import { orderPendingByFeePriority, ZyronChain } from "../src/chain.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
-import { createTransfer } from "../src/transaction.js";
+import { createTransfer, createValidatorApproval, createValidatorSetUpdate } from "../src/transaction.js";
 import type { GenesisConfig, Transaction } from "../src/types.js";
 
 // External reviewer note EXT-01: selection used to be ordered by sender
@@ -83,4 +83,65 @@ test("same sender and nonce alternatives: higher fee is tried first", () => {
   const first = transfer(low, 1, 1);
   const bump = transfer(low, 1, 9, 101);
   assert.deepEqual(chain.selectValidPending([first, bump], 10).map((tx) => tx.txid), [bump.txid]);
+});
+
+// Round-18 independent retest of #1041 (R18-1041-L1, R18-1041-L2).
+
+function governanceGenesis(): GenesisConfig {
+  return { ...genesis(), validators: [low, high].map(({ address, publicKey }) => ({ address, publicKey })) };
+}
+
+function validatorUpdate(from: typeof low, nonce: number, activationHeight: number, timestampMs: number, approve = true): Transaction {
+  const base = governanceGenesis();
+  const input = { chainId: base.chainId, sender: from.address, nonce, activationHeight, validators: base.validators };
+  const approvals = approve ? [low, high].map((validator) => createValidatorApproval(input, validator.privateKey, validator.publicKey)) : [];
+  return createValidatorSetUpdate({ ...input, approvals, timestampMs }, from.privateKey, from.publicKey);
+}
+
+test("validator updates from different senders are selected in activation-height order (R18-1041-L1)", () => {
+  const chain = new ZyronChain(governanceGenesis());
+  const early = validatorUpdate(low, 1, 150, 120); // earlier activation, later timestamp
+  const late = validatorUpdate(high, 1, 250, 110);
+  for (const input of [[early, late], [late, early]]) {
+    assert.deepEqual(chain.selectValidPending(input, 10).map((tx) => tx.txid), [early.txid, late.txid]);
+  }
+});
+
+test("an authorized protocol transaction lifts its sender's nonce predecessors above fee-paying transfers (R18-1041-L2)", () => {
+  const chain = new ZyronChain(governanceGenesis());
+  const cheap = transfer(low, 1, 1);
+  const update = validatorUpdate(low, 2, 150, 102);
+  const rich1 = transfer(high, 1, 100);
+  const rich2 = transfer(high, 2, 100);
+  assert.deepEqual(chain.selectValidPending([rich1, rich2, update, cheap], 2).map((tx) => tx.txid), [cheap.txid, update.txid]);
+});
+
+test("an unauthorized protocol transaction does not lift its sender's predecessors", () => {
+  const chain = new ZyronChain(governanceGenesis());
+  const cheap = transfer(low, 1, 1);
+  const unapproved = validatorUpdate(low, 2, 150, 102, false);
+  const rich1 = transfer(high, 1, 100);
+  const rich2 = transfer(high, 2, 100);
+  assert.deepEqual(chain.selectValidPending([cheap, unapproved, rich1, rich2], 2).map((tx) => tx.txid), [rich1.txid, rich2.txid]);
+  // The pure ordering never lifts predecessors unless the caller vouches for the protocol transaction.
+  const fake = { ...transfer(low, 2, 0), kind: "validator_update", activationHeight: 150 } as unknown as Transaction;
+  assert.deepEqual(orderPendingByFeePriority([cheap, fake, rich1]).map((tx) => tx.txid), [rich1.txid, cheap.txid, fake.txid]);
+});
+
+test("protocol ordering is a total order: deterministic for every permutation", () => {
+  const governance = (from: typeof low, kind: string, activationHeight: number, timestampMs: number): Transaction =>
+    ({ ...transfer(from, 1, 0, timestampMs), kind, activationHeight }) as unknown as Transaction;
+  const a = governance(low, "validator_update", 100, 130);
+  const b = governance(high, "validator_update", 200, 110);
+  const c = governance(accounts[1]!, "protocol_upgrade", 50, 120);
+  const d = transfer(accounts[2]!, 1, 9);
+  const all = [a, b, c, d];
+  const expected = orderPendingByFeePriority(all).map((tx) => tx.txid);
+  const permutations = (items: Transaction[]): Transaction[][] => items.length <= 1 ? [items] :
+    items.flatMap((item, i) => permutations([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest]));
+  for (const permutation of permutations(all)) {
+    assert.deepEqual(orderPendingByFeePriority(permutation).map((tx) => tx.txid), expected);
+  }
+  assert.ok(expected.indexOf(a.txid) < expected.indexOf(b.txid), "lower validator activation first");
+  assert.equal(expected[3], d.txid, "transfers after protocol transactions");
 });
