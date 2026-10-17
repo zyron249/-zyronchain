@@ -3,7 +3,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
-import { request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +11,7 @@ import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { createRpcServer, MAX_SYNC_BLOCKS, NodeService } from "../src/node-base.js";
 import { ChainStore } from "../src/storage.js";
 import type { GenesisConfig } from "../src/types.js";
+import { postAllowingEarlyClose } from "./support/http-post.js";
 
 const MAX_RPC_BODY_BYTES = 2_500_000; // node-base.ts MAX_BODY_BYTES
 
@@ -41,16 +41,10 @@ async function withServer(options: Parameters<typeof createRpcServer>[1], run: (
   }
 }
 
+// T-D31-1: the server refuses these bodies before reading them, so the shared
+// helper tolerates the expected early close only after the full response.
 function post(port: number, path: string, body: Buffer, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
-  return new Promise((resolveResponse, reject) => {
-    const req = httpRequest({ host: "127.0.0.1", port, path, method: "POST", headers: { "content-type": "application/json", ...headers } }, (res) => {
-      const chunks: Buffer[] = [];
-      res.on("data", (chunk: Buffer) => chunks.push(chunk));
-      res.on("end", () => resolveResponse({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
-    });
-    req.on("error", reject);
-    req.end(body);
-  });
+  return postAllowingEarlyClose(port, path, body, headers);
 }
 
 // A JSON object of exactly `bytes` bytes.
