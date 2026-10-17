@@ -1131,8 +1131,10 @@ function applyMiningClaimStateV2(state: SparseMerkleState, tx: MiningClaimTx): S
  *     activation cannot advance a governance cursor past an earlier, otherwise
  *     compatible update (R18-1041-L1).
  *  2. A sender's lower-nonce transactions in front of a protocol transaction
- *     that `isAuthorizedProtocolTx` vouches for are ranked like that protocol
- *     transaction, because it cannot be included without them (R18-1041-L2).
+ *     that `isAuthorizedProtocolTx` vouches for are ranked like the nearest
+ *     such protocol transaction after them, because it cannot be included
+ *     without them (R18-1041-L2). This holds for every vouched protocol
+ *     transaction in the lane, not only the first.
  *     The default vouches for nothing, so callers decide (selection checks
  *     signatures and oracle/validator-quorum authorization first).
  *  3. Then, among per-sender queue heads, highest feeAtoms first.
@@ -1154,13 +1156,15 @@ export function orderPendingByFeePriority(
   };
   const activationOf = (tx: Transaction): number =>
     tx.kind === "validator_update" || tx.kind === "protocol_upgrade" ? tx.activationHeight : 0;
-  interface Lane { queue: Transaction[]; index: number; liftedUntil: number }
+  // liftTarget[i]: index of the first authorized protocol transaction at or after i (-1 if none).
+  interface Lane { queue: Transaction[]; index: number; liftTarget: number[] }
   // Priority key of a lane's current head: [class, rank, activation]; class 0 = protocol.
   const headKey = (lane: Lane): [number, number, number] => {
     const head = lane.queue[lane.index]!;
     if (head.kind !== "transfer") return [0, protocolRank(head), activationOf(head)];
-    if (lane.index < lane.liftedUntil) {
-      const lifter = lane.queue[lane.liftedUntil]!;
+    const target = lane.liftTarget[lane.index]!;
+    if (target >= 0) {
+      const lifter = lane.queue[target]!;
       return [0, protocolRank(lifter), activationOf(lifter)];
     }
     return [1, 0, 0];
@@ -1192,8 +1196,14 @@ export function orderPendingByFeePriority(
       right.feeAtoms - left.feeAtoms ||
       left.timestampMs - right.timestampMs ||
       compareCanonicalStrings(left.txid, right.txid));
-    const lifter = queue.findIndex((tx) => tx.kind !== "transfer" && isAuthorizedProtocolTx(tx));
-    lanes.push({ queue, index: 0, liftedUntil: lifter < 0 ? 0 : lifter });
+    const liftTarget = new Array<number>(queue.length);
+    let next = -1;
+    for (let i = queue.length - 1; i >= 0; i -= 1) {
+      const tx = queue[i]!;
+      if (tx.kind !== "transfer" && isAuthorizedProtocolTx(tx)) next = i;
+      liftTarget[i] = next;
+    }
+    lanes.push({ queue, index: 0, liftTarget });
   }
   // Binary heap of lanes keyed by their current head.
   const before = (a: number, b: number): boolean => headBefore(lanes[a]!, lanes[b]!);
