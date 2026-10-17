@@ -60,9 +60,7 @@ import {
   assertAddress,
   assertExactKeys,
   assertPlainRecord,
-  protocolUpgradeApprovalPayload,
   validateTransactionShape,
-  validatorUpdateApprovalPayload,
   verifyProtocolUpgradeApprovalSignature,
   verifyValidatorUpdateApprovalSignature
 } from "./transaction.js";
@@ -887,7 +885,6 @@ function validateValidatorUpdateAuthorization(
   if (tx.activationHeight <= lastActivationHeight) throw new Error("Validator activation height must increase");
   const allowed = new Map(currentValidators.map((validator) => [validator.address, validator.publicKey]));
   if (!allowed.has(tx.sender)) throw new Error("Validator update initiator is not active");
-  const payload = validatorUpdateApprovalPayload(tx);
   const seen = new Set<string>();
   let valid = 0;
   for (const approval of tx.approvals) {
@@ -932,7 +929,6 @@ function validateProtocolUpgradeAuthorization(
     `Protocol downgrade refused: version ${tx.protocolVersion} after protocol v${lastScheduledVersion} is scheduled`);
   const allowed = new Map(currentValidators.map((validator) => [validator.address, validator.publicKey]));
   if (!allowed.has(tx.sender)) throw new Error("Protocol upgrade initiator is not active");
-  const payload = protocolUpgradeApprovalPayload(tx);
   const seen = new Set<string>();
   let valid = 0;
   for (const approval of tx.approvals) {
