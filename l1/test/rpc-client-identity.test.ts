@@ -120,3 +120,62 @@ test("gateway loopback proxy with malformed or oversized forwarding falls back t
   assert.equal(gatewayClientIdentity("127.0.0.1", { "x-forwarded-for": `${"1.1.1.1, ".repeat(400)}198.51.100.7` }, options), "proxy:127.0.0.1");
   assert.equal(gatewayClientIdentity(undefined, {}, options), "unknown");
 });
+
+// R14-1037-L1 (independent QA retest of the P1-02 fix): the loopback-proxy
+// check accepted only three literal spellings, so a local proxy connecting
+// from another 127.0.0.0/8 address, or a non-canonical spelling of a loopback
+// address, lost its appended X-Forwarded-For entry and every client behind it
+// shared the proxy's bucket. Every loopback address (127.0.0.0/8 and ::1, in
+// any spelling, including IPv4-mapped) is the same local trust boundary.
+test("gateway treats every loopback spelling and 127.0.0.0/8 address as the local proxy", () => {
+  const options = { trustCloudflareConnectingIp: false };
+  for (const proxy of [
+    "127.0.0.1", "127.0.0.2", "127.255.255.254", "::ffff:127.0.0.2", "::FFFF:127.0.0.1",
+    "::ffff:7f00:1", "::ffff:7f00:2", "0:0:0:0:0:0:0:1", "0000:0000:0000:0000:0000:0000:0000:0001", "[::1]", "::0.0.0.1"
+  ]) {
+    const first = gatewayClientIdentity(proxy, { "x-forwarded-for": "203.0.113.99, 198.51.100.7" }, options);
+    const second = gatewayClientIdentity(proxy, { "x-forwarded-for": "198.51.100.8" }, options);
+    assert.equal(first, "198.51.100.7", proxy);
+    assert.equal(second, "198.51.100.8", proxy);
+  }
+});
+
+test("gateway still ignores forwarding headers from non-loopback look-alikes", () => {
+  const options = { trustCloudflareConnectingIp: false };
+  const headers = { "x-forwarded-for": "198.51.100.7" };
+  for (const [transport, bucket] of [
+    ["128.0.0.1", "128.0.0.1"],
+    ["126.255.255.255", "126.255.255.255"],
+    ["0.0.0.0", "0.0.0.0"],
+    ["::2", "ipv6:0000:0000:0000:0000/64"],
+    ["::127.0.0.1", "ipv6:0000:0000:0000:0000/64"],
+    ["64:ff9b::127.0.0.1", "ipv6:0064:ff9b:0000:0000/64"],
+    ["::ffff:128.0.0.1", "128.0.0.1"]
+  ] as const) {
+    assert.equal(gatewayClientIdentity(transport, headers, options), bucket, transport);
+  }
+});
+
+test("gateway behind a local proxy on 127.0.0.2 keys distinct clients separately (real socket)", async (t) => {
+  const { createServer } = await import("node:http");
+  const { request } = await import("node:http");
+  const seen: string[] = [];
+  const server = createServer((req, res) => {
+    seen.push(gatewayClientIdentity(req.socket.remoteAddress, req.headers, { trustCloudflareConnectingIp: false }));
+    res.end("ok");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const port = (server.address() as { port: number }).port;
+  const get = (forwardedFor: string) => new Promise<void>((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, path: "/", localAddress: "127.0.0.2", headers: { "x-forwarded-for": forwardedFor, connection: "close" } }, (res) => {
+      res.resume();
+      res.on("end", resolve);
+    });
+    req.on("error", reject);
+    req.end();
+  });
+  await get("198.51.100.7");
+  await get("198.51.100.8");
+  assert.deepEqual(seen, ["198.51.100.7", "198.51.100.8"]);
+});
