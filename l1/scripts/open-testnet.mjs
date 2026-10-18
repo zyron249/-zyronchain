@@ -58,6 +58,11 @@ const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 const RESERVED_CHAIN_IDS = new Set(["zyron-mainnet-1", "zyron-public-testnet-1"]);
 
 const STARTUP_GRACE_MS = 10 * 60_000;
+// Boot liveness (download/decrypt/replay): /health stays 200 only while start-up
+// makes progress (a phase change, a download attempt, a replayed block, a
+// validator copy). Longer than one 180 s download attempt; no wall-clock cap,
+// because a large snapshot on a slow instance replays for a long time.
+export const BOOT_STALL_MS = 5 * 60_000;
 const SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS = [2_000, 5_000];
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "600" };
 const SECURITY = { "x-content-type-options": "nosniff", "x-zyron-network": "testnet-no-value", "referrer-policy": "no-referrer" };
@@ -89,9 +94,11 @@ export async function listenGateway(server, port, host) {
 // Startup progress shared by the boot handler and the phase timing log.
 export function createBootState(log = true) {
   const startedAtMs = Date.now();
-  const boot = { phase: "boot", startedAtMs, phaseStartedAtMs: startedAtMs, timings: {} };
+  const boot = { phase: "boot", startedAtMs, phaseStartedAtMs: startedAtMs, lastProgressAtMs: startedAtMs, timings: {} };
+  boot.progress = () => { boot.lastProgressAtMs = Date.now(); };
   boot.enter = (phase) => {
     const now = Date.now();
+    boot.lastProgressAtMs = now;
     const ms = now - boot.phaseStartedAtMs;
     boot.timings[boot.phase] = (boot.timings[boot.phase] ?? 0) + ms;
     if (log) console.log(`startup phase ${boot.phase} done in ${ms}ms; entering ${phase} (elapsed ${now - startedAtMs}ms)`);
@@ -99,15 +106,19 @@ export function createBootState(log = true) {
   };
   return boot;
 }
-export function createBootHandler(boot) {
+export function createBootHandler(boot, { stallMs = BOOT_STALL_MS } = {}) {
   return (request, response) => {
     if (request.method === "OPTIONS") { response.writeHead(204, CORS); return response.end(); }
     const path = String(request.url ?? "/").split("?")[0].replace(/\/+$/, "") || "/";
-    const body = { ok: false, status: "starting", phase: boot.phase, network: "testnet", valueBearing: false, startedAtMs: boot.startedAtMs, elapsedMs: Date.now() - boot.startedAtMs };
-    // Liveness: the process is up and making progress, so the platform health
-    // check passes. Readiness and every RPC endpoint wait for the validators.
-    if (request.method === "GET" && (path === "/health" || path === "/healthz")) return writeJson(response, 200, body);
-    return writeJson(response, 503, { ...body, error: "gateway is starting; retry shortly" }, { "retry-after": "10" });
+    const now = Date.now();
+    const sinceProgressMs = now - boot.lastProgressAtMs;
+    const stalled = sinceProgressMs > stallMs;
+    const body = { ok: false, status: stalled ? "stalled" : "starting", phase: boot.phase, network: "testnet", valueBearing: false, startedAtMs: boot.startedAtMs, elapsedMs: now - boot.startedAtMs, sinceProgressMs };
+    // Liveness: the process is up and start-up is making progress, so the
+    // platform health check passes. A stalled start-up answers 503 so the host
+    // restarts it. Readiness and every RPC endpoint wait for the validators.
+    if (request.method === "GET" && (path === "/health" || path === "/healthz") && !stalled) return writeJson(response, 200, body);
+    return writeJson(response, 503, { ...body, error: stalled ? "gateway start-up stalled" : "gateway is starting; retry shortly" }, { "retry-after": "10" });
   };
 }
 
@@ -169,7 +180,7 @@ export function openSnapshot(bytes, secret) {
 // the finalized log + checkpoint are copied to the other validators, each of
 // which re-opens and verifies them, so neither the restore nor the validator
 // start-up pays for a full replay four times (startup cost on a 0.1-CPU host).
-export async function restoreNetwork(dir, bundle, expectedChainId) {
+export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress = () => {} } = {}) {
   assert.equal(bundle?.format, SNAPSHOT_MAGIC, "unknown snapshot format");
   const { genesis, network, keys, blocks } = bundle;
   assertTestnetChainId(genesis.chainId);
@@ -191,9 +202,10 @@ export async function restoreNetwork(dir, bundle, expectedChainId) {
   const firstData = join(dir, `data-${first}`);
   await mkdir(firstData, { mode: 0o700 });
   const store = await ChainStore.open(genesis, firstData);
-  for (const block of blocks) await store.commitFinalizedBlock(block);
+  for (const block of blocks) { await store.commitFinalizedBlock(block); onProgress(); }
   assert.equal(store.chain.height, blocks.length, "snapshot replay height mismatch");
   const checkpoint = await store.writeRecoveryCheckpoint();
+  onProgress();
   for (const name of others) {
     const data = join(dir, `data-${name}`);
     await mkdir(data, { mode: 0o700 });
@@ -201,6 +213,7 @@ export async function restoreNetwork(dir, bundle, expectedChainId) {
     await chmod(join(data, "blocks.ndjson"), 0o600);
     const copy = await ChainStore.open(genesis, data);
     assert.ok(copy.chain.height === blocks.length && copy.chain.tip.hash === checkpoint.tipHash, `restored ${name} state does not match the replayed state`);
+    onProgress();
   }
   await writeFile(join(dir, "network.json"), `${JSON.stringify(network, null, 2)}\n`, { mode: 0o644, flag: "wx" });
   return { chainId: genesis.chainId, genesisHash: network.genesisHash, height: blocks.length, tipHash: checkpoint.tipHash };
@@ -736,6 +749,7 @@ if (!invokedDirectly) {
           // Transient download failures are retried; only a decrypt/validation
           // failure or a missing snapshot falls back to a fresh genesis.
           try {
+            boot.progress();
             response = await fetch(restoreUrl, { redirect: "follow", signal: AbortSignal.timeout(180_000) });
             if (response.status === 200 || response.status === 404 || attempt >= SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS.length) break;
             console.error(`snapshot download returned ${response.status}; retrying`);
@@ -753,7 +767,7 @@ if (!invokedDirectly) {
           boot.enter("decrypt");
           const bundle = openSnapshot(sealed, stateSecret);
           boot.enter("replay");
-          const restored = await restoreNetwork(dir, bundle, chainId);
+          const restored = await restoreNetwork(dir, bundle, chainId, { onProgress: boot.progress });
           persistence = { mode: "snapshot-restore", restoredHeight: restored.height, restoredAtMs: Date.now() };
           console.log(`restored ${restored.chainId} genesis ${restored.genesisHash} at height ${restored.height}`);
         }
