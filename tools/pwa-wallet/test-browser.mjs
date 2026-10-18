@@ -197,6 +197,14 @@ try {
       rmSync(profile, { recursive: true, force: true });
     }
     assert.ok(await page.isVisible('[data-platform="android"]'));
+    assert.equal(await page.isVisible('[data-install-wrong-browser]'), false, 'Chrome on Android is not the iOS in-app warning');
+    const installBeforeStatus = await page.evaluate(() => {
+      const install = document.querySelector('[data-install]');
+      const status = document.querySelector('[data-network-status]');
+      return Boolean(install && status && install.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+    assert.equal(installBeforeStatus, true, 'install guidance is above the network status table');
+    assert.match(await page.textContent('[data-balance]'), /does not connect/);
     assert.ok(await noHorizontalScroll(page));
     await page.locator('[data-install]').scrollIntoViewIfNeeded();
     await shot(page, '1-install-instructions');
@@ -220,7 +228,7 @@ try {
     const shellKeys = Object.keys(JSON.parse(sw.match(/const ASSETS = (\{[\s\S]*?\});/)[1])).map((k) => '/app/' + k.slice(2)).sort();
     if (!live) assert.deepEqual(cachedUrls, shellKeys, 'cache holds exactly the stamped shell URLs');
     for (const file of ['app.js', 'app.css', 'zyron-wallet-core.js', 'vendor/noble-scure.js', 'vendor/qr.js']) assert.ok(cachedUrls.some((u) => new RegExp(`^/app/${file.replace('.', '\\.')}\\?v=[0-9a-f]{12}$`).test(u)), `${file} cached under its versioned URL`);
-    assert.deepEqual(cached[names[0]].filter((p) => !/\.(js|css)$/.test(p)), ['/app/icons/apple-touch-icon-180.png', '/app/icons/icon-192.png', '/app/icons/maskable-192.png', '/app/index.html', '/app/manifest.json'].sort());
+    assert.deepEqual(cached[names[0]].filter((p) => !/\.(js|css)$/.test(p)), ['/app/icons/apple-touch-icon-180.png', '/app/icons/icon-192.png', '/app/icons/icon-512.png', '/app/icons/maskable-192.png', '/app/icons/maskable-512.png', '/app/index.html', '/app/manifest.json'].sort());
     await context.setOffline(true);
     await page.reload({ waitUntil: 'load' });
     await page.waitForFunction(() => document.body.dataset.current === 'welcome' && !!globalThis.ZyronAppCore && !!globalThis.ZyronQR);
@@ -484,6 +492,9 @@ try {
       await m.page.waitForFunction(() => document.body.dataset.current === 'welcome');
       if (width === 390) {
         assert.equal(await m.page.$eval('.install-steps', (el) => el.firstElementChild.dataset.platform), 'ios');
+        assert.equal(await m.page.isVisible('[data-install-ios-only]'), true);
+        assert.equal(await m.page.isVisible('[data-install-wrong-browser]'), false, 'Safari is not warned');
+        assert.match(await m.page.textContent('[data-install]'), /address bar must show https:\/\/zyronchain.com\/app\//);
         await m.page.locator('[data-install]').scrollIntoViewIfNeeded();
         await shot(m.page, '1-install-ios');
       }
@@ -493,6 +504,25 @@ try {
       }
       await m.page.evaluate(() => { for (const s of document.querySelectorAll('[data-screen]')) s.hidden = s.dataset.screen !== 'home'; document.querySelector('[data-home-address]').textContent = 'ZYN 09C0 B2D1 A486 C439 A87b CbA6 b46A 7a1A 23F3 897c'; document.querySelector('[data-tx-out]').hidden = false; document.querySelector('[data-tx-json]').textContent = JSON.stringify({ kind: 'transfer', publicKey: 'ab'.repeat(64), signature: 'cd'.repeat(64) }, null, 2); });
       assert.ok(await noHorizontalScroll(m.page), `${width}px home`);
+      assert.deepEqual(m.problems, []);
+      await m.context.close();
+    }
+  });
+
+  await test('iOS in-app browsers are told to open Safari before Add to Home Screen', async () => {
+    const cases = [
+      ['Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Telegram/10.0', 'Telegram'],
+      ['Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Twitter for iPhone/10.0', 'X'],
+      ['Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/129.0.6668.69 Mobile/15E148 Safari/604.1', 'Chrome']
+    ];
+    for (const [agent, label] of cases) {
+      const m = await newMobile(390, 844, agent);
+      await m.page.goto(appUrl, { waitUntil: 'load' });
+      await m.page.waitForFunction(() => document.body.dataset.current === 'welcome');
+      assert.equal(await m.page.isVisible('[data-install-wrong-browser]'), true, label);
+      assert.equal(await m.page.textContent('[data-install-browser-name]'), label);
+      assert.match(await m.page.textContent('[data-install-wrong-browser]'), /Open in Safari/);
+      assert.equal(await m.page.isVisible('[data-install-button]'), false, 'no Android install button on iPhone');
       assert.deepEqual(m.problems, []);
       await m.context.close();
     }

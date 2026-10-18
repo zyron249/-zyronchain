@@ -24,7 +24,7 @@ if (!release) throw new Error('website/release.js has no RELEASE_REF');
 // Files that index.html loads with integrity="" (scripts + stylesheet), each with a content-versioned URL.
 const SRI_FILES = ['app.css', 'vendor/noble-scure.js', 'vendor/qr.js', 'zyron-wallet-core.js', 'app.js'];
 // Offline app shell (everything the page needs without network). Icons and the manifest keep plain URLs.
-const PLAIN = ['index.html', 'manifest.json', 'icons/icon-192.png', 'icons/apple-touch-icon-180.png', 'icons/maskable-192.png'];
+const PLAIN = ['index.html', 'manifest.json', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon-180.png', 'icons/maskable-192.png', 'icons/maskable-512.png'];
 const fileVersion = (file) => sha256(read(file)).slice(0, 12);
 const BUILD_META = /<meta name="zyron-build" content="[^"]*" \/>/;
 

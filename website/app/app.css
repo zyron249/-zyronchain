@@ -115,7 +115,10 @@ details.danger-zone { margin-top: 14px; color: var(--muted); }
 details.danger-zone summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
 .install-steps { display: grid; gap: 4px; }
 .install-steps ol { margin: 0 0 8px; padding-left: 22px; color: var(--muted); }
+.install-steps li { margin: 0 0 6px; }
 .install-steps [data-platform].current h3::after { content: " ←"; color: var(--gold); }
+[data-install-check] { overflow-wrap: anywhere; }
+[data-install-browser-line] { display: block; margin-top: 6px; }
 .foot { color: var(--muted); font-size: .82rem; margin-top: 18px; }
 .busy { position: fixed; inset: 0; background: rgba(0, 0, 0, .78); display: grid; place-items: center; z-index: 10; text-align: center; padding: 24px; }
 .busy[hidden] { display: none; }

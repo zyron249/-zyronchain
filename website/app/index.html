@@ -13,13 +13,14 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Zyron Wallet" />
   <meta name="format-detection" content="telephone=no" />
-  <meta name="zyron-build" content="app=4ce51a36df1161e4;release=c545a6cd1e90fe3b7c7d62190bceaa93967e225b" />
+  <meta name="zyron-build" content="app=fbc77a94374fb922;release=c3737bd80eb6a3bccb9a4468ba48618a20c51730" />
   <title>ZyronChain Wallet (testnet)</title>
-  <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys are generated and encrypted on this device. No public RPC; sign locally, nothing is broadcast." />
+  <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys stay on this device. This app does not connect and does not show a balance. Sign locally." />
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="icon" type="image/png" sizes="192x192" href="/app/icons/icon-192.png" />
+  <link rel="icon" type="image/png" sizes="512x512" href="/app/icons/icon-512.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/app/icons/apple-touch-icon-180.png" />
-  <link rel="stylesheet" href="/app/app.css?v=a5dcb0d66d6f" integrity="sha384-KPzWqQi09UoEoknuc7HFrO9SRJaIkFy83Swaz4YAAOCyodVVHEMiTxbut14wjx9c" />
+  <link rel="stylesheet" href="/app/app.css?v=fd58927db757" integrity="sha384-TlE+9Kfz9jXRjhFAhCBjTwfchtVk3pbZZR6Z9AjkYYur0dHy4rKMtUf2GxFU3zKu" />
 </head>
 <body>
   <div class="app" id="app">
@@ -52,7 +53,7 @@
       <p class="lead" data-i18n="welcomeLead">Keys are generated here with the device's secure random generator and stored only as an encrypted vault. No account, no server, no app store.</p>
       <ul class="facts">
         <li data-i18n="fact1">Testnet only and unaudited. Do not use it for real value until an independent review is done.</li>
-        <li data-i18n="fact2">No public RPC yet: no balances and no broadcasting. You can create, back up, show your address and sign transfers locally.</li>
+        <li data-i18n="fact2">This app stays offline: it does not show a balance and it does not broadcast. A no-value testnet RPC exists for the Snap and the CLI. You can create, back up, show your address and sign transfers on this device.</li>
         <li data-i18n="fact3">Same derivation as the ZyronChain MetaMask Snap (m/44'/249249'/0'/0/0): the same recovery phrase gives the same address in both.</li>
       </ul>
       <div class="actions">
@@ -191,10 +192,11 @@
       <div class="card">
         <h2 data-i18n="balanceTitle">Balance and broadcasting</h2>
         <dl class="kv">
-          <div><dt>Balance</dt><dd data-balance>Unavailable: no public RPC</dd></div>
-          <div><dt>Broadcast</dt><dd>Unavailable until network activation</dd></div>
+          <div><dt>Balance</dt><dd data-balance>Not shown. This app does not connect to a network.</dd></div>
+          <div><dt>Broadcast</dt><dd>Off. Nothing from this app is sent to a network.</dd></div>
         </dl>
-        <button type="button" disabled data-i18n="broadcastDisabled">Broadcast (disabled: no public RPC)</button>
+        <p class="hint" data-i18n="balanceEmpty">Empty on purpose. The Snap and the CLI can use the no-value wallet testnet (chain id zyron-wallet-testnet-1). This phone app does not.</p>
+        <button type="button" disabled data-i18n="broadcastDisabled">Broadcast (off: this app stays offline)</button>
       </div>
 
       <div class="card">
@@ -306,12 +308,45 @@
       </div>
     </section>
 
+    <section class="card install" data-install aria-labelledby="install-title">
+      <h2 id="install-title" data-i18n="installTitle">Install on your phone</h2>
+      <p class="hint" data-installed hidden data-i18n="installed">Installed: you are using the home-screen app. Your paper recovery phrase is the only real backup.</p>
+      <div data-install-guide>
+        <p class="notice warn" data-install-wrong-browser hidden>
+          <span data-i18n="wrongBrowserLead">Add to Home Screen is available in Safari only.</span>
+          <span data-install-browser-line> This page is open in <strong data-install-browser-name>this browser</strong>, not Safari. Chrome, Telegram and X on iPhone do not offer Add to Home Screen. Open https://zyronchain.com/app/ in Safari. In Telegram or X, use the browser menu and choose Open in Safari.</span>
+        </p>
+        <p data-install-check data-i18n="installCheck">Before you add it, the Safari address bar must show https://zyronchain.com/app/ exactly. After you add it, that bar is hidden.</p>
+        <p class="hint" data-install-ios-only hidden data-i18n="iosNoButton">iPhone does not show an Install button on this page. Use the Share sheet.</p>
+        <button class="primary" type="button" data-install-button hidden data-i18n="installNow">Install app</button>
+        <div class="install-steps">
+          <div data-platform="ios">
+            <h3>iPhone / iPad (Safari)</h3>
+            <ol>
+              <li data-i18n="ios1">Open zyronchain.com/app/ in Safari, not in Chrome, Telegram or X.</li>
+              <li data-i18n="ios2">Confirm the address bar is https://zyronchain.com/app/ and you are not in a private tab. Private browsing hides Add to Home Screen.</li>
+              <li data-i18n="ios3">Tap Share (square with an arrow). Scroll the actions if needed, then choose Add to Home Screen. It may sit under More.</li>
+              <li data-i18n="ios4">Tap Add. The paper recovery phrase is the only real backup if this phone later deletes website data.</li>
+            </ol>
+          </div>
+          <div data-platform="android">
+            <h3>Android (Chrome)</h3>
+            <ol>
+              <li data-i18n="and1">Open zyronchain.com/app/ in Chrome.</li>
+              <li data-i18n="and2">Tap Install app above, or the menu, then Install app or Add to Home screen.</li>
+              <li data-i18n="and3">Confirm. The app opens full screen and works offline. Your paper recovery phrase is the only real backup.</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <div class="card">
       <!-- BEGIN NETWORK STATUS (generated by tools/site/network-status.mjs; edit the script, not this block) -->
       <section class="netstatus" id="network-status" aria-labelledby="network-status-title" data-network-status>
         <div class="ns-head">
           <h2 id="network-status-title">Network status</h2>
-          <p class="ns-sub">Repository facts below are static. A progressive script may poll the documented open-testnet gateway <code>/readyz</code> (no-value only). This page does not claim that mainnet exists or that trading is enabled.</p>
+          <p class="ns-sub">Repository facts below are static. This phone wallet does not poll any network. This page does not claim that mainnet exists or that trading is enabled.</p>
         </div>
         <table class="ns-table">
           <caption class="sr-only">ZyronChain network capabilities as of this build</caption>
@@ -322,46 +357,21 @@
             <tr data-ns-row="explorer"><th scope="row">Explorer</th><td><span class="ns-state ns-gov"><span aria-hidden="true">◐</span> Open testnet page</span><span class="ns-note">Explorer and faucet live on the same no-value gateway. Formal activation remains gated.</span></td></tr>
             <tr data-ns-row="wallet-creation"><th scope="row">Wallet creation</th><td><span class="ns-state ns-on"><span aria-hidden="true">✓</span> Available locally</span><span class="ns-note">Keys are created on your own device.</span></td></tr>
             <tr data-ns-row="offline-signing"><th scope="row">Offline signing</th><td><span class="ns-state ns-on"><span aria-hidden="true">✓</span> Available</span><span class="ns-note">Can sign ≠ can broadcast to mainnet.</span></td></tr>
-            <tr data-ns-row="broadcasting"><th scope="row">Broadcasting</th><td><span class="ns-state ns-gov"><span aria-hidden="true">◐</span> Testnet transfers only</span><span class="ns-note">Signed transfers may be submitted to the open no-value gateway only. Mainnet broadcasting remains unavailable.</span></td></tr>
+            <tr data-ns-row="broadcasting"><th scope="row">Broadcasting</th><td><span class="ns-state ns-gov"><span aria-hidden="true">◐</span> Testnet transfers only</span><span class="ns-note">This phone app does not submit transfers. The Snap and the CLI can submit no-value test transfers on their own. Mainnet broadcasting remains unavailable.</span></td></tr>
             <tr data-ns-row="mining"><th scope="row">Mining</th><td><span class="ns-state ns-retired"><span aria-hidden="true">—</span> Retired</span><span class="ns-note">Shut down on 2026-09-30. Do not run miner software.</span></td></tr>
             <tr data-ns-row="token-sale"><th scope="row">Token sale</th><td><span class="ns-state ns-none"><span aria-hidden="true">—</span> None</span><span class="ns-note">No sale, no price, no market.</span></td></tr>
           </tbody>
         </table>
         <div class="ns-live" data-ns-live aria-live="polite">
-          <p class="ns-live-label">Open-testnet readiness probe</p>
+          <p class="ns-live-label">Open-testnet link</p>
           <p class="ns-live-endpoint">Gateway: <a href="https://zyron-open-testnet.onrender.com" rel="noopener noreferrer">https://zyron-open-testnet.onrender.com</a> (Render free plan; may sleep when idle)</p>
-          <p class="ns-live-state" data-ns-live-state>Enable JavaScript to refresh <code>/readyz</code>, or open the gateway link.</p>
+          <p class="ns-live-state" data-ns-live-state>This phone wallet does not connect, so it does not refresh <code>/readyz</code>. Open the gateway link to check the no-value open testnet.</p>
           <p class="ns-live-detail" data-ns-live-detail></p>
         </div>
         <p class="ns-foot">Source: docs/l1-launch-authorization.json (publicTestnetActivationAllowed=false, mainnetActivationAllowed=false) and docs/OPEN_TESTNET.md.</p>
       </section>
       <!-- END NETWORK STATUS -->
     </div>
-
-    <!-- INSTALL -->
-    <section class="card install" data-install aria-labelledby="install-title">
-      <h2 id="install-title" data-i18n="installTitle">Install on phone</h2>
-      <p class="hint" data-installed hidden data-i18n="installed">Installed: you are using the home-screen app.</p>
-      <button class="primary" type="button" data-install-button hidden data-i18n="installNow">Install app</button>
-      <div class="install-steps">
-        <div data-platform="ios">
-          <h3>iPhone / iPad (Safari)</h3>
-          <ol>
-            <li data-i18n="ios1">Open zyronchain.com/app/ in Safari.</li>
-            <li data-i18n="ios2">Tap Share (square with an arrow).</li>
-            <li data-i18n="ios3">Choose "Add to Home Screen", then "Add".</li>
-          </ol>
-        </div>
-        <div data-platform="android">
-          <h3>Android (Chrome)</h3>
-          <ol>
-            <li data-i18n="and1">Open zyronchain.com/app/ in Chrome.</li>
-            <li data-i18n="and2">Tap "Install app" above, or ⋮ menu → "Install app" / "Add to Home screen".</li>
-            <li data-i18n="and3">Confirm. The app opens full-screen and works offline.</li>
-          </ol>
-        </div>
-      </div>
-    </section>
 
     <footer class="foot">
       <p data-i18n="foot">Open source, served only from zyronchain.com with pinned, integrity-checked libraries (@noble/curves, @noble/hashes, @scure/bip39, @scure/bip32, qr). Unaudited testnet software.</p>
@@ -374,6 +384,6 @@
   <script src="/app/vendor/noble-scure.js?v=8bc52c47d762" integrity="sha384-8rRjvBX0v19QY1jV/tt980903+713cFYFQwMvCGJR+dGfUXeXlHhGh1Ommt20XpE"></script>
   <script src="/app/vendor/qr.js?v=df7e5ee0f9db" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
   <script src="/app/zyron-wallet-core.js?v=cbd30fccb01e" integrity="sha384-WbWqxJS7Av62pZPmCgd0E5fS2d3ZYnNm+VwHvZ8IiGTSyocZvE9gOD261825+H2u"></script>
-  <script src="/app/app.js?v=3858be2cd80c" integrity="sha384-1b18kpOgy4HSSwljuT0xpLHaM5eh6wqCa7E9UdaX9oa3HcttLp6c3olgeeQYHYFv"></script>
+  <script src="/app/app.js?v=2e6807e8cb8a" integrity="sha384-9HE/NTdxGmBrmltZtp0BzRoqdblcUnjlMXwg1IpGgH7ne55TBqc9HJ1zxgWJUl6R"></script>
 </body>
 </html>
