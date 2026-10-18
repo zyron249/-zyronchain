@@ -324,6 +324,13 @@ export interface FinalizedLogOpenFaultHooks {
    * It must not throw; it cannot change what is accepted.
    */
   onBlockRecord?: () => void;
+  /**
+   * Progress only: called after each batch when the open rebuilds or catches up
+   * the derived State-v2 store (for example a restored copy without one), which
+   * is written in bounded batches with event-loop yields (Codex P2 on #1060).
+   * It must not throw; it cannot change what is stored or accepted.
+   */
+  onStateV2Batch?: () => void;
 }
 
 export class ChainStore {
@@ -440,7 +447,7 @@ export class ChainStore {
         // block fsync and before its State-v2 root pointer commit, leaving a
         // valid but stale state store. Replay has already revalidated the full
         // transition, so catch the store up to that authenticated state.
-        await stateV2Store.commit(replayedStateV2, replayedKeys);
+        await stateV2Store.commit(replayedStateV2, replayedKeys, faultHooks.onStateV2Batch ? { onCatchupBatch: faultHooks.onStateV2Batch } : {});
       }
     }
     return new ChainStore(

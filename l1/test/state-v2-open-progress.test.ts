@@ -73,18 +73,23 @@ test("ChainStore.open rebuilds a missing State-v2 store in batches, reporting pr
       if (file.startsWith("state-v2")) await rm(join(directory, file), { recursive: true, force: true });
     }
 
+    // Every batch must be followed by an event-loop turn before the next one:
+    // each callback schedules a setImmediate and the next callback checks it ran.
     let batches = 0;
-    let yielded = false;
-    let yieldedBeforeLastBatch = false;
+    let yielded = true;
+    let withoutYield = 0;
     const reopened = await ChainStore.open(config, directory, {
       onStateV2Batch: () => {
         batches += 1;
-        if (batches === 1) setImmediate(() => { yielded = true; });
-        else if (yielded) yieldedBeforeLastBatch = true;
+        if (!yielded) withoutYield += 1;
+        yielded = false;
+        setImmediate(() => { yielded = true; });
       }
     });
-    assert.ok(batches >= 2, `State-v2 rebuild of ${nodeCount} nodes reported ${batches} progress batch(es)`);
-    assert.ok(yieldedBeforeLastBatch, "the State-v2 rebuild did not yield to the event loop between batches");
+    // Bounded steps: no single write of more than 4096 node records or 4096 keys.
+    const minimumBatches = Math.ceil(nodeCount / 4_096) + Math.ceil(ACCOUNTS / 4_096);
+    assert.ok(batches >= minimumBatches, `State-v2 rebuild of ${nodeCount} nodes reported ${batches} progress batch(es), expected at least ${minimumBatches}`);
+    assert.equal(withoutYield, 0, "the State-v2 rebuild did not yield to the event loop between batches");
     assert.equal(reopened.chain.height, 101);
     assert.equal(reopened.chain.stateV2ForPersistence()?.root(), expectedRoot);
     // The rebuilt store is complete: a plain reopen needs no rebuild and has the same root.

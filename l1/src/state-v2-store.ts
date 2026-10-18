@@ -39,7 +39,17 @@ export const STATE_V2_METADATA_MAX_BYTES = 4 * 1024;
 
 export interface StateV2CommitFaultHooks {
   afterSemanticKeysSync?: () => void | Promise<void>;
+  /**
+   * Progress only: called after each bounded batch of a full catch-up write
+   * (every node record of the state, e.g. a rebuilt store), which yields to the
+   * event loop between batches. It must not throw; it cannot change what is stored.
+   */
+  onCatchupBatch?: () => void;
 }
+
+/** Records per SQLite transaction when a whole state is written at once. */
+export const STATE_V2_CATCHUP_BATCH_SIZE = 1_024;
+const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 /**
  * Crash-safe content-addressed persistence for State v2 nodes.
@@ -147,13 +157,35 @@ export class StateV2DiskStore {
   ): Promise<void> {
     const pending = state.pendingNodeRecords();
     const needsReplayCatchup = state.root() !== this.currentState.root() && pending.length === 0;
-    await this.nodeObjects.putMany(needsReplayCatchup ? state.nodeRecords() : pending);
+    if (needsReplayCatchup) {
+      // A full catch-up (for example a store rebuilt from the finalized log) can
+      // be large: write it in bounded batches and yield in between so the
+      // process stays responsive and progress is visible (Codex P2 on #1060).
+      // Node records are content-addressed and the root pointer is written only
+      // after every batch, so a crash part-way leaves the previous root intact.
+      const records = state.nodeRecords();
+      for (let offset = 0; offset < records.length; offset += STATE_V2_CATCHUP_BATCH_SIZE) {
+        await this.nodeObjects.putMany(records.slice(offset, offset + STATE_V2_CATCHUP_BATCH_SIZE));
+        faultHooks.onCatchupBatch?.();
+        await yieldToEventLoop();
+      }
+    } else {
+      await this.nodeObjects.putMany(pending);
+    }
 
     for (const key of keyPreimages) {
       if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new Error("Invalid State v2 semantic key preimage");
       if (state.get(key) === undefined) throw new Error("State v2 semantic key is not committed by target root");
     }
-    await this.nodeObjects.putSemanticKeys(keyPreimages);
+    if (needsReplayCatchup) {
+      for (let offset = 0; offset < keyPreimages.length; offset += STATE_V2_CATCHUP_BATCH_SIZE) {
+        await this.nodeObjects.putSemanticKeys(keyPreimages.slice(offset, offset + STATE_V2_CATCHUP_BATCH_SIZE));
+        faultHooks.onCatchupBatch?.();
+        await yieldToEventLoop();
+      }
+    } else {
+      await this.nodeObjects.putSemanticKeys(keyPreimages);
+    }
     await faultHooks.afterSemanticKeysSync?.();
     if (!this.semanticIndexWouldBeComplete(state, [])) {
       throw new Error("Refusing State v2 root commit without complete semantic key index");
