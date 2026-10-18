@@ -2,8 +2,9 @@
 // 503, the host may restart the process in place. A restore or fresh init that
 // was interrupted leaves the network directory without network.json (both write
 // it last). The next start must clean that partial directory and restore the
-// published snapshot again, not fall back to a fresh TEST genesis. A directory
-// holding anything the open testnet does not create is never deleted.
+// published snapshot again, not fall back to a fresh TEST genesis. Nothing is
+// deleted: the partial directory is moved aside, and a directory with top-level
+// entries the open testnet does not create is refused and left untouched.
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
@@ -104,7 +105,8 @@ test("an interrupted restore leaves a partial directory; the next start removes 
     assert.equal(status.persistence.restoredHeight, 100);
     assert.equal(status.genesisHash, network.genesisHash);
     assert.doesNotMatch(log, /STATE RESTORE FAILED|fresh TEST genesis/);
-    assert.match(log, /removed an incomplete network directory/);
+    assert.match(log, /moved an incomplete network directory left by an interrupted start-up to .*hosted\.incomplete-/);
+    assert.ok((await readdir(root)).some((name) => name.startsWith("hosted.incomplete-")), "partial directory kept aside");
     for (const name of ["v1", "v2", "v3", "v4"]) await access(join(target, `data-${name}`, "recovery-checkpoint.json"));
   } finally {
     if (child && child.exitCode === null) { child.kill("SIGTERM"); await Promise.race([once(child, "exit"), sleep(15_000)]); if (child.exitCode === null) child.kill("SIGKILL"); }
@@ -113,29 +115,34 @@ test("an interrupted restore leaves a partial directory; the next start removes 
   }
 });
 
-test("incomplete-directory cleanup removes only open-testnet entries and never a complete network", async () => {
+test("an incomplete directory is moved aside (never deleted), a foreign or complete directory is left untouched", async () => {
   const root = await mkdtemp(join(tmpdir(), "zyron-incomplete-dir-"));
   try {
-    assert.equal(await api.removeIncompleteNetworkDir(join(root, "missing")), false);
+    assert.equal(await api.moveAsideIncompleteNetworkDir(join(root, "missing")), false);
 
     const partial = join(root, "partial");
     await mkdir(join(partial, "keys"), { recursive: true });
     await mkdir(join(partial, "data-v1"));
     await writeFile(join(partial, "genesis.json"), "{}");
-    assert.equal(await api.removeIncompleteNetworkDir(partial), true);
+    // Even an unexpected file nested inside a recognised directory survives.
+    await writeFile(join(partial, "keys", "operator-note.txt"), "kept");
+    const aside = await api.moveAsideIncompleteNetworkDir(partial);
+    assert.match(String(aside), /partial\.incomplete-\d+-\d+$/);
     await assert.rejects(access(partial), { code: "ENOENT" });
+    assert.equal(await readFile(join(aside, "keys", "operator-note.txt"), "utf8"), "kept");
+    await access(join(aside, "genesis.json"));
 
     const foreign = join(root, "foreign");
     await mkdir(join(foreign, "keys"), { recursive: true });
     await writeFile(join(foreign, "notes.txt"), "not created by the open testnet");
-    await assert.rejects(api.removeIncompleteNetworkDir(foreign), /refusing to remove .*notes\.txt/);
+    await assert.rejects(api.moveAsideIncompleteNetworkDir(foreign), /refusing to move .*notes\.txt/);
     await access(join(foreign, "notes.txt"));
     await access(join(foreign, "keys"));
 
     const complete = join(root, "complete");
     await mkdir(join(complete, "keys"), { recursive: true });
     await writeFile(join(complete, "network.json"), "{}");
-    assert.equal(await api.removeIncompleteNetworkDir(complete), false);
+    assert.equal(await api.moveAsideIncompleteNetworkDir(complete), false);
     await access(join(complete, "network.json"));
   } finally {
     await rm(root, { recursive: true, force: true });

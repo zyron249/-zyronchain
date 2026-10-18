@@ -29,7 +29,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createServer } from "node:http";
 import { realpathSync } from "node:fs";
-import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,17 +51,19 @@ const NETWORK_DIR_ENTRIES = new Set(["keys", "genesis.json", "network.json", ...
 
 // Both restoreNetwork and initNetwork write network.json last, so a directory
 // without it is an interrupted restore or init (for example a host restart in
-// the middle of a replay). Remove it so the next attempt starts clean, but only
-// if it holds nothing except entries those steps create; anything else is
-// refused rather than deleted. Returns true if a directory was removed.
-export async function removeIncompleteNetworkDir(dir) {
+// the middle of a replay). Move it aside (never delete it) so the next attempt
+// starts clean; a directory holding top-level entries those steps do not create
+// is refused and left untouched. Returns the new path, or false if nothing was
+// moved.
+export async function moveAsideIncompleteNetworkDir(dir) {
   let entries;
   try { entries = await readdir(dir); } catch (error) { if (error?.code === "ENOENT") return false; throw error; }
   if (entries.includes("network.json")) return false;
   const unexpected = entries.filter((name) => !NETWORK_DIR_ENTRIES.has(name));
-  if (unexpected.length) throw new Error(`refusing to remove ${dir}: unexpected entries ${unexpected.join(", ")}`);
-  await rm(dir, { recursive: true, force: true });
-  return true;
+  if (unexpected.length) throw new Error(`refusing to move ${dir}: unexpected entries ${unexpected.join(", ")}`);
+  const aside = `${dir}.incomplete-${Date.now()}-${process.pid}`;
+  await rename(dir, aside);
+  return aside;
 }
 const V6_ACTIVATION_HEIGHT = 101;
 const ATOMS_PER_ZYN = 100_000_000;
@@ -759,7 +761,10 @@ if (!invokedDirectly) {
     const exists = await stat(join(dir, "network.json")).then(() => true, () => false);
     const chainId = option("--chain-id", process.env.ZYRON_TESTNET_CHAIN_ID ?? DEFAULT_CHAIN_ID);
     const restoreUrl = option("--restore-url", process.env.ZYRON_TESTNET_STATE_URL || undefined);
-    if (!exists && await removeIncompleteNetworkDir(dir)) console.log("removed an incomplete network directory left by an interrupted start-up");
+    if (!exists) {
+      const aside = await moveAsideIncompleteNetworkDir(dir);
+      if (aside) console.log(`moved an incomplete network directory left by an interrupted start-up to ${aside}`);
+    }
     if (!exists && restoreUrl && stateSecret) {
       try {
         boot.enter("download");
@@ -792,7 +797,8 @@ if (!invokedDirectly) {
         }
       } catch (error) {
         console.error(`STATE RESTORE FAILED (${error instanceof Error ? error.message : String(error)}); creating a fresh TEST genesis`);
-        await removeIncompleteNetworkDir(dir);
+        const aside = await moveAsideIncompleteNetworkDir(dir);
+        if (aside) console.error(`moved the failed restore directory to ${aside}`);
       }
     }
     if (!(await stat(join(dir, "network.json")).then(() => true, () => false))) {
