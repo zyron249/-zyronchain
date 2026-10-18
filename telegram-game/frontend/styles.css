@@ -892,3 +892,5 @@ html[data-sky="night"] body::before {
 .map-dot { fill: #4fd8fb; }
 .map-link { stroke: rgba(79, 216, 251, 0.45); stroke-width: 0.35; }
 [data-map] select { width: 100%; margin: 8px 0; background: #0a1020; color: #f4f7f9; border: 1px solid rgba(216, 220, 224, 0.35); border-radius: 10px; padding: 8px; }
+.share-sheet { max-height: calc(100vh - 36px); overflow: auto; }
+.share-sheet canvas { width: min(100%, 280px); height: auto; border-radius: 16px; margin: 8px auto; display: block; background: #02050a; }

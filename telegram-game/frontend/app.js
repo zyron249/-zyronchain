@@ -340,7 +340,8 @@
       api("/api/chain", { timeoutMs: timeoutMs }),
       api("/api/cipher", { timeoutMs: timeoutMs }),
       api("/api/events", { timeoutMs: timeoutMs }),
-      api("/api/map", { timeoutMs: timeoutMs })
+      api("/api/map", { timeoutMs: timeoutMs }),
+      api("/api/cards", { timeoutMs: timeoutMs })
     ]);
     state.upgrades = rest[0];
     state.chests = rest[1];
@@ -350,6 +351,7 @@
     state.cipher = rest[5];
     state.events = rest[6];
     state.map = rest[7];
+    state.cards = rest[8];
     if (!state.introChecked) {
       state.introChecked = true;
       if (!localStorage.getItem("zyronNodeIntro")) state.introStep = 1;
@@ -1779,6 +1781,7 @@
     wrap.append(referralCard(p));
     wrap.append(walletCard(p));
     wrap.append(achievementCard());
+    wrap.append(shareCards());
     wrap.append(chainCard());
     (state.me.notices || []).forEach(function (notice) {
       wrap.append(el("p", { class: "fine", text: notice }));
@@ -1925,6 +1928,80 @@
     return card;
   }
 
+  function shareCards() {
+    const card = el("article", { class: "card", "data-share-cards": "1" }, [
+      el("h2", { text: "Share cards" }),
+      el("p", { class: "fine", text: "Earned cards only. Zyron Points stay separate from ZYN." })
+    ]);
+    const items = (state.cards && state.cards.cards) || [];
+    if (!items.length) card.append(el("p", { class: "muted", text: "No cards loaded." }));
+    items.forEach(function (item) {
+      const row = el("div", { class: "rank-row", "data-card": item.id }, [
+        el("strong", { class: item.earned ? "badge-on" : "", text: item.title }),
+        el("span", { text: item.earned ? "Ready" : "Locked" })
+      ]);
+      if (item.earned) {
+        row.append(el("button", {
+          class: "ghost",
+          text: "Open card",
+          onclick: function () { openShareCard(item.id); }
+        }));
+      }
+      card.append(row);
+    });
+    return card;
+  }
+
+  function openShareCard(id) {
+    if (state.busy) return;
+    state.busy = true;
+    api("/api/cards/" + encodeURIComponent(id))
+      .then(function (card) {
+        state.shareCard = card;
+        state.busy = false;
+        render();
+      })
+      .catch(fail);
+  }
+
+  function shareModal() {
+    const card = state.shareCard;
+    const links = window.ZyronCards ? ZyronCards.shareLinks(card) : { telegram: "", x: "" };
+    const canvas = el("canvas", { "data-share-canvas": "1" });
+    const sheet = el("div", { class: "sheet share-sheet", role: "dialog", "aria-modal": "true", "data-share-sheet": "1" }, [
+      el("h2", { text: card.title }),
+      el("p", { class: "fine", text: card.line || "" }),
+      canvas,
+      el("div", { class: "actions" }, [
+        el("button", { class: "primary", text: "Share on Telegram", "data-share": "telegram", onclick: function () { shareTelegram(links.telegram); } }),
+        el("button", { class: "ghost", text: "Share on X", "data-share": "x", onclick: function () { openExternal(links.x); } }),
+        el("button", { class: "ghost", text: "Save image", onclick: function () { saveCardImage(canvas, card.id); } }),
+        el("button", { class: "ghost", text: "Close", onclick: function () { state.shareCard = null; render(); } })
+      ])
+    ]);
+    window.setTimeout(function () {
+      if (window.ZyronCards) ZyronCards.paint(canvas, card);
+    }, 0);
+    return el("div", { class: "modal-back" }, [sheet]);
+  }
+
+  function shareTelegram(url) {
+    if (tg && typeof tg.openTelegramLink === "function") tg.openTelegramLink(url);
+    else openExternal(url);
+  }
+
+  function saveCardImage(canvas, id) {
+    if (!canvas.toBlob) return;
+    canvas.toBlob(function (blob) {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const link = el("a", { href: url, download: (id || "zyron-card") + ".png" });
+      document.body.append(link);
+      link.click();
+      link.remove();
+    });
+  }
+
   function chainCard() {
     const card = el("article", { class: "card" }, [
       el("h2", { text: "Chain observer" }),
@@ -1989,6 +2066,7 @@
     if (state.modal) modals.append(chestModal());
     if (state.celebration) modals.append(levelUpLayer());
     if (state.chainOpen) modals.append(chainModal());
+    if (state.shareCard) modals.append(shareModal());
     syncChrome();
   }
 

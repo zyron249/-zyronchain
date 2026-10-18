@@ -30,6 +30,7 @@ STATIC_ASSETS = (
     "chain.js",
     "events.js",
     "map.js",
+    "cards.js",
     "styles.css",
     "logo.png",
     "points-mark-52.png",
