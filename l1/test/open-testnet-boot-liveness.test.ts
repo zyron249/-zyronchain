@@ -87,3 +87,16 @@ test("snapshot restore reports progress for every replayed block and every valid
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("fresh TEST genesis initialisation reports progress for every produced and committed block (Round 22)", { timeout: 240_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-boot-liveness-init-"));
+  try {
+    let calls = 0;
+    const info = await api.initNetwork(join(root, "network"), "zyron-boot-liveness-init-testnet-1", { onProgress: () => { calls += 1; } });
+    assert.equal(info.network, "testnet");
+    // Heights 1-100 (below the v6 activation height 101) are produced offline once and committed by each of the 4 validators.
+    assert.ok(calls >= 100 * 5, `progress reported ${calls} times`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
