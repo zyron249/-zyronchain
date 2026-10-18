@@ -149,8 +149,9 @@ test("a network.json torn by a crash is not a completion marker; the next start 
     // killed or disk full while it was written).
     const target = join(root, "hosted");
     await cp(source, target, { recursive: true });
-    const marker = await readFile(join(target, "network.json"), "utf8");
-    await truncate(join(target, "network.json"), Math.floor(marker.length / 2));
+    const marker = await readFile(join(target, "network.json"));
+    const tornLength = Math.floor(marker.length / 2);
+    await truncate(join(target, "network.json"), tornLength);
 
     const hosted = startHosted(target, published);
     child = hosted.child;
@@ -169,7 +170,7 @@ test("a network.json torn by a crash is not a completion marker; the next start 
     assert.match(log, /moved an incomplete network directory left by an interrupted start-up to .*hosted\.incomplete-/);
     const aside = (await readdir(root)).find((name) => name.startsWith("hosted.incomplete-"));
     assert.ok(aside, "torn directory kept aside");
-    assert.equal(await readFile(join(root, aside, "network.json"), "utf8"), marker.slice(0, Math.floor(marker.length / 2)), "torn marker preserved, not deleted");
+    assert.ok((await readFile(join(root, aside, "network.json"))).equals(marker.subarray(0, tornLength)), "torn marker preserved, not deleted");
     assert.deepEqual(JSON.parse(await readFile(join(target, "network.json"), "utf8")), network);
     await assert.rejects(access(join(target, "network.json.partial")), { code: "ENOENT" });
   } finally {

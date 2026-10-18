@@ -29,7 +29,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createServer } from "node:http";
 import { realpathSync } from "node:fs";
-import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,24 +46,53 @@ const { gatewayClientIdentity } = await import(dist("rpc-client-identity.js"));
 
 export const DEFAULT_CHAIN_ID = "zyron-open-testnet-1";
 const VALIDATOR_NAMES = ["v1", "v2", "v3", "v4"];
-// Entries that initNetwork / restoreNetwork create in a network directory.
-const NETWORK_DIR_ENTRIES = new Set(["keys", "genesis.json", "network.json", ...VALIDATOR_NAMES.map((name) => `data-${name}`)]);
+// Entries that initNetwork / restoreNetwork create in a network directory
+// (network.json.partial is the completion marker before its atomic rename).
+const NETWORK_DIR_ENTRIES = new Set(["keys", "genesis.json", "network.json", "network.json.partial", ...VALIDATOR_NAMES.map((name) => `data-${name}`)]);
 
-// Both restoreNetwork and initNetwork write network.json last, so a directory
-// without it is an interrupted restore or init (for example a host restart in
-// the middle of a replay). Move it aside (never delete it) so the next attempt
+// network.json is the completion marker: restoreNetwork and initNetwork write it
+// last, through a temporary file that is fsynced and renamed into place, so it
+// is either absent or complete. A marker that is missing, unparsable or not a
+// network description (for example one torn by an older non-atomic write) means
+// the directory is not a usable network. Returns the parsed marker or null.
+export async function readNetworkMarker(dir) {
+  let text;
+  try { text = await readFile(join(dir, "network.json"), "utf8"); } catch (error) { if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null; throw error; }
+  let info;
+  try { info = JSON.parse(text); } catch { return null; }
+  if (!info || typeof info !== "object" || Array.isArray(info) || typeof info.chainId !== "string" || typeof info.genesisHash !== "string") return null;
+  return info;
+}
+
+async function writeNetworkMarker(dir, value) {
+  const marker = join(dir, "network.json");
+  if (await lstat(marker).then(() => true, () => false)) throw Object.assign(new Error(`${marker} already exists`), { code: "EEXIST" });
+  const partial = `${marker}.partial`;
+  const handle = await open(partial, "w", 0o644);
+  try { await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`); await handle.sync(); } finally { await handle.close(); }
+  await rename(partial, marker);
+}
+
+// A directory without a valid completion marker is an interrupted restore or
+// init (for example a host restart in the middle of a replay, or a crash while
+// network.json was written). Move it aside (never delete it) so the next attempt
 // starts clean; a directory holding top-level entries those steps do not create
-// is refused and left untouched. Returns the new path, or false if nothing was
-// moved.
+// is refused and left untouched. An existing path is never replaced. Returns the
+// new path, or false if nothing was moved.
 export async function moveAsideIncompleteNetworkDir(dir) {
   let entries;
   try { entries = await readdir(dir); } catch (error) { if (error?.code === "ENOENT") return false; throw error; }
-  if (entries.includes("network.json")) return false;
+  if (await readNetworkMarker(dir)) return false;
   const unexpected = entries.filter((name) => !NETWORK_DIR_ENTRIES.has(name));
   if (unexpected.length) throw new Error(`refusing to move ${dir}: unexpected entries ${unexpected.join(", ")}`);
-  const aside = `${dir}.incomplete-${Date.now()}-${process.pid}`;
-  await rename(dir, aside);
-  return aside;
+  const base = `${dir}.incomplete-${Date.now()}-${process.pid}`;
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
+    const aside = attempt === 0 ? base : `${base}-${attempt}`;
+    if (await lstat(aside).then(() => true, (error) => { if (error?.code === "ENOENT") return false; throw error; })) continue;
+    await rename(dir, aside);
+    return aside;
+  }
+  throw new Error(`refusing to move ${dir}: no free name next to it`);
 }
 const V6_ACTIVATION_HEIGHT = 101;
 const ATOMS_PER_ZYN = 100_000_000;
@@ -234,7 +263,7 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
     assert.ok(copy.chain.height === blocks.length && copy.chain.tip.hash === checkpoint.tipHash, `restored ${name} state does not match the replayed state`);
     onProgress();
   }
-  await writeFile(join(dir, "network.json"), `${JSON.stringify(network, null, 2)}\n`, { mode: 0o644, flag: "wx" });
+  await writeNetworkMarker(dir, network);
   return { chainId: genesis.chainId, genesisHash: network.genesisHash, height: blocks.length, tipHash: checkpoint.tipHash };
 }
 
@@ -301,7 +330,7 @@ export async function initNetwork(dir, chainId, { onProgress = () => {} } = {}) 
     validators: genesis.validators, faucetAddress: roles.faucet.address,
     roles: { founderVesting: roles.founder.address, publicDistributionFaucet: roles.faucet.address, permanentLiquidity: roles.liquidity.address, ecosystemActivityPool: roles.ecosystem.address }
   };
-  await writeFile(join(dir, "network.json"), `${JSON.stringify(publicInfo, null, 2)}\n`, { mode: 0o644, flag: "wx" });
+  await writeNetworkMarker(dir, publicInfo);
   return publicInfo;
 }
 
@@ -758,7 +787,7 @@ if (!invokedDirectly) {
   const stateSecret = process.env.ZYRON_TESTNET_STATE_SECRET || undefined;
   let persistence = { mode: "local-disk" };
   if (rest.includes("--init-if-missing")) {
-    const exists = await stat(join(dir, "network.json")).then(() => true, () => false);
+    const exists = Boolean(await readNetworkMarker(dir));
     const chainId = option("--chain-id", process.env.ZYRON_TESTNET_CHAIN_ID ?? DEFAULT_CHAIN_ID);
     const restoreUrl = option("--restore-url", process.env.ZYRON_TESTNET_STATE_URL || undefined);
     if (!exists) {
@@ -801,7 +830,7 @@ if (!invokedDirectly) {
         if (aside) console.error(`moved the failed restore directory to ${aside}`);
       }
     }
-    if (!(await stat(join(dir, "network.json")).then(() => true, () => false))) {
+    if (!(await readNetworkMarker(dir))) {
       boot.enter("init");
       console.log(JSON.stringify(await initNetwork(dir, chainId, { onProgress: boot.progress })));
       persistence = { mode: exists ? "local-disk" : "fresh-genesis", createdAtMs: Date.now() };
