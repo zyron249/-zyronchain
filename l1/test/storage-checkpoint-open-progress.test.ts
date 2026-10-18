@@ -18,6 +18,8 @@ import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { createProtocolUpgrade, createProtocolUpgradeApproval } from "../src/transaction.js";
 import type { GenesisConfig } from "../src/types.js";
 import { ChainStore } from "../src/storage.js";
+import { ZyronChain } from "../src/chain.js";
+import { canonicalJson, sha256Hex } from "../src/codec.js";
 
 const key = (n: number) => n.toString(16).padStart(64, "0");
 const validatorOnePrivate = key(1);
@@ -45,7 +47,7 @@ function genesis(): GenesisConfig {
   };
 }
 
-test("ChainStore.open reports progress in bounded, yielding steps while it loads a large recovery checkpoint", { timeout: 240_000 }, async () => {
+test("ChainStore.open reports progress in bounded, yielding steps while it loads a large recovery checkpoint", { timeout: 240_000 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-checkpoint-open-progress-"));
   try {
     const config = genesis();
@@ -99,6 +101,46 @@ test("ChainStore.open reports progress in bounded, yielding steps while it loads
     assert.equal(reopened.chain.height, 101);
     assert.equal(reopened.chain.tip.header.stateRoot, expectedRoot);
     assert.equal(reopened.chain.stateV2ForPersistence()?.root(), expectedRoot);
+
+    // The stepped loader accepts and rejects exactly what the synchronous one does.
+    const snapshot = store.chain.snapshot();
+    const anchorFor = (value: unknown, tipHash = snapshot.tip.hash) => ({ tipHash, snapshotSha256: sha256Hex(canonicalJson(value)) });
+    const sync = ZyronChain.fromTrustedSnapshot(config, snapshot, anchorFor(snapshot));
+    // No single step may take most of the work: the State-v2 rebuild dominates
+    // and must itself be split (time ratio, so independent of machine speed).
+    const copy = structuredClone(snapshot);
+    const marks: number[] = [];
+    const started = performance.now();
+    const stepped = await ZyronChain.fromTrustedSnapshotInSteps(config, copy, anchorFor(snapshot), () => { marks.push(performance.now()); });
+    const finished = performance.now();
+    const points = [started, ...marks, finished];
+    let longest = 0;
+    for (let i = 1; i < points.length; i += 1) longest = Math.max(longest, points[i]! - points[i - 1]!);
+    const share = longest / (finished - started);
+    t.diagnostic(`stepped checkpoint load: ${marks.length} steps, longest ${(share * 100).toFixed(1)}% of ${(finished - started).toFixed(0)} ms`);
+    assert.ok(marks.length >= Math.ceil(ACCOUNTS / 4_096) + 1, `the stepped loader reported ${marks.length} step(s)`);
+    assert.ok(share <= 0.6, `one step of the stepped checkpoint loader took ${(share * 100).toFixed(0)}% of the load (${marks.length} steps)`);
+    assert.equal(stepped.height, sync.height);
+    assert.equal(stepped.tip.hash, sync.tip.hash);
+    assert.equal(stepped.stateV2ForPersistence()?.root(), sync.stateV2ForPersistence()?.root());
+    assert.deepEqual(stepped.stateV2SemanticKeyPreimages(), sync.stateV2SemanticKeyPreimages());
+    assert.equal(canonicalJson(stepped.snapshot()), canonicalJson(sync.snapshot()));
+    const balanceChanged = structuredClone(snapshot);
+    balanceChanged.state.accounts[0]!.balanceAtoms += 1;
+    const cases: Array<[string, unknown, { tipHash: string; snapshotSha256: string }]> = [
+      ["digest mismatch", snapshot, { tipHash: snapshot.tip.hash, snapshotSha256: "0".repeat(64) }],
+      ["tip anchor mismatch", snapshot, anchorFor(snapshot, "1".repeat(64))],
+      ["state differs from the certified root", balanceChanged, anchorFor(balanceChanged)]
+    ];
+    for (const [label, value, anchor] of cases) {
+      let syncError = "";
+      try { ZyronChain.fromTrustedSnapshot(config, structuredClone(value), anchor); } catch (error) { syncError = (error as Error).message; }
+      assert.ok(syncError, `${label}: the synchronous loader accepted it`);
+      await assert.rejects(() => ZyronChain.fromTrustedSnapshotInSteps(config, structuredClone(value), anchor), (error: Error) => {
+        assert.equal(error.message, syncError, `${label}: different rejection`);
+        return true;
+      });
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

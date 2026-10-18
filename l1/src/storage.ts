@@ -331,6 +331,13 @@ export interface FinalizedLogOpenFaultHooks {
    * It must not throw; it cannot change what is stored or accepted.
    */
   onStateV2Batch?: () => void;
+  /**
+   * Progress only: called after each bounded step of loading and verifying the
+   * recovery checkpoint (file read, parse, snapshot digest, ledger, every 1024
+   * State-v2 entries rebuilt), which yields to the event loop between steps
+   * (Codex P2 on #1060). It must not throw; it cannot change what is accepted.
+   */
+  onCheckpointStep?: () => void;
 }
 
 export class ChainStore {
@@ -402,7 +409,7 @@ export class ChainStore {
       throw new Error("Finalized block log initialization persistence failed", { cause: error });
     }
     const retention = await loadHistoryRetention(genesis, dataDir);
-    const checkpoint = await loadRecoveryCheckpoint(genesis, dataDir);
+    const checkpoint = await loadRecoveryCheckpoint(genesis, dataDir, faultHooks.onCheckpointStep);
     if (retention && (!checkpoint || checkpoint.checkpoint.version !== 2 ||
         checkpoint.checkpoint.retainedFromHeight < retention.prunedThroughHeight + 1)) {
       throw new Error("Pruned finalized history requires a valid compatible recovery checkpoint");
@@ -1630,9 +1637,13 @@ interface LoadedRecoveryCheckpoint {
   chain: ZyronChain;
 }
 
-async function loadRecoveryCheckpoint(genesis: GenesisConfig, dataDir: string): Promise<LoadedRecoveryCheckpoint | undefined> {
+async function loadRecoveryCheckpoint(
+  genesis: GenesisConfig,
+  dataDir: string,
+  onStep?: () => void
+): Promise<LoadedRecoveryCheckpoint | undefined> {
   try {
-    return await loadRecoveryCheckpointFile(genesis, join(dataDir, "recovery-checkpoint.json"));
+    return await loadRecoveryCheckpointFile(genesis, join(dataDir, "recovery-checkpoint.json"), onStep);
   } catch (error) {
     if (isMissingFile(error)) return undefined;
     // Recovery metadata is an optimization, never the authority. Corrupt or
@@ -1642,14 +1653,28 @@ async function loadRecoveryCheckpoint(genesis: GenesisConfig, dataDir: string): 
 }
 
 /** Reads and fully verifies one recovery checkpoint file; throws on any defect. */
-async function loadRecoveryCheckpointFile(genesis: GenesisConfig, path: string): Promise<LoadedRecoveryCheckpoint> {
+async function loadRecoveryCheckpointFile(
+  genesis: GenesisConfig,
+  path: string,
+  onStep?: () => void
+): Promise<LoadedRecoveryCheckpoint> {
+  // With a progress callback, the slow parts (the State-v2 rebuild in
+  // particular) run in bounded steps with a callback and an event-loop yield
+  // after each (Codex P2 on #1060); the checks and the result are the same.
+  const step = async (): Promise<void> => {
+    if (!onStep) return;
+    onStep();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  };
   const checkpointBytes = await readBoundedFileBuffer(
     path,
     MAX_RECOVERY_CHECKPOINT_FILE_BYTES,
     "Recovery checkpoint"
   );
+  await step();
   assertBoundedCheckpointJsonStructure(checkpointBytes);
   const value = JSON.parse(checkpointBytes.toString("utf8")) as unknown;
+  await step();
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid recovery checkpoint");
   const record = value as Record<string, unknown>;
   const commonValid = typeof record.chainId === "string" && typeof record.genesisHash === "string" &&
@@ -1698,10 +1723,10 @@ async function loadRecoveryCheckpointFile(genesis: GenesisConfig, path: string):
       checkpoint.tipHash !== (checkpoint.snapshot as { tip?: { hash?: unknown } }).tip?.hash) {
     throw new Error("Recovery checkpoint metadata mismatch");
   }
-  const chain = ZyronChain.fromTrustedSnapshot(genesis, checkpoint.snapshot, {
-    tipHash: checkpoint.tipHash,
-    snapshotSha256: checkpoint.snapshotSha256
-  });
+  const trustedAnchor = { tipHash: checkpoint.tipHash, snapshotSha256: checkpoint.snapshotSha256 };
+  const chain = onStep
+    ? await ZyronChain.fromTrustedSnapshotInSteps(genesis, checkpoint.snapshot, trustedAnchor, onStep)
+    : ZyronChain.fromTrustedSnapshot(genesis, checkpoint.snapshot, trustedAnchor);
   if (checkpoint.genesisHash !== chain.genesisHash) throw new Error("Recovery checkpoint genesis mismatch");
   if (checkpoint.height === 0 && checkpoint.blockFileBytes !== 0) throw new Error("Invalid genesis recovery boundary");
   if (checkpoint.version === 2) {

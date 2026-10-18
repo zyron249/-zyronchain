@@ -469,22 +469,51 @@ export function stateV2FromLedgerSnapshot(
   snapshot: LedgerSnapshot,
   governance?: StateV2GovernanceSnapshot
 ): SparseMerkleState {
+  const steps = stateV2FromLedgerSnapshotSteps(snapshot, governance);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Entries set per step of stateV2FromLedgerSnapshotSteps. */
+export const STATE_V2_REBUILD_STEP_ENTRIES = 1_024;
+
+/**
+ * stateV2FromLedgerSnapshot in bounded steps: the generator yields after every
+ * STATE_V2_REBUILD_STEP_ENTRIES entries and returns the same state. Each set()
+ * hashes a key path, so rebuilding a large state is slow; a caller can yield to
+ * the event loop between steps (Codex P2 on #1060).
+ */
+export function* stateV2FromLedgerSnapshotSteps(
+  snapshot: LedgerSnapshot,
+  governance?: StateV2GovernanceSnapshot
+): Generator<void, SparseMerkleState, undefined> {
   let state = SparseMerkleState.empty();
+  let entries = 0;
+  const counted = function* (): Generator<void, void, undefined> {
+    entries += 1;
+    if (entries % STATE_V2_REBUILD_STEP_ENTRIES === 0) yield;
+  };
   for (const account of [...snapshot.accounts].sort((a, b) => compareCanonicalStrings(a.address, b.address))) {
     state = state.set(accountKey(account.address), {
       balanceAtoms: account.balanceAtoms,
       nonce: account.nonce
     });
+    yield* counted();
   }
   for (const epoch of [...snapshot.settledActivityEpochs].sort((a, b) => a - b)) {
     state = state.set(activityEpochKey(epoch), { settled: true });
+    yield* counted();
   }
   if (governance) {
     for (const entry of [...governance.validatorSchedule].sort((a, b) => a.activationHeight - b.activationHeight)) {
       state = state.set(validatorScheduleKey(entry.activationHeight), { validators: entry.validators });
+      yield* counted();
     }
     for (const entry of [...governance.protocolSchedule].sort((a, b) => a.activationHeight - b.activationHeight)) {
       state = state.set(protocolScheduleKey(entry.activationHeight), { protocolVersion: entry.protocolVersion });
+      yield* counted();
     }
   }
   return state;

@@ -330,7 +330,8 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
     await verifyFiles(name, data);
     const copy = await ChainStore.open(genesis, data, {
       onBlockRecord: () => onProgress({ step: "open-record", validator: name }),
-      onStateV2Batch: () => onProgress({ step: "open-state", validator: name })
+      onStateV2Batch: () => onProgress({ step: "open-state", validator: name }),
+      onCheckpointStep: () => onProgress({ step: "open-checkpoint", validator: name })
     });
     assert.ok(copy.chain.height === blocks.length && copy.chain.tip.hash === checkpoint.tipHash, `restored ${name} state does not match the replayed state`);
     onProgress({ step: "copy-opened", validator: name });
