@@ -28,7 +28,7 @@ import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createServer } from "node:http";
-import { realpathSync } from "node:fs";
+import { createReadStream, realpathSync } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -40,7 +40,9 @@ const { ZyronChain } = await import(dist("chain.js"));
 const { ChainStore } = await import(dist("storage.js"));
 const { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } = await import(dist("crypto.js"));
 const { createProtocolUpgrade, createProtocolUpgradeApproval, createTransfer } = await import(dist("transaction.js"));
-const { expectedValidator } = await import(dist("block.js"));
+const { blockHash, expectedValidator } = await import(dist("block.js"));
+const { merkleRoot } = await import(dist("merkle.js"));
+const { canonicalJson } = await import(dist("codec.js"));
 const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist("tokenomics.js"));
 const { gatewayClientIdentity } = await import(dist("rpc-client-identity.js"));
 
@@ -249,6 +251,15 @@ export function openSnapshot(bytes, secret) {
 // the finalized log + checkpoint are copied to the other validators, each of
 // which re-opens and verifies them, so neither the restore nor the validator
 // start-up pays for a full replay four times (startup cost on a 0.1-CPU host).
+// R21-1046-L1: with a checkpoint, ChainStore.open only line-scans the records
+// below it, so every validator's files are compared byte-for-byte (SHA-256)
+// with the replayed ones before they are opened, and data-v1 again at the end.
+const RESTORED_DATA_FILES = ["metadata.json", "blocks.ndjson", "recovery-checkpoint.json"];
+async function fileSha256(path) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
+}
 export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress = () => {} } = {}) {
   assert.equal(bundle?.format, SNAPSHOT_MAGIC, "unknown snapshot format");
   const { genesis, network, keys, blocks } = bundle;
@@ -274,16 +285,25 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
   for (const block of blocks) { await store.commitFinalizedBlock(block); onProgress(); }
   assert.equal(store.chain.height, blocks.length, "snapshot replay height mismatch");
   const checkpoint = await store.writeRecoveryCheckpoint();
+  const replayed = new Map();
+  for (const file of RESTORED_DATA_FILES) replayed.set(file, await fileSha256(join(firstData, file)));
+  const verifyFiles = async (name, data) => {
+    for (const file of RESTORED_DATA_FILES) {
+      if (await fileSha256(join(data, file)) !== replayed.get(file)) throw new Error(`restored ${name} ${file} does not match the replayed log`);
+    }
+  };
   onProgress();
   for (const name of others) {
     const data = join(dir, `data-${name}`);
     await mkdir(data, { mode: 0o700 });
-    for (const file of ["metadata.json", "blocks.ndjson", "recovery-checkpoint.json"]) await copyFile(join(firstData, file), join(data, file));
+    for (const file of RESTORED_DATA_FILES) await copyFile(join(firstData, file), join(data, file));
     await chmod(join(data, "blocks.ndjson"), 0o600);
+    await verifyFiles(name, data);
     const copy = await ChainStore.open(genesis, data);
     assert.ok(copy.chain.height === blocks.length && copy.chain.tip.hash === checkpoint.tipHash, `restored ${name} state does not match the replayed state`);
     onProgress();
   }
+  await verifyFiles(first, firstData);
   await writeNetworkMarker(dir, network);
   return { chainId: genesis.chainId, genesisHash: network.genesisHash, height: blocks.length, tipHash: checkpoint.tipHash };
 }
@@ -353,6 +373,77 @@ export async function initNetwork(dir, chainId, { onProgress = () => {} } = {}) 
   };
   await writeNetworkMarker(dir, publicInfo);
   return publicInfo;
+}
+
+// ---- snapshot history verification (R21-1046-L1, option C) -------------------
+// Validators serve historical blocks from their own block log. Below a recovery
+// checkpoint that log is not re-validated on open, so a block corrupted on one
+// validator's disk could be sealed into the published snapshot, fail the next
+// cold-start replay and reset the testnet. Before sealing, the history must
+// hash-link from genesis to the live tip (header hash, previousHash,
+// transaction root, no repeated transaction), and every block must be served
+// byte-identically by two validators (covers fields outside the header hash,
+// such as attestation signatures). Otherwise nothing is sealed and the last
+// published snapshot stays in place.
+export function verifySnapshotBlocks(blocks, { tip, tipHash, chainId, genesisHash }) {
+  assert.ok(Array.isArray(blocks) && blocks.length === tip, `snapshot history has ${Array.isArray(blocks) ? blocks.length : "no"} blocks, expected ${tip}`);
+  let previous = genesisHash;
+  for (const [index, block] of blocks.entries()) {
+    const height = index + 1;
+    const header = block?.header;
+    assert.ok(header && typeof header === "object" && header.height === height && header.chainId === chainId, `snapshot block ${height} has the wrong height or chain ID`);
+    assert.equal(header.previousHash, previous, `snapshot block ${height} does not link to block ${height - 1}`);
+    assert.equal(blockHash(header), block.hash, `snapshot block ${height} hash does not match its header`);
+    assert.ok(Array.isArray(block.transactions) && merkleRoot(block.transactions) === header.transactionRoot, `snapshot block ${height} transactions do not match its header`);
+    assert.equal(new Set(block.transactions.map((tx) => tx?.txid)).size, block.transactions.length, `snapshot block ${height} repeats a transaction`);
+    previous = block.hash;
+  }
+  assert.equal(previous, tipHash, "snapshot history does not end at the live tip");
+}
+
+// readers: [{ name, read(from, limit) -> blocks }], one per validator. Each
+// history must verify on its own. Normally two validators serve identical
+// bytes and that history is used. Validators can legitimately hold different
+// finality certificates for the same block (for example a proposer that
+// finalized locally and restarted before broadcasting), so otherwise each
+// height takes the block that at least two verified histories serve
+// identically; a height without such a pair fails the build.
+async function readSnapshotHistory(reader, tip, pageSize) {
+  const blocks = [];
+  while (blocks.length < tip) {
+    const before = blocks.length;
+    const page = await reader.read(before + 1, Math.min(pageSize, tip - before));
+    if (Array.isArray(page)) for (const block of page) if (blocks.length < tip && block?.header?.height === blocks.length + 1) blocks.push(block);
+    if (blocks.length === before) throw new Error(`block ${before + 1} not served`);
+  }
+  return blocks;
+}
+export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, genesisHash, pageSize = 100, onReject = () => {} }) {
+  const expected = { tip, tipHash, chainId, genesisHash };
+  const histories = [];
+  for (const reader of readers) {
+    let blocks;
+    try {
+      blocks = await readSnapshotHistory(reader, tip, pageSize);
+      verifySnapshotBlocks(blocks, expected);
+    } catch (error) {
+      onReject(reader.name, error);
+      continue;
+    }
+    const lines = blocks.map((block) => canonicalJson(block));
+    const digest = createHash("sha256").update(lines.join("\n")).digest("hex");
+    if (histories.some((history) => history.digest === digest)) return blocks;
+    histories.push({ blocks, lines, digest });
+  }
+  if (histories.length < 2) throw new Error("snapshot history: fewer than two validators served verified blocks");
+  const merged = [];
+  for (let index = 0; index < tip; index += 1) {
+    const agreed = histories.find((history, i) => histories.some((other, j) => j > i && other.lines[index] === history.lines[index]));
+    if (!agreed) throw new Error(`snapshot history: no two validators served the same block ${index + 1}`);
+    merged.push(agreed.blocks[index]);
+  }
+  verifySnapshotBlocks(merged, expected);
+  return merged;
 }
 
 // ---- run: validators + gateway ---------------------------------------------------
@@ -492,13 +583,21 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   let snapshotCache; let snapshotCacheAt = 0;
   async function buildSnapshot() {
     if (snapshotCache && Date.now() - snapshotCacheAt < 60_000) return snapshotCache;
-    const tip = (await chainStatus()).height;
-    const blocks = [];
-    while (blocks.length < tip) {
-      const result = await anyNode(`/blocks?from=${blocks.length + 1}&limit=100`);
-      if (result.status !== 200 || !Array.isArray(result.body?.blocks) || result.body.blocks.length === 0) throw new Error("snapshot block read failed");
-      for (const block of result.body.blocks) { if (block.header.height === blocks.length + 1 && blocks.length < tip) blocks.push(block); }
-    }
+    const { height: tip, tipHash } = await chainStatus();
+    const readers = VALIDATOR_NAMES.map((name) => ({
+      name,
+      async read(from, limit) {
+        const node = nodes.get(name);
+        if (!node || node.exit) throw new Error("validator not running");
+        const result = await nodeFetch(node.port, `/blocks?from=${from}&limit=${limit}`);
+        if (result.status !== 200 || !Array.isArray(result.body?.blocks)) throw new Error(`block read returned ${result.status}`);
+        return result.body.blocks;
+      }
+    }));
+    const blocks = await collectSnapshotBlocks(readers, {
+      tip, tipHash, chainId, genesisHash: info.genesisHash,
+      onReject: (name, error) => console.error(`snapshot: history from ${name} not used (${error instanceof Error ? error.message : String(error)})`)
+    });
     const keys = {};
     for (const name of [...VALIDATOR_NAMES, "oracle", "founder", "faucet", "liquidity", "ecosystem"]) keys[name] = (await readSecret(join(dir, "keys", `${name}.json`))).privateKey;
     const sealed = sealSnapshot({ format: SNAPSHOT_MAGIC, createdAtMs: Date.now(), genesis, network: info, keys, blocks }, stateSecret);

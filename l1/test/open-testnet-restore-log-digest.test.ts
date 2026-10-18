@@ -10,7 +10,7 @@
 //    against the log it has just replayed and validated.
 // C: the snapshot builder must not seal history it cannot verify: header hash,
 //    previous-hash linkage from genesis to the live tip, transaction root, and
-//    two validators serving identical history.
+//    every block served identically by two validators.
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
@@ -67,12 +67,33 @@ test("restore rejects a validator log that no longer matches the replayed log (s
     };
     await assert.rejects(
       api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress }),
-      /does not match the replayed/,
+      /restored v2 blocks\.ndjson does not match the replayed log/,
       "a validator log corrupted after the validated replay must not be accepted"
     );
     assert.ok(calls > bundle.blocks.length, "the corruption hook ran");
     // Nothing was marked complete, so the next start moves it aside and restores again.
     assert.ok(!(await api.readNetworkMarker(target)), "an unverified restore must not be marked complete");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("restore re-checks the replayed log itself after the validator copies", { timeout: 240_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-restore-digest-v1-"));
+  try {
+    const bundle = await sourceBundle(root, "zyron-restore-digest-v1-testnet-1");
+    const target = join(root, "restored");
+    let calls = 0;
+    // The tick after the last validator copy (v4) is opened: only data-v1 changes.
+    const onProgress = () => {
+      calls += 1;
+      if (calls === bundle.blocks.length + 4) corruptBlockHashSync(join(target, "data-v1", "blocks.ndjson"));
+    };
+    await assert.rejects(
+      api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress }),
+      /restored v1 blocks\.ndjson does not match the replayed log/
+    );
+    assert.ok(!(await api.readNetworkMarker(target)));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -149,7 +170,20 @@ test("snapshot block collection verifies hashes, linkage, transaction roots and 
     assert.doesNotThrow(() => api.verifySnapshotBlocks(signature, expected));
     assert.deepEqual(await api.collectSnapshotBlocks([readerOf("v1", signature), honest("v2"), honest("v3")], { ...expected, onReject }), blocks);
 
-    // No two validators agree: nothing is sealed.
+    // Validators can hold different (valid) finality certificates for the same
+    // block. Without a whole-history pair, each height takes the block two
+    // validators serve identically.
+    const variant = (height: number) => {
+      const copy = structuredClone(blocks);
+      const vote = copy[height - 1].attestations[0];
+      vote.signature = (vote.signature[0] === "0" ? "1" : "0") + vote.signature.slice(1);
+      return copy;
+    };
+    rejected.length = 0;
+    assert.deepEqual(await api.collectSnapshotBlocks([readerOf("v1", variant(60)), readerOf("v2", variant(70)), readerOf("v3", variant(80))], { ...expected, onReject }), blocks);
+    assert.deepEqual(rejected, []);
+
+    // No two validators agree at some height: nothing is sealed.
     await assert.rejects(api.collectSnapshotBlocks([readerOf("v1", signature), honest("v2"), readerOf("v3", flipped)], { ...expected, onReject }));
     await assert.rejects(api.collectSnapshotBlocks([honest("v1")], { ...expected, onReject }));
     // A reader that fails or serves nothing is skipped, not trusted.
