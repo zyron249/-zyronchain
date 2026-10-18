@@ -21,7 +21,7 @@ The open testnet runs the canonical TypeScript L1 (`l1/`) with:
 |---|---|---|
 | GET | `/` or `/explorer` | Block explorer and faucet page |
 | GET | `/api` | Endpoint list and chain summary |
-| GET | `/health` (`/healthz`, `/readyz`) | 200 while at least a quorum of validators answers; per-validator height and readiness |
+| GET | `/health` (`/healthz`, `/readyz`) | 200 while at least a quorum of validators answers; per-validator height and readiness. During start-up `/health` answers 200 with `status: "starting"` and the current `phase`, while `/readyz` and all other endpoints answer 503 until the validators serve |
 | GET | `/status`, `/network`, `/genesis` | Chain ID, genesis hash, height, protocol version, public role addresses |
 | GET | `/account/{address}`, `/balance/{address}`, `/nonce/{address}` | Account state |
 | GET | `/blocks?from=&limit=` (limit ≤ 20), `/block/{height}` | Block summaries |
@@ -60,7 +60,8 @@ The directory holds plaintext **test** validator and faucet keys. Keep it outsid
 
 - With `ZYRON_TESTNET_STATE_SECRET` set (Render generates it; it is stored nowhere else), the gateway serves `GET /state/snapshot`: genesis, TEST keys and all finalized blocks, gzip + AES-256-GCM. Rate limited to 30 per hour.
 - [`deploy/open-testnet/snapshot-keeper.sh`](../deploy/open-testnet/snapshot-keeper.sh) runs on an always-on machine. Every 10 minutes it downloads the snapshot and publishes it as the `state.enc` asset of the `open-testnet-state` prerelease. It also keeps a per-genesis copy. Its polling keeps the free instance from idling.
-- On a cold start, `run --init-if-missing --restore-url <asset>` decrypts the snapshot, checks the genesis hash and keys, replays every block through normal validation, and resumes the same chain. A fresh genesis is created only if no snapshot exists or the restore fails, and the failure is logged.
+- On a cold start, `run --init-if-missing --restore-url <asset>` decrypts the snapshot, checks the genesis hash and keys, replays every block through normal validation once, writes a recovery checkpoint that the other validators verify and start from, and resumes the same chain. A fresh genesis is created only if no snapshot exists or the restore fails, and the failure is logged. Transient download failures are retried first.
+- The gateway binds its port (`--port`, else `$PORT`, else 10000) before the restore starts, so hosts that scan for an open port see it immediately. The log reports how long each start-up phase took (`download`, `decrypt`, `replay`, `validators`).
 - `GET /status` reports `persistence.mode` (`snapshot-restore`, `fresh-genesis` or `local-disk`).
 
 Limits: up to about 10 minutes of the newest blocks can be lost on an unplanned restart, and they are produced again from that height. Validator signing journals are not part of the snapshot. This is acceptable only because the network has no value.
