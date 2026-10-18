@@ -21,7 +21,7 @@ The open testnet runs the canonical TypeScript L1 (`l1/`) with:
 |---|---|---|
 | GET | `/` or `/explorer` | Block explorer and faucet page |
 | GET | `/api` | Endpoint list and chain summary |
-| GET | `/health` (`/healthz`, `/readyz`) | 200 while at least a quorum of validators answers; per-validator height and readiness. During start-up `/health` answers 200 with `status: "starting"` and the current `phase` while start-up makes progress (a phase change, a download attempt, a replayed block, a validator copy), and 503 with `status: "stalled"` after 5 minutes without progress so the host restarts it; `/readyz` and all other endpoints answer 503 until the validators serve |
+| GET | `/health` (`/healthz`, `/readyz`) | 200 while at least a quorum of validators answers; per-validator height and readiness. During start-up `/health` answers 200 with `status: "starting"` and the current `phase` while start-up makes progress (a phase change, a download attempt, a replayed block, a validator copy, a block of a fresh TEST genesis), and 503 with `status: "stalled"` after 5 minutes without progress so the host restarts it; `/readyz` and all other endpoints answer 503 until the validators serve |
 | GET | `/status`, `/network`, `/genesis` | Chain ID, genesis hash, height, protocol version, public role addresses |
 | GET | `/account/{address}`, `/balance/{address}`, `/nonce/{address}` | Account state |
 | GET | `/blocks?from=&limit=` (limit ≤ 20), `/block/{height}` | Block summaries |

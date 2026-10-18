@@ -58,9 +58,9 @@ const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 const RESERVED_CHAIN_IDS = new Set(["zyron-mainnet-1", "zyron-public-testnet-1"]);
 
 const STARTUP_GRACE_MS = 10 * 60_000;
-// Boot liveness (download/decrypt/replay): /health stays 200 only while start-up
-// makes progress (a phase change, a download attempt, a replayed block, a
-// validator copy). Longer than one 180 s download attempt; no wall-clock cap,
+// Boot liveness (download/decrypt/replay/init): /health stays 200 only while
+// start-up makes progress (a phase change, a download attempt, a replayed
+// block, a validator copy, a block produced or committed by a fresh init). Longer than one 180 s download attempt; no wall-clock cap,
 // because a large snapshot on a slow instance replays for a long time.
 export const BOOT_STALL_MS = 5 * 60_000;
 const SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS = [2_000, 5_000];
@@ -220,7 +220,7 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
 }
 
 // ---- init: fresh TEST keys, fixed-supply-v1 genesis, v6 prefix ----------------
-export async function initNetwork(dir, chainId) {
+export async function initNetwork(dir, chainId, { onProgress = () => {} } = {}) {
   assertTestnetChainId(chainId);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);
@@ -266,6 +266,7 @@ export async function initNetwork(dir, chainId) {
     for (const key of byPublicKey.values()) block = chain.attestBlock(block, key);
     chain.acceptBlock(block, timestampMs);
     blocks.push(block);
+    onProgress();
   }
   assert.equal(chain.protocolVersionAt(V6_ACTIVATION_HEIGHT), 6);
   await writeFile(join(dir, "genesis.json"), `${JSON.stringify(genesis, null, 2)}\n`, { mode: 0o644, flag: "wx" });
@@ -273,7 +274,7 @@ export async function initNetwork(dir, chainId) {
     const data = join(dir, `data-${name}`);
     await mkdir(data, { mode: 0o700 });
     const store = await ChainStore.open(genesis, data);
-    for (const block of blocks) await store.commitFinalizedBlock(block);
+    for (const block of blocks) { await store.commitFinalizedBlock(block); onProgress(); }
   }
   const publicInfo = {
     network: "testnet", valueBearing: false, notice: NOTICE, chainId, genesisHash: chain.genesisHash,
@@ -778,7 +779,7 @@ if (!invokedDirectly) {
     }
     if (!(await stat(join(dir, "network.json")).then(() => true, () => false))) {
       boot.enter("init");
-      console.log(JSON.stringify(await initNetwork(dir, chainId)));
+      console.log(JSON.stringify(await initNetwork(dir, chainId, { onProgress: boot.progress })));
       persistence = { mode: exists ? "local-disk" : "fresh-genesis", createdAtMs: Date.now() };
     }
   }
