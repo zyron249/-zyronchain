@@ -55,7 +55,9 @@ def client(settings):
                         quiz_polls,
                         pending_deletes,
                         web_logins,
-                        web_sessions
+                        web_sessions,
+                        network_events,
+                        squads
                     RESTART IDENTITY CASCADE
                     """
                 )

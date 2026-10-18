@@ -868,4 +868,23 @@ html[data-sky="night"] body::before {
 .league-row.badge-silver { box-shadow: 0 0 14px rgba(216, 220, 224, 0.35); border: 1px solid rgba(216, 220, 224, 0.7); }
 .league-row.badge-bronze { box-shadow: 0 0 14px rgba(215, 176, 138, 0.4); border: 1px solid rgba(215, 176, 138, 0.75); }
 .badge-on { color: #4fd8fb; }
-[data-squad] input { width: 100%; margin: 6px 0; }
+[data-squad] input, [data-cipher] input { width: 100%; margin: 6px 0; }
+.cipher-mask { letter-spacing: 0.28em; font-size: 20px; color: #4fd8fb; }
+.hp-bar { margin: 8px 0; }
+.event-boom { margin-top: 8px; text-align: center; color: #e6c36a; font-weight: 700; letter-spacing: 0.14em; animation: event-boom 0.7s ease; }
+.event-burst { position: relative; height: 28px; margin-top: 4px; }
+.event-spark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  background: #4fd8fb;
+  box-shadow: 0 0 10px #0a9ff5;
+  transform: rotate(var(--deg)) translateY(-14px);
+  animation: event-spark 0.7s ease;
+}
+@keyframes event-boom { 0% { transform: scale(0.7); opacity: 0; } 45% { transform: scale(1.15); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+@keyframes event-spark { from { transform: rotate(var(--deg)) translateY(0); opacity: 1; } to { transform: rotate(var(--deg)) translateY(-26px); opacity: 0; } }

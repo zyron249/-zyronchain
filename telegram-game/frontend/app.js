@@ -337,13 +337,17 @@
       api("/api/chests", { timeoutMs: timeoutMs }),
       api("/api/achievements", { timeoutMs: timeoutMs }),
       api("/api/leaderboard?board=" + encodeURIComponent(state.board), { timeoutMs: timeoutMs }),
-      api("/api/chain", { timeoutMs: timeoutMs })
+      api("/api/chain", { timeoutMs: timeoutMs }),
+      api("/api/cipher", { timeoutMs: timeoutMs }),
+      api("/api/events", { timeoutMs: timeoutMs })
     ]);
     state.upgrades = rest[0];
     state.chests = rest[1];
     state.achievements = rest[2];
     state.ranks = rest[3];
     state.chain = rest[4];
+    state.cipher = rest[5];
+    state.events = rest[6];
     if (!state.introChecked) {
       state.introChecked = true;
       if (!localStorage.getItem("zyronNodeIntro")) state.introStep = 1;
@@ -676,7 +680,98 @@
       chip("Network Power", formatPoints(p.networkPower))
     ]));
     section.append(stackCard());
+    section.append(cipherCard());
+    if (state.events && state.events.active) section.append(eventCard(state.events.active));
     return section;
+  }
+
+  function cipherCard() {
+    const data = state.cipher || {};
+    const card = el("article", { class: "card", "data-cipher": "1" }, [
+      el("h2", { text: "Daily cipher" }),
+      el("p", { class: "cipher-mask", text: data.mask || "— — —" }),
+      el("p", { class: "fine", text: data.solved ? "Solved for today." : "Guess the builder word. The server checks it. " + formatPoints(data.reward || 0) + " Zyron Points." })
+    ]);
+    if (!data.solved) {
+      card.append(el("input", { "data-cipher-guess": "1", maxlength: "12", placeholder: "Your guess" }));
+      card.append(el("button", {
+        class: "primary",
+        text: "Submit guess",
+        disabled: state.busy ? "disabled" : null,
+        onclick: submitCipher
+      }));
+    }
+    return card;
+  }
+
+  function submitCipher() {
+    if (state.busy) return;
+    const field = root.querySelector("[data-cipher-guess]");
+    const guess = field ? field.value : "";
+    state.busy = true;
+    render();
+    api("/api/cipher/answer", { method: "POST", body: { guess: guess, idempotencyKey: key("cipher") } })
+      .then(function (res) {
+        toast(res.correct ? "Cipher solved" : "Not that word", res.correct ? "ok" : "");
+        if (res.correct) playFx("reward");
+        return refresh();
+      })
+      .catch(fail);
+  }
+
+  function eventCard(active) {
+    const monster = active.kind === "bug_monster";
+    const ratio = window.ZyronEvents ? ZyronEvents.barRatio(active) : 0;
+    const bar = el("div", { class: "bar hp-bar" }, [el("i")]);
+    bar.firstChild.style.width = (ratio * 100) + "%";
+    const card = el("article", { class: "card" + (active.defeated ? " is-cleared" : ""), "data-event": active.kind }, [
+      el("h2", { text: active.title }),
+      el("p", { class: "fine", text: monster ? "Shared HP. Every builder's strike counts." : "Stack blocks together until the storm goal is met." }),
+      bar,
+      el("p", { text: monster ? active.hp + " / " + active.maxHp + " HP" : active.progress + " / " + active.goal })
+    ]);
+    if (active.defeated) {
+      const burst = el("div", { class: "event-burst", "data-event-burst": "1" });
+      const sparks = window.ZyronEvents ? ZyronEvents.sparkCount(active) : 0;
+      for (let i = 0; i < sparks; i += 1) {
+        const spark = el("i", { class: "event-spark" });
+        spark.style.setProperty("--deg", String((360 / sparks) * i) + "deg");
+        burst.append(spark);
+      }
+      card.append(burst);
+      card.append(el("div", { class: "event-boom", text: "Cleared" }));
+      if (!active.claimed) {
+        card.append(el("button", { class: "primary", text: "Claim goal", disabled: state.busy ? "disabled" : null, onclick: claimEvent }));
+      }
+    } else {
+      card.append(el("button", { class: "primary", text: "Strike", disabled: state.busy ? "disabled" : null, onclick: strikeEvent }));
+    }
+    return card;
+  }
+
+  function strikeEvent() {
+    if (state.busy) return;
+    state.busy = true;
+    render();
+    api("/api/events/strike", { method: "POST", body: { idempotencyKey: key("strike") } })
+      .then(function (res) {
+        if (res.finisher) playFx("rare");
+        toast(res.finisher ? "Community goal cleared" : "Strike landed", "ok");
+        return refresh();
+      })
+      .catch(fail);
+  }
+
+  function claimEvent() {
+    if (state.busy) return;
+    state.busy = true;
+    render();
+    api("/api/events/claim", { method: "POST", body: { idempotencyKey: key("eclaim") } })
+      .then(function (res) {
+        toast(res.points ? "+" + formatPoints(res.points) + " Zyron Points" : "Goal already claimed", res.points ? "ok" : "");
+        return refresh();
+      })
+      .catch(fail);
   }
 
   function stackCard() {
