@@ -472,17 +472,26 @@ export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, ge
     for (let index = 0; index < readers.length && !accepted; index += 1) {
       const block = await blockFrom(index, height);
       if (!block) continue;
-      const line = canonicalJson(block);
-      if (failures.has(line)) { reject(index, failures.get(line)); continue; }
-      const candidate = structuredClone(block);
+      let line;
       try {
+        // Served blocks are parsed JSON and can hold values canonicalJson
+        // refuses (unsafe numbers, excessive nesting): reject that validator.
+        line = canonicalJson(block);
+      } catch (error) {
+        reject(index, new Error(`block ${height} is not canonical (${error instanceof Error ? error.message : String(error)})`));
+        continue;
+      }
+      if (failures.has(line)) { reject(index, failures.get(line)); continue; }
+      try {
+        const candidate = structuredClone(block);
         // acceptBlock validates completely before it changes the chain, so a
         // rejected candidate leaves the verified history untouched.
         verified.chain.acceptBlock(structuredClone(candidate), Date.now());
         accepted = candidate;
       } catch (error) {
-        failures.set(line, error);
-        reject(index, new Error(`block ${height} failed validation (${error instanceof Error ? error.message : String(error)})`));
+        const failure = new Error(`block ${height} failed validation (${error instanceof Error ? error.message : String(error)})`);
+        failures.set(line, failure);
+        reject(index, failure);
       }
     }
     if (!accepted) throw new Error(`snapshot history: no validator served a block ${height} that passes finalized-block validation`);
