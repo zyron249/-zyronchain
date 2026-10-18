@@ -31,7 +31,7 @@ import { createServer } from "node:http";
 import { realpathSync } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const l1Root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -52,15 +52,23 @@ const NETWORK_DIR_ENTRIES = new Set(["keys", "genesis.json", "network.json", "ne
 
 // network.json is the completion marker: restoreNetwork and initNetwork write it
 // last, through a temporary file that is fsynced and renamed into place, so it
-// is either absent or complete. A marker that is missing, unparsable or not a
-// network description (for example one torn by an older non-atomic write) means
-// the directory is not a usable network. Returns the parsed marker or null.
+// is either absent or complete. A directory only counts as a usable network if
+// the marker is a network description the gateway can run with (chain ID,
+// genesis hash, faucet address) and describes this directory's genesis.json;
+// anything else (missing, torn by an older non-atomic write, edited, or for
+// another genesis) is incomplete. Returns the parsed marker or null.
 export async function readNetworkMarker(dir) {
-  let text;
-  try { text = await readFile(join(dir, "network.json"), "utf8"); } catch (error) { if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null; throw error; }
-  let info;
-  try { info = JSON.parse(text); } catch { return null; }
-  if (!info || typeof info !== "object" || Array.isArray(info) || typeof info.chainId !== "string" || typeof info.genesisHash !== "string") return null;
+  const readJson = async (name) => {
+    let text;
+    try { text = await readFile(join(dir, name), "utf8"); } catch (error) { if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return undefined; throw error; }
+    try { return JSON.parse(text); } catch { return undefined; }
+  };
+  const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  const info = await readJson("network.json");
+  if (!isObject(info) || typeof info.chainId !== "string" || typeof info.genesisHash !== "string" || typeof info.faucetAddress !== "string") return null;
+  const genesis = await readJson("genesis.json");
+  if (!isObject(genesis) || genesis.chainId !== info.chainId) return null;
+  try { if (new ZyronChain(genesis).genesisHash !== info.genesisHash) return null; } catch { return null; }
   return info;
 }
 
@@ -75,20 +83,25 @@ async function writeNetworkMarker(dir, value) {
 
 // A directory without a valid completion marker is an interrupted restore or
 // init (for example a host restart in the middle of a replay, or a crash while
-// network.json was written). Move it aside (never delete it) so the next attempt
-// starts clean; a directory holding top-level entries those steps do not create
-// is refused and left untouched. An existing path is never replaced. Returns the
-// new path, or false if nothing was moved.
+// network.json was written). Move it aside to <dir>.incomplete-<ms>-<pid>/<name>
+// (never delete it) so the next attempt starts clean; a directory holding
+// top-level entries those steps do not create is refused and left untouched.
+// An existing path is never replaced. Returns the new path, or false if nothing
+// was moved.
 export async function moveAsideIncompleteNetworkDir(dir) {
   let entries;
   try { entries = await readdir(dir); } catch (error) { if (error?.code === "ENOENT") return false; throw error; }
   if (await readNetworkMarker(dir)) return false;
   const unexpected = entries.filter((name) => !NETWORK_DIR_ENTRIES.has(name));
   if (unexpected.length) throw new Error(`refusing to move ${dir}: unexpected entries ${unexpected.join(", ")}`);
+  // The holder directory is reserved with an exclusive mkdir (an existing path
+  // is skipped, never replaced); the directory then moves into it under its
+  // own name, a path nothing else can have created.
   const base = `${dir}.incomplete-${Date.now()}-${process.pid}`;
   for (let attempt = 0; attempt < 1000; attempt += 1) {
-    const aside = attempt === 0 ? base : `${base}-${attempt}`;
-    if (await lstat(aside).then(() => true, (error) => { if (error?.code === "ENOENT") return false; throw error; })) continue;
+    const holder = attempt === 0 ? base : `${base}-${attempt}`;
+    try { await mkdir(holder, { mode: 0o700 }); } catch (error) { if (error?.code === "EEXIST") continue; throw error; }
+    const aside = join(holder, basename(dir));
     await rename(dir, aside);
     return aside;
   }
