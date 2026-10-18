@@ -63,12 +63,15 @@ test("restore rejects a validator log that no longer matches the replayed log (s
     const bundle = await sourceBundle(root, "zyron-restore-digest-testnet-1");
     const target = join(root, "restored");
     let calls = 0;
-    // restoreNetwork calls onProgress synchronously. The first tick after the
-    // replay comes right after the recovery checkpoint is written and before
-    // any validator copy is made: corrupt the replayed log in place there.
-    const onProgress = () => {
+    let hooked = 0;
+    // restoreNetwork calls onProgress synchronously. The "digested" tick comes
+    // right after the recovery checkpoint is written and the replayed files are
+    // hashed, before any validator copy is made: corrupt the replayed log in
+    // place there. (R26-1048-L1 labelled the ticks; this is the same point as
+    // the former tick count blocks + 1.)
+    const onProgress = (event?: Json) => {
       calls += 1;
-      if (calls === bundle.blocks.length + 1) corruptBlockHashSync(join(target, "data-v1", "blocks.ndjson"));
+      if (event?.step === "digested") { hooked += 1; corruptBlockHashSync(join(target, "data-v1", "blocks.ndjson")); }
     };
     await assert.rejects(
       api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress }),
@@ -76,6 +79,7 @@ test("restore rejects a validator log that no longer matches the replayed log (s
       "a validator log corrupted after the validated replay must not be accepted"
     );
     assert.ok(calls > bundle.blocks.length, "the corruption hook ran");
+    assert.equal(hooked, 1, "the corruption hook ran exactly once");
     // Nothing was marked complete, so the next start moves it aside and restores again.
     assert.ok(!(await api.readNetworkMarker(target)), "an unverified restore must not be marked complete");
   } finally {
@@ -89,15 +93,17 @@ test("restore re-checks the replayed log itself after the validator copies", { t
     const bundle = await sourceBundle(root, "zyron-restore-digest-v1-testnet-1");
     const target = join(root, "restored");
     let calls = 0;
+    let hooked = 0;
     // The tick after the last validator copy (v4) is opened: only data-v1 changes.
-    const onProgress = () => {
+    const onProgress = (event?: Json) => {
       calls += 1;
-      if (calls === bundle.blocks.length + 4) corruptBlockHashSync(join(target, "data-v1", "blocks.ndjson"));
+      if (event?.step === "copy-opened" && event.validator === "v4") { hooked += 1; corruptBlockHashSync(join(target, "data-v1", "blocks.ndjson")); }
     };
     await assert.rejects(
       api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress }),
       /restored v1 blocks\.ndjson does not match the replayed log/
     );
+    assert.equal(hooked, 1, "the corruption hook ran exactly once");
     assert.ok(!(await api.readNetworkMarker(target)));
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -113,15 +119,17 @@ test("restore re-checks every validator copy before marking the restore complete
     const bundle = await sourceBundle(root, "zyron-restore-digest-v2-testnet-1");
     const target = join(root, "restored");
     let calls = 0;
-    const onProgress = () => {
+    let hooked = 0;
+    const onProgress = (event?: Json) => {
       calls += 1;
-      if (calls === bundle.blocks.length + 4) corruptBlockHashSync(join(target, "data-v2", "blocks.ndjson"));
+      if (event?.step === "copy-opened" && event.validator === "v4") { hooked += 1; corruptBlockHashSync(join(target, "data-v2", "blocks.ndjson")); }
     };
     await assert.rejects(
       api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress }),
       /restored v2 blocks\.ndjson does not match the replayed log/,
       "restore marked complete with a corrupted data-v2"
     );
+    assert.equal(hooked, 1, "the corruption hook ran exactly once");
     assert.ok(!(await api.readNetworkMarker(target)));
   } finally {
     await rm(root, { recursive: true, force: true });

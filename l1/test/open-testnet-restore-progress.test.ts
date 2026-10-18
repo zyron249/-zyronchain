@@ -53,6 +53,8 @@ test("restore reports progress for every validator copy step: copied files, reco
     const replayed = events.filter((event) => event.step === "replay-block").length;
     assert.equal(replayed, bundle.blocks.length, "one tick per replayed snapshot block");
     assert.equal(events.filter((event) => event.step === "checkpoint").length, 1, "a tick once the recovery checkpoint is written");
+    assert.equal(events.filter((event) => event.step === "digested").length, 1, "a tick once the replayed files are hashed");
+    for (const file of FILES) assert.ok(events.some((event) => event.step === "hash-chunk" && event.validator === "v1" && event.file === file), `no progress while hashing the replayed ${file}`);
 
     for (const name of COPIES) {
       for (const file of FILES) {
