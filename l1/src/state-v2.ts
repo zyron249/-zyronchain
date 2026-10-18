@@ -141,27 +141,60 @@ export class SparseMerkleState {
 
   nodeRecords(): StateV2NodeRecord[] {
     const records: StateV2NodeRecord[] = [];
+    for (const batch of this.nodeRecordBatches(4_096)) {
+      for (const record of batch) records.push(record);
+    }
+    return records;
+  }
+
+  /**
+   * The records of nodeRecords(), in the same order (children before their
+   * branch), produced lazily in batches of at most `batchSize`. The traversal is
+   * iterative and resumes where the previous batch stopped, so a caller can
+   * yield to the event loop between batches of a large tree instead of building
+   * the whole list in one synchronous step (Codex P2 on #1060). The state is
+   * immutable, so interleaving other work between batches cannot change them.
+   */
+  *nodeRecordBatches(batchSize: number): Generator<StateV2NodeRecord[], void, undefined> {
+    if (!Number.isSafeInteger(batchSize) || batchSize < 1) throw new Error("Invalid State v2 node record batch size");
     const seen = new Set<string>();
-    const visit = (link: NodeLink | undefined, depth: number): void => {
+    const stack: Array<{ node: BranchNode; depth: number; next: 0 | 1 | 2 }> = [];
+    let batch: StateV2NodeRecord[] = [];
+    const enter = (link: NodeLink | undefined, depth: number): void => {
       if (!link || seen.has(link.hash)) return;
       const node = this.resolveNode(link, depth);
       seen.add(node.hash);
       if (node.kind === "leaf") {
-        records.push({
+        batch.push({
           kind: "leaf", hash: node.hash, keyHash: node.keyHash,
           valueHash: node.valueHash, valueJson: node.valueJson
         });
-        return;
+      } else {
+        stack.push({ node, depth, next: 0 });
       }
-      visit(node.left, depth + 1);
-      visit(node.right, depth + 1);
-      records.push({
-        kind: "branch", hash: node.hash,
-        leftHash: linkHash(node.left) ?? null, rightHash: linkHash(node.right) ?? null
-      });
     };
-    visit(this.rootNode, 0);
-    return records;
+    enter(this.rootNode, 0);
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1]!;
+      if (frame.next === 0) {
+        frame.next = 1;
+        enter(frame.node.left, frame.depth + 1);
+      } else if (frame.next === 1) {
+        frame.next = 2;
+        enter(frame.node.right, frame.depth + 1);
+      } else {
+        stack.pop();
+        batch.push({
+          kind: "branch", hash: frame.node.hash,
+          leftHash: linkHash(frame.node.left) ?? null, rightHash: linkHash(frame.node.right) ?? null
+        });
+      }
+      if (batch.length >= batchSize) {
+        yield batch;
+        batch = [];
+      }
+    }
+    if (batch.length > 0) yield batch;
   }
 
   /** Reachability metadata without duplicating full leaf payloads. */

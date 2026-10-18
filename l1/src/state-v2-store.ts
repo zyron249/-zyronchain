@@ -49,7 +49,18 @@ export interface StateV2CommitFaultHooks {
 
 /** Records per SQLite transaction when a whole state is written at once. */
 export const STATE_V2_CATCHUP_BATCH_SIZE = 1_024;
+/**
+ * Semantic keys checked against the target root per catch-up step. Each check
+ * resolves one key path (up to the tree depth), so this is smaller than the
+ * record batch to keep every step comparably bounded.
+ */
+export const STATE_V2_CATCHUP_KEY_CHECK_BATCH_SIZE = 128;
 const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+function assertCommittedSemanticKey(state: SparseMerkleState, key: string): void {
+  if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new Error("Invalid State v2 semantic key preimage");
+  if (state.get(key) === undefined) throw new Error("State v2 semantic key is not committed by target root");
+}
 
 /**
  * Crash-safe content-addressed persistence for State v2 nodes.
@@ -158,37 +169,15 @@ export class StateV2DiskStore {
     const pending = state.pendingNodeRecords();
     const needsReplayCatchup = state.root() !== this.currentState.root() && pending.length === 0;
     if (needsReplayCatchup) {
-      // A full catch-up (for example a store rebuilt from the finalized log) can
-      // be large: write it in bounded batches and yield in between so the
-      // process stays responsive and progress is visible (Codex P2 on #1060).
-      // Node records are content-addressed and the root pointer is written only
-      // after every batch, so a crash part-way leaves the previous root intact.
-      const records = state.nodeRecords();
-      for (let offset = 0; offset < records.length; offset += STATE_V2_CATCHUP_BATCH_SIZE) {
-        await this.nodeObjects.putMany(records.slice(offset, offset + STATE_V2_CATCHUP_BATCH_SIZE));
-        faultHooks.onCatchupBatch?.();
-        await yieldToEventLoop();
-      }
+      await this.writeCatchup(state, keyPreimages, faultHooks);
     } else {
       await this.nodeObjects.putMany(pending);
-    }
-
-    for (const key of keyPreimages) {
-      if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new Error("Invalid State v2 semantic key preimage");
-      if (state.get(key) === undefined) throw new Error("State v2 semantic key is not committed by target root");
-    }
-    if (needsReplayCatchup) {
-      for (let offset = 0; offset < keyPreimages.length; offset += STATE_V2_CATCHUP_BATCH_SIZE) {
-        await this.nodeObjects.putSemanticKeys(keyPreimages.slice(offset, offset + STATE_V2_CATCHUP_BATCH_SIZE));
-        faultHooks.onCatchupBatch?.();
-        await yieldToEventLoop();
-      }
-    } else {
+      for (const key of keyPreimages) assertCommittedSemanticKey(state, key);
       await this.nodeObjects.putSemanticKeys(keyPreimages);
-    }
-    await faultHooks.afterSemanticKeysSync?.();
-    if (!this.semanticIndexWouldBeComplete(state, [])) {
-      throw new Error("Refusing State v2 root commit without complete semantic key index");
+      await faultHooks.afterSemanticKeysSync?.();
+      if (!this.semanticIndexWouldBeComplete(state, [])) {
+        throw new Error("Refusing State v2 root commit without complete semantic key index");
+      }
     }
 
     const body: RootMetadataBody = { version: 1, root: state.root() };
@@ -210,6 +199,56 @@ export class StateV2DiskStore {
       await directoryHandle.close();
     }
     this.currentState = SparseMerkleState.fromNodeResolver(state.root(), this.nodeObjects.resolver());
+  }
+
+  /**
+   * Full catch-up (for example a store rebuilt from the finalized log): every
+   * node record of the target state and its semantic keys. A large state is
+   * handled in bounded steps with a progress callback and an event-loop yield
+   * after each one, so the process stays responsive (Codex P2 on #1060):
+   * - the records are collected lazily, batch by batch, while they are written
+   *   (no whole-tree list is built first), and the leaf key hashes are noted;
+   * - each semantic key is checked against the target root in small batches;
+   * - the keys are written in batches;
+   * - index completeness (every leaf of the target has its key) is checked in
+   *   batches against the noted leaf key hashes, the same set leafKeyHashes()
+   *   returns, instead of one more whole-tree traversal.
+   * Node records are content-addressed and the root pointer is written only by
+   * the caller after all of this succeeds, so an interruption at any step
+   * leaves the previous root in place.
+   */
+  private async writeCatchup(
+    state: SparseMerkleState,
+    keyPreimages: readonly string[],
+    faultHooks: StateV2CommitFaultHooks
+  ): Promise<void> {
+    const step = async (): Promise<void> => {
+      faultHooks.onCatchupBatch?.();
+      await yieldToEventLoop();
+    };
+    const leafKeyHashes = new Set<string>();
+    for (const records of state.nodeRecordBatches(STATE_V2_CATCHUP_BATCH_SIZE)) {
+      for (const record of records) if (record.kind === "leaf") leafKeyHashes.add(record.keyHash);
+      await this.nodeObjects.putMany(records);
+      await step();
+    }
+    for (let offset = 0; offset < keyPreimages.length; offset += STATE_V2_CATCHUP_KEY_CHECK_BATCH_SIZE) {
+      for (const key of keyPreimages.slice(offset, offset + STATE_V2_CATCHUP_KEY_CHECK_BATCH_SIZE)) assertCommittedSemanticKey(state, key);
+      await step();
+    }
+    for (let offset = 0; offset < keyPreimages.length; offset += STATE_V2_CATCHUP_BATCH_SIZE) {
+      await this.nodeObjects.putSemanticKeys(keyPreimages.slice(offset, offset + STATE_V2_CATCHUP_BATCH_SIZE));
+      await step();
+    }
+    await faultHooks.afterSemanticKeysSync?.();
+    let checked = 0;
+    for (const keyHash of leafKeyHashes) {
+      if (this.nodeObjects.semanticKey(keyHash) === undefined) {
+        throw new Error("Refusing State v2 root commit without complete semantic key index");
+      }
+      checked += 1;
+      if (checked % STATE_V2_CATCHUP_BATCH_SIZE === 0) await step();
+    }
   }
 }
 

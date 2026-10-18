@@ -135,3 +135,30 @@ test("an interrupted State-v2 catch-up keeps the previous root and a later catch
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("nodeRecordBatches yields the records of a recursive post-order traversal, in order, in batches of at most the requested size", () => {
+  let state = SparseMerkleState.empty();
+  for (let i = 0; i < 300; i += 1) state = state.set(`account:batch-${i}`, { balanceAtoms: i });
+  // Independent reference: the former recursive nodeRecords() traversal.
+  const reference: StateV2NodeRecord[] = [];
+  const byHash = new Map(state.nodeRecords().map((record) => [record.hash, record]));
+  const seen = new Set<string>();
+  const visit = (hash: string | null): void => {
+    if (hash === null || seen.has(hash)) return;
+    seen.add(hash);
+    const record = byHash.get(hash)!;
+    if (record.kind === "branch") { visit(record.leftHash); visit(record.rightHash); }
+    reference.push(record);
+  };
+  visit(state.root());
+  assert.equal(reference.length, byHash.size);
+  for (const size of [1, 7, 1_024, 1_000_000]) {
+    const batches = [...state.nodeRecordBatches(size)];
+    assert.ok(batches.every((batch) => batch.length >= 1 && batch.length <= size), `batch size bound ${size}`);
+    assert.ok(batches.slice(0, -1).every((batch) => batch.length === size), `only the last batch may be short (${size})`);
+    assert.deepEqual(batches.flat(), reference, `batched records differ from the reference at size ${size}`);
+  }
+  assert.deepEqual(state.nodeRecords(), reference);
+  assert.deepEqual([...SparseMerkleState.empty().nodeRecordBatches(4)], []);
+  for (const invalid of [0, -1, 1.5, Number.NaN]) assert.throws(() => [...state.nodeRecordBatches(invalid)], /Invalid State v2 node record batch size/);
+});

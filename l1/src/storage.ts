@@ -13,7 +13,7 @@ import { ZyronChain } from "./chain.js";
 import { ConsensusStateStore } from "./consensus-state-store.js";
 import { V6_MAX_ROUND, safeVote, type V6Lock } from "./consensus-v6.js";
 import { StateV2DiskStore } from "./state-v2-store.js";
-import { stateV2TransactionKeyPreimages } from "./state-v2.js";
+import { SparseMerkleState, stateV2TransactionKeyPreimages } from "./state-v2.js";
 import type { StateV2PortableBundleV1 } from "./state-v2-portable.js";
 import type { Block, GenesisConfig } from "./types.js";
 
@@ -441,7 +441,9 @@ export class ChainStore {
       const replayedKeys = replay.chain.stateV2SemanticKeyPreimages();
       if (!replayedKeys) throw new Error("Active State v2 replay is missing semantic keys");
       const persistedRoot = stateV2Store.state().root();
-      if (stateV2Store.state().nodeRecords().length === 0 || persistedRoot !== replayedStateV2.root() ||
+      // An empty store has the empty root; comparing roots avoids copying every
+      // record of a populated store just to test for emptiness.
+      if (persistedRoot === SparseMerkleState.empty().root() || persistedRoot !== replayedStateV2.root() ||
           !stateV2Store.semanticIndexWouldBeComplete(replayedStateV2, [])) {
         // The finalized block log is authoritative. A crash can occur after the
         // block fsync and before its State-v2 root pointer commit, leaving a
