@@ -5,12 +5,14 @@
 // published snapshot again, not fall back to a fresh TEST genesis. Nothing is
 // deleted: the partial directory is moved aside, and a directory with top-level
 // entries the open testnet does not create is refused and left untouched.
+// A network.json torn by a crash while it was written (Codex review) is not a
+// completion marker: that directory is moved aside and restored again too.
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { createServer, type Server } from "node:http";
-import { access, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -61,24 +63,48 @@ async function until<T>(label: string, check: () => Promise<T | false | undefine
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api: any = await import(pathToFileURL(script).href);
 
+// Builds a source network, serves its sealed snapshot on loopback and returns
+// what a restarted host needs to restore it.
+async function publishSnapshot(root: string) {
+  const source = join(root, "source");
+  await runToExit(["init", "--dir", source, "--chain-id", CHAIN_ID]);
+  const genesis = JSON.parse(await readFile(join(source, "genesis.json"), "utf8"));
+  const network = JSON.parse(await readFile(join(source, "network.json"), "utf8"));
+  const keys: Record<string, string> = {};
+  for (const file of await readdir(join(source, "keys"))) keys[file.replace(/\.json$/, "")] = JSON.parse(await readFile(join(source, "keys", file), "utf8")).privateKey;
+  const blocks = (await readFile(join(source, "data-v1", "blocks.ndjson"), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const secret = randomBytes(32).toString("base64");
+  const sealed = seal({ format: MAGIC, createdAtMs: Date.now(), genesis, network, keys, blocks }, secret);
+  const server = createServer((_request, response) => { response.writeHead(200, { "content-type": "application/octet-stream", "content-length": sealed.length }); response.end(sealed); });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  return { source, network, secret, server, url: `http://127.0.0.1:${(server.address() as { port: number }).port}/state.enc` };
+}
+
+function startHosted(target: string, published: { secret: string; url: string }) {
+  const basePort = 23_000 + Math.floor(Math.random() * 1_000) * 4;
+  const child = spawn(process.execPath, [script, "run", "--dir", target, "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
+    "--chain-id", CHAIN_ID, "--validator-base-port", String(basePort), "--restore-url", published.url], {
+    cwd: l1Root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ZYRON_TESTNET_STATE_SECRET: published.secret, PORT: "" }
+  });
+  const output = { log: "" };
+  child.stdout!.on("data", (c) => { output.log += c; });
+  child.stderr!.on("data", (c) => { output.log += c; });
+  return { child, output };
+}
+
+async function stop(child: ChildProcess | undefined) {
+  if (child && child.exitCode === null) { child.kill("SIGTERM"); await Promise.race([once(child, "exit"), sleep(15_000)]); if (child.exitCode === null) child.kill("SIGKILL"); }
+}
+
 test("an interrupted restore leaves a partial directory; the next start removes it and restores the snapshot", { timeout: 300_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "zyron-interrupted-restore-"));
   let child: ChildProcess | undefined;
   let snapshotServer: Server | undefined;
   try {
-    const source = join(root, "source");
-    await runToExit(["init", "--dir", source, "--chain-id", CHAIN_ID]);
-    const genesis = JSON.parse(await readFile(join(source, "genesis.json"), "utf8"));
-    const network = JSON.parse(await readFile(join(source, "network.json"), "utf8"));
-    const keys: Record<string, string> = {};
-    for (const file of await readdir(join(source, "keys"))) keys[file.replace(/\.json$/, "")] = JSON.parse(await readFile(join(source, "keys", file), "utf8")).privateKey;
-    const blocks = (await readFile(join(source, "data-v1", "blocks.ndjson"), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
-    const secret = randomBytes(32).toString("base64");
-    const sealed = seal({ format: MAGIC, createdAtMs: Date.now(), genesis, network, keys, blocks }, secret);
-    snapshotServer = createServer((_request, response) => { response.writeHead(200, { "content-type": "application/octet-stream", "content-length": sealed.length }); response.end(sealed); });
-    snapshotServer.listen(0, "127.0.0.1");
-    await once(snapshotServer, "listening");
-    const snapshotPort = (snapshotServer.address() as { port: number }).port;
+    const published = await publishSnapshot(root);
+    snapshotServer = published.server;
+    const { source, network } = published;
 
     // What a restore interrupted during replay leaves behind: keys, genesis and
     // the first validator's partially written data, but no network.json.
@@ -88,19 +114,14 @@ test("an interrupted restore leaves a partial directory; the next start removes 
     await cp(join(source, "genesis.json"), join(target, "genesis.json"));
     await cp(join(source, "data-v1"), join(target, "data-v1"), { recursive: true });
 
-    const basePort = 23_000 + Math.floor(Math.random() * 1_000) * 4;
-    child = spawn(process.execPath, [script, "run", "--dir", target, "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
-      "--chain-id", CHAIN_ID, "--validator-base-port", String(basePort), "--restore-url", `http://127.0.0.1:${snapshotPort}/state.enc`], {
-      cwd: l1Root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ZYRON_TESTNET_STATE_SECRET: secret, PORT: "" }
-    });
-    let log = "";
-    child.stdout!.on("data", (c) => { log += c; });
-    child.stderr!.on("data", (c) => { log += c; });
-    const port = await until("gateway listening line", async () => Number(/gateway listening on 127\.0\.0\.1:(\d+)/.exec(log)?.[1] ?? 0) || false, 30_000);
+    const hosted = startHosted(target, published);
+    child = hosted.child;
+    const port = await until("gateway listening line", async () => Number(/gateway listening on 127\.0\.0\.1:(\d+)/.exec(hosted.output.log)?.[1] ?? 0) || false, 30_000);
     const status = await until("chain served", async () => {
       const response = await json(`http://127.0.0.1:${port}/status`);
       return response.status === 200 ? response.body : false;
     }, 180_000);
+    const log = hosted.output.log;
     assert.equal(status.persistence.mode, "snapshot-restore", log);
     assert.equal(status.persistence.restoredHeight, 100);
     assert.equal(status.genesisHash, network.genesisHash);
@@ -109,8 +130,94 @@ test("an interrupted restore leaves a partial directory; the next start removes 
     assert.ok((await readdir(root)).some((name) => name.startsWith("hosted.incomplete-")), "partial directory kept aside");
     for (const name of ["v1", "v2", "v3", "v4"]) await access(join(target, `data-${name}`, "recovery-checkpoint.json"));
   } finally {
-    if (child && child.exitCode === null) { child.kill("SIGTERM"); await Promise.race([once(child, "exit"), sleep(15_000)]); if (child.exitCode === null) child.kill("SIGKILL"); }
+    await stop(child);
     snapshotServer?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a network.json torn by a crash is not a completion marker; the next start moves the directory aside and restores the snapshot", { timeout: 300_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-torn-marker-"));
+  let child: ChildProcess | undefined;
+  let snapshotServer: Server | undefined;
+  try {
+    const published = await publishSnapshot(root);
+    snapshotServer = published.server;
+    const { source, network } = published;
+
+    // A full network directory whose network.json was cut short (process
+    // killed or disk full while it was written).
+    const target = join(root, "hosted");
+    await cp(source, target, { recursive: true });
+    const marker = await readFile(join(target, "network.json"), "utf8");
+    await truncate(join(target, "network.json"), Math.floor(marker.length / 2));
+
+    const hosted = startHosted(target, published);
+    child = hosted.child;
+    const port = await until("gateway listening line", async () => Number(/gateway listening on 127\.0\.0\.1:(\d+)/.exec(hosted.output.log)?.[1] ?? 0) || false, 30_000);
+    const status = await until("chain served or start-up crashed", async () => {
+      if (child!.exitCode !== null) return { exitedWith: child!.exitCode };
+      const response = await json(`http://127.0.0.1:${port}/status`);
+      return response.status === 200 ? response.body : false;
+    }, 180_000);
+    const log = hosted.output.log;
+    assert.equal(status.exitedWith, undefined, `start-up crashed on the torn network.json:\n${log}`);
+    assert.equal(status.persistence.mode, "snapshot-restore", log);
+    assert.equal(status.persistence.restoredHeight, 100);
+    assert.equal(status.genesisHash, network.genesisHash);
+    assert.doesNotMatch(log, /STATE RESTORE FAILED|fresh TEST genesis/);
+    assert.match(log, /moved an incomplete network directory left by an interrupted start-up to .*hosted\.incomplete-/);
+    const aside = (await readdir(root)).find((name) => name.startsWith("hosted.incomplete-"));
+    assert.ok(aside, "torn directory kept aside");
+    assert.equal(await readFile(join(root, aside, "network.json"), "utf8"), marker.slice(0, Math.floor(marker.length / 2)), "torn marker preserved, not deleted");
+    assert.deepEqual(JSON.parse(await readFile(join(target, "network.json"), "utf8")), network);
+    await assert.rejects(access(join(target, "network.json.partial")), { code: "ENOENT" });
+  } finally {
+    await stop(child);
+    snapshotServer?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("move-aside treats an unparsable or partial marker as incomplete and never replaces an existing destination", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-marker-dir-"));
+  const realNow = Date.now;
+  try {
+    const torn = join(root, "torn");
+    await mkdir(join(torn, "keys"), { recursive: true });
+    await writeFile(join(torn, "network.json"), '{"network":"testnet","genesisHa');
+    await writeFile(join(torn, "network.json.partial"), "{");
+    const tornAside = await api.moveAsideIncompleteNetworkDir(torn);
+    assert.match(String(tornAside), /torn\.incomplete-\d+-\d+/);
+    await access(join(tornAside, "network.json.partial"));
+
+    // A marker that parses but is not a network description is not complete either.
+    const wrongShape = join(root, "wrong-shape");
+    await mkdir(wrongShape);
+    await writeFile(join(wrongShape, "network.json"), "[]");
+    assert.ok(await api.moveAsideIncompleteNetworkDir(wrongShape));
+
+    const complete = join(root, "complete");
+    await mkdir(complete);
+    await writeFile(join(complete, "network.json"), JSON.stringify({ chainId: CHAIN_ID, genesisHash: "ab".repeat(32) }));
+    assert.equal(await api.moveAsideIncompleteNetworkDir(complete), false);
+    await access(join(complete, "network.json"));
+
+    // Same millisecond and process: an existing (even empty) directory at the
+    // first candidate name is never replaced.
+    const fixed = realNow();
+    Date.now = () => fixed;
+    const partial = join(root, "partial");
+    await mkdir(join(partial, "keys"), { recursive: true });
+    const taken = `${partial}.incomplete-${fixed}-${process.pid}`;
+    await mkdir(taken);
+    const takenInode = (await lstat(taken)).ino;
+    const aside = await api.moveAsideIncompleteNetworkDir(partial);
+    assert.notEqual(aside, taken);
+    assert.equal((await lstat(taken)).ino, takenInode, "existing destination replaced");
+    await access(join(aside, "keys"));
+  } finally {
+    Date.now = realNow;
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -141,7 +248,7 @@ test("an incomplete directory is moved aside (never deleted), a foreign or compl
 
     const complete = join(root, "complete");
     await mkdir(join(complete, "keys"), { recursive: true });
-    await writeFile(join(complete, "network.json"), "{}");
+    await writeFile(join(complete, "network.json"), JSON.stringify({ chainId: CHAIN_ID, genesisHash: "cd".repeat(32) }));
     assert.equal(await api.moveAsideIncompleteNetworkDir(complete), false);
     await access(join(complete, "network.json"));
   } finally {
