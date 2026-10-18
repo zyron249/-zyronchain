@@ -861,3 +861,11 @@ html[data-sky="night"] body::before {
 .chain-tray { display: flex; flex-wrap: wrap; gap: 8px; }
 .chain-tray button { width: 58px; padding: 0; border: 0; background: transparent; }
 @keyframes block-drop { from { transform: translateY(-24px); } to { transform: translateY(0); } }
+.chain-pips { display: flex; gap: 6px; margin-top: 8px; }
+.chain-pips i { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; font-style: normal; font-size: 12px; border: 1px solid rgba(216, 220, 224, 0.35); color: #b1b8c0; }
+.chain-pips i.on { color: #02050a; background: #4fd8fb; border-color: #4fd8fb; }
+.league-row.badge-gold { box-shadow: 0 0 16px rgba(230, 195, 106, 0.45); border: 1px solid rgba(230, 195, 106, 0.8); }
+.league-row.badge-silver { box-shadow: 0 0 14px rgba(216, 220, 224, 0.35); border: 1px solid rgba(216, 220, 224, 0.7); }
+.league-row.badge-bronze { box-shadow: 0 0 14px rgba(215, 176, 138, 0.4); border: 1px solid rgba(215, 176, 138, 0.75); }
+.badge-on { color: #4fd8fb; }
+[data-squad] input { width: 100%; margin: 6px 0; }

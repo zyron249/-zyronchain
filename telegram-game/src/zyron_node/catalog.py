@@ -75,6 +75,8 @@ ACHIEVEMENTS: tuple[Achievement, ...] = (
     Achievement("wallet", "Watch address", "Link a read-only wallet address.", 10, "wallet_linked", 1),
     Achievement("referral", "Signal booster", "Qualify one referral.", 30, "qualified_referrals", 1),
     Achievement("referral_5", "Community relay", "Qualify five referrals.", 80, "qualified_referrals", 5),
+    Achievement("blocks_100", "First 100 blocks", "Run 100 node cycles. The blocks are yours.", 15, "cycle_count", 100),
+    Achievement("team_captain", "Team captain", "Create a builder squad and lead it.", 20, "squad_captain", 1),
 )
 
 QUESTS_BY_ID = {quest.id: quest for quest in QUESTS}

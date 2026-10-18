@@ -47,7 +47,7 @@ from zyron_node.game import (
 from zyron_node.limits import RateLimitExceeded, hit
 from zyron_node import community, reminders, telegram_api
 from zyron_node.wallet_proof import issue_challenge, verify_proof
-from zyron_node import chain_builder, wardrobe
+from zyron_node import chain_builder, squads, wardrobe
 from zyron_node import web_login
 
 
@@ -85,6 +85,15 @@ class WardrobeEquipBody(IdempotentBody):
 class ChainFinishBody(IdempotentBody):
     attempt: int = Field(ge=1, le=12)
     placed: list[str] = Field(min_length=1, max_length=5)
+
+
+class SquadCreateBody(IdempotentBody):
+    name: str = Field(min_length=3, max_length=24)
+    tag: str = Field(min_length=2, max_length=5)
+
+
+class SquadJoinBody(IdempotentBody):
+    tag: str = Field(min_length=2, max_length=5)
 
 
 class WalletBody(IdempotentBody):
@@ -331,6 +340,30 @@ def register_routes(app) -> None:
         return chain_builder.finish(
             request.app.state.pool, player, body.idempotencyKey, body.attempt, list(body.placed), now
         )
+
+    @app.post("/api/squads")
+    def squad_create(request: Request, body: SquadCreateBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "squadcreate", 8, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return squads.create_squad(request.app.state.pool, player, body.name, body.tag, body.idempotencyKey, now)
+
+    @app.post("/api/squads/join")
+    def squad_join(request: Request, body: SquadJoinBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "squadjoin", 12, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return squads.join_squad(request.app.state.pool, player, body.tag, body.idempotencyKey, now)
+
+    @app.post("/api/squads/leave")
+    def squad_leave(request: Request, body: IdempotentBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "squadleave", 8, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return squads.leave_squad(request.app.state.pool, player, body.idempotencyKey, now)
 
     @app.get("/api/upgrades")
     def upgrades(request: Request):
