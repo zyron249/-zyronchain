@@ -22,6 +22,8 @@ import test from "node:test";
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api: any = await import(pathToFileURL(join(l1Root, "scripts", "open-testnet.mjs")).href);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const { blockHash }: any = await import(pathToFileURL(join(l1Root, "dist", "src", "block.js")).href);
 const SECRET = "restore-log-digest-test-secret-0123456789abcdef";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -148,7 +150,8 @@ test("snapshot block collection verifies hashes, linkage, transaction roots and 
     // A consistent rewrite of one header (hash recomputed) breaks the linkage.
     const relinked = structuredClone(blocks);
     relinked[49].header.timestampMs += 1;
-    assert.throws(() => api.verifySnapshotBlocks(relinked, expected));
+    relinked[49].hash = blockHash(relinked[49].header);
+    assert.throws(() => api.verifySnapshotBlocks(relinked, expected), /snapshot block 51 does not link to block 50/);
 
     // A transaction body that no longer matches its header's transaction root.
     const body = structuredClone(blocks);
