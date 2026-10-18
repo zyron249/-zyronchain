@@ -1362,11 +1362,105 @@
         el("strong", { text: reward })
       ]));
     });
+    const chain = (player().streak && player().streak.chain) || { day: 0, length: 7 };
+    const chainRow = el("div", { class: "chain-pips", "data-streak-chain": String(chain.day || 0) });
+    for (let i = 1; i <= (chain.length || 7); i += 1) {
+      chainRow.append(el("i", { class: i <= chain.day ? "on" : "", text: String(i) }));
+    }
     return el("article", { class: "card" }, [
       el("h2", { text: "30-day streak track" }),
       el("p", { class: "fine", text: player().streak.claimedToday ? "Today's supply is collected." : "Today's chest pays " + player().streak.nextReward + " Zyron Points." }),
-      calendar
+      calendar,
+      el("h3", { text: "7-day chain" }),
+      el("p", { class: "fine", text: "Claim the daily chest on consecutive days. The server pays a small chain bonus, once each UTC day." }),
+      chainRow
     ]);
+  }
+
+  function squadPanel() {
+    const squad = (player() && player().squad) || { league: [], yours: null, week: "" };
+    const card = el("article", { class: "card", "data-squad": "1" }, [
+      el("h2", { text: "Weekly squad league" }),
+      el("p", { class: "fine", text: "Builders team up. This week " + (squad.week || "") + " sums Zyron Points. Top three earn a badge. Not ZYN." })
+    ]);
+    const rows = squad.league || [];
+    if (!rows.length) card.append(el("p", { class: "fine", text: "No squads on the board yet." }));
+    rows.forEach(function (row) {
+      card.append(el("div", { class: "rank-row league-row" + (row.badge ? " badge-" + row.badge : ""), "data-badge": row.badge || "none" }, [
+        el("span", { text: "#" + row.rank + " " + row.name + " · " + row.tag }),
+        el("strong", { text: formatPoints(row.score) })
+      ]));
+    });
+    const yours = squad.yours;
+    if (!yours) {
+      card.append(el("input", { "data-squad-name": "1", maxlength: "24", placeholder: "Squad name" }));
+      card.append(el("input", { "data-squad-tag": "1", maxlength: "5", placeholder: "TAG" }));
+      card.append(el("button", {
+        class: "primary",
+        text: "Create squad",
+        disabled: state.busy ? "disabled" : null,
+        onclick: function () {
+          createSquad(root.querySelector("[data-squad-name]").value, root.querySelector("[data-squad-tag]").value);
+        }
+      }));
+      card.append(el("button", {
+        class: "ghost buy",
+        text: "Join with tag",
+        disabled: state.busy ? "disabled" : null,
+        onclick: function () { joinSquad(root.querySelector("[data-squad-tag]").value); }
+      }));
+    } else {
+      card.append(el("p", { text: yours.name + " · " + yours.tag + " · " + (yours.role === "captain" ? "Team captain" : "Member") }));
+      (yours.members || []).forEach(function (member) {
+        card.append(el("div", { class: "rank-row" }, [
+          el("span", { text: member.displayName }),
+          el("span", { text: member.role === "captain" ? "Captain" : "Builder" })
+        ]));
+      });
+      card.append(el("button", {
+        class: "ghost buy",
+        text: "Leave squad",
+        disabled: state.busy ? "disabled" : null,
+        onclick: leaveSquad
+      }));
+    }
+    return card;
+  }
+
+  function createSquad(name, tag) {
+    if (state.busy) return;
+    state.busy = true;
+    render();
+    api("/api/squads", { method: "POST", body: { name: name, tag: tag, idempotencyKey: key("squad") } })
+      .then(function (res) {
+        toast((res.achievementsUnlocked || []).indexOf("team_captain") >= 0 ? "Team captain badge unlocked" : "Squad created", "ok");
+        return refresh();
+      })
+      .catch(fail);
+  }
+
+  function joinSquad(tag) {
+    if (state.busy) return;
+    state.busy = true;
+    render();
+    api("/api/squads/join", { method: "POST", body: { tag: tag, idempotencyKey: key("join") } })
+      .then(function () {
+        toast("Joined the squad", "ok");
+        return refresh();
+      })
+      .catch(fail);
+  }
+
+  function leaveSquad() {
+    if (state.busy) return;
+    state.busy = true;
+    render();
+    api("/api/squads/leave", { method: "POST", body: { idempotencyKey: key("leave") } })
+      .then(function () {
+        toast("Left the squad", "ok");
+        return refresh();
+      })
+      .catch(fail);
   }
 
   function boardView() {
@@ -1379,7 +1473,7 @@
         onclick: function () { loadBoard(item[0]); }
       }));
     });
-    wrap.append(el("h2", { text: "Rank" }), switcher);
+    wrap.append(el("h2", { text: "Rank" }), switcher, squadPanel());
     const profile = player();
     if (profile) wrap.append(tierTrack(profile));
     if (state.boardBusy || !state.ranks) {
@@ -1639,7 +1733,7 @@
       bar.firstChild.style.width = (ratio * 100) + "%";
       card.append(el("div", { class: "rank-row" }, [
         el("div", {}, [
-          el("strong", { text: item.title + (item.unlocked ? " · unlocked" : "") }),
+          el("strong", { class: item.unlocked ? "badge-on" : "", text: item.title + (item.unlocked ? " · unlocked" : "") }),
           el("p", { class: "fine", text: item.description }),
           bar
         ]),
@@ -1772,6 +1866,9 @@
       );
       const bonus = bonusLine(result);
       if (bonus) sheet.append(bonus);
+      if (result.chain && !result.replayed) {
+        sheet.append(el("p", { class: "fine", "data-streak-chain": "1", text: "7-day chain day " + result.chain.day + " of " + result.chain.length + " · +" + formatPoints(result.chain.points) }));
+      }
       sheet.append(
         el("p", { class: "fine", text: modal.count > 1 ? "Opened " + modal.index + " / " + modal.count + " · this batch +" + formatPoints(modal.total) : "Balance " + formatPoints(result.points) })
       );
