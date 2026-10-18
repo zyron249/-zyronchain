@@ -23,6 +23,7 @@ STATIC_ASSETS = (
     "blocks.js",
     "builders.js",
     "season.js",
+    "polish.js",
     "styles.css",
     "logo.png",
     "points-mark-52.png",

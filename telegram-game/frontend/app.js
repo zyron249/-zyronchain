@@ -47,7 +47,8 @@
     introStep: 0,
     modal: null,
     activityBusy: false,
-    boardBusy: false
+    boardBusy: false,
+    celebration: null
   };
   let chromeKey = "";
 
@@ -151,7 +152,11 @@
     if (!tg || !tg.HapticFeedback) return;
     if (kind === "success" || kind === "error" || kind === "warning") tg.HapticFeedback.notificationOccurred(kind);
     else if (kind === "select") tg.HapticFeedback.selectionChanged();
-    else tg.HapticFeedback.impactOccurred(kind === "heavy" ? "medium" : "light");
+    else tg.HapticFeedback.impactOccurred(kind === "heavy" ? "heavy" : "light");
+  }
+
+  function playFx(kind) {
+    if (window.ZyronPolish) window.ZyronPolish.play(kind);
   }
 
   function formatPoints(value) {
@@ -503,9 +508,30 @@
     ]);
   }
 
+  function soundToggle() {
+    const muted = window.ZyronPolish ? window.ZyronPolish.isMuted(localStorage) : false;
+    return el("button", {
+      class: "sound-toggle" + (muted ? " is-muted" : ""),
+      type: "button",
+      "aria-pressed": muted ? "true" : "false",
+      "aria-label": muted ? "Sound off" : "Sound on",
+      text: muted ? "Sound off" : "Sound on",
+      onclick: function () {
+        if (!window.ZyronPolish) return;
+        const next = window.ZyronPolish.toggleMuted(localStorage);
+        if (!next) playFx("tap");
+        haptic("select");
+        render();
+      }
+    });
+  }
+
   function header() {
     const bar = shellBrand();
-    bar.append(el("div", { class: "season", text: state.me.season ? state.me.season.name : "Off-season" }));
+    const tools = el("div", { class: "top-tools" });
+    if (window.ZyronPolish) tools.append(soundToggle());
+    tools.append(el("div", { class: "season", text: state.me.season ? state.me.season.name : "Off-season" }));
+    bar.append(tools);
     return bar;
   }
 
@@ -602,11 +628,13 @@
       tierTrack(p)
     ]));
     const visual = el("div", { class: "node-visual " + nodeMode(), "data-node": "1" }, [nodeArt(energy.current), buildersLayer(), chainTrack()]);
+    polishNode(visual);
     const pillClass = "status-pill " + (state.running ? "on" : state.phase === "routing" ? "busy" : "");
     const ticks = el("div", { class: "tick-log", "data-ticks": "1" });
     fillTicks(ticks);
     section.append(el("article", { class: "node-card" }, [
       visual,
+      evolutionPill(),
       el("div", { class: pillClass }, [
         el("i"),
         el("span", { "data-node-status": "1", text: statusText() })
@@ -1212,7 +1240,8 @@
   function rankRow(entry) {
     const medalClass = entry.rank <= 3 ? " medal m" + entry.rank : "";
     const top = entry.rank <= 3 ? " top" : "";
-    return el("div", { class: "rank-row" + (entry.you ? " you" : "") + top }, [
+    const podium = window.ZyronPolish ? window.ZyronPolish.podiumClass(entry.rank) : "";
+    return el("div", { class: "rank-row" + (entry.you ? " you" : "") + top + (podium ? " " + podium : "") }, [
       el("div", { class: "who" }, [
         el("div", { class: "medal" + medalClass, text: String(entry.rank) }),
         el("span", { text: entry.displayName + (entry.you ? " · you" : "") + " · Lv " + entry.nodeLevel }),
@@ -1448,6 +1477,7 @@
       return;
     }
     if (state.modal) modals.append(chestModal());
+    if (state.celebration) modals.append(levelUpLayer());
     syncChrome();
   }
 
@@ -1480,8 +1510,19 @@
 
   function chestModal() {
     const modal = state.modal;
-    const sheet = el("div", { class: "sheet", role: "dialog", "aria-modal": "true" }, [chestArt(modal.phase === "open")]);
-    if (modal.phase === "sealing") {
+    const ceremony = modal.phase === "ceremony" && window.ZyronPolish
+      ? window.ZyronPolish.chestClass(modal.step, modal.plan)
+      : "";
+    const rareOpen = modal.phase === "open" && modal.plan && modal.plan.gold;
+    const sheet = el("div", {
+      class: "sheet" + ((modal.plan && modal.plan.gold) ? " is-rare" : ""),
+      role: "dialog",
+      "aria-modal": "true"
+    }, [chestArt(modal.phase === "open" || rareOpen, ceremony)]);
+    if (modal.phase === "ceremony") {
+      sheet.append(el("h2", { text: modal.step === "burst" && modal.plan.rare ? "Rare supply" : "Unsealing" }));
+      sheet.append(el("p", { class: "fine", text: "The lock is giving way." }));
+    } else if (modal.phase === "sealing") {
       sheet.append(el("h2", { text: "Unsealing" }), el("p", { class: "fine", text: "Asking the server… " + modal.index + " / " + modal.count }));
     } else if (modal.phase === "error") {
       sheet.append(el("h2", { text: "Still sealed" }), el("p", { class: "error", text: modal.message }), el("button", { class: "primary", text: "Close", onclick: closeModal }));
@@ -1515,8 +1556,64 @@
 
   function closeModal() {
     state.modal = null;
+    document.documentElement.classList.remove("fx-shake");
     haptic("light");
     refresh().catch(fail);
+  }
+
+  function evolutionPill() {
+    if (!window.ZyronPolish || !player()) return null;
+    const evo = window.ZyronPolish.evolutionFor(player().level);
+    return el("p", { class: "evo-pill evo-" + evo.id, "data-evo-label": "1", text: evo.label + " node" });
+  }
+
+  function polishNode(visual) {
+    if (!visual || !window.ZyronPolish || !player()) return;
+    const level = player().level;
+    const evo = window.ZyronPolish.evolutionFor(level);
+    visual.setAttribute("data-evo", evo.id);
+    visual.setAttribute("data-intensity", String(evo.intensity));
+    visual.style.setProperty("--spark-lap", window.ZyronPolish.orbitSeconds(level) + "s");
+    let sparks = visual.querySelector("[data-sparks]");
+    if (!sparks) {
+      sparks = el("div", { class: "spark-orbit", "data-sparks": "1", "aria-hidden": "true" });
+      visual.append(sparks);
+    }
+    if (sparks.getAttribute("data-level") !== String(level)) {
+      clear(sparks);
+      sparks.append(window.ZyronPolish.buildSparks(svg, level));
+      sparks.setAttribute("data-level", String(level));
+    }
+  }
+
+  function levelUpLayer() {
+    const plan = state.celebration;
+    const layer = el("div", { class: "levelup", role: "dialog", "aria-modal": "true", "aria-label": "Level up" }, [
+      el("canvas", { class: "confetti-canvas", "data-confetti": "1", width: "390", height: "700" }),
+      el("p", { class: "eyebrow", text: plan.label + " node" }),
+      el("h2", { text: plan.title }),
+      el("p", { text: "Node level " + plan.from + " to " + plan.to }),
+      el("button", {
+        class: "primary",
+        text: "Continue",
+        onclick: function () {
+          if (state.confettiStop) state.confettiStop();
+          state.celebration = null;
+          state.confettiStop = null;
+          haptic("light");
+          render();
+        }
+      })
+    ]);
+    return layer;
+  }
+
+  function startConfetti() {
+    if (!window.ZyronPolish || window.ZyronPolish.prefersReducedMotion()) return;
+    const canvas = modals.querySelector("[data-confetti]");
+    if (!canvas) return;
+    if (state.confettiStop) state.confettiStop();
+    state.confettiStop = window.ZyronPolish.paintConfetti(canvas, false);
   }
 
   // Zyron Points mark: the transparent ZyronChain wolf + Z (tight crop), 1x/2x/3x so it stays crisp on every
@@ -1659,14 +1756,16 @@
     ]);
   }
 
-  function chestArt(open) {
-    return svg("svg", { viewBox: "0 0 120 96", class: "chest-art" + (open ? " is-open" : "") }, [
+  function chestArt(open, extra) {
+    return svg("svg", { viewBox: "0 0 120 96", class: "chest-art" + (open ? " is-open" : "") + (extra ? " " + extra : "") }, [
       svg("g", { class: "lid", transform: open ? "rotate(-22 60 42) translate(0 -8)" : null }, [
         svg("path", { d: "M18 44 V32 Q18 14 60 14 Q102 14 102 32 V44 Z", fill: "#14243d", stroke: "#4fd8fb", "stroke-width": "2" }),
         svg("path", { d: "M30 30 H90", stroke: "rgba(216,220,224,0.35)", "stroke-width": "2", "stroke-linecap": "round" })
       ]),
       svg("rect", { x: "12", y: "42", width: "96", height: "42", rx: "8", fill: "#0b1526", stroke: "#4fd8fb", "stroke-width": "2" }),
       svg("path", { d: "M12 56 H108", stroke: "rgba(79,216,251,0.25)", "stroke-width": "1.5" }),
+      svg("path", { class: "chest-crack", d: "M60 48 L56 58 L64 66 L58 78", fill: "none", stroke: "#f4f7f9", "stroke-width": "1.4", opacity: "0" }),
+      svg("circle", { class: "chest-burst", cx: "60", cy: "50", r: "8", fill: "#4fd8fb", opacity: "0" }),
       svg("circle", { cx: "60", cy: "62", r: "9", fill: "#d8dce0", stroke: "#0a9ff5", "stroke-width": "2" }),
       svg("path", { d: "M60 58v8", stroke: "#02050a", "stroke-width": "2", "stroke-linecap": "round" })
     ]);
@@ -1733,6 +1832,7 @@
     if (visual) {
       visual.classList.remove("is-idle", "is-run", "is-routing", "is-down");
       visual.classList.add(nodeMode());
+      polishNode(visual);
       syncChain(visual.querySelector("[data-chain]"));
       syncBuilders(visual.querySelector("[data-builders]"));
     }
@@ -1807,6 +1907,7 @@
     state.looping = true;
     state.running = true;
     state.phase = "running";
+    playFx("tap");
     state.chainEpoch = Date.now();
     state.sessionPoints = 0;
     state.sessionCycles = 0;
@@ -1915,9 +2016,9 @@
           absorbTier(result);
           floatGain(result.gained || 0);
         }
-        state.modal = { phase: "open", result: result, total: total, index: i + 1, count: ids.length };
-        renderModal();
-        haptic(result.replayed ? "light" : "success");
+        await playChestCeremony(result, total, i + 1, ids.length);
+        const rareChest = window.ZyronPolish && window.ZyronPolish.ceremonyFor(result).rare;
+        haptic(result.replayed ? "light" : (rareChest ? "heavy" : "success"));
         (result.achievementsUnlocked || []).forEach(function (id) { toast(achievementTitle(id) + " unlocked", "ok"); });
         if (i < ids.length - 1) await sleep(700);
       }
@@ -1942,19 +2043,55 @@
     }).catch(fail);
   }
 
+  async function playChestCeremony(result, total, index, count) {
+    const plan = window.ZyronPolish ? window.ZyronPolish.ceremonyFor(result) : { steps: ["reveal"], rare: false, gold: false, shake: false, stepMs: {} };
+    const reduced = window.ZyronPolish ? window.ZyronPolish.prefersReducedMotion() : false;
+    const steps = reduced ? ["reveal"] : plan.steps;
+    for (let s = 0; s < steps.length; s += 1) {
+      const step = steps[s];
+      if (step === "reveal") break;
+      state.modal = { phase: "ceremony", step: step, plan: plan, result: result, total: total, index: index, count: count };
+      renderModal();
+      if (step === "shake" && plan.shake) document.documentElement.classList.add("fx-shake");
+      await sleep(plan.stepMs[step] || 0);
+    }
+    document.documentElement.classList.remove("fx-shake");
+    state.modal = { phase: "open", plan: plan, result: result, total: total, index: index, count: count };
+    renderModal();
+    playFx(plan.rare ? "rare" : "reward");
+  }
+
+  function celebrateLevel(previous, next) {
+    if (!window.ZyronPolish) return false;
+    const plan = window.ZyronPolish.levelUpFrom(previous, next);
+    if (!plan) return false;
+    state.celebration = plan;
+    playFx("level");
+    haptic(window.ZyronPolish.hapticPlan("level"));
+    if (tg && tg.HapticFeedback && typeof tg.HapticFeedback.impactOccurred === "function") {
+      try { tg.HapticFeedback.impactOccurred("heavy"); } catch (err) { /* older Telegram clients */ }
+    }
+    return true;
+  }
+
   function onUpgrade(module) {
     if (state.busy) return;
+    const previousLevel = player() ? player().level : 1;
     state.busy = true;
     state.busyModule = module.id;
     haptic("light");
+    playFx("tap");
     render();
     api("/api/upgrade", { method: "POST", body: { module: module.id, idempotencyKey: key("upgrade") } })
       .then(function (res) {
         absorbTier(res);
         toast(module.title + " installed", "ok");
         haptic("success");
+        const leveled = celebrateLevel(previousLevel, res.nodeLevel);
         (res.achievementsUnlocked || []).forEach(function (id) { toast(achievementTitle(id) + " unlocked", "ok"); });
-        return refresh();
+        return refresh().then(function () {
+          if (leveled) startConfetti();
+        });
       })
       .catch(fail);
   }
