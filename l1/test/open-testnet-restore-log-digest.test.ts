@@ -13,7 +13,7 @@
 //    every block served identically by two validators.
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -24,6 +24,8 @@ const l1Root = fileURLToPath(new URL("../../", import.meta.url));
 const api: any = await import(pathToFileURL(join(l1Root, "scripts", "open-testnet.mjs")).href);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const { blockHash }: any = await import(pathToFileURL(join(l1Root, "dist", "src", "block.js")).href);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const { ChainStore }: any = await import(pathToFileURL(join(l1Root, "dist", "src", "storage.js")).href);
 const SECRET = "restore-log-digest-test-secret-0123456789abcdef";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -94,6 +96,30 @@ test("restore re-checks the replayed log itself after the validator copies", { t
     await assert.rejects(
       api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress }),
       /restored v1 blocks\.ndjson does not match the replayed log/
+    );
+    assert.ok(!(await api.readNetworkMarker(target)));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// R28-1059-L1 (OpenClaw Round 28): only data-v1 was re-checked before the
+// completion marker, so a copy changed after its own check and open (here
+// data-v2, at the tick after the last copy is opened) still completed.
+test("restore re-checks every validator copy before marking the restore complete", { timeout: 240_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-restore-digest-v2-"));
+  try {
+    const bundle = await sourceBundle(root, "zyron-restore-digest-v2-testnet-1");
+    const target = join(root, "restored");
+    let calls = 0;
+    const onProgress = () => {
+      calls += 1;
+      if (calls === bundle.blocks.length + 4) corruptBlockHashSync(join(target, "data-v2", "blocks.ndjson"));
+    };
+    await assert.rejects(
+      api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress }),
+      /restored v2 blocks\.ndjson does not match the replayed log/,
+      "restore marked complete with a corrupted data-v2"
     );
     assert.ok(!(await api.readNetworkMarker(target)));
   } finally {
@@ -193,6 +219,92 @@ test("snapshot block collection verifies hashes, linkage, transaction roots and 
     const failing = { name: "v1", read: async () => { throw new Error("connection refused"); } };
     const empty = { name: "v2", read: async () => [] };
     assert.deepEqual(await api.collectSnapshotBlocks([failing, empty, honest("v3"), honest("v4")], { ...expected, onReject }), blocks);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// What a cold start does with a sealed snapshot: a fresh ChainStore replays
+// every block with full finalized-block validation.
+async function freshReplay(root: string, name: string, genesis: Json, blocks: Json[]): Promise<Json> {
+  const dir = join(root, name);
+  await mkdir(dir);
+  await writeFile(join(dir, "blocks.ndjson"), `${blocks.map((block) => JSON.stringify(block)).join("\n")}\n`);
+  return ChainStore.open(genesis, dir);
+}
+
+// R28-1059-M1 / R28-1059-M2 (OpenClaw Round 28): byte agreement between two
+// validators is not validity. Honest validators can hold different valid
+// finality certificates for the same block (snapshots must not stop), and two
+// validators serving the same invalid bytes must not get them sealed. The
+// snapshot history must pass the validation a cold-start replay applies.
+test("snapshot history is validated like a cold-start replay, not by agreement between validators", { timeout: 240_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-snapshot-replay-"));
+  try {
+    const bundle = await sourceBundle(root, "zyron-snapshot-replay-testnet-1");
+    const blocks: Json[] = bundle.blocks;
+    const tip = blocks.length;
+    const expected = { tip, tipHash: blocks[tip - 1].hash, chainId: bundle.genesis.chainId, genesisHash: bundle.network.genesisHash, genesis: bundle.genesis };
+    assert.ok(blocks[49].attestations.length >= 4, "block 50 carries all four attestations");
+
+    // M1: four valid certificates for block 50 (each drops a different
+    // attestation; three of four is still a quorum). Each history replays.
+    const variants: Json[][] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const copy = structuredClone(blocks);
+      copy[49].attestations.splice(i, 1);
+      const store = await freshReplay(root, `valid-certificate-${i}`, bundle.genesis, copy);
+      assert.equal(store.chain.height, tip);
+      variants.push(copy);
+    }
+    const diverse = await api.collectSnapshotBlocks(variants.map((copy, i) => readerOf(`v${i + 1}`, copy)), expected);
+    assert.equal(diverse.length, tip);
+    const diverseStore = await freshReplay(root, "diverse-snapshot", bundle.genesis, diverse);
+    assert.equal(diverseStore.chain.tip.hash, expected.tipHash);
+
+    // M2: two validators serve the same corrupted attestation signature for
+    // block 50; a fresh replay rejects it. The honest block must be sealed.
+    const bad = structuredClone(blocks);
+    const vote = bad[49].attestations[0];
+    vote.signature = (vote.signature[0] === "0" ? "1" : "0") + vote.signature.slice(1);
+    await assert.rejects(freshReplay(root, "bad-replay", bundle.genesis, bad));
+    const rejected: string[] = [];
+    const sealed = await api.collectSnapshotBlocks(
+      [readerOf("v1", bad), readerOf("v2", bad), readerOf("v3", blocks), readerOf("v4", blocks)],
+      { ...expected, onReject: (name: string) => { rejected.push(name); } }
+    );
+    assert.deepEqual(sealed, blocks, "collector accepted history rejected by a fresh ChainStore replay");
+    assert.deepEqual(rejected, ["v1", "v2"]);
+
+    // If no validator serves a valid block 50, nothing is sealed.
+    await assert.rejects(api.collectSnapshotBlocks([readerOf("v1", bad), readerOf("v2", bad)], expected), /block 50/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// Full validation is replay-priced, so the gateway keeps the verified history
+// and only validates new blocks on the next build; a restore hands over the
+// history it has just replayed so a cold start does not validate it twice.
+test("snapshot history is extended incrementally and can start from the restore replay", { timeout: 240_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-snapshot-incremental-"));
+  try {
+    const bundle = await sourceBundle(root, "zyron-snapshot-incremental-testnet-1");
+    const blocks: Json[] = bundle.blocks;
+    const base = { chainId: bundle.genesis.chainId, genesisHash: bundle.network.genesisHash, genesis: bundle.genesis };
+    const reads: number[] = [];
+    const counting = { name: "v1", read: async (from: number, limit: number) => { reads.push(from); return structuredClone(blocks.slice(from - 1, from - 1 + limit)); } };
+    const history = api.createSnapshotHistory(bundle.genesis);
+    assert.deepEqual(await api.collectSnapshotBlocks([counting], { ...base, tip: 60, tipHash: blocks[59].hash, history }), blocks.slice(0, 60));
+    reads.length = 0;
+    assert.deepEqual(await api.collectSnapshotBlocks([counting], { ...base, tip: blocks.length, tipHash: blocks.at(-1).hash, history }), blocks);
+    assert.ok(reads.length > 0 && reads.every((from) => from > 60), `only new blocks are read (${reads.join(",")})`);
+
+    const restored = await api.restoreNetwork(join(root, "restored"), structuredClone(bundle), bundle.genesis.chainId);
+    assert.equal(restored.verifiedHistory?.blocks.length, blocks.length, "the restore hands over the history it replayed");
+    reads.length = 0;
+    assert.deepEqual(await api.collectSnapshotBlocks([counting], { ...base, tip: blocks.length, tipHash: blocks.at(-1).hash, history: restored.verifiedHistory }), blocks);
+    assert.deepEqual(reads, [], "blocks replayed by the restore are not read or validated again");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
