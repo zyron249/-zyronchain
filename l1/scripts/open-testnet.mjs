@@ -28,9 +28,10 @@ import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createServer } from "node:http";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const l1Root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -45,6 +46,75 @@ const { gatewayClientIdentity } = await import(dist("rpc-client-identity.js"));
 
 export const DEFAULT_CHAIN_ID = "zyron-open-testnet-1";
 const VALIDATOR_NAMES = ["v1", "v2", "v3", "v4"];
+// Entries that initNetwork / restoreNetwork create in a network directory
+// (network.json.partial is the completion marker before its atomic rename).
+const NETWORK_DIR_ENTRIES = new Set(["keys", "genesis.json", "network.json", "network.json.partial", ...VALIDATOR_NAMES.map((name) => `data-${name}`)]);
+
+// network.json is the completion marker: restoreNetwork and initNetwork write it
+// last, through a temporary file that is fsynced and renamed into place, so it
+// is either absent or complete. A directory only counts as a usable network if
+// the marker is a network description the gateway can run with (chain ID,
+// genesis hash, faucet address matching keys/faucet.json, TEST chain ID) and
+// describes this directory's genesis.json;
+// anything else (missing, torn by an older non-atomic write, edited, or for
+// another genesis) is incomplete. Returns the parsed marker or null.
+export async function readNetworkMarker(dir) {
+  const readJson = async (name) => {
+    let text;
+    try { text = await readFile(join(dir, name), "utf8"); } catch (error) { if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return undefined; throw error; }
+    try { return JSON.parse(text); } catch { return undefined; }
+  };
+  const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  const info = await readJson("network.json");
+  if (!isObject(info) || typeof info.chainId !== "string" || typeof info.genesisHash !== "string" || typeof info.faucetAddress !== "string") return null;
+  const genesis = await readJson("genesis.json");
+  if (!isObject(genesis) || genesis.chainId !== info.chainId) return null;
+  try { if (new ZyronChain(genesis).genesisHash !== info.genesisHash) return null; } catch { return null; }
+  // The remaining runNetwork preconditions: a TEST chain ID and a faucet key
+  // whose address is the marker's faucetAddress.
+  try {
+    assertTestnetChainId(genesis.chainId);
+    const faucetKey = (await readSecret(join(dir, "keys", "faucet.json"))).privateKey;
+    if (addressFromPublicKey(publicKeyFromPrivate(faucetKey)) !== info.faucetAddress) return null;
+  } catch { return null; }
+  return info;
+}
+
+async function writeNetworkMarker(dir, value) {
+  const marker = join(dir, "network.json");
+  if (await lstat(marker).then(() => true, () => false)) throw Object.assign(new Error(`${marker} already exists`), { code: "EEXIST" });
+  const partial = `${marker}.partial`;
+  const handle = await open(partial, "w", 0o644);
+  try { await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`); await handle.sync(); } finally { await handle.close(); }
+  await rename(partial, marker);
+}
+
+// A directory without a valid completion marker is an interrupted restore or
+// init (for example a host restart in the middle of a replay, or a crash while
+// network.json was written). Move it aside to <dir>.incomplete-<ms>-<pid>/<name>
+// (never delete it) so the next attempt starts clean; a directory holding
+// top-level entries those steps do not create is refused and left untouched.
+// An existing path is never replaced. Returns the new path, or false if nothing
+// was moved.
+export async function moveAsideIncompleteNetworkDir(dir) {
+  let entries;
+  try { entries = await readdir(dir); } catch (error) { if (error?.code === "ENOENT") return false; throw error; }
+  if (await readNetworkMarker(dir)) return false;
+  const unexpected = entries.filter((name) => !NETWORK_DIR_ENTRIES.has(name));
+  if (unexpected.length) throw new Error(`refusing to move ${dir}: unexpected entries ${unexpected.join(", ")}`);
+  // The holder directory is reserved with an exclusive mkdir (an existing path
+  // is skipped, never replaced); the directory then moves into it under its
+  // own name, a path nothing else can have created.
+  const base = `${dir}.incomplete-${Date.now()}-${process.pid}`;
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
+    const holder = attempt === 0 ? base : `${base}-${attempt}`;
+    try { await mkdir(holder, { mode: 0o700 }); } catch (error) { if (error?.code === "EEXIST") continue; throw error; }
+    const aside = join(holder, basename(dir));
+    await rename(dir, aside);
+    return aside;
+  }
+  throw new Error(`refusing to move ${dir}: no free name next to it`);
+}
 const V6_ACTIVATION_HEIGHT = 101;
 const ATOMS_PER_ZYN = 100_000_000;
 const FAUCET_DRIP_ATOMS = 100 * ATOMS_PER_ZYN;
@@ -57,6 +127,11 @@ const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 const RESERVED_CHAIN_IDS = new Set(["zyron-mainnet-1", "zyron-public-testnet-1"]);
 
 const STARTUP_GRACE_MS = 10 * 60_000;
+// Boot liveness (download/decrypt/replay/init): /health stays 200 only while
+// start-up makes progress (a phase change, a download attempt, a replayed
+// block, a validator copy, a block produced or committed by a fresh init). Longer than one 180 s download attempt; no wall-clock cap,
+// because a large snapshot on a slow instance replays for a long time.
+export const BOOT_STALL_MS = 5 * 60_000;
 const SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS = [2_000, 5_000];
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "600" };
 const SECURITY = { "x-content-type-options": "nosniff", "x-zyron-network": "testnet-no-value", "referrer-policy": "no-referrer" };
@@ -88,9 +163,11 @@ export async function listenGateway(server, port, host) {
 // Startup progress shared by the boot handler and the phase timing log.
 export function createBootState(log = true) {
   const startedAtMs = Date.now();
-  const boot = { phase: "boot", startedAtMs, phaseStartedAtMs: startedAtMs, timings: {} };
+  const boot = { phase: "boot", startedAtMs, phaseStartedAtMs: startedAtMs, lastProgressAtMs: startedAtMs, timings: {} };
+  boot.progress = () => { boot.lastProgressAtMs = Date.now(); };
   boot.enter = (phase) => {
     const now = Date.now();
+    boot.lastProgressAtMs = now;
     const ms = now - boot.phaseStartedAtMs;
     boot.timings[boot.phase] = (boot.timings[boot.phase] ?? 0) + ms;
     if (log) console.log(`startup phase ${boot.phase} done in ${ms}ms; entering ${phase} (elapsed ${now - startedAtMs}ms)`);
@@ -98,15 +175,19 @@ export function createBootState(log = true) {
   };
   return boot;
 }
-export function createBootHandler(boot) {
+export function createBootHandler(boot, { stallMs = BOOT_STALL_MS } = {}) {
   return (request, response) => {
     if (request.method === "OPTIONS") { response.writeHead(204, CORS); return response.end(); }
     const path = String(request.url ?? "/").split("?")[0].replace(/\/+$/, "") || "/";
-    const body = { ok: false, status: "starting", phase: boot.phase, network: "testnet", valueBearing: false, startedAtMs: boot.startedAtMs, elapsedMs: Date.now() - boot.startedAtMs };
-    // Liveness: the process is up and making progress, so the platform health
-    // check passes. Readiness and every RPC endpoint wait for the validators.
-    if (request.method === "GET" && (path === "/health" || path === "/healthz")) return writeJson(response, 200, body);
-    return writeJson(response, 503, { ...body, error: "gateway is starting; retry shortly" }, { "retry-after": "10" });
+    const now = Date.now();
+    const sinceProgressMs = now - boot.lastProgressAtMs;
+    const stalled = sinceProgressMs > stallMs;
+    const body = { ok: false, status: stalled ? "stalled" : "starting", phase: boot.phase, network: "testnet", valueBearing: false, startedAtMs: boot.startedAtMs, elapsedMs: now - boot.startedAtMs, sinceProgressMs };
+    // Liveness: the process is up and start-up is making progress, so the
+    // platform health check passes. A stalled start-up answers 503 so the host
+    // restarts it. Readiness and every RPC endpoint wait for the validators.
+    if (request.method === "GET" && (path === "/health" || path === "/healthz") && !stalled) return writeJson(response, 200, body);
+    return writeJson(response, 503, { ...body, error: stalled ? "gateway start-up stalled" : "gateway is starting; retry shortly" }, { "retry-after": "10" });
   };
 }
 
@@ -168,7 +249,7 @@ export function openSnapshot(bytes, secret) {
 // the finalized log + checkpoint are copied to the other validators, each of
 // which re-opens and verifies them, so neither the restore nor the validator
 // start-up pays for a full replay four times (startup cost on a 0.1-CPU host).
-export async function restoreNetwork(dir, bundle, expectedChainId) {
+export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress = () => {} } = {}) {
   assert.equal(bundle?.format, SNAPSHOT_MAGIC, "unknown snapshot format");
   const { genesis, network, keys, blocks } = bundle;
   assertTestnetChainId(genesis.chainId);
@@ -190,9 +271,10 @@ export async function restoreNetwork(dir, bundle, expectedChainId) {
   const firstData = join(dir, `data-${first}`);
   await mkdir(firstData, { mode: 0o700 });
   const store = await ChainStore.open(genesis, firstData);
-  for (const block of blocks) await store.commitFinalizedBlock(block);
+  for (const block of blocks) { await store.commitFinalizedBlock(block); onProgress(); }
   assert.equal(store.chain.height, blocks.length, "snapshot replay height mismatch");
   const checkpoint = await store.writeRecoveryCheckpoint();
+  onProgress();
   for (const name of others) {
     const data = join(dir, `data-${name}`);
     await mkdir(data, { mode: 0o700 });
@@ -200,13 +282,14 @@ export async function restoreNetwork(dir, bundle, expectedChainId) {
     await chmod(join(data, "blocks.ndjson"), 0o600);
     const copy = await ChainStore.open(genesis, data);
     assert.ok(copy.chain.height === blocks.length && copy.chain.tip.hash === checkpoint.tipHash, `restored ${name} state does not match the replayed state`);
+    onProgress();
   }
-  await writeFile(join(dir, "network.json"), `${JSON.stringify(network, null, 2)}\n`, { mode: 0o644, flag: "wx" });
+  await writeNetworkMarker(dir, network);
   return { chainId: genesis.chainId, genesisHash: network.genesisHash, height: blocks.length, tipHash: checkpoint.tipHash };
 }
 
 // ---- init: fresh TEST keys, fixed-supply-v1 genesis, v6 prefix ----------------
-export async function initNetwork(dir, chainId) {
+export async function initNetwork(dir, chainId, { onProgress = () => {} } = {}) {
   assertTestnetChainId(chainId);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);
@@ -252,6 +335,7 @@ export async function initNetwork(dir, chainId) {
     for (const key of byPublicKey.values()) block = chain.attestBlock(block, key);
     chain.acceptBlock(block, timestampMs);
     blocks.push(block);
+    onProgress();
   }
   assert.equal(chain.protocolVersionAt(V6_ACTIVATION_HEIGHT), 6);
   await writeFile(join(dir, "genesis.json"), `${JSON.stringify(genesis, null, 2)}\n`, { mode: 0o644, flag: "wx" });
@@ -259,7 +343,7 @@ export async function initNetwork(dir, chainId) {
     const data = join(dir, `data-${name}`);
     await mkdir(data, { mode: 0o700 });
     const store = await ChainStore.open(genesis, data);
-    for (const block of blocks) await store.commitFinalizedBlock(block);
+    for (const block of blocks) { await store.commitFinalizedBlock(block); onProgress(); }
   }
   const publicInfo = {
     network: "testnet", valueBearing: false, notice: NOTICE, chainId, genesisHash: chain.genesisHash,
@@ -267,7 +351,7 @@ export async function initNetwork(dir, chainId) {
     validators: genesis.validators, faucetAddress: roles.faucet.address,
     roles: { founderVesting: roles.founder.address, publicDistributionFaucet: roles.faucet.address, permanentLiquidity: roles.liquidity.address, ecosystemActivityPool: roles.ecosystem.address }
   };
-  await writeFile(join(dir, "network.json"), `${JSON.stringify(publicInfo, null, 2)}\n`, { mode: 0o644, flag: "wx" });
+  await writeNetworkMarker(dir, publicInfo);
   return publicInfo;
 }
 
@@ -698,7 +782,14 @@ async function smoke() {
   }
 }
 
-if (command === "init") {
+// The CLI runs only when this file is executed directly; importing it (unit
+// tests) loads the exported functions without dispatching a command.
+const invokedDirectly = (() => {
+  try { return realpathSync(process.argv[1] ?? "") === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+})();
+if (!invokedDirectly) {
+  // imported as a module: nothing to run
+} else if (command === "init") {
   const dir = resolve(option("--dir"));
   const result = await initNetwork(dir, option("--chain-id", DEFAULT_CHAIN_ID));
   console.log(JSON.stringify({ chainId: result.chainId, genesisHash: result.genesisHash, faucetAddress: result.faucetAddress, directory: dir }, null, 2));
@@ -717,9 +808,13 @@ if (command === "init") {
   const stateSecret = process.env.ZYRON_TESTNET_STATE_SECRET || undefined;
   let persistence = { mode: "local-disk" };
   if (rest.includes("--init-if-missing")) {
-    const exists = await stat(join(dir, "network.json")).then(() => true, () => false);
+    const exists = Boolean(await readNetworkMarker(dir));
     const chainId = option("--chain-id", process.env.ZYRON_TESTNET_CHAIN_ID ?? DEFAULT_CHAIN_ID);
     const restoreUrl = option("--restore-url", process.env.ZYRON_TESTNET_STATE_URL || undefined);
+    if (!exists) {
+      const aside = await moveAsideIncompleteNetworkDir(dir);
+      if (aside) console.log(`moved an incomplete network directory left by an interrupted start-up to ${aside}`);
+    }
     if (!exists && restoreUrl && stateSecret) {
       try {
         boot.enter("download");
@@ -728,6 +823,7 @@ if (command === "init") {
           // Transient download failures are retried; only a decrypt/validation
           // failure or a missing snapshot falls back to a fresh genesis.
           try {
+            boot.progress();
             response = await fetch(restoreUrl, { redirect: "follow", signal: AbortSignal.timeout(180_000) });
             if (response.status === 200 || response.status === 404 || attempt >= SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS.length) break;
             console.error(`snapshot download returned ${response.status}; retrying`);
@@ -745,18 +841,19 @@ if (command === "init") {
           boot.enter("decrypt");
           const bundle = openSnapshot(sealed, stateSecret);
           boot.enter("replay");
-          const restored = await restoreNetwork(dir, bundle, chainId);
+          const restored = await restoreNetwork(dir, bundle, chainId, { onProgress: boot.progress });
           persistence = { mode: "snapshot-restore", restoredHeight: restored.height, restoredAtMs: Date.now() };
           console.log(`restored ${restored.chainId} genesis ${restored.genesisHash} at height ${restored.height}`);
         }
       } catch (error) {
         console.error(`STATE RESTORE FAILED (${error instanceof Error ? error.message : String(error)}); creating a fresh TEST genesis`);
-        await rm(dir, { recursive: true, force: true });
+        const aside = await moveAsideIncompleteNetworkDir(dir);
+        if (aside) console.error(`moved the failed restore directory to ${aside}`);
       }
     }
-    if (!(await stat(join(dir, "network.json")).then(() => true, () => false))) {
+    if (!(await readNetworkMarker(dir))) {
       boot.enter("init");
-      console.log(JSON.stringify(await initNetwork(dir, chainId)));
+      console.log(JSON.stringify(await initNetwork(dir, chainId, { onProgress: boot.progress })));
       persistence = { mode: exists ? "local-disk" : "fresh-genesis", createdAtMs: Date.now() };
     }
   }
