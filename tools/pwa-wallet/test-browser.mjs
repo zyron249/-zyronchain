@@ -8,7 +8,7 @@
 // isolation, mobile layouts (360/390/414) and frame blocking.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -288,9 +288,17 @@ try {
       await page.clock.install();
       await page.click('[data-copy-address]');
       assert.equal(await page.evaluate(() => navigator.clipboard.readText()), core.toChecksumAddress(address));
-      assert.equal(await page.textContent('[data-copy-result]'), 'Copied. Clipboard will be cleared automatically.');
+      assert.equal(await page.textContent('[data-copy-result]'), 'Copied. This app will try to clear the clipboard in 60 seconds.');
       await page.clock.fastForward(61000);
       await page.waitForFunction(() => navigator.clipboard.readText().then((t) => t === ''));
+      assert.match(await page.textContent('[data-copy-result]'), /Clipboard cleared/);
+      await page.evaluate(() => {
+        navigator.clipboard.writeText = (text) => (text === '' ? Promise.reject(new Error('blocked')) : Promise.resolve());
+      });
+      await page.click('[data-copy-plain]');
+      assert.match(await page.textContent('[data-copy-result]'), /try to clear the clipboard/);
+      await page.clock.fastForward(61000);
+      await page.waitForFunction(() => /kept the clipboard/.test(document.querySelector('[data-copy-result]').textContent));
     }
   });
 
@@ -298,22 +306,28 @@ try {
   await test('sign transfer offline: exact l1 transfer, no network, broadcast disabled', async () => {
     assert.equal(await page.isDisabled('[data-screen="home"] button[disabled]'), true);
     const before = requests.length;
-    await page.fill('[data-tx-chain]', 'zyron-pwa-test');
+    await page.fill('[data-tx-chain]', 'zyron-wallet-testnet-1');
     await page.fill('[data-tx-nonce]', '1');
     await page.fill('[data-tx-to]', RECEIVER);
     assert.match(await page.textContent('[data-tx-check]'), /checksum verified/);
     await page.fill('[data-tx-amount]', '2.5');
     await page.fill('[data-tx-fee]', '0.00001');
+    await page.fill('[data-tx-chain]', 'zyron-mainnet-1');
+    await page.click('[data-tx-review]');
+    assert.match(await page.textContent('[data-tx-check]'), /testnet or devnet/);
+    assert.equal(await visibleScreen(page), 'home', 'a non-testnet chain id never reaches review');
+    await page.fill('[data-tx-chain]', 'zyron-wallet-testnet-1');
     await page.click('[data-tx-review]');
     await page.waitForSelector('[data-screen="review"]:not([hidden])');
     const rows = await page.$$eval('[data-review-rows] > div', (divs) => divs.map((d) => [d.dataset.reviewKey, d.querySelector('dt').textContent, d.querySelector('dd').textContent]));
-    assert.deepEqual(rows.map((r) => r[1]), ['Type', 'From', 'To', 'Amount', 'Fee', 'Chain ID', 'Nonce', 'Timestamp']);
+    assert.deepEqual(rows.map((r) => r[1]), ['Type', 'From', 'To', 'Amount', 'Fee', 'Total', 'Chain ID', 'Nonce', 'Timestamp']);
     const review = Object.fromEntries(rows.map((r) => [r[0], r[2]]));
     assert.equal(review.from, core.toChecksumAddress(address));
     assert.equal(review.to, RECEIVER);
     assert.equal(review.amount, '2.5 ZYN (250000000 atoms)');
     assert.equal(review.fee, '0.00001 ZYN (1000 atoms)');
-    assert.equal(review.chain, 'zyron-pwa-test');
+    assert.equal(review.total, '2.50001 ZYN (250001000 atoms)');
+    assert.equal(review.chain, 'zyron-wallet-testnet-1');
     assert.equal(review.nonce, '1');
     assert.match(review.type, /Transfer \(kind "transfer", version 2\)/);
     assert.equal(await page.isDisabled('[data-tx-sign]'), true, 'signing needs a deliberate confirmation');
@@ -338,8 +352,21 @@ try {
     await page.click('[data-tx-download]');
     assert.match((await download).suggestedFilename(), /^zyron-transfer-nonce-1\.json$/);
     assert.equal(requests.slice(before).filter((r) => r.url.startsWith('http')).length, 0, 'signing makes no requests');
-    await page.click('[data-review-done]');
-    await page.waitForSelector('[data-screen="home"]:not([hidden])');
+    if (!live) {
+      await page.clock.fastForward(5 * 60 * 1000 + 1000);
+      await page.waitForFunction(() => document.body.dataset.current === 'unlock');
+      assert.equal(await page.textContent('[data-tx-json]'), '', 'signed JSON is not shown on the lock screen');
+      await page.fill('[data-unlock-password]', PASSWORD);
+      await page.click('[data-unlock-go]');
+      await page.waitForSelector('[data-screen="home"]:not([hidden])', { timeout: 60000 });
+      assert.equal(await page.isVisible('[data-signed-hold]'), true, 'signed transfer stays until dismissed');
+      assert.equal(JSON.parse(await page.textContent('[data-signed-hold-json]')).txid, signed.txid);
+      await page.click('[data-signed-dismiss]');
+      assert.equal(await page.isVisible('[data-signed-hold]'), false);
+    } else {
+      await page.click('[data-review-done]');
+      await page.waitForSelector('[data-screen="home"]:not([hidden])');
+    }
     await page.fill('[data-tx-to]', core.MINING_TRACKER_ADDRESS);
     await page.click('[data-tx-review]');
     assert.match(await page.textContent('[data-tx-check]'), /mining tracker/);
@@ -428,6 +455,36 @@ try {
     assert.deepEqual(await readVaultRecord(page), []);
     assert.equal(await page.isDisabled('[data-go="create"]'), false);
     assert.equal(await page.isVisible('[data-unsupported]'), false);
+  });
+
+  await test('encrypted vault file imports and exports on this device only', async () => {
+    const entropy = core.phraseToEntropy(SNAP.mnemonic);
+    const account = await core.deriveAccount(entropy);
+    const vault = await core.createVault(entropy, PASSWORD, account, 1700000000000);
+    core.wipe(entropy, account.privateKey);
+    const dir = mkdtempSync(join(tmpdir(), 'zyron-vault-'));
+    const incoming = join(dir, 'incoming.json');
+    writeFileSync(incoming, JSON.stringify(vault));
+    const before = requests.length;
+    await page.locator('[data-screen="welcome"] summary').click();
+    await page.setInputFiles('[data-vault-file]', incoming);
+    await page.waitForFunction(() => document.body.dataset.current === 'unlock', null, { timeout: 15000 });
+    assert.equal(await page.textContent('[data-unlock-address]'), core.groupAddress(core.toChecksumAddress(SNAP.address)));
+    const downloadPromise = page.waitForEvent('download');
+    await page.click('[data-screen="unlock"] [data-vault-export]');
+    const download = await downloadPromise;
+    assert.equal(download.suggestedFilename(), 'zyron-vault.json');
+    const saved = join(dir, 'exported.json');
+    await download.saveAs(saved);
+    const exported = JSON.parse(readFileSync(saved, 'utf8'));
+    core.assertVaultShape(exported);
+    assert.equal(exported.ciphertext, vault.ciphertext);
+    assert.equal(exported.address, SNAP.address);
+    const text = JSON.stringify(exported);
+    assert.ok(!text.includes(PASSWORD), 'export does not contain the password');
+    assert.ok(!text.includes('junk'), 'export does not contain the recovery phrase');
+    assert.equal(requests.slice(before).filter((r) => r.url.startsWith('http')).length, 0, 'vault import and export make no network requests');
+    rmSync(dir, { recursive: true, force: true });
   });
 
   await test('missing crypto libraries: the wallet refuses to run', async () => {

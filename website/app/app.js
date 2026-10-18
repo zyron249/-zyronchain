@@ -34,8 +34,12 @@
     msgUnlocking: 'Unlocking… (can take a few seconds on phones)',
     msgQuizWord: 'Word #{n}',
     msgQuizWrong: 'One or more words are wrong. Check your paper or show the words again.',
-    msgCopied: 'Copied. Clipboard will be cleared automatically.',
+    msgCopied: 'Copied. This app will try to clear the clipboard in 60 seconds.',
+    msgClipboardCleared: 'Clipboard cleared.',
+    msgClipboardKept: 'The browser kept the clipboard. Clear it yourself if this device is shared.',
     msgCopyFailed: 'Could not copy; select and copy by hand.',
+    msgImported: 'Encrypted vault imported on this device. Unlock it with its password. Nothing was uploaded.',
+    msgImportEmpty: 'Choose the encrypted vault file from this device.',
     msgWrongPassword: 'Wrong password, or the vault was modified.',
     msgLocked: 'Locked.',
     msgSigned: 'Signed locally. Not broadcast. txid {txid}',
@@ -86,6 +90,7 @@
     idleTimer: 0,
     wordTimer: 0,
     clipboardTimer: 0,
+    copyResultSelector: '',
     installPrompt: null,
     rejectedVault: false,
     linkRequest: null // ZYRON NODE wallet link request from the URL hash (public text only)
@@ -196,11 +201,19 @@
   $('[data-restore-password]').addEventListener('input', (event) => renderMeter('restore', event.target.value));
 
   // ---------------- clipboard (address and signed transfer only; auto-clear) ----------------
-  async function copyText(text) {
+  async function copyText(text, resultSelector) {
+    state.copyResultSelector = resultSelector || '';
     try {
       await navigator.clipboard.writeText(text);
       clearTimeout(state.clipboardTimer);
-      state.clipboardTimer = setTimeout(() => { navigator.clipboard.writeText('').catch(() => {}); }, CLIPBOARD_CLEAR_MS);
+      state.clipboardTimer = setTimeout(() => {
+        const target = state.copyResultSelector;
+        navigator.clipboard.writeText('').then(() => {
+          if (target) setMessage(target, t('msgClipboardCleared'), 'good');
+        }).catch(() => {
+          if (target) setMessage(target, t('msgClipboardKept'), 'bad');
+        });
+      }, CLIPBOARD_CLEAR_MS);
       return true;
     } catch (error) {
       return false;
@@ -231,7 +244,6 @@
     state.account = null;
     clearPending();
     state.unsigned = null;
-    state.lastTx = null;
     $('[data-link-proof]').textContent = '';
     $('[data-link-out]').hidden = true;
     $('[data-tx-out]').hidden = true;
@@ -297,6 +309,17 @@
     $('[data-home-raw]').textContent = address;
     renderQr(address);
     setMessage('[data-copy-result]', '', '');
+    const hold = $('[data-signed-hold]');
+    const holdJson = $('[data-signed-hold-json]');
+    if (hold && holdJson) {
+      if (state.lastTx) {
+        holdJson.textContent = JSON.stringify(state.lastTx, null, 2);
+        hold.hidden = false;
+      } else {
+        holdJson.textContent = '';
+        hold.hidden = true;
+      }
+    }
     show('home');
     touch();
     refreshStorageStatus();
@@ -510,11 +533,11 @@
   // ---------------- copy address ----------------
   $('[data-copy-address]').addEventListener('click', async () => {
     if (!state.account) return;
-    setMessage('[data-copy-result]', (await copyText(core.toChecksumAddress(state.account.address))) ? t('msgCopied') : t('msgCopyFailed'), '');
+    setMessage('[data-copy-result]', (await copyText(core.toChecksumAddress(state.account.address), '[data-copy-result]')) ? t('msgCopied') : t('msgCopyFailed'), '');
   });
   $('[data-copy-plain]').addEventListener('click', async () => {
     if (!state.account) return;
-    setMessage('[data-copy-result]', (await copyText(state.account.address)) ? t('msgCopied') : t('msgCopyFailed'), '');
+    setMessage('[data-copy-result]', (await copyText(state.account.address, '[data-copy-result]')) ? t('msgCopied') : t('msgCopyFailed'), '');
   });
 
   // ---------------- transfer: build -> review -> deliberate confirm -> sign locally ----------------
@@ -555,7 +578,6 @@
       }, state.account);
       renderReview(core.describeTransfer(unsigned));
       state.unsigned = unsigned;
-      state.lastTx = null;
       $('[data-review-ack]').checked = false;
       $('[data-tx-sign]').disabled = true;
       $('[data-review-confirm-box]').hidden = false;
@@ -586,17 +608,28 @@
       setMessage('[data-review-error]', errorText(error), 'bad');
     }
   });
+  function dismissSigned() {
+    state.lastTx = null;
+    state.unsigned = null;
+    $('[data-tx-json]').textContent = '';
+    $('[data-review-rows]').textContent = '';
+    const hold = $('[data-signed-hold]');
+    const holdJson = $('[data-signed-hold-json]');
+    if (holdJson) holdJson.textContent = '';
+    if (hold) hold.hidden = true;
+    if (state.account) showHome(); else lock();
+  }
   function leaveReview() {
     state.unsigned = null;
-    state.lastTx = null;
-    $('[data-tx-json]').textContent = '';
     $('[data-review-rows]').textContent = '';
     if (state.account) showHome(); else lock();
   }
   $('[data-review-cancel]').addEventListener('click', leaveReview);
-  $('[data-review-done]').addEventListener('click', leaveReview);
+  $('[data-review-done]').addEventListener('click', dismissSigned);
+  const dismissHold = $('[data-signed-dismiss]');
+  if (dismissHold) dismissHold.addEventListener('click', dismissSigned);
   $('[data-tx-copy]').addEventListener('click', async () => {
-    if (state.lastTx) setMessage('[data-tx-copy-result]', (await copyText(JSON.stringify(state.lastTx))) ? t('msgCopied') : t('msgCopyFailed'), '');
+    if (state.lastTx) setMessage('[data-tx-copy-result]', (await copyText(JSON.stringify(state.lastTx), '[data-tx-copy-result]')) ? t('msgCopied') : t('msgCopyFailed'), '');
   });
   $('[data-tx-download]').addEventListener('click', () => {
     if (!state.lastTx) return;
@@ -657,7 +690,7 @@
   $('[data-link-done]').addEventListener('click', leaveLink);
   $('[data-link-copy]').addEventListener('click', async () => {
     const proof = $('[data-link-proof]').textContent;
-    if (proof) setMessage('[data-link-copy-result]', (await copyText(proof)) ? t('msgCopied') : t('msgCopyFailed'), '');
+    if (proof) setMessage('[data-link-copy-result]', (await copyText(proof, '[data-link-copy-result]')) ? t('msgCopied') : t('msgCopyFailed'), '');
   });
   function readLinkRequest() {
     if (!/^#link=/.test(window.location.hash)) return;
@@ -679,6 +712,46 @@
   $('[data-conv-atoms]').addEventListener('input', () => {
     try { $('[data-conv-zyn]').value = core.atomsToZyn($('[data-conv-atoms]').value); setMessage('[data-conv-result]', '1 ZYN = 100,000,000 atoms', ''); }
     catch (error) { setMessage('[data-conv-result]', error.message, 'bad'); }
+  });
+
+  // ---------------- encrypted vault file (on this device only; never uploaded) ----------------
+  function downloadJson(filename, value) {
+    const blob = new Blob([JSON.stringify(value, null, 2) + '\n'], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function exportVault() {
+    if (!state.vault) return;
+    downloadJson('zyron-vault.json', core.parseVault(state.vault));
+  }
+  for (const button of $$('[data-vault-export]')) button.addEventListener('click', exportVault);
+  const vaultFile = $('[data-vault-file]');
+  if (vaultFile) vaultFile.addEventListener('change', async (event) => {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = '';
+    if (!file) { setMessage('[data-vault-import-result]', t('msgImportEmpty'), 'bad'); return; }
+    if (state.vault) { setMessage('[data-vault-import-result]', t('msgVaultExists'), 'bad'); return; }
+    try {
+      const vault = core.parseVault(await file.text());
+      await saveVault(vault);
+      state.vault = vault;
+      if (state.rejectedVault) {
+        state.rejectedVault = false;
+        $('[data-unsupported]').hidden = true;
+        $('[data-rejected-delete]').hidden = true;
+        for (const button of $$('[data-go="create"], [data-go="restore"], [data-unlock-go]')) button.disabled = false;
+      }
+      setMessage('[data-vault-import-result]', t('msgImported'), 'good');
+      lock(t('msgImported'));
+    } catch (error) {
+      setMessage('[data-vault-import-result]', errorText(error), 'bad');
+    }
   });
 
   // ---------------- delete: button -> confirmation screen -> explicit confirmation ----------------

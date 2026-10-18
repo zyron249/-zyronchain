@@ -207,21 +207,22 @@ await test('crypto self-test passes with the vendored libraries and refuses to r
 await test('signing review: shows every field, refuses unknown types, messages and extra fields', async () => {
   const entropy = core.phraseToEntropy(SNAP_VECTORS[0].mnemonic);
   const account = await core.deriveAccount(entropy);
-  const unsigned = core.buildTransfer({ version: 2, chainId: 'zyron-review-test', nonce: 7, receiver: 'ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42', amountAtoms: 150000000, feeAtoms: 1000, timestampMs: 1700000000000 }, account);
+  const unsigned = core.buildTransfer({ version: 2, chainId: 'zyron-review-testnet', nonce: 7, receiver: 'ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42', amountAtoms: 150000000, feeAtoms: 1000, timestampMs: 1700000000000 }, account);
   const rows = core.describeTransfer(unsigned);
-  assert.deepEqual(rows.map((r) => r.key), ['type', 'from', 'to', 'amount', 'fee', 'chain', 'nonce', 'time']);
+  assert.deepEqual(rows.map((r) => r.key), ['type', 'from', 'to', 'amount', 'fee', 'total', 'chain', 'nonce', 'time']);
   const byKey = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   assert.match(byKey.type, /^Transfer \(kind "transfer", version 2\)$/);
   assert.equal(byKey.from, core.toChecksumAddress(account.address));
   assert.equal(byKey.to, 'ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42');
   assert.equal(byKey.amount, '1.5 ZYN (150000000 atoms)');
   assert.equal(byKey.fee, '0.00001 ZYN (1000 atoms)');
-  assert.equal(byKey.chain, 'zyron-review-test');
+  assert.equal(byKey.total, '1.50001 ZYN (150001000 atoms)');
+  assert.equal(byKey.chain, 'zyron-review-testnet');
   assert.equal(byKey.nonce, '7');
   for (const [bad, pattern] of [
     [{ ...unsigned, kind: 'mining_claim' }, /transfers only/], [{ ...unsigned, kind: 'message' }, /transfers only/], [{ ...unsigned, kind: undefined }, /transfers only/],
     [{ ...unsigned, memo: 'x' }, /Unexpected transfer fields/], [{ ...unsigned, data: '0x' }, /Unexpected transfer fields/],
-    [{ ...unsigned, version: 3 }, /version/], [{ ...unsigned, chainId: '' }, /Chain ID/], [{ ...unsigned, nonce: 0 }, /Nonce/],
+    [{ ...unsigned, version: 3 }, /version/], [{ ...unsigned, chainId: '' }, /Chain ID/], [{ ...unsigned, chainId: 'zyron-mainnet-1' }, /testnet or devnet/], [{ ...unsigned, nonce: 0 }, /Nonce/],
     [{ ...unsigned, receiver: core.MINING_TRACKER_ADDRESS }, /mining tracker/], [{ ...unsigned, sender: 'ZYN' + '1'.repeat(40) }, /Sender does not match/],
     [JSON.stringify(unsigned), /Nothing to review/], [['transfer'], /Nothing to review/]
   ]) {
@@ -256,7 +257,8 @@ await test('recovery phrase UX: privacy screen first, words hidden by default, n
   // copy is only offered for the address and a signed transfer
   const copyButtons = [...html.matchAll(/<button\b[^>]*>[^<]*<\/button>/g)].map((m) => m[0]).filter((b) => /copy/i.test(b)).map((b) => b.match(/data-([a-z-]+)/)[1]).sort();
   assert.deepEqual(copyButtons, ['copy-address', 'copy-plain', 'link-copy', 'tx-copy']);
-  assert.ok(appJs.includes("msgCopied: 'Copied. Clipboard will be cleared automatically.'"));
+  assert.ok(appJs.includes("msgCopied: 'Copied. This app will try to clear the clipboard in 60 seconds.'"));
+  assert.ok(appJs.includes('msgClipboardKept'));
 });
 
 await test('network status component: static, honest rows, identical everywhere it is used', async () => {
@@ -306,7 +308,7 @@ await test('display checksum vectors (docs/ADDRESS_CHECKSUM.md) and password rul
 
 await test('transfer builder: only transfers, mining_claim impossible, strict inputs', async () => {
   const account = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
-  const base = { version: 2, chainId: 'zyron-test-1', nonce: '1', receiver: SNAP_VECTORS[1].address, amountAtoms: 150000000, feeAtoms: 1000, timestampMs: 1700000000000 };
+  const base = { version: 2, chainId: 'zyron-testnet-1', nonce: '1', receiver: SNAP_VECTORS[1].address, amountAtoms: 150000000, feeAtoms: 1000, timestampMs: 1700000000000 };
   const unsigned = core.buildTransfer(base, account);
   assert.equal(unsigned.kind, 'transfer');
   assert.equal(core.buildTransfer({ ...base, kind: 'mining_claim' }, account).kind, 'transfer', 'a kind input is ignored');
@@ -315,6 +317,9 @@ await test('transfer builder: only transfers, mining_claim impossible, strict in
   assert.throws(() => core.buildTransfer({ ...base, receiver: core.MINING_TRACKER_ADDRESS }, account), /mining tracker/);
   assert.throws(() => core.buildTransfer({ ...base, receiver: account.address }, account), /differ/);
   assert.throws(() => core.buildTransfer({ ...base, chainId: 'Zyron Test' }, account), /Chain ID/);
+  assert.throws(() => core.buildTransfer({ ...base, chainId: 'zyron-mainnet-1' }, account), /testnet or devnet/);
+  assert.throws(() => core.buildTransfer({ ...base, chainId: 'zyron-pwa-test' }, account), /testnet or devnet/);
+  assert.equal(core.buildTransfer({ ...base, chainId: core.WALLET_TESTNET_CHAIN_ID }, account).chainId, 'zyron-wallet-testnet-1');
   assert.throws(() => core.buildTransfer({ ...base, nonce: '0' }, account), /Nonce/);
   assert.throws(() => core.buildTransfer({ ...base, version: 3 }, account), /version/);
   assert.throws(() => core.buildTransfer({ ...base, amountAtoms: 0 }, account), /Amount/);
@@ -341,7 +346,7 @@ if (existsSync(join(l1Dist, 'transaction.js'))) {
       assert.equal(l1crypto.addressFromPublicKey(vector.publicKey), vector.address);
       const receiver = vector === SNAP_VECTORS[0] ? SNAP_VECTORS[1].address : SNAP_VECTORS[0].address;
       for (const version of [1, 2]) {
-        const input = { version, chainId: 'zyron-pwa-test', nonce: 1, receiver, amountAtoms: 250000000, feeAtoms: 1000, timestampMs: 1700000000123 };
+        const input = { version, chainId: 'zyron-pwa-testnet', nonce: 1, receiver, amountAtoms: 250000000, feeAtoms: 1000, timestampMs: 1700000000123 };
         const tx = core.signTransfer(core.buildTransfer(input, account), account.privateKey);
         const reference = l1tx.createTransfer({ chainId: input.chainId, nonce: 1, sender: account.address, receiver, amountAtoms: input.amountAtoms, feeAtoms: input.feeAtoms, timestampMs: input.timestampMs }, privHex, account.publicKey, version);
         assert.equal(JSON.stringify(tx), JSON.stringify(reference), `v${version} byte-identical`);

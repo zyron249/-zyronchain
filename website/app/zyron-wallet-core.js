@@ -26,6 +26,8 @@
   const TRANSFER_SIGNING_DOMAIN_V2 = 'zyronchain/transaction/transfer/v2';
   const ADDRESS_CHECKSUM_DOMAIN = 'zyronchain/address-checksum/v1:';
   const CHAIN_ID_RE = /^[a-z0-9-]{3,64}$/;
+  const TEST_CHAIN_ID_RE = /(^|-)(testnet|devnet)(-|$)/;
+  const WALLET_TESTNET_CHAIN_ID = 'zyron-wallet-testnet-1';
   const ADDRESS_RE = /^ZYN[0-9a-f]{40}$/;
   const ADDRESS_INPUT_RE = /^ZYN[0-9a-fA-F]{40}$/;
   const PUBLIC_KEY_RE = /^[0-9a-f]{128}$/;
@@ -308,6 +310,7 @@
     if (version !== 1 && version !== 2) throw new Error('Transaction version must be 1 or 2 (protocol 3+ requires 2)');
     const chainId = String(input.chainId == null ? '' : input.chainId).trim();
     if (!CHAIN_ID_RE.test(chainId)) throw new Error('Chain ID must match ^[a-z0-9-]{3,64}$ (copy it from the network announcement)');
+    if (!TEST_CHAIN_ID_RE.test(chainId)) throw new Error('This unaudited wallet signs only testnet or devnet chain IDs. The no-value wallet testnet id is ' + WALLET_TESTNET_CHAIN_ID);
     const nonce = typeof input.nonce === 'number' ? input.nonce : Number(String(input.nonce == null ? '' : input.nonce).trim() || NaN);
     if (!Number.isSafeInteger(nonce) || nonce < 1) throw new Error('Nonce must be a whole number >= 1 (your next account nonce)');
     const receiver = parseAddressInput(input.receiver).canonical;
@@ -344,6 +347,7 @@
     if (Object.keys(unsigned).sort().join(',') !== TRANSFER_KEYS) throw new Error('Unexpected transfer fields');
     if (unsigned.version !== 1 && unsigned.version !== 2) throw new Error('Unsupported transfer version');
     if (!CHAIN_ID_RE.test(unsigned.chainId)) throw new Error('Chain ID is missing or invalid');
+    if (!TEST_CHAIN_ID_RE.test(unsigned.chainId)) throw new Error('Chain ID must name a testnet or devnet network');
     if (!Number.isSafeInteger(unsigned.nonce) || unsigned.nonce < 1) throw new Error('Nonce is missing or invalid');
     if (!ADDRESS_RE.test(unsigned.sender) || !ADDRESS_RE.test(unsigned.receiver)) throw new Error('Address is invalid');
     if (unsigned.receiver === MINING_TRACKER_ADDRESS) throw new Error('Receiver is the protocol-reserved mining tracker address');
@@ -355,6 +359,7 @@
       { key: 'to', label: 'To', value: toChecksumAddress(unsigned.receiver) },
       { key: 'amount', label: 'Amount', value: atomsToZyn(String(unsigned.amountAtoms)) + ' ZYN (' + unsigned.amountAtoms + ' atoms)' },
       { key: 'fee', label: 'Fee', value: atomsToZyn(String(unsigned.feeAtoms)) + ' ZYN (' + unsigned.feeAtoms + ' atoms)' },
+      { key: 'total', label: 'Total', value: atomsToZyn(String(unsigned.amountAtoms + unsigned.feeAtoms)) + ' ZYN (' + (unsigned.amountAtoms + unsigned.feeAtoms) + ' atoms)' },
       { key: 'chain', label: 'Chain ID', value: unsigned.chainId },
       { key: 'nonce', label: 'Nonce', value: String(unsigned.nonce) },
       { key: 'time', label: 'Timestamp', value: new Date(unsigned.timestampMs).toISOString() }
@@ -421,7 +426,7 @@
 
   const api = Object.freeze({
     DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_KDF, ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
-    TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE,
+    TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, WALLET_TESTNET_CHAIN_ID,
     wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress,
     passwordStrength, normalizePhrase, generateEntropy, entropyToPhrase, phraseToEntropy, deriveAccount,
     createVault, openVault, assertVaultShape, parseVault, zynToAtoms, atomsToZyn, buildTransfer, describeTransfer, signTransfer, verifyCanonical,
