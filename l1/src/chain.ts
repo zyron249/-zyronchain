@@ -618,9 +618,12 @@ export class ZyronChain {
         maxTransactionBytes > MAX_BLOCK_TRANSACTION_BYTES) {
       throw new Error("Invalid pending byte limit");
     }
-    const ordered = orderPendingByFeePriority(transactions.map((tx) => structuredClone(tx)));
     const protocolVersion = this.protocolVersionAt(this.height + 1);
     assertSupportedProtocolVersion(protocolVersion);
+    const ordered = orderPendingByFeePriority(
+      transactions.map((tx) => structuredClone(tx)),
+      (tx) => this.isAuthorizedProtocolCandidate(tx, protocolVersion, blockTimestampMs)
+    );
     const next = protocolVersion === 1 ? this.legacyStateForTransition().clone() : undefined;
     let sparse = protocolUsesStateV2(protocolVersion)
       ? (this.stateV2 ?? stateV2FromLedgerSnapshot(this.requireLegacyState().snapshot(), this.governanceSnapshot()))
@@ -686,6 +689,40 @@ export class ZyronChain {
       }
     }
     return selected;
+  }
+
+  /**
+   * Selection-time priority hint only (R18-1041-L2): whether a pending protocol
+   * transaction is currently authorized (signature, transaction version, oracle
+   * or validator-quorum approval, epoch window and activation rules against the
+   * block's starting cursors). Only such a transaction may lift its sender's
+   * lower-nonce predecessors ahead of fee-paying transfers. Selection still
+   * validates every transaction in order and block validation stays
+   * authoritative.
+   */
+  private isAuthorizedProtocolCandidate(tx: Transaction, protocolVersion: number, blockTimestampMs: number): boolean {
+    try {
+      if (tx.chainId !== this.genesis.chainId) return false;
+      if (tx.kind !== "activity_settlement" && tx.kind !== "validator_update" && tx.kind !== "protocol_upgrade") return false;
+      validateTransactionShape(tx);
+      assertTransactionVersionForProtocol(tx, protocolVersion);
+      if (tx.kind === "activity_settlement") {
+        assertActivitySettlementAuthorized(tx, this.genesis);
+        assertActivityEpochWindow(tx.epoch, this.genesis.timestampMs, blockTimestampMs);
+        return true;
+      }
+      const validators = this.validatorsAt(this.height + 1);
+      if (tx.kind === "validator_update") {
+        validateValidatorUpdateAuthorization(tx, validators, this.height + 1, this.lastValidatorActivationHeight());
+      } else {
+        validateProtocolUpgradeAuthorization(
+          tx, validators, this.height + 1, this.lastProtocolActivationHeight(), this.lastScheduledProtocolVersion()
+        );
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private validateAndApply(
@@ -1089,17 +1126,57 @@ function applyMiningClaimStateV2(state: SparseMerkleState, tx: MiningClaimTx): S
  * Order now:
  *  1. Zero-fee protocol transactions (activity settlements, validator and
  *     protocol governance) before transfers, so fee bidding cannot starve them.
- *  2. Among per-sender queue heads, highest feeAtoms first.
- *  3. Ties: earlier timestampMs, then txid, then sender (canonical order).
+ *     Among themselves: activity settlements, then validator updates, then
+ *     protocol upgrades, each kind by ascending activation height, so a later
+ *     activation cannot advance a governance cursor past an earlier, otherwise
+ *     compatible update (R18-1041-L1).
+ *  2. A sender's lower-nonce transactions in front of a protocol transaction
+ *     that `isAuthorizedProtocolTx` vouches for are ranked like the nearest
+ *     such protocol transaction after them, because it cannot be included
+ *     without them (R18-1041-L2). This holds for every vouched protocol
+ *     transaction in the lane, not only the first.
+ *     The default vouches for nothing, so callers decide (selection checks
+ *     signatures and oracle/validator-quorum authorization first).
+ *  3. Then, among per-sender queue heads, highest feeAtoms first.
+ *  4. Ties: earlier timestampMs, then txid, then sender (canonical order).
  * Each sender's transactions keep ascending nonce order (same-nonce
- * alternatives: higher fee first), so nonce sequencing is preserved. The
- * result is a pure function of the input set, so it stays deterministic.
+ * alternatives: higher fee first), so nonce sequencing is preserved. Heads are
+ * compared lexicographically on these keys, a total order, so the result is a
+ * pure function of the input set (and the predicate) and stays deterministic.
  */
-export function orderPendingByFeePriority(transactions: Transaction[]): Transaction[] {
-  const priorityClass = (tx: Transaction): number => (tx.kind === "transfer" ? 1 : 0);
-  const headBefore = (left: Transaction, right: Transaction): boolean => {
-    const cls = priorityClass(left) - priorityClass(right);
-    if (cls) return cls < 0;
+export function orderPendingByFeePriority(
+  transactions: Transaction[],
+  isAuthorizedProtocolTx: (tx: Transaction) => boolean = () => false
+): Transaction[] {
+  const protocolRank = (tx: Transaction): number => {
+    if (tx.kind === "activity_settlement") return 0;
+    if (tx.kind === "validator_update") return 1;
+    if (tx.kind === "protocol_upgrade") return 2;
+    return 3;
+  };
+  const activationOf = (tx: Transaction): number =>
+    tx.kind === "validator_update" || tx.kind === "protocol_upgrade" ? tx.activationHeight : 0;
+  // liftTarget[i]: index of the first authorized protocol transaction at or after i (-1 if none).
+  interface Lane { queue: Transaction[]; index: number; liftTarget: number[] }
+  // Priority key of a lane's current head: [class, rank, activation]; class 0 = protocol.
+  const headKey = (lane: Lane): [number, number, number] => {
+    const head = lane.queue[lane.index]!;
+    if (head.kind !== "transfer") return [0, protocolRank(head), activationOf(head)];
+    const target = lane.liftTarget[lane.index]!;
+    if (target >= 0) {
+      const lifter = lane.queue[target]!;
+      return [0, protocolRank(lifter), activationOf(lifter)];
+    }
+    return [1, 0, 0];
+  };
+  const headBefore = (leftLane: Lane, rightLane: Lane): boolean => {
+    const leftKey = headKey(leftLane);
+    const rightKey = headKey(rightLane);
+    for (let i = 0; i < leftKey.length; i += 1) {
+      if (leftKey[i] !== rightKey[i]) return leftKey[i]! < rightKey[i]!;
+    }
+    const left = leftLane.queue[leftLane.index]!;
+    const right = rightLane.queue[rightLane.index]!;
     if (left.feeAtoms !== right.feeAtoms) return left.feeAtoms > right.feeAtoms;
     if (left.timestampMs !== right.timestampMs) return left.timestampMs < right.timestampMs;
     const byTxid = compareCanonicalStrings(left.txid, right.txid);
@@ -1112,18 +1189,24 @@ export function orderPendingByFeePriority(transactions: Transaction[]): Transact
     if (queue) queue.push(tx);
     else queues.set(tx.sender, [tx]);
   }
-  const lanes: Array<{ queue: Transaction[]; index: number }> = [];
+  const lanes: Lane[] = [];
   for (const queue of queues.values()) {
     queue.sort((left, right) =>
       left.nonce - right.nonce ||
       right.feeAtoms - left.feeAtoms ||
       left.timestampMs - right.timestampMs ||
       compareCanonicalStrings(left.txid, right.txid));
-    lanes.push({ queue, index: 0 });
+    const liftTarget = new Array<number>(queue.length);
+    let next = -1;
+    for (let i = queue.length - 1; i >= 0; i -= 1) {
+      const tx = queue[i]!;
+      if (tx.kind !== "transfer" && isAuthorizedProtocolTx(tx)) next = i;
+      liftTarget[i] = next;
+    }
+    lanes.push({ queue, index: 0, liftTarget });
   }
   // Binary heap of lanes keyed by their current head.
-  const before = (a: number, b: number): boolean =>
-    headBefore(lanes[a]!.queue[lanes[a]!.index]!, lanes[b]!.queue[lanes[b]!.index]!);
+  const before = (a: number, b: number): boolean => headBefore(lanes[a]!, lanes[b]!);
   const heap: number[] = [];
   const swap = (i: number, j: number): void => { const t = heap[i]!; heap[i] = heap[j]!; heap[j] = t; };
   const up = (i: number): void => {
