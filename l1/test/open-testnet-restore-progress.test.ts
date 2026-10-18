@@ -14,7 +14,7 @@
 // per chunk.
 import assert from "node:assert/strict";
 import { existsSync, statSync } from "node:fs";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -85,6 +85,36 @@ test("restore reports progress for every validator copy step: copied files, reco
     for (const name of ["v1", ...COPIES]) {
       for (const file of FILES) assert.ok(final.some((event) => event.validator === name && event.file === file), `no progress while re-checking ${name} ${file} before the marker`);
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// Codex review on #1060 (P2): FileHandle.write may write fewer bytes than
+// asked. The chunked copy must keep writing until each chunk is complete;
+// otherwise the copy is short, fails its digest check and the restore falls
+// back to a fresh genesis.
+test("the chunked restore copy completes short writes", { timeout: 60_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-restore-short-write-"));
+  try {
+    const source = join(root, "source.bin");
+    const bytes = Buffer.alloc(200_000);
+    for (let i = 0; i < bytes.length; i += 1) bytes[i] = (i * 31) % 251;
+    await writeFile(source, bytes);
+    const destination = join(root, "copy.bin");
+    // A file handle whose writes complete at most 1000 bytes at a time.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const shortWriting = async (path: string, flags: string, mode: number): Promise<any> => {
+      const handle = await open(path, flags, mode);
+      return {
+        write: (buffer: Buffer, offset = 0, length = buffer.length - offset) => handle.write(buffer, offset, Math.min(length, 1_000)),
+        close: () => handle.close()
+      };
+    };
+    let chunks = 0;
+    await api.copyFileWithProgress(source, destination, () => { chunks += 1; }, { openFile: shortWriting });
+    assert.ok((await readFile(destination)).equals(bytes), "the copy is incomplete after short writes");
+    assert.ok(chunks >= 2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
