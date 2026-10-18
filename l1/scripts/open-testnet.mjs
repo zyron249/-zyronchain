@@ -266,12 +266,18 @@ async function fileSha256(path, onChunk = () => {}) {
   return hash.digest("hex");
 }
 // R31-1060-L2: copy in chunks with a tick per chunk, so a large log is not one
-// silent step. The destination is new (exclusive create) and owner-only.
-async function copyFileWithProgress(source, destination, onChunk = () => {}) {
-  const handle = await open(destination, "wx", 0o600);
+// silent step. The destination is new (exclusive create) and owner-only. A
+// write may complete fewer bytes than asked (Codex P2 on #1060), so each chunk
+// is written until it is complete. openFile is a test seam.
+export async function copyFileWithProgress(source, destination, onChunk = () => {}, { openFile = open } = {}) {
+  const handle = await openFile(destination, "wx", 0o600);
   try {
     for await (const chunk of createReadStream(source)) {
-      await handle.write(chunk);
+      for (let offset = 0; offset < chunk.length;) {
+        const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset);
+        if (!(bytesWritten > 0)) throw new Error(`restore copy of ${source} made no progress`);
+        offset += bytesWritten;
+      }
       onChunk();
     }
   } finally {
