@@ -5,8 +5,9 @@
 // published snapshot again, not fall back to a fresh TEST genesis. Nothing is
 // deleted: the partial directory is moved aside, and a directory with top-level
 // entries the open testnet does not create is refused and left untouched.
-// A network.json torn by a crash while it was written (Codex review) is not a
-// completion marker: that directory is moved aside and restored again too.
+// A network.json torn by a crash while it was written, or one that does not
+// describe the directory's genesis (Codex review), is not a completion marker:
+// that directory is moved aside and restored again too.
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
@@ -170,7 +171,7 @@ test("a network.json torn by a crash is not a completion marker; the next start 
     assert.match(log, /moved an incomplete network directory left by an interrupted start-up to .*hosted\.incomplete-/);
     const aside = (await readdir(root)).find((name) => name.startsWith("hosted.incomplete-"));
     assert.ok(aside, "torn directory kept aside");
-    assert.ok((await readFile(join(root, aside, "network.json"))).equals(marker.subarray(0, tornLength)), "torn marker preserved, not deleted");
+    assert.ok((await readFile(join(root, aside, "hosted", "network.json"))).equals(marker.subarray(0, tornLength)), "torn marker preserved, not deleted");
     assert.deepEqual(JSON.parse(await readFile(join(target, "network.json"), "utf8")), network);
     await assert.rejects(access(join(target, "network.json.partial")), { code: "ENOENT" });
   } finally {
@@ -180,7 +181,7 @@ test("a network.json torn by a crash is not a completion marker; the next start 
   }
 });
 
-test("move-aside treats an unparsable or partial marker as incomplete and never replaces an existing destination", async () => {
+test("move-aside treats an unparsable or partial marker as incomplete and never replaces an existing path", async () => {
   const root = await mkdtemp(join(tmpdir(), "zyron-marker-dir-"));
   const realNow = Date.now;
   try {
@@ -189,7 +190,7 @@ test("move-aside treats an unparsable or partial marker as incomplete and never 
     await writeFile(join(torn, "network.json"), '{"network":"testnet","genesisHa');
     await writeFile(join(torn, "network.json.partial"), "{");
     const tornAside = await api.moveAsideIncompleteNetworkDir(torn);
-    assert.match(String(tornAside), /torn\.incomplete-\d+-\d+/);
+    assert.match(String(tornAside), /torn\.incomplete-\d+-\d+\/torn$/);
     await access(join(tornAside, "network.json.partial"));
 
     // A marker that parses but is not a network description is not complete either.
@@ -198,14 +199,9 @@ test("move-aside treats an unparsable or partial marker as incomplete and never 
     await writeFile(join(wrongShape, "network.json"), "[]");
     assert.ok(await api.moveAsideIncompleteNetworkDir(wrongShape));
 
-    const complete = join(root, "complete");
-    await mkdir(complete);
-    await writeFile(join(complete, "network.json"), JSON.stringify({ chainId: CHAIN_ID, genesisHash: "ab".repeat(32) }));
-    assert.equal(await api.moveAsideIncompleteNetworkDir(complete), false);
-    await access(join(complete, "network.json"));
-
     // Same millisecond and process: an existing (even empty) directory at the
-    // first candidate name is never replaced.
+    // first candidate name is never replaced; the directory is moved into a
+    // freshly reserved holder under its own name.
     const fixed = realNow();
     Date.now = () => fixed;
     const partial = join(root, "partial");
@@ -214,8 +210,9 @@ test("move-aside treats an unparsable or partial marker as incomplete and never 
     await mkdir(taken);
     const takenInode = (await lstat(taken)).ino;
     const aside = await api.moveAsideIncompleteNetworkDir(partial);
-    assert.notEqual(aside, taken);
+    assert.equal(aside, join(`${taken}-1`, "partial"));
     assert.equal((await lstat(taken)).ino, takenInode, "existing destination replaced");
+    assert.deepEqual(await readdir(taken), []);
     await access(join(aside, "keys"));
   } finally {
     Date.now = realNow;
@@ -223,7 +220,35 @@ test("move-aside treats an unparsable or partial marker as incomplete and never 
   }
 });
 
-test("an incomplete directory is moved aside (never deleted), a foreign or complete directory is left untouched", async () => {
+test("a marker the gateway cannot run with, or one for another genesis, is not a completion marker (Codex review)", { timeout: 120_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-marker-consistency-"));
+  try {
+    // A real network is complete and stays where it is.
+    const complete = join(root, "complete");
+    await api.initNetwork(complete, CHAIN_ID);
+    const network = JSON.parse(await readFile(join(complete, "network.json"), "utf8"));
+    assert.equal(await api.moveAsideIncompleteNetworkDir(complete), false);
+    await access(join(complete, "network.json"));
+
+    // A marker the gateway cannot run with (no faucet address), or one that does
+    // not describe this directory's genesis, is not a completion marker.
+    const { faucetAddress: _dropped, ...withoutFaucet } = network;
+    const noFaucet = join(root, "no-faucet");
+    await cp(complete, noFaucet, { recursive: true });
+    await rm(join(noFaucet, "network.json"));
+    await writeFile(join(noFaucet, "network.json"), JSON.stringify(withoutFaucet));
+    assert.ok(await api.moveAsideIncompleteNetworkDir(noFaucet), "marker without faucetAddress accepted as complete");
+    const otherGenesis = join(root, "other-genesis");
+    await cp(complete, otherGenesis, { recursive: true });
+    await rm(join(otherGenesis, "network.json"));
+    await writeFile(join(otherGenesis, "network.json"), JSON.stringify({ ...network, genesisHash: "ab".repeat(32) }));
+    assert.ok(await api.moveAsideIncompleteNetworkDir(otherGenesis), "marker for another genesis accepted as complete");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an incomplete directory is moved aside (never deleted), a foreign or complete directory is left untouched", { timeout: 120_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "zyron-incomplete-dir-"));
   try {
     assert.equal(await api.moveAsideIncompleteNetworkDir(join(root, "missing")), false);
@@ -235,7 +260,7 @@ test("an incomplete directory is moved aside (never deleted), a foreign or compl
     // Even an unexpected file nested inside a recognised directory survives.
     await writeFile(join(partial, "keys", "operator-note.txt"), "kept");
     const aside = await api.moveAsideIncompleteNetworkDir(partial);
-    assert.match(String(aside), /partial\.incomplete-\d+-\d+$/);
+    assert.match(String(aside), /partial\.incomplete-\d+-\d+\/partial$/);
     await assert.rejects(access(partial), { code: "ENOENT" });
     assert.equal(await readFile(join(aside, "keys", "operator-note.txt"), "utf8"), "kept");
     await access(join(aside, "genesis.json"));
@@ -248,8 +273,7 @@ test("an incomplete directory is moved aside (never deleted), a foreign or compl
     await access(join(foreign, "keys"));
 
     const complete = join(root, "complete");
-    await mkdir(join(complete, "keys"), { recursive: true });
-    await writeFile(join(complete, "network.json"), JSON.stringify({ chainId: CHAIN_ID, genesisHash: "cd".repeat(32) }));
+    await api.initNetwork(complete, CHAIN_ID);
     assert.equal(await api.moveAsideIncompleteNetworkDir(complete), false);
     await access(join(complete, "network.json"));
   } finally {
