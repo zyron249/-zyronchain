@@ -162,3 +162,34 @@ test("nodeRecordBatches yields the records of a recursive post-order traversal, 
   assert.deepEqual([...SparseMerkleState.empty().nodeRecordBatches(4)], []);
   for (const invalid of [0, -1, 1.5, Number.NaN]) assert.throws(() => [...state.nodeRecordBatches(invalid)], /Invalid State v2 node record batch size/);
 });
+
+test("a State-v2 catch-up without every semantic key is refused and keeps the previous root", { timeout: 120_000 }, async () => {
+  let source = SparseMerkleState.empty();
+  const keys: string[] = [];
+  for (let i = 0; i < 3_000; i += 1) {
+    keys.push(`account:missing-${i}`);
+    source = source.set(keys[i]!, { balanceAtoms: i });
+  }
+  const records = new Map(source.nodeRecords().map((record) => [record.hash, record]));
+  // Keys written by an attempt stay in the (content-addressed) index, so each
+  // case starts from a fresh store.
+  for (const missing of [0, 1_500, 2_999, -1]) {
+    const directory = await mkdtemp(join(tmpdir(), "zyron-state-v2-catchup-missing-key-"));
+    try {
+      const store = await StateV2DiskStore.open(directory);
+      const previous = store.state().set("account:previous", { balanceAtoms: 1 });
+      await store.commit(previous, ["account:previous"]);
+      if (missing >= 0) {
+        await assert.rejects(() => store.commit(countingTarget(source.root(), records).state, keys.filter((_, index) => index !== missing)),
+          /complete semantic key index/, `catch-up without key ${missing} was accepted`);
+      } else {
+        await assert.rejects(() => store.commit(countingTarget(source.root(), records).state, [...keys, "account:not-in-target"]),
+          /not committed by target root/);
+      }
+      assert.equal(store.state().root(), previous.root());
+      assert.equal((await StateV2DiskStore.open(directory)).state().root(), previous.root());
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
