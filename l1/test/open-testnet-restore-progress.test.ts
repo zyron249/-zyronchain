@@ -73,6 +73,12 @@ test("restore reports progress for every validator copy step: copied files, reco
           assert.ok(chunks.length >= 2, `${name} ${file} copied in ${chunks.length} progress step(s)`);
         }
       }
+      // Codex P2 (#1060 at 2d6fb39): loading and verifying the copied recovery
+      // checkpoint (which rebuilds the whole state) reports progress before
+      // the copy's first block record is read.
+      const firstRecord = events.findIndex((event) => event.step === "open-record" && event.validator === name);
+      const checkpointSteps = events.filter((event, index) => event.step === "open-checkpoint" && event.validator === name && index < firstRecord).length;
+      assert.ok(checkpointSteps >= 2, `${name} reported ${checkpointSteps} progress tick(s) while loading its recovery checkpoint`);
       const records = events.filter((event) => event.step === "open-record" && event.validator === name).length;
       assert.ok(records >= bundle.blocks.length, `${name} open reported ${records} records for ${bundle.blocks.length} blocks`);
       assert.equal(events.filter((event) => event.step === "copy-opened" && event.validator === name).length, 1, `a tick once ${name} is opened`);
