@@ -47,7 +47,7 @@ from zyron_node.game import (
 from zyron_node.limits import RateLimitExceeded, hit
 from zyron_node import community, reminders, telegram_api
 from zyron_node.wallet_proof import issue_challenge, verify_proof
-from zyron_node import chain_builder, squads, wardrobe
+from zyron_node import chain_builder, cipher, events, squads, wardrobe
 from zyron_node import web_login
 
 
@@ -94,6 +94,10 @@ class SquadCreateBody(IdempotentBody):
 
 class SquadJoinBody(IdempotentBody):
     tag: str = Field(min_length=2, max_length=5)
+
+
+class CipherBody(IdempotentBody):
+    guess: str = Field(min_length=3, max_length=12)
 
 
 class WalletBody(IdempotentBody):
@@ -364,6 +368,48 @@ def register_routes(app) -> None:
         limit_user(request, identity.id, "squadleave", 8, 60, now)
         player = _player_id(request, identity, ip_hash, now)
         return squads.leave_squad(request.app.state.pool, player, body.idempotencyKey, now)
+
+    @app.get("/api/cipher")
+    def cipher_status(request: Request):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "cipher", 60, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        with request.app.state.pool.connection() as conn:
+            return cipher.cipher_view(conn, player, now)
+
+    @app.post("/api/cipher/answer")
+    def cipher_answer(request: Request, body: CipherBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "cipherguess", 20, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return cipher.answer(request.app.state.pool, player, body.guess, body.idempotencyKey, now)
+
+    @app.get("/api/events")
+    def event_status(request: Request):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "events", 60, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        with request.app.state.pool.connection() as conn:
+            return events.events_view(conn, player, now)
+
+    @app.post("/api/events/strike")
+    def event_strike(request: Request, body: IdempotentBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "strike", 12, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return events.strike(request.app.state.pool, player, body.idempotencyKey, now)
+
+    @app.post("/api/events/claim")
+    def event_claim(request: Request, body: IdempotentBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "eventclaim", 6, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return events.claim_goal(request.app.state.pool, player, body.idempotencyKey, now)
 
     @app.get("/api/upgrades")
     def upgrades(request: Request):

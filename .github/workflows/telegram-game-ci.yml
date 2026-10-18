@@ -74,6 +74,7 @@ jobs:
           node --check telegram-game/frontend/daynight.js
           node --check telegram-game/frontend/wardrobe.js
           node --check telegram-game/frontend/chain.js
+          node --check telegram-game/frontend/events.js
       - name: Install Chrome for mobile smoke
         run: |
           if ! command -v google-chrome >/dev/null 2>&1 && ! command -v google-chrome-stable >/dev/null 2>&1; then
