@@ -54,7 +54,8 @@ const NETWORK_DIR_ENTRIES = new Set(["keys", "genesis.json", "network.json", "ne
 // last, through a temporary file that is fsynced and renamed into place, so it
 // is either absent or complete. A directory only counts as a usable network if
 // the marker is a network description the gateway can run with (chain ID,
-// genesis hash, faucet address) and describes this directory's genesis.json;
+// genesis hash, faucet address matching keys/faucet.json, TEST chain ID) and
+// describes this directory's genesis.json;
 // anything else (missing, torn by an older non-atomic write, edited, or for
 // another genesis) is incomplete. Returns the parsed marker or null.
 export async function readNetworkMarker(dir) {
@@ -69,6 +70,13 @@ export async function readNetworkMarker(dir) {
   const genesis = await readJson("genesis.json");
   if (!isObject(genesis) || genesis.chainId !== info.chainId) return null;
   try { if (new ZyronChain(genesis).genesisHash !== info.genesisHash) return null; } catch { return null; }
+  // The remaining runNetwork preconditions: a TEST chain ID and a faucet key
+  // whose address is the marker's faucetAddress.
+  try {
+    assertTestnetChainId(genesis.chainId);
+    const faucetKey = (await readSecret(join(dir, "keys", "faucet.json"))).privateKey;
+    if (addressFromPublicKey(publicKeyFromPrivate(faucetKey)) !== info.faucetAddress) return null;
+  } catch { return null; }
   return info;
 }
 
