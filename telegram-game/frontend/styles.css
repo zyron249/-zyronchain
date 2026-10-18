@@ -766,3 +766,67 @@ html.fx-shake { animation: screen-shake 0.45s linear; }
   60% { transform: translate(-2px, 2px); }
   80% { transform: translate(2px, -1px); }
 }
+
+/* Local-time sky (frontend/daynight.js). The grid stays; only the wash changes. */
+html[data-sky="day"] body::before {
+  background:
+    radial-gradient(700px 380px at 80% -8%, rgba(79, 216, 251, 0.22), transparent 62%),
+    radial-gradient(520px 280px at -8% 0%, rgba(10, 159, 245, 0.16), transparent 60%),
+    linear-gradient(180deg, #071422 0%, #02050a 42%),
+    linear-gradient(rgba(120, 175, 255, 0.04) 1px, transparent 1px) 0 0 / 40px 40px,
+    linear-gradient(90deg, rgba(120, 175, 255, 0.04) 1px, transparent 1px) 0 0 / 40px 40px;
+}
+html[data-sky="dusk"] body::before {
+  background:
+    radial-gradient(640px 320px at 88% -6%, rgba(44, 104, 173, 0.32), transparent 64%),
+    radial-gradient(480px 260px at 0% 10%, rgba(10, 159, 245, 0.12), transparent 62%),
+    linear-gradient(180deg, #0a1020 0%, #02050a 50%),
+    linear-gradient(rgba(120, 175, 255, 0.03) 1px, transparent 1px) 0 0 / 40px 40px,
+    linear-gradient(90deg, rgba(120, 175, 255, 0.03) 1px, transparent 1px) 0 0 / 40px 40px;
+}
+html[data-sky="night"] body::before {
+  background:
+    radial-gradient(560px 280px at 78% -10%, rgba(10, 159, 245, 0.1), transparent 66%),
+    linear-gradient(180deg, #010308 0%, #02050a 40%),
+    linear-gradient(rgba(120, 175, 255, 0.025) 1px, transparent 1px) 0 0 / 40px 40px,
+    linear-gradient(90deg, rgba(120, 175, 255, 0.025) 1px, transparent 1px) 0 0 / 40px 40px;
+}
+
+/* CSS 3D node cube (frontend/cube.js). Transforms only. */
+.node-cube {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: 54px;
+  height: 54px;
+  margin: -27px 0 0 -27px;
+  z-index: 2;
+  touch-action: none;
+  cursor: grab;
+}
+.node-cube.is-drag { cursor: grabbing; }
+.cube-scene { width: 100%; height: 100%; perspective: 280px; }
+.cube-rotor { position: relative; width: 100%; height: 100%; transform-style: preserve-3d; }
+.cube-layer { position: absolute; inset: 0; transform-style: preserve-3d; }
+.cube-layer[data-scale="118"] { transform: scale3d(1.18, 1.18, 1.18); }
+.cube-layer[data-scale="136"] { transform: scale3d(1.36, 1.36, 1.36); }
+.cube-layer[data-scale="154"] { transform: scale3d(1.54, 1.54, 1.54); }
+.cube-layer[data-scale="172"] { transform: scale3d(1.72, 1.72, 1.72); }
+.cube-layer[data-scale="190"] { transform: scale3d(1.9, 1.9, 1.9); }
+.cube-layer.is-shell { opacity: 0.55; }
+.cube-face {
+  position: absolute;
+  inset: 8px;
+  border: 1px solid rgba(79, 216, 251, 0.75);
+  background: linear-gradient(160deg, rgba(244, 247, 249, 0.28), rgba(10, 159, 245, 0.18) 46%, rgba(2, 5, 10, 0.55));
+  box-shadow: inset 0 0 12px rgba(79, 216, 251, 0.25);
+}
+.cube-face.is-shell { background: transparent; border-color: rgba(216, 220, 224, 0.45); }
+.cube-face.front { transform: translateZ(18px); }
+.cube-face.back { transform: rotateY(180deg) translateZ(18px); }
+.cube-face.left { transform: rotateY(-90deg) translateZ(18px); }
+.cube-face.right { transform: rotateY(90deg) translateZ(18px); }
+.cube-face.top { transform: rotateX(90deg) translateZ(18px); }
+.cube-face.bottom { transform: rotateX(-90deg) translateZ(18px); }
+.node-visual[data-evo="gold"] .cube-face { border-color: rgba(230, 195, 106, 0.8); }
+.node-visual[data-evo="legendary"] .cube-face { box-shadow: inset 0 0 14px rgba(79, 216, 251, 0.55), 0 0 12px rgba(10, 159, 245, 0.35); }

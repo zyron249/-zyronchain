@@ -58,7 +58,7 @@ def _dump(chrome, url, shot, profile):
         "--dump-dom",
         url,
     ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
     chunks = []
     deadline = time.time() + 12
     while time.time() < deadline:
@@ -71,6 +71,11 @@ def _dump(chrome, url, shot, profile):
             break
         else:
             time.sleep(0.05)
+    shot_deadline = time.time() + 4
+    while time.time() < shot_deadline:
+        if Path(shot).exists() and Path(shot).stat().st_size > 1000:
+            break
+        time.sleep(0.1)
     proc.kill()
     try:
         rest, _ = proc.communicate(timeout=3)
@@ -79,7 +84,7 @@ def _dump(chrome, url, shot, profile):
     if rest:
         chunks.append(rest)
     out = "".join(chunks)
-    assert Path(shot).exists() and Path(shot).stat().st_size > 1000, err[-500:] if err else "missing screenshot"
+    assert Path(shot).exists() and Path(shot).stat().st_size > 1000, "missing screenshot"
     return out
 
 

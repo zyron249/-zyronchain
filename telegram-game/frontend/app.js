@@ -48,7 +48,8 @@
     modal: null,
     activityBusy: false,
     boardBusy: false,
-    celebration: null
+    celebration: null,
+    cubeHandle: null
   };
   let chromeKey = "";
 
@@ -343,6 +344,11 @@
   }
 
   function render() {
+    if (state.cubeHandle) {
+      state.cubeHandle.stop();
+      state.cubeHandle = null;
+    }
+    if (window.ZyronSky) window.ZyronSky.apply(document);
     clear(root);
     if (!player()) hideMainButton();
     if (state.blocked) {
@@ -1584,6 +1590,24 @@
       sparks.append(window.ZyronPolish.buildSparks(svg, level));
       sparks.setAttribute("data-level", String(level));
     }
+    mountCube(visual);
+  }
+
+  function mountCube(visual) {
+    if (!visual || !window.ZyronCube || !player()) return;
+    const layers = String(window.ZyronCube.layerCount(player().level));
+    let cube = visual.querySelector("[data-cube]");
+    if (cube && cube.getAttribute("data-layers") === layers && state.cubeHandle) return;
+    if (state.cubeHandle) {
+      state.cubeHandle.stop();
+      state.cubeHandle = null;
+    }
+    if (cube) cube.remove();
+    cube = window.ZyronCube.build(el, player().level);
+    visual.append(cube);
+    state.cubeHandle = window.ZyronCube.attach(cube, player().level, {
+      reduced: window.ZyronPolish ? window.ZyronPolish.prefersReducedMotion() : false
+    });
   }
 
   function levelUpLayer() {
