@@ -28,7 +28,7 @@ import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createServer } from "node:http";
-import { realpathSync } from "node:fs";
+import { createReadStream, realpathSync } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -40,7 +40,9 @@ const { ZyronChain } = await import(dist("chain.js"));
 const { ChainStore } = await import(dist("storage.js"));
 const { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } = await import(dist("crypto.js"));
 const { createProtocolUpgrade, createProtocolUpgradeApproval, createTransfer } = await import(dist("transaction.js"));
-const { expectedValidator } = await import(dist("block.js"));
+const { blockHash, expectedValidator } = await import(dist("block.js"));
+const { merkleRoot } = await import(dist("merkle.js"));
+const { canonicalJson } = await import(dist("codec.js"));
 const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist("tokenomics.js"));
 const { gatewayClientIdentity } = await import(dist("rpc-client-identity.js"));
 
@@ -249,6 +251,16 @@ export function openSnapshot(bytes, secret) {
 // the finalized log + checkpoint are copied to the other validators, each of
 // which re-opens and verifies them, so neither the restore nor the validator
 // start-up pays for a full replay four times (startup cost on a 0.1-CPU host).
+// R21-1046-L1: with a checkpoint, ChainStore.open only line-scans the records
+// below it, so every validator's files are compared byte-for-byte (SHA-256)
+// with the replayed ones before they are opened, and all of them again right
+// before network.json is written.
+const RESTORED_DATA_FILES = ["metadata.json", "blocks.ndjson", "recovery-checkpoint.json"];
+async function fileSha256(path) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
+}
 export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress = () => {} } = {}) {
   assert.equal(bundle?.format, SNAPSHOT_MAGIC, "unknown snapshot format");
   const { genesis, network, keys, blocks } = bundle;
@@ -274,18 +286,33 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
   for (const block of blocks) { await store.commitFinalizedBlock(block); onProgress(); }
   assert.equal(store.chain.height, blocks.length, "snapshot replay height mismatch");
   const checkpoint = await store.writeRecoveryCheckpoint();
+  const replayed = new Map();
+  for (const file of RESTORED_DATA_FILES) replayed.set(file, await fileSha256(join(firstData, file)));
+  const verifyFiles = async (name, data) => {
+    for (const file of RESTORED_DATA_FILES) {
+      if (await fileSha256(join(data, file)) !== replayed.get(file)) throw new Error(`restored ${name} ${file} does not match the replayed log`);
+    }
+  };
   onProgress();
   for (const name of others) {
     const data = join(dir, `data-${name}`);
     await mkdir(data, { mode: 0o700 });
-    for (const file of ["metadata.json", "blocks.ndjson", "recovery-checkpoint.json"]) await copyFile(join(firstData, file), join(data, file));
+    for (const file of RESTORED_DATA_FILES) await copyFile(join(firstData, file), join(data, file));
     await chmod(join(data, "blocks.ndjson"), 0o600);
+    await verifyFiles(name, data);
     const copy = await ChainStore.open(genesis, data);
     assert.ok(copy.chain.height === blocks.length && copy.chain.tip.hash === checkpoint.tipHash, `restored ${name} state does not match the replayed state`);
     onProgress();
   }
+  // R28-1059-L1: every copy (not only the replayed one) is checked again
+  // right before the completion marker.
+  for (const name of VALIDATOR_NAMES) await verifyFiles(name, join(dir, `data-${name}`));
   await writeNetworkMarker(dir, network);
-  return { chainId: genesis.chainId, genesisHash: network.genesisHash, height: blocks.length, tipHash: checkpoint.tipHash };
+  // The replayed chain (in memory) and its blocks are the start of the
+  // gateway's verified snapshot history, so a cold start does not validate
+  // the restored history a second time before the first snapshot.
+  const verifiedHistory = { chain: store.chain, blocks };
+  return { chainId: genesis.chainId, genesisHash: network.genesisHash, height: blocks.length, tipHash: checkpoint.tipHash, verifiedHistory };
 }
 
 // ---- init: fresh TEST keys, fixed-supply-v1 genesis, v6 prefix ----------------
@@ -355,8 +382,129 @@ export async function initNetwork(dir, chainId, { onProgress = () => {} } = {}) 
   return publicInfo;
 }
 
+// ---- snapshot history verification (R21-1046-L1, option C) -------------------
+// Validators serve historical blocks from their own block log. Below a recovery
+// checkpoint that log is not re-validated on open, so a block corrupted on one
+// validator's disk could be sealed into the published snapshot, fail the next
+// cold-start replay and reset the testnet. Before sealing, every block must
+// pass the finalized-block validation a cold-start replay applies
+// (ZyronChain.acceptBlock: envelope, proposer and attestation signatures,
+// finality certificate, transactions, state root) on top of the blocks before
+// it, and the history must end at the live tip. Byte agreement between
+// validators is not used: honest validators can hold different valid
+// certificates for one block, and identical bytes can still be invalid
+// (R28-1059-M1/M2). If no validator serves a valid block at some height,
+// nothing is sealed and the last published snapshot stays in place.
+export function verifySnapshotBlocks(blocks, { tip, tipHash, chainId, genesisHash }) {
+  assert.ok(Array.isArray(blocks) && blocks.length === tip, `snapshot history has ${Array.isArray(blocks) ? blocks.length : "no"} blocks, expected ${tip}`);
+  let previous = genesisHash;
+  for (const [index, block] of blocks.entries()) {
+    const height = index + 1;
+    const header = block?.header;
+    assert.ok(header && typeof header === "object" && header.height === height && header.chainId === chainId, `snapshot block ${height} has the wrong height or chain ID`);
+    assert.equal(header.previousHash, previous, `snapshot block ${height} does not link to block ${height - 1}`);
+    assert.equal(blockHash(header), block.hash, `snapshot block ${height} hash does not match its header`);
+    assert.ok(Array.isArray(block.transactions) && merkleRoot(block.transactions) === header.transactionRoot, `snapshot block ${height} transactions do not match its header`);
+    assert.equal(new Set(block.transactions.map((tx) => tx?.txid)).size, block.transactions.length, `snapshot block ${height} repeats a transaction`);
+    previous = block.hash;
+  }
+  assert.equal(previous, tipHash, "snapshot history does not end at the live tip");
+}
+
+// Verified snapshot history: the in-memory chain after the verified blocks.
+// The gateway keeps one and extends it on each build, so full validation is
+// paid once per block (validation is replay-priced on a 0.1-CPU host).
+export function createSnapshotHistory(genesis) {
+  return { chain: new ZyronChain(genesis), blocks: [] };
+}
+const yieldToEventLoop = () => new Promise((done) => setImmediate(done));
+
+// readers: [{ name, read(from, limit) -> blocks }], one per validator, tried
+// in order for each height. A candidate block is used only if it passes full
+// finalized-block validation on top of the verified history; a reader that
+// fails, serves nothing or serves an invalid block is reported (once per
+// build) through onReject and the next reader is tried for that height.
+export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, genesisHash, genesis, history, pageSize = 100, onReject = () => {} } = {}) {
+  const expected = { tip, tipHash, chainId, genesisHash };
+  assert.ok(Number.isSafeInteger(tip) && tip >= 1, "snapshot tip must be a positive height");
+  const verified = history ?? createSnapshotHistory(genesis);
+  assert.equal(verified.chain.genesisHash, genesisHash, "snapshot history is for another genesis");
+  assert.equal(verified.chain.height, verified.blocks.length, "snapshot history is inconsistent");
+  const reported = new Set();
+  const reject = (index, error) => {
+    const { name } = readers[index];
+    if (reported.has(name)) return;
+    reported.add(name);
+    onReject(name, error);
+  };
+  const pages = readers.map(() => ({ from: 0, blocks: [], failed: false }));
+  async function blockFrom(index, height) {
+    const page = pages[index];
+    if (page.failed) return undefined;
+    if (height < page.from || height >= page.from + page.blocks.length) {
+      let served;
+      try {
+        served = await readers[index].read(height, Math.min(pageSize, tip - height + 1));
+      } catch (error) {
+        page.failed = true;
+        reject(index, error);
+        return undefined;
+      }
+      page.from = height; page.blocks = [];
+      if (Array.isArray(served)) {
+        for (const block of served) {
+          if (block?.header?.height !== page.from + page.blocks.length) break;
+          page.blocks.push(block);
+        }
+      }
+      if (page.blocks.length === 0) {
+        page.failed = true;
+        reject(index, new Error(`block ${height} not served`));
+        return undefined;
+      }
+    }
+    return page.blocks[height - page.from];
+  }
+  while (verified.blocks.length < tip) {
+    const height = verified.blocks.length + 1;
+    const failures = new Map();
+    let accepted;
+    for (let index = 0; index < readers.length && !accepted; index += 1) {
+      const block = await blockFrom(index, height);
+      if (!block) continue;
+      let line;
+      try {
+        // Served blocks are parsed JSON and can hold values canonicalJson
+        // refuses (unsafe numbers, excessive nesting): reject that validator.
+        line = canonicalJson(block);
+      } catch (error) {
+        reject(index, new Error(`block ${height} is not canonical (${error instanceof Error ? error.message : String(error)})`));
+        continue;
+      }
+      if (failures.has(line)) { reject(index, failures.get(line)); continue; }
+      try {
+        const candidate = structuredClone(block);
+        // acceptBlock validates completely before it changes the chain, so a
+        // rejected candidate leaves the verified history untouched.
+        verified.chain.acceptBlock(structuredClone(candidate), Date.now());
+        accepted = candidate;
+      } catch (error) {
+        const failure = new Error(`block ${height} failed validation (${error instanceof Error ? error.message : String(error)})`);
+        failures.set(line, failure);
+        reject(index, failure);
+      }
+    }
+    if (!accepted) throw new Error(`snapshot history: no validator served a block ${height} that passes finalized-block validation`);
+    verified.blocks.push(accepted);
+    await yieldToEventLoop();
+  }
+  const blocks = verified.blocks.slice(0, tip);
+  verifySnapshotBlocks(blocks, expected);
+  return blocks;
+}
+
 // ---- run: validators + gateway ---------------------------------------------------
-export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server } = {}) {
+export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server, verifiedHistory } = {}) {
   const runStartedAtMs = Date.now();
   const genesisPath = join(dir, "genesis.json");
   const genesis = JSON.parse(await readFile(genesisPath, "utf8"));
@@ -489,16 +637,33 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     faucetGlobal: new WindowLimiter(200, 3_600_000, 1),
     snapshot: new WindowLimiter(30, 3_600_000, 1)
   };
-  let snapshotCache; let snapshotCacheAt = 0;
-  async function buildSnapshot() {
-    if (snapshotCache && Date.now() - snapshotCacheAt < 60_000) return snapshotCache;
-    const tip = (await chainStatus()).height;
-    const blocks = [];
-    while (blocks.length < tip) {
-      const result = await anyNode(`/blocks?from=${blocks.length + 1}&limit=100`);
-      if (result.status !== 200 || !Array.isArray(result.body?.blocks) || result.body.blocks.length === 0) throw new Error("snapshot block read failed");
-      for (const block of result.body.blocks) { if (block.header.height === blocks.length + 1 && blocks.length < tip) blocks.push(block); }
-    }
+  let snapshotCache; let snapshotCacheAt = 0; let snapshotBuild;
+  // Verified history (R28-1059): from the restore replay when there was one,
+  // otherwise validated from genesis on the first build.
+  const snapshotHistory = verifiedHistory ?? createSnapshotHistory(genesis);
+  // One build at a time: concurrent requests share it, and the verified
+  // history is never extended twice in parallel.
+  function buildSnapshot() {
+    if (snapshotCache && Date.now() - snapshotCacheAt < 60_000) return Promise.resolve(snapshotCache);
+    snapshotBuild ??= buildSnapshotNow().finally(() => { snapshotBuild = undefined; });
+    return snapshotBuild;
+  }
+  async function buildSnapshotNow() {
+    const { height: tip, tipHash } = await chainStatus();
+    const readers = VALIDATOR_NAMES.map((name) => ({
+      name,
+      async read(from, limit) {
+        const node = nodes.get(name);
+        if (!node || node.exit) throw new Error("validator not running");
+        const result = await nodeFetch(node.port, `/blocks?from=${from}&limit=${limit}`);
+        if (result.status !== 200 || !Array.isArray(result.body?.blocks)) throw new Error(`block read returned ${result.status}`);
+        return result.body.blocks;
+      }
+    }));
+    const blocks = await collectSnapshotBlocks(readers, {
+      tip, tipHash, chainId, genesisHash: info.genesisHash, history: snapshotHistory,
+      onReject: (name, error) => console.error(`snapshot: history from ${name} not used (${error instanceof Error ? error.message : String(error)})`)
+    });
     const keys = {};
     for (const name of [...VALIDATOR_NAMES, "oracle", "founder", "faucet", "liquidity", "ecosystem"]) keys[name] = (await readSecret(join(dir, "keys", `${name}.json`))).privateKey;
     const sealed = sealSnapshot({ format: SNAPSHOT_MAGIC, createdAtMs: Date.now(), genesis, network: info, keys, blocks }, stateSecret);
@@ -771,7 +936,7 @@ async function smoke() {
     await network.shutdown(); network = undefined;
     const restored = await restoreNetwork(join(dir, "restored"), openSnapshot(sealed, smokeSecret), info.chainId);
     assert.equal(restored.genesisHash, info.genesisHash);
-    network = await runNetwork(join(dir, "restored"), { gatewayPort: 0, basePort: 19300 + Math.floor(Math.random() * 500) * 4, log: false, stateSecret: smokeSecret, persistence: { mode: "snapshot-restore" } });
+    network = await runNetwork(join(dir, "restored"), { gatewayPort: 0, basePort: 19300 + Math.floor(Math.random() * 500) * 4, log: false, stateSecret: smokeSecret, persistence: { mode: "snapshot-restore" }, verifiedHistory: restored.verifiedHistory });
     const base2 = `http://127.0.0.1:${network.port}`;
     await until("restored chain finalizes past the snapshot", async () => { const s = await (await fetch(`${base2}/status`)).json(); return s.genesisHash === info.genesisHash && s.height > snapHeight; }, 360_000);
     assert.equal((await (await fetch(`${base2}/account/${bob.address}`)).json()).balanceAtoms, 25 * ATOMS_PER_ZYN);
@@ -807,6 +972,7 @@ if (!invokedDirectly) {
   // cold start is a new network with a new genesis hash.
   const stateSecret = process.env.ZYRON_TESTNET_STATE_SECRET || undefined;
   let persistence = { mode: "local-disk" };
+  let verifiedHistory;
   if (rest.includes("--init-if-missing")) {
     const exists = Boolean(await readNetworkMarker(dir));
     const chainId = option("--chain-id", process.env.ZYRON_TESTNET_CHAIN_ID ?? DEFAULT_CHAIN_ID);
@@ -843,6 +1009,7 @@ if (!invokedDirectly) {
           boot.enter("replay");
           const restored = await restoreNetwork(dir, bundle, chainId, { onProgress: boot.progress });
           persistence = { mode: "snapshot-restore", restoredHeight: restored.height, restoredAtMs: Date.now() };
+          verifiedHistory = restored.verifiedHistory;
           console.log(`restored ${restored.chainId} genesis ${restored.genesisHash} at height ${restored.height}`);
         }
       } catch (error) {
@@ -858,7 +1025,7 @@ if (!invokedDirectly) {
     }
   }
   boot.enter("validators");
-  const network = await runNetwork(dir, { stateSecret, persistence, host, server, basePort: Number(option("--validator-base-port", "9300")) });
+  const network = await runNetwork(dir, { stateSecret, persistence, host, server, verifiedHistory, basePort: Number(option("--validator-base-port", "9300")) });
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { void network.shutdown().then(() => process.exit(0)); });
   if (await network.waitForQuorum()) {
     boot.enter("ready");
