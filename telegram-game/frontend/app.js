@@ -894,9 +894,84 @@
       ]));
     }
     wrap.append(head);
+    if (player().wardrobe) wrap.append(wardrobeCard(player().wardrobe));
     (data.tree || []).forEach(function (item) { wrap.append(treeCard(item)); });
     [chestOddsCard(), collectionCard(), nodeView()].forEach(function (node) { if (node) wrap.append(node); });
     return wrap;
+  }
+
+  function wardrobeCard(wardrobe) {
+    const card = el("article", { class: "card", "data-wardrobe": "1" }, [
+      el("h2", { text: "Builder look" }),
+      el("p", { class: "fine", text: "Unlock helmets, pickaxes, colors, and a wolf mask with Zyron Points. Cosmetic only. Nothing here changes rewards." })
+    ]);
+    const grid = el("div", { class: "wardrobe-grid" });
+    (wardrobe.items || []).forEach(function (item) {
+      const row = el("div", { class: "wear-row" }, [
+        el("div", {}, [
+          el("strong", { text: item.title }),
+          el("p", { class: "fine", text: item.owned ? "Unlocked" : item.detail + " · " + formatPoints(item.cost) + " pts" })
+        ])
+      ]);
+      if (!item.owned) {
+        row.append(el("button", {
+          class: "ghost",
+          text: "Unlock",
+          disabled: state.busy ? "disabled" : null,
+          onclick: function () { unlockWearable(item); }
+        }));
+      } else {
+        row.append(el("button", {
+          class: "ghost",
+          text: equipped(wardrobe.loadout, item) ? "Equipped" : "Equip",
+          disabled: state.busy || equipped(wardrobe.loadout, item) ? "disabled" : null,
+          onclick: function () { equipWearable(wardrobe.loadout, item); }
+        }));
+      }
+      grid.append(row);
+    });
+    card.append(grid);
+    return card;
+  }
+
+  function equipped(loadout, item) {
+    loadout = loadout || {};
+    if (item.slot === "mask") return !!loadout.wolfMask;
+    return loadout[item.slot] === item.value;
+  }
+
+  function unlockWearable(item) {
+    if (state.busy) return;
+    state.busy = true;
+    playFx("tap");
+    api("/api/wardrobe/unlock", { method: "POST", body: { item: item.id, idempotencyKey: key("wear") } })
+      .then(function (res) {
+        toast(res.alreadyOwned ? item.title + " is already unlocked" : item.title + " unlocked", "ok");
+        haptic("success");
+        return refresh();
+      })
+      .catch(fail);
+  }
+
+  function equipWearable(loadout, item) {
+    if (state.busy) return;
+    const next = {
+      helmet: (loadout && loadout.helmet) || "stock",
+      pickaxe: (loadout && loadout.pickaxe) || "stock",
+      color: (loadout && loadout.color) || "electric",
+      wolfMask: !!(loadout && loadout.wolfMask)
+    };
+    if (item.slot === "mask") next.wolfMask = true;
+    else next[item.slot] = item.value;
+    state.busy = true;
+    playFx("tap");
+    api("/api/wardrobe/equip", { method: "POST", body: Object.assign({ idempotencyKey: key("equip") }, next) })
+      .then(function () {
+        toast(item.title + " equipped", "ok");
+        haptic("select");
+        return refresh();
+      })
+      .catch(fail);
   }
 
   function treeCard(item) {
@@ -1703,7 +1778,8 @@
     if (!window.ZyronBuilders) return null;
     const owned = (player() && player().cosmetics) || [];
     const cos = owned.map(function (id) { return " cos-" + id.replace(/[^a-z0-9_]/g, ""); }).join("");
-    const layer = el("div", { class: "builders" + cos, "data-builders": "1", "data-builders-state": "idle", role: "img", "aria-label": window.ZyronBuilders.labelFor("idle") }, [window.ZyronBuilders.build(svg)]);
+    const look = window.ZyronWardrobe ? window.ZyronWardrobe.attrs((((player() && player().wardrobe) || {}).loadout)) : {};
+    const layer = el("div", Object.assign({ class: "builders" + cos, "data-builders": "1", "data-builders-state": "idle", role: "img", "aria-label": window.ZyronBuilders.labelFor("idle") }, look), [window.ZyronBuilders.build(svg)]);
     syncBuilders(layer);
     return layer;
   }

@@ -1889,6 +1889,12 @@ def build_context(conn, player, levels: dict[str, int], now: datetime) -> dict[s
     }
 
 
+def _wardrobe_view(conn, player_id: int) -> dict:
+    from zyron_node.wardrobe import wardrobe_view
+
+    return wardrobe_view(conn, player_id)
+
+
 def build_profile(conn, player, levels: dict[str, int], now: datetime, bot_username: str) -> dict:
     season = active_season(conn)
     team = bool(player.get("team_account"))
@@ -1933,6 +1939,7 @@ def build_profile(conn, player, levels: dict[str, int], now: datetime, bot_usern
             "teamAccount": team,
             "teamNote": TEAM_ACCOUNT_NOTE if team else None,
             "cosmetics": sorted(owned_cosmetics(conn, int(player["id"]))),
+            "wardrobe": _wardrobe_view(conn, int(player["id"])),
             "dailyPoints": daily_points_view(player, now),
             "rank": ranks,
             **tier_view(int(player["lifetime_points"])),

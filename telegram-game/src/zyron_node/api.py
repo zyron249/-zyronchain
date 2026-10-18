@@ -47,6 +47,7 @@ from zyron_node.game import (
 from zyron_node.limits import RateLimitExceeded, hit
 from zyron_node import community, reminders, telegram_api
 from zyron_node.wallet_proof import issue_challenge, verify_proof
+from zyron_node import wardrobe
 from zyron_node import web_login
 
 
@@ -68,6 +69,17 @@ class UpgradeBody(IdempotentBody):
 
 class TreeBody(IdempotentBody):
     upgrade: str = Field(min_length=3, max_length=20, pattern=r"^[a-z]+$")
+
+
+class WardrobeUnlockBody(IdempotentBody):
+    item: str = Field(min_length=3, max_length=32, pattern=r"^[a-z0-9_]+$")
+
+
+class WardrobeEquipBody(IdempotentBody):
+    helmet: str = Field(min_length=3, max_length=32, pattern=r"^[a-z0-9_]+$")
+    pickaxe: str = Field(min_length=3, max_length=32, pattern=r"^[a-z0-9_]+$")
+    color: str = Field(min_length=3, max_length=32, pattern=r"^[a-z0-9_]+$")
+    wolfMask: bool = False
 
 
 class WalletBody(IdempotentBody):
@@ -262,6 +274,31 @@ def register_routes(app) -> None:
         limit_user(request, identity.id, "treehour", 120, 3600, now)
         player = _player_id(request, identity, ip_hash, now)
         return purchase_tree(request.app.state.pool, player, body.upgrade, body.idempotencyKey, now)
+
+    @app.post("/api/wardrobe/unlock")
+    def wardrobe_unlock(request: Request, body: WardrobeUnlockBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "wardrobe", 20, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return wardrobe.unlock(request.app.state.pool, player, body.item, body.idempotencyKey, now)
+
+    @app.post("/api/wardrobe/equip")
+    def wardrobe_equip(request: Request, body: WardrobeEquipBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "equip", 30, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return wardrobe.equip(
+            request.app.state.pool,
+            player,
+            body.idempotencyKey,
+            body.helmet,
+            body.pickaxe,
+            body.color,
+            body.wolfMask,
+            now,
+        )
 
     @app.get("/api/upgrades")
     def upgrades(request: Request):

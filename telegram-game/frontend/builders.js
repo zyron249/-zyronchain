@@ -124,15 +124,28 @@
         poly("0.5,-13 3.5,-13 5,0 2.3,0", C.dark),
         poly("-5.6,0 -1.8,0 -2,-2 -5.2,-2", C.chrome3),
         poly("2,0 6.4,0 5.6,-2 2.2,-2", C.chrome3),
-        poly("-4.6,-24 3.8,-24.5 4.6,-12.5 -4.4,-12.5", C.chrome2),
-        poly("-4.5,-17.4 4.3,-17.6 4.4,-15.8 -4.5,-15.6", C.blue),
+        poly("-4.6,-24 3.8,-24.5 4.6,-12.5 -4.4,-12.5", C.chrome2, { class: "builder-suit" }),
+        poly("-4.5,-17.4 4.3,-17.6 4.4,-15.8 -4.5,-15.6", C.blue, { class: "builder-stripe" }),
         poly("-4.4,-13.6 4.5,-13.6 4.6,-12.3 -4.4,-12.3", C.dark),
         poly("-2.9,-29.4 -1.6,-31.2 1.6,-31.4 3.6,-29.6 3.8,-26.4 2,-24.6 -1.4,-24.6 -3,-26.4", C.chrome3),
         poly("1.6,-27.8 4.6,-27.6 4.2,-25.6 1.8,-25.8", C.dark),
         poly("-3.8,-28.5 -3,-31.6 0.5,-33 3.8,-31.8 4.6,-28.6", C.chrome1),
         poly("-4.4,-28.6 6.8,-28.6 6.6,-27.6 -4.4,-27.8", C.chrome2),
         ["circle", { class: "builder-lamp-glow", cx: "5.2", cy: "-30.3", r: "2.8", fill: C.glow, opacity: "0.35" }, []],
+        ["circle", { class: "builder-lamp-wide", cx: "5.2", cy: "-30.3", r: "5.2", fill: C.glow, opacity: "0.55" }, []],
         ["circle", { cx: "5.2", cy: "-30.3", r: "1.2", fill: C.cyan }, []],
+        ["g", { class: "builder-crest" }, [
+          poly("-2.4,-33.2 2.4,-33.2 0,-39.2", C.chrome1),
+          poly("-0.7,-33.4 0.7,-33.4 0,-37.6", C.cyan)
+        ]],
+        ["g", { class: "builder-mask" }, [
+          poly("-3.4,-32.6 -1.2,-32.8 -2.4,-37.4", C.chrome3),
+          poly("1.4,-32.8 3.6,-32.6 2.6,-37.4", C.chrome3),
+          poly("-4,-30.6 4.2,-30.6 3.4,-24.6 -3.2,-24.6", C.chrome1),
+          poly("-2.6,-29.4 -0.6,-29.4 -0.8,-27.6 -2.4,-27.6", C.dark),
+          poly("0.8,-29.4 2.8,-29.4 2.6,-27.6 1,-27.6", C.dark),
+          poly("-1.3,-26.6 1.5,-26.6 0.7,-23.8 -0.5,-23.8", C.chrome3)
+        ]],
         // seasonal witch hat (styles.css shows it only under html.season-halloween; hidden otherwise)
         ["g", { class: "builder-hat" }, [
           poly("-6.4,-31.4 7.6,-31.4 7,-30.2 -5.8,-30.2", C.dark),
@@ -143,7 +156,7 @@
         ["g", { transform: "translate(1 -21)" }, [
           ["g", { class: "builder-arm" }, [
             poly("7,-0.8 22,-0.6 22,0.6 7,0.8", C.chrome3),
-            poly("19.6,-6.4 22.2,-2 23,0 22.2,2 19.6,6.4 21,0", C.chrome1),
+            poly("19.6,-6.4 22.2,-2 23,0 22.2,2 19.6,6.4 21,0", C.chrome1, { class: "builder-pick" }),
             poly("19.6,6.4 21.4,3.2 22,3.6", C.cyan),
             poly("0,-1.6 8,-1.2 8,1.2 0,1.8", C.chrome2),
             poly("7.4,-1.4 9.4,-1.4 9.4,1.4 7.4,1.4", C.chrome3)

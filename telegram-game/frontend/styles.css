@@ -642,6 +642,20 @@ html.is-hidden .builders * { animation-play-state: paused !important; }
 @keyframes season-flap { from { transform: scaleY(1); } to { transform: scaleY(.55); } }
 @media (prefers-reduced-motion: reduce) { .season-layer { display: none; } }
 .builder-hat { display: none; }
+.builder-crest, .builder-mask, .builder-lamp-wide { display: none; }
+.builders[data-helmet="crest"] .builder-crest { display: inline; }
+.builders[data-helmet="lamp"] .builder-lamp-wide { display: inline; }
+.builders[data-helmet="lamp"] .builder-lamp-glow { opacity: 0.95; }
+.builders[data-mask="wolf"] .builder-mask { display: inline; }
+.builders[data-pick="blue"] .builder-pick { fill: #4fd8fb; }
+.builders[data-pick="gold"] .builder-pick { fill: #e6c36a; }
+.builders[data-color="ice"] .builder-lamp-glow,
+.builders[data-color="ice"] .builder-stripe { fill: #f4f7f9; }
+.builders[data-color="chrome"] .builder-suit { fill: #f4f7f9; }
+.builders[data-color="void"] .builder-suit { fill: #24282d; }
+.wardrobe-grid { display: grid; gap: 8px; }
+.wear-row { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.wear-row p { margin: 0; }
 .season-halloween .builder-hat { display: inline; }
 .builder-hat polygon { stroke: #ff8a1f; stroke-width: 0.5; }
 .builder-hat .hat-band { fill: #ff8a1f; stroke: none; }
