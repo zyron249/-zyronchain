@@ -306,6 +306,8 @@ try {
   await test('sign transfer offline: exact l1 transfer, no network, broadcast disabled', async () => {
     assert.equal(await page.isDisabled('[data-screen="home"] button[disabled]'), true);
     const before = requests.length;
+    await page.click('[data-screen="home"] [data-go="send"]');
+    await page.waitForSelector('[data-screen="send"]:not([hidden])');
     await page.fill('[data-tx-chain]', 'zyron-wallet-testnet-1');
     await page.fill('[data-tx-nonce]', '1');
     await page.fill('[data-tx-to]', RECEIVER);
@@ -315,7 +317,7 @@ try {
     await page.fill('[data-tx-chain]', 'zyron-mainnet-1');
     await page.click('[data-tx-review]');
     assert.match(await page.textContent('[data-tx-check]'), /testnet or devnet/);
-    assert.equal(await visibleScreen(page), 'home', 'a non-testnet chain id never reaches review');
+    assert.equal(await visibleScreen(page), 'send', 'a non-testnet chain id never reaches review');
     await page.fill('[data-tx-chain]', 'zyron-wallet-testnet-1');
     await page.click('[data-tx-review]');
     await page.waitForSelector('[data-screen="review"]:not([hidden])');
@@ -367,10 +369,11 @@ try {
       await page.click('[data-review-done]');
       await page.waitForSelector('[data-screen="home"]:not([hidden])');
     }
+    await page.click('[data-screen="home"] [data-go="send"]');
     await page.fill('[data-tx-to]', core.MINING_TRACKER_ADDRESS);
     await page.click('[data-tx-review]');
     assert.match(await page.textContent('[data-tx-check]'), /mining tracker/);
-    assert.equal(await visibleScreen(page), 'home', 'invalid transfers never reach the review screen');
+    assert.equal(await visibleScreen(page), 'send', 'invalid transfers never reach the review screen');
     await page.fill('[data-tx-to]', RECEIVER);
     await page.fill('[data-tx-chain]', '');
     await page.click('[data-tx-review]');
@@ -435,6 +438,32 @@ try {
     await page.waitForSelector('[data-screen="home"]:not([hidden])', { timeout: 60000 });
     assert.equal(await page.textContent('[data-home-address]'), core.groupAddress(core.toChecksumAddress(SNAP.address)));
     await shot(page, '7-home-restored');
+    assert.equal(await page.isVisible('[data-backup-reminder]'), true, 'restore has not passed a word check this session');
+  });
+
+  await test('backup re-quiz: password stays on device, four words, reminder hides until the next unlock', async () => {
+    await page.click('[data-screen="home"] [data-go="backup"]');
+    await page.waitForSelector('[data-screen="backup"]:not([hidden])');
+    await page.fill('[data-backup-password]', PASSWORD + 'no');
+    await page.click('[data-backup-open]');
+    await page.waitForFunction(() => /Wrong password/.test(document.querySelector('[data-backup-result]').textContent), null, { timeout: 60000 });
+    await page.fill('[data-backup-password]', PASSWORD);
+    await page.click('[data-backup-open]');
+    await page.waitForSelector('[data-backup-quiz-box]:not([hidden])', { timeout: 60000 });
+    const indexes = await page.$$eval('[data-backup-quiz] input', (inputs) => inputs.map((el) => Number(el.dataset.backupIndex)));
+    assert.equal(indexes.length, 4);
+    const phrase = SNAP.mnemonic.split(' ');
+    for (const index of indexes) await page.fill(`[data-backup-index="${index}"]`, phrase[index]);
+    const before = requests.length;
+    await page.click('[data-backup-check]');
+    await page.waitForSelector('[data-screen="home"]:not([hidden])');
+    assert.equal(await page.isVisible('[data-backup-reminder]'), false);
+    assert.equal(requests.slice(before).filter((r) => r.url.startsWith('http')).length, 0, 'the word check makes no requests');
+    await page.click('[data-lock]');
+    await page.fill('[data-unlock-password]', PASSWORD);
+    await page.click('[data-unlock-go]');
+    await page.waitForSelector('[data-screen="home"]:not([hidden])', { timeout: 60000 });
+    assert.equal(await page.isVisible('[data-backup-reminder]'), true, 'the reminder returns after lock');
   });
 
   await test('stored vault with an unknown version or malformed data is rejected and left untouched (fail closed)', async () => {
@@ -555,7 +584,7 @@ try {
         await m.page.locator('[data-install]').scrollIntoViewIfNeeded();
         await shot(m.page, '1-install-ios');
       }
-      for (const screen of ['welcome', 'create', 'privacy', 'phrase', 'quiz', 'restore', 'review', 'delete']) {
+      for (const screen of ['welcome', 'create', 'privacy', 'phrase', 'quiz', 'restore', 'review', 'delete', 'send', 'settings', 'backup']) {
         await m.page.evaluate((name) => { for (const s of document.querySelectorAll('[data-screen]')) s.hidden = s.dataset.screen !== name; }, screen);
         assert.ok(await noHorizontalScroll(m.page), `${width}px ${screen}`);
       }
