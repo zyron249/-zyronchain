@@ -29,7 +29,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createServer } from "node:http";
 import { createReadStream, realpathSync } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -265,6 +265,19 @@ async function fileSha256(path, onChunk = () => {}) {
   for await (const chunk of createReadStream(path)) { hash.update(chunk); onChunk(); }
   return hash.digest("hex");
 }
+// R31-1060-L2: copy in chunks with a tick per chunk, so a large log is not one
+// silent step. The destination is new (exclusive create) and owner-only.
+async function copyFileWithProgress(source, destination, onChunk = () => {}) {
+  const handle = await open(destination, "wx", 0o600);
+  try {
+    for await (const chunk of createReadStream(source)) {
+      await handle.write(chunk);
+      onChunk();
+    }
+  } finally {
+    await handle.close();
+  }
+}
 export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress = () => {} } = {}) {
   assert.equal(bundle?.format, SNAPSHOT_MAGIC, "unknown snapshot format");
   const { genesis, network, keys, blocks } = bundle;
@@ -304,7 +317,7 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
     const data = join(dir, `data-${name}`);
     await mkdir(data, { mode: 0o700 });
     for (const file of RESTORED_DATA_FILES) {
-      await copyFile(join(firstData, file), join(data, file));
+      await copyFileWithProgress(join(firstData, file), join(data, file), () => onProgress({ step: "copy-chunk", validator: name, file }));
       onProgress({ step: "copy-file", validator: name, file });
     }
     await chmod(join(data, "blocks.ndjson"), 0o600);

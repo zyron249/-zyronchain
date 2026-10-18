@@ -318,7 +318,10 @@ export interface FinalizedLogOpenFaultHooks {
    * Progress only: called synchronously for every stored block record the open
    * reads (line scan below a recovery checkpoint and replay above it, or a full
    * replay), so a liveness monitor can tell a long open from a stall
-   * (R26-1048-L1). It must not throw; it cannot change what is accepted.
+   * (R26-1048-L1). It counts reads, not distinct records: when a checkpoint is
+   * rejected and the open falls back to a full replay, the records are read and
+   * reported again, so progress continues during the fallback (R31-1060-L1).
+   * It must not throw; it cannot change what is accepted.
    */
   onBlockRecord?: () => void;
 }

@@ -6,7 +6,7 @@
 // a healthy, progressing restore look stalled. ChainStore.open must report
 // every stored block record it reads.
 import assert from "node:assert/strict";
-import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -38,6 +38,35 @@ test("ChainStore.open reports every stored block record it reads, with and witho
       assert.equal(store.chain.height, height);
       assert.ok(records >= height, `${withCheckpoint ? "checkpoint" : "full replay"} open reported ${records} records for ${height} blocks`);
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// R31-1060-L1 (OpenClaw Round 31): the hook counts records read, not distinct
+// records. A checkpoint that does not match the log is rejected and the open
+// falls back to a full replay; that replay must keep reporting progress too.
+test("ChainStore.open keeps reporting progress when it falls back from a rejected checkpoint to a full replay", { timeout: 240_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-open-progress-fallback-"));
+  try {
+    const source = join(root, "source");
+    await api.initNetwork(source, "zyron-open-progress-fallback-testnet-1");
+    const genesis = JSON.parse(await readFile(join(source, "genesis.json"), "utf8"));
+    const height = (await readFile(join(source, "data-v1", "blocks.ndjson"), "utf8")).trim().split("\n").length;
+    const seed = await ChainStore.open(genesis, join(source, "data-v1"));
+    await seed.writeRecoveryCheckpoint();
+    const dir = join(root, "fallback");
+    await mkdir(dir);
+    for (const file of ["metadata.json", "blocks.ndjson", "recovery-checkpoint.json"]) await copyFile(join(source, "data-v1", file), join(dir, file));
+    // A checkpoint whose recorded log length no longer matches the log.
+    const checkpointPath = join(dir, "recovery-checkpoint.json");
+    const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"));
+    checkpoint.blockFileBytes += 1;
+    await writeFile(checkpointPath, `${JSON.stringify(checkpoint)}\n`);
+    let records = 0;
+    const store = await ChainStore.open(genesis, dir, { onBlockRecord: () => { records += 1; } });
+    assert.equal(store.chain.height, height, "the fallback full replay restores the same chain");
+    assert.ok(records > height, `fallback open reported ${records} reads for ${height} blocks: the full replay after the rejected checkpoint reported no progress`);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
