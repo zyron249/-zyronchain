@@ -77,10 +77,11 @@ Notation: `n` validators at height `H` (`validatorsAt(H)`), quorum
    unparsable final record is dropped as never acknowledged; when it follows a
    lock row, the lock row is dropped with it (F-10). A complete final row that
    only lost its newline is kept. A complete lock row with no commit byte after
-   it is kept and completed with the matching commit reservation (#967, merged
-   `d1bdc17`; `v6-journal-lock-row-only.test.ts`; section 6, item 2). A lock row
-   followed by any other row still fails closed ("Torn protocol v6 lock/commit
-   pair").
+   it is kept and completed with the matching commit reservation when the
+   replayed history is consistent with a commit append (#967, merged `d1bdc17`;
+   `v6-journal-lock-row-only.test.ts`; section 6, item 2). An inconsistent lone
+   lock, or a lock row followed by any other row, still fails closed ("Torn
+   protocol v6 lock/commit pair").
 3. Consensus-state files (`consensus-state/H-*`) are written to a temporary
    file, fsynced, renamed and the directory fsynced. A crash can leave a stray
    temporary file (ignored, pruned after finality) or, after a power loss, the
@@ -141,25 +142,25 @@ reproduced by running the same triple again.
 
 ## 6. Open items found by this work
 
-1. **Governance downgrade after activation (fixed by #966, merged `f8f46b5`).** A `protocol_upgrade` with
-   `q` approvals to a legacy version (for example 5) is admitted to the mempool,
-   included in a v6 block and scheduled, so the chain would return to the
-   legacy single-phase consensus (and its F-01 split) at the activation height.
-   The design says rollback is possible only before activation. Requires a
-   governance quorum, so it is not exploitable by a minority, but it is not
-   refused. Triage: confirmed defect, Medium. Fixed by #966: any version
+1. **Governance downgrade after activation (fixed by #966, merged `f8f46b5`).** Before the fix, a
+   `protocol_upgrade` with `q` approvals to a legacy version (for example 5)
+   was admitted to the mempool, included in a v6 block and scheduled, so the
+   chain would have returned to the legacy single-phase consensus (and its F-01
+   split) at the activation height. The design says rollback is possible only
+   before activation. It required a governance quorum, so it was not
+   exploitable by a minority, but it was not refused. Triage: confirmed defect, Medium. Fixed by #966: any version
    decrease once v6 is scheduled is refused in admission, block validation and
    checkpoint schedules (`v6-governance-downgrade.test.ts`).
-2. **Lock row without commit row after power loss (fixed by #967, merged `d1bdc17`).** If a power
-   loss persists exactly the lock row of an unacknowledged lock+commit append,
-   the journal refuses to open forever, while one more byte (a partial commit
-   row) is dropped and recovers. Safe either way (no signature was released),
-   but the first case leaves the validator down until an operator acts, and the
-   runbook forbids editing journals. Spec §9.1 asks for fail-stop; F-10
+2. **Lock row without commit row after power loss (fixed by #967, merged `d1bdc17`).** Before the fix, if
+   a power loss persisted exactly the lock row of an unacknowledged lock+commit
+   append, the journal refused to open forever, while one more byte (a partial
+   commit row) was dropped and recovered. Safe either way (no signature was
+   released), but the first case left the validator down until an operator
+   acted, and the runbook forbids editing journals. Spec §9.1 asks for fail-stop; F-10
    recovers the neighbouring case. Triage: confirmed defect, Low (safe
    fail-stop, liveness only, low likelihood). Fixed by #967: the lock is kept and
-   the pair is completed with its commit reservation
-   (`v6-journal-lock-row-only.test.ts`). The crash-point test in this suite
+   the pair is completed with its commit reservation when the replayed history
+   is consistent with a commit append (`v6-journal-lock-row-only.test.ts`). The crash-point test in this suite
    still accepts both behaviours.
 
 ## 7. Limits (what these tests do not show)
