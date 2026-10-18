@@ -47,7 +47,7 @@ from zyron_node.game import (
 from zyron_node.limits import RateLimitExceeded, hit
 from zyron_node import community, reminders, telegram_api
 from zyron_node.wallet_proof import issue_challenge, verify_proof
-from zyron_node import wardrobe
+from zyron_node import chain_builder, wardrobe
 from zyron_node import web_login
 
 
@@ -80,6 +80,11 @@ class WardrobeEquipBody(IdempotentBody):
     pickaxe: str = Field(min_length=3, max_length=32, pattern=r"^[a-z0-9_]+$")
     color: str = Field(min_length=3, max_length=32, pattern=r"^[a-z0-9_]+$")
     wolfMask: bool = False
+
+
+class ChainFinishBody(IdempotentBody):
+    attempt: int = Field(ge=1, le=12)
+    placed: list[str] = Field(min_length=1, max_length=5)
 
 
 class WalletBody(IdempotentBody):
@@ -298,6 +303,33 @@ def register_routes(app) -> None:
             body.color,
             body.wolfMask,
             now,
+        )
+
+    @app.get("/api/chain")
+    def chain_status(request: Request):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "chain", 60, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        with request.app.state.pool.connection() as conn:
+            return chain_builder.chain_view(conn, player, now)
+
+    @app.post("/api/chain/start")
+    def chain_start(request: Request, body: IdempotentBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "chainstart", 12, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return chain_builder.start(request.app.state.pool, player, body.idempotencyKey, now)
+
+    @app.post("/api/chain/finish")
+    def chain_finish(request: Request, body: ChainFinishBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "chainfinish", 12, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return chain_builder.finish(
+            request.app.state.pool, player, body.idempotencyKey, body.attempt, list(body.placed), now
         )
 
     @app.get("/api/upgrades")

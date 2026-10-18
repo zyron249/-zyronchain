@@ -49,7 +49,13 @@
     activityBusy: false,
     boardBusy: false,
     celebration: null,
-    cubeHandle: null
+    cubeHandle: null,
+    chain: null,
+    chainOpen: false,
+    chainLocal: null,
+    chainResult: null,
+    chainFinishKey: "",
+    chainPending: null
   };
   let chromeKey = "";
 
@@ -325,17 +331,19 @@
     state.me = me;
     watchTier();
     state.energyReceivedAt = Date.now();
-    // The rest of the session loads in parallel once the profile is known (one round trip instead of four).
+    // The rest of the session loads in parallel once the profile is known.
     const rest = await Promise.all([
       api("/api/upgrades", { timeoutMs: timeoutMs }),
       api("/api/chests", { timeoutMs: timeoutMs }),
       api("/api/achievements", { timeoutMs: timeoutMs }),
-      api("/api/leaderboard?board=" + encodeURIComponent(state.board), { timeoutMs: timeoutMs })
+      api("/api/leaderboard?board=" + encodeURIComponent(state.board), { timeoutMs: timeoutMs }),
+      api("/api/chain", { timeoutMs: timeoutMs })
     ]);
     state.upgrades = rest[0];
     state.chests = rest[1];
     state.achievements = rest[2];
     state.ranks = rest[3];
+    state.chain = rest[4];
     if (!state.introChecked) {
       state.introChecked = true;
       if (!localStorage.getItem("zyronNodeIntro")) state.introStep = 1;
@@ -667,7 +675,152 @@
       chip("Streak", p.streak.count + " days"),
       chip("Network Power", formatPoints(p.networkPower))
     ]));
+    section.append(stackCard());
     return section;
+  }
+
+  function stackCard() {
+    const daily = (state.chain && state.chain.daily) || { used: 0, cap: 40 };
+    return el("article", { class: "card", "data-chain-card": "1" }, [
+      el("h2", { text: "Chain Builder" }),
+      el("p", { class: "fine", text: "Drop blocks in blueprint order. " + formatPoints(daily.used) + " / " + formatPoints(daily.cap) + " pts today. The server scores the stack." }),
+      el("button", {
+        class: "primary",
+        text: "Play",
+        disabled: state.busy ? "disabled" : null,
+        onclick: function () {
+          state.chainOpen = true;
+          haptic("select");
+          render();
+        }
+      })
+    ]);
+  }
+
+  function chainBlock(id, ghost, fresh) {
+    return el("div", { class: "drop-block " + id + (ghost ? " is-ghost" : "") + (fresh ? " is-new" : ""), "data-block": id });
+  }
+
+  function chainModal() {
+    const data = state.chain || {};
+    const open = data.open;
+    const sheet = el("div", { class: "sheet chain-sheet", role: "dialog", "aria-modal": "true", "data-chain-game": "1" }, [
+      el("p", { class: "eyebrow", text: "Chain Builder" }),
+      el("h2", { text: "Stack the blueprint" }),
+      el("p", { class: "fine", text: "Drop blocks from bottom to top. Zyron Points only, not ZYN. The server checks the order." })
+    ]);
+    if (state.chainResult && !open) {
+      const gained = state.chainResult.points || 0;
+      sheet.append(el("p", { text: gained ? "+" + formatPoints(gained) + " Zyron Points" : "That stack missed. No points this run." }));
+      sheet.append(el("p", { class: "fine", text: "Correct blocks: " + (state.chainResult.correct || 0) + ". Today's Chain Builder total is capped." }));
+      sheet.append(el("button", { class: "primary", text: "Play again", disabled: state.busy ? "disabled" : null, onclick: startChain }));
+    } else if (!open) {
+      sheet.append(el("button", { class: "primary", text: state.busy ? "Starting…" : "Start stack", disabled: state.busy ? "disabled" : null, onclick: startChain }));
+    } else {
+      if (!state.chainLocal || state.chainLocal.attempt !== open.attempt) {
+        state.chainLocal = { attempt: open.attempt, placed: [] };
+      }
+      const sequence = open.sequence || [];
+      const placed = state.chainLocal.placed;
+      const board = el("div", { class: "chain-board" });
+      const plan = el("div", {}, [el("p", { class: "stack-label", text: "Blueprint" })]);
+      const planStack = el("div", { class: "stack-col", "data-blueprint": "1" });
+      sequence.forEach(function (id) { planStack.append(chainBlock(id, true, false)); });
+      plan.append(planStack);
+      const live = el("div", {}, [el("p", { class: "stack-label", text: "Your stack" })]);
+      const liveStack = el("div", { class: "stack-col", "data-live-stack": "1" });
+      placed.forEach(function (id, index) { liveStack.append(chainBlock(id, false, index === placed.length - 1)); });
+      live.append(liveStack);
+      board.append(plan, live);
+      sheet.append(board);
+      const remain = window.ZyronChain ? window.ZyronChain.tray(sequence, open.attempt) : sequence.slice();
+      placed.forEach(function (id) {
+        const at = remain.indexOf(id);
+        if (at >= 0) remain.splice(at, 1);
+      });
+      const tray = el("div", { class: "chain-tray", "data-tray": "1" });
+      remain.forEach(function (id) {
+        tray.append(el("button", {
+          type: "button",
+          "data-block": id,
+          disabled: state.busy ? "disabled" : null,
+          onclick: function () { dropBlock(id); }
+        }, [chainBlock(id, false, false)]));
+      });
+      sheet.append(tray);
+      if (state.chainPending) {
+        sheet.append(el("button", { class: "primary", text: "Submit stack", disabled: state.busy ? "disabled" : null, onclick: function () { finishChain(state.chainPending); } }));
+      }
+    }
+    sheet.append(el("button", {
+      class: "ghost buy",
+      text: "Close",
+      onclick: function () {
+        state.chainOpen = false;
+        state.chainResult = null;
+        haptic("select");
+        render();
+      }
+    }));
+    return el("div", { class: "modal-back" }, [sheet]);
+  }
+
+  function startChain() {
+    if (state.busy) return;
+    state.busy = true;
+    state.chainResult = null;
+    state.chainLocal = null;
+    state.chainPending = null;
+    render();
+    api("/api/chain/start", { method: "POST", body: { idempotencyKey: key("chain") } })
+      .then(function (res) {
+        state.chain = Object.assign({}, state.chain || {}, {
+          open: { attempt: res.attempt, sequence: res.sequence, startedAt: res.startedAt },
+          daily: res.daily
+        });
+        state.busy = false;
+        render();
+      })
+      .catch(fail);
+  }
+
+  function dropBlock(id) {
+    if (state.busy || !state.chain || !state.chain.open || !state.chainLocal) return;
+    const sequence = state.chain.open.sequence || [];
+    const placed = state.chainLocal.placed;
+    if (placed.length >= sequence.length) return;
+    placed.push(id);
+    haptic("light");
+    const missed = id !== sequence[placed.length - 1];
+    if (missed || placed.length === sequence.length) finishChain(placed.slice());
+    else render();
+  }
+
+  function finishChain(placed) {
+    const open = state.chain && state.chain.open;
+    if (!open || state.busy) return;
+    if (!state.chainFinishKey) state.chainFinishKey = key("chainfin");
+    const started = Date.parse(open.startedAt);
+    const wait = Math.max(0, 2500 - (Date.now() - started));
+    state.busy = true;
+    render();
+    sleep(wait).then(function () {
+      return api("/api/chain/finish", {
+        method: "POST",
+        body: { attempt: open.attempt, placed: placed, idempotencyKey: state.chainFinishKey }
+      });
+    }).then(function (res) {
+      state.chainResult = res;
+      state.chainFinishKey = "";
+      state.chainPending = null;
+      state.busy = false;
+      if (res.points > 0) playFx("reward");
+      toast(res.points > 0 ? "+" + formatPoints(res.points) + " Zyron Points" : "Stack missed. No points.", res.points > 0 ? "ok" : "");
+      return refresh();
+    }).catch(function (error) {
+      state.chainPending = placed.slice();
+      fail(error);
+    });
   }
 
   function chestLists() {
@@ -1559,6 +1712,7 @@
     }
     if (state.modal) modals.append(chestModal());
     if (state.celebration) modals.append(levelUpLayer());
+    if (state.chainOpen) modals.append(chainModal());
     syncChrome();
   }
 
