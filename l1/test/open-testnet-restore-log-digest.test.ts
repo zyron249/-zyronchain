@@ -8,9 +8,10 @@
 //
 // B: a restore must verify every validator's copied files byte-for-byte
 //    against the log it has just replayed and validated.
-// C: the snapshot builder must not seal history it cannot verify: header hash,
-//    previous-hash linkage from genesis to the live tip, transaction root, and
-//    every block served identically by two validators.
+// C: the snapshot builder must not seal history it cannot verify: every block
+//    must pass the finalized-block validation a cold-start replay applies
+//    (R28-1059: byte agreement between validators was not enough), and the
+//    history must hash-link from genesis to the live tip.
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -146,13 +147,13 @@ function readerOf(name: string, blocks: Json[]): { name: string; read: (from: nu
   return { name, read: async (from: number, limit: number) => structuredClone(blocks.slice(from - 1, from - 1 + limit)) };
 }
 
-test("snapshot block collection verifies hashes, linkage, transaction roots and agreement between validators", { timeout: 240_000 }, async () => {
+test("snapshot block collection verifies hashes, linkage, transaction roots and full block validity", { timeout: 240_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "zyron-snapshot-verify-"));
   try {
     const bundle = await sourceBundle(root, "zyron-snapshot-verify-testnet-1");
     const blocks: Json[] = bundle.blocks;
     const tip = blocks.length;
-    const expected = { tip, tipHash: blocks[tip - 1].hash, chainId: bundle.genesis.chainId, genesisHash: bundle.network.genesisHash };
+    const expected = { tip, tipHash: blocks[tip - 1].hash, chainId: bundle.genesis.chainId, genesisHash: bundle.network.genesisHash, genesis: bundle.genesis };
     assert.equal(typeof api.collectSnapshotBlocks, "function", "collectSnapshotBlocks is not exported");
     assert.equal(typeof api.verifySnapshotBlocks, "function", "verifySnapshotBlocks is not exported");
 
@@ -160,7 +161,7 @@ test("snapshot block collection verifies hashes, linkage, transaction roots and 
     const rejected: string[] = [];
     const onReject = (name: string) => { rejected.push(name); };
 
-    // All honest: the first two agreeing validators are enough.
+    // All honest: the first validator's history is validated and used.
     const all = await api.collectSnapshotBlocks([honest("v1"), honest("v2"), honest("v3"), honest("v4")], { ...expected, onReject });
     assert.deepEqual(all, blocks);
 
@@ -192,16 +193,16 @@ test("snapshot block collection verifies hashes, linkage, transaction roots and 
     assert.doesNotThrow(() => api.verifySnapshotBlocks(blocks, expected));
 
     // Corruption outside the hashed fields (an attestation signature) passes
-    // the hash checks, so a second validator must serve identical history.
+    // the hash checks; full validation rejects it and the next validator's
+    // block is used.
     const signature = structuredClone(blocks);
     const attestation = signature[49].attestations[0];
     attestation.signature = (attestation.signature[0] === "0" ? "1" : "0") + attestation.signature.slice(1);
     assert.doesNotThrow(() => api.verifySnapshotBlocks(signature, expected));
     assert.deepEqual(await api.collectSnapshotBlocks([readerOf("v1", signature), honest("v2"), honest("v3")], { ...expected, onReject }), blocks);
 
-    // Validators can hold different (valid) finality certificates for the same
-    // block. Without a whole-history pair, each height takes the block two
-    // validators serve identically.
+    // Invalid blocks on different validators at different heights: each
+    // height takes the first block that passes validation.
     const variant = (height: number) => {
       const copy = structuredClone(blocks);
       const vote = copy[height - 1].attestations[0];
@@ -210,11 +211,13 @@ test("snapshot block collection verifies hashes, linkage, transaction roots and 
     };
     rejected.length = 0;
     assert.deepEqual(await api.collectSnapshotBlocks([readerOf("v1", variant(60)), readerOf("v2", variant(70)), readerOf("v3", variant(80))], { ...expected, onReject }), blocks);
-    assert.deepEqual(rejected, []);
+    assert.deepEqual(rejected, ["v1"]);
 
-    // No two validators agree at some height: nothing is sealed.
-    await assert.rejects(api.collectSnapshotBlocks([readerOf("v1", signature), honest("v2"), readerOf("v3", flipped)], { ...expected, onReject }));
-    await assert.rejects(api.collectSnapshotBlocks([honest("v1")], { ...expected, onReject }));
+    // One valid block per height is enough: validity, not agreement, decides.
+    assert.deepEqual(await api.collectSnapshotBlocks([readerOf("v1", signature), honest("v2"), readerOf("v3", flipped)], { ...expected, onReject }), blocks);
+    assert.deepEqual(await api.collectSnapshotBlocks([honest("v1")], { ...expected, onReject }), blocks);
+    // No validator serves a valid block 50: nothing is sealed.
+    await assert.rejects(api.collectSnapshotBlocks([readerOf("v1", signature), readerOf("v3", flipped)], { ...expected, onReject }), /block 50/);
     // A reader that fails or serves nothing is skipped, not trusted.
     const failing = { name: "v1", read: async () => { throw new Error("connection refused"); } };
     const empty = { name: "v2", read: async () => [] };
