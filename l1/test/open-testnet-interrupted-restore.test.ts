@@ -220,7 +220,7 @@ test("move-aside treats an unparsable or partial marker as incomplete and never 
   }
 });
 
-test("a marker the gateway cannot run with, or one for another genesis, is not a completion marker (Codex review)", { timeout: 120_000 }, async () => {
+test("a marker the gateway cannot run with, or one for another genesis, is not a completion marker (Codex review, Round 26 retest)", { timeout: 120_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "zyron-marker-consistency-"));
   try {
     // A real network is complete and stays where it is.
@@ -243,6 +243,18 @@ test("a marker the gateway cannot run with, or one for another genesis, is not a
     await rm(join(otherGenesis, "network.json"));
     await writeFile(join(otherGenesis, "network.json"), JSON.stringify({ ...network, genesisHash: "ab".repeat(32) }));
     assert.ok(await api.moveAsideIncompleteNetworkDir(otherGenesis), "marker for another genesis accepted as complete");
+    // A well-formed address that is not the faucet key's (Round 26 retest).
+    const otherFaucet = join(root, "other-faucet");
+    await cp(complete, otherFaucet, { recursive: true });
+    await rm(join(otherFaucet, "network.json"));
+    await writeFile(join(otherFaucet, "network.json"), JSON.stringify({ ...network, faucetAddress: network.validators[0].address }));
+    assert.notEqual(network.validators[0].address, network.faucetAddress);
+    assert.ok(await api.moveAsideIncompleteNetworkDir(otherFaucet), "marker whose faucetAddress does not match the faucet key accepted as complete");
+    // A marker without the faucet key the gateway needs is not complete either.
+    const noFaucetKey = join(root, "no-faucet-key");
+    await cp(complete, noFaucetKey, { recursive: true });
+    await rm(join(noFaucetKey, "keys", "faucet.json"));
+    assert.ok(await api.moveAsideIncompleteNetworkDir(noFaucetKey), "network without keys/faucet.json accepted as complete");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
