@@ -4,12 +4,12 @@
 - **Pinned to:** `origin/main` `59940965197a91d882dbebd44f716c9dcec2ef07` (2026-10-11 11:19 EDT). File and line references are for that commit unless stated otherwise.
 - **Current facts:**
   - Protocol v6 (locked two-phase BFT, PR #945) is merged.
-  - v6 is **not active on any network**.
+  - v6 is **not active on any value-bearing network**. (Update 2026-10-18: the hosted open TESTNET, which has no value, runs v6 from height 101 with 4 project-operated validators as separate processes on one host; see `docs/OPEN_TESTNET.md`.)
   - There is no mainnet.
-  - There is no public testnet with independent operators. The only running validators are 2 project-operated validators (host configuration not verified in this guide).
-- **Open PRs that change this guide:** #963 (v6 snapshot/checkpoint verification), #966 (downgrade refusal), #967 (lone journal lock row), #968 (snapshot tip body). All four are **open and not merged**; each needs owner approval. Every section below says what applies **today on main** and what changes **if the PR merges**.
+  - There is no network with independent operators. All running validators are project-operated (host configuration not verified in this guide).
+- **PRs that changed this guide (all merged 2026-10-12):** #963 (v6 snapshot/checkpoint verification, `c81ec66`), #966 (downgrade refusal, `f8f46b5`), #967 (lone journal lock row, `d1bdc17`), #968 (snapshot tip body, `cd9729b`). Sections 6-9 label the earlier behaviour **"Before #NNN"** (binaries older than that merge) and the current behaviour **"On main since #NNN"**.
 - **Review status:** v6 has had project self-reviews and one AI-assisted retest (result: v6 safety/liveness fix confirmed; not a formal proof and not an audit). **No independent human audit has taken place.**
-- **PR-dependent sections:** text marked **"Today on main"** describes merged behaviour. Text marked **"If #NNN merges"** or **"With PR"** describes behaviour that exists only on an open pull request and must not be relied on until that PR is merged and deployed.
+- **Version-dependent sections:** text marked **"Before #NNN"** describes binaries built before that pull request was merged. Text marked **"On main since #NNN"** describes the current code. Every validator should run a binary that includes all four merges.
 
 Primary sources: `docs/V6_SAFETY_PROOF_OBLIGATIONS.md` (operator rules §4, durability §3), `docs/L1_OPERATIONS_RUNBOOK.md`, `l1/README.md`. The normative design specification is [`docs/consensus/V6_CONSENSUS_SPEC.md`](consensus/V6_CONSENSUS_SPEC.md) (referred to in code comments as `F01_CONSENSUS_DESIGN.md`).
 
@@ -28,7 +28,7 @@ Primary sources: `docs/V6_SAFETY_PROOF_OBLIGATIONS.md` (operator rules §4, dura
 | Timing | 30 s round window | `V6_ROUND_BASE_MS`=30,000, step 5,000, max 120,000, `V6_TIMEOUT_GUARD_MS`=2,000, fallback poll 3,000 ms, `V6_MAX_ROUND`=1,000,000 | `consensus-v6.ts:26-36` |
 | Remote signer | supported | v6 intents **refused** unless `--validator-signer-allow-v6 true` | `l1/src/validator-signer.ts:24-30,85-88`, `l1/src/cli.ts:344-350` |
 
-Quorum is `q = floor(2n/3)+1` and `f = n - q`. **n = 2 and n = 3 give f = 0**: any unavailable validator stops progress until it returns. v6 then resumes by itself, but these sets have no crash tolerance. A network that claims crash tolerance needs n ≥ 4 (`V6_SAFETY_PROOF_OBLIGATIONS.md` §4.6). The current 2-validator setup has **no fault tolerance**.
+Quorum is `q = floor(2n/3)+1` and `f = n - q`. **n = 2 and n = 3 give f = 0**: any unavailable validator stops progress until it returns. v6 then resumes by itself, but these sets have no crash tolerance. A network that claims crash tolerance needs n ≥ 4 (`V6_SAFETY_PROOF_OBLIGATIONS.md` §4.6). A 2-validator setup (such as the project's local devnet) has **no fault tolerance**. The hosted open TESTNET has n = 4 (f = 1), but all four validators run on one host, so a host failure stops all of them.
 
 ## 2. Install and upgrade
 
@@ -54,17 +54,17 @@ npm run build          # output: dist/src/cli.js
 2. Stop cleanly with `SIGTERM`. Wait for the `ZyronChain node shutdown complete` log line (`L1_OPERATIONS_RUNBOOK.md` §2). Never start a second process on the same data directory: the writer lease must be released first.
 3. Replace the binary in place. **Keep the same data directory.** Never copy it, never restore it from a snapshot (see §6).
 4. Start with the same flags. Check `GET /readyz` → 200, `GET /status` height increasing, and that the tip matches the other validators.
-5. Upgrade one validator at a time. With n = 2 every restart pauses finality. Plan the restart window and expect a `stale-tip` reason if it exceeds `--ready-max-tip-age-ms` (default 600,000 ms).
+5. Upgrade one validator at a time. With n = 2 or 3 every restart pauses finality. Plan the restart window and expect a `stale-tip` reason if it exceeds `--ready-max-tip-age-ms` (default 600,000 ms).
 
 ### 2.3 Prerequisites before anyone proposes v6 (checklist)
 - [ ] Every validator runs a v6-capable binary (supported versions `{1,2,3,5,6}`, `l1/src/chain.ts:80`). Old binaries fail-stop at A by design.
-- [ ] Owner decision on #963 is recorded. Without it, the snapshot/checkpoint/state-sync paths reject v6 tips, and pruning after activation can leave a node unable to start (NEW-R1, §8).
-- [ ] Owner decision on #966 is recorded. It decides whether a scheduled v6 can be cancelled by governance (§9).
-- [ ] Owner decision on #967 is recorded. It decides whether the lone-lock-row case recovers by itself (§7.3).
-- [ ] Remote-signer plan decided (§10). The reference signer has no v6 journal (open engineering item).
+- [x] #963 merged (`c81ec66`): snapshot/checkpoint/state-sync paths verify v6 tips with the commit certificate (NEW-R1, §8). Every validator binary must include it.
+- [x] #966 merged (`f8f46b5`): a scheduled v6 can no longer be cancelled by governance (§9).
+- [x] #967 merged (`d1bdc17`): the lone-lock-row case recovers by itself (§7.3).
+- [ ] Remote-signer plan decided (§10). Since P0-09 (`cbdca51`) the reference signer (`l1/src/remote-signer-service.ts`) keeps its own journal v2 and enforces the v6 rules; it is a reference implementation, not an HSM.
 - [ ] Clocks synchronized well inside the 2 s timeout guard (NTP/chrony on every host).
 - [ ] Storage with honest `fsync` (no volatile write cache without power-loss protection; `V6_SAFETY_PROOF_OBLIGATIONS.md` §3.5).
-- [ ] Rehearsal of the activation on a non-value test network with ≥ 4 validators **Not done yet.**
+- [ ] Rehearsal of the activation on a non-value test network with ≥ 4 validators. **Partial:** the hosted open TESTNET (4 project-operated validators on one host) activates v6 at height 101 through a unanimous `protocol_upgrade` carried in block 1, which is produced offline at init (`l1/scripts/open-testnet.mjs`). A live governance activation with separately hosted validators has **not been done yet**.
 - [ ] An external consensus review **Not done yet.**
 
 ## 3. Activation procedure and margin
@@ -168,18 +168,18 @@ There is no peer-count reason: lost peers show up as `consensus-quorum-unreachab
   - (a) Start from an **empty** data directory with the same key **only after every height that validator may have signed is finalized** on the surviving validators. Sync blocks first, as a non-signing node if possible. Or:
   - (b) Rotate the validator key through the quorum-authorized `validator-proposal` / `validator-approve` / `validator-submit` flow (delayed ≥ 100 blocks) and start fresh with the new key.
 - Backups are for **non-validator** recovery and archive: use `snapshot` (offline, takes the writer lease), then `checkpoint-install` into a **new empty** directory with independently trusted `--tip-hash` and `--sha256` (`L1_OPERATIONS_RUNBOOK.md` §4-5).
-  - **Today on main this path rejects v6 tips** (NEW-R1). It works for v6 only if #963 merges.
+  - Binaries before #963 (`c81ec66`) reject v6 tips on this path (NEW-R1). Since #963 it works for v6.
 - Cloud features that silently snapshot or roll back disks, or live-migrate with a disk revert, must be **disabled** for validator volumes. **UNVERIFIED:** current settings on the existing validator hosts.
 
 ## 7. Journal v2 recovery
 
 General rules: never hand-edit, truncate or delete `signing-journal.ndjson` or `consensus-state/` (`V6_SAFETY_PROOF_OBLIGATIONS.md` §4.2). Preserve copies before any action. One writer per data directory (OS lease).
 
-| Situation on startup | Behaviour today (main) | With PR | Operator action |
+| Situation on startup | Before #967 (binaries older than `d1bdc17`) | On main since #967 | Operator action |
 |---|---|---|---|
 | Unterminated, unparsable last line (torn tail after power loss) | dropped with fsync, log `Dropped a torn trailing ... record`. If it was part of a lock+commit append, the lock row of that append is dropped too (F-10, #954) | unchanged | none; repeated occurrences mean a storage or power-path fault |
 | Complete last row that lost only its newline | kept and re-terminated | unchanged | none |
-| Complete v6 **lock row** as the very last row with no commit row (power loss inside one append) | **fatal**: `Torn protocol v6 lock/commit pair in signing journal` (`storage.ts:945,959,1151`). Safe (no signature left) but the validator stays down | **#967**: the lock is kept and completed with the matching commit reservation if consistent; log `Completed a lone trailing protocol v6 lock row`. A lock row followed by any other row stays fatal | today: keep the node down, preserve copies, do **not** edit. Recover per §6 (a) or (b). If #967 merges, upgrade and restart |
+| Complete v6 **lock row** as the very last row with no commit row (power loss inside one append) | **fatal**: `Torn protocol v6 lock/commit pair in signing journal` (`storage.ts:945,959,1151` at the pinned commit). Safe (no signature left) but the validator stays down | the lock is kept and completed with the matching commit reservation **only if the replayed history is consistent with a commit append** (no timeout at or above that round, no later vote, any own prepare at that round is for the same block); log `Completed a lone trailing protocol v6 lock row`. An inconsistent lone lock, or a lock row followed by any other row, stays fatal | on a binary with #967: restart; if it still fails, keep the node down, preserve copies, do **not** edit, recover per §6 (a) or (b). On an older binary: upgrade first |
 | Terminated line that does not parse, corruption before the last row, parsable but invalid row | fatal `Corrupt signing journal entry` | unchanged | storage incident. Preserve copies; recover per §6 |
 | Legacy and v2 rows at the same height | fatal `Mixed legacy and protocol v6 signing journal rows` (`storage.ts:955,1154`); v6 actions refused `legacy journal rows exist at this height` (`:1197`) | unchanged | only reachable by operator error across A. Preserve evidence; recover per §6 |
 | Two different values for one slot in the file | fatal `Conflicting signing journal history` (`storage.ts:954,1158,1162`) | unchanged | **security incident**: evidence of a copied directory or a second writer. Freeze, preserve, escalate |
@@ -188,10 +188,10 @@ General rules: never hand-edit, truncate or delete `signing-journal.ndjson` or `
 
 ## 8. Snapshots, checkpoints, state sync and pruning under v6 (NEW-R1)
 
-- **Today on main** (finding NEW-R1): `ZyronChain.fromTrustedSnapshot` checks v6 tips with the legacy attestation rule and throws `Invalid validator attestation`. This affects `checkpoint-install`, `checkpoint-fetch-install`, `state-fetch-install`, the p2p checkpoint/state sync and the recovery-checkpoint fast path.
-  - `prune-finalized` after activation fails with `Verified recovery checkpoint unavailable for pruning` and overwrites the previous good checkpoint.
-  - The node then refuses to start with `Pruned finalized history requires a valid compatible recovery checkpoint`.
-- **Operator rule until #963 is merged and deployed:**
+- **Before #963** (finding NEW-R1; fixed on main since #963, `c81ec66`, which verifies v6 tips with the commit certificate): `ZyronChain.fromTrustedSnapshot` checked v6 tips with the legacy attestation rule and throws `Invalid validator attestation`. This affects `checkpoint-install`, `checkpoint-fetch-install`, `state-fetch-install`, the p2p checkpoint/state sync and the recovery-checkpoint fast path.
+  - `prune-finalized` after activation failed with `Verified recovery checkpoint unavailable for pruning` and overwrote the previous good checkpoint.
+  - The node then refused to start with `Pruned finalized history requires a valid compatible recovery checkpoint`.
+- **Operator rule for any node still on a binary without #963 (merged `c81ec66`):**
   - Do **not** run `prune-finalized` on any node after v6 activation.
   - Do not plan to bootstrap new nodes from snapshots at v6 heights.
   - Keep ≥ 2 archive (unpruned) nodes.
@@ -200,15 +200,15 @@ General rules: never hand-edit, truncate or delete `signing-journal.ndjson` or `
 
 ## 9. Rollback policy
 
-| Phase | Today on main | If #966 merges |
+| Phase | Before #966 (binaries older than `f8f46b5`) | On main since #966 |
 |---|---|---|
 | Before A (v6 scheduled, not active) | a quorum can schedule another `protocol_upgrade` (for example back to 5) at a later height | **refused**: once the latest scheduled version is ≥ 6, any entry with a lower version is rejected in mempool admission, pending selection, block validation and trusted checkpoint schedules. "A scheduled v6 activation therefore cannot be cancelled through governance; abandoning it requires a separately reviewed release" (PR #966, `l1/README.md` diff) |
 | After A | a quorum-approved downgrade to a legacy version is **accepted** (P0-03 finding A, Medium; `V6_SAFETY_PROOF_OBLIGATIONS.md` §6.1). It would bring back legacy consensus and the F-01 split | refused |
 | Binary rollback after A | an old binary fail-stops on v2 rows and on v6 heights (by design) | unchanged |
 
 Operational consequences:
-- Treat the v6 governance submission as **irreversible** (it will be literally irreversible if #966 merges). Do every rehearsal **before** submitting.
-- `L1_OPERATIONS_RUNBOOK.md` §7 step 5 ("rehearse a separately quorum-authorized rollback schedule") predates v6. It does not apply to v6 and contradicts #966 if merged. That runbook line needs an update (docs follow-up).
+- Treat the v6 governance submission as **irreversible** (it is literally irreversible on main since #966). Do every rehearsal **before** submitting.
+- `L1_OPERATIONS_RUNBOOK.md` §7 step 5 ("rehearse a separately quorum-authorized rollback schedule") predates v6. It does not apply to v6 and contradicts #966 (merged). That runbook line needs an update (docs follow-up).
 - Pre-activation "rollback" of the **binary** (before A, nothing v6 signed yet) is safe. Do not downgrade a binary after it has written v2 rows.
 
 ## 10. Key handling and the remote-signer boundary
@@ -220,12 +220,12 @@ Operational consequences:
 | `keygen` without `--password-file` | writes a **plaintext** private key file (mode 0600) | `l1/src/cli.ts:237-260` |
 | Password supply | `ZYRON_KEYSTORE_PASSWORD_FILE` (regular private file) | `cli.ts:992-994` |
 | Remote signer client | `--validator-signer-url` (HTTPS, or HTTP on loopback only), pinned `--validator-public-key`, bearer token from `--validator-signer-token-file` (32-512 printable chars), 3 s default timeout; the signature is re-verified | `validator-signer.ts:56-100,167-177` |
-| v6 through a remote signer | refused unless `--validator-signer-allow-v6 true`. With it, **only the node's journal** protects against conflicting votes; the signer does not enforce v6 rules | `cli.ts:344-350` |
-| Production signer/HSM | none chosen; reference signer lacks v6 journal rules (open engineering item) | n/a |
+| v6 through a remote signer | refused unless `--validator-signer-allow-v6 true`. With it, the node's journal always guards against conflicting votes; whether the signer also enforces the v6 rules depends on the signer (the reference signer does since P0-09, `cbdca51`) | `cli.ts:344-350` |
+| Production signer/HSM | none chosen. The reference signer enforces the v6 journal rules at the custody boundary since P0-09 (`cbdca51`); it is not an HSM | `l1/src/remote-signer-service.ts` |
 
 Rules:
 1. Never copy a validator key between hosts. Never run two nodes with one key (with or without a signer).
-2. **v6 with a remote signer today:** setting `--validator-signer-allow-v6 true` removes the signer as a second line of defence. Use it only with one node per signer and one signer per key, after documenting the residual risk. Recommended: wait for a signer that enforces v6 journal rules. **Owner decision.**
+2. **v6 with a remote signer:** with a signer that does not enforce the v6 journal rules, setting `--validator-signer-allow-v6 true` removes the signer as a second line of defence; use it only with one node per signer and one signer per key, after documenting the residual risk. The reference signer (`l1/src/remote-signer-service.ts`, P0-09 `cbdca51`) enforces those rules with its own durable journal v2; it is a reference implementation, not an HSM. Choice of a production signer: **owner decision.**
 3. Signer tokens and keystore passwords live in `0600` files, provisioned out of band. Never in arguments, environment variables, images, logs or the repository (`L1_OPERATIONS_RUNBOOK.md` §2).
 4. Suspected key compromise: disable the signer **without deleting its journal**, preserve logs, rotate through the quorum-authorized delayed validator update (`L1_OPERATIONS_RUNBOOK.md` §6). No emergency path exists in code.
 5. With the F-12 allowlist, list every validator PeerId with `--p2p-consensus-peer` (the allowlist is opt-in; making it mandatory is a proposed change and an owner decision).
@@ -244,11 +244,11 @@ Rules:
 
 ## 12. Gaps and items to verify
 
-1. The v6 design specification is committed as `docs/consensus/V6_CONSENSUS_SPEC.md`. It predates the implementation; its line references point at the pre-implementation baseline, and the pending fixes #963/#966/#967/#968 are not reflected in its normative text.
-2. No v6 activation has been rehearsed with independent operators. The 2-validator setup has f = 0.
+1. The v6 design specification is committed as `docs/consensus/V6_CONSENSUS_SPEC.md`. It predates the implementation; its line references point at the pre-implementation baseline, and the merged fixes #963/#966/#967/#968 are listed in its status note but not reflected in its normative text.
+2. No v6 activation has been rehearsed with independent operators. A 2-validator setup has f = 0; the hosted open TESTNET (n = 4) runs all validators on one host.
 3. A runbook drill script for v6 on a local 4-node devnet does not exist yet.
 4. `L1_OPERATIONS_RUNBOOK.md` has no v6-specific steps and contains the pre-v6 rollback rehearsal step (§9 above).
-5. No remote signer enforces v6 journal rules.
+5. Only the reference signer (P0-09) enforces the v6 journal rules; no production signer or HSM has been chosen or reviewed.
 6. The 2,000-block margin is mempool policy only. A block producer with a modified binary could include a v6 upgrade with a 100-block margin, but it still needs q approvals.
 7. UNVERIFIED: host-level disk-snapshot settings, NTP configuration and fsync honesty of the current validator hosts.
 8. No RPC exposes the scheduled protocol table, and `unsupported-next-protocol` fires only one block before activation. A pre-activation readiness signal (for example "scheduled version V at height A is unsupported by this binary") would help operators. This is an engineering follow-up, not implemented.

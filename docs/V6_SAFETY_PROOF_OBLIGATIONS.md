@@ -54,7 +54,7 @@ Notation: `n` validators at height `H` (`validatorsAt(H)`), quorum
 | S3 | **No two conflicting blocks finalize at one height** (L1: at most one PrepareQC value per round; L2: after a commit at round r no QC for another value exists at a later round). | spec §7.3-7.5, uses S-Q, S1, S2 only | `consensus-v6-model.test.ts` T9 (randomized schedules) and T12 (mutations are detected); `f01-v6-consensus.test.ts` T7; wire-level check for conflicting commit certificates and per-height comparison of every honest finalized chain in every fault run |
 | S4 | **Finality is verified, never trusted.** Every node and light client checks `q` distinct commit votes for `(H, commitRound, hash)` under `validatorsAt(H)`, all from one round, an empty legacy round certificate, and the v6 block envelope. | spec §7.5 | `f01-v6-boundary.test.ts` (envelope); `f01-v6-transport.test.ts` (light client); `f01-v6-block-integrity.test.ts` |
 | S5 | **Prefix consistency.** Every honest finalized chain is hash-linked and agrees with every other honest chain at every common height. | follows from S3 and S4 | per-node hash-link and per-height agreement check in every fault run |
-| S6 | **One protocol per height, no fallback after activation.** Heights below the activation height use legacy rows and certificates, heights at or above it use v6 only; a v6 node refuses legacy-format blocks, legacy attest/skip requests and legacy journal rows at v6 heights; an old binary refuses v2 journal rows (downgrade fails closed). | spec §10, §12 | `f01-v6-boundary.test.ts` T11; `f01-journal-v2.test.ts` T10; `v6-fault-rollback.test.ts`; scenario `upgrade-v5-v6` (late nodes cross the boundary by block sync; no v2 row below and no legacy row at or above the activation height; every block at or above it is a v6 block). **Open:** a quorum-approved governance `protocol_upgrade` back to a legacy version is currently accepted after activation (section 6; fix proposed in PR #966) |
+| S6 | **One protocol per height, no fallback after activation.** Heights below the activation height use legacy rows and certificates, heights at or above it use v6 only; a v6 node refuses legacy-format blocks, legacy attest/skip requests and legacy journal rows at v6 heights; an old binary refuses v2 journal rows (downgrade fails closed). | spec §10, §12 | `f01-v6-boundary.test.ts` T11; `f01-journal-v2.test.ts` T10; `v6-fault-rollback.test.ts`; scenario `upgrade-v5-v6` (late nodes cross the boundary by block sync; no v2 row below and no legacy row at or above the activation height; every block at or above it is a v6 block). Governance downgrade: a `protocol_upgrade` to a lower version is refused once v6 is scheduled or active (#966, merged `f8f46b5`; `v6-governance-downgrade.test.ts`; section 6 item 1) |
 | S7 | **Supply invariant under faults.** Consensus faults never change the supply rule: total supply equals the initial supply minus burned transfer fees, never more. | fixed-supply design (#947) | supply check in every fault run (random transfers are submitted during the faults); tokenomics tests from #947/#950 |
 
 ### 2.2 Liveness
@@ -77,9 +77,11 @@ Notation: `n` validators at height `H` (`validatorsAt(H)`), quorum
    unparsable final record is dropped as never acknowledged; when it follows a
    lock row, the lock row is dropped with it (F-10). A complete final row that
    only lost its newline is kept. A complete lock row with no commit byte after
-   it makes the journal fail-stop ("Torn protocol v6 lock/commit pair", spec
-   §9.1). That is safe but needs operator action (section 6, item 2; fix
-   proposed in PR #967).
+   it is kept and completed with the matching commit reservation when the
+   replayed history is consistent with a commit append (#967, merged `d1bdc17`;
+   `v6-journal-lock-row-only.test.ts`; section 6, item 2). An inconsistent lone
+   lock, or a lock row followed by any other row, still fails closed ("Torn
+   protocol v6 lock/commit pair").
 3. Consensus-state files (`consensus-state/H-*`) are written to a temporary
    file, fsynced, renamed and the directory fsynced. A crash can leave a stray
    temporary file (ignored, pruned after finality) or, after a power loss, the
@@ -115,7 +117,7 @@ Notation: `n` validators at height `H` (`validatorsAt(H)`), quorum
 | `l1/test/v6-fault-n2-n7.test.ts` | n = 2 functional runs and n = 7 Byzantine, combined and outage runs | per PR |
 | `l1/test/v6-fault-rollback.test.ts` | rollback refusal at v6 heights; operator rule negative control | per PR |
 | `l1/test/v6-fault-harness-selftest.test.ts` | the invariant checks catch injected mutations | per PR |
-| `l1/test/v6-fault-state-sync.test.ts` | outage then anchored v6 snapshot install (todo until PR #963) | per PR (todo) |
+| `l1/test/v6-fault-state-sync.test.ts` | outage then anchored v6 snapshot install (enabled by #1032 after #963 merged) | per PR |
 | `l1/test/v6-fault-seeds.test.ts` | seed sweep, skipped unless `ZYRON_V6_FAULT_SEEDS` is set | opt-in |
 
 Scenarios: `crash-step`, `power-loss`, `partition-flapping` (symmetric and
@@ -140,25 +142,26 @@ reproduced by running the same triple again.
 
 ## 6. Open items found by this work
 
-1. **Governance downgrade after activation (open).** A `protocol_upgrade` with
-   `q` approvals to a legacy version (for example 5) is admitted to the mempool,
-   included in a v6 block and scheduled, so the chain would return to the
-   legacy single-phase consensus (and its F-01 split) at the activation height.
-   The design says rollback is possible only before activation. Requires a
-   governance quorum, so it is not exploitable by a minority, but it is not
-   refused. Triage: confirmed defect, Medium. Fix proposed in PR #966 (refuse
-   any version decrease once v6 is scheduled, in admission, block validation
-   and checkpoint schedules); awaiting owner approval.
-2. **Lock row without commit row after power loss (observation).** If a power
-   loss persists exactly the lock row of an unacknowledged lock+commit append,
-   the journal refuses to open forever, while one more byte (a partial commit
-   row) is dropped and recovers. Safe either way (no signature was released),
-   but the first case leaves the validator down until an operator acts, and the
-   runbook forbids editing journals. Spec §9.1 asks for fail-stop; F-10
+1. **Governance downgrade after activation (fixed by #966, merged `f8f46b5`).** Before the fix, a
+   `protocol_upgrade` with `q` approvals to a legacy version (for example 5)
+   was admitted to the mempool, included in a v6 block and scheduled, so the
+   chain would have returned to the legacy single-phase consensus (and its F-01
+   split) at the activation height. The design says rollback is possible only
+   before activation. It required a governance quorum, so it was not
+   exploitable by a minority, but it was not refused. Triage: confirmed defect, Medium. Fixed by #966: any version
+   decrease once v6 is scheduled is refused in admission, block validation and
+   checkpoint schedules (`v6-governance-downgrade.test.ts`).
+2. **Lock row without commit row after power loss (fixed by #967, merged `d1bdc17`).** Before the fix, if
+   a power loss persisted exactly the lock row of an unacknowledged lock+commit
+   append, the journal refused to open forever, while one more byte (a partial
+   commit row) was dropped and recovered. Safe either way (no signature was
+   released), but the first case left the validator down until an operator
+   acted, and the runbook forbids editing journals. Spec §9.1 asks for fail-stop; F-10
    recovers the neighbouring case. Triage: confirmed defect, Low (safe
-   fail-stop, liveness only, low likelihood). Fix proposed in PR #967 (keep the
-   lock and complete the pair with its commit reservation); awaiting owner
-   approval. The crash-point test in this suite accepts both behaviours.
+   fail-stop, liveness only, low likelihood). Fixed by #967: the lock is kept and
+   the pair is completed with its commit reservation when the replayed history
+   is consistent with a commit append (`v6-journal-lock-row-only.test.ts`). The crash-point test in this suite
+   still accepts both behaviours.
 
 ## 7. Limits (what these tests do not show)
 

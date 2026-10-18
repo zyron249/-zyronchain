@@ -2,11 +2,11 @@
 
 > **Document status.** This is the design specification implemented by PR #945 (`fix(consensus): protocol v6 locked two-phase round change (F-01)`, merged as `6607dbf`). It was written before implementation (the original title was "F-01 Consensus Design Specification") and is committed unchanged in its technical content, so file and line references point at the pre-implementation code baseline named below, not at current `main`. Source code comments refer to this document by its working name `F01_CONSENSUS_DESIGN.md`.
 >
-> **Later fixes pending owner approval.** The following follow-up PRs refine or correct v6 behaviour and are **open and not merged**; each requires explicit owner approval because it changes consensus or verification rules:
-> - #963: trusted snapshot/checkpoint verification of v6 tips with the commit certificate, and write-verify-swap recovery checkpoints (finding NEW-R1).
-> - #966: refuse protocol downgrades once v6 is scheduled. If merged, the rollback rule in section 12 item 4 ("cancel or replace the upgrade through governance before A") no longer holds: a scheduled v6 activation cannot be cancelled through governance.
-> - #967: recovery of a lone trailing v6 lock row after power loss (section 9.1 currently specifies fail-stop for a torn lock+commit pair).
-> - #968: binding of the trusted snapshot tip body to `header.transactionRoot` (a pre-existing gap, not specific to v6).
+> **Later fixes (merged 2026-10-12).** The following follow-up PRs refine or correct v6 behaviour. They are merged on `main`; this specification's normative text has not been rewritten for them, so where they differ the merged code and its tests apply:
+> - #963 (merged `c81ec66`): trusted snapshot/checkpoint verification of v6 tips with the commit certificate, and write-verify-swap recovery checkpoints (finding NEW-R1).
+> - #966 (merged `f8f46b5`): protocol downgrades are refused once v6 is scheduled. The rollback rule in section 12 item 4 ("cancel or replace the upgrade through governance before A") therefore no longer holds: a scheduled v6 activation cannot be cancelled through governance.
+> - #967 (merged `d1bdc17`): a lone trailing v6 lock row left by a power loss is kept and completed with its commit reservation instead of the fail-stop that section 9.1 specifies for a torn lock+commit pair, but only when the replayed history is consistent with a commit append (no timeout at or above that round, no later vote, any own prepare at that round is for the same block). An inconsistent lone lock, or a lock row followed by any other row, still fails closed (`f01-journal-v2.test.ts`, `v6-journal-lock-row-only.test.ts`).
+> - #968 (merged `cd9729b`): binding of the trusted snapshot tip body to `header.transactionRoot` (a pre-existing gap, not specific to v6).
 >
 > Where this specification and merged code disagree, the code and its tests are authoritative and the difference should be reported. Implementation-level safety obligations are tracked in [`../V6_SAFETY_PROOF_OBLIGATIONS.md`](../V6_SAFETY_PROOF_OBLIGATIONS.md) and operator procedures in [`../V6_OPERATOR_GUIDE.md`](../V6_OPERATOR_GUIDE.md). Activation of v6 on any network is a separate owner decision.
 
