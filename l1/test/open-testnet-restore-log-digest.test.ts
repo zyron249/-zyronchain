@@ -281,6 +281,18 @@ test("snapshot history is validated like a cold-start replay, not by agreement b
 
     // If no validator serves a valid block 50, nothing is sealed.
     await assert.rejects(api.collectSnapshotBlocks([readerOf("v1", bad), readerOf("v2", bad)], expected), /block 50/);
+
+    // A block that parses as JSON but cannot be canonicalized (an unsafe
+    // integer) rejects that validator only; the build goes on with the next.
+    const unsafe = structuredClone(blocks);
+    unsafe[49].header.timestampMs = 2 ** 60;
+    rejected.length = 0;
+    assert.deepEqual(
+      await api.collectSnapshotBlocks([readerOf("v1", unsafe), readerOf("v2", blocks)], { ...expected, onReject: (name: string) => { rejected.push(name); } }),
+      blocks,
+      "one validator serving a non-canonical block stopped the snapshot build"
+    );
+    assert.deepEqual(rejected, ["v1"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
