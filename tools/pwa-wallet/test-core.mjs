@@ -271,9 +271,15 @@ await test('network status component: static, honest rows, identical everywhere 
     if (!existsSync(file)) continue;
     const html = readFileSync(file, 'utf8');
     if (!html.includes('BEGIN NETWORK STATUS')) { assert.notEqual(page, 'website/app/index.html', 'the phone wallet shows network status'); continue; }
+    const expected = page.endsWith('website/app/index.html') ? render({ variant: 'wallet' }) : block;
     const got = html.match(/<!-- BEGIN NETWORK STATUS[\s\S]*?<!-- END NETWORK STATUS -->/)[0].split('\n').map((l) => l.trim()).join('\n');
-    assert.equal(got, block.split('\n').map((l) => l.trim()).join('\n'), `${page} network status is stale`);
+    assert.equal(got, expected.split('\n').map((l) => l.trim()).join('\n'), `${page} network status is stale`);
   }
+  const walletBlock = render({ variant: 'wallet' });
+  assert.match(walletBlock, /does not poll any network/);
+  assert.match(walletBlock, /does not connect, so it does not refresh/);
+  assert.match(walletBlock, /This phone app does not submit transfers/);
+  assert.doesNotMatch(walletBlock, /Enable JavaScript to refresh/);
   assert.doesNotMatch(block, /mainnet (is )?live|activated public testnet|public rpc: available|buy now|price target|\$\s?\d|live trading/i);
   assert.doesNotMatch(block, new RegExp(String.raw`https?:\/\/(?!github\.com|zyron-open-testnet\.onrender\.com)`), 'only documented open-testnet gateway or github');
 });
@@ -498,8 +504,12 @@ await test('web app manifest is valid and installable (name, scope, standalone, 
   const html = readFileSync(join(app, 'index.html'), 'utf8');
   for (const marker of ['rel="manifest" href="/app/manifest.json"', 'rel="apple-touch-icon" sizes="180x180"', 'name="apple-mobile-web-app-capable" content="yes"', 'name="theme-color"', 'viewport-fit=cover']) assert.ok(html.includes(marker), marker);
   assert.deepEqual(pngSize(join(app, 'icons', 'apple-touch-icon-180.png')), [180, 180]);
-  for (const marker of ['TESTNET', 'Scam warning', 'No public RPC yet', 'unaudited', 'Add to Home Screen', 'Install app']) assert.ok(html.includes(marker), marker);
+  for (const marker of ['TESTNET', 'Scam warning', 'does not show a balance', 'unaudited', 'Add to Home Screen', 'Install app', 'Open in Safari', 'zyron-wallet-testnet-1']) assert.ok(html.includes(marker), marker);
+  assert.ok(html.indexOf('data-install') < html.indexOf('data-network-status'), 'install guidance is above the network status table');
+  assert.doesNotMatch(html, /No public RPC yet/);
   const appJs = readFileSync(join(app, 'app.js'), 'utf8');
+  assert.match(appJs, /IN_APP_RE/);
+  assert.match(appJs, /Telegram/);
   // English-only UI: no language toggle, no second dictionary, no locale auto-detect, no accented/non-English letters.
   for (const banned of ['data-lang-toggle', 'navigator.language', 'navigator.languages', 'hreflang', 'Intl.DateTimeFormat().resolvedOptions']) {
     assert.ok(!html.includes(banned), `index.html contains ${banned}`);

@@ -720,10 +720,38 @@
     });
   }
 
-  // ---------------- install (Android prompt + iOS instructions) ----------------
+  // ---------------- install (Android prompt + iOS Safari walkthrough) ----------------
+  const ua = navigator.userAgent || '';
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-  const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isIos = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const IN_APP_RE = /CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo|GSA\/|Telegram|Twitter|Instagram|FBAN|FBAV|FB_IAB|Line\/|MicroMessenger|Snapchat|TikTok|BytedanceWebview|Musical_ly/i;
+  const isInAppBrowser = isIos && (IN_APP_RE.test(ua) || !/Safari/i.test(ua));
+  function browserLabel() {
+    if (/Telegram/i.test(ua)) return 'Telegram';
+    if (/Twitter/i.test(ua)) return 'X';
+    if (/Instagram/i.test(ua)) return 'Instagram';
+    if (/FBAN|FBAV|FB_IAB/i.test(ua)) return 'Facebook';
+    if (/CriOS/i.test(ua)) return 'Chrome';
+    if (/FxiOS/i.test(ua)) return 'Firefox';
+    if (/EdgiOS/i.test(ua)) return 'Edge';
+    if (/OPiOS/i.test(ua)) return 'Opera';
+    if (/Snapchat/i.test(ua)) return 'Snapchat';
+    if (/TikTok|Bytedance|Musical_ly/i.test(ua)) return 'TikTok';
+    if (/DuckDuckGo/i.test(ua)) return 'DuckDuckGo';
+    if (/MicroMessenger/i.test(ua)) return 'WeChat';
+    return 'this browser';
+  }
   $('[data-installed]').hidden = !isStandalone;
+  const installGuide = $('[data-install-guide]');
+  if (installGuide) installGuide.hidden = isStandalone;
+  const iosOnly = $('[data-install-ios-only]');
+  if (iosOnly) iosOnly.hidden = !isIos || isStandalone;
+  const wrongBrowser = $('[data-install-wrong-browser]');
+  if (wrongBrowser) wrongBrowser.hidden = !isInAppBrowser || isStandalone;
+  if (isInAppBrowser) {
+    const name = $('[data-install-browser-name]');
+    if (name) name.textContent = browserLabel();
+  }
   for (const block of $$('[data-platform]')) block.classList.toggle('current', (block.dataset.platform === 'ios') === isIos);
   if (isIos) $('.install-steps').prepend($('[data-platform="ios"]'));
   window.addEventListener('beforeinstallprompt', (event) => {

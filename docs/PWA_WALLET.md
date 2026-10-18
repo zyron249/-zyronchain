@@ -16,7 +16,7 @@ An installable web app for iOS and Android ("Add to Home Screen"). There is no a
 | Address | `ZYN` + first 40 hex of SHA-256(64-byte uncompressed public key), exactly as in `l1/src/crypto.ts`. Displayed with the display-only checksum from `docs/ADDRESS_CHECKSUM.md`. The QR code holds the plain lower-case address. |
 | Lock / unlock | Auto-lock after 5 minutes without activity, or after 60 s in the background. Lock wipes the key buffer. |
 | Sign transfer | Offline. Produces exactly l1's `transfer` (v2 domain-separated by default, v1 optional). Chain ID and the next nonce are typed in by hand; nothing is guessed. A **review screen** shows Type, From, To, Amount, Fee, Chain ID, Nonce and Timestamp (`describeTransfer`), and signing needs a deliberate confirmation. `describeTransfer`/`signTransfer` refuse any other kind, extra fields (memo/data), messages or arbitrary JSON, so `mining_claim` is impossible. The mining-tracker address and self-sends are refused. |
-| Balance / broadcast | Disabled, with an honest "no public RPC yet" notice. A signed `tx.json` can be submitted later with the CLI (`tx-submit`). |
+| Balance / broadcast | Disabled. This app does not connect and does not show a balance. A no-value testnet RPC exists for the Snap and the CLI (`docs/WALLET_TESTNET_RPC.md`, chain id `zyron-wallet-testnet-1`). A signed `tx.json` can be submitted later with the CLI (`tx-submit`). |
 | Other | ZYN ↔ atoms converter; only the address and a signed transfer can be copied ("Copied. Clipboard will be cleared automatically.", cleared after 60 s); delete wallet = button → confirmation screen → acknowledgement + type DELETE (no secure-overwrite claim); scam warning with "Official site: zyronchain.com"; static network status (`tools/site/network-status.mjs`); "Local wallet · Offline ready" indicator that never implies a network connection; English-only UI. |
 
 ## Key storage
@@ -121,12 +121,12 @@ Lighthouse 12 removed the PWA category, so installability is checked with Chrome
     and Website Data" is used.
   - Android Chrome can evict data under storage pressure unless persistence is granted (the app requests it and
     shows the result).
-- On iOS, use Safari to add the app to the home screen (iOS 16.4+ also allows other browsers' share menus).
+- On iOS, add the app from Safari. Chrome, Telegram and X on iPhone do not offer Add to Home Screen. Confirm the address bar is `https://zyronchain.com/app/` before adding it; the home-screen app hides that bar. iPhone does not show the Android Install button. Private browsing hides the Share action.
 - A malicious or compromised zyronchain.com deployment could ship code that steals phrases. SRI only pins the
   files that the served HTML names. Use the CLI for anything of value, and treat this as testnet software.
 - Some mobile keyboards learn typed words. The restore box disables autocorrect and suggestions where the browser
   allows, but the keyboard is outside the app's control.
-- There is no public RPC: no balances, no nonce lookup, no broadcasting.
+- This app does not connect (`connect-src 'none'`): no balance, no nonce lookup, no broadcasting. The no-value wallet testnet RPC is for the Snap and the CLI, not for this page.
 
 ## Updating
 1. `cd tools/pwa-wallet && npm ci`
