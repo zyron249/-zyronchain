@@ -9,8 +9,11 @@
 // hashed chunk of the byte-for-byte checks, including the final check of all
 // copies right before the completion marker. Progress events are labelled so a
 // caller (and these tests) can tell the steps apart.
+// R31-1060-L2 (OpenClaw Round 31): a whole-file copy was still one silent step
+// (O(height) bytes between ticks), so files are copied in chunks with a tick
+// per chunk.
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,6 +65,13 @@ test("restore reports progress for every validator copy step: copied files, reco
         assert.ok(copied, `no progress after copying ${file} to ${name}`);
         assert.ok(copied.present, `the ${name} ${file} tick came before the file was copied`);
         assert.ok(events.some((event) => event.step === "verify-chunk" && event.validator === name && event.file === file), `no progress while hashing ${name} ${file}`);
+        const chunks = events.filter((event) => event.step === "copy-chunk" && event.validator === name && event.file === file);
+        assert.ok(chunks.length >= 1, `no progress while copying ${file} to ${name}`);
+        if (file === "blocks.ndjson") {
+          // The fixture log is larger than one 64 KiB read, so a chunked copy ticks more than once.
+          assert.ok(statSync(join(target, "data-v1", file)).size > 65_536, "fixture log too small for a multi-chunk copy");
+          assert.ok(chunks.length >= 2, `${name} ${file} copied in ${chunks.length} progress step(s)`);
+        }
       }
       const records = events.filter((event) => event.step === "open-record" && event.validator === name).length;
       assert.ok(records >= bundle.blocks.length, `${name} open reported ${records} records for ${bundle.blocks.length} blocks`);
