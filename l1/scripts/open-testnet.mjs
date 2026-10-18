@@ -15,6 +15,12 @@
 // restores a missing directory from such a bundle (re-validating every block)
 // before falling back to a fresh genesis.
 //
+// Startup on hosts with a port scan (Render): the gateway binds --port / $PORT
+// before anything slow happens. While the snapshot is downloaded, decrypted and
+// replayed, GET /health answers 200 {status:"starting", phase} so the platform
+// health check passes, /readyz answers 503, and every other endpoint answers 503
+// until the validators are serving.
+//
 // <secret dir> holds plaintext TEST validator/faucet keys (mode 0600) and the
 // chain data. It must live outside the repository and must never be shared.
 import assert from "node:assert/strict";
@@ -22,7 +28,7 @@ import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createServer } from "node:http";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,6 +55,60 @@ const NOTICE = "TESTNET — tokens have no value. ZyronChain open testnet: test 
 const SNAPSHOT_MAGIC = "ZYRON-OPEN-TESTNET-STATE-V1";
 const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 const RESERVED_CHAIN_IDS = new Set(["zyron-mainnet-1", "zyron-public-testnet-1"]);
+
+const STARTUP_GRACE_MS = 10 * 60_000;
+const SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS = [2_000, 5_000];
+const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "600" };
+const SECURITY = { "x-content-type-options": "nosniff", "x-zyron-network": "testnet-no-value", "referrer-policy": "no-referrer" };
+function writeJson(response, code, body, extra = {}) {
+  const payload = `${JSON.stringify(body, null, 2)}\n`;
+  response.writeHead(code, { ...CORS, ...SECURITY, "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(payload), ...extra });
+  response.end(payload);
+}
+
+// ---- gateway server: bound first, request handler swapped in when ready -------
+// One HTTP server for the whole process lifetime. `run` binds it before the
+// snapshot restore so a platform port scan sees the port immediately; the
+// boot handler answers until runNetwork installs the full RPC handler.
+export function createGatewayServer(handler) {
+  let current = handler;
+  const server = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, keepAliveTimeout: 5_000, maxHeaderSize: 16_384 }, (request, response) => current(request, response));
+  server.maxConnections = 256;
+  server.setHandler = (next) => { current = next; };
+  return server;
+}
+export async function listenGateway(server, port, host) {
+  await new Promise((done, reject) => {
+    const onError = (error) => reject(error);
+    server.once("error", onError);
+    server.listen(port, host, () => { server.off("error", onError); done(); });
+  });
+  return server.address().port;
+}
+// Startup progress shared by the boot handler and the phase timing log.
+export function createBootState(log = true) {
+  const startedAtMs = Date.now();
+  const boot = { phase: "boot", startedAtMs, phaseStartedAtMs: startedAtMs, timings: {} };
+  boot.enter = (phase) => {
+    const now = Date.now();
+    const ms = now - boot.phaseStartedAtMs;
+    boot.timings[boot.phase] = (boot.timings[boot.phase] ?? 0) + ms;
+    if (log) console.log(`startup phase ${boot.phase} done in ${ms}ms; entering ${phase} (elapsed ${now - startedAtMs}ms)`);
+    boot.phase = phase; boot.phaseStartedAtMs = now;
+  };
+  return boot;
+}
+export function createBootHandler(boot) {
+  return (request, response) => {
+    if (request.method === "OPTIONS") { response.writeHead(204, CORS); return response.end(); }
+    const path = String(request.url ?? "/").split("?")[0].replace(/\/+$/, "") || "/";
+    const body = { ok: false, status: "starting", phase: boot.phase, network: "testnet", valueBearing: false, startedAtMs: boot.startedAtMs, elapsedMs: Date.now() - boot.startedAtMs };
+    // Liveness: the process is up and making progress, so the platform health
+    // check passes. Readiness and every RPC endpoint wait for the validators.
+    if (request.method === "GET" && (path === "/health" || path === "/healthz")) return writeJson(response, 200, body);
+    return writeJson(response, 503, { ...body, error: "gateway is starting; retry shortly" }, { "retry-after": "10" });
+  };
+}
 
 const [command, ...rest] = process.argv.slice(2);
 function option(name, fallback) {
@@ -103,7 +163,11 @@ export function openSnapshot(bytes, secret) {
   return JSON.parse(gunzipSync(plain, { maxOutputLength: MAX_SNAPSHOT_BYTES * 4 }).toString("utf8"));
 }
 // Rebuilds a network directory from a snapshot bundle. Every block is replayed
-// through ChainStore validation; keys must match the genesis validator set.
+// once through ChainStore validation (into data-v1); keys must match the genesis
+// validator set. A recovery checkpoint of that validated state is written and
+// the finalized log + checkpoint are copied to the other validators, each of
+// which re-opens and verifies them, so neither the restore nor the validator
+// start-up pays for a full replay four times (startup cost on a 0.1-CPU host).
 export async function restoreNetwork(dir, bundle, expectedChainId) {
   assert.equal(bundle?.format, SNAPSHOT_MAGIC, "unknown snapshot format");
   const { genesis, network, keys, blocks } = bundle;
@@ -122,14 +186,23 @@ export async function restoreNetwork(dir, bundle, expectedChainId) {
     await writeSecret(join(dir, "keys", `${name}.json`), { privateKey });
   }
   await writeFile(join(dir, "genesis.json"), `${JSON.stringify(genesis, null, 2)}\n`, { mode: 0o644, flag: "wx" });
-  for (const name of VALIDATOR_NAMES) {
+  const [first, ...others] = VALIDATOR_NAMES;
+  const firstData = join(dir, `data-${first}`);
+  await mkdir(firstData, { mode: 0o700 });
+  const store = await ChainStore.open(genesis, firstData);
+  for (const block of blocks) await store.commitFinalizedBlock(block);
+  assert.equal(store.chain.height, blocks.length, "snapshot replay height mismatch");
+  const checkpoint = await store.writeRecoveryCheckpoint();
+  for (const name of others) {
     const data = join(dir, `data-${name}`);
     await mkdir(data, { mode: 0o700 });
-    const store = await ChainStore.open(genesis, data);
-    for (const block of blocks) await store.commitFinalizedBlock(block);
+    for (const file of ["metadata.json", "blocks.ndjson", "recovery-checkpoint.json"]) await copyFile(join(firstData, file), join(data, file));
+    await chmod(join(data, "blocks.ndjson"), 0o600);
+    const copy = await ChainStore.open(genesis, data);
+    assert.ok(copy.chain.height === blocks.length && copy.chain.tip.hash === checkpoint.tipHash, `restored ${name} state does not match the replayed state`);
   }
   await writeFile(join(dir, "network.json"), `${JSON.stringify(network, null, 2)}\n`, { mode: 0o644, flag: "wx" });
-  return { chainId: genesis.chainId, genesisHash: network.genesisHash, height: blocks.length };
+  return { chainId: genesis.chainId, genesisHash: network.genesisHash, height: blocks.length, tipHash: checkpoint.tipHash };
 }
 
 // ---- init: fresh TEST keys, fixed-supply-v1 genesis, v6 prefix ----------------
@@ -199,7 +272,8 @@ export async function initNetwork(dir, chainId) {
 }
 
 // ---- run: validators + gateway ---------------------------------------------------
-export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" } } = {}) {
+export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server } = {}) {
+  const runStartedAtMs = Date.now();
   const genesisPath = join(dir, "genesis.json");
   const genesis = JSON.parse(await readFile(genesisPath, "utf8"));
   assertTestnetChainId(genesis.chainId);
@@ -377,14 +451,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     return run;
   }
 
-  const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "600" };
   const PEER_RPC = { "x-zyron-rpc-version": "1" };
-  const SECURITY = { "x-content-type-options": "nosniff", "x-zyron-network": "testnet-no-value", "referrer-policy": "no-referrer" };
-  function sendJson(response, code, body, extra = {}) {
-    const payload = `${JSON.stringify(body, null, 2)}\n`;
-    response.writeHead(code, { ...CORS, ...SECURITY, "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(payload), ...extra });
-    response.end(payload);
-  }
+  const sendJson = writeJson;
   const explorerHtml = await readFile(join(l1Root, "scripts", "open-testnet", "explorer.html"));
   function sendHtml(response) {
     response.writeHead(200, { ...SECURITY, "content-type": "text/html; charset=utf-8", "cache-control": "no-cache", "content-length": explorerHtml.length,
@@ -409,8 +477,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     };
   }
 
-  let active = 0;
-  const gateway = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, keepAliveTimeout: 5_000, maxHeaderSize: 16_384 }, async (request, response) => {
+  let active = 0; let everReady = false;
+  const handler = async (request, response) => {
     if (active >= 64) return sendJson(response, 503, { error: "busy, retry shortly" }, { "retry-after": "1" });
     active += 1; response.once("close", () => { active -= 1; });
     try {
@@ -427,7 +495,14 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const heights = up.map((v) => v.height);
           const quorum = Math.floor((2 * genesis.validators.length) / 3) + 1;
           const ok = up.length >= quorum;
-          return sendJson(response, ok ? 200 : 503, { ok, network: "testnet", valueBearing: false, chainId, quorum, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
+          if (ok) everReady = true;
+          // Until the validators first reach a quorum (bounded by STARTUP_GRACE_MS)
+          // liveness stays 200 "starting"; afterwards a lost quorum is a 503.
+          // /readyz is always strict.
+          const starting = !ok && !everReady && Date.now() - runStartedAtMs < STARTUP_GRACE_MS;
+          const status = ok ? "ready" : starting ? "starting" : "degraded";
+          const code = ok || (starting && path !== "/readyz") ? 200 : 503;
+          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), network: "testnet", valueBearing: false, chainId, persistence, quorum, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
@@ -516,19 +591,29 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       if (code === 500) console.error(`gateway error: ${error instanceof Error ? error.message : String(error)}`);
       return sendJson(response, code, { error: code === 500 ? "internal error" : error.message });
     }
-  });
-  gateway.maxConnections = 256;
+  };
 
   for (const name of VALIDATOR_NAMES) startValidator(name);
-  await new Promise((done, reject) => { gateway.once("error", reject); gateway.listen(gatewayPort, host, () => done()); });
-  const port = gateway.address().port;
+  const gateway = server ?? createGatewayServer(handler);
+  gateway.setHandler(handler);
+  const port = gateway.listening ? gateway.address().port : await listenGateway(gateway, gatewayPort, host);
   console.log(`ZyronChain open TESTNET gateway on ${host}:${port}; chain ${chainId}; genesis ${info.genesisHash}; validators ${VALIDATOR_NAMES.length}; value-bearing=false`);
   async function shutdown() {
     if (shuttingDown) return; shuttingDown = true;
     await new Promise((done) => gateway.close(() => done()));
     await Promise.all(VALIDATOR_NAMES.map((name) => stopValidator(name)));
   }
-  return { port, chainId, info, faucet, shutdown, stopValidator, startValidator, validatorStatuses };
+  async function waitForQuorum(timeoutMs = STARTUP_GRACE_MS) {
+    const quorum = Math.floor((2 * genesis.validators.length) / 3) + 1;
+    const deadline = Date.now() + timeoutMs;
+    while (!shuttingDown && Date.now() < deadline) {
+      const up = (await validatorStatuses()).filter((v) => v.up).length;
+      if (up >= quorum) return true;
+      await sleep(1_000);
+    }
+    return false;
+  }
+  return { port, chainId, info, faucet, shutdown, stopValidator, startValidator, validatorStatuses, waitForQuorum };
 }
 
 // ---- smoke: disposable end-to-end check --------------------------------------
@@ -619,6 +704,13 @@ if (command === "init") {
   console.log(JSON.stringify({ chainId: result.chainId, genesisHash: result.genesisHash, faucetAddress: result.faucetAddress, directory: dir }, null, 2));
 } else if (command === "run") {
   const dir = resolve(option("--dir"));
+  const host = option("--host", "127.0.0.1");
+  // Bind the public port first: download/decrypt/replay of a large snapshot on
+  // a slow free instance can outlast the platform's port scan.
+  const boot = createBootState();
+  const server = createGatewayServer(createBootHandler(boot));
+  const port = await listenGateway(server, Number(option("--port", process.env.PORT ?? "10000")), host);
+  console.log(`gateway listening on ${host}:${port} (starting; full RPC once the validators are up)`);
   // --init-if-missing is for hosts without a persistent disk (for example a
   // free web service): a missing directory gets a fresh TEST genesis, so every
   // cold start is a new network with a new genesis hash.
@@ -630,11 +722,30 @@ if (command === "init") {
     const restoreUrl = option("--restore-url", process.env.ZYRON_TESTNET_STATE_URL || undefined);
     if (!exists && restoreUrl && stateSecret) {
       try {
-        const response = await fetch(restoreUrl, { redirect: "follow", signal: AbortSignal.timeout(180_000) });
+        boot.enter("download");
+        let response;
+        for (let attempt = 0; ; attempt += 1) {
+          // Transient download failures are retried; only a decrypt/validation
+          // failure or a missing snapshot falls back to a fresh genesis.
+          try {
+            response = await fetch(restoreUrl, { redirect: "follow", signal: AbortSignal.timeout(180_000) });
+            if (response.status === 200 || response.status === 404 || attempt >= SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS.length) break;
+            console.error(`snapshot download returned ${response.status}; retrying`);
+          } catch (error) {
+            if (attempt >= SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS.length) throw error;
+            console.error(`snapshot download failed (${error instanceof Error ? error.message : String(error)}); retrying`);
+          }
+          await sleep(SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS[attempt]);
+        }
         if (response.status === 404) console.log("no state snapshot published yet; creating a fresh TEST genesis");
         else {
           assert.equal(response.status, 200, `snapshot download returned ${response.status}`);
-          const restored = await restoreNetwork(dir, openSnapshot(Buffer.from(await response.arrayBuffer()), stateSecret), chainId);
+          const sealed = Buffer.from(await response.arrayBuffer());
+          console.log(`snapshot downloaded (${sealed.length} bytes)`);
+          boot.enter("decrypt");
+          const bundle = openSnapshot(sealed, stateSecret);
+          boot.enter("replay");
+          const restored = await restoreNetwork(dir, bundle, chainId);
           persistence = { mode: "snapshot-restore", restoredHeight: restored.height, restoredAtMs: Date.now() };
           console.log(`restored ${restored.chainId} genesis ${restored.genesisHash} at height ${restored.height}`);
         }
@@ -644,12 +755,18 @@ if (command === "init") {
       }
     }
     if (!(await stat(join(dir, "network.json")).then(() => true, () => false))) {
+      boot.enter("init");
       console.log(JSON.stringify(await initNetwork(dir, chainId)));
       persistence = { mode: exists ? "local-disk" : "fresh-genesis", createdAtMs: Date.now() };
     }
   }
-  const network = await runNetwork(dir, { stateSecret, persistence, host: option("--host", "127.0.0.1"), gatewayPort: Number(option("--port", process.env.PORT ?? "10000")), basePort: Number(option("--validator-base-port", "9300")) });
+  boot.enter("validators");
+  const network = await runNetwork(dir, { stateSecret, persistence, host, server, basePort: Number(option("--validator-base-port", "9300")) });
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { void network.shutdown().then(() => process.exit(0)); });
+  if (await network.waitForQuorum()) {
+    boot.enter("ready");
+    console.log(`startup complete in ${Date.now() - boot.startedAtMs}ms; phase timings ${JSON.stringify(boot.timings)}`);
+  } else console.error(`validators did not reach a quorum within ${STARTUP_GRACE_MS}ms of start-up`);
 } else if (command === "smoke") {
   await smoke();
   process.exit(0);
