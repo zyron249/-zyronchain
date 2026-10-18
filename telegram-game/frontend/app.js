@@ -339,7 +339,8 @@
       api("/api/leaderboard?board=" + encodeURIComponent(state.board), { timeoutMs: timeoutMs }),
       api("/api/chain", { timeoutMs: timeoutMs }),
       api("/api/cipher", { timeoutMs: timeoutMs }),
-      api("/api/events", { timeoutMs: timeoutMs })
+      api("/api/events", { timeoutMs: timeoutMs }),
+      api("/api/map", { timeoutMs: timeoutMs })
     ]);
     state.upgrades = rest[0];
     state.chests = rest[1];
@@ -348,6 +349,7 @@
     state.chain = rest[4];
     state.cipher = rest[5];
     state.events = rest[6];
+    state.map = rest[7];
     if (!state.introChecked) {
       state.introChecked = true;
       if (!localStorage.getItem("zyronNodeIntro")) state.introStep = 1;
@@ -682,6 +684,7 @@
     section.append(stackCard());
     section.append(cipherCard());
     if (state.events && state.events.active) section.append(eventCard(state.events.active));
+    section.append(mapCard());
     return section;
   }
 
@@ -769,6 +772,90 @@
     api("/api/events/claim", { method: "POST", body: { idempotencyKey: key("eclaim") } })
       .then(function (res) {
         toast(res.points ? "+" + formatPoints(res.points) + " Zyron Points" : "Goal already claimed", res.points ? "ok" : "");
+        return refresh();
+      })
+      .catch(fail);
+  }
+
+  function mapCard() {
+    const data = state.map || {};
+    const galaxy = data.galaxy || {};
+    const nodes = window.ZyronMap ? ZyronMap.galaxy(galaxy.shown || 0, galaxy.seed || 1) : [];
+    const sky = svgBoard("galaxy");
+    nodes.forEach(function (node, index) {
+      if (index > 0) sky.append(svgLine(nodes[index - 1], node));
+      sky.append(svgDot(node.x, node.y, index % 7 === 0 ? 1.8 : 1.1));
+    });
+    const world = svgBoard("world-map");
+    (data.world || []).forEach(function (dot) {
+      const mark = svgDot(dot.x, dot.y, 3.2 + Math.min(1.4, (dot.builders || 1) / 12));
+      mark.setAttribute("data-country", dot.code);
+      world.append(mark);
+    });
+    const legend = (data.world || []).map(function (dot) { return dot.name + " " + dot.builders; }).join(" · ") || "No countries yet";
+    const yours = data.country || (player() && player().countryCode) || "";
+    const picker = el("select", { "data-country": "1" }, [
+      el("option", { value: "", text: "Hidden" })
+    ]);
+    (data.choices || []).forEach(function (choice) {
+      const option = el("option", { value: choice.code, text: choice.name });
+      if (choice.code === yours) option.selected = true;
+      picker.append(option);
+    });
+    return el("article", { class: "card", "data-map": "1" }, [
+      el("h2", { text: "Your chain" }),
+      el("p", { class: "fine", text: (galaxy.blocks || 0) + " blocks in your galaxy. " + (galaxy.notice || "") }),
+      sky,
+      el("h2", { text: "Builders by country" }),
+      el("p", { class: "fine", text: data.notice || "Country only, and only if you opt in." }),
+      world,
+      el("p", { class: "fine", "data-world-legend": "1", text: legend }),
+      picker,
+      el("button", {
+        class: "primary",
+        text: "Save country",
+        disabled: state.busy ? "disabled" : null,
+        onclick: saveCountry
+      })
+    ]);
+  }
+
+  function svgBoard(className) {
+    const board = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    board.setAttribute("viewBox", "0 0 100 100");
+    board.setAttribute("class", className);
+    board.setAttribute("role", "img");
+    return board;
+  }
+
+  function svgDot(x, y, r) {
+    const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    dot.setAttribute("cx", String(x));
+    dot.setAttribute("cy", String(y));
+    dot.setAttribute("r", String(r));
+    dot.setAttribute("class", "map-dot");
+    return dot;
+  }
+
+  function svgLine(a, b) {
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", String(a.x));
+    line.setAttribute("y1", String(a.y));
+    line.setAttribute("x2", String(b.x));
+    line.setAttribute("y2", String(b.y));
+    line.setAttribute("class", "map-link");
+    return line;
+  }
+
+  function saveCountry() {
+    if (state.busy) return;
+    const field = root.querySelector("[data-country]");
+    const country = field ? field.value : "";
+    state.busy = true;
+    render();
+    api("/api/map/country", { method: "POST", body: { country: country, idempotencyKey: key("country") } })
+      .then(function () {
+        toast("Country saved", "ok");
         return refresh();
       })
       .catch(fail);
