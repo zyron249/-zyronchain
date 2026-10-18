@@ -26,6 +26,7 @@ STATIC_ASSETS = (
     "polish.js",
     "cube.js",
     "daynight.js",
+    "wardrobe.js",
     "styles.css",
     "logo.png",
     "points-mark-52.png",
