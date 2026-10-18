@@ -314,6 +314,13 @@ export interface FinalizedLogOpenFaultHooks {
   afterDirectorySync?: () => void | Promise<void>;
   /** After the tail repair write (re-termination or lone-lock completion), before its fsync. */
   afterTailRepairWrite?: () => void | Promise<void>;
+  /**
+   * Progress only: called synchronously for every stored block record the open
+   * reads (line scan below a recovery checkpoint and replay above it, or a full
+   * replay), so a liveness monitor can tell a long open from a stall
+   * (R26-1048-L1). It must not throw; it cannot change what is accepted.
+   */
+  onBlockRecord?: () => void;
 }
 
 export class ChainStore {
@@ -393,7 +400,7 @@ export class ChainStore {
     let replay: Awaited<ReturnType<typeof replayStoredBlocks>> | undefined;
     if (checkpoint) {
       try {
-        replay = await replayStoredBlocks(genesis, blocksPath, checkpoint);
+        replay = await replayStoredBlocks(genesis, blocksPath, checkpoint, faultHooks.onBlockRecord);
       } catch (error) {
         if (retention) {
           throw new Error("Pruned finalized history cannot fall back to full replay", { cause: error });
@@ -403,7 +410,7 @@ export class ChainStore {
         // it must never prevent a safe full replay.
       }
     }
-    replay ??= await replayStoredBlocks(genesis, blocksPath);
+    replay ??= await replayStoredBlocks(genesis, blocksPath, undefined, faultHooks.onBlockRecord);
     if (replay.tornTailBytes > 0) {
       await truncateTornTail(blocksPath, replay.offset, replay.tornTailBytes, "finalized block log");
     }
@@ -1700,7 +1707,8 @@ async function loadRecoveryCheckpointFile(genesis: GenesisConfig, path: string):
 async function replayStoredBlocks(
   genesis: GenesisConfig,
   blocksPath: string,
-  loaded?: LoadedRecoveryCheckpoint
+  loaded?: LoadedRecoveryCheckpoint,
+  onBlockRecord: () => void = () => {}
 ): Promise<{
   chain: ZyronChain;
   count: number;
@@ -1756,6 +1764,7 @@ async function replayStoredBlocks(
     }
     const height = count + 1;
     blockRanges.push({ height, offset, length: lineBytes });
+    onBlockRecord();
 
     if (checkpoint && height < checkpoint.height) {
       count = height;
