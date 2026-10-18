@@ -1949,6 +1949,7 @@ def build_profile(conn, player, levels: dict[str, int], now: datetime, bot_usern
             "networkPower": network_power(levels),
             "cycleReward": cycle_reward(levels, int(player["streak_count"])),
             "cycleCount": int(player["cycle_count"]),
+            "countryCode": player.get("country_code"),
             "energy": energy_view(player, levels, now),
             "streak": {
                 "count": int(player["streak_count"]),

@@ -47,7 +47,7 @@ from zyron_node.game import (
 from zyron_node.limits import RateLimitExceeded, hit
 from zyron_node import community, reminders, telegram_api
 from zyron_node.wallet_proof import issue_challenge, verify_proof
-from zyron_node import chain_builder, cipher, events, squads, wardrobe
+from zyron_node import chain_builder, cipher, events, maps, squads, wardrobe
 from zyron_node import web_login
 
 
@@ -98,6 +98,10 @@ class SquadJoinBody(IdempotentBody):
 
 class CipherBody(IdempotentBody):
     guess: str = Field(min_length=3, max_length=12)
+
+
+class CountryBody(IdempotentBody):
+    country: str = Field(default="", max_length=2)
 
 
 class WalletBody(IdempotentBody):
@@ -410,6 +414,24 @@ def register_routes(app) -> None:
         limit_user(request, identity.id, "eventclaim", 6, 60, now)
         player = _player_id(request, identity, ip_hash, now)
         return events.claim_goal(request.app.state.pool, player, body.idempotencyKey, now)
+
+    @app.get("/api/map")
+    def map_status(request: Request):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "map", 60, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        with request.app.state.pool.connection() as conn:
+            row = conn.execute("SELECT * FROM players WHERE id = %s", (player,)).fetchone()
+            return maps.map_view(conn, row)
+
+    @app.post("/api/map/country")
+    def map_country(request: Request, body: CountryBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "country", 12, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return maps.set_country(request.app.state.pool, player, body.country, body.idempotencyKey, now)
 
     @app.get("/api/upgrades")
     def upgrades(request: Request):
