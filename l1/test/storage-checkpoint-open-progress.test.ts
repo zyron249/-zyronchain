@@ -79,19 +79,33 @@ test("ChainStore.open reports progress in bounded, yielding steps while it loads
     let records = 0;
     let yielded = true;
     let withoutYield = 0;
+    const stepMarks: number[] = [];
+    let firstRecordAt = 0;
     const hooks = {
       onCheckpointStep: () => {
+        stepMarks.push(performance.now());
         steps += 1;
         if (!yielded) withoutYield += 1;
         yielded = false;
         setImmediate(() => { yielded = true; });
       },
       onBlockRecord: () => {
-        if (records === 0) stepsBeforeFirstRecord = steps;
+        if (records === 0) { stepsBeforeFirstRecord = steps; firstRecordAt = performance.now(); }
         records += 1;
       }
     };
+    const openStarted = performance.now();
     const reopened = await ChainStore.open(config, directory, hooks);
+    // Until the first block record the open is (almost) only the checkpoint
+    // load; no single gap between progress steps may take most of it (time
+    // ratio, so independent of machine speed).
+    const openPoints = [openStarted, ...stepMarks.filter((mark) => mark <= firstRecordAt), firstRecordAt];
+    let openLongest = 0;
+    for (let i = 1; i < openPoints.length; i += 1) openLongest = Math.max(openLongest, openPoints[i]! - openPoints[i - 1]!);
+    const openShare = openLongest / (firstRecordAt - openStarted);
+    t.diagnostic(`checkpoint open: ${stepsBeforeFirstRecord} steps before the first record, longest gap ${(openShare * 100).toFixed(1)}% of ${(firstRecordAt - openStarted).toFixed(0)} ms`);
+    assert.ok(firstRecordAt > 0, "the open read no block record");
+    assert.ok(openShare <= 0.6, `one gap between checkpoint progress steps took ${(openShare * 100).toFixed(0)}% of the open before its first block record`);
     // Bounded steps: the state rebuild may not set more than 4096 entries per step.
     const minimumSteps = Math.ceil(ACCOUNTS / 4_096) + 1;
     assert.ok(stepsBeforeFirstRecord >= minimumSteps,
