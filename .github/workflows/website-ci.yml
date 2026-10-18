@@ -292,8 +292,12 @@ jobs:
             }
           }
           const iconSources = (manifest.icons || []).map((icon) => icon.src);
-          for (const src of ['/favicon-32.png', '/apple-touch-icon.png', '/icon-192.png']) {
+          for (const src of ['/favicon-32.png', '/apple-touch-icon.png', '/icon-192.png', '/brand/icon-512.png']) {
             if (!iconSources.includes(src)) throw new Error(`Web manifest missing icon ${src}`);
+          }
+          const icon512 = (manifest.icons || []).find((icon) => icon.src === '/brand/icon-512.png');
+          if (!icon512 || icon512.sizes !== '512x512' || icon512.type !== 'image/png') {
+            throw new Error('Web manifest must include the 512 PNG brand icon');
           }
           if (manifest.name !== 'ZyronChain' || manifest.start_url !== '/' || manifest.display !== 'standalone') {
             throw new Error('Web manifest contract is invalid');

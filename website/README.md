@@ -11,7 +11,7 @@ Production static website for `https://zyronchain.com`. The website is intention
 - Brand palette and asset pipeline: [`tools/brand/README.md`](../tools/brand/README.md) (near-black, electric blue/cyan, chrome; no remote fonts or scripts).
 - `brand/` — generated brand assets: header wordmark, hero banner (`zyron-banner-*.webp|jpg`, mobile crop `zyron-banner-m-*`), `og-image.jpg` (1200×630), `icon-512.png`, small favicons.
 - `brand-mark.png` — wolf + Z mark (transparent) for header, footer and wallet identity.
-- `favicon.ico` (16/32/48), `favicon-32.png`, `apple-touch-icon.png`, `icon-192.png` — browser and home-screen icons from the same mark.
+- `favicon.ico` (16/32/48), `favicon-32.png`, `apple-touch-icon.png`, `icon-192.png`, and `brand/icon-512.png` (listed in `site-manifest.json`) — browser and home-screen icons from the same mark.
 - `logo.svg` / `favicon.svg` — SVG wrappers (system-font wordmark + embedded raster mark).
 - `wallet.html` — **Desktop Wallet Setup**: local-first wallet onboarding for the canonical CLI and security education. The installable **Phone Wallet — Testnet** is `app/`.
 - `wallet.js` — prepares pinned local wallet setup and backup-verify scripts, the address checker and transfer templates; it never generates, requests or uploads wallet secrets.
