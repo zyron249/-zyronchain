@@ -28,6 +28,7 @@ import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createServer } from "node:http";
+import { realpathSync } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -698,7 +699,14 @@ async function smoke() {
   }
 }
 
-if (command === "init") {
+// The CLI runs only when this file is executed directly; importing it (unit
+// tests) loads the exported functions without dispatching a command.
+const invokedDirectly = (() => {
+  try { return realpathSync(process.argv[1] ?? "") === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+})();
+if (!invokedDirectly) {
+  // imported as a module: nothing to run
+} else if (command === "init") {
   const dir = resolve(option("--dir"));
   const result = await initNetwork(dir, option("--chain-id", DEFAULT_CHAIN_ID));
   console.log(JSON.stringify({ chainId: result.chainId, genesisHash: result.genesisHash, faucetAddress: result.faucetAddress, directory: dir }, null, 2));
