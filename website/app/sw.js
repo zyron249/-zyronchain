@@ -13,9 +13,9 @@
 'use strict';
 
 // BEGIN GENERATED (tools/pwa-wallet/stamp-app.mjs)
-const VERSION = '078b8d7bfe5a371a';
+const VERSION = '829641ee2da6b999';
 const ASSETS = {
-  "./index.html": "23631cb542da56a422a6f4a3a578d6e2d3e75b182fb6ff4ba75b074ff5a4e18c",
+  "./index.html": "4e4ae9453b8ede7d03f887ffaac06ec7e053aa03ef68f88b71af884626aff1b7",
   "./manifest.json": "83636b2a989ee4244d5e1d11c4575733f7341b15e9172196f400ec80c74f8498",
   "./icons/icon-192.png": null,
   "./icons/icon-512.png": null,

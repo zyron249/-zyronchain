@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#02050a" />
+  <meta name="description" content="Look up a ZyronChain wallet-testnet address and submit a signed test transfer. Test ZYN has no value. This page never asks for a recovery phrase, password or private key." />
+  <meta name="referrer" content="no-referrer" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src https://zyron-wallet-testnet-rpc.onrender.com; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'" />
+  <link rel="canonical" href="https://zyronchain.com/testnet/" />
+  <link rel="icon" href="../favicon-32.png" type="image/png" sizes="32x32" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="ZyronChain" />
+  <meta property="og:title" content="ZyronChain — Wallet testnet" />
+  <meta property="og:description" content="Read-only lookup and signed-transfer submit for the no-value ZyronChain wallet testnet." />
+  <meta property="og:url" content="https://zyronchain.com/testnet/" />
+  <meta property="og:image" content="https://zyronchain.com/brand/og-image.jpg" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://zyronchain.com/brand/og-image.jpg" />
+  <title>ZyronChain — Wallet testnet</title>
+  <link rel="stylesheet" href="./testnet.css?v=d22435dc0a48" integrity="sha384-Nj6FbHhPTiBmkoyuLj9M13LqOV8MoS1/YDd0fXuyD8invgN+cUKUCTGZXMSEo9rk" />
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="wrap">
+    <header>
+      <a class="brand" href="../" aria-label="ZyronChain home">
+        <img src="../brand-mark.png" alt="" width="192" height="192" />
+        <span>ZyronChain</span>
+      </a>
+      <span class="badge">TESTNET · NO VALUE</span>
+    </header>
+    <main id="main" tabindex="-1">
+      <h1>Wallet testnet</h1>
+      <p class="lead">Look up an address on the no-value wallet testnet, or paste a signed transfer from the phone wallet. Chain id <code>zyron-wallet-testnet-1</code>.</p>
+      <p class="notice" role="note"><strong>Balances can vanish.</strong> This free host sleeps after inactivity and starts a fresh genesis when it wakes. A new genesis hash means earlier balances are gone. Test ZYN has no value and cannot be bought or sold.</p>
+      <p class="notice quiet" role="note">This page never asks for a recovery phrase, a password or a private key. Keys stay in the phone wallet. Only a signed transfer leaves that device.</p>
+
+      <section class="card" aria-labelledby="net-title">
+        <h2 id="net-title">Network</h2>
+        <p data-net-state aria-live="polite">Waking the free host. This can take up to a minute.</p>
+        <dl class="kv">
+          <div><dt>Chain ID</dt><dd data-chain>unknown</dd></div>
+          <div><dt>Expected transaction version</dt><dd data-tx-version>unknown</dd></div>
+          <div><dt>Height</dt><dd data-height>unknown</dd></div>
+          <div><dt>Genesis hash</dt><dd data-genesis>unknown</dd></div>
+        </dl>
+        <div class="actions"><button type="button" data-refresh>Refresh status</button></div>
+      </section>
+
+      <section class="card" aria-labelledby="lookup-title">
+        <h2 id="lookup-title">Address lookup</h2>
+        <p class="lead">Lowercase or a correct checksum both work. A wrong checksum is rejected on this page.</p>
+        <label><span>Address</span><input data-address autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ZYN…" aria-describedby="lookup-msg" /></label>
+        <div class="actions"><button class="primary" type="button" data-lookup>Look up</button></div>
+        <p class="msg" id="lookup-msg" data-lookup-msg aria-live="polite"></p>
+        <dl class="kv" data-account hidden>
+          <div><dt>Address</dt><dd data-acc-address>unknown</dd></div>
+          <div><dt>Balance</dt><dd data-acc-zyn>unknown</dd></div>
+          <div><dt>Balance (atoms)</dt><dd data-acc-atoms>unknown</dd></div>
+          <div><dt>Current nonce</dt><dd data-acc-nonce>unknown</dd></div>
+          <div><dt>Next nonce to sign = nonce + 1</dt><dd data-acc-next>unknown</dd></div>
+          <div><dt>Height</dt><dd data-acc-height>unknown</dd></div>
+          <div><dt>Genesis hash</dt><dd data-acc-genesis>unknown</dd></div>
+        </dl>
+      </section>
+
+      <section class="card" aria-labelledby="submit-title">
+        <h2 id="submit-title">Submit a signed transfer</h2>
+        <p class="lead">Paste the signed transfer JSON from the phone wallet. This page checks the shape, the chain id and the transaction version, then shows who is paid. It sends the transfer only when you press Submit.</p>
+        <label><span>Signed transfer</span><textarea data-tx spellcheck="false" autocomplete="off" aria-describedby="tx-msg" placeholder="{ &quot;kind&quot;: &quot;transfer&quot;, … }"></textarea></label>
+        <div class="actions"><button class="primary" type="button" data-tx-review>Review transfer</button></div>
+        <p class="msg" id="tx-msg" data-tx-msg aria-live="polite"></p>
+        <dl class="kv" data-review hidden>
+          <div><dt>From</dt><dd data-rev-from>unknown</dd></div>
+          <div><dt>To</dt><dd data-rev-to>unknown</dd></div>
+          <div><dt>Amount</dt><dd data-rev-amount>unknown</dd></div>
+          <div><dt>Fee</dt><dd data-rev-fee>unknown</dd></div>
+          <div><dt>Nonce</dt><dd data-rev-nonce>unknown</dd></div>
+        </dl>
+        <div class="actions"><button type="button" data-submit disabled>Submit to testnet</button></div>
+        <p class="msg" data-submit-msg aria-live="polite"></p>
+      </section>
+    </main>
+    <footer>
+      <a href="../">Home</a>
+      <a href="../app/">Phone wallet</a>
+      <a href="../hub/">Hub</a>
+      <span class="build" data-site-build>Build 483e12ff</span>
+    </footer>
+  </div>
+  <script src="./testnet.js?v=cda7e638bf2f" integrity="sha384-+EiTb7mCWzGKoj/IW6pW/3Nv3lAwN2uk0iGOlRUpwIhY1kAt3zyrKqug1xJlB3ao" defer></script>
+</body>
+</html>
