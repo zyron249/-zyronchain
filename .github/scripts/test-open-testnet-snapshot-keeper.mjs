@@ -364,6 +364,24 @@ test("runKeeper keeps polling health while a slow publish cycle is still running
   assert.ok(health.length >= 6 && gaps.every((gap) => gap <= 5 * 60_000), `health gaps ${gaps.map((gap) => gap / 60_000)} min`);
 });
 
+test("runKeeper returns at its deadline instead of sleeping a full interval past it", async () => {
+  const time = virtualTime();
+  const { github } = fakeGitHub({ now: time.now });
+  const health = [];
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/health")) { health.push(time.now()); return new Response("{}", { status: 200 }); }
+    return new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": "2150", "x-zyron-genesis-hash": GENESIS } });
+  };
+  const stats = await time.run(runKeeper({
+    fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS,
+    runMs: 7 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000,
+    now: time.now, sleep: time.sleep, log() {}, warn() {}
+  }));
+  assert.equal(stats.cycles, 1);
+  assert.deepEqual(health.map((at) => (at - T0) / 60_000), [0, 5]);
+  assert.equal(time.now() - T0, 7 * 60_000, "both loops stop at the deadline");
+});
+
 test("runKeeper survives gateway outages and reports failure only when nothing was ever up to date", async () => {
   const time = virtualTime();
   const { github } = fakeGitHub({ now: time.now });

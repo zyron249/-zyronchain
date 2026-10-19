@@ -224,7 +224,9 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
 
 // Restores a missing restore name from this keeper's own copies (left by a
 // crash or a failed swap), then deletes this keeper's copies older than
-// KEEPER_ASSET_MAX_AGE_MS for names that exist. Nothing else is deleted.
+// KEEPER_ASSET_MAX_AGE_MS for names that exist, except the best copy of each
+// name, which stays as a backup. The name is re-checked in a fresh listing
+// right before any deletion. Nothing else is deleted.
 export async function repairAndCleanup({ github, tag, expectedGenesis, now, log, warn = log, sleep = defaultSleep }) {
   const release = await github.release(tag);
   const present = new Set(release.assets.map((asset) => asset.name));
