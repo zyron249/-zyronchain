@@ -134,7 +134,11 @@ const STARTUP_GRACE_MS = 10 * 60_000;
 // block, a validator copy, a block produced or committed by a fresh init). Longer than one 180 s download attempt; no wall-clock cap,
 // because a large snapshot on a slow instance replays for a long time.
 export const BOOT_STALL_MS = 5 * 60_000;
-export const SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS = [2_000, 5_000];
+// A host outage (5xx, a network error, a body cut off mid-transfer) is retried
+// for 172 s in total before the restore counts as failed, about as long as a
+// missing asset: a failed restore creates a fresh TEST genesis, so a short
+// outage of the asset host must not reset the network.
+export const SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 20_000, 30_000, 45_000, 60_000];
 // A keeper replaces the published snapshot release asset in more than one step
 // (`gh release upload --clobber` deletes the old asset and then uploads the new
 // one; the scheduled keeper renames), so a cold start can see 404 while a
@@ -213,15 +217,17 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 // Downloads the published snapshot for a cold start. Transient download
 // failures and a transient 404 are retried; the caller treats a final 404 as
 // "nothing published" (fresh TEST genesis) and anything other than 200 as a
-// failed restore. Returns the last response (a 200 body is left unread).
-export async function downloadSnapshot(url, { fetchImpl = fetch, sleepImpl = sleep, onAttempt = () => {}, log = console.error, notFoundDelaysMs = SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS, failureDelaysMs = SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS } = {}) {
+// failed restore. Returns the last response (a 200 body is left unread). With
+// `readBody`, a 200 body is read inside the retry loop (a body cut off
+// mid-transfer is downloaded again) and `{ status: 200, bytes }` is returned.
+export async function downloadSnapshot(url, { fetchImpl = fetch, sleepImpl = sleep, onAttempt = () => {}, log = console.error, notFoundDelaysMs = SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS, failureDelaysMs = SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS, readBody = false } = {}) {
   let failures = 0;
   let notFound = 0;
   for (;;) {
     try {
       onAttempt();
       const response = await fetchImpl(url, { redirect: "follow", signal: AbortSignal.timeout(180_000) });
-      if (response.status === 200) return response;
+      if (response.status === 200) return readBody ? { status: 200, bytes: Buffer.from(await response.arrayBuffer()) } : response;
       if (response.status === 404) {
         if (notFound >= notFoundDelaysMs.length) return response;
         await response.arrayBuffer().catch(() => undefined);
@@ -1056,11 +1062,11 @@ if (!invokedDirectly) {
     if (!exists && restoreUrl && stateSecret) {
       try {
         boot.enter("download");
-        const response = await downloadSnapshot(restoreUrl, { onAttempt: boot.progress });
+        const response = await downloadSnapshot(restoreUrl, { onAttempt: boot.progress, readBody: true });
         if (response.status === 404) console.log("no state snapshot published yet; creating a fresh TEST genesis");
         else {
           assert.equal(response.status, 200, `snapshot download returned ${response.status}`);
-          const sealed = Buffer.from(await response.arrayBuffer());
+          const sealed = response.bytes;
           console.log(`snapshot downloaded (${sealed.length} bytes)`);
           boot.enter("decrypt");
           const bundle = openSnapshot(sealed, stateSecret);
