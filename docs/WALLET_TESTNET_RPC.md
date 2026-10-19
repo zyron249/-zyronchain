@@ -42,8 +42,24 @@ with origin `null`; nothing uses cookies).
 | GET | `/genesis` | the testnet genesis document |
 | GET | `/account/{address}` | balance (atoms) and nonce |
 | GET | `/balance/{address}`, `/nonce/{address}` | single values |
-| POST | `/tx` | a signed `transfer` for this chain ID only, forwarded to the validator mempool |
+| POST | `/tx` | a signed `transfer` for this chain ID only, forwarded unchanged to the validator mempool |
 | POST | `/faucet` | `{"address":"ZYN..."}`; sends 100 test ZYN |
+
+`/account`, `/balance`, `/nonce` and `POST /faucet` accept either the canonical
+address (`ZYN` + 40 lower-case hex) or a correct display checksum
+(`docs/ADDRESS_CHECKSUM.md`). A mixed-case address with the wrong checksum is
+rejected (`Address checksum mismatch`). The gateway normalizes a valid input to
+the canonical lower-case form before it calls the node, before it applies the
+per-address faucet limit, and in every response `address` / `receiver` field.
+The same account therefore shares one faucet drip whether the client sends the
+lower-case form or the checksummed form. L1 consensus addresses are unchanged:
+the node still stores and matches only the lower-case form.
+
+`POST /tx` does **not** normalize `sender` or `receiver`. Those fields are part
+of the signed canonical JSON, so rewriting their case would make a valid
+signature fail. A checksummed or otherwise non-canonical address is rejected
+with the lower-case form to submit instead. A correct signature over the
+canonical lower-case addresses is forwarded unchanged.
 
 Everything else returns `404`; consensus endpoints (`/block`, `/proposal/*`,
 `/round/*`, `/v6/*`) and `/blocks`, `/peers`, `/metrics` are not exposed.
@@ -84,5 +100,8 @@ node scripts/public-testnet-rpc.mjs --smoke             # CI smoke test
 ```
 
 The smoke test checks `/health`, CORS, the endpoint allowlist, the faucet and
-its per-address limit, a wrong-chain rejection, and a finalized transfer between
-two fresh test accounts.
+its per-address limit (including a checksummed request followed by the
+lower-case form of the same address), wrong-checksum rejection, canonical
+responses for lower-case and checksummed reads, a wrong-chain rejection, a
+refusal to rewrite checksummed `sender` / `receiver` on `POST /tx`, and a
+finalized transfer between two fresh test accounts.
