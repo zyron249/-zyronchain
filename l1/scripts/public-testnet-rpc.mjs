@@ -20,17 +20,19 @@ import { ZyronChain } from "../dist/src/chain.js";
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "../dist/src/crypto.js";
 import { createTransfer } from "../dist/src/transaction.js";
 import { gatewayClientIdentity } from "../dist/src/rpc-client-identity.js";
+import { connectWalletTestnetDatabase, planStateRestore } from "./wallet-testnet-durable.mjs";
 
 export const DEFAULT_CHAIN_ID = "zyron-wallet-testnet-1";
 const ATOMS_PER_ZYN = 100_000_000;
 const FAUCET_ALLOCATION_ATOMS = 1_000_000 * ATOMS_PER_ZYN;
 const VALIDATOR_ALLOCATION_ATOMS = 1 * ATOMS_PER_ZYN;
 const POOL_ALLOCATION_ATOMS = 1 * ATOMS_PER_ZYN;
+const CONFIGURED_TEST_SUPPLY_ATOMS = FAUCET_ALLOCATION_ATOMS + VALIDATOR_ALLOCATION_ATOMS + POOL_ALLOCATION_ATOMS;
 const FAUCET_DRIP_ATOMS = 100 * ATOMS_PER_ZYN;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ADDRESS_PATTERN = /^ZYN[0-9a-f]{40}$/;
 const MAX_BODY_BYTES = 8 * 1024;
-const NOTICE = "ZyronChain wallet TESTNET. Test ZYN has no value, cannot be bought or sold, and the network can be reset at any time. Not mainnet.";
+const NOTICE = "ZyronChain wallet TESTNET. Test ZYN has no value, cannot be bought or sold, and is not mainnet. Balances and nonces survive a restart only when durable storage is on. The network can still be reset at any time.";
 
 const smokeMode = process.argv.includes("--smoke");
 const chainId = process.env.ZYRON_TESTNET_CHAIN_ID ?? DEFAULT_CHAIN_ID;
@@ -46,15 +48,18 @@ const nodePort = Number(process.env.ZYRON_TESTNET_NODE_PORT ?? 9237);
 const gatewayPort = smokeMode ? 0 : Number(process.env.PORT ?? 10000);
 const trustProxy = process.env.ZYRON_TRUST_PROXY === "1";
 // Legacy consensus derives the round from (now - tip time), so a fresh chain
-// must start from a recent genesis time. Each start is therefore a new genesis
-// (new genesis hash); clients should treat a genesis-hash change as a reset.
+// must start from a recent genesis time. The genesis hash therefore changes on
+// each process start even when balances were restored from durable storage.
+// A hash change is not, by itself, a wipe.
 const genesisTimestampMs = Date.now() - 60_000;
 assert.ok(Number.isSafeInteger(nodePort) && nodePort > 1024 && nodePort < 65535, "invalid ZYRON_TESTNET_NODE_PORT");
 
 // ---- keys and genesis ------------------------------------------------------
 // With ZYRON_TESTNET_SEED (a testnet-only secret, 32+ characters) the
-// validator and faucet keys are identical across restarts. Chain history lives
-// on the host's ephemeral disk, so a restart starts a fresh genesis.
+// validator and faucet keys are identical across restarts. Disk state is
+// ephemeral. ZYRON_TESTNET_DATABASE_URL, when it connects, restores included
+// transfers and faucet daily limits. The seed must stay the same or a faucet
+// transfer signed by the previous key cannot be replayed.
 const seedSecret = process.env.ZYRON_TESTNET_SEED;
 if (seedSecret !== undefined) assert.ok(seedSecret.length >= 32 && seedSecret.length <= 256, "ZYRON_TESTNET_SEED must be 32-256 characters");
 const seed = seedSecret ? createHash("sha256").update(`zyronchain/wallet-testnet-seed/${seedSecret}`).digest() : randomBytes(32);
@@ -74,7 +79,7 @@ const validator = account("validator");
 const faucet = account("faucet");
 const oracle = account("activity-oracle");
 const pool = account("activity-pool");
-const genesis = {
+let genesis = {
   chainId,
   timestampMs: genesisTimestampMs,
   validators: [{ publicKey: validator.publicKey, address: validator.address }],
@@ -86,8 +91,68 @@ const genesis = {
     { address: pool.address, amountAtoms: POOL_ALLOCATION_ATOMS }
   ]
 };
-const validatedGenesis = new ZyronChain(genesis);
-const genesisHash = validatedGenesis.genesisHash;
+// stateDurable is true only when this process will record new inclusions.
+// restoredTxCount / restoredAccounts describe what this start recovered.
+let durable = null;
+let restoreMode = "none";
+let restoreEntries = [];
+let plannedRestore = { restoredTxCount: 0, restoredAccounts: 0 };
+let faucetSeed = [];
+let stateDurable = false;
+let restoredTxCount = 0;
+let restoredAccounts = 0;
+let restoreReady = true;
+const databaseUrl = process.env.ZYRON_TESTNET_DATABASE_URL?.trim();
+if (databaseUrl) {
+  try {
+    durable = await connectWalletTestnetDatabase(databaseUrl);
+    const loaded = await durable.load(chainId);
+    const plan = planStateRestore({
+      genesis,
+      entries: loaded.entries,
+      baseline: loaded.baseline,
+      nowMs: Date.now(),
+      validatorPrivateKey: validator.privateKey,
+      configuredSupplyAtoms: CONFIGURED_TEST_SUPPLY_ATOMS
+    });
+    if (plan.baselineToSave) await durable.saveBaseline(chainId, plan.baselineToSave);
+    if (plan.error) console.warn(`wallet testnet restore: ${plan.error}`);
+    if (plan.mode === "abort" && plan.severe) {
+      console.warn("wallet testnet durable restore aborted; starting non-durable so new transfers are not appended to an unusable log");
+      await durable.close();
+      durable = null;
+    } else {
+      // A non-window failure with a saved baseline keeps those balances and
+      // does not replay the bad tail. Chain nonces in that baseline are 0
+      // unless a later replay advances them.
+      genesis = plan.genesis;
+      if (plan.mode === "abort") {
+        restoreMode = "none";
+        restoredAccounts = plan.restoredAccounts;
+      } else {
+        restoreMode = plan.mode;
+        restoreEntries = plan.entries;
+        plannedRestore = { restoredTxCount: plan.restoredTxCount, restoredAccounts: plan.restoredAccounts };
+        if (plan.mode === "replay") restoreReady = false;
+        else {
+          restoredTxCount = plan.restoredTxCount;
+          restoredAccounts = plan.restoredAccounts;
+        }
+      }
+      faucetSeed = await durable.loadFaucetLimits(chainId);
+    }
+    stateDurable = Boolean(durable);
+  } catch (error) {
+    console.warn(`wallet testnet durable state unavailable; starting non-durable: ${error instanceof Error ? error.message : String(error)}`);
+    if (durable) await durable.close().catch(() => undefined);
+    durable = null;
+    stateDurable = false;
+    restoreMode = "none";
+    restoreReady = true;
+    restoreEntries = [];
+  }
+}
+const genesisHash = new ZyronChain(genesis).genesisHash;
 
 const explicitRoot = process.env.ZYRON_TESTNET_DATA_ROOT;
 const root = explicitRoot ? resolve(explicitRoot) : await mkdtemp(join(tmpdir(), "zyron-wallet-testnet-"));
@@ -158,7 +223,10 @@ async function fetchChainStatus() {
     protocolVersion: nextProtocol,
     transactionVersion: nextProtocol >= 3 ? 2 : 1,
     blockIntervalSeconds: 30,
-    faucet: { address: faucet.address, dripZyn: FAUCET_DRIP_ATOMS / ATOMS_PER_ZYN, perAddressPerDay: 1 }
+    faucet: { address: faucet.address, dripZyn: FAUCET_DRIP_ATOMS / ATOMS_PER_ZYN, perAddressPerDay: 1 },
+    stateDurable,
+    restoredTxCount,
+    restoredAccounts
   };
   statusCacheAt = Date.now();
   return statusCache;
@@ -179,6 +247,16 @@ class WindowLimiter {
     entry.count += 1;
     return { allowed: true };
   }
+  snapshot(key) {
+    const entry = this.hits.get(key);
+    return entry ? { start: entry.start, count: entry.count } : null;
+  }
+  restore(key, start, count) {
+    if (typeof key !== "string" || key.length < 1 || key.length > 200) return;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(count) || count < 0) return;
+    if (!this.hits.has(key) && this.hits.size >= this.maxKeys) return;
+    this.hits.set(key, { start, count });
+  }
   sweep(now) { for (const [key, entry] of this.hits) if (now - entry.start >= this.windowMs) this.hits.delete(key); }
 }
 const limits = {
@@ -188,6 +266,22 @@ const limits = {
   faucetAddress: new WindowLimiter(1, DAY_MS),
   faucetGlobal: new WindowLimiter(200, 60 * 60 * 1000, 1)
 };
+for (const row of faucetSeed) {
+  const limiter = row.bucket === "address" ? limits.faucetAddress : row.bucket === "ip" ? limits.faucetIp : row.bucket === "global" ? limits.faucetGlobal : null;
+  if (!limiter) continue;
+  if (!Number.isSafeInteger(row.windowStartMs) || Date.now() - row.windowStartMs >= limiter.windowMs) continue;
+  limiter.restore(row.subject, row.windowStartMs, row.hits);
+}
+async function persistFaucetLimit(bucket, key, limiter) {
+  if (!durable) return;
+  const snap = limiter.snapshot(key);
+  if (!snap) return;
+  try {
+    await durable.saveFaucetLimit(chainId, bucket, key, snap.start, snap.count);
+  } catch (error) {
+    console.warn(`wallet testnet faucet limit was not saved: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 // Rate-limit identity (P1-02). ZYRON_TRUST_PROXY=1 means the service runs
 // behind Render's Cloudflare edge, which sets CF-Connecting-IP; the leftmost
@@ -311,13 +405,17 @@ const gateway = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, ke
       return response.end();
     }
     const ip = clientIp(request);
+    if (request.method === "GET" && (path === "/health" || path === "/healthz")) {
+      const alive = child && child.exitCode === null && child.signalCode === null;
+      let height = null;
+      try { height = (await chainStatus()).height; } catch { /* starting */ }
+      return sendJson(response, alive && height !== null ? 200 : 503, { ok: Boolean(alive && height !== null), network: "testnet", valueBearing: false, chainId, height });
+    }
+    // /health stays available while included transfers are replayed so the host
+    // does not restart the process. Other routes wait so clients do not read
+    // the empty pre-replay balances or submit a conflicting nonce.
+    if (!restoreReady) return sendJson(response, 503, { error: "Restoring saved testnet state. Try again in a moment." }, { "retry-after": "2" });
     if (request.method === "GET") {
-      if (path === "/health" || path === "/healthz") {
-        const alive = child && child.exitCode === null && child.signalCode === null;
-        let height = null;
-        try { height = (await chainStatus()).height; } catch { /* starting */ }
-        return sendJson(response, alive && height !== null ? 200 : 503, { ok: Boolean(alive && height !== null), network: "testnet", valueBearing: false, chainId, height });
-      }
       const rate = limits.read.take(ip);
       if (!rate.allowed) return limited(response, rate);
       if (path === "/" ) {
@@ -360,6 +458,7 @@ const gateway = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, ke
       }
       if (path === "/faucet") {
         const ipRate = limits.faucetIp.take(ip);
+        if (ipRate.allowed) await persistFaucetLimit("ip", ip, limits.faucetIp);
         if (!ipRate.allowed) return limited(response, ipRate);
         const body = await readJsonBody(request);
         const rawAddress = body && typeof body === "object" ? body.address : undefined;
@@ -369,8 +468,10 @@ const gateway = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, ke
         const address = parsed.canonical;
         if (address === faucet.address) return sendJson(response, 400, { error: "invalid address" });
         const addressRate = limits.faucetAddress.take(address);
+        if (addressRate.allowed) await persistFaucetLimit("address", address, limits.faucetAddress);
         if (!addressRate.allowed) return limited(response, addressRate);
         const globalRate = limits.faucetGlobal.take("global");
+        if (globalRate.allowed) await persistFaucetLimit("global", "global", limits.faucetGlobal);
         if (!globalRate.allowed) return limited(response, globalRate);
         const result = await faucetSend(address);
         return sendJson(response, 200, { ...result, network: "testnet", valueBearing: false, note: "Test ZYN, no value. Arrives in the next block (about 30 seconds)." });
@@ -386,10 +487,148 @@ const gateway = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, ke
 });
 gateway.maxConnections = 256;
 
+let scannedHeight = 0;
+let scanTimer;
+let scanChain = Promise.resolve();
+
+function scheduleScan() {
+  if (!durable) return Promise.resolve();
+  scanChain = scanChain.then(() => scanIncludedTransactions()).catch((error) => {
+    console.warn(`wallet testnet inclusion scan failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  return scanChain;
+}
+
+async function scanIncludedTransactions(force = false) {
+  if (!durable || (shuttingDown && !force)) return;
+  let from = scannedHeight + 1;
+  for (;;) {
+    if (shuttingDown && !force) return;
+    const res = await nodeFetch(`/blocks?from=${from}&limit=50`);
+    if (res.status !== 200 || !Array.isArray(res.body?.blocks) || res.body.blocks.length === 0) return;
+    for (const block of res.body.blocks) {
+      const height = block?.header?.height;
+      for (const tx of block.transactions ?? []) {
+        if (tx?.kind === "transfer") await durable.insertIncluded(chainId, tx);
+      }
+      if (Number.isSafeInteger(height)) scannedHeight = height;
+    }
+    from = scannedHeight + 1;
+  }
+}
+
+async function waitForNodeReady() {
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (shuttingDown) return false;
+    const res = await nodeFetch("/healthz").catch(() => ({ status: 0 }));
+    if (res.status === 200) return true;
+    await new Promise((done) => setTimeout(done, 200));
+  }
+  return false;
+}
+
+async function replayStoredTransactions(entries) {
+  const pending = entries.map((entry) => entry.tx);
+  const done = new Set();
+  const deadline = Date.now() + 180_000;
+  while (pending.some((tx) => !done.has(tx.txid))) {
+    if (shuttingDown) return done.size;
+    if (Date.now() > deadline) throw new Error(`timed out replaying stored transfers (${done.size} included)`);
+    const confirmed = new Map();
+    const balances = new Map();
+    const reservedSpend = new Map();
+    const batch = [];
+    const queued = new Map();
+    for (const tx of pending) {
+      if (done.has(tx.txid)) continue;
+      let base = confirmed.get(tx.sender);
+      if (base === undefined) {
+        const res = await nodeFetch(`/nonce/${tx.sender}`);
+        if (res.status !== 200) throw new Error("nonce unavailable during restore");
+        base = res.body.nonce;
+        confirmed.set(tx.sender, base);
+      }
+      if (tx.nonce <= base) { done.add(tx.txid); continue; }
+      const tip = queued.get(tx.sender) ?? base;
+      if (tx.nonce !== tip + 1 || tx.nonce > base + 64) continue;
+      // A received drip is not spendable until the block that included it is
+      // confirmed. Submitting the spend in the same batch is rejected.
+      const cost = Number(tx.amountAtoms) + Number(tx.feeAtoms);
+      if (!Number.isSafeInteger(cost) || cost < 0) throw new Error("restore transfer has an invalid amount");
+      let balance = balances.get(tx.sender);
+      if (balance === undefined) {
+        const res = await nodeFetch(`/balance/${tx.sender}`);
+        if (res.status !== 200 || !Number.isSafeInteger(res.body?.balanceAtoms)) throw new Error("balance unavailable during restore");
+        balance = res.body.balanceAtoms;
+        balances.set(tx.sender, balance);
+      }
+      const reserved = reservedSpend.get(tx.sender) ?? 0;
+      if (reserved + cost > balance) continue;
+      batch.push(tx);
+      queued.set(tx.sender, tx.nonce);
+      reservedSpend.set(tx.sender, reserved + cost);
+    }
+    if (batch.length === 0) {
+      await new Promise((doneWait) => setTimeout(doneWait, 1_000));
+      continue;
+    }
+    for (const tx of batch) {
+      const res = await nodeFetch("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
+      const message = String(res.body?.error ?? "");
+      if ((res.status < 200 || res.status > 299) && !/already in mempool/i.test(message)) {
+        throw new Error(`restore submit failed: ${message || res.status}`);
+      }
+    }
+    const batchDeadline = Date.now() + 90_000;
+    const waiting = new Set(batch.map((tx) => tx.txid));
+    while (waiting.size && Date.now() < batchDeadline) {
+      if (shuttingDown) return done.size;
+      for (const tx of batch) {
+        if (!waiting.has(tx.txid)) continue;
+        const res = await nodeFetch(`/nonce/${tx.sender}`);
+        if (res.status === 200 && res.body.nonce >= tx.nonce) waiting.delete(tx.txid);
+      }
+      if (waiting.size) await new Promise((doneWait) => setTimeout(doneWait, 1_000));
+    }
+    if (waiting.size) throw new Error(`restore inclusion timed out for ${waiting.size} transfers`);
+    for (const tx of batch) done.add(tx.txid);
+    await scheduleScan();
+  }
+  return done.size;
+}
+
+async function beginDurableMaintenance() {
+  const ready = await waitForNodeReady();
+  if (!ready || shuttingDown) {
+    if (restoreMode === "replay") console.warn("wallet testnet validator did not become ready; stored transfers were not replayed");
+    restoreReady = true;
+    statusCache = undefined;
+    return;
+  }
+  scanTimer = setInterval(() => { void scheduleScan(); }, 1_000);
+  scanTimer.unref?.();
+  try {
+    if (restoreMode === "replay" && restoreEntries.length > 0) {
+      const included = await replayStoredTransactions(restoreEntries);
+      restoredTxCount = included;
+      restoredAccounts = included === restoreEntries.length ? plannedRestore.restoredAccounts : 0;
+      if (included !== restoreEntries.length) console.warn(`wallet testnet replay included ${included} of ${restoreEntries.length} stored transfers`);
+    }
+  } catch (error) {
+    console.warn(`wallet testnet replay failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    restoreReady = true;
+    statusCache = undefined;
+  }
+}
+
 async function shutdown(reason, exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`Shutting down wallet testnet: ${reason}`);
+  if (scanTimer) clearInterval(scanTimer);
+  await scanIncludedTransactions(true).catch(() => undefined);
   await new Promise((done) => gateway.close(() => done()));
   if (child && child.exitCode === null) {
     const exited = new Promise((done) => child.once("exit", done));
@@ -397,14 +636,16 @@ async function shutdown(reason, exitCode = 0) {
     await Promise.race([exited, new Promise((done) => setTimeout(done, 8_000))]);
     if (child.exitCode === null) child.kill("SIGKILL");
   }
+  if (durable) await durable.close().catch(() => undefined);
   if (!explicitRoot) await rm(root, { recursive: true, force: true });
-  process.exitCode = exitCode;
+  process.exit(exitCode);
 }
 
 startValidator();
 await new Promise((done, reject) => { gateway.once("error", reject); gateway.listen(gatewayPort, "0.0.0.0", () => done()); });
 const port = gateway.address().port;
-console.log(`ZyronChain wallet TESTNET RPC on 0.0.0.0:${port}; chain ${chainId}; genesis ${genesisHash}; faucet ${faucet.address}; stable keys=${Boolean(seedSecret)}; value-bearing=false`);
+console.log(`ZyronChain wallet TESTNET RPC on 0.0.0.0:${port}; chain ${chainId}; genesis ${genesisHash}; faucet ${faucet.address}; stable keys=${Boolean(seedSecret)}; stateDurable=${stateDurable}; restore=${restoreMode}; value-bearing=false`);
+if (durable) void beginDurableMaintenance();
 process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
 process.once("SIGINT", () => { void shutdown("SIGINT"); });
 
@@ -432,6 +673,11 @@ async function smokeTest() {
   assert.equal(status.body.chainId, chainId);
   assert.equal(status.body.valueBearing, false);
   assert.equal(status.headers.get("access-control-allow-origin"), "*");
+  if (!process.env.ZYRON_TESTNET_DATABASE_URL?.trim()) {
+    assert.equal(status.body.stateDurable, false);
+    assert.equal(status.body.restoredTxCount, 0);
+    assert.equal(status.body.restoredAccounts, 0);
+  }
   const preflight = await fetch(`${base}/tx`, { method: "OPTIONS" });
   assert.equal(preflight.status, 204);
   assert.equal((await get("/balance/not-an-address")).status, 400);

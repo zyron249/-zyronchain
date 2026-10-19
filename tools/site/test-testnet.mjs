@@ -49,7 +49,10 @@ test('talks only to the wallet testnet RPC and never handles keys', () => {
   assert.doesNotMatch(html, /type="password"|type="file"/);
   assert.match(visible, /never asks for a recovery phrase, a password or a private key/);
   assert.match(visible, /Next nonce to sign = nonce \+ 1/);
-  assert.match(visible, /fresh genesis/);
+  assert.match(visible, /durable storage is on/);
+  assert.match(visible, /deliberately reset/);
+  assert.match(visible, /Durable storage/);
+  assert.doesNotMatch(visible, /fresh genesis|Balances can vanish/);
   assert.match(js, /This looks like a recovery phrase/);
 });
 
