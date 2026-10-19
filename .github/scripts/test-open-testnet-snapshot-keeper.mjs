@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  GITHUB_CALL_TIMEOUT_MS, RENAME_RETRY_DELAYS_MS, SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, fetchSnapshot, formatLabel,
+  GITHUB_CALL_TIMEOUT_MS, RENAME_RETRY_DELAYS_MS, cancellableSleep, SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, fetchSnapshot, formatLabel,
   keeperAssetName, parseKeeperAssetName, parseLabel, perGenesisName, publishAsset, publishCycle, readCapped, repairAndCleanup, runKeeper, validateSnapshot
 } from "./open-testnet-snapshot-keeper.mjs";
 
@@ -268,6 +268,46 @@ test("an aside rename that failed leaves state.enc untouched; an unverifiable on
   }
 });
 
+test("a final rename that GitHub applied but whose response was lost keeps the new asset (no previous asset)", async () => {
+  const { github, state } = fakeGitHub({ assets: [] });
+  const rename = github.rename;
+  github.rename = async (id, name, label) => { const result = await rename(id, name, label); if (name === "state.enc") { const error = new Error("socket hang up"); error.status = 502; throw error; } return result; };
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 5, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(result.published, true);
+  assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc")?.label)?.height, 5);
+  assert.ok(!state.calls.some((call) => call[0] === "remove"), "the now-canonical asset is never deleted");
+});
+
+test("a final rename that GitHub applied but whose response was lost keeps the new asset and the backup", async () => {
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
+  const rename = github.rename;
+  github.rename = async (id, name, label) => { const result = await rename(id, name, label); if (id !== 7 && name === "state.enc") { const error = new Error("socket hang up"); error.status = 502; throw error; } return result; };
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(result.published, true);
+  assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc").label).height, 2150);
+  assert.match(state.assets.find((asset) => asset.id === 7).name, /^prev-/);
+  assert.ok(!state.calls.some((call) => call[0] === "remove"));
+});
+
+test("a failed final rename whose outcome cannot be verified deletes nothing", async () => {
+  const { github, state } = fakeGitHub({ assets: [] });
+  github.rename = async () => { const error = new Error("socket hang up"); error.status = 502; throw error; };
+  let listings = 0;
+  state.hooks.release = () => { listings += 1; if (listings >= 3) throw new Error("listing unavailable"); };
+  const warnings = [];
+  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 5, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn: (line) => warnings.push(line), sleep: async () => {} }), /socket hang up/);
+  assert.equal(state.assets.length, 1, "the upload is kept for repair");
+  assert.ok(!state.calls.some((call) => call[0] === "remove"));
+  assert.ok(warnings.some((line) => /could not verify/.test(line)));
+});
+
+test("publishAsset replaces a canonical asset that is incomplete, even when it is fresh and unlabeled", async () => {
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: "", size: 12, updated_at: new Date(T0 - 10_000).toISOString() }] });
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(result.published, true);
+  assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc").label).height, 2150);
+});
+
 test("publishAsset does not start the swap after its swap deadline and drops the upload", async () => {
   const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
   const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0 + 1, swapBy: T0, log() {}, warn() {}, sleep: async () => {} });
@@ -353,6 +393,54 @@ test("repairAndCleanup never promotes or keeps as the backup an incomplete or em
   const lone = fakeGitHub({ assets: [{ id: 6, name: keeperAssetName("prev", "state.enc", T0 - 60 * 60_000, "dddddddd"), label: "", state: "starter", size: 0 }] });
   await repairAndCleanup({ github: lone.github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {} });
   assert.ok(!lone.state.assets.some((asset) => asset.name === "state.enc"));
+});
+
+test("repairAndCleanup replaces an incomplete canonical asset with the best complete backup", async () => {
+  for (const broken of [
+    { state: "starter", size: 0, updated_at: new Date(T0 - 20 * 60_000).toISOString() },
+    { state: "uploaded", size: 12, updated_at: new Date(T0 - 30_000).toISOString() }
+  ]) {
+    const { github, state } = fakeGitHub({ assets: [
+      { id: 1, name: "state.enc", label: "", ...broken },
+      { id: 3, name: keeperAssetName("prev", "state.enc", T0 - 50 * 60_000, "aaaaaaaa"), label: formatLabel(2100, GENESIS) }
+    ] });
+    await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {} });
+    assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 3, JSON.stringify(broken));
+    assert.match(state.assets.find((asset) => asset.id === 1)?.name ?? "deleted", /^prev-|^deleted$/);
+  }
+  // An upload that may still be in progress (starter, updated moments ago) is left alone.
+  const { github, state } = fakeGitHub({ assets: [
+    { id: 1, name: "state.enc", label: "", state: "starter", size: 0, updated_at: new Date(T0 - 60_000).toISOString() },
+    { id: 3, name: keeperAssetName("prev", "state.enc", T0 - 50 * 60_000, "aaaaaaaa"), label: formatLabel(2100, GENESIS) }
+  ] });
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {} });
+  assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 1);
+});
+
+test("repairAndCleanup never restores a moved-aside copy labeled for another genesis", async () => {
+  {
+    const { github, state } = fakeGitHub({ assets: [
+      { id: 3, name: keeperAssetName("prev", "state.enc", T0 - 10 * 60_000, "aaaaaaaa"), label: formatLabel(9999, OTHER) },
+      { id: 4, name: keeperAssetName("prev", "state.enc", T0 - 50 * 60_000, "bbbbbbbb"), label: "" }
+    ] });
+    await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {} });
+    assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 4, "the unlabeled legacy copy, not the foreign one");
+  }
+  {
+    const { github, state } = fakeGitHub({ assets: [{ id: 3, name: keeperAssetName("prev", "state.enc", T0 - 10 * 60_000, "aaaaaaaa"), label: formatLabel(9999, OTHER) }] });
+    await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {} });
+    assert.ok(!state.assets.some((asset) => asset.name === "state.enc"));
+  }
+});
+
+test("repairAndCleanup deletes stale incomplete copies even while the name is missing", async () => {
+  const { github, state } = fakeGitHub({ assets: [
+    { id: 4, name: keeperAssetName("next", "state.enc", T0 - 40 * 60_000, "bbbbbbbb"), label: formatLabel(2150, GENESIS), state: "starter", size: 0 },
+    { id: 5, name: keeperAssetName("next", "state.enc", T0 - 50 * 60_000, "cccccccc"), label: formatLabel(2140, GENESIS), size: 0 },
+    { id: 6, name: keeperAssetName("next", "state.enc", T0 - 60_000, "dddddddd"), label: formatLabel(2160, GENESIS), state: "starter", size: 0 }
+  ] });
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {} });
+  assert.deepEqual(state.assets.map((asset) => asset.id), [6], "stale incomplete copies are deleted; a fresh one waits");
 });
 
 function gatewayFetch({ height = 2150, genesis = GENESIS, status = 200 } = {}) {
@@ -495,6 +583,42 @@ test("a run whose every cycle was refused for a safety reason fails instead of c
   // A genuinely current published asset is still success.
   assert.equal(exitCodeFor({ published: 0, notNewer: 1, refused: 2, genesisMismatches: 0 }), 0);
   assert.equal(exitCodeFor({ published: 0, notNewer: 0, refused: 3, genesisMismatches: 0 }), 1);
+});
+
+test("runKeeper starts each publish cycle on its interval measured from the previous cycle start", async () => {
+  const time = virtualTime();
+  const { github } = fakeGitHub({ now: time.now });
+  const upload = github.upload;
+  github.upload = async (...args) => { await time.sleep(4 * 60_000); return upload(...args); };
+  const requests = [];
+  let height = 2150;
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/health")) return new Response("{}", { status: 200 });
+    requests.push((time.now() - T0) / 60_000);
+    height += 10;
+    return new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": String(height), "x-zyron-genesis-hash": GENESIS } });
+  };
+  await time.run(runKeeper({ fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS, runMs: 30 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000, now: time.now, sleep: time.sleep, log() {}, warn() {} }));
+  assert.deepEqual(requests, [0, 10, 20], "an 8-minute cycle does not push the next snapshot request to minute 18");
+});
+
+test("runKeeper cancels its pending keepalive wait when publishing stops, so the process can exit", async () => {
+  const time = virtualTime();
+  const { github } = fakeGitHub({ now: time.now });
+  const signals = [];
+  const fetchImpl = async (url) => url.endsWith("/health") ? new Response("{}", { status: 200 })
+    : new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": "2150", "x-zyron-genesis-hash": GENESIS } });
+  await time.run(runKeeper({ fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS, runMs: 7 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000, now: time.now, sleep: (ms, signal) => { signals.push(signal); return time.sleep(ms); }, log() {}, warn() {} }));
+  assert.ok(signals.length > 0 && signals.every((signal) => signal?.aborted === true), "every wait still pending at the end is cancelled");
+  // The real sleep clears its timer on abort.
+  const timers = () => process.getActiveResourcesInfo().filter((kind) => kind === "Timeout").length;
+  const before = timers();
+  const controller = new AbortController();
+  const waiting = cancellableSleep(10 * 60_000, controller.signal);
+  assert.equal(timers(), before + 1);
+  controller.abort();
+  await waiting;
+  assert.equal(timers(), before, "no live timer is left behind");
 });
 
 test("a swap started at the deadline finishes or rolls back well before the workflow timeout", async () => {
