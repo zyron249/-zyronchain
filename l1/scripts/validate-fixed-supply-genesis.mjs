@@ -60,5 +60,10 @@ console.log("Ecosystem reserve: 5,000,000 ZYN (10%)");
 console.log("Mining issuance headroom: 0 ZYN");
 console.log(`Launch profile: ${FIXED_SUPPLY_LAUNCH_PROFILE}`);
 console.log(`Network class: ${genesis.networkClass}`);
+const release = genesis.publicDistributionRelease;
+if (release && typeof release === "object") {
+  console.log(`Public distribution release: cliffMs=${release.cliffMs} linearMs=${release.linearMs} address=${release.address}`);
+  console.log("Public distribution schedule: PENDING REVIEW (owner product decision). Documented conservative default: 90-day cliff, then 1,095-day linear release. Day one stays locked.");
+}
 console.log(`Genesis configuration commitment: ${genesisConfigCommitment(genesis)}`);
 console.log(`Genesis hash (chain identity): ${chain.genesisHash}`);

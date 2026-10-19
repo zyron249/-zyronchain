@@ -35,6 +35,8 @@ Nothing about supply, allocations, the vesting schedule (365-day cliff, 1,095-da
 
 `npm run tokenomics:check` now also requires `launchProfile: "fixed-supply-v1"` on the launch genesis and prints the configuration commitment and the genesis hash. The ceremony should publish both values alongside the genesis file's SHA-256.
 
+Declaring `networkClass` (network-class-v1) or `publicDistributionRelease` (public-distribution-release-v1) also places that same commitment in the genesis previous-hash slot. A file that omits `launchProfile`, `activityOracleThreshold`, `networkClass` and `publicDistributionRelease` keeps the historical zero previous hash. Adding `publicDistributionRelease` to a live devnet or testnet data directory changes the genesis hash; do not do that. The field and its schedule are specified in [`PUBLIC_DISTRIBUTION_RELEASE.md`](PUBLIC_DISTRIBUTION_RELEASE.md).
+
 ## What is not in the commitment
 
 - **Protocol activation schedule.** ZyronChain has no genesis-level schedule; every chain starts at protocol v1 and later versions activate through on-chain `protocol_upgrade` governance, which is already part of block history. If a genesis-level schedule is ever added it becomes a genesis field and is therefore bound automatically.
