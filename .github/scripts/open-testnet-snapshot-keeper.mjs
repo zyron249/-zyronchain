@@ -416,7 +416,6 @@ async function installBackup({ github, tag, finalName, canonical, candidates, no
       await renameWithin(github, canonical.id, keeperAssetName("prev", finalName, now()), canonical.label ?? "", { ...timing, untilMs: windowStart + ASIDE_SHARE_MS });
       warn(`moved incomplete ${finalName} (state ${canonical.state}, ${canonical.size} bytes) aside`);
     } catch (error) {
-      if (error.status === 422) throw error;
       let check = null;
       try { check = await listWithin(github, tag, { ...timing, untilMs: windowStart + ASIDE_SHARE_MS + 10_000 }); }
       catch (listError) { warn(`could not verify moving incomplete ${finalName} aside (${listError.message}); attempting the install anyway (refused if the name is still held)`); }

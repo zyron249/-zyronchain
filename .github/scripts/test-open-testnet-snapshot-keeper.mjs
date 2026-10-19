@@ -266,9 +266,11 @@ test("an aside rename that GitHub applied but whose response was lost does not d
 test("an aside rename that failed leaves state.enc untouched; an unverifiable one keeps the upload for repair", async () => {
   {
     const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
-    github.rename = async () => { const error = new Error("boom"); error.status = 500; throw error; };
+    let installs = 0;
+    github.rename = async (id, name) => { if (name === "state.enc") installs += 1; const error = new Error("boom"); error.status = 500; throw error; };
     await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} }), /boom/);
     assert.deepEqual(state.assets.map((asset) => [asset.id, /^next-/.test(asset.name) ? "next" : asset.name]), [[7, "state.enc"], [100, "next"]], "the listing shows the rename did not happen: state.enc untouched, the upload kept for cleanup");
+    assert.equal(installs, 0, "no install is attempted once the listing shows the old asset still under the name");
     assert.ok(!state.calls.some((call) => call[0] === "remove"));
   }
   {
@@ -332,8 +334,10 @@ test("an ambiguous aside rename whose old asset now has another name is not take
     if (id !== 7 && name === "state.enc") { state.calls.push(["rename", id, name]); const error = new Error("socket hang up"); error.status = 502; throw error; }
     return rename(id, name, label);
   };
-  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} }), /socket hang up/);
+  const warnings = [];
+  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn: (line) => warnings.push(line), sleep: async () => {} }), /socket hang up/);
   assert.equal(state.assets.find((asset) => asset.id === 7)?.name, "renamed-by-someone-else.enc", "an asset that is not this keeper's aside copy is never renamed back");
+  assert.ok(warnings.some((line) => /vanished during the swap \(now renamed-by-someone-else\.enc\)/.test(line)), "reported as not this keeper's backup");
   assert.ok(state.assets.some((asset) => /^next-/.test(asset.name)), "the upload is kept for repair");
   assert.ok(!state.calls.some((call) => call[0] === "remove"));
 });
@@ -1292,4 +1296,133 @@ test("createGitHub applies a per-call timeout to renames and listings", { timeou
     assert.ok(Date.now() - started < 5_000, `${what} honoured its 50 ms timeout`);
   }
   } finally { clearInterval(hold); }
+});
+
+test("a moved-aside copy renamed by someone else after the swap started is not renamed back", async () => {
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
+  const rename = github.rename;
+  github.rename = async (id, name, label) => {
+    if (id !== 7 && name === "state.enc") {
+      state.calls.push(["rename", id, name]);
+      const moved = state.assets.find((asset) => asset.id === 7);
+      if (/^prev-/.test(moved.name)) moved.name = "renamed-by-someone-else.enc";
+      const error = new Error("socket hang up"); error.status = 502; throw error;
+    }
+    return rename(id, name, label);
+  };
+  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} }), /socket hang up/);
+  assert.equal(state.assets.find((asset) => asset.id === 7)?.name, "renamed-by-someone-else.enc");
+  assert.ok(!state.assets.some((asset) => asset.name === "state.enc"), "nothing is renamed into the name from a copy that is not ours");
+  assert.ok(state.assets.some((asset) => /^next-/.test(asset.name)), "the upload is kept for repair");
+});
+
+test("a 422 on the final rename is not retried", async () => {
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
+  state.hooks.rename = (s) => { if (!s.assets.some((asset) => asset.name === "state.enc")) s.assets.push({ id: 60, name: "state.enc", label: "", state: "uploaded", size: 1000 }); };
+  let sleeps = 0;
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => { sleeps += 1; } });
+  assert.equal(result.published, false);
+  assert.equal(state.calls.filter((call) => call[0] === "rename" && call[1] === 100).length, 1, "the name is taken: one attempt");
+  assert.equal(sleeps, 0);
+});
+
+test("swap phases: the aside rename, the final rename and the rename back each end inside their share of the window, and nothing starts without time left", async () => {
+  const B = keeper.MISSING_NAME_BUDGET_MS;
+  assert.ok(B < await restoreNotFoundGraceMs());
+  assert.ok(keeper.ROLLBACK_RESERVE_MS >= 2 * keeper.SWAP_CALL_TIMEOUT_MS + 2_000, "the reserve leaves room for a verifying listing and a rename back");
+  assert.ok(keeper.ASIDE_SHARE_MS + keeper.ROLLBACK_RESERVE_MS + keeper.SWAP_CALL_TIMEOUT_MS <= B, "the final rename always gets at least one full attempt");
+  // [aside never applies] and [aside applies, final and rename back time out]; every call overruns its timeout by 20 s or 40 s.
+  for (const [asideWorks, overrunMs] of [[false, 20_000], [true, 20_000], [false, 40_000], [true, 40_000]]) {
+    const { clock, now, spend } = steppedClock();
+    const sleeps = [];
+    const sleep = async (ms) => { sleeps.push([clock.ms, ms]); clock.ms += ms; };
+    const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }], now });
+    const rename = github.rename;
+    const calls = [];
+    let windowStart = null;
+    github.rename = async (id, name, label, opts) => {
+      if (id === 7 && /^prev-/.test(name)) windowStart ??= clock.ms;
+      const kind = id === 7 ? (/^prev-/.test(name) ? "aside" : "back") : "final";
+      calls.push({ kind, start: clock.ms, timeoutMs: opts?.timeoutMs });
+      if (asideWorks && kind === "aside") return rename(id, name, label);
+      state.calls.push(["rename", id, name]);
+      spend(opts); clock.ms += overrunMs; throw timeoutError();
+    };
+    await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now, log() {}, warn() {}, sleep }));
+    const limit = { aside: keeper.ASIDE_SHARE_MS, final: B - keeper.ROLLBACK_RESERVE_MS, back: B };
+    for (const call of calls) {
+      assert.ok(call.timeoutMs >= 1_000, `${call.kind} call given ${call.timeoutMs} ms`);
+      assert.ok(call.start - windowStart + call.timeoutMs <= limit[call.kind], `${call.kind} call [${call.start - windowStart} ms + ${call.timeoutMs} ms] must end by ${limit[call.kind]} ms`);
+    }
+    for (const [start, ms] of sleeps) assert.ok(start - windowStart + ms <= B, `retry wait [${start - windowStart} ms + ${ms} ms] must end inside the window`);
+    assert.ok(calls.some((call) => call.kind === "final"), "the final rename is attempted");
+  }
+});
+
+test("the rename back keeps time for a retry after a slow aside rename and a timed-out final rename", async () => {
+  const { clock, now, sleep, spend } = steppedClock();
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }], now });
+  const rename = github.rename;
+  let backAttempts = 0;
+  let windowStart = null;
+  let restoredAt = null;
+  github.rename = async (id, name, label, opts) => {
+    if (id === 7 && /^prev-/.test(name)) { windowStart ??= clock.ms; clock.ms += Math.min(44_000, opts?.timeoutMs ?? 44_000); return rename(id, name, label); }
+    if (id !== 7) { state.calls.push(["rename", id, name]); spend(opts); throw timeoutError(); }
+    backAttempts += 1;
+    // The first rename back times out; the second takes 10 s.
+    if (backAttempts === 1) { spend(opts); throw timeoutError(); }
+    if ((opts?.timeoutMs ?? Infinity) < 10_000) { spend(opts); throw timeoutError(); }
+    clock.ms += 10_000;
+    const result = await rename(id, name, label);
+    restoredAt = clock.ms;
+    return result;
+  };
+  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now, log() {}, warn() {}, sleep }));
+  assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 7, "the old asset is back");
+  assert.ok(restoredAt - windowStart <= keeper.MISSING_NAME_BUDGET_MS);
+});
+
+test("repair stops installing when the name is taken, and gives up inside the window when every copy times out", async () => {
+  const copies = [0, 1, 2, 3, 4].map((i) => ({ id: 20 + i, name: keeperAssetName("prev", "state.enc", T0 - (5 + i) * 60_000, `0000000${i}`), label: formatLabel(2100 - i, GENESIS) }));
+  {
+    const { github, state } = fakeGitHub({ assets: copies.map((copy) => ({ ...copy })) });
+    const rename = github.rename;
+    github.rename = async (id, name, label) => {
+      // Another publisher's upload takes the name while the first install is in flight.
+      if (name === "state.enc" && !state.assets.some((asset) => asset.id === 60)) state.assets.push({ id: 60, name: "state.enc", label: "", state: "starter", size: 0, updated_at: new Date(T0).toISOString() });
+      return rename(id, name, label);
+    };
+    await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+    assert.equal(state.calls.filter((call) => call[0] === "rename" && call[2] === "state.enc").length, 1, "no further copy is tried once the name is held");
+    assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 60);
+  }
+  {
+    const { clock, now, sleep, spend } = steppedClock();
+    const { github, state } = fakeGitHub({ assets: copies.map((copy) => ({ ...copy })), now });
+    const tried = new Set();
+    github.rename = async (id, name, label, opts) => { tried.add(id); state.calls.push(["rename", id, name]); spend(opts); throw timeoutError(); };
+    await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now, log() {}, warn() {}, sleep });
+    assert.ok(clock.ms - T0 <= keeper.MISSING_NAME_BUDGET_MS, `repair spent ${clock.ms - T0} ms on installs`);
+    assert.ok(tried.size < copies.length, "not every copy is tried once the window is spent");
+  }
+});
+
+test("no GitHub call is started once the missing-name window is spent", async () => {
+  const { clock, now, sleep } = steppedClock();
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }], now });
+  const rename = github.rename;
+  const late = [];
+  let windowStart = null;
+  github.rename = async (id, name, label, opts) => {
+    if (windowStart !== null && clock.ms - windowStart >= keeper.MISSING_NAME_BUDGET_MS) late.push([id, name, opts?.timeoutMs]);
+    const result = await rename(id, name, label);
+    // The aside rename is applied but its response takes longer than the whole window.
+    if (id === 7 && /^prev-/.test(name)) { windowStart = clock.ms; clock.ms += keeper.MISSING_NAME_BUDGET_MS + 5_000; }
+    return result;
+  };
+  const warnings = [];
+  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now, log() {}, warn: (line) => warnings.push(line), sleep }), /missing-name window/);
+  assert.deepEqual(late, [], "no rename is started after the window");
+  assert.ok(state.assets.some((asset) => /^next-/.test(asset.name)) && state.assets.some((asset) => /^prev-/.test(asset.name)), "both copies are kept for the next cycle's repair");
 });

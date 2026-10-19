@@ -13,8 +13,9 @@ name: Open Testnet Snapshot Keeper
 # - Only the expected genesis is ever published, the published height never goes
 #   backwards, and the published asset is renamed aside (never deleted) until
 #   its replacement is in place (see .github/scripts/open-testnet-snapshot-keeper.mjs and
-#   docs/OPEN_TESTNET.md "Snapshot keepers"). It is safe to run next to the
-#   legacy machine keeper (deploy/open-testnet/snapshot-keeper.sh).
+#   docs/OPEN_TESTNET.md "Snapshot keepers"). While it runs, stop the legacy
+#   machine keeper (deploy/open-testnet/snapshot-keeper.sh); running both loses
+#   nothing but lets the legacy delete-then-upload remove state.enc briefly.
 # - Scheduled runs are delayed or dropped under load, often by hours, so each run
 #   loops for about 5 h 40 min instead of exiting after one cycle. The concurrency
 #   group keeps exactly one run active; the next scheduled run waits as pending
