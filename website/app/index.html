@@ -13,20 +13,21 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Zyron Wallet" />
   <meta name="format-detection" content="telephone=no" />
-  <meta name="zyron-build" content="app=75883bdac6ebcab1;release=f068d0ce8edbf15bca4f2918940c0516d34d1a9d" />
+  <meta name="zyron-build" content="app=b55be00de58d5578;release=98f0dc08811573f70258002e545d8f0e043ea48f" />
   <title>ZyronChain Wallet (testnet)</title>
   <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys stay on this device. This app does not connect and does not show a balance. Sign locally." />
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="icon" type="image/png" sizes="192x192" href="/app/icons/icon-192.png" />
   <link rel="icon" type="image/png" sizes="512x512" href="/app/icons/icon-512.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/app/icons/apple-touch-icon-180.png" />
-  <link rel="stylesheet" href="/app/app.css?v=fd58927db757" integrity="sha384-TlE+9Kfz9jXRjhFAhCBjTwfchtVk3pbZZR6Z9AjkYYur0dHy4rKMtUf2GxFU3zKu" />
+  <link rel="stylesheet" href="/app/app.css?v=b077b4292c9a" integrity="sha384-pkc32gczAb5Ji/UW9W2AioSZdGHZODZy1TbL3RilqIfigczhQHK1oyYUjBlI4CXF" />
 </head>
 <body>
   <div class="app" id="app">
     <header class="bar">
-      <a class="brand" href="/" aria-label="ZyronChain home"><img src="/app/icons/icon-192.png" alt="" width="32" height="32" /><span>Phone Wallet</span></a>
+      <a class="brand" href="/" aria-label="ZyronChain home"><img src="/app/icons/icon-192.png" alt="" width="32" height="32" /><span>Zyron Wallet</span></a>
       <span class="badge" data-i18n="badge">TESTNET · UNAUDITED</span>
+      <button type="button" class="lock-btn" data-lock hidden data-i18n="lock">Lock</button>
       <span class="chip local" data-local-indicator title="Keys and vault stay on this device"><span aria-hidden="true">●</span> <span data-local-text>Local wallet</span></span>
     </header>
 
@@ -48,6 +49,7 @@
 
     <!-- WELCOME -->
     <section class="screen" data-screen="welcome">
+      <img class="hero-mark" src="/app/icons/icon-192.png" width="72" height="72" alt="" />
       <p class="eyebrow">ZYRONCHAIN · PHONE WALLET — TESTNET</p>
       <h1 data-i18n="welcomeTitle">Create and keep your keys on this device.</h1>
       <p class="lead" data-i18n="welcomeLead">Keys are generated here with the device's secure random generator and stored only as an encrypted vault. No account, no server, no app store.</p>
@@ -71,6 +73,7 @@
 
     <!-- CREATE: PASSWORD -->
     <section class="screen" data-screen="create" hidden>
+      <div class="progress" data-progress="1" aria-hidden="true"><span></span></div>
       <p class="step">Step 1 of 4</p>
       <h2 data-i18n="createTitle">Choose a device password</h2>
       <div class="split-explain">
@@ -92,6 +95,7 @@
 
     <!-- CREATE: PRIVACY BEFORE REVEAL -->
     <section class="screen" data-screen="privacy" hidden>
+      <div class="progress" data-progress="2" aria-hidden="true"><span></span></div>
       <p class="step">Step 2 of 4</p>
       <h2 data-i18n="privacyTitle">Before you reveal your recovery phrase</h2>
       <ul class="privacy-list">
@@ -112,6 +116,7 @@
 
     <!-- CREATE: PHRASE -->
     <section class="screen" data-screen="phrase" hidden>
+      <div class="progress" data-progress="3" aria-hidden="true"><span></span></div>
       <p class="step">Step 3 of 4</p>
       <h2 data-i18n="phraseTitle">Write down your recovery phrase</h2>
       <p class="hint" data-i18n="phraseHint">Words are hidden. Tap a card to reveal it, or press and hold "Hold to reveal all". Words hide again after 20 seconds, or when you leave the app.</p>
@@ -130,6 +135,7 @@
 
     <!-- CREATE: QUIZ -->
     <section class="screen" data-screen="quiz" hidden>
+      <div class="progress" data-progress="4" aria-hidden="true"><span></span></div>
       <p class="step">Step 4 of 4</p>
       <h2 data-i18n="quizTitle">Check your backup</h2>
       <p data-i18n="quizLead">Type the requested words from your paper. The wallet is saved on this device only after this check passes.</p>
@@ -179,16 +185,30 @@
       </details>
     </section>
 
-    <!-- HOME -->
+    <!-- HOME / RECEIVE -->
     <section class="screen" data-screen="home" hidden>
+      <nav class="dock" aria-label="Wallet">
+        <button type="button" data-go="home" aria-current="page" data-i18n="dockReceive">Receive</button>
+        <button type="button" data-go="send" data-i18n="dockSend">Send</button>
+        <button type="button" data-go="settings" data-i18n="dockSettings">Settings</button>
+      </nav>
+      <div class="banner" data-backup-reminder hidden>
+        <strong data-i18n="backupRemindTitle">Confirm your paper backup</strong>
+        <span data-i18n="backupRemindBody">This session has not checked your recovery words yet. The check stays on this device. The phrase is not shown.</span>
+        <button type="button" data-go="backup" data-i18n="backupRemindGo">Check backup</button>
+      </div>
       <p class="notice ok" data-created-note hidden data-i18n="createdNote">Wallet saved. The recovery phrase was removed from the screen and the app's references to it were cleared. JavaScript cannot guarantee that memory is erased, so close the app when you are done.</p>
       <div class="card receive">
-        <div class="row between"><h2 data-i18n="receiveTitle">Your address</h2><button type="button" data-lock data-i18n="lock">Lock</button></div>
+        <h2 data-i18n="receiveTitle">Receive</h2>
+        <p class="eyebrow" data-i18n="receiveKicker">Your address</p>
         <p class="address" data-home-address aria-label="Address, grouped for reading"></p>
         <p class="label-small" data-i18n="rawLabel">Full address (what the chain uses)</p>
         <p class="address-raw" data-home-raw></p>
         <p class="hint" data-i18n="checksumNote">Upper/lower-case letters above are a display-only checksum, not consensus. The QR code holds the plain lower-case address.</p>
-        <div class="qr" data-qr role="img" aria-label="QR code of your address"></div>
+        <div class="qr-frame">
+          <div class="qr" data-qr role="img" aria-label="QR code of your address"></div>
+        </div>
+        <p class="hint" data-i18n="receiveEmpty">Show this code to receive test ZYN. Nothing incoming is listed: this app does not connect and does not show a balance.</p>
         <div class="actions">
           <button class="primary" type="button" data-copy-address data-i18n="copyChecksummed">Copy address</button>
           <button type="button" data-copy-plain data-i18n="copyPlain">Copy lower-case</button>
@@ -205,8 +225,9 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card empty-card">
         <h2 data-i18n="balanceTitle">Balance and broadcasting</h2>
+        <div class="empty-well" aria-hidden="true"><span>--</span></div>
         <dl class="kv">
           <div><dt>Balance</dt><dd data-balance>Not shown. This app does not connect to a network.</dd></div>
           <div><dt>Broadcast</dt><dd>Off. Nothing from this app is sent to a network.</dd></div>
@@ -214,7 +235,15 @@
         <p class="hint" data-i18n="balanceEmpty">Empty on purpose. The Snap and the CLI can use the no-value wallet testnet (chain id zyron-wallet-testnet-1). This phone app does not.</p>
         <button type="button" disabled data-i18n="broadcastDisabled">Broadcast (off: this app stays offline)</button>
       </div>
+    </section>
 
+    <!-- SEND -->
+    <section class="screen" data-screen="send" hidden>
+      <nav class="dock" aria-label="Wallet">
+        <button type="button" data-go="home" data-i18n="dockReceive">Receive</button>
+        <button type="button" data-go="send" aria-current="page" data-i18n="dockSend">Send</button>
+        <button type="button" data-go="settings" data-i18n="dockSettings">Settings</button>
+      </nav>
       <div class="card">
         <h2 data-i18n="signTitle">Sign a transfer locally</h2>
         <p class="hint" data-i18n="signLead">Builds exactly the L1 transfer format. Only transfers can be signed, and only for a testnet or devnet chain id.</p>
@@ -230,9 +259,25 @@
         <label><span data-i18n="txVersion">Transaction version</span>
           <select data-tx-version><option value="2" selected>2 (protocol 3+, domain-separated)</option><option value="1">1 (legacy)</option></select></label>
         <p class="hint" data-tx-check aria-live="polite"></p>
-        <div class="actions"><button class="primary" type="button" data-tx-review data-i18n="review">Review transfer</button></div>
+        <div class="actions">
+          <button class="primary" type="button" data-tx-review data-i18n="review">Review transfer</button>
+          <button type="button" data-go="home" data-i18n="back">Back</button>
+        </div>
       </div>
+    </section>
 
+    <!-- SETTINGS -->
+    <section class="screen" data-screen="settings" hidden>
+      <nav class="dock" aria-label="Wallet">
+        <button type="button" data-go="home" data-i18n="dockReceive">Receive</button>
+        <button type="button" data-go="send" data-i18n="dockSend">Send</button>
+        <button type="button" data-go="settings" aria-current="page" data-i18n="dockSettings">Settings</button>
+      </nav>
+      <div class="card">
+        <h2 data-i18n="backupRemindTitle">Confirm your paper backup</h2>
+        <p class="hint" data-i18n="backupSettingsLead">A short word check confirms the paper backup for this session. The phrase stays on this device and is not shown.</p>
+        <div class="actions"><button class="primary" type="button" data-go="backup" data-i18n="backupRemindGo">Check backup</button></div>
+      </div>
       <div class="card">
         <h2 data-i18n="convTitle">ZYN ↔ atoms</h2>
         <div class="row two">
@@ -241,19 +286,50 @@
         </div>
         <p class="hint" data-conv-result aria-live="polite">1 ZYN = 100,000,000 atoms</p>
       </div>
-
       <div class="card">
         <h2 data-i18n="securityTitle">Security</h2>
         <ul class="facts">
           <li data-i18n="sec1">Only an encrypted vault is stored on this device (scrypt N=2^17 + AES-256-GCM). The key exists in memory only while unlocked.</li>
           <li data-i18n="sec2">Auto-locks after 5 minutes without activity, or 60 seconds after the app goes to the background.</li>
-          <li data-i18n="sec3">Only your address and signed transfers can be copied; the clipboard is cleared automatically after 60 seconds when the browser allows it.</li>
+          <li data-i18n="sec3">Only your address and a signed transfer can be copied. This app tries to clear the clipboard after 60 seconds and tells you if the browser keeps it.</li>
           <li data-i18n="sec4">iPhone/iPad: the browser may delete site data if storage runs low or the app is removed. Your paper recovery phrase is the only real backup.</li>
         </ul>
         <p class="hint" data-storage-status></p>
         <div class="actions">
           <button type="button" data-vault-export data-i18n="exportVault">Export encrypted vault</button>
           <button type="button" class="danger" data-go="delete" data-i18n="deleteWallet">Delete wallet</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- BACKUP RE-QUIZ -->
+    <section class="screen" data-screen="backup" hidden>
+      <nav class="dock" aria-label="Wallet">
+        <button type="button" data-go="home" data-i18n="dockReceive">Receive</button>
+        <button type="button" data-go="send" data-i18n="dockSend">Send</button>
+        <button type="button" data-go="settings" data-i18n="dockSettings">Settings</button>
+      </nav>
+      <div class="card">
+        <p class="eyebrow">PAPER BACKUP</p>
+        <h2 data-i18n="backupTitle">Check your recovery words</h2>
+        <div data-backup-unlock-box>
+          <p class="hint" data-i18n="backupLead">Enter the device password. This app opens the vault here, asks for four words from your paper, then wipes those words from memory. Nothing is uploaded.</p>
+          <label><span data-i18n="password">Password</span>
+            <input type="password" data-backup-password autocomplete="current-password" spellcheck="false" autocapitalize="none" /></label>
+          <p class="hint" data-backup-result aria-live="polite"></p>
+          <div class="actions">
+            <button class="primary" type="button" data-backup-open data-i18n="backupOpen">Unlock and start the check</button>
+            <button type="button" data-go="home" data-i18n="back">Back</button>
+          </div>
+        </div>
+        <div data-backup-quiz-box hidden>
+          <p class="hint" data-i18n="backupQuizLead">Type the requested words from your paper. The words are not shown.</p>
+          <div class="quiz" data-backup-quiz></div>
+          <p class="hint" data-backup-quiz-result aria-live="polite"></p>
+          <div class="actions">
+            <button class="primary" type="button" data-backup-check data-i18n="backupCheck">Check words</button>
+            <button type="button" data-backup-cancel data-i18n="cancel">Cancel</button>
+          </div>
         </div>
       </div>
     </section>
@@ -270,7 +346,7 @@
           <button type="button" data-review-cancel data-i18n="cancel">Cancel</button>
         </div>
       </div>
-      <div class="tx-out" data-tx-out hidden>
+      <div class="tx-out result" data-tx-out hidden>
         <p class="notice ok" data-tx-summary></p>
         <pre data-tx-json></pre>
         <div class="actions">
@@ -405,6 +481,6 @@
   <script src="/app/vendor/noble-scure.js?v=8bc52c47d762" integrity="sha384-8rRjvBX0v19QY1jV/tt980903+713cFYFQwMvCGJR+dGfUXeXlHhGh1Ommt20XpE"></script>
   <script src="/app/vendor/qr.js?v=df7e5ee0f9db" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
   <script src="/app/zyron-wallet-core.js?v=60b8ff9850a8" integrity="sha384-yxY5KfHEcEfcCQeXZaAr2P622gxEfX+NR9Qtihi3J186Un0xdKsp59uBvev8YyiP"></script>
-  <script src="/app/app.js?v=978d379337d5" integrity="sha384-Sjx2NTPHmpRGB/nTVyCXjaL7qcjJ1X48ez8I9U6m4mnlDVi21z3sfMd1UNdsYWmd"></script>
+  <script src="/app/app.js?v=4a9e01698c49" integrity="sha384-4oXuTc03kmCIH0+6RhVO84V8OmmEJ1/o5SFdlHpvlBXr7ow2U1aHyB3mN8Gt0pWJ"></script>
 </body>
 </html>

@@ -86,6 +86,9 @@
     quiz: null,      // shuffled word indexes for the backup check
     unsigned: null,  // transfer under review (not signed)
     lastTx: null,
+    backupEntropy: null, // held only during a backup re-quiz; wiped after the check or on leave
+    backupQuiz: null,
+    backupConfirmed: false, // this unlock session only; never stored
     hiddenAt: 0,
     idleTimer: 0,
     wordTimer: 0,
@@ -129,6 +132,7 @@
   // ---------------- helpers ----------------
   function show(name) {
     if (name !== 'phrase') hideWords();
+    if (name !== 'backup') wipeBackup();
     for (const screen of $$('[data-screen]')) screen.hidden = screen.dataset.screen !== name;
     document.body.dataset.current = name;
     window.scrollTo(0, 0);
@@ -222,7 +226,7 @@
   // The recovery phrase can never be copied: block copy/cut/drag from the word list and the backup check.
   for (const type of ['copy', 'cut', 'dragstart']) {
     document.addEventListener(type, (event) => {
-      if (event.target && event.target.closest && event.target.closest('[data-phrase-words], [data-quiz]')) event.preventDefault();
+      if (event.target && event.target.closest && event.target.closest('[data-phrase-words], [data-quiz], [data-backup-quiz]')) event.preventDefault();
     });
   }
 
@@ -244,6 +248,7 @@
     state.account = null;
     clearPending();
     state.unsigned = null;
+    state.backupConfirmed = false;
     $('[data-link-proof]').textContent = '';
     $('[data-link-out]').hidden = true;
     $('[data-tx-out]').hidden = true;
@@ -253,6 +258,7 @@
     $('[data-created-note]').hidden = true;
     clearInputs();
     clearTimeout(state.idleTimer);
+    $('[data-lock]').hidden = true;
     if (state.vault) {
       $('[data-unlock-address]').textContent = core.groupAddress(core.toChecksumAddress(state.vault.address));
       setMessage('[data-unlock-result]', message || '', '');
@@ -278,7 +284,7 @@
     }
   });
   window.addEventListener('blur', hideWords);
-  window.addEventListener('pagehide', () => { hideWords(); wipeAccount(state.account); if (state.pending) { wipeAccount(state.pending.account); core.wipe(state.pending.entropy); } });
+  window.addEventListener('pagehide', () => { hideWords(); wipeAccount(state.account); if (state.pending) { wipeAccount(state.pending.account); core.wipe(state.pending.entropy); } wipeBackup(); });
 
   // ---------------- QR ----------------
   function renderQr(text) {
@@ -320,6 +326,9 @@
         hold.hidden = true;
       }
     }
+    const reminder = $('[data-backup-reminder]');
+    if (reminder) reminder.hidden = !!state.backupConfirmed;
+    $('[data-lock]').hidden = false;
     show('home');
     touch();
     refreshStorageStatus();
@@ -423,8 +432,17 @@
   }
   function revealAll() { if (state.pending) for (const button of $$('[data-phrase-words] .word-card')) setCard(button, true); }
   const hold = $('[data-hold-reveal]');
-  hold.addEventListener('pointerdown', (event) => { event.preventDefault(); revealAll(); });
-  for (const type of ['pointerup', 'pointerleave', 'pointercancel', 'blur']) hold.addEventListener(type, hideWords);
+  hold.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    // Keep the press if revealing the words shifts the button under the finger.
+    try { hold.setPointerCapture(event.pointerId); } catch (error) { /* pointer capture is optional */ }
+    revealAll();
+  });
+  for (const type of ['pointerup', 'pointercancel', 'blur']) hold.addEventListener(type, hideWords);
+  hold.addEventListener('pointerleave', (event) => {
+    if (typeof hold.hasPointerCapture === 'function' && hold.hasPointerCapture(event.pointerId)) return;
+    hideWords();
+  });
   hold.addEventListener('keydown', (event) => { if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) { event.preventDefault(); revealAll(); } });
   hold.addEventListener('keyup', (event) => { if (event.key === ' ' || event.key === 'Enter') hideWords(); });
   hold.addEventListener('contextmenu', (event) => event.preventDefault());
@@ -474,6 +492,7 @@
       state.account = state.pending.account;
       state.pending.account = null;
       clearPending(); // wipes entropy, drops vault/words references, empties the word list and the check
+      state.backupConfirmed = true; // the create check just passed; ask again only after the next unlock
       showHome();
       $('[data-created-note]').hidden = false;
     } catch (error) {
@@ -783,12 +802,84 @@
   });
   $('[data-delete-cancel]').addEventListener('click', () => (state.account ? showHome() : lock()));
 
+  // ---------------- backup re-quiz (password opens the vault on this device; four words; then wipe) ----------------
+  function resetBackupQuizUi() {
+    const quizBox = $('[data-backup-quiz-box]');
+    const unlockBox = $('[data-backup-unlock-box]');
+    const quiz = $('[data-backup-quiz]');
+    const password = $('[data-backup-password]');
+    if (quiz) quiz.textContent = '';
+    if (password) password.value = '';
+    if (quizBox) quizBox.hidden = true;
+    if (unlockBox) unlockBox.hidden = false;
+    const result = $('[data-backup-result]');
+    const quizResult = $('[data-backup-quiz-result]');
+    if (result) result.textContent = '';
+    if (quizResult) quizResult.textContent = '';
+  }
+  function wipeBackup() {
+    if (state.backupEntropy) core.wipe(state.backupEntropy);
+    state.backupEntropy = null;
+    state.backupQuiz = null;
+    resetBackupQuizUi();
+  }
+  function renderBackupQuiz() {
+    const box = $('[data-backup-quiz]');
+    box.textContent = '';
+    state.backupQuiz.forEach((index) => {
+      const label = document.createElement('label');
+      const span = document.createElement('span');
+      span.textContent = t('msgQuizWord', { n: index + 1 });
+      const input = document.createElement('input');
+      for (const [name, value] of [['autocomplete', 'off'], ['autocapitalize', 'none'], ['autocorrect', 'off'], ['spellcheck', 'false'], ['data-1p-ignore', ''], ['data-lpignore', 'true']]) input.setAttribute(name, value);
+      input.dataset.backupIndex = String(index);
+      label.append(span, input);
+      box.appendChild(label);
+    });
+  }
+  $('[data-backup-open]').addEventListener('click', async () => {
+    if (!state.vault || !state.account) return lock();
+    const password = $('[data-backup-password]').value;
+    setMessage('[data-backup-result]', '', '');
+    try {
+      const opened = await busy(t('msgUnlocking'), () => core.openVault(state.vault, password));
+      wipeAccount(opened.account);
+      if (state.backupEntropy) core.wipe(state.backupEntropy);
+      state.backupEntropy = opened.entropy;
+      state.backupQuiz = randomIndexes(QUIZ_WORDS, opened.entropy.length * 3 / 4);
+      $('[data-backup-password]').value = '';
+      renderBackupQuiz();
+      $('[data-backup-unlock-box]').hidden = true;
+      $('[data-backup-quiz-box]').hidden = false;
+      setMessage('[data-backup-quiz-result]', '', '');
+    } catch (error) {
+      setMessage('[data-backup-result]', /authentication failed/.test(error.message) ? t('msgWrongPassword') : errorText(error), 'bad');
+    }
+  });
+  $('[data-backup-check]').addEventListener('click', () => {
+    if (!state.backupEntropy || !state.backupQuiz) return;
+    const words = core.entropyToPhrase(state.backupEntropy).split(' ');
+    const inputs = $$('[data-backup-quiz] input');
+    const ok = inputs.length === QUIZ_WORDS && inputs.every((input) => core.normalizePhrase(input.value) === words[Number(input.dataset.backupIndex)]);
+    words.fill('');
+    if (!ok) { setMessage('[data-backup-quiz-result]', t('msgQuizWrong'), 'bad'); return; }
+    wipeBackup();
+    state.backupConfirmed = true;
+    showHome();
+  });
+  $('[data-backup-cancel]').addEventListener('click', () => {
+    wipeBackup();
+    if (state.account) showHome(); else lock();
+  });
+
   // ---------------- navigation ----------------
   for (const button of $$('[data-go]')) {
     button.addEventListener('click', () => {
       const target = button.dataset.go;
       if (target === 'delete') { $('[data-delete-confirm]').value = ''; $('[data-delete-ack]').checked = false; $('[data-delete-go]').disabled = true; }
       setMessage('[data-strength]', t('ruleText'), '');
+      if (target === 'home') { if (state.account) showHome(); else lock(); return; }
+      if ((target === 'send' || target === 'settings' || target === 'backup') && !state.account) return lock();
       show(target);
     });
   }

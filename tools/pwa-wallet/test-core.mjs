@@ -253,6 +253,12 @@ await test('recovery phrase UX: privacy screen first, words hidden by default, n
   assert.match(appJs, /for \(const type of \['copy', 'cut', 'dragstart'\]\)/);
   assert.doesNotMatch(appJs, /pending\.words|words: core\.entropyToPhrase/, 'the phrase is not kept as a long-lived string list');
   assert.match(appJs, /core\.wipe\(state\.pending\.entropy\);/);
+  assert.match(html, /data-screen="send"/);
+  assert.match(html, /data-screen="backup"/);
+  assert.match(html, /data-backup-reminder/);
+  assert.match(appJs, /state\.backupConfirmed = false;/);
+  assert.match(appJs, /if \(state\.backupEntropy\) core\.wipe\(state\.backupEntropy\);/);
+  assert.doesNotMatch(appJs, /backupConfirmed[\s\S]{0,120}(localStorage|sessionStorage|indexedDB)/);
   assert.match(html, /JavaScript cannot guarantee that memory is erased/);
   // copy is only offered for the address and a signed transfer
   const copyButtons = [...html.matchAll(/<button\b[^>]*>[^<]*<\/button>/g)].map((m) => m[0]).filter((b) => /copy/i.test(b)).map((b) => b.match(/data-([a-z-]+)/)[1]).sort();
