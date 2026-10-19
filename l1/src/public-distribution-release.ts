@@ -47,16 +47,17 @@ export function defaultPublicDistributionRelease(address: Address): PublicDistri
 }
 
 /**
- * Fail-closed check. A value-bearing class must name the schedule. Any other
- * genesis may omit it, and then the allocation stays spendable (existing
- * testnets). When the field is present it is enforced, including on a test class.
+ * Fail-closed check. A value-bearing class and every `fixed-supply-v1` genesis
+ * must name the schedule. A genesis that omits both may omit the field, and
+ * then the allocation stays spendable. When the field is present it is
+ * enforced, including on a test class.
  */
 export function validatePublicDistributionRelease(genesis: GenesisConfig): void {
   const present = Object.prototype.hasOwnProperty.call(genesis, "publicDistributionRelease");
   if (!present) {
-    if (isStrictNetworkClass(readNetworkClass(genesis))) {
+    if (isStrictNetworkClass(readNetworkClass(genesis)) || genesis.launchProfile === FIXED_SUPPLY_LAUNCH_PROFILE) {
       throw new Error(
-        "Value-bearing, public-launch, and mainnet genesis must declare publicDistributionRelease so the 20,000,000 ZYN allocation cannot be spent in full on day one"
+        "fixed-supply-v1, public-launch, value-bearing, and mainnet genesis must declare publicDistributionRelease so the 20,000,000 ZYN allocation cannot be spent in full on day one"
       );
     }
     return;

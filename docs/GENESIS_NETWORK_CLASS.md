@@ -14,7 +14,7 @@ Genesis files that omit the field keep the previous validation and the previous 
 
 ## Closed set
 
-Explicit test classes. Locks stay optional. One validator remains allowed.
+Explicit test classes. When they omit `launchProfile`, locks stay optional and one validator remains allowed. A genesis that declares `launchProfile: "fixed-supply-v1"` follows the launch rules even if its class is a test class or the class is omitted: locks, at least four validators, `publicDistributionRelease` and `activityOraclePolicy: "threshold-v1"`.
 
 - `devnet`
 - `local-devnet`
@@ -23,7 +23,7 @@ Explicit test classes. Locks stay optional. One validator remains allowed.
 - `open-testnet`
 - `wallet-testnet`
 
-Value-bearing classes. Node start (`new ZyronChain`, which `ChainStore.open` runs) refuses the genesis unless `launchProfile` is `fixed-supply-v1`. That profile refuses the genesis unless `allocationLocks` names the founder and permanent-liquidity allocations and the supply is exactly 50,000,000 ZYN split 5M / 20M / 20M / 5M. The same classes also require `publicDistributionRelease` (public-distribution-release-v1), so the 20,000,000 ZYN public-distribution allocation cannot be spent in full on day one. The owner-decided default is no cliff and a 365-day linear release ([`PUBLIC_DISTRIBUTION_RELEASE.md`](PUBLIC_DISTRIBUTION_RELEASE.md)). They refuse a validator set of fewer than four distinct public keys, at genesis and on a later validator-set update or checkpoint schedule. One to three validators can finalize with no tolerance for a faulty or offline validator. Test classes stay on the historical range of 1 to 100.
+Value-bearing classes. Node start (`new ZyronChain`, which `ChainStore.open` runs) refuses the genesis unless `launchProfile` is `fixed-supply-v1`. That profile refuses the genesis unless all of the following hold: `allocationLocks` names the founder and permanent-liquidity allocations, the supply is exactly 50,000,000 ZYN split 5M / 20M / 20M / 5M, there are at least four distinct validators, `publicDistributionRelease` is present (public-distribution-release-v1), and `activityOraclePolicy` is `threshold-v1` (at least 2-of-3). The public-distribution schedule keeps the 20,000,000 ZYN allocation from being spent in full on day one. The owner-decided default is no cliff and a 365-day linear release ([`PUBLIC_DISTRIBUTION_RELEASE.md`](PUBLIC_DISTRIBUTION_RELEASE.md)). Fewer than four distinct public keys is refused at genesis and on a later validator-set update or checkpoint schedule, for the profile and for these classes. One to three validators can finalize with no tolerance for a faulty or offline validator. Test classes that omit the profile stay on the historical range of 1 to 100.
 
 - `public-launch`
 - `value-bearing`
@@ -35,12 +35,12 @@ A chain ID that names `mainnet`, `public-launch` or `value-bearing` as a hyphen-
 
 - local devnet `zyron-local-<hex>`
 - `zyron-wallet-testnet-1`
-- open testnet `zyron-open-testnet-1` (it already uses `fixed-supply-v1` and the locks)
+- open testnet `zyron-open-testnet-1` (it uses `fixed-supply-v1`, so it already has the locks, four validators, `publicDistributionRelease` and `threshold-v1`; it does not declare a value-bearing class and its tokens have no value)
 - private testnet `zyron-render-private-testnet-1`
 
 ## Compatibility trade-off
 
-A genesis that omits `networkClass` and whose chain ID does not name a value-bearing class still starts with optional locks. That is deliberate: existing chains and test fixtures must keep their identity and their rules. A value-bearing launch has to set the class. `npm run tokenomics:check` refuses a ceremony file that does not. The residual gap is a chain that is operated as if it had value, but whose chain ID does not name `mainnet`, `public-launch` or `value-bearing`, and whose genesis omits `networkClass`. The ceremony command will not accept that file. Node start will, so that current testnets do not stop.
+A genesis that omits both `networkClass` and `launchProfile`, and whose chain ID does not name a value-bearing class, still starts with optional locks and may keep one validator. That is deliberate: existing chains and test fixtures that do not use the profile must keep their identity and their rules. Declaring `fixed-supply-v1` opts into the full launch rules (locks, four validators, the public-distribution schedule and `threshold-v1`) even when the class is omitted. A value-bearing launch has to set the class. `npm run tokenomics:check` refuses a ceremony file that does not. The residual gap is a chain that is operated as if it had value, but whose chain ID does not name `mainnet`, `public-launch` or `value-bearing`, and whose genesis omits `networkClass` while still using the profile. The ceremony command will not accept that file. Node start will, so that the open testnet can keep the launch rules without becoming a value-bearing network.
 
 ## What stays unchanged
 
