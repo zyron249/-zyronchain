@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, formatLabel,
-  keeperAssetName, parseKeeperAssetName, parseLabel, perGenesisName, publishAsset, publishCycle, repairAndCleanup, runKeeper, validateSnapshot
+  SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, fetchSnapshot, formatLabel,
+  keeperAssetName, parseKeeperAssetName, parseLabel, perGenesisName, publishAsset, publishCycle, readCapped, repairAndCleanup, runKeeper, validateSnapshot
 } from "./open-testnet-snapshot-keeper.mjs";
 
 const GENESIS = "9ad75d777141de46df1fb008298a4d8a92fbce0a9c96aaf26ecf69474b7db8eb";
@@ -14,6 +14,34 @@ const OTHER = "822cf008".padEnd(64, "0");
 const T0 = Date.parse("2026-10-19T05:00:00Z");
 const sealed = (size = 200) => Buffer.concat([Buffer.from(SNAPSHOT_HEADER), Buffer.alloc(size, 7)]);
 const headersOf = (map) => new Headers(map);
+
+// Virtual clock: sleep() registers a timer; run() fires the earliest timer
+// whenever every task is idle, so concurrent loops see consistent time.
+function virtualTime(start = T0) {
+  let clock = start;
+  const timers = [];
+  const sleep = (ms) => new Promise((resolve) => timers.push({ at: clock + ms, resolve }));
+  async function run(promise) {
+    let done = false;
+    let idle = 0;
+    const result = promise.finally(() => { done = true; });
+    while (!done) {
+      for (let i = 0; i < 20 && !done; i += 1) await new Promise((resolve) => setImmediate(resolve));
+      if (done) continue;
+      if (!timers.length) {
+        if (++idle > 500) throw new Error("virtual time stalled: the task waits on neither a timer nor I/O");
+        continue;
+      }
+      idle = 0;
+      timers.sort((a, b) => a.at - b.at);
+      const next = timers.shift();
+      clock = Math.max(clock, next.at);
+      next.resolve();
+    }
+    return result;
+  }
+  return { now: () => clock, sleep, run };
+}
 
 // In-memory release with GitHub's asset semantics: unique names, delete by id, rename by id.
 function fakeGitHub({ assets = [], now = () => T0 } = {}) {
@@ -188,9 +216,9 @@ test("when the old asset cannot be put back either, both copies stay and the nex
   await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0 + 60_000, log() {}, warn() {}, sleep: async () => {} });
   const restored = state.assets.find((asset) => asset.name === "state.enc");
   assert.equal(parseLabel(restored.label).height, 2150, "the highest labeled copy of the expected genesis is restored");
-  assert.equal(state.assets.length, 2, "the other copy is not stale yet");
+  assert.equal(state.assets.length, 2, "the other copy is kept");
   await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0 + 31 * 60_000, log() {}, warn() {}, sleep: async () => {} });
-  assert.deepEqual(state.assets.map((asset) => asset.name), ["state.enc"]);
+  assert.equal(state.assets.length, 2, "the only remaining copy is kept as a backup even when stale");
 });
 
 test("publishAsset still succeeds when the old copy cannot be deleted after the swap", async () => {
@@ -203,17 +231,36 @@ test("publishAsset still succeeds when the old copy cannot be deleted after the 
   assert.ok(warnings.some((line) => /cleaned up later/.test(line)));
 });
 
-test("repairAndCleanup deletes only this keeper's stale copies, and only for names that exist", async () => {
+test("repairAndCleanup keeps the best copy as a backup and deletes only this keeper's stale surplus copies", async () => {
   const assets = [
     { id: 1, name: "state.enc" }, { id: 2, name: "state-9ad75d777141.enc" },
-    { id: 3, name: keeperAssetName("prev", "state.enc", T0 - 31 * 60_000, "aaaaaaaa") },
-    { id: 4, name: keeperAssetName("next", "state.enc", T0 - 60_000, "bbbbbbbb") },
+    { id: 3, name: keeperAssetName("prev", "state.enc", T0 - 31 * 60_000, "aaaaaaaa"), label: formatLabel(2100, GENESIS) },
+    { id: 9, name: keeperAssetName("prev", "state.enc", T0 - 50 * 60_000, "eeeeeeee"), label: formatLabel(2200, GENESIS) },
+    { id: 4, name: keeperAssetName("next", "state.enc", T0 - 60_000, "bbbbbbbb"), label: formatLabel(2000, GENESIS) },
     { id: 5, name: "state-next-x.enc" }, { id: 6, name: `next-${T0 - 40 * 60_000}-cccccccc.other.enc` },
-    { id: 8, name: keeperAssetName("next", "state-9ad75d777141.enc", T0 - 45 * 60_000, "dddddddd") }
+    { id: 8, name: keeperAssetName("next", "state-9ad75d777141.enc", T0 - 45 * 60_000, "dddddddd"), label: formatLabel(2100, GENESIS) },
+    { id: 10, name: keeperAssetName("prev", "state-9ad75d777141.enc", T0 - 46 * 60_000, "ffffffff"), label: "" }
   ];
   const { github, state } = fakeGitHub({ assets });
   await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {} });
-  assert.deepEqual(state.assets.map((asset) => asset.id), [1, 2, 4, 5, 6]);
+  // state.enc: 9 (highest) is the backup, 3 is stale surplus, 4 is fresh. Per-genesis: 8 is the backup, 10 stale surplus.
+  assert.deepEqual(state.assets.map((asset) => asset.id).sort((a, b) => a - b), [1, 2, 4, 5, 6, 8, 9]);
+});
+
+test("repairAndCleanup deletes nothing when the name disappears between listings", async () => {
+  const assets = [
+    { id: 1, name: "state.enc" },
+    { id: 3, name: keeperAssetName("prev", "state.enc", T0 - 40 * 60_000, "aaaaaaaa"), label: formatLabel(2100, GENESIS) },
+    { id: 4, name: keeperAssetName("prev", "state.enc", T0 - 50 * 60_000, "bbbbbbbb"), label: formatLabel(2000, GENESIS) }
+  ];
+  const { github, state } = fakeGitHub({ assets });
+  let listings = 0;
+  state.hooks.release = (s) => { listings += 1; if (listings === 2) s.assets = s.assets.filter((asset) => asset.id !== 1); };
+  const warnings = [];
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn: (line) => warnings.push(line) });
+  assert.deepEqual(state.assets.map((asset) => asset.id), [3, 4], "no copy is deleted while the name is missing");
+  assert.ok(!state.calls.some((call) => call[0] === "remove"));
+  assert.ok(warnings.some((line) => /disappeared/.test(line)));
 });
 
 test("repairAndCleanup restores a missing name only from a trustworthy copy", async () => {
@@ -226,7 +273,7 @@ test("repairAndCleanup restores a missing name only from a trustworthy copy", as
     ] });
     await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {} });
     assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 4);
-    assert.deepEqual(state.assets.map((asset) => asset.id).sort(), [4, 5], "stale copies go once the name exists; the fresh one waits");
+    assert.deepEqual(state.assets.map((asset) => asset.id).sort(), [3, 4, 5], "the best remaining copy stays as a backup; the fresh one waits");
   }
   // An unlabeled moved-aside asset (legacy keeper) is restored rather than leaving the name missing.
   {
@@ -276,34 +323,76 @@ test("publishCycle never publishes another genesis", async () => {
 });
 
 test("runKeeper polls health, publishes on its interval and stops at the deadline", async () => {
-  let clock = T0;
-  const { github } = fakeGitHub({ now: () => clock });
+  const time = virtualTime();
+  const { github } = fakeGitHub({ now: time.now });
   let height = 2150;
-  const { fetchImpl, calls } = gatewayFetch();
-  const wrapped = async (url) => { const response = await fetchImpl(url); if (!url.endsWith("/health")) height += 20; return url.endsWith("/health") ? response : new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": String(height), "x-zyron-genesis-hash": GENESIS } }); };
-  const stats = await runKeeper({
-    fetchImpl: wrapped, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS,
+  const health = [];
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/health")) { health.push(time.now()); return new Response(JSON.stringify({ ok: true, status: "ready", maxHeight: height }), { status: 200 }); }
+    height += 20;
+    return new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": String(height), "x-zyron-genesis-hash": GENESIS } });
+  };
+  const stats = await time.run(runKeeper({
+    fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS,
     runMs: 30 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000,
-    now: () => clock, sleep: async (ms) => { clock += ms; }, log() {}, warn() {}
-  });
+    now: time.now, sleep: time.sleep, log() {}, warn() {}
+  }));
   assert.equal(stats.cycles, 3);
   assert.equal(stats.published, 3);
   assert.equal(stats.lastPublishedHeight, 2210);
-  assert.equal(calls.filter((url) => url.endsWith("/health")).length, 6);
+  assert.deepEqual(health.map((at) => (at - T0) / 60_000), [0, 5, 10, 15, 20, 25]);
   assert.equal(exitCodeFor(stats), 0);
 });
 
+test("runKeeper keeps polling health while a slow publish cycle is still running", async () => {
+  const time = virtualTime();
+  const { github } = fakeGitHub({ now: time.now });
+  const upload = github.upload;
+  github.upload = async (...args) => { await time.sleep(20 * 60_000); return upload(...args); };
+  const health = [];
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/health")) { health.push(time.now()); return new Response("{}", { status: 200 }); }
+    return new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": "2150", "x-zyron-genesis-hash": GENESIS } });
+  };
+  const stats = await time.run(runKeeper({
+    fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS,
+    runMs: 30 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000,
+    now: time.now, sleep: time.sleep, log() {}, warn() {}
+  }));
+  assert.equal(stats.published, 1, "one 40-minute cycle (two slow uploads)");
+  const gaps = health.slice(1).map((at, index) => at - health[index]);
+  assert.ok(health.length >= 6 && gaps.every((gap) => gap <= 5 * 60_000), `health gaps ${gaps.map((gap) => gap / 60_000)} min`);
+});
+
 test("runKeeper survives gateway outages and reports failure only when nothing was ever up to date", async () => {
-  let clock = T0;
-  const { github } = fakeGitHub({ now: () => clock });
+  const time = virtualTime();
+  const { github } = fakeGitHub({ now: time.now });
   const fetchImpl = async () => new Response("down", { status: 503 });
   const warnings = [];
-  const stats = await runKeeper({ fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS, runMs: 20 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000, now: () => clock, sleep: async (ms) => { clock += ms; }, log() {}, warn: (line) => warnings.push(line) });
+  const stats = await time.run(runKeeper({ fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS, runMs: 20 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000, now: time.now, sleep: time.sleep, log() {}, warn: (line) => warnings.push(line) }));
   assert.equal(stats.failures, 2);
   assert.equal(exitCodeFor(stats), 1);
-  assert.ok(warnings.every((line) => /HTTP 503/.test(line)));
+  assert.ok(warnings.length === 2 && warnings.every((line) => /HTTP 503/.test(line)));
   assert.equal(exitCodeFor({ published: 0, notNewer: 3, genesisMismatches: 0 }), 0);
   assert.equal(exitCodeFor({ published: 5, notNewer: 0, genesisMismatches: 1 }), 1);
+});
+
+test("snapshot downloads are size-capped before and while reading, and error bodies are not read", async () => {
+  const big = new Response("x", { status: 200, headers: { "content-length": String(300 * 1024 * 1024) } });
+  await assert.rejects(readCapped(big, 256 * 1024 * 1024), /content-length/);
+  await assert.rejects(readCapped(new Response("x", { headers: { "content-length": "12abc" } }), 1000), /content-length/);
+  let pulled = 0;
+  // A finite but oversized body without content-length (64 KiB against a 10 KiB cap).
+  const chunked = (counter) => new ReadableStream({ pull(controller) { counter(); if (pulledTotal() >= 64) controller.close(); else controller.enqueue(new Uint8Array(1024)); } });
+  let pulledTotal = () => pulled;
+  await assert.rejects(readCapped(new Response(chunked(() => { pulled += 1; })), 10 * 1024), /exceeds 10240 bytes/);
+  assert.ok(pulled <= 13, `stopped reading after the cap (${pulled} chunks)`);
+  assert.equal((await readCapped(new Response(sealed(100)), 1000)).length, SNAPSHOT_HEADER.length + 100);
+  let errorBodyPulled = 0;
+  pulledTotal = () => errorBodyPulled;
+  const errorBody = chunked(() => { errorBodyPulled += 1; });
+  await assert.rejects(fetchSnapshot({ fetchImpl: async () => new Response(errorBody, { status: 429 }), gateway: "https://gw", expectedGenesis: GENESIS, now: () => T0 }), /HTTP 429/);
+  assert.ok(errorBodyPulled <= 2, `a non-200 body is cancelled, not read (${errorBodyPulled} chunks)`);
 });
 
 test("createGitHub sends authenticated requests to the documented endpoints", async () => {

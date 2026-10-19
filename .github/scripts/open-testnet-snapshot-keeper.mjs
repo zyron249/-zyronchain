@@ -115,8 +115,8 @@ export function createGitHub({ fetchImpl, token, repo, apiBase = "https://api.gi
   if (!token) throw new Error("GITHUB_TOKEN is required");
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) throw new Error(`invalid repository ${repo}`);
   const headers = { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "zyron-open-testnet-snapshot-keeper" };
-  async function call(method, url, { body, contentType, okStatuses = [200] } = {}) {
-    const response = await fetchImpl(url, { method, headers: { ...headers, ...(contentType ? { "content-type": contentType } : {}) }, body, signal: AbortSignal.timeout(120_000) });
+  async function call(method, url, { body, contentType, okStatuses = [200], timeoutMs = 120_000 } = {}) {
+    const response = await fetchImpl(url, { method, headers: { ...headers, ...(contentType ? { "content-type": contentType } : {}) }, body, signal: AbortSignal.timeout(timeoutMs) });
     const text = await response.text();
     if (!okStatuses.includes(response.status)) {
       const error = new Error(`${method} ${url.replace(/\?.*$/, "")} returned HTTP ${response.status}: ${text.slice(0, 300)}`);
@@ -138,7 +138,7 @@ export function createGitHub({ fetchImpl, token, repo, apiBase = "https://api.gi
     },
     upload(releaseId, name, label, bytes) {
       const query = new URLSearchParams({ name, label });
-      return call("POST", `${uploadBase}/repos/${repo}/releases/${releaseId}/assets?${query}`, { body: bytes, contentType: "application/octet-stream", okStatuses: [201] });
+      return call("POST", `${uploadBase}/repos/${repo}/releases/${releaseId}/assets?${query}`, { body: bytes, contentType: "application/octet-stream", okStatuses: [201], timeoutMs: 600_000 });
     },
     async remove(assetId) {
       try { await call("DELETE", `${apiBase}/repos/${repo}/releases/assets/${assetId}`, { okStatuses: [204] }); return true; }
@@ -237,29 +237,61 @@ export async function repairAndCleanup({ github, tag, expectedGenesis, now, log,
   }
   for (const [finalName, copies] of groups) {
     if (!present.has(finalName)) {
-      const rank = (copy) => {
-        const label = parseLabel(copy.asset.label);
-        return label && label.genesis === expectedGenesis ? label.height : -1;
-      };
+      const rank = (copy) => copyRank(copy, expectedGenesis);
       const best = [...copies].sort((a, b) => rank(b) - rank(a) || b.ms - a.ms)[0];
       if (rank(best) < 0 && best.kind !== "prev") continue;
       await renameWithRetry(github, best.asset.id, finalName, best.asset.label ?? "", sleep);
       warn(`restored missing ${finalName} from ${best.asset.name}`);
       copies.splice(copies.indexOf(best), 1);
     }
-    for (const copy of copies) {
-      if (now() - copy.ms > KEEPER_ASSET_MAX_AGE_MS) {
-        await github.remove(copy.asset.id);
-        log(`removed stale keeper copy ${copy.asset.name}`);
-      }
+    // The best remaining copy is always kept as a backup (another keeper's
+    // delete-then-upload may remove the name at any time and fail to replace
+    // it). Older surplus copies are deleted only after a fresh listing shows
+    // that the name still exists.
+    const surplus = [...copies].sort((a, b) => copyRank(b, expectedGenesis) - copyRank(a, expectedGenesis) || b.ms - a.ms)
+      .slice(1).filter((copy) => now() - copy.ms > KEEPER_ASSET_MAX_AGE_MS);
+    if (!surplus.length) continue;
+    const fresh = await github.release(tag);
+    if (!fresh.assets.some((asset) => asset.name === finalName)) { warn(`${finalName} disappeared; keeping all keeper copies`); continue; }
+    for (const copy of surplus) {
+      await github.remove(copy.asset.id);
+      log(`removed stale keeper copy ${copy.asset.name}`);
     }
   }
+}
+
+function copyRank(copy, expectedGenesis) {
+  const label = parseLabel(copy.asset.label);
+  return label && label.genesis === expectedGenesis ? label.height : -1;
+}
+
+// Reads a response body with a hard byte cap (checked before and while reading).
+export async function readCapped(response, maxBytes) {
+  const declared = response.headers.get("content-length");
+  if (declared !== null && (!/^[0-9]+$/.test(declared.trim()) || Number(declared) > maxBytes)) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error(`snapshot content-length ${JSON.stringify(declared)} is invalid or above ${maxBytes} bytes`);
+  }
+  const chunks = [];
+  let total = 0;
+  if (response.body) {
+    for await (const chunk of response.body) {
+      total += chunk.length;
+      if (total > maxBytes) throw new Error(`snapshot body exceeds ${maxBytes} bytes`);
+      chunks.push(chunk);
+    }
+  }
+  return Buffer.concat(chunks, total);
 }
 
 export async function fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now }) {
   const requestStartedMs = now();
   const response = await fetchImpl(`${gateway}/state/snapshot`, { signal: AbortSignal.timeout(300_000) });
-  const bytes = Buffer.from(await response.arrayBuffer());
+  if (response.status !== 200) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error(`snapshot request returned HTTP ${response.status}`);
+  }
+  const bytes = await readCapped(response, MAX_SNAPSHOT_BYTES);
   const snapshot = validateSnapshot({ status: response.status, headers: response.headers, bytes }, expectedGenesis);
   return { snapshot, bytes, requestStartedMs };
 }
@@ -287,19 +319,26 @@ export async function keepAlive({ fetchImpl, gateway }) {
   }
 }
 
+// Runs two independent loops until the deadline: /health every
+// keepAliveIntervalMs (so a slow publish cycle never lets the instance idle)
+// and a publish cycle every publishIntervalMs.
 export async function runKeeper(options) {
   const { fetchImpl, github, gateway, tag, expectedGenesis, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn } = options;
   const stats = { cycles: 0, published: 0, notNewer: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null };
   const deadline = now() + runMs;
-  let nextPublish = now();
-  let nextKeepAlive = now();
-  while (now() < deadline) {
-    if (now() >= nextKeepAlive) {
+  const pause = async (intervalMs) => {
+    const wait = Math.min(now() + intervalMs, deadline) - now();
+    if (wait > 0) await sleep(wait);
+  };
+  const keepAliveLoop = async () => {
+    while (now() < deadline) {
       const health = await keepAlive({ fetchImpl, gateway });
       log(`health HTTP ${health.status} ${health.phase}${health.height === null ? "" : ` height ${health.height}`}`);
-      nextKeepAlive = now() + keepAliveIntervalMs;
+      await pause(keepAliveIntervalMs);
     }
-    if (now() >= nextPublish) {
+  };
+  const publishLoop = async () => {
+    while (now() < deadline) {
       stats.cycles += 1;
       try { await repairAndCleanup({ github, tag, expectedGenesis, now, log, warn, sleep }); }
       catch (error) { warn(`repair/cleanup of keeper copies failed: ${error instanceof Error ? error.message : String(error)}`); }
@@ -312,12 +351,10 @@ export async function runKeeper(options) {
         if (error instanceof GenesisMismatchError) { stats.genesisMismatches += 1; warn(error.message); }
         else { stats.failures += 1; warn(`cycle failed: ${error instanceof Error ? error.message : String(error)}`); }
       }
-      nextPublish = now() + publishIntervalMs;
-      nextKeepAlive = Math.min(nextKeepAlive, now() + keepAliveIntervalMs);
+      await pause(publishIntervalMs);
     }
-    const wait = Math.min(nextPublish, nextKeepAlive, deadline) - now();
-    if (wait > 0) await sleep(wait);
-  }
+  };
+  await Promise.all([keepAliveLoop(), publishLoop()]);
   return stats;
 }
 
