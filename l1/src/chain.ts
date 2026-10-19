@@ -50,6 +50,7 @@ import {
   stateV2ActivityEpochSettled,
   stateV2Balance,
   stateV2FromLedgerSnapshot,
+  stateV2FromLedgerSnapshotSteps,
   stateV2Nonce,
   stateV2KeyPreimages,
   reconstructStateV2PortableView,
@@ -135,11 +136,46 @@ export class ZyronChain {
     value: unknown,
     anchor: { tipHash: string; snapshotSha256: string }
   ): ZyronChain {
+    const steps = ZyronChain.trustedSnapshotSteps(genesis, value, anchor);
+    for (;;) {
+      const step = steps.next();
+      if (step.done) return step.value;
+    }
+  }
+
+  /**
+   * fromTrustedSnapshot (same checks, same result) in bounded steps: after each
+   * step it calls onStep and yields to the event loop, so loading a large
+   * checkpoint (the State-v2 rebuild hashes a key path per account) keeps the
+   * process responsive and reports progress (Codex P2 on #1060). The caller
+   * must own `value` and not change it while this runs.
+   */
+  static async fromTrustedSnapshotInSteps(
+    genesis: GenesisConfig,
+    value: unknown,
+    anchor: { tipHash: string; snapshotSha256: string },
+    onStep: () => void = () => {}
+  ): Promise<ZyronChain> {
+    const steps = ZyronChain.trustedSnapshotSteps(genesis, value, anchor);
+    for (;;) {
+      const step = steps.next();
+      if (step.done) return step.value;
+      onStep();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+
+  private static *trustedSnapshotSteps(
+    genesis: GenesisConfig,
+    value: unknown,
+    anchor: { tipHash: string; snapshotSha256: string }
+  ): Generator<void, ZyronChain, undefined> {
     assertHex(anchor.tipHash, 32, "trusted checkpoint tip hash");
     assertHex(anchor.snapshotSha256, 32, "trusted checkpoint snapshot digest");
     if (sha256Hex(canonicalJson(value)) !== anchor.snapshotSha256) {
       throw new Error("Trusted checkpoint snapshot digest mismatch");
     }
+    yield;
     assertPlainRecord(value, "chain snapshot");
     assertExactKeys(value, [
       "version", "chainId", "genesisHash", "height", "tip", "state", "validatorSchedule", "protocolSchedule"
@@ -180,6 +216,7 @@ export class ZyronChain {
     for (const [height, version] of protocolSchedule) chain.protocolSchedule.set(height, version);
 
     const state = LedgerState.fromSnapshot(snapshot.state);
+    yield;
     const governance = {
       validatorSchedule: [...validatorSchedule].map(([activationHeight, validators]) => ({
         activationHeight, validators: structuredClone(validators)
@@ -194,7 +231,8 @@ export class ZyronChain {
     if ((snapshot.tip.header.version === CONSENSUS_V6_PROTOCOL_VERSION) !== isConsensusV6(protocolVersion)) {
       throw new Error("Trusted checkpoint tip protocol version mismatch");
     }
-    const sparse = protocolUsesStateV2(protocolVersion) ? stateV2FromLedgerSnapshot(state.snapshot(), governance) : undefined;
+    const sparse = protocolUsesStateV2(protocolVersion) ? yield* stateV2FromLedgerSnapshotSteps(state.snapshot(), governance) : undefined;
+    yield;
     const stateRoot = protocolVersion === 1 ? state.root() : sparse!.root();
     if (snapshot.tip.header.stateRoot !== stateRoot) throw new Error("Trusted checkpoint state root mismatch");
 

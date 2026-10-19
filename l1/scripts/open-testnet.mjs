@@ -29,7 +29,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createServer } from "node:http";
 import { createReadStream, realpathSync } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -255,11 +255,34 @@ export function openSnapshot(bytes, secret) {
 // below it, so every validator's files are compared byte-for-byte (SHA-256)
 // with the replayed ones before they are opened, and all of them again right
 // before network.json is written.
+// R26-1048-L1: every copy step reports progress (each copied file, each stored
+// block record a copy's ChainStore.open reads, each hashed chunk), so the boot
+// liveness check can tell a long restore from a stall. Progress events are
+// labelled ({ step, validator, file }); the boot handler only needs the tick.
 const RESTORED_DATA_FILES = ["metadata.json", "blocks.ndjson", "recovery-checkpoint.json"];
-async function fileSha256(path) {
+async function fileSha256(path, onChunk = () => {}) {
   const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  for await (const chunk of createReadStream(path)) { hash.update(chunk); onChunk(); }
   return hash.digest("hex");
+}
+// R31-1060-L2: copy in chunks with a tick per chunk, so a large log is not one
+// silent step. The destination is new (exclusive create) and owner-only. A
+// write may complete fewer bytes than asked (Codex P2 on #1060), so each chunk
+// is written until it is complete. openFile is a test seam.
+export async function copyFileWithProgress(source, destination, onChunk = () => {}, { openFile = open } = {}) {
+  const handle = await openFile(destination, "wx", 0o600);
+  try {
+    for await (const chunk of createReadStream(source)) {
+      for (let offset = 0; offset < chunk.length;) {
+        const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset);
+        if (!(bytesWritten > 0)) throw new Error(`restore copy of ${source} made no progress`);
+        offset += bytesWritten;
+      }
+      onChunk();
+    }
+  } finally {
+    await handle.close();
+  }
 }
 export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress = () => {} } = {}) {
   assert.equal(bundle?.format, SNAPSHOT_MAGIC, "unknown snapshot format");
@@ -283,26 +306,35 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
   const firstData = join(dir, `data-${first}`);
   await mkdir(firstData, { mode: 0o700 });
   const store = await ChainStore.open(genesis, firstData);
-  for (const block of blocks) { await store.commitFinalizedBlock(block); onProgress(); }
+  for (const block of blocks) { await store.commitFinalizedBlock(block); onProgress({ step: "replay-block" }); }
   assert.equal(store.chain.height, blocks.length, "snapshot replay height mismatch");
   const checkpoint = await store.writeRecoveryCheckpoint();
+  onProgress({ step: "checkpoint" });
   const replayed = new Map();
-  for (const file of RESTORED_DATA_FILES) replayed.set(file, await fileSha256(join(firstData, file)));
+  for (const file of RESTORED_DATA_FILES) replayed.set(file, await fileSha256(join(firstData, file), () => onProgress({ step: "hash-chunk", validator: first, file })));
+  onProgress({ step: "digested" });
   const verifyFiles = async (name, data) => {
     for (const file of RESTORED_DATA_FILES) {
-      if (await fileSha256(join(data, file)) !== replayed.get(file)) throw new Error(`restored ${name} ${file} does not match the replayed log`);
+      const digest = await fileSha256(join(data, file), () => onProgress({ step: "verify-chunk", validator: name, file }));
+      if (digest !== replayed.get(file)) throw new Error(`restored ${name} ${file} does not match the replayed log`);
     }
   };
-  onProgress();
   for (const name of others) {
     const data = join(dir, `data-${name}`);
     await mkdir(data, { mode: 0o700 });
-    for (const file of RESTORED_DATA_FILES) await copyFile(join(firstData, file), join(data, file));
+    for (const file of RESTORED_DATA_FILES) {
+      await copyFileWithProgress(join(firstData, file), join(data, file), () => onProgress({ step: "copy-chunk", validator: name, file }));
+      onProgress({ step: "copy-file", validator: name, file });
+    }
     await chmod(join(data, "blocks.ndjson"), 0o600);
     await verifyFiles(name, data);
-    const copy = await ChainStore.open(genesis, data);
+    const copy = await ChainStore.open(genesis, data, {
+      onBlockRecord: () => onProgress({ step: "open-record", validator: name }),
+      onStateV2Batch: () => onProgress({ step: "open-state", validator: name }),
+      onCheckpointStep: () => onProgress({ step: "open-checkpoint", validator: name })
+    });
     assert.ok(copy.chain.height === blocks.length && copy.chain.tip.hash === checkpoint.tipHash, `restored ${name} state does not match the replayed state`);
-    onProgress();
+    onProgress({ step: "copy-opened", validator: name });
   }
   // R28-1059-L1: every copy (not only the replayed one) is checked again
   // right before the completion marker.

@@ -141,27 +141,60 @@ export class SparseMerkleState {
 
   nodeRecords(): StateV2NodeRecord[] {
     const records: StateV2NodeRecord[] = [];
+    for (const batch of this.nodeRecordBatches(4_096)) {
+      for (const record of batch) records.push(record);
+    }
+    return records;
+  }
+
+  /**
+   * The records of nodeRecords(), in the same order (children before their
+   * branch), produced lazily in batches of at most `batchSize`. The traversal is
+   * iterative and resumes where the previous batch stopped, so a caller can
+   * yield to the event loop between batches of a large tree instead of building
+   * the whole list in one synchronous step (Codex P2 on #1060). The state is
+   * immutable, so interleaving other work between batches cannot change them.
+   */
+  *nodeRecordBatches(batchSize: number): Generator<StateV2NodeRecord[], void, undefined> {
+    if (!Number.isSafeInteger(batchSize) || batchSize < 1) throw new Error("Invalid State v2 node record batch size");
     const seen = new Set<string>();
-    const visit = (link: NodeLink | undefined, depth: number): void => {
+    const stack: Array<{ node: BranchNode; depth: number; next: 0 | 1 | 2 }> = [];
+    let batch: StateV2NodeRecord[] = [];
+    const enter = (link: NodeLink | undefined, depth: number): void => {
       if (!link || seen.has(link.hash)) return;
       const node = this.resolveNode(link, depth);
       seen.add(node.hash);
       if (node.kind === "leaf") {
-        records.push({
+        batch.push({
           kind: "leaf", hash: node.hash, keyHash: node.keyHash,
           valueHash: node.valueHash, valueJson: node.valueJson
         });
-        return;
+      } else {
+        stack.push({ node, depth, next: 0 });
       }
-      visit(node.left, depth + 1);
-      visit(node.right, depth + 1);
-      records.push({
-        kind: "branch", hash: node.hash,
-        leftHash: linkHash(node.left) ?? null, rightHash: linkHash(node.right) ?? null
-      });
     };
-    visit(this.rootNode, 0);
-    return records;
+    enter(this.rootNode, 0);
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1]!;
+      if (frame.next === 0) {
+        frame.next = 1;
+        enter(frame.node.left, frame.depth + 1);
+      } else if (frame.next === 1) {
+        frame.next = 2;
+        enter(frame.node.right, frame.depth + 1);
+      } else {
+        stack.pop();
+        batch.push({
+          kind: "branch", hash: frame.node.hash,
+          leftHash: linkHash(frame.node.left) ?? null, rightHash: linkHash(frame.node.right) ?? null
+        });
+      }
+      if (batch.length >= batchSize) {
+        yield batch;
+        batch = [];
+      }
+    }
+    if (batch.length > 0) yield batch;
   }
 
   /** Reachability metadata without duplicating full leaf payloads. */
@@ -436,22 +469,51 @@ export function stateV2FromLedgerSnapshot(
   snapshot: LedgerSnapshot,
   governance?: StateV2GovernanceSnapshot
 ): SparseMerkleState {
+  const steps = stateV2FromLedgerSnapshotSteps(snapshot, governance);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Entries set per step of stateV2FromLedgerSnapshotSteps. */
+export const STATE_V2_REBUILD_STEP_ENTRIES = 1_024;
+
+/**
+ * stateV2FromLedgerSnapshot in bounded steps: the generator yields after every
+ * STATE_V2_REBUILD_STEP_ENTRIES entries and returns the same state. Each set()
+ * hashes a key path, so rebuilding a large state is slow; a caller can yield to
+ * the event loop between steps (Codex P2 on #1060).
+ */
+export function* stateV2FromLedgerSnapshotSteps(
+  snapshot: LedgerSnapshot,
+  governance?: StateV2GovernanceSnapshot
+): Generator<void, SparseMerkleState, undefined> {
   let state = SparseMerkleState.empty();
+  let entries = 0;
+  const counted = function* (): Generator<void, void, undefined> {
+    entries += 1;
+    if (entries % STATE_V2_REBUILD_STEP_ENTRIES === 0) yield;
+  };
   for (const account of [...snapshot.accounts].sort((a, b) => compareCanonicalStrings(a.address, b.address))) {
     state = state.set(accountKey(account.address), {
       balanceAtoms: account.balanceAtoms,
       nonce: account.nonce
     });
+    yield* counted();
   }
   for (const epoch of [...snapshot.settledActivityEpochs].sort((a, b) => a - b)) {
     state = state.set(activityEpochKey(epoch), { settled: true });
+    yield* counted();
   }
   if (governance) {
     for (const entry of [...governance.validatorSchedule].sort((a, b) => a.activationHeight - b.activationHeight)) {
       state = state.set(validatorScheduleKey(entry.activationHeight), { validators: entry.validators });
+      yield* counted();
     }
     for (const entry of [...governance.protocolSchedule].sort((a, b) => a.activationHeight - b.activationHeight)) {
       state = state.set(protocolScheduleKey(entry.activationHeight), { protocolVersion: entry.protocolVersion });
+      yield* counted();
     }
   }
   return state;

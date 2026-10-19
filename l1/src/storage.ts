@@ -13,7 +13,7 @@ import { ZyronChain } from "./chain.js";
 import { ConsensusStateStore } from "./consensus-state-store.js";
 import { V6_MAX_ROUND, safeVote, type V6Lock } from "./consensus-v6.js";
 import { StateV2DiskStore } from "./state-v2-store.js";
-import { stateV2TransactionKeyPreimages } from "./state-v2.js";
+import { SparseMerkleState, stateV2TransactionKeyPreimages } from "./state-v2.js";
 import type { StateV2PortableBundleV1 } from "./state-v2-portable.js";
 import type { Block, GenesisConfig } from "./types.js";
 
@@ -314,6 +314,30 @@ export interface FinalizedLogOpenFaultHooks {
   afterDirectorySync?: () => void | Promise<void>;
   /** After the tail repair write (re-termination or lone-lock completion), before its fsync. */
   afterTailRepairWrite?: () => void | Promise<void>;
+  /**
+   * Progress only: called synchronously for every stored block record the open
+   * reads (line scan below a recovery checkpoint and replay above it, or a full
+   * replay), so a liveness monitor can tell a long open from a stall
+   * (R26-1048-L1). It counts reads, not distinct records: when a checkpoint is
+   * rejected and the open falls back to a full replay, the records are read and
+   * reported again, so progress continues during the fallback (R31-1060-L1).
+   * It must not throw; it cannot change what is accepted.
+   */
+  onBlockRecord?: () => void;
+  /**
+   * Progress only: called after each batch when the open rebuilds or catches up
+   * the derived State-v2 store (for example a restored copy without one), which
+   * is written in bounded batches with event-loop yields (Codex P2 on #1060).
+   * It must not throw; it cannot change what is stored or accepted.
+   */
+  onStateV2Batch?: () => void;
+  /**
+   * Progress only: called after each bounded step of loading and verifying the
+   * recovery checkpoint (file read, parse, snapshot digest, ledger, every 1024
+   * State-v2 entries rebuilt), which yields to the event loop between steps
+   * (Codex P2 on #1060). It must not throw; it cannot change what is accepted.
+   */
+  onCheckpointStep?: () => void;
 }
 
 export class ChainStore {
@@ -385,7 +409,7 @@ export class ChainStore {
       throw new Error("Finalized block log initialization persistence failed", { cause: error });
     }
     const retention = await loadHistoryRetention(genesis, dataDir);
-    const checkpoint = await loadRecoveryCheckpoint(genesis, dataDir);
+    const checkpoint = await loadRecoveryCheckpoint(genesis, dataDir, faultHooks.onCheckpointStep);
     if (retention && (!checkpoint || checkpoint.checkpoint.version !== 2 ||
         checkpoint.checkpoint.retainedFromHeight < retention.prunedThroughHeight + 1)) {
       throw new Error("Pruned finalized history requires a valid compatible recovery checkpoint");
@@ -393,7 +417,7 @@ export class ChainStore {
     let replay: Awaited<ReturnType<typeof replayStoredBlocks>> | undefined;
     if (checkpoint) {
       try {
-        replay = await replayStoredBlocks(genesis, blocksPath, checkpoint);
+        replay = await replayStoredBlocks(genesis, blocksPath, checkpoint, faultHooks.onBlockRecord);
       } catch (error) {
         if (retention) {
           throw new Error("Pruned finalized history cannot fall back to full replay", { cause: error });
@@ -403,7 +427,7 @@ export class ChainStore {
         // it must never prevent a safe full replay.
       }
     }
-    replay ??= await replayStoredBlocks(genesis, blocksPath);
+    replay ??= await replayStoredBlocks(genesis, blocksPath, undefined, faultHooks.onBlockRecord);
     if (replay.tornTailBytes > 0) {
       await truncateTornTail(blocksPath, replay.offset, replay.tornTailBytes, "finalized block log");
     }
@@ -424,13 +448,15 @@ export class ChainStore {
       const replayedKeys = replay.chain.stateV2SemanticKeyPreimages();
       if (!replayedKeys) throw new Error("Active State v2 replay is missing semantic keys");
       const persistedRoot = stateV2Store.state().root();
-      if (stateV2Store.state().nodeRecords().length === 0 || persistedRoot !== replayedStateV2.root() ||
+      // An empty store has the empty root; comparing roots avoids copying every
+      // record of a populated store just to test for emptiness.
+      if (persistedRoot === SparseMerkleState.empty().root() || persistedRoot !== replayedStateV2.root() ||
           !stateV2Store.semanticIndexWouldBeComplete(replayedStateV2, [])) {
         // The finalized block log is authoritative. A crash can occur after the
         // block fsync and before its State-v2 root pointer commit, leaving a
         // valid but stale state store. Replay has already revalidated the full
         // transition, so catch the store up to that authenticated state.
-        await stateV2Store.commit(replayedStateV2, replayedKeys);
+        await stateV2Store.commit(replayedStateV2, replayedKeys, faultHooks.onStateV2Batch ? { onCatchupBatch: faultHooks.onStateV2Batch } : {});
       }
     }
     return new ChainStore(
@@ -1611,9 +1637,13 @@ interface LoadedRecoveryCheckpoint {
   chain: ZyronChain;
 }
 
-async function loadRecoveryCheckpoint(genesis: GenesisConfig, dataDir: string): Promise<LoadedRecoveryCheckpoint | undefined> {
+async function loadRecoveryCheckpoint(
+  genesis: GenesisConfig,
+  dataDir: string,
+  onStep?: () => void
+): Promise<LoadedRecoveryCheckpoint | undefined> {
   try {
-    return await loadRecoveryCheckpointFile(genesis, join(dataDir, "recovery-checkpoint.json"));
+    return await loadRecoveryCheckpointFile(genesis, join(dataDir, "recovery-checkpoint.json"), onStep);
   } catch (error) {
     if (isMissingFile(error)) return undefined;
     // Recovery metadata is an optimization, never the authority. Corrupt or
@@ -1623,14 +1653,28 @@ async function loadRecoveryCheckpoint(genesis: GenesisConfig, dataDir: string): 
 }
 
 /** Reads and fully verifies one recovery checkpoint file; throws on any defect. */
-async function loadRecoveryCheckpointFile(genesis: GenesisConfig, path: string): Promise<LoadedRecoveryCheckpoint> {
+async function loadRecoveryCheckpointFile(
+  genesis: GenesisConfig,
+  path: string,
+  onStep?: () => void
+): Promise<LoadedRecoveryCheckpoint> {
+  // With a progress callback, the slow parts (the State-v2 rebuild in
+  // particular) run in bounded steps with a callback and an event-loop yield
+  // after each (Codex P2 on #1060); the checks and the result are the same.
+  const step = async (): Promise<void> => {
+    if (!onStep) return;
+    onStep();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  };
   const checkpointBytes = await readBoundedFileBuffer(
     path,
     MAX_RECOVERY_CHECKPOINT_FILE_BYTES,
     "Recovery checkpoint"
   );
+  await step();
   assertBoundedCheckpointJsonStructure(checkpointBytes);
   const value = JSON.parse(checkpointBytes.toString("utf8")) as unknown;
+  await step();
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid recovery checkpoint");
   const record = value as Record<string, unknown>;
   const commonValid = typeof record.chainId === "string" && typeof record.genesisHash === "string" &&
@@ -1679,10 +1723,10 @@ async function loadRecoveryCheckpointFile(genesis: GenesisConfig, path: string):
       checkpoint.tipHash !== (checkpoint.snapshot as { tip?: { hash?: unknown } }).tip?.hash) {
     throw new Error("Recovery checkpoint metadata mismatch");
   }
-  const chain = ZyronChain.fromTrustedSnapshot(genesis, checkpoint.snapshot, {
-    tipHash: checkpoint.tipHash,
-    snapshotSha256: checkpoint.snapshotSha256
-  });
+  const trustedAnchor = { tipHash: checkpoint.tipHash, snapshotSha256: checkpoint.snapshotSha256 };
+  const chain = onStep
+    ? await ZyronChain.fromTrustedSnapshotInSteps(genesis, checkpoint.snapshot, trustedAnchor, onStep)
+    : ZyronChain.fromTrustedSnapshot(genesis, checkpoint.snapshot, trustedAnchor);
   if (checkpoint.genesisHash !== chain.genesisHash) throw new Error("Recovery checkpoint genesis mismatch");
   if (checkpoint.height === 0 && checkpoint.blockFileBytes !== 0) throw new Error("Invalid genesis recovery boundary");
   if (checkpoint.version === 2) {
@@ -1700,7 +1744,8 @@ async function loadRecoveryCheckpointFile(genesis: GenesisConfig, path: string):
 async function replayStoredBlocks(
   genesis: GenesisConfig,
   blocksPath: string,
-  loaded?: LoadedRecoveryCheckpoint
+  loaded?: LoadedRecoveryCheckpoint,
+  onBlockRecord: () => void = () => {}
 ): Promise<{
   chain: ZyronChain;
   count: number;
@@ -1756,6 +1801,7 @@ async function replayStoredBlocks(
     }
     const height = count + 1;
     blockRanges.push({ height, offset, length: lineBytes });
+    onBlockRecord();
 
     if (checkpoint && height < checkpoint.height) {
       count = height;
