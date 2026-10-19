@@ -438,6 +438,8 @@ test("a failed upload is only adopted when the listing shows that exact upload c
   for (const [what, tamper] of [
     ["the POST failed before GitHub stored anything", (s) => { s.assets = s.assets.filter((asset) => !/^next-/.test(asset.name)); }],
     ["the upload is still in the starter state", (s) => { for (const asset of s.assets) if (/^next-/.test(asset.name)) Object.assign(asset, { state: "starter", size: 0 }); }],
+    ["the upload is in the starter state with its full size", (s) => { for (const asset of s.assets) if (/^next-/.test(asset.name)) asset.state = "starter"; }],
+    ["only an older keeper copy with the same label and size exists", (s) => { for (const asset of s.assets) if (/^next-/.test(asset.name)) asset.name = keeperAssetName("next", "state.enc", T0 - 60_000, "abcdef01"); }],
     ["the stored asset is shorter than the snapshot", (s) => { for (const asset of s.assets) if (/^next-/.test(asset.name)) asset.size -= 1; }],
     ["the stored asset carries another label", (s) => { for (const asset of s.assets) if (/^next-/.test(asset.name)) asset.label = formatLabel(9999, GENESIS); }]
   ]) {
