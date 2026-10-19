@@ -344,16 +344,16 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
       if (collided) return { published: false, reason: "another keeper's upload of the same name is in progress; upload kept for repair" };
       throw error;
     }
-    if (keepUpload) {
+    if (keepUpload || !aside) {
+      // No asset holds the name and there is no moved-aside copy to put back:
+      // the upload is the only complete copy, so it stays for repair.
       warn(`could not rename the upload to ${name} (${error.message}); keeping the upload ${temp.name ?? temp.id} for the next cycle to repair`);
       throw error;
     }
-    if (aside) {
-      try { await renameWithRetry(github, aside.id, name, aside.label ?? "", sleep); }
-      catch (restoreError) {
-        warn(`could not rename ${name} back (${restoreError.message}); keeping both copies for the next cycle to repair`);
-        throw error;
-      }
+    try { await renameWithRetry(github, aside.id, name, aside.label ?? "", sleep); }
+    catch (restoreError) {
+      warn(`could not rename ${name} back (${restoreError.message}); keeping both copies for the next cycle to repair`);
+      throw error;
     }
     await github.remove(temp.id).catch(() => {});
     throw error;
@@ -533,15 +533,23 @@ export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGe
   const { snapshot, bytes, requestStartedMs } = await fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now });
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const main = await publishAsset({ github, tag, name: "state.enc", bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep, swapBy });
-  const copy = await publishAsset({ github, tag, name: perGenesisName(snapshot.genesis), bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep, swapBy });
+  // The state.enc result stands even when the per-genesis copy fails.
+  let copy;
+  try { copy = await publishAsset({ github, tag, name: perGenesisName(snapshot.genesis), bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep, swapBy }); }
+  catch (error) {
+    warn(`publishing ${perGenesisName(snapshot.genesis)} failed: ${error instanceof Error ? error.message : String(error)}`);
+    copy = { published: false, reason: "failed" };
+  }
   if (!main.published) log(`state.enc not replaced: ${main.reason}`);
   if (!copy.published) log(`${perGenesisName(snapshot.genesis)} not replaced: ${copy.reason}`);
   return { height: snapshot.height, genesis: snapshot.genesis, sha256, size: bytes.length, published: main.published, upToDate: !main.published && main.upToDate === true, copyPublished: copy.published, reason: main.reason };
 }
 
-export async function keepAlive({ fetchImpl, gateway }) {
+// `signal` (optional) aborts the request early, for example when the keeper stops.
+export async function keepAlive({ fetchImpl, gateway, signal }) {
   try {
-    const response = await fetchImpl(`${gateway}/health`, { signal: AbortSignal.timeout(90_000) });
+    const timeout = AbortSignal.timeout(90_000);
+    const response = await fetchImpl(`${gateway}/health`, { signal: signal ? AbortSignal.any([timeout, signal]) : timeout });
     const text = await response.text();
     let body = {};
     try { body = JSON.parse(text); } catch {}
@@ -573,7 +581,8 @@ export async function runKeeper(options) {
   const stopped = new Promise((resolve) => { markStopped = resolve; });
   const keepAliveLoop = async () => {
     while (!publishStopped) {
-      const health = await keepAlive({ fetchImpl, gateway });
+      // The stop signal also aborts a request still in flight when publishing stops.
+      const health = await keepAlive({ fetchImpl, gateway, signal: stop.signal });
       log(`health HTTP ${health.status} ${health.phase}${health.height === null ? "" : ` height ${health.height}`}`);
       if (publishStopped) break;
       await Promise.race([sleep(keepAliveIntervalMs, stop.signal), stopped]);
