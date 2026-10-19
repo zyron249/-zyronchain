@@ -78,6 +78,7 @@ import type {
   ValidatorSetUpdateTx
 } from "./types.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
+import { assertValueBearingClassRequiresFixedSupplyProfile } from "./network-class.js";
 import { assertFixedSupplyLaunchProfile, FIXED_SUPPLY_LAUNCH_PROFILE } from "./tokenomics.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
@@ -1040,7 +1041,9 @@ function validateGenesis(genesis: GenesisConfig): void {
     // Optional: m-of-n activity-oracle approval (docs/ACTIVITY_ORACLE_GOVERNANCE.md).
     ...(Object.prototype.hasOwnProperty.call(genesis, "activityOracleThreshold") ? ["activityOracleThreshold"] : []),
     // Optional: launch profile (docs/GENESIS_CONFIG_BINDING.md).
-    ...(Object.prototype.hasOwnProperty.call(genesis, "launchProfile") ? ["launchProfile"] : [])
+    ...(Object.prototype.hasOwnProperty.call(genesis, "launchProfile") ? ["launchProfile"] : []),
+    // Optional: network class, version network-class-v1 (docs/GENESIS_NETWORK_CLASS.md).
+    ...(Object.prototype.hasOwnProperty.call(genesis, "networkClass") ? ["networkClass"] : [])
   ], "genesis");
   const hasLaunchProfile = Object.prototype.hasOwnProperty.call(genesis, "launchProfile");
   if (hasLaunchProfile && genesis.launchProfile !== FIXED_SUPPLY_LAUNCH_PROFILE) {
@@ -1049,6 +1052,9 @@ function validateGenesis(genesis: GenesisConfig): void {
   if (typeof genesis.chainId !== "string" || !/^[a-z0-9-]{3,64}$/.test(genesis.chainId)) {
     throw new Error("Invalid chain ID");
   }
+  // network-class-v1: a non-test value-bearing class cannot omit the profile
+  // that makes founder vesting and the permanent-liquidity lock consensus rules.
+  assertValueBearingClassRequiresFixedSupplyProfile(genesis);
   if (!Number.isSafeInteger(genesis.timestampMs) || genesis.timestampMs < 0) {
     throw new Error("Invalid genesis timestamp");
   }
