@@ -1,0 +1,269 @@
+#!/usr/bin/env node
+// Tests for the open-testnet snapshot keeper (.github/scripts/open-testnet-snapshot-keeper.mjs)
+// and static policy checks for its scheduled workflow.
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import {
+  SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, cleanupTempAssets, createGitHub, decideReplace,
+  exitCodeFor, formatLabel, parseLabel, perGenesisName, publishAsset, publishCycle, runKeeper, tempAssetName, validateSnapshot
+} from "./open-testnet-snapshot-keeper.mjs";
+
+const GENESIS = "9ad75d777141de46df1fb008298a4d8a92fbce0a9c96aaf26ecf69474b7db8eb";
+const OTHER = "822cf008".padEnd(64, "0");
+const T0 = Date.parse("2026-10-19T05:00:00Z");
+const sealed = (size = 200) => Buffer.concat([Buffer.from(SNAPSHOT_HEADER), Buffer.alloc(size, 7)]);
+const headersOf = (map) => new Headers(map);
+
+// In-memory release with GitHub's asset semantics: unique names, delete by id, rename by id.
+function fakeGitHub({ assets = [], now = () => T0 } = {}) {
+  let nextId = 100;
+  const state = { assets: assets.map((asset) => ({ ...asset })), calls: [], hooks: {} };
+  const github = {
+    async release(tag) { state.calls.push(["release", tag]); await state.hooks.release?.(state); return { id: 1, assets: state.assets.map((asset) => ({ ...asset })) }; },
+    async upload(releaseId, name, label, bytes) {
+      state.calls.push(["upload", name, label]);
+      if (state.assets.some((asset) => asset.name === name)) { const error = new Error("exists"); error.status = 422; throw error; }
+      const asset = { id: nextId++, name, label, size: bytes.length, updated_at: new Date(now()).toISOString(), bytes };
+      state.assets.push(asset);
+      return { ...asset };
+    },
+    async remove(id) {
+      state.calls.push(["remove", id]);
+      const index = state.assets.findIndex((asset) => asset.id === id);
+      if (index < 0) return false;
+      state.assets.splice(index, 1);
+      return true;
+    },
+    async rename(id, name, label) {
+      state.calls.push(["rename", id, name]);
+      await state.hooks.rename?.(state);
+      if (state.assets.some((asset) => asset.name === name && asset.id !== id)) { const error = new Error("exists"); error.status = 422; throw error; }
+      const asset = state.assets.find((entry) => entry.id === id);
+      Object.assign(asset, { name, label });
+      return { ...asset };
+    }
+  };
+  return { github, state };
+}
+
+test("labels round-trip and reject anything else", () => {
+  assert.deepEqual(parseLabel(formatLabel(2145, GENESIS)), { height: 2145, genesis: GENESIS });
+  for (const bad of ["", null, undefined, "state snapshot height=0 genesis=" + GENESIS, "state snapshot height=12 genesis=" + GENESIS.slice(1), `x ${formatLabel(5, GENESIS)}`, "state snapshot height=99999999999999999 genesis=" + GENESIS]) {
+    assert.equal(parseLabel(bad), null, String(bad));
+  }
+  assert.equal(perGenesisName(GENESIS), "state-9ad75d777141.enc");
+  assert.match(tempAssetName(T0, "0a1b2c3d"), /^state-next-\d{13}-0a1b2c3d\.enc$/);
+  assert.notEqual(tempAssetName(T0), "state.enc");
+});
+
+test("validateSnapshot accepts a sealed snapshot of the expected genesis only", () => {
+  const bytes = sealed();
+  const ok = { status: 200, headers: headersOf({ "x-zyron-snapshot-height": "2150", "x-zyron-genesis-hash": GENESIS, "content-length": String(bytes.length) }), bytes };
+  assert.deepEqual(validateSnapshot(ok, GENESIS), { height: 2150, genesis: GENESIS });
+  assert.throws(() => validateSnapshot({ ...ok, headers: headersOf({ "x-zyron-snapshot-height": "2150", "x-zyron-genesis-hash": OTHER }) }, GENESIS), GenesisMismatchError);
+  assert.throws(() => validateSnapshot({ ...ok, status: 503 }, GENESIS), /HTTP 503/);
+  for (const height of ["", "0", "-1", "12a", "1e3", "99999999999999999"]) {
+    assert.throws(() => validateSnapshot({ ...ok, headers: headersOf({ "x-zyron-snapshot-height": height, "x-zyron-genesis-hash": GENESIS }) }, GENESIS), /height/, height);
+  }
+  assert.throws(() => validateSnapshot({ ...ok, headers: headersOf({ "x-zyron-snapshot-height": "5", "x-zyron-genesis-hash": "abc" }) }, GENESIS), /genesis header/);
+  assert.throws(() => validateSnapshot({ ...ok, headers: headersOf({ "x-zyron-snapshot-height": "5", "x-zyron-genesis-hash": GENESIS, "content-length": String(bytes.length + 1) }) }, GENESIS), /truncated/);
+  assert.throws(() => validateSnapshot({ ...ok, bytes: Buffer.from("<html>sleeping</html>".padEnd(400, " ")), headers: headersOf({ "x-zyron-snapshot-height": "5", "x-zyron-genesis-hash": GENESIS }) }, GENESIS), /not an open-testnet/);
+  assert.throws(() => validateSnapshot({ ...ok, bytes: Buffer.from(SNAPSHOT_HEADER), headers: headersOf({ "x-zyron-snapshot-height": "5", "x-zyron-genesis-hash": GENESIS }) }, GENESIS), /size/);
+});
+
+test("decideReplace keeps the published height monotonic", () => {
+  const snapshot = { height: 2150, genesis: GENESIS };
+  const base = { snapshot, expectedGenesis: GENESIS, requestStartedMs: T0 };
+  assert.equal(decideReplace({ ...base, asset: null }).publish, true);
+  assert.equal(decideReplace({ ...base, asset: { label: formatLabel(2149, GENESIS) } }).publish, true);
+  assert.equal(decideReplace({ ...base, asset: { label: formatLabel(2150, GENESIS) } }).publish, false);
+  assert.equal(decideReplace({ ...base, asset: { label: formatLabel(2151, GENESIS) } }).publish, false);
+  assert.equal(decideReplace({ ...base, asset: { label: formatLabel(10, OTHER) } }).publish, false, "an asset labeled for another genesis is never replaced");
+  assert.equal(decideReplace({ ...base, snapshot: { height: 9999, genesis: OTHER }, asset: null }).publish, false, "a snapshot of another genesis is never published");
+  // Unlabeled assets (legacy keeper): only snapshots requested well after the asset was written.
+  const at = (ms) => ({ label: "", updated_at: new Date(ms).toISOString() });
+  assert.equal(decideReplace({ ...base, asset: at(T0 - UNLABELED_MARGIN_MS - 1000) }).publish, true);
+  assert.equal(decideReplace({ ...base, asset: at(T0 - UNLABELED_MARGIN_MS) }).publish, false);
+  assert.equal(decideReplace({ ...base, asset: at(T0 - 30_000) }).publish, false);
+  assert.equal(decideReplace({ ...base, asset: at(T0 + 60_000) }).publish, false);
+  assert.equal(decideReplace({ ...base, asset: { label: "", updated_at: "garbage" } }).publish, false);
+});
+
+test("publishAsset uploads under a temporary name and swaps only after the upload exists", async () => {
+  const old = { id: 7, name: "state.enc", label: formatLabel(2100, GENESIS), updated_at: new Date(T0 - 600_000).toISOString() };
+  const { github, state } = fakeGitHub({ assets: [old] });
+  const lines = [];
+  const result = await publishAsset({ github, tag: "open-testnet-state", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log: (line) => lines.push(line) });
+  assert.equal(result.published, true);
+  const kinds = state.calls.map((call) => call[0]);
+  assert.deepEqual(kinds, ["release", "upload", "release", "remove", "rename"]);
+  assert.match(state.calls[1][1], /^state-next-/, "the first upload never uses the restore name");
+  assert.deepEqual(state.assets.map((asset) => [asset.name, asset.label]), [["state.enc", formatLabel(2150, GENESIS)]]);
+  assert.ok(lines.some((line) => line.includes("height 2150")));
+});
+
+test("publishAsset does nothing when the published height is not lower", async () => {
+  const old = { id: 7, name: "state.enc", label: formatLabel(2150, GENESIS) };
+  const { github, state } = fakeGitHub({ assets: [old] });
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {} });
+  assert.equal(result.published, false);
+  assert.deepEqual(state.calls.map((call) => call[0]), ["release"]);
+  assert.equal(state.assets[0].id, 7);
+});
+
+test("publishAsset re-checks before the swap and keeps a higher asset another keeper published meanwhile", async () => {
+  const old = { id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) };
+  const { github, state } = fakeGitHub({ assets: [old] });
+  let releases = 0;
+  state.hooks.release = (s) => {
+    releases += 1;
+    if (releases === 2) { s.assets = s.assets.filter((asset) => asset.id !== 7); s.assets.push({ id: 50, name: "state.enc", label: formatLabel(2160, GENESIS) }); }
+  };
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {} });
+  assert.equal(result.published, false);
+  assert.match(result.reason, /another keeper published first/);
+  assert.ok(!state.calls.some((call) => call[0] === "rename"), "no swap is attempted against a newer asset");
+  assert.deepEqual(state.assets.map((asset) => [asset.id, asset.name]), [[50, "state.enc"]], "the newer asset stays and the temporary upload is removed");
+});
+
+test("publishAsset treats a fresh unlabeled asset from the legacy keeper as possibly newer", async () => {
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: "", updated_at: new Date(T0 - 10_000).toISOString() }] });
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {} });
+  assert.equal(result.published, false);
+  assert.equal(state.assets.length, 1);
+  assert.equal(state.assets[0].id, 7);
+});
+
+test("publishAsset loses a concurrent same-name upload cleanly and never leaves the name missing", async () => {
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
+  state.hooks.rename = (s) => { if (!s.assets.some((asset) => asset.name === "state.enc")) s.assets.push({ id: 60, name: "state.enc", label: "" }); };
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {} });
+  assert.equal(result.published, false);
+  assert.deepEqual(state.assets.map((asset) => asset.id), [60]);
+});
+
+test("publishAsset removes its temporary asset when the swap fails unexpectedly", async () => {
+  const { github, state } = fakeGitHub({ assets: [] });
+  github.rename = async () => { const error = new Error("boom"); error.status = 500; throw error; };
+  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 5, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {} }), /boom/);
+  assert.deepEqual(state.assets, []);
+});
+
+test("cleanupTempAssets removes only this keeper's stale temporary assets", async () => {
+  const assets = [
+    { id: 1, name: "state.enc" }, { id: 2, name: "state-9ad75d777141.enc" },
+    { id: 3, name: tempAssetName(T0 - 31 * 60_000, "aaaaaaaa") }, { id: 4, name: tempAssetName(T0 - 60_000, "bbbbbbbb") },
+    { id: 5, name: "state-next-x.enc" }
+  ];
+  const { github, state } = fakeGitHub({ assets });
+  await cleanupTempAssets({ github, tag: "t", now: () => T0, log() {} });
+  assert.deepEqual(state.assets.map((asset) => asset.id), [1, 2, 4, 5]);
+});
+
+function gatewayFetch({ height = 2150, genesis = GENESIS, status = 200 } = {}) {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.endsWith("/health")) return new Response(JSON.stringify({ ok: true, status: "ready", maxHeight: height }), { status: 200 });
+    const bytes = sealed();
+    return new Response(bytes, { status, headers: { "x-zyron-snapshot-height": String(height), "x-zyron-genesis-hash": genesis, "content-length": String(bytes.length) } });
+  };
+  return { fetchImpl, calls };
+}
+
+test("publishCycle publishes state.enc and the per-genesis copy", async () => {
+  const { github, state } = fakeGitHub();
+  const { fetchImpl } = gatewayFetch();
+  const result = await publishCycle({ fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {} });
+  assert.equal(result.published, true);
+  assert.equal(result.copyPublished, true);
+  assert.deepEqual(state.assets.map((asset) => asset.name).sort(), ["state-9ad75d777141.enc", "state.enc"]);
+  assert.match(result.sha256, /^[0-9a-f]{64}$/);
+});
+
+test("publishCycle never publishes another genesis", async () => {
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
+  const { fetchImpl } = gatewayFetch({ genesis: OTHER, height: 5 });
+  await assert.rejects(publishCycle({ fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {} }), GenesisMismatchError);
+  assert.deepEqual(state.calls, []);
+  assert.equal(state.assets[0].label, formatLabel(2100, GENESIS));
+});
+
+test("runKeeper polls health, publishes on its interval and stops at the deadline", async () => {
+  let clock = T0;
+  const { github } = fakeGitHub({ now: () => clock });
+  let height = 2150;
+  const { fetchImpl, calls } = gatewayFetch();
+  const wrapped = async (url) => { const response = await fetchImpl(url); if (!url.endsWith("/health")) height += 20; return url.endsWith("/health") ? response : new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": String(height), "x-zyron-genesis-hash": GENESIS } }); };
+  const stats = await runKeeper({
+    fetchImpl: wrapped, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS,
+    runMs: 30 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000,
+    now: () => clock, sleep: async (ms) => { clock += ms; }, log() {}, warn() {}
+  });
+  assert.equal(stats.cycles, 3);
+  assert.equal(stats.published, 3);
+  assert.equal(stats.lastPublishedHeight, 2210);
+  assert.equal(calls.filter((url) => url.endsWith("/health")).length, 6);
+  assert.equal(exitCodeFor(stats), 0);
+});
+
+test("runKeeper survives gateway outages and reports failure only when nothing was ever up to date", async () => {
+  let clock = T0;
+  const { github } = fakeGitHub({ now: () => clock });
+  const fetchImpl = async () => new Response("down", { status: 503 });
+  const warnings = [];
+  const stats = await runKeeper({ fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS, runMs: 20 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000, now: () => clock, sleep: async (ms) => { clock += ms; }, log() {}, warn: (line) => warnings.push(line) });
+  assert.equal(stats.failures, 2);
+  assert.equal(exitCodeFor(stats), 1);
+  assert.ok(warnings.every((line) => /HTTP 503/.test(line)));
+  assert.equal(exitCodeFor({ published: 0, notNewer: 3, genesisMismatches: 0 }), 0);
+  assert.equal(exitCodeFor({ published: 5, notNewer: 0, genesisMismatches: 1 }), 1);
+});
+
+test("createGitHub sends authenticated requests to the documented endpoints", async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => {
+    seen.push({ url, method: init.method, auth: init.headers.authorization, type: init.headers["content-type"], body: init.body });
+    if (url.includes("/releases/tags/")) return new Response(JSON.stringify({ id: 42 }), { status: 200 });
+    if (init.method === "GET" && url.includes("/releases/42/assets")) return new Response(JSON.stringify([{ id: 1, name: "state.enc" }]), { status: 200 });
+    if (init.method === "POST") return new Response(JSON.stringify({ id: 9 }), { status: 201 });
+    if (init.method === "DELETE") return new Response(null, { status: url.endsWith("/404") ? 404 : 204 });
+    if (init.method === "PATCH") return new Response(JSON.stringify({ id: 9 }), { status: 200 });
+    return new Response("no", { status: 500 });
+  };
+  const github = createGitHub({ fetchImpl, token: "t0ken", repo: "zyron249/-zyronchain" });
+  assert.deepEqual(await github.release("open-testnet-state"), { id: 42, assets: [{ id: 1, name: "state.enc" }] });
+  await github.upload(42, "state-next-1.enc", formatLabel(5, GENESIS), sealed());
+  assert.equal(await github.remove(3), true);
+  assert.equal(await github.remove(404), false);
+  await github.rename(9, "state.enc", formatLabel(5, GENESIS));
+  assert.ok(seen.every((call) => call.auth === "Bearer t0ken"));
+  const upload = seen.find((call) => call.method === "POST");
+  assert.match(upload.url, /^https:\/\/uploads\.github\.com\/repos\/zyron249\/-zyronchain\/releases\/42\/assets\?name=state-next-1\.enc&label=/);
+  assert.equal(upload.type, "application/octet-stream");
+  const patch = seen.find((call) => call.method === "PATCH");
+  assert.equal(patch.url, "https://api.github.com/repos/zyron249/-zyronchain/releases/assets/9");
+  assert.deepEqual(JSON.parse(patch.body), { name: "state.enc", label: formatLabel(5, GENESIS) });
+  assert.throws(() => createGitHub({ fetchImpl, token: "", repo: "a/b" }), /GITHUB_TOKEN/);
+  assert.throws(() => createGitHub({ fetchImpl, token: "x", repo: "a/b/../c" }), /invalid repository/);
+});
+
+test("the scheduled workflow keeps least privilege, one active run, a bounded job and the pinned genesis", async () => {
+  const workflow = await readFile(new URL("../workflows/open-testnet-snapshot-keeper.yml", import.meta.url), "utf8");
+  const active = workflow.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+  assert.match(active, /^on:\n  schedule:\n    - cron: '[^']+'\n  workflow_dispatch:/m);
+  assert.match(active, /^permissions: \{\}$/m, "no workflow-level permissions");
+  assert.deepEqual([...active.matchAll(/^\s+permissions:\n\s+(\S.*)$/gm)].map((match) => match[1]), ["contents: write"], "only the job gets contents: write");
+  assert.match(active, /^concurrency:\n  group: open-testnet-snapshot-keeper\n  cancel-in-progress: false$/m, "exactly one active run; never cancel a run mid-upload");
+  const timeout = Number(/^\s+timeout-minutes: (\d+)$/m.exec(active)?.[1]);
+  const runMinutes = Number(/RUN_MINUTES: \$\{\{ inputs\.run_minutes \|\| '(\d+)' \}\}/.exec(active)?.[1]);
+  assert.ok(timeout <= 360 && runMinutes > 0 && runMinutes + 10 <= timeout, `job timeout ${timeout} must exceed the run length ${runMinutes} and stay within 360`);
+  assert.match(active, /EXPECTED_GENESIS: 9ad75d777141de46df1fb008298a4d8a92fbce0a9c96aaf26ecf69474b7db8eb$/m);
+  assert.match(active, /if: github\.repository == 'zyron249\/-zyronchain'/);
+  assert.deepEqual([...active.matchAll(/\$\{\{\s*([^}]*?)\s*\}\}/g)].map((match) => match[1]).sort(), ["github.repository", "github.token", "inputs.run_minutes || '340'"], "no secrets and no untrusted expression in a script");
+  assert.doesNotMatch(active, /secrets\./);
+  for (const use of active.matchAll(/uses: (\S+)/g)) assert.match(use[1], /^actions\/(checkout|setup-node)@[0-9a-f]{40}$/, `unpinned or unexpected action ${use[1]}`);
+  assert.match(active, /persist-credentials: false/);
+  assert.match(active, /run: node \.github\/scripts\/open-testnet-snapshot-keeper\.mjs$/m);
+});
