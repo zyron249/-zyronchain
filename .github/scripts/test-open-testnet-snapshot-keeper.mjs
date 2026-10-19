@@ -179,11 +179,21 @@ test("publishAsset loses a concurrent same-name upload cleanly and never leaves 
   assert.ok(state.assets.some((asset) => asset.id === 7 && /^prev-/.test(asset.name)), "the old copy is kept aside for cleanup");
 });
 
-test("publishAsset removes its upload when nothing was swapped yet", async () => {
+test("publishAsset keeps its upload for repair when no asset holds the name and the final rename fails", async () => {
+  // Nothing was swapped (no previous asset); the upload is the only complete
+  // copy, so it is never deleted and the next repair installs it.
   const { github, state } = fakeGitHub({ assets: [] });
-  github.rename = async () => { const error = new Error("boom"); error.status = 500; throw error; };
-  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 5, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, sleep: async () => {} }), /boom/);
-  assert.deepEqual(state.assets, []);
+  const rename = github.rename;
+  let broken = true;
+  github.rename = async (id, name, label) => { if (broken) { state.calls.push(["rename", id, name]); const error = new Error("boom"); error.status = 500; throw error; } return rename(id, name, label); };
+  const warnings = [];
+  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 5, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn: (line) => warnings.push(line), sleep: async () => {} }), /boom/);
+  assert.deepEqual(state.assets.map((asset) => [/^next-\d{13}-[0-9a-f]{8}\.state\.enc$/.test(asset.name), parseLabel(asset.label)?.height]), [[true, 5]], "only the upload exists, under its temporary name");
+  assert.ok(!state.calls.some((call) => call[0] === "remove"));
+  assert.ok(warnings.some((line) => /keeping the upload/.test(line)));
+  broken = false;
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0 + 60_000, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc")?.label)?.height, 5);
 });
 
 test("a failed final rename puts the old asset back and never leaves the restore name missing", async () => {
@@ -725,6 +735,32 @@ test("publishCycle publishes state.enc and the per-genesis copy", async () => {
   assert.match(result.sha256, /^[0-9a-f]{64}$/);
 });
 
+test("publishCycle keeps the state.enc result when the per-genesis copy fails", async () => {
+  const { github, state } = fakeGitHub();
+  const upload = github.upload;
+  github.upload = async (releaseId, name, label, bytes) => { if (name.endsWith(".state-9ad75d777141.enc")) { const error = new Error("upload outage"); error.status = 503; throw error; } return upload(releaseId, name, label, bytes); };
+  const { fetchImpl } = gatewayFetch();
+  const warnings = [];
+  const result = await publishCycle({ fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn: (line) => warnings.push(line), sleep: async () => {} });
+  assert.equal(result.published, true, "state.enc was published");
+  assert.equal(result.copyPublished, false);
+  assert.ok(state.assets.some((asset) => asset.name === "state.enc"));
+  assert.ok(warnings.some((line) => /upload outage/.test(line)));
+  {
+    // In runKeeper the run counts the publication, so it does not fail.
+    const time = virtualTime();
+    const run = fakeGitHub({ now: time.now });
+    const runUpload = run.github.upload;
+    run.github.upload = async (releaseId, name, label, bytes) => { if (name.endsWith(".state-9ad75d777141.enc")) { const error = new Error("upload outage"); error.status = 503; throw error; } return runUpload(releaseId, name, label, bytes); };
+    let height = 2150;
+    const runFetch = async (url) => url.endsWith("/health") ? new Response("{}", { status: 200 })
+      : new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": String(height += 10), "x-zyron-genesis-hash": GENESIS } });
+    const stats = await time.run(runKeeper({ fetchImpl: runFetch, github: run.github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS, runMs: 20 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000, now: time.now, sleep: time.sleep, log() {}, warn() {} }));
+    assert.equal(stats.published, 2);
+    assert.equal(exitCodeFor(stats), 0);
+  }
+});
+
 test("publishCycle never publishes another genesis", async () => {
   const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
   const { fetchImpl } = gatewayFetch({ genesis: OTHER, height: 5 });
@@ -880,6 +916,25 @@ test("runKeeper cancels its pending keepalive wait when publishing stops, so the
   controller.abort();
   await waiting;
   assert.equal(timers(), before, "no live timer is left behind");
+});
+
+test("runKeeper aborts an in-flight health request when publishing stops", { timeout: 15_000 }, async () => {
+  const time = virtualTime();
+  const { github } = fakeGitHub({ now: time.now });
+  let healthCalls = 0;
+  const fetchImpl = (url, init) => {
+    if (!url.endsWith("/health")) return Promise.resolve(new Response("down", { status: 503 }));
+    healthCalls += 1;
+    // A gateway that never answers: only an abort ends the request.
+    return new Promise((resolve, reject) => {
+      if (init?.signal?.aborted) { reject(init.signal.reason); return; }
+      init?.signal?.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+    });
+  };
+  const started = Date.now();
+  await time.run(runKeeper({ fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS, runMs: 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000, now: time.now, sleep: time.sleep, log() {}, warn() {} }));
+  assert.equal(healthCalls, 1);
+  assert.ok(Date.now() - started < 5_000, `runKeeper returned ${Date.now() - started} ms after the publish loop stopped, not after the request timeout`);
 });
 
 test("a swap started at the deadline finishes or rolls back well before the workflow timeout", async () => {
