@@ -28,6 +28,11 @@
   const CHAIN_ID_RE = /^[a-z0-9-]{3,64}$/;
   const TEST_CHAIN_ID_RE = /(^|-)(testnet|devnet)(-|$)/;
   const WALLET_TESTNET_CHAIN_ID = 'zyron-wallet-testnet-1';
+  // That chain runs protocol version 1 and rejects transaction version 2.
+  // Every other testnet or devnet id keeps version 2 as the selectable default.
+  function defaultTransferVersion(chainId) {
+    return String(chainId == null ? '' : chainId).trim() === WALLET_TESTNET_CHAIN_ID ? 1 : 2;
+  }
   const ADDRESS_RE = /^ZYN[0-9a-f]{40}$/;
   const ADDRESS_INPUT_RE = /^ZYN[0-9a-fA-F]{40}$/;
   const PUBLIC_KEY_RE = /^[0-9a-f]{128}$/;
@@ -426,7 +431,7 @@
 
   const api = Object.freeze({
     DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_KDF, ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
-    TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, WALLET_TESTNET_CHAIN_ID,
+    TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, WALLET_TESTNET_CHAIN_ID, defaultTransferVersion,
     wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress,
     passwordStrength, normalizePhrase, generateEntropy, entropyToPhrase, phraseToEntropy, deriveAccount,
     createVault, openVault, assertVaultShape, parseVault, zynToAtoms, atomsToZyn, buildTransfer, describeTransfer, signTransfer, verifyCanonical,

@@ -326,6 +326,12 @@ await test('transfer builder: only transfers, mining_claim impossible, strict in
   assert.throws(() => core.buildTransfer({ ...base, chainId: 'zyron-mainnet-1' }, account), /testnet or devnet/);
   assert.throws(() => core.buildTransfer({ ...base, chainId: 'zyron-pwa-test' }, account), /testnet or devnet/);
   assert.equal(core.buildTransfer({ ...base, chainId: core.WALLET_TESTNET_CHAIN_ID }, account).chainId, 'zyron-wallet-testnet-1');
+  assert.equal(core.defaultTransferVersion('zyron-wallet-testnet-1'), 1, 'wallet testnet default version is 1');
+  assert.equal(core.defaultTransferVersion(' zyron-wallet-testnet-1 '), 1);
+  assert.equal(core.defaultTransferVersion('zyron-devnet'), 2);
+  assert.equal(core.defaultTransferVersion('zyron-other-testnet'), 2);
+  assert.equal(core.defaultTransferVersion(''), 2);
+  assert.equal(core.buildTransfer({ ...base, version: core.defaultTransferVersion(core.WALLET_TESTNET_CHAIN_ID), chainId: core.WALLET_TESTNET_CHAIN_ID }, account).version, 1);
   assert.throws(() => core.buildTransfer({ ...base, nonce: '0' }, account), /Nonce/);
   assert.throws(() => core.buildTransfer({ ...base, version: 3 }, account), /version/);
   assert.throws(() => core.buildTransfer({ ...base, amountAtoms: 0 }, account), /Amount/);
@@ -515,7 +521,12 @@ await test('web app manifest is valid and installable (name, scope, standalone, 
   const html = readFileSync(join(app, 'index.html'), 'utf8');
   for (const marker of ['rel="manifest" href="/app/manifest.json"', 'rel="apple-touch-icon" sizes="180x180"', 'name="apple-mobile-web-app-capable" content="yes"', 'name="theme-color"', 'viewport-fit=cover']) assert.ok(html.includes(marker), marker);
   assert.deepEqual(pngSize(join(app, 'icons', 'apple-touch-icon-180.png')), [180, 180]);
-  for (const marker of ['TESTNET', 'Scam warning', 'does not show a balance', 'unaudited', 'Add to Home Screen', 'Install app', 'Open in Safari', 'zyron-wallet-testnet-1']) assert.ok(html.includes(marker), marker);
+  for (const marker of ['TESTNET', 'Scam warning', 'does not show a balance', 'unaudited', 'Add to Home Screen', 'Install app', 'Open in Safari', 'zyron-wallet-testnet-1', "Balance isn't shown in this offline app", "use the network's current nonce + 1 (1 for a new account)", 'href="/testnet/"']) assert.ok(html.includes(marker), marker);
+  assert.doesNotMatch(html, /empty-well|>--</, 'no balance placeholder');
+  assert.doesNotMatch(html.slice(html.indexOf('data-balance-card'), html.indexOf('data-screen="send"')), /\d+(?:\.\d+)?\s*ZYN/, 'balance card shows no amount');
+  const appSource = readFileSync(join(app, 'app.js'), 'utf8');
+  assert.match(appSource, /\[data-copy-address\]'\)\.addEventListener\([\s\S]*?copyText\(state\.account\.address/, 'primary copy is the canonical lowercase address');
+  assert.match(appSource, /defaultTransferVersion/);
   assert.ok(html.indexOf('data-install') < html.indexOf('data-network-status'), 'install guidance is above the network status table');
   assert.doesNotMatch(html, /No public RPC yet/);
   const appJs = readFileSync(join(app, 'app.js'), 'utf8');

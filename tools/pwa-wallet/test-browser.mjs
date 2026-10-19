@@ -205,7 +205,11 @@ try {
       return Boolean(install && status && install.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING);
     });
     assert.equal(installBeforeStatus, true, 'install guidance is above the network status table');
-    assert.match(await page.textContent('[data-balance]'), /does not connect/);
+    const balanceCard = await page.textContent('[data-balance-card]');
+    assert.match(balanceCard, /Balance isn't shown in this offline app/);
+    assert.match(balanceCard, /does not connect/);
+    assert.doesNotMatch(balanceCard, /--|Not shown|\d+(?:\.\d+)?\s*ZYN/, 'no balance number or placeholder');
+    assert.equal(await page.getAttribute('[data-balance] a', 'href'), '/testnet/');
     assert.ok(await noHorizontalScroll(page));
     await page.locator('[data-install]').scrollIntoViewIfNeeded();
     await shot(page, '1-install-instructions');
@@ -288,7 +292,7 @@ try {
     if (!live) {
       await page.clock.install();
       await page.click('[data-copy-address]');
-      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), core.toChecksumAddress(address));
+      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), address, 'primary copy is the canonical lowercase address');
       assert.equal(await page.textContent('[data-copy-result]'), 'Copied. This app will try to clear the clipboard in 60 seconds.');
       await page.clock.fastForward(61000);
       await page.waitForFunction(() => navigator.clipboard.readText().then((t) => t === ''));
@@ -310,6 +314,9 @@ try {
     await page.click('[data-screen="home"] [data-go="send"]');
     await page.waitForSelector('[data-screen="send"]:not([hidden])');
     await page.fill('[data-tx-chain]', 'zyron-wallet-testnet-1');
+    assert.equal(await page.inputValue('[data-tx-version]'), '1', 'wallet testnet defaults to transaction version 1');
+    assert.match(await page.textContent('[data-tx-version-hint]'), /default transaction version is 1/);
+    assert.match(await page.textContent('[data-screen="send"]'), /use the network's current nonce \+ 1 \(1 for a new account\)/);
     await page.fill('[data-tx-nonce]', '1');
     await page.fill('[data-tx-to]', RECEIVER);
     assert.match(await page.textContent('[data-tx-check]'), /checksum verified/);
@@ -319,7 +326,13 @@ try {
     await page.click('[data-tx-review]');
     assert.match(await page.textContent('[data-tx-check]'), /testnet or devnet/);
     assert.equal(await visibleScreen(page), 'send', 'a non-testnet chain id never reaches review');
+    await page.fill('[data-tx-chain]', 'zyron-other-testnet');
+    assert.equal(await page.inputValue('[data-tx-version]'), '2', 'other test chains keep version 2 selectable as the default');
+    await page.selectOption('[data-tx-version]', '1');
+    await page.selectOption('[data-tx-version]', '2');
     await page.fill('[data-tx-chain]', 'zyron-wallet-testnet-1');
+    assert.equal(await page.inputValue('[data-tx-version]'), '2', 'an explicit version choice is kept');
+    await page.selectOption('[data-tx-version]', '1');
     await page.click('[data-tx-review]');
     await page.waitForSelector('[data-screen="review"]:not([hidden])');
     const rows = await page.$$eval('[data-review-rows] > div', (divs) => divs.map((d) => [d.dataset.reviewKey, d.querySelector('dt').textContent, d.querySelector('dd').textContent]));
@@ -332,7 +345,7 @@ try {
     assert.equal(review.total, '2.50001 ZYN (250001000 atoms)');
     assert.equal(review.chain, 'zyron-wallet-testnet-1');
     assert.equal(review.nonce, '1');
-    assert.match(review.type, /Transfer \(kind "transfer", version 2\)/);
+    assert.match(review.type, /Transfer \(kind "transfer", version 1\)/);
     assert.equal(await page.isDisabled('[data-tx-sign]'), true, 'signing needs a deliberate confirmation');
     assert.equal(await page.isVisible('[data-tx-out]'), false, 'nothing is signed on review');
     await shot(page, '6a-review-transfer');
@@ -342,13 +355,13 @@ try {
     assert.match(await page.textContent('[data-tx-summary]'), /Signed locally\. Not broadcast\./);
     signed = JSON.parse(await page.textContent('[data-tx-json]'));
     assert.equal(signed.kind, 'transfer');
-    assert.equal(signed.version, 2);
+    assert.equal(signed.version, 1);
     assert.equal(signed.sender, address);
     assert.equal(signed.receiver, RECEIVER.toLowerCase().replace('zyn', 'ZYN'));
     assert.equal(signed.amountAtoms, 250000000);
     assert.equal(signed.feeAtoms, 1000);
     if (l1) l1.validateTransactionShape(signed);
-    assert.ok(core.verifyCanonical({ domain: core.TRANSFER_SIGNING_DOMAIN_V2, payload: (({ signature, txid, ...rest }) => rest)(signed) }, signed.signature, signed.publicKey));
+    assert.ok(core.verifyCanonical((({ signature, txid, ...rest }) => rest)(signed), signed.signature, signed.publicKey));
     await page.locator('[data-tx-out]').scrollIntoViewIfNeeded();
     await shot(page, '6-sign-transfer');
     const download = page.waitForEvent('download');

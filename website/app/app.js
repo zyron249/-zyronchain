@@ -552,12 +552,26 @@
   // ---------------- copy address ----------------
   $('[data-copy-address]').addEventListener('click', async () => {
     if (!state.account) return;
-    setMessage('[data-copy-result]', (await copyText(core.toChecksumAddress(state.account.address), '[data-copy-result]')) ? t('msgCopied') : t('msgCopyFailed'), '');
+    setMessage('[data-copy-result]', (await copyText(state.account.address, '[data-copy-result]')) ? t('msgCopied') : t('msgCopyFailed'), '');
   });
   $('[data-copy-plain]').addEventListener('click', async () => {
     if (!state.account) return;
-    setMessage('[data-copy-result]', (await copyText(state.account.address, '[data-copy-result]')) ? t('msgCopied') : t('msgCopyFailed'), '');
+    setMessage('[data-copy-result]', (await copyText(core.toChecksumAddress(state.account.address), '[data-copy-result]')) ? t('msgCopied') : t('msgCopyFailed'), '');
   });
+
+  // Known-chain default: zyron-wallet-testnet-1 signs version 1 unless the owner picks another version.
+  let txVersionTouched = false;
+  function applyDefaultTxVersion() {
+    const chainId = $('[data-tx-chain]').value.trim();
+    if (!txVersionTouched) $('[data-tx-version]').value = String(core.defaultTransferVersion(chainId));
+    const hint = $('[data-tx-version-hint]');
+    if (!hint) return;
+    hint.textContent = chainId === core.WALLET_TESTNET_CHAIN_ID
+      ? 'zyron-wallet-testnet-1 runs protocol version 1. The default transaction version is 1. Version 2 is rejected by that network. You can still select version 2 for another test or devnet chain.'
+      : 'Other testnet and devnet chains default to transaction version 2. zyron-wallet-testnet-1 defaults to version 1.';
+  }
+  $('[data-tx-chain]').addEventListener('input', applyDefaultTxVersion);
+  $('[data-tx-version]').addEventListener('change', () => { txVersionTouched = true; });
 
   // ---------------- transfer: build -> review -> deliberate confirm -> sign locally ----------------
   $('[data-tx-to]').addEventListener('input', () => {

@@ -13,14 +13,14 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Zyron Wallet" />
   <meta name="format-detection" content="telephone=no" />
-  <meta name="zyron-build" content="app=9b197b7428f79806;release=01949f43729d57e5205eb4a60e2c1bf6ff6bfb6d" />
+  <meta name="zyron-build" content="app=078b8d7bfe5a371a;release=52fba56b5e82897cd6c4f71f93cc0495dd431443" />
   <title>ZyronChain Wallet (testnet)</title>
   <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys stay on this device. This app does not connect and does not show a balance. Sign locally." />
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="icon" type="image/png" sizes="192x192" href="/app/icons/icon-192.png" />
   <link rel="icon" type="image/png" sizes="512x512" href="/app/icons/icon-512.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/app/icons/apple-touch-icon-180.png" />
-  <link rel="stylesheet" href="/app/app.css?v=b077b4292c9a" integrity="sha384-pkc32gczAb5Ji/UW9W2AioSZdGHZODZy1TbL3RilqIfigczhQHK1oyYUjBlI4CXF" />
+  <link rel="stylesheet" href="/app/app.css?v=461d44b39721" integrity="sha384-sZ22mHn75EEqIcMeVByZUVxNyvj3SlB9LnYC3Y7MAC7+q6WGMXPqvWZrRr+QP9Pb" />
 </head>
 <body>
   <div class="app" id="app">
@@ -204,14 +204,14 @@
         <p class="address" data-home-address aria-label="Address, grouped for reading"></p>
         <p class="label-small" data-i18n="rawLabel">Full address (what the chain uses)</p>
         <p class="address-raw" data-home-raw></p>
-        <p class="hint" data-i18n="checksumNote">Upper/lower-case letters above are a display-only checksum, not consensus. The QR code holds the plain lower-case address.</p>
+        <p class="hint" data-i18n="checksumNote">Upper/lower-case letters above are a display-only checksum, not consensus. Copy address copies the lowercase form the chain uses. The QR code holds that same lowercase address.</p>
         <div class="qr-frame">
           <div class="qr" data-qr role="img" aria-label="QR code of your address"></div>
         </div>
         <p class="hint" data-i18n="receiveEmpty">Show this code to receive test ZYN. Nothing incoming is listed: this app does not connect and does not show a balance.</p>
         <div class="actions">
-          <button class="primary" type="button" data-copy-address data-i18n="copyChecksummed">Copy address</button>
-          <button type="button" data-copy-plain data-i18n="copyPlain">Copy lower-case</button>
+          <button class="primary" type="button" data-copy-address data-i18n="copyAddress">Copy address</button>
+          <button type="button" data-copy-plain data-i18n="copyChecksummed">Copy checksummed</button>
         </div>
         <p class="hint" data-copy-result aria-live="polite"></p>
       </div>
@@ -225,14 +225,13 @@
         </div>
       </div>
 
-      <div class="card empty-card">
-        <h2 data-i18n="balanceTitle">Balance and broadcasting</h2>
-        <div class="empty-well" aria-hidden="true"><span>--</span></div>
+      <div class="card" data-balance-card>
+        <h2 data-i18n="balanceTitle">Balance</h2>
+        <p class="notice info" data-balance>Balance isn't shown in this offline app. <a href="/testnet/">Look up an address on the wallet testnet</a>. This page does not connect.</p>
         <dl class="kv">
-          <div><dt>Balance</dt><dd data-balance>Not shown. This app does not connect to a network.</dd></div>
           <div><dt>Broadcast</dt><dd>Off. Nothing from this app is sent to a network.</dd></div>
         </dl>
-        <p class="hint" data-i18n="balanceEmpty">Empty on purpose. The Snap and the CLI can use the no-value wallet testnet (chain id zyron-wallet-testnet-1). This phone app does not.</p>
+        <p class="hint" data-i18n="balanceEmpty">The link opens a separate read-only page. This wallet does not fetch a balance, a nonce or a transaction.</p>
         <button type="button" disabled data-i18n="broadcastDisabled">Broadcast (off: this app stays offline)</button>
       </div>
     </section>
@@ -247,9 +246,10 @@
       <div class="card">
         <h2 data-i18n="signTitle">Sign a transfer locally</h2>
         <p class="hint" data-i18n="signLead">Builds exactly the L1 transfer format. Only transfers can be signed, and only for a testnet or devnet chain id.</p>
-        <p class="hint" data-i18n="chainHint">Type a testnet or devnet chain id. The no-value wallet testnet id is zyron-wallet-testnet-1. Type the nonce yourself. Nothing is guessed.</p>
+        <p class="hint" data-i18n="chainHint">Type a testnet or devnet chain id. The no-value wallet testnet id is zyron-wallet-testnet-1. Type the nonce yourself. Nothing is fetched or guessed.</p>
         <label><span data-i18n="chainId">Chain ID</span><input data-tx-chain autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="zyron-wallet-testnet-1" /></label>
         <label><span data-i18n="nonce">Next nonce</span><input data-tx-nonce inputmode="numeric" autocomplete="off" placeholder="1" /></label>
+        <p class="hint" data-i18n="nonceHint">Next nonce to sign: use the network's current nonce + 1 (1 for a new account). This app does not look it up.</p>
         <label><span data-i18n="receiver">Receiver address</span><input data-tx-to autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ZYN…" /></label>
         <div class="row two">
           <label><span data-i18n="amount">Amount (ZYN)</span><input data-tx-amount inputmode="decimal" autocomplete="off" placeholder="1.5" /></label>
@@ -257,7 +257,8 @@
         </div>
         <p class="hint" data-i18n="feeHint">Fee is extra. The review shows amount, fee and the total. 0 is allowed on this testnet. This app does not look up a fee.</p>
         <label><span data-i18n="txVersion">Transaction version</span>
-          <select data-tx-version><option value="2" selected>2 (protocol 3+, domain-separated)</option><option value="1">1 (legacy)</option></select></label>
+          <select data-tx-version><option value="1" selected>1 (wallet testnet default)</option><option value="2">2 (other testnet or devnet, protocol 3+)</option></select></label>
+        <p class="hint" data-tx-version-hint>zyron-wallet-testnet-1 defaults to transaction version 1. That network rejects version 2. Other testnet and devnet chains default to version 2, which stays selectable.</p>
         <p class="hint" data-tx-check aria-live="polite"></p>
         <div class="actions">
           <button class="primary" type="button" data-tx-review data-i18n="review">Review transfer</button>
@@ -480,7 +481,7 @@
   </div>
   <script src="/app/vendor/noble-scure.js?v=8bc52c47d762" integrity="sha384-8rRjvBX0v19QY1jV/tt980903+713cFYFQwMvCGJR+dGfUXeXlHhGh1Ommt20XpE"></script>
   <script src="/app/vendor/qr.js?v=df7e5ee0f9db" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
-  <script src="/app/zyron-wallet-core.js?v=60b8ff9850a8" integrity="sha384-yxY5KfHEcEfcCQeXZaAr2P622gxEfX+NR9Qtihi3J186Un0xdKsp59uBvev8YyiP"></script>
-  <script src="/app/app.js?v=4a9e01698c49" integrity="sha384-4oXuTc03kmCIH0+6RhVO84V8OmmEJ1/o5SFdlHpvlBXr7ow2U1aHyB3mN8Gt0pWJ"></script>
+  <script src="/app/zyron-wallet-core.js?v=14eb09cc79b2" integrity="sha384-hi9+CLBLnVNtZzNw7Qi5VH0lTBcJPDvGdrI8PR8byLu/ClEZ310h7DJoCt9Dlkq1"></script>
+  <script src="/app/app.js?v=e4e4d1e19660" integrity="sha384-8/qHlA1WIfIreL9NczPOj2dAco/6dvOSHSe4C743flbVNyYLw7O1iLELdEYtI98/"></script>
 </body>
 </html>
