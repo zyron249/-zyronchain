@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { allocationLockContext, MS_PER_DAY } from "../src/allocation-locks.js";
+import { allocationLockContext, lockedAtoms, MS_PER_DAY } from "../src/allocation-locks.js";
 import { ZyronChain } from "../src/chain.js";
 import { linearCliffVestedAtoms } from "../src/founder-vesting.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
@@ -78,9 +78,10 @@ function transfer(genesis: GenesisConfig, sender: number, amountAtoms: number, f
 
 test("documented default and day-one floor are explicit and do not change the supply cap", () => {
   assert.equal(MAX_SUPPLY_ATOMS, 50_000_000 * ZYN);
-  assert.equal(PUBLIC_DISTRIBUTION_DEFAULT_CLIFF_MS, 90 * MS_PER_DAY);
-  assert.equal(PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS, 1_095 * MS_PER_DAY);
-  assert.equal(PUBLIC_DISTRIBUTION_MIN_CLIFF_MS, MS_PER_DAY);
+  assert.equal(PUBLIC_DISTRIBUTION_DEFAULT_CLIFF_MS, 0);
+  assert.equal(PUBLIC_DISTRIBUTION_MIN_CLIFF_MS, 0);
+  assert.equal(PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS, 31_536_000_000);
+  assert.equal(PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS, 365 * MS_PER_DAY);
   assert.equal(PUBLIC_DISTRIBUTION_MIN_LINEAR_MS, 365 * MS_PER_DAY);
   assert.deepEqual(defaultPublicDistributionRelease(addr(PUBLIC)), release());
 });
@@ -101,10 +102,8 @@ test("a value-bearing genesis without a release schedule is rejected at construc
   }
 });
 
-test("schedules that would unlock on day one, or that are malformed, are rejected", () => {
+test("schedules shorter than the linear floor, or that are malformed, are rejected", () => {
   const rejected: Array<[GenesisConfig["publicDistributionRelease"], RegExp]> = [
-    [release(0, PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS), /cliffMs/],
-    [release(MS_PER_DAY - 1, PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS), /cliffMs/],
     [release(PUBLIC_DISTRIBUTION_DEFAULT_CLIFF_MS, 0), /linearMs/],
     [release(PUBLIC_DISTRIBUTION_DEFAULT_CLIFF_MS, PUBLIC_DISTRIBUTION_MIN_LINEAR_MS - 1), /linearMs/],
     [release(-1, PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS), /cliffMs/],
@@ -127,29 +126,38 @@ test("schedules that would unlock on day one, or that are malformed, are rejecte
   assert.throws(() => new ZyronChain(fractional), /cliffMs/);
 });
 
-test("the minimum schedule is accepted and still locks the allocation through day one", () => {
+test("the decided schedule releases only the first day's linear increment on day one", () => {
   const genesis = strictGenesis(release(PUBLIC_DISTRIBUTION_MIN_CLIFF_MS, PUBLIC_DISTRIBUTION_MIN_LINEAR_MS));
   const chain = new ZyronChain(genesis);
+  assert.equal(lockedAtoms(allocationLockContext(genesis, T0), addr(PUBLIC), PUBLIC_ATOMS), PUBLIC_ATOMS);
+  const firstIncrement = Number(linearCliffVestedAtoms(1n, 0n, BigInt(PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS), BigInt(PUBLIC_ATOMS)));
+  assert.ok(firstIncrement > 0 && firstIncrement < PUBLIC_ATOMS);
+  // The next block cannot reuse the genesis timestamp, so the first spendable slice is the 1 ms increment.
+  assert.equal(chain.spendableBalance(addr(PUBLIC), T0), firstIncrement);
+  assert.equal(chain.spendableBalance(addr(PUBLIC), T0 + 1), firstIncrement);
   const dayOne = T0 + MS_PER_DAY;
-  assert.equal(chain.spendableBalance(addr(PUBLIC), dayOne), 0);
-  assert.throws(() => chain.validateMempoolAdmission(transfer(genesis, PUBLIC, 1), dayOne), LOCKED);
-  const justAfter = dayOne + 1;
-  const vested = Number(linearCliffVestedAtoms(
-    BigInt(justAfter - T0),
-    BigInt(PUBLIC_DISTRIBUTION_MIN_CLIFF_MS),
-    BigInt(PUBLIC_DISTRIBUTION_MIN_LINEAR_MS),
+  const daySlice = Number(linearCliffVestedAtoms(
+    BigInt(MS_PER_DAY),
+    0n,
+    BigInt(PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS),
     BigInt(PUBLIC_ATOMS)
   ));
-  assert.ok(vested > 0 && vested < PUBLIC_ATOMS);
-  assert.equal(chain.spendableBalance(addr(PUBLIC), justAfter), vested);
+  assert.equal(daySlice, Math.floor(PUBLIC_ATOMS / 365));
+  assert.ok(daySlice > firstIncrement && daySlice < PUBLIC_ATOMS);
+  assert.equal(chain.spendableBalance(addr(PUBLIC), dayOne), daySlice);
+  assert.throws(() => chain.produceBlock([transfer(genesis, PUBLIC, PUBLIC_ATOMS)], key(VALIDATORS[0]!), { timestampMs: dayOne }), LOCKED);
+  assert.throws(() => chain.produceBlock([transfer(genesis, PUBLIC, daySlice + 1)], key(VALIDATORS[0]!), { timestampMs: dayOne }), LOCKED);
+  assert.doesNotThrow(() => chain.produceBlock([transfer(genesis, PUBLIC, daySlice)], key(VALIDATORS[0]!), { timestampMs: dayOne }));
 });
 
-test("day-one spend of the public distribution is rejected on chain paths and both appliers", () => {
+test("spending more than the accrued linear slice is rejected on chain paths and both appliers", () => {
   const genesis = strictGenesis();
   const chain = new ZyronChain(genesis);
   const at = T0 + 60_000;
-  const tx = transfer(genesis, PUBLIC, 1, 1);
-  assert.equal(chain.spendableBalance(addr(PUBLIC), at), 0);
+  const vested = Number(linearCliffVestedAtoms(60_000n, 0n, BigInt(PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS), BigInt(PUBLIC_ATOMS)));
+  assert.ok(vested > 0 && vested < PUBLIC_ATOMS);
+  assert.equal(chain.spendableBalance(addr(PUBLIC), at), vested);
+  const tx = transfer(genesis, PUBLIC, PUBLIC_ATOMS, 0);
   assert.throws(() => chain.validateMempoolAdmission(tx, at), LOCKED);
   assert.deepEqual(chain.selectValidPending([tx], 10, 1_500_000, at), []);
   assert.throws(() => chain.produceBlock([tx], key(VALIDATORS[0]!), { timestampMs: at }), LOCKED);
@@ -162,19 +170,11 @@ test("day-one spend of the public distribution is rejected on chain paths and bo
   assert.equal(chain.balance(addr(PUBLIC)), PUBLIC_ATOMS);
 });
 
-test("the default schedule releases nothing at the cliff and the full allocation only after the linear term", () => {
+test("the default schedule releases the full allocation only after 365 days", () => {
   const genesis = strictGenesis();
   const chain = new ZyronChain(genesis);
-  const cliff = T0 + PUBLIC_DISTRIBUTION_DEFAULT_CLIFF_MS;
-  assert.equal(chain.spendableBalance(addr(PUBLIC), cliff), 0);
-  assert.throws(() => chain.produceBlock([transfer(genesis, PUBLIC, 1)], key(VALIDATORS[0]!), { timestampMs: cliff }), LOCKED);
-  const oneMs = cliff + 1;
-  const vestedAt = Number(linearCliffVestedAtoms(
-    BigInt(oneMs - T0),
-    BigInt(PUBLIC_DISTRIBUTION_DEFAULT_CLIFF_MS),
-    BigInt(PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS),
-    BigInt(PUBLIC_ATOMS)
-  ));
+  const oneMs = T0 + 1;
+  const vestedAt = Number(linearCliffVestedAtoms(1n, 0n, BigInt(PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS), BigInt(PUBLIC_ATOMS)));
   assert.ok(vestedAt > 0 && vestedAt < PUBLIC_ATOMS);
   assert.equal(chain.spendableBalance(addr(PUBLIC), oneMs), vestedAt);
   const exact = transfer(genesis, PUBLIC, vestedAt, 0);
@@ -182,7 +182,7 @@ test("the default schedule releases nothing at the cliff and the full allocation
   assert.doesNotThrow(() => chain.produceBlock([exact], key(VALIDATORS[0]!), { timestampMs: oneMs }));
   assert.throws(() => chain.produceBlock([over], key(VALIDATORS[0]!), { timestampMs: oneMs }), LOCKED);
 
-  const done = T0 + PUBLIC_DISTRIBUTION_DEFAULT_CLIFF_MS + PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS;
+  const done = T0 + PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS;
   assert.equal(chain.spendableBalance(addr(PUBLIC), done), PUBLIC_ATOMS);
   let block = chain.produceBlock([transfer(genesis, PUBLIC, PUBLIC_ATOMS, 0)], key(VALIDATORS[0]!), { timestampMs: done });
   for (const id of VALIDATORS.slice(0, 3)) block = chain.attestBlock(block, key(id));
@@ -209,7 +209,7 @@ test("inflows above the still-locked genesis allocation are spendable during the
     ],
     publicDistributionRelease: {
       address: addr(holder),
-      cliffMs: PUBLIC_DISTRIBUTION_DEFAULT_CLIFF_MS,
+      cliffMs: 90 * MS_PER_DAY,
       linearMs: PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS
     }
   };
@@ -272,18 +272,25 @@ test("open testnet and wallet testnet shapes without the field keep day-one spen
   const bound = new ZyronChain(opted);
   assert.notEqual(bound.genesisHash, walletChain.genesisHash);
   assert.notEqual(bound.tip.header.previousHash, "0".repeat(64));
-  assert.equal(bound.spendableBalance(addr(PUBLIC), T0 + 1_000), 0);
+  const walletAtoms = 1_000 * ZYN;
+  const slice = Number(linearCliffVestedAtoms(1_000n, 0n, BigInt(PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS), BigInt(walletAtoms)));
+  assert.ok(slice > 0 && slice < walletAtoms);
+  assert.equal(bound.spendableBalance(addr(PUBLIC), T0 + 1_000), slice);
 });
 
 test("a fee is counted, and stripping the release from a value-bearing file is a different chain that cannot start", () => {
   const genesis = strictGenesis();
   const chain = new ZyronChain(genesis);
-  const at = T0 + PUBLIC_DISTRIBUTION_DEFAULT_CLIFF_MS + 1;
+  const at = T0 + 1;
   const vested = chain.spendableBalance(addr(PUBLIC), at);
   assert.throws(() => chain.produceBlock([transfer(genesis, PUBLIC, vested, 1)], key(VALIDATORS[0]!), { timestampMs: at }), LOCKED);
   assert.doesNotThrow(() => chain.produceBlock([transfer(genesis, PUBLIC, vested - 1, 1)], key(VALIDATORS[0]!), { timestampMs: at }));
   const stripped = structuredClone(genesis);
   delete stripped.publicDistributionRelease;
   assert.throws(() => new ZyronChain(stripped), REQUIRED);
-  assert.notEqual(chain.genesisHash, new ZyronChain(strictGenesis(release(PUBLIC_DISTRIBUTION_MIN_CLIFF_MS, PUBLIC_DISTRIBUTION_MIN_LINEAR_MS))).genesisHash);
+  assert.notEqual(chain.genesisHash, new ZyronChain(strictGenesis(release(MS_PER_DAY, PUBLIC_DISTRIBUTION_MIN_LINEAR_MS))).genesisHash);
+  const held = strictGenesis(release(MS_PER_DAY, PUBLIC_DISTRIBUTION_MIN_LINEAR_MS));
+  const heldChain = new ZyronChain(held);
+  assert.equal(heldChain.spendableBalance(addr(PUBLIC), T0 + MS_PER_DAY), 0);
+  assert.ok(heldChain.spendableBalance(addr(PUBLIC), T0 + MS_PER_DAY + 1) > 0);
 });

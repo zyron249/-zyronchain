@@ -13,8 +13,8 @@ Under `launchProfile: "fixed-supply-v1"` the 20,000,000 ZYN public-distribution 
 ```json
 "publicDistributionRelease": {
   "address": "ZYN...",
-  "cliffMs": 7776000000,
-  "linearMs": 94608000000
+  "cliffMs": 0,
+  "linearMs": 31536000000
 }
 ```
 
@@ -34,19 +34,19 @@ The rule reuses `linearCliffVestedAtoms` (the same helper as founder vesting). T
 - Inflows are spendable immediately. The lock does not swallow coins that arrived later.
 - The total supply does not change. A fee, if any, is still burned.
 
-## Parameters (PENDING REVIEW)
+## Parameters (decided by owner)
 
-These numbers are a product decision. Consensus enforces whatever explicit values are in the genesis, inside the fail-closed floors. The floors exist so a file cannot make the allocation spendable on day one or finish the release the moment the cliff ends.
+Consensus enforces the explicit values in the genesis file, inside the fail-closed floors. The linear floor is what keeps the full allocation from unlocking on day one.
 
-| Parameter | Documented conservative default | Fail-closed bound | Status |
+| Parameter | Owner decision | Fail-closed bound | Status |
 |---|---|---|---|
-| `cliffMs` | 90 days (`7,776,000,000`) | `86,400,000` (1 day) to 100 years | PENDING REVIEW |
-| `linearMs` | 1,095 days (`94,608,000,000`) | 365 days to 100 years | PENDING REVIEW |
+| `cliffMs` | `0` (no cliff) | `0` to 100 years | decided by owner |
+| `linearMs` | 365 days (`31,536,000,000`) | 365 days to 100 years | decided by owner |
 | `address` | none in this repository | the public-distribution allocation; under `fixed-supply-v1`, the 20,000,000 ZYN account that is not the founder, the permanent-liquidity reserve, or the activity pool | owner input |
 
-With the default cliff, the first 90 days release nothing, so day one releases nothing. With the minimum cliff of one day, elapsed of exactly 24 hours is still inside the cliff, so day one still releases nothing. The first positive release is one millisecond after the cliff.
+Nothing is vested at elapsed `0`. One millisecond later the first linear slice vests: `floor(allocation / linearMs)`. At exactly 24 hours the vested amount is one day of the line, `floor(allocation * 86,400,000 / linearMs)`. With the decided 365-day line that is `floor(allocation / 365)`, not the full 20,000,000 ZYN. A linear length below 365 days is rejected, so no allowed schedule can make the whole allocation spendable on day one. The full allocation is spendable only after `cliffMs + linearMs`. A longer cliff is still allowed; nothing vests at or before that cliff.
 
-`npm run tokenomics:check` prints the configured `cliffMs` and `linearMs` and the line `PENDING REVIEW`.
+`npm run tokenomics:check` prints the configured `cliffMs` and `linearMs` and the line `decided by owner`.
 
 ## What stays unchanged
 

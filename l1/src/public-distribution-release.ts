@@ -9,30 +9,28 @@ import type { Address, GenesisConfig, PublicDistributionRelease } from "./types.
 /**
  * Public-distribution release, version public-distribution-release-v1.
  *
- * The 20,000,000 ZYN public-distribution allocation is not spendable on day
- * one when this field is present. The schedule reuses the cliff-then-linear
- * vesting arithmetic. Parameters below are the fail-closed floors and the
- * documented conservative default. The exact cliff and linear length are
- * PENDING REVIEW: they are a product decision and must be explicit in the
- * genesis file. This module does not invent an address.
+ * The 20,000,000 ZYN public-distribution allocation cannot be spent in full on
+ * day one when this field is present. The schedule reuses the cliff-then-linear
+ * vesting arithmetic. The owner decided the default: no cliff, then a 365-day
+ * linear release. Nodes do not fill those numbers in; the genesis file must
+ * contain them. This module does not invent an address.
  */
 export const PUBLIC_DISTRIBUTION_RELEASE_VERSION = "public-distribution-release-v1";
 
-/** PENDING REVIEW. Documented conservative default: 90 days with nothing vested at the cliff. */
-export const PUBLIC_DISTRIBUTION_DEFAULT_CLIFF_DAYS = 90;
-/** PENDING REVIEW. Documented conservative default: 1,095 days of linear release after the cliff. */
-export const PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_DAYS = 1_095;
+/** Owner decision: no cliff. Release starts at the first millisecond after genesis. */
+export const PUBLIC_DISTRIBUTION_DEFAULT_CLIFF_DAYS = 0;
+/** Owner decision: 365-day linear release. 365 * 86_400_000 = 31_536_000_000. */
+export const PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_DAYS = 365;
 
 export const PUBLIC_DISTRIBUTION_DEFAULT_CLIFF_MS = PUBLIC_DISTRIBUTION_DEFAULT_CLIFF_DAYS * MS_PER_DAY;
 export const PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_MS = PUBLIC_DISTRIBUTION_DEFAULT_LINEAR_DAYS * MS_PER_DAY;
 
 /**
- * Fail-closed floors, also PENDING REVIEW as bounds rather than as the chosen
- * schedule. A cliff shorter than one day would make some of the allocation
- * spendable on day one. A linear length shorter than 365 days would let the
- * remainder finish too quickly after the cliff.
+ * Fail-closed floors. A cliff of 0 is allowed. A linear length shorter than
+ * 365 days is rejected so the allocation cannot become spendable in full on
+ * day one: at 24 hours the vested amount is at most one day of a 365-day line.
  */
-export const PUBLIC_DISTRIBUTION_MIN_CLIFF_MS = MS_PER_DAY;
+export const PUBLIC_DISTRIBUTION_MIN_CLIFF_MS = 0;
 export const PUBLIC_DISTRIBUTION_MIN_LINEAR_MS = 365 * MS_PER_DAY;
 export const PUBLIC_DISTRIBUTION_MAX_CLIFF_MS = 100 * 365 * MS_PER_DAY;
 export const PUBLIC_DISTRIBUTION_MAX_LINEAR_MS = 100 * 365 * MS_PER_DAY;
@@ -58,7 +56,7 @@ export function validatePublicDistributionRelease(genesis: GenesisConfig): void 
   if (!present) {
     if (isStrictNetworkClass(readNetworkClass(genesis))) {
       throw new Error(
-        "Value-bearing, public-launch, and mainnet genesis must declare publicDistributionRelease so the 20,000,000 ZYN allocation is not spendable on day one"
+        "Value-bearing, public-launch, and mainnet genesis must declare publicDistributionRelease so the 20,000,000 ZYN allocation cannot be spent in full on day one"
       );
     }
     return;

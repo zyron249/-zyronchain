@@ -63,7 +63,7 @@ console.log(`Network class: ${genesis.networkClass}`);
 const release = genesis.publicDistributionRelease;
 if (release && typeof release === "object") {
   console.log(`Public distribution release: cliffMs=${release.cliffMs} linearMs=${release.linearMs} address=${release.address}`);
-  console.log("Public distribution schedule: PENDING REVIEW (owner product decision). Documented conservative default: 90-day cliff, then 1,095-day linear release. Day one stays locked.");
+  console.log("Public distribution schedule: decided by owner. Default is no cliff (cliffMs=0) and a 365-day linear release (linearMs=31536000000). Day one releases only the accrued linear slice, not the full allocation.");
 }
 console.log(`Genesis configuration commitment: ${genesisConfigCommitment(genesis)}`);
 console.log(`Genesis hash (chain identity): ${chain.genesisHash}`);

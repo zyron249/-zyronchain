@@ -331,7 +331,7 @@ test("tokenomics:check rejects a launch file without the value-bearing class and
     assert.equal(accepted.status, 0, `${accepted.stdout}\n${accepted.stderr}`);
     assert.match(accepted.stdout, /Network class: value-bearing/);
     assert.match(accepted.stdout, /50,000,000 ZYN/);
-    assert.match(accepted.stdout, /PENDING REVIEW/);
+    assert.match(accepted.stdout, /decided by owner/);
     const omitted = structuredClone(ready);
     delete omitted.networkClass;
     const refused = await run(omitted);
