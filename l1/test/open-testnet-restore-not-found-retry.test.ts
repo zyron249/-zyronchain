@@ -62,12 +62,12 @@ async function sealedNetwork(root: string, secret: string): Promise<{ sealed: Bu
   return { sealed: seal({ format: MAGIC, createdAtMs: Date.now(), genesis, network, keys, blocks }, secret), genesisHash: network.genesisHash };
 }
 
-// Serves 404 for the first `missing` requests, then the snapshot.
-async function startHost(root: string, secret: string, missing: number, sealed: Buffer) {
+// Serves `failStatus` (404 by default) for the first `missing` requests, then the snapshot.
+async function startHost(root: string, secret: string, missing: number, sealed: Buffer, failStatus = 404) {
   let requests = 0;
   const server: Server = createServer((request, response) => {
     requests += 1;
-    if (requests <= missing) { response.writeHead(404, { "content-type": "text/plain" }); response.end("Not Found"); return; }
+    if (requests <= missing) { response.writeHead(failStatus, { "content-type": "text/plain" }); response.end(failStatus === 404 ? "Not Found" : "Unavailable"); return; }
     response.writeHead(200, { "content-type": "application/octet-stream", "content-length": sealed.length });
     response.end(sealed);
   });
@@ -105,7 +105,7 @@ async function servedStatus(host: { log: string }): Promise<any> {
 
 // The retry schedule itself is checked in-process with an injected clock, so the
 // suite does not wait the real 160 s (CI runners have a job time limit).
-function fakeHost(statuses: Array<number | "error">) {
+function fakeHost(statuses: Array<number | "error" | "body-error">) {
   const calls: string[] = [];
   const waits: number[] = [];
   const logs: string[] = [];
@@ -114,18 +114,25 @@ function fakeHost(statuses: Array<number | "error">) {
     calls.push(url);
     const status = statuses[Math.min(calls.length - 1, statuses.length - 1)]!;
     if (status === "error") throw new Error("connection reset");
+    // A 200 whose body fails while it is read (connection reset mid-transfer).
+    if (status === "body-error") return new Response(new ReadableStream({ pull(controller) { controller.error(new Error("terminated")); } }), { status: 200 });
     return new Response(status === 200 ? "sealed" : "Not Found", { status });
   };
   const options = { fetchImpl, sleepImpl: async (ms: number) => { waits.push(ms); }, onAttempt: () => { attempts += 1; }, log: (line: string) => { logs.push(line); } };
   return { calls, waits, logs, options, attempts: () => attempts };
 }
 
+const FAILURE_DELAYS = [2_000, 5_000, 10_000, 20_000, 30_000, 45_000, 60_000];
+
 test("the 404 retry schedule spans 160 s and is separate from the transient-failure schedule", () => {
   assert.deepEqual(api.SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS, [3_000, 7_000, 15_000, 30_000, 45_000, 60_000]);
   assert.equal(api.SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS.reduce((a: number, b: number) => a + b, 0), 160_000);
-  assert.deepEqual(api.SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS, [2_000, 5_000]);
+  // A host outage (5xx, network error, a body cut off mid-transfer) is retried
+  // for about as long as a missing asset (R36-1069-L1): 172 s.
+  assert.deepEqual(api.SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS, FAILURE_DELAYS);
+  assert.equal(api.SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS.reduce((a: number, b: number) => a + b, 0), 172_000);
   // Every single wait stays far below the 5-minute start-up stall limit.
-  for (const ms of api.SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS) assert.ok(ms < api.BOOT_STALL_MS / 2);
+  for (const ms of [...api.SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS, ...api.SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS]) assert.ok(ms < api.BOOT_STALL_MS / 2);
 });
 
 test("a transient 404 is retried until the published snapshot is back", async () => {
@@ -152,14 +159,34 @@ test("404 retries do not use up the transient-failure retries, and vice versa", 
   const response = await api.downloadSnapshot("https://example.invalid/state.enc", mixed.options);
   assert.equal(response.status, 200);
   assert.deepEqual(mixed.waits, [2_000, 3_000, 7_000, 5_000, 15_000]);
-  // Transient failures still stop after two retries: the third 5xx is returned
-  // (a failed restore), the third network error is thrown.
+  // Transient failures stop after the full failure schedule: the last 5xx is
+  // returned (a failed restore), the last network error is thrown.
   const failing = fakeHost([500]);
   assert.equal((await api.downloadSnapshot("https://example.invalid/state.enc", failing.options)).status, 500);
-  assert.deepEqual(failing.waits, [2_000, 5_000]);
+  assert.deepEqual(failing.waits, FAILURE_DELAYS);
   const unreachable = fakeHost(["error"]);
   await assert.rejects(api.downloadSnapshot("https://example.invalid/state.enc", unreachable.options), /connection reset/);
-  assert.equal(unreachable.calls.length, 3);
+  assert.equal(unreachable.calls.length, FAILURE_DELAYS.length + 1);
+});
+
+test("a host outage longer than a few seconds is retried until the snapshot is served (R36-1069-L1)", async () => {
+  const host = fakeHost([503, 502, "error", 503, 200]);
+  const response = await api.downloadSnapshot("https://example.invalid/state.enc", host.options);
+  assert.equal(response.status, 200);
+  assert.deepEqual(host.waits, [2_000, 5_000, 10_000, 20_000]);
+  assert.equal(host.attempts(), 5, "start-up progress is reported before every attempt");
+});
+
+test("with readBody, a body cut off mid-transfer is downloaded again within the failure budget", async () => {
+  const host = fakeHost(["body-error", "body-error", 200]);
+  const result = await api.downloadSnapshot("https://example.invalid/state.enc", { ...host.options, readBody: true });
+  assert.equal(result.status, 200);
+  assert.equal(Buffer.from(result.bytes).toString(), "sealed");
+  assert.deepEqual(host.waits, [2_000, 5_000]);
+  assert.equal(host.logs.filter((line) => /terminated/.test(line)).length, 2);
+  // 404s are still reported as a status, and a body that never reads is a failure after the budget.
+  assert.equal((await api.downloadSnapshot("https://example.invalid/state.enc", { ...fakeHost([404]).options, readBody: true })).status, 404);
+  await assert.rejects(api.downloadSnapshot("https://example.invalid/state.enc", { ...fakeHost(["body-error"]).options, readBody: true }), /terminated/);
 });
 
 test("a cold start retries a transient 404 and restores the published chain", { timeout: 360_000 }, async () => {
@@ -176,6 +203,27 @@ test("a cold start retries a transient 404 and restores the published chain", { 
     assert.equal(status.persistence.restoredHeight, 100);
     assert.equal(host.requests(), 2);
     assert.equal((host.log.match(/snapshot download returned 404; retrying/g) ?? []).length, 1);
+    assert.doesNotMatch(host.log, /STATE RESTORE FAILED|fresh TEST genesis/);
+  } finally {
+    await stop(host);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a cold start rides out a host outage longer than 7 s and restores the published chain (R36-1069-L1)", { timeout: 360_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-restore-503-"));
+  let host: Awaited<ReturnType<typeof startHost>> | undefined;
+  try {
+    const secret = randomBytes(32).toString("base64");
+    const { sealed, genesisHash } = await sealedNetwork(root, secret);
+    // Three 503s (2 s + 5 s + 10 s of waits), then the snapshot. Before the fix
+    // the third 503 ended the download and a fresh TEST genesis was created.
+    host = await startHost(root, secret, 3, sealed, 503);
+    const status = await servedStatus(host);
+    assert.equal(status.genesisHash, genesisHash);
+    assert.equal(status.persistence.mode, "snapshot-restore");
+    assert.equal(host.requests(), 4);
+    assert.equal((host.log.match(/snapshot download returned 503; retrying/g) ?? []).length, 3);
     assert.doesNotMatch(host.log, /STATE RESTORE FAILED|fresh TEST genesis/);
   } finally {
     await stop(host);
