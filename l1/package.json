@@ -40,7 +40,8 @@
     "@multiformats/multiaddr": "13.0.3",
     "@noble/curves": "2.4.0",
     "better-sqlite3": "13.0.3",
-    "libp2p": "3.3.12"
+    "libp2p": "3.3.12",
+    "pg": "8.16.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "9.6.0",

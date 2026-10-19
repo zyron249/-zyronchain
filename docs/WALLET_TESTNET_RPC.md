@@ -1,7 +1,9 @@
 # ZyronChain wallet testnet RPC
 
 Status: **testnet only, no value.** Test ZYN on this network cannot be bought or
-sold, and the network resets whenever the free host restarts.
+sold. Balances and nonces survive a free-host sleep only when durable storage
+is configured. They can still reset if that storage is off, or if the network
+is deliberately reset.
 
 This is a small public RPC that wallets (the MetaMask Snap in `snap/` and the
 phone wallet) can use to read balances and nonces and submit test transfers. It
@@ -38,7 +40,7 @@ with origin `null`; nothing uses cookies).
 | method | path | notes |
 |---|---|---|
 | GET | `/health` | `200` once the validator answers; used by the host health check |
-| GET | `/` or `/status` | chain ID, genesis hash, height, tip, tx version, faucet info, `valueBearing: false` |
+| GET | `/` or `/status` | chain ID, genesis hash, height, tip, tx version, faucet info, `valueBearing: false`, `stateDurable`, `restoredTxCount`, `restoredAccounts` |
 | GET | `/genesis` | the testnet genesis document |
 | GET | `/account/{address}` | balance (atoms) and nonce |
 | GET | `/balance/{address}`, `/nonce/{address}` | single values |
@@ -84,12 +86,16 @@ The repo cannot create a Render service by itself. In the Render dashboard:
 2. Or **New > Web Service** with: root directory `l1`, runtime Node, build
    `npm ci && npm run build`, start `node scripts/public-testnet-rpc.mjs`,
    health check `/health`, plan Free, env `NODE_VERSION=22`,
-   `ZYRON_TRUST_PROXY=1`, `ZYRON_TESTNET_SEED=<random 32+ characters>`.
+   `ZYRON_TRUST_PROXY=1`, `ZYRON_TESTNET_SEED=<random 32+ characters>`, and
+   optionally `ZYRON_TESTNET_DATABASE_URL` (see below). Do not add a keep-alive
+   pinger: free instance hours are shared with other services.
 
 Free web services sleep after about 15 minutes without traffic. The first
-request afterwards takes up to a minute and starts a **fresh genesis**: balances
-reset and the genesis hash changes. Wallets should compare the genesis hash and
-treat a change as a reset.
+request afterwards takes up to a minute. Block production needs a recent
+genesis time, so the genesis hash changes on each process start even when
+balances were restored. A new genesis hash does not by itself mean balances
+were wiped. Compare balances and nonces. If durable storage is off, or the
+network is deliberately reset, those balances are gone.
 
 ## Local run and smoke test
 
@@ -105,6 +111,89 @@ lower-case form of the same address), wrong-checksum rejection, canonical
 responses for lower-case and checksummed reads, a wrong-chain rejection, a
 refusal to rewrite checksummed `sender` / `receiver` on `POST /tx`, and a
 finalized transfer between two fresh test accounts.
+
+## Durable state (optional Postgres)
+
+Set `ZYRON_TESTNET_DATABASE_URL` to a Postgres URL when included transfers and
+the per-address faucet day limit should survive a process restart. Leave it
+unset to keep the ephemeral behavior.
+
+Expected form:
+
+```text
+postgresql://USER:PASSWORD@HOST/DBNAME?sslmode=require
+```
+
+URL-encode the password. `sslmode=require` is the Neon form (encrypt the
+connection). A local database without TLS can omit `sslmode`. Example:
+`postgresql://USER:PASSWORD@127.0.0.1:5432/zyron_wallet_testnet`.
+
+Use a **separate Neon database and role** from the Telegram game. Do not point
+this variable at the game `DATABASE_URL`. Test ZYN has no value, cannot be
+bought or sold, and is not mainnet. The Render blueprint lists the variable
+with `sync: false`, so the secret is entered in the dashboard and is never
+committed. The RPC uses a short connect timeout. If the database cannot be
+reached, it logs a warning and starts non-durable.
+
+`ZYRON_TESTNET_SEED` must stay the same across restarts. The faucet transfer
+is signed by the seed-derived faucet key; a new seed cannot replay it.
+
+On startup the script loads `wallet_testnet_tx` and checks whether those
+transfers still pass the normal mempool admission path
+(`validateMempoolAdmission` and the next-nonce rule) at the current time. When
+they do, it submits the original bytes to the validator `POST /tx` and waits
+until a block includes them. Balances and next nonces match the previous
+process, so a signed transfer must use that restored nonce (current nonce + 1).
+The `/testnet/` page reads the nonce from this RPC. The phone wallet stays
+offline (`connect-src 'none'`) and does not invent one; copy the next nonce
+from that page.
+
+If admission fails because of a timestamp or activity-epoch window, those
+bytes cannot be included again. Chain checks are not weakened. The fallback
+folds the transfers with the ledger apply rules (a fee is burned, nothing is
+minted) and starts from genesis allocations equal to the folded balances. The
+sum is never allowed above the configured test genesis amount (faucet
+1,000,000 ZYN, validator 1, activity pool 1). A genesis allocation is only
+`{address, amountAtoms}`. Consensus rejects any other field, so a nonce cannot
+be stored in it. After this fallback the chain reports nonce 0, and the folded
+nonce is kept only as a record in `wallet_testnet_baseline.accounts`. Sign the
+nonce `GET /nonce` reports. A transfer signed with the pre-fallback nonce will
+not be accepted and must be signed again. Rows at or below
+`compacted_through_seq` are not replayed, so they are not paid a second time
+on top of the folded balances. Ordinary wallet transfers have no timestamp
+window, so this fallback is not the path they take.
+
+Schema (created on startup if the role can create tables):
+
+```sql
+CREATE TABLE IF NOT EXISTS wallet_testnet_tx (
+  chain_id text NOT NULL,
+  seq bigserial NOT NULL,
+  raw_tx jsonb NOT NULL,
+  accepted_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (chain_id, seq)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS wallet_testnet_tx_chain_txid_idx
+  ON wallet_testnet_tx (chain_id, (raw_tx->>'txid'));
+CREATE TABLE IF NOT EXISTS wallet_testnet_baseline (
+  chain_id text PRIMARY KEY,
+  compacted_through_seq bigint NOT NULL,
+  accounts jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS wallet_testnet_faucet_limit (
+  chain_id text NOT NULL,
+  bucket text NOT NULL,
+  subject text NOT NULL,
+  window_start timestamptz NOT NULL,
+  hits integer NOT NULL,
+  PRIMARY KEY (chain_id, bucket, subject)
+);
+```
+
+`/status` adds `stateDurable` (`true` or `false`), `restoredTxCount` (included
+transfers applied at this start), and `restoredAccounts` (accounts touched by
+that restore, or accounts in a fallback baseline).
 
 ## Website page
 

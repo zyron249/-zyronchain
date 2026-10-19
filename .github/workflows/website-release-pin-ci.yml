@@ -84,7 +84,19 @@ jobs:
             exit 1
           fi
           if [[ -n "$CHANGED_L1" ]]; then
-            if [[ "$WEBSITE_CHANGED" == "1" ]]; then
+            # A website change must pin the reviewed base, which already
+            # contains every previously merged L1 commit. L1 files introduced
+            # in this same change cannot be inside that pin until after it
+            # merges, so they are the drift warning below rather than a
+            # failure. A pin that is behind the reviewed base still fails.
+            COVERED_TOGETHER=0
+            if [[ "$EVENT_NAME" == "pull_request" && "$RELEASE_REF" == "$PR_BASE_SHA" ]]; then
+              COVERED_TOGETHER=1
+            fi
+            if [[ "$EVENT_NAME" != "pull_request" && "$RELEASE_REF" == "$PUSH_BEFORE_SHA" ]]; then
+              COVERED_TOGETHER=1
+            fi
+            if [[ "$WEBSITE_CHANGED" == "1" && "$COVERED_TOGETHER" != "1" ]]; then
               echo "Website pin does not cover canonical L1/security changes:" >&2
               printf '%s\n' "$CHANGED_L1" >&2
               exit 1
