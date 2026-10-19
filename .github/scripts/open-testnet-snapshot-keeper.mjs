@@ -135,12 +135,14 @@ export function decideReplace({ snapshot, asset, expectedGenesis, requestStarted
   return { publish: false, reason: `unlabeled asset updated ${asset.updated_at} by another keeper moments ago` };
 }
 
-// decideReplace, except that a published asset that is provably incomplete (a failed or
-// abandoned upload, unusable for a restore) is always replaced, unless it is
-// labeled for another genesis.
-function decidePublish({ snapshot, asset, expectedGenesis, requestStartedMs }) {
+// decideReplace, except that a broken published asset (fully uploaded but too
+// small, or a `starter` upload abandoned for STARTER_ABANDONED_MS; unusable for
+// a restore) is always replaced, unless it is labeled for another genesis. A
+// fresh `starter` asset may be another keeper's newer snapshot still uploading,
+// so the normal rules apply to it.
+function decidePublish({ snapshot, asset, expectedGenesis, requestStartedMs, nowMs }) {
   const decision = decideReplace({ snapshot, asset, expectedGenesis, requestStartedMs });
-  if (decision.publish || !asset || !isProvablyIncomplete(asset) || snapshot.genesis !== expectedGenesis) return decision;
+  if (decision.publish || !asset || !isBrokenCanonical(asset, nowMs) || snapshot.genesis !== expectedGenesis) return decision;
   const label = parseLabel(asset.label);
   if (label && label.genesis !== expectedGenesis) return decision;
   return { publish: true, reason: `published asset is incomplete (state ${asset.state}, ${asset.size} bytes)` };
@@ -213,19 +215,20 @@ async function renameWithRetry(github, id, name, label, sleep) {
 export async function publishAsset({ github, tag, name, bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity }) {
   let release = await github.release(tag);
   let current = release.assets.find((asset) => asset.name === name) ?? null;
-  const first = decidePublish({ snapshot, asset: current, expectedGenesis, requestStartedMs });
+  const first = decidePublish({ snapshot, asset: current, expectedGenesis, requestStartedMs, nowMs: now() });
   if (!first.publish) return { published: false, upToDate: first.upToDate === true, reason: first.reason };
   if (now() > swapBy) return { published: false, reason: "run deadline reached before the upload; left for the next run" };
   const label = formatLabel(snapshot.height, snapshot.genesis);
   const temp = await github.upload(release.id, keeperAssetName("next", name, now()), label, bytes);
   let aside = null;
   let asideAttempted = false;
+  let asideName = null;
   try {
     // Re-check right before the swap: another keeper may have published meanwhile.
     release = await github.release(tag);
     const latest = release.assets.find((asset) => asset.name === name) ?? null;
     if ((latest?.id ?? null) !== (current?.id ?? null)) {
-      const again = decidePublish({ snapshot, asset: latest, expectedGenesis, requestStartedMs });
+      const again = decidePublish({ snapshot, asset: latest, expectedGenesis, requestStartedMs, nowMs: now() });
       if (!again.publish) { await github.remove(temp.id); return { published: false, upToDate: again.upToDate === true, reason: `another keeper published first: ${again.reason}` }; }
       current = latest;
     }
@@ -235,7 +238,8 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
     }
     if (current) {
       asideAttempted = true;
-      await renameWithRetry(github, current.id, keeperAssetName("prev", name, now()), current.label ?? "", sleep);
+      asideName = keeperAssetName("prev", name, now());
+      await renameWithRetry(github, current.id, asideName, current.label ?? "", sleep);
       aside = current;
     }
   } catch (error) {
@@ -252,13 +256,21 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
       warn(`could not verify the rename of ${name} aside (${listError.message}); keeping the upload ${temp.name ?? temp.id} for the next cycle to repair`);
       throw error;
     }
-    if (listing.assets.some((asset) => asset.id === current.id && asset.name === name)) {
+    const old = listing.assets.find((asset) => asset.id === current.id) ?? null;
+    if (old?.name === name) {
       // `name` is still the old asset: the rename did not happen. Drop the upload.
       await github.remove(temp.id).catch(() => {});
       throw error;
     }
+    if (old?.name !== asideName) {
+      // The old asset vanished (another keeper deleted it) or was renamed by
+      // someone else: there is nothing to roll back to, so the swap stops here
+      // and the upload stays as a keeper copy that repair can put in place.
+      warn(`${name} was neither kept nor moved aside (${old ? `now ${old.name}` : "deleted"}); keeping the upload ${temp.name ?? temp.id} for the next cycle to repair`);
+      throw error;
+    }
     warn(`renaming ${name} aside reported an error but the listing shows it moved; completing the swap`);
-    aside = listing.assets.find((asset) => asset.id === current.id) ?? null;
+    aside = old;
   }
   try {
     await renameWithRetry(github, temp.id, name, label, sleep);
