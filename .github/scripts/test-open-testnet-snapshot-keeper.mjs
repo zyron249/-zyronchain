@@ -4,9 +4,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import * as keeper from "./open-testnet-snapshot-keeper.mjs";
 import {
-  GITHUB_CALL_TIMEOUT_MS, RENAME_RETRY_DELAYS_MS, cancellableSleep, SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, fetchSnapshot, formatLabel,
-  keeperAssetName, parseKeeperAssetName, parseLabel, perGenesisName, publishAsset, publishCycle, readCapped, repairAndCleanup, runKeeper, validateSnapshot
+  GITHUB_CALL_TIMEOUT_MS, cancellableSleep, SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, fetchSnapshot, formatLabel,
+  isCompleteAsset, keeperAssetName, parseKeeperAssetName, parseLabel, perGenesisName, publishAsset, publishCycle, readCapped, repairAndCleanup, runKeeper, validateSnapshot
 } from "./open-testnet-snapshot-keeper.mjs";
 
 const GENESIS = "9ad75d777141de46df1fb008298a4d8a92fbce0a9c96aaf26ecf69474b7db8eb";
@@ -157,7 +158,9 @@ test("publishAsset re-checks before the swap and keeps a higher asset another ke
   assert.equal(result.published, false);
   assert.match(result.reason, /another keeper published first/);
   assert.ok(!state.calls.some((call) => call[0] === "rename"), "no swap is attempted against a newer asset");
-  assert.deepEqual(state.assets.map((asset) => [asset.id, asset.name]), [[50, "state.enc"]], "the newer asset stays and the temporary upload is removed");
+  // publishAsset never deletes (the design since 72276b7's review): the upload stays as a keeper copy for cleanup.
+  assert.deepEqual(state.assets.map((asset) => [asset.id, /^next-/.test(asset.name) ? "next" : asset.name]).sort((a, b) => a[0] - b[0]), [[50, "state.enc"], [100, "next"]], "the newer asset stays; the temporary upload is kept for cleanup");
+  assert.ok(!state.calls.some((call) => call[0] === "remove"));
 });
 
 test("publishAsset treats a fresh unlabeled asset from the legacy keeper as possibly newer", async () => {
@@ -175,7 +178,8 @@ test("publishAsset loses a concurrent same-name upload cleanly and never leaves 
   const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {} });
   assert.equal(result.published, false);
   assert.ok(state.assets.some((asset) => asset.id === 60 && asset.name === "state.enc"), "their asset keeps the name");
-  assert.ok(!state.assets.some((asset) => /^next-/.test(asset.name)), "our upload is removed");
+  assert.ok(state.assets.some((asset) => /^next-/.test(asset.name)), "our upload is kept for cleanup (publishAsset never deletes)");
+  assert.ok(!state.calls.some((call) => call[0] === "remove"));
   assert.ok(state.assets.some((asset) => asset.id === 7 && /^prev-/.test(asset.name)), "the old copy is kept aside for cleanup");
 });
 
@@ -206,7 +210,7 @@ test("a failed final rename puts the old asset back and never leaves the restore
     return rename(id, name, label);
   };
   await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, sleep: async () => {} }), /timeout/);
-  assert.deepEqual(state.assets.map((asset) => [asset.id, asset.name, asset.label]), [[7, "state.enc", formatLabel(2100, GENESIS)]]);
+  assert.deepEqual(state.assets.map((asset) => [asset.id, /^next-/.test(asset.name) ? "next" : asset.name, asset.label]), [[7, "state.enc", formatLabel(2100, GENESIS)], [100, "next", formatLabel(2150, GENESIS)]], "the old asset is back; the upload is kept for cleanup");
   assert.equal(finalAttempts, 3, "the final rename is retried before giving up");
 });
 
@@ -264,7 +268,8 @@ test("an aside rename that failed leaves state.enc untouched; an unverifiable on
     const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
     github.rename = async () => { const error = new Error("boom"); error.status = 500; throw error; };
     await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} }), /boom/);
-    assert.deepEqual(state.assets.map((asset) => [asset.id, asset.name]), [[7, "state.enc"]], "the listing shows the rename did not happen: the upload is dropped");
+    assert.deepEqual(state.assets.map((asset) => [asset.id, /^next-/.test(asset.name) ? "next" : asset.name]), [[7, "state.enc"], [100, "next"]], "the listing shows the rename did not happen: state.enc untouched, the upload kept for cleanup");
+    assert.ok(!state.calls.some((call) => call[0] === "remove"));
   }
   {
     const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
@@ -274,8 +279,13 @@ test("an aside rename that failed leaves state.enc untouched; an unverifiable on
     state.hooks.release = () => { listings += 1; if (listings >= 3) throw new Error("listing unavailable"); };
     const warnings = [];
     await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn: (line) => warnings.push(line), sleep: async () => {} }), /socket hang up/);
-    assert.ok(state.assets.some((asset) => /^next-/.test(asset.name) && parseLabel(asset.label)?.height === 2150), "the upload is kept when the outcome cannot be verified");
-    assert.ok(warnings.some((line) => /keeping the upload/.test(line)));
+    // The aside rename may have applied, so the install is attempted anyway
+    // (GitHub refuses it while the old asset still holds the name); here it
+    // fills the name, and the rename back is then refused.
+    assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc")?.label)?.height, 2150, "the name is filled in the same cycle when the outcome cannot be verified");
+    assert.match(state.assets.find((asset) => asset.id === 7).name, /^prev-/, "the old asset stays aside as a backup");
+    assert.ok(!state.calls.some((call) => call[0] === "remove"));
+    assert.ok(warnings.some((line) => /could not verify/.test(line)));
   }
 });
 
@@ -368,7 +378,10 @@ test("a failed final rename whose outcome cannot be verified keeps the upload an
   let listings = 0;
   state.hooks.release = () => { listings += 1; if (listings >= 3) throw new Error("listing unavailable"); };
   await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} }), /socket hang up/);
-  assert.ok(state.assets.some((asset) => /^next-/.test(asset.name)) && state.assets.some((asset) => asset.id === 7 && /^prev-/.test(asset.name)), "nothing is renamed back or deleted");
+  // The old asset is renamed back without verification: GitHub refuses the
+  // rename (422) if the upload did take the name, so this only fills a missing name.
+  assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 7, "the old asset is back under the name");
+  assert.ok(state.assets.some((asset) => /^next-/.test(asset.name)), "the upload is kept");
   assert.ok(!state.calls.some((call) => call[0] === "remove"));
 });
 
@@ -380,7 +393,8 @@ test("a failed final rename is not taken as published when the listing shows ano
     const error = new Error("socket hang up"); error.status = 502; throw error;
   };
   await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 5, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} }), /socket hang up/);
-  assert.deepEqual(state.assets.map((asset) => [asset.id, asset.name]), [[60, "state.enc"]], "the other asset stays and the upload is removed");
+  assert.deepEqual(state.assets.map((asset) => [asset.id, /^next-/.test(asset.name) ? "next" : asset.name]).sort((a, b) => a[0] - b[0]), [[60, "state.enc"], [100, "next"]], "the other asset stays; the upload is kept for cleanup");
+  assert.ok(!state.calls.some((call) => call[0] === "remove"));
 });
 
 // The legacy keeper deletes state.enc and uploads its replacement: while that
@@ -481,14 +495,28 @@ test("repair verifies an ambiguous aside rename of an incomplete canonical asset
     assert.equal(state.assets.find((asset) => asset.id === 7).name, "state.enc");
   }
   {
-    // The verifying listing fails: nothing else is renamed.
+    // The aside rename was applied but the verifying listing fails: the install
+    // is attempted anyway (GitHub would refuse it if the name were still held).
     const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: "", size: 12 }, { ...backup }] });
     const rename = github.rename;
     github.rename = async (id, name, label) => { const result = await rename(id, name, label); if (id === 7) { const error = new Error("socket hang up"); error.status = 502; throw error; } return result; };
     let releases = 0;
     state.hooks.release = () => { releases += 1; if (releases >= 2) throw new Error("listing unavailable"); };
-    await assert.rejects(repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} }));
-    assert.equal(state.assets.find((asset) => asset.id === 3).name, backup.name);
+    await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+    assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 3, "the backup fills the free name");
+    assert.match(state.assets.find((asset) => asset.id === 7).name, /^prev-/);
+  }
+  {
+    // The aside rename really failed and the verifying listing fails: the install is refused (422) and nothing moves.
+    const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: "", size: 12 }, { ...backup }] });
+    const rename = github.rename;
+    github.rename = async (id, name, label) => { if (id === 7) { state.calls.push(["rename", id, name]); const error = new Error("socket hang up"); error.status = 502; throw error; } return rename(id, name, label); };
+    let releases = 0;
+    state.hooks.release = () => { releases += 1; if (releases >= 2) throw new Error("listing unavailable"); };
+    await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+    assert.equal(state.assets.find((asset) => asset.id === 3).name, backup.name, "the backup stays where it was");
+    assert.equal(state.assets.find((asset) => asset.id === 7).name, "state.enc");
+    assert.ok(!state.calls.some((call) => call[0] === "remove"));
   }
 });
 
@@ -854,7 +882,9 @@ test("runKeeper never starts a swap after its deadline, even when a slow upload 
   }));
   assert.equal(stats.published, 0);
   assert.ok(!state.calls.some((call) => call[0] === "rename"), "nothing is renamed aside once the deadline has passed");
-  assert.deepEqual(state.assets.map((asset) => asset.id).sort((a, b) => a - b), [7, 8]);
+  assert.deepEqual(state.assets.filter((asset) => !/^next-/.test(asset.name)).map((asset) => [asset.id, asset.name]).sort((a, b) => a[0] - b[0]), [[7, "state.enc"], [8, "state-9ad75d777141.enc"]], "both restore names are untouched");
+  assert.ok(state.assets.filter((asset) => /^next-/.test(asset.name)).every((asset) => isCompleteAsset(asset)), "a finished upload is kept as a keeper copy for cleanup");
+  assert.ok(!state.calls.some((call) => call[0] === "remove"));
 });
 
 test("runKeeper keeps polling health until a publish cycle that overran the deadline settles, and starts no upload after it", async () => {
@@ -952,18 +982,17 @@ test("a swap started at the deadline finishes or rolls back well before the work
   const workflow = await readFile(new URL("../workflows/open-testnet-snapshot-keeper.yml", import.meta.url), "utf8");
   const timeout = Number(/^\s+timeout-minutes: (\d+)$/m.exec(workflow)?.[1]);
   const runMinutes = Number(/RUN_MINUTES: \$\{\{ inputs\.run_minutes \|\| '(\d+)' \}\}/.exec(workflow)?.[1]);
-  // Worst case after the swap check: rename aside, a listing that verifies an
-  // ambiguous aside rename, rename into place, a listing that verifies an
-  // ambiguous final rename, rename back, deleting the upload, each with every
-  // retry timing out (a listing shares one timeout across its pages); plus 2
-  // minutes for job set-up. A repair started before the deadline moves an
-  // incomplete asset aside and renames a backup into place.
-  const rename = (RENAME_RETRY_DELAYS_MS.length + 1) * GITHUB_CALL_TIMEOUT_MS + RENAME_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0);
-  const swap = 3 * rename + 3 * GITHUB_CALL_TIMEOUT_MS;
+  // Worst case after the swap check: every call from the aside rename to the
+  // rename back shares MISSING_NAME_BUDGET_MS (no call or retry wait is started
+  // that could end after it); plus 2 minutes for job set-up. A repair started
+  // before the deadline makes its listing, installs within the same budget,
+  // then makes the cleanup listing and deletes one stale copy.
+  const swap = keeper.MISSING_NAME_BUDGET_MS;
+  assert.ok(Number.isFinite(swap) && swap > 0);
+  assert.ok(swap < await restoreNotFoundGraceMs(), "the missing-name budget stays below the cold-start 404 grace");
   assert.ok(swap + 2 * 60_000 <= (timeout - runMinutes) * 60_000, `swap worst case ${swap} ms must fit in ${timeout - runMinutes} min`);
-  // (2 listings: the repair's own and the one that verifies an ambiguous aside rename.)
-  const repair = 2 * rename + 2 * GITHUB_CALL_TIMEOUT_MS;
-  assert.ok(repair + 2 * 60_000 <= (timeout - runMinutes) * 60_000, `repair worst case ${repair} ms must fit in ${timeout - runMinutes} min`);
+  const repair = 2 * (GITHUB_CALL_TIMEOUT_MS + keeper.MISSING_NAME_BUDGET_MS + 2 * GITHUB_CALL_TIMEOUT_MS);
+  assert.ok(repair + 2 * 60_000 <= (timeout - runMinutes) * 60_000, `repair worst case ${repair} ms (both names) must fit in ${timeout - runMinutes} min`);
 });
 
 test("a release listing shares one GitHub call timeout across all its pages", async () => {
@@ -1248,4 +1277,19 @@ test("repair verifies a failed install of the backup and tries the next backup w
       assert.equal(state.assets.find((asset) => asset.id === 3)?.name, best.name, `${what}: the failed backup is left where it was`);
     }
   }
+});
+
+test("createGitHub applies a per-call timeout to renames and listings", { timeout: 15_000 }, async () => {
+  // A fetch that never answers until its signal aborts.
+  const fetchImpl = (url, init) => new Promise((resolve, reject) => { init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true }); });
+  const github = createGitHub({ fetchImpl, token: "t", repo: "o/r" });
+  // AbortSignal.timeout timers do not keep the event loop alive on their own.
+  const hold = setInterval(() => {}, 1_000);
+  try {
+  for (const [what, call] of [["rename", () => github.rename(3, "state.enc", "", { timeoutMs: 50 })], ["listing", () => github.release("t", { timeoutMs: 50 })]]) {
+    const started = Date.now();
+    await assert.rejects(call(), (error) => error?.name === "TimeoutError", what);
+    assert.ok(Date.now() - started < 5_000, `${what} honoured its 50 ms timeout`);
+  }
+  } finally { clearInterval(hold); }
 });
