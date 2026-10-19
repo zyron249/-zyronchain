@@ -105,3 +105,12 @@ lower-case form of the same address), wrong-checksum rejection, canonical
 responses for lower-case and checksummed reads, a wrong-chain rejection, a
 refusal to rewrite checksummed `sender` / `receiver` on `POST /tx`, and a
 finalized transfer between two fresh test accounts.
+
+## Website page
+
+`https://zyronchain.com/testnet/` (`website/testnet/`) reads this RPC from the
+browser. It looks up an address (lowercase or a correct display checksum), shows
+the balance in ZYN and atoms, the current nonce, the next nonce to sign, the
+height and the genesis hash, and can submit a signed transfer the phone wallet
+already produced. It never asks for a recovery phrase, a password or a private
+key. The phone wallet itself stays offline and only links here.

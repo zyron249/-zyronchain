@@ -14,6 +14,7 @@ Production static website for `https://zyronchain.com`. The website is intention
 - `favicon.ico` (16/32/48), `favicon-32.png`, `apple-touch-icon.png`, `icon-192.png` — browser and home-screen icons from the same mark.
 - `logo.svg` / `favicon.svg` — SVG wrappers (system-font wordmark + embedded raster mark).
 - `wallet.html` — **Desktop Wallet Setup**: local-first wallet onboarding for the canonical CLI and security education. The installable **Phone Wallet — Testnet** is `app/`.
+- `testnet/` — read-only wallet testnet page (`https://zyronchain.com/testnet/`). It looks up addresses and submits a signed transfer to the no-value RPC. It never asks for a recovery phrase, a password or a private key. The phone wallet stays offline and only links here.
 - `wallet.js` — prepares pinned local wallet setup and backup-verify scripts, the address checker and transfer templates; it never generates, requests or uploads wallet secrets.
 - `wallet-core.js` — public-data helpers (address format, display-only checksum per `docs/ADDRESS_CHECKSUM.md`, public key → address derivation via Web Crypto SHA-256, ZYN/atoms conversion, the password-strength rule embedded into the local scripts). No key generation, signing or decryption.
 - `test-wallet-core.mjs` — `node website/test-wallet-core.mjs [--require-l1]`; proves the page's address rule equals the L1 (`l1/src/crypto.ts`) and that the restore test in the generated scripts decrypts a real L1 keystore.

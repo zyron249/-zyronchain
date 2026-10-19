@@ -42,6 +42,7 @@ jobs:
           node --check website/validator.js
           node --check website/season.js
           node --check website/hero-chain.js
+          node --check website/testnet/testnet.js
           node --check website/app/app.js
           node --check website/app/zyron-wallet-core.js
           node --check website/app/sw.js
@@ -52,13 +53,16 @@ jobs:
       - name: Static network status component is current (build-time, never live RPC)
         run: node tools/site/network-status.mjs --check
       - name: Site CSS/JS references carry current content versions
-        run: node tools/site/stamp-site.mjs --check
+        run: |
+          node tools/site/stamp-site.mjs --check
+          node tools/site/stamp-testnet.mjs --check
       - name: Seasonal theme date gating and overrides (Halloween 2026)
         run: node --test tools/site/test-season.mjs tools/site/test-hero-chain.mjs
       - name: Site regression tests (English-only, network-status honesty, naming, mining retired, build id, SEO)
         run: |
           node tools/site/test-site.mjs
           node tools/site/test-network-live.mjs
+          node tools/site/test-testnet.mjs
       - name: Verify production website, wallet and validator contracts
         shell: bash
         run: |
@@ -95,7 +99,10 @@ jobs:
             'website/validator.css',
             'website/validator.js',
             'website/mining.html',
-            'website/mining.css'
+            'website/mining.css',
+            'website/testnet/index.html',
+            'website/testnet/testnet.js',
+            'website/testnet/testnet.css'
           ];
           for (const file of required) {
             if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
@@ -504,3 +511,4 @@ jobs:
           node tools/site/test-layout.mjs
           node tools/site/test-season-browser.mjs
           node tools/site/test-hero-chain-browser.mjs
+          node tools/site/test-testnet-browser.mjs
