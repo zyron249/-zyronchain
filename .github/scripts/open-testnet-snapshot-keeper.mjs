@@ -26,14 +26,18 @@
 //     the old asset is renamed back; if that fails too, both copies are kept and
 //     the next cycle renames the best one back into place, so `state.enc` is
 //     only missing between two API calls and never lost. A failed rename
-//     request is checked against a fresh listing (GitHub may have applied it).
-//     No upload or swap starts after the run deadline, so a started swap ends
-//     before the job timeout;
-//   - only this keeper's own next-/prev- copies are ever cleaned up, only when
-//     the name they belong to exists (rechecked right before deleting), and the
-//     best complete copy of each name is always kept. An incomplete asset (not
-//     in the `uploaded` state, or too small) is never restored or kept;
-//   - /health is polled until the publish loop stops, even past the deadline.
+//     request is checked against a fresh listing (GitHub may have applied it);
+//     when the listing fails, every copy is kept. No upload, swap, repair
+//     rename or cleanup delete starts after the run deadline, so a started
+//     swap ends before the job timeout;
+//   - only this keeper's own next-/prev- copies are ever cleaned up; complete
+//     ones only when the name they belong to exists (rechecked right before
+//     deleting), and the best restorable copy of each name is always kept. An
+//     incomplete asset (not in the `uploaded` state, or too small) is never
+//     restored or kept, and a copy labeled for another genesis is never
+//     restored. An incomplete `state.enc` is replaced or repaired;
+//   - /health is polled until the publish loop stops, even past the deadline;
+//     publish cycles start on a fixed interval from the previous cycle start.
 // The only credential is the workflow GITHUB_TOKEN (contents: write, for the
 // release assets).
 import { createHash, randomBytes } from "node:crypto";
@@ -78,7 +82,18 @@ export function parseKeeperAssetName(name) {
   return match ? { kind: match[1], ms: Number(match[2]), finalName: match[3] } : null;
 }
 
-const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Resolves after `ms`, or as soon as `signal` aborts; the timer is cleared
+// either way, so an abandoned wait never keeps the process alive.
+export function cancellableSleep(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) { resolve(); return; }
+    const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
+
+const defaultSleep = cancellableSleep;
 
 // Checks a downloaded snapshot without decrypting it. Returns { height, genesis }.
 export function validateSnapshot({ status, headers, bytes }, expectedGenesis) {
@@ -120,12 +135,23 @@ export function decideReplace({ snapshot, asset, expectedGenesis, requestStarted
   return { publish: false, reason: `unlabeled asset updated ${asset.updated_at} by another keeper moments ago` };
 }
 
+// decideReplace, except that a published asset that is provably incomplete (a failed or
+// abandoned upload, unusable for a restore) is always replaced, unless it is
+// labeled for another genesis.
+function decidePublish({ snapshot, asset, expectedGenesis, requestStartedMs }) {
+  const decision = decideReplace({ snapshot, asset, expectedGenesis, requestStartedMs });
+  if (decision.publish || !asset || !isProvablyIncomplete(asset) || snapshot.genesis !== expectedGenesis) return decision;
+  const label = parseLabel(asset.label);
+  if (label && label.genesis !== expectedGenesis) return decision;
+  return { publish: true, reason: `published asset is incomplete (state ${asset.state}, ${asset.size} bytes)` };
+}
+
 export function createGitHub({ fetchImpl, token, repo, apiBase = "https://api.github.com", uploadBase = "https://uploads.github.com" }) {
   if (!token) throw new Error("GITHUB_TOKEN is required");
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) throw new Error(`invalid repository ${repo}`);
   const headers = { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "zyron-open-testnet-snapshot-keeper" };
-  async function call(method, url, { body, contentType, okStatuses = [200], timeoutMs = GITHUB_CALL_TIMEOUT_MS } = {}) {
-    const response = await fetchImpl(url, { method, headers: { ...headers, ...(contentType ? { "content-type": contentType } : {}) }, body, signal: AbortSignal.timeout(timeoutMs) });
+  async function call(method, url, { body, contentType, okStatuses = [200], timeoutMs = GITHUB_CALL_TIMEOUT_MS, signal = AbortSignal.timeout(timeoutMs) } = {}) {
+    const response = await fetchImpl(url, { method, headers: { ...headers, ...(contentType ? { "content-type": contentType } : {}) }, body, signal });
     const text = await response.text();
     if (!okStatuses.includes(response.status)) {
       const error = new Error(`${method} ${url.replace(/\?.*$/, "")} returned HTTP ${response.status}: ${text.slice(0, 300)}`);
@@ -135,11 +161,14 @@ export function createGitHub({ fetchImpl, token, repo, apiBase = "https://api.gi
     return text ? JSON.parse(text) : null;
   }
   return {
+    // One timeout covers the whole listing (every page), so a listing counts as
+    // a single GitHub call in the swap time budget.
     async release(tag) {
-      const release = await call("GET", `${apiBase}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`);
+      const signal = AbortSignal.timeout(GITHUB_CALL_TIMEOUT_MS);
+      const release = await call("GET", `${apiBase}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, { signal });
       const assets = [];
       for (let page = 1; page <= 10; page += 1) {
-        const batch = await call("GET", `${apiBase}/repos/${repo}/releases/${release.id}/assets?per_page=100&page=${page}`);
+        const batch = await call("GET", `${apiBase}/repos/${repo}/releases/${release.id}/assets?per_page=100&page=${page}`, { signal });
         assets.push(...batch);
         if (batch.length < 100) break;
       }
@@ -184,7 +213,7 @@ async function renameWithRetry(github, id, name, label, sleep) {
 export async function publishAsset({ github, tag, name, bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity }) {
   let release = await github.release(tag);
   let current = release.assets.find((asset) => asset.name === name) ?? null;
-  const first = decideReplace({ snapshot, asset: current, expectedGenesis, requestStartedMs });
+  const first = decidePublish({ snapshot, asset: current, expectedGenesis, requestStartedMs });
   if (!first.publish) return { published: false, upToDate: first.upToDate === true, reason: first.reason };
   if (now() > swapBy) return { published: false, reason: "run deadline reached before the upload; left for the next run" };
   const label = formatLabel(snapshot.height, snapshot.genesis);
@@ -196,7 +225,7 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
     release = await github.release(tag);
     const latest = release.assets.find((asset) => asset.name === name) ?? null;
     if ((latest?.id ?? null) !== (current?.id ?? null)) {
-      const again = decideReplace({ snapshot, asset: latest, expectedGenesis, requestStartedMs });
+      const again = decidePublish({ snapshot, asset: latest, expectedGenesis, requestStartedMs });
       if (!again.publish) { await github.remove(temp.id); return { published: false, upToDate: again.upToDate === true, reason: `another keeper published first: ${again.reason}` }; }
       current = latest;
     }
@@ -234,6 +263,22 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
   try {
     await renameWithRetry(github, temp.id, name, label, sleep);
   } catch (error) {
+    if (error.status !== 422) {
+      // As with the aside rename, GitHub may have applied the final rename and
+      // lost the response. Nothing is renamed back or deleted until a fresh
+      // listing shows that the upload is not in place.
+      let listing;
+      try { listing = await github.release(tag); }
+      catch (listError) {
+        warn(`could not verify the rename of the upload to ${name} (${listError.message}); keeping every copy for the next cycle to repair`);
+        throw error;
+      }
+      if (listing.assets.some((asset) => asset.id === temp.id && asset.name === name)) {
+        warn(`renaming the upload to ${name} reported an error but the listing shows it in place`);
+        log(`published ${name} height ${snapshot.height} genesis ${snapshot.genesis.slice(0, 12)} (${first.reason})`);
+        return { published: true, reason: first.reason };
+      }
+    }
     if (error.status === 422) {
       // Another keeper put a new asset under `name` meanwhile: theirs stays. The
       // old copy (if any) is kept aside and cleaned up later.
@@ -254,14 +299,21 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
   return { published: true, reason: first.reason };
 }
 
-// Restores a missing restore name from this keeper's own copies (left by a
-// crash or a failed swap), then deletes this keeper's copies older than
-// KEEPER_ASSET_MAX_AGE_MS for names that exist, except the best copy of each
-// name, which stays as a backup. The name is re-checked in a fresh listing
-// right before any deletion. Nothing else is deleted.
-export async function repairAndCleanup({ github, tag, expectedGenesis, now, log, warn = log, sleep = defaultSleep }) {
+// Restores a missing or incomplete restore name from this keeper's own copies
+// (left by a crash, a failed swap, or another keeper's failed upload), then
+// deletes this keeper's copies older than KEEPER_ASSET_MAX_AGE_MS, except the
+// best restorable copy of each name, which stays as a backup. Complete copies
+// are deleted only while the name exists (re-checked in a fresh listing right
+// before deleting); stale incomplete copies are unusable and are deleted even
+// while it is missing. Nothing else is deleted.
+export async function repairAndCleanup({ github, tag, expectedGenesis, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity }) {
   const release = await github.release(tag);
-  const present = new Set(release.assets.map((asset) => asset.name));
+  // Like a swap, no repair or cleanup step starts after the run deadline.
+  const pastDeadline = () => {
+    if (now() <= swapBy) return false;
+    warn("run deadline reached; leaving keeper copy repair and cleanup for the next run");
+    return true;
+  };
   const groups = new Map();
   for (const asset of release.assets) {
     const parsed = parseKeeperAssetName(asset.name);
@@ -270,31 +322,68 @@ export async function repairAndCleanup({ github, tag, expectedGenesis, now, log,
     groups.get(parsed.finalName).push({ asset, ...parsed });
   }
   for (const [finalName, copies] of groups) {
-    if (!present.has(finalName)) {
-      const rank = (copy) => copyRank(copy, expectedGenesis);
-      const best = [...copies].sort((a, b) => rank(b) - rank(a) || b.ms - a.ms)[0];
-      if (!isCompleteAsset(best.asset)) { warn(`${finalName} is missing and no complete keeper copy exists to restore it`); continue; }
-      if (rank(best) < 0 && best.kind !== "prev") continue;
-      await renameWithRetry(github, best.asset.id, finalName, best.asset.label ?? "", sleep);
-      warn(`restored missing ${finalName} from ${best.asset.name}`);
-      copies.splice(copies.indexOf(best), 1);
-    }
-    // The best remaining copy is always kept as a backup (another keeper's
-    // delete-then-upload may remove the name at any time and fail to replace
-    // it). Older surplus copies are deleted only after a fresh listing shows
-    // that the name still exists.
-    // An incomplete copy is never the backup, so it is always surplus once stale.
     const ranked = [...copies].sort((a, b) => copyRank(b, expectedGenesis) - copyRank(a, expectedGenesis) || b.ms - a.ms);
-    const backup = ranked.find((copy) => isCompleteAsset(copy.asset));
-    const surplus = ranked.filter((copy) => copy !== backup && now() - copy.ms > KEEPER_ASSET_MAX_AGE_MS);
+    const restorable = ranked.filter((copy) => isRestorableCopy(copy, expectedGenesis));
+    const canonical = release.assets.find((asset) => asset.name === finalName) ?? null;
+    if (!canonical || isBrokenCanonical(canonical, now())) {
+      const best = restorable[0];
+      if (!best) {
+        warn(`${finalName} is ${canonical ? "incomplete" : "missing"} and no complete keeper copy of the expected genesis exists to restore it`);
+      } else {
+        if (pastDeadline()) return;
+        if (canonical) {
+          // Move the unusable asset aside (never delete the canonical name's
+          // asset); it is an incomplete keeper copy from then on and is cleaned
+          // up once stale.
+          await renameWithRetry(github, canonical.id, keeperAssetName("prev", finalName, now()), canonical.label ?? "", sleep);
+          warn(`moved incomplete ${finalName} (state ${canonical.state}, ${canonical.size} bytes) aside`);
+        }
+        await renameWithRetry(github, best.asset.id, finalName, best.asset.label ?? "", sleep);
+        warn(`restored ${canonical ? "incomplete" : "missing"} ${finalName} from ${best.asset.name}`);
+        copies.splice(copies.indexOf(best), 1);
+        restorable.shift();
+      }
+    }
+    // The best remaining restorable copy is always kept as a backup (another
+    // keeper's delete-then-upload may remove the name at any time and fail to
+    // replace it). An incomplete copy is never the backup.
+    const backup = restorable.find((copy) => copies.includes(copy));
+    const surplus = ranked.filter((copy) => copies.includes(copy) && copy !== backup && now() - copy.ms > KEEPER_ASSET_MAX_AGE_MS);
     if (!surplus.length) continue;
+    if (pastDeadline()) return;
     const fresh = await github.release(tag);
-    if (!fresh.assets.some((asset) => asset.name === finalName)) { warn(`${finalName} disappeared; keeping all keeper copies`); continue; }
-    for (const copy of surplus) {
+    const nameExists = fresh.assets.some((asset) => asset.name === finalName);
+    const doomed = nameExists ? surplus : surplus.filter((copy) => !isCompleteAsset(copy.asset));
+    if (!nameExists) warn(`${finalName} disappeared; keeping every complete keeper copy`);
+    for (const copy of doomed) {
+      if (pastDeadline()) return;
       await github.remove(copy.asset.id);
       log(`removed stale keeper copy ${copy.asset.name}`);
     }
   }
+}
+
+// An asset that is still being uploaded is in the `starter` state; an upload
+// is given this long (longer than the 10-minute upload timeout) before an
+// incomplete canonical asset counts as abandoned.
+export const STARTER_ABANDONED_MS = 15 * 60_000;
+
+// The canonical asset is broken when it is unusable for a restore: fully
+// uploaded but too small, or still `starter` long after it was created.
+function isBrokenCanonical(asset, nowMs) {
+  if (!isProvablyIncomplete(asset)) return false;
+  if (asset.state !== "starter") return true;
+  const updatedMs = Date.parse(asset.updated_at ?? "");
+  return Number.isFinite(updatedMs) && nowMs - updatedMs > STARTER_ABANDONED_MS;
+}
+
+// A copy may be renamed into place when it is complete and either labeled for
+// the expected genesis or a moved-aside copy without a label (a legacy keeper
+// asset). A copy labeled for another genesis is never restored.
+function isRestorableCopy(copy, expectedGenesis) {
+  if (!isCompleteAsset(copy.asset)) return false;
+  const label = parseLabel(copy.asset.label);
+  return label ? label.genesis === expectedGenesis : copy.kind === "prev";
 }
 
 // A release asset is usable only when GitHub reports it fully uploaded and it is
@@ -302,6 +391,14 @@ export async function repairAndCleanup({ github, tag, expectedGenesis, now, log,
 // 502) can leave an empty asset in the `starter` state.
 export function isCompleteAsset(asset) {
   return asset?.state === "uploaded" && Number.isSafeInteger(asset.size) && asset.size > SNAPSHOT_HEADER.length + 28;
+}
+
+// An asset GitHub reports as not fully uploaded, or as too small to be a sealed
+// snapshot. Only such positive evidence lets a published asset be replaced
+// regardless of its height or moved aside by repair (isCompleteAsset, which
+// requires positive evidence of completeness, decides what may be restored).
+function isProvablyIncomplete(asset) {
+  return (typeof asset?.state === "string" && asset.state !== "uploaded") || (Number.isSafeInteger(asset?.size) && asset.size <= SNAPSHOT_HEADER.length + 28);
 }
 
 // Ranks this keeper's copies: the labeled height for complete copies of the
@@ -374,9 +471,13 @@ export async function runKeeper(options) {
   const { fetchImpl, github, gateway, tag, expectedGenesis, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn } = options;
   const stats = { cycles: 0, published: 0, notNewer: 0, refused: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null };
   const deadline = now() + runMs;
-  const pause = async (intervalMs) => {
-    const wait = Math.min(now() + intervalMs, deadline) - now();
-    if (wait > 0) await sleep(wait);
+  // Aborted when the publish loop stops, so no pending wait (and no live timer)
+  // outlives runKeeper.
+  const stop = new AbortController();
+  // Waits until `untilMs` (capped at the deadline).
+  const pauseUntil = async (untilMs) => {
+    const wait = Math.min(untilMs, deadline) - now();
+    if (wait > 0) await sleep(wait, stop.signal);
   };
   // Health is polled until the publish loop has stopped, not just until the
   // deadline: a cycle that started before the deadline can still be uploading.
@@ -388,13 +489,16 @@ export async function runKeeper(options) {
       const health = await keepAlive({ fetchImpl, gateway });
       log(`health HTTP ${health.status} ${health.phase}${health.height === null ? "" : ` height ${health.height}`}`);
       if (publishStopped) break;
-      await Promise.race([sleep(keepAliveIntervalMs), stopped]);
+      await Promise.race([sleep(keepAliveIntervalMs, stop.signal), stopped]);
     }
   };
   const publishLoop = async () => {
     while (now() < deadline) {
+      // Cycles start every publishIntervalMs measured from the previous cycle
+      // start; a cycle that overran the interval is followed immediately.
+      const cycleStartedMs = now();
       stats.cycles += 1;
-      try { await repairAndCleanup({ github, tag, expectedGenesis, now, log, warn, sleep }); }
+      try { await repairAndCleanup({ github, tag, expectedGenesis, now, log, warn, sleep, swapBy: deadline }); }
       catch (error) { warn(`repair/cleanup of keeper copies failed: ${error instanceof Error ? error.message : String(error)}`); }
       try {
         const result = await publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, now, log, warn, sleep, swapBy: deadline });
@@ -406,10 +510,10 @@ export async function runKeeper(options) {
         if (error instanceof GenesisMismatchError) { stats.genesisMismatches += 1; warn(error.message); }
         else { stats.failures += 1; warn(`cycle failed: ${error instanceof Error ? error.message : String(error)}`); }
       }
-      await pause(publishIntervalMs);
+      await pauseUntil(cycleStartedMs + publishIntervalMs);
     }
   };
-  await Promise.all([keepAliveLoop(), publishLoop().finally(() => { publishStopped = true; markStopped(); })]);
+  await Promise.all([keepAliveLoop(), publishLoop().finally(() => { publishStopped = true; markStopped(); stop.abort(); })]);
   return stats;
 }
 
@@ -445,7 +549,7 @@ async function main() {
     runMs: runMinutes * 60_000,
     publishIntervalMs: envNumber(env, "PUBLISH_INTERVAL_SECONDS", 600, 60, 3600) * 1000,
     keepAliveIntervalMs: envNumber(env, "KEEPALIVE_INTERVAL_SECONDS", 300, 30, 840) * 1000,
-    now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now: Date.now, sleep: cancellableSleep,
     log: (line) => console.log(`${stamp()} ${line}`),
     warn: (line) => console.log(`::warning::${stamp()} ${line}`)
   });

@@ -301,6 +301,33 @@ test("a failed final rename whose outcome cannot be verified deletes nothing", a
   assert.ok(warnings.some((line) => /could not verify/.test(line)));
 });
 
+test("a failed final rename is not taken as published when the listing shows another asset under the name", async () => {
+  const { github, state } = fakeGitHub({ assets: [] });
+  github.rename = async (id, name) => {
+    state.calls.push(["rename", id, name]);
+    if (!state.assets.some((asset) => asset.id === 60)) state.assets.push({ id: 60, name, label: formatLabel(2200, GENESIS), state: "uploaded", size: 1000 });
+    const error = new Error("socket hang up"); error.status = 502; throw error;
+  };
+  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 5, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} }), /socket hang up/);
+  assert.deepEqual(state.assets.map((asset) => [asset.id, asset.name]), [[60, "state.enc"]], "the other asset stays and the upload is removed");
+});
+
+test("publishAsset replaces an incomplete canonical asset only when it is provably incomplete and not labeled for another genesis", async () => {
+  {
+    // A `starter` asset (an upload that never finished) is incomplete whatever size GitHub reports.
+    const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: "", state: "starter", size: 1000, updated_at: new Date(T0 - 10_000).toISOString() }] });
+    const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+    assert.equal(result.published, true);
+    assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc").label).height, 2150);
+  }
+  {
+    const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(9999, OTHER), size: 12 }] });
+    const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+    assert.equal(result.published, false, "an asset labeled for another genesis is never replaced");
+    assert.equal(state.assets.find((asset) => asset.name === "state.enc").id, 7);
+  }
+});
+
 test("publishAsset replaces a canonical asset that is incomplete, even when it is fresh and unlabeled", async () => {
   const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: "", size: 12, updated_at: new Date(T0 - 10_000).toISOString() }] });
   const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
@@ -626,11 +653,61 @@ test("a swap started at the deadline finishes or rolls back well before the work
   const timeout = Number(/^\s+timeout-minutes: (\d+)$/m.exec(workflow)?.[1]);
   const runMinutes = Number(/RUN_MINUTES: \$\{\{ inputs\.run_minutes \|\| '(\d+)' \}\}/.exec(workflow)?.[1]);
   // Worst case after the swap check: rename aside, a listing that verifies an
-  // ambiguous aside rename, rename into place, rename back, each with every retry
-  // timing out; plus 2 minutes for job set-up.
+  // ambiguous aside rename, rename into place, a listing that verifies an
+  // ambiguous final rename, rename back, deleting the upload, each with every
+  // retry timing out (a listing shares one timeout across its pages); plus 2
+  // minutes for job set-up. A repair started before the deadline moves an
+  // incomplete asset aside and renames a backup into place.
   const rename = (RENAME_RETRY_DELAYS_MS.length + 1) * GITHUB_CALL_TIMEOUT_MS + RENAME_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0);
-  const swap = 3 * rename + GITHUB_CALL_TIMEOUT_MS;
+  const swap = 3 * rename + 3 * GITHUB_CALL_TIMEOUT_MS;
   assert.ok(swap + 2 * 60_000 <= (timeout - runMinutes) * 60_000, `swap worst case ${swap} ms must fit in ${timeout - runMinutes} min`);
+  const repair = 2 * rename + GITHUB_CALL_TIMEOUT_MS;
+  assert.ok(repair + 2 * 60_000 <= (timeout - runMinutes) * 60_000, `repair worst case ${repair} ms must fit in ${timeout - runMinutes} min`);
+});
+
+test("a release listing shares one GitHub call timeout across all its pages", async () => {
+  const signals = [];
+  const page = (count, offset) => Array.from({ length: count }, (_, i) => ({ id: offset + i, name: `a${offset + i}` }));
+  const fetchImpl = async (url, init) => {
+    signals.push(init.signal);
+    if (url.includes("/releases/tags/")) return new Response(JSON.stringify({ id: 9 }), { status: 200 });
+    if (/[?&]page=1$/.test(url)) return new Response(JSON.stringify(page(100, 0)), { status: 200 });
+    if (/[?&]page=2$/.test(url)) return new Response(JSON.stringify(page(3, 100)), { status: 200 });
+    return new Response(JSON.stringify({ id: 1, name: "x" }), { status: 200 });
+  };
+  const github = createGitHub({ fetchImpl, token: "t0ken", repo: "a/b" });
+  const release = await github.release("t");
+  assert.equal(release.assets.length, 103);
+  assert.equal(signals.length, 3);
+  assert.ok(signals.every((signal) => signal === signals[0]), "one deadline for the whole listing");
+  await github.rename(5, "y", "");
+  assert.notEqual(signals[3], signals[0], "other calls get their own timeout");
+});
+
+test("repairAndCleanup starts no rename or delete after the run deadline", async () => {
+  const { github, state } = fakeGitHub({ assets: [
+    { id: 3, name: keeperAssetName("prev", "state.enc", T0 - 50 * 60_000, "aaaaaaaa"), label: formatLabel(2100, GENESIS) },
+    { id: 8, name: "state-9ad75d777141.enc", label: formatLabel(2100, GENESIS) },
+    { id: 4, name: keeperAssetName("prev", "state-9ad75d777141.enc", T0 - 50 * 60_000, "bbbbbbbb"), label: formatLabel(2000, GENESIS) },
+    { id: 5, name: keeperAssetName("prev", "state-9ad75d777141.enc", T0 - 60 * 60_000, "cccccccc"), label: formatLabel(1900, GENESIS) }
+  ] });
+  const warnings = [];
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, swapBy: T0 - 1, log() {}, warn: (line) => warnings.push(line), sleep: async () => {} });
+  assert.ok(!state.calls.some((call) => call[0] === "rename" || call[0] === "remove"));
+  assert.ok(warnings.some((line) => /deadline/.test(line)));
+  {
+    // Cleanup only (the name exists): not even the re-check listing starts after the deadline.
+    const cleanup = fakeGitHub({ assets: state.assets.filter((asset) => asset.id !== 3) });
+    await repairAndCleanup({ github: cleanup.github, tag: "t", expectedGenesis: GENESIS, now: () => T0, swapBy: T0 - 1, log() {}, warn() {}, sleep: async () => {} });
+    assert.deepEqual(cleanup.state.calls.map((call) => call[0]), ["release"], "no listing, rename or delete after the deadline");
+  }
+  // runKeeper passes its run deadline: a cycle whose listing returns after it repairs nothing.
+  const time = virtualTime();
+  const slow = fakeGitHub({ now: time.now, assets: [{ id: 3, name: keeperAssetName("prev", "state.enc", T0 - 50 * 60_000, "aaaaaaaa"), label: formatLabel(2100, GENESIS) }] });
+  slow.state.hooks.release = () => time.sleep(2 * 60_000);
+  const fetchImpl = async (url) => url.endsWith("/health") ? new Response("{}", { status: 200 }) : new Response("down", { status: 503 });
+  await time.run(runKeeper({ fetchImpl, github: slow.github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS, runMs: 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000, now: time.now, sleep: time.sleep, log() {}, warn() {} }));
+  assert.ok(!slow.state.calls.some((call) => call[0] === "rename"), "no repair rename after the deadline");
 });
 
 test("runKeeper survives gateway outages and reports failure only when nothing was ever up to date", async () => {
