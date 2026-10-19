@@ -134,7 +134,15 @@ const STARTUP_GRACE_MS = 10 * 60_000;
 // block, a validator copy, a block produced or committed by a fresh init). Longer than one 180 s download attempt; no wall-clock cap,
 // because a large snapshot on a slow instance replays for a long time.
 export const BOOT_STALL_MS = 5 * 60_000;
-const SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS = [2_000, 5_000];
+export const SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS = [2_000, 5_000];
+// A keeper replaces the published snapshot release asset in more than one step
+// (`gh release upload --clobber` deletes the old asset and then uploads the new
+// one; the scheduled keeper renames), so a cold start can see 404 while a
+// snapshot does exist. A 404 is retried on its own schedule (160 s in total,
+// enough for the upload of a snapshot far larger than today's) before it is
+// taken to mean that nothing is published (which creates a fresh TEST genesis).
+// Each wait is far below the 5-minute start-up stall limit.
+export const SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS = [3_000, 7_000, 15_000, 30_000, 45_000, 60_000];
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "600" };
 const SECURITY = { "x-content-type-options": "nosniff", "x-zyron-network": "testnet-no-value", "referrer-policy": "no-referrer" };
 function writeJson(response, code, body, extra = {}) {
@@ -201,6 +209,38 @@ function option(name, fallback) {
   return rest[index + 1];
 }
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+// Downloads the published snapshot for a cold start. Transient download
+// failures and a transient 404 are retried; the caller treats a final 404 as
+// "nothing published" (fresh TEST genesis) and anything other than 200 as a
+// failed restore. Returns the last response (a 200 body is left unread).
+export async function downloadSnapshot(url, { fetchImpl = fetch, sleepImpl = sleep, onAttempt = () => {}, log = console.error, notFoundDelaysMs = SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS, failureDelaysMs = SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS } = {}) {
+  let failures = 0;
+  let notFound = 0;
+  for (;;) {
+    try {
+      onAttempt();
+      const response = await fetchImpl(url, { redirect: "follow", signal: AbortSignal.timeout(180_000) });
+      if (response.status === 200) return response;
+      if (response.status === 404) {
+        if (notFound >= notFoundDelaysMs.length) return response;
+        await response.arrayBuffer().catch(() => undefined);
+        log("snapshot download returned 404; retrying in case the published snapshot is being replaced");
+        await sleepImpl(notFoundDelaysMs[notFound]);
+        notFound += 1;
+        continue;
+      }
+      if (failures >= failureDelaysMs.length) return response;
+      await response.arrayBuffer().catch(() => undefined);
+      log(`snapshot download returned ${response.status}; retrying`);
+    } catch (error) {
+      if (failures >= failureDelaysMs.length) throw error;
+      log(`snapshot download failed (${error instanceof Error ? error.message : String(error)}); retrying`);
+    }
+    await sleepImpl(failureDelaysMs[failures]);
+    failures += 1;
+  }
+}
 
 function assertTestnetChainId(chainId) {
   assert.ok(/^[a-z0-9-]{3,64}$/.test(chainId) && chainId.includes("testnet"), "chain ID must contain 'testnet'");
@@ -1016,21 +1056,7 @@ if (!invokedDirectly) {
     if (!exists && restoreUrl && stateSecret) {
       try {
         boot.enter("download");
-        let response;
-        for (let attempt = 0; ; attempt += 1) {
-          // Transient download failures are retried; only a decrypt/validation
-          // failure or a missing snapshot falls back to a fresh genesis.
-          try {
-            boot.progress();
-            response = await fetch(restoreUrl, { redirect: "follow", signal: AbortSignal.timeout(180_000) });
-            if (response.status === 200 || response.status === 404 || attempt >= SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS.length) break;
-            console.error(`snapshot download returned ${response.status}; retrying`);
-          } catch (error) {
-            if (attempt >= SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS.length) throw error;
-            console.error(`snapshot download failed (${error instanceof Error ? error.message : String(error)}); retrying`);
-          }
-          await sleep(SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS[attempt]);
-        }
+        const response = await downloadSnapshot(restoreUrl, { onAttempt: boot.progress });
         if (response.status === 404) console.log("no state snapshot published yet; creating a fresh TEST genesis");
         else {
           assert.equal(response.status, 200, `snapshot download returned ${response.status}`);
