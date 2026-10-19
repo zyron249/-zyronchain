@@ -29,8 +29,9 @@
 //     request is checked against a fresh listing (GitHub may have applied it);
 //     when the listing fails, every copy is kept. A failed upload request is
 //     checked the same way (the generated temporary name is known before the
-//     POST). The upload is deleted after losing the name to another asset only
-//     when that asset is complete. No upload, swap, repair rename or cleanup
+//     POST), and so is repair's request to move an incomplete asset aside.
+//     The upload is deleted after losing the name to another asset only when
+//     that asset is complete, and never after a failed pre-swap listing. No upload, swap, repair rename or cleanup
 //     delete starts after the run deadline, and no publication follows a repair
 //     that ended after it, so a started swap ends before the job timeout;
 //   - only this keeper's own next-/prev- copies are ever cleaned up; complete
@@ -245,7 +246,17 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
     const latest = release.assets.find((asset) => asset.name === name) ?? null;
     if ((latest?.id ?? null) !== (current?.id ?? null)) {
       const again = decidePublish({ snapshot, asset: latest, expectedGenesis, requestStartedMs, nowMs: now() });
-      if (!again.publish) { await github.remove(temp.id); return { published: false, upToDate: again.upToDate === true, reason: `another keeper published first: ${again.reason}` }; }
+      if (!again.publish) {
+        // The upload is dropped only in favour of a complete asset: one that is
+        // still being uploaded may never complete, and the upload may then be
+        // the only usable copy (repair installs it once the other is abandoned).
+        if (!isCompleteAsset(latest)) {
+          warn(`${name} is now held by an incomplete asset (state ${latest?.state}, ${latest?.size} bytes), probably an upload in progress; keeping the upload ${temp.name ?? temp.id} for the next cycle to repair`);
+          return { published: false, reason: `another keeper's upload is in progress: ${again.reason}; upload kept for repair` };
+        }
+        await github.remove(temp.id).catch(() => {});
+        return { published: false, upToDate: again.upToDate === true, reason: `another keeper published first: ${again.reason}` };
+      }
       current = latest;
     }
     if (now() > swapBy) {
@@ -259,7 +270,13 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
       aside = current;
     }
   } catch (error) {
-    if (!asideAttempted || error.status === 422) {
+    if (!asideAttempted) {
+      // The pre-swap listing failed: it shows neither that `name` exists nor
+      // that dropping the upload is safe, so the upload stays for repair.
+      warn(`could not re-check ${name} before the swap (${error.message}); keeping the upload ${temp.name ?? temp.id} for the next cycle to repair`);
+      throw error;
+    }
+    if (error.status === 422) {
       // `name` is untouched (the aside rename did not happen): drop the upload.
       await github.remove(temp.id).catch(() => {});
       throw error;
@@ -396,7 +413,16 @@ export async function repairAndCleanup({ github, tag, expectedGenesis, now, log,
           // Move the unusable asset aside (never delete the canonical name's
           // asset); it is an incomplete keeper copy from then on and is cleaned
           // up once stale.
-          await renameWithRetry(github, canonical.id, keeperAssetName("prev", finalName, now()), canonical.label ?? "", sleep);
+          try {
+            await renameWithRetry(github, canonical.id, keeperAssetName("prev", finalName, now()), canonical.label ?? "", sleep);
+          } catch (error) {
+            if (error.status === 422) throw error;
+            // GitHub may have applied the rename and lost the response: the
+            // backup is installed only when a fresh listing shows the name free.
+            const check = await github.release(tag);
+            if (check.assets.some((asset) => asset.name === finalName)) throw error;
+            warn(`moving incomplete ${finalName} aside reported an error (${error.message}) but the listing shows the name free`);
+          }
           warn(`moved incomplete ${finalName} (state ${canonical.state}, ${canonical.size} bytes) aside`);
         }
         await renameWithRetry(github, best.asset.id, finalName, best.asset.label ?? "", sleep);
