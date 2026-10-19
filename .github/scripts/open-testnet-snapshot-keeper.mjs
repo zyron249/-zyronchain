@@ -223,6 +223,9 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
   let aside = null;
   let asideAttempted = false;
   let asideName = null;
+  // Set when the old asset vanished: there is nothing to roll back to, so a
+  // failed final rename keeps the upload for repair instead of deleting it.
+  let keepUpload = false;
   try {
     // Re-check right before the swap: another keeper may have published meanwhile.
     release = await github.release(tag);
@@ -264,13 +267,16 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
     }
     if (old?.name !== asideName) {
       // The old asset vanished (another keeper deleted it) or was renamed by
-      // someone else: there is nothing to roll back to, so the swap stops here
-      // and the upload stays as a keeper copy that repair can put in place.
-      warn(`${name} was neither kept nor moved aside (${old ? `now ${old.name}` : "deleted"}); keeping the upload ${temp.name ?? temp.id} for the next cycle to repair`);
-      throw error;
+      // someone else: it is not this keeper's backup and is never renamed back.
+      // The name is probably free now, so the upload is renamed into place at
+      // once (a concurrent upload of the name makes that a harmless 422); if
+      // that fails, the upload stays as a keeper copy for repair.
+      warn(`${name} vanished during the swap (${old ? `now ${old.name}` : "deleted"}); renaming the upload into place`);
+      keepUpload = true;
+    } else {
+      warn(`renaming ${name} aside reported an error but the listing shows it moved; completing the swap`);
+      aside = old;
     }
-    warn(`renaming ${name} aside reported an error but the listing shows it moved; completing the swap`);
-    aside = old;
   }
   try {
     await renameWithRetry(github, temp.id, name, label, sleep);
@@ -290,6 +296,10 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
         log(`published ${name} height ${snapshot.height} genesis ${snapshot.genesis.slice(0, 12)} (${first.reason})`);
         return { published: true, reason: first.reason };
       }
+    }
+    if (keepUpload && error.status !== 422) {
+      warn(`could not rename the upload to ${name} (${error.message}); keeping the upload ${temp.name ?? temp.id} for the next cycle to repair`);
+      throw error;
     }
     if (error.status === 422) {
       // Another keeper put a new asset under `name` meanwhile: theirs stays. The

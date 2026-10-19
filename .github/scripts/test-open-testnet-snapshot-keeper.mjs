@@ -307,8 +307,8 @@ test("an ambiguous aside rename whose old asset now has another name is not take
   const rename = github.rename;
   // GitHub applied a different rename of the old asset (another client), then the response was lost.
   github.rename = async (id, name, label) => {
-    if (id === 7) { await rename(id, "renamed-by-someone-else.enc", label); const error = new Error("socket hang up"); error.status = 502; throw error; }
-    if (name === "state.enc") { state.calls.push(["rename", id, name]); const error = new Error("socket hang up"); error.status = 502; throw error; }
+    if (id === 7 && /^prev-/.test(name)) { await rename(id, "renamed-by-someone-else.enc", label); const error = new Error("socket hang up"); error.status = 502; throw error; }
+    if (id !== 7 && name === "state.enc") { state.calls.push(["rename", id, name]); const error = new Error("socket hang up"); error.status = 502; throw error; }
     return rename(id, name, label);
   };
   await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} }), /socket hang up/);
