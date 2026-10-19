@@ -364,7 +364,8 @@ test("a failed final rename is not taken as published when the listing shows ano
 
 // The legacy keeper deletes state.enc and uploads its replacement: while that
 // upload runs, GitHub lists it under the name in the `starter` state.
-const legacyUploadStarts = (s) => s.assets.push({ id: 60, name: "state.enc", label: "", state: "starter", size: 0, updated_at: new Date(T0).toISOString() });
+// (The aside rename is retried, so this may run more than once; it starts one upload.)
+const legacyUploadStarts = (s) => { if (!s.assets.some((asset) => asset.id === 60)) s.assets.push({ id: 60, name: "state.enc", label: "", state: "starter", size: 0, updated_at: new Date(T0).toISOString() }); };
 
 test("a final rename that collides with an in-progress upload keeps the replacement for repair (old asset vanished, no backup)", async () => {
   const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });

@@ -27,9 +27,12 @@
 //     the next cycle renames the best one back into place, so `state.enc` is
 //     only missing between two API calls and never lost. A failed rename
 //     request is checked against a fresh listing (GitHub may have applied it);
-//     when the listing fails, every copy is kept. No upload, swap, repair
-//     rename or cleanup delete starts after the run deadline, so a started
-//     swap ends before the job timeout;
+//     when the listing fails, every copy is kept. A failed upload request is
+//     checked the same way (the generated temporary name is known before the
+//     POST). The upload is deleted after losing the name to another asset only
+//     when that asset is complete. No upload, swap, repair rename or cleanup
+//     delete starts after the run deadline, and no publication follows a repair
+//     that ended after it, so a started swap ends before the job timeout;
 //   - only this keeper's own next-/prev- copies are ever cleaned up; complete
 //     ones only when the name they belong to exists (rechecked right before
 //     deleting), and the best restorable copy of each name is always kept. An
@@ -219,7 +222,17 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
   if (!first.publish) return { published: false, upToDate: first.upToDate === true, reason: first.reason };
   if (now() > swapBy) return { published: false, reason: "run deadline reached before the upload; left for the next run" };
   const label = formatLabel(snapshot.height, snapshot.genesis);
-  const temp = await github.upload(release.id, keeperAssetName("next", name, now()), label, bytes);
+  // The temporary name is fixed before the POST, so an upload whose response
+  // was lost can still be found and installed.
+  const tempName = keeperAssetName("next", name, now());
+  let temp;
+  try {
+    temp = await github.upload(release.id, tempName, label, bytes);
+  } catch (error) {
+    temp = await findCompletedUpload({ github, tag, tempName, label, size: bytes.length, warn });
+    if (!temp) throw error;
+    warn(`the upload of ${tempName} reported an error (${error.message}) but the listing shows it complete; continuing the swap`);
+  }
   let aside = null;
   let asideAttempted = false;
   let asideName = null;
@@ -281,31 +294,42 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
   try {
     await renameWithRetry(github, temp.id, name, label, sleep);
   } catch (error) {
-    if (error.status !== 422) {
-      // As with the aside rename, GitHub may have applied the final rename and
-      // lost the response. Nothing is renamed back or deleted until a fresh
-      // listing shows that the upload is not in place.
-      let listing;
-      try { listing = await github.release(tag); }
-      catch (listError) {
-        warn(`could not verify the rename of the upload to ${name} (${listError.message}); keeping every copy for the next cycle to repair`);
-        throw error;
-      }
-      if (listing.assets.some((asset) => asset.id === temp.id && asset.name === name)) {
-        warn(`renaming the upload to ${name} reported an error but the listing shows it in place`);
-        log(`published ${name} height ${snapshot.height} genesis ${snapshot.genesis.slice(0, 12)} (${first.reason})`);
-        return { published: true, reason: first.reason };
-      }
-    }
-    if (keepUpload && error.status !== 422) {
-      warn(`could not rename the upload to ${name} (${error.message}); keeping the upload ${temp.name ?? temp.id} for the next cycle to repair`);
+    // As with the aside rename, GitHub may have applied the final rename and
+    // lost the response, and a 422 only says that some asset held the name at
+    // that moment. Nothing is renamed back or deleted until a fresh listing
+    // shows what is under the name.
+    const collided = error.status === 422;
+    let listing;
+    try { listing = await github.release(tag); }
+    catch (listError) {
+      warn(`could not verify the rename of the upload to ${name} (${listError.message}); keeping every copy for the next cycle to repair`);
+      if (collided) return { published: false, reason: "the name was taken concurrently and the listing could not be checked; every copy kept for repair" };
       throw error;
     }
-    if (error.status === 422) {
-      // Another keeper put a new asset under `name` meanwhile: theirs stays. The
-      // old copy (if any) is kept aside and cleaned up later.
-      await github.remove(temp.id).catch(() => {});
-      return { published: false, reason: "another keeper published the same name concurrently" };
+    if (listing.assets.some((asset) => asset.id === temp.id && asset.name === name)) {
+      warn(`renaming the upload to ${name} reported an error but the listing shows it in place`);
+      log(`published ${name} height ${snapshot.height} genesis ${snapshot.genesis.slice(0, 12)} (${first.reason})`);
+      return { published: true, reason: first.reason };
+    }
+    const holder = listing.assets.find((asset) => asset.name === name && asset.id !== temp.id) ?? null;
+    if (holder) {
+      // Another keeper put an asset under `name` meanwhile; theirs keeps the
+      // name and the old copy (if any) stays aside for cleanup. The upload is
+      // deleted only when their asset is complete: an asset that is still
+      // being uploaded (`starter`) may never complete, and the upload may then
+      // be the only usable copy, which repair installs once theirs is abandoned.
+      if (isCompleteAsset(holder)) {
+        await github.remove(temp.id).catch(() => {});
+        if (collided) return { published: false, reason: "another keeper published the same name concurrently" };
+        throw error;
+      }
+      warn(`${name} is held by an incomplete asset (state ${holder.state}, ${holder.size} bytes), probably an upload in progress; keeping the upload ${temp.name ?? temp.id} for the next cycle to repair`);
+      if (collided) return { published: false, reason: "another keeper's upload of the same name is in progress; upload kept for repair" };
+      throw error;
+    }
+    if (keepUpload) {
+      warn(`could not rename the upload to ${name} (${error.message}); keeping the upload ${temp.name ?? temp.id} for the next cycle to repair`);
+      throw error;
     }
     if (aside) {
       try { await renameWithRetry(github, aside.id, name, aside.label ?? "", sleep); }
@@ -319,6 +343,21 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
   }
   log(`published ${name} height ${snapshot.height} genesis ${snapshot.genesis.slice(0, 12)} (${first.reason})`);
   return { published: true, reason: first.reason };
+}
+
+// After a failed upload request: the upload under `tempName` if a fresh listing
+// shows it complete with this upload's label and size (GitHub stored it and the
+// response was lost), otherwise null. Anything else is left to repair.
+async function findCompletedUpload({ github, tag, tempName, label, size, warn }) {
+  let listing;
+  try { listing = await github.release(tag); }
+  catch (listError) {
+    warn(`could not check whether the failed upload of ${tempName} was stored (${listError.message})`);
+    return null;
+  }
+  const stored = listing.assets.find((asset) => asset.name === tempName) ?? null;
+  if (!stored || !isCompleteAsset(stored) || stored.size !== size || (stored.label ?? "") !== label) return null;
+  return stored;
 }
 
 // Restores a missing or incomplete restore name from this keeper's own copies
@@ -522,6 +561,9 @@ export async function runKeeper(options) {
       stats.cycles += 1;
       try { await repairAndCleanup({ github, tag, expectedGenesis, now, log, warn, sleep, swapBy: deadline }); }
       catch (error) { warn(`repair/cleanup of keeper copies failed: ${error instanceof Error ? error.message : String(error)}`); }
+      // A repair that started before the deadline can end after it; no
+      // download or upload starts then.
+      if (now() >= deadline) { warn("run deadline reached during repair; skipping publication"); break; }
       try {
         const result = await publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, now, log, warn, sleep, swapBy: deadline });
         stats.lastHeight = result.height;
