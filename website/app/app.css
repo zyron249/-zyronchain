@@ -102,10 +102,10 @@ a.button { display: inline-flex; align-items: center; justify-content: center; t
 .hint.badtext { color: #ff9b8d; }
 .words { list-style: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 0; margin: 0 0 12px; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .words li { min-width: 0; }
-.word-card { width: 100%; display: flex; align-items: center; gap: 8px; text-align: left; padding: 10px; min-height: 48px; font: 600 16px/1.2 var(--mono); background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; }
-.word-card .word-num { color: var(--muted); font-weight: 400; min-width: 1.6em; text-align: right; }
+.word-card { width: 100%; display: flex; align-items: center; gap: 8px; text-align: left; padding: 10px; height: 48px; min-height: 48px; overflow: hidden; font: 600 16px/1.2 var(--mono); background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; }
+.word-card .word-num { color: var(--muted); font-weight: 400; min-width: 1.6em; text-align: right; flex: none; }
 .word-card .word-num::after { content: "."; }
-.word-card .word-text { min-width: 0; overflow-wrap: anywhere; }
+.word-card .word-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .word-card[data-revealed="false"] .word-text { filter: blur(3px); color: var(--muted); letter-spacing: .1em; }
 .word-card[data-revealed="true"] { border-color: rgba(79, 216, 251, .6); box-shadow: 0 0 0 1px rgba(79, 216, 251, .25); }
 button.hold { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }

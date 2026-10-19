@@ -129,6 +129,7 @@ async function createWallet(page, { snapshot = false } = {}) {
   assert.deepEqual(await visibleWords(), Array(12).fill('•••••'), 'blur hides all words');
   // hold-to-reveal-all shows words only while pressed
   const hold = await page.$('[data-hold-reveal]');
+  await hold.scrollIntoViewIfNeeded();
   const box = await hold.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();

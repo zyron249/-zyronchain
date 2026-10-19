@@ -432,8 +432,17 @@
   }
   function revealAll() { if (state.pending) for (const button of $$('[data-phrase-words] .word-card')) setCard(button, true); }
   const hold = $('[data-hold-reveal]');
-  hold.addEventListener('pointerdown', (event) => { event.preventDefault(); revealAll(); });
-  for (const type of ['pointerup', 'pointerleave', 'pointercancel', 'blur']) hold.addEventListener(type, hideWords);
+  hold.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    // Keep the press if revealing the words shifts the button under the finger.
+    try { hold.setPointerCapture(event.pointerId); } catch (error) { /* pointer capture is optional */ }
+    revealAll();
+  });
+  for (const type of ['pointerup', 'pointercancel', 'blur']) hold.addEventListener(type, hideWords);
+  hold.addEventListener('pointerleave', (event) => {
+    if (typeof hold.hasPointerCapture === 'function' && hold.hasPointerCapture(event.pointerId)) return;
+    hideWords();
+  });
   hold.addEventListener('keydown', (event) => { if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) { event.preventDefault(); revealAll(); } });
   hold.addEventListener('keyup', (event) => { if (event.key === ' ' || event.key === 'Enter') hideWords(); });
   hold.addEventListener('contextmenu', (event) => event.preventDefault());
