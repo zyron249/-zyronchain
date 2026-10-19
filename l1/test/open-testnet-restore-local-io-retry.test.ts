@@ -245,3 +245,19 @@ test("R37-1072-L1: a system error wrapped as a cause counts as a local I/O error
   assert.equal((await api.restoreNetworkWithLocalRetry("/net", {}, "zyron-test", fake.options)).height, 100);
   assert.equal(fake.calls.length, 2);
 });
+
+test("R37-1072-L1: a partial directory that cannot be moved aside ends as a localIo error, never as a fresh-genesis error, and nothing is deleted", async () => {
+  for (const moveError of [eio("/net"), new Error("refusing to move /net: unexpected entries notes.txt")]) {
+    const fake = fakeRestore([eio(), "ok"]);
+    const options = { ...fake.options, moveAside: async (dir: string) => { fake.moved.push(dir); throw moveError; } };
+    await assert.rejects(api.restoreNetworkWithLocalRetry("/net", {}, "zyron-test", options), (error: any) => {
+      assert.equal(error.localIo, true);
+      assert.match(error.message, /could not be moved aside/);
+      assert.equal(error.cause.code, "EIO");
+      return true;
+    });
+    assert.equal(fake.calls.length, 1, "no second restore into a directory that was not moved aside");
+    assert.deepEqual(fake.moved, ["/net"]);
+    assert.deepEqual(fake.waits, []);
+  }
+});

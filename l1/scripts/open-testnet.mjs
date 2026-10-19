@@ -397,7 +397,8 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
 // to this instance's disk (EIO, EMFILE, ENOSPC, ...; a Node system error, also
 // when wrapped as an error's cause) says nothing about the snapshot. The
 // partial directory is moved aside and the restore runs again from the same
-// downloaded bundle; if the disk keeps failing the error is marked localIo, and
+// downloaded bundle; if the disk keeps failing (or the partial directory
+// cannot be moved aside) the error is marked localIo, and
 // start-up stops instead of creating a fresh TEST genesis (the host restarts
 // the instance, which downloads and restores the published snapshot again).
 // Errors about the snapshot itself (format, chain ID, genesis, keys, replay)
@@ -420,7 +421,14 @@ export async function restoreNetworkWithLocalRetry(dir, bundle, expectedChainId,
         throw Object.assign(new Error(`local I/O error during the restore after ${attempt + 1} attempts: ${message}`), { localIo: true, cause: error });
       }
       log(`restore hit a local I/O error (${message}); restoring the downloaded snapshot again in ${delays[attempt]} ms (attempt ${attempt + 2} of ${delays.length + 1})`);
-      const aside = await moveAside(dir);
+      // The partial directory must be moved aside (never deleted) before the
+      // next attempt. If that fails too, the disk is still failing: stop as a
+      // local I/O error rather than fall through to a fresh TEST genesis.
+      let aside;
+      try { aside = await moveAside(dir); } catch (moveError) {
+        const moveMessage = moveError instanceof Error ? moveError.message : String(moveError);
+        throw Object.assign(new Error(`local I/O error during the restore (${message}); the partial directory could not be moved aside: ${moveMessage}`), { localIo: true, cause: error });
+      }
       if (aside) log(`moved the partial restore directory to ${aside}`);
       onProgress({ step: "local-io-retry" });
       await sleepImpl(delays[attempt]);
