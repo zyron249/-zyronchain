@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Zyron Wallet" />
   <meta name="format-detection" content="telephone=no" />
-  <meta name="zyron-build" content="app=fbc77a94374fb922;release=c3737bd80eb6a3bccb9a4468ba48618a20c51730" />
+  <meta name="zyron-build" content="app=75883bdac6ebcab1;release=f068d0ce8edbf15bca4f2918940c0516d34d1a9d" />
   <title>ZyronChain Wallet (testnet)</title>
   <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys stay on this device. This app does not connect and does not show a balance. Sign locally." />
   <link rel="manifest" href="/app/manifest.json" />
@@ -60,6 +60,12 @@
         <button class="primary" type="button" data-go="create" data-i18n="create">Create new wallet</button>
         <button type="button" data-go="restore" data-i18n="restoreStart">Restore from recovery phrase</button>
       </div>
+      <details class="danger-zone">
+        <summary data-i18n="importSummary">Import an encrypted vault</summary>
+        <p class="hint" data-i18n="importLead">The file is the password-encrypted vault from this app. It is read on this device and is not uploaded. The recovery phrase is not inside the file.</p>
+        <label><span data-i18n="importFile">Vault file</span><input type="file" data-vault-file accept="application/json,.json" /></label>
+        <p class="hint" data-vault-import-result aria-live="polite"></p>
+      </details>
       <button type="button" class="danger" data-go="delete" data-rejected-delete hidden data-i18n="deleteRejected">Delete the unreadable stored vault</button>
     </section>
 
@@ -164,6 +170,7 @@
       <p class="hint" data-unlock-result aria-live="polite"></p>
       <div class="actions">
         <button class="primary" type="button" data-unlock-go data-i18n="unlock">Unlock</button>
+        <button type="button" data-vault-export data-i18n="exportVault">Export encrypted vault</button>
       </div>
       <details class="danger-zone">
         <summary data-i18n="forgot">Forgot the password?</summary>
@@ -189,6 +196,15 @@
         <p class="hint" data-copy-result aria-live="polite"></p>
       </div>
 
+      <div class="card" data-signed-hold hidden>
+        <h2 data-i18n="signedHoldTitle">Signed transfer</h2>
+        <p class="hint" data-i18n="signedHoldLead">Still on this screen until you dismiss it. Nothing was broadcast. Locking the app keeps it until you unlock and dismiss it.</p>
+        <pre data-signed-hold-json></pre>
+        <div class="actions">
+          <button type="button" data-signed-dismiss data-i18n="dismissSigned">Dismiss signed transfer</button>
+        </div>
+      </div>
+
       <div class="card">
         <h2 data-i18n="balanceTitle">Balance and broadcasting</h2>
         <dl class="kv">
@@ -201,14 +217,16 @@
 
       <div class="card">
         <h2 data-i18n="signTitle">Sign a transfer locally</h2>
-        <p class="hint" data-i18n="signLead">Builds exactly the L1 transfer format. Enter the chain ID and your next nonce by hand from an official announcement; nothing is guessed. Only transfers can be signed.</p>
-        <label><span data-i18n="chainId">Chain ID</span><input data-tx-chain autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="from an official announcement" /></label>
+        <p class="hint" data-i18n="signLead">Builds exactly the L1 transfer format. Only transfers can be signed, and only for a testnet or devnet chain id.</p>
+        <p class="hint" data-i18n="chainHint">Type a testnet or devnet chain id. The no-value wallet testnet id is zyron-wallet-testnet-1. Type the nonce yourself. Nothing is guessed.</p>
+        <label><span data-i18n="chainId">Chain ID</span><input data-tx-chain autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="zyron-wallet-testnet-1" /></label>
         <label><span data-i18n="nonce">Next nonce</span><input data-tx-nonce inputmode="numeric" autocomplete="off" placeholder="1" /></label>
         <label><span data-i18n="receiver">Receiver address</span><input data-tx-to autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ZYN…" /></label>
         <div class="row two">
           <label><span data-i18n="amount">Amount (ZYN)</span><input data-tx-amount inputmode="decimal" autocomplete="off" placeholder="1.5" /></label>
           <label><span data-i18n="fee">Fee (ZYN)</span><input data-tx-fee inputmode="decimal" autocomplete="off" value="0" /></label>
         </div>
+        <p class="hint" data-i18n="feeHint">Fee is extra. The review shows amount, fee and the total. 0 is allowed on this testnet. This app does not look up a fee.</p>
         <label><span data-i18n="txVersion">Transaction version</span>
           <select data-tx-version><option value="2" selected>2 (protocol 3+, domain-separated)</option><option value="1">1 (legacy)</option></select></label>
         <p class="hint" data-tx-check aria-live="polite"></p>
@@ -233,7 +251,10 @@
           <li data-i18n="sec4">iPhone/iPad: the browser may delete site data if storage runs low or the app is removed. Your paper recovery phrase is the only real backup.</li>
         </ul>
         <p class="hint" data-storage-status></p>
-        <button type="button" class="danger" data-go="delete" data-i18n="deleteWallet">Delete wallet</button>
+        <div class="actions">
+          <button type="button" data-vault-export data-i18n="exportVault">Export encrypted vault</button>
+          <button type="button" class="danger" data-go="delete" data-i18n="deleteWallet">Delete wallet</button>
+        </div>
       </div>
     </section>
 
@@ -257,7 +278,7 @@
           <button type="button" data-tx-download data-i18n="downloadTx">Download tx.json</button>
         </div>
         <p class="hint" data-tx-copy-result aria-live="polite"></p>
-        <div class="actions"><button class="primary" type="button" data-review-done data-i18n="done">Done</button></div>
+        <div class="actions"><button class="primary" type="button" data-review-done data-i18n="dismissSigned">Dismiss signed transfer</button></div>
       </div>
       <p class="hint badtext" data-review-error aria-live="polite"></p>
     </section>
@@ -383,7 +404,7 @@
   </div>
   <script src="/app/vendor/noble-scure.js?v=8bc52c47d762" integrity="sha384-8rRjvBX0v19QY1jV/tt980903+713cFYFQwMvCGJR+dGfUXeXlHhGh1Ommt20XpE"></script>
   <script src="/app/vendor/qr.js?v=df7e5ee0f9db" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
-  <script src="/app/zyron-wallet-core.js?v=cbd30fccb01e" integrity="sha384-WbWqxJS7Av62pZPmCgd0E5fS2d3ZYnNm+VwHvZ8IiGTSyocZvE9gOD261825+H2u"></script>
-  <script src="/app/app.js?v=2e6807e8cb8a" integrity="sha384-9HE/NTdxGmBrmltZtp0BzRoqdblcUnjlMXwg1IpGgH7ne55TBqc9HJ1zxgWJUl6R"></script>
+  <script src="/app/zyron-wallet-core.js?v=60b8ff9850a8" integrity="sha384-yxY5KfHEcEfcCQeXZaAr2P622gxEfX+NR9Qtihi3J186Un0xdKsp59uBvev8YyiP"></script>
+  <script src="/app/app.js?v=978d379337d5" integrity="sha384-Sjx2NTPHmpRGB/nTVyCXjaL7qcjJ1X48ez8I9U6m4mnlDVi21z3sfMd1UNdsYWmd"></script>
 </body>
 </html>
