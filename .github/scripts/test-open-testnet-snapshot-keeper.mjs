@@ -268,6 +268,36 @@ test("an aside rename that failed leaves state.enc untouched; an unverifiable on
   }
 });
 
+test("an aside rename whose old asset vanished (deleted by another keeper) keeps the upload and stops the swap", async () => {
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
+  const rename = github.rename;
+  github.rename = async (id, name, label) => {
+    if (id === 7) { state.calls.push(["rename", id, name]); state.assets = state.assets.filter((asset) => asset.id !== 7); const error = new Error("Not Found"); error.status = 404; throw error; }
+    return rename(id, name, label);
+  };
+  const warnings = [];
+  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn: (line) => warnings.push(line), sleep: async () => {} }), /Not Found/);
+  assert.ok(state.assets.some((asset) => /^next-/.test(asset.name) && parseLabel(asset.label)?.height === 2150), "the upload stays as a keeper copy for repair");
+  assert.ok(!state.calls.some((call) => call[0] === "remove"));
+  assert.ok(warnings.some((line) => /keeping the upload/.test(line)));
+  // The next repair puts it in place.
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc")?.label)?.height, 2150);
+});
+
+test("an ambiguous aside rename is completed only when the listing shows the old asset under the generated aside name", async () => {
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
+  const rename = github.rename;
+  // GitHub applied a different rename of the old asset (another client), then the response was lost.
+  github.rename = async (id, name, label) => {
+    if (id === 7 && name !== "state.enc") { await rename(id, "renamed-by-someone-else.enc", label); const error = new Error("socket hang up"); error.status = 502; throw error; }
+    return rename(id, name, label);
+  };
+  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} }), /socket hang up/);
+  assert.ok(!state.assets.some((asset) => asset.name === "state.enc"), "no swap is completed on an unconfirmed aside rename");
+  assert.ok(state.assets.some((asset) => /^next-/.test(asset.name)), "the upload is kept for repair");
+});
+
 test("a final rename that GitHub applied but whose response was lost keeps the new asset (no previous asset)", async () => {
   const { github, state } = fakeGitHub({ assets: [] });
   const rename = github.rename;
@@ -314,11 +344,18 @@ test("a failed final rename is not taken as published when the listing shows ano
 
 test("publishAsset replaces an incomplete canonical asset only when it is provably incomplete and not labeled for another genesis", async () => {
   {
-    // A `starter` asset (an upload that never finished) is incomplete whatever size GitHub reports.
-    const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: "", state: "starter", size: 1000, updated_at: new Date(T0 - 10_000).toISOString() }] });
+    // A `starter` asset abandoned long ago is incomplete whatever size or label height GitHub reports.
+    const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(9999, GENESIS), state: "starter", size: 1000, updated_at: new Date(T0 - 20 * 60_000).toISOString() }] });
     const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
     assert.equal(result.published, true);
     assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc").label).height, 2150);
+  }
+  {
+    // A fresh `starter` asset may be another keeper's newer snapshot still uploading: the normal rules apply.
+    const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: "", state: "starter", size: 0, updated_at: new Date(T0 - 10_000).toISOString() }] });
+    const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0 - 60_000, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+    assert.equal(result.published, false, "a fresh in-progress upload is not replaced");
+    assert.equal(state.assets.find((asset) => asset.name === "state.enc").id, 7);
   }
   {
     const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(9999, OTHER), size: 12 }] });
