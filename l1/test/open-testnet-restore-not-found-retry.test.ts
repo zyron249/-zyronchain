@@ -73,7 +73,10 @@ async function startHost(root: string, secret: string, missing: number, sealed?:
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const snapshotPort = (server.address() as { port: number }).port;
-  const basePort = 23_000 + Math.floor(Math.random() * 1_000) * 4;
+  // 29000-32599: disjoint from the other open-testnet tests (21000-28999), which
+  // run concurrently in the same `node --test` invocation, and below the Linux
+  // ephemeral port range.
+  const basePort = 29_000 + Math.floor(Math.random() * 900) * 4;
   const child: ChildProcess = spawn(process.execPath, [script, "run", "--dir", join(root, "hosted"), "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
     "--chain-id", CHAIN_ID, "--validator-base-port", String(basePort), "--restore-url", `http://127.0.0.1:${snapshotPort}/state.enc`], {
     cwd: l1Root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ZYRON_TESTNET_STATE_SECRET: secret, PORT: "" }
@@ -96,7 +99,7 @@ async function servedStatus(host: { log: string }): Promise<any> {
   return until("status served", async () => {
     const response = await fetch(`http://127.0.0.1:${port}/status`, { signal: AbortSignal.timeout(10_000) });
     return response.status === 200 ? response.json() : false;
-  }, 240_000);
+  }, 420_000);
 }
 
 test("a cold start retries a transient 404 and restores the published chain", { timeout: 360_000 }, async () => {
@@ -105,13 +108,14 @@ test("a cold start retries a transient 404 and restores the published chain", { 
   try {
     const secret = randomBytes(32).toString("base64");
     const { sealed, genesisHash } = await sealedNetwork(root, secret);
-    host = await startHost(root, secret, 2, sealed);
+    // Four 404s span 55 s of retries: longer than a multi-second asset upload.
+    host = await startHost(root, secret, 4, sealed);
     const status = await servedStatus(host);
     assert.equal(status.genesisHash, genesisHash);
     assert.equal(status.persistence.mode, "snapshot-restore");
     assert.equal(status.persistence.restoredHeight, 100);
-    assert.equal(host.requests(), 3);
-    assert.equal((host.log.match(/snapshot download returned 404; retrying/g) ?? []).length, 2);
+    assert.equal(host.requests(), 5);
+    assert.equal((host.log.match(/snapshot download returned 404; retrying/g) ?? []).length, 4);
     assert.doesNotMatch(host.log, /STATE RESTORE FAILED|fresh TEST genesis/);
   } finally {
     await stop(host);
@@ -119,7 +123,7 @@ test("a cold start retries a transient 404 and restores the published chain", { 
   }
 });
 
-test("a snapshot that stays missing after the 404 retries creates a fresh TEST genesis", { timeout: 360_000 }, async () => {
+test("a snapshot that stays missing after the 404 retries creates a fresh TEST genesis", { timeout: 480_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "zyron-restore-404-none-"));
   let host: Awaited<ReturnType<typeof startHost>> | undefined;
   try {
@@ -127,8 +131,8 @@ test("a snapshot that stays missing after the 404 retries creates a fresh TEST g
     host = await startHost(root, secret, Infinity);
     const status = await servedStatus(host);
     assert.equal(status.persistence.mode, "fresh-genesis");
-    assert.equal(host.requests(), 4, "one request plus three 404 retries");
-    assert.equal((host.log.match(/snapshot download returned 404; retrying/g) ?? []).length, 3);
+    assert.equal(host.requests(), 7, "one request plus six 404 retries (160 s)");
+    assert.equal((host.log.match(/snapshot download returned 404; retrying/g) ?? []).length, 6);
     assert.match(host.log, /no state snapshot published yet; creating a fresh TEST genesis/);
     assert.doesNotMatch(host.log, /STATE RESTORE FAILED/);
   } finally {

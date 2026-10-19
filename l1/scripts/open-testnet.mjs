@@ -135,11 +135,14 @@ const STARTUP_GRACE_MS = 10 * 60_000;
 // because a large snapshot on a slow instance replays for a long time.
 export const BOOT_STALL_MS = 5 * 60_000;
 const SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS = [2_000, 5_000];
-// A keeper replaces the published snapshot by deleting the old release asset
-// and uploading (or renaming) the new one, so a cold start can briefly see 404
-// while a snapshot does exist. A 404 is retried on its own schedule before it is
+// A keeper replaces the published snapshot release asset in more than one step
+// (`gh release upload --clobber` deletes the old asset and then uploads the new
+// one; the scheduled keeper renames), so a cold start can see 404 while a
+// snapshot does exist. A 404 is retried on its own schedule (160 s in total,
+// enough for the upload of a snapshot far larger than today's) before it is
 // taken to mean that nothing is published (which creates a fresh TEST genesis).
-const SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS = [3_000, 7_000, 15_000];
+// Each wait is far below the 5-minute start-up stall limit.
+const SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS = [3_000, 7_000, 15_000, 30_000, 45_000, 60_000];
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "600" };
 const SECURITY = { "x-content-type-options": "nosniff", "x-zyron-network": "testnet-no-value", "referrer-policy": "no-referrer" };
 function writeJson(response, code, body, extra = {}) {
