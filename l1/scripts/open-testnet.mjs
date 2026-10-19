@@ -393,6 +393,42 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
   return { chainId: genesis.chainId, genesisHash: network.genesisHash, height: blocks.length, tipHash: checkpoint.tipHash, verifiedHistory };
 }
 
+// R37-1072-L1: a local filesystem error while the verified snapshot is written
+// to this instance's disk (EIO, EMFILE, ENOSPC, ...; a Node system error, also
+// when wrapped as an error's cause) says nothing about the snapshot. The
+// partial directory is moved aside and the restore runs again from the same
+// downloaded bundle; if the disk keeps failing the error is marked localIo, and
+// start-up stops instead of creating a fresh TEST genesis (the host restarts
+// the instance, which downloads and restores the published snapshot again).
+// Errors about the snapshot itself (format, chain ID, genesis, keys, replay)
+// are not retried. Each wait stays far below the start-up stall limit.
+export const LOCAL_RESTORE_RETRY_DELAYS_MS = [2_000, 5_000];
+export function isLocalIoError(error) {
+  for (let current = error, depth = 0; current && typeof current === "object" && depth < 8; current = current.cause, depth += 1) {
+    if (typeof current.code === "string" && typeof current.syscall === "string") return true;
+  }
+  return false;
+}
+export async function restoreNetworkWithLocalRetry(dir, bundle, expectedChainId, { onProgress = () => {}, restore = restoreNetwork, moveAside = moveAsideIncompleteNetworkDir, sleepImpl = sleep, log = (line) => console.error(line), delays = LOCAL_RESTORE_RETRY_DELAYS_MS } = {}) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await restore(dir, bundle, expectedChainId, { onProgress });
+    } catch (error) {
+      if (!isLocalIoError(error)) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (attempt >= delays.length) {
+        throw Object.assign(new Error(`local I/O error during the restore after ${attempt + 1} attempts: ${message}`), { localIo: true, cause: error });
+      }
+      log(`restore hit a local I/O error (${message}); restoring the downloaded snapshot again in ${delays[attempt]} ms (attempt ${attempt + 2} of ${delays.length + 1})`);
+      const aside = await moveAside(dir);
+      if (aside) log(`moved the partial restore directory to ${aside}`);
+      onProgress({ step: "local-io-retry" });
+      await sleepImpl(delays[attempt]);
+      onProgress({ step: "local-io-retry" });
+    }
+  }
+}
+
 // ---- init: fresh TEST keys, fixed-supply-v1 genesis, v6 prefix ----------------
 export async function initNetwork(dir, chainId, { onProgress = () => {} } = {}) {
   assertTestnetChainId(chainId);
@@ -1071,12 +1107,24 @@ if (!invokedDirectly) {
           boot.enter("decrypt");
           const bundle = openSnapshot(sealed, stateSecret);
           boot.enter("replay");
-          const restored = await restoreNetwork(dir, bundle, chainId, { onProgress: boot.progress });
+          const restored = await restoreNetworkWithLocalRetry(dir, bundle, chainId, { onProgress: boot.progress });
           persistence = { mode: "snapshot-restore", restoredHeight: restored.height, restoredAtMs: Date.now() };
           verifiedHistory = restored.verifiedHistory;
           console.log(`restored ${restored.chainId} genesis ${restored.genesisHash} at height ${restored.height}`);
         }
       } catch (error) {
+        if (error?.localIo) {
+          // R37-1072-L1: never replace a published chain because this
+          // instance's disk failed. No completion marker is written, so the
+          // next start restores the published snapshot again.
+          console.error(`STATE RESTORE FAILED (${error.message}); the published chain is kept (no new TEST genesis while the local disk fails); stopping so the host restarts the instance`);
+          const aside = await moveAsideIncompleteNetworkDir(dir).catch((moveError) => { console.error(`could not move the failed restore directory aside: ${moveError instanceof Error ? moveError.message : String(moveError)}`); return false; });
+          if (aside) console.error(`moved the failed restore directory to ${aside}`);
+          // Let the log lines reach the host (pipes can be asynchronous) before exiting.
+          await new Promise((done) => process.stderr.write("", done));
+          await new Promise((done) => process.stdout.write("", done));
+          process.exit(1);
+        }
         console.error(`STATE RESTORE FAILED (${error instanceof Error ? error.message : String(error)}); creating a fresh TEST genesis`);
         const aside = await moveAsideIncompleteNetworkDir(dir);
         if (aside) console.error(`moved the failed restore directory to ${aside}`);

@@ -167,3 +167,81 @@ test("a local disk that keeps failing during the restore stops start-up instead 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// The retry itself, in-process with an injected restore and clock.
+const api: any = await import(pathToFileURL(script).href);
+const eio = (path = "/x/data-v2/blocks.ndjson") => Object.assign(new Error(`EIO: i/o error, open '${path}'`), { code: "EIO", errno: -5, syscall: "open", path });
+
+function fakeRestore(outcomes: Array<Error | "ok">) {
+  const calls: string[] = [];
+  const waits: number[] = [];
+  const moved: string[] = [];
+  const logs: string[] = [];
+  const progress: string[] = [];
+  const restore = async (dir: string) => {
+    calls.push(dir);
+    const outcome = outcomes[Math.min(calls.length - 1, outcomes.length - 1)]!;
+    if (outcome !== "ok") throw outcome;
+    return { chainId: "zyron-test", height: 100 };
+  };
+  const options = {
+    restore,
+    moveAside: async (dir: string) => { moved.push(dir); return `${dir}.incomplete-${moved.length}`; },
+    sleepImpl: async (ms: number) => { waits.push(ms); },
+    log: (line: string) => { logs.push(line); },
+    onProgress: (event: { step: string }) => { progress.push(event.step); }
+  };
+  return { calls, waits, moved, logs, progress, options };
+}
+
+test("R37-1072-L1: the local restore retry schedule is short and far below the start-up stall limit", () => {
+  assert.deepEqual(api.LOCAL_RESTORE_RETRY_DELAYS_MS, [2_000, 5_000]);
+  for (const ms of api.LOCAL_RESTORE_RETRY_DELAYS_MS) assert.ok(ms < api.BOOT_STALL_MS / 2);
+});
+
+test("R37-1072-L1: a transient local I/O error is retried from the same bundle after moving the partial directory aside", async () => {
+  const fake = fakeRestore([eio(), "ok"]);
+  const bundle = { format: "bundle" };
+  const result = await api.restoreNetworkWithLocalRetry("/net", bundle, "zyron-test", fake.options);
+  assert.deepEqual(result, { chainId: "zyron-test", height: 100 });
+  assert.deepEqual(fake.calls, ["/net", "/net"]);
+  assert.deepEqual(fake.moved, ["/net"], "the partial directory is moved aside before the next attempt");
+  assert.deepEqual(fake.waits, [2_000]);
+  assert.ok(fake.progress.filter((step) => step === "local-io-retry").length >= 2, "start-up progress is reported around the wait");
+  assert.equal(fake.logs.filter((line) => /local I\/O error \(EIO/.test(line)).length, 1);
+});
+
+test("R37-1072-L1: a disk that keeps failing ends as a localIo error after every attempt, never as a fresh-genesis error", async () => {
+  const fake = fakeRestore([eio()]);
+  await assert.rejects(api.restoreNetworkWithLocalRetry("/net", {}, "zyron-test", fake.options), (error: any) => {
+    assert.equal(error.localIo, true);
+    assert.match(error.message, /after 3 attempts: EIO/);
+    assert.equal(error.cause.code, "EIO");
+    return true;
+  });
+  assert.equal(fake.calls.length, 3);
+  assert.deepEqual(fake.waits, [2_000, 5_000]);
+  assert.deepEqual(fake.moved, ["/net", "/net"]);
+});
+
+test("R37-1072-L1: errors about the snapshot itself are not retried and keep the existing fallback", async () => {
+  const mismatch = new assert.AssertionError({ message: "snapshot genesis hash mismatch" });
+  for (const error of [mismatch, new Error("restored v2 blocks.ndjson does not match the replayed log"), Object.assign(new Error("no syscall"), { code: "ERR_ASSERTION" })]) {
+    const fake = fakeRestore([error, "ok"]);
+    await assert.rejects(api.restoreNetworkWithLocalRetry("/net", {}, "zyron-test", fake.options), (thrown: any) => thrown === error && !thrown.localIo);
+    assert.equal(fake.calls.length, 1);
+    assert.deepEqual(fake.waits, []);
+    assert.deepEqual(fake.moved, []);
+  }
+});
+
+test("R37-1072-L1: a system error wrapped as a cause counts as a local I/O error", async () => {
+  assert.equal(api.isLocalIoError(eio()), true);
+  assert.equal(api.isLocalIoError(new Error("wrapped", { cause: Object.assign(new Error("EMFILE: too many open files"), { code: "EMFILE", syscall: "open" }) })), true);
+  assert.equal(api.isLocalIoError(new Error("plain")), false);
+  assert.equal(api.isLocalIoError(undefined), false);
+  assert.equal(api.isLocalIoError("EIO"), false);
+  const fake = fakeRestore([new Error("store open failed", { cause: eio() }), "ok"]);
+  assert.equal((await api.restoreNetworkWithLocalRetry("/net", {}, "zyron-test", fake.options)).height, 100);
+  assert.equal(fake.calls.length, 2);
+});
