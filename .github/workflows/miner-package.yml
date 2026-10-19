@@ -28,7 +28,10 @@ jobs:
           - os: windows-2022
             shard: 2
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # The full L1 suite on macos-15 arm64 used about 19 minutes of the previous
+    # 20-minute budget, and the job was cancelled during candidate packaging
+    # after that suite had already passed. 40 minutes leaves room for packaging.
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: l1
