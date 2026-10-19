@@ -237,9 +237,6 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
   let aside = null;
   let asideAttempted = false;
   let asideName = null;
-  // Set when the old asset vanished: there is nothing to roll back to, so a
-  // failed final rename keeps the upload for repair instead of deleting it.
-  let keepUpload = false;
   try {
     // Re-check right before the swap: another keeper may have published meanwhile.
     release = await github.release(tag);
@@ -301,8 +298,9 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
       // The name is probably free now, so the upload is renamed into place at
       // once (a concurrent upload of the name makes that a harmless 422); if
       // that fails, the upload stays as a keeper copy for repair.
+      // `aside` stays null: nothing is renamed back, and a failed final
+      // rename keeps the upload.
       warn(`${name} vanished during the swap (${old ? `now ${old.name}` : "deleted"}); renaming the upload into place`);
-      keepUpload = true;
     } else {
       warn(`renaming ${name} aside reported an error but the listing shows it moved; completing the swap`);
       aside = old;
@@ -344,7 +342,7 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
       if (collided) return { published: false, reason: "another keeper's upload of the same name is in progress; upload kept for repair" };
       throw error;
     }
-    if (keepUpload || !aside) {
+    if (!aside) {
       // No asset holds the name and there is no moved-aside copy to put back:
       // the upload is the only complete copy, so it stays for repair.
       warn(`could not rename the upload to ${name} (${error.message}); keeping the upload ${temp.name ?? temp.id} for the next cycle to repair`);

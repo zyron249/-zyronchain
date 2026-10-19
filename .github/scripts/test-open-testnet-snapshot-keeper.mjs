@@ -361,6 +361,17 @@ test("a failed final rename whose outcome cannot be verified deletes nothing", a
   assert.ok(warnings.some((line) => /could not verify/.test(line)));
 });
 
+test("a failed final rename whose outcome cannot be verified keeps the upload and the moved-aside copy", async () => {
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
+  const rename = github.rename;
+  github.rename = async (id, name, label) => { if (id !== 7 && name === "state.enc") { state.calls.push(["rename", id, name]); const error = new Error("socket hang up"); error.status = 502; throw error; } return rename(id, name, label); };
+  let listings = 0;
+  state.hooks.release = () => { listings += 1; if (listings >= 3) throw new Error("listing unavailable"); };
+  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} }), /socket hang up/);
+  assert.ok(state.assets.some((asset) => /^next-/.test(asset.name)) && state.assets.some((asset) => asset.id === 7 && /^prev-/.test(asset.name)), "nothing is renamed back or deleted");
+  assert.ok(!state.calls.some((call) => call[0] === "remove"));
+});
+
 test("a failed final rename is not taken as published when the listing shows another asset under the name", async () => {
   const { github, state } = fakeGitHub({ assets: [] });
   github.rename = async (id, name) => {
