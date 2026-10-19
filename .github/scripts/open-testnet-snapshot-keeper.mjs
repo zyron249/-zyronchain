@@ -21,13 +21,15 @@
 //     most 60 s), and a restart resumes from the published asset;
 //   - the published asset is never deleted before its replacement is in place:
 //     the new file is uploaded as next-<ms>-<hex>.<name>, the current asset is
-//     renamed aside to prev-<ms>-<hex>.<name>, the new file is renamed to <name>,
-//     and only then is the old copy deleted. If the final rename fails the old
-//     asset is renamed back; if that fails too, both copies are kept and the
-//     next cycle renames the best one back into place, so `state.enc` is only
-//     missing between two API calls and never lost;
-//   - only this keeper's own next-/prev- copies are ever cleaned up, and only
-//     when the name they belong to exists.
+//     renamed aside to prev-<ms>-<hex>.<name> and the new file is renamed to
+//     <name>. The moved-aside copy stays as a backup. If the final rename fails
+//     the old asset is renamed back; if that fails too, both copies are kept and
+//     the next cycle renames the best one back into place, so `state.enc` is
+//     only missing between two API calls and never lost. No swap starts after
+//     the run deadline, so a started swap ends before the job timeout;
+//   - only this keeper's own next-/prev- copies are ever cleaned up, only when
+//     the name they belong to exists (rechecked right before deleting), and the
+//     best copy of each name is always kept.
 // The only credential is the workflow GITHUB_TOKEN (contents: write, for the
 // release assets).
 import { createHash, randomBytes } from "node:crypto";
@@ -39,6 +41,9 @@ export const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 export const UNLABELED_MARGIN_MS = 120_000;
 export const KEEPER_ASSET_PATTERN = /^(next|prev)-(\d{13})-[0-9a-f]{8}\.(state(?:-[0-9a-f]{12})?\.enc)$/;
 export const KEEPER_ASSET_MAX_AGE_MS = 30 * 60_000;
+// Per-request timeout for GitHub metadata calls (listing, rename, delete). It
+// bounds the time a swap can take once started; see publishAsset's swapBy.
+export const GITHUB_CALL_TIMEOUT_MS = 60_000;
 const LABEL_PATTERN = /^state snapshot height=([1-9][0-9]{0,15}) genesis=([0-9a-f]{64})$/;
 const GENESIS_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -115,7 +120,7 @@ export function createGitHub({ fetchImpl, token, repo, apiBase = "https://api.gi
   if (!token) throw new Error("GITHUB_TOKEN is required");
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) throw new Error(`invalid repository ${repo}`);
   const headers = { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "zyron-open-testnet-snapshot-keeper" };
-  async function call(method, url, { body, contentType, okStatuses = [200], timeoutMs = 120_000 } = {}) {
+  async function call(method, url, { body, contentType, okStatuses = [200], timeoutMs = GITHUB_CALL_TIMEOUT_MS } = {}) {
     const response = await fetchImpl(url, { method, headers: { ...headers, ...(contentType ? { "content-type": contentType } : {}) }, body, signal: AbortSignal.timeout(timeoutMs) });
     const text = await response.text();
     if (!okStatuses.includes(response.status)) {
@@ -150,7 +155,7 @@ export function createGitHub({ fetchImpl, token, repo, apiBase = "https://api.gi
   };
 }
 
-const RENAME_RETRY_DELAYS_MS = [2_000, 5_000];
+export const RENAME_RETRY_DELAYS_MS = [2_000, 5_000];
 
 // Renames an asset, retrying transient failures. A 422 (the name is taken) is final.
 async function renameWithRetry(github, id, name, label, sleep) {
@@ -166,10 +171,13 @@ async function renameWithRetry(github, id, name, label, sleep) {
 // Publishes one snapshot as asset `name` if it is newer. The current asset is
 // never deleted before the replacement is in place: the replacement is uploaded
 // under a temporary name, the current asset is renamed aside, the replacement is
-// renamed to `name`, and only then is the old copy deleted. If the final rename
-// fails, the old asset is renamed back; if even that fails, both copies are kept
-// so the next cycle can restore the name (see repairAndCleanup).
-export async function publishAsset({ github, tag, name, bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn = log, sleep = defaultSleep }) {
+// renamed to `name`. The moved-aside copy is kept as a backup (another keeper's
+// delete-then-upload can remove `name` at any time) and aged out later by
+// repairAndCleanup. If the final rename fails, the old asset is renamed back; if
+// even that fails, both copies are kept so the next cycle can restore the name.
+// The swap is not started after `swapBy`, so it can finish or roll back before
+// the job is killed.
+export async function publishAsset({ github, tag, name, bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity }) {
   let release = await github.release(tag);
   let current = release.assets.find((asset) => asset.name === name) ?? null;
   const first = decideReplace({ snapshot, asset: current, expectedGenesis, requestStartedMs });
@@ -185,6 +193,10 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
       const again = decideReplace({ snapshot, asset: latest, expectedGenesis, requestStartedMs });
       if (!again.publish) { await github.remove(temp.id); return { published: false, reason: `another keeper published first: ${again.reason}` }; }
       current = latest;
+    }
+    if (now() > swapBy) {
+      await github.remove(temp.id).catch(() => {});
+      return { published: false, reason: "run deadline reached before the swap; left for the next run" };
     }
     if (current) {
       await renameWithRetry(github, current.id, keeperAssetName("prev", name, now()), current.label ?? "", sleep);
@@ -213,10 +225,6 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
     }
     await github.remove(temp.id).catch(() => {});
     throw error;
-  }
-  if (aside) {
-    try { await github.remove(aside.id); }
-    catch (error) { warn(`old copy of ${name} not deleted yet (${error.message}); it is cleaned up later`); }
   }
   log(`published ${name} height ${snapshot.height} genesis ${snapshot.genesis.slice(0, 12)} (${first.reason})`);
   return { published: true, reason: first.reason };
@@ -299,11 +307,11 @@ export async function fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now }
 }
 
 // One keeper cycle: download, check, publish state.enc then the per-genesis copy.
-export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, now, log, warn = log, sleep = defaultSleep }) {
+export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity }) {
   const { snapshot, bytes, requestStartedMs } = await fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now });
   const sha256 = createHash("sha256").update(bytes).digest("hex");
-  const main = await publishAsset({ github, tag, name: "state.enc", bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep });
-  const copy = await publishAsset({ github, tag, name: perGenesisName(snapshot.genesis), bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep });
+  const main = await publishAsset({ github, tag, name: "state.enc", bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep, swapBy });
+  const copy = await publishAsset({ github, tag, name: perGenesisName(snapshot.genesis), bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep, swapBy });
   if (!main.published) log(`state.enc not replaced: ${main.reason}`);
   if (!copy.published) log(`${perGenesisName(snapshot.genesis)} not replaced: ${copy.reason}`);
   return { height: snapshot.height, genesis: snapshot.genesis, sha256, size: bytes.length, published: main.published, copyPublished: copy.published, reason: main.reason };
@@ -345,7 +353,7 @@ export async function runKeeper(options) {
       try { await repairAndCleanup({ github, tag, expectedGenesis, now, log, warn, sleep }); }
       catch (error) { warn(`repair/cleanup of keeper copies failed: ${error instanceof Error ? error.message : String(error)}`); }
       try {
-        const result = await publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, now, log, warn, sleep });
+        const result = await publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, now, log, warn, sleep, swapBy: deadline });
         stats.lastHeight = result.height;
         if (result.published) { stats.published += 1; stats.lastPublishedHeight = result.height; log(`snapshot sha256 ${result.sha256} size ${result.size}`); }
         else stats.notNewer += 1;

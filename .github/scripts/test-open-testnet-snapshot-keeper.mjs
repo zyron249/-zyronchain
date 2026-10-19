@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, fetchSnapshot, formatLabel,
+  GITHUB_CALL_TIMEOUT_MS, RENAME_RETRY_DELAYS_MS, SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, fetchSnapshot, formatLabel,
   keeperAssetName, parseKeeperAssetName, parseLabel, perGenesisName, publishAsset, publishCycle, readCapped, repairAndCleanup, runKeeper, validateSnapshot
 } from "./open-testnet-snapshot-keeper.mjs";
 
@@ -126,12 +126,13 @@ test("publishAsset uploads under a temporary name and swaps only after the uploa
   const result = await publishAsset({ github, tag: "open-testnet-state", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log: (line) => lines.push(line) });
   assert.equal(result.published, true);
   const kinds = state.calls.map((call) => call[0]);
-  assert.deepEqual(kinds, ["release", "upload", "release", "rename", "rename", "remove"]);
+  assert.deepEqual(kinds, ["release", "upload", "release", "rename", "rename"]);
   assert.match(state.calls[1][1], /^next-\d{13}-[0-9a-f]{8}\.state\.enc$/, "the first upload never uses the restore name");
   assert.equal(state.calls[3][1], 7);
   assert.match(state.calls[3][2], /^prev-\d{13}-[0-9a-f]{8}\.state\.enc$/, "the old asset is moved aside, not deleted");
-  assert.deepEqual(state.calls[5], ["remove", 7], "the old copy is deleted only after the swap");
-  assert.deepEqual(state.assets.map((asset) => [asset.name, asset.label]), [["state.enc", formatLabel(2150, GENESIS)]]);
+  // The moved-aside asset stays as a backup (repairAndCleanup ages it out later).
+  assert.deepEqual(state.assets.map((asset) => [asset.id, /^prev-/.test(asset.name) ? "prev" : asset.name, asset.label]).sort((a, b) => a[0] - b[0]),
+    [[7, "prev", formatLabel(2100, GENESIS)], [100, "state.enc", formatLabel(2150, GENESIS)]]);
   assert.ok(lines.some((line) => line.includes("height 2150")));
 });
 
@@ -221,14 +222,24 @@ test("when the old asset cannot be put back either, both copies stay and the nex
   assert.equal(state.assets.length, 2, "the only remaining copy is kept as a backup even when stale");
 });
 
-test("publishAsset still succeeds when the old copy cannot be deleted after the swap", async () => {
+test("publishAsset never deletes the moved-aside asset after a successful swap", async () => {
   const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
-  github.remove = async () => { throw new Error("rate limited"); };
-  const warnings = [];
-  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn: (line) => warnings.push(line), sleep: async () => {} });
+  github.remove = async () => { throw new Error("must not delete"); };
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
   assert.equal(result.published, true);
   assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc").label).height, 2150);
-  assert.ok(warnings.some((line) => /cleaned up later/.test(line)));
+  // Another keeper's delete-then-upload may remove the new state.enc right
+  // after the swap; the moved-aside copy is what the next cycle repairs from.
+  assert.match(state.assets.find((asset) => asset.id === 7).name, /^prev-\d{13}-[0-9a-f]{8}\.state\.enc$/);
+});
+
+test("publishAsset does not start the swap after its swap deadline and drops the upload", async () => {
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0 + 1, swapBy: T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(result.published, false);
+  assert.match(result.reason, /deadline/);
+  assert.deepEqual(state.assets.map((asset) => [asset.id, asset.name]), [[7, "state.enc"]], "state.enc untouched, upload removed");
+  assert.ok(!state.calls.some((call) => call[0] === "rename"));
 });
 
 test("repairAndCleanup keeps the best copy as a backup and deletes only this keeper's stale surplus copies", async () => {
@@ -380,6 +391,33 @@ test("runKeeper returns at its deadline instead of sleeping a full interval past
   assert.equal(stats.cycles, 1);
   assert.deepEqual(health.map((at) => (at - T0) / 60_000), [0, 5]);
   assert.equal(time.now() - T0, 7 * 60_000, "both loops stop at the deadline");
+});
+
+test("runKeeper never starts a swap after its deadline, even when a slow upload ends past it", async () => {
+  const time = virtualTime();
+  const { github, state } = fakeGitHub({ now: time.now, assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }, { id: 8, name: "state-9ad75d777141.enc", label: formatLabel(2100, GENESIS) }] });
+  const upload = github.upload;
+  github.upload = async (...args) => { await time.sleep(20 * 60_000); return upload(...args); };
+  const fetchImpl = async (url) => url.endsWith("/health") ? new Response("{}", { status: 200 })
+    : new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": "2150", "x-zyron-genesis-hash": GENESIS } });
+  const stats = await time.run(runKeeper({
+    fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS,
+    runMs: 15 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000,
+    now: time.now, sleep: time.sleep, log() {}, warn() {}
+  }));
+  assert.equal(stats.published, 0);
+  assert.ok(!state.calls.some((call) => call[0] === "rename"), "nothing is renamed aside once the deadline has passed");
+  assert.deepEqual(state.assets.map((asset) => asset.id).sort((a, b) => a - b), [7, 8]);
+});
+
+test("a swap started at the deadline finishes or rolls back well before the workflow timeout", async () => {
+  const workflow = await readFile(new URL("../workflows/open-testnet-snapshot-keeper.yml", import.meta.url), "utf8");
+  const timeout = Number(/^\s+timeout-minutes: (\d+)$/m.exec(workflow)?.[1]);
+  const runMinutes = Number(/RUN_MINUTES: \$\{\{ inputs\.run_minutes \|\| '(\d+)' \}\}/.exec(workflow)?.[1]);
+  // Worst case after the swap check: rename aside, rename into place, rename back,
+  // each with every retry timing out; plus 2 minutes for job set-up.
+  const rename = (RENAME_RETRY_DELAYS_MS.length + 1) * GITHUB_CALL_TIMEOUT_MS + RENAME_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0);
+  assert.ok(3 * rename + 2 * 60_000 <= (timeout - runMinutes) * 60_000, `swap worst case ${3 * rename} ms must fit in ${timeout - runMinutes} min`);
 });
 
 test("runKeeper survives gateway outages and reports failure only when nothing was ever up to date", async () => {
