@@ -112,7 +112,7 @@ function fakeHost(statuses: Array<number | "error">) {
   let attempts = 0;
   const fetchImpl = async (url: string) => {
     calls.push(url);
-    const status = statuses[Math.min(calls.length - 1, statuses.length - 1)];
+    const status = statuses[Math.min(calls.length - 1, statuses.length - 1)]!;
     if (status === "error") throw new Error("connection reset");
     return new Response(status === 200 ? "sealed" : "Not Found", { status });
   };
