@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { parseAddressInput, toChecksumAddress } from "../dist/src/address-checksum.js";
 import { ZyronChain } from "../dist/src/chain.js";
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "../dist/src/crypto.js";
 import { createTransfer } from "../dist/src/transaction.js";
@@ -262,9 +263,36 @@ async function readJsonBody(request) {
   }
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw Object.assign(new Error("invalid JSON"), { statusCode: 400 }); }
 }
+// Display checksum (docs/ADDRESS_CHECKSUM.md) is accepted on read and faucet
+// routes and folded to the canonical lowercase form before any node call or
+// rate-limit key. A wrong checksum is rejected; it is never "fixed".
+function canonicalAddress(input) {
+  if (typeof input !== "string" || input.length > 80) return { error: "invalid address" };
+  try {
+    return { canonical: parseAddressInput(input).canonical };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "invalid address" };
+  }
+}
 function addressFrom(path, prefix) {
-  const value = path.slice(prefix.length);
-  return ADDRESS_PATTERN.test(value) ? value : undefined;
+  let value;
+  try { value = decodeURIComponent(path.slice(prefix.length)); } catch { return { error: "invalid address" }; }
+  return canonicalAddress(value);
+}
+// POST /tx is forwarded byte-for-byte. Rewriting sender or receiver would
+// change the signed canonical JSON and make a valid signature fail, so a
+// checksummed or otherwise non-canonical address is rejected with the
+// lowercase form the client should submit instead.
+function nonCanonicalTxAddress(tx) {
+  if (!tx || typeof tx !== "object") return undefined;
+  for (const field of ["sender", "receiver"]) {
+    const value = tx[field];
+    if (typeof value !== "string" || ADDRESS_PATTERN.test(value)) continue;
+    const parsed = canonicalAddress(value);
+    if (parsed.error) return `${field}: ${parsed.error}`;
+    return `${field} must be the canonical lowercase address ${parsed.canonical}. POST /tx does not rewrite addresses: the signature covers sender and receiver, so a checksummed or mixed-case form would not verify. Submit the lowercase form.`;
+  }
+  return undefined;
 }
 
 let activeRequests = 0;
@@ -303,8 +331,9 @@ const gateway = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, ke
       if (path === "/genesis") return sendJson(response, 200, { network: "testnet", valueBearing: false, genesisHash, genesis });
       for (const prefix of ["/balance/", "/nonce/", "/account/"]) {
         if (!path.startsWith(prefix)) continue;
-        const address = addressFrom(path, prefix);
-        if (!address) return sendJson(response, 400, { error: "invalid address" });
+        const parsed = addressFrom(path, prefix);
+        if (parsed.error) return sendJson(response, 400, { error: parsed.error });
+        const address = parsed.canonical;
         const [balance, nonce] = await Promise.all([nodeFetch(`/balance/${address}`), nodeFetch(`/nonce/${address}`)]);
         if (balance.status !== 200 || nonce.status !== 200) return sendJson(response, 502, { error: "node unavailable" });
         const status = await chainStatus();
@@ -323,6 +352,8 @@ const gateway = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, ke
         if (!tx || typeof tx !== "object" || Array.isArray(tx)) return sendJson(response, 400, { error: "transaction must be an object" });
         if (tx.kind !== "transfer") return sendJson(response, 400, { error: "only transfer transactions are accepted by this gateway" });
         if (tx.chainId !== chainId) return sendJson(response, 400, { error: `wrong chainId; this testnet is ${chainId}` });
+        const addressError = nonCanonicalTxAddress(tx);
+        if (addressError) return sendJson(response, 400, { error: addressError });
         const submitted = await nodeFetch("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
         if (submitted.status < 200 || submitted.status > 299) return sendJson(response, 400, { error: String(submitted.body?.error ?? "rejected").slice(0, 300) });
         return sendJson(response, 200, { accepted: true, txid: submitted.body.txid, note: "Included in the next block (about 30 seconds)." });
@@ -331,8 +362,11 @@ const gateway = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, ke
         const ipRate = limits.faucetIp.take(ip);
         if (!ipRate.allowed) return limited(response, ipRate);
         const body = await readJsonBody(request);
-        const address = body && typeof body === "object" ? body.address : undefined;
-        if (typeof address !== "string" || !ADDRESS_PATTERN.test(address)) return sendJson(response, 400, { error: "body must be {\"address\":\"ZYN...\"}" });
+        const rawAddress = body && typeof body === "object" ? body.address : undefined;
+        if (typeof rawAddress !== "string") return sendJson(response, 400, { error: "body must be {\"address\":\"ZYN...\"}" });
+        const parsed = canonicalAddress(rawAddress);
+        if (parsed.error) return sendJson(response, 400, { error: parsed.error });
+        const address = parsed.canonical;
         if (address === faucet.address) return sendJson(response, 400, { error: "invalid address" });
         const addressRate = limits.faucetAddress.take(address);
         if (!addressRate.allowed) return limited(response, addressRate);
@@ -420,17 +454,48 @@ async function smokeTest() {
 
   const alice = account("smoke-alice-" + Date.now());
   const bob = account("smoke-bob-" + Date.now());
-  const drip = await post("/faucet", { address: alice.address });
+  const aliceChecksum = toChecksumAddress(alice.address);
+  const bobChecksum = toChecksumAddress(bob.address);
+  assert.notEqual(aliceChecksum, alice.address, "smoke address must exercise a real checksum");
+  // Published vector (docs/ADDRESS_CHECKSUM.md): one flipped letter is a checksum mismatch, not a new address.
+  const wrongChecksum = "ZYN09c0B2D1A486C439A87bCbA6b46A7a1A23F3897c";
+  assert.throws(() => parseAddressInput(wrongChecksum), /checksum mismatch/);
+  for (const path of [`/account/${wrongChecksum}`, `/balance/${wrongChecksum}`, `/nonce/${wrongChecksum}`]) {
+    const rejected = await get(path);
+    assert.equal(rejected.status, 400, path);
+    assert.match(rejected.body.error, /checksum mismatch/, path);
+  }
+  const wrongFaucet = await post("/faucet", { address: wrongChecksum });
+  assert.equal(wrongFaucet.status, 400);
+  assert.match(wrongFaucet.body.error, /checksum mismatch/);
+  // The daily faucet limit is one drip per canonical address, whatever case the client sent.
+  const drip = await post("/faucet", { address: aliceChecksum });
   assert.equal(drip.status, 200, JSON.stringify(drip.body));
-  assert.equal((await post("/faucet", { address: alice.address })).status, 429, "second drip for one address must be refused");
-  await until("faucet drip", async () => (await get(`/account/${alice.address}`)).body.balanceAtoms === FAUCET_DRIP_ATOMS);
-  const aliceNonce = (await get(`/nonce/${alice.address}`)).body.nonce;
+  assert.equal(drip.body.receiver, alice.address, "faucet response uses the canonical address");
+  assert.equal((await post("/faucet", { address: alice.address })).status, 429, "lowercase form of a checksummed drip must share the address limit");
+  await until("faucet drip", async () => (await get(`/account/${aliceChecksum}`)).body.balanceAtoms === FAUCET_DRIP_ATOMS);
+  const viaChecksum = (await get(`/account/${aliceChecksum}`)).body;
+  const viaLower = (await get(`/account/${alice.address}`)).body;
+  assert.equal(viaChecksum.address, alice.address);
+  assert.deepEqual(viaChecksum, viaLower, "checksummed and lowercase reads return the same canonical account");
+  assert.equal((await get(`/balance/${aliceChecksum}`)).body.address, alice.address);
+  assert.equal((await get(`/balance/${alice.address}`)).body.balanceAtoms, FAUCET_DRIP_ATOMS);
+  const aliceNonce = (await get(`/nonce/${aliceChecksum}`)).body.nonce;
+  assert.equal((await get(`/nonce/${alice.address}`)).body.address, alice.address);
   const st = (await get("/status")).body;
   const tx = createTransfer({ chainId, nonce: aliceNonce + 1, sender: alice.address, receiver: bob.address, amountAtoms: 25 * ATOMS_PER_ZYN, feeAtoms: 0, timestampMs: Date.now() }, alice.privateKey, alice.publicKey, st.transactionVersion);
   assert.equal((await post("/tx", { ...tx, chainId: "zyron-other-testnet" })).status, 400, "wrong chain must be refused");
+  const rewrittenSender = await post("/tx", { ...tx, sender: aliceChecksum });
+  assert.equal(rewrittenSender.status, 400, "checksummed sender must be refused, not rewritten");
+  assert.match(rewrittenSender.body.error, /canonical lowercase/);
+  assert.match(rewrittenSender.body.error, /signature/);
+  const rewrittenReceiver = await post("/tx", { ...tx, receiver: bobChecksum });
+  assert.equal(rewrittenReceiver.status, 400);
+  assert.match(rewrittenReceiver.body.error, new RegExp(bob.address));
   const sent = await post("/tx", tx);
   assert.equal(sent.status, 200, JSON.stringify(sent.body));
-  await until("transfer", async () => (await get(`/account/${bob.address}`)).body.balanceAtoms === 25 * ATOMS_PER_ZYN);
+  await until("transfer", async () => (await get(`/account/${bobChecksum}`)).body.balanceAtoms === 25 * ATOMS_PER_ZYN);
+  assert.equal((await get(`/account/${bobChecksum}`)).body.address, bob.address);
   const after = (await get(`/account/${alice.address}`)).body;
   assert.equal(after.balanceAtoms, 75 * ATOMS_PER_ZYN);
   assert.equal(after.nonce, aliceNonce + 1);
