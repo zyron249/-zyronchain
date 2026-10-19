@@ -11,8 +11,8 @@ name: Open Testnet Snapshot Keeper
 #   exists only on the host. The job uses the workflow GITHUB_TOKEN with
 #   contents: write, which is what release asset uploads require.
 # - Only the expected genesis is ever published, the published height never goes
-#   backwards, and the old asset is deleted only after its replacement has been
-#   uploaded (see .github/scripts/open-testnet-snapshot-keeper.mjs and
+#   backwards, and the published asset is renamed aside (never deleted) until
+#   its replacement is in place (see .github/scripts/open-testnet-snapshot-keeper.mjs and
 #   docs/OPEN_TESTNET.md "Snapshot keepers"). It is safe to run next to the
 #   legacy machine keeper (deploy/open-testnet/snapshot-keeper.sh).
 # - Scheduled runs are delayed or dropped under load, often by hours, so each run
@@ -21,6 +21,9 @@ name: Open Testnet Snapshot Keeper
 #   and starts when the active one ends. GitHub cancels older pending runs of the
 #   group, so cancelled scheduled runs in the list are expected. A manual run also
 #   waits behind an active run.
+# - GitHub disables scheduled workflows after 60 days without repository
+#   activity. If that happens the keeper stops: re-enable it with
+#   `gh workflow enable open-testnet-snapshot-keeper.yml` (or the Actions tab).
 # - Budget: Actions minutes are free for public repositories; the job occupies one
 #   hosted runner slot. Keeping the instance awake uses about 720-744 of the 750
 #   free instance hours a Render workspace gets per month, so other free web

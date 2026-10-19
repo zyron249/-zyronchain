@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, cleanupTempAssets, createGitHub, decideReplace,
-  exitCodeFor, formatLabel, parseLabel, perGenesisName, publishAsset, publishCycle, runKeeper, tempAssetName, validateSnapshot
+  SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, formatLabel,
+  keeperAssetName, parseKeeperAssetName, parseLabel, perGenesisName, publishAsset, publishCycle, repairAndCleanup, runKeeper, validateSnapshot
 } from "./open-testnet-snapshot-keeper.mjs";
 
 const GENESIS = "9ad75d777141de46df1fb008298a4d8a92fbce0a9c96aaf26ecf69474b7db8eb";
@@ -53,8 +53,9 @@ test("labels round-trip and reject anything else", () => {
     assert.equal(parseLabel(bad), null, String(bad));
   }
   assert.equal(perGenesisName(GENESIS), "state-9ad75d777141.enc");
-  assert.match(tempAssetName(T0, "0a1b2c3d"), /^state-next-\d{13}-0a1b2c3d\.enc$/);
-  assert.notEqual(tempAssetName(T0), "state.enc");
+  assert.equal(keeperAssetName("next", "state.enc", T0, "0a1b2c3d"), `next-${T0}-0a1b2c3d.state.enc`);
+  assert.deepEqual(parseKeeperAssetName(keeperAssetName("prev", "state-9ad75d777141.enc", T0, "0a1b2c3d")), { kind: "prev", ms: T0, finalName: "state-9ad75d777141.enc" });
+  for (const name of ["state.enc", "state-9ad75d777141.enc", `next-${T0}-0a1b2c3d.other.enc`, `old-${T0}-0a1b2c3d.state.enc`, `next-${T0}-0A1B2C3D.state.enc`]) assert.equal(parseKeeperAssetName(name), null, name);
 });
 
 test("validateSnapshot accepts a sealed snapshot of the expected genesis only", () => {
@@ -97,8 +98,11 @@ test("publishAsset uploads under a temporary name and swaps only after the uploa
   const result = await publishAsset({ github, tag: "open-testnet-state", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log: (line) => lines.push(line) });
   assert.equal(result.published, true);
   const kinds = state.calls.map((call) => call[0]);
-  assert.deepEqual(kinds, ["release", "upload", "release", "remove", "rename"]);
-  assert.match(state.calls[1][1], /^state-next-/, "the first upload never uses the restore name");
+  assert.deepEqual(kinds, ["release", "upload", "release", "rename", "rename", "remove"]);
+  assert.match(state.calls[1][1], /^next-\d{13}-[0-9a-f]{8}\.state\.enc$/, "the first upload never uses the restore name");
+  assert.equal(state.calls[3][1], 7);
+  assert.match(state.calls[3][2], /^prev-\d{13}-[0-9a-f]{8}\.state\.enc$/, "the old asset is moved aside, not deleted");
+  assert.deepEqual(state.calls[5], ["remove", 7], "the old copy is deleted only after the swap");
   assert.deepEqual(state.assets.map((asset) => [asset.name, asset.label]), [["state.enc", formatLabel(2150, GENESIS)]]);
   assert.ok(lines.some((line) => line.includes("height 2150")));
 });
@@ -140,25 +144,106 @@ test("publishAsset loses a concurrent same-name upload cleanly and never leaves 
   state.hooks.rename = (s) => { if (!s.assets.some((asset) => asset.name === "state.enc")) s.assets.push({ id: 60, name: "state.enc", label: "" }); };
   const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {} });
   assert.equal(result.published, false);
-  assert.deepEqual(state.assets.map((asset) => asset.id), [60]);
+  assert.ok(state.assets.some((asset) => asset.id === 60 && asset.name === "state.enc"), "their asset keeps the name");
+  assert.ok(!state.assets.some((asset) => /^next-/.test(asset.name)), "our upload is removed");
+  assert.ok(state.assets.some((asset) => asset.id === 7 && /^prev-/.test(asset.name)), "the old copy is kept aside for cleanup");
 });
 
-test("publishAsset removes its temporary asset when the swap fails unexpectedly", async () => {
+test("publishAsset removes its upload when nothing was swapped yet", async () => {
   const { github, state } = fakeGitHub({ assets: [] });
   github.rename = async () => { const error = new Error("boom"); error.status = 500; throw error; };
-  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 5, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {} }), /boom/);
+  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 5, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, sleep: async () => {} }), /boom/);
   assert.deepEqual(state.assets, []);
 });
 
-test("cleanupTempAssets removes only this keeper's stale temporary assets", async () => {
+test("a failed final rename puts the old asset back and never leaves the restore name missing", async () => {
+  const old = { id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) };
+  const { github, state } = fakeGitHub({ assets: [old] });
+  const rename = github.rename;
+  let finalAttempts = 0;
+  github.rename = async (id, name, label) => {
+    if (id !== 7 && name === "state.enc") { finalAttempts += 1; const error = new Error("timeout"); error.status = 502; throw error; }
+    return rename(id, name, label);
+  };
+  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, sleep: async () => {} }), /timeout/);
+  assert.deepEqual(state.assets.map((asset) => [asset.id, asset.name, asset.label]), [[7, "state.enc", formatLabel(2100, GENESIS)]]);
+  assert.equal(finalAttempts, 3, "the final rename is retried before giving up");
+});
+
+test("when the old asset cannot be put back either, both copies stay and the next cycle repairs the name", async () => {
+  const old = { id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) };
+  const { github, state } = fakeGitHub({ assets: [old] });
+  const rename = github.rename;
+  let broken = true;
+  github.rename = async (id, name, label) => {
+    if (broken && name === "state.enc") { const error = new Error("outage"); error.status = 503; throw error; }
+    return rename(id, name, label);
+  };
+  const warnings = [];
+  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn: (line) => warnings.push(line), sleep: async () => {} }), /outage/);
+  assert.equal(state.assets.length, 2, "neither copy is deleted");
+  assert.ok(state.assets.every((asset) => /^(next|prev)-/.test(asset.name)));
+  assert.ok(warnings.some((line) => /keeping both copies/.test(line)));
+  broken = false;
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0 + 60_000, log() {}, warn() {}, sleep: async () => {} });
+  const restored = state.assets.find((asset) => asset.name === "state.enc");
+  assert.equal(parseLabel(restored.label).height, 2150, "the highest labeled copy of the expected genesis is restored");
+  assert.equal(state.assets.length, 2, "the other copy is not stale yet");
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0 + 31 * 60_000, log() {}, warn() {}, sleep: async () => {} });
+  assert.deepEqual(state.assets.map((asset) => asset.name), ["state.enc"]);
+});
+
+test("publishAsset still succeeds when the old copy cannot be deleted after the swap", async () => {
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
+  github.remove = async () => { throw new Error("rate limited"); };
+  const warnings = [];
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn: (line) => warnings.push(line), sleep: async () => {} });
+  assert.equal(result.published, true);
+  assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc").label).height, 2150);
+  assert.ok(warnings.some((line) => /cleaned up later/.test(line)));
+});
+
+test("repairAndCleanup deletes only this keeper's stale copies, and only for names that exist", async () => {
   const assets = [
     { id: 1, name: "state.enc" }, { id: 2, name: "state-9ad75d777141.enc" },
-    { id: 3, name: tempAssetName(T0 - 31 * 60_000, "aaaaaaaa") }, { id: 4, name: tempAssetName(T0 - 60_000, "bbbbbbbb") },
-    { id: 5, name: "state-next-x.enc" }
+    { id: 3, name: keeperAssetName("prev", "state.enc", T0 - 31 * 60_000, "aaaaaaaa") },
+    { id: 4, name: keeperAssetName("next", "state.enc", T0 - 60_000, "bbbbbbbb") },
+    { id: 5, name: "state-next-x.enc" }, { id: 6, name: `next-${T0 - 40 * 60_000}-cccccccc.other.enc` },
+    { id: 8, name: keeperAssetName("next", "state-9ad75d777141.enc", T0 - 45 * 60_000, "dddddddd") }
   ];
   const { github, state } = fakeGitHub({ assets });
-  await cleanupTempAssets({ github, tag: "t", now: () => T0, log() {} });
-  assert.deepEqual(state.assets.map((asset) => asset.id), [1, 2, 4, 5]);
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {} });
+  assert.deepEqual(state.assets.map((asset) => asset.id), [1, 2, 4, 5, 6]);
+});
+
+test("repairAndCleanup restores a missing name only from a trustworthy copy", async () => {
+  // Labeled copies of the expected genesis win by height; a labeled copy of another genesis is never used.
+  {
+    const { github, state } = fakeGitHub({ assets: [
+      { id: 3, name: keeperAssetName("prev", "state.enc", T0 - 50 * 60_000, "aaaaaaaa"), label: formatLabel(2100, GENESIS) },
+      { id: 4, name: keeperAssetName("next", "state.enc", T0 - 40 * 60_000, "bbbbbbbb"), label: formatLabel(2150, GENESIS) },
+      { id: 5, name: keeperAssetName("next", "state.enc", T0 - 30_000, "cccccccc"), label: formatLabel(9999, OTHER) }
+    ] });
+    await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {} });
+    assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 4);
+    assert.deepEqual(state.assets.map((asset) => asset.id).sort(), [4, 5], "stale copies go once the name exists; the fresh one waits");
+  }
+  // An unlabeled moved-aside asset (legacy keeper) is restored rather than leaving the name missing.
+  {
+    const { github, state } = fakeGitHub({ assets: [{ id: 3, name: keeperAssetName("prev", "state.enc", T0 - 60 * 60_000, "aaaaaaaa"), label: "" }] });
+    await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {} });
+    assert.deepEqual(state.assets.map((asset) => [asset.id, asset.name]), [[3, "state.enc"]]);
+  }
+  // An unlabeled or foreign-genesis upload is never promoted, and nothing is deleted while the name is missing.
+  {
+    const { github, state } = fakeGitHub({ assets: [
+      { id: 4, name: keeperAssetName("next", "state.enc", T0 - 60 * 60_000, "bbbbbbbb"), label: "" },
+      { id: 5, name: keeperAssetName("next", "state.enc", T0 - 60 * 60_000, "cccccccc"), label: formatLabel(10, OTHER) }
+    ] });
+    await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {} });
+    assert.ok(!state.assets.some((asset) => asset.name === "state.enc"), "no untrusted copy is promoted");
+    assert.deepEqual(state.assets.map((asset) => asset.id), [4, 5], "nothing is deleted while the name is missing");
+  }
 });
 
 function gatewayFetch({ height = 2150, genesis = GENESIS, status = 200 } = {}) {

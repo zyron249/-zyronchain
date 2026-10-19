@@ -19,10 +19,15 @@
 //     than UNLABELED_MARGIN_MS after that asset was updated; every later snapshot
 //     of the same chain is at least as high (the gateway caches a snapshot for at
 //     most 60 s), and a restart resumes from the published asset;
-//   - the asset is never deleted before its replacement exists: the new file is
-//     uploaded under a temporary name, the old asset is deleted and the new one
-//     renamed in place, so `state.enc` is missing only between two API calls;
-//   - only temporary assets this keeper names are cleaned up.
+//   - the published asset is never deleted before its replacement is in place:
+//     the new file is uploaded as next-<ms>-<hex>.<name>, the current asset is
+//     renamed aside to prev-<ms>-<hex>.<name>, the new file is renamed to <name>,
+//     and only then is the old copy deleted. If the final rename fails the old
+//     asset is renamed back; if that fails too, both copies are kept and the
+//     next cycle renames the best one back into place, so `state.enc` is only
+//     missing between two API calls and never lost;
+//   - only this keeper's own next-/prev- copies are ever cleaned up, and only
+//     when the name they belong to exists.
 // The only credential is the workflow GITHUB_TOKEN (contents: write, for the
 // release assets).
 import { createHash, randomBytes } from "node:crypto";
@@ -32,8 +37,8 @@ import { appendFile } from "node:fs/promises";
 export const SNAPSHOT_HEADER = "ZYRON-OPEN-TESTNET-STATE-V1\n";
 export const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 export const UNLABELED_MARGIN_MS = 120_000;
-export const TEMP_ASSET_PATTERN = /^state-next-(\d{13})-[0-9a-f]{8}\.enc$/;
-export const TEMP_ASSET_MAX_AGE_MS = 30 * 60_000;
+export const KEEPER_ASSET_PATTERN = /^(next|prev)-(\d{13})-[0-9a-f]{8}\.(state(?:-[0-9a-f]{12})?\.enc)$/;
+export const KEEPER_ASSET_MAX_AGE_MS = 30 * 60_000;
 const LABEL_PATTERN = /^state snapshot height=([1-9][0-9]{0,15}) genesis=([0-9a-f]{64})$/;
 const GENESIS_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -52,9 +57,19 @@ export function perGenesisName(genesis) {
   return `state-${genesis.slice(0, 12)}.enc`;
 }
 
-export function tempAssetName(nowMs, random = randomBytes(4).toString("hex")) {
-  return `state-next-${String(nowMs).padStart(13, "0")}-${random}.enc`;
+// Names of this keeper's own copies: next-<ms>-<hex>.<final name> (an upload
+// before its swap) and prev-<ms>-<hex>.<final name> (the replaced asset until
+// the swap completes).
+export function keeperAssetName(kind, finalName, nowMs, random = randomBytes(4).toString("hex")) {
+  return `${kind}-${String(nowMs).padStart(13, "0")}-${random}.${finalName}`;
 }
+
+export function parseKeeperAssetName(name) {
+  const match = KEEPER_ASSET_PATTERN.exec(typeof name === "string" ? name : "");
+  return match ? { kind: match[1], ms: Number(match[2]), finalName: match[3] } : null;
+}
+
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Checks a downloaded snapshot without decrypting it. Returns { height, genesis }.
 export function validateSnapshot({ status, headers, bytes }, expectedGenesis) {
@@ -135,14 +150,33 @@ export function createGitHub({ fetchImpl, token, repo, apiBase = "https://api.gi
   };
 }
 
-// Publishes one snapshot as asset `name` if it is newer. Returns "published" or a skip reason.
-export async function publishAsset({ github, tag, name, bytes, snapshot, expectedGenesis, requestStartedMs, now, log }) {
+const RENAME_RETRY_DELAYS_MS = [2_000, 5_000];
+
+// Renames an asset, retrying transient failures. A 422 (the name is taken) is final.
+async function renameWithRetry(github, id, name, label, sleep) {
+  for (let attempt = 0; ; attempt += 1) {
+    try { return await github.rename(id, name, label); }
+    catch (error) {
+      if (error.status === 422 || attempt >= RENAME_RETRY_DELAYS_MS.length) throw error;
+      await sleep(RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+// Publishes one snapshot as asset `name` if it is newer. The current asset is
+// never deleted before the replacement is in place: the replacement is uploaded
+// under a temporary name, the current asset is renamed aside, the replacement is
+// renamed to `name`, and only then is the old copy deleted. If the final rename
+// fails, the old asset is renamed back; if even that fails, both copies are kept
+// so the next cycle can restore the name (see repairAndCleanup).
+export async function publishAsset({ github, tag, name, bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn = log, sleep = defaultSleep }) {
   let release = await github.release(tag);
   let current = release.assets.find((asset) => asset.name === name) ?? null;
   const first = decideReplace({ snapshot, asset: current, expectedGenesis, requestStartedMs });
   if (!first.publish) return { published: false, reason: first.reason };
   const label = formatLabel(snapshot.height, snapshot.genesis);
-  const temp = await github.upload(release.id, tempAssetName(now()), label, bytes);
+  const temp = await github.upload(release.id, keeperAssetName("next", name, now()), label, bytes);
+  let aside = null;
   try {
     // Re-check right before the swap: another keeper may have published meanwhile.
     release = await github.release(tag);
@@ -152,29 +186,72 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
       if (!again.publish) { await github.remove(temp.id); return { published: false, reason: `another keeper published first: ${again.reason}` }; }
       current = latest;
     }
-    if (current) await github.remove(current.id);
-    try {
-      await github.rename(temp.id, name, label);
-    } catch (error) {
-      // Lost a race with another keeper's upload of the same name: theirs stays.
-      if (error.status === 422) { await github.remove(temp.id); return { published: false, reason: "another keeper published the same name concurrently" }; }
-      throw error;
+    if (current) {
+      await renameWithRetry(github, current.id, keeperAssetName("prev", name, now()), current.label ?? "", sleep);
+      aside = current;
     }
-    log(`published ${name} height ${snapshot.height} genesis ${snapshot.genesis.slice(0, 12)} (${first.reason})`);
-    return { published: true, reason: first.reason };
   } catch (error) {
+    // `name` is untouched (the aside rename did not happen): drop the upload.
     await github.remove(temp.id).catch(() => {});
     throw error;
   }
+  try {
+    await renameWithRetry(github, temp.id, name, label, sleep);
+  } catch (error) {
+    if (error.status === 422) {
+      // Another keeper put a new asset under `name` meanwhile: theirs stays. The
+      // old copy (if any) is kept aside and cleaned up later.
+      await github.remove(temp.id).catch(() => {});
+      return { published: false, reason: "another keeper published the same name concurrently" };
+    }
+    if (aside) {
+      try { await renameWithRetry(github, aside.id, name, aside.label ?? "", sleep); }
+      catch (restoreError) {
+        warn(`could not rename ${name} back (${restoreError.message}); keeping both copies for the next cycle to repair`);
+        throw error;
+      }
+    }
+    await github.remove(temp.id).catch(() => {});
+    throw error;
+  }
+  if (aside) {
+    try { await github.remove(aside.id); }
+    catch (error) { warn(`old copy of ${name} not deleted yet (${error.message}); it is cleaned up later`); }
+  }
+  log(`published ${name} height ${snapshot.height} genesis ${snapshot.genesis.slice(0, 12)} (${first.reason})`);
+  return { published: true, reason: first.reason };
 }
 
-export async function cleanupTempAssets({ github, tag, now, log }) {
+// Restores a missing restore name from this keeper's own copies (left by a
+// crash or a failed swap), then deletes this keeper's copies older than
+// KEEPER_ASSET_MAX_AGE_MS for names that exist. Nothing else is deleted.
+export async function repairAndCleanup({ github, tag, expectedGenesis, now, log, warn = log, sleep = defaultSleep }) {
   const release = await github.release(tag);
+  const present = new Set(release.assets.map((asset) => asset.name));
+  const groups = new Map();
   for (const asset of release.assets) {
-    const match = TEMP_ASSET_PATTERN.exec(asset.name);
-    if (match && now() - Number(match[1]) > TEMP_ASSET_MAX_AGE_MS) {
-      await github.remove(asset.id);
-      log(`removed stale temporary asset ${asset.name}`);
+    const parsed = parseKeeperAssetName(asset.name);
+    if (!parsed) continue;
+    if (!groups.has(parsed.finalName)) groups.set(parsed.finalName, []);
+    groups.get(parsed.finalName).push({ asset, ...parsed });
+  }
+  for (const [finalName, copies] of groups) {
+    if (!present.has(finalName)) {
+      const rank = (copy) => {
+        const label = parseLabel(copy.asset.label);
+        return label && label.genesis === expectedGenesis ? label.height : -1;
+      };
+      const best = [...copies].sort((a, b) => rank(b) - rank(a) || b.ms - a.ms)[0];
+      if (rank(best) < 0 && best.kind !== "prev") continue;
+      await renameWithRetry(github, best.asset.id, finalName, best.asset.label ?? "", sleep);
+      warn(`restored missing ${finalName} from ${best.asset.name}`);
+      copies.splice(copies.indexOf(best), 1);
+    }
+    for (const copy of copies) {
+      if (now() - copy.ms > KEEPER_ASSET_MAX_AGE_MS) {
+        await github.remove(copy.asset.id);
+        log(`removed stale keeper copy ${copy.asset.name}`);
+      }
     }
   }
 }
@@ -188,11 +265,11 @@ export async function fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now }
 }
 
 // One keeper cycle: download, check, publish state.enc then the per-genesis copy.
-export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, now, log }) {
+export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, now, log, warn = log, sleep = defaultSleep }) {
   const { snapshot, bytes, requestStartedMs } = await fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now });
   const sha256 = createHash("sha256").update(bytes).digest("hex");
-  const main = await publishAsset({ github, tag, name: "state.enc", bytes, snapshot, expectedGenesis, requestStartedMs, now, log });
-  const copy = await publishAsset({ github, tag, name: perGenesisName(snapshot.genesis), bytes, snapshot, expectedGenesis, requestStartedMs, now, log });
+  const main = await publishAsset({ github, tag, name: "state.enc", bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep });
+  const copy = await publishAsset({ github, tag, name: perGenesisName(snapshot.genesis), bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep });
   if (!main.published) log(`state.enc not replaced: ${main.reason}`);
   if (!copy.published) log(`${perGenesisName(snapshot.genesis)} not replaced: ${copy.reason}`);
   return { height: snapshot.height, genesis: snapshot.genesis, sha256, size: bytes.length, published: main.published, copyPublished: copy.published, reason: main.reason };
@@ -216,7 +293,6 @@ export async function runKeeper(options) {
   const deadline = now() + runMs;
   let nextPublish = now();
   let nextKeepAlive = now();
-  try { await cleanupTempAssets({ github, tag, now, log }); } catch (error) { warn(`temporary asset cleanup failed: ${error.message}`); }
   while (now() < deadline) {
     if (now() >= nextKeepAlive) {
       const health = await keepAlive({ fetchImpl, gateway });
@@ -225,8 +301,10 @@ export async function runKeeper(options) {
     }
     if (now() >= nextPublish) {
       stats.cycles += 1;
+      try { await repairAndCleanup({ github, tag, expectedGenesis, now, log, warn, sleep }); }
+      catch (error) { warn(`repair/cleanup of keeper copies failed: ${error instanceof Error ? error.message : String(error)}`); }
       try {
-        const result = await publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, now, log });
+        const result = await publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, now, log, warn, sleep });
         stats.lastHeight = result.height;
         if (result.published) { stats.published += 1; stats.lastPublishedHeight = result.height; log(`snapshot sha256 ${result.sha256} size ${result.size}`); }
         else stats.notNewer += 1;
