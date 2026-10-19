@@ -17,7 +17,7 @@ Hard rules for every phase: total supply is fixed at 50,000,000 ZYN; no `mining_
 | `website/` information site | Static, `connect-src 'none'`, build-time network status, English-only and honesty tests | IMPLEMENTED, TESTED (`website-ci.yml`) |
 | `website/app/` Phone Wallet PWA | Create, restore, lock/unlock, scrypt + AES-256-GCM vault, address + QR, offline-signed testnet transfers, wallet-link proof signing; CSP `default-src 'none'; connect-src 'none'` | IMPLEMENTED, TESTED (`website-pwa-wallet.yml`, l1 cross-check) |
 | `website/wallet.html` | Desktop wallet setup (no browser key handling) | IMPLEMENTED |
-| Wallet testnet RPC | `zyron-wallet-testnet-rpc.onrender.com`, chain `zyron-wallet-testnet-1`, `valueBearing: false`, faucet; free host, sleeps and may reset | IMPLEMENTED (no value) |
+| Wallet testnet RPC | `zyron-wallet-testnet-rpc.onrender.com`, chain `zyron-wallet-testnet-1`, `valueBearing: false`, faucet; free host sleeps. Balances survive a restart only when `ZYRON_TESTNET_DATABASE_URL` is set | IMPLEMENTED (no value) |
 | `telegram-game/` ZYRON NODE | FastAPI + Postgres, Telegram `initData` auth, builders, upgrades, chests, tiers, activity ledger, referrals, community bot, reminders | IMPLEMENTED, TESTED (`telegram-game-ci.yml`), live |
 | `wallet_proof.py` | One-time nonce bound to player + Telegram id; secp256k1 proof checked exactly like l1; nonce burned on every attempt; cosmetic badge only | IMPLEMENTED, TESTED; real-Telegram end-to-end PENDING REVIEW |
 | Game `/api/meta` | Public build, season, points notice | IMPLEMENTED; CORS allows only the Mini App origin, so **zyronchain.com cannot read it yet** |
