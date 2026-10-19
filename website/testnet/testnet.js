@@ -109,6 +109,7 @@
     text('[data-tx-version]', ok && Number.isSafeInteger(next.transactionVersion) ? String(next.transactionVersion) : 'unknown');
     text('[data-height]', ok ? whole(next.height) : 'unknown');
     text('[data-genesis]', ok && typeof next.genesisHash === 'string' ? next.genesisHash : 'unknown');
+    text('[data-durable]', !ok ? 'unknown' : next.stateDurable === true ? 'on' : next.stateDurable === false ? 'off' : 'unknown');
   }
 
   async function loadStatus() {
@@ -123,6 +124,7 @@
       text('[data-tx-version]', 'unknown');
       text('[data-height]', 'unknown');
       text('[data-genesis]', 'unknown');
+      text('[data-durable]', 'unknown');
       text('[data-net-state]', error instanceof Error ? error.message : 'The wallet testnet is not reachable right now.');
     }
   }
@@ -251,7 +253,7 @@
         }
         if (!changed && Date.now() < deadline) await sleep(POLL_MS);
       } while (!changed && Date.now() < deadline);
-      if (!changed) msg('[data-submit-msg]', 'No receiver balance change yet. Transaction id ' + txid + '. The next block can take about 30 seconds, or the free host may have restarted and reset genesis.', '');
+      if (!changed) msg('[data-submit-msg]', 'No receiver balance change yet. Transaction id ' + txid + '. The next block can take about 30 seconds. Balances can still reset if durable storage is off or the network was deliberately reset.', '');
     } catch (error) {
       $('[data-submit]').disabled = false;
       msg('[data-submit-msg]', error instanceof Error ? error.message : 'Submit failed', 'bad');

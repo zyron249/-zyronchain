@@ -91,9 +91,9 @@
         row('Chain ID', str(s.chainId, 80) || 'unknown'),
         row('Height', height === null ? 'unknown' : String(height)),
         row('Genesis hash', (str(s.genesisHash, 64) || 'unknown')),
-        row('Notice', str(s.notice, 400) || 'Test ZYN has no value and the network can reset.')
+        row('Notice', str(s.notice, 400) || 'Test ZYN has no value. Balances stay only when durable storage is on.')
       ]);
-      text('overview-rpc', `Testnet status: reachable · height ${height === null ? 'unknown' : height} · no value, may reset`);
+      text('overview-rpc', `Testnet status: reachable · height ${height === null ? 'unknown' : height} · no value`);
     } catch (err) {
       put('rpc-status', [row('Wallet testnet', 'Not reachable right now', 'warn'),
         row('Why', 'The free test service may be asleep or restarting. Try Refresh in a minute.')]);

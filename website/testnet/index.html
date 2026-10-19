@@ -34,7 +34,7 @@
     <main id="main" tabindex="-1">
       <h1>Wallet testnet</h1>
       <p class="lead">Look up an address on the no-value wallet testnet, or paste a signed transfer from the phone wallet. Chain id <code>zyron-wallet-testnet-1</code>.</p>
-      <p class="notice" role="note"><strong>Balances can vanish.</strong> This free host sleeps after inactivity and starts a fresh genesis when it wakes. A new genesis hash means earlier balances are gone. Test ZYN has no value and cannot be bought or sold.</p>
+      <p class="notice" role="note"><strong>Test ZYN has no value.</strong> Balances and nonces stay across a free-host sleep when durable storage is on. They can still reset if durable storage is off, or if this network is deliberately reset. The genesis hash can change when the process starts, because block production needs a recent genesis time. That hash change does not by itself wipe a durable balance. Test ZYN cannot be bought or sold.</p>
       <p class="notice quiet" role="note">This page never asks for a recovery phrase, a password or a private key. Keys stay in the phone wallet. Only a signed transfer leaves that device.</p>
 
       <section class="card" aria-labelledby="net-title">
@@ -45,6 +45,7 @@
           <div><dt>Expected transaction version</dt><dd data-tx-version>unknown</dd></div>
           <div><dt>Height</dt><dd data-height>unknown</dd></div>
           <div><dt>Genesis hash</dt><dd data-genesis>unknown</dd></div>
+          <div><dt>Durable storage</dt><dd data-durable>unknown</dd></div>
         </dl>
         <div class="actions"><button type="button" data-refresh>Refresh status</button></div>
       </section>
@@ -90,6 +91,6 @@
       <span class="build" data-site-build>Build 483e12ff</span>
     </footer>
   </div>
-  <script src="./testnet.js?v=cda7e638bf2f" integrity="sha384-+EiTb7mCWzGKoj/IW6pW/3Nv3lAwN2uk0iGOlRUpwIhY1kAt3zyrKqug1xJlB3ao" defer></script>
+  <script src="./testnet.js?v=0bffd4010260" integrity="sha384-Tydi55acTDf/xgRzq2ieCq4/BBie5ujMlRW5Wgi0+hXLOmN5zGF0q7NjmaVEONyT" defer></script>
 </body>
 </html>
