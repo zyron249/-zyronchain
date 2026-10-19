@@ -28,6 +28,8 @@ ZyronChain currently uses a permissioned validator set for block proposal and fi
 
 For `N` active validators, finality and governance require `floor(2N/3)+1` unique valid signatures. Safety assumes an adversary cannot obtain a finality quorum. Liveness assumes enough honest validators remain online and can communicate within the documented timing model.
 
+A public-launch, value-bearing or mainnet genesis (`docs/GENESIS_NETWORK_CLASS.md`) is refused unless it has at least four distinct validator public keys. The same floor applies to a later validator-set update and to a checkpoint schedule on that class. With fewer than four validators, finality tolerates zero faulty or offline validators. Test classes, and genesis files that omit `networkClass`, may still start with one to 100 validators so existing devnets and testnets keep working. Duplicate validator addresses or public keys are rejected on every class.
+
 Historical (mining retired, see the banner above): protocol v5 was designed to permit **permissionless proof-of-work ZYN issuance claims**; consensus now rejects every such claim. Mining is not the chain-selection algorithm: hash power does not select the proposer, replace validator attestations or determine the canonical fork. Any key holder may compete to earn a mining claim, but validators still decide which valid transactions are ordered into finalized blocks.
 
 This is therefore not proof-of-stake or Nakamoto proof-of-work consensus, and validator admission is not permissionless. Validator count alone is not decentralization. Operators sharing an owner, cloud, network, jurisdiction, signer or recovery process may fail as one domain.
