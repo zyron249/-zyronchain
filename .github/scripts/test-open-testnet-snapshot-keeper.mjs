@@ -1088,3 +1088,164 @@ test("the scheduled workflow keeps least privilege, one active run, a bounded jo
   assert.match(active, /persist-credentials: false/);
   assert.match(active, /run: node \.github\/scripts\/open-testnet-snapshot-keeper\.mjs$/m);
 });
+
+// ---- Codex round 4 at 72276b7: the missing-name window and repair installs ----
+
+// The host's cold-start 404 grace: the sum of SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS
+// in l1/scripts/open-testnet.mjs (read from the source so the two cannot drift).
+async function restoreNotFoundGraceMs() {
+  const source = await readFile(new URL("../../l1/scripts/open-testnet.mjs", import.meta.url), "utf8");
+  const match = /export const SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS = \[([0-9_,\s]+)\];/.exec(source);
+  assert.ok(match, "SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS not found in l1/scripts/open-testnet.mjs");
+  return match[1].split(",").map((part) => Number(part.trim().replaceAll("_", ""))).reduce((a, b) => a + b, 0);
+}
+
+// A clock that only moves when a fake call or a sleep says so. A GitHub call
+// that "times out" costs the timeout it was given (GITHUB_CALL_TIMEOUT_MS when
+// none was given).
+function steppedClock(start = T0) {
+  const clock = { ms: start };
+  return { clock, now: () => clock.ms, sleep: async (ms) => { clock.ms += ms; }, spend: (opts) => { clock.ms += opts?.timeoutMs ?? GITHUB_CALL_TIMEOUT_MS; } };
+}
+const timeoutError = () => { const error = new Error("The operation was aborted due to timeout"); error.name = "TimeoutError"; return error; };
+
+test("a swap that passes its deadline keeps the upload when the restore name is absent or broken", async () => {
+  for (const [what, assets] of [
+    ["absent", []],
+    ["broken (fully uploaded but empty)", [{ id: 7, name: "state.enc", label: "", size: 12 }]]
+  ]) {
+    const { clock, now } = steppedClock();
+    const { github, state } = fakeGitHub({ assets, now });
+    const upload = github.upload;
+    // The upload itself ends past the swap deadline.
+    github.upload = async (...args) => { const result = await upload(...args); clock.ms = T0 + 10; return result; };
+    const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now, swapBy: T0 + 5, log() {}, warn() {}, sleep: async () => {} });
+    assert.equal(result.published, false, what);
+    assert.match(result.reason, /deadline/, what);
+    assert.ok(state.assets.some((asset) => /^next-/.test(asset.name) && parseLabel(asset.label)?.height === 2150), `${what}: the complete upload is kept`);
+    assert.ok(!state.calls.some((call) => call[0] === "remove"), `${what}: nothing is deleted`);
+    // The next run's repair installs it.
+    await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0 + 60_000, log() {}, warn() {}, sleep: async () => {} });
+    assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc")?.label)?.height, 2150, `${what}: installed by the next repair`);
+  }
+});
+
+test("publishAsset never deletes: the upload stays when it loses, and cleanup removes it once stale", async () => {
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
+  let releases = 0;
+  // Another publisher installs a higher complete asset during our upload.
+  state.hooks.release = (s) => { releases += 1; if (releases === 2) { s.assets = s.assets.filter((asset) => asset.id !== 7); s.assets.push({ id: 50, name: "state.enc", label: formatLabel(2200, GENESIS), state: "uploaded", size: 1000 }); } };
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(result.published, false);
+  assert.ok(!state.calls.some((call) => call[0] === "remove"), "publishAsset deletes nothing");
+  assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 50);
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0 + 31 * 60_000, log() {}, warn() {}, sleep: async () => {} });
+  // The only keeper copy is the best restorable one, so it stays as the backup.
+  assert.equal(state.assets.filter((asset) => /^next-/.test(asset.name)).length, 1);
+});
+
+test("the restore name is never missing longer than the cold-start 404 grace, even when every final rename times out", async () => {
+  const grace = await restoreNotFoundGraceMs();
+  assert.equal(grace, 160_000);
+  for (const listingFails of [false, true]) {
+    const { clock, now, sleep, spend } = steppedClock();
+    const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }], now });
+    const rename = github.rename;
+    let missingFrom = null;
+    let missingTo = null;
+    github.rename = async (id, name, label, opts) => {
+      if (id !== 7 && name === "state.enc") { state.calls.push(["rename", id, name]); spend(opts); throw timeoutError(); }
+      const result = await rename(id, name, label);
+      if (id === 7 && /^prev-/.test(name)) missingFrom = clock.ms;
+      if (id === 7 && name === "state.enc") missingTo = clock.ms;
+      return result;
+    };
+    let releases = 0;
+    const release = github.release;
+    github.release = async (tag, opts) => { releases += 1; if (listingFails && releases >= 3) { spend(opts); throw timeoutError(); } return release(tag, opts); };
+    await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now, log() {}, warn() {}, sleep }));
+    assert.notEqual(missingFrom, null);
+    assert.notEqual(missingTo, null, `listing ${listingFails ? "failing" : "ok"}: the old asset is put back in the same cycle`);
+    assert.ok(missingTo - missingFrom < grace, `listing ${listingFails ? "failing" : "ok"}: state.enc missing for ${missingTo - missingFrom} ms, must stay below ${grace} ms`);
+    assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 7);
+    assert.ok(state.assets.some((asset) => /^next-/.test(asset.name)), "the upload is kept for the next cycle");
+  }
+});
+
+test("an aside rename that may have applied is followed by an install attempt within the 404 grace when it cannot be verified", async () => {
+  const grace = await restoreNotFoundGraceMs();
+  const { clock, now, sleep, spend } = steppedClock();
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }], now });
+  const rename = github.rename;
+  let missingFrom = null;
+  let installedAt = null;
+  // GitHub applies the aside rename but the response is lost, and the listing that would verify it fails.
+  github.rename = async (id, name, label, opts) => {
+    const result = await rename(id, name, label);
+    if (id === 7 && /^prev-/.test(name)) { missingFrom ??= clock.ms; spend(opts); throw timeoutError(); }
+    if (name === "state.enc") installedAt = clock.ms;
+    return result;
+  };
+  let releases = 0;
+  const release = github.release;
+  github.release = async (tag, opts) => { releases += 1; if (releases >= 3) { spend(opts); throw timeoutError(); } return release(tag, opts); };
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now, log() {}, warn() {}, sleep }).catch((error) => ({ error }));
+  assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc")?.label)?.height, 2150, "the upload is installed (a 422 would have shown the name still held)");
+  assert.ok(installedAt - missingFrom < grace, `state.enc missing for ${installedAt - missingFrom} ms`);
+  assert.ok(!state.calls.some((call) => call[0] === "remove"));
+  assert.ok(result.published === true || result.error);
+});
+
+test("every GitHub call in a swap's missing-name window carries a timeout that fits the window", async () => {
+  const grace = await restoreNotFoundGraceMs();
+  const { now, sleep, spend } = steppedClock();
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }], now });
+  const rename = github.rename;
+  const timeouts = [];
+  github.rename = async (id, name, label, opts) => {
+    timeouts.push(opts?.timeoutMs);
+    if (id !== 7 && name === "state.enc") { state.calls.push(["rename", id, name]); spend(opts); throw timeoutError(); }
+    return rename(id, name, label);
+  };
+  await assert.rejects(publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now, log() {}, warn() {}, sleep }));
+  assert.ok(timeouts.length >= 3);
+  for (const ms of timeouts) assert.ok(Number.isFinite(ms) && ms > 0 && ms < grace / 3, `rename timeout ${ms}`);
+});
+
+test("repair verifies a failed install of the backup and tries the next backup within the 404 grace", async () => {
+  const grace = await restoreNotFoundGraceMs();
+  const best = { id: 3, name: keeperAssetName("prev", "state.enc", T0 - 5 * 60_000, "aaaaaaaa"), label: formatLabel(2100, GENESIS) };
+  const second = { id: 4, name: keeperAssetName("prev", "state.enc", T0 - 15 * 60_000, "bbbbbbbb"), label: formatLabel(2090, GENESIS) };
+  for (const canonical of [null, { id: 7, name: "state.enc", label: "", size: 12 }]) {
+    const what = canonical ? "broken canonical" : "missing canonical";
+    {
+      // GitHub installs the best backup but every response is lost: verified, not an error.
+      const { github, state } = fakeGitHub({ assets: [...(canonical ? [{ ...canonical }] : []), { ...best }, { ...second }] });
+      const rename = github.rename;
+      github.rename = async (id, name, label, opts) => { const result = await rename(id, name, label, opts); if (id === 3) { const error = new Error("socket hang up"); error.status = 502; throw error; } return result; };
+      const warnings = [];
+      await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn: (line) => warnings.push(line), sleep: async () => {} });
+      assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 3, `${what}: the best backup is in place`);
+      assert.ok(warnings.some((line) => /listing shows/.test(line)), `${what}: the ambiguous install is reported`);
+    }
+    {
+      // The best backup cannot be renamed (every attempt times out without applying): the next one is installed.
+      const { clock, now, sleep, spend } = steppedClock();
+      const { github, state } = fakeGitHub({ assets: [...(canonical ? [{ ...canonical }] : []), { ...best }, { ...second }], now });
+      const rename = github.rename;
+      let missingFrom = canonical ? null : T0;
+      let installedAt = null;
+      github.rename = async (id, name, label, opts) => {
+        if (id === 3) { state.calls.push(["rename", id, name]); spend(opts); throw timeoutError(); }
+        const result = await rename(id, name, label, opts);
+        if (id === 7) missingFrom = clock.ms;
+        if (name === "state.enc") installedAt = clock.ms;
+        return result;
+      };
+      await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now, log() {}, warn() {}, sleep });
+      assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 4, `${what}: the next backup is installed`);
+      assert.ok(installedAt - missingFrom < grace, `${what}: name missing for ${installedAt - missingFrom} ms`);
+      assert.equal(state.assets.find((asset) => asset.id === 3)?.name, best.name, `${what}: the failed backup is left where it was`);
+    }
+  }
+});
