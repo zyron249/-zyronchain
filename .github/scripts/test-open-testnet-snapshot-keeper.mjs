@@ -501,10 +501,12 @@ test("a swap started at the deadline finishes or rolls back well before the work
   const workflow = await readFile(new URL("../workflows/open-testnet-snapshot-keeper.yml", import.meta.url), "utf8");
   const timeout = Number(/^\s+timeout-minutes: (\d+)$/m.exec(workflow)?.[1]);
   const runMinutes = Number(/RUN_MINUTES: \$\{\{ inputs\.run_minutes \|\| '(\d+)' \}\}/.exec(workflow)?.[1]);
-  // Worst case after the swap check: rename aside, rename into place, rename back,
-  // each with every retry timing out; plus 2 minutes for job set-up.
+  // Worst case after the swap check: rename aside, a listing that verifies an
+  // ambiguous aside rename, rename into place, rename back, each with every retry
+  // timing out; plus 2 minutes for job set-up.
   const rename = (RENAME_RETRY_DELAYS_MS.length + 1) * GITHUB_CALL_TIMEOUT_MS + RENAME_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0);
-  assert.ok(3 * rename + 2 * 60_000 <= (timeout - runMinutes) * 60_000, `swap worst case ${3 * rename} ms must fit in ${timeout - runMinutes} min`);
+  const swap = 3 * rename + GITHUB_CALL_TIMEOUT_MS;
+  assert.ok(swap + 2 * 60_000 <= (timeout - runMinutes) * 60_000, `swap worst case ${swap} ms must fit in ${timeout - runMinutes} min`);
 });
 
 test("runKeeper survives gateway outages and reports failure only when nothing was ever up to date", async () => {

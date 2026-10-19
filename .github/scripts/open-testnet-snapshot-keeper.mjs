@@ -25,11 +25,15 @@
 //     <name>. The moved-aside copy stays as a backup. If the final rename fails
 //     the old asset is renamed back; if that fails too, both copies are kept and
 //     the next cycle renames the best one back into place, so `state.enc` is
-//     only missing between two API calls and never lost. No swap starts after
-//     the run deadline, so a started swap ends before the job timeout;
+//     only missing between two API calls and never lost. A failed rename
+//     request is checked against a fresh listing (GitHub may have applied it).
+//     No upload or swap starts after the run deadline, so a started swap ends
+//     before the job timeout;
 //   - only this keeper's own next-/prev- copies are ever cleaned up, only when
 //     the name they belong to exists (rechecked right before deleting), and the
-//     best copy of each name is always kept.
+//     best complete copy of each name is always kept. An incomplete asset (not
+//     in the `uploaded` state, or too small) is never restored or kept;
+//   - /health is polled until the publish loop stops, even past the deadline.
 // The only credential is the workflow GITHUB_TOKEN (contents: write, for the
 // release assets).
 import { createHash, randomBytes } from "node:crypto";
@@ -108,7 +112,7 @@ export function decideReplace({ snapshot, asset, expectedGenesis, requestStarted
   if (label) {
     if (label.genesis !== expectedGenesis) return { publish: false, reason: `published asset is labeled for genesis ${label.genesis.slice(0, 12)}…` };
     if (snapshot.height > label.height) return { publish: true, reason: `height ${label.height} -> ${snapshot.height}` };
-    return { publish: false, reason: `not newer (published height ${label.height}, snapshot ${snapshot.height})` };
+    return { publish: false, upToDate: true, reason: `not newer (published height ${label.height}, snapshot ${snapshot.height})` };
   }
   const updatedMs = Date.parse(asset.updated_at ?? "");
   if (!Number.isFinite(updatedMs)) return { publish: false, reason: "published asset has no usable updated_at" };
@@ -181,17 +185,19 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
   let release = await github.release(tag);
   let current = release.assets.find((asset) => asset.name === name) ?? null;
   const first = decideReplace({ snapshot, asset: current, expectedGenesis, requestStartedMs });
-  if (!first.publish) return { published: false, reason: first.reason };
+  if (!first.publish) return { published: false, upToDate: first.upToDate === true, reason: first.reason };
+  if (now() > swapBy) return { published: false, reason: "run deadline reached before the upload; left for the next run" };
   const label = formatLabel(snapshot.height, snapshot.genesis);
   const temp = await github.upload(release.id, keeperAssetName("next", name, now()), label, bytes);
   let aside = null;
+  let asideAttempted = false;
   try {
     // Re-check right before the swap: another keeper may have published meanwhile.
     release = await github.release(tag);
     const latest = release.assets.find((asset) => asset.name === name) ?? null;
     if ((latest?.id ?? null) !== (current?.id ?? null)) {
       const again = decideReplace({ snapshot, asset: latest, expectedGenesis, requestStartedMs });
-      if (!again.publish) { await github.remove(temp.id); return { published: false, reason: `another keeper published first: ${again.reason}` }; }
+      if (!again.publish) { await github.remove(temp.id); return { published: false, upToDate: again.upToDate === true, reason: `another keeper published first: ${again.reason}` }; }
       current = latest;
     }
     if (now() > swapBy) {
@@ -199,13 +205,31 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
       return { published: false, reason: "run deadline reached before the swap; left for the next run" };
     }
     if (current) {
+      asideAttempted = true;
       await renameWithRetry(github, current.id, keeperAssetName("prev", name, now()), current.label ?? "", sleep);
       aside = current;
     }
   } catch (error) {
-    // `name` is untouched (the aside rename did not happen): drop the upload.
-    await github.remove(temp.id).catch(() => {});
-    throw error;
+    if (!asideAttempted || error.status === 422) {
+      // `name` is untouched (the aside rename did not happen): drop the upload.
+      await github.remove(temp.id).catch(() => {});
+      throw error;
+    }
+    // A failed request does not prove that GitHub did not apply the rename (the
+    // response can be lost). Look at a fresh listing before touching anything.
+    let listing;
+    try { listing = await github.release(tag); }
+    catch (listError) {
+      warn(`could not verify the rename of ${name} aside (${listError.message}); keeping the upload ${temp.name ?? temp.id} for the next cycle to repair`);
+      throw error;
+    }
+    if (listing.assets.some((asset) => asset.id === current.id && asset.name === name)) {
+      // `name` is still the old asset: the rename did not happen. Drop the upload.
+      await github.remove(temp.id).catch(() => {});
+      throw error;
+    }
+    warn(`renaming ${name} aside reported an error but the listing shows it moved; completing the swap`);
+    aside = listing.assets.find((asset) => asset.id === current.id) ?? null;
   }
   try {
     await renameWithRetry(github, temp.id, name, label, sleep);
@@ -249,6 +273,7 @@ export async function repairAndCleanup({ github, tag, expectedGenesis, now, log,
     if (!present.has(finalName)) {
       const rank = (copy) => copyRank(copy, expectedGenesis);
       const best = [...copies].sort((a, b) => rank(b) - rank(a) || b.ms - a.ms)[0];
+      if (!isCompleteAsset(best.asset)) { warn(`${finalName} is missing and no complete keeper copy exists to restore it`); continue; }
       if (rank(best) < 0 && best.kind !== "prev") continue;
       await renameWithRetry(github, best.asset.id, finalName, best.asset.label ?? "", sleep);
       warn(`restored missing ${finalName} from ${best.asset.name}`);
@@ -258,8 +283,10 @@ export async function repairAndCleanup({ github, tag, expectedGenesis, now, log,
     // delete-then-upload may remove the name at any time and fail to replace
     // it). Older surplus copies are deleted only after a fresh listing shows
     // that the name still exists.
-    const surplus = [...copies].sort((a, b) => copyRank(b, expectedGenesis) - copyRank(a, expectedGenesis) || b.ms - a.ms)
-      .slice(1).filter((copy) => now() - copy.ms > KEEPER_ASSET_MAX_AGE_MS);
+    // An incomplete copy is never the backup, so it is always surplus once stale.
+    const ranked = [...copies].sort((a, b) => copyRank(b, expectedGenesis) - copyRank(a, expectedGenesis) || b.ms - a.ms);
+    const backup = ranked.find((copy) => isCompleteAsset(copy.asset));
+    const surplus = ranked.filter((copy) => copy !== backup && now() - copy.ms > KEEPER_ASSET_MAX_AGE_MS);
     if (!surplus.length) continue;
     const fresh = await github.release(tag);
     if (!fresh.assets.some((asset) => asset.name === finalName)) { warn(`${finalName} disappeared; keeping all keeper copies`); continue; }
@@ -270,7 +297,18 @@ export async function repairAndCleanup({ github, tag, expectedGenesis, now, log,
   }
 }
 
+// A release asset is usable only when GitHub reports it fully uploaded and it is
+// large enough to be a sealed snapshot. A failed upload (for example an upstream
+// 502) can leave an empty asset in the `starter` state.
+export function isCompleteAsset(asset) {
+  return asset?.state === "uploaded" && Number.isSafeInteger(asset.size) && asset.size > SNAPSHOT_HEADER.length + 28;
+}
+
+// Ranks this keeper's copies: the labeled height for complete copies of the
+// expected genesis, -1 for other complete copies, -2 for incomplete ones (never
+// restored and never kept as the backup).
 function copyRank(copy, expectedGenesis) {
+  if (!isCompleteAsset(copy.asset)) return -2;
   const label = parseLabel(copy.asset.label);
   return label && label.genesis === expectedGenesis ? label.height : -1;
 }
@@ -314,7 +352,7 @@ export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGe
   const copy = await publishAsset({ github, tag, name: perGenesisName(snapshot.genesis), bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep, swapBy });
   if (!main.published) log(`state.enc not replaced: ${main.reason}`);
   if (!copy.published) log(`${perGenesisName(snapshot.genesis)} not replaced: ${copy.reason}`);
-  return { height: snapshot.height, genesis: snapshot.genesis, sha256, size: bytes.length, published: main.published, copyPublished: copy.published, reason: main.reason };
+  return { height: snapshot.height, genesis: snapshot.genesis, sha256, size: bytes.length, published: main.published, upToDate: !main.published && main.upToDate === true, copyPublished: copy.published, reason: main.reason };
 }
 
 export async function keepAlive({ fetchImpl, gateway }) {
@@ -334,17 +372,23 @@ export async function keepAlive({ fetchImpl, gateway }) {
 // and a publish cycle every publishIntervalMs.
 export async function runKeeper(options) {
   const { fetchImpl, github, gateway, tag, expectedGenesis, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn } = options;
-  const stats = { cycles: 0, published: 0, notNewer: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null };
+  const stats = { cycles: 0, published: 0, notNewer: 0, refused: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null };
   const deadline = now() + runMs;
   const pause = async (intervalMs) => {
     const wait = Math.min(now() + intervalMs, deadline) - now();
     if (wait > 0) await sleep(wait);
   };
+  // Health is polled until the publish loop has stopped, not just until the
+  // deadline: a cycle that started before the deadline can still be uploading.
+  let publishStopped = false;
+  let markStopped;
+  const stopped = new Promise((resolve) => { markStopped = resolve; });
   const keepAliveLoop = async () => {
-    while (now() < deadline) {
+    while (!publishStopped) {
       const health = await keepAlive({ fetchImpl, gateway });
       log(`health HTTP ${health.status} ${health.phase}${health.height === null ? "" : ` height ${health.height}`}`);
-      await pause(keepAliveIntervalMs);
+      if (publishStopped) break;
+      await Promise.race([sleep(keepAliveIntervalMs), stopped]);
     }
   };
   const publishLoop = async () => {
@@ -356,7 +400,8 @@ export async function runKeeper(options) {
         const result = await publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, now, log, warn, sleep, swapBy: deadline });
         stats.lastHeight = result.height;
         if (result.published) { stats.published += 1; stats.lastPublishedHeight = result.height; log(`snapshot sha256 ${result.sha256} size ${result.size}`); }
-        else stats.notNewer += 1;
+        else if (result.upToDate) stats.notNewer += 1;
+        else { stats.refused += 1; warn(`state.enc not replaced: ${result.reason}`); }
       } catch (error) {
         if (error instanceof GenesisMismatchError) { stats.genesisMismatches += 1; warn(error.message); }
         else { stats.failures += 1; warn(`cycle failed: ${error instanceof Error ? error.message : String(error)}`); }
@@ -364,12 +409,13 @@ export async function runKeeper(options) {
       await pause(publishIntervalMs);
     }
   };
-  await Promise.all([keepAliveLoop(), publishLoop()]);
+  await Promise.all([keepAliveLoop(), publishLoop().finally(() => { publishStopped = true; markStopped(); })]);
   return stats;
 }
 
 // Exit status: fail on any genesis mismatch, or when the whole run published
-// nothing and never saw an up-to-date published asset (gateway or upload broken).
+// nothing and never saw an up-to-date published asset (gateway or upload broken,
+// or every publication refused for a safety reason such as a foreign-genesis label).
 export function exitCodeFor(stats) {
   if (stats.genesisMismatches > 0) return 1;
   if (stats.published === 0 && stats.notNewer === 0) return 1;
@@ -405,7 +451,7 @@ async function main() {
   });
   console.log(`${stamp()} done ${JSON.stringify(stats)}`);
   if (env.GITHUB_STEP_SUMMARY) {
-    await appendFile(env.GITHUB_STEP_SUMMARY, `### Open testnet snapshot keeper\n\n| cycles | published | not newer | failures | genesis mismatches | last published height | last seen height |\n|---|---|---|---|---|---|---|\n| ${stats.cycles} | ${stats.published} | ${stats.notNewer} | ${stats.failures} | ${stats.genesisMismatches} | ${stats.lastPublishedHeight ?? "-"} | ${stats.lastHeight ?? "-"} |\n`);
+    await appendFile(env.GITHUB_STEP_SUMMARY, `### Open testnet snapshot keeper\n\n| cycles | published | not newer | refused | failures | genesis mismatches | last published height | last seen height |\n|---|---|---|---|---|---|---|---|\n| ${stats.cycles} | ${stats.published} | ${stats.notNewer} | ${stats.refused} | ${stats.failures} | ${stats.genesisMismatches} | ${stats.lastPublishedHeight ?? "-"} | ${stats.lastHeight ?? "-"} |\n`);
   }
   process.exitCode = exitCodeFor(stats);
 }
