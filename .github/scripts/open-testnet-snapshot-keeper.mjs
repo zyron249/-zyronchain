@@ -457,7 +457,8 @@ async function installBackup({ github, tag, finalName, canonical, candidates, no
 // best restorable copy of each name, which stays as a backup. Complete copies
 // are deleted only while the name exists (re-checked in a fresh listing right
 // before deleting); stale incomplete copies are unusable and are deleted even
-// while it is missing. Nothing else is deleted.
+// while it is missing. A copy is deleted only while that fresh listing still
+// shows it under its own keeper name. Nothing else is deleted.
 export async function repairAndCleanup({ github, tag, expectedGenesis, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity }) {
   const release = await github.release(tag);
   // Like a swap, no repair or cleanup step starts after the run deadline.
@@ -498,7 +499,13 @@ export async function repairAndCleanup({ github, tag, expectedGenesis, now, log,
     if (pastDeadline()) return;
     const fresh = await github.release(tag);
     const nameExists = fresh.assets.some((asset) => asset.name === finalName);
-    const doomed = nameExists ? surplus : surplus.filter((copy) => !isCompleteAsset(copy.asset));
+    // Only a copy the fresh listing still shows under its own keeper name may
+    // be deleted. A copy renamed since the first listing (for example one an
+    // install put under finalName while every response and the verifying
+    // listing were lost) is never deleted; a vanished one needs no delete.
+    const freshNames = new Map(fresh.assets.map((asset) => [asset.id, asset.name]));
+    const unmoved = surplus.filter((copy) => freshNames.get(copy.asset.id) === copy.asset.name);
+    const doomed = nameExists ? unmoved : unmoved.filter((copy) => !isCompleteAsset(copy.asset));
     if (!nameExists) warn(`${finalName} disappeared; keeping every complete keeper copy`);
     for (const copy of doomed) {
       if (pastDeadline()) return;
