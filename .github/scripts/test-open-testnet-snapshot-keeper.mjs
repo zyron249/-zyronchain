@@ -663,6 +663,29 @@ test("repairAndCleanup deletes nothing when the name disappears between listings
   assert.ok(warnings.some((line) => /disappeared/.test(line)));
 });
 
+test("repairAndCleanup never deletes a copy that an unverifiable install put under the restore name", async () => {
+  // The name is missing. The best copy (id 3) cannot be renamed at all; the
+  // next copy (id 4) is renamed into place by GitHub, but every response and
+  // the verifying listing are lost, so installBackup cannot confirm it. The
+  // cleanup must see in its fresh listing that id 4 now holds state.enc and
+  // must not delete it as a stale surplus copy.
+  const best = { id: 3, name: keeperAssetName("prev", "state.enc", T0 - 40 * 60_000, "aaaaaaaa"), label: formatLabel(2200, GENESIS) };
+  const next = { id: 4, name: keeperAssetName("prev", "state.enc", T0 - 50 * 60_000, "bbbbbbbb"), label: formatLabel(2100, GENESIS) };
+  const { github, state } = fakeGitHub({ assets: [{ ...best }, { ...next }] });
+  const rename = github.rename;
+  github.rename = async (id, name, label) => {
+    if (id === 3) { state.calls.push(["rename", id, name]); const error = new Error("internal error"); error.status = 500; throw error; }
+    await rename(id, name, label);
+    const error = new Error("socket hang up"); error.status = 502; throw error;
+  };
+  let listings = 0;
+  state.hooks.release = () => { listings += 1; if (listings === 3) throw new Error("listing unavailable"); };
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 4, "the installed copy still holds the restore name");
+  assert.ok(!state.calls.some((call) => call[0] === "remove" && call[1] === 4), "the installed copy is never deleted");
+  assert.equal(state.assets.find((asset) => asset.id === 3)?.name, best.name, "the best copy stays as the backup");
+});
+
 test("repairAndCleanup restores a missing name only from a trustworthy copy", async () => {
   // Labeled copies of the expected genesis win by height; a labeled copy of another genesis is never used.
   {
