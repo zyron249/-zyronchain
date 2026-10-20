@@ -41,6 +41,24 @@ export interface GenesisConfig {
    * 5M / 20M / 20M / 5M.
    */
   launchProfile?: "fixed-supply-v1";
+  /**
+   * Optional network class, version network-class-v1
+   * (docs/GENESIS_NETWORK_CLASS.md). Absent on genesis files that predate it;
+   * validation and the genesis hash are then unchanged. A public-launch,
+   * value-bearing or mainnet class must also set launchProfile to
+   * "fixed-supply-v1", so founder vesting and the permanent-liquidity lock
+   * cannot be skipped by choosing another profile.
+   */
+  networkClass?:
+    | "devnet"
+    | "local-devnet"
+    | "testnet"
+    | "private-testnet"
+    | "open-testnet"
+    | "wallet-testnet"
+    | "public-launch"
+    | "value-bearing"
+    | "mainnet";
 }
 
 export interface AllocationLocks {

@@ -400,7 +400,8 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
       throw new Error("Invalid validator set size");
     }
     const validatorAddresses = new Set<string>();
-    for (const validator of tx.validators) validateValidator(validator, validatorAddresses);
+    const validatorKeys = new Set<string>();
+    for (const validator of tx.validators) validateValidator(validator, validatorAddresses, validatorKeys);
     if (!Array.isArray(tx.approvals) || tx.approvals.length === 0 || tx.approvals.length > 100) {
       throw new Error("Invalid validator approvals");
     }
@@ -504,7 +505,7 @@ function verifyForTransactionVersion(
     : verifyCanonical(payload, signatureHex, publicKeyHex);
 }
 
-function validateValidator(value: Validator, seen: Set<string>): void {
+function validateValidator(value: Validator, seenAddresses: Set<string>, seenKeys: Set<string>): void {
   assertPlainRecord(value, "validator");
   assertExactKeys(value, ["address", "publicKey"], "validator");
   assertAddress(value.address);
@@ -512,8 +513,10 @@ function validateValidator(value: Validator, seen: Set<string>): void {
   assertHex(value.publicKey, 64, "validator publicKey");
   if (addressFromPublicKey(value.publicKey) !== value.address) throw new Error("Validator address/public key mismatch");
   assertValidPublicKey(value.publicKey, "Validator public key");
-  if (seen.has(value.address)) throw new Error("Duplicate validator");
-  seen.add(value.address);
+  if (seenKeys.has(value.publicKey)) throw new Error("Duplicate validator public key");
+  if (seenAddresses.has(value.address)) throw new Error("Duplicate validator address");
+  seenAddresses.add(value.address);
+  seenKeys.add(value.publicKey);
 }
 
 function validateValidatorApproval(value: ValidatorApproval): void {
