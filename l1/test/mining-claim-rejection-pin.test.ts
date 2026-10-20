@@ -9,8 +9,9 @@
 //   (1) a well-formed, correctly signed `mining_claim` is rejected with
 //       MINING_RETIRED_MESSAGE at shape validation, mempool admission,
 //       pending validation / selection, block production, block validation
-//       (proposal and attested block) and by both state appliers (legacy
-//       LedgerState and State-v2), under protocol v1, v2, v3, v5 and v6;
+//       (proposal and attested block) and by the state appliers (legacy
+//       LedgerState, generic State-v2 and the chain-context State-v2 mining
+//       applier), under protocol v1, v2, v3, v5 and v6;
 //   (2) MINING_TRACKER_ADDRESS stays protocol-reserved in genesis
 //       (allocation, activity pool), allocation locks, transfers and activity
 //       settlements, with its exact messages.
@@ -20,6 +21,7 @@ import test from "node:test";
 import { validateAllocationLocks } from "../src/allocation-locks.js";
 import { createBlockAttestation, createSignedBlock, validateBlockShape } from "../src/block.js";
 import { isConsensusV6, signV6, V6_COMMIT_VOTE_DOMAIN, votePayload } from "../src/consensus-v6.js";
+import * as chainModule from "../src/chain.js";
 import { ZyronChain } from "../src/chain.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { Mempool } from "../src/mempool.js";
@@ -38,6 +40,12 @@ import { ATOMS_PER_ZYN, type GenesisConfig, type MiningClaimTx, type Transaction
 
 const RETIRED_MESSAGE_TEXT = "Mining is retired: mining_claim transactions are rejected by consensus";
 const TRACKER_RESERVED = "Mining tracker address is protocol-reserved";
+
+// The chain dispatches State-v2 mining claims to its own chain-context applier
+// (not the generic applyStateV2Transaction); it is looked up at run time so a
+// missing export fails this pin instead of the build.
+type ChainContextMiningApplier = (state: ReturnType<typeof stateV2FromLedgerSnapshot>, tx: MiningClaimTx) => unknown;
+const chainContextMiningApplier = (chainModule as unknown as Record<string, unknown>).applyMiningClaimStateV2 as ChainContextMiningApplier | undefined;
 
 const key = (n: number) => n.toString(16).padStart(64, "0");
 const pub = (n: number) => publicKeyFromPrivate(key(n));
@@ -168,6 +176,14 @@ for (const version of [1, 2, 3, 5, 6]) {
     const forged = { ...claim, sender: MINING_TRACKER_ADDRESS } as MiningClaimTx;
     throwsExactly(() => validateTransactionShape(forged), MINING_RETIRED_MESSAGE, "shape (tracker sender)");
     throwsExactly(() => LedgerState.fromGenesis(genesis).apply(forged, genesis.activityPool), MINING_RETIRED_MESSAGE, "legacy applier (tracker sender)");
+    // The chain-context State-v2 mining applier that block production and
+    // block validation dispatch mining claims to, reached without shape
+    // validation (EXT-04 PR B must keep this rejection).
+    assert.equal(typeof chainContextMiningApplier, "function", "chain-context State-v2 mining applier must be reachable");
+    const sparseRoot = sparse.root();
+    throwsExactly(() => chainContextMiningApplier!(sparse, claim), MINING_RETIRED_MESSAGE, "chain-context State-v2 mining applier");
+    throwsExactly(() => chainContextMiningApplier!(sparse, forged), MINING_RETIRED_MESSAGE, "chain-context State-v2 mining applier (tracker sender)");
+    assert.equal(sparse.root(), sparseRoot);
 
     // Block validation: a validator-signed block that carries the claim.
     const smuggled = createSignedBlock({
