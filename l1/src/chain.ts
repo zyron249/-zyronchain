@@ -20,7 +20,14 @@ import {
   MINING_TRACKER_ADDRESS,
   miningRewardAtoms as scheduledMiningRewardAtoms
 } from "./mining.js";
-import { assertActivitySettlementAuthorized, validateActivityOracleThreshold } from "./activity-oracle.js";
+import {
+  ACTIVITY_ORACLE_PAUSED_MESSAGE,
+  activityOracleGovernancePublicKeysValid,
+  assertActivitySettlementAuthorized,
+  validateActivityOraclePolicy,
+  validateActivityOracleThreshold,
+  type ActivityOracleSet
+} from "./activity-oracle.js";
 import { merkleRoot } from "./merkle.js";
 import { assertNoActivityPoolInflow, LedgerState, type LedgerSnapshot } from "./state.js";
 import {
@@ -36,6 +43,7 @@ import {
   ACTIVITY_WINDOW_RESERVED_MESSAGE,
   ACTIVITY_WINDOW_TIME_ADDRESS,
   activityRollingWindowEnforced,
+  activitySettlementCapAtoms,
   assertActivityRollingWindow,
   assertNoActivityPoolDirectDebit,
   isActivityWindowAddress,
@@ -62,6 +70,7 @@ import {
   assertExactKeys,
   assertPlainRecord,
   validateTransactionShape,
+  verifyActivityOracleGovernanceApprovalSignature,
   verifyProtocolUpgradeApprovalSignature,
   verifyValidatorUpdateApprovalSignature
 } from "./transaction.js";
@@ -71,6 +80,8 @@ import type {
   Block,
   GenesisConfig,
   MiningClaimTx,
+  ActivityOracleGovernanceAction,
+  ActivityOracleGovernanceTx,
   ProtocolUpgradeTx,
   RoundSkipVote,
   Transaction,
@@ -79,6 +90,7 @@ import type {
 } from "./types.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import { assertValueBearingClassRequiresFixedSupplyProfile, minimumValidatorCount } from "./network-class.js";
+import { validatePublicDistributionRelease } from "./public-distribution-release.js";
 import { assertFixedSupplyLaunchProfile, FIXED_SUPPLY_LAUNCH_PROFILE } from "./tokenomics.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
@@ -98,6 +110,12 @@ interface AppliedTransition {
   sparse: SparseMerkleState | undefined;
 }
 
+export interface ActivityOracleGovernanceEntry {
+  activationHeight: number;
+  action: ActivityOracleGovernanceAction;
+  publicKeys: string[];
+}
+
 export interface ChainSnapshotV1 {
   version: 1;
   chainId: string;
@@ -109,6 +127,14 @@ export interface ChainSnapshotV1 {
   protocolSchedule: Array<{ activationHeight: number; protocolVersion: number }>;
 }
 
+/** Snapshot version 2 adds the activity-oracle pause/revoke schedule. Version 1 is unchanged. */
+export interface ChainSnapshotV2 extends Omit<ChainSnapshotV1, "version"> {
+  version: 2;
+  activityOracleGovernance: ActivityOracleGovernanceEntry[];
+}
+
+export type ChainSnapshot = ChainSnapshotV1 | ChainSnapshotV2;
+
 export class ZyronChain {
   readonly genesis: GenesisConfig;
   private readonly genesisBlock: Block;
@@ -117,6 +143,7 @@ export class ZyronChain {
   private currentHeight = 0;
   private readonly validatorSchedule = new Map<number, Validator[]>();
   private readonly protocolSchedule = new Map<number, number>();
+  private readonly activityOracleGovernance = new Map<number, { action: ActivityOracleGovernanceAction; publicKeys: string[] }>();
   private state: LedgerState | undefined;
   private stateV2: SparseMerkleState | undefined;
   private stateV2SemanticKeys: Set<string> | undefined;
@@ -178,12 +205,15 @@ export class ZyronChain {
     }
     yield;
     assertPlainRecord(value, "chain snapshot");
+    const snapshotVersion = (value as { version?: unknown }).version;
+    if (snapshotVersion !== 1 && snapshotVersion !== 2) throw new Error("Invalid checkpoint version");
     assertExactKeys(value, [
-      "version", "chainId", "genesisHash", "height", "tip", "state", "validatorSchedule", "protocolSchedule"
+      "version", "chainId", "genesisHash", "height", "tip", "state", "validatorSchedule", "protocolSchedule",
+      ...(snapshotVersion === 2 ? ["activityOracleGovernance"] : [])
     ], "chain snapshot");
-    const snapshot = value as unknown as ChainSnapshotV1;
+    const snapshot = value as unknown as ChainSnapshot;
     const chain = new ZyronChain(genesis);
-    if (snapshot.version !== 1 || snapshot.chainId !== genesis.chainId || snapshot.genesisHash !== chain.genesisHash) {
+    if (snapshot.chainId !== genesis.chainId || snapshot.genesisHash !== chain.genesisHash) {
       throw new Error("Trusted checkpoint chain identity mismatch");
     }
     if (!Number.isSafeInteger(snapshot.height) || snapshot.height < 0) throw new Error("Invalid checkpoint height");
@@ -219,6 +249,13 @@ export class ZyronChain {
     for (const [height, validators] of validatorSchedule) chain.validatorSchedule.set(height, validators);
     chain.protocolSchedule.clear();
     for (const [height, version] of protocolSchedule) chain.protocolSchedule.set(height, version);
+    const activityOracleGovernance = snapshot.version === 2
+      ? validateActivityOracleGovernanceSchedule(snapshot.activityOracleGovernance, genesis)
+      : [];
+    chain.activityOracleGovernance.clear();
+    for (const entry of activityOracleGovernance) {
+      chain.activityOracleGovernance.set(entry.activationHeight, { action: entry.action, publicKeys: [...entry.publicKeys] });
+    }
 
     const state = LedgerState.fromSnapshot(snapshot.state);
     yield;
@@ -226,7 +263,8 @@ export class ZyronChain {
       validatorSchedule: [...validatorSchedule].map(([activationHeight, validators]) => ({
         activationHeight, validators: structuredClone(validators)
       })),
-      protocolSchedule: [...protocolSchedule].map(([activationHeight, protocolVersion]) => ({ activationHeight, protocolVersion }))
+      protocolSchedule: [...protocolSchedule].map(([activationHeight, protocolVersion]) => ({ activationHeight, protocolVersion })),
+      ...(activityOracleGovernance.length ? { activityOracleGovernance } : {})
     };
     const protocolVersion = chain.protocolVersionAt(snapshot.height);
     assertSupportedProtocolVersion(protocolVersion);
@@ -297,16 +335,33 @@ export class ZyronChain {
       throw new Error("Portable State v2 checkpoint requires an active State-v2 protocol");
     }
     const base = new ZyronChain(genesis);
-    const snapshot: ChainSnapshotV1 = {
-      version: 1,
-      chainId: genesis.chainId,
-      genesisHash: base.genesisHash,
-      height: tip.header.height,
-      tip: structuredClone(tip),
-      state: validated.view.ledger,
-      validatorSchedule: validated.view.governance.validatorSchedule,
-      protocolSchedule: validated.view.governance.protocolSchedule
-    };
+    const oracleGovernance = validated.view.governance.activityOracleGovernance;
+    const snapshot: ChainSnapshot = oracleGovernance && oracleGovernance.length > 0
+      ? {
+        version: 2,
+        chainId: genesis.chainId,
+        genesisHash: base.genesisHash,
+        height: tip.header.height,
+        tip: structuredClone(tip),
+        state: validated.view.ledger,
+        validatorSchedule: validated.view.governance.validatorSchedule,
+        protocolSchedule: validated.view.governance.protocolSchedule,
+        activityOracleGovernance: oracleGovernance.map((entry) => ({
+          activationHeight: entry.activationHeight,
+          action: entry.action,
+          publicKeys: [...entry.publicKeys]
+        }))
+      }
+      : {
+        version: 1,
+        chainId: genesis.chainId,
+        genesisHash: base.genesisHash,
+        height: tip.header.height,
+        tip: structuredClone(tip),
+        state: validated.view.ledger,
+        validatorSchedule: validated.view.governance.validatorSchedule,
+        protocolSchedule: validated.view.governance.protocolSchedule
+      };
     return ZyronChain.fromTrustedSnapshot(genesis, snapshot, anchor);
   }
 
@@ -380,10 +435,9 @@ export class ZyronChain {
     return scheduledMiningRewardAtoms(this.miningClaimCount(), this.genesisSupplyAtomsValue);
   }
 
-  snapshot(): ChainSnapshotV1 {
+  snapshot(): ChainSnapshot {
     const ledger = this.state ? this.state.snapshot() : this.stateV2PortableView().ledger;
-    return {
-      version: 1,
+    const common = {
       chainId: this.genesis.chainId,
       genesisHash: this.genesisHash,
       height: this.height,
@@ -396,6 +450,16 @@ export class ZyronChain {
         .sort(([a], [b]) => a - b)
         .map(([activationHeight, protocolVersion]) => ({ activationHeight, protocolVersion }))
     };
+    const activityOracleGovernance = [...this.activityOracleGovernance.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([activationHeight, entry]) => ({
+        activationHeight,
+        action: entry.action,
+        publicKeys: [...entry.publicKeys]
+      }));
+    // Version 1 stays byte-identical until a pause or revoke is scheduled.
+    if (activityOracleGovernance.length === 0) return { version: 1, ...common };
+    return { version: 2, ...common, activityOracleGovernance };
   }
 
   stateV2SemanticKeyPreimages(): string[] | undefined {
@@ -601,11 +665,15 @@ export class ZyronChain {
       return;
     }
     if (tx.kind === "activity_settlement") {
-      assertActivitySettlementAuthorized(tx, this.genesis);
+      const oracles = this.oracleSetAt(this.height + 1);
+      const blockTimestampMs = this.nextBlockTimestampMs(nowMs);
+      assertActivitySettlementAuthorized(tx, oracles, {
+        chainId: this.genesis.chainId, blockTimestampMs, genesisTimestampMs: this.genesis.timestampMs
+      });
       if (tx.sender !== this.genesis.activityPool) throw new Error("Invalid activity pool sender");
       for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, this.genesis.activityPool);
-      const total = assertActivitySettlementWithinCap(tx.entries);
-      assertActivityEpochWindow(tx.epoch, this.genesis.timestampMs, this.nextBlockTimestampMs(nowMs));
+      const total = assertActivitySettlementWithinCap(tx.entries, activitySettlementCapAtoms(oracles));
+      assertActivityEpochWindow(tx.epoch, this.genesis.timestampMs, blockTimestampMs);
       const settled = (epoch: number) => this.stateV2 && protocolUsesStateV2(this.protocolVersionAt(this.height))
         ? stateV2ActivityEpochSettled(this.stateV2, epoch)
         : this.requireLegacyState().isActivityEpochSettled(epoch);
@@ -619,7 +687,7 @@ export class ZyronChain {
         assertActivityRollingWindow({
           timestampMs: this.nonce(ACTIVITY_WINDOW_TIME_ADDRESS),
           amountAtoms: this.nonce(ACTIVITY_WINDOW_AMOUNT_ADDRESS)
-        }, this.nextBlockTimestampMs(nowMs), total);
+        }, blockTimestampMs, total, activitySettlementCapAtoms(oracles));
       }
       if (total > this.balance(this.genesis.activityPool)) throw new Error("Activity pool exhausted");
       assertAllocationLockOutflow(
@@ -642,6 +710,13 @@ export class ZyronChain {
     if (tx.kind === "validator_update") {
       validateValidatorUpdateAuthorization(
         tx, validators, this.height + 1, this.lastValidatorActivationHeight(), minimumValidatorCount(this.genesis)
+      );
+      return;
+    }
+    if (tx.kind === "activity_oracle_governance") {
+      validateActivityOracleGovernanceAuthorization(
+        tx, validators, this.height + 1, this.lastActivityOracleGovernanceHeight(), this.genesis,
+        this.scheduledOracleRevocations(), this.oraclePauseScheduled()
       );
       return;
     }
@@ -677,7 +752,11 @@ export class ZyronChain {
     let lastActivation = this.lastValidatorActivationHeight();
     let lastProtocolActivation = this.lastProtocolActivationHeight();
     let lastProtocolVersion = this.lastScheduledProtocolVersion();
+    let lastOracleGovernance = this.lastActivityOracleGovernanceHeight();
+    const scheduledRevoked = this.scheduledOracleRevocations();
+    let pauseScheduled = this.oraclePauseScheduled();
     const currentValidators = this.validatorsAt(this.height + 1);
+    const oracles = this.oracleSetAt(this.height + 1);
     let miningClaimSelected = false;
     let miningClaimCount = this.miningClaimCount();
     const locks = this.allocationLocksAt(blockTimestampMs);
@@ -688,7 +767,9 @@ export class ZyronChain {
         validateTransactionShape(tx);
         assertTransactionVersionForProtocol(tx, protocolVersion);
         if (tx.kind === "activity_settlement") {
-          assertActivitySettlementAuthorized(tx, this.genesis);
+          assertActivitySettlementAuthorized(tx, oracles, {
+            chainId: this.genesis.chainId, blockTimestampMs, genesisTimestampMs: this.genesis.timestampMs
+          });
           assertActivityEpochWindow(tx.epoch, this.genesis.timestampMs, blockTimestampMs);
         }
         if (tx.kind === "mining_claim") {
@@ -703,6 +784,11 @@ export class ZyronChain {
           validateValidatorUpdateAuthorization(
             tx, currentValidators, this.height + 1, lastActivation, minimumValidatorCount(this.genesis)
           );
+        } else if (tx.kind === "activity_oracle_governance") {
+          validateActivityOracleGovernanceAuthorization(
+            tx, currentValidators, this.height + 1, lastOracleGovernance, this.genesis,
+            scheduledRevoked, pauseScheduled
+          );
         } else if (tx.kind === "protocol_upgrade") {
           validateProtocolUpgradeAuthorization(tx, currentValidators, this.height + 1, lastProtocolActivation, lastProtocolVersion);
         }
@@ -711,9 +797,9 @@ export class ZyronChain {
         if (sparse) {
           sparse = tx.kind === "mining_claim"
             ? applyMiningClaimStateV2(sparse, tx)
-            : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks, this.genesis);
+            : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks, oracles);
         } else {
-          next!.apply(tx, this.genesis.activityPool, locks, this.genesis);
+          next!.apply(tx, this.genesis.activityPool, locks, oracles);
         }
         if (tx.kind === "mining_claim") {
           miningClaimSelected = true;
@@ -722,6 +808,12 @@ export class ZyronChain {
         // F-06: advance the governance cursors only once the transaction has
         // passed the byte budget and its state transition, i.e. is selected.
         if (tx.kind === "validator_update") lastActivation = tx.activationHeight;
+        if (tx.kind === "activity_oracle_governance") {
+          lastOracleGovernance = tx.activationHeight;
+          if (tx.action === "pause") pauseScheduled = true;
+          else if (tx.action === "resume") pauseScheduled = false;
+          else for (const publicKey of tx.publicKeys) scheduledRevoked.add(publicKey);
+        }
         if (tx.kind === "protocol_upgrade") {
           lastProtocolActivation = tx.activationHeight;
           lastProtocolVersion = tx.protocolVersion;
@@ -748,11 +840,14 @@ export class ZyronChain {
   private isAuthorizedProtocolCandidate(tx: Transaction, protocolVersion: number, blockTimestampMs: number): boolean {
     try {
       if (tx.chainId !== this.genesis.chainId) return false;
-      if (tx.kind !== "activity_settlement" && tx.kind !== "validator_update" && tx.kind !== "protocol_upgrade") return false;
+      if (tx.kind !== "activity_settlement" && tx.kind !== "validator_update" &&
+          tx.kind !== "activity_oracle_governance" && tx.kind !== "protocol_upgrade") return false;
       validateTransactionShape(tx);
       assertTransactionVersionForProtocol(tx, protocolVersion);
       if (tx.kind === "activity_settlement") {
-        assertActivitySettlementAuthorized(tx, this.genesis);
+        assertActivitySettlementAuthorized(tx, this.oracleSetAt(this.height + 1), {
+          chainId: this.genesis.chainId, blockTimestampMs, genesisTimestampMs: this.genesis.timestampMs
+        });
         assertActivityEpochWindow(tx.epoch, this.genesis.timestampMs, blockTimestampMs);
         return true;
       }
@@ -760,6 +855,11 @@ export class ZyronChain {
       if (tx.kind === "validator_update") {
         validateValidatorUpdateAuthorization(
           tx, validators, this.height + 1, this.lastValidatorActivationHeight(), minimumValidatorCount(this.genesis)
+        );
+      } else if (tx.kind === "activity_oracle_governance") {
+        validateActivityOracleGovernanceAuthorization(
+          tx, validators, this.height + 1, this.lastActivityOracleGovernanceHeight(), this.genesis,
+          this.scheduledOracleRevocations(), this.oraclePauseScheduled()
         );
       } else {
         validateProtocolUpgradeAuthorization(
@@ -788,6 +888,10 @@ export class ZyronChain {
     let lastActivation = this.lastValidatorActivationHeight();
     let lastProtocolActivation = this.lastProtocolActivationHeight();
     let lastProtocolVersion = this.lastScheduledProtocolVersion();
+    let lastOracleGovernance = this.lastActivityOracleGovernanceHeight();
+    const scheduledRevoked = this.scheduledOracleRevocations();
+    let pauseScheduled = this.oraclePauseScheduled();
+    const oracles = this.oracleSetAt(blockHeight);
     let miningClaimSeen = false;
     let miningClaimCount = this.miningClaimCount();
     // On-chain allocation locks, evaluated at this block's own timestamp.
@@ -799,8 +903,10 @@ export class ZyronChain {
       validateTransactionShape(tx);
       assertTransactionVersionForProtocol(tx, protocolVersion);
       if (tx.kind === "activity_settlement") {
-        // Registered submitter plus, under a genesis threshold, m-of-n approvals.
-        assertActivitySettlementAuthorized(tx, this.genesis);
+        // Registered submitter plus, under a threshold policy, m-of-n approvals.
+        assertActivitySettlementAuthorized(tx, oracles, {
+          chainId: this.genesis.chainId, blockTimestampMs, genesisTimestampMs: this.genesis.timestampMs
+        });
         // ZC-CRY-20260930-010: only the most recently closed epoch, judged by
         // this block's own timestamp. Since block time increases, this alone
         // makes settled epochs strictly increasing; the cap and the
@@ -820,6 +926,14 @@ export class ZyronChain {
           tx, currentValidators, blockHeight, lastActivation, minimumValidatorCount(this.genesis)
         );
         lastActivation = tx.activationHeight;
+      } else if (tx.kind === "activity_oracle_governance") {
+        validateActivityOracleGovernanceAuthorization(
+          tx, currentValidators, blockHeight, lastOracleGovernance, this.genesis, scheduledRevoked, pauseScheduled
+        );
+        lastOracleGovernance = tx.activationHeight;
+        if (tx.action === "pause") pauseScheduled = true;
+        else if (tx.action === "resume") pauseScheduled = false;
+        else for (const publicKey of tx.publicKeys) scheduledRevoked.add(publicKey);
       } else if (tx.kind === "protocol_upgrade") {
         validateProtocolUpgradeAuthorization(tx, currentValidators, blockHeight, lastProtocolActivation, lastProtocolVersion);
         lastProtocolActivation = tx.activationHeight;
@@ -828,9 +942,9 @@ export class ZyronChain {
       if (sparse) {
         sparse = tx.kind === "mining_claim"
           ? applyMiningClaimStateV2(sparse, tx)
-          : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks, this.genesis);
+          : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks, oracles);
       } else {
-        next!.apply(tx, this.genesis.activityPool, locks, this.genesis);
+        next!.apply(tx, this.genesis.activityPool, locks, oracles);
       }
       if (tx.kind === "mining_claim") {
         miningClaimSeen = true;
@@ -861,6 +975,8 @@ export class ZyronChain {
     for (const tx of transactions) {
       if (tx.kind === "validator_update") {
         this.validatorSchedule.set(tx.activationHeight, structuredClone(tx.validators));
+      } else if (tx.kind === "activity_oracle_governance") {
+        this.activityOracleGovernance.set(tx.activationHeight, { action: tx.action, publicKeys: [...tx.publicKeys] });
       } else if (tx.kind === "protocol_upgrade") {
         this.protocolSchedule.set(tx.activationHeight, tx.protocolVersion);
       }
@@ -875,20 +991,84 @@ export class ZyronChain {
     return Math.max(...this.protocolSchedule.keys());
   }
 
+  private lastActivityOracleGovernanceHeight(): number {
+    return this.activityOracleGovernance.size === 0 ? 0 : Math.max(...this.activityOracleGovernance.keys());
+  }
+
   /** Version of the latest scheduled protocol entry (active or pending). */
   private lastScheduledProtocolVersion(): number {
     return this.protocolSchedule.get(this.lastProtocolActivationHeight())!;
   }
 
   private governanceSnapshot(): import("./state-v2.js").StateV2GovernanceSnapshot {
+    const activityOracleGovernance = [...this.activityOracleGovernance.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([activationHeight, entry]) => ({
+        activationHeight,
+        action: entry.action,
+        publicKeys: [...entry.publicKeys]
+      }));
     return {
       validatorSchedule: [...this.validatorSchedule.entries()]
         .sort(([a], [b]) => a - b)
         .map(([activationHeight, validators]) => ({ activationHeight, validators: structuredClone(validators) })),
       protocolSchedule: [...this.protocolSchedule.entries()]
         .sort(([a], [b]) => a - b)
-        .map(([activationHeight, protocolVersion]) => ({ activationHeight, protocolVersion }))
+        .map(([activationHeight, protocolVersion]) => ({ activationHeight, protocolVersion })),
+      ...(activityOracleGovernance.length ? { activityOracleGovernance } : {})
     };
+  }
+
+  private activityOracleControlAt(height: number): { paused: boolean; revoked: Set<string> } {
+    let paused = false;
+    const revoked = new Set<string>();
+    const entries = [...this.activityOracleGovernance.entries()].sort(([a], [b]) => a - b);
+    for (const [activationHeight, entry] of entries) {
+      if (activationHeight > height) break;
+      if (entry.action === "pause") paused = true;
+      else if (entry.action === "resume") paused = false;
+      else for (const publicKey of entry.publicKeys) revoked.add(publicKey);
+    }
+    return { paused, revoked };
+  }
+
+  private oracleSetAt(height: number): ActivityOracleSet {
+    const control = this.activityOracleControlAt(height);
+    return {
+      activityOracles: this.genesis.activityOracles,
+      ...(this.genesis.activityOracleThreshold !== undefined
+        ? { activityOracleThreshold: this.genesis.activityOracleThreshold }
+        : {}),
+      ...(this.genesis.activityOraclePolicy !== undefined
+        ? { activityOraclePolicy: this.genesis.activityOraclePolicy }
+        : {}),
+      ...(this.genesis.activitySettlementCapAtoms !== undefined
+        ? { activitySettlementCapAtoms: this.genesis.activitySettlementCapAtoms }
+        : {}),
+      ...(this.genesis.launchProfile !== undefined
+        ? { launchProfile: this.genesis.launchProfile }
+        : {}),
+      timestampMs: this.genesis.timestampMs,
+      paused: control.paused,
+      revokedPublicKeys: [...control.revoked]
+    };
+  }
+
+  private scheduledOracleRevocations(): Set<string> {
+    const revoked = new Set<string>();
+    for (const entry of this.activityOracleGovernance.values()) {
+      if (entry.action === "revoke") for (const publicKey of entry.publicKeys) revoked.add(publicKey);
+    }
+    return revoked;
+  }
+
+  private oraclePauseScheduled(): boolean {
+    let paused = false;
+    for (const [, entry] of [...this.activityOracleGovernance.entries()].sort(([a], [b]) => a - b)) {
+      if (entry.action === "pause") paused = true;
+      else if (entry.action === "resume") paused = false;
+    }
+    return paused;
   }
 }
 
@@ -909,7 +1089,7 @@ function validateValidatorSchedule(
     }
     if (candidate.validators.length < minimumValidators || candidate.validators.length > 100) {
       throw new Error(minimumValidators > 1
-        ? "Public-launch, value-bearing, and mainnet chains require at least 4 and at most 100 distinct validators"
+        ? "fixed-supply-v1, public-launch, value-bearing, and mainnet chains require at least 4 and at most 100 distinct validators"
         : "Invalid checkpoint validator schedule");
     }
     const validators: Validator[] = [];
@@ -974,6 +1154,85 @@ function assertSupportedProtocolVersion(version: number): void {
   }
 }
 
+function validateActivityOracleGovernanceSchedule(
+  value: unknown,
+  genesis: GenesisConfig
+): ActivityOracleGovernanceEntry[] {
+  if (!Array.isArray(value) || value.length === 0) throw new Error("Invalid activity oracle governance schedule");
+  const registered = new Set(genesis.activityOracles);
+  const revoked = new Set<string>();
+  let paused = false;
+  const result: ActivityOracleGovernanceEntry[] = [];
+  let previousHeight = 0;
+  for (const candidate of value) {
+    assertPlainRecord(candidate, "activity oracle governance entry");
+    assertExactKeys(candidate, ["activationHeight", "action", "publicKeys"], "activity oracle governance entry");
+    const activationHeight = Number(candidate.activationHeight);
+    const action = candidate.action;
+    if (!Number.isSafeInteger(activationHeight) || activationHeight <= previousHeight || activationHeight < 1) {
+      throw new Error("Invalid activity oracle governance schedule");
+    }
+    if (action !== "pause" && action !== "resume" && action !== "revoke") {
+      throw new Error("Invalid activity oracle governance schedule");
+    }
+    if (!Array.isArray(candidate.publicKeys)) throw new Error("Invalid activity oracle governance schedule");
+    const publicKeys = candidate.publicKeys.map((item) => {
+      if (typeof item !== "string") throw new Error("Invalid activity oracle governance schedule");
+      assertHex(item, 64, "activity oracle governance publicKey");
+      return item;
+    });
+    if (action === "pause") {
+      if (paused || publicKeys.length !== 0) throw new Error("Invalid activity oracle governance schedule");
+      paused = true;
+    } else if (action === "resume") {
+      if (!paused || publicKeys.length !== 0) throw new Error("Invalid activity oracle governance schedule");
+      paused = false;
+    } else {
+      activityOracleGovernancePublicKeysValid("revoke", publicKeys, registered, revoked);
+      for (const publicKey of publicKeys) revoked.add(publicKey);
+    }
+    result.push({ activationHeight, action, publicKeys });
+    previousHeight = activationHeight;
+  }
+  return result;
+}
+
+function validateActivityOracleGovernanceAuthorization(
+  tx: ActivityOracleGovernanceTx,
+  currentValidators: Validator[],
+  blockHeight: number,
+  lastActivationHeight: number,
+  genesis: GenesisConfig,
+  alreadyRevoked: ReadonlySet<string>,
+  pauseScheduled: boolean
+): void {
+  if (tx.activationHeight < blockHeight + MIN_VALIDATOR_UPDATE_DELAY) {
+    throw new Error("Activity oracle governance activation is too soon");
+  }
+  if (tx.activationHeight <= lastActivationHeight) throw new Error("Activity oracle governance activation height must increase");
+  if (tx.action === "pause") {
+    if (pauseScheduled) throw new Error(ACTIVITY_ORACLE_PAUSED_MESSAGE);
+  } else if (tx.action === "resume") {
+    if (!pauseScheduled) throw new Error("Activity oracle settlements are not paused");
+  }
+  activityOracleGovernancePublicKeysValid(tx.action, tx.publicKeys, new Set(genesis.activityOracles), alreadyRevoked);
+  const allowed = new Map(currentValidators.map((validator) => [validator.address, validator.publicKey]));
+  if (!allowed.has(tx.sender)) throw new Error("Activity oracle governance initiator is not active");
+  const seen = new Set<string>();
+  let valid = 0;
+  for (const approval of tx.approvals) {
+    if (seen.has(approval.validator)) throw new Error("Duplicate activity oracle governance approval");
+    seen.add(approval.validator);
+    if (allowed.get(approval.validator) !== approval.publicKey) throw new Error("Unknown activity oracle governance approver");
+    if (!verifyActivityOracleGovernanceApprovalSignature(tx, approval)) {
+      throw new Error("Invalid activity oracle governance approval");
+    }
+    valid += 1;
+  }
+  const quorum = Math.floor((currentValidators.length * 2) / 3) + 1;
+  if (valid < quorum) throw new Error(`Activity oracle governance quorum not reached: ${valid}/${quorum}`);
+}
+
 function validateValidatorUpdateAuthorization(
   tx: ValidatorSetUpdateTx,
   currentValidators: Validator[],
@@ -983,7 +1242,7 @@ function validateValidatorUpdateAuthorization(
 ): void {
   if (tx.validators.length < minimumValidators || tx.validators.length > 100) {
     throw new Error(minimumValidators > 1
-      ? "Public-launch, value-bearing, and mainnet chains require at least 4 and at most 100 distinct validators"
+      ? "fixed-supply-v1, public-launch, value-bearing, and mainnet chains require at least 4 and at most 100 distinct validators"
       : "Invalid validator set size");
   }
   if (tx.activationHeight < blockHeight + MIN_VALIDATOR_UPDATE_DELAY) {
@@ -1071,10 +1330,15 @@ function validateGenesis(genesis: GenesisConfig): void {
     ...(Object.prototype.hasOwnProperty.call(genesis, "allocationLocks") ? ["allocationLocks"] : []),
     // Optional: m-of-n activity-oracle approval (docs/ACTIVITY_ORACLE_GOVERNANCE.md).
     ...(Object.prototype.hasOwnProperty.call(genesis, "activityOracleThreshold") ? ["activityOracleThreshold"] : []),
+    // Optional: versioned activity-oracle policy (docs/ACTIVITY_ORACLE_GOVERNANCE.md).
+    ...(Object.prototype.hasOwnProperty.call(genesis, "activityOraclePolicy") ? ["activityOraclePolicy"] : []),
+    ...(Object.prototype.hasOwnProperty.call(genesis, "activitySettlementCapAtoms") ? ["activitySettlementCapAtoms"] : []),
     // Optional: launch profile (docs/GENESIS_CONFIG_BINDING.md).
     ...(Object.prototype.hasOwnProperty.call(genesis, "launchProfile") ? ["launchProfile"] : []),
     // Optional: network class, version network-class-v1 (docs/GENESIS_NETWORK_CLASS.md).
-    ...(Object.prototype.hasOwnProperty.call(genesis, "networkClass") ? ["networkClass"] : [])
+    ...(Object.prototype.hasOwnProperty.call(genesis, "networkClass") ? ["networkClass"] : []),
+    // Optional: public-distribution release, version public-distribution-release-v1.
+    ...(Object.prototype.hasOwnProperty.call(genesis, "publicDistributionRelease") ? ["publicDistributionRelease"] : [])
   ], "genesis");
   const hasLaunchProfile = Object.prototype.hasOwnProperty.call(genesis, "launchProfile");
   if (hasLaunchProfile && genesis.launchProfile !== FIXED_SUPPLY_LAUNCH_PROFILE) {
@@ -1092,7 +1356,7 @@ function validateGenesis(genesis: GenesisConfig): void {
   const minimumValidators = minimumValidatorCount(genesis);
   if (!Array.isArray(genesis.validators) || genesis.validators.length < minimumValidators || genesis.validators.length > 100) {
     throw new Error(minimumValidators > 1
-      ? "Public-launch, value-bearing, and mainnet genesis require at least 4 and at most 100 distinct validators"
+      ? "fixed-supply-v1, public-launch, value-bearing, and mainnet genesis require at least 4 and at most 100 distinct validators"
       : "Genesis validator count must be between 1 and 100");
   }
   const validatorAddresses = new Set<string>();
@@ -1123,6 +1387,7 @@ function validateGenesis(genesis: GenesisConfig): void {
     oracles.add(oracle);
   }
   validateActivityOracleThreshold(genesis);
+  validateActivityOraclePolicy(genesis);
   if (Object.prototype.hasOwnProperty.call(genesis, "activityOracleThreshold")) {
     // An unusable key must never count toward n (m could become unreachable).
     // Legacy genesis files keep the 64-hex check so existing chains still open.
@@ -1157,6 +1422,8 @@ function validateGenesis(genesis: GenesisConfig): void {
   // Under the fixed-supply launch profile the launch rules are consensus rules:
   // allocationLocks present, exactly 50M ZYN, 5M / 20M / 20M / 5M roles.
   if (hasLaunchProfile) assertFixedSupplyLaunchProfile(genesis);
+  // public-distribution-release-v1. Required for fixed-supply-v1 and a value-bearing class.
+  validatePublicDistributionRelease(genesis);
 }
 
 function stateV2KeysForTransaction(tx: Transaction, genesis: GenesisConfig): string[] {
@@ -1174,7 +1441,8 @@ function stateV2KeysForTransaction(tx: Transaction, genesis: GenesisConfig): str
   return stateV2TransactionKeyPreimages(tx);
 }
 
-function applyMiningClaimStateV2(state: SparseMerkleState, tx: MiningClaimTx): SparseMerkleState {
+/** Exported only so tests can pin its fail-closed retirement guard (EXT-04). */
+export function applyMiningClaimStateV2(state: SparseMerkleState, tx: MiningClaimTx): SparseMerkleState {
   assertMiningNotRetired();
   if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
   const minerNonce = stateV2Nonce(state, tx.sender);
@@ -1229,10 +1497,12 @@ export function orderPendingByFeePriority(
     if (tx.kind === "activity_settlement") return 0;
     if (tx.kind === "validator_update") return 1;
     if (tx.kind === "protocol_upgrade") return 2;
-    return 3;
+    if (tx.kind === "activity_oracle_governance") return 3;
+    return 4;
   };
   const activationOf = (tx: Transaction): number =>
-    tx.kind === "validator_update" || tx.kind === "protocol_upgrade" ? tx.activationHeight : 0;
+    tx.kind === "validator_update" || tx.kind === "protocol_upgrade" || tx.kind === "activity_oracle_governance"
+      ? tx.activationHeight : 0;
   // liftTarget[i]: index of the first authorized protocol transaction at or after i (-1 if none).
   interface Lane { queue: Transaction[]; index: number; liftTarget: number[] }
   // Priority key of a lane's current head: [class, rank, activation]; class 0 = protocol.

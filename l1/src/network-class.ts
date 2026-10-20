@@ -5,16 +5,19 @@ import type { GenesisConfig } from "./types.js";
  * Optional genesis network class, version network-class-v1
  * (docs/GENESIS_NETWORK_CLASS.md).
  *
- * Genesis files that omit `networkClass` keep their previous validation and
- * their previous genesis hash. That is how the local devnet, the wallet
- * testnet, the open testnet and the private testnet keep starting.
+ * Genesis files that omit both `networkClass` and `launchProfile` keep their
+ * previous validation and their previous genesis hash. That is how the local
+ * devnet, the wallet testnet and the private testnet keep starting. The open
+ * testnet declares `fixed-supply-v1`, so it follows the launch rules without
+ * a value-bearing class.
  *
  * A public-launch, value-bearing or mainnet class is refused unless it also
  * declares `launchProfile: "fixed-supply-v1"`. That profile refuses the
- * genesis unless founder vesting and the permanent-liquidity lock are present
- * and the 50,000,000 ZYN split is 5M / 20M / 20M / 5M. There is no other
- * launch profile, so those classes cannot be started with the allocations
- * spendable.
+ * genesis unless founder vesting and the permanent-liquidity lock are present,
+ * the 50,000,000 ZYN split is 5M / 20M / 20M / 5M, there are at least four
+ * validators, `publicDistributionRelease` is set, and the activity-oracle
+ * policy is `threshold-v1`. There is no other launch profile, so those
+ * classes cannot be started with the allocations spendable.
  */
 export const NETWORK_CLASS_VERSION = "network-class-v1";
 
@@ -52,12 +55,16 @@ export const STRICT_MIN_VALIDATORS = 4;
 export const MAX_VALIDATORS = 100;
 
 /**
- * Test classes and genesis files that omit `networkClass` keep the historical
- * minimum of one validator. A public-launch, value-bearing or mainnet class
- * requires four distinct validators.
+ * Test classes and genesis files that omit both `networkClass` and
+ * `launchProfile` keep the historical minimum of one validator. A
+ * public-launch, value-bearing or mainnet class, and every
+ * `launchProfile: "fixed-supply-v1"` genesis, requires four distinct validators.
  */
 export function minimumValidatorCount(genesis: object): number {
-  return isStrictNetworkClass(readNetworkClass(genesis)) ? STRICT_MIN_VALIDATORS : 1;
+  const profile = (genesis as { launchProfile?: unknown }).launchProfile;
+  return isStrictNetworkClass(readNetworkClass(genesis)) || profile === FIXED_SUPPLY_LAUNCH_PROFILE
+    ? STRICT_MIN_VALIDATORS
+    : 1;
 }
 
 /**

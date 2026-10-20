@@ -29,16 +29,34 @@ export interface GenesisConfig {
    * Optional m-of-n activity-oracle approval (docs/ACTIVITY_ORACLE_GOVERNANCE.md):
    * a settlement needs approvals from at least this many distinct keys of
    * `activityOracles`. Absent on genesis files that predate it; behaviour,
-   * transaction encoding and genesis hash are then unchanged (single oracle).
+   * transaction encoding and genesis hash are then unchanged (single oracle),
+   * unless `activityOraclePolicy` says otherwise.
    */
   activityOracleThreshold?: number;
+  /**
+   * Versioned activity-oracle policy (docs/ACTIVITY_ORACLE_GOVERNANCE.md).
+   * Absent: historical rules (single oracle, or the lenient threshold above).
+   * "test-single-v1": explicit dev/test profile. One registered key authorizes.
+   *   Refused together with `launchProfile: "fixed-supply-v1"`.
+   * "threshold-v1": fail-closed m-of-n (2-of-3 or stricter) and the reduced
+   *   configurable cap. Required by `launchProfile: "fixed-supply-v1"`.
+   */
+  activityOraclePolicy?: "test-single-v1" | "threshold-v1";
+  /**
+   * Optional per-epoch activity cap in atoms. Allowed only with
+   * `activityOraclePolicy`. Omitted: the policy default (historical 10,000 ZYN
+   * for test-single-v1, the reduced public-launch cap for threshold-v1).
+   * Cannot raise the cap above that policy's maximum.
+   */
+  activitySettlementCapAtoms?: number;
   /**
    * Optional launch profile (docs/GENESIS_CONFIG_BINDING.md). Absent on every
    * genesis that predates it; its genesis hash and rules are then unchanged.
    * "fixed-supply-v1": the genesis hash commits to the entire genesis
    * configuration, and the genesis is refused unless `allocationLocks` is
    * present, exactly 50,000,000 ZYN is allocated and the four roles hold
-   * 5M / 20M / 20M / 5M.
+   * 5M / 20M / 20M / 5M, at least four distinct validators,
+   * `publicDistributionRelease`, and `activityOraclePolicy: "threshold-v1"`.
    */
   launchProfile?: "fixed-supply-v1";
   /**
@@ -59,6 +77,23 @@ export interface GenesisConfig {
     | "public-launch"
     | "value-bearing"
     | "mainnet";
+  /**
+   * Optional public-distribution release, version public-distribution-release-v1
+   * (docs/PUBLIC_DISTRIBUTION_RELEASE.md). Absent on genesis files that predate
+   * it; that allocation stays spendable and the genesis hash is unchanged.
+   * A public-launch, value-bearing or mainnet network class must set it.
+   * The address is an input, not a value stored in this repository.
+   */
+  publicDistributionRelease?: PublicDistributionRelease;
+}
+
+export interface PublicDistributionRelease {
+  /** Public-distribution allocation. Supplied at genesis; not invented here. */
+  address: Address;
+  /** Milliseconds after the genesis timestamp before any of the allocation vests. */
+  cliffMs: number;
+  /** Linear release length after the cliff, in milliseconds. */
+  linearMs: number;
 }
 
 export interface AllocationLocks {
@@ -94,6 +129,9 @@ export interface ActivityOracleApproval {
   signature: string;
 }
 
+/** Validator-quorum action that pauses settlements or revokes an oracle key. */
+export type ActivityOracleGovernanceAction = "pause" | "resume" | "revoke";
+
 export interface ActivitySettlementTx {
   kind: "activity_settlement";
   version: 1 | 2;
@@ -108,6 +146,11 @@ export interface ActivitySettlementTx {
    * omitted entirely otherwise, so legacy settlements keep their exact encoding.
    */
   oracleApprovals?: ActivityOracleApproval[];
+  /**
+   * Inclusive expiry of the threshold-v1 attestation, signed by every oracle.
+   * Omitted unless `activityOraclePolicy` is `threshold-v1`.
+   */
+  attestationExpiresAtMs?: number;
   feeAtoms: 0;
   timestampMs: number;
   publicKey: string;
@@ -162,6 +205,23 @@ export interface ValidatorSetUpdateTx {
   txid: string;
 }
 
+export interface ActivityOracleGovernanceTx {
+  kind: "activity_oracle_governance";
+  version: 1 | 2;
+  chainId: string;
+  nonce: number;
+  sender: Address;
+  activationHeight: number;
+  action: ActivityOracleGovernanceAction;
+  publicKeys: string[];
+  approvals: ValidatorApproval[];
+  feeAtoms: 0;
+  timestampMs: number;
+  publicKey: string;
+  signature: string;
+  txid: string;
+}
+
 export interface ProtocolUpgradeTx {
   kind: "protocol_upgrade";
   version: 1 | 2;
@@ -178,7 +238,7 @@ export interface ProtocolUpgradeTx {
   txid: string;
 }
 
-export type Transaction = TransferTx | ActivitySettlementTx | MiningClaimTx | ValidatorSetUpdateTx | ProtocolUpgradeTx;
+export type Transaction = TransferTx | ActivitySettlementTx | MiningClaimTx | ValidatorSetUpdateTx | ActivityOracleGovernanceTx | ProtocolUpgradeTx;
 
 export interface BlockHeader {
   version: number;
