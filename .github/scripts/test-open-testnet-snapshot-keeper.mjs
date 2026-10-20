@@ -1532,3 +1532,65 @@ test("repair restores state.enc before it touches any per-genesis keeper copy", 
     assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 3, "state.enc restored despite the per-genesis delete failure");
   }
 });
+
+// A rename that GitHub refuses once (422: a concurrent asset held the name at
+// that moment) and then allows; the fresh listing shows the holder gone.
+const transientCollisionOnce = (github, state, finalName) => {
+  const rename = github.rename;
+  let refused = false;
+  github.rename = async (id, name, label, opts) => {
+    if (name === finalName && !refused) { refused = true; state.calls.push(["rename", id, name]); const error = new Error("already_exists"); error.status = 422; throw error; }
+    return rename(id, name, label, opts);
+  };
+};
+
+test("publishAsset installs its upload when a transient collision on the final rename has cleared", async () => {
+  const { github, state } = fakeGitHub({ assets: [] });
+  transientCollisionOnce(github, state, "state.enc");
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(result.published, true);
+  assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc")?.label)?.height, 2150, "the upload holds state.enc in the same cycle");
+});
+
+test("repair retries the same backup when a transient collision on its install has cleared", async () => {
+  const backup = { id: 3, name: keeperAssetName("prev", "state.enc", T0 - 5 * 60_000, "aaaaaaaa"), label: formatLabel(2100, GENESIS) };
+  const { github, state } = fakeGitHub({ assets: [{ ...backup }] });
+  transientCollisionOnce(github, state, "state.enc");
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 3, "the only backup is installed in the same cycle");
+});
+
+test("the keeper creates the snapshot prerelease when the tag does not exist", async () => {
+  const { github, state } = fakeGitHub({ assets: [] });
+  let exists = false;
+  const release = github.release;
+  github.release = async (tag, opts) => { if (!exists) { state.calls.push(["release", tag]); const error = new Error("GET /releases/tags/t returned HTTP 404: Not Found"); error.status = 404; throw error; } return release(tag, opts); };
+  github.createRelease = async (tag) => { state.calls.push(["createRelease", tag]); exists = true; return { id: 1 }; };
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.ok(state.calls.some((call) => call[0] === "createRelease" && call[1] === "t"), "the missing release is created");
+  const { fetchImpl } = gatewayFetch();
+  const result = await publishCycle({ fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(result.published, true);
+  {
+    // Any other listing failure creates nothing.
+    const { github: other, state: otherState } = fakeGitHub({ assets: [] });
+    other.release = async () => { const error = new Error("HTTP 502"); error.status = 502; throw error; };
+    other.createRelease = async (tag) => { otherState.calls.push(["createRelease", tag]); return { id: 1 }; };
+    await assert.rejects(repairAndCleanup({ github: other, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} }), /502/);
+    assert.ok(!otherState.calls.some((call) => call[0] === "createRelease"));
+  }
+});
+
+test("createGitHub creates the snapshot release as a prerelease", async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => { seen.push({ url, method: init.method, body: init.body }); return new Response(JSON.stringify({ id: 5 }), { status: 201 }); };
+  const github = createGitHub({ fetchImpl, token: "t0ken", repo: "zyron249/-zyronchain" });
+  assert.equal(typeof github.createRelease, "function");
+  await github.createRelease("open-testnet-state");
+  assert.equal(seen[0].method, "POST");
+  assert.equal(seen[0].url, "https://api.github.com/repos/zyron249/-zyronchain/releases");
+  const body = JSON.parse(seen[0].body);
+  assert.equal(body.tag_name, "open-testnet-state");
+  assert.equal(body.prerelease, true);
+  assert.match(body.body, /no value/);
+});
