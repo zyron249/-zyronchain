@@ -21,6 +21,8 @@ const required = [
   'p.publicMiningActivated !== false || p.rpcUrl !== null || p.genesisFile !== null',
   "if: runner.os != 'Windows'",
   'run: npm test',
+  'shard: [1, 2]',
+  'L1_TEST_SHARD: ${{ matrix.shard }}/2',
   "if: runner.os == 'Windows'",
   'dist/test/miner-genesis.test.js dist/test/miner-network.test.js dist/test/miner-security.test.js',
   'Prove package materialization is quarantined before filesystem writes',
