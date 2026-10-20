@@ -13,6 +13,7 @@ import { MAX_SUPPLY_ATOMS } from "./types.js";
 import type {
   ActivityEntry,
   ActivityOracleApproval,
+  ActivityOracleGovernanceTx,
   ActivitySettlementTx,
   Address,
   MiningClaimTx,
@@ -29,17 +30,22 @@ type UnsignedSettlement = Omit<ActivitySettlementTx, "signature" | "txid">;
 type UnsignedMiningClaim = Omit<MiningClaimTx, "signature" | "txid">;
 type UnsignedValidatorUpdate = Omit<ValidatorSetUpdateTx, "signature" | "txid">;
 type UnsignedProtocolUpgrade = Omit<ProtocolUpgradeTx, "signature" | "txid">;
+type UnsignedOracleGovernance = Omit<ActivityOracleGovernanceTx, "signature" | "txid">;
 export type TransactionVersion = 1 | 2;
 
 const VALIDATOR_SET_APPROVAL_DOMAIN = "zyronchain/validator-set-approval/v1";
 const PROTOCOL_UPGRADE_APPROVAL_DOMAIN = "zyronchain/protocol-upgrade-approval/v1";
-/** Domain of m-of-n activity-oracle approvals (docs/ACTIVITY_ORACLE_GOVERNANCE.md). */
+/** Domain of legacy m-of-n activity-oracle approvals (docs/ACTIVITY_ORACLE_GOVERNANCE.md). */
 export const ACTIVITY_SETTLEMENT_APPROVAL_DOMAIN = "zyronchain/activity-settlement-approval/v1";
+/** Domain of fail-closed threshold-v1 attestations. The payload adds expiresAtMs. */
+export const ACTIVITY_SETTLEMENT_APPROVAL_DOMAIN_V2 = "zyronchain/activity-settlement-approval/v2";
+const ACTIVITY_ORACLE_GOVERNANCE_APPROVAL_DOMAIN = "zyronchain/activity-oracle-governance-approval/v1";
 /** Upper bound on `oracleApprovals` entries in one settlement. */
 export const MAX_ACTIVITY_ORACLE_APPROVALS = 100;
 
 function txSigningPayload(
-  tx: Transaction | UnsignedTransfer | UnsignedSettlement | UnsignedMiningClaim | UnsignedValidatorUpdate | UnsignedProtocolUpgrade
+  tx: Transaction | UnsignedTransfer | UnsignedSettlement | UnsignedMiningClaim | UnsignedValidatorUpdate |
+    UnsignedOracleGovernance | UnsignedProtocolUpgrade
 ): unknown {
   const { signature: _signature, txid: _txid, ...payload } = tx as Transaction;
   return payload;
@@ -139,6 +145,68 @@ export function createValidatorSetUpdate(
   return { ...withSignature, txid: sha256Hex(canonicalJson(withSignature)) };
 }
 
+export function activityOracleGovernanceApprovalPayload(input: {
+  chainId: string;
+  nonce: number;
+  sender: Address;
+  activationHeight: number;
+  action: ActivityOracleGovernanceTx["action"];
+  publicKeys: readonly string[];
+}): unknown {
+  return {
+    chainId: input.chainId,
+    nonce: input.nonce,
+    sender: input.sender,
+    activationHeight: input.activationHeight,
+    action: input.action,
+    publicKeys: [...input.publicKeys]
+  };
+}
+
+export function createActivityOracleGovernanceApproval(
+  input: Parameters<typeof activityOracleGovernanceApprovalPayload>[0],
+  validatorPrivateKey: string,
+  validatorPublicKey: string,
+  transactionVersion: TransactionVersion = 1
+): ValidatorApproval {
+  const payload = governanceApprovalPayload(activityOracleGovernanceApprovalPayload(input), transactionVersion);
+  return {
+    validator: addressFromPublicKey(validatorPublicKey),
+    publicKey: validatorPublicKey,
+    signature: signForTransactionVersion(
+      transactionVersion,
+      ACTIVITY_ORACLE_GOVERNANCE_APPROVAL_DOMAIN,
+      payload,
+      validatorPrivateKey
+    )
+  };
+}
+
+export function createActivityOracleGovernance(
+  input: Omit<UnsignedOracleGovernance, "kind" | "version" | "publicKey" | "feeAtoms">,
+  privateKeyHex: string,
+  publicKey: string,
+  version: TransactionVersion = 1
+): ActivityOracleGovernanceTx {
+  const unsigned: UnsignedOracleGovernance = {
+    kind: "activity_oracle_governance",
+    version,
+    chainId: input.chainId,
+    nonce: input.nonce,
+    sender: input.sender,
+    activationHeight: input.activationHeight,
+    action: input.action,
+    publicKeys: [...input.publicKeys],
+    approvals: input.approvals.map((approval) => ({ ...approval })),
+    feeAtoms: 0,
+    timestampMs: input.timestampMs,
+    publicKey
+  };
+  const signature = signTransactionPayload(unsigned, privateKeyHex);
+  const withSignature = { ...unsigned, signature };
+  return { ...withSignature, txid: sha256Hex(canonicalJson(withSignature)) };
+}
+
 export function createProtocolUpgrade(
   input: Omit<UnsignedProtocolUpgrade, "kind" | "version" | "publicKey" | "feeAtoms">,
   privateKeyHex: string,
@@ -214,6 +282,20 @@ export function activitySettlementApprovalPayload(input: {
   };
 }
 
+export function activitySettlementApprovalPayloadV2(input: {
+  chainId: string;
+  sender: Address;
+  epoch: number;
+  entries: readonly ActivityEntry[];
+  receiptRoot: string;
+  expiresAtMs: number;
+}): unknown {
+  return {
+    ...activitySettlementApprovalPayload(input) as Record<string, unknown>,
+    expiresAtMs: input.expiresAtMs
+  };
+}
+
 export function createActivityOracleApproval(
   input: Parameters<typeof activitySettlementApprovalPayload>[0],
   oraclePrivateKey: string,
@@ -229,10 +311,36 @@ export function createActivityOracleApproval(
   };
 }
 
+/** threshold-v1 attestation. expiresAtMs is covered by the signature. */
+export function createActivityOracleApprovalV2(
+  input: Parameters<typeof activitySettlementApprovalPayloadV2>[0],
+  oraclePrivateKey: string,
+  oraclePublicKey: string
+): ActivityOracleApproval {
+  return {
+    publicKey: oraclePublicKey,
+    signature: signCanonicalDomain(
+      ACTIVITY_SETTLEMENT_APPROVAL_DOMAIN_V2,
+      activitySettlementApprovalPayloadV2(input),
+      oraclePrivateKey
+    )
+  };
+}
+
 export function verifyActivityOracleApprovalSignature(
   tx: ActivitySettlementTx,
-  approval: ActivityOracleApproval
+  approval: ActivityOracleApproval,
+  policy: "v1" | "v2" = "v1"
 ): boolean {
+  if (policy === "v2") {
+    if (tx.attestationExpiresAtMs === undefined || !Number.isSafeInteger(tx.attestationExpiresAtMs)) return false;
+    return verifyCanonicalDomain(
+      ACTIVITY_SETTLEMENT_APPROVAL_DOMAIN_V2,
+      activitySettlementApprovalPayloadV2({ ...tx, expiresAtMs: tx.attestationExpiresAtMs }),
+      approval.signature,
+      approval.publicKey
+    );
+  }
   return verifyCanonicalDomain(
     ACTIVITY_SETTLEMENT_APPROVAL_DOMAIN,
     activitySettlementApprovalPayload(tx),
@@ -267,6 +375,7 @@ export function createActivitySettlement(
         signature: approval.signature
       }))
     }),
+    ...(input.attestationExpiresAtMs === undefined ? {} : { attestationExpiresAtMs: input.attestationExpiresAtMs }),
     feeAtoms: 0,
     timestampMs: input.timestampMs,
     publicKey
@@ -316,6 +425,7 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
       "kind", "version", "chainId", "nonce", "sender", "epoch", "entries", "receiptRoot",
       // Optional m-of-n approvals (docs/ACTIVITY_ORACLE_GOVERNANCE.md).
       ...(Object.prototype.hasOwnProperty.call(value, "oracleApprovals") ? ["oracleApprovals"] : []),
+      ...(Object.prototype.hasOwnProperty.call(value, "attestationExpiresAtMs") ? ["attestationExpiresAtMs"] : []),
       "feeAtoms", "timestampMs", "publicKey", "signature", "txid"
     ], "activity settlement");
   } else if (value.kind === "mining_claim") {
@@ -330,6 +440,11 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
       "kind", "version", "chainId", "nonce", "sender", "activationHeight", "validators", "approvals",
       "feeAtoms", "timestampMs", "publicKey", "signature", "txid"
     ], "validator update");
+  } else if (value.kind === "activity_oracle_governance") {
+    assertExactKeys(value, [
+      "kind", "version", "chainId", "nonce", "sender", "activationHeight", "action", "publicKeys", "approvals",
+      "feeAtoms", "timestampMs", "publicKey", "signature", "txid"
+    ], "activity oracle governance");
   } else if (value.kind === "protocol_upgrade") {
     assertExactKeys(value, [
       "kind", "version", "chainId", "nonce", "sender", "activationHeight", "protocolVersion", "approvals",
@@ -378,6 +493,10 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
       }
       for (const approval of tx.oracleApprovals) validateActivityOracleApproval(approval);
     }
+    if (Object.prototype.hasOwnProperty.call(tx, "attestationExpiresAtMs") &&
+        !Number.isSafeInteger(tx.attestationExpiresAtMs)) {
+      throw new Error("Invalid activity oracle attestation expiry");
+    }
   } else if (tx.kind === "mining_claim") {
     if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     if (tx.version !== 2) throw new Error("Mining claim requires transaction version 2");
@@ -404,6 +523,27 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
     for (const validator of tx.validators) validateValidator(validator, validatorAddresses, validatorKeys);
     if (!Array.isArray(tx.approvals) || tx.approvals.length === 0 || tx.approvals.length > 100) {
       throw new Error("Invalid validator approvals");
+    }
+    for (const approval of tx.approvals) validateValidatorApproval(approval);
+  } else if (tx.kind === "activity_oracle_governance") {
+    if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
+    if (tx.feeAtoms !== 0) throw new Error("Activity oracle governance fee must be zero");
+    if (!Number.isSafeInteger(tx.activationHeight) || tx.activationHeight < 1) {
+      throw new Error("Invalid activity oracle governance activation height");
+    }
+    if (tx.action !== "pause" && tx.action !== "resume" && tx.action !== "revoke") {
+      throw new Error("Invalid activity oracle governance action");
+    }
+    if (addressFromPublicKey(tx.publicKey) !== tx.sender) throw new Error("Public key does not match sender");
+    if (!Array.isArray(tx.publicKeys) || tx.publicKeys.length > MAX_ACTIVITY_ORACLE_APPROVALS) {
+      throw new Error("Invalid activity oracle governance keys");
+    }
+    for (const publicKey of tx.publicKeys) {
+      if (typeof publicKey !== "string") throw new Error("Invalid activity oracle governance key");
+      assertHex(publicKey, 64, "activity oracle governance publicKey");
+    }
+    if (!Array.isArray(tx.approvals) || tx.approvals.length === 0 || tx.approvals.length > 100) {
+      throw new Error("Invalid activity oracle governance approvals");
     }
     for (const approval of tx.approvals) validateValidatorApproval(approval);
   } else {
@@ -435,6 +575,7 @@ export function transactionSigningDomain(kind: Transaction["kind"]): string {
     case "activity_settlement": return "zyronchain/transaction/activity-settlement/v2";
     case "mining_claim": return "zyronchain/transaction/mining-claim/v2";
     case "validator_update": return "zyronchain/transaction/validator-update/v2";
+    case "activity_oracle_governance": return "zyronchain/transaction/activity-oracle-governance/v1";
     case "protocol_upgrade": return "zyronchain/transaction/protocol-upgrade/v2";
   }
 }
@@ -444,6 +585,20 @@ export function verifyValidatorUpdateApprovalSignature(tx: ValidatorSetUpdateTx,
   return verifyForTransactionVersion(
     tx.version,
     VALIDATOR_SET_APPROVAL_DOMAIN,
+    payload,
+    approval.signature,
+    approval.publicKey
+  );
+}
+
+export function verifyActivityOracleGovernanceApprovalSignature(
+  tx: ActivityOracleGovernanceTx,
+  approval: ValidatorApproval
+): boolean {
+  const payload = governanceApprovalPayload(activityOracleGovernanceApprovalPayload(tx), tx.version);
+  return verifyForTransactionVersion(
+    tx.version,
+    ACTIVITY_ORACLE_GOVERNANCE_APPROVAL_DOMAIN,
     payload,
     approval.signature,
     approval.publicKey
@@ -466,7 +621,8 @@ function governanceApprovalPayload(payload: unknown, version: TransactionVersion
 }
 
 function signTransactionPayload(
-  tx: UnsignedTransfer | UnsignedSettlement | UnsignedMiningClaim | UnsignedValidatorUpdate | UnsignedProtocolUpgrade,
+  tx: UnsignedTransfer | UnsignedSettlement | UnsignedMiningClaim | UnsignedValidatorUpdate |
+    UnsignedOracleGovernance | UnsignedProtocolUpgrade,
   privateKeyHex: string
 ): string {
   return signForTransactionVersion(tx.version, transactionSigningDomain(tx.kind), tx, privateKeyHex);
