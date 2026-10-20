@@ -1174,7 +1174,8 @@ function stateV2KeysForTransaction(tx: Transaction, genesis: GenesisConfig): str
   return stateV2TransactionKeyPreimages(tx);
 }
 
-function applyMiningClaimStateV2(state: SparseMerkleState, tx: MiningClaimTx): SparseMerkleState {
+/** Exported only so tests can pin its fail-closed retirement guard (EXT-04). */
+export function applyMiningClaimStateV2(state: SparseMerkleState, tx: MiningClaimTx): SparseMerkleState {
   assertMiningNotRetired();
   if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
   const minerNonce = stateV2Nonce(state, tx.sender);
