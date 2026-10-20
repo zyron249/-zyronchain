@@ -6,6 +6,7 @@
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
+    "noUnusedLocals": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "types": ["node"]

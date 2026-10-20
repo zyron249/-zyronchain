@@ -227,39 +227,6 @@ async function readRequest(stream: Parameters<typeof readP2PFrame>[0]): Promise<
   return { kind: value.kind, start: Number(value.start), limit: Number(value.limit) };
 }
 
-async function writeFixtureResponse(
-  stream: Parameters<typeof writeP2PFrame>[0],
-  fixture: Awaited<ReturnType<typeof createFixture>>,
-  request: RequestShape
-): Promise<void> {
-  if (request.kind === "manifest") {
-    await writeP2PFrame(stream, {
-      version: 1, identity: peerIdentity(fixture), tipHash: fixture.anchor.tipHash,
-      snapshotSha256: fixture.anchor.snapshotSha256, height: fixture.tip.header.height,
-      stateRoot: fixture.bundle.root, recordCount: fixture.bundle.records.length,
-      keyCount: fixture.bundle.keyPreimages.length, tip: fixture.tip
-    }, 2_500_000, 5_000);
-    await stream.close();
-    return;
-  }
-  const source = request.kind === "records" ? fixture.bundle.records : fixture.bundle.keyPreimages;
-  await writeChunk(stream, fixture, request, source.slice(request.start, request.start + request.limit));
-}
-
-async function writeChunk(
-  stream: Parameters<typeof writeP2PFrame>[0],
-  fixture: Awaited<ReturnType<typeof createFixture>>,
-  request: RequestShape,
-  items: unknown[]
-): Promise<void> {
-  await writeP2PFrame(stream, {
-    version: 1, identity: peerIdentity(fixture), tipHash: fixture.anchor.tipHash,
-    snapshotSha256: fixture.anchor.snapshotSha256, kind: request.kind,
-    start: request.start, items
-  }, 20 * 1024 * 1024, 5_000);
-  await stream.close();
-}
-
 function peerIdentity(fixture: Awaited<ReturnType<typeof createFixture>>) {
   return {
     version: 1 as const,
