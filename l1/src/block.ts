@@ -42,10 +42,12 @@ export function genesisConfigCommitment(genesis: GenesisConfig): string {
 }
 
 /**
- * Genesis block. Legacy genesis files (no `launchProfile` and no
- * `activityOracleThreshold`) keep the historical header with a zero previous
- * hash, so their genesis hash is unchanged. Under a launch profile, or when the
- * genesis declares `activityOracleThreshold` (which changes block validity),
+ * Genesis block. Legacy genesis files (no `launchProfile`, no
+ * `activityOracleThreshold` and no `networkClass`) keep the historical header
+ * with a zero previous hash, so their genesis hash is unchanged. Under a
+ * launch profile, when the genesis declares `activityOracleThreshold` (which
+ * changes block validity), or when it declares `networkClass`
+ * (network-class-v1, which changes which genesis files are allowed to start),
  * the previous-hash slot of the genesis header carries
  * `genesisConfigCommitment(genesis)`, so the genesis hash (and therefore the
  * P2P chain identity, block 1's parent link, store metadata and light-client
@@ -53,7 +55,8 @@ export function genesisConfigCommitment(genesis: GenesisConfig): string {
  */
 export function createGenesisBlock(genesis: GenesisConfig, stateRoot: string): Block {
   const bindConfig = genesis.launchProfile !== undefined ||
-    Object.prototype.hasOwnProperty.call(genesis, "activityOracleThreshold");
+    Object.prototype.hasOwnProperty.call(genesis, "activityOracleThreshold") ||
+    Object.prototype.hasOwnProperty.call(genesis, "networkClass");
   const header: BlockHeader = {
     version: 1,
     chainId: genesis.chainId,
