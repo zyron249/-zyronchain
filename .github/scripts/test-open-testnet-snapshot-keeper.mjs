@@ -1186,6 +1186,37 @@ test("a swap that passes its deadline keeps the upload when the restore name is 
   }
 });
 
+test("an upload that ends past the deadline starts no further listing, and publishCycle then skips the per-genesis copy", async () => {
+  const callsAfterUpload = (calls) => calls.slice(calls.findIndex((call) => call[0] === "upload") + 1);
+  {
+    // publishAsset: the upload (or its adoption) overran swapBy, so the
+    // pre-swap re-listing is not started; the upload is kept for repair.
+    const { clock, now } = steppedClock();
+    const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }], now });
+    const upload = github.upload;
+    github.upload = async (...args) => { const result = await upload(...args); clock.ms = T0 + 10; return result; };
+    const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now, swapBy: T0 + 5, log() {}, warn() {}, sleep: async () => {} });
+    assert.equal(result.published, false);
+    assert.match(result.reason, /deadline/);
+    assert.deepEqual(callsAfterUpload(state.calls), [], "no listing or rename after the deadline");
+    assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 7, "state.enc untouched");
+    assert.ok(state.assets.some((asset) => /^next-/.test(asset.name)), "the upload is kept for repair");
+  }
+  {
+    // publishCycle: once the state.enc call overran swapBy, the per-genesis
+    // publication is not started at all.
+    const { clock, now } = steppedClock();
+    const { github, state } = fakeGitHub({ now });
+    const upload = github.upload;
+    github.upload = async (...args) => { const result = await upload(...args); clock.ms = T0 + 10; return result; };
+    const { fetchImpl } = gatewayFetch();
+    const result = await publishCycle({ fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS, now, swapBy: T0 + 5, log() {}, warn() {}, sleep: async () => {} });
+    assert.equal(result.published, false);
+    assert.equal(result.copyPublished, false);
+    assert.deepEqual(callsAfterUpload(state.calls), [], "no per-genesis listing or upload after the deadline");
+  }
+});
+
 test("publishAsset never deletes: the upload stays when it loses, and cleanup removes it once stale", async () => {
   const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }] });
   let releases = 0;
