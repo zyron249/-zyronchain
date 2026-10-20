@@ -17,7 +17,7 @@ A genesis may carry an optional field:
 }
 ```
 
-Without the field, behaviour is unchanged (older genesis files and test networks keep working). When present it is validated fail-closed when the chain is constructed:
+Without the field, behaviour is unchanged for a genesis that is not a value-bearing class (older genesis files and test networks keep working). A `networkClass` of `public-launch`, `value-bearing` or `mainnet` is refused at node start unless `launchProfile` is `fixed-supply-v1`, and that profile refuses the genesis unless this field is present. See [`GENESIS_NETWORK_CLASS.md`](GENESIS_NETWORK_CLASS.md). When the field is present it is validated fail-closed when the chain is constructed:
 
 - exactly the two keys `founderVesting` and `permanentLiquidity`;
 - both are valid, distinct ZYN addresses;
