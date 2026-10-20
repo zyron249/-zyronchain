@@ -404,9 +404,20 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
 // Errors about the snapshot itself (format, chain ID, genesis, keys, replay)
 // are not retried. Each wait stays far below the start-up stall limit.
 export const LOCAL_RESTORE_RETRY_DELAYS_MS = [2_000, 5_000];
+// The State-v2 database is built on this instance's disk during the replay
+// (it is never part of the bundle), so better-sqlite3 storage failures there
+// are local as well. A SqliteError carries a string SQLite result code but no
+// syscall; only the storage/resource codes below (and their extended codes,
+// e.g. SQLITE_IOERR_WRITE) count. SQL, constraint and misuse errors do not.
+const LOCAL_SQLITE_ERROR_CODES = ["SQLITE_IOERR", "SQLITE_FULL", "SQLITE_CANTOPEN", "SQLITE_NOMEM", "SQLITE_READONLY", "SQLITE_BUSY", "SQLITE_LOCKED", "SQLITE_PROTOCOL", "SQLITE_CORRUPT", "SQLITE_NOTADB"];
+function isLocalSqliteError(error) {
+  if (error.name !== "SqliteError" || typeof error.code !== "string") return false;
+  return LOCAL_SQLITE_ERROR_CODES.some((code) => error.code === code || error.code.startsWith(`${code}_`));
+}
 export function isLocalIoError(error) {
   for (let current = error, depth = 0; current && typeof current === "object" && depth < 8; current = current.cause, depth += 1) {
     if (typeof current.code === "string" && typeof current.syscall === "string") return true;
+    if (isLocalSqliteError(current)) return true;
   }
   return false;
 }
