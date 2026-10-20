@@ -194,6 +194,12 @@ export function createGitHub({ fetchImpl, token, repo, apiBase = "https://api.gi
     },
     rename(assetId, name, label, { timeoutMs = GITHUB_CALL_TIMEOUT_MS } = {}) {
       return call("PATCH", `${apiBase}/repos/${repo}/releases/assets/${assetId}`, { body: JSON.stringify({ name, label }), contentType: "application/json", timeoutMs });
+    },
+    // Creates the snapshot storage release (a prerelease, like the legacy
+    // machine keeper's `gh release create --prerelease`).
+    createRelease(tag) {
+      const body = "Sealed state snapshots of the hosted open TESTNET. Test tokens have no value. Not audited. The files are encrypted; they are only useful to the hosted instance.";
+      return call("POST", `${apiBase}/repos/${repo}/releases`, { body: JSON.stringify({ tag_name: tag, name: "Open TESTNET state snapshots (no value)", body, prerelease: true }), contentType: "application/json", okStatuses: [201] });
     }
   };
 }
@@ -381,6 +387,20 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
       if (collided) return { published: false, reason: kept(`${name} was taken concurrently`) };
       throw error;
     }
+    if (collided && listing) {
+      // The fresh listing shows the name free: the 422 came from a holder that
+      // has gone again (for example a concurrent upload that failed). Retry the
+      // install within the missing-name window instead of leaving the snapshot
+      // only under its temporary name.
+      try {
+        await renameWithin(github, temp.id, name, label, { ...timing, untilMs: missingBy });
+        warn(`${name} was briefly held by another asset (${error.message}); the upload is installed now`);
+        log(`published ${name} height ${snapshot.height} genesis ${snapshot.genesis.slice(0, 12)} (${first.reason})`);
+        return { published: true, reason: first.reason };
+      } catch (retryError) {
+        warn(`retrying the install of the upload as ${name} failed (${retryError.message})`);
+      }
+    }
     warn(`could not rename the upload to ${name} (${error.message}); keeping the upload ${temp.name ?? temp.id} for the next cycle to repair`);
     if (collided && !listing) return { published: false, reason: kept("the name was taken concurrently and the listing could not be checked") };
     throw error;
@@ -430,27 +450,36 @@ async function installBackup({ github, tag, finalName, canonical, candidates, no
     }
   }
   for (const copy of candidates) {
-    try {
-      await renameWithin(github, copy.asset.id, finalName, copy.asset.label ?? "", { ...timing, untilMs: missingBy });
-      warn(`restored ${canonical ? "incomplete" : "missing"} ${finalName} from ${copy.asset.name}`);
-      return copy;
-    } catch (error) {
-      let listing = null;
-      try { listing = await listWithin(github, tag, { ...timing, untilMs: missingBy }); }
-      catch (listError) { warn(`could not verify the install of ${copy.asset.name} as ${finalName} (${listError.message})`); }
-      if (listing?.assets.some((asset) => asset.id === copy.asset.id && asset.name === finalName)) {
-        warn(`installing ${copy.asset.name} as ${finalName} reported an error (${error.message}) but the listing shows it in place`);
+    // A copy is tried again once when its install was refused (422) but the
+    // fresh listing shows the name free: the holder was transient.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await renameWithin(github, copy.asset.id, finalName, copy.asset.label ?? "", { ...timing, untilMs: missingBy });
+        warn(`restored ${canonical ? "incomplete" : "missing"} ${finalName} from ${copy.asset.name}`);
         return copy;
+      } catch (error) {
+        let listing = null;
+        try { listing = await listWithin(github, tag, { ...timing, untilMs: missingBy }); }
+        catch (listError) { warn(`could not verify the install of ${copy.asset.name} as ${finalName} (${listError.message})`); }
+        if (listing?.assets.some((asset) => asset.id === copy.asset.id && asset.name === finalName)) {
+          warn(`installing ${copy.asset.name} as ${finalName} reported an error (${error.message}) but the listing shows it in place`);
+          return copy;
+        }
+        if (listing?.assets.some((asset) => asset.name === finalName) || (!listing && error.status === 422)) {
+          warn(`${finalName} is held by another asset now; leaving it (${error.message})`);
+          return null;
+        }
+        if (error.budget || now() >= missingBy - MIN_CALL_MS) {
+          warn(`could not restore ${finalName} within the missing-name window (${error.message}); the next cycle repairs it`);
+          return null;
+        }
+        if (error.status === 422 && attempt === 0) {
+          warn(`${finalName} was briefly held by another asset (${error.message}); retrying ${copy.asset.name}`);
+          continue;
+        }
+        warn(`could not install ${copy.asset.name} as ${finalName} (${error.message}); trying the next copy`);
+        break;
       }
-      if (listing?.assets.some((asset) => asset.name === finalName) || (!listing && error.status === 422)) {
-        warn(`${finalName} is held by another asset now; leaving it (${error.message})`);
-        return null;
-      }
-      if (error.budget || now() >= missingBy - MIN_CALL_MS) {
-        warn(`could not restore ${finalName} within the missing-name window (${error.message}); the next cycle repairs it`);
-        return null;
-      }
-      warn(`could not install ${copy.asset.name} as ${finalName} (${error.message}); trying the next copy`);
     }
   }
   warn(`could not restore ${finalName} from any keeper copy; the next cycle repairs it`);
@@ -466,7 +495,22 @@ async function installBackup({ github, tag, finalName, canonical, candidates, no
 // while it is missing. A copy is deleted only while that fresh listing still
 // shows it under its own keeper name. Nothing else is deleted.
 export async function repairAndCleanup({ github, tag, expectedGenesis, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity }) {
-  const release = await github.release(tag);
+  let release;
+  try { release = await github.release(tag); }
+  catch (error) {
+    // Storage bootstrap: on a confirmed tag-not-found the snapshot prerelease
+    // is created (empty, so there is nothing to repair this cycle). Any other
+    // failure creates nothing.
+    if (error.status !== 404) throw error;
+    try {
+      await github.createRelease(tag);
+      warn(`the ${tag} release did not exist; created it as a prerelease`);
+    } catch (createError) {
+      // 422: another run created it meanwhile.
+      if (createError.status !== 422) throw createError;
+    }
+    return;
+  }
   // Like a swap, no repair or cleanup step starts after the run deadline.
   const pastDeadline = () => {
     if (now() <= swapBy) return false;
