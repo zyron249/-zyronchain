@@ -257,6 +257,9 @@ async function listWithin(github, tag, { untilMs, now }) {
 // held again, all calls share MISSING_NAME_BUDGET_MS. The swap is not started
 // after `swapBy`, so it can finish or roll back before the job is killed.
 export async function publishAsset({ github, tag, name, bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity }) {
+  // A call made after the run deadline (for example after a snapshot download
+  // that overran it) starts no request at all.
+  if (now() > swapBy) return { published: false, reason: "run deadline reached before the listing; left for the next run" };
   let release = await github.release(tag);
   let current = release.assets.find((asset) => asset.name === name) ?? null;
   const first = decidePublish({ snapshot, asset: current, expectedGenesis, requestStartedMs, nowMs: now() });
@@ -477,7 +480,10 @@ export async function repairAndCleanup({ github, tag, expectedGenesis, now, log,
     if (!groups.has(parsed.finalName)) groups.set(parsed.finalName, []);
     groups.get(parsed.finalName).push({ asset, ...parsed });
   }
-  for (const [finalName, copies] of groups) {
+  // state.enc (the asset a cold start downloads) is repaired first, so slow or
+  // failing maintenance of a per-genesis group can neither delay nor prevent it.
+  const ordered = [...groups].sort(([a], [b]) => (b === "state.enc") - (a === "state.enc"));
+  for (const [finalName, copies] of ordered) {
     const ranked = [...copies].sort((a, b) => copyRank(b, expectedGenesis) - copyRank(a, expectedGenesis) || b.ms - a.ms);
     const restorable = ranked.filter((copy) => isRestorableCopy(copy, expectedGenesis));
     const canonical = release.assets.find((asset) => asset.name === finalName) ?? null;
@@ -600,6 +606,8 @@ export async function fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now }
 export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity }) {
   const { snapshot, bytes, requestStartedMs } = await fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now });
   const sha256 = createHash("sha256").update(bytes).digest("hex");
+  // A download that ended past the deadline starts neither publication
+  // (publishAsset also refuses to start after swapBy).
   const main = await publishAsset({ github, tag, name: "state.enc", bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep, swapBy });
   // The state.enc result stands even when the per-genesis copy fails.
   // The per-genesis copy is not started once the state.enc call overran the deadline.
