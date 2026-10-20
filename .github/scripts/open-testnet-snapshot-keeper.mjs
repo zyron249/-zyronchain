@@ -275,6 +275,9 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
     if (!temp) throw error;
     warn(`the upload of ${tempName} reported an error (${error.message}) but the listing shows it complete; continuing the swap`);
   }
+  // An upload (or its adoption) can end past the run deadline: no further
+  // request starts then, and the kept upload is left for the next run's repair.
+  if (now() > swapBy) return { published: false, reason: kept("run deadline reached after the upload; left for the next run") };
   // Re-check right before the swap: another publisher may have changed the name meanwhile.
   try {
     release = await github.release(tag);
@@ -599,11 +602,15 @@ export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGe
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const main = await publishAsset({ github, tag, name: "state.enc", bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep, swapBy });
   // The state.enc result stands even when the per-genesis copy fails.
+  // The per-genesis copy is not started once the state.enc call overran the deadline.
   let copy;
-  try { copy = await publishAsset({ github, tag, name: perGenesisName(snapshot.genesis), bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep, swapBy }); }
-  catch (error) {
-    warn(`publishing ${perGenesisName(snapshot.genesis)} failed: ${error instanceof Error ? error.message : String(error)}`);
-    copy = { published: false, reason: "failed" };
+  if (now() > swapBy) copy = { published: false, reason: "run deadline reached; left for the next run" };
+  else {
+    try { copy = await publishAsset({ github, tag, name: perGenesisName(snapshot.genesis), bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep, swapBy }); }
+    catch (error) {
+      warn(`publishing ${perGenesisName(snapshot.genesis)} failed: ${error instanceof Error ? error.message : String(error)}`);
+      copy = { published: false, reason: "failed" };
+    }
   }
   if (!main.published) log(`state.enc not replaced: ${main.reason}`);
   if (!copy.published) log(`${perGenesisName(snapshot.genesis)} not replaced: ${copy.reason}`);
