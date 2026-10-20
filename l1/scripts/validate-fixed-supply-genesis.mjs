@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { readBoundedRegularControlFile } from "../dist/src/control-file.js";
 import { ZyronChain } from "../dist/src/chain.js";
 import { genesisConfigCommitment } from "../dist/src/block.js";
+import { assertLaunchCeremonyNetworkClass } from "../dist/src/network-class.js";
 import { assertFixedSupplyGenesis, FIXED_SUPPLY_LAUNCH_PROFILE } from "../dist/src/tokenomics.js";
 
 const MAX_GENESIS_BYTES = 256 * 1024;
@@ -41,6 +42,10 @@ const addresses = {
 if (genesis === null || typeof genesis !== "object" || genesis.launchProfile !== FIXED_SUPPLY_LAUNCH_PROFILE) {
   throw new Error(`Fixed-supply launch genesis must declare launchProfile "${FIXED_SUPPLY_LAUNCH_PROFILE}"`);
 }
+// network-class-v1: the ceremony file must name a value-bearing class. Node
+// start then refuses that class unless the fixed-supply profile (and therefore
+// the founder and permanent-liquidity locks) is present.
+assertLaunchCeremonyNetworkClass(genesis);
 assertFixedSupplyGenesis(genesis, addresses);
 // Full consensus genesis validation, including the allocation-lock declaration
 // and the consensus launch-profile rules.
@@ -54,5 +59,6 @@ console.log("Permanent-liquidity reserve: 20,000,000 ZYN (40%), on-chain locked:
 console.log("Ecosystem reserve: 5,000,000 ZYN (10%)");
 console.log("Mining issuance headroom: 0 ZYN");
 console.log(`Launch profile: ${FIXED_SUPPLY_LAUNCH_PROFILE}`);
+console.log(`Network class: ${genesis.networkClass}`);
 console.log(`Genesis configuration commitment: ${genesisConfigCommitment(genesis)}`);
 console.log(`Genesis hash (chain identity): ${chain.genesisHash}`);
