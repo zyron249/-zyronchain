@@ -564,6 +564,11 @@ export function applyStateV2Transaction(
     assertNoActivityPoolInflow(tx.receiver, activityPool);
     assertNoActivityPoolDirectDebit(tx.sender, activityPool, oracles);
     if (rollingWindow && isActivityWindowAddress(tx.receiver)) throw new Error(ACTIVITY_WINDOW_RESERVED_MESSAGE);
+    // Same reservation and precedence as LedgerState.applyTransfer (defence in
+    // depth; validateTransactionShape already rejects these on chain paths).
+    if (tx.sender === MINING_TRACKER_ADDRESS || tx.receiver === MINING_TRACKER_ADDRESS) {
+      throw new Error("Mining tracker address is protocol-reserved");
+    }
     requireStateV2Nonce(state, tx.sender, tx.nonce);
     const total = tx.amountAtoms + tx.feeAtoms;
     if (!Number.isSafeInteger(total)) throw new Error("Insufficient balance");
@@ -578,6 +583,10 @@ export function applyStateV2Transaction(
     if (oracles) assertActivitySettlementAuthorized(tx, oracles);
     if (tx.sender !== activityPool) throw new Error("Invalid activity pool sender");
     for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, activityPool);
+    // Same reservation and precedence as LedgerState.applyActivity.
+    if (tx.entries.some((entry) => entry.receiver === MINING_TRACKER_ADDRESS)) {
+      throw new Error("Mining tracker address is protocol-reserved");
+    }
     if (state.get(activityEpochKey(tx.epoch)) !== undefined) throw new Error("Activity epoch already settled");
     // Adjacent-order defence in depth (see LedgerState.applyActivity).
     if (state.get(activityEpochKey(tx.epoch + 1)) !== undefined) throw new Error(ACTIVITY_ORDER_MESSAGE);
@@ -609,6 +618,8 @@ export function applyStateV2Transaction(
     assertMiningNotRetired();
     throw new Error("Mining claim requires chain-context State-v2 application");
   }
+  // Same reservation as LedgerState.applyValidatorUpdate / applyProtocolUpgrade.
+  if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
   requireStateV2Nonce(state, tx.sender, tx.nonce);
   let next = setStateV2Nonce(state, tx.sender, tx.nonce);
   if (tx.kind === "validator_update") {
