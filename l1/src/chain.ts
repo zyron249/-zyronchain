@@ -78,7 +78,7 @@ import type {
   ValidatorSetUpdateTx
 } from "./types.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
-import { assertValueBearingClassRequiresFixedSupplyProfile } from "./network-class.js";
+import { assertValueBearingClassRequiresFixedSupplyProfile, minimumValidatorCount } from "./network-class.js";
 import { assertFixedSupplyLaunchProfile, FIXED_SUPPLY_LAUNCH_PROFILE } from "./tokenomics.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
@@ -209,7 +209,11 @@ export class ZyronChain {
       tipTxids.add(tx.txid);
     }
 
-    const validatorSchedule = validateValidatorSchedule(snapshot.validatorSchedule, genesis.validators);
+    const validatorSchedule = validateValidatorSchedule(
+      snapshot.validatorSchedule,
+      genesis.validators,
+      minimumValidatorCount(genesis)
+    );
     const protocolSchedule = validateProtocolSchedule(snapshot.protocolSchedule);
     chain.validatorSchedule.clear();
     for (const [height, validators] of validatorSchedule) chain.validatorSchedule.set(height, validators);
@@ -636,7 +640,9 @@ export class ZyronChain {
     }
     const validators = this.validatorsAt(this.height + 1);
     if (tx.kind === "validator_update") {
-      validateValidatorUpdateAuthorization(tx, validators, this.height + 1, this.lastValidatorActivationHeight());
+      validateValidatorUpdateAuthorization(
+        tx, validators, this.height + 1, this.lastValidatorActivationHeight(), minimumValidatorCount(this.genesis)
+      );
       return;
     }
     validateProtocolUpgradeAuthorization(tx, validators, this.height + 1, this.lastProtocolActivationHeight(), this.lastScheduledProtocolVersion());
@@ -694,7 +700,9 @@ export class ZyronChain {
             genesisSupplyAtoms: this.genesisSupplyAtomsValue
           });
         } else if (tx.kind === "validator_update") {
-          validateValidatorUpdateAuthorization(tx, currentValidators, this.height + 1, lastActivation);
+          validateValidatorUpdateAuthorization(
+            tx, currentValidators, this.height + 1, lastActivation, minimumValidatorCount(this.genesis)
+          );
         } else if (tx.kind === "protocol_upgrade") {
           validateProtocolUpgradeAuthorization(tx, currentValidators, this.height + 1, lastProtocolActivation, lastProtocolVersion);
         }
@@ -750,7 +758,9 @@ export class ZyronChain {
       }
       const validators = this.validatorsAt(this.height + 1);
       if (tx.kind === "validator_update") {
-        validateValidatorUpdateAuthorization(tx, validators, this.height + 1, this.lastValidatorActivationHeight());
+        validateValidatorUpdateAuthorization(
+          tx, validators, this.height + 1, this.lastValidatorActivationHeight(), minimumValidatorCount(this.genesis)
+        );
       } else {
         validateProtocolUpgradeAuthorization(
           tx, validators, this.height + 1, this.lastProtocolActivationHeight(), this.lastScheduledProtocolVersion()
@@ -806,7 +816,9 @@ export class ZyronChain {
           genesisSupplyAtoms: this.genesisSupplyAtomsValue
         });
       } else if (tx.kind === "validator_update") {
-        validateValidatorUpdateAuthorization(tx, currentValidators, blockHeight, lastActivation);
+        validateValidatorUpdateAuthorization(
+          tx, currentValidators, blockHeight, lastActivation, minimumValidatorCount(this.genesis)
+        );
         lastActivation = tx.activationHeight;
       } else if (tx.kind === "protocol_upgrade") {
         validateProtocolUpgradeAuthorization(tx, currentValidators, blockHeight, lastProtocolActivation, lastProtocolVersion);
@@ -880,7 +892,11 @@ export class ZyronChain {
   }
 }
 
-function validateValidatorSchedule(value: unknown, genesisValidators: Validator[]): Map<number, Validator[]> {
+function validateValidatorSchedule(
+  value: unknown,
+  genesisValidators: Validator[],
+  minimumValidators: number
+): Map<number, Validator[]> {
   if (!Array.isArray(value) || value.length < 1) throw new Error("Invalid checkpoint validator schedule");
   const result = new Map<number, Validator[]>();
   let previousHeight = -1;
@@ -888,20 +904,29 @@ function validateValidatorSchedule(value: unknown, genesisValidators: Validator[
     assertPlainRecord(candidate, "checkpoint validator schedule entry");
     assertExactKeys(candidate, ["activationHeight", "validators"], "checkpoint validator schedule entry");
     if (!Number.isSafeInteger(candidate.activationHeight) || Number(candidate.activationHeight) <= previousHeight ||
-        !Array.isArray(candidate.validators) || candidate.validators.length < 1 || candidate.validators.length > 100) {
+        !Array.isArray(candidate.validators)) {
       throw new Error("Invalid checkpoint validator schedule");
     }
+    if (candidate.validators.length < minimumValidators || candidate.validators.length > 100) {
+      throw new Error(minimumValidators > 1
+        ? "Public-launch, value-bearing, and mainnet chains require at least 4 and at most 100 distinct validators"
+        : "Invalid checkpoint validator schedule");
+    }
     const validators: Validator[] = [];
-    const seen = new Set<string>();
+    const seenAddresses = new Set<string>();
+    const seenKeys = new Set<string>();
     for (const item of candidate.validators) {
       assertPlainRecord(item, "checkpoint validator");
       assertExactKeys(item, ["address", "publicKey"], "checkpoint validator");
       if (typeof item.address !== "string" || typeof item.publicKey !== "string") throw new Error("Invalid checkpoint validator");
       assertAddress(item.address);
       assertHex(item.publicKey, 64, "checkpoint validator public key");
-      if (addressFromPublicKey(item.publicKey) !== item.address || seen.has(item.address)) throw new Error("Invalid checkpoint validator");
+      if (addressFromPublicKey(item.publicKey) !== item.address) throw new Error("Invalid checkpoint validator");
+      if (seenKeys.has(item.publicKey)) throw new Error("Duplicate validator public key");
+      if (seenAddresses.has(item.address)) throw new Error("Duplicate validator address");
       assertValidPublicKey(item.publicKey, "Checkpoint validator public key");
-      seen.add(item.address);
+      seenAddresses.add(item.address);
+      seenKeys.add(item.publicKey);
       validators.push({ address: item.address, publicKey: item.publicKey });
     }
     const activationHeight = Number(candidate.activationHeight);
@@ -953,8 +978,14 @@ function validateValidatorUpdateAuthorization(
   tx: ValidatorSetUpdateTx,
   currentValidators: Validator[],
   blockHeight: number,
-  lastActivationHeight: number
+  lastActivationHeight: number,
+  minimumValidators = 1
 ): void {
+  if (tx.validators.length < minimumValidators || tx.validators.length > 100) {
+    throw new Error(minimumValidators > 1
+      ? "Public-launch, value-bearing, and mainnet chains require at least 4 and at most 100 distinct validators"
+      : "Invalid validator set size");
+  }
   if (tx.activationHeight < blockHeight + MIN_VALIDATOR_UPDATE_DELAY) {
     throw new Error("Validator update activation is too soon");
   }
@@ -1058,10 +1089,14 @@ function validateGenesis(genesis: GenesisConfig): void {
   if (!Number.isSafeInteger(genesis.timestampMs) || genesis.timestampMs < 0) {
     throw new Error("Invalid genesis timestamp");
   }
-  if (!Array.isArray(genesis.validators) || genesis.validators.length === 0 || genesis.validators.length > 100) {
-    throw new Error("Genesis validator count must be between 1 and 100");
+  const minimumValidators = minimumValidatorCount(genesis);
+  if (!Array.isArray(genesis.validators) || genesis.validators.length < minimumValidators || genesis.validators.length > 100) {
+    throw new Error(minimumValidators > 1
+      ? "Public-launch, value-bearing, and mainnet genesis require at least 4 and at most 100 distinct validators"
+      : "Genesis validator count must be between 1 and 100");
   }
-  const validators = new Set<string>();
+  const validatorAddresses = new Set<string>();
+  const validatorKeys = new Set<string>();
   for (const validator of genesis.validators) {
     assertPlainRecord(validator, "validator");
     assertExactKeys(validator, ["address", "publicKey"], "validator");
@@ -1072,8 +1107,10 @@ function validateGenesis(genesis: GenesisConfig): void {
       throw new Error("Validator address/public key mismatch");
     }
     assertValidPublicKey(validator.publicKey, "Genesis validator public key");
-    if (validators.has(validator.address)) throw new Error("Duplicate validator");
-    validators.add(validator.address);
+    if (validatorKeys.has(validator.publicKey)) throw new Error("Duplicate validator public key");
+    if (validatorAddresses.has(validator.address)) throw new Error("Duplicate validator address");
+    validatorAddresses.add(validator.address);
+    validatorKeys.add(validator.publicKey);
   }
   if (!Array.isArray(genesis.activityOracles) || !genesis.activityOracles.length) {
     throw new Error("At least one activity oracle is required");

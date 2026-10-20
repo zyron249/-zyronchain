@@ -47,6 +47,19 @@ export function isStrictNetworkClass(value: string | undefined): value is Strict
   return value !== undefined && STRICT_CLASS.has(value);
 }
 
+/** Value-bearing classes refuse a set that cannot tolerate one faulty validator. */
+export const STRICT_MIN_VALIDATORS = 4;
+export const MAX_VALIDATORS = 100;
+
+/**
+ * Test classes and genesis files that omit `networkClass` keep the historical
+ * minimum of one validator. A public-launch, value-bearing or mainnet class
+ * requires four distinct validators.
+ */
+export function minimumValidatorCount(genesis: object): number {
+  return isStrictNetworkClass(readNetworkClass(genesis)) ? STRICT_MIN_VALIDATORS : 1;
+}
+
 /**
  * A chain ID that names a value-bearing class cannot omit that class.
  * The match is on hyphen-delimited segments, so `zyron-mainnet-1` matches and

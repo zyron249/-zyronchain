@@ -33,7 +33,8 @@ const CLASS_REQUIRED = /requires networkClass/;
 const key = (n: number) => n.toString(16).padStart(64, "0");
 const pub = (n: number) => publicKeyFromPrivate(key(n));
 const addr = (n: number) => addressFromPublicKey(pub(n));
-const VALIDATOR = 0x11;
+const VALIDATOR = 0x21;
+const VALIDATOR_COUNT = 4;
 const ORACLE = 0x12;
 const FOUNDER = 0x13;
 const PUBLIC = 0x14;
@@ -59,7 +60,10 @@ function strictGenesis(networkClass: NonNullable<GenesisConfig["networkClass"]> 
   const genesis: GenesisConfig = {
     chainId,
     timestampMs: T0,
-    validators: [{ address: addr(VALIDATOR), publicKey: pub(VALIDATOR) }],
+    validators: Array.from({ length: VALIDATOR_COUNT }, (_, index) => {
+      const id = VALIDATOR + index;
+      return { address: addr(id), publicKey: pub(id) };
+    }),
     activityOracles: [pub(ORACLE)],
     activityPool: addr(ECOSYSTEM),
     allocations: [
@@ -283,7 +287,8 @@ test("a started value-bearing chain rejects founder and liquidity spends inside 
   assert.deepEqual(chain.selectValidPending([founderTx, liquidityTx], 10, 1_500_000, at), []);
   assert.throws(() => chain.produceBlock([founderTx], key(VALIDATOR), { timestampMs: at }), VESTING);
   assert.throws(() => chain.produceBlock([liquidityTx], key(VALIDATOR), { timestampMs: at }), LIQUIDITY_LOCKED);
-  const block = chain.attestBlock(chain.produceBlock([], key(VALIDATOR), { timestampMs: at }), key(VALIDATOR));
+  let block = chain.produceBlock([], key(VALIDATOR), { timestampMs: at });
+  for (let index = 0; index < 3; index += 1) block = chain.attestBlock(block, key(VALIDATOR + index));
   chain.acceptBlock(block, at);
   assert.equal(chain.height, 1);
   assert.equal(chain.balance(addr(FOUNDER)), 5_000_000 * ZYN);
