@@ -45,7 +45,6 @@ import {
 } from "../../src/consensus-v6.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../../src/crypto.js";
 import { createTransfer } from "../../src/transaction.js";
-import type { Block } from "../../src/types.js";
 import { v6LeaderStart } from "../../src/v6-scheduler.js";
 import {
   ACTIVATION_HEIGHT,
