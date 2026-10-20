@@ -1,7 +1,7 @@
 export class ConsensusOperationBudget {
   private active = 0;
 
-  constructor(readonly limit: number, private readonly label: string) {
+  constructor(readonly limit: number, label: string) {
     if (!Number.isSafeInteger(limit) || limit < 1) throw new Error(`Invalid ${label} operation budget`);
   }
 
