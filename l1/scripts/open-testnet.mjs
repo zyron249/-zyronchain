@@ -44,6 +44,7 @@ const { blockHash, expectedValidator } = await import(dist("block.js"));
 const { merkleRoot } = await import(dist("merkle.js"));
 const { canonicalJson } = await import(dist("codec.js"));
 const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist("tokenomics.js"));
+const { defaultPublicDistributionRelease } = await import(dist("public-distribution-release.js"));
 const { gatewayClientIdentity } = await import(dist("rpc-client-identity.js"));
 
 export const DEFAULT_CHAIN_ID = "zyron-open-testnet-1";
@@ -338,7 +339,11 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
   assert.equal(network.chainId, genesis.chainId);
   assert.equal(new ZyronChain(genesis).genesisHash, network.genesisHash, "snapshot genesis hash mismatch");
   for (const [index, name] of VALIDATOR_NAMES.entries()) assert.equal(publicKeyFromPrivate(keys[name]), genesis.validators[index].publicKey, `snapshot key ${name} does not match genesis`);
+  for (const [index, name] of ["oracle1", "oracle2", "oracle3"].entries()) {
+    assert.equal(publicKeyFromPrivate(keys[name]), genesis.activityOracles[index], `snapshot oracle key ${name} does not match genesis`);
+  }
   assert.equal(addressFromPublicKey(publicKeyFromPrivate(keys.faucet)), network.faucetAddress, "snapshot faucet key mismatch");
+  assert.equal(genesis.publicDistributionRelease?.address, network.faucetAddress, "snapshot public-distribution release does not match the faucet");
   assert.ok(Array.isArray(blocks) && blocks.length >= V6_ACTIVATION_HEIGHT - 1, "snapshot has too few blocks");
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);
@@ -401,13 +406,18 @@ export async function initNetwork(dir, chainId, { onProgress = () => {} } = {}) 
   const keyDir = join(dir, "keys");
   await mkdir(keyDir, { mode: 0o700 });
   const validators = VALIDATOR_NAMES.map(() => newAccount());
-  const roles = { oracle: newAccount(), founder: newAccount(), faucet: newAccount(), liquidity: newAccount(), ecosystem: newAccount() };
+  const oracleNames = ["oracle1", "oracle2", "oracle3"];
+  const oracles = oracleNames.map(() => newAccount());
+  const roles = { founder: newAccount(), faucet: newAccount(), liquidity: newAccount(), ecosystem: newAccount() };
   const plan = fixedSupplyPlanAtoms();
   const genesis = {
     chainId,
-    timestampMs: Date.now() - 60_000,
+    // Backdated so the 365-day public-distribution line has vested the 100 ZYN faucet drip.
+    timestampMs: Date.now() - 10 * 60_000,
     validators: validators.map(({ publicKey, address }) => ({ address, publicKey })),
-    activityOracles: [roles.oracle.publicKey],
+    activityOracles: oracles.map((oracle) => oracle.publicKey),
+    activityOracleThreshold: 2,
+    activityOraclePolicy: "threshold-v1",
     activityPool: roles.ecosystem.address,
     allocations: [
       { address: roles.founder.address, amountAtoms: plan.founder },
@@ -416,10 +426,12 @@ export async function initNetwork(dir, chainId, { onProgress = () => {} } = {}) 
       { address: roles.ecosystem.address, amountAtoms: plan.ecosystemReserve }
     ],
     allocationLocks: { founderVesting: roles.founder.address, permanentLiquidity: roles.liquidity.address },
+    publicDistributionRelease: defaultPublicDistributionRelease(roles.faucet.address),
     launchProfile: FIXED_SUPPLY_LAUNCH_PROFILE
   };
   const chain = new ZyronChain(genesis);
   for (const [index, name] of VALIDATOR_NAMES.entries()) await writeSecret(join(keyDir, `${name}.json`), { privateKey: validators[index].privateKey });
+  for (const [index, name] of oracleNames.entries()) await writeSecret(join(keyDir, `${name}.json`), { privateKey: oracles[index].privateKey });
   for (const [name, account] of Object.entries(roles)) await writeSecret(join(keyDir, `${name}.json`), { privateKey: account.privateKey });
 
   // MIN_PROTOCOL_UPDATE_DELAY is 100 blocks: heights 1-100 are produced offline
@@ -452,7 +464,8 @@ export async function initNetwork(dir, chainId, { onProgress = () => {} } = {}) 
   }
   const publicInfo = {
     network: "testnet", valueBearing: false, notice: NOTICE, chainId, genesisHash: chain.genesisHash,
-    launchProfile: FIXED_SUPPLY_LAUNCH_PROFILE, protocolV6ActivationHeight: V6_ACTIVATION_HEIGHT,
+    launchProfile: FIXED_SUPPLY_LAUNCH_PROFILE, activityOraclePolicy: "threshold-v1", activityOracleThreshold: 2,
+    activityOracleCount: oracles.length, protocolV6ActivationHeight: V6_ACTIVATION_HEIGHT,
     validators: genesis.validators, faucetAddress: roles.faucet.address,
     roles: { founderVesting: roles.founder.address, publicDistributionFaucet: roles.faucet.address, permanentLiquidity: roles.liquidity.address, ecosystemActivityPool: roles.ecosystem.address }
   };
@@ -683,7 +696,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     const nextProtocol = protocol.status === 200 ? protocol.body.nextVersion : 1;
     statusCache = {
       network: "testnet", valueBearing: false, notice: NOTICE, chainId, genesisHash: status.body.genesisHash,
-      launchProfile: genesis.launchProfile, height: status.body.height, tipHash: status.body.tipHash,
+      launchProfile: genesis.launchProfile, activityOraclePolicy: genesis.activityOraclePolicy,
+      activityOracleThreshold: genesis.activityOracleThreshold, activityOracleCount: genesis.activityOracles.length,
+      height: status.body.height, tipHash: status.body.tipHash,
       protocolVersion: nextProtocol, transactionVersion: nextProtocol >= 3 ? 2 : 1, blockIntervalSeconds: 30,
       validatorCount: genesis.validators.length, persistence,
       faucet: { address: faucet.address, dripZyn: FAUCET_DRIP_ATOMS / ATOMS_PER_ZYN, perAddressPerDay: 1 }
@@ -743,7 +758,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       onReject: (name, error) => console.error(`snapshot: history from ${name} not used (${error instanceof Error ? error.message : String(error)})`)
     });
     const keys = {};
-    for (const name of [...VALIDATOR_NAMES, "oracle", "founder", "faucet", "liquidity", "ecosystem"]) keys[name] = (await readSecret(join(dir, "keys", `${name}.json`))).privateKey;
+    for (const name of [...VALIDATOR_NAMES, "oracle1", "oracle2", "oracle3", "founder", "faucet", "liquidity", "ecosystem"]) keys[name] = (await readSecret(join(dir, "keys", `${name}.json`))).privateKey;
     const sealed = sealSnapshot({ format: SNAPSHOT_MAGIC, createdAtMs: Date.now(), genesis, network: info, keys, blocks }, stateSecret);
     snapshotCache = { sealed, height: tip }; snapshotCacheAt = Date.now();
     return snapshotCache;
@@ -964,6 +979,11 @@ async function smoke() {
     await until("first v6 block on all validators", () => allAt(V6_ACTIVATION_HEIGHT));
     const status = (await get("/status")).body;
     assert.equal(status.protocolVersion, 6); assert.equal(status.valueBearing, false); assert.equal(status.launchProfile, "fixed-supply-v1");
+    assert.equal(status.activityOraclePolicy, "threshold-v1"); assert.equal(status.activityOracleThreshold, 2); assert.equal(status.activityOracleCount, 3);
+    const published = (await get("/genesis")).body.genesis;
+    assert.equal(published.publicDistributionRelease.address, info.faucetAddress);
+    assert.equal(published.publicDistributionRelease.cliffMs, 0);
+    assert.equal(published.publicDistributionRelease.linearMs, 31_536_000_000);
     assert.match((await get("/")).body, /TESTNET/);
     const block = (await get(`/block/${V6_ACTIVATION_HEIGHT}`)).body;
     assert.equal(block.version, 6);

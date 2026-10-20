@@ -20,9 +20,9 @@ Under `launchProfile: "fixed-supply-v1"` the 20,000,000 ZYN public-distribution 
 
 `address` is an input. This repository does not contain a real role address. `cliffMs` and `linearMs` must be written in the genesis file. Nodes do not fill them in silently.
 
-Genesis files that omit the field keep the previous rule: that allocation is spendable, and a file that also omits `launchProfile`, `activityOracleThreshold` and `networkClass` keeps the historical genesis hash. Adding the field commits the full configuration (see [`GENESIS_CONFIG_BINDING.md`](GENESIS_CONFIG_BINDING.md)). Do not add it to a live devnet or testnet data directory.
+Genesis files that omit the field keep the previous rule: that allocation is spendable, and a file that also omits `launchProfile`, `activityOracleThreshold`, `activityOraclePolicy`, `activitySettlementCapAtoms` and `networkClass` keeps the historical genesis hash. Adding the field commits the full configuration (see [`GENESIS_CONFIG_BINDING.md`](GENESIS_CONFIG_BINDING.md)). Do not add it to a live devnet or testnet data directory.
 
-A `networkClass` of `public-launch`, `value-bearing` or `mainnet` is refused at node start unless the field is present and inside the bounds below. An explicit test class, and a genesis that omits the class, may omit it. The open testnet, the wallet testnet, the local devnet and the private testnet omit it, so they keep working.
+`launchProfile: "fixed-supply-v1"` and a `networkClass` of `public-launch`, `value-bearing` or `mainnet` are refused at node start unless the field is present and inside the bounds below. A genesis that omits both the profile and a value-bearing class may omit the field. The wallet testnet, the local devnet and the private testnet omit it, so they keep a spendable allocation. The open testnet uses `fixed-supply-v1`, so it declares the schedule (no cliff, 365-day linear release) on its public-distribution faucet. The faucet drips from the vested slice; the full 20,000,000 test ZYN is not spendable on day one.
 
 ## Schedule
 
@@ -51,5 +51,5 @@ Nothing is vested at elapsed `0`. One millisecond later the first linear slice v
 ## What stays unchanged
 
 - Founder vesting and the permanent-liquidity lock are unchanged.
-- A genesis that omits this field does not suddenly lock an existing testnet allocation.
+- A genesis that omits this field, and that also omits `fixed-supply-v1` and a value-bearing class, does not suddenly lock an existing testnet allocation.
 - No activation flag is flipped.

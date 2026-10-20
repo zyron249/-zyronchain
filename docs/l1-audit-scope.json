@@ -183,12 +183,12 @@
     },
     {
       "id": "SUPPLY-002",
-      "statement": "An activity settlement pays at most 10,000 ZYN, settles only the most recently closed 24-hour epoch by block time, and epochs settle once and in strictly increasing order, so one oracle key moves at most 10,000 ZYN per epoch.",
+      "statement": "An activity settlement pays at most the genesis activity cap (10,000 ZYN when no activityOraclePolicy is set; at most 1,000 ZYN, configurable downward, under threshold-v1), settles only the most recently closed 24-hour epoch by block time, and epochs settle once and in strictly increasing order. fixed-supply-v1 also caps the rolling 24-hour window at that same configured cap.",
       "primaryModules": ["l1/src/activity.ts", "l1/src/chain.ts", "l1/src/state.ts", "l1/src/state-v2.ts", "l1/src/transaction.ts"]
     },
     {
       "id": "SUPPLY-004",
-      "statement": "When genesis declares activityOracleThreshold m, an activity settlement is valid on every path only with signatures from at least m distinct registered oracle keys over the canonical payload {chainId, sender, epoch, entries, receiptRoot}; without it, settlements carrying oracleApprovals are rejected and single-oracle behaviour is unchanged.",
+      "statement": "fixed-supply-v1 requires activityOraclePolicy threshold-v1: at least 2-of-3 or stricter, fail-closed (duplicate signers, unknown keys, replayed signatures, stale or expired attestations and a wrong chain id are rejected) over domain zyronchain/activity-settlement-approval/v2. A genesis with activityOracleThreshold and no policy keeps the lenient v1 m-of-n rule. A genesis with neither keeps single-oracle settlements and rejects oracleApprovals. Validator quorum can pause, resume or revoke registered oracle keys; it cannot add a replacement key.",
       "primaryModules": ["l1/src/activity-oracle.ts", "l1/src/transaction.ts", "l1/src/chain.ts", "l1/src/state.ts", "l1/src/state-v2.ts", "l1/src/types.ts"]
     },
     {

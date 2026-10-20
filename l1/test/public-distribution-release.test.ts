@@ -53,7 +53,9 @@ function strictGenesis(schedule: GenesisConfig["publicDistributionRelease"] | "o
     chainId: "zyron-review-distribution",
     timestampMs: T0,
     validators: VALIDATORS.map((id) => ({ address: addr(id), publicKey: pub(id) })),
-    activityOracles: [pub(ORACLE)],
+    activityOracles: [pub(ORACLE), pub(0x18), pub(0x19)],
+    activityOracleThreshold: 2,
+    activityOraclePolicy: "threshold-v1",
     activityPool: addr(ECOSYSTEM),
     allocations: [
       { address: addr(FOUNDER), amountAtoms: 5_000_000 * ZYN },
@@ -237,25 +239,16 @@ test("inflows above the still-locked genesis allocation are spendable during the
   assert.throws(() => chain.produceBlock([spendAllocation], key(VALIDATORS[0]!), { timestampMs: at + 1 }), LOCKED);
 });
 
-test("open testnet and wallet testnet shapes without the field keep day-one spend and the historical hash rule", () => {
-  const open: GenesisConfig = {
-    chainId: "zyron-open-testnet-1",
-    timestampMs: T0,
-    validators: [{ address: addr(VALIDATORS[0]!), publicKey: pub(VALIDATORS[0]!) }],
-    activityOracles: [pub(ORACLE)],
-    activityPool: addr(ECOSYSTEM),
-    allocations: [
-      { address: addr(FOUNDER), amountAtoms: 5_000_000 * ZYN },
-      { address: addr(PUBLIC), amountAtoms: PUBLIC_ATOMS },
-      { address: addr(LIQUIDITY), amountAtoms: 20_000_000 * ZYN },
-      { address: addr(ECOSYSTEM), amountAtoms: 5_000_000 * ZYN }
-    ],
-    allocationLocks: { founderVesting: addr(FOUNDER), permanentLiquidity: addr(LIQUIDITY) },
-    launchProfile: "fixed-supply-v1"
-  };
+test("fixed-supply-v1 requires the release; a wallet testnet without the profile keeps day-one spend", () => {
+  const open = strictGenesis();
+  delete open.networkClass;
+  open.chainId = "zyron-open-testnet-1";
   const chain = new ZyronChain(open);
-  assert.equal(chain.spendableBalance(addr(PUBLIC), T0 + 1_000), PUBLIC_ATOMS);
-  assert.equal(allocationLockContext(open, T0 + 1_000)?.publicDistribution, undefined);
+  assert.ok(chain.spendableBalance(addr(PUBLIC), T0 + 1_000) < PUBLIC_ATOMS);
+  assert.ok(allocationLockContext(open, T0 + 1_000)?.publicDistribution);
+  const omitted = structuredClone(open);
+  delete omitted.publicDistributionRelease;
+  assert.throws(() => new ZyronChain(omitted), REQUIRED);
   const wallet: GenesisConfig = {
     chainId: "zyron-wallet-testnet-1",
     timestampMs: T0,

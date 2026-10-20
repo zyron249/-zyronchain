@@ -9,6 +9,7 @@ import {
   ACTIVITY_WINDOW_RESERVED_MESSAGE,
   ACTIVITY_WINDOW_TIME_ADDRESS,
   activityRollingWindowEnforced,
+  activitySettlementCapAtoms,
   assertActivityRollingWindow,
   assertActivitySettlementWithinCap,
   assertNoActivityPoolDirectDebit,
@@ -349,6 +350,12 @@ export function verifySparseMerkleProof(
 export interface StateV2GovernanceSnapshot {
   validatorSchedule: Array<{ activationHeight: number; validators: Validator[] }>;
   protocolSchedule: Array<{ activationHeight: number; protocolVersion: number }>;
+  /** Present only after a pause, resume or revoke. Omitted when empty so older views stay canonical. */
+  activityOracleGovernance?: Array<{
+    activationHeight: number;
+    action: "pause" | "resume" | "revoke";
+    publicKeys: string[];
+  }>;
 }
 
 export interface StateV2PortableView {
@@ -369,7 +376,8 @@ export function stateV2KeyPreimages(
     ...snapshot.accounts.map((account) => accountKey(account.address)),
     ...snapshot.settledActivityEpochs.map(activityEpochKey),
     ...governance.validatorSchedule.map((entry) => validatorScheduleKey(entry.activationHeight)),
-    ...governance.protocolSchedule.map((entry) => protocolScheduleKey(entry.activationHeight))
+    ...governance.protocolSchedule.map((entry) => protocolScheduleKey(entry.activationHeight)),
+    ...(governance.activityOracleGovernance ?? []).map((entry) => activityOracleGovernanceKey(entry.activationHeight))
   ].sort();
 }
 
@@ -385,6 +393,8 @@ export function stateV2TransactionKeyPreimages(tx: Transaction): string[] {
     keys.add(accountKey(MINING_TRACKER_ADDRESS));
   } else if (tx.kind === "validator_update") {
     keys.add(validatorScheduleKey(tx.activationHeight));
+  } else if (tx.kind === "activity_oracle_governance") {
+    keys.add(activityOracleGovernanceKey(tx.activationHeight));
   } else {
     keys.add(protocolScheduleKey(tx.activationHeight));
   }
@@ -409,6 +419,7 @@ export function reconstructStateV2PortableView(
   const epochs: number[] = [];
   const validatorSchedule: StateV2GovernanceSnapshot["validatorSchedule"] = [];
   const protocolSchedule: StateV2GovernanceSnapshot["protocolSchedule"] = [];
+  const activityOracleGovernance: NonNullable<StateV2GovernanceSnapshot["activityOracleGovernance"]> = [];
 
   for (const key of keyPreimages) {
     if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new Error("Invalid State v2 key preimage");
@@ -435,6 +446,14 @@ export function reconstructStateV2PortableView(
       const activationHeight = parseSemanticHeight(key.slice("protocol-schedule:".length), "protocol activation height");
       assertStateV2ProtocolScheduleValue(value);
       protocolSchedule.push({ activationHeight, protocolVersion: Number(value.protocolVersion) });
+    } else if (key.startsWith("activity-oracle-governance:")) {
+      const activationHeight = parseSemanticHeight(key.slice("activity-oracle-governance:".length), "activity oracle governance height");
+      assertStateV2ActivityOracleGovernanceValue(value);
+      activityOracleGovernance.push({
+        activationHeight,
+        action: value.action,
+        publicKeys: [...value.publicKeys]
+      });
     } else {
       throw new Error("Unknown State v2 semantic key");
     }
@@ -445,15 +464,21 @@ export function reconstructStateV2PortableView(
   epochs.sort((a, b) => a - b);
   validatorSchedule.sort((a, b) => a.activationHeight - b.activationHeight);
   protocolSchedule.sort((a, b) => a.activationHeight - b.activationHeight);
+  activityOracleGovernance.sort((a, b) => a.activationHeight - b.activationHeight);
   assertUniqueSemanticNumbers(epochs, "activity epoch");
   assertUniqueSemanticNumbers(validatorSchedule.map((entry) => entry.activationHeight), "validator activation height");
   assertUniqueSemanticNumbers(protocolSchedule.map((entry) => entry.activationHeight), "protocol activation height");
+  assertUniqueSemanticNumbers(activityOracleGovernance.map((entry) => entry.activationHeight), "activity oracle governance height");
   if (validatorSchedule[0]?.activationHeight !== 0 || protocolSchedule[0]?.activationHeight !== 0) {
     throw new Error("State v2 governance schedule must start at genesis");
   }
 
   const ledger = LedgerState.fromSnapshot({ accounts, settledActivityEpochs: epochs }).snapshot();
-  const governance = { validatorSchedule, protocolSchedule };
+  const governance = {
+    validatorSchedule,
+    protocolSchedule,
+    ...(activityOracleGovernance.length ? { activityOracleGovernance } : {})
+  };
   if (stateV2FromLedgerSnapshot(ledger, governance).root() !== state.root()) {
     throw new Error("Reconstructed State v2 portable view root mismatch");
   }
@@ -513,6 +538,13 @@ export function* stateV2FromLedgerSnapshotSteps(
     }
     for (const entry of [...governance.protocolSchedule].sort((a, b) => a.activationHeight - b.activationHeight)) {
       state = state.set(protocolScheduleKey(entry.activationHeight), { protocolVersion: entry.protocolVersion });
+      yield* counted();
+    }
+    for (const entry of [...(governance.activityOracleGovernance ?? [])].sort((a, b) => a.activationHeight - b.activationHeight)) {
+      state = state.set(activityOracleGovernanceKey(entry.activationHeight), {
+        action: entry.action,
+        publicKeys: [...entry.publicKeys]
+      });
       yield* counted();
     }
   }
@@ -575,14 +607,21 @@ export function applyStateV2Transaction(
     return setStateV2Nonce(next, tx.sender, tx.nonce);
   }
   if (tx.kind === "activity_settlement") {
-    if (oracles) assertActivitySettlementAuthorized(tx, oracles);
+    if (oracles) {
+      assertActivitySettlementAuthorized(tx, oracles, {
+        chainId: tx.chainId,
+        ...(locks?.blockTimestampMs !== undefined ? { blockTimestampMs: locks.blockTimestampMs } : {}),
+        ...(oracles.timestampMs !== undefined ? { genesisTimestampMs: oracles.timestampMs } : {})
+      });
+    }
     if (tx.sender !== activityPool) throw new Error("Invalid activity pool sender");
     for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, activityPool);
     if (state.get(activityEpochKey(tx.epoch)) !== undefined) throw new Error("Activity epoch already settled");
     // Adjacent-order defence in depth (see LedgerState.applyActivity).
     if (state.get(activityEpochKey(tx.epoch + 1)) !== undefined) throw new Error(ACTIVITY_ORDER_MESSAGE);
     requireStateV2Nonce(state, activityPool, tx.nonce);
-    const total = assertActivitySettlementWithinCap(tx.entries);
+    const capAtoms = activitySettlementCapAtoms(oracles);
+    const total = assertActivitySettlementWithinCap(tx.entries, capAtoms);
     if (rollingWindow) {
       // Rolling 24 h cap under fixed-supply-v1 (see activity.ts).
       if (tx.entries.some((entry) => isActivityWindowAddress(entry.receiver))) {
@@ -591,7 +630,7 @@ export function applyStateV2Transaction(
       assertActivityRollingWindow({
         timestampMs: stateV2Nonce(state, ACTIVITY_WINDOW_TIME_ADDRESS),
         amountAtoms: stateV2Nonce(state, ACTIVITY_WINDOW_AMOUNT_ADDRESS)
-      }, locks?.blockTimestampMs, total);
+      }, locks?.blockTimestampMs, total, capAtoms);
     }
     const poolBalance = stateV2Balance(state, activityPool);
     if (poolBalance < total) throw new Error("Insufficient balance");
@@ -613,6 +652,8 @@ export function applyStateV2Transaction(
   let next = setStateV2Nonce(state, tx.sender, tx.nonce);
   if (tx.kind === "validator_update") {
     next = next.set(validatorScheduleKey(tx.activationHeight), { validators: tx.validators });
+  } else if (tx.kind === "activity_oracle_governance") {
+    next = next.set(activityOracleGovernanceKey(tx.activationHeight), { action: tx.action, publicKeys: [...tx.publicKeys] });
   } else {
     next = next.set(protocolScheduleKey(tx.activationHeight), { protocolVersion: tx.protocolVersion });
   }
@@ -694,6 +735,10 @@ export function protocolScheduleKey(activationHeight: number): string {
   return `protocol-schedule:${activationHeight}`;
 }
 
+export function activityOracleGovernanceKey(activationHeight: number): string {
+  return `activity-oracle-governance:${activationHeight}`;
+}
+
 /**
  * Untrusted-input pre-check for a portable key preimage (round-4 PR980): only
  * the semantic key families that {@link reconstructStateV2PortableView}
@@ -721,6 +766,32 @@ function assertStateV2ValidatorScheduleValue(value: unknown): asserts value is {
   if (!Array.isArray(value.validators)) throw new Error("Invalid State v2 validator schedule value");
 }
 
+function assertStateV2ActivityOracleGovernanceValue(value: unknown): asserts value is {
+  action: "pause" | "resume" | "revoke";
+  publicKeys: string[];
+} {
+  assertExactPortableRecord(value, ["action", "publicKeys"], "State v2 activity oracle governance value");
+  if (value.action !== "pause" && value.action !== "resume" && value.action !== "revoke") {
+    throw new Error("Invalid State v2 activity oracle governance value");
+  }
+  if (!Array.isArray(value.publicKeys) || value.publicKeys.length > 100) {
+    throw new Error("Invalid State v2 activity oracle governance value");
+  }
+  const seen = new Set<string>();
+  for (const publicKey of value.publicKeys) {
+    if (typeof publicKey !== "string" || !/^[0-9a-f]{128}$/.test(publicKey) || seen.has(publicKey)) {
+      throw new Error("Invalid State v2 activity oracle governance value");
+    }
+    seen.add(publicKey);
+  }
+  if ((value.action === "pause" || value.action === "resume") && value.publicKeys.length !== 0) {
+    throw new Error("Invalid State v2 activity oracle governance value");
+  }
+  if (value.action === "revoke" && value.publicKeys.length === 0) {
+    throw new Error("Invalid State v2 activity oracle governance value");
+  }
+}
+
 function assertStateV2ProtocolScheduleValue(value: unknown): asserts value is { protocolVersion: number } {
   assertExactPortableRecord(value, ["protocolVersion"], "State v2 protocol schedule value");
   if (!Number.isSafeInteger(value.protocolVersion) || Number(value.protocolVersion) < 1) {
@@ -745,9 +816,11 @@ export function assertStateV2LeafValueSchema(value: unknown): void {
     else if (fields === "validators") {
       assertStateV2ValidatorScheduleValue(value);
       assertPortableValidatorList(value.validators);
-    } else if (fields === "protocolVersion") {
+    }     else if (fields === "protocolVersion") {
       assertStateV2ProtocolScheduleValue(value);
       if (value.protocolVersion > MAX_PORTABLE_PROTOCOL_VERSION) throw new Error("protocol version out of range");
+    } else if (fields === "action,publicKeys") {
+      assertStateV2ActivityOracleGovernanceValue(value);
     } else throw new Error("unknown field set");
   } catch (cause) {
     throw new Error("Invalid portable State v2 leaf value schema", { cause });
@@ -788,6 +861,10 @@ export function assertStateV2SemanticKeyShape(key: string): void {
   }
   if (key.startsWith("protocol-schedule:")) {
     parseSemanticHeight(key.slice("protocol-schedule:".length), "protocol activation height");
+    return;
+  }
+  if (key.startsWith("activity-oracle-governance:")) {
+    parseSemanticHeight(key.slice("activity-oracle-governance:".length), "activity oracle governance height");
     return;
   }
   throw new Error("Unknown State v2 semantic key");

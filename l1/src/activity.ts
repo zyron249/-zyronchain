@@ -14,20 +14,50 @@ import type { ActivityEntry, Address } from "./types.js";
  *   order, so the per-settlement cap is also the per-epoch cap.
  */
 export const ACTIVITY_EPOCH_MS = 86_400_000;
+/** Historical per-epoch ceiling. A genesis without `activityOraclePolicy` uses this. */
 export const MAX_ACTIVITY_SETTLEMENT_ATOMS = 10_000 * ATOMS_PER_ZYN;
+/**
+ * Default and maximum per-epoch / rolling-24h cap under
+ * `activityOraclePolicy: "threshold-v1"` (public launch). Ten times below the
+ * historical ceiling. Raising it is a consensus change and needs an owner decision.
+ */
+export const PUBLIC_LAUNCH_ACTIVITY_CAP_ATOMS = 1_000 * ATOMS_PER_ZYN;
 
 export const ACTIVITY_CAP_MESSAGE = "Activity settlement exceeds the per-epoch activity cap";
 export const ACTIVITY_NOT_CLOSED_MESSAGE = "Activity epoch is not closed yet";
 export const ACTIVITY_WINDOW_CLOSED_MESSAGE = "Activity epoch settlement window has closed";
 export const ACTIVITY_ORDER_MESSAGE = "Activity epochs must settle in increasing order";
 
+/**
+ * Per-epoch cap for this genesis. Legacy and `test-single-v1` keep the
+ * historical 10,000 ZYN ceiling (configurable downward on the test profile).
+ * `threshold-v1` defaults to {@link PUBLIC_LAUNCH_ACTIVITY_CAP_ATOMS} and
+ * cannot be configured above it.
+ */
+export function activitySettlementCapAtoms(genesis: {
+  readonly activityOraclePolicy?: string;
+  readonly activitySettlementCapAtoms?: number;
+} | undefined): number {
+  if (genesis?.activityOraclePolicy === "threshold-v1") {
+    return genesis.activitySettlementCapAtoms ?? PUBLIC_LAUNCH_ACTIVITY_CAP_ATOMS;
+  }
+  if (genesis?.activityOraclePolicy === "test-single-v1") {
+    return genesis.activitySettlementCapAtoms ?? MAX_ACTIVITY_SETTLEMENT_ATOMS;
+  }
+  return MAX_ACTIVITY_SETTLEMENT_ATOMS;
+}
+
 /** Total payout of a settlement; throws when it exceeds the per-epoch cap. */
-export function assertActivitySettlementWithinCap(entries: readonly ActivityEntry[]): number {
+export function assertActivitySettlementWithinCap(
+  entries: readonly ActivityEntry[],
+  capAtoms: number = MAX_ACTIVITY_SETTLEMENT_ATOMS
+): number {
+  if (!Number.isSafeInteger(capAtoms) || capAtoms < 1) throw new Error("Invalid activity cap");
   let total = 0n;
   for (const entry of entries) {
     if (!Number.isSafeInteger(entry.amountAtoms) || entry.amountAtoms < 0) throw new Error("Invalid activity amount");
     total += BigInt(entry.amountAtoms);
-    if (total > BigInt(MAX_ACTIVITY_SETTLEMENT_ATOMS)) throw new Error(ACTIVITY_CAP_MESSAGE);
+    if (total > BigInt(capAtoms)) throw new Error(ACTIVITY_CAP_MESSAGE);
   }
   return Number(total);
 }
@@ -55,13 +85,13 @@ export function activityEpochWindowExpired(epoch: number, genesisTimestampMs: nu
 }
 
 /**
- * Rolling 24 h activity cap (owner rule: at most 10,000 ZYN of activity
- * settlements per 24 hours). Enforced only under `launchProfile:
+ * Rolling 24 h activity cap. Enforced only under `launchProfile:
  * "fixed-supply-v1"`; a genesis without a launch profile keeps the per-epoch
  * rule above, so existing chains do not fork. See docs/ACTIVITY_ORACLE_CAP.md.
  *
  * Rule: the settlements whose block timestamps lie inside any window
- * (t, t + 24 h) sum to at most MAX_ACTIVITY_SETTLEMENT_ATOMS.
+ * (t, t + 24 h) sum to at most the configured activity cap (1,000 ZYN by
+ * default under threshold-v1).
  *
  * Why one record is enough: epoch e settles only in a block timestamped inside
  * epoch e + 1, at most once and in increasing order, so each 24 h epoch of
@@ -79,7 +109,7 @@ export function activityEpochWindowExpired(epoch: number, genesisTimestampMs: nu
 export const ACTIVITY_ROLLING_WINDOW_MS = 86_400_000;
 export const ACTIVITY_WINDOW_TIME_ADDRESS = `ZYN${"0".repeat(39)}1` as Address;
 export const ACTIVITY_WINDOW_AMOUNT_ADDRESS = `ZYN${"0".repeat(39)}2` as Address;
-export const ACTIVITY_ROLLING_CAP_MESSAGE = "Activity settlements exceed 10,000 ZYN in a rolling 24-hour window";
+export const ACTIVITY_ROLLING_CAP_MESSAGE = "Activity settlements exceed the activity cap in a rolling 24-hour window";
 export const ACTIVITY_WINDOW_RESERVED_MESSAGE = "Activity window record address is protocol-reserved";
 
 /** Launch profile under which the rolling window is a consensus rule. */
@@ -122,19 +152,23 @@ export interface ActivityWindowRecord {
 export function assertActivityRollingWindow(
   previous: ActivityWindowRecord,
   blockTimestampMs: number | undefined,
-  totalAtoms: number
+  totalAtoms: number,
+  capAtoms: number = MAX_ACTIVITY_SETTLEMENT_ATOMS
 ): void {
+  if (!Number.isSafeInteger(capAtoms) || capAtoms < 1 || capAtoms > MAX_ACTIVITY_SETTLEMENT_ATOMS) {
+    throw new Error("Invalid activity cap");
+  }
   if (blockTimestampMs === undefined || !Number.isSafeInteger(blockTimestampMs) || blockTimestampMs < 0) {
     throw new Error("Activity rolling window requires the block timestamp");
   }
   if (!Number.isSafeInteger(previous.timestampMs) || previous.timestampMs < 0 ||
       !Number.isSafeInteger(previous.amountAtoms) || previous.amountAtoms < 0 ||
-      previous.amountAtoms > MAX_ACTIVITY_SETTLEMENT_ATOMS || previous.timestampMs > blockTimestampMs) {
+      previous.amountAtoms > capAtoms || previous.timestampMs > blockTimestampMs) {
     throw new Error("Corrupt activity window state");
   }
   if (!Number.isSafeInteger(totalAtoms) || totalAtoms < 0) throw new Error("Invalid activity amount");
   if (blockTimestampMs - previous.timestampMs < ACTIVITY_ROLLING_WINDOW_MS &&
-      previous.amountAtoms + totalAtoms > MAX_ACTIVITY_SETTLEMENT_ATOMS) {
+      previous.amountAtoms + totalAtoms > capAtoms) {
     throw new Error(ACTIVITY_ROLLING_CAP_MESSAGE);
   }
 }

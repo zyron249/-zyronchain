@@ -49,7 +49,9 @@ function strictGenesis(count: number, chainId = "zyron-review-validators"): Gene
     chainId,
     timestampMs: T0,
     validators: Array.from({ length: count }, (_, index) => validator(0x21 + index)),
-    activityOracles: [pub(0x12)],
+    activityOracles: [pub(0x12), pub(0x17), pub(0x18)],
+    activityOracleThreshold: 2,
+    activityOraclePolicy: "threshold-v1",
     activityPool: ecosystem,
     allocations: [
       { address: founder, amountAtoms: 5_000_000 * ZYN },
@@ -95,6 +97,9 @@ test("a value-bearing genesis with fewer than four validators is rejected at con
     const genesis = strictGenesis(count, `zyron-review-n${count}`);
     assert.throws(() => new ZyronChain(genesis), TOO_FEW);
   }
+  const profileOnly = strictGenesis(3, "zyron-profile-few");
+  delete profileOnly.networkClass;
+  assert.throws(() => new ZyronChain(profileOnly), TOO_FEW);
   const directory = await mkdtemp(join(tmpdir(), "zyron-min-validators-"));
   try {
     await assert.rejects(() => ChainStore.open(strictGenesis(3, "zyron-review-open"), directory), TOO_FEW);
@@ -105,6 +110,9 @@ test("a value-bearing genesis with fewer than four validators is rejected at con
 
 test("a value-bearing genesis with four distinct validators starts and keeps the 50M supply", async () => {
   const genesis = strictGenesis(4);
+  const openProfile = strictGenesis(4, "zyron-open-profile");
+  delete openProfile.networkClass;
+  assert.equal(new ZyronChain(openProfile).validatorsAt(1).length, 4);
   const chain = new ZyronChain(genesis);
   assert.equal(chain.validatorsAt(1).length, 4);
   assert.equal(new Set(chain.validatorsAt(1).map((item) => item.address)).size, 4);
