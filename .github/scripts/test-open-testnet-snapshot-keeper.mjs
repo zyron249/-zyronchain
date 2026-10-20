@@ -1480,3 +1480,55 @@ test("no GitHub call is started once the missing-name window is spent", async ()
   assert.deepEqual(late, [], "no rename is started after the window");
   assert.ok(state.assets.some((asset) => /^next-/.test(asset.name)) && state.assets.some((asset) => /^prev-/.test(asset.name)), "both copies are kept for the next cycle's repair");
 });
+
+test("a snapshot download that ends past the deadline starts no release listing at all", async () => {
+  {
+    // publishAsset called after swapBy makes no GitHub request.
+    const { now } = steppedClock(T0 + 10);
+    const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }], now });
+    const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 2150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now, swapBy: T0 + 5, log() {}, warn() {}, sleep: async () => {} });
+    assert.equal(result.published, false);
+    assert.match(result.reason, /deadline/);
+    assert.deepEqual(state.calls, [], "no listing after the deadline");
+  }
+  {
+    // publishCycle: /state/snapshot completes after swapBy, so neither
+    // publication starts a listing.
+    const { clock, now } = steppedClock();
+    const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(2100, GENESIS) }], now });
+    const gateway = gatewayFetch();
+    const fetchImpl = async (...args) => { const response = await gateway.fetchImpl(...args); clock.ms = T0 + 10; return response; };
+    const result = await publishCycle({ fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS, now, swapBy: T0 + 5, log() {}, warn() {}, sleep: async () => {} });
+    assert.equal(result.published, false);
+    assert.equal(result.copyPublished, false);
+    assert.deepEqual(state.calls, [], "no GitHub request after a download that overran the deadline");
+  }
+});
+
+test("repair restores state.enc before it touches any per-genesis keeper copy", async () => {
+  const per = perGenesisName(GENESIS);
+  // The listing returns the per-genesis group first (API order); state.enc is
+  // missing and a complete backup of it is listed last.
+  const assets = () => [
+    { id: 20, name: per, label: formatLabel(2100, GENESIS) },
+    { id: 21, name: keeperAssetName("prev", per, T0 - 50 * 60_000, "aaaaaaa1"), label: formatLabel(2050, GENESIS) },
+    { id: 22, name: keeperAssetName("prev", per, T0 - 40 * 60_000, "aaaaaaa2"), label: formatLabel(2060, GENESIS) },
+    { id: 23, name: keeperAssetName("next", per, T0 - 45 * 60_000, "aaaaaaa3"), label: formatLabel(2000, GENESIS), state: "starter", size: 0 },
+    { id: 3, name: keeperAssetName("prev", "state.enc", T0 - 5 * 60_000, "bbbbbbbb"), label: formatLabel(2100, GENESIS) }
+  ];
+  {
+    // Healthy calls: the first mutating request is the state.enc install.
+    const { github, state } = fakeGitHub({ assets: assets() });
+    await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+    const firstMutation = state.calls.find((call) => call[0] === "rename" || call[0] === "remove");
+    assert.deepEqual(firstMutation, ["rename", 3, "state.enc"], "state.enc is repaired first");
+    assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 3);
+  }
+  {
+    // A failing delete in the per-genesis group cannot prevent the state.enc restore.
+    const { github, state } = fakeGitHub({ assets: assets() });
+    github.remove = async (id) => { state.calls.push(["remove", id]); const error = new Error("socket hang up"); error.status = 502; throw error; };
+    await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} }).catch(() => {});
+    assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 3, "state.enc restored despite the per-genesis delete failure");
+  }
+});
