@@ -1,8 +1,56 @@
-# Activity-oracle governance: m-of-n settlement approval (P1-01)
+# Activity-oracle governance: m-of-n settlement approval (P1-01, H3)
 
-Status: consensus rule, implemented and opt-in per genesis (`activityOracleThreshold`). **Not activated on any network.** Choosing m, n and the key holders is an owner decision. This change does not touch supply, the activity pool size, allocations, the 10,000 ZYN per closed 24 h epoch cap, the settlement window or ordering (see `ACTIVITY_ORACLE_CAP.md`).
+Status: consensus rule. **Not activated on any value-bearing network.** Real oracle public keys are not in this repository. Choosing m, n and the key holders remains an owner decision. Supply stays 50,000,000 ZYN. `mining_claim` stays retired. `publicTestnetActivationAllowed` and `mainnetActivationAllowed` stay false.
+
+## Policies
+
+`activityOraclePolicy` versions the authorization rule. Omitting it leaves historical chains unchanged, including their genesis hash.
+
+| Policy | When | Authorization |
+|---|---|---|
+| absent, no `activityOracleThreshold` | existing dev and test genesis files | one registered oracle signs the settlement |
+| absent, with `activityOracleThreshold` | existing private chains that already opted into m-of-n | lenient m-of-n over domain `zyronchain/activity-settlement-approval/v1`. Unregistered approvals are ignored. A duplicate key counts once |
+| `test-single-v1` | explicit dev/test profile | one registered oracle. Cannot be combined with `launchProfile: "fixed-supply-v1"` and cannot declare `activityOracleThreshold`. Cap defaults to 10,000 ZYN and can be lowered |
+| `threshold-v1` | required by `fixed-supply-v1` | fail-closed m-of-n. Floor is 2-of-3 or stricter |
+
+`threshold-v1` accepts a threshold only when all of the following hold: at least three registered keys, m at least 2, m at most n, at least one spare key (`n - m >= 1`), and at least two-thirds of the keys (`m * 3 >= n * 2`). That accepts 2-of-3, 3-of-4, 4-of-5, 4-of-6 and 5-of-7. It rejects 2-of-2, 2-of-4, 3-of-3 and 3-of-5. Every registered key must be a valid secp256k1 point. The open testnet uses three freshly generated test keys and threshold 2. It does not set `activitySettlementCapAtoms`, so the 1,000 ZYN default applies.
+
+### Fail-closed attestation (`threshold-v1`)
+
+Approvals use domain `zyronchain/activity-settlement-approval/v2`. The signed payload is `{ chainId, sender, epoch, entries, receiptRoot, expiresAtMs }`. The settlement stores `expiresAtMs` as `attestationExpiresAtMs` (omitted on legacy encodings, so those txids stay identical).
+
+A settlement is rejected when any of the following is true:
+
+- the submitter is not a registered, non-revoked oracle, or the oracle schedule is paused;
+- `attestationExpiresAtMs` is missing, or it does not lie in the epoch settlement window `[genesis + (e + 1) * 24 h, genesis + (e + 2) * 24 h)` (stale);
+- the including block's timestamp is after `attestationExpiresAtMs` (expired);
+- an approval repeats the submitter or another approval's public key (duplicate signer);
+- an approval's public key is not registered (unknown) or is revoked;
+- the same signature bytes appear twice (replay);
+- an approval does not verify over the v2 payload, including a v1-domain signature or a wrong chain id;
+- fewer than m distinct registered keys signed (the submitter counts as one).
+
+A legacy genesis that carries `attestationExpiresAtMs` is rejected. The epoch-already-settled error stays "Activity epoch already settled".
+
+## Pause, resume and revoke
+
+`activity_oracle_governance` fits the existing validator-quorum model (`validator_update`): quorum `floor(2N/3)+1`, activation at least `MIN_VALIDATOR_UPDATE_DELAY` (100) blocks ahead, and a separate activation cursor that must strictly increase. The signing domain is `zyronchain/activity-oracle-governance-approval/v1`. The transaction signing domain is `zyronchain/transaction/activity-oracle-governance/v1`.
+
+| Action | `publicKeys` | Effect at the activation height |
+|---|---|---|
+| `pause` | empty | every later settlement is rejected until resume |
+| `resume` | empty | settlements are allowed again. Refused unless a pause is already scheduled |
+| `revoke` | distinct registered keys that are not already revoked | those keys can no longer submit or approve |
+
+A second pause while one is already scheduled is refused. Revoke may drop the active set below m. Settlements then fail closed until a future consensus change can register a replacement. **Adding a replacement key is not implemented.** There is no CLI wrapper; callers use `createActivityOracleGovernance` and `createActivityOracleGovernanceApproval`.
+
+Chain snapshots stay version 1, byte-identical, until any oracle-governance entry exists. The first such entry makes the snapshot version 2 and adds `activityOracleGovernance`. State v2 stores `activity-oracle-governance:<height>` as `{ action, publicKeys }`. The field is omitted from portable governance objects when the list is empty.
+
+Genesis configuration is committed in the genesis previous-hash slot when `launchProfile`, `activityOracleThreshold`, `activityOraclePolicy` or `activitySettlementCapAtoms` is present. Legacy genesis files that omit all four keep the zero previous hash.
 
 ## Problem
+
+The following sections describe the historical single-key problem and the lenient opt-in threshold that a genesis without `activityOraclePolicy` still uses. `threshold-v1` is specified above.
 
 Activity settlements pay out from the 5,000,000 ZYN ecosystem reserve (the activity pool). Until now any single key listed in `genesis.activityOracles` could authorize a settlement on its own. The cap limits a compromised key to 10,000 ZYN per epoch, but one stolen or misbehaving key could still take the full daily budget every day, and the key set is fixed in genesis.
 
@@ -55,6 +103,8 @@ The same function (`assertActivitySettlementAuthorized`, `l1/src/activity-oracle
 
 ## Threat model
 
+The table below is the legacy opt-in threshold (no `activityOraclePolicy`), whose cap is 10,000 ZYN. Under `threshold-v1` the same theft of m keys is capped at 1,000 ZYN per epoch and per rolling 24 h (or the lower configured cap), unknown approvals are rejected rather than ignored, and a repeated signature is a replay.
+
 | Threat | Without threshold | With m-of-n |
 |---|---|---|
 | One oracle key stolen | Up to 10,000 ZYN per epoch to the attacker | Nothing. The attacker needs m-1 more keys |
@@ -70,8 +120,8 @@ Out of scope: validators collectively rewriting history, and wrong reward *amoun
 
 ### Choosing m and n
 
-- `m >= 2` for any value-bearing network. A launch profile should require this (see "Interaction with the genesis launch profile").
-- `n - m >= 1`, so one unavailable oracle does not halt payouts. A reasonable starting point is 2-of-3 or 3-of-5.
+- `fixed-supply-v1` requires the `threshold-v1` floor: at least 2-of-3, one spare key, and at least two-thirds of the registered keys. 3-of-5 is below that floor and is refused.
+- `n - m >= 1`, so one unavailable oracle does not halt payouts. 2-of-3 meets the floor.
 - Keys must be held by independent people or organisations in separate failure domains (different hosts, ideally hardware-backed signers). m keys on one machine provide no protection.
 
 ## Disagreement and withholding
@@ -82,22 +132,38 @@ Out of scope: validators collectively rewriting history, and wrong reward *amoun
 
 ## Key rotation and revocation
 
-The oracle set and threshold are genesis parameters, and there is no on-chain rotation transaction. Today the options are:
+Pause, resume and revoke are the on-chain response to a compromised key (see above). They do not add a replacement key. Today the remaining options are:
 
-1. **Planned rotation or replacement:** a protocol upgrade that introduces an oracle-set update (for example a governance transaction approved by the validator quorum, like `validator_update`, with an activation height). This is future work and needs owner approval.
-2. **Emergency (key compromise below m):** no funds are at risk while fewer than m keys are compromised. Remaining honest oracles keep settling, and the compromised key stays registered until a rotation mechanism exists. If compromised keys could reach m, stop signing and treat it as an incident. The cap bounds the loss to 10,000 ZYN per epoch until a rotation or upgrade is deployed.
-3. **New network:** choose fresh keys in a new genesis before launch.
+1. **Compromise of fewer than m keys:** revoke the affected keys. Honest oracles can keep settling as long as at least m registered keys remain.
+2. **Compromise that could reach m, or a revoke that drops the active set below m:** pause immediately. Settlements stop. Replacing the key set needs a later consensus change or a new genesis. The `threshold-v1` cap (default 1,000 ZYN per epoch and per rolling 24 h) bounds what m colluding keys can move before the pause activates.
+3. **New network:** choose fresh keys in a new genesis before any value-bearing launch. Do not copy test keys.
 
 Operational guidance:
-- Each oracle signs only payloads it computed itself from the receipt data for the closed epoch, using `createActivityOracleApproval`. It never signs a payload supplied by another party without recomputing it.
+- Each oracle signs only payloads it computed itself from the receipt data for the closed epoch. `threshold-v1` uses `createActivityOracleApprovalV2` (the signature covers `expiresAtMs`). The legacy threshold uses `createActivityOracleApproval`. An oracle never signs a payload supplied by another party without recomputing it.
 - Keep a signed log of every approval, recording epoch, payload hash and time.
 - Store keys offline or in an HSM where possible, and never put two oracle keys on one host.
 
 ## Interaction with the genesis launch profile
 
-The open genesis-config-binding change (#961, `launchProfile: "fixed-supply-v1"`) commits the full genesis object into the genesis hash with the same commitment this change uses. After both merge, the genesis header should carry the commitment when either `launchProfile` or `activityOracleThreshold` is present; the two definitions are identical, so a fixed-supply genesis with a threshold gets one commitment either way. That profile should then also require `activityOracleThreshold >= 2`. This is deliberately not part of this change, to keep it independent of the profile. Merging both will need a small conflict resolution in `validateGenesis` (optional genesis keys), `createGenesisBlock` and `types.ts`; whichever merges second needs a rebase.
+`launchProfile: "fixed-supply-v1"` requires `activityOraclePolicy: "threshold-v1"` and therefore a 2-of-3-or-stricter threshold. The same profile also requires `allocationLocks`, at least four distinct validators and `publicDistributionRelease`. The genesis hash commits to that policy, the threshold, the oracle keys, the validator set, the locks, the release schedule and any lowered cap. `test-single-v1` cannot be used on that profile. Activation flags stay false: this requirement does not start a value-bearing network.
+
+The sections below describe the earlier opt-in threshold (`activityOracleThreshold` without `activityOraclePolicy`). That encoding is unchanged for genesis files that already use it.
 
 ## Tests
+
+`l1/test/activity-oracle-threshold-v1.test.ts`:
+
+- `fixed-supply-v1` refuses a single oracle, `test-single-v1`, 2-of-2, 2-of-4, 3-of-5 and a cap above 1,000 ZYN, and accepts 2-of-3 and 3-of-4.
+- `threshold-v1` rejects one key, duplicate signers, unknown keys, repeated signature bytes, a v1-domain signature, a stale expiry, an expired attestation and a wrong chain id.
+- A lowered cap is enforced. Total supply stays 50,000,000 ZYN. `mining_claim` stays retired.
+- A validator quorum can pause, revoke and resume across the activation delay. Snapshot version 2 restores. State v2 commits the pause under its own semantic key.
+- A legacy genesis still settles 10,000 ZYN with one key and rejects `attestationExpiresAtMs`.
+
+## Legacy opt-in threshold
+
+The rest of this document describes `activityOracleThreshold` without `activityOraclePolicy`.
+
+## Tests (legacy threshold)
 
 `l1/test/activity-oracle-threshold.test.ts`, protocol v1, v2, v3, v5 and v6, every path listed above:
 - With m=2, a settlement signed only by its submitter is rejected, and adding one more registered approval makes it valid.

@@ -30,11 +30,23 @@ Settled epochs form a strictly increasing sequence. This follows from rule 2 alo
 
 Because every epoch settles at most once and only during the following 24 h, the per-settlement cap is also the per-epoch cap. Missed epochs are forfeited rather than carried over, so idle time never builds up headroom that a compromised key could take in one burst. The activity being rewarded is not lost: a later settlement may reward activity from earlier periods, still within its own cap; the epoch number is a rate-limit slot, not a receipt identifier.
 
+## Versioned cap (`activityOraclePolicy`)
+
+`MAX_ACTIVITY_SETTLEMENT_ATOMS` (10,000 ZYN) remains the absolute ceiling for a genesis that does not opt into `threshold-v1`. Public-launch genesis uses a lower ceiling:
+
+| Policy | Default cap | Maximum cap | Who authorizes |
+|---|---|---|---|
+| absent (historical) | 10,000 ZYN | 10,000 ZYN (not configurable) | one registered key, or the legacy lenient threshold when `activityOracleThreshold` is set without a policy |
+| `test-single-v1` | 10,000 ZYN | 10,000 ZYN, configurable downward with `activitySettlementCapAtoms` | one registered key. Refused together with `launchProfile: "fixed-supply-v1"` |
+| `threshold-v1` | 1,000 ZYN (`PUBLIC_LAUNCH_ACTIVITY_CAP_ATOMS`) | 1,000 ZYN, configurable downward to 1 atom | fail-closed m-of-n, at least 2-of-3 (see `ACTIVITY_ORACLE_GOVERNANCE.md`) |
+
+`fixed-supply-v1` requires `threshold-v1`, plus allocation locks, at least four validators and `publicDistributionRelease`, so a public-launch genesis cannot keep the 10,000 ZYN single-key budget. `activitySettlementCapAtoms` is ignored unless a policy is present, and a value above that policy's maximum is refused at genesis.
+
 ## Rolling 24 h cap (fixed-supply-v1)
 
-Owner rule: at most 10,000 ZYN of activity settlements per 24 hours. A genesis with `launchProfile: "fixed-supply-v1"` enforces it as a consensus rule from genesis:
+A genesis with `launchProfile: "fixed-supply-v1"` enforces a rolling window at the same configured cap (default 1,000 ZYN under `threshold-v1`):
 
-4. **Rolling window:** the settlements whose block timestamps lie within any 24 h window sum to at most 10,000 ZYN. Concretely, a settlement of amount `a` in a block at time `t` is rejected when the previous settlement (time `t0`, amount `a0`) satisfies `t - t0 < 24 h` and `a0 + a > 10,000 ZYN`. Two settlements exactly 24 h apart are in different windows.
+4. **Rolling window:** the settlements whose block timestamps lie within any 24 h window sum to at most that cap. Concretely, a settlement of amount `a` in a block at time `t` is rejected when the previous settlement (time `t0`, amount `a0`) satisfies `t - t0 < 24 h` and `a0 + a` exceeds the configured cap. Two settlements exactly 24 h apart are in different windows. The rejection text is "Activity settlements exceed the activity cap in a rolling 24-hour window".
 
 Checking only the previous settlement is enough. By rule 2 each 24 h epoch of block time contains at most one settlement, so a window of 24 h or less contains at most two settlements, and they are consecutive.
 
@@ -42,13 +54,13 @@ The previous settlement's block timestamp and amount are consensus state. They a
 
 The rule is checked in both state appliers (block validation and block production) using the including block's timestamp, and at mempool admission using the earliest possible next block time. A settlement that is too early for the rolling window is rejected, not queued, and must be resubmitted later in its epoch window.
 
-A genesis without a launch profile keeps rules 1-3 only. This is deliberate, so that existing development and test chains do not fork. On those chains two adjacent epochs can be settled either side of an epoch boundary: up to 20,000 ZYN inside one 24 h window, while the long-run average is still at most 10,000 ZYN per day. A public launch uses `fixed-supply-v1`, so this does not apply to it.
+A genesis without a launch profile keeps rules 1-3 only, at the historical 10,000 ZYN ceiling (or a lower `test-single-v1` cap). This is deliberate, so that existing development and test chains do not fork. On those chains two adjacent epochs can be settled either side of an epoch boundary: up to twice the per-epoch cap inside one 24 h window. A public launch uses `fixed-supply-v1`, so the rolling window applies and the ceiling is at most 1,000 ZYN.
 
 ## Bounds
 
-- A single oracle key (or, with `activityOracleThreshold`, a threshold of oracle keys) can move at most 10,000 ZYN per epoch (0.2% of the 5,000,000 ZYN pool).
-- Under `fixed-supply-v1`: at most 10,000 ZYN inside any 24 h window.
-- The long-run average is at most 10,000 ZYN per day. Paying out the full pool takes at least 500 epochs, so it cannot complete earlier than 500 days after genesis.
+- Historical and `test-single-v1` genesis: at most 10,000 ZYN per epoch (0.2% of the 5,000,000 ZYN pool), or less when the test profile sets a lower cap.
+- `threshold-v1`, including every `fixed-supply-v1` genesis: at most 1,000 ZYN per epoch and inside any rolling 24 h window (0.02% of the pool), or less when `activitySettlementCapAtoms` is set. Paying out the full pool takes at least 5,000 epochs at the default cap.
+- One registered key cannot authorize a `threshold-v1` settlement. Pause and revoke are described in `ACTIVITY_ORACLE_GOVERNANCE.md`.
 
 `l1/test/activity-rolling-24h-cap.test.ts` pins the rolling cap (protocol v1, v3 and v6, both appliers, reserved addresses, restart). `l1/test/activity-oracle-epoch-bound.test.ts` pins the per-epoch behaviour of a genesis without a launch profile.
 - Cumulative payouts never exceed the pool's genesis balance (outflow-only pool, unchanged).
@@ -76,8 +88,8 @@ The oracle must sign epoch `e` and submit it during epoch `e + 1` (after `genesi
 
 ## Not covered (open)
 
-- **m-of-n oracle approval.** Implemented as an opt-in genesis parameter (`activityOracleThreshold`), see `ACTIVITY_ORACLE_GOVERNANCE.md`. A genesis without it keeps single-oracle settlements; the cap above applies in both cases.
-- **Oracle custody and governance** (`activity-oracle-production-governance` in `PUBLIC_LAUNCH_CHECKLIST.md`) stay blocked until independent oracles exist.
-- The constants are pre-genesis policy. Changing them later is a consensus change.
+- **Real oracle keys and custody.** No production public keys are in this repository. `activity-oracle-production-governance` in `PUBLIC_LAUNCH_CHECKLIST.md` stays blocked until independent oracle operators exist. The open testnet generates disposable test keys.
+- **Replacing a revoked key.** Pause, resume and revoke exist. Adding a replacement key does not.
+- The default 1,000 ZYN public cap, and whether a weaker threshold than two-thirds (for example 3-of-5) should be allowed, are owner decisions. The constants are pre-genesis policy.
 
-Tests: `l1/test/activity-oracle-cap.test.ts` (every path and protocol version, window, ordering, cumulative bound, mempool expiry), plus the updated `activity-airdrop-cap.test.ts` and `fixed-supply-genesis-invariants.test.ts`.
+Tests: `l1/test/activity-oracle-cap.test.ts` (historical 10,000 ZYN cap, window, ordering, cumulative bound, mempool expiry), `l1/test/activity-oracle-threshold-v1.test.ts` (policy, lower cap, fail-closed attestation), `l1/test/activity-rolling-24h-cap.test.ts`, plus `activity-airdrop-cap.test.ts` and `fixed-supply-genesis-invariants.test.ts`.

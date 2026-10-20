@@ -1,7 +1,14 @@
 import { linearCliffVestedAtoms } from "./founder-vesting.js";
 import { MINING_TRACKER_ADDRESS } from "./mining.js";
+import { PUBLIC_DISTRIBUTION_LOCKED_MESSAGE } from "./public-distribution-release.js";
 import { assertAddress, assertExactKeys, assertPlainRecord } from "./transaction.js";
-import { MAX_SUPPLY_ATOMS, type Address, type AllocationLocks, type GenesisConfig } from "./types.js";
+import {
+  MAX_SUPPLY_ATOMS,
+  type Address,
+  type AllocationLocks,
+  type GenesisConfig,
+  type PublicDistributionRelease
+} from "./types.js";
 
 /**
  * On-chain allocation locks (docs/ALLOCATION_LOCKS.md).
@@ -29,14 +36,23 @@ export const FOUNDER_VESTING_LINEAR_MS = 1_095 * MS_PER_DAY;
 export const FOUNDER_VESTING_LOCKED_MESSAGE = "Founder allocation is still vesting";
 export const PERMANENT_LIQUIDITY_LOCKED_MESSAGE = "Permanent-liquidity reserve is locked";
 
+export interface PublicDistributionLockState {
+  readonly address: Address;
+  readonly allocationAtoms: number;
+  readonly cliffMs: number;
+  readonly linearMs: number;
+}
+
 export interface AllocationLockContext {
-  readonly founderVesting: Address;
-  readonly permanentLiquidity: Address;
-  /** Genesis allocation of the founder account (the vesting total). */
+  readonly founderVesting?: Address;
+  readonly permanentLiquidity?: Address;
+  /** Genesis allocation of the founder account. Zero when the genesis locks only the public distribution. */
   readonly founderAllocationAtoms: number;
   readonly genesisTimestampMs: number;
   /** Timestamp of the block that would include the debit. */
   readonly blockTimestampMs: number;
+  /** Set when the genesis declares publicDistributionRelease (public-distribution-release-v1). */
+  readonly publicDistribution?: PublicDistributionLockState;
 }
 
 /** Fail-closed validation of the optional genesis `allocationLocks` field. */
@@ -60,21 +76,38 @@ export function validateAllocationLocks(genesis: GenesisConfig): void {
   }
 }
 
-/** Lock context for a block at `blockTimestampMs`, or undefined when the genesis declares no locks. */
+/** Lock context for a block at `blockTimestampMs`, or undefined when the genesis declares no locks and no public-distribution release. */
 export function allocationLockContext(genesis: GenesisConfig, blockTimestampMs: number): AllocationLockContext | undefined {
   const locks: AllocationLocks | undefined = genesis.allocationLocks;
-  if (locks === undefined) return undefined;
+  const release: PublicDistributionRelease | undefined = genesis.publicDistributionRelease;
+  if (locks === undefined && release === undefined) return undefined;
   assertTimestamp(blockTimestampMs, "block timestamp");
   assertTimestamp(genesis.timestampMs, "genesis timestamp");
-  const founderAllocation = genesis.allocations.find((allocation) => allocation.address === locks.founderVesting);
-  if (!founderAllocation) throw new Error("Invalid allocation lock: the locked account needs a genesis allocation");
-  assertAtoms(founderAllocation.amountAtoms);
+  let founderAllocationAtoms = 0;
+  if (locks) {
+    const founderAllocation = genesis.allocations.find((allocation) => allocation.address === locks.founderVesting);
+    if (!founderAllocation) throw new Error("Invalid allocation lock: the locked account needs a genesis allocation");
+    assertAtoms(founderAllocation.amountAtoms);
+    founderAllocationAtoms = founderAllocation.amountAtoms;
+  }
+  let publicDistribution: AllocationLockContext["publicDistribution"];
+  if (release) {
+    const allocation = genesis.allocations.find((item) => item.address === release.address);
+    if (!allocation) throw new Error("Invalid public distribution release: the account needs a genesis allocation");
+    assertAtoms(allocation.amountAtoms);
+    publicDistribution = Object.freeze({
+      address: release.address,
+      allocationAtoms: allocation.amountAtoms,
+      cliffMs: release.cliffMs,
+      linearMs: release.linearMs
+    });
+  }
   return Object.freeze({
-    founderVesting: locks.founderVesting,
-    permanentLiquidity: locks.permanentLiquidity,
-    founderAllocationAtoms: founderAllocation.amountAtoms,
+    founderAllocationAtoms,
     genesisTimestampMs: genesis.timestampMs,
-    blockTimestampMs
+    blockTimestampMs,
+    ...(locks ? { founderVesting: locks.founderVesting, permanentLiquidity: locks.permanentLiquidity } : {}),
+    ...(publicDistribution ? { publicDistribution } : {})
   });
 }
 
@@ -101,9 +134,23 @@ export function founderLockedAtomsAtTimestamp(genesisTimestampMs: number, blockT
 export function lockedAtoms(context: AllocationLockContext | undefined, address: Address, balanceAtoms: number): number {
   assertAtoms(balanceAtoms);
   if (!context) return 0;
-  if (address === context.permanentLiquidity) return balanceAtoms;
-  if (address === context.founderVesting) {
+  if (context.permanentLiquidity !== undefined && address === context.permanentLiquidity) return balanceAtoms;
+  if (context.founderVesting !== undefined && address === context.founderVesting) {
     return founderLockedAtomsAtTimestamp(context.genesisTimestampMs, context.blockTimestampMs, context.founderAllocationAtoms);
+  }
+  const release = context.publicDistribution;
+  if (release !== undefined && address === release.address) {
+    const vested = linearCliffVestedAtoms(
+      BigInt(context.blockTimestampMs) - BigInt(context.genesisTimestampMs),
+      BigInt(release.cliffMs),
+      BigInt(release.linearMs),
+      BigInt(release.allocationAtoms)
+    );
+    const locked = release.allocationAtoms - Number(vested);
+    if (!Number.isSafeInteger(locked) || locked < 0 || locked > release.allocationAtoms) {
+      throw new Error("Public distribution locked amount overflow");
+    }
+    return locked;
   }
   return 0;
 }
@@ -128,10 +175,17 @@ export function assertAllocationLockOutflow(
   if (!context) return;
   assertAtoms(balanceAtoms);
   assertAtoms(outflowAtoms);
-  if (sender === context.permanentLiquidity) throw new Error(PERMANENT_LIQUIDITY_LOCKED_MESSAGE);
-  if (sender !== context.founderVesting) return;
-  const locked = lockedAtoms(context, sender, balanceAtoms);
-  if (BigInt(balanceAtoms) - BigInt(outflowAtoms) < BigInt(locked)) throw new Error(FOUNDER_VESTING_LOCKED_MESSAGE);
+  if (context.permanentLiquidity !== undefined && sender === context.permanentLiquidity) {
+    throw new Error(PERMANENT_LIQUIDITY_LOCKED_MESSAGE);
+  }
+  if (context.founderVesting !== undefined && sender === context.founderVesting) {
+    const locked = lockedAtoms(context, sender, balanceAtoms);
+    if (BigInt(balanceAtoms) - BigInt(outflowAtoms) < BigInt(locked)) throw new Error(FOUNDER_VESTING_LOCKED_MESSAGE);
+  }
+  if (context.publicDistribution !== undefined && sender === context.publicDistribution.address) {
+    const locked = lockedAtoms(context, sender, balanceAtoms);
+    if (BigInt(balanceAtoms) - BigInt(outflowAtoms) < BigInt(locked)) throw new Error(PUBLIC_DISTRIBUTION_LOCKED_MESSAGE);
+  }
 }
 
 function assertTimestamp(value: number, name: string): void {

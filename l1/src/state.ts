@@ -6,6 +6,7 @@ import {
   ACTIVITY_WINDOW_RESERVED_MESSAGE,
   ACTIVITY_WINDOW_TIME_ADDRESS,
   activityRollingWindowEnforced,
+  activitySettlementCapAtoms,
   assertActivityRollingWindow,
   assertActivitySettlementWithinCap,
   assertNoActivityPoolDirectDebit,
@@ -15,7 +16,7 @@ import { assertActivitySettlementAuthorized, type ActivityOracleSet } from "./ac
 import { assertAllocationLockOutflow, type AllocationLockContext } from "./allocation-locks.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import { assertAddress, assertExactKeys, assertPlainRecord } from "./transaction.js";
-import type { ActivitySettlementTx, Address, GenesisConfig, MiningClaimTx, ProtocolUpgradeTx, Transaction, TransferTx, ValidatorSetUpdateTx } from "./types.js";
+import type { ActivityOracleGovernanceTx, ActivitySettlementTx, Address, GenesisConfig, MiningClaimTx, ProtocolUpgradeTx, Transaction, TransferTx, ValidatorSetUpdateTx } from "./types.js";
 
 interface AccountState {
   balanceAtoms: number;
@@ -141,11 +142,18 @@ export class LedgerState {
       if (rollingWindow && isActivityWindowAddress(tx.receiver)) throw new Error(ACTIVITY_WINDOW_RESERVED_MESSAGE);
       this.applyTransfer(tx, locks);
     } else if (tx.kind === "activity_settlement") {
-      if (oracles) assertActivitySettlementAuthorized(tx, oracles);
-      this.applyActivity(tx, activityPool, locks, rollingWindow);
+      if (oracles) {
+        assertActivitySettlementAuthorized(tx, oracles, {
+          chainId: tx.chainId,
+          ...(locks?.blockTimestampMs !== undefined ? { blockTimestampMs: locks.blockTimestampMs } : {}),
+          ...(oracles.timestampMs !== undefined ? { genesisTimestampMs: oracles.timestampMs } : {})
+        });
+      }
+      this.applyActivity(tx, activityPool, locks, rollingWindow, activitySettlementCapAtoms(oracles));
     }
     else if (tx.kind === "mining_claim") this.applyMining(tx);
     else if (tx.kind === "validator_update") this.applyValidatorUpdate(tx);
+    else if (tx.kind === "activity_oracle_governance") this.applyActivityOracleGovernance(tx);
     else this.applyProtocolUpgrade(tx);
   }
 
@@ -181,7 +189,8 @@ export class LedgerState {
     tx: ActivitySettlementTx,
     activityPool: Address,
     locks: AllocationLockContext | undefined,
-    rollingWindow = false
+    rollingWindow = false,
+    capAtoms = activitySettlementCapAtoms(undefined)
   ): void {
     if (tx.sender !== activityPool) throw new Error("Invalid activity pool sender");
     for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, activityPool);
@@ -195,7 +204,7 @@ export class LedgerState {
     // cannot see because it has no block timestamp.
     if (this.settledActivityEpochs.has(tx.epoch + 1)) throw new Error(ACTIVITY_ORDER_MESSAGE);
     this.requireNonce(activityPool, tx.nonce);
-    const total = assertActivitySettlementWithinCap(tx.entries);
+    const total = assertActivitySettlementWithinCap(tx.entries, capAtoms);
     if (rollingWindow) {
       if (tx.entries.some((entry) => isActivityWindowAddress(entry.receiver))) {
         throw new Error(ACTIVITY_WINDOW_RESERVED_MESSAGE);
@@ -203,7 +212,7 @@ export class LedgerState {
       assertActivityRollingWindow({
         timestampMs: this.nonce(ACTIVITY_WINDOW_TIME_ADDRESS),
         amountAtoms: this.nonce(ACTIVITY_WINDOW_AMOUNT_ADDRESS)
-      }, locks?.blockTimestampMs, total);
+      }, locks?.blockTimestampMs, total, capAtoms);
     }
     if (this.balance(activityPool) < total) throw new Error("Activity pool exhausted");
     assertAllocationLockOutflow(locks, activityPool, this.balance(activityPool), total);
@@ -220,6 +229,12 @@ export class LedgerState {
   /** EXT-04: mining is retired; explicit rejection only, no issuance logic. */
   private applyMining(_tx: MiningClaimTx): never {
     return rejectRetiredMiningClaim();
+  }
+
+  private applyActivityOracleGovernance(tx: ActivityOracleGovernanceTx): void {
+    if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
+    this.requireNonce(tx.sender, tx.nonce);
+    this.setNonce(tx.sender, tx.nonce);
   }
 
   private applyValidatorUpdate(tx: ValidatorSetUpdateTx): void {

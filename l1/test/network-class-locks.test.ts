@@ -21,6 +21,7 @@ import { ChainStore } from "../src/storage.js";
 import { createTransfer } from "../src/transaction.js";
 import { ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, type GenesisConfig } from "../src/types.js";
 import { MINING_RETIRED } from "../src/mining.js";
+import { defaultPublicDistributionRelease } from "../src/public-distribution-release.js";
 
 const ZYN = ATOMS_PER_ZYN;
 const ZERO = "0".repeat(64);
@@ -36,6 +37,8 @@ const addr = (n: number) => addressFromPublicKey(pub(n));
 const VALIDATOR = 0x21;
 const VALIDATOR_COUNT = 4;
 const ORACLE = 0x12;
+const ORACLE_2 = 0x18;
+const ORACLE_3 = 0x19;
 const FOUNDER = 0x13;
 const PUBLIC = 0x14;
 const LIQUIDITY = 0x15;
@@ -64,7 +67,9 @@ function strictGenesis(networkClass: NonNullable<GenesisConfig["networkClass"]> 
       const id = VALIDATOR + index;
       return { address: addr(id), publicKey: pub(id) };
     }),
-    activityOracles: [pub(ORACLE)],
+    activityOracles: [pub(ORACLE), pub(ORACLE_2), pub(ORACLE_3)],
+    activityOracleThreshold: 2,
+    activityOraclePolicy: "threshold-v1",
     activityPool: addr(ECOSYSTEM),
     allocations: [
       { address: addr(FOUNDER), amountAtoms: 5_000_000 * ZYN },
@@ -73,6 +78,7 @@ function strictGenesis(networkClass: NonNullable<GenesisConfig["networkClass"]> 
       { address: addr(ECOSYSTEM), amountAtoms: 5_000_000 * ZYN }
     ],
     allocationLocks: { founderVesting: addr(FOUNDER), permanentLiquidity: addr(LIQUIDITY) },
+    publicDistributionRelease: defaultPublicDistributionRelease(addr(PUBLIC)),
     launchProfile: "fixed-supply-v1"
   };
   if (networkClass !== undefined) genesis.networkClass = networkClass;
@@ -158,6 +164,11 @@ test("open-testnet fixed-supply profile without a network class still starts", a
   delete genesis.networkClass;
   const chain = new ZyronChain(genesis);
   assert.equal(chain.totalSupplyAtoms(), MAX_SUPPLY_ATOMS);
+  assert.equal(chain.genesis.activityOraclePolicy, "threshold-v1");
+  assert.ok(chain.spendableBalance(addr(PUBLIC), T0 + 1_000) < 20_000_000 * ZYN);
+  const missingRelease = structuredClone(genesis);
+  delete missingRelease.publicDistributionRelease;
+  assert.throws(() => new ZyronChain(missingRelease), /publicDistributionRelease/);
   const directory = await mkdtemp(join(tmpdir(), "zyron-class-open-"));
   try {
     const store = await ChainStore.open(genesis, directory);
@@ -327,6 +338,7 @@ test("tokenomics:check rejects a launch file without the value-bearing class and
     assert.equal(accepted.status, 0, `${accepted.stdout}\n${accepted.stderr}`);
     assert.match(accepted.stdout, /Network class: value-bearing/);
     assert.match(accepted.stdout, /50,000,000 ZYN/);
+    assert.match(accepted.stdout, /decided by owner/);
     const omitted = structuredClone(ready);
     delete omitted.networkClass;
     const refused = await run(omitted);
@@ -337,6 +349,11 @@ test("tokenomics:check rejects a launch file without the value-bearing class and
     const noLocks = await run(unlocked);
     assert.notEqual(noLocks.status, 0);
     assert.match(`${noLocks.stdout}\n${noLocks.stderr}`, /allocationLocks|launchProfile|fixed-supply/);
+    const noRelease = structuredClone(ready);
+    delete noRelease.publicDistributionRelease;
+    const missingRelease = await run(noRelease);
+    assert.notEqual(missingRelease.status, 0);
+    assert.match(`${missingRelease.stdout}\n${missingRelease.stderr}`, /publicDistributionRelease/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

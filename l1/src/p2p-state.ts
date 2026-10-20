@@ -634,7 +634,8 @@ async function selectPortableState(
   if (!state) throw new Error("State transfer requires active State v2");
   const bundle = createStateV2PortableBundle(state, snapshot.state, {
     validatorSchedule: snapshot.validatorSchedule,
-    protocolSchedule: snapshot.protocolSchedule
+    protocolSchedule: snapshot.protocolSchedule,
+    ...(snapshot.version === 2 ? { activityOracleGovernance: snapshot.activityOracleGovernance } : {})
   });
   const manifest: PortableStateResumeManifestV1 = {
     version: 1, chainId: status.chainId, genesisHash: status.genesisHash,
