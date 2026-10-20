@@ -59,6 +59,23 @@ export interface GenesisConfig {
     | "public-launch"
     | "value-bearing"
     | "mainnet";
+  /**
+   * Optional public-distribution release, version public-distribution-release-v1
+   * (docs/PUBLIC_DISTRIBUTION_RELEASE.md). Absent on genesis files that predate
+   * it; that allocation stays spendable and the genesis hash is unchanged.
+   * A public-launch, value-bearing or mainnet network class must set it.
+   * The address is an input, not a value stored in this repository.
+   */
+  publicDistributionRelease?: PublicDistributionRelease;
+}
+
+export interface PublicDistributionRelease {
+  /** Public-distribution allocation. Supplied at genesis; not invented here. */
+  address: Address;
+  /** Milliseconds after the genesis timestamp before any of the allocation vests. */
+  cliffMs: number;
+  /** Linear release length after the cliff, in milliseconds. */
+  linearMs: number;
 }
 
 export interface AllocationLocks {

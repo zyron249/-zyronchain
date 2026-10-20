@@ -92,6 +92,8 @@ The liquidity reserve therefore remains a disclosed genesis role, not a live poo
 
 The 20,000,000 ZYN public-distribution allocation is a reserve for the eventual public distribution mechanism. It is not permission for a maintainer, website, or backend to custody purchaser funds.
 
+On a public-launch, value-bearing or mainnet genesis the allocation cannot be spent in full on day one. The genesis must declare `publicDistributionRelease` (version public-distribution-release-v1): an owner-supplied address plus an explicit cliff and linear length. The owner decided the default: no cliff (`cliffMs` 0) and a 365-day linear release (`linearMs` 31,536,000,000). The linear floor is 365 days, so day one releases only the accrued slice. See [`PUBLIC_DISTRIBUTION_RELEASE.md`](PUBLIC_DISTRIBUTION_RELEASE.md). Genesis files that omit the field, including the open testnet, keep the previous rule.
+
 Before enabling a public purchase surface, the project must freeze and review at least:
 
 - the quote asset and how it exists on ZyronChain;

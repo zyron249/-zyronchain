@@ -79,6 +79,7 @@ import type {
 } from "./types.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
 import { assertValueBearingClassRequiresFixedSupplyProfile, minimumValidatorCount } from "./network-class.js";
+import { validatePublicDistributionRelease } from "./public-distribution-release.js";
 import { assertFixedSupplyLaunchProfile, FIXED_SUPPLY_LAUNCH_PROFILE } from "./tokenomics.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
@@ -1074,7 +1075,9 @@ function validateGenesis(genesis: GenesisConfig): void {
     // Optional: launch profile (docs/GENESIS_CONFIG_BINDING.md).
     ...(Object.prototype.hasOwnProperty.call(genesis, "launchProfile") ? ["launchProfile"] : []),
     // Optional: network class, version network-class-v1 (docs/GENESIS_NETWORK_CLASS.md).
-    ...(Object.prototype.hasOwnProperty.call(genesis, "networkClass") ? ["networkClass"] : [])
+    ...(Object.prototype.hasOwnProperty.call(genesis, "networkClass") ? ["networkClass"] : []),
+    // Optional: public-distribution release, version public-distribution-release-v1.
+    ...(Object.prototype.hasOwnProperty.call(genesis, "publicDistributionRelease") ? ["publicDistributionRelease"] : [])
   ], "genesis");
   const hasLaunchProfile = Object.prototype.hasOwnProperty.call(genesis, "launchProfile");
   if (hasLaunchProfile && genesis.launchProfile !== FIXED_SUPPLY_LAUNCH_PROFILE) {
@@ -1157,6 +1160,8 @@ function validateGenesis(genesis: GenesisConfig): void {
   // Under the fixed-supply launch profile the launch rules are consensus rules:
   // allocationLocks present, exactly 50M ZYN, 5M / 20M / 20M / 5M roles.
   if (hasLaunchProfile) assertFixedSupplyLaunchProfile(genesis);
+  // public-distribution-release-v1. Required for a value-bearing class; opt-in otherwise.
+  validatePublicDistributionRelease(genesis);
 }
 
 function stateV2KeysForTransaction(tx: Transaction, genesis: GenesisConfig): string[] {

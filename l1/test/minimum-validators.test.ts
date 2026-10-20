@@ -10,6 +10,7 @@ import { ZyronChain } from "../src/chain.js";
 import { canonicalJson, sha256Hex } from "../src/codec.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { STRICT_MIN_VALIDATORS } from "../src/network-class.js";
+import { defaultPublicDistributionRelease } from "../src/public-distribution-release.js";
 import { ChainStore } from "../src/storage.js";
 import { createValidatorApproval, createValidatorSetUpdate } from "../src/transaction.js";
 import { ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, type GenesisConfig, type Validator } from "../src/types.js";
@@ -58,7 +59,8 @@ function strictGenesis(count: number, chainId = "zyron-review-validators"): Gene
     ],
     allocationLocks: { founderVesting: founder, permanentLiquidity: liquidity },
     launchProfile: "fixed-supply-v1",
-    networkClass: "mainnet"
+    networkClass: "mainnet",
+    publicDistributionRelease: defaultPublicDistributionRelease(distributed)
   };
 }
 
