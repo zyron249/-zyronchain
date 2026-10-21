@@ -11,8 +11,11 @@
 
   const GATEWAY = "https://zyron-open-testnet.onrender.com";
   // Snapshot-keeper pin from .github/workflows/open-testnet-snapshot-keeper.yml.
+  // #1088 set it to the genesis the open testnet was serving on 2026-10-21
+  // (GET /genesis, chain zyron-open-testnet-render-1, timestamp
+  // 2026-10-20T22:09:28.767Z). The previous pin 9ad75d77… is the earlier chain.
   // A mismatch means the served chain is not that pinned genesis.
-  const REPOSITORY_GENESIS_PIN = "9ad75d777141de46df1fb008298a4d8a92fbce0a9c96aaf26ecf69474b7db8eb";
+  const REPOSITORY_GENESIS_PIN = "e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad";
   const ALLOWED_CHAIN_IDS = new Set(["zyron-open-testnet-render-1", "zyron-open-testnet-1"]);
   const WINDOW = 32;
   const BATCH = 100;
