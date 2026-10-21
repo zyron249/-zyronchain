@@ -218,6 +218,13 @@ export interface ValidatorSetUpdateTx {
   activationHeight: number;
   validators: Validator[];
   approvals: ValidatorApproval[];
+  /**
+   * possession-proof-v1 (P1-07, docs/VALIDATOR_POSSESSION_PROOF.md). Only on a
+   * chain whose genesis declares `validatorAdmission`, where it is mandatory:
+   * one proof per incoming validator, in `validators` order. Refused on every
+   * other chain.
+   */
+  possessionProofs?: ValidatorPossessionProof[];
   feeAtoms: 0;
   timestampMs: number;
   publicKey: string;
