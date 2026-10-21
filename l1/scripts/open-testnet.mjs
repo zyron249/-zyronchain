@@ -156,7 +156,14 @@ const VALIDATOR_DATA_FILES = new Set([
   "state-v2.backend.json", "state-v2.keys.backend.json", "state-v2.nodes.ndjson", "state-v2.keys.ndjson", "state-v2.root.json",
   ...["state-v2.nodes.sqlite", "node-writer.lock.sqlite", "signing-journal.lock.sqlite"].flatMap((file) => [file, `${file}-journal`, `${file}-wal`, `${file}-shm`])
 ]);
-const CONSENSUS_STATE_FILE_PATTERN = /^H-\d{1,16}(?:\.json|-B-[0-9a-f]{64}\.json|-r-\d{1,8}\.(?:proposal|timeout)\.json)$/;
+// Exactly the names ConsensusStateStore.heightFile/blockFile/proposalFile/
+// timeoutFile produce: canonical decimal, height a positive safe integer,
+// round 0..99999999.
+const CONSENSUS_STATE_FILE_PATTERN = /^H-([1-9]\d{0,15})(?:\.json|-B-[0-9a-f]{64}\.json|-r-(?:0|[1-9]\d{0,7})\.(?:proposal|timeout)\.json)$/;
+function isConsensusStateFileName(name) {
+  const match = CONSENSUS_STATE_FILE_PATTERN.exec(name);
+  return Boolean(match) && BigInt(match[1]) <= BigInt(Number.MAX_SAFE_INTEGER);
+}
 // The leftover names each writer can leave behind, per file: quarantined
 // State-v2 files (storage.ts quarantineCorruptStateV2), and the temporary files
 // of the atomic writers (storage.ts, state-v2-store.ts, peer and p2p reputation,
@@ -167,16 +174,18 @@ const TMP_PID_HEX16_SUFFIX = /^\.tmp-\d{1,10}-[0-9a-f]{16}$/;
 const TMP_PID_HEX12_SUFFIX = /^\.tmp-\d{1,10}-[0-9a-f]{12}$/;
 const PID_TMP_SUFFIX = /^\.\d{1,10}\.tmp$/;
 const PID_MS_TMP_SUFFIX = /^\.\d{1,10}\.\d{1,16}\.tmp$/;
+const COMPACT_SUFFIX = /^\.compact-\d{1,10}-[0-9a-f]{16}$/;
 const VALIDATOR_DATA_LEFTOVERS = new Map([
   ...["state-v2.nodes.ndjson", "state-v2.nodes.sqlite", "state-v2.nodes.sqlite-journal", "state-v2.nodes.sqlite-wal", "state-v2.nodes.sqlite-shm", "state-v2.keys.ndjson"].map((file) => [file, [CORRUPT_SUFFIX]]),
   ...["state-v2.backend.json", "state-v2.keys.backend.json", "state-v2.root.json"].map((file) => [file, [CORRUPT_SUFFIX, PID_MS_TMP_SUFFIX]]),
   ...["history-retention.json", "recovery-checkpoint.json", "peer-reputation.json", "native-peer-reputation.json"].map((file) => [file, [TMP_PID_HEX16_SUFFIX]]),
-  ["metadata.json", [PID_TMP_SUFFIX]]
+  ["metadata.json", [PID_TMP_SUFFIX]],
+  ["signing-journal.ndjson", [COMPACT_SUFFIX]]
 ]);
+// peer-identity.ts writes its temporary only at the validator data-directory root.
+const IDENTITY_TEMP_PATTERN = /^\.node-identity\.json\.\d{1,10}\.[0-9a-f]{32}\.tmp$/;
 function isStoreFileName(name, known, leftovers = new Map()) {
   if (known(name)) return true;
-  const identityTemp = /^\.node-identity\.json\.\d{1,10}\.[0-9a-f]{32}\.tmp$/;
-  if (identityTemp.test(name)) return true;
   for (let cut = name.indexOf("."); cut > 0; cut = name.indexOf(".", cut + 1)) {
     const base = name.slice(0, cut);
     if (!known(base)) continue;
@@ -197,8 +206,8 @@ async function isValidatorDataDir(path) {
     const child = join(path, entry);
     const info = await lstat(child);
     if (entry === "consensus-state") {
-      if (!info.isDirectory() || !(await onlyRegularFiles(child, (name) => CONSENSUS_STATE_FILE_PATTERN.test(name), () => [TMP_PID_HEX12_SUFFIX]))) return false;
-    } else if (!info.isFile() || !isStoreFileName(entry, (name) => VALIDATOR_DATA_FILES.has(name), VALIDATOR_DATA_LEFTOVERS)) return false;
+      if (!info.isDirectory() || !(await onlyRegularFiles(child, isConsensusStateFileName, () => [TMP_PID_HEX12_SUFFIX]))) return false;
+    } else if (!info.isFile() || !(IDENTITY_TEMP_PATTERN.test(entry) || isStoreFileName(entry, (name) => VALIDATOR_DATA_FILES.has(name), VALIDATOR_DATA_LEFTOVERS))) return false;
   }
   return true;
 }
@@ -212,8 +221,12 @@ export function parseMountInfoMountPoints(text) {
   }
   return points;
 }
-async function readMountPointsFromProc() {
-  try { return parseMountInfoMountPoints(await readFile("/proc/self/mountinfo", "utf8")); } catch { return []; }
+// On Linux a mount table that cannot be read fails the inspection (the holder
+// is then logged and kept); a same-device bind mount is visible nowhere else.
+// Other platforms have no mountinfo and rely on the device check.
+export async function readMountPointsFromProc(path = "/proc/self/mountinfo") {
+  if (process.platform !== "linux") return [];
+  return parseMountInfoMountPoints(await readFile(path, "utf8"));
 }
 // A holder with a mount point at or inside it (even a bind mount of the same
 // filesystem), or with a directory on another device, is never pruned: a
@@ -256,7 +269,10 @@ async function isPrunableHolderLayout(holder, name) {
   }
   return true;
 }
-const HOLDER_SUFFIX_PATTERN = /^\.incomplete-(\d+)-(\d+)(?:-(\d+))?$/;
+// Only fields this writer produces: canonical decimal, a millisecond time of
+// at most 16 digits, a pid of at most 10, a counter of at most 20. Other names
+// are not holders (never pruned, never counted, never used for ordering).
+const HOLDER_SUFFIX_PATTERN = /^\.incomplete-(0|[1-9]\d{0,15})-([1-9]\d{0,9})(?:-([1-9]\d{0,19}))?$/;
 // Order key of a holder name: [time, counter, pid].
 function holderOrder(name, entry) {
   if (!entry.startsWith(`${name}.incomplete-`)) return null;
@@ -306,8 +322,9 @@ async function removeInspectedHolder(path, name, fingerprint, removeHolder, read
   else {
     try { await removeHolder(trash); return; } catch (error) { failure = error; }
   }
+  // rename only lands on a missing path or an empty directory (a placeholder),
+  // never on one with contents, so this cannot replace anything.
   try {
-    await mkdir(path, { mode: 0o700 });
     await rename(trash, path);
   } catch (error) {
     throw new Error(`${failure instanceof Error ? failure.message : String(failure)}; it could not be renamed back and is kept at ${trash} (${error instanceof Error ? error.message : String(error)})`);
@@ -338,7 +355,6 @@ async function recoverStrandedPruning(parent, name, { removeHolder, readMountPoi
       if (!(await lstat(path)).isDirectory()) continue;
       if ((await readdir(path)).length === 0) { await rmdir(path); log(`removed the empty moved-aside holder ${path} left by an interrupted pruning`); continue; }
       if (await isPrunableHolder(path, name, readMountPoints)) { await removeHolder(path); log(`pruned the moved-aside holder ${path} left by an interrupted pruning`); continue; }
-      await mkdir(original, { mode: 0o700 });
       await rename(path, original);
       log(`renamed the moved-aside holder ${path} left by an interrupted pruning back to ${original}`);
     } catch (error) { log(`could not recover the moved-aside holder ${path} left by an interrupted pruning: ${error instanceof Error ? error.message : String(error)}`); }
