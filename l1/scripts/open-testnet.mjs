@@ -29,7 +29,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createServer } from "node:http";
 import { createReadStream, realpathSync } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -100,7 +100,7 @@ async function writeNetworkMarker(dir, value) {
 // An existing path is never replaced. Returns the new path, or false if nothing
 // was moved. Afterwards only the newest MAX_INCOMPLETE_HOLDERS holders are kept
 // (see pruneIncompleteHolders); the directory just moved is never pruned.
-export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserveHolder = (path) => mkdir(path, { mode: 0o700 }), afterInspect, log = (line) => console.error(line) } = {}) {
+export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserveHolder = (path) => mkdir(path, { mode: 0o700 }), afterInspect, readMountPoints, log = (line) => console.error(line) } = {}) {
   let entries;
   try { entries = await readdir(dir); } catch (error) { if (error?.code === "ENOENT") return false; throw error; }
   if (await readNetworkMarker(dir)) return false;
@@ -111,18 +111,18 @@ export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserve
   // own name, a path nothing else can have created.
   // Old holders are pruned first, down to room for the new one, so a disk
   // filled by earlier attempts can free space before the reservation.
-  await pruneIncompleteHolders(dir, { keep: MAX_INCOMPLETE_HOLDERS - 1, removeHolder, afterInspect, log });
+  await pruneIncompleteHolders(dir, { keep: MAX_INCOMPLETE_HOLDERS - 1, removeHolder, afterInspect, readMountPoints, log });
   // The name keeps creation order even if the wall clock moved back: its time
   // is never below the newest existing holder's, and at an equal time the
   // counter goes past that holder's (order is time, then counter, then pid).
   const { ms, next } = await nextHolderOrder(dir, Date.now());
   const base = `${dir}.incomplete-${ms}-${process.pid}`;
-  for (let attempt = next; attempt < next + 1000; attempt += 1) {
-    const holder = attempt === 0 ? base : `${base}-${attempt}`;
+  for (let attempt = next; attempt < next + 1000n; attempt += 1n) {
+    const holder = attempt === 0n ? base : `${base}-${attempt}`;
     try { await reserveHolder(holder); } catch (error) { if (error?.code === "EEXIST") continue; throw error; }
     const aside = join(holder, basename(dir));
     await rename(dir, aside);
-    await pruneIncompleteHolders(dir, { exclude: holder, removeHolder, afterInspect, log });
+    await pruneIncompleteHolders(dir, { exclude: holder, removeHolder, afterInspect, readMountPoints, log });
     return aside;
   }
   throw new Error(`refusing to move ${dir}: no free name next to it`);
@@ -157,19 +157,37 @@ const VALIDATOR_DATA_FILES = new Set([
   ...["state-v2.nodes.sqlite", "node-writer.lock.sqlite", "signing-journal.lock.sqlite"].flatMap((file) => [file, `${file}-journal`, `${file}-wal`, `${file}-shm`])
 ]);
 const CONSENSUS_STATE_FILE_PATTERN = /^H-\d{1,16}(?:\.json|-B-[0-9a-f]{64}\.json|-r-\d{1,8}\.(?:proposal|timeout)\.json)$/;
-const LEFTOVER_SUFFIX_PATTERN = /^(?:\.tmp-\d+-[0-9a-f]+|\.\d+\.tmp|\.\d+\.\d+\.tmp|\.corrupt-\d+-[0-9a-f]+)$/;
-function isStoreFileName(name, known) {
+// The leftover names each writer can leave behind, per file: quarantined
+// State-v2 files (storage.ts quarantineCorruptStateV2), and the temporary files
+// of the atomic writers (storage.ts, state-v2-store.ts, peer and p2p reputation,
+// consensus-state-store.ts, peer-identity.ts). A suffix on any other file is
+// not one the testnet writes.
+const CORRUPT_SUFFIX = /^\.corrupt-\d{1,16}-[0-9a-f]{12}$/;
+const TMP_PID_HEX16_SUFFIX = /^\.tmp-\d{1,10}-[0-9a-f]{16}$/;
+const TMP_PID_HEX12_SUFFIX = /^\.tmp-\d{1,10}-[0-9a-f]{12}$/;
+const PID_TMP_SUFFIX = /^\.\d{1,10}\.tmp$/;
+const PID_MS_TMP_SUFFIX = /^\.\d{1,10}\.\d{1,16}\.tmp$/;
+const VALIDATOR_DATA_LEFTOVERS = new Map([
+  ...["state-v2.nodes.ndjson", "state-v2.nodes.sqlite", "state-v2.nodes.sqlite-journal", "state-v2.nodes.sqlite-wal", "state-v2.nodes.sqlite-shm", "state-v2.keys.ndjson"].map((file) => [file, [CORRUPT_SUFFIX]]),
+  ...["state-v2.backend.json", "state-v2.keys.backend.json", "state-v2.root.json"].map((file) => [file, [CORRUPT_SUFFIX, PID_MS_TMP_SUFFIX]]),
+  ...["history-retention.json", "recovery-checkpoint.json", "peer-reputation.json", "native-peer-reputation.json"].map((file) => [file, [TMP_PID_HEX16_SUFFIX]]),
+  ["metadata.json", [PID_TMP_SUFFIX]]
+]);
+function isStoreFileName(name, known, leftovers = new Map()) {
   if (known(name)) return true;
-  const identityTemp = /^\.node-identity\.json\.\d+\.[0-9a-f]+\.tmp$/;
+  const identityTemp = /^\.node-identity\.json\.\d{1,10}\.[0-9a-f]{32}\.tmp$/;
   if (identityTemp.test(name)) return true;
   for (let cut = name.indexOf("."); cut > 0; cut = name.indexOf(".", cut + 1)) {
-    if (known(name.slice(0, cut)) && LEFTOVER_SUFFIX_PATTERN.test(name.slice(cut))) return true;
+    const base = name.slice(0, cut);
+    if (!known(base)) continue;
+    const patterns = typeof leftovers === "function" ? leftovers(base) : leftovers.get(base);
+    if (patterns?.some((pattern) => pattern.test(name.slice(cut)))) return true;
   }
   return false;
 }
-async function onlyRegularFiles(path, known) {
+async function onlyRegularFiles(path, known, leftovers) {
   for (const entry of await readdir(path)) {
-    if (!isStoreFileName(entry, known)) return false;
+    if (!isStoreFileName(entry, known, leftovers)) return false;
     if (!(await lstat(join(path, entry))).isFile()) return false;
   }
   return true;
@@ -179,12 +197,48 @@ async function isValidatorDataDir(path) {
     const child = join(path, entry);
     const info = await lstat(child);
     if (entry === "consensus-state") {
-      if (!info.isDirectory() || !(await onlyRegularFiles(child, (name) => CONSENSUS_STATE_FILE_PATTERN.test(name)))) return false;
-    } else if (!info.isFile() || !isStoreFileName(entry, (name) => VALIDATOR_DATA_FILES.has(name))) return false;
+      if (!info.isDirectory() || !(await onlyRegularFiles(child, (name) => CONSENSUS_STATE_FILE_PATTERN.test(name), () => [TMP_PID_HEX12_SUFFIX]))) return false;
+    } else if (!info.isFile() || !isStoreFileName(entry, (name) => VALIDATOR_DATA_FILES.has(name), VALIDATOR_DATA_LEFTOVERS)) return false;
   }
   return true;
 }
-async function isPrunableHolder(holder, name) {
+// Mount points from /proc/self/mountinfo (field 5, octal escapes decoded).
+export function parseMountInfoMountPoints(text) {
+  const points = [];
+  for (const line of text.split("\n")) {
+    const fields = line.split(" ");
+    if (fields.length < 5) continue;
+    points.push(fields[4].replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(Number.parseInt(octal, 8))));
+  }
+  return points;
+}
+async function readMountPointsFromProc() {
+  try { return parseMountInfoMountPoints(await readFile("/proc/self/mountinfo", "utf8")); } catch { return []; }
+}
+// A holder with a mount point at or inside it (even a bind mount of the same
+// filesystem), or with a directory on another device, is never pruned: a
+// recursive removal would reach into the mounted storage.
+async function holderHasMountPoint(holder, readMountPoints) {
+  const real = await realpath(holder);
+  for (const point of await readMountPoints()) {
+    if (point === real || point.startsWith(`${real}/`)) return true;
+  }
+  const device = (await lstat(holder)).dev;
+  const walk = async (path) => {
+    for (const entry of await readdir(path)) {
+      const info = await lstat(join(path, entry));
+      if (info.dev !== device) return true;
+      if (info.isDirectory() && await walk(join(path, entry))) return true;
+    }
+    return false;
+  };
+  return walk(holder);
+}
+async function isPrunableHolder(holder, name, readMountPoints = readMountPointsFromProc) {
+  if (!(await isPrunableHolderLayout(holder, name))) return false;
+  return !(await holderHasMountPoint(holder, readMountPoints));
+}
+async function isPrunableHolderLayout(holder, name) {
   const info = await lstat(holder);
   if (!info.isDirectory()) return false;
   const top = await readdir(holder);
@@ -218,8 +272,8 @@ async function nextHolderOrder(dir, now) {
     const order = holderOrder(name, entry);
     if (order && (!newest || compareHolderOrder(order, newest) > 0)) newest = order;
   }
-  if (!newest || BigInt(now) > newest[0]) return { ms: String(now), next: 0 };
-  return { ms: String(newest[0]), next: Number(newest[1]) + 1 };
+  if (!newest || BigInt(now) > newest[0]) return { ms: String(now), next: 0n };
+  return { ms: String(newest[0]), next: newest[1] + 1n };
 }
 function compareHolderOrder(a, b) {
   for (let i = 0; i < 3; i += 1) { if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1; }
@@ -242,11 +296,11 @@ async function holderFingerprint(path) {
 // name (so the path can no longer be swapped under the removal), then checked
 // again there; if it is not the same prunable holder, or the removal fails, it
 // is renamed back and kept.
-async function removeInspectedHolder(path, name, fingerprint, removeHolder) {
+async function removeInspectedHolder(path, name, fingerprint, removeHolder, readMountPoints) {
   const trash = join(resolve(path, ".."), `.${basename(path)}.pruning-${process.pid}-${randomBytes(6).toString("hex")}`);
   await rename(path, trash);
   let unchanged = false;
-  try { unchanged = (await isPrunableHolder(trash, name)) && (await holderFingerprint(trash)) === fingerprint; } catch { unchanged = false; }
+  try { unchanged = (await isPrunableHolder(trash, name, readMountPoints)) && (await holderFingerprint(trash)) === fingerprint; } catch { unchanged = false; }
   let failure;
   if (!unchanged) failure = new Error("it changed after it was inspected, so it is kept");
   else {
@@ -260,10 +314,41 @@ async function removeInspectedHolder(path, name, fingerprint, removeHolder) {
   }
   throw failure;
 }
-export async function pruneIncompleteHolders(dir, { keep = MAX_INCOMPLETE_HOLDERS, exclude, removeHolder = (path) => rm(path, { recursive: true }), afterInspect = async () => {}, log = (line) => console.error(line) } = {}) {
+const STRANDED_PRUNING_PATTERN = /^\.(.+)\.pruning-(\d{1,10})-[0-9a-f]{12}$/;
+function processIsAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (error) { return error?.code === "EPERM"; }
+}
+// A crash between the private rename and the end of the removal leaves a
+// holder under .<holder>.pruning-<pid>-<hex>. On the next start such a holder
+// is finished off if it is still prunable (or empty), and otherwise renamed back
+// under its own name, where it is kept like any other holder. A name of
+// another live process is left alone (it may be pruning right now).
+async function recoverStrandedPruning(parent, name, { removeHolder, readMountPoints, log }) {
+  let entries;
+  try { entries = await readdir(parent); } catch { return; }
+  for (const entry of entries) {
+    if (!entry.startsWith(`.${name}.incomplete-`)) continue;
+    const match = STRANDED_PRUNING_PATTERN.exec(entry);
+    if (!match || !holderOrder(name, match[1])) continue;
+    const pid = Number(match[2]);
+    if (pid !== process.pid && processIsAlive(pid)) continue;
+    const path = join(parent, entry);
+    const original = join(parent, match[1]);
+    try {
+      if (!(await lstat(path)).isDirectory()) continue;
+      if ((await readdir(path)).length === 0) { await rmdir(path); log(`removed the empty moved-aside holder ${path} left by an interrupted pruning`); continue; }
+      if (await isPrunableHolder(path, name, readMountPoints)) { await removeHolder(path); log(`pruned the moved-aside holder ${path} left by an interrupted pruning`); continue; }
+      await mkdir(original, { mode: 0o700 });
+      await rename(path, original);
+      log(`renamed the moved-aside holder ${path} left by an interrupted pruning back to ${original}`);
+    } catch (error) { log(`could not recover the moved-aside holder ${path} left by an interrupted pruning: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+}
+export async function pruneIncompleteHolders(dir, { keep = MAX_INCOMPLETE_HOLDERS, exclude, removeHolder = (path) => rm(path, { recursive: true }), afterInspect = async () => {}, readMountPoints = readMountPointsFromProc, log = (line) => console.error(line) } = {}) {
   const parent = resolve(dir, "..");
   const name = basename(dir);
   const candidates = [];
+  await recoverStrandedPruning(parent, name, { removeHolder, readMountPoints, log });
   let entries;
   try { entries = await readdir(parent); } catch (error) { log(`could not prune moved-aside holders next to ${dir}: ${error instanceof Error ? error.message : String(error)}`); return []; }
   for (const entry of entries) {
@@ -274,7 +359,7 @@ export async function pruneIncompleteHolders(dir, { keep = MAX_INCOMPLETE_HOLDER
     let fingerprint;
     try {
       if (!excluded) {
-        if (!(await isPrunableHolder(path, name))) continue;
+        if (!(await isPrunableHolder(path, name, readMountPoints))) continue;
         fingerprint = await holderFingerprint(path);
       }
     } catch (error) { log(`could not inspect the moved-aside holder ${path}: ${error instanceof Error ? error.message : String(error)}`); continue; }
@@ -285,7 +370,7 @@ export async function pruneIncompleteHolders(dir, { keep = MAX_INCOMPLETE_HOLDER
   const room = Math.max(0, keep - (candidates.length - older.length));
   const removed = [];
   for (const holder of older.slice(0, Math.max(0, older.length - room))) {
-    try { await afterInspect(holder.path); await removeInspectedHolder(holder.path, name, holder.fingerprint, removeHolder); removed.push(holder.path); log(`pruned the old moved-aside holder ${holder.path}`); }
+    try { await afterInspect(holder.path); await removeInspectedHolder(holder.path, name, holder.fingerprint, removeHolder, readMountPoints); removed.push(holder.path); log(`pruned the old moved-aside holder ${holder.path}`); }
     catch (error) { log(`could not prune the moved-aside holder ${holder.path}: ${error instanceof Error ? error.message : String(error)}`); }
   }
   return removed;

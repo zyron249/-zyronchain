@@ -468,6 +468,8 @@ test("holders stranded under a private pruning name by a crash are recovered on 
     await api.moveAsideIncompleteNetworkDir(join(root, "net"), { log: () => {} });
     await assert.rejects(access(prunable), { code: "ENOENT" });
     await assert.rejects(access(emptied), { code: "ENOENT" });
+    // An emptied one (the removal had got that far) is not brought back.
+    await assert.rejects(access(join(root, "net.incomplete-92-4242")), { code: "ENOENT" });
     // A stranded holder that is not prunable goes back under its own name and is kept.
     await access(join(root, "net.incomplete-91-4242", "net", "notes.txt"));
     await access(unrelated);
