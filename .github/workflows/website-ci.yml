@@ -43,6 +43,10 @@ jobs:
           node --check website/season.js
           node --check website/hero-chain.js
           node --check website/testnet/testnet.js
+          node --check website/verify/vendor/secp256k1-verify.js
+          node --check website/verify/light-client.js
+          node --check website/verify/session.js
+          node --check website/verify/verify.js
           node --check website/app/app.js
           node --check website/app/zyron-wallet-core.js
           node --check website/app/sw.js
@@ -56,6 +60,7 @@ jobs:
         run: |
           node tools/site/stamp-site.mjs --check
           node tools/site/stamp-testnet.mjs --check
+          node tools/site/stamp-verify.mjs --check
       - name: Seasonal theme date gating and overrides (Halloween 2026)
         run: node --test tools/site/test-season.mjs tools/site/test-hero-chain.mjs
       - name: Site regression tests (English-only, network-status honesty, naming, mining retired, build id, SEO)
@@ -63,6 +68,9 @@ jobs:
           node tools/site/test-site.mjs
           node tools/site/test-network-live.mjs
           node tools/site/test-testnet.mjs
+          node website/verify/test-light-client.mjs
+          node website/verify/test-session.mjs
+          node tools/site/test-verify.mjs
       - name: Verify production website, wallet and validator contracts
         shell: bash
         run: |
@@ -509,6 +517,7 @@ jobs:
           CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
           export CHROME_PATH
           node tools/site/test-layout.mjs
+          node tools/site/test-verify-browser.mjs
           node tools/site/test-season-browser.mjs
           node tools/site/test-hero-chain-browser.mjs
           node tools/site/test-testnet-browser.mjs
