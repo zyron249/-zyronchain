@@ -18,7 +18,8 @@ import {
   assertMiningNotRetired,
   MINING_PROTOCOL_VERSION,
   MINING_TRACKER_ADDRESS,
-  miningRewardAtoms as scheduledMiningRewardAtoms
+  miningRewardAtoms as scheduledMiningRewardAtoms,
+  rejectRetiredMiningClaim
 } from "./mining.js";
 import {
   ACTIVITY_ORACLE_PAUSED_MESSAGE,
@@ -1441,23 +1442,12 @@ function stateV2KeysForTransaction(tx: Transaction, genesis: GenesisConfig): str
   return stateV2TransactionKeyPreimages(tx);
 }
 
-/** Exported only so tests can pin its fail-closed retirement guard (EXT-04). */
-export function applyMiningClaimStateV2(state: SparseMerkleState, tx: MiningClaimTx): SparseMerkleState {
-  assertMiningNotRetired();
-  if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
-  const minerNonce = stateV2Nonce(state, tx.sender);
-  if (tx.nonce !== minerNonce + 1) throw new Error("Invalid nonce");
-  const trackerNonce = stateV2Nonce(state, MINING_TRACKER_ADDRESS);
-  if (trackerNonce >= Number.MAX_SAFE_INTEGER) throw new Error("Mining claim counter exhausted");
-  const balance = stateV2Balance(state, tx.sender);
-  const nextBalance = balance + tx.rewardAtoms;
-  if (!Number.isSafeInteger(nextBalance) || nextBalance > MAX_SUPPLY_ATOMS) throw new Error("Mining balance overflow");
-  let next = state.set(accountKey(tx.sender), { balanceAtoms: nextBalance, nonce: tx.nonce });
-  next = next.set(accountKey(MINING_TRACKER_ADDRESS), {
-    balanceAtoms: stateV2Balance(state, MINING_TRACKER_ADDRESS),
-    nonce: trackerNonce + 1
-  });
-  return next;
+/**
+ * Exported only so tests can pin its fail-closed retirement guard (EXT-04).
+ * Mining is retired: explicit rejection only, no issuance logic.
+ */
+export function applyMiningClaimStateV2(_state: SparseMerkleState, _tx: MiningClaimTx): never {
+  return rejectRetiredMiningClaim();
 }
 
 /**

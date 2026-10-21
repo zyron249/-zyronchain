@@ -1,5 +1,5 @@
 import { canonicalJson, compareCanonicalStrings, sha256Hex } from "./codec.js";
-import { assertMiningNotRetired, MINING_TRACKER_ADDRESS } from "./mining.js";
+import { MINING_TRACKER_ADDRESS, rejectRetiredMiningClaim } from "./mining.js";
 import {
   ACTIVITY_ORDER_MESSAGE,
   ACTIVITY_WINDOW_AMOUNT_ADDRESS,
@@ -226,19 +226,9 @@ export class LedgerState {
     }
   }
 
-  private applyMining(tx: MiningClaimTx): void {
-    assertMiningNotRetired();
-    if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
-    this.requireNonce(tx.sender, tx.nonce);
-    const nextSupply = this.totalSupplyAtoms() + tx.rewardAtoms;
-    if (!Number.isSafeInteger(nextSupply) || nextSupply > MAX_SUPPLY_ATOMS) {
-      throw new Error("Mining reward exceeds maximum supply");
-    }
-    const claimCount = this.miningClaimCount();
-    if (claimCount >= Number.MAX_SAFE_INTEGER) throw new Error("Mining claim counter exhausted");
-    this.credit(tx.sender, tx.rewardAtoms);
-    this.setNonce(tx.sender, tx.nonce);
-    this.setNonce(MINING_TRACKER_ADDRESS, claimCount + 1);
+  /** EXT-04: mining is retired; explicit rejection only, no issuance logic. */
+  private applyMining(_tx: MiningClaimTx): never {
+    return rejectRetiredMiningClaim();
   }
 
   private applyActivityOracleGovernance(tx: ActivityOracleGovernanceTx): void {
