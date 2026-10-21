@@ -9,3 +9,5 @@ The local `recovery-checkpoint.json` fast path is optional recovery metadata, ne
 - Linux/general CI and the Windows bounded-state workflow exercise this recovery-file boundary; those regressions are implementation evidence only, not target-hardware recovery-capacity evidence.
 
 This control reduces local recovery memory/TOCTOU exposure. It does **not** close the target-hardware recovery evidence required by issue #383 and does not change public-testnet, mainnet, mining, governance, consensus, or finality activation gates.
+
+Since checkpoint v3, the fast path also verifies a SHA-256 of the retained finalized-log prefix it skips; see `RECOVERY_CHECKPOINT_PREFIX_DIGEST.md`.
