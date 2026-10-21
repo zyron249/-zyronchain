@@ -1,6 +1,6 @@
 # Proof of possession for incoming validators (design, P1-07)
 
-Status: **partly implemented.** The genesis part (`validatorAdmission`, genesis proofs, chain identity, the requirement for value-bearing classes and the `tokenomics:check --before-possession-proofs` ceremony precheck) is implemented in `l1/src/validator-admission.ts`. The `validator_update` part is a separate PR. This is a consensus and cryptography change. It has had AI review only; it is not an audit and needs an independent review.
+Status: **partly implemented.** The genesis part (`validatorAdmission`, genesis proofs, chain identity, the requirement for value-bearing classes and the `tokenomics:check --before-possession-proofs` ceremony precheck) is implemented in `l1/src/validator-admission.ts`, and so is the `validator_update` part (`possessionProofs`, per-block working schedule). CLI support for collecting proofs for a `validator_update` is a follow-up. This is a consensus and cryptography change. It has had AI review only; it is not an audit and needs an independent review.
 
 Backlog item: P1-07 (F-05 residual).
 
