@@ -21,6 +21,24 @@
   const VAULT_CIPHER = 'aes-256-gcm';
   const VAULT_KEYS = ['address', 'cipher', 'ciphertext', 'createdAt', 'derivationPath', 'format', 'kdf', 'publicKey', 'salt', 'version', 'words'];
   const ATOMS_PER_ZYN = 100000000;
+  // Proposed fixed protocol fee: 0.001 ZYN. Same constant as l1 FIXED_TRANSFER_FEE_ATOMS.
+  const FIXED_TRANSFER_FEE_ATOMS = ATOMS_PER_ZYN / 1000;
+  // Published fixed-supply-v1 chain IDs. Offline signing cannot read a genesis,
+  // so these IDs are the default for that profile. zyron-wallet-testnet-1 is not one of them.
+  const FIXED_SUPPLY_V1_CHAIN_IDS = ['zyron-open-testnet-1', 'zyron-open-testnet-render-1', 'zyron-public-testnet-1'];
+  function fixedFeeRejection(input) {
+    if (!input || typeof input !== 'object') return undefined;
+    const chainId = String(input.chainId == null ? '' : input.chainId);
+    const required = input.fixedTransferFeeAtoms == null ? FIXED_TRANSFER_FEE_ATOMS : input.fixedTransferFeeAtoms;
+    if (!Number.isSafeInteger(required) || required < 1) return undefined;
+    let enforced = false;
+    if (input.feePolicyActive === true || input.launchProfile === 'fixed-supply-v1') enforced = true;
+    else if (typeof input.launchProfile === 'string') enforced = false;
+    else enforced = FIXED_SUPPLY_V1_CHAIN_IDS.indexOf(chainId) !== -1;
+    if (!enforced || input.feeAtoms === required) return undefined;
+    const zyn = required === FIXED_TRANSFER_FEE_ATOMS ? ' (0.001 ZYN)' : '';
+    return 'This network will reject this fee. The protocol fee is ' + required + ' atoms' + zyn + '. Nothing was signed.';
+  }
   const MAX_SUPPLY_ATOMS = 50000000 * ATOMS_PER_ZYN;
   const MINING_TRACKER_ADDRESS = 'ZYN' + '0'.repeat(40);
   const TRANSFER_SIGNING_DOMAIN_V2 = 'zyronchain/transaction/transfer/v2';
@@ -334,6 +352,8 @@
   function signTransfer(unsigned, privateKey) {
     if (!unsigned || unsigned.kind !== 'transfer') throw new Error('This wallet signs transfers only');
     describeTransfer(unsigned); // same strict shape check the review screen uses
+    const rejection = fixedFeeRejection(unsigned);
+    if (rejection) throw new Error(rejection);
     const v = vendor();
     if (v.bytesToHex(v.secp256k1.getPublicKey(privateKey, false).slice(1)) !== unsigned.publicKey) throw new Error('Key does not match the transfer public key');
     const domainPayload = unsigned.version === 2 ? { domain: TRANSFER_SIGNING_DOMAIN_V2, payload: unsigned } : unsigned;
@@ -430,11 +450,11 @@
   }
 
   const api = Object.freeze({
-    DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_KDF, ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
+    DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_KDF, ATOMS_PER_ZYN, FIXED_TRANSFER_FEE_ATOMS, FIXED_SUPPLY_V1_CHAIN_IDS, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
     TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, WALLET_TESTNET_CHAIN_ID, defaultTransferVersion,
     wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress,
     passwordStrength, normalizePhrase, generateEntropy, entropyToPhrase, phraseToEntropy, deriveAccount,
-    createVault, openVault, assertVaultShape, parseVault, zynToAtoms, atomsToZyn, buildTransfer, describeTransfer, signTransfer, verifyCanonical,
+    createVault, openVault, assertVaultShape, parseVault, zynToAtoms, atomsToZyn, buildTransfer, describeTransfer, fixedFeeRejection, signTransfer, verifyCanonical,
     LINK_SIGNING_DOMAIN, LINK_NETWORK, LINK_RETURN_URL, parseLinkMessage, parseLinkHash, signLinkProof, textToBase64Url,
     selfTest
   });

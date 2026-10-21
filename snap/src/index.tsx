@@ -11,13 +11,15 @@ import {
 import {
   ALLOWED_ORIGINS,
   DERIVATION_PATH_STRING,
+  FIXED_TRANSFER_FEE_ATOMS,
   MESSAGE_SIGNING_DOMAIN,
   RPC_METHODS,
 } from './constants';
 import type { Account } from './keys';
 import { getAccount, withAccountKey } from './keys';
 import { RpcError, TESTNET_RPC_URL, getAccountState, getStatus, submitTransfer } from './rpc';
-import { MessageConfirmation, TransferConfirmation } from './ui';
+import { fixedFeeRejection, type FeeGuardInput } from './fee-guard';
+import { FeeRejectedWarning, MessageConfirmation, TransferConfirmation } from './ui';
 import { parseMessageRequest, signMessagePayload } from './zyron/message';
 import {
   TransactionRequestError,
@@ -68,6 +70,22 @@ function assertNoParams(params: unknown, method = 'This method'): void {
 }
 
 /**
+ * Shows the rejection and refuses to sign. The alert is the pre-sign warning.
+ * Approving it does not produce a signature.
+ *
+ * @param input - Fee and chain context.
+ */
+async function blockRejectedFee(input: FeeGuardInput): Promise<void> {
+  const warning = fixedFeeRejection(input);
+  if (warning === undefined) return;
+  await snap.request({
+    method: 'snap_dialog',
+    params: { type: 'alert', content: <FeeRejectedWarning message={warning} /> },
+  });
+  throw new InvalidParamsError(warning);
+}
+
+/**
  * Shows a confirmation dialog and throws 4001 if the user declines.
  *
  * @param content - Dialog JSX.
@@ -114,6 +132,8 @@ async function withRpc<Result>(action: () => Promise<Result>): Promise<Result> {
 /**
  * `zyron_sendTransfer` params: exactly { receiver, amountAtoms, feeAtoms? }.
  * Chain ID, nonce and transaction version come from the testnet RPC.
+ * An omitted fee is the proposed fixed protocol fee (0.001 ZYN). An explicit
+ * fee, including 0, is kept so a network that has not opted in can still be used.
  *
  * @param params - Untrusted params.
  * @returns Parsed request.
@@ -128,7 +148,7 @@ function parseSendRequest(params: unknown): { receiver: unknown; amountAtoms: un
   return {
     receiver: params.receiver,
     amountAtoms: params.amountAtoms,
-    feeAtoms: Object.hasOwn(params, 'feeAtoms') ? params.feeAtoms : 0,
+    feeAtoms: Object.hasOwn(params, 'feeAtoms') ? params.feeAtoms : FIXED_TRANSFER_FEE_ATOMS,
   };
 }
 
@@ -166,6 +186,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       const unsigned = validated(() =>
         parseTransferRequest(params.transaction, account, Date.now()),
       );
+      await blockRejectedFee({ chainId: unsigned.chainId, feeAtoms: unsigned.feeAtoms });
       await confirmOrReject(<TransferConfirmation origin={origin} tx={unsigned} />);
       return withAccountKey((privateKey, signer) => {
         assertSameAccount(account, signer);
@@ -231,6 +252,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       if (unsigned.amountAtoms + unsigned.feeAtoms > state.balanceAtoms) {
         throw new InvalidParamsError('Insufficient testnet balance for amount plus fee');
       }
+      await blockRejectedFee({ chainId: unsigned.chainId, feeAtoms: unsigned.feeAtoms });
       await confirmOrReject(
         <TransferConfirmation
           origin={origin}

@@ -1,6 +1,16 @@
 import { canonicalJson } from "./codec.js";
+import { FIXED_FEE_MISMATCH_MESSAGE } from "./fee-policy.js";
 import { assertMiningNotRetired, miningWorkHash } from "./mining.js";
 import type { MiningClaimTx, Transaction } from "./types.js";
+
+export interface MempoolOptions {
+  /** fixed-fee-v1: same-nonce replacement by a higher fee is rejected. */
+  disableFeeReplacement?: boolean;
+  /** fixed-fee-v1: transfers whose fee is not this value are rejected. */
+  fixedTransferFeeAtoms?: number;
+  /** Per-sender pending cap. Unset: no count cap beyond the caller's other checks. */
+  maxPendingPerSender?: number;
+}
 
 const REPLACEMENT_BUMP_NUMERATOR = 11n;
 const REPLACEMENT_BUMP_DENOMINATOR = 10n;
@@ -25,12 +35,17 @@ export class Mempool {
   private nonMiningBytes = 0;
   private nonMiningEvictionCacheValid = false;
   private nonMiningEvictionCache: EvictionCandidate | undefined;
+  private readonly pendingBySender = new Map<string, number>();
+  private readonly disableFeeReplacement: boolean;
+  private readonly fixedTransferFeeAtoms: number | undefined;
+  private readonly maxPendingPerSender: number | undefined;
 
   constructor(
     maxNonMiningSize?: number,
     miningReserve?: number,
     maxNonMiningBytes = DEFAULT_MEMPOOL_NON_MINING_MAX_BYTES,
-    maxMiningBytes = DEFAULT_MINING_MEMPOOL_MAX_BYTES
+    maxMiningBytes = DEFAULT_MINING_MEMPOOL_MAX_BYTES,
+    options?: MempoolOptions
   ) {
     this.maxNonMiningSize = maxNonMiningSize ?? DEFAULT_MEMPOOL_NON_MINING_CAPACITY;
     this.miningReserve = miningReserve ?? (maxNonMiningSize === undefined ? MAX_MINING_MEMPOOL_CLAIMS : 0);
@@ -49,11 +64,25 @@ export class Mempool {
     if (!Number.isSafeInteger(this.maxMiningBytes) || this.maxMiningBytes < 1) {
       throw new Error("Invalid mining mempool byte capacity");
     }
+    this.disableFeeReplacement = options?.disableFeeReplacement === true;
+    this.fixedTransferFeeAtoms = options?.fixedTransferFeeAtoms;
+    this.maxPendingPerSender = options?.maxPendingPerSender;
+    if (this.fixedTransferFeeAtoms !== undefined &&
+        (!Number.isSafeInteger(this.fixedTransferFeeAtoms) || this.fixedTransferFeeAtoms < 1)) {
+      throw new Error("Invalid fixed transfer fee");
+    }
+    if (this.maxPendingPerSender !== undefined &&
+        (!Number.isSafeInteger(this.maxPendingPerSender) || this.maxPendingPerSender < 1)) {
+      throw new Error("Invalid per-sender mempool cap");
+    }
   }
 
   add(tx: Transaction): void {
     // Mining is retired: the mining reserve can never be occupied.
     if (tx.kind === "mining_claim") assertMiningNotRetired();
+    if (this.fixedTransferFeeAtoms !== undefined && tx.kind === "transfer" && tx.feeAtoms !== this.fixedTransferFeeAtoms) {
+      throw new Error(FIXED_FEE_MISMATCH_MESSAGE);
+    }
     if (this.byId.has(tx.txid)) throw new Error("Transaction already in mempool");
     const txBytes = transactionBytes(tx);
     if (tx.kind === "mining_claim") {
@@ -66,7 +95,7 @@ export class Mempool {
     const conflictingId = this.nonceIds.get(nonceKey);
     if (conflictingId) {
       const conflicting = this.byId.get(conflictingId)!;
-      if (!isValidReplacement(conflicting, tx)) throw new Error("Conflicting sender nonce");
+      if (!isValidReplacement(conflicting, tx, this.disableFeeReplacement)) throw new Error("Conflicting sender nonce");
       const conflictingBytes = transactionBytes(conflicting);
       if (tx.kind === "mining_claim") {
         if (this.miningBytes - conflictingBytes + txBytes > this.maxMiningBytes) {
@@ -76,6 +105,9 @@ export class Mempool {
         throw new Error("Mempool full");
       }
       this.deleteTransaction(conflictingId, conflicting);
+    } else if (this.maxPendingPerSender !== undefined &&
+        (this.pendingBySender.get(tx.sender) ?? 0) >= this.maxPendingPerSender) {
+      throw new Error("Per-sender mempool cap exceeded");
     }
 
     if (tx.kind === "mining_claim") {
@@ -94,6 +126,7 @@ export class Mempool {
       }
     } else if (this.nonMiningSize >= this.maxNonMiningSize ||
         this.nonMiningBytes + txBytes > this.maxNonMiningBytes) {
+      if (this.disableFeeReplacement) throw new Error("Mempool full");
       const eviction = this.lowestPriorityEvictableTransfer();
       if (!eviction || (tx.kind === "transfer" && !hasRequiredFeeRateBump(eviction.tx, tx)) ||
           this.nonMiningBytes - transactionBytes(eviction.tx) + txBytes > this.maxNonMiningBytes) {
@@ -107,6 +140,7 @@ export class Mempool {
     this.nonceIds.set(nonceKey, tx.txid);
     this.adjustOccupancy(stored, 1, txBytes);
     this.adjustTransferSpend(stored, 1n);
+    this.adjustSenderCount(stored.sender, 1);
     this.invalidateNonMiningEvictionCache();
   }
 
@@ -174,7 +208,15 @@ export class Mempool {
     this.nonceIds.delete(`${tx.sender}:${tx.nonce}`);
     this.adjustOccupancy(tx, -1);
     this.adjustTransferSpend(tx, -1n);
+    this.adjustSenderCount(tx.sender, -1);
     this.invalidateNonMiningEvictionCache();
+  }
+
+  private adjustSenderCount(sender: string, direction: 1 | -1): void {
+    const next = (this.pendingBySender.get(sender) ?? 0) + direction;
+    if (next < 0) throw new Error("Mempool occupancy invariant violated");
+    if (next === 0) this.pendingBySender.delete(sender);
+    else this.pendingBySender.set(sender, next);
   }
 
   private invalidateNonMiningEvictionCache(): void {
@@ -222,8 +264,9 @@ function transactionBytes(tx: Transaction): number {
   return bytes;
 }
 
-function isValidReplacement(existing: Transaction, incoming: Transaction): boolean {
+function isValidReplacement(existing: Transaction, incoming: Transaction, disableFeeReplacement: boolean): boolean {
   if (existing.kind === "transfer" && incoming.kind === "transfer") {
+    if (disableFeeReplacement) return false;
     return hasRequiredFeeRateBump(existing, incoming);
   }
   if (existing.kind === "mining_claim" && incoming.kind === "mining_claim") {

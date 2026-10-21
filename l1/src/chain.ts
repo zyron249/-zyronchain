@@ -93,6 +93,12 @@ import { MAX_SUPPLY_ATOMS } from "./types.js";
 import { assertValueBearingClassRequiresFixedSupplyProfile, minimumValidatorCount } from "./network-class.js";
 import { validatePublicDistributionRelease } from "./public-distribution-release.js";
 import { assertFixedSupplyLaunchProfile, FIXED_SUPPLY_LAUNCH_PROFILE } from "./tokenomics.js";
+import {
+  readFeePolicy,
+  splitFixedFee,
+  validateGenesisFeePolicy,
+  type FixedFeeApplication
+} from "./fee-policy.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
 export const MAX_BLOCK_TRANSACTION_BYTES = 1_500_000;
@@ -471,7 +477,7 @@ export class ZyronChain {
   stateV2SemanticKeyPreimagesForBlock(block: Block): string[] {
     const keys = new Set(this.stateV2SemanticKeys ?? stateV2KeyPreimages(this.requireLegacyState().snapshot(), this.governanceSnapshot()));
     for (const tx of block.transactions) {
-      for (const key of stateV2KeysForTransaction(tx, this.genesis)) keys.add(key);
+      for (const key of stateV2KeysForTransaction(tx, this.genesis, block.header.proposer)) keys.add(key);
     }
     return [...keys].sort();
   }
@@ -552,7 +558,9 @@ export class ZyronChain {
       throw new Error("Public key is not the expected proposer");
     }
     const timestampMs = options.timestampMs ?? Math.max(Date.now(), this.tip.header.timestampMs + 1);
-    const next = this.validateAndApply(transactions, this.state, this.height + 1, timestampMs);
+    const next = this.validateAndApply(
+      transactions, this.state, this.height + 1, timestampMs, addressFromPublicKey(proposerPublicKey)
+    );
     const block = createUnsignedBlock({
       version: protocolVersion,
       chainId: this.genesis.chainId,
@@ -574,7 +582,9 @@ export class ZyronChain {
     assertSupportedProtocolVersion(protocolVersion);
     validateBlockEnvelope(block, this.tip, this.validatorsAt(block.header.height), nowMs, false, protocolVersion, false);
     if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
-    const next = this.validateAndApply(block.transactions, this.state, block.header.height, block.header.timestampMs);
+    const next = this.validateAndApply(
+      block.transactions, this.state, block.header.height, block.header.timestampMs, feeProducerOf(block)
+    );
     if (block.header.stateRoot !== stateRootForProtocol(protocolVersion, next)) throw new Error("State root mismatch");
   }
 
@@ -596,7 +606,7 @@ export class ZyronChain {
     } else {
       const keys = new Set(this.stateV2SemanticKeys ?? stateV2KeyPreimages(this.requireLegacyState().snapshot(), this.governanceSnapshot()));
       for (const tx of block.transactions) {
-        for (const key of stateV2KeysForTransaction(tx, this.genesis)) keys.add(key);
+        for (const key of stateV2KeysForTransaction(tx, this.genesis, block.header.proposer)) keys.add(key);
       }
       this.state = undefined;
       this.stateV2 = next.sparse?.persistenceCheckpoint();
@@ -615,7 +625,9 @@ export class ZyronChain {
     const validators = this.validatorsAt(block.header.height);
     validateBlockEnvelope(block, this.tip, validators, nowMs, true, protocolVersion);
     if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
-    const next = this.validateAndApply(block.transactions, this.state, block.header.height, block.header.timestampMs);
+    const next = this.validateAndApply(
+      block.transactions, this.state, block.header.height, block.header.timestampMs, feeProducerOf(block)
+    );
     if (block.header.stateRoot !== stateRootForProtocol(protocolVersion, next)) throw new Error("State root mismatch");
     return next;
   }
@@ -625,7 +637,9 @@ export class ZyronChain {
     assertSupportedProtocolVersion(protocolVersion);
     validateBlockEnvelope(block, this.tip, this.validatorsAt(block.header.height), nowMs, false, protocolVersion);
     if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
-    const next = this.validateAndApply(block.transactions, this.state, block.header.height, block.header.timestampMs);
+    const next = this.validateAndApply(
+      block.transactions, this.state, block.header.height, block.header.timestampMs, feeProducerOf(block)
+    );
     if (block.header.stateRoot !== stateRootForProtocol(protocolVersion, next)) throw new Error("State root mismatch");
   }
 
@@ -650,7 +664,7 @@ export class ZyronChain {
 
   validateMempoolAdmission(tx: Transaction, nowMs = Date.now()): void {
     if (tx.chainId !== this.genesis.chainId) throw new Error("Wrong transaction chain ID");
-    validateTransactionShape(tx);
+    this.shape(tx);
     const protocolVersion = this.protocolVersionAt(this.height + 1);
     assertTransactionVersionForProtocol(tx, protocolVersion);
     const rollingWindow = activityRollingWindowEnforced(this.genesis);
@@ -728,7 +742,8 @@ export class ZyronChain {
     transactions: Transaction[],
     limit: number,
     maxTransactionBytes = MAX_BLOCK_TRANSACTION_BYTES,
-    blockTimestampMs = this.nextBlockTimestampMs()
+    blockTimestampMs = this.nextBlockTimestampMs(),
+    producerAddress?: Address
   ): Transaction[] {
     if (!Number.isSafeInteger(limit) || limit < 0 || limit > 10_000) {
       throw new Error("Invalid pending selection limit");
@@ -739,10 +754,13 @@ export class ZyronChain {
     }
     const protocolVersion = this.protocolVersionAt(this.height + 1);
     assertSupportedProtocolVersion(protocolVersion);
+    const policy = readFeePolicy(this.genesis);
     const ordered = orderPendingByFeePriority(
       transactions.map((tx) => structuredClone(tx)),
-      (tx) => this.isAuthorizedProtocolCandidate(tx, protocolVersion, blockTimestampMs)
+      (tx) => this.isAuthorizedProtocolCandidate(tx, protocolVersion, blockTimestampMs),
+      policy ? { feePriority: false } : undefined
     );
+    const fee = this.fixedFeeApplication(this.height + 1, producerAddress);
     const next = protocolVersion === 1 ? this.legacyStateForTransition().clone() : undefined;
     let sparse = protocolUsesStateV2(protocolVersion)
       ? (this.stateV2 ?? stateV2FromLedgerSnapshot(this.requireLegacyState().snapshot(), this.governanceSnapshot()))
@@ -765,7 +783,7 @@ export class ZyronChain {
       if (selected.length >= limit) break;
       try {
         if (tx.chainId !== this.genesis.chainId || seen.has(tx.txid)) continue;
-        validateTransactionShape(tx);
+        this.shape(tx);
         assertTransactionVersionForProtocol(tx, protocolVersion);
         if (tx.kind === "activity_settlement") {
           assertActivitySettlementAuthorized(tx, oracles, {
@@ -798,9 +816,9 @@ export class ZyronChain {
         if (sparse) {
           sparse = tx.kind === "mining_claim"
             ? applyMiningClaimStateV2(sparse, tx)
-            : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks, oracles);
+            : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks, oracles, fee);
         } else {
-          next!.apply(tx, this.genesis.activityPool, locks, oracles);
+          next!.apply(tx, this.genesis.activityPool, locks, oracles, fee);
         }
         if (tx.kind === "mining_claim") {
           miningClaimSelected = true;
@@ -843,7 +861,7 @@ export class ZyronChain {
       if (tx.chainId !== this.genesis.chainId) return false;
       if (tx.kind !== "activity_settlement" && tx.kind !== "validator_update" &&
           tx.kind !== "activity_oracle_governance" && tx.kind !== "protocol_upgrade") return false;
-      validateTransactionShape(tx);
+      this.shape(tx);
       assertTransactionVersionForProtocol(tx, protocolVersion);
       if (tx.kind === "activity_settlement") {
         assertActivitySettlementAuthorized(tx, this.oracleSetAt(this.height + 1), {
@@ -873,13 +891,34 @@ export class ZyronChain {
     }
   }
 
+  /** Shape check for this chain. fixed-fee-v1 passes the committed fee; other chains do not. */
+  private shape(value: unknown): asserts value is Transaction {
+    validateTransactionShape(value, readFeePolicy(this.genesis)?.fixedTransferFeeAtoms);
+  }
+
+  /**
+   * Producer credit for fixed-fee-v1. Absent when the genesis has no fee
+   * policy, so historical appliers still burn the whole fee. When the caller
+   * knows the block proposer, that address is the producer. Mempool
+   * pre-validation, which has no block yet, uses the round-0 proposer of the
+   * height. Block validation always passes the block proposer.
+   */
+  private fixedFeeApplication(blockHeight: number, producer: Address | undefined): FixedFeeApplication | undefined {
+    const policy = readFeePolicy(this.genesis);
+    if (!policy) return undefined;
+    const resolved = producer ?? expectedValidator(this.validatorsAt(blockHeight), blockHeight, 0).address;
+    return { producer: resolved, fixedTransferFeeAtoms: policy.fixedTransferFeeAtoms };
+  }
+
   private validateAndApply(
     transactions: Transaction[],
     startingState: LedgerState | undefined,
     blockHeight: number,
-    blockTimestampMs: number
+    blockTimestampMs: number,
+    producer?: Address
   ): AppliedTransition {
     const protocolVersion = this.protocolVersionAt(blockHeight);
+    const fee = this.fixedFeeApplication(blockHeight, producer);
     const next = protocolVersion === 1 ? this.legacyStateForTransition(startingState).clone() : startingState;
     let sparse = protocolUsesStateV2(protocolVersion)
       ? (this.stateV2 ?? stateV2FromLedgerSnapshot((startingState ?? this.requireLegacyState()).snapshot(), this.governanceSnapshot()))
@@ -901,7 +940,7 @@ export class ZyronChain {
       if (tx.chainId !== this.genesis.chainId) throw new Error("Wrong transaction chain ID");
       if (seen.has(tx.txid)) throw new Error("Duplicate transaction in block");
       seen.add(tx.txid);
-      validateTransactionShape(tx);
+      this.shape(tx);
       assertTransactionVersionForProtocol(tx, protocolVersion);
       if (tx.kind === "activity_settlement") {
         // Registered submitter plus, under a threshold policy, m-of-n approvals.
@@ -943,9 +982,9 @@ export class ZyronChain {
       if (sparse) {
         sparse = tx.kind === "mining_claim"
           ? applyMiningClaimStateV2(sparse, tx)
-          : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks, oracles);
+          : applyStateV2Transaction(sparse, tx, this.genesis.activityPool, locks, oracles, fee);
       } else {
-        next!.apply(tx, this.genesis.activityPool, locks, oracles);
+        next!.apply(tx, this.genesis.activityPool, locks, oracles, fee);
       }
       if (tx.kind === "mining_claim") {
         miningClaimSeen = true;
@@ -1339,7 +1378,9 @@ function validateGenesis(genesis: GenesisConfig): void {
     // Optional: network class, version network-class-v1 (docs/GENESIS_NETWORK_CLASS.md).
     ...(Object.prototype.hasOwnProperty.call(genesis, "networkClass") ? ["networkClass"] : []),
     // Optional: public-distribution release, version public-distribution-release-v1.
-    ...(Object.prototype.hasOwnProperty.call(genesis, "publicDistributionRelease") ? ["publicDistributionRelease"] : [])
+    ...(Object.prototype.hasOwnProperty.call(genesis, "publicDistributionRelease") ? ["publicDistributionRelease"] : []),
+    // Optional: fixed-fee-v1 (docs/FEE_POLICY_V1.md). Absent: historical fee rules.
+    ...(Object.prototype.hasOwnProperty.call(genesis, "feePolicy") ? ["feePolicy"] : [])
   ], "genesis");
   const hasLaunchProfile = Object.prototype.hasOwnProperty.call(genesis, "launchProfile");
   if (hasLaunchProfile && genesis.launchProfile !== FIXED_SUPPLY_LAUNCH_PROFILE) {
@@ -1425,9 +1466,21 @@ function validateGenesis(genesis: GenesisConfig): void {
   if (hasLaunchProfile) assertFixedSupplyLaunchProfile(genesis);
   // public-distribution-release-v1. Required for fixed-supply-v1 and a value-bearing class.
   validatePublicDistributionRelease(genesis);
+  // fixed-fee-v1. Optional. Absent feePolicy leaves historical fee rules in place.
+  validateGenesisFeePolicy(genesis);
 }
 
-function stateV2KeysForTransaction(tx: Transaction, genesis: GenesisConfig): string[] {
+function stateV2KeysForTransaction(tx: Transaction, genesis: GenesisConfig, producer?: Address | "GENESIS"): string[] {
+  const keys = stateV2KeysForTransactionBody(tx, genesis);
+  if (tx.kind !== "transfer" || producer === undefined || producer === "GENESIS") return keys;
+  const policy = readFeePolicy(genesis);
+  if (!policy || splitFixedFee(tx.feeAtoms).producerAtoms <= 0) return keys;
+  const producerKey = accountKey(producer);
+  if (keys.includes(producerKey)) return keys;
+  return [...keys, producerKey].sort();
+}
+
+function stateV2KeysForTransactionBody(tx: Transaction, genesis: GenesisConfig): string[] {
   if (tx.kind === "mining_claim") {
     return [accountKey(tx.sender), accountKey(MINING_TRACKER_ADDRESS)].sort();
   }
@@ -1440,6 +1493,10 @@ function stateV2KeysForTransaction(tx: Transaction, genesis: GenesisConfig): str
     ].sort();
   }
   return stateV2TransactionKeyPreimages(tx);
+}
+
+function feeProducerOf(block: Block): Address | undefined {
+  return block.header.proposer === "GENESIS" ? undefined : block.header.proposer;
 }
 
 /**
@@ -1473,6 +1530,9 @@ export function applyMiningClaimStateV2(_state: SparseMerkleState, _tx: MiningCl
  *     The default vouches for nothing, so callers decide (selection checks
  *     signatures and oracle/validator-quorum authorization first).
  *  3. Then, among per-sender queue heads, highest feeAtoms first.
+ *     fixed-fee-v1 passes `feePriority: false` and uses input arrival order
+ *     instead of fee (FIFO per sender nonce). Block validity does not depend
+ *     on this order.
  *  4. Ties: earlier timestampMs, then txid, then sender (canonical order).
  * Each sender's transactions keep ascending nonce order (same-nonce
  * alternatives: higher fee first), so nonce sequencing is preserved. Heads are
@@ -1481,8 +1541,17 @@ export function applyMiningClaimStateV2(_state: SparseMerkleState, _tx: MiningCl
  */
 export function orderPendingByFeePriority(
   transactions: Transaction[],
-  isAuthorizedProtocolTx: (tx: Transaction) => boolean = () => false
+  isAuthorizedProtocolTx: (tx: Transaction) => boolean = () => false,
+  options?: { feePriority: boolean }
 ): Transaction[] {
+  const feePriority = options?.feePriority !== false;
+  const arrival = new Map<string, number>();
+  if (!feePriority) {
+    transactions.forEach((tx, index) => {
+      if (!arrival.has(tx.txid)) arrival.set(tx.txid, index);
+    });
+  }
+  const arrivalOf = (tx: Transaction): number => arrival.get(tx.txid) ?? 0;
   const protocolRank = (tx: Transaction): number => {
     if (tx.kind === "activity_settlement") return 0;
     if (tx.kind === "validator_update") return 1;
@@ -1514,7 +1583,11 @@ export function orderPendingByFeePriority(
     }
     const left = leftLane.queue[leftLane.index]!;
     const right = rightLane.queue[rightLane.index]!;
-    if (left.feeAtoms !== right.feeAtoms) return left.feeAtoms > right.feeAtoms;
+    if (feePriority) {
+      if (left.feeAtoms !== right.feeAtoms) return left.feeAtoms > right.feeAtoms;
+    } else if (arrivalOf(left) !== arrivalOf(right)) {
+      return arrivalOf(left) < arrivalOf(right);
+    }
     if (left.timestampMs !== right.timestampMs) return left.timestampMs < right.timestampMs;
     const byTxid = compareCanonicalStrings(left.txid, right.txid);
     if (byTxid) return byTxid < 0;
@@ -1530,7 +1603,7 @@ export function orderPendingByFeePriority(
   for (const queue of queues.values()) {
     queue.sort((left, right) =>
       left.nonce - right.nonce ||
-      right.feeAtoms - left.feeAtoms ||
+      (feePriority ? right.feeAtoms - left.feeAtoms : arrivalOf(left) - arrivalOf(right)) ||
       left.timestampMs - right.timestampMs ||
       compareCanonicalStrings(left.txid, right.txid));
     const liftTarget = new Array<number>(queue.length);

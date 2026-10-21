@@ -85,6 +85,22 @@ export interface GenesisConfig {
    * The address is an input, not a value stored in this repository.
    */
   publicDistributionRelease?: PublicDistributionRelease;
+  /**
+   * Optional fee policy, protocol rule version fixed-fee-v1
+   * (docs/FEE_POLICY_V1.md). Absent on every shipped genesis, including the
+   * open testnet: transfer fees stay caller-chosen, the whole fee is burned,
+   * and the genesis hash is unchanged. Present only together with
+   * `launchProfile: "fixed-supply-v1"`. The single tunable parameter is
+   * `fixedTransferFeeAtoms` (proposed default 100,000 atoms = 0.001 ZYN).
+   */
+  feePolicy?: FeePolicyV1;
+}
+
+/** Opt-in fixed transfer fee. See docs/FEE_POLICY_V1.md. Not activated on shipped genesis. */
+export interface FeePolicyV1 {
+  version: "fixed-fee-v1";
+  /** Exact transfer fee in atoms. Proposed launch default: 100,000 (0.001 ZYN). */
+  fixedTransferFeeAtoms: number;
 }
 
 export interface PublicDistributionRelease {

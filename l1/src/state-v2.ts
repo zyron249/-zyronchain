@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJson, compareCanonicalStrings } from "./codec.js";
+import { FIXED_FEE_MISMATCH_MESSAGE, splitFixedFee, type FixedFeeApplication } from "./fee-policy.js";
 import { addressFromPublicKey } from "./crypto.js";
 import { assertMiningNotRetired, MINING_TRACKER_ADDRESS } from "./mining.js";
 import {
@@ -589,7 +590,8 @@ export function applyStateV2Transaction(
   tx: Transaction,
   activityPool: Address,
   locks?: AllocationLockContext,
-  oracles?: ActivityOracleSet
+  oracles?: ActivityOracleSet,
+  fee?: FixedFeeApplication
 ): SparseMerkleState {
   const rollingWindow = activityRollingWindowEnforced(oracles);
   if (tx.kind === "transfer") {
@@ -609,6 +611,7 @@ export function applyStateV2Transaction(
     assertAllocationLockOutflow(locks, tx.sender, senderBalance, total);
     let next = debitStateV2(state, tx.sender, total);
     next = creditStateV2(next, tx.receiver, tx.amountAtoms);
+    if (fee) next = creditStateV2ProducerFee(next, tx.feeAtoms, fee, activityPool);
     return setStateV2Nonce(next, tx.sender, tx.nonce);
   }
   if (tx.kind === "activity_settlement") {
@@ -723,6 +726,21 @@ function creditStateV2(state: SparseMerkleState, address: Address, amount: numbe
   const balanceAtoms = account.balanceAtoms + amount;
   if (!Number.isSafeInteger(balanceAtoms) || balanceAtoms > MAX_SUPPLY_ATOMS) throw new Error("Balance overflow");
   return state.set(accountKey(address), { balanceAtoms, nonce: account.nonce });
+}
+
+/** fixed-fee-v1 producer share. A zero share does not create an account. */
+function creditStateV2ProducerFee(
+  state: SparseMerkleState,
+  feeAtoms: number,
+  fee: FixedFeeApplication,
+  activityPool: Address
+): SparseMerkleState {
+  if (feeAtoms !== fee.fixedTransferFeeAtoms) throw new Error(FIXED_FEE_MISMATCH_MESSAGE);
+  const { producerAtoms } = splitFixedFee(feeAtoms);
+  if (producerAtoms <= 0) return state;
+  if (fee.producer === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
+  assertNoActivityPoolInflow(fee.producer, activityPool);
+  return creditStateV2(state, fee.producer, producerAtoms);
 }
 
 function setStateV2Nonce(state: SparseMerkleState, address: Address, nonce: number): SparseMerkleState {

@@ -44,13 +44,14 @@ export function genesisConfigCommitment(genesis: GenesisConfig): string {
 /**
  * Genesis block. Legacy genesis files (no `launchProfile`, no
  * `activityOracleThreshold`, no `activityOraclePolicy`, no
- * `activitySettlementCapAtoms`, no `networkClass` and no
- * `publicDistributionRelease`) keep the historical header with a zero previous
- * hash, so their genesis hash is unchanged. Under a launch profile, when the
- * genesis declares `activityOracleThreshold`, `activityOraclePolicy` or
- * `activitySettlementCapAtoms` (which change block validity), when it declares
- * `networkClass` (network-class-v1), or when it declares
- * `publicDistributionRelease` (public-distribution-release-v1), the
+ * `activitySettlementCapAtoms`, no `networkClass`, no
+ * `publicDistributionRelease`, and no `feePolicy`) keep the historical header
+ * with a zero previous hash, so their genesis hash is unchanged. Under a
+ * launch profile, when the genesis declares `activityOracleThreshold`,
+ * `activityOraclePolicy` or `activitySettlementCapAtoms` (which change block
+ * validity), when it declares `networkClass` (network-class-v1), when it
+ * declares `publicDistributionRelease` (public-distribution-release-v1), or
+ * when it declares `feePolicy` (fixed-fee-v1), the
  * previous-hash slot of the genesis header carries
  * `genesisConfigCommitment(genesis)`, so the genesis hash (and therefore the
  * P2P chain identity, block 1's parent link, store metadata and light-client
@@ -62,7 +63,8 @@ export function createGenesisBlock(genesis: GenesisConfig, stateRoot: string): B
     Object.prototype.hasOwnProperty.call(genesis, "activityOraclePolicy") ||
     Object.prototype.hasOwnProperty.call(genesis, "activitySettlementCapAtoms") ||
     Object.prototype.hasOwnProperty.call(genesis, "networkClass") ||
-    Object.prototype.hasOwnProperty.call(genesis, "publicDistributionRelease");
+    Object.prototype.hasOwnProperty.call(genesis, "publicDistributionRelease") ||
+    Object.prototype.hasOwnProperty.call(genesis, "feePolicy");
   const header: BlockHeader = {
     version: 1,
     chainId: genesis.chainId,
