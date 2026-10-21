@@ -5,7 +5,7 @@
 // something the open testnet itself creates. A holder with an operator file in
 // it, a symlink, an unexpected name or an unexpected layout is never removed.
 import assert from "node:assert/strict";
-import { access, chmod, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -435,7 +435,8 @@ test("holder counters beyond the safe-integer range keep their order and never s
 
 test("pruning never removes a holder that has a mount point inside it", { timeout: 60_000 }, async () => {
   assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
-  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-mount-"));
+  // The mount table lists canonical paths (macOS tmpdir is under a /var symlink).
+  const root = await realpath(await mkdtemp(join(tmpdir(), "zyron-holder-retention-mount-")));
   try {
     const keep = api.MAX_INCOMPLETE_HOLDERS;
     const mounted = await holder(root, "net", 80);
@@ -547,6 +548,112 @@ test("holder names with fields this writer cannot produce do not steer the next 
     const aside = await api.moveAsideIncompleteNetworkDir(join(root, "net"), { log: () => {} });
     assert.match(String(aside), /net\.incomplete-[1-9]\d{0,15}-\d+\/net$/);
     await access(join(huge, "notes.txt"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a holder counter at the top of its range advances the time instead of producing a name that is never counted", { timeout: 60_000 }, async (t) => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-maxcounter-"));
+  try {
+    const later = 9_000_000_000_000;
+    t.mock.method(Date, "now", () => 1_000_000);
+    const top = join(root, `net.incomplete-${later}-1-${"9".repeat(20)}`);
+    await partialNetwork(join(top, "net"));
+    await writeFile(join(top, "net", "notes.txt"), "kept");
+    await partialNetwork(join(root, "net"));
+    const aside = await api.moveAsideIncompleteNetworkDir(join(root, "net"), { log: () => {} });
+    assert.match(String(aside), new RegExp(`net\\.incomplete-${later + 1}-${process.pid}/net$`));
+    await access(join(top, "net", "notes.txt"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("leftover names with noncanonical numeric fields (leading zeros) are not testnet-created", { timeout: 60_000 }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-canonical-"));
+  try {
+    const keep = api.MAX_INCOMPLETE_HOLDERS;
+    const kept: string[] = [];
+    for (const [index, file] of [
+      join("data-v1", "recovery-checkpoint.json.tmp-00042-0123456789abcdef"),
+      join("data-v1", "recovery-checkpoint.json.tmp-0-0123456789abcdef"),
+      join("data-v1", "metadata.json.04242.tmp"),
+      join("data-v1", "state-v2.root.json.4242.01700000000000.tmp"),
+      join("data-v1", "state-v2.root.json.corrupt-01700000000000-0123456789ab"),
+      join("data-v1", `signing-journal.ndjson.compact-04242-${"cd".repeat(8)}`),
+      join("data-v1", `.node-identity.json.04242.${"ab".repeat(16)}.tmp`),
+      join("data-v1", "consensus-state", "H-1.json.tmp-042-0123456789ab")
+    ].entries()) {
+      const path = await holder(root, "net", 30 + index);
+      await writeFile(join(path, "net", file), "operator");
+      kept.push(join(path, "net", file));
+    }
+    for (let index = 0; index < keep; index += 1) await holder(root, "net", 900 + index);
+    await partialNetwork(join(root, "net"));
+    await api.moveAsideIncompleteNetworkDir(join(root, "net"), { log: () => {} });
+    for (const path of kept) await access(path);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite WAL sidecars are not testnet-created: every store database runs in DELETE journal mode", { timeout: 60_000 }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-sidecars-"));
+  try {
+    const keep = api.MAX_INCOMPLETE_HOLDERS;
+    const kept: string[] = [];
+    for (const [index, file] of ["node-writer.lock.sqlite-wal", "signing-journal.lock.sqlite-shm", "state-v2.nodes.sqlite-wal", "state-v2.nodes.sqlite-shm.corrupt-1700000000000-0123456789ab"].entries()) {
+      const path = await holder(root, "net", 30 + index);
+      await writeFile(join(path, "net", "data-v1", file), "operator");
+      kept.push(join(path, "net", "data-v1", file));
+    }
+    const generated = await holder(root, "net", 90);
+    for (const file of ["node-writer.lock.sqlite-journal", "signing-journal.lock.sqlite", "state-v2.nodes.sqlite-journal.corrupt-1700000000000-0123456789ab"]) await writeFile(join(generated, "net", "data-v1", file), "");
+    for (let index = 0; index < keep; index += 1) await holder(root, "net", 900 + index);
+    await partialNetwork(join(root, "net"));
+    await api.moveAsideIncompleteNetworkDir(join(root, "net"), { log: () => {} });
+    for (const path of kept) await access(path);
+    await assert.rejects(access(generated), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a failure while reading the existing holder order fails the move-aside instead of guessing the order", { timeout: 60_000, skip: process.getuid?.() === 0 ? "root can read any directory" : process.platform === "win32" ? "POSIX permissions" : false }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-orderfail-"));
+  try {
+    await partialNetwork(join(root, "net"));
+    // Searchable and writable but not listable: holders can be created, but the order cannot be read.
+    await chmod(root, 0o300);
+    await assert.rejects(api.moveAsideIncompleteNetworkDir(join(root, "net"), { log: () => {} }));
+    await chmod(root, 0o700);
+    await access(join(root, "net", "genesis.json"));
+    assert.deepEqual(await holders(root, "net"), []);
+  } finally {
+    await chmod(root, 0o700).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("holders whose private pruning name would exceed the name-length limit are still pruned and recovered", { timeout: 60_000 }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-longname-"));
+  try {
+    const keep = api.MAX_INCOMPLETE_HOLDERS;
+    // A 215-byte network name: holder names fit in 255 bytes, ".<holder>.pruning-<pid>-<hex>" would not.
+    const name = "n".repeat(215);
+    const old: string[] = [];
+    for (let index = 0; index < keep + 2; index += 1) old.push(await holder(root, name, 1_000_000 + index));
+    await partialNetwork(join(root, name));
+    await api.moveAsideIncompleteNetworkDir(join(root, name), { log: () => {} });
+    assert.equal((await holders(root, name)).length, keep);
+    for (const path of old.slice(0, old.length - (keep - 1))) await assert.rejects(access(path), { code: "ENOENT" });
+    assert.deepEqual((await readdir(root)).filter((entry) => entry.includes("pruning")), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
