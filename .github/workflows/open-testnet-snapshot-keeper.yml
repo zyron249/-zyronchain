@@ -69,7 +69,13 @@ jobs:
           REPO: ${{ github.repository }}
           GATEWAY: https://zyron-open-testnet.onrender.com
           TAG: open-testnet-state
-          EXPECTED_GENESIS: 9ad75d777141de46df1fb008298a4d8a92fbce0a9c96aaf26ecf69474b7db8eb
+          # Deployed genesis observed 2026-10-21 on GET /genesis and GET /status
+          # (chain zyron-open-testnet-render-1, genesis timestamp
+          # 2026-10-20T22:09:28.767Z). The previous pin 9ad75d77… is the earlier
+          # chain still stored as release asset state-9ad75d777141.enc
+          # (2026-10-20T20:38:27Z). The Actions keeper refused e0212e57… until
+          # this pin matched the chain the host is serving.
+          EXPECTED_GENESIS: e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad
           RUN_MINUTES: ${{ inputs.run_minutes || '340' }}
           PUBLISH_INTERVAL_SECONDS: '600'
           KEEPALIVE_INTERVAL_SECONDS: '300'
