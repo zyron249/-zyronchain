@@ -58,7 +58,7 @@ A new top-level field on `validator_update`:
 
 - exactly one entry per incoming validator, in the order those validators appear in `validators`; no entry for continuing validators; no extra or duplicate entries (`assertExactKeys`, as for all other records);
 - the field is covered by the sender's transaction signature and the txid, like every other field;
-- it is **not** added to the approval payload: approvers sign the set, key holders sign their own consent; the transaction carries both. The proofs are already bound to `chainId`, `activationHeight` and the slot;
+- it is **not** added to the approval payload: approvers sign the set, key holders sign their own consent; the transaction carries both. The proofs are already bound to `chainId`, `chainBinding`, `activationHeight` and the slot;
 - **on a chain without the opt-in the field is refused**, exactly as today's exact-key shape refuses it. Accepting it there would let upgraded and older binaries disagree on the same transaction and split a mixed-version network. On an opted-in chain the field is mandatory (an empty array when there is no incoming validator).
 
 ### Activation (no change to existing chains)
