@@ -42,6 +42,8 @@ It is always made with the domain-separated primitive (`signCanonicalDomain` / `
 
 Each validator in `tx.validators` that is **incoming relative to the set it replaces** needs a proof. The set it replaces is the latest validator set scheduled with an activation height below `tx.activationHeight` (the active set if no update is pending), not simply the set active at inclusion. Example: an update removes `V` at height 200 and, before that activates, a second update re-adds `V` at height 300; `V` is incoming at 300 and needs a fresh proof. Quorum authorization is unchanged and still uses the set active at inclusion.
 
+Several updates can be included in one block. Block validation (`validateAndApply`) and pending selection (`selectValidPending`) today advance only a scalar last-activation cursor inside a block. The implementation must keep a **per-block working schedule**: each accepted update in the block is added to it before the next update is classified, so a remove-then-re-add of `V` inside one block also needs a proof for `V`.
+
 A validator that continues from the set it replaces needs no new proof, because it already proved possession when it joined: by an earlier proof, or by a genesis proof (next section).
 
 ### Genesis validators
@@ -71,6 +73,7 @@ Replay of existing data directories must stay byte for byte identical.
   "validatorAdmission": { "policy": "possession-proof-v1", "genesisProofs": [ ... ] }
   ```
 
+  0. **Fail-closed record.** `validatorAdmission` must be a plain record with exactly the keys `policy` and `genesisProofs`; `policy` must be the string `possession-proof-v1`. A missing, non-string or unknown policy, or any extra key, refuses the genesis (a typo or a future policy must never silently get v1 semantics).
   1. **Chain identity.** `validatorAdmission` is added to the `bindConfig` predicate of `createGenesisBlock`, so it alone (without `launchProfile` or any other opt-in field) writes the configuration commitment into the genesis previous-hash slot. Two genesis files that differ only in this rule then have different genesis hashes and P2P identities.
   2. **Where it is required.** It is required for the **value-bearing network classes** (`public-launch`, `value-bearing`, `mainnet`, `docs/GENESIS_NETWORK_CLASS.md`), not for `launchProfile: "fixed-supply-v1"` as such. The existing open test network uses `fixed-supply-v1` with a test class and a persisted genesis that predates the field; it keeps its genesis hash and behaviour and is not refused at startup. Test networks may opt in voluntarily (a new genesis).
   3. No value-bearing chain exists yet (activation flags are false), so a launch genesis carries the rule from block 0. The tokenomics / launch check gains one field.
@@ -88,9 +91,9 @@ The CLI / tooling that builds a `validator_update` or a launch genesis gains a s
 1. Opted-in chain: an update adding a validator **without** a proof is refused in the mempool, in `produceBlock` / `selectValidPending`, and in `validateProposal` / `acceptBlock` (with a real finality certificate). Must fail on main before the fix.
 2. A proof signed by a different key, for a different `chainId`, for a same-`chainId` chain with a different genesis hash, for a different `activationHeight`, for a different slot, or without the domain (plain `signCanonical`) is refused.
 3. Extra, duplicate, misordered or continuing-validator proofs are refused; a missing field is refused on an opted-in chain.
-4. Pending-schedule case: remove `V` at H1, then re-add `V` at H2 > H1 before H1 activates; the re-add needs a proof for `V`.
+4. Pending-schedule case: remove `V` at H1, then re-add `V` at H2 > H1 before H1 activates; the re-add needs a proof for `V`. Same case with both updates in **one block** (block validation and pending selection).
 5. A valid update with correct proofs is accepted and activates at `activationHeight`; a continuing validator needs no proof.
-6. Opted-in genesis: missing, extra, misordered or invalid genesis proofs are refused at node start.
+6. Opted-in genesis: missing, extra, misordered or invalid genesis proofs are refused at node start; `validatorAdmission` with a missing, non-string or unknown `policy`, or an extra key, is refused.
 7. Chain identity: a genesis whose **only** opt-in field is `validatorAdmission` gets a non-zero previous hash and a different genesis hash than the same file without it; replacing one genesis proof by another valid signature does not change the genesis hash.
 8. Value-bearing network class without `validatorAdmission` is refused; the existing open-testnet genesis (`fixed-supply-v1`, test class, no field) still opens with the same genesis hash.
 9. Chain without the opt-in: a `validator_update` carrying `possessionProofs` is refused; historical behaviour is otherwise unchanged (existing validator-update tests unchanged and green; replay fixtures keep their state roots).
