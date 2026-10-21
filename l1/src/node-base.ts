@@ -470,7 +470,8 @@ export class NodeService {
     this.readinessMaxTipAgeMs = maxTipAge;
     const signer = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
     this.validatorSigner = signer ? this.observeSignerAvailability(signer) : undefined;
-    const policy = readFeePolicy(store.chain.genesis);
+    // A test double may omit genesis. No genesis means the historical fee rules.
+    const policy = store.chain.genesis ? readFeePolicy(store.chain.genesis) : undefined;
     const mempoolOptions: MempoolOptions = { maxPendingPerSender: MAX_MEMPOOL_PENDING_PER_SENDER };
     if (policy) {
       mempoolOptions.disableFeeReplacement = true;
