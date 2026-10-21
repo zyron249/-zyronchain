@@ -383,3 +383,96 @@ test("pruning keeps a holder rewritten in place or replaced by a look-alike afte
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("leftover suffixes count as testnet-created only on the files whose writers use them", { timeout: 60_000 }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-leftover-"));
+  try {
+    const keep = api.MAX_INCOMPLETE_HOLDERS;
+    // Suffixes no writer appends to these files: operator files, kept.
+    const kept: string[] = [];
+    for (const [index, file] of ["blocks.ndjson.corrupt-1-abcdef", "metadata.json.tmp-1-abcd", "blocks.ndjson.4242.tmp", "signing-journal.ndjson.4242.1700000000000.tmp"].entries()) {
+      const path = await holder(root, "net", 60 + index);
+      await writeFile(join(path, "net", "data-v1", file), "operator");
+      kept.push(join(path, "net", "data-v1", file));
+    }
+    // Leftovers the store writers do leave behind: prunable.
+    const generated = await holder(root, "net", 70);
+    for (const file of ["state-v2.root.json.corrupt-1700000000000-0123456789ab", "recovery-checkpoint.json.tmp-42-0123456789abcdef", "metadata.json.4242.tmp", "state-v2.backend.json.4242.1700000000000.tmp"]) await writeFile(join(generated, "net", "data-v1", file), "");
+    await writeFile(join(generated, "net", "data-v1", "consensus-state", "H-1.json.tmp-42-0123456789ab"), "");
+    for (let index = 0; index < keep; index += 1) await holder(root, "net", 700 + index);
+    await partialNetwork(join(root, "net"));
+    await api.moveAsideIncompleteNetworkDir(join(root, "net"), { log: () => {} });
+    for (const path of kept) await access(path);
+    await assert.rejects(access(generated), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("holder counters beyond the safe-integer range keep their order and never stall the reservation", { timeout: 60_000 }, async (t) => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-bigint-"));
+  try {
+    const later = 9_000_000_000_000;
+    t.mock.method(Date, "now", () => 1_000_000);
+    // A preserved (operator file) holder with a huge counter, and the name a Number-rounded counter would pick.
+    const foreign = join(root, `net.incomplete-${later}-1-9007199254740993`);
+    await partialNetwork(join(foreign, "net"));
+    await writeFile(join(foreign, "net", "notes.txt"), "kept");
+    await mkdir(join(root, `net.incomplete-${later}-${process.pid}-9007199254740992`));
+    await partialNetwork(join(root, "net"));
+    const result = await Promise.race([
+      api.moveAsideIncompleteNetworkDir(join(root, "net"), { log: () => {} }),
+      new Promise((resolveTimeout) => setTimeout(() => resolveTimeout("stalled"), 10_000).unref())
+    ]);
+    assert.notEqual(result, "stalled");
+    assert.match(String(result), new RegExp(`net\\.incomplete-${later}-${process.pid}-9007199254740994/net$`));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pruning never removes a holder that has a mount point inside it", { timeout: 60_000 }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-mount-"));
+  try {
+    const keep = api.MAX_INCOMPLETE_HOLDERS;
+    const mounted = await holder(root, "net", 80);
+    for (let index = 0; index < keep; index += 1) await holder(root, "net", 800 + index);
+    await partialNetwork(join(root, "net"));
+    // Test seam: the mount table as /proc/self/mountinfo would report it.
+    const readMountPoints = async () => ["/", join(mounted, "net", "data-v1")];
+    await api.moveAsideIncompleteNetworkDir(join(root, "net"), { readMountPoints, log: () => {} });
+    await access(join(mounted, "net", "data-v1", "blocks.ndjson"));
+    assert.deepEqual(api.parseMountInfoMountPoints("36 35 98:0 /mnt1 /mnt\\040with\\040space rw,noatime master:1 - ext3 /dev/root rw\n37 35 98:0 / / rw - ext4 /dev/sda1 rw\n"), ["/mnt with space", "/"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("holders stranded under a private pruning name by a crash are recovered on the next start", { timeout: 60_000 }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-stranded-"));
+  try {
+    const prunable = join(root, ".net.incomplete-90-4242.pruning-4242-0123456789ab");
+    await partialNetwork(join(prunable, "net"));
+    const withNote = join(root, ".net.incomplete-91-4242.pruning-4242-0123456789ab");
+    await partialNetwork(join(withNote, "net"));
+    await writeFile(join(withNote, "net", "notes.txt"), "kept");
+    const emptied = join(root, ".net.incomplete-92-4242.pruning-4242-0123456789ab");
+    await mkdir(emptied);
+    const unrelated = join(root, ".other.pruning-4242-0123456789ab");
+    await mkdir(unrelated);
+    await partialNetwork(join(root, "net"));
+    await api.moveAsideIncompleteNetworkDir(join(root, "net"), { log: () => {} });
+    await assert.rejects(access(prunable), { code: "ENOENT" });
+    await assert.rejects(access(emptied), { code: "ENOENT" });
+    // A stranded holder that is not prunable goes back under its own name and is kept.
+    await access(join(root, "net.incomplete-91-4242", "net", "notes.txt"));
+    await access(unrelated);
+    assert.deepEqual((await readdir(root)).filter((entry) => entry.includes(".pruning-")), [".other.pruning-4242-0123456789ab"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
