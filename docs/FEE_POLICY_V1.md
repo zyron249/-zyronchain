@@ -105,7 +105,9 @@ Until that decision, validator compensation from the reserve does not exist. The
 
 ## Wallet
 
-The phone wallet (`website/app`) and the Snap fill **0.001 ZYN (100,000 atoms)** when the fee is left empty. The review screen shows the fee and the total before anything is signed. The phone wallet keeps `connect-src 'none'` and signs on the device. The Snap shows the same fee in its confirmation before it signs. A caller may still pass a different fee; the current testnet has not opted into the consensus rule, so this default does not by itself change that network.
+The phone wallet (`website/app`) and the Snap fill **0.001 ZYN (100,000 atoms)** when the fee is left empty. The review screen shows the fee and the total before anything is signed. The phone wallet keeps `connect-src 'none'` and signs on the device. The Snap shows the same fee in its confirmation before it signs.
+
+A different explicit fee, including 0, is still signed for a chain that is not under this rule. The no-value wallet testnet (`zyron-wallet-testnet-1`) is one of those chains. It is not signed silently when a fee-policy genesis is in effect, when the caller knows `launchProfile` is `fixed-supply-v1`, or by default on the published fixed-supply chain IDs `zyron-open-testnet-1`, `zyron-open-testnet-render-1` and `zyron-public-testnet-1`. In those cases the wallet and the Snap show a pre-sign warning that the network will reject the fee, and they do not produce a signature.
 
 ## Activation
 

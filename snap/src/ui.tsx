@@ -76,6 +76,17 @@ export const TransferConfirmation = ({
   </Box>
 );
 
+/** Shown instead of the signing confirmation when the fee cannot be accepted. */
+export const FeeRejectedWarning = ({ message }: { message: string }) => (
+  <Box>
+    <Heading>Fee rejected</Heading>
+    <Banner title="Network will reject this fee" severity="warning">
+      <Text>{message}</Text>
+    </Banner>
+    <Text>Nothing was signed.</Text>
+  </Box>
+);
+
 export const MessageConfirmation = ({ payload }: { payload: MessagePayload }) => (
   <Box>
     <Heading>Sign ZyronChain message</Heading>

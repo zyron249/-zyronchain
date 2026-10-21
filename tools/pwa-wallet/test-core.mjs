@@ -216,6 +216,11 @@ await test('signing review: shows every field, refuses unknown types, messages a
   assert.equal(byKey.to, 'ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42');
   assert.equal(byKey.amount, '1.5 ZYN (150000000 atoms)');
   assert.equal(byKey.fee, '0.00001 ZYN (1000 atoms)');
+  assert.equal(core.fixedFeeRejection(unsigned), undefined, 'a historical review chain may still use another fee');
+  assert.throws(() => core.signTransfer({ ...unsigned, chainId: 'zyron-open-testnet-1' }, account.privateKey), /will reject this fee/);
+  const allowed = core.buildTransfer({ ...unsigned, chainId: 'zyron-open-testnet-1', feeAtoms: 100000 }, account);
+  assert.equal(core.fixedFeeRejection(allowed), undefined);
+  assert.equal(core.signTransfer(allowed, account.privateKey).feeAtoms, 100000);
   assert.equal(byKey.total, '1.50001 ZYN (150001000 atoms)');
   assert.equal(byKey.chain, 'zyron-review-testnet');
   assert.equal(byKey.nonce, '7');
@@ -311,6 +316,19 @@ await test('display checksum vectors (docs/ADDRESS_CHECKSUM.md) and password rul
   assert.equal(core.atomsToZyn('150000000'), '1.5');
   assert.equal(core.FIXED_TRANSFER_FEE_ATOMS, 100000);
   assert.equal(core.atomsToZyn(String(core.FIXED_TRANSFER_FEE_ATOMS)), '0.001');
+  assert.deepEqual(core.FIXED_SUPPLY_V1_CHAIN_IDS, ['zyron-open-testnet-1', 'zyron-open-testnet-render-1', 'zyron-public-testnet-1']);
+  const reject = 'This network will reject this fee. The protocol fee is 100000 atoms (0.001 ZYN). Nothing was signed.';
+  for (const chainId of core.FIXED_SUPPLY_V1_CHAIN_IDS) {
+    assert.equal(core.fixedFeeRejection({ chainId, feeAtoms: 0 }), reject, chainId);
+    assert.equal(core.fixedFeeRejection({ chainId, feeAtoms: 100000 }), undefined, chainId);
+  }
+  assert.equal(core.fixedFeeRejection({ chainId: 'zyron-wallet-testnet-1', feeAtoms: 0 }), undefined);
+  assert.equal(core.fixedFeeRejection({ chainId: 'zyron-review-testnet', feeAtoms: 1000 }), undefined);
+  assert.equal(core.fixedFeeRejection({ chainId: 'zyron-wallet-testnet-1', feeAtoms: 0, launchProfile: 'fixed-supply-v1' }), reject);
+  assert.equal(core.fixedFeeRejection({ chainId: 'zyron-wallet-testnet-1', feeAtoms: 0, feePolicyActive: true }), reject);
+  assert.equal(core.fixedFeeRejection({ chainId: 'zyron-open-testnet-1', feeAtoms: 0, launchProfile: 'legacy' }), undefined);
+  assert.equal(core.fixedFeeRejection({ chainId: 'zyron-devnet-1', feeAtoms: 3, feePolicyActive: true, fixedTransferFeeAtoms: 3 }), undefined);
+  assert.equal(core.fixedFeeRejection({ chainId: 'zyron-devnet-1', feeAtoms: 0, feePolicyActive: true, fixedTransferFeeAtoms: 3 }), 'This network will reject this fee. The protocol fee is 3 atoms. Nothing was signed.');
   assert.throws(() => core.zynToAtoms('50000000.00000001'), /supply/);
 });
 

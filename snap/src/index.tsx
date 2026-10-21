@@ -18,7 +18,8 @@ import {
 import type { Account } from './keys';
 import { getAccount, withAccountKey } from './keys';
 import { RpcError, TESTNET_RPC_URL, getAccountState, getStatus, submitTransfer } from './rpc';
-import { MessageConfirmation, TransferConfirmation } from './ui';
+import { fixedFeeRejection, type FeeGuardInput } from './fee-guard';
+import { FeeRejectedWarning, MessageConfirmation, TransferConfirmation } from './ui';
 import { parseMessageRequest, signMessagePayload } from './zyron/message';
 import {
   TransactionRequestError,
@@ -66,6 +67,22 @@ function assertNoParams(params: unknown, method = 'This method'): void {
     return;
   }
   throw new InvalidParamsError(`${method} takes no parameters`);
+}
+
+/**
+ * Shows the rejection and refuses to sign. The alert is the pre-sign warning.
+ * Approving it does not produce a signature.
+ *
+ * @param input - Fee and chain context.
+ */
+async function blockRejectedFee(input: FeeGuardInput): Promise<void> {
+  const warning = fixedFeeRejection(input);
+  if (warning === undefined) return;
+  await snap.request({
+    method: 'snap_dialog',
+    params: { type: 'alert', content: <FeeRejectedWarning message={warning} /> },
+  });
+  throw new InvalidParamsError(warning);
 }
 
 /**
@@ -169,6 +186,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       const unsigned = validated(() =>
         parseTransferRequest(params.transaction, account, Date.now()),
       );
+      await blockRejectedFee({ chainId: unsigned.chainId, feeAtoms: unsigned.feeAtoms });
       await confirmOrReject(<TransferConfirmation origin={origin} tx={unsigned} />);
       return withAccountKey((privateKey, signer) => {
         assertSameAccount(account, signer);
@@ -234,6 +252,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       if (unsigned.amountAtoms + unsigned.feeAtoms > state.balanceAtoms) {
         throw new InvalidParamsError('Insufficient testnet balance for amount plus fee');
       }
+      await blockRejectedFee({ chainId: unsigned.chainId, feeAtoms: unsigned.feeAtoms });
       await confirmOrReject(
         <TransferConfirmation
           origin={origin}
