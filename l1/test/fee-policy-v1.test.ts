@@ -4,8 +4,10 @@
 // that sets fixed-fee-v1 rejects every other transfer fee, splits the fee
 // 50/50 (odd atom to the burn), and does not order or replace by fee.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { expectedValidator, MAX_BLOCK_BYTES, MAX_BLOCK_TRANSACTIONS, validatorQuorumSize } from "../src/block.js";
 import { MAX_BLOCK_TRANSACTION_BYTES, ZyronChain } from "../src/chain.js";
@@ -259,7 +261,8 @@ test("both appliers credit the producer share and burn the odd atom", () => {
   );
   assert.equal(stateV2Balance(sparse, producer), 1);
   assert.equal(stateV2Balance(sparse, addr(ALICE)), 9);
-  assert.equal(stateV2Balance(sparse, addr(PUBLIC_DISTRIBUTION)), before - 9 - 3);
+  const senderBefore = LedgerState.fromGenesis(genesis).balance(addr(PUBLIC_DISTRIBUTION));
+  assert.equal(stateV2Balance(sparse, addr(PUBLIC_DISTRIBUTION)), senderBefore - 9 - 3);
 
   assert.throws(() => ledger.apply(
     transfer(genesis, PUBLIC_DISTRIBUTION, 2, 1, 3, genesis.timestampMs + DAY),
@@ -336,14 +339,25 @@ test("protocol v2 credits the block producer and keeps the supply identity", () 
   assert.ok(keys?.includes(`account:${proposer}`));
 });
 
+function repoRoot(): string {
+  let current = dirname(fileURLToPath(import.meta.url));
+  for (let index = 0; index < 8; index += 1) {
+    if (existsSync(join(current, "l1", "package.json")) &&
+        existsSync(join(current, "docs", "l1-launch-authorization.json"))) return current;
+    current = resolve(current, "..");
+  }
+  throw new Error("Could not locate the ZyronChain repository root");
+}
+
 test("activation flags stay false and no shipped launch plan turns the fee policy on", () => {
-  const auth = JSON.parse(readFileSync(new URL("../../docs/l1-launch-authorization.json", import.meta.url), "utf8")) as {
+  const root = repoRoot();
+  const auth = JSON.parse(readFileSync(join(root, "docs", "l1-launch-authorization.json"), "utf8")) as {
     publicTestnetActivationAllowed: boolean;
     mainnetActivationAllowed: boolean;
   };
   assert.equal(auth.publicTestnetActivationAllowed, false);
   assert.equal(auth.mainnetActivationAllowed, false);
-  const plan = JSON.parse(readFileSync(new URL("../../docs/fixed-supply-launch-plan.json", import.meta.url), "utf8")) as {
+  const plan = JSON.parse(readFileSync(join(root, "docs", "fixed-supply-launch-plan.json"), "utf8")) as {
     feePolicy: { version: string; fixedTransferFeeAtoms: string; consensusEnforcementActivated: boolean };
     activationGates: Record<string, boolean>;
   };
