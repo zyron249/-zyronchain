@@ -56,7 +56,7 @@
     <label>Nonce (account nonce + 1) <input id="nonce" type="number" min="1" value="1"></label>
     <label>Receiver <input id="receiver" placeholder="ZYN + 40 lowercase hex" autocomplete="off"></label>
     <label>Amount (atoms, 1 ZYN = 100,000,000) <input id="amountAtoms" type="number" min="1" value="100000000"></label>
-    <label>Fee (atoms) <input id="feeAtoms" type="number" min="0" value="0"></label>
+    <label>Fee (atoms, proposed protocol fee 100000 = 0.001 ZYN) <input id="feeAtoms" type="number" min="0" value="100000"></label>
     <button id="sign" type="button">zyron_signTransaction</button>
   </fieldset>
 

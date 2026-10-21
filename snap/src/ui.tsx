@@ -58,8 +58,8 @@ export const TransferConfirmation = ({
         <Bold>{`${formatZyn(tx.amountAtoms)} ZYN`}</Bold>
       </Text>
     </Row>
-    <Row label="Fee">
-      <Text>{`${formatZyn(tx.feeAtoms)} ZYN`}</Text>
+    <Row label="Protocol fee">
+      <Text>{`${formatZyn(tx.feeAtoms)} ZYN (${tx.feeAtoms} atoms)`}</Text>
     </Row>
     <Row label="Total">
       <Text>{`${formatZyn(tx.amountAtoms + tx.feeAtoms)} ZYN`}</Text>
@@ -73,6 +73,17 @@ export const TransferConfirmation = ({
     </Row>
     <Text>From (this Snap account):</Text>
     <Text>{tx.sender}</Text>
+  </Box>
+);
+
+/** Shown instead of the signing confirmation when the fee cannot be accepted. */
+export const FeeRejectedWarning = ({ message }: { message: string }) => (
+  <Box>
+    <Heading>Fee rejected</Heading>
+    <Banner title="Network will reject this fee" severity="warning">
+      <Text>{message}</Text>
+    </Banner>
+    <Text>Nothing was signed.</Text>
   </Box>
 );
 

@@ -106,6 +106,20 @@ Before enabling a public purchase surface, the project must freeze and review at
 - independent audit of the founder vesting and liquidity lock enforcement ([`ALLOCATION_LOCKS.md`](ALLOCATION_LOCKS.md));
 - applicable legal/compliance requirements for a public token distribution.
 
+## Fee policy v1 (implemented, not activated)
+
+The proposed transfer fee is a single launch-profile parameter: **0.001 ZYN (100,000 atoms)**. See [`FEE_POLICY_V1.md`](FEE_POLICY_V1.md).
+
+A genesis opts in by setting `feePolicy` to `{ "version": "fixed-fee-v1", "fixedTransferFeeAtoms": 100000 }` together with `launchProfile: "fixed-supply-v1"`. The integer is the only tunable value. Consensus then rejects every transfer whose fee is not that integer, at shape validation, mempool admission, and block validation. `floor(fee / 2)` is credited to the block producer. The rest is burned, and an odd atom goes to the burn. `sum(balances) + burned` stays equal to the genesis supply. Nothing mints. Block selection does not rank by fee, and a higher fee cannot replace a pending transaction.
+
+No shipped genesis sets the field. Current testnet and historical blocks keep a full burn and whatever fee they already carry. `docs/fixed-supply-launch-plan.json` leaves `fixedFeePolicyV1Activated` false.
+
+### Validator support from the ecosystem reserve (NOT IMPLEMENTED)
+
+This is a design note for the owner. It is not a transfer, a schedule, or a genesis field. It requires an explicit owner decision before any of those exist. No address is named here.
+
+The 5,000,000 ZYN ecosystem/community reserve is the only source under consideration for optional validator operating support. The founder allocation, the public-distribution allocation, and the permanent-liquidity reserve are not sources. If the owner later approves it, the support would be a public schedule (start, length, and a fixed amount per block or per epoch) debited from that reserve, visible in the block, and capped by the reserve's remaining balance. The reserve cannot be refilled. This change does not implement that debit.
+
 ## Activation discipline
 
 This design does not flip `publicTestnetActivationAllowed`, `mainnetActivationAllowed`, miner-publication flags, or website trading controls.

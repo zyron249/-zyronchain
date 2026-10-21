@@ -61,12 +61,14 @@ export function genesisCommitmentView(genesis: GenesisConfig): GenesisConfig {
  * Genesis block. Legacy genesis files (no `launchProfile`, no
  * `activityOracleThreshold`, no `activityOraclePolicy`, no
  * `activitySettlementCapAtoms`, no `networkClass`, no
- * `publicDistributionRelease` and no `validatorAdmission`) keep the historical header with a zero previous
- * hash, so their genesis hash is unchanged. Under a launch profile, when the
- * genesis declares `activityOracleThreshold`, `activityOraclePolicy` or
+ * `publicDistributionRelease`, no `feePolicy` and no `validatorAdmission`) keep
+ * the historical header with a zero previous hash, so their genesis hash is
+ * unchanged. Under a launch profile, when the genesis declares
+ * `activityOracleThreshold`, `activityOraclePolicy` or
  * `activitySettlementCapAtoms` (which change block validity), when it declares
- * `networkClass` (network-class-v1), `publicDistributionRelease`
- * (public-distribution-release-v1) or `validatorAdmission`
+ * `networkClass` (network-class-v1), when it declares
+ * `publicDistributionRelease` (public-distribution-release-v1), when it
+ * declares `feePolicy` (fixed-fee-v1), or when it declares `validatorAdmission`
  * (possession-proof-v1, P1-07), the
  * previous-hash slot of the genesis header carries
  * `genesisConfigCommitment(genesis)`, so the genesis hash (and therefore the
@@ -80,6 +82,7 @@ export function createGenesisBlock(genesis: GenesisConfig, stateRoot: string): B
     Object.prototype.hasOwnProperty.call(genesis, "activitySettlementCapAtoms") ||
     Object.prototype.hasOwnProperty.call(genesis, "networkClass") ||
     Object.prototype.hasOwnProperty.call(genesis, "publicDistributionRelease") ||
+    Object.prototype.hasOwnProperty.call(genesis, "feePolicy") ||
     Object.prototype.hasOwnProperty.call(genesis, "validatorAdmission");
   const header: BlockHeader = {
     version: 1,

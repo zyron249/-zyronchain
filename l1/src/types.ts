@@ -86,6 +86,15 @@ export interface GenesisConfig {
    */
   publicDistributionRelease?: PublicDistributionRelease;
   /**
+   * Optional fee policy, protocol rule version fixed-fee-v1
+   * (docs/FEE_POLICY_V1.md). Absent on every shipped genesis, including the
+   * open testnet: transfer fees stay caller-chosen, the whole fee is burned,
+   * and the genesis hash is unchanged. Present only together with
+   * `launchProfile: "fixed-supply-v1"`. The single tunable parameter is
+   * `fixedTransferFeeAtoms` (proposed default 100,000 atoms = 0.001 ZYN).
+   */
+  feePolicy?: FeePolicyV1;
+  /**
    * Optional validator admission, policy possession-proof-v1
    * (docs/VALIDATOR_POSSESSION_PROOF.md, P1-07). Every genesis validator proves
    * possession of its private key. Absent on genesis files that predate it;
@@ -93,6 +102,13 @@ export interface GenesisConfig {
    * public-launch, value-bearing and mainnet network classes.
    */
   validatorAdmission?: ValidatorAdmission;
+}
+
+/** Opt-in fixed transfer fee. See docs/FEE_POLICY_V1.md. Not activated on shipped genesis. */
+export interface FeePolicyV1 {
+  version: "fixed-fee-v1";
+  /** Exact transfer fee in atoms. Proposed launch default: 100,000 (0.001 ZYN). */
+  fixedTransferFeeAtoms: number;
 }
 
 export interface ValidatorPossessionProof {
