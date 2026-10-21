@@ -5,7 +5,8 @@
 // value-bearing network classes; legacy and test genesis files are unchanged.
 // Design: docs/VALIDATOR_POSSESSION_PROOF.md.
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -291,4 +292,49 @@ test("a test genesis may opt in voluntarily and is then held to the same proofs"
 test("signGenesisPossessionProofs refuses a key that does not match the validator slot", () => {
   assert.throws(() => signGenesisPossessionProofs(devGenesis("zyron-devnet-wrongkey"), [key(0x32)]), /does not match/);
   assert.throws(() => signGenesisPossessionProofs(devGenesis("zyron-devnet-count"), []), /one private key per genesis validator/);
+});
+
+test("tokenomics:check: unsigned precheck, then the final check verifies the proofs", async () => {
+  const unsigned = strictBase("mainnet", "zyron-mainnet-ceremony-review");
+  unsigned.validatorAdmission = { policy: "possession-proof-v1", genesisProofs: [] };
+  const signed = signGenesisPossessionProofs(strictBase("mainnet", "zyron-mainnet-ceremony-review"), VALIDATORS.map(key));
+  const root = await mkdtemp(join(tmpdir(), "zyron-admission-ceremony-"));
+  const file = join(root, "genesis.json");
+  const run = async (genesis: GenesisConfig, precheck: boolean) => {
+    await writeFile(file, `${JSON.stringify(genesis, null, 2)}\n`);
+    return spawnSync(process.execPath, [
+      "scripts/validate-fixed-supply-genesis.mjs", "--genesis", file,
+      "--founder", addr(0x13), "--public-distribution", addr(0x14),
+      "--liquidity-reserve", addr(0x15), "--ecosystem-reserve", addr(0x16),
+      ...(precheck ? ["--before-possession-proofs"] : [])
+    ], { cwd: process.cwd(), encoding: "utf8" });
+  };
+  try {
+    const pre = await run(unsigned, true);
+    assert.equal(pre.status, 0, `${pre.stdout}\n${pre.stderr}`);
+    assert.match(pre.stdout, /PRECHECK ONLY/);
+    const binding = genesisPossessionChainBinding(signed);
+    assert.ok(pre.stdout.includes(`chain binding (genesis configuration commitment): ${binding}`));
+    assert.doesNotMatch(pre.stdout, /Genesis hash \(chain identity\)/);
+    // The final check refuses the unsigned file, and the precheck refuses a signed or field-less one.
+    const unsignedFinal = await run(unsigned, false);
+    assert.notEqual(unsignedFinal.status, 0);
+    assert.match(unsignedFinal.stderr, /one possession proof per genesis validator/);
+    const signedPre = await run(signed, true);
+    assert.notEqual(signedPre.status, 0);
+    assert.match(signedPre.stderr, /empty validatorAdmission.genesisProofs/);
+    const missing = await run(strictBase("mainnet", "zyron-mainnet-ceremony-review"), true);
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /require validatorAdmission/);
+    // The precheck still enforces every other rule.
+    const inflated = structuredClone(unsigned);
+    inflated.allocations[0]!.amountAtoms += 1;
+    assert.notEqual((await run(inflated, true)).status, 0);
+    const final = await run(signed, false);
+    assert.equal(final.status, 0, `${final.stdout}\n${final.stderr}`);
+    assert.match(final.stdout, /Genesis hash \(chain identity\)/);
+    assert.ok(final.stdout.includes(`Genesis configuration commitment: ${binding}`));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
