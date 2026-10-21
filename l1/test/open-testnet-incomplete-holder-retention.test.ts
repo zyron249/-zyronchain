@@ -256,3 +256,73 @@ test("pruning never removes a holder with a JSON file in keys/ that the testnet 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("the newest holder survives later restarts after the clock moved back (creation order persists across calls)", { timeout: 60_000 }, async (t) => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-rollback-"));
+  try {
+    const keep = api.MAX_INCOMPLETE_HOLDERS;
+    const dir = join(root, "net");
+    let clock = 9_000_000_000_000;
+    t.mock.method(Date, "now", () => clock);
+    const created: string[] = [];
+    // keep holders made while the clock ran ahead.
+    for (let index = 0; index < keep; index += 1) {
+      clock += 1;
+      await partialNetwork(dir);
+      created.push(String(await api.moveAsideIncompleteNetworkDir(dir, { log: () => {} })).slice(0, -"/net".length));
+    }
+    // The clock is corrected backwards; the next holder carries an earlier time but is the newest.
+    clock = 1_000_000;
+    await partialNetwork(dir);
+    const afterRollback = String(await api.moveAsideIncompleteNetworkDir(dir, { log: () => {} })).slice(0, -"/net".length);
+    // One more failed start-up: the holder from the previous call must not be the one pruned.
+    clock += 1;
+    await partialNetwork(dir);
+    const latest = String(await api.moveAsideIncompleteNetworkDir(dir, { log: () => {} })).slice(0, -"/net".length);
+    const left = await holders(root, "net");
+    assert.equal(left.length, keep, left.join(", "));
+    await access(afterRollback);
+    await access(latest);
+    // The oldest by creation are the ones removed.
+    for (const path of created.slice(0, created.length - (keep - 2))) await assert.rejects(access(path), { code: "ENOENT" });
+    for (const path of created.slice(created.length - (keep - 2))) await access(path);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pruning removes only the holder it inspected: contents added or a directory swapped in after inspection are kept", { timeout: 60_000 }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-toctou-"));
+  try {
+    const keep = api.MAX_INCOMPLETE_HOLDERS;
+    const changed = await holder(root, "net", 40);
+    const swapped = await holder(root, "net", 41);
+    const prunable: string[] = [];
+    for (let index = 0; index < keep; index += 1) prunable.push(await holder(root, "net", 400 + index));
+    const inspected: string[] = [];
+    // Test seam: runs after a holder was found prunable and before it is removed.
+    const afterInspect = async (path: string) => {
+      inspected.push(path);
+      if (path === changed) await writeFile(join(changed, "net", "data-v1", "operator-note.txt"), "added after inspection");
+      if (path === swapped) {
+        await rm(swapped, { recursive: true });
+        await mkdir(join(swapped, "net"), { recursive: true });
+        await writeFile(join(swapped, "net", "genesis.json"), "foreign directory swapped in");
+        await writeFile(join(swapped, "precious.txt"), "kept");
+      }
+    };
+    await partialNetwork(join(root, "net"));
+    const aside = await api.moveAsideIncompleteNetworkDir(join(root, "net"), { afterInspect, log: () => {} });
+    await access(join(aside, "genesis.json"));
+    assert.ok(inspected.includes(changed) && inspected.includes(swapped), `the seam saw ${inspected.join(", ")}`);
+    await access(join(changed, "net", "data-v1", "operator-note.txt"));
+    await access(join(swapped, "precious.txt"));
+    await access(join(swapped, "net", "genesis.json"));
+    // No private pruning leftovers remain next to the directory.
+    assert.deepEqual((await readdir(root)).filter((entry) => !entry.startsWith("net.incomplete-") && entry !== "net"), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
