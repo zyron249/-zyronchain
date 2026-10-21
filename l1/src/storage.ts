@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, type Hash } from "node:crypto";
 import { lstat, mkdir, open, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3";
@@ -63,7 +63,42 @@ interface RecoveryCheckpointV2 {
   snapshot: ReturnType<ZyronChain["snapshot"]>;
 }
 
-type RecoveryCheckpoint = RecoveryCheckpointV1 | RecoveryCheckpointV2;
+/**
+ * v3 (R21-1046-L1): one layout for unpruned and pruned logs that also binds the
+ * SHA-256 of the exact retained finalized-log bytes it lets open skip,
+ * `blocks.ndjson[0 .. blockFileBytes)` (and, during an interrupted prune, the
+ * old layout's `[0 .. transition.blockFileBytes)`). The line scan below the
+ * checkpoint does not parse those records, so without the digest a same-length
+ * corruption of a historical block would be accepted. `stateV2Root` is null
+ * only for an unpruned chain without active State v2. v1/v2 stay readable.
+ */
+interface RecoveryCheckpointV3 {
+  version: 3;
+  chainId: string;
+  genesisHash: string;
+  height: number;
+  tipHash: string;
+  stateV2Root: string | null;
+  retainedFromHeight: number;
+  blockFileBytes: number;
+  blockFilePrefixSha256: string;
+  transition: null | {
+    fromHeight: number;
+    blockFileBytes: number;
+    blockFilePrefixSha256: string;
+  };
+  snapshotSha256: string;
+  snapshot: ReturnType<ZyronChain["snapshot"]>;
+}
+
+type RecoveryCheckpoint = RecoveryCheckpointV1 | RecoveryCheckpointV2 | RecoveryCheckpointV3;
+
+/** v2 and v3 carry an explicit retained-history boundary (and may describe a pruned log). */
+function hasRetainedLayout(checkpoint: RecoveryCheckpoint): checkpoint is RecoveryCheckpointV2 | RecoveryCheckpointV3 {
+  return checkpoint.version === 2 || checkpoint.version === 3;
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 interface StoredBlockRange {
   height: number;
@@ -410,7 +445,8 @@ export class ChainStore {
     }
     const retention = await loadHistoryRetention(genesis, dataDir);
     const checkpoint = await loadRecoveryCheckpoint(genesis, dataDir, faultHooks.onCheckpointStep);
-    if (retention && (!checkpoint || checkpoint.checkpoint.version !== 2 ||
+    if (retention && (!checkpoint || !hasRetainedLayout(checkpoint.checkpoint) ||
+        checkpoint.checkpoint.stateV2Root === null ||
         checkpoint.checkpoint.retainedFromHeight < retention.prunedThroughHeight + 1)) {
       throw new Error("Pruned finalized history requires a valid compatible recovery checkpoint");
     }
@@ -520,8 +556,8 @@ export class ChainStore {
 
       const stateStore = await StateV2DiskStore.open(staging);
       await stateStore.commit(stateV2, stateV2Keys);
-      const checkpoint: RecoveryCheckpointV2 = {
-        version: 2,
+      const checkpoint: RecoveryCheckpointV3 = {
+        version: 3,
         chainId: genesis.chainId,
         genesisHash: genesisChain.genesisHash,
         height: chain.height,
@@ -529,6 +565,7 @@ export class ChainStore {
         stateV2Root: stateV2.root(),
         retainedFromHeight: chain.height + 1,
         blockFileBytes: 0,
+        blockFilePrefixSha256: EMPTY_SHA256,
         transition: null,
         snapshotSha256: anchor.snapshotSha256,
         snapshot
@@ -648,34 +685,26 @@ export class ChainStore {
   ): Promise<{ height: number; tipHash: string; snapshotSha256: string }> {
     const snapshot = this.chain.snapshot();
     const snapshotSha256 = sha256Hex(canonicalJson(snapshot));
-    let checkpoint: RecoveryCheckpoint;
-    if (this.firstStoredHeight === 1) {
-      checkpoint = {
-        version: 1,
-        chainId: this.chain.genesis.chainId,
-        genesisHash: this.chain.genesisHash,
-        height: this.persistedHeight,
-        tipHash: this.chain.tip.hash,
-        blockFileBytes: this.persistedBytes,
-        snapshotSha256,
-        snapshot
-      };
-    } else {
-      const stateV2 = this.requireDurableStateV2ForPruning();
-      checkpoint = {
-        version: 2,
-        chainId: this.chain.genesis.chainId,
-        genesisHash: this.chain.genesisHash,
-        height: this.persistedHeight,
-        tipHash: this.chain.tip.hash,
-        stateV2Root: stateV2.root(),
-        retainedFromHeight: this.firstStoredHeight,
-        blockFileBytes: this.persistedBytes,
-        transition: null,
-        snapshotSha256,
-        snapshot
-      };
-    }
+    // Unpruned logs keep v1's rule: the root (if any) is taken from the
+    // snapshot-backed chain; pruned logs additionally require the durable store.
+    const stateV2Root = this.firstStoredHeight === 1
+      ? this.chain.stateV2ForPersistence()?.root() ?? null
+      : this.requireDurableStateV2ForPruning().root();
+    const blockFilePrefixSha256 = await sha256FileRange(join(this.dataDir, "blocks.ndjson"), 0, this.persistedBytes);
+    const checkpoint: RecoveryCheckpointV3 = {
+      version: 3,
+      chainId: this.chain.genesis.chainId,
+      genesisHash: this.chain.genesisHash,
+      height: this.persistedHeight,
+      tipHash: this.chain.tip.hash,
+      stateV2Root,
+      retainedFromHeight: this.firstStoredHeight,
+      blockFileBytes: this.persistedBytes,
+      blockFilePrefixSha256,
+      transition: null,
+      snapshotSha256,
+      snapshot
+    };
     const path = join(this.dataDir, "recovery-checkpoint.json");
     const genesis = this.chain.genesis;
     await writeCheckpointFile(path, checkpoint, faultHooks, async (temporaryPath) => {
@@ -737,8 +766,15 @@ export class ChainStore {
 
     const snapshot = this.chain.snapshot();
     const snapshotSha256 = sha256Hex(canonicalJson(snapshot));
-    const transition: RecoveryCheckpointV2 = {
-      version: 2,
+    // Both layouts an interrupted prune can leave on disk are bound: the old
+    // retained log [0 .. persistedBytes) and the new suffix log, whose bytes are
+    // exactly [retainedStartOffset .. persistedBytes) of the old one.
+    const prefixDigests = await sha256FileRanges(blocksPath, [
+      [0, this.persistedBytes],
+      [retainedStartOffset, this.persistedBytes]
+    ]);
+    const transition: RecoveryCheckpointV3 = {
+      version: 3,
       chainId: this.chain.genesis.chainId,
       genesisHash: this.chain.genesisHash,
       height: this.persistedHeight,
@@ -746,9 +782,11 @@ export class ChainStore {
       stateV2Root: stateV2.root(),
       retainedFromHeight: targetRetainedFromHeight,
       blockFileBytes: targetBlockFileBytes,
+      blockFilePrefixSha256: prefixDigests[1]!,
       transition: {
         fromHeight: this.firstStoredHeight,
-        blockFileBytes: this.persistedBytes
+        blockFileBytes: this.persistedBytes,
+        blockFilePrefixSha256: prefixDigests[0]!
       },
       snapshotSha256,
       snapshot
@@ -783,7 +821,7 @@ export class ChainStore {
       this.pendingPruneThroughHeight = undefined;
       if (targetBlockFileBytes === 0) this.appendNeedsDelimiter = false;
 
-      const stable: RecoveryCheckpointV2 = { ...transition, transition: null };
+      const stable: RecoveryCheckpointV3 = { ...transition, transition: null };
       await writeCheckpointFile(checkpointPath, stable);
       // Only explicit finalized-history pruning physically discards historical
       // State-v2 objects. The retained current root is fully re-authenticated
@@ -1716,6 +1754,40 @@ async function loadRecoveryCheckpointFile(
         checkpoint.transition.fromHeight > checkpoint.height)) {
       throw new Error("Invalid recovery checkpoint transition");
     }
+  } else if (record.version === 3) {
+    const expectedKeys = [
+      "version", "chainId", "genesisHash", "height", "tipHash", "stateV2Root", "retainedFromHeight",
+      "blockFileBytes", "blockFilePrefixSha256", "transition", "snapshotSha256", "snapshot"
+    ].sort().join(",");
+    const transition = record.transition;
+    const transitionValid = transition === null || (
+      typeof transition === "object" && !Array.isArray(transition) && transition !== null &&
+      Object.keys(transition).sort().join(",") === "blockFileBytes,blockFilePrefixSha256,fromHeight" &&
+      Number.isSafeInteger((transition as Record<string, unknown>).fromHeight) &&
+      Number((transition as Record<string, unknown>).fromHeight) >= 1 &&
+      Number.isSafeInteger((transition as Record<string, unknown>).blockFileBytes) &&
+      Number((transition as Record<string, unknown>).blockFileBytes) >= 0 &&
+      typeof (transition as Record<string, unknown>).blockFilePrefixSha256 === "string" &&
+      SHA256_HEX.test((transition as Record<string, string>).blockFilePrefixSha256!)
+    );
+    const rootValid = record.stateV2Root === null ||
+      (typeof record.stateV2Root === "string" && SHA256_HEX.test(record.stateV2Root));
+    if (Object.keys(record).sort().join(",") !== expectedKeys || !rootValid ||
+        typeof record.blockFilePrefixSha256 !== "string" || !SHA256_HEX.test(record.blockFilePrefixSha256) ||
+        !Number.isSafeInteger(record.retainedFromHeight) ||
+        Number(record.retainedFromHeight) < 1 || Number(record.retainedFromHeight) > Number(record.height) + 1 ||
+        !transitionValid) {
+      throw new Error("Invalid recovery checkpoint");
+    }
+    checkpoint = record as unknown as RecoveryCheckpointV3;
+    if (checkpoint.transition && (checkpoint.transition.fromHeight >= checkpoint.retainedFromHeight ||
+        checkpoint.transition.fromHeight > checkpoint.height)) {
+      throw new Error("Invalid recovery checkpoint transition");
+    }
+    // Without State v2 a log cannot have been pruned.
+    if (checkpoint.stateV2Root === null && (checkpoint.retainedFromHeight !== 1 || checkpoint.transition !== null)) {
+      throw new Error("Invalid recovery checkpoint");
+    }
   } else {
     throw new Error("Invalid recovery checkpoint version");
   }
@@ -1729,11 +1801,19 @@ async function loadRecoveryCheckpointFile(
     : ZyronChain.fromTrustedSnapshot(genesis, checkpoint.snapshot, trustedAnchor);
   if (checkpoint.genesisHash !== chain.genesisHash) throw new Error("Recovery checkpoint genesis mismatch");
   if (checkpoint.height === 0 && checkpoint.blockFileBytes !== 0) throw new Error("Invalid genesis recovery boundary");
-  if (checkpoint.version === 2) {
+  if (checkpoint.version === 3 && checkpoint.retainedFromHeight === 1 && checkpoint.transition === null) {
+    // Unpruned v3 (the v1 case): the root, or null without active State v2,
+    // must be exactly the snapshot-backed chain's.
+    if (checkpoint.stateV2Root !== (chain.stateV2ForPersistence()?.root() ?? null)) {
+      throw new Error("Recovery checkpoint State v2 root mismatch");
+    }
+  } else if (hasRetainedLayout(checkpoint)) {
     const stateV2 = chain.stateV2ForPersistence();
     if (!stateV2 || checkpoint.stateV2Root !== stateV2.root() || checkpoint.stateV2Root !== chain.tip.header.stateRoot) {
       throw new Error("Recovery checkpoint State v2 root mismatch");
     }
+  }
+  if (hasRetainedLayout(checkpoint)) {
     if (checkpoint.retainedFromHeight === checkpoint.height + 1 && checkpoint.blockFileBytes !== 0) {
       throw new Error("Invalid empty retained-history boundary");
     }
@@ -1760,12 +1840,29 @@ async function replayStoredBlocks(
   let checkpointVerified = checkpoint?.height === 0;
   let count = 0;
   let offset = 0;
-  let layoutDetermined = checkpoint?.version !== 2;
+  let layoutDetermined = !checkpoint || !hasRetainedLayout(checkpoint);
   let checkpointBoundaryBytes = checkpoint?.blockFileBytes ?? 0;
+  let expectedPrefixSha256 = checkpoint?.version === 3 ? checkpoint.blockFilePrefixSha256 : undefined;
   let lastLineTerminated = true;
   let tornTailBytes = 0;
   const blockRanges: StoredBlockRange[] = [];
-  for await (const record of readLines(blocksPath, MAX_STORED_BLOCK_LINE_BYTES, "Stored block exceeds line limit")) {
+  // R21-1046-L1: records below a v3 checkpoint are only line-scanned, so the
+  // raw bytes the scan reads are hashed at both possible layout boundaries.
+  const prefixDigests = checkpoint?.version === 3
+    ? new PrefixDigests([checkpoint.blockFileBytes, ...(checkpoint.transition ? [checkpoint.transition.blockFileBytes] : [])])
+    : undefined;
+  const assertPrefixDigest = (): void => {
+    if (expectedPrefixSha256 === undefined) return;
+    if (prefixDigests?.digestAt(checkpointBoundaryBytes) !== expectedPrefixSha256) {
+      throw new Error("Recovery checkpoint does not match finalized block log");
+    }
+  };
+  for await (const record of readLines(
+    blocksPath,
+    MAX_STORED_BLOCK_LINE_BYTES,
+    "Stored block exceeds line limit",
+    prefixDigests ? (bytes) => prefixDigests.update(bytes) : undefined
+  )) {
     const line = record.text;
     const lineBytes = record.contentBytes;
     lastLineTerminated = record.terminated;
@@ -1780,7 +1877,7 @@ async function replayStoredBlocks(
       break;
     }
     let parsed: unknown;
-    if (checkpoint?.version === 2 && !layoutDetermined) {
+    if (checkpoint && hasRetainedLayout(checkpoint) && !layoutDetermined) {
       try {
         parsed = JSON.parse(line);
       } catch {
@@ -1794,6 +1891,9 @@ async function replayStoredBlocks(
       } else if (checkpoint.transition && firstHeight === checkpoint.transition.fromHeight) {
         count = checkpoint.transition.fromHeight - 1;
         checkpointBoundaryBytes = checkpoint.transition.blockFileBytes;
+        if (checkpoint.version === 3 && checkpoint.transition) {
+          expectedPrefixSha256 = checkpoint.transition.blockFilePrefixSha256;
+        }
       } else {
         throw new Error("Finalized history does not match checkpoint retention boundary");
       }
@@ -1821,6 +1921,8 @@ async function replayStoredBlocks(
           canonicalJson(parsed) !== canonicalJson(checkpoint.snapshot.tip)) {
         throw new Error("Recovery checkpoint does not match finalized block log");
       }
+      // Fail before replaying any suffix block on top of an unverified prefix.
+      assertPrefixDigest();
       checkpointVerified = true;
     } else {
       chain.acceptBlock(parsed as Block, Number.MAX_SAFE_INTEGER);
@@ -1831,7 +1933,7 @@ async function replayStoredBlocks(
       throw new Error("Stored block height discontinuity");
     }
   }
-  if (checkpoint?.version === 2 && !layoutDetermined) {
+  if (checkpoint && hasRetainedLayout(checkpoint) && !layoutDetermined) {
     if (offset !== 0 || checkpoint.retainedFromHeight !== checkpoint.height + 1 || checkpoint.blockFileBytes !== 0) {
       throw new Error("Recovery checkpoint is ahead of retained finalized block log");
     }
@@ -1842,6 +1944,9 @@ async function replayStoredBlocks(
   if (checkpoint && (!checkpointVerified || checkpoint.height > count)) {
     throw new Error("Recovery checkpoint is ahead of finalized block log");
   }
+  // Also covers boundaries verified without a tip record (genesis or an empty
+  // retained log, both with a zero-byte prefix).
+  assertPrefixDigest();
   if (checkpoint?.version === 1 && checkpoint.blockFileBytes > offset) {
     throw new Error("Recovery checkpoint is ahead of finalized block log");
   }
@@ -1872,7 +1977,12 @@ async function ensureMetadata(path: string, expected: StoreMetadata): Promise<vo
   }
 }
 
-async function* readLines(path: string, maxLineBytes: number, overflowMessage: string): AsyncGenerator<BoundedLine> {
+async function* readLines(
+  path: string,
+  maxLineBytes: number,
+  overflowMessage: string,
+  onRawBytes?: (bytes: Buffer) => void
+): AsyncGenerator<BoundedLine> {
   if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes < 0) throw new Error("Invalid stored-line byte limit");
   const input = createReadStream(path, { highWaterMark: Math.min(64 * 1024, Math.max(1, maxLineBytes + 1)) });
   let parts: Buffer[] = [];
@@ -1914,9 +2024,12 @@ async function* readLines(path: string, maxLineBytes: number, overflowMessage: s
         const newline = chunk.indexOf(0x0a, cursor);
         if (newline === -1) {
           append(chunk.subarray(cursor), false);
+          onRawBytes?.(chunk.subarray(cursor));
           break;
         }
         append(chunk.subarray(cursor, newline), true);
+        // Raw bytes (line, CR, LF) in file order, fed before the line is yielded.
+        onRawBytes?.(chunk.subarray(cursor, newline + 1));
         yield materialize(true);
         cursor = newline + 1;
       }
@@ -1925,6 +2038,78 @@ async function* readLines(path: string, maxLineBytes: number, overflowMessage: s
   } finally {
     input.destroy();
   }
+}
+
+const EMPTY_SHA256 = createHash("sha256").digest("hex");
+
+/**
+ * Incremental SHA-256 of a byte stream that records the digest of the exact
+ * prefix ending at each target offset. Bytes past the last target are ignored.
+ */
+class PrefixDigests {
+  private readonly hash: Hash = createHash("sha256");
+  private fed = 0;
+  private readonly pending: number[];
+  private readonly digests = new Map<number, string>();
+
+  constructor(targets: number[]) {
+    this.pending = [...new Set(targets)].sort((a, b) => a - b);
+    while (this.pending[0] === 0) {
+      this.pending.shift();
+      this.digests.set(0, EMPTY_SHA256);
+    }
+  }
+
+  update(bytes: Buffer): void {
+    let rest = bytes;
+    while (rest.length > 0 && this.pending.length > 0) {
+      const target = this.pending[0]!;
+      const needed = target - this.fed;
+      if (needed > rest.length) {
+        this.hash.update(rest);
+        this.fed += rest.length;
+        return;
+      }
+      this.hash.update(rest.subarray(0, needed));
+      this.fed += needed;
+      rest = rest.subarray(needed);
+      this.pending.shift();
+      this.digests.set(target, this.hash.copy().digest("hex"));
+    }
+  }
+
+  digestAt(offset: number): string | undefined {
+    return this.digests.get(offset);
+  }
+}
+
+/** SHA-256 of each byte range [start, end) of one file, read once in order. */
+async function sha256FileRanges(path: string, ranges: Array<[number, number]>): Promise<string[]> {
+  const hashes = ranges.map(() => createHash("sha256"));
+  const end = Math.max(0, ...ranges.map(([, rangeEnd]) => rangeEnd));
+  let position = 0;
+  if (end > 0) {
+    const input = createReadStream(path, { start: 0, end: end - 1, highWaterMark: 64 * 1024 });
+    try {
+      for await (const chunkValue of input) {
+        const chunk = Buffer.isBuffer(chunkValue) ? chunkValue : Buffer.from(chunkValue);
+        ranges.forEach(([start, rangeEnd], index) => {
+          const from = Math.max(start, position);
+          const to = Math.min(rangeEnd, position + chunk.length);
+          if (to > from) hashes[index]!.update(chunk.subarray(from - position, to - position));
+        });
+        position += chunk.length;
+      }
+    } finally {
+      input.destroy();
+    }
+  }
+  if (position !== end) throw new Error("Finalized block log is shorter than its durable byte boundary");
+  return hashes.map((hash) => hash.digest("hex"));
+}
+
+async function sha256FileRange(path: string, start: number, end: number): Promise<string> {
+  return (await sha256FileRanges(path, [[start, end]]))[0]!;
 }
 
 function isMissingFile(error: unknown): boolean {

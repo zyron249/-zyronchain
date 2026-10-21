@@ -1206,7 +1206,8 @@ test("recovery checkpoint is published only after durable block state and binds 
 
     const anchor = await store.writeRecoveryCheckpoint();
     const checkpoint = JSON.parse(await readFile(join(directory, "recovery-checkpoint.json"), "utf8")) as Record<string, unknown>;
-    assert.equal(checkpoint.version, 1);
+    // v3 since R21-1046-L1 (v1/v2 stay readable): also binds the log prefix digest.
+    assert.equal(checkpoint.version, 3);
     assert.equal(checkpoint.chainId, genesis().chainId);
     assert.equal(checkpoint.genesisHash, store.chain.genesisHash);
     assert.equal(checkpoint.height, 1);

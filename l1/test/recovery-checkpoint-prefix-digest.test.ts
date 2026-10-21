@@ -56,6 +56,10 @@ async function commitEmptyBlocks(store: ChainStore, through: number, firstTxs: (
 
 /** Advances to State v2 (activation at 101), as the pruning suites do. */
 async function advanceToStateV2(store: ChainStore): Promise<void> {
+  await advanceToStateV2Through(store, 101);
+}
+
+async function advanceToStateV2Through(store: ChainStore, through: number): Promise<void> {
   const proposal = { chainId: genesis().chainId, nonce: 1, sender: validatorOne, activationHeight: 101, protocolVersion: 2 };
   const upgrade = createProtocolUpgrade({
     ...proposal,
@@ -65,7 +69,7 @@ async function advanceToStateV2(store: ChainStore): Promise<void> {
     ],
     timestampMs: genesis().timestampMs + 50
   }, validatorOnePrivate, validatorOnePublic);
-  await commitEmptyBlocks(store, 101, (height) => height === 1 ? [upgrade] : []);
+  await commitEmptyBlocks(store, through, (height) => height === 1 ? [upgrade] : []);
 }
 
 /**
@@ -239,6 +243,44 @@ test("a v3 checkpoint with a malformed or extra field is rejected and falls back
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+for (const checkpointHeight of [100, 101]) {
+  test(`an unpruned checkpoint at height ${checkpointHeight} around State v2 activation binds the exact root and opens`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "zyron-prefix-digest-v2root-"));
+    try {
+      const store = await ChainStore.open(genesis(), directory);
+      await advanceToStateV2(store);
+      if (checkpointHeight === 101) {
+        await store.writeRecoveryCheckpoint();
+      } else {
+        const early = await mkdtemp(join(tmpdir(), "zyron-prefix-digest-v2root-early-"));
+        try {
+          const partial = await ChainStore.open(genesis(), early);
+          await advanceToStateV2Through(partial, 100);
+          await partial.writeRecoveryCheckpoint();
+          const checkpoint = await readCheckpoint(early);
+          assert.equal(checkpoint.version, 3);
+          assert.equal(checkpoint.stateV2Root, partial.chain.stateV2ForPersistence()?.root() ?? null);
+          const reopened = await ChainStore.open(genesis(), early);
+          assert.equal(reopened.recoveredFromCheckpointHeight, 100);
+          assert.equal(reopened.chain.tip.hash, partial.chain.tip.hash);
+        } finally {
+          await rm(early, { recursive: true, force: true });
+        }
+        return;
+      }
+      const checkpoint = await readCheckpoint(directory);
+      assert.equal(checkpoint.version, 3);
+      assert.equal(checkpoint.retainedFromHeight, 1);
+      assert.equal(checkpoint.stateV2Root, store.chain.tip.header.stateRoot);
+      const reopened = await ChainStore.open(genesis(), directory);
+      assert.equal(reopened.recoveredFromCheckpointHeight, 101);
+      assert.equal(reopened.chain.tip.hash, store.chain.tip.hash);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
 
 test("a legacy v1 checkpoint still opens through the fast path", async () => {
   const directory = await mkdtemp(join(tmpdir(), "zyron-prefix-digest-legacy-v1-"));
