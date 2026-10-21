@@ -10,7 +10,7 @@ A `validator_update` transaction installs a new validator set at `activationHeig
 
 - every entry of `validators` is a well-formed record whose `address` is derived from its `publicKey`, whose key is a valid secp256k1 point (F-05, `assertValidPublicKey`), with no duplicate address or key (`validateValidator`);
 - the sender is an active validator;
-- at least `floor(2n/3) + 1` of the **current** validators approve the exact payload `{ chainId, nonce, sender, activationHeight, validators }` under the domain `zyronchain/validator-set-approval/v1`;
+- at least `floor(2n/3) + 1` of the **current** validators approve the payload `{ chainId, nonce, sender, activationHeight, validators }` (`signForTransactionVersion`: for transaction version 2 the payload is wrapped as `{ transactionVersion: 2, payload }` and signed under the domain `zyronchain/validator-set-approval/v1`; for version 1 it is signed with plain canonical signing and **no domain**);
 - `activationHeight >= height + MIN_VALIDATOR_UPDATE_DELAY` (100) and activation heights strictly increase;
 - a fixed-supply launch chain keeps at least 4 and at most 100 validators.
 
