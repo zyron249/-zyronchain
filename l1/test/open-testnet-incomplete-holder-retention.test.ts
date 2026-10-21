@@ -326,3 +326,60 @@ test("pruning removes only the holder it inspected: contents added or a director
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("after a clock rollback the new holder sorts after an existing holder of another process at the same time", { timeout: 60_000 }, async (t) => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-pid-"));
+  try {
+    const dir = join(root, "net");
+    const later = 9_000_000_000_000;
+    // Holders left by an earlier process (a higher pid) while the clock ran ahead.
+    const earlier: string[] = [];
+    for (let index = 0; index < api.MAX_INCOMPLETE_HOLDERS - 1; index += 1) {
+      const path = join(root, `net.incomplete-${later - index}-99999999`);
+      await partialNetwork(join(path, "net"));
+      earlier.push(path);
+    }
+    let clock = 1_000_000;
+    t.mock.method(Date, "now", () => clock);
+    const created: string[] = [];
+    for (let index = 0; index < api.MAX_INCOMPLETE_HOLDERS; index += 1) {
+      clock += 1;
+      await partialNetwork(dir);
+      created.push(String(await api.moveAsideIncompleteNetworkDir(dir, { log: () => {} })).slice(0, -"/net".length));
+    }
+    // The holders this process created are the newest ones and all survive.
+    for (const path of created) await access(path);
+    for (const path of earlier) await assert.rejects(access(path), { code: "ENOENT" });
+    assert.equal((await holders(root, "net")).length, api.MAX_INCOMPLETE_HOLDERS);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pruning keeps a holder rewritten in place or replaced by a look-alike after inspection", { timeout: 60_000 }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-lookalike-"));
+  try {
+    const keep = api.MAX_INCOMPLETE_HOLDERS;
+    const rewritten = await holder(root, "net", 50);
+    const replaced = await holder(root, "net", 51);
+    for (let index = 0; index < keep; index += 1) await holder(root, "net", 500 + index);
+    const afterInspect = async (path: string) => {
+      if (path === rewritten) await writeFile(join(rewritten, "net", "data-v1", "blocks.ndjson"), "{\"operator\":\"appended after inspection\"}\n", { flag: "a" });
+      if (path === replaced) {
+        // Same layout and names, but a different directory than the one inspected.
+        await rm(replaced, { recursive: true });
+        await partialNetwork(join(replaced, "net"));
+        await writeFile(join(replaced, "net", "genesis.json"), "{\"swapped\":true}");
+      }
+    };
+    await partialNetwork(join(root, "net"));
+    const aside = await api.moveAsideIncompleteNetworkDir(join(root, "net"), { afterInspect, log: () => {} });
+    await access(join(aside, "genesis.json"));
+    await access(join(rewritten, "net", "data-v1", "blocks.ndjson"));
+    await access(join(replaced, "net", "genesis.json"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
