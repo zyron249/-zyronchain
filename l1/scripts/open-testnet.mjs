@@ -100,7 +100,7 @@ async function writeNetworkMarker(dir, value) {
 // An existing path is never replaced. Returns the new path, or false if nothing
 // was moved. Afterwards only the newest MAX_INCOMPLETE_HOLDERS holders are kept
 // (see pruneIncompleteHolders); the directory just moved is never pruned.
-export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, log = (line) => console.error(line) } = {}) {
+export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserveHolder = (path) => mkdir(path, { mode: 0o700 }), log = (line) => console.error(line) } = {}) {
   let entries;
   try { entries = await readdir(dir); } catch (error) { if (error?.code === "ENOENT") return false; throw error; }
   if (await readNetworkMarker(dir)) return false;
@@ -109,10 +109,13 @@ export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, log = (
   // The holder directory is reserved with an exclusive mkdir (an existing path
   // is skipped, never replaced); the directory then moves into it under its
   // own name, a path nothing else can have created.
+  // Old holders are pruned first, down to room for the new one, so a disk
+  // filled by earlier attempts can free space before the reservation.
+  await pruneIncompleteHolders(dir, { keep: MAX_INCOMPLETE_HOLDERS - 1, removeHolder, log });
   const base = `${dir}.incomplete-${Date.now()}-${process.pid}`;
   for (let attempt = 0; attempt < 1000; attempt += 1) {
     const holder = attempt === 0 ? base : `${base}-${attempt}`;
-    try { await mkdir(holder, { mode: 0o700 }); } catch (error) { if (error?.code === "EEXIST") continue; throw error; }
+    try { await reserveHolder(holder); } catch (error) { if (error?.code === "EEXIST") continue; throw error; }
     const aside = join(holder, basename(dir));
     await rename(dir, aside);
     await pruneIncompleteHolders(dir, { exclude: holder, removeHolder, log });
@@ -128,18 +131,49 @@ export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, log = (
 // holder is removed only if it is exactly what move-aside creates: a real
 // directory named <dir>.incomplete-<ms>-<pid>[-<n>] next to <dir>, holding only
 // a real directory named like <dir>, whose top-level entries are ones the open
-// testnet creates, whose keys/ holds only <name>.json key files, and with no
-// symlink or special file anywhere inside. Anything else (an operator note, a
-// foreign name or layout) is never removed and does not count toward the bound.
-// A pruning failure is logged and never fails the move-aside.
+// testnet creates, whose keys/ holds only <name>.json key files, whose
+// data-<validator>/ directories hold only the files a validator store writes
+// (and consensus-state/ only consensus-state files), with no symlink or special
+// file anywhere inside. Anything else (an operator note, a foreign name or
+// layout) is never removed and does not count toward the bound. Old holders are
+// pruned before the new one is reserved and again after the move. A holder
+// that cannot be inspected, or a pruning failure, is logged and never fails the
+// move-aside.
 export const MAX_INCOMPLETE_HOLDERS = 3;
 const KEY_FILE_PATTERN = /^[a-z0-9]+\.json$/;
-async function onlyRegularFilesAndDirs(path) {
-  for (const entry of await readdir(path, { withFileTypes: true })) {
-    const child = join(path, entry.name);
+// Files a validator store writes into its data directory, and the temporary
+// or quarantined copies of them it can leave behind after a crash.
+const VALIDATOR_DATA_FILES = new Set([
+  "blocks.ndjson", "metadata.json", "recovery-checkpoint.json", "history-retention.json", "node-identity.json",
+  "peer-reputation.json", "native-peer-reputation.json", "signing-journal.ndjson",
+  "state-v2.backend.json", "state-v2.keys.backend.json", "state-v2.nodes.ndjson", "state-v2.keys.ndjson", "state-v2.root.json",
+  ...["state-v2.nodes.sqlite", "node-writer.lock.sqlite", "signing-journal.lock.sqlite"].flatMap((file) => [file, `${file}-journal`, `${file}-wal`, `${file}-shm`])
+]);
+const CONSENSUS_STATE_FILE_PATTERN = /^H-\d{1,16}(?:\.json|-B-[0-9a-f]{64}\.json|-r-\d{1,8}\.(?:proposal|timeout)\.json)$/;
+const LEFTOVER_SUFFIX_PATTERN = /^(?:\.tmp-\d+-[0-9a-f]+|\.\d+\.tmp|\.\d+\.\d+\.tmp|\.corrupt-\d+-[0-9a-f]+)$/;
+function isStoreFileName(name, known) {
+  if (known(name)) return true;
+  const identityTemp = /^\.node-identity\.json\.\d+\.[0-9a-f]+\.tmp$/;
+  if (identityTemp.test(name)) return true;
+  for (let cut = name.indexOf("."); cut > 0; cut = name.indexOf(".", cut + 1)) {
+    if (known(name.slice(0, cut)) && LEFTOVER_SUFFIX_PATTERN.test(name.slice(cut))) return true;
+  }
+  return false;
+}
+async function onlyRegularFiles(path, known) {
+  for (const entry of await readdir(path)) {
+    if (!isStoreFileName(entry, known)) return false;
+    if (!(await lstat(join(path, entry))).isFile()) return false;
+  }
+  return true;
+}
+async function isValidatorDataDir(path) {
+  for (const entry of await readdir(path)) {
+    const child = join(path, entry);
     const info = await lstat(child);
-    if (info.isDirectory()) { if (!(await onlyRegularFilesAndDirs(child))) return false; }
-    else if (!info.isFile()) return false;
+    if (entry === "consensus-state") {
+      if (!info.isDirectory() || !(await onlyRegularFiles(child, (name) => CONSENSUS_STATE_FILE_PATTERN.test(name)))) return false;
+    } else if (!info.isFile() || !isStoreFileName(entry, (name) => VALIDATOR_DATA_FILES.has(name))) return false;
   }
   return true;
 }
@@ -152,12 +186,14 @@ async function isPrunableHolder(holder, name) {
   if (!(await lstat(inner)).isDirectory()) return false;
   const entries = await readdir(inner);
   if (entries.some((entry) => !NETWORK_DIR_ENTRIES.has(entry))) return false;
-  if (entries.includes("keys")) {
-    const keyDir = join(inner, "keys");
-    if (!(await lstat(keyDir)).isDirectory()) return false;
-    if ((await readdir(keyDir)).some((entry) => !KEY_FILE_PATTERN.test(entry))) return false;
+  for (const entry of entries) {
+    const child = join(inner, entry);
+    const info = await lstat(child);
+    if (entry === "keys") { if (!info.isDirectory() || !(await onlyRegularFiles(child, (name) => KEY_FILE_PATTERN.test(name)))) return false; }
+    else if (entry.startsWith("data-")) { if (!info.isDirectory() || !(await isValidatorDataDir(child))) return false; }
+    else if (!info.isFile()) return false;
   }
-  return onlyRegularFilesAndDirs(inner);
+  return true;
 }
 export async function pruneIncompleteHolders(dir, { keep = MAX_INCOMPLETE_HOLDERS, exclude, removeHolder = (path) => rm(path, { recursive: true }), log = (line) => console.error(line) } = {}) {
   const parent = resolve(dir, "..");
@@ -172,7 +208,8 @@ export async function pruneIncompleteHolders(dir, { keep = MAX_INCOMPLETE_HOLDER
     if (!match) continue;
     const path = join(parent, entry);
     const excluded = exclude !== undefined && resolve(path) === resolve(exclude);
-    try { if (!excluded && !(await isPrunableHolder(path, name))) continue; } catch { continue; }
+    try { if (!excluded && !(await isPrunableHolder(path, name))) continue; }
+    catch (error) { log(`could not inspect the moved-aside holder ${path}: ${error instanceof Error ? error.message : String(error)}`); continue; }
     candidates.push({ path, excluded, order: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3] ?? "0")] });
   }
   const compare = (a, b) => { for (let i = 0; i < 3; i += 1) { if (a.order[i] !== b.order[i]) return a.order[i] < b.order[i] ? -1 : 1; } return 0; };

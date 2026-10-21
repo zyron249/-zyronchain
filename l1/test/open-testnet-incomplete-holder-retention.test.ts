@@ -210,3 +210,25 @@ test("old holders are pruned before the new holder is reserved, so a full disk c
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("when the pre-prune could not remove old holders, the later prune still never removes the holder just created", { timeout: 60_000 }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-late-"));
+  try {
+    const keep = api.MAX_INCOMPLETE_HOLDERS;
+    // Later timestamps than the new holder (clock moved back), so by name the new holder sorts oldest.
+    for (let index = 0; index < keep + 1; index += 1) await holder(root, "net", 9_000_000_000_000_000 + index);
+    await partialNetwork(join(root, "net"));
+    let moved = false;
+    const removeHolder = async (path: string) => {
+      if (!moved) throw Object.assign(new Error("EBUSY: simulated"), { code: "EBUSY" });
+      await rm(path, { recursive: true });
+    };
+    const reserveHolder = async (path: string) => { await mkdir(path, { mode: 0o700 }); moved = true; };
+    const aside = await api.moveAsideIncompleteNetworkDir(join(root, "net"), { removeHolder, reserveHolder, log: () => {} });
+    await access(join(aside, "genesis.json"));
+    assert.equal((await holders(root, "net")).length, keep);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
