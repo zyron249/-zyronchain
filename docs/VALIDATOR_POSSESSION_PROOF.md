@@ -1,6 +1,6 @@
 # Proof of possession for incoming validators (design, P1-07)
 
-Status: **design proposal only. Nothing in this document is implemented.** This is a consensus and cryptography change. It has had a self-review by one AI system only; it is not an audit and needs an independent review. The implementation will follow as separate, failing-first PRs.
+Status: **partly implemented.** The genesis part (`validatorAdmission`, genesis proofs, chain identity, the requirement for value-bearing classes and the `tokenomics:check --before-possession-proofs` ceremony precheck) is implemented in `l1/src/validator-admission.ts`. The `validator_update` part is a separate PR. This is a consensus and cryptography change. It has had AI review only; it is not an audit and needs an independent review.
 
 Backlog item: P1-07 (F-05 residual).
 
@@ -84,7 +84,7 @@ Replay of existing data directories must stay byte for byte identical.
 
 The update check belongs in `validateValidatorUpdateAuthorization` (it needs the scheduled sets and the genesis option) and therefore runs on every path that already calls it: mempool admission, pending selection / block production, block validation (proposal and attested block). The genesis-proof check belongs in `validateGenesis`. The raw state appliers (legacy and State-v2) need no change: both chain callers run shape validation and authorization first; this is pinned by tests in the same way as the reserved tracker address (#1080, #1081).
 
-The CLI / tooling that builds a `validator_update` or a launch genesis gains a step to collect each incoming operator's proof (the operator signs locally; the private key never leaves the operator's host).
+The CLI / tooling that builds a `validator_update` or a launch genesis gains a step to collect each incoming operator's proof (the operator signs locally; the private key never leaves the operator's host). Launch ceremony order: `npm run tokenomics:check -- ... --before-possession-proofs` on the genesis with `validatorAdmission.genesisProofs: []` checks every other rule and prints the configuration commitment to sign; each validator operator signs it locally; the command is then run again without the flag on the file with every proof, and only that run is the final check.
 
 ## Test plan (failing-first)
 
