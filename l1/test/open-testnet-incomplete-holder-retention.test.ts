@@ -35,6 +35,7 @@ async function holders(root: string, name: string): Promise<string[]> {
 test("move-aside keeps a bounded number of testnet-created holders and prunes the oldest ones", { timeout: 60_000 }, async () => {
   assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
   assert.ok(api.MAX_INCOMPLETE_HOLDERS >= 2, "at least the new holder and one earlier attempt are kept");
+  assert.ok(api.MAX_INCOMPLETE_HOLDERS <= 8, "the bound is small enough to matter on a small disk");
   const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-"));
   try {
     const keep = api.MAX_INCOMPLETE_HOLDERS;
@@ -92,6 +93,22 @@ test("pruning never removes a holder with an operator file, a symlink, an unexpe
     const survivors = prunable.slice(prunable.length - (keep - 1));
     for (const path of survivors) await access(path);
     for (const path of prunable.slice(0, prunable.length - (keep - 1))) await assert.rejects(access(path), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the holder just created is never pruned, even if older holders carry later timestamps (clock moved back)", { timeout: 60_000 }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-clock-"));
+  try {
+    const future: string[] = [];
+    for (let index = 0; index < api.MAX_INCOMPLETE_HOLDERS + 1; index += 1) future.push(await holder(root, "net", 9_000_000_000_000_000 + index));
+    await partialNetwork(join(root, "net"));
+    const aside = await api.moveAsideIncompleteNetworkDir(join(root, "net"));
+    await access(join(aside, "genesis.json"));
+    assert.equal((await holders(root, "net")).length, api.MAX_INCOMPLETE_HOLDERS);
+    for (const path of future.slice(future.length - (api.MAX_INCOMPLETE_HOLDERS - 1))) await access(path);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
