@@ -607,11 +607,16 @@
         nonce: $('[data-tx-nonce]').value,
         receiver: $('[data-tx-to]').value,
         amountAtoms: core.zynToAtoms($('[data-tx-amount]').value),
-        feeAtoms: core.zynToAtoms($('[data-tx-fee]').value || '0')
+        feeAtoms: core.zynToAtoms($('[data-tx-fee]').value.trim() || core.atomsToZyn(String(core.FIXED_TRANSFER_FEE_ATOMS)))
       }, state.account);
       renderReview(core.describeTransfer(unsigned));
-      state.unsigned = unsigned;
+      const rejection = core.fixedFeeRejection(unsigned);
+      const feeWarning = $('[data-review-fee-warning]');
+      feeWarning.hidden = !rejection;
+      feeWarning.textContent = rejection || '';
+      state.unsigned = rejection ? null : unsigned;
       $('[data-review-ack]').checked = false;
+      $('[data-review-ack]').disabled = Boolean(rejection);
       $('[data-tx-sign]').disabled = true;
       $('[data-review-confirm-box]').hidden = false;
       $('[data-tx-out]').hidden = true;
@@ -623,12 +628,16 @@
       setMessage('[data-tx-check]', errorText(error), 'bad');
     }
   });
-  $('[data-review-ack]').addEventListener('change', (event) => { $('[data-tx-sign]').disabled = !event.target.checked; });
+  $('[data-review-ack]').addEventListener('change', (event) => {
+    $('[data-tx-sign]').disabled = !$('[data-review-fee-warning]').hidden || !event.target.checked;
+  });
   $('[data-tx-sign]').addEventListener('click', () => {
     if (!state.account) return lock();
     if (!state.unsigned || !$('[data-review-ack]').checked) return;
     try {
       core.describeTransfer(state.unsigned); // re-check right before signing
+      const rejection = core.fixedFeeRejection(state.unsigned);
+      if (rejection) throw new Error(rejection);
       const tx = core.signTransfer(state.unsigned, state.account.privateKey);
       state.unsigned = null;
       state.lastTx = tx;
@@ -655,6 +664,8 @@
   function leaveReview() {
     state.unsigned = null;
     $('[data-review-rows]').textContent = '';
+    const feeWarning = $('[data-review-fee-warning]');
+    if (feeWarning) { feeWarning.hidden = true; feeWarning.textContent = ''; }
     if (state.account) showHome(); else lock();
   }
   $('[data-review-cancel]').addEventListener('click', leaveReview);

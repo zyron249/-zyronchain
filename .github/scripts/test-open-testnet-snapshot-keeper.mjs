@@ -1136,7 +1136,7 @@ test("the scheduled workflow keeps least privilege, one active run, a bounded jo
   const timeout = Number(/^\s+timeout-minutes: (\d+)$/m.exec(active)?.[1]);
   const runMinutes = Number(/RUN_MINUTES: \$\{\{ inputs\.run_minutes \|\| '(\d+)' \}\}/.exec(active)?.[1]);
   assert.ok(timeout <= 360 && runMinutes > 0 && runMinutes + 10 <= timeout, `job timeout ${timeout} must exceed the run length ${runMinutes} and stay within 360`);
-  assert.match(active, /EXPECTED_GENESIS: 9ad75d777141de46df1fb008298a4d8a92fbce0a9c96aaf26ecf69474b7db8eb$/m);
+  assert.match(active, /EXPECTED_GENESIS: e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad$/m);
   assert.match(active, /if: github\.repository == 'zyron249\/-zyronchain'/);
   assert.deepEqual([...active.matchAll(/\$\{\{\s*([^}]*?)\s*\}\}/g)].map((match) => match[1]).sort(), ["github.repository", "github.token", "inputs.run_minutes || '340'"], "no secrets and no untrusted expression in a script");
   assert.doesNotMatch(active, /secrets\./);

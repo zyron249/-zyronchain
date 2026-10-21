@@ -59,6 +59,11 @@ console.log("Permanent-liquidity reserve: 20,000,000 ZYN (40%), on-chain locked:
 console.log("Ecosystem reserve: 5,000,000 ZYN (10%)");
 console.log("Mining issuance headroom: 0 ZYN");
 console.log(`Launch profile: ${FIXED_SUPPLY_LAUNCH_PROFILE}`);
+if (genesis.feePolicy && typeof genesis.feePolicy === "object") {
+  console.log(`Fee policy: ${genesis.feePolicy.version} fixedTransferFeeAtoms=${genesis.feePolicy.fixedTransferFeeAtoms}`);
+} else {
+  console.log("Fee policy: absent (historical full burn; fixed-fee-v1 is not activated on this file)");
+}
 console.log(`Network class: ${genesis.networkClass}`);
 const release = genesis.publicDistributionRelease;
 if (release && typeof release === "object") {

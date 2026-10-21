@@ -39,6 +39,9 @@ export const ALLOWED_ORIGINS: readonly string[] = [
 
 /** Mirrors l1/src/types.ts. */
 export const ATOMS_PER_ZYN = 100_000_000;
+
+/** Proposed fixed protocol fee: 0.001 ZYN. Mirrors l1 FIXED_TRANSFER_FEE_ATOMS. */
+export const FIXED_TRANSFER_FEE_ATOMS = ATOMS_PER_ZYN / 1_000;
 export const MAX_SUPPLY_ATOMS = 50_000_000 * ATOMS_PER_ZYN;
 
 /** Mirrors l1/src/mining.ts MINING_TRACKER_ADDRESS (protocol-reserved). */
