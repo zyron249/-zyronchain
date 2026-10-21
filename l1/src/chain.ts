@@ -96,6 +96,7 @@ import { assertFixedSupplyLaunchProfile, FIXED_SUPPLY_LAUNCH_PROFILE } from "./t
 import {
   assertGenesisPossessionProofs,
   assertValueBearingClassRequiresValidatorAdmission,
+  hasValidatorAdmission,
   validateValidatorAdmissionShape
 } from "./validator-admission.js";
 
@@ -1328,7 +1329,18 @@ function assertTransactionVersionForProtocol(tx: Transaction, protocolVersion: n
   }
 }
 
-function validateGenesis(genesis: GenesisConfig): void {
+/**
+ * Launch-ceremony precheck (P1-07): every genesis rule except the possession
+ * proofs themselves. The genesis must declare `validatorAdmission` with an
+ * empty `genesisProofs`; the validators then sign its (proof-independent)
+ * configuration commitment, and the final check (`new ZyronChain`) verifies
+ * the proofs. Never use this to start a node.
+ */
+export function validateGenesisBeforePossessionProofs(genesis: GenesisConfig): void {
+  validateGenesis(genesis, { beforePossessionProofs: true });
+}
+
+function validateGenesis(genesis: GenesisConfig, options: { beforePossessionProofs?: boolean } = {}): void {
   assertPlainRecord(genesis, "genesis");
   assertExactKeys(genesis, [
     "chainId", "timestampMs", "validators", "activityOracles", "activityPool", "allocations",
@@ -1436,6 +1448,13 @@ function validateGenesis(genesis: GenesisConfig): void {
   // so the proofs are verified over an otherwise valid configuration.
   validateValidatorAdmissionShape(genesis);
   assertValueBearingClassRequiresValidatorAdmission(genesis);
+  if (options.beforePossessionProofs) {
+    if (!hasValidatorAdmission(genesis)) throw new Error("The possession-proof precheck requires validatorAdmission");
+    if (genesis.validatorAdmission!.genesisProofs.length !== 0) {
+      throw new Error("The possession-proof precheck requires an empty validatorAdmission.genesisProofs");
+    }
+    return;
+  }
   assertGenesisPossessionProofs(genesis);
 }
 

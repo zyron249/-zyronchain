@@ -2,10 +2,11 @@
 import { resolve } from "node:path";
 
 import { readBoundedRegularControlFile } from "../dist/src/control-file.js";
-import { ZyronChain } from "../dist/src/chain.js";
+import { validateGenesisBeforePossessionProofs, ZyronChain } from "../dist/src/chain.js";
 import { genesisConfigCommitment } from "../dist/src/block.js";
 import { assertLaunchCeremonyNetworkClass } from "../dist/src/network-class.js";
 import { assertFixedSupplyGenesis, FIXED_SUPPLY_LAUNCH_PROFILE } from "../dist/src/tokenomics.js";
+import { POSSESSION_PROOF_DOMAIN } from "../dist/src/validator-admission.js";
 
 const MAX_GENESIS_BYTES = 256 * 1024;
 
@@ -47,8 +48,25 @@ if (genesis === null || typeof genesis !== "object" || genesis.launchProfile !==
 // the founder and permanent-liquidity locks) is present.
 assertLaunchCeremonyNetworkClass(genesis);
 assertFixedSupplyGenesis(genesis, addresses);
-// Full consensus genesis validation, including the allocation-lock declaration
-// and the consensus launch-profile rules.
+
+// P1-07 ceremony order: (1) precheck with `--before-possession-proofs` on the
+// genesis whose validatorAdmission.genesisProofs is empty; (2) each validator
+// operator signs the printed chain binding locally; (3) this command again,
+// without the flag, on the file with every proof. Only (3) is the final check.
+if (process.argv.includes("--before-possession-proofs")) {
+  validateGenesisBeforePossessionProofs(genesis);
+  const binding = genesisConfigCommitment(genesis);
+  console.log("PRECHECK ONLY (before validator possession proofs). This is not the final ceremony check.");
+  console.log("Every genesis rule except the possession proofs passed.");
+  console.log(`Possession proof domain: ${POSSESSION_PROOF_DOMAIN}`);
+  console.log(`Possession proof chain binding (genesis configuration commitment): ${binding}`);
+  console.log(`Possession proof payload per validator: { chainId: "${genesis.chainId}", chainBinding: "${binding}", activationHeight: 0, address, publicKey }`);
+  console.log("Next: collect one proof per validator, in validator order, then run this command again without --before-possession-proofs.");
+  process.exit(0);
+}
+
+// Full consensus genesis validation, including the allocation-lock declaration,
+// the consensus launch-profile rules and the validator possession proofs.
 const chain = new ZyronChain(genesis);
 
 console.log("Fixed-supply genesis validated.");
