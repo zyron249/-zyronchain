@@ -232,3 +232,27 @@ test("when the pre-prune could not remove old holders, the later prune still nev
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("pruning never removes a holder with a JSON file in keys/ that the testnet does not write", { timeout: 60_000 }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-keys-"));
+  try {
+    const keep = api.MAX_INCOMPLETE_HOLDERS;
+    const withKeyNote = await holder(root, "net", 30);
+    await writeFile(join(withKeyNote, "net", "keys", "notes.json"), "kept");
+    const withAllKeys = await holder(root, "net", 31);
+    for (const name of ["v2", "v3", "v4", "oracle1", "oracle2", "oracle3", "founder", "faucet", "liquidity", "ecosystem"]) await writeFile(join(withAllKeys, "net", "keys", `${name}.json`), "{}");
+    const prunable: string[] = [];
+    for (let index = 0; index < keep; index += 1) prunable.push(await holder(root, "net", 300 + index));
+    await partialNetwork(join(root, "net"));
+    const aside = await api.moveAsideIncompleteNetworkDir(join(root, "net"), { log: () => {} });
+    await access(join(aside, "genesis.json"));
+    await access(join(withKeyNote, "net", "keys", "notes.json"));
+    // The holder with only testnet key names is prunable: it is the oldest prunable one.
+    await assert.rejects(access(withAllKeys), { code: "ENOENT" });
+    for (const path of prunable.slice(0, prunable.length - (keep - 1))) await assert.rejects(access(path), { code: "ENOENT" });
+    for (const path of prunable.slice(prunable.length - (keep - 1))) await access(path);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
