@@ -98,8 +98,9 @@ async function writeNetworkMarker(dir, value) {
 // (never delete it) so the next attempt starts clean; a directory holding
 // top-level entries those steps do not create is refused and left untouched.
 // An existing path is never replaced. Returns the new path, or false if nothing
-// was moved.
-export async function moveAsideIncompleteNetworkDir(dir) {
+// was moved. Afterwards only the newest MAX_INCOMPLETE_HOLDERS holders are kept
+// (see pruneIncompleteHolders); the directory just moved is never pruned.
+export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, log = (line) => console.error(line) } = {}) {
   let entries;
   try { entries = await readdir(dir); } catch (error) { if (error?.code === "ENOENT") return false; throw error; }
   if (await readNetworkMarker(dir)) return false;
@@ -114,9 +115,75 @@ export async function moveAsideIncompleteNetworkDir(dir) {
     try { await mkdir(holder, { mode: 0o700 }); } catch (error) { if (error?.code === "EEXIST") continue; throw error; }
     const aside = join(holder, basename(dir));
     await rename(dir, aside);
+    await pruneIncompleteHolders(dir, { exclude: holder, removeHolder, log });
     return aside;
   }
   throw new Error(`refusing to move ${dir}: no free name next to it`);
+}
+
+// R24-1048-I1: retention bound for moved-aside holders. Holders are TEST data
+// only (no value), but a host that keeps failing restores on the same disk
+// would otherwise keep one partial network per attempt. Only the newest
+// MAX_INCOMPLETE_HOLDERS (including the one just created) are kept. An older
+// holder is removed only if it is exactly what move-aside creates: a real
+// directory named <dir>.incomplete-<ms>-<pid>[-<n>] next to <dir>, holding only
+// a real directory named like <dir>, whose top-level entries are ones the open
+// testnet creates, whose keys/ holds only <name>.json key files, and with no
+// symlink or special file anywhere inside. Anything else (an operator note, a
+// foreign name or layout) is never removed and does not count toward the bound.
+// A pruning failure is logged and never fails the move-aside.
+export const MAX_INCOMPLETE_HOLDERS = 3;
+const KEY_FILE_PATTERN = /^[a-z0-9]+\.json$/;
+async function onlyRegularFilesAndDirs(path) {
+  for (const entry of await readdir(path, { withFileTypes: true })) {
+    const child = join(path, entry.name);
+    const info = await lstat(child);
+    if (info.isDirectory()) { if (!(await onlyRegularFilesAndDirs(child))) return false; }
+    else if (!info.isFile()) return false;
+  }
+  return true;
+}
+async function isPrunableHolder(holder, name) {
+  const info = await lstat(holder);
+  if (!info.isDirectory()) return false;
+  const top = await readdir(holder);
+  if (top.length !== 1 || top[0] !== name) return false;
+  const inner = join(holder, name);
+  if (!(await lstat(inner)).isDirectory()) return false;
+  const entries = await readdir(inner);
+  if (entries.some((entry) => !NETWORK_DIR_ENTRIES.has(entry))) return false;
+  if (entries.includes("keys")) {
+    const keyDir = join(inner, "keys");
+    if (!(await lstat(keyDir)).isDirectory()) return false;
+    if ((await readdir(keyDir)).some((entry) => !KEY_FILE_PATTERN.test(entry))) return false;
+  }
+  return onlyRegularFilesAndDirs(inner);
+}
+export async function pruneIncompleteHolders(dir, { keep = MAX_INCOMPLETE_HOLDERS, exclude, removeHolder = (path) => rm(path, { recursive: true }), log = (line) => console.error(line) } = {}) {
+  const parent = resolve(dir, "..");
+  const name = basename(dir);
+  const pattern = /^\.incomplete-(\d+)-(\d+)(?:-(\d+))?$/;
+  const candidates = [];
+  let entries;
+  try { entries = await readdir(parent); } catch (error) { log(`could not prune moved-aside holders next to ${dir}: ${error instanceof Error ? error.message : String(error)}`); return []; }
+  for (const entry of entries) {
+    if (!entry.startsWith(`${name}.incomplete-`)) continue;
+    const match = pattern.exec(entry.slice(name.length));
+    if (!match) continue;
+    const path = join(parent, entry);
+    const excluded = exclude !== undefined && resolve(path) === resolve(exclude);
+    try { if (!excluded && !(await isPrunableHolder(path, name))) continue; } catch { continue; }
+    candidates.push({ path, excluded, order: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3] ?? "0")] });
+  }
+  const compare = (a, b) => { for (let i = 0; i < 3; i += 1) { if (a.order[i] !== b.order[i]) return a.order[i] < b.order[i] ? -1 : 1; } return 0; };
+  const older = candidates.filter((holder) => !holder.excluded).sort(compare);
+  const room = Math.max(0, keep - (candidates.length - older.length));
+  const removed = [];
+  for (const holder of older.slice(0, Math.max(0, older.length - room))) {
+    try { await removeHolder(holder.path); removed.push(holder.path); log(`pruned the old moved-aside holder ${holder.path}`); }
+    catch (error) { log(`could not prune the moved-aside holder ${holder.path}: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+  return removed;
 }
 const V6_ACTIVATION_HEIGHT = 101;
 const ATOMS_PER_ZYN = 100_000_000;
