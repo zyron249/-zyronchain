@@ -8,7 +8,7 @@ Backlog item: P1-07 (F-05 residual).
 
 A `validator_update` transaction installs a new validator set at `activationHeight`. Consensus checks today (`transaction.ts` `validateTransactionShape`, `chain.ts` `validateValidatorUpdateAuthorization`):
 
-- every entry of `validators` is a well-formed record whose `address` is derived from its `publicKey`, with no duplicate address or key (`validateValidator`); the genesis path also requires each key to be a valid secp256k1 point (F-05, `assertValidPublicKey`);
+- every entry of `validators` is a well-formed record whose `address` is derived from its `publicKey`, whose key is a valid secp256k1 point (F-05, `assertValidPublicKey`), with no duplicate address or key (`validateValidator`);
 - the sender is an active validator;
 - at least `floor(2n/3) + 1` of the **current** validators approve the exact payload `{ chainId, nonce, sender, activationHeight, validators }` under the domain `zyronchain/validator-set-approval/v1`;
 - `activationHeight >= height + MIN_VALIDATOR_UPDATE_DELAY` (100) and activation heights strictly increase;
@@ -18,8 +18,6 @@ Nothing proves that the holder of each **incoming** public key agreed to join, o
 
 1. **Dead slots.** A typo, a copied key from another chain, or a key whose private part was lost can be voted in. Each such slot counts toward `n` but never signs. With `n = 4` and quorum 3, one dead slot leaves no fault tolerance; two halt the chain. Recovery needs another `validator_update`, which itself needs a quorum of the (now partly dead) set.
 2. **Unconsented keys.** A quorum can name a key that belongs to an operator who never agreed to validate this chain (for example a published key of another network). That operator is then listed as a validator of this chain without consent, and the dead-slot effect of point 1 applies.
-3. **Point validity.** `validateValidator` checks only 32-byte hex for keys carried in a `validator_update`; the genesis path (and checkpoints / light client) additionally call `assertValidPublicKey`. An invalid point can therefore be installed by an update, which is an unusable slot of type 1.
-
 This is not a rogue-key attack in the BLS sense: approvals and votes are individual secp256k1 signatures, there is no key aggregation, so an incoming key cannot cancel or forge other validators' signatures. The impact is liveness and consent, not safety or supply. Severity per the original F-05 residual: Low/Medium (liveness), consensus-scoped.
 
 ## Proposal
@@ -49,8 +47,6 @@ A new optional top-level field on `validator_update`:
 - the field is covered by the sender's transaction signature and the txid, like every other field;
 - it is **not** added to the approval payload: approvers sign the set, key holders sign their own consent; the transaction carries both. (Including it in the approval payload would force a second approval round whenever a proof arrives late, with no security gain, since the proofs are already bound to `chainId`, `activationHeight` and the slot.)
 
-`validateValidator` additionally calls `assertValidPublicKey` for every key in a `validator_update` once the rule is active (point 3).
-
 ### Activation (no change to existing chains)
 
 Replay of existing data directories must stay byte-for-byte identical. Two options:
@@ -71,7 +67,7 @@ The CLI / tooling that builds a `validator_update` gains a step to collect each 
 1. Under a genesis with the rule: an update adding a validator **without** a proof is refused at shape/authorization in the mempool, in `produceBlock` / `selectValidPending`, and in `validateProposal` / `acceptBlock` (with a real finality certificate). Must fail on main before the fix.
 2. A proof signed by a different key, for a different `chainId`, for a different `activationHeight`, or for a different slot is refused.
 3. Extra, duplicate, misordered, or continuing-validator proofs are refused (exact-keys / exact-count).
-4. An incoming key that is not a valid secp256k1 point is refused.
+4. An incoming key that is not a valid secp256k1 point stays refused (already enforced by `validateValidator` since F-05; pinned, not changed).
 5. A valid update with correct proofs is accepted and activates at `activationHeight`; a continuing validator needs no proof.
 6. Under a genesis **without** the rule: historical behaviour is unchanged (existing validator-update tests unchanged and green; a replay fixture of an existing chain keeps its state roots).
 7. `fixed-supply-v1` genesis without the new field is refused; the configuration commitment covers it.
