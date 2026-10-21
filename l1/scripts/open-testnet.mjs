@@ -131,7 +131,7 @@ export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserve
 // holder is removed only if it is exactly what move-aside creates: a real
 // directory named <dir>.incomplete-<ms>-<pid>[-<n>] next to <dir>, holding only
 // a real directory named like <dir>, whose top-level entries are ones the open
-// testnet creates, whose keys/ holds only <name>.json key files, whose
+// testnet creates, whose keys/ holds only the key files the testnet writes, whose
 // data-<validator>/ directories hold only the files a validator store writes
 // (and consensus-state/ only consensus-state files), with no symlink or special
 // file anywhere inside. Anything else (an operator note, a foreign name or
@@ -140,7 +140,8 @@ export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserve
 // that cannot be inspected, or a pruning failure, is logged and never fails the
 // move-aside.
 export const MAX_INCOMPLETE_HOLDERS = 3;
-const KEY_FILE_PATTERN = /^[a-z0-9]+\.json$/;
+// The key files init and restore write (validators, oracles, genesis roles).
+const TESTNET_KEY_FILES = new Set([...VALIDATOR_NAMES, "oracle1", "oracle2", "oracle3", "founder", "faucet", "liquidity", "ecosystem"].map((name) => `${name}.json`));
 // Files a validator store writes into its data directory, and the temporary
 // or quarantined copies of them it can leave behind after a crash.
 const VALIDATOR_DATA_FILES = new Set([
@@ -189,7 +190,7 @@ async function isPrunableHolder(holder, name) {
   for (const entry of entries) {
     const child = join(inner, entry);
     const info = await lstat(child);
-    if (entry === "keys") { if (!info.isDirectory() || !(await onlyRegularFiles(child, (name) => KEY_FILE_PATTERN.test(name)))) return false; }
+    if (entry === "keys") { if (!info.isDirectory() || !(await onlyRegularFiles(child, (name) => TESTNET_KEY_FILES.has(name)))) return false; }
     else if (entry.startsWith("data-")) { if (!info.isDirectory() || !(await isValidatorDataDir(child))) return false; }
     else if (!info.isFile()) return false;
   }
