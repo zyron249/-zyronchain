@@ -116,9 +116,7 @@ export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserve
   // is never below the newest existing holder's, and at an equal time the
   // counter goes past that holder's (order is time, then counter, then pid).
   const { ms, next } = await nextHolderOrder(dir, Date.now());
-  const base = `${dir}.incomplete-${ms}-${process.pid}`;
-  for (let attempt = next; attempt < next + 1000n; attempt += 1n) {
-    const holder = attempt === 0n ? base : `${base}-${attempt}`;
+  for (const holder of holderNames(dir, ms, next)) {
     try { await reserveHolder(holder); } catch (error) { if (error?.code === "EEXIST") continue; throw error; }
     const aside = join(holder, basename(dir));
     await rename(dir, aside);
@@ -154,7 +152,9 @@ const VALIDATOR_DATA_FILES = new Set([
   "blocks.ndjson", "metadata.json", "recovery-checkpoint.json", "history-retention.json", "node-identity.json",
   "peer-reputation.json", "native-peer-reputation.json", "signing-journal.ndjson",
   "state-v2.backend.json", "state-v2.keys.backend.json", "state-v2.nodes.ndjson", "state-v2.keys.ndjson", "state-v2.root.json",
-  ...["state-v2.nodes.sqlite", "node-writer.lock.sqlite", "signing-journal.lock.sqlite"].flatMap((file) => [file, `${file}-journal`, `${file}-wal`, `${file}-shm`])
+  // Every store database runs in journal_mode = DELETE (storage.ts,
+  // state-v2-node-store.ts), which leaves a -journal sidecar, never -wal/-shm.
+  ...["state-v2.nodes.sqlite", "node-writer.lock.sqlite", "signing-journal.lock.sqlite"].flatMap((file) => [file, `${file}-journal`])
 ]);
 // Exactly the names ConsensusStateStore.heightFile/blockFile/proposalFile/
 // timeoutFile produce: canonical decimal, height a positive safe integer,
@@ -169,21 +169,25 @@ function isConsensusStateFileName(name) {
 // of the atomic writers (storage.ts, state-v2-store.ts, peer and p2p reputation,
 // consensus-state-store.ts, peer-identity.ts). A suffix on any other file is
 // not one the testnet writes.
-const CORRUPT_SUFFIX = /^\.corrupt-\d{1,16}-[0-9a-f]{12}$/;
-const TMP_PID_HEX16_SUFFIX = /^\.tmp-\d{1,10}-[0-9a-f]{16}$/;
-const TMP_PID_HEX12_SUFFIX = /^\.tmp-\d{1,10}-[0-9a-f]{12}$/;
-const PID_TMP_SUFFIX = /^\.\d{1,10}\.tmp$/;
-const PID_MS_TMP_SUFFIX = /^\.\d{1,10}\.\d{1,16}\.tmp$/;
-const COMPACT_SUFFIX = /^\.compact-\d{1,10}-[0-9a-f]{16}$/;
+// Numeric fields are canonical decimal as the writers interpolate them: a pid
+// is a positive integer of at most 10 digits, a millisecond time at most 16.
+const PID = "[1-9]\\d{0,9}";
+const MS = "(?:0|[1-9]\\d{0,15})";
+const CORRUPT_SUFFIX = new RegExp(`^\\.corrupt-${MS}-[0-9a-f]{12}$`);
+const TMP_PID_HEX16_SUFFIX = new RegExp(`^\\.tmp-${PID}-[0-9a-f]{16}$`);
+const TMP_PID_HEX12_SUFFIX = new RegExp(`^\\.tmp-${PID}-[0-9a-f]{12}$`);
+const PID_TMP_SUFFIX = new RegExp(`^\\.${PID}\\.tmp$`);
+const PID_MS_TMP_SUFFIX = new RegExp(`^\\.${PID}\\.${MS}\\.tmp$`);
+const COMPACT_SUFFIX = new RegExp(`^\\.compact-${PID}-[0-9a-f]{16}$`);
 const VALIDATOR_DATA_LEFTOVERS = new Map([
-  ...["state-v2.nodes.ndjson", "state-v2.nodes.sqlite", "state-v2.nodes.sqlite-journal", "state-v2.nodes.sqlite-wal", "state-v2.nodes.sqlite-shm", "state-v2.keys.ndjson"].map((file) => [file, [CORRUPT_SUFFIX]]),
+  ...["state-v2.nodes.ndjson", "state-v2.nodes.sqlite", "state-v2.nodes.sqlite-journal", "state-v2.keys.ndjson"].map((file) => [file, [CORRUPT_SUFFIX]]),
   ...["state-v2.backend.json", "state-v2.keys.backend.json", "state-v2.root.json"].map((file) => [file, [CORRUPT_SUFFIX, PID_MS_TMP_SUFFIX]]),
   ...["history-retention.json", "recovery-checkpoint.json", "peer-reputation.json", "native-peer-reputation.json"].map((file) => [file, [TMP_PID_HEX16_SUFFIX]]),
   ["metadata.json", [PID_TMP_SUFFIX]],
   ["signing-journal.ndjson", [COMPACT_SUFFIX]]
 ]);
 // peer-identity.ts writes its temporary only at the validator data-directory root.
-const IDENTITY_TEMP_PATTERN = /^\.node-identity\.json\.\d{1,10}\.[0-9a-f]{32}\.tmp$/;
+const IDENTITY_TEMP_PATTERN = new RegExp(`^\\.node-identity\\.json\\.${PID}\\.[0-9a-f]{32}\\.tmp$`);
 function isStoreFileName(name, known, leftovers = new Map()) {
   if (known(name)) return true;
   for (let cut = name.indexOf("."); cut > 0; cut = name.indexOf(".", cut + 1)) {
@@ -282,14 +286,29 @@ function holderOrder(name, entry) {
 async function nextHolderOrder(dir, now) {
   const name = basename(dir);
   let newest = null;
-  let entries = [];
-  try { entries = await readdir(resolve(dir, "..")); } catch { entries = []; }
+  // Without the existing names the order cannot be kept, so a failure here
+  // fails the move-aside (nothing has been moved yet).
+  const entries = await readdir(resolve(dir, ".."));
   for (const entry of entries) {
     const order = holderOrder(name, entry);
     if (order && (!newest || compareHolderOrder(order, newest) > 0)) newest = order;
   }
-  if (!newest || BigInt(now) > newest[0]) return { ms: String(now), next: 0n };
-  return { ms: String(newest[0]), next: newest[1] + 1n };
+  if (!newest || BigInt(now) > newest[0]) return { ms: BigInt(now), next: 0n };
+  return { ms: newest[0], next: newest[1] + 1n };
+}
+// The largest fields a holder name may carry (see HOLDER_SUFFIX_PATTERN).
+const MAX_HOLDER_COUNTER = 10n ** 20n - 1n;
+const MAX_HOLDER_MS = 10n ** 16n - 1n;
+// Holder names from (ms, counter) on, in order: past the largest counter the
+// time advances by one millisecond, so every name stays one that is counted.
+function* holderNames(dir, ms, counter) {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
+    if (counter > MAX_HOLDER_COUNTER) { ms += 1n; counter = 0n; }
+    if (ms > MAX_HOLDER_MS) return;
+    const base = `${dir}.incomplete-${ms}-${process.pid}`;
+    yield counter === 0n ? base : `${base}-${counter}`;
+    counter += 1n;
+  }
 }
 function compareHolderOrder(a, b) {
   for (let i = 0; i < 3; i += 1) { if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1; }
@@ -313,7 +332,7 @@ async function holderFingerprint(path) {
 // again there; if it is not the same prunable holder, or the removal fails, it
 // is renamed back and kept.
 async function removeInspectedHolder(path, name, fingerprint, removeHolder, readMountPoints) {
-  const trash = join(resolve(path, ".."), `.${basename(path)}.pruning-${process.pid}-${randomBytes(6).toString("hex")}`);
+  const trash = join(resolve(path, ".."), privatePruningName(basename(path), name));
   await rename(path, trash);
   let unchanged = false;
   try { unchanged = (await isPrunableHolder(trash, name, readMountPoints)) && (await holderFingerprint(trash)) === fingerprint; } catch { unchanged = false; }
@@ -331,7 +350,31 @@ async function removeInspectedHolder(path, name, fingerprint, removeHolder, read
   }
   throw failure;
 }
-const STRANDED_PRUNING_PATTERN = /^\.(.+)\.pruning-(\d{1,10})-[0-9a-f]{12}$/;
+// The private name is .<holder>.pruning-<pid>-<hex>. When that would not fit
+// in a 255-byte name component (a long --dir basename), the short form
+// .pruning-<pid>-<hex>.incomplete-<fields> is used: at most 92 bytes, and the
+// holder name is <name>.incomplete-<fields> again.
+const MAX_NAME_BYTES = 255;
+function privatePruningName(holderName, name) {
+  const tag = `pruning-${process.pid}-${randomBytes(6).toString("hex")}`;
+  const long = `.${holderName}.${tag}`;
+  if (Buffer.byteLength(long) <= MAX_NAME_BYTES) return long;
+  return `.${tag}${holderName.slice(name.length)}`;
+}
+const STRANDED_PRUNING_PATTERN = new RegExp(`^\\.(.+)\\.pruning-(${PID})-[0-9a-f]{12}$`);
+const SHORT_STRANDED_PRUNING_PATTERN = new RegExp(`^\\.pruning-(${PID})-[0-9a-f]{12}(\\.incomplete-.+)$`);
+// The holder name and pid a private pruning name belongs to, or null.
+async function strandedPruningOwner(parent, entry, name) {
+  let match = STRANDED_PRUNING_PATTERN.exec(entry);
+  if (match && entry.startsWith(`.${name}.incomplete-`) && holderOrder(name, match[1])) return { original: match[1], pid: Number(match[2]) };
+  match = SHORT_STRANDED_PRUNING_PATTERN.exec(entry);
+  if (!match || !holderOrder(name, `${name}${match[2]}`)) return null;
+  // The short form does not carry the network name: it is this network's only
+  // if it is empty (a removal got that far) or holds a directory of that name.
+  const top = await readdir(join(parent, entry));
+  if (top.length && !top.includes(name)) return null;
+  return { original: `${name}${match[2]}`, pid: Number(match[1]) };
+}
 function processIsAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error?.code === "EPERM"; }
 }
@@ -344,15 +387,13 @@ async function recoverStrandedPruning(parent, name, { removeHolder, readMountPoi
   let entries;
   try { entries = await readdir(parent); } catch { return; }
   for (const entry of entries) {
-    if (!entry.startsWith(`.${name}.incomplete-`)) continue;
-    const match = STRANDED_PRUNING_PATTERN.exec(entry);
-    if (!match || !holderOrder(name, match[1])) continue;
-    const pid = Number(match[2]);
-    if (pid !== process.pid && processIsAlive(pid)) continue;
+    if (!entry.startsWith(`.${name}.incomplete-`) && !entry.startsWith(".pruning-")) continue;
     const path = join(parent, entry);
-    const original = join(parent, match[1]);
     try {
       if (!(await lstat(path)).isDirectory()) continue;
+      const owner = await strandedPruningOwner(parent, entry, name);
+      if (!owner || (owner.pid !== process.pid && processIsAlive(owner.pid))) continue;
+      const original = join(parent, owner.original);
       if ((await readdir(path)).length === 0) { await rmdir(path); log(`removed the empty moved-aside holder ${path} left by an interrupted pruning`); continue; }
       if (await isPrunableHolder(path, name, readMountPoints)) { await removeHolder(path); log(`pruned the moved-aside holder ${path} left by an interrupted pruning`); continue; }
       await rename(path, original);

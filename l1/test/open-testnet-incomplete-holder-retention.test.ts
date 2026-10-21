@@ -658,3 +658,25 @@ test("holders whose private pruning name would exceed the name-length limit are 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a holder stranded under the short private pruning name is recovered only when it belongs to this network", { timeout: 60_000 }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-shortstranded-"));
+  try {
+    const name = "n".repeat(215);
+    const prunable = join(root, ".pruning-4242-0123456789ab.incomplete-90-4242");
+    await partialNetwork(join(prunable, name));
+    const withNote = join(root, ".pruning-4242-0123456789ac.incomplete-91-4242");
+    await partialNetwork(join(withNote, name));
+    await writeFile(join(withNote, name, "notes.txt"), "kept");
+    const foreign = join(root, ".pruning-4242-0123456789ad.incomplete-92-4242");
+    await partialNetwork(join(foreign, "other"));
+    await partialNetwork(join(root, name));
+    await api.moveAsideIncompleteNetworkDir(join(root, name), { log: () => {} });
+    await assert.rejects(access(prunable), { code: "ENOENT" });
+    await access(join(root, `${name}.incomplete-91-4242`, name, "notes.txt"));
+    await access(join(foreign, "other", "genesis.json"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
