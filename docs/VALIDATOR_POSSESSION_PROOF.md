@@ -28,10 +28,15 @@ A possession proof is a signature by a validator's own private key over
 
 ```
 domain:  "zyronchain/validator-possession/v1"
-payload: { chainId, activationHeight, address, publicKey }
+payload: { chainId, chainBinding, activationHeight, address, publicKey }
 ```
 
-It is always made with the domain-separated primitive (`signCanonicalDomain` / `verifyCanonicalDomain`), **independent of the transaction version**. (`signForTransactionVersion` signs version-1 payloads with plain `signCanonical` and no domain, which would not give the cross-context separation this proof needs.) Binding `chainId` and `activationHeight` means a proof cannot be replayed into another chain or into a later update; the key holder consents to one specific activation. `address` and `publicKey` bind the proof to the slot.
+`chainBinding` identifies the exact chain, not only its `chainId` (different genesis configurations may share a `chainId` and differ only in genesis hash):
+
+- for a `validator_update` proof it is the chain's **genesis hash**;
+- for a genesis proof (next sections) it is a proof-independent commitment of the intended genesis: `genesisConfigCommitment` of the genesis with `validatorAdmission.genesisProofs` replaced by an empty array. This avoids the circularity of signing a hash that covers the proofs themselves.
+
+It is always made with the domain-separated primitive (`signCanonicalDomain` / `verifyCanonicalDomain`), **independent of the transaction version**. (`signForTransactionVersion` signs version-1 payloads with plain `signCanonical` and no domain, which would not give the cross-context separation this proof needs.) Binding `chainId`, `chainBinding` and `activationHeight` means a proof cannot be replayed into another chain (including a same-`chainId` twin with a different genesis) or into a later update; the key holder consents to one specific activation. `address` and `publicKey` bind the proof to the slot.
 
 ### Which validators need a proof
 
@@ -41,7 +46,7 @@ A validator that continues from the set it replaces needs no new proof, because 
 
 ### Genesis validators
 
-Genesis lists only address and public key, which proves nothing about possession. Under the opt-in (see Activation) the genesis therefore also carries one proof per initial validator, over the same domain with `activationHeight: 0` and the genesis `chainId`. Node start refuses an opted-in genesis with a missing, extra, misordered or invalid genesis proof. The proofs are part of the genesis file and therefore of the configuration commitment. This turns "continuing validators were proven" into an invariant for the whole life of an opted-in chain, instead of a trusted grandfathered exception.
+Genesis lists only address and public key, which proves nothing about possession. Under the opt-in (see Activation) the genesis therefore also carries one proof per initial validator, over the same domain with `activationHeight: 0`, the genesis `chainId` and the proof-independent genesis commitment as `chainBinding`. Node start refuses an opted-in genesis with a missing, extra, misordered or invalid genesis proof. The proofs are part of the genesis file and therefore of the configuration commitment. This turns "continuing validators were proven" into an invariant for the whole life of an opted-in chain, instead of a trusted grandfathered exception.
 
 ### Wire format
 
@@ -73,7 +78,8 @@ Replay of existing data directories must stay byte for byte identical.
 - **Option B: protocol version (not recommended now).** Requiring proofs from a new protocol version on a live chain needs at least:
   1. proofs for every update whose `activationHeight` is at or after the new version's activation, regardless of when it was included, and a refusal to schedule the version while any older proofless update with a later activation is pending (otherwise a proofless set scheduled before the boundary still takes effect after it);
   2. the new version inherits every v6 consensus and signing invariant, and every consumer that compares the version exactly with 6 (`isConsensusV6`, block validation, node routing, light-client and signer checks) is migrated; adding 7 to the schedule alone would leave the locked two-phase consensus path;
-  3. a migration for existing genesis validators, which have no proofs.
+  3. a migration for existing genesis validators, which have no proofs;
+  4. a compatibility-safe transition for updates that cross the boundary: a proof-bearing update is refused by binaries without the rule (exact-key shape) and must not be accepted early, while a proofless one recreates the pending-schedule bypass. Validator updates whose activation would cross the boundary are therefore frozen (refused) from the moment the new version is scheduled until it is active.
 
   This is much larger and riskier than Option A, and is only worth doing if a live chain needs the rule.
 
@@ -86,7 +92,7 @@ The CLI / tooling that builds a `validator_update` or a launch genesis gains a s
 ## Test plan (failing-first)
 
 1. Opted-in chain: an update adding a validator **without** a proof is refused in the mempool, in `produceBlock` / `selectValidPending`, and in `validateProposal` / `acceptBlock` (with a real finality certificate). Must fail on main before the fix.
-2. A proof signed by a different key, for a different `chainId`, for a different `activationHeight`, for a different slot, or without the domain (plain `signCanonical`) is refused.
+2. A proof signed by a different key, for a different `chainId`, for a same-`chainId` chain with a different genesis hash, for a different `activationHeight`, for a different slot, or without the domain (plain `signCanonical`) is refused.
 3. Extra, duplicate, misordered or continuing-validator proofs are refused; a missing field is refused on an opted-in chain.
 4. Pending-schedule case: remove `V` at H1, then re-add `V` at H2 > H1 before H1 activates; the re-add needs a proof for `V`.
 5. A valid update with correct proofs is accepted and activates at `activationHeight`; a continuing validator needs no proof.
