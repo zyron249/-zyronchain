@@ -14,19 +14,12 @@ import test from "node:test";
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
 const api: any = await import(pathToFileURL(join(l1Root, "scripts", "open-testnet.mjs")).href);
 
-// A stranded `.pruning-<pid>-<hex>` holder is left alone while <pid> is a live
-// process (it may be pruning right now). The recovery tests need an owner pid
-// that is not alive on the host running them: a fixed 4242 can be a live
-// process on a CI runner (seen on #1090 PR CI, node 22, Oct 21 2026), which
-// made three recovery tests fail. Start at 4242 and take the first pid that
-// the same liveness probe as the script reports as not alive.
-function firstDeadPid(start = 4242, isAlive = (pid: number): boolean => {
-  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException)?.code === "EPERM"; }
-}): number {
-  for (let pid = start; pid < start + 100_000; pid += 1) if (pid !== process.pid && !isAlive(pid)) return pid;
-  throw new Error("no dead pid found for the stranded-pruning fixtures");
-}
-const STRANDED_PID = firstDeadPid();
+// Stranded `.pruning-<pid>-<hex>` fixtures name owner pid 4242. The script
+// leaves such a holder alone while its owner is alive, and 4242 can be a live
+// process on a CI host (#1090 PR CI, node 22, Oct 21 2026). The recovery tests
+// therefore inject the liveness check: only the fixture owner has exited.
+const FIXTURE_OWNER_PID = 4242;
+const fixtureOwnerExited = (pid: number): boolean => pid !== FIXTURE_OWNER_PID;
 
 // The layout a failed restore leaves behind: keys, genesis, and validator
 // data directories holding the files a validator store writes.
@@ -470,17 +463,17 @@ test("holders stranded under a private pruning name by a crash are recovered on 
   assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
   const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-stranded-"));
   try {
-    const prunable = join(root, `.net.incomplete-90-4242.pruning-${STRANDED_PID}-0123456789ab`);
+    const prunable = join(root, ".net.incomplete-90-4242.pruning-4242-0123456789ab");
     await partialNetwork(join(prunable, "net"));
-    const withNote = join(root, `.net.incomplete-91-4242.pruning-${STRANDED_PID}-0123456789ab`);
+    const withNote = join(root, ".net.incomplete-91-4242.pruning-4242-0123456789ab");
     await partialNetwork(join(withNote, "net"));
     await writeFile(join(withNote, "net", "notes.txt"), "kept");
-    const emptied = join(root, `.net.incomplete-92-4242.pruning-${STRANDED_PID}-0123456789ab`);
+    const emptied = join(root, ".net.incomplete-92-4242.pruning-4242-0123456789ab");
     await mkdir(emptied);
-    const unrelated = join(root, `.other.pruning-${STRANDED_PID}-0123456789ab`);
+    const unrelated = join(root, ".other.pruning-4242-0123456789ab");
     await mkdir(unrelated);
     await partialNetwork(join(root, "net"));
-    await api.moveAsideIncompleteNetworkDir(join(root, "net"), { log: () => {} });
+    await api.moveAsideIncompleteNetworkDir(join(root, "net"), { isProcessAlive: fixtureOwnerExited, log: () => {} });
     await assert.rejects(access(prunable), { code: "ENOENT" });
     await assert.rejects(access(emptied), { code: "ENOENT" });
     // An emptied one (the removal had got that far) is not brought back.
@@ -488,7 +481,7 @@ test("holders stranded under a private pruning name by a crash are recovered on 
     // A stranded holder that is not prunable goes back under its own name and is kept.
     await access(join(root, "net.incomplete-91-4242", "net", "notes.txt"));
     await access(unrelated);
-    assert.deepEqual((await readdir(root)).filter((entry) => entry.includes(".pruning-")), [`.other.pruning-${STRANDED_PID}-0123456789ab`]);
+    assert.deepEqual((await readdir(root)).filter((entry) => entry.includes(".pruning-")), [".other.pruning-4242-0123456789ab"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -537,12 +530,12 @@ test("restoring a stranded holder is idempotent: an empty placeholder left by a 
   assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
   const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-placeholder-"));
   try {
-    const stranded = join(root, `.net.incomplete-95-4242.pruning-${STRANDED_PID}-0123456789ab`);
+    const stranded = join(root, ".net.incomplete-95-4242.pruning-4242-0123456789ab");
     await partialNetwork(join(stranded, "net"));
     await writeFile(join(stranded, "net", "notes.txt"), "kept");
     await mkdir(join(root, "net.incomplete-95-4242"));
     await partialNetwork(join(root, "net"));
-    await api.moveAsideIncompleteNetworkDir(join(root, "net"), { log: () => {} });
+    await api.moveAsideIncompleteNetworkDir(join(root, "net"), { isProcessAlive: fixtureOwnerExited, log: () => {} });
     await access(join(root, "net.incomplete-95-4242", "net", "notes.txt"));
     await assert.rejects(access(stranded), { code: "ENOENT" });
   } finally {
@@ -678,15 +671,15 @@ test("a holder stranded under the short private pruning name is recovered only w
   const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-shortstranded-"));
   try {
     const name = "n".repeat(215);
-    const prunable = join(root, `.pruning-${STRANDED_PID}-0123456789ab.incomplete-90-4242`);
+    const prunable = join(root, ".pruning-4242-0123456789ab.incomplete-90-4242");
     await partialNetwork(join(prunable, name));
-    const withNote = join(root, `.pruning-${STRANDED_PID}-0123456789ac.incomplete-91-4242`);
+    const withNote = join(root, ".pruning-4242-0123456789ac.incomplete-91-4242");
     await partialNetwork(join(withNote, name));
     await writeFile(join(withNote, name, "notes.txt"), "kept");
-    const foreign = join(root, `.pruning-${STRANDED_PID}-0123456789ad.incomplete-92-4242`);
+    const foreign = join(root, ".pruning-4242-0123456789ad.incomplete-92-4242");
     await partialNetwork(join(foreign, "other"));
     await partialNetwork(join(root, name));
-    await api.moveAsideIncompleteNetworkDir(join(root, name), { log: () => {} });
+    await api.moveAsideIncompleteNetworkDir(join(root, name), { isProcessAlive: fixtureOwnerExited, log: () => {} });
     await assert.rejects(access(prunable), { code: "ENOENT" });
     await access(join(root, `${name}.incomplete-91-4242`, name, "notes.txt"));
     await access(join(foreign, "other", "genesis.json"));
@@ -695,12 +688,16 @@ test("a holder stranded under the short private pruning name is recovered only w
   }
 });
 
-test("stranded-pruning fixtures use an owner pid that is not alive", () => {
-  const live = new Set([4242, 4243]);
-  assert.equal(firstDeadPid(4242, (pid) => live.has(pid)), 4244);
-  assert.equal(firstDeadPid(4242, () => false), 4242);
-  let alive = true;
-  try { process.kill(STRANDED_PID, 0); } catch (error) { alive = (error as NodeJS.ErrnoException)?.code === "EPERM"; }
-  assert.equal(alive, false);
-  assert.notEqual(STRANDED_PID, process.pid);
+test("a stranded pruning holder whose owner is alive is left alone", { timeout: 60_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-live-owner-"));
+  try {
+    const stranded = join(root, `.net.incomplete-96-4242.pruning-${FIXTURE_OWNER_PID}-0123456789ab`);
+    await partialNetwork(join(stranded, "net"));
+    await partialNetwork(join(root, "net"));
+    await api.moveAsideIncompleteNetworkDir(join(root, "net"), { isProcessAlive: () => true, log: () => {} });
+    await access(join(stranded, "net"));
+    await assert.rejects(access(join(root, "net.incomplete-96-4242")), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

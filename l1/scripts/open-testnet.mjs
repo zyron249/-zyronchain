@@ -100,7 +100,7 @@ async function writeNetworkMarker(dir, value) {
 // An existing path is never replaced. Returns the new path, or false if nothing
 // was moved. Afterwards only the newest MAX_INCOMPLETE_HOLDERS holders are kept
 // (see pruneIncompleteHolders); the directory just moved is never pruned.
-export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserveHolder = (path) => mkdir(path, { mode: 0o700 }), afterInspect, readMountPoints, log = (line) => console.error(line) } = {}) {
+export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserveHolder = (path) => mkdir(path, { mode: 0o700 }), afterInspect, readMountPoints, isProcessAlive, log = (line) => console.error(line) } = {}) {
   let entries;
   try { entries = await readdir(dir); } catch (error) { if (error?.code === "ENOENT") return false; throw error; }
   if (await readNetworkMarker(dir)) return false;
@@ -119,7 +119,7 @@ export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserve
   try {
     incomingCounts = await isTestnetCreatedNetworkDir(dir) && !(await holderHasMountPoint(dir, readMountPoints ?? readMountPointsFromProc));
   } catch { incomingCounts = true; }
-  await pruneIncompleteHolders(dir, { keep: incomingCounts ? MAX_INCOMPLETE_HOLDERS - 1 : MAX_INCOMPLETE_HOLDERS, removeHolder, afterInspect, readMountPoints, log });
+  await pruneIncompleteHolders(dir, { keep: incomingCounts ? MAX_INCOMPLETE_HOLDERS - 1 : MAX_INCOMPLETE_HOLDERS, removeHolder, afterInspect, readMountPoints, isProcessAlive, log });
   // The name keeps creation order even if the wall clock moved back: its time
   // is never below the newest existing holder's, and at an equal time the
   // counter goes past that holder's (order is time, then counter, then pid).
@@ -128,7 +128,7 @@ export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserve
     try { await reserveHolder(holder); } catch (error) { if (error?.code === "EEXIST") continue; throw error; }
     const aside = join(holder, basename(dir));
     await rename(dir, aside);
-    await pruneIncompleteHolders(dir, { exclude: holder, removeHolder, afterInspect, readMountPoints, log });
+    await pruneIncompleteHolders(dir, { exclude: holder, removeHolder, afterInspect, readMountPoints, isProcessAlive, log });
     return aside;
   }
   throw new Error(`refusing to move ${dir}: no free name next to it`);
@@ -399,7 +399,9 @@ function processIsAlive(pid) {
 // is finished off if it is still prunable (or empty), and otherwise renamed back
 // under its own name, where it is kept like any other holder. A name of
 // another live process is left alone (it may be pruning right now).
-async function recoverStrandedPruning(parent, name, { removeHolder, readMountPoints, log }) {
+// `isProcessAlive` is a seam for tests only (a fixed fixture pid can be a live
+// process on a CI host); production always uses processIsAlive.
+async function recoverStrandedPruning(parent, name, { removeHolder, readMountPoints, isProcessAlive = processIsAlive, log }) {
   let entries;
   try { entries = await readdir(parent); } catch { return; }
   for (const entry of entries) {
@@ -408,7 +410,7 @@ async function recoverStrandedPruning(parent, name, { removeHolder, readMountPoi
     try {
       if (!(await lstat(path)).isDirectory()) continue;
       const owner = await strandedPruningOwner(parent, entry, name);
-      if (!owner || (owner.pid !== process.pid && processIsAlive(owner.pid))) continue;
+      if (!owner || (owner.pid !== process.pid && isProcessAlive(owner.pid))) continue;
       const original = join(parent, owner.original);
       if ((await readdir(path)).length === 0) { await rmdir(path); log(`removed the empty moved-aside holder ${path} left by an interrupted pruning`); continue; }
       if (await isPrunableHolder(path, name, readMountPoints)) { await removeHolder(path); log(`pruned the moved-aside holder ${path} left by an interrupted pruning`); continue; }
@@ -417,11 +419,11 @@ async function recoverStrandedPruning(parent, name, { removeHolder, readMountPoi
     } catch (error) { log(`could not recover the moved-aside holder ${path} left by an interrupted pruning: ${error instanceof Error ? error.message : String(error)}`); }
   }
 }
-export async function pruneIncompleteHolders(dir, { keep = MAX_INCOMPLETE_HOLDERS, exclude, removeHolder = (path) => rm(path, { recursive: true }), afterInspect = async () => {}, readMountPoints = readMountPointsFromProc, log = (line) => console.error(line) } = {}) {
+export async function pruneIncompleteHolders(dir, { keep = MAX_INCOMPLETE_HOLDERS, exclude, removeHolder = (path) => rm(path, { recursive: true }), afterInspect = async () => {}, readMountPoints = readMountPointsFromProc, isProcessAlive = processIsAlive, log = (line) => console.error(line) } = {}) {
   const parent = resolve(dir, "..");
   const name = basename(dir);
   const candidates = [];
-  await recoverStrandedPruning(parent, name, { removeHolder, readMountPoints, log });
+  await recoverStrandedPruning(parent, name, { removeHolder, readMountPoints, isProcessAlive, log });
   let entries;
   try { entries = await readdir(parent); } catch (error) { log(`could not prune moved-aside holders next to ${dir}: ${error instanceof Error ? error.message : String(error)}`); return []; }
   for (const entry of entries) {
