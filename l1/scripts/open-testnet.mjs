@@ -111,7 +111,15 @@ export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserve
   // own name, a path nothing else can have created.
   // Old holders are pruned first, down to room for the new one, so a disk
   // filled by earlier attempts can free space before the reservation.
-  await pruneIncompleteHolders(dir, { keep: MAX_INCOMPLETE_HOLDERS - 1, removeHolder, afterInspect, readMountPoints, log });
+  // Room is reserved only for a directory that will count toward the bound
+  // once moved (R24-1048-I1-F1): one with an operator file below an allowed
+  // entry, or a mount point, will be kept and not counted, so it must not cost
+  // an older prunable holder. An inspection failure reserves the room.
+  let incomingCounts = true;
+  try {
+    incomingCounts = await isTestnetCreatedNetworkDir(dir) && !(await holderHasMountPoint(dir, readMountPoints ?? readMountPointsFromProc));
+  } catch { incomingCounts = true; }
+  await pruneIncompleteHolders(dir, { keep: incomingCounts ? MAX_INCOMPLETE_HOLDERS - 1 : MAX_INCOMPLETE_HOLDERS, removeHolder, afterInspect, readMountPoints, log });
   // The name keeps creation order even if the wall clock moved back: its time
   // is never below the newest existing holder's, and at an equal time the
   // counter goes past that holder's (order is time, then counter, then pid).
@@ -179,11 +187,15 @@ const TMP_PID_HEX12_SUFFIX = new RegExp(`^\\.tmp-${PID}-[0-9a-f]{12}$`);
 const PID_TMP_SUFFIX = new RegExp(`^\\.${PID}\\.tmp$`);
 const PID_MS_TMP_SUFFIX = new RegExp(`^\\.${PID}\\.${MS}\\.tmp$`);
 const COMPACT_SUFFIX = new RegExp(`^\\.compact-${PID}-[0-9a-f]{16}$`);
+// storage.ts pruneFinalizedHistory: `${blocksPath}.prune-${pid}-<16 hex>`, left
+// behind if a finalized-history prune is interrupted (R24-1048-I1-F1).
+const PRUNE_PID_HEX16_SUFFIX = new RegExp(`^\\.prune-${PID}-[0-9a-f]{16}$`);
 const VALIDATOR_DATA_LEFTOVERS = new Map([
   ...["state-v2.nodes.ndjson", "state-v2.nodes.sqlite", "state-v2.nodes.sqlite-journal", "state-v2.keys.ndjson"].map((file) => [file, [CORRUPT_SUFFIX]]),
   ...["state-v2.backend.json", "state-v2.keys.backend.json", "state-v2.root.json"].map((file) => [file, [CORRUPT_SUFFIX, PID_MS_TMP_SUFFIX]]),
   ...["history-retention.json", "recovery-checkpoint.json", "peer-reputation.json", "native-peer-reputation.json"].map((file) => [file, [TMP_PID_HEX16_SUFFIX]]),
   ["metadata.json", [PID_TMP_SUFFIX]],
+  ["blocks.ndjson", [PRUNE_PID_HEX16_SUFFIX]],
   ["signing-journal.ndjson", [COMPACT_SUFFIX]]
 ]);
 // peer-identity.ts writes its temporary only at the validator data-directory root.
@@ -260,7 +272,11 @@ async function isPrunableHolderLayout(holder, name) {
   if (!info.isDirectory()) return false;
   const top = await readdir(holder);
   if (top.length !== 1 || top[0] !== name) return false;
-  const inner = join(holder, name);
+  return isTestnetCreatedNetworkDir(join(holder, name));
+}
+// A network directory holding only what the open testnet creates (the layout a
+// prunable holder has inside it).
+async function isTestnetCreatedNetworkDir(inner) {
   if (!(await lstat(inner)).isDirectory()) return false;
   const entries = await readdir(inner);
   if (entries.some((entry) => !NETWORK_DIR_ENTRIES.has(entry))) return false;
@@ -414,12 +430,19 @@ export async function pruneIncompleteHolders(dir, { keep = MAX_INCOMPLETE_HOLDER
     const path = join(parent, entry);
     const excluded = exclude !== undefined && resolve(path) === resolve(exclude);
     let fingerprint;
-    try {
-      if (!excluded) {
+    if (excluded) {
+      // The holder just created is never pruned, and it counts toward the bound
+      // only if it is one pruning could remove (R24-1048-I1-F1); a failed
+      // inspection counts it, as before.
+      let counts = true;
+      try { counts = await isPrunableHolder(path, name, readMountPoints); } catch { counts = true; }
+      if (!counts) continue;
+    } else {
+      try {
         if (!(await isPrunableHolder(path, name, readMountPoints))) continue;
         fingerprint = await holderFingerprint(path);
-      }
-    } catch (error) { log(`could not inspect the moved-aside holder ${path}: ${error instanceof Error ? error.message : String(error)}`); continue; }
+      } catch (error) { log(`could not inspect the moved-aside holder ${path}: ${error instanceof Error ? error.message : String(error)}`); continue; }
+    }
     candidates.push({ path, excluded, order, fingerprint });
   }
   const compare = (a, b) => compareHolderOrder(a.order, b.order);
