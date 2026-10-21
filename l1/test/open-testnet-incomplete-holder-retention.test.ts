@@ -689,9 +689,12 @@ test("a holder stranded under the short private pruning name is recovered only w
 });
 
 test("a stranded pruning holder whose owner is alive is left alone", { timeout: 60_000 }, async () => {
+  // The script always treats a holder named with its own pid as stranded, so
+  // the live owner must be a pid other than this worker's.
+  const liveOwnerPid = process.pid === FIXTURE_OWNER_PID ? FIXTURE_OWNER_PID + 1 : FIXTURE_OWNER_PID;
   const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-live-owner-"));
   try {
-    const stranded = join(root, `.net.incomplete-96-4242.pruning-${FIXTURE_OWNER_PID}-0123456789ab`);
+    const stranded = join(root, `.net.incomplete-96-4242.pruning-${liveOwnerPid}-0123456789ab`);
     await partialNetwork(join(stranded, "net"));
     await partialNetwork(join(root, "net"));
     await api.moveAsideIncompleteNetworkDir(join(root, "net"), { isProcessAlive: () => true, log: () => {} });
