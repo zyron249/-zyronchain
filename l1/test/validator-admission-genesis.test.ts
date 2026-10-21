@@ -250,7 +250,7 @@ test("proofs by another key, for another chain, height, slot or without the doma
 test("a proof made for a test genesis cannot be reused when the value-bearing class is added", () => {
   const test = admitted(strictBase(undefined, "zyron-review-reuse"));
   const reused = strictBase("mainnet", "zyron-review-reuse");
-  reused.validatorAdmission = structuredClone(test.validatorAdmission);
+  reused.validatorAdmission = structuredClone(test.validatorAdmission!);
   assert.throws(() => new ZyronChain(reused), INVALID_PROOF);
 });
 

@@ -85,6 +85,26 @@ export interface GenesisConfig {
    * The address is an input, not a value stored in this repository.
    */
   publicDistributionRelease?: PublicDistributionRelease;
+  /**
+   * Optional validator admission, policy possession-proof-v1
+   * (docs/VALIDATOR_POSSESSION_PROOF.md, P1-07). Every genesis validator proves
+   * possession of its private key. Absent on genesis files that predate it;
+   * validation and the genesis hash are then unchanged. Required for the
+   * public-launch, value-bearing and mainnet network classes.
+   */
+  validatorAdmission?: ValidatorAdmission;
+}
+
+export interface ValidatorPossessionProof {
+  /** Address of the validator slot (same order as `validators`). */
+  address: Address;
+  /** 64-byte compact secp256k1 signature, hex, under "zyronchain/validator-possession/v1". */
+  signature: string;
+}
+
+export interface ValidatorAdmission {
+  policy: "possession-proof-v1";
+  genesisProofs: ValidatorPossessionProof[];
 }
 
 export interface PublicDistributionRelease {

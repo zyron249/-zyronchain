@@ -14,6 +14,7 @@ import { defaultPublicDistributionRelease } from "../src/public-distribution-rel
 import { ChainStore } from "../src/storage.js";
 import { createValidatorApproval, createValidatorSetUpdate } from "../src/transaction.js";
 import { ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, type GenesisConfig, type Validator } from "../src/types.js";
+import { signGenesisPossessionProofs } from "../src/validator-admission.js";
 
 const ZYN = ATOMS_PER_ZYN;
 const T0 = 1_700_000_000_000;
@@ -45,7 +46,8 @@ function strictGenesis(count: number, chainId = "zyron-review-validators"): Gene
   const distributed = addr(0x14);
   const liquidity = addr(0x15);
   const ecosystem = addr(0x16);
-  return {
+  // A value-bearing class also requires validator possession proofs (P1-07).
+  return signGenesisPossessionProofs({
     chainId,
     timestampMs: T0,
     validators: Array.from({ length: count }, (_, index) => validator(0x21 + index)),
@@ -63,7 +65,15 @@ function strictGenesis(count: number, chainId = "zyron-review-validators"): Gene
     launchProfile: "fixed-supply-v1",
     networkClass: "mainnet",
     publicDistributionRelease: defaultPublicDistributionRelease(distributed)
-  };
+  }, Array.from({ length: count }, (_, index) => key(0x21 + index)));
+}
+
+/** The fixed-supply profile without a value-bearing class (no proofs required). */
+function profileOnlyGenesis(count: number, chainId: string): GenesisConfig {
+  const genesis = strictGenesis(count, chainId);
+  delete genesis.networkClass;
+  delete genesis.validatorAdmission;
+  return genesis;
 }
 
 function signerId(genesis: GenesisConfig, signer: Validator): number {
@@ -97,8 +107,7 @@ test("a value-bearing genesis with fewer than four validators is rejected at con
     const genesis = strictGenesis(count, `zyron-review-n${count}`);
     assert.throws(() => new ZyronChain(genesis), TOO_FEW);
   }
-  const profileOnly = strictGenesis(3, "zyron-profile-few");
-  delete profileOnly.networkClass;
+  const profileOnly = profileOnlyGenesis(3, "zyron-profile-few");
   assert.throws(() => new ZyronChain(profileOnly), TOO_FEW);
   const directory = await mkdtemp(join(tmpdir(), "zyron-min-validators-"));
   try {
@@ -110,8 +119,7 @@ test("a value-bearing genesis with fewer than four validators is rejected at con
 
 test("a value-bearing genesis with four distinct validators starts and keeps the 50M supply", async () => {
   const genesis = strictGenesis(4);
-  const openProfile = strictGenesis(4, "zyron-open-profile");
-  delete openProfile.networkClass;
+  const openProfile = profileOnlyGenesis(4, "zyron-open-profile");
   assert.equal(new ZyronChain(openProfile).validatorsAt(1).length, 4);
   const chain = new ZyronChain(genesis);
   assert.equal(chain.validatorsAt(1).length, 4);
