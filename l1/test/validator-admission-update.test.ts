@@ -205,7 +205,7 @@ test("the possessionProofs field has a strict shape", () => {
   ];
   for (const value of bad) {
     const tx = { ...base, possessionProofs: value } as unknown as ValidatorSetUpdateTx;
-    assert.throws(() => validateTransactionShape(tx), undefined, JSON.stringify(value).slice(0, 60));
+    assert.throws(() => validateTransactionShape(tx), /possession proof|Invalid/, JSON.stringify(value).slice(0, 60));
   }
 });
 

@@ -22,6 +22,7 @@ import type {
   TransferTx,
   Validator,
   ValidatorApproval,
+  ValidatorPossessionProof,
   ValidatorSetUpdateTx
 } from "./types.js";
 
@@ -136,6 +137,9 @@ export function createValidatorSetUpdate(
     activationHeight: input.activationHeight,
     validators: input.validators.map((validator) => ({ ...validator })),
     approvals: input.approvals.map((approval) => ({ ...approval })),
+    ...(input.possessionProofs !== undefined
+      ? { possessionProofs: input.possessionProofs.map((proof) => ({ ...proof })) }
+      : {}),
     feeAtoms: 0,
     timestampMs: input.timestampMs,
     publicKey
@@ -438,6 +442,9 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
   } else if (value.kind === "validator_update") {
     assertExactKeys(value, [
       "kind", "version", "chainId", "nonce", "sender", "activationHeight", "validators", "approvals",
+      // Optional: possession-proof-v1 (P1-07). Whether it is allowed or required
+      // depends on the genesis and is decided by chain validation.
+      ...(Object.prototype.hasOwnProperty.call(value, "possessionProofs") ? ["possessionProofs"] : []),
       "feeAtoms", "timestampMs", "publicKey", "signature", "txid"
     ], "validator update");
   } else if (value.kind === "activity_oracle_governance") {
@@ -525,6 +532,12 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
       throw new Error("Invalid validator approvals");
     }
     for (const approval of tx.approvals) validateValidatorApproval(approval);
+    if (Object.prototype.hasOwnProperty.call(tx, "possessionProofs")) {
+      if (!Array.isArray(tx.possessionProofs) || tx.possessionProofs.length > 100) {
+        throw new Error("Invalid validator possession proofs");
+      }
+      for (const proof of tx.possessionProofs) validateValidatorPossessionProofShape(proof);
+    }
   } else if (tx.kind === "activity_oracle_governance") {
     if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
     if (tx.feeAtoms !== 0) throw new Error("Activity oracle governance fee must be zero");
@@ -683,6 +696,14 @@ function validateValidatorApproval(value: ValidatorApproval): void {
   assertHex(value.publicKey, 64, "validator approval publicKey");
   assertHex(value.signature, 64, "validator approval signature");
   if (addressFromPublicKey(value.publicKey) !== value.validator) throw new Error("Validator approval address mismatch");
+}
+
+function validateValidatorPossessionProofShape(value: ValidatorPossessionProof): void {
+  assertPlainRecord(value, "validator possession proof");
+  assertExactKeys(value, ["address", "signature"], "validator possession proof");
+  assertAddress(value.address);
+  if (typeof value.signature !== "string") throw new Error("Invalid validator possession proof signature");
+  assertHex(value.signature, 64, "validator possession proof signature");
 }
 
 function validateActivityOracleApproval(value: ActivityOracleApproval): void {

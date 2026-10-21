@@ -2,7 +2,7 @@ import { genesisConfigCommitment } from "./block.js";
 import { assertHex } from "./codec.js";
 import { addressFromPublicKey, publicKeyFromPrivate, signCanonicalDomain, verifyCanonicalDomain } from "./crypto.js";
 import { isStrictNetworkClass, readNetworkClass } from "./network-class.js";
-import type { GenesisConfig, ValidatorPossessionProof } from "./types.js";
+import type { GenesisConfig, Validator, ValidatorPossessionProof, ValidatorSetUpdateTx } from "./types.js";
 
 /**
  * Validator admission, policy possession-proof-v1 (P1-07, F-05 residual;
@@ -174,4 +174,76 @@ export function signGenesisPossessionProofs(genesis: GenesisConfig, privateKeys:
     };
   });
   return { ...unsigned, validatorAdmission: { policy: POSSESSION_PROOF_POLICY_V1, genesisProofs } };
+}
+
+/**
+ * Possession proof for a validator that a `validator_update` brings in. The
+ * chain binding is the chain's genesis hash; the activation height is the
+ * update's. Made by the incoming operator with its own key.
+ */
+export function signValidatorUpdatePossessionProof(
+  input: { chainId: string; genesisHash: string; activationHeight: number; validator: Validator },
+  privateKeyHex: string
+): ValidatorPossessionProof {
+  return {
+    address: input.validator.address,
+    signature: signPossessionProof({
+      chainId: input.chainId,
+      chainBinding: input.genesisHash,
+      activationHeight: input.activationHeight,
+      address: input.validator.address,
+      publicKey: input.validator.publicKey
+    }, privateKeyHex)
+  };
+}
+
+export interface ValidatorUpdateAdmissionContext {
+  /** Whether the genesis declares `validatorAdmission`. */
+  optedIn: boolean;
+  chainId: string;
+  genesisHash: string;
+  /**
+   * The set this update replaces: the latest scheduled set (activation heights
+   * strictly increase, so it is the entry with the highest activation height,
+   * including an update accepted earlier in the same block).
+   */
+  replacedValidators: readonly Validator[];
+}
+
+/**
+ * possession-proof-v1 rule for `validator_update` (P1-07). Without the
+ * opt-in, the field is refused (upgraded and older binaries agree). With it,
+ * the field is mandatory and holds exactly one valid proof per incoming
+ * validator (not in the replaced set), in `validators` order.
+ */
+export function assertValidatorUpdatePossessionProofs(tx: ValidatorSetUpdateTx, context: ValidatorUpdateAdmissionContext): void {
+  const present = Object.prototype.hasOwnProperty.call(tx, "possessionProofs");
+  if (!context.optedIn) {
+    if (present) throw new Error("Validator update possessionProofs require validatorAdmission in the genesis");
+    return;
+  }
+  if (!present || !Array.isArray(tx.possessionProofs)) {
+    throw new Error("Validator update requires possessionProofs (one possession proof per incoming validator) under validatorAdmission");
+  }
+  const continuing = new Set(context.replacedValidators.map((validator) => `${validator.address}:${validator.publicKey}`));
+  const incoming = tx.validators.filter((validator) => !continuing.has(`${validator.address}:${validator.publicKey}`));
+  const proofs = tx.possessionProofs;
+  if (proofs.length !== incoming.length) {
+    throw new Error("Validator update requires exactly one possession proof per incoming validator");
+  }
+  for (let index = 0; index < incoming.length; index += 1) {
+    const validator = incoming[index]!;
+    const proof = proofs[index]!;
+    if (proof.address !== validator.address) {
+      throw new Error("Validator possession proof does not match the incoming validator order");
+    }
+    const valid = verifyPossessionProof({
+      chainId: context.chainId,
+      chainBinding: context.genesisHash,
+      activationHeight: tx.activationHeight,
+      address: validator.address,
+      publicKey: validator.publicKey
+    }, proof.signature);
+    if (!valid) throw new Error(`Invalid validator possession proof for ${validator.address}`);
+  }
 }
