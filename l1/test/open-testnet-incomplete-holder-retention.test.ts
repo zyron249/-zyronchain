@@ -478,3 +478,76 @@ test("holders stranded under a private pruning name by a crash are recovered on 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("the default mount table reader fails closed on Linux when mountinfo cannot be read", { timeout: 60_000, skip: process.platform !== "linux" ? "mountinfo is Linux only" : false }, async () => {
+  assert.equal(typeof api.readMountPointsFromProc, "function");
+  await assert.rejects(api.readMountPointsFromProc(join(tmpdir(), "zyron-no-such-mountinfo", "mountinfo")));
+  assert.ok((await api.readMountPointsFromProc()).includes("/"));
+});
+
+test("only names the writers can create count as testnet-created (compaction leftovers, canonical consensus-state names, identity temporaries at the data root)", { timeout: 60_000 }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-writers-"));
+  try {
+    const keep = api.MAX_INCOMPLETE_HOLDERS;
+    const identityTemp = `.node-identity.json.4242.${"ab".repeat(16)}.tmp`;
+    const kept: string[] = [];
+    for (const [index, file] of [
+      join("data-v1", "consensus-state", "H-0.json"),
+      join("data-v1", "consensus-state", "H-01.json"),
+      join("data-v1", "consensus-state", "H-1-r-007.proposal.json"),
+      join("data-v1", "consensus-state", "H-99999999999999999.json"),
+      join("data-v1", "consensus-state", identityTemp),
+      join("keys", identityTemp)
+    ].entries()) {
+      const path = await holder(root, "net", 30 + index);
+      await writeFile(join(path, "net", file), "operator");
+      kept.push(join(path, "net", file));
+    }
+    const generated = await holder(root, "net", 90);
+    await writeFile(join(generated, "net", "data-v1", `signing-journal.ndjson.compact-4242-${"cd".repeat(8)}`), "");
+    await writeFile(join(generated, "net", "data-v1", identityTemp), "");
+    await writeFile(join(generated, "net", "data-v1", "consensus-state", "H-12-r-0.timeout.json"), "");
+    for (let index = 0; index < keep; index += 1) await holder(root, "net", 900 + index);
+    await partialNetwork(join(root, "net"));
+    await api.moveAsideIncompleteNetworkDir(join(root, "net"), { log: () => {} });
+    for (const path of kept) await access(path);
+    await assert.rejects(access(generated), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("restoring a stranded holder is idempotent: an empty placeholder left by a crash does not block it", { timeout: 60_000 }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-placeholder-"));
+  try {
+    const stranded = join(root, ".net.incomplete-95-4242.pruning-4242-0123456789ab");
+    await partialNetwork(join(stranded, "net"));
+    await writeFile(join(stranded, "net", "notes.txt"), "kept");
+    await mkdir(join(root, "net.incomplete-95-4242"));
+    await partialNetwork(join(root, "net"));
+    await api.moveAsideIncompleteNetworkDir(join(root, "net"), { log: () => {} });
+    await access(join(root, "net.incomplete-95-4242", "net", "notes.txt"));
+    await assert.rejects(access(stranded), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("holder names with fields this writer cannot produce do not steer the next name", { timeout: 60_000 }, async () => {
+  assert.equal(typeof api.MAX_INCOMPLETE_HOLDERS, "number");
+  const root = await mkdtemp(join(tmpdir(), "zyron-holder-retention-fields-"));
+  try {
+    const huge = join(root, `net.incomplete-${"9".repeat(238)}-1`);
+    await mkdir(huge);
+    await writeFile(join(huge, "notes.txt"), "kept");
+    await mkdir(join(root, "net.incomplete-0099-1"));
+    await partialNetwork(join(root, "net"));
+    const aside = await api.moveAsideIncompleteNetworkDir(join(root, "net"), { log: () => {} });
+    assert.match(String(aside), /net\.incomplete-[1-9]\d{0,15}-\d+\/net$/);
+    await access(join(huge, "notes.txt"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
