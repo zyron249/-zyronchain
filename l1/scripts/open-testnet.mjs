@@ -100,7 +100,7 @@ async function writeNetworkMarker(dir, value) {
 // An existing path is never replaced. Returns the new path, or false if nothing
 // was moved. Afterwards only the newest MAX_INCOMPLETE_HOLDERS holders are kept
 // (see pruneIncompleteHolders); the directory just moved is never pruned.
-export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserveHolder = (path) => mkdir(path, { mode: 0o700 }), log = (line) => console.error(line) } = {}) {
+export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserveHolder = (path) => mkdir(path, { mode: 0o700 }), afterInspect, log = (line) => console.error(line) } = {}) {
   let entries;
   try { entries = await readdir(dir); } catch (error) { if (error?.code === "ENOENT") return false; throw error; }
   if (await readNetworkMarker(dir)) return false;
@@ -111,14 +111,18 @@ export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserve
   // own name, a path nothing else can have created.
   // Old holders are pruned first, down to room for the new one, so a disk
   // filled by earlier attempts can free space before the reservation.
-  await pruneIncompleteHolders(dir, { keep: MAX_INCOMPLETE_HOLDERS - 1, removeHolder, log });
-  const base = `${dir}.incomplete-${Date.now()}-${process.pid}`;
-  for (let attempt = 0; attempt < 1000; attempt += 1) {
+  await pruneIncompleteHolders(dir, { keep: MAX_INCOMPLETE_HOLDERS - 1, removeHolder, afterInspect, log });
+  // The name keeps creation order even if the wall clock moved back: its time
+  // is never below the newest existing holder's, and at an equal time the
+  // counter goes past that holder's (order is time, then counter, then pid).
+  const { ms, next } = await nextHolderOrder(dir, Date.now());
+  const base = `${dir}.incomplete-${ms}-${process.pid}`;
+  for (let attempt = next; attempt < next + 1000; attempt += 1) {
     const holder = attempt === 0 ? base : `${base}-${attempt}`;
     try { await reserveHolder(holder); } catch (error) { if (error?.code === "EEXIST") continue; throw error; }
     const aside = join(holder, basename(dir));
     await rename(dir, aside);
-    await pruneIncompleteHolders(dir, { exclude: holder, removeHolder, log });
+    await pruneIncompleteHolders(dir, { exclude: holder, removeHolder, afterInspect, log });
     return aside;
   }
   throw new Error(`refusing to move ${dir}: no free name next to it`);
@@ -136,7 +140,9 @@ export async function moveAsideIncompleteNetworkDir(dir, { removeHolder, reserve
 // (and consensus-state/ only consensus-state files), with no symlink or special
 // file anywhere inside. Anything else (an operator note, a foreign name or
 // layout) is never removed and does not count toward the bound. Old holders are
-// pruned before the new one is reserved and again after the move. A holder
+// pruned before the new one is reserved and again after the move. Names keep
+// creation order across clock rollbacks (see nextHolderOrder), and a holder is
+// removed only if it is unchanged since inspection (see removeInspectedHolder). A holder
 // that cannot be inspected, or a pruning failure, is logged and never fails the
 // move-aside.
 export const MAX_INCOMPLETE_HOLDERS = 3;
@@ -196,29 +202,90 @@ async function isPrunableHolder(holder, name) {
   }
   return true;
 }
-export async function pruneIncompleteHolders(dir, { keep = MAX_INCOMPLETE_HOLDERS, exclude, removeHolder = (path) => rm(path, { recursive: true }), log = (line) => console.error(line) } = {}) {
+const HOLDER_SUFFIX_PATTERN = /^\.incomplete-(\d+)-(\d+)(?:-(\d+))?$/;
+// Order key of a holder name: [time, counter, pid].
+function holderOrder(name, entry) {
+  if (!entry.startsWith(`${name}.incomplete-`)) return null;
+  const match = HOLDER_SUFFIX_PATTERN.exec(entry.slice(name.length));
+  return match ? [BigInt(match[1]), BigInt(match[3] ?? "0"), BigInt(match[2])] : null;
+}
+async function nextHolderOrder(dir, now) {
+  const name = basename(dir);
+  let newest = null;
+  let entries = [];
+  try { entries = await readdir(resolve(dir, "..")); } catch { entries = []; }
+  for (const entry of entries) {
+    const order = holderOrder(name, entry);
+    if (order && (!newest || compareHolderOrder(order, newest) > 0)) newest = order;
+  }
+  if (!newest || BigInt(now) > newest[0]) return { ms: String(now), next: 0 };
+  return { ms: String(newest[0]), next: Number(newest[1]) + 1 };
+}
+function compareHolderOrder(a, b) {
+  for (let i = 0; i < 3; i += 1) { if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1; }
+  return 0;
+}
+// Everything that identifies a holder's contents: each path with its type,
+// inode, size and modification time. A holder is removed only if this is
+// unchanged since it was inspected.
+async function holderFingerprint(path) {
+  const lines = [];
+  const walk = async (current, relative) => {
+    const info = await lstat(current);
+    lines.push(`${relative}\0${info.isDirectory() ? "d" : info.isFile() ? "f" : "o"}\0${info.dev}:${info.ino}\0${info.size}\0${info.mtimeMs}`);
+    if (info.isDirectory()) for (const entry of (await readdir(current)).sort()) await walk(join(current, entry), `${relative}/${entry}`);
+  };
+  await walk(path, ".");
+  return lines.join("\n");
+}
+// Remove only the holder that was inspected: it is first renamed to a private
+// name (so the path can no longer be swapped under the removal), then checked
+// again there; if it is not the same prunable holder, or the removal fails, it
+// is renamed back and kept.
+async function removeInspectedHolder(path, name, fingerprint, removeHolder) {
+  const trash = join(resolve(path, ".."), `.${basename(path)}.pruning-${process.pid}-${randomBytes(6).toString("hex")}`);
+  await rename(path, trash);
+  let unchanged = false;
+  try { unchanged = (await isPrunableHolder(trash, name)) && (await holderFingerprint(trash)) === fingerprint; } catch { unchanged = false; }
+  let failure;
+  if (!unchanged) failure = new Error("it changed after it was inspected, so it is kept");
+  else {
+    try { await removeHolder(trash); return; } catch (error) { failure = error; }
+  }
+  try {
+    await mkdir(path, { mode: 0o700 });
+    await rename(trash, path);
+  } catch (error) {
+    throw new Error(`${failure instanceof Error ? failure.message : String(failure)}; it could not be renamed back and is kept at ${trash} (${error instanceof Error ? error.message : String(error)})`);
+  }
+  throw failure;
+}
+export async function pruneIncompleteHolders(dir, { keep = MAX_INCOMPLETE_HOLDERS, exclude, removeHolder = (path) => rm(path, { recursive: true }), afterInspect = async () => {}, log = (line) => console.error(line) } = {}) {
   const parent = resolve(dir, "..");
   const name = basename(dir);
-  const pattern = /^\.incomplete-(\d+)-(\d+)(?:-(\d+))?$/;
   const candidates = [];
   let entries;
   try { entries = await readdir(parent); } catch (error) { log(`could not prune moved-aside holders next to ${dir}: ${error instanceof Error ? error.message : String(error)}`); return []; }
   for (const entry of entries) {
-    if (!entry.startsWith(`${name}.incomplete-`)) continue;
-    const match = pattern.exec(entry.slice(name.length));
-    if (!match) continue;
+    const order = holderOrder(name, entry);
+    if (!order) continue;
     const path = join(parent, entry);
     const excluded = exclude !== undefined && resolve(path) === resolve(exclude);
-    try { if (!excluded && !(await isPrunableHolder(path, name))) continue; }
-    catch (error) { log(`could not inspect the moved-aside holder ${path}: ${error instanceof Error ? error.message : String(error)}`); continue; }
-    candidates.push({ path, excluded, order: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3] ?? "0")] });
+    let fingerprint;
+    try {
+      if (!excluded) {
+        if (!(await isPrunableHolder(path, name))) continue;
+        fingerprint = await holderFingerprint(path);
+      }
+    } catch (error) { log(`could not inspect the moved-aside holder ${path}: ${error instanceof Error ? error.message : String(error)}`); continue; }
+    candidates.push({ path, excluded, order, fingerprint });
   }
-  const compare = (a, b) => { for (let i = 0; i < 3; i += 1) { if (a.order[i] !== b.order[i]) return a.order[i] < b.order[i] ? -1 : 1; } return 0; };
+  const compare = (a, b) => compareHolderOrder(a.order, b.order);
   const older = candidates.filter((holder) => !holder.excluded).sort(compare);
   const room = Math.max(0, keep - (candidates.length - older.length));
   const removed = [];
   for (const holder of older.slice(0, Math.max(0, older.length - room))) {
-    try { await removeHolder(holder.path); removed.push(holder.path); log(`pruned the old moved-aside holder ${holder.path}`); }
+    try { await afterInspect(holder.path); await removeInspectedHolder(holder.path, name, holder.fingerprint, removeHolder); removed.push(holder.path); log(`pruned the old moved-aside holder ${holder.path}`); }
     catch (error) { log(`could not prune the moved-aside holder ${holder.path}: ${error instanceof Error ? error.message : String(error)}`); }
   }
   return removed;
