@@ -384,6 +384,19 @@ try {
       await page.waitForSelector('[data-screen="home"]:not([hidden])');
     }
     await page.click('[data-screen="home"] [data-go="send"]');
+    await page.waitForSelector('[data-screen="send"]:not([hidden])');
+    await page.fill('[data-tx-chain]', 'zyron-open-testnet-1');
+    await page.fill('[data-tx-fee]', '0');
+    await page.click('[data-tx-review]');
+    await page.waitForSelector('[data-screen="review"]:not([hidden])');
+    assert.match(await page.textContent('[data-review-fee-warning]'), /This network will reject this fee/);
+    assert.match(await page.textContent('[data-review-fee-warning]'), /100000 atoms \(0\.001 ZYN\)/);
+    assert.equal(await page.isHidden('[data-review-fee-warning]'), false);
+    assert.equal(await page.isDisabled('[data-review-ack]'), true, 'a rejected fee cannot be acknowledged into a signature');
+    assert.equal(await page.isDisabled('[data-tx-sign]'), true, 'a rejected fee is not signed');
+    await page.click('[data-review-cancel]');
+    await page.waitForSelector('[data-screen="home"]:not([hidden])');
+    await page.click('[data-screen="home"] [data-go="send"]');
     await page.fill('[data-tx-to]', core.MINING_TRACKER_ADDRESS);
     await page.click('[data-tx-review]');
     assert.match(await page.textContent('[data-tx-check]'), /mining tracker/);

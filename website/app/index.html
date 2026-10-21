@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Zyron Wallet" />
   <meta name="format-detection" content="telephone=no" />
-  <meta name="zyron-build" content="app=16d1a80208b7f0cf;release=dc8e13039bda32f0898ae54c1abb060933cb2143" />
+  <meta name="zyron-build" content="app=0f3959883dbf1840;release=22efcb5e39bd343aa804edc1955f4c8d8b8359a1" />
   <title>ZyronChain Wallet (testnet)</title>
   <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys stay on this device. This app does not connect and does not show a balance. Sign locally." />
   <link rel="manifest" href="/app/manifest.json" />
@@ -253,9 +253,9 @@
         <label><span data-i18n="receiver">Receiver address</span><input data-tx-to autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ZYN…" /></label>
         <div class="row two">
           <label><span data-i18n="amount">Amount (ZYN)</span><input data-tx-amount inputmode="decimal" autocomplete="off" placeholder="1.5" /></label>
-          <label><span data-i18n="fee">Fee (ZYN)</span><input data-tx-fee inputmode="decimal" autocomplete="off" value="0" /></label>
+          <label><span data-i18n="fee">Fee (ZYN)</span><input data-tx-fee inputmode="decimal" autocomplete="off" value="0.001" /></label>
         </div>
-        <p class="hint" data-i18n="feeHint">Fee is extra. The review shows amount, fee and the total. 0 is allowed on this testnet. This app does not look up a fee.</p>
+        <p class="hint" data-i18n="feeHint">The protocol fee is filled in at 0.001 ZYN (100000 atoms). Review shows the fee and the total before anything is signed. This page does not look up a fee and does not connect to a network.</p>
         <label><span data-i18n="txVersion">Transaction version</span>
           <select data-tx-version><option value="1" selected>1 (wallet testnet default)</option><option value="2">2 (other testnet or devnet, protocol 3+)</option></select></label>
         <p class="hint" data-tx-version-hint>zyron-wallet-testnet-1 defaults to transaction version 1. That network rejects version 2. Other testnet and devnet chains default to version 2, which stays selectable.</p>
@@ -340,6 +340,7 @@
       <h2 data-i18n="reviewTitle">Review transfer</h2>
       <p class="hint" data-i18n="reviewLead">Check every field. Signing happens on this device; nothing is broadcast.</p>
       <dl class="review" data-review-rows></dl>
+      <p class="hint badtext" data-review-fee-warning hidden></p>
       <div data-review-confirm-box>
         <label class="check"><input type="checkbox" data-review-ack /> <span data-i18n="reviewAck">I checked the receiver, amount, fee and chain ID.</span></label>
         <div class="actions">
@@ -481,7 +482,7 @@
   </div>
   <script src="/app/vendor/noble-scure.js?v=8bc52c47d762" integrity="sha384-8rRjvBX0v19QY1jV/tt980903+713cFYFQwMvCGJR+dGfUXeXlHhGh1Ommt20XpE"></script>
   <script src="/app/vendor/qr.js?v=df7e5ee0f9db" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
-  <script src="/app/zyron-wallet-core.js?v=14eb09cc79b2" integrity="sha384-hi9+CLBLnVNtZzNw7Qi5VH0lTBcJPDvGdrI8PR8byLu/ClEZ310h7DJoCt9Dlkq1"></script>
-  <script src="/app/app.js?v=e4e4d1e19660" integrity="sha384-8/qHlA1WIfIreL9NczPOj2dAco/6dvOSHSe4C743flbVNyYLw7O1iLELdEYtI98/"></script>
+  <script src="/app/zyron-wallet-core.js?v=6a08c4a34402" integrity="sha384-I5+PglYG/TYRImKhQs03y6dgwAI4fuQCFDpAtmnUcLb/5B5OvcOkFp8pMA4pokSo"></script>
+  <script src="/app/app.js?v=acb9210c20df" integrity="sha384-iM68mg8c6IiIy4fnRKq4AM8/0Odyxe9kV6xDX7/KqHhLh0Jrm2Ew9bg5iQw0RdQ1"></script>
 </body>
 </html>

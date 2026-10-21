@@ -79,9 +79,15 @@ No params. Returns the Snap account's testnet state from the RPC:
 ### `zyron_sendTransfer`
 
 Params: exactly `{ receiver, amountAtoms, feeAtoms? }` (`feeAtoms` defaults to
-0). The Snap reads chain ID, transaction version and nonce from the testnet RPC,
+100000 atoms, 0.001 ZYN, when omitted). An explicit `feeAtoms`, including 0, is
+kept on the wallet testnet, which has no fee policy. On a fixed-supply chain
+ID (`zyron-open-testnet-1`, `zyron-open-testnet-render-1`, `zyron-public-testnet-1`),
+and whenever the caller is signing for a fee-policy or fixed-supply-v1 genesis,
+a different fee shows a pre-sign warning that the network will reject it and
+nothing is signed. The Snap reads chain ID, transaction version and nonce from the testnet RPC,
 checks the balance covers amount + fee, shows the confirmation dialog (with the
-RPC URL and current testnet balance), signs after approval and submits to
+protocol fee in ZYN and atoms, the RPC URL and current testnet balance) before
+signing, signs after approval and submits to
 `POST <rpc>/tx`. Returns `{ network: "testnet", chainId, txid, transaction }`.
 Declining returns `4001` and submits nothing. The transfer is finalized in the
 next block (about 30 seconds).

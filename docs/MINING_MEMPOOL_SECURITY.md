@@ -18,6 +18,8 @@ Mining and non-mining entry counts and retained canonical bytes are tracked incr
 
 Byte pressure does not introduce cascading eviction semantics. One incoming transaction may trigger at most the same single deterministic policy replacement already permitted by the count-based mempool rules. If the projected subpool would still exceed its byte ceiling after that one replacement, admission fails closed instead of deleting additional resident transactions.
 
+A genesis that sets `feePolicy` (`fixed-fee-v1`, see `docs/FEE_POLICY_V1.md`) disables this fee-rate eviction and same-nonce replacement. A full pool rejects the new transfer. Chains that omit `feePolicy` keep the eviction below.
+
 When the ordinary pool is saturated by count or retained bytes, the deterministic lowest-priority evictable transfer is cached while mempool contents remain unchanged. Repeated rejected submissions therefore reuse the same bounded replacement decision instead of rescanning the 10,000-entry pool on every request. Every successful insert, deletion, replacement, remove or prune invalidates that cache before the next full-pool replacement decision, so fee-rate and highest-nonce eviction semantics remain identical to an uncached scan.
 
 ## Admission and stale-work controls

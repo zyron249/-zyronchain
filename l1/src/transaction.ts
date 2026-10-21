@@ -7,6 +7,7 @@ import {
   verifyCanonical,
   verifyCanonicalDomain
 } from "./crypto.js";
+import { FIXED_FEE_MISMATCH_MESSAGE } from "./fee-policy.js";
 import { MINING_RETIRED_MESSAGE, MINING_TRACKER_ADDRESS } from "./mining.js";
 import { assertActivitySettlementWithinCap } from "./activity.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
@@ -417,7 +418,7 @@ export function createMiningClaim(
   return { ...withSignature, txid: sha256Hex(canonicalJson(withSignature)) };
 }
 
-export function validateTransactionShape(value: unknown): asserts value is Transaction {
+export function validateTransactionShape(value: unknown, fixedTransferFeeAtoms?: number): asserts value is Transaction {
   assertPlainRecord(value, "transaction");
   if (value.kind === "transfer") {
     assertExactKeys(value, [
@@ -480,6 +481,11 @@ export function validateTransactionShape(value: unknown): asserts value is Trans
     }
     assertAmount(tx.amountAtoms, "amountAtoms", false);
     assertAmount(tx.feeAtoms, "feeAtoms", true);
+    // Historical callers omit the fee. fixed-fee-v1 chains pass the genesis
+    // constant so a transfer with any other fee fails shape validation.
+    if (fixedTransferFeeAtoms !== undefined && tx.feeAtoms !== fixedTransferFeeAtoms) {
+      throw new Error(FIXED_FEE_MISMATCH_MESSAGE);
+    }
     if (addressFromPublicKey(tx.publicKey) !== tx.sender) {
       throw new Error("Public key does not match sender");
     }
