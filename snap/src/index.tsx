@@ -11,6 +11,7 @@ import {
 import {
   ALLOWED_ORIGINS,
   DERIVATION_PATH_STRING,
+  FIXED_TRANSFER_FEE_ATOMS,
   MESSAGE_SIGNING_DOMAIN,
   RPC_METHODS,
 } from './constants';
@@ -114,6 +115,8 @@ async function withRpc<Result>(action: () => Promise<Result>): Promise<Result> {
 /**
  * `zyron_sendTransfer` params: exactly { receiver, amountAtoms, feeAtoms? }.
  * Chain ID, nonce and transaction version come from the testnet RPC.
+ * An omitted fee is the proposed fixed protocol fee (0.001 ZYN). An explicit
+ * fee, including 0, is kept so a network that has not opted in can still be used.
  *
  * @param params - Untrusted params.
  * @returns Parsed request.
@@ -128,7 +131,7 @@ function parseSendRequest(params: unknown): { receiver: unknown; amountAtoms: un
   return {
     receiver: params.receiver,
     amountAtoms: params.amountAtoms,
-    feeAtoms: Object.hasOwn(params, 'feeAtoms') ? params.feeAtoms : 0,
+    feeAtoms: Object.hasOwn(params, 'feeAtoms') ? params.feeAtoms : FIXED_TRANSFER_FEE_ATOMS,
   };
 }
 

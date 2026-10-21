@@ -309,6 +309,8 @@ await test('display checksum vectors (docs/ADDRESS_CHECKSUM.md) and password rul
   }
   for (const value of ['0', '1', '0.00000001', '12.5', '50000000']) assert.equal(String(core.zynToAtoms(value)), siteCore.zynToAtoms(value));
   assert.equal(core.atomsToZyn('150000000'), '1.5');
+  assert.equal(core.FIXED_TRANSFER_FEE_ATOMS, 100000);
+  assert.equal(core.atomsToZyn(String(core.FIXED_TRANSFER_FEE_ATOMS)), '0.001');
   assert.throws(() => core.zynToAtoms('50000000.00000001'), /supply/);
 });
 
@@ -439,6 +441,8 @@ await test('static scan: app code makes no network requests and has no eval/inli
   assert.doesNotMatch(appJs, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/, 'no HTML injection sinks');
   const csp = html.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)[1];
   for (const directive of ["default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'none'", "object-src 'none'", "base-uri 'none'", "frame-src 'none'", "form-action 'none'", "worker-src 'self'", "manifest-src 'self'"]) assert.ok(csp.includes(directive), directive);
+  assert.match(html, /data-tx-fee[^>]*value="0\.001"/, 'send form fills the 0.001 ZYN protocol fee');
+  assert.match(readFileSync(join(app, 'app.js'), 'utf8'), /FIXED_TRANSFER_FEE_ATOMS/, 'an empty fee field falls back to the protocol fee');
   assert.doesNotMatch(csp, /unsafe-inline|unsafe-eval|wasm-unsafe-eval|\*|https?:|data:|blob:/);
   assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/, 'no inline scripts');
   assert.doesNotMatch(html, /<style|\sstyle=|\son[a-z]+=/i, 'no inline styles or event handlers');

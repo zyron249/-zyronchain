@@ -1,4 +1,5 @@
 import { canonicalJson, compareCanonicalStrings, sha256Hex } from "./codec.js";
+import { FIXED_FEE_MISMATCH_MESSAGE, splitFixedFee, type FixedFeeApplication } from "./fee-policy.js";
 import { MINING_TRACKER_ADDRESS, rejectRetiredMiningClaim } from "./mining.js";
 import {
   ACTIVITY_ORDER_MESSAGE,
@@ -133,14 +134,15 @@ export class LedgerState {
    * `oracles` carries the genesis activity-oracle keys and optional m-of-n
    * threshold; chain paths always pass it (activity-oracle.ts). Direct callers
    * that omit it get the historical applier, which never checked the signer.
+   * `fee` is set only under fixed-fee-v1. Omitted, the whole fee is burned.
    */
-  apply(tx: Transaction, activityPool: Address, locks?: AllocationLockContext, oracles?: ActivityOracleSet): void {
+  apply(tx: Transaction, activityPool: Address, locks?: AllocationLockContext, oracles?: ActivityOracleSet, fee?: FixedFeeApplication): void {
     const rollingWindow = activityRollingWindowEnforced(oracles);
     if (tx.kind === "transfer") {
       assertNoActivityPoolInflow(tx.receiver, activityPool);
       assertNoActivityPoolDirectDebit(tx.sender, activityPool, oracles);
       if (rollingWindow && isActivityWindowAddress(tx.receiver)) throw new Error(ACTIVITY_WINDOW_RESERVED_MESSAGE);
-      this.applyTransfer(tx, locks);
+      this.applyTransfer(tx, locks, activityPool, fee);
     } else if (tx.kind === "activity_settlement") {
       if (oracles) {
         assertActivitySettlementAuthorized(tx, oracles, {
@@ -170,7 +172,12 @@ export class LedgerState {
     };
   }
 
-  private applyTransfer(tx: TransferTx, locks: AllocationLockContext | undefined): void {
+  private applyTransfer(
+    tx: TransferTx,
+    locks: AllocationLockContext | undefined,
+    activityPool: Address,
+    fee: FixedFeeApplication | undefined
+  ): void {
     if (tx.sender === MINING_TRACKER_ADDRESS || tx.receiver === MINING_TRACKER_ADDRESS) {
       throw new Error("Mining tracker address is protocol-reserved");
     }
@@ -182,7 +189,22 @@ export class LedgerState {
     assertAllocationLockOutflow(locks, tx.sender, this.balance(tx.sender), total);
     this.debit(tx.sender, total);
     this.credit(tx.receiver, tx.amountAtoms);
+    if (fee) this.creditProducerFee(tx.feeAtoms, fee, activityPool);
     this.setNonce(tx.sender, tx.nonce);
+  }
+
+  /**
+   * fixed-fee-v1 only. floor(fee/2) is credited to the block producer.
+   * The remainder, including the odd atom, is not credited and stays burned.
+   * A zero producer share writes nothing, so the account set is unchanged.
+   */
+  private creditProducerFee(feeAtoms: number, fee: FixedFeeApplication, activityPool: Address): void {
+    if (feeAtoms !== fee.fixedTransferFeeAtoms) throw new Error(FIXED_FEE_MISMATCH_MESSAGE);
+    const { producerAtoms } = splitFixedFee(feeAtoms);
+    if (producerAtoms <= 0) return;
+    if (fee.producer === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
+    assertNoActivityPoolInflow(fee.producer, activityPool);
+    this.credit(fee.producer, producerAtoms);
   }
 
   private applyActivity(

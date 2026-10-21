@@ -43,7 +43,8 @@ import {
 import { RoundSkipVoteDiagnostics, type RoundSkipVoteDiagnosticsMetrics } from "./consensus-diagnostics.js";
 import { SUPPORTED_PROTOCOL_VERSIONS } from "./chain.js";
 import { addressFromPublicKey } from "./crypto.js";
-import { Mempool } from "./mempool.js";
+import { assertMempoolSenderNonce, MAX_MEMPOOL_PENDING_PER_SENDER, readFeePolicy } from "./fee-policy.js";
+import { Mempool, type MempoolOptions } from "./mempool.js";
 import { PeerReputationStore } from "./peer-reputation.js";
 import { ipv6Prefix64 } from "./p2p-address.js";
 import { nativeP2PFrameBudgetMetrics } from "./p2p-frame.js";
@@ -442,7 +443,7 @@ export function rpcRateLimitIdentity(
 }
 
 export class NodeService {
-  readonly mempool = new Mempool();
+  readonly mempool: Mempool;
   readonly roundSkipVoteDiagnostics = new RoundSkipVoteDiagnostics();
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly startedAtMs = Date.now();
@@ -469,6 +470,13 @@ export class NodeService {
     this.readinessMaxTipAgeMs = maxTipAge;
     const signer = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
     this.validatorSigner = signer ? this.observeSignerAvailability(signer) : undefined;
+    const policy = readFeePolicy(store.chain.genesis);
+    const mempoolOptions: MempoolOptions = { maxPendingPerSender: MAX_MEMPOOL_PENDING_PER_SENDER };
+    if (policy) {
+      mempoolOptions.disableFeeReplacement = true;
+      mempoolOptions.fixedTransferFeeAtoms = policy.fixedTransferFeeAtoms;
+    }
+    this.mempool = new Mempool(undefined, undefined, undefined, undefined, mempoolOptions);
   }
 
   /**
@@ -653,7 +661,7 @@ export class NodeService {
   }
 
   submitTransaction(value: unknown): string {
-    validateTransactionShape(value);
+    validateTransactionShape(value, readFeePolicy(this.store.chain.genesis)?.fixedTransferFeeAtoms);
     const tx = value as Transaction;
     if (tx.chainId !== this.store.chain.genesis.chainId) throw new Error("Wrong transaction chain ID");
     // F-01 §16.9-9: mempool policy only (block validity is unchanged, so old
@@ -663,7 +671,7 @@ export class NodeService {
       throw new Error(`Protocol v6 upgrade activation must be at least ${V6_MIN_ACTIVATION_MARGIN_BLOCKS} blocks ahead (node policy)`);
     }
     const stateNonce = this.store.chain.nonce(tx.sender);
-    if (tx.nonce <= stateNonce || tx.nonce > stateNonce + 64) throw new Error("Transaction nonce outside mempool window");
+    assertMempoolSenderNonce(tx.nonce, stateNonce);
     this.store.chain.validateMempoolAdmission(tx);
     if (tx.kind === "transfer") {
       const conflicting = this.mempool.conflictingTransaction(tx.sender, tx.nonce);

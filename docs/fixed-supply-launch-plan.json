@@ -36,7 +36,18 @@
     "buyerFundsTarget": "permanent-liquidity-pool",
     "productionImplementationActivated": false
   },
+  "feePolicy": {
+    "version": "fixed-fee-v1",
+    "status": "proposed-not-activated",
+    "fixedTransferFeeAtoms": "100000",
+    "fixedTransferFeeZyn": "0.001",
+    "burn": "fee minus floor(fee/2); the odd atom is burned",
+    "blockProducer": "floor(fee/2)",
+    "consensusEnforcementActivated": false,
+    "note": "Opt-in genesis field only. No shipped genesis sets feePolicy. See docs/FEE_POLICY_V1.md. Validator support from the ecosystem reserve is not implemented and needs an owner decision."
+  },
   "activationGates": {
+    "fixedFeePolicyV1Activated": false,
     "founderVestingConsensusEnforced": false,
     "quoteAssetTrustModelFrozen": false,
     "ammConsensusImplementedAndAudited": false,

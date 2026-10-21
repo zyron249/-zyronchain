@@ -21,6 +21,8 @@
   const VAULT_CIPHER = 'aes-256-gcm';
   const VAULT_KEYS = ['address', 'cipher', 'ciphertext', 'createdAt', 'derivationPath', 'format', 'kdf', 'publicKey', 'salt', 'version', 'words'];
   const ATOMS_PER_ZYN = 100000000;
+  // Proposed fixed protocol fee: 0.001 ZYN. Same constant as l1 FIXED_TRANSFER_FEE_ATOMS.
+  const FIXED_TRANSFER_FEE_ATOMS = ATOMS_PER_ZYN / 1000;
   const MAX_SUPPLY_ATOMS = 50000000 * ATOMS_PER_ZYN;
   const MINING_TRACKER_ADDRESS = 'ZYN' + '0'.repeat(40);
   const TRANSFER_SIGNING_DOMAIN_V2 = 'zyronchain/transaction/transfer/v2';
@@ -430,7 +432,7 @@
   }
 
   const api = Object.freeze({
-    DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_KDF, ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
+    DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_KDF, ATOMS_PER_ZYN, FIXED_TRANSFER_FEE_ATOMS, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
     TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, WALLET_TESTNET_CHAIN_ID, defaultTransferVersion,
     wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress,
     passwordStrength, normalizePhrase, generateEntropy, entropyToPhrase, phraseToEntropy, deriveAccount,

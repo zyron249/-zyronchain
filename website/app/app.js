@@ -607,7 +607,7 @@
         nonce: $('[data-tx-nonce]').value,
         receiver: $('[data-tx-to]').value,
         amountAtoms: core.zynToAtoms($('[data-tx-amount]').value),
-        feeAtoms: core.zynToAtoms($('[data-tx-fee]').value || '0')
+        feeAtoms: core.zynToAtoms($('[data-tx-fee]').value.trim() || core.atomsToZyn(String(core.FIXED_TRANSFER_FEE_ATOMS)))
       }, state.account);
       renderReview(core.describeTransfer(unsigned));
       state.unsigned = unsigned;

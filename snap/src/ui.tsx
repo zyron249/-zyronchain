@@ -58,8 +58,8 @@ export const TransferConfirmation = ({
         <Bold>{`${formatZyn(tx.amountAtoms)} ZYN`}</Bold>
       </Text>
     </Row>
-    <Row label="Fee">
-      <Text>{`${formatZyn(tx.feeAtoms)} ZYN`}</Text>
+    <Row label="Protocol fee">
+      <Text>{`${formatZyn(tx.feeAtoms)} ZYN (${tx.feeAtoms} atoms)`}</Text>
     </Row>
     <Row label="Total">
       <Text>{`${formatZyn(tx.amountAtoms + tx.feeAtoms)} ZYN`}</Text>
