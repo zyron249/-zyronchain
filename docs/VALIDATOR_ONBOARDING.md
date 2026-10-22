@@ -180,6 +180,42 @@ The first sync downloads and re-validates every finalized block and certificate 
 
 A signing key alone does not make this command a validator. The follower talks only to the hosted read-only HTTP peer on loopback, which carries no v6 prepare/commit traffic. An admitted validator also needs a native P2P listener (`--p2p-listen`), pinned bootstrap peers (`--p2p-peer`, `--p2p-peer-group`), every other validator as `--p2p-consensus-peer`, and its key (`--validator-key <key.json>` with the password in `ZYRON_KEYSTORE_PASSWORD_FILE`, or a remote signer, `--validator-signer-url`). See `docs/L1_OPERATIONS_RUNBOOK.md` and `docs/V6_OPERATOR_GUIDE.md`. The exact network-specific startup command (peer IDs, addresses, approved commit) is given to each operator at admission; none exists for the hosted testnet yet.
 
+### 5.1 Upgrading after a genesis relaunch
+
+The genesis currently pinned for `zyron-open-testnet-render-1` is `e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad` (genesis timestamp 2026-10-20T22:09:28.767Z). That genesis carries fields that older code does not know: `activityOracleThreshold` and `activityOraclePolicy` (added in #1076, `f3913f2`) and `publicDistributionRelease` (added in #1075, `69171bf`). Genesis loading rejects unknown fields, so a node built before those changes stops at start with:
+
+```text
+Fatal: Invalid genesis fields
+```
+
+Any `main` at or after `fdd1e792` contains both changes. (`fdd1e792` itself, #1092, only changes the stranded-pruning test fixtures of `l1/scripts/open-testnet.mjs`; it is used here as a known-good reference point, not as the commit that added the fields.)
+
+1. **Confirm the expected hash independently.** Compare the `EXPECTED_GENESIS` pin in `.github/workflows/open-testnet-snapshot-keeper.yml` on `main`, `docs/OPEN_TESTNET.md`, and the reset announcement. If they disagree, stop, keep your data directory and report it.
+2. **Update the code** to the latest `main` and check that `fdd1e792` is included:
+   ```sh
+   git fetch origin && git checkout main && git pull --ff-only origin main
+   git merge-base --is-ancestor fdd1e792 HEAD && echo "includes fdd1e792"
+   ```
+3. **Rebuild** (section 3):
+   ```sh
+   cd l1 && npm ci && npm run build
+   ```
+4. **Verify the genesis hash** the network reports. `GET /status` and `GET /genesis` return it; check it against the pin from step 1:
+   ```sh
+   curl -s https://zyron-open-testnet.onrender.com/status
+   ```
+   A node prints `Genesis <hash>, height <n>` when it starts; that hash must equal the pin too.
+5. **Archive the old data directory, do not delete it.** Stop the node, then move the directory aside, for example `mv "$DIR" "$DIR.pre-e0212e57-$(date +%Y%m%d)"`. Keep it until the new chain is confirmed; it is the evidence if anything turns out wrong.
+6. **Restart** with a fresh, empty data directory against the new genesis (commands below), and check that the start-up line shows the pinned hash.
+
+For the follower in section 5, the data directory is the `--data` path (`$HOME/zyron-follower` in the example):
+
+```sh
+mv "$HOME/zyron-follower" "$HOME/zyron-follower.pre-e0212e57-$(date +%Y%m%d)"
+```
+
+Then re-run the section 5 commands: fetch the genesis again, create the empty directory with `mkdir -m 700 -p`, and start the node.
+
 ## 6. How admission works
 
 **Open testnet (today).** Validators change only through on-chain governance: an existing validator creates a proposal (`validator-proposal --activation-height <n> --validator-public-key <hex> ...`), at least `floor(2n/3)+1` current validators approve it (`validator-approve`), and it is submitted (`validator-submit`). Activation must be at least 100 blocks ahead. A fixed-supply chain keeps between 4 and 100 validators. Because the hosted validators have no outside consensus endpoint yet, no outside key will be voted in until that exists; adding a validator that cannot reach the others would only weaken the quorum.

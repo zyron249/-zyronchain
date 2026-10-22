@@ -89,6 +89,39 @@ Both keepers fetch `/state/snapshot` about 6 times an hour (limit: 30 per hour f
 
 Free-plan budget: Actions minutes are free for public repositories, and the job occupies one hosted runner slot. A free web service that is kept awake all month uses about 720-744 of the 750 free instance hours a Render workspace gets per month. Other free web services in the same workspace share that allowance, and when it runs out Render suspends the workspace's free web services until the next month.
 
+## Upgrading after a genesis relaunch
+
+The genesis currently pinned for `zyron-open-testnet-render-1` is `e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad` (genesis timestamp 2026-10-20T22:09:28.767Z). That genesis carries fields that older code does not know: `activityOracleThreshold` and `activityOraclePolicy` (added in #1076, `f3913f2`) and `publicDistributionRelease` (added in #1075, `69171bf`). Genesis loading rejects unknown fields, so a node built before those changes stops at start with:
+
+```text
+Fatal: Invalid genesis fields
+```
+
+Any `main` at or after `fdd1e792` contains both changes. (`fdd1e792` itself, #1092, only changes the stranded-pruning test fixtures of `l1/scripts/open-testnet.mjs`; it is used here as a known-good reference point, not as the commit that added the fields.)
+
+1. **Confirm the expected hash independently.** Compare the `EXPECTED_GENESIS` pin in `.github/workflows/open-testnet-snapshot-keeper.yml` on `main`, this document, and the reset announcement. If they disagree, stop, keep your data directory and report it.
+2. **Update the code** to the latest `main` and check that `fdd1e792` is included:
+   ```sh
+   git fetch origin && git checkout main && git pull --ff-only origin main
+   git merge-base --is-ancestor fdd1e792 HEAD && echo "includes fdd1e792"
+   ```
+3. **Rebuild** from `l1/`:
+   ```sh
+   cd l1 && npm ci && npm run build
+   ```
+4. **Verify the genesis hash** the network reports. `GET /status` and `GET /genesis` return it; check it against the pin from step 1:
+   ```sh
+   curl -s https://zyron-open-testnet.onrender.com/status
+   ```
+   A node prints `Genesis <hash>, height <n>` when it starts; that hash must equal the pin too.
+5. **Archive the old data directory, do not delete it.** Stop the node, then move the directory aside, for example `mv "$DIR" "$DIR.pre-e0212e57-$(date +%Y%m%d)"`. Keep it until the new chain is confirmed; it is the evidence if anything turns out wrong.
+6. **Restart** with a fresh, empty data directory against the new genesis (commands below), and check that the start-up line shows the pinned hash.
+
+Restart commands, by setup:
+
+- **Your own copy** (`open-testnet.mjs`): `init` creates a fresh TEST genesis of its own, so its hash is not the public pin. Re-run `node scripts/open-testnet.mjs init --dir <new dir>` and `run --dir <new dir>` as in [Run your own copy](#run-your-own-copy).
+- **Follower of the public testnet**: re-fetch the genesis from `GET /genesis` and start `secure-cli.js node --genesis ... --data <new dir>` as in [`VALIDATOR_ONBOARDING.md`](VALIDATOR_ONBOARDING.md) section 5.1.
+
 ## Founder-operated nodes
 
 These nodes are run by the project itself. They are **not independent** and never count toward the independent-validator requirement for launch.
