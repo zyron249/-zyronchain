@@ -60,8 +60,8 @@ import {
 import { clientAddressBucket, isLoopbackAddress } from "./rpc-client-identity.js";
 import { FixedWindowLimiter } from "./rpc-rate-limit.js";
 import { ChainStore, SigningJournal } from "./storage.js";
-import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
-import type { Block, BlockAttestation, RoundSkipVote, Transaction, Validator } from "./types.js";
+import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape, validatorUpdateApprovalPayload } from "./transaction.js";
+import type { Block, BlockAttestation, RoundSkipVote, Transaction, Validator, ValidatorSetUpdateTx } from "./types.js";
 import { LocalValidatorSigner, signWithValidator, type ValidatorSigner } from "./validator-signer.js";
 import { hasValidatorAdmission } from "./validator-admission.js";
 
@@ -452,6 +452,8 @@ export function rpcRateLimitIdentity(
  * with full admission checks, after the next validator update is admitted.
  */
 export const MAX_DEFERRED_VALIDATOR_UPDATES = 16;
+/** P1-07-F2 (Codex P2 on #1104): variants kept per quorum-approved update payload. */
+export const MAX_DEFERRED_VARIANTS_PER_VALIDATOR_UPDATE = 2;
 
 export class NodeService {
   readonly mempool: Mempool;
@@ -467,7 +469,10 @@ export class NodeService {
   private consensusQuorumFailure: { height: number; previousHash: string; phase: number } | undefined;
   private validatorSignerFailed = false;
   readonly readinessMaxTipAgeMs: number;
-  private readonly deferredValidatorUpdates = new Map<string, Transaction>();
+  // Keyed by the quorum-approved payload; each key holds at most
+  // MAX_DEFERRED_VARIANTS_PER_VALIDATOR_UPDATE variants (they differ only in
+  // fields the approvals do not cover, such as possessionProofs).
+  private readonly deferredValidatorUpdates = new Map<string, Transaction[]>();
   private readmittedTransactions: Transaction[] = [];
   private readmittedValidatorUpdateIds: string[] = [];
   private readmittedTransactionRelay: ((transaction: Transaction) => void | Promise<void>) | undefined;
@@ -688,7 +693,14 @@ export class NodeService {
       this.deferRefusedValidatorUpdate(value);
       throw error;
     }
-    if ((value as Transaction).kind === "validator_update") this.retryDeferredValidatorUpdates();
+    // Codex P2 on #1104: a deferred update can also be waiting for the nonce
+    // prefix of a pending predecessor's sender, so a transaction from the sender
+    // of a pending or deferred update re-tries the set as well.
+    const admitted = value as Transaction;
+    if (this.deferredValidatorUpdates.size > 0
+      && (admitted.kind === "validator_update" || this.isValidatorUpdateSender(admitted.sender))) {
+      this.retryDeferredValidatorUpdates();
+    }
     return txid;
   }
 
@@ -734,7 +746,34 @@ export class NodeService {
   }
 
   deferredValidatorUpdateCount(): number {
-    return this.deferredValidatorUpdates.size;
+    let count = 0;
+    for (const variants of this.deferredValidatorUpdates.values()) count += variants.length;
+    return count;
+  }
+
+  private isValidatorUpdateSender(sender: string): boolean {
+    for (const variants of this.deferredValidatorUpdates.values()) {
+      if (variants.some((tx) => tx.sender === sender)) return true;
+    }
+    return this.mempool.values().some((tx) => tx.kind === "validator_update" && tx.sender === sender);
+  }
+
+  private static deferredValidatorUpdateKey(tx: ValidatorSetUpdateTx): string {
+    return sha256Hex(canonicalJson(validatorUpdateApprovalPayload(tx)));
+  }
+
+  /** Whether a deferred update can still be admitted later (else it is dropped). */
+  private canStillDeferValidatorUpdate(tx: ValidatorSetUpdateTx): boolean {
+    if (tx.activationHeight <= this.store.chain.height + 1 || tx.nonce <= this.store.chain.nonce(tx.sender)) return false;
+    // Codex P2 on #1104: only an update that a predecessor could still make
+    // admissible (active initiator, current-validator quorum, activation
+    // order) may use or evict a deferred slot.
+    try {
+      this.store.chain.assertValidatorUpdateAuthorizedExceptProofs(tx);
+    } catch {
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -753,14 +792,16 @@ export class NodeService {
     }
     const tx = value as Transaction;
     if (tx.kind !== "validator_update" || tx.chainId !== genesis.chainId) return;
-    if (tx.activationHeight <= this.store.chain.height + 1 || tx.nonce <= this.store.chain.nonce(tx.sender)) return;
-    if (this.deferredValidatorUpdates.has(tx.txid) || this.mempool.values().some((item) => item.txid === tx.txid)) return;
-    // Codex P2 on #1104: only an update that a predecessor could still make
-    // admissible (active initiator, current-validator quorum, activation
-    // order) may use or evict a deferred slot.
-    try {
-      this.store.chain.assertValidatorUpdateAuthorizedExceptProofs(tx);
-    } catch {
+    if (this.mempool.values().some((item) => item.txid === tx.txid)) return;
+    const key = NodeService.deferredValidatorUpdateKey(tx);
+    const variants = this.deferredValidatorUpdates.get(key);
+    if (variants?.some((item) => item.txid === tx.txid)) return;
+    if (!this.canStillDeferValidatorUpdate(tx)) return;
+    if (variants) {
+      // Codex P2 on #1104: variants of one approved update (the approvals do
+      // not cover possessionProofs) only replace each other.
+      while (variants.length >= MAX_DEFERRED_VARIANTS_PER_VALIDATOR_UPDATE) variants.shift();
+      variants.push(structuredClone(tx));
       return;
     }
     while (this.deferredValidatorUpdates.size >= MAX_DEFERRED_VALIDATOR_UPDATES) {
@@ -768,32 +809,46 @@ export class NodeService {
       if (oldest === undefined) break;
       this.deferredValidatorUpdates.delete(oldest);
     }
-    this.deferredValidatorUpdates.set(tx.txid, structuredClone(tx));
+    this.deferredValidatorUpdates.set(key, [structuredClone(tx)]);
   }
 
   /**
-   * P1-07-F2: after a validator update is admitted, re-try every deferred one
-   * through the full admission path, repeating while one more is admitted (an
-   * admitted update can be the predecessor of another). Updates still refused
-   * are dropped, so each deferred update is re-tried at most once per trigger
-   * and the work is bounded by MAX_DEFERRED_VALIDATOR_UPDATES.
+   * P1-07-F2: after a validator update (or a transaction from the sender of a
+   * pending or deferred update) is admitted, or a block finalized, re-try every
+   * deferred update through the full admission path, repeating while one more
+   * is admitted (an admitted update can be the predecessor of another). Updates
+   * still refused stay deferred while they can still be admitted (a missing
+   * predecessor or nonce prefix can arrive later) and are dropped otherwise, so
+   * each trigger re-tries each deferred update at most once per pass and the
+   * work is bounded by the deferred set's size.
    */
   private retryDeferredValidatorUpdates(): void {
-    let remaining = [...this.deferredValidatorUpdates.values()];
+    const entries = [...this.deferredValidatorUpdates.entries()];
     this.deferredValidatorUpdates.clear();
+    let remaining = entries.flatMap(([key, variants]) => variants.map((tx) => ({ key, tx })));
     while (remaining.length > 0) {
-      const refused: Transaction[] = [];
-      for (const tx of remaining) {
+      const refused: typeof remaining = [];
+      const admittedKeys = new Set<string>();
+      for (const entry of remaining) {
+        if (admittedKeys.has(entry.key)) continue;
         try {
-          this.admitTransaction(tx);
-          this.readmittedTransactions.push(structuredClone(tx));
-          this.readmittedValidatorUpdateIds.push(tx.txid);
+          this.admitTransaction(entry.tx);
+          admittedKeys.add(entry.key);
+          this.readmittedTransactions.push(structuredClone(entry.tx));
+          this.readmittedValidatorUpdateIds.push(entry.tx.txid);
         } catch {
-          refused.push(tx);
+          refused.push(entry);
         }
       }
-      if (refused.length === remaining.length) break;
-      remaining = refused;
+      remaining = refused.filter((entry) => !admittedKeys.has(entry.key));
+      if (admittedKeys.size === 0) break;
+    }
+    // Keep the original (oldest-first) order of the keys that stay deferred.
+    for (const { key, tx } of remaining) {
+      if (tx.kind !== "validator_update" || !this.canStillDeferValidatorUpdate(tx)) continue;
+      const variants = this.deferredValidatorUpdates.get(key);
+      if (variants) variants.push(tx);
+      else this.deferredValidatorUpdates.set(key, [tx]);
     }
     if (this.readmittedValidatorUpdateIds.length > MAX_DEFERRED_VALIDATOR_UPDATES) {
       this.readmittedValidatorUpdateIds = this.readmittedValidatorUpdateIds.slice(-MAX_DEFERRED_VALIDATOR_UPDATES);
@@ -984,8 +1039,9 @@ export class NodeService {
       );
       // P1-07-F2 (Codex P2 on #1104): a predecessor can also arrive only in a
       // finalized block (sync, proposal finalization, /block); re-try the
-      // deferred updates against the new persisted schedule.
-      if (this.deferredValidatorUpdates.size > 0 && block.transactions.some((tx) => tx.kind === "validator_update")) {
+      // deferred updates against the new persisted schedule (a finalized block
+      // can also complete a pending predecessor's nonce prefix).
+      if (this.deferredValidatorUpdates.size > 0) {
         this.retryDeferredValidatorUpdates();
       }
     });
