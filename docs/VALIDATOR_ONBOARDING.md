@@ -118,7 +118,44 @@ Ceremony order for the coordinator: run the precheck on the draft with an empty 
 
 ### 4.3 Rehearse it on a scratch chain
 
-This was run to check the steps above: 4 keys from `keygen`, a scratch genesis from `node dist/src/cli.js genesis --chain-id zyron-scratch-1 --validator-public-key <k1> ... <k4> ...`, binding from 4.2, 4 proofs from 4.1 placed in validator order. `assertGenesisPossessionProofs` accepted the result, reversing the proof order was refused with `Genesis possession proof does not match the genesis validator order`, and `node dist/src/cli.js node --genesis <file> --validator-key k1.json ...` started at height 0. A scratch chain is disposable; never reuse its keys.
+Run from `l1/` after section 3, with `sign-possession-proof.mjs` and `genesis-binding.mjs` saved in `$R`. Everything lives in a throwaway directory; never reuse these keys.
+
+```sh
+R=$(mktemp -d) && umask 077
+# save sign-possession-proof.mjs (4.1) and genesis-binding.mjs (4.2) into "$R" first
+for i in 1 2 3 4; do
+  head -c 24 /dev/urandom | base64 > "$R/pw$i"
+  node dist/src/cli.js keygen --out "$R/k$i.json" --password-file "$R/pw$i" | awk '/^Public key:/ {print $3}' > "$R/pub$i"
+done
+ADDR=$(ZYRON_KEYSTORE_PASSWORD_FILE="$R/pw1" node dist/src/cli.js keystore-verify --key "$R/k1.json" | awk '/^Address:/ {print $2}')
+node dist/src/cli.js genesis --out "$R/genesis.json" --chain-id zyron-scratch-1 \
+  --validator-public-key "$(cat "$R/pub1")" --validator-public-key "$(cat "$R/pub2")" \
+  --validator-public-key "$(cat "$R/pub3")" --validator-public-key "$(cat "$R/pub4")" \
+  --oracle-public-key "$(cat "$R/pub1")" --activity-pool "$ADDR" --allocation "$ADDR:1000"
+B=$(node "$R/genesis-binding.mjs" . "$R/genesis.json")
+for i in 1 2 3 4; do
+  node "$R/sign-possession-proof.mjs" . "$R/k$i.json" "$R/pw$i" zyron-scratch-1 "$B" 0 > "$R/proof$i.json"
+done
+# assemble validatorAdmission in validator order and check it
+node --input-type=module -e '
+import fs from "node:fs"; import { resolve } from "node:path";
+const R = process.argv[1];
+const va = await import(resolve("dist/src/validator-admission.js"));
+const g = JSON.parse(fs.readFileSync(R + "/genesis.json", "utf8"));
+const proofs = [1, 2, 3, 4].map((i) => JSON.parse(fs.readFileSync(R + "/proof" + i + ".json", "utf8")).proof);
+const byAddress = new Map(proofs.map((p) => [p.address, p]));
+g.validatorAdmission = { policy: "possession-proof-v1", genesisProofs: g.validators.map((v) => byAddress.get(v.address)) };
+va.assertGenesisPossessionProofs(g);
+fs.writeFileSync(R + "/genesis-with-proofs.json", JSON.stringify(g, null, 2));
+console.log("genesis possession proofs OK");
+' "$R"
+mkdir -m 700 "$R/data1"
+ZYRON_KEYSTORE_PASSWORD_FILE="$R/pw1" node dist/src/cli.js node --genesis "$R/genesis-with-proofs.json" \
+  --data "$R/data1" --validator-key "$R/k1.json" --host 127.0.0.1 --port 19371
+# prints "... node listening on http://127.0.0.1:19371" and "Genesis <hash>, height 0"; stop with Ctrl-C
+```
+
+With one validator of four running, the chain stays at height 0 (no quorum); this rehearsal only checks that the proofs are accepted at start. Try mutations on `genesis-with-proofs.json` (reverse `genesisProofs`, drop one, sign a different binding): node start must refuse each one. Reversing the order, for example, fails with `Genesis possession proof does not match the genesis validator order`.
 
 ### 4.4 Proof for a later `validator_update`
 
