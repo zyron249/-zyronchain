@@ -1,0 +1,55 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { canonicalJson, MAX_CANONICAL_JSON_DEPTH, sha256Hex } from "../src/codec.js";
+test("canonical JSON uses locale-independent UTF-16 key ordering", () => {
+    const value = {
+        "é": 6,
+        z: 4,
+        "_": 2,
+        "😀": 7,
+        a: 3,
+        "ä": 5,
+        A: 1
+    };
+    const expected = '{"A":1,"_":2,"a":3,"z":4,"ä":5,"é":6,"😀":7}';
+    assert.equal(canonicalJson(value), expected);
+    assert.equal(sha256Hex(canonicalJson(value)), "80f499c6b47a4f2f9b86de581406de022202f437803c494b3a68762d913fd915");
+});
+test("canonical JSON is invariant to randomized object insertion order", () => {
+    const entries = [
+        ["z", 4], ["A", 1], ["😀", 7], ["_", 2], ["é", 6], ["a", 3], ["ä", 5]
+    ];
+    const expected = canonicalJson(Object.fromEntries(entries));
+    let seed = 0x71c05e;
+    const random = () => {
+        seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
+        return seed;
+    };
+    for (let iteration = 0; iteration < 100; iteration += 1) {
+        const shuffled = [...entries];
+        for (let index = shuffled.length - 1; index > 0; index -= 1) {
+            const other = random() % (index + 1);
+            [shuffled[index], shuffled[other]] = [shuffled[other], shuffled[index]];
+        }
+        assert.equal(canonicalJson(Object.fromEntries(shuffled)), expected);
+    }
+});
+test("canonical JSON accepts the exact nesting-depth boundary", () => {
+    assert.doesNotThrow(() => canonicalJson(nestedContainerAtDepth(MAX_CANONICAL_JSON_DEPTH)));
+});
+test("canonical JSON rejects over-depth input before call-stack exhaustion", () => {
+    assert.throws(() => canonicalJson(nestedContainerAtDepth(MAX_CANONICAL_JSON_DEPTH + 1)), /Canonical JSON nesting depth exceeded/);
+});
+test("canonical JSON rejects cycles but permits shared acyclic references", () => {
+    const cyclic = {};
+    cyclic.self = cyclic;
+    assert.throws(() => canonicalJson(cyclic), /Canonical JSON must not contain cycles/);
+    const shared = { value: 7 };
+    assert.equal(canonicalJson({ left: shared, right: shared }), '{"left":{"value":7},"right":{"value":7}}');
+});
+function nestedContainerAtDepth(depth) {
+    let value = { leaf: true };
+    for (let index = 0; index < depth; index += 1)
+        value = [value];
+    return value;
+}

@@ -43,6 +43,8 @@ test("relay peers config is strict", () => {
   assert.equal(parseRelayPeers(undefined).size, 0);
   assert.equal(parseRelayPeers(`${ADDRESS}=${publicKeyFromPrivate(relayKey)}`).size, 1);
   assert.throws(() => parseRelayPeers("ZYNxyz=00"), /ZYRON_RELAY_PEERS/);
+  // 128 hex characters that are not a secp256k1 point (transcription error) fail at startup.
+  assert.throws(() => parseRelayPeers(`${ADDRESS}=${"0".repeat(128)}`), /not a valid secp256k1 point/);
   assert.throws(() => parseRelayPeers(`${ADDRESS}=${publicKeyFromPrivate(relayKey)},${ADDRESS}=${publicKeyFromPrivate(relayKey)}`), /duplicate/);
 });
 
@@ -101,6 +103,18 @@ test("mailbox: offline peer answers 503 at once; unknown paths 404; oversized re
   assert.equal((await pending).status, 504, "no valid reply: the hosted caller times out below its 8 s deadline");
 });
 
+test("mailbox replies carry the RPC version header the node peer clients require", async () => {
+  const { relayReplyHeaders } = relayModule;
+  assert.equal(typeof relayReplyHeaders, "function");
+  assert.equal(relayReplyHeaders(5)["x-zyron-rpc-version"], "1");
+  assert.equal(relayReplyHeaders(5)["content-length"], 5);
+  const { readFile } = await import("node:fs/promises");
+  const gatewaySource = await readFile(join(l1Root, "scripts", "open-testnet.mjs"), "utf8");
+  const mailboxBlock = gatewaySource.slice(gatewaySource.indexOf("mailbox = createServer"), gatewaySource.indexOf("mailbox.listen"));
+  assert.ok(mailboxBlock.length > 0);
+  assert.doesNotMatch(mailboxBlock, /writeHead\([^)]*\{ "content-type"/, "every mailbox response uses relayReplyHeaders");
+});
+
 async function listen(server: Server): Promise<number> {
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", () => done()));
   return (server.address() as { port: number }).port;
@@ -134,6 +148,8 @@ test("end to end: hosted→external and external→hosted bytes are relayed unch
     const outbound = await fetch(`http://127.0.0.1:${clientPort}/h/1/v6/prepare`, { method: "POST", headers: { "content-type": "application/json" }, body: '{"h":8}' });
     assert.equal(outbound.status, 200);
     assert.equal(await outbound.text(), '{"vote":"hosted-signed"}');
+    // Node peer clients reject consensus/sync replies without the RPC version header.
+    assert.equal(outbound.headers.get("x-zyron-rpc-version"), "1");
     assert.deepEqual(hostedSeen, ['1/v6/prepare{"h":8}']);
     assert.equal((await fetch(`http://127.0.0.1:${clientPort}/h/1/tx`, { method: "POST", body: "{}" })).status, 404);
     assert.equal((await fetch(`http://127.0.0.1:${clientPort}/h/9/v6/prepare`, { method: "POST", body: "{}" })).status, 404);

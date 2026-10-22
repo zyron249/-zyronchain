@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const l1Root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const { signCanonicalDomain, verifyCanonicalDomain, publicKeyFromPrivate } = await import(join(l1Root, "dist/src/crypto.js"));
+const { signCanonicalDomain, verifyCanonicalDomain, publicKeyFromPrivate, isValidPublicKey } = await import(join(l1Root, "dist/src/crypto.js"));
 
 export const RELAY_DOMAIN = "zyronchain/open-testnet-relay/v1";
 export const RELAY_AUTH_HEADER = "x-zyron-relay-auth";
@@ -47,6 +47,9 @@ export class RelayError extends Error {
   constructor(statusCode, message) { super(message); this.statusCode = statusCode; }
 }
 
+/** Response headers for relayed consensus/sync replies: node peer clients require the RPC version header. */
+export function relayReplyHeaders(length) { return { "content-type": "application/json", "content-length": length, "x-zyron-rpc-version": "1" }; }
+
 export const sha256Hex = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 /** `ZYRON_RELAY_PEERS=<validatorAddress>=<relayPublicKey>,...` → Map. */
@@ -56,6 +59,7 @@ export function parseRelayPeers(value) {
   for (const item of value.split(",")) {
     const [address, publicKey, extra] = item.trim().split("=");
     if (extra !== undefined || !ADDRESS.test(address ?? "") || !PUBKEY.test(publicKey ?? "")) throw new Error("ZYRON_RELAY_PEERS: each entry must be <address>=<relay public key>");
+    if (!isValidPublicKey(publicKey)) throw new Error(`ZYRON_RELAY_PEERS: relay public key for ${address} is not a valid secp256k1 point`);
     if (peers.has(address)) throw new Error("ZYRON_RELAY_PEERS: duplicate address");
     peers.set(address, publicKey);
   }

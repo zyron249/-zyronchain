@@ -73,7 +73,7 @@ export function createRelayClient({ gateway, address, relayKey, chainId, genesis
   }
   // Local peer endpoint for the node: /h/<i>/<path>.
   const server = createServer({ headersTimeout: 5_000, requestTimeout: 15_000 }, async (req, res) => {
-    const send = (code, bytes) => { res.writeHead(code, { "content-type": "application/json", "content-length": bytes.length }); res.end(bytes); };
+    const send = (code, bytes) => { res.writeHead(code, { "content-type": "application/json", "content-length": bytes.length, "x-zyron-rpc-version": "1" }); res.end(bytes); };
     try {
       const match = /^\/h\/(\d{1,2})(\/[a-z0-9/]*)(\?.*)?$/.exec(req.url ?? "");
       if (!match || Number(match[1]) >= hosted) return send(404, Buffer.from('{"error":"Not found"}'));

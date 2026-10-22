@@ -46,7 +46,7 @@ const { canonicalJson } = await import(dist("codec.js"));
 const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist("tokenomics.js"));
 const { defaultPublicDistributionRelease } = await import(dist("public-distribution-release.js"));
 const { gatewayClientIdentity } = await import(dist("rpc-client-identity.js"));
-const { ConsensusRelay, RELAY_MAX_BODY_BYTES, RELAY_MAX_CONSENSUS_REQUEST_BYTES, parseRelayPeers } = await import("./open-testnet/consensus-relay.mjs");
+const { ConsensusRelay, RELAY_MAX_BODY_BYTES, RELAY_MAX_CONSENSUS_REQUEST_BYTES, parseRelayPeers, relayReplyHeaders } = await import("./open-testnet/consensus-relay.mjs");
 
 export const DEFAULT_CHAIN_ID = "zyron-open-testnet-1";
 const VALIDATOR_NAMES = ["v1", "v2", "v3", "v4"];
@@ -1026,14 +1026,14 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     mailbox = createServer({ headersTimeout: 5_000, requestTimeout: 10_000 }, async (request, response) => {
       try {
         const match = /^\/x\/(ZYN[0-9a-f]{40})(\/[a-z0-9/]+)(?:\?([a-z0-9=&]{0,64}))?$/.exec(request.url ?? "");
-        if ((request.method !== "POST" && request.method !== "GET") || !match) { response.writeHead(404, { "content-type": "application/json" }); return response.end('{"error":"Not found"}'); }
+        if ((request.method !== "POST" && request.method !== "GET") || !match) { const notFound = Buffer.from('{"error":"Not found"}'); response.writeHead(404, relayReplyHeaders(notFound.length)); return response.end(notFound); }
         const body = request.method === "POST" ? await readRawBody(request, RELAY_MAX_CONSENSUS_REQUEST_BYTES) : Buffer.alloc(0);
         const result = await relay.mailbox(match[1], match[2], body, request.method, match[3] ?? "");
-        response.writeHead(result.status, { "content-type": "application/json", "content-length": result.body.length });
+        response.writeHead(result.status, relayReplyHeaders(result.body.length));
         response.end(result.body);
       } catch (error) {
         const code = error?.statusCode ?? 500;
-        response.writeHead(code, { "content-type": "application/json" }); response.end(JSON.stringify({ error: code === 500 ? "internal error" : error.message }));
+        const failure = Buffer.from(JSON.stringify({ error: code === 500 ? "internal error" : error.message })); response.writeHead(code, relayReplyHeaders(failure.length)); response.end(failure);
       }
     });
     await new Promise((done, fail) => { mailbox.once("error", fail); mailbox.listen(mailboxPort, "127.0.0.1", () => { mailbox.off("error", fail); done(); }); });

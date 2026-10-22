@@ -1,0 +1,449 @@
+import { randomUUID } from "node:crypto";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { canonicalJson, sha256Hex } from "./codec.js";
+import { MAX_PORTABLE_STATE_KEYS, MAX_PORTABLE_STATE_NODES } from "./state-v2-portable.js";
+const MANIFEST_FILE = "manifest.json";
+const RECORDS_DIR = "records";
+// R6-1010-M1: a state-sync client stages records root first (from the end of
+// the post-order list) so each record is checked against the anchored root as
+// it arrives. Those chunks form a contiguous suffix and live in their own
+// directory, so an ascending staging with a missing chunk is never mistaken
+// for one.
+const ROOT_FIRST_RECORDS_DIR = "records-root-first";
+const KEYS_DIR = "keys";
+const TEMP_DIR = ".tmp";
+const MAX_RESUME_CHUNK_FILE_BYTES = 20 * 1024 * 1024;
+/**
+ * Crash-safe, untrusted download staging for portable State-v2 chunks. These
+ * files are never node state: the complete bundle still has to pass the
+ * external checkpoint anchor and Merkle/finality validation before publish.
+ */
+/**
+ * The staging directory is for the same requested checkpoint but disagrees
+ * with the current peer on a peer-supplied field, or is internally
+ * inconsistent (for example a gap left by an interrupted discard). Staging is
+ * untrusted download state produced by some peer, so it can be discarded and
+ * the download restarted (F-09).
+ */
+export class PortableStateResumeMismatchError extends Error {
+}
+/**
+ * Only these fields name the requested checkpoint: the local chain identity
+ * and the operator's external anchor. Height, state root, the tip body and the
+ * record/key counts are supplied by a peer and are authenticated only when the
+ * complete bundle passes anchored validation, so a disagreement on them is a
+ * peer mismatch, never a different checkpoint (F-09 residual).
+ */
+const CHECKPOINT_IDENTITY_FIELDS = ["version", "chainId", "genesisHash", "tipHash", "snapshotSha256"];
+const DISCARD_SUFFIX = ".discard-";
+/**
+ * Discard a staging directory crash-safely: it is first renamed away in one
+ * atomic step, so an interruption can never leave a partly deleted staging
+ * directory at its original path; leftovers are removed by the next open.
+ */
+export async function discardPortableStateResumeDirectory(dataDir) {
+    const tombstone = `${dataDir}${DISCARD_SUFFIX}${randomUUID()}`;
+    try {
+        await rename(dataDir, tombstone);
+    }
+    catch (error) {
+        if (isMissingFile(error))
+            return;
+        throw error;
+    }
+    await syncDirectoryBestEffort(dirname(dataDir));
+    await rm(tombstone, { recursive: true, force: true });
+}
+async function removeDiscardLeftovers(dataDir) {
+    const prefix = `${basename(dataDir)}${DISCARD_SUFFIX}`;
+    let names;
+    try {
+        names = await readdir(dirname(dataDir));
+    }
+    catch (error) {
+        if (isMissingFile(error))
+            return;
+        throw error;
+    }
+    for (const name of names) {
+        if (name.startsWith(prefix))
+            await rm(join(dirname(dataDir), name), { recursive: true, force: true });
+    }
+}
+async function syncDirectoryBestEffort(path) {
+    try {
+        const handle = await open(path, constants.O_RDONLY);
+        try {
+            await handle.sync();
+        }
+        finally {
+            await handle.close();
+        }
+    }
+    catch {
+        // The rename itself is atomic; a lost rename only means the staging is
+        // found again and re-validated on the next open.
+    }
+}
+export class PortableStateResumeStore {
+    dataDir;
+    manifest;
+    recordProgress;
+    recordSuffixStart;
+    recordDir;
+    keyProgress;
+    recordChunks;
+    keyChunks;
+    constructor(dataDir, manifest, recordProgress, recordSuffixStart, recordDir, keyProgress, recordChunks, keyChunks) {
+        this.dataDir = dataDir;
+        this.manifest = manifest;
+        this.recordProgress = recordProgress;
+        this.recordSuffixStart = recordSuffixStart;
+        this.recordDir = recordDir;
+        this.keyProgress = keyProgress;
+        this.recordChunks = recordChunks;
+        this.keyChunks = keyChunks;
+    }
+    static async open(dataDir, manifest) {
+        validateManifest(manifest);
+        await removeDiscardLeftovers(dataDir);
+        await mkdir(dataDir, { recursive: true, mode: 0o700 });
+        await assertRealDirectory(dataDir);
+        const recordsDir = join(dataDir, RECORDS_DIR);
+        const keysDir = join(dataDir, KEYS_DIR);
+        const tempDir = join(dataDir, TEMP_DIR);
+        const rootFirstDir = join(dataDir, ROOT_FIRST_RECORDS_DIR);
+        await mkdir(recordsDir, { recursive: true, mode: 0o700 });
+        await mkdir(rootFirstDir, { recursive: true, mode: 0o700 });
+        await mkdir(keysDir, { recursive: true, mode: 0o700 });
+        await assertRealDirectory(recordsDir);
+        await assertRealDirectory(rootFirstDir);
+        await assertRealDirectory(keysDir);
+        await rm(tempDir, { recursive: true, force: true });
+        await mkdir(tempDir, { mode: 0o700 });
+        await assertRealDirectory(tempDir);
+        const path = join(dataDir, MANIFEST_FILE);
+        try {
+            const existing = parseManifestEnvelope(await readPortableStateResumeFile(path, 3_000_000));
+            if (canonicalJson(existing.manifest) !== canonicalJson(manifest)) {
+                const sameCheckpoint = CHECKPOINT_IDENTITY_FIELDS.every((field) => canonicalJson(existing.manifest[field]) === canonicalJson(manifest[field]));
+                if (sameCheckpoint) {
+                    throw new PortableStateResumeMismatchError("Portable state resume manifest differs from the staged peer manifest");
+                }
+                throw new Error("Portable state resume manifest does not match requested checkpoint");
+            }
+        }
+        catch (error) {
+            if (!isMissingFile(error))
+                throw error;
+            // Chunks without a manifest are orphans of an interrupted discard (or
+            // an older binary's in-place delete): never adopt them.
+            if ((await readdir(recordsDir)).length > 0 || (await readdir(rootFirstDir)).length > 0 ||
+                (await readdir(keysDir)).length > 0) {
+                throw new PortableStateResumeMismatchError("Portable state resume staging has chunks but no manifest");
+            }
+            await atomicWrite(path, manifestEnvelope(manifest), tempDir);
+        }
+        const records = await scanProgress(recordsDir, manifest.recordCount, MAX_PORTABLE_STATE_NODES);
+        const rootFirst = await scanSuffix(rootFirstDir, manifest.recordCount, MAX_PORTABLE_STATE_NODES);
+        if (records.chunks.length > 0 && rootFirst.chunks.length > 0) {
+            throw new PortableStateResumeMismatchError("Portable state resume staging mixes record orders");
+        }
+        const keys = await scanProgress(join(dataDir, KEYS_DIR), manifest.keyCount, MAX_PORTABLE_STATE_KEYS);
+        if (rootFirst.chunks.length > 0) {
+            return new PortableStateResumeStore(dataDir, structuredClone(manifest), rootFirst.start === 0 ? manifest.recordCount : 0, rootFirst.start, ROOT_FIRST_RECORDS_DIR, keys.progress, rootFirst.chunks, keys.chunks);
+        }
+        return new PortableStateResumeStore(dataDir, structuredClone(manifest), records.progress, records.progress === manifest.recordCount ? 0 : manifest.recordCount, RECORDS_DIR, keys.progress, records.chunks, keys.chunks);
+    }
+    static async openExisting(dataDir, expected) {
+        await assertRealDirectory(dataDir);
+        const envelope = parseManifestEnvelope(await readPortableStateResumeFile(join(dataDir, MANIFEST_FILE), 3_000_000));
+        const manifest = envelope.manifest;
+        if (manifest.chainId !== expected.chainId || manifest.genesisHash !== expected.genesisHash ||
+            manifest.tipHash !== expected.tipHash || manifest.snapshotSha256 !== expected.snapshotSha256) {
+            throw new Error("Portable state resume manifest does not match requested checkpoint");
+        }
+        return PortableStateResumeStore.open(dataDir, manifest);
+    }
+    nextRecordStart() { return this.recordProgress; }
+    /** R6-1010-M1: start of the root-first staged suffix (record count when none, 0 when complete). */
+    nextRecordSuffixStart() { return this.recordSuffixStart; }
+    nextKeyStart() { return this.keyProgress; }
+    async putRecords(start, items) {
+        if (this.recordDir !== RECORDS_DIR)
+            throw new Error("Portable state resume chunk is not the exact next range");
+        this.recordProgress = await this.put(RECORDS_DIR, this.recordProgress, this.manifest.recordCount, start, items);
+        this.recordChunks.push({ start, length: items.length });
+        if (this.recordProgress === this.manifest.recordCount)
+            this.recordSuffixStart = 0;
+    }
+    /** R6-1010-M1: stage the record chunk that ends exactly where the root-first suffix starts. */
+    async putRecordsBefore(start, items) {
+        if (this.recordProgress !== 0 || !Array.isArray(items) || items.length < 1 ||
+            !Number.isSafeInteger(start) || start < 0 || start + items.length !== this.recordSuffixStart) {
+            throw new Error("Portable state resume chunk is not the exact next range");
+        }
+        await this.put(ROOT_FIRST_RECORDS_DIR, start, this.manifest.recordCount, start, items);
+        this.recordDir = ROOT_FIRST_RECORDS_DIR;
+        this.recordChunks.unshift({ start, length: items.length });
+        this.recordSuffixStart = start;
+        if (start === 0)
+            this.recordProgress = this.manifest.recordCount;
+    }
+    async putKeys(start, items) {
+        this.keyProgress = await this.put(KEYS_DIR, this.keyProgress, this.manifest.keyCount, start, items);
+        this.keyChunks.push({ start, length: items.length });
+    }
+    async records(start, limit) {
+        if (this.recordDir === ROOT_FIRST_RECORDS_DIR) {
+            if (start < this.recordSuffixStart)
+                throw new Error("Portable state resume read range is incomplete");
+            return readRange(join(this.dataDir, ROOT_FIRST_RECORDS_DIR), this.recordChunks, this.manifest.recordCount, start, limit);
+        }
+        return readRange(join(this.dataDir, RECORDS_DIR), this.recordChunks, this.manifest.recordCount, start, limit);
+    }
+    async keys(start, limit) {
+        return readRange(join(this.dataDir, KEYS_DIR), this.keyChunks, this.manifest.keyCount, start, limit);
+    }
+    complete() {
+        return this.recordProgress === this.manifest.recordCount && this.keyProgress === this.manifest.keyCount;
+    }
+    async bundle() {
+        if (!this.complete())
+            throw new Error("Portable state resume is incomplete");
+        const records = await collectItems(join(this.dataDir, this.recordDir), this.manifest.recordCount);
+        const keyPreimages = await collectItems(join(this.dataDir, KEYS_DIR), this.manifest.keyCount);
+        return {
+            version: 1,
+            root: this.manifest.stateRoot,
+            records,
+            keyPreimages
+        };
+    }
+    async discard() {
+        await discardPortableStateResumeDirectory(this.dataDir);
+    }
+    async put(directory, progress, total, start, items) {
+        if (!Number.isSafeInteger(start) || start !== progress || !Array.isArray(items) || items.length < 1 || start + items.length > total) {
+            throw new Error("Portable state resume chunk is not the exact next range");
+        }
+        const path = join(this.dataDir, directory, `${start}.json`);
+        const body = { version: 1, start, items: structuredClone(items) };
+        const envelope = { ...body, checksum: sha256Hex(canonicalJson(body)) };
+        const text = `${canonicalJson(envelope)}\n`;
+        if (Buffer.byteLength(text, "utf8") > MAX_RESUME_CHUNK_FILE_BYTES)
+            throw new Error("Portable state resume chunk exceeds disk byte limit");
+        await atomicWrite(path, text, join(this.dataDir, TEMP_DIR));
+        return start + items.length;
+    }
+}
+function manifestEnvelope(manifest) {
+    const envelope = {
+        manifest: structuredClone(manifest),
+        checksum: sha256Hex(canonicalJson(manifest))
+    };
+    return `${canonicalJson(envelope)}\n`;
+}
+function parseManifestEnvelope(text) {
+    const value = JSON.parse(text);
+    if (!value || typeof value !== "object" || !value.manifest || typeof value.checksum !== "string") {
+        throw new Error("Corrupt portable state resume manifest");
+    }
+    validateManifest(value.manifest);
+    if (sha256Hex(canonicalJson(value.manifest)) !== value.checksum || text !== manifestEnvelope(value.manifest)) {
+        throw new Error("Portable state resume manifest checksum mismatch");
+    }
+    return value;
+}
+function validateManifest(value) {
+    if (value.version !== 1 || typeof value.chainId !== "string" || value.chainId.length < 1 || value.chainId.length > 128 ||
+        !isHash(value.genesisHash) || !isHash(value.tipHash) || !isHash(value.snapshotSha256) || !isHash(value.stateRoot) ||
+        !Number.isSafeInteger(value.height) || value.height < 1 ||
+        !Number.isSafeInteger(value.recordCount) || value.recordCount < 1 || value.recordCount > MAX_PORTABLE_STATE_NODES ||
+        !Number.isSafeInteger(value.keyCount) || value.keyCount < 1 || value.keyCount > MAX_PORTABLE_STATE_KEYS ||
+        !value.tip || typeof value.tip !== "object" || Array.isArray(value.tip)) {
+        throw new Error("Invalid portable state resume manifest");
+    }
+}
+async function scanProgress(directory, total, absoluteMax) {
+    const names = await readdir(directory);
+    const starts = names.map(parseChunkFilename).sort((a, b) => a - b);
+    if (starts.length > absoluteMax)
+        throw new Error("Portable state resume contains too many chunks");
+    let progress = 0;
+    const chunks = [];
+    for (const start of starts) {
+        // A missing range is what an interrupted delete leaves behind: discardable.
+        // Overlaps and corrupt chunk files stay fatal.
+        if (start > progress)
+            throw new PortableStateResumeMismatchError("Portable state resume chunks contain a gap");
+        if (start !== progress)
+            throw new Error("Portable state resume chunks contain a gap, overlap, or unexpected file");
+        const chunk = parseChunkEnvelope(await readPortableStateResumeFile(join(directory, `${start}.json`), MAX_RESUME_CHUNK_FILE_BYTES));
+        if (chunk.start !== start || chunk.items.length < 1 || start + chunk.items.length > total) {
+            throw new Error("Invalid portable state resume chunk range");
+        }
+        chunks.push({ start, length: chunk.items.length });
+        progress += chunk.items.length;
+    }
+    return { progress, chunks };
+}
+/** R6-1010-M1: root-first record chunks must be a contiguous suffix ending at the record count. */
+async function scanSuffix(directory, total, absoluteMax) {
+    const starts = (await readdir(directory)).map(parseChunkFilename).sort((a, b) => a - b);
+    if (starts.length > absoluteMax)
+        throw new Error("Portable state resume contains too many chunks");
+    const chunks = [];
+    let cursor = starts[0] ?? total;
+    for (const start of starts) {
+        if (start !== cursor)
+            throw new PortableStateResumeMismatchError("Portable state resume chunks contain a gap");
+        const chunk = parseChunkEnvelope(await readPortableStateResumeFile(join(directory, `${start}.json`), MAX_RESUME_CHUNK_FILE_BYTES));
+        if (chunk.start !== start || chunk.items.length < 1 || start + chunk.items.length > total) {
+            throw new Error("Invalid portable state resume chunk range");
+        }
+        chunks.push({ start, length: chunk.items.length });
+        cursor += chunk.items.length;
+    }
+    if (cursor !== total)
+        throw new PortableStateResumeMismatchError("Portable state resume chunks contain a gap");
+    return { start: starts[0] ?? total, chunks };
+}
+async function readRange(directory, chunks, total, start, limit) {
+    if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(limit) || limit < 1 || start + limit > total) {
+        throw new Error("Invalid portable state resume read range");
+    }
+    const result = [];
+    const end = start + limit;
+    for (const index of chunks) {
+        const chunkEnd = index.start + index.length;
+        if (chunkEnd <= start)
+            continue;
+        if (index.start >= end)
+            break;
+        const chunk = parseChunkEnvelope(await readPortableStateResumeFile(join(directory, `${index.start}.json`), MAX_RESUME_CHUNK_FILE_BYTES));
+        if (chunk.start !== index.start || chunk.items.length !== index.length) {
+            throw new Error("Portable state resume chunk changed after indexing");
+        }
+        const from = Math.max(start, index.start) - index.start;
+        const to = Math.min(end, chunkEnd) - index.start;
+        result.push(...chunk.items.slice(from, to));
+    }
+    if (result.length !== limit)
+        throw new Error("Portable state resume read range is incomplete");
+    return result;
+}
+async function collectItems(directory, total) {
+    const names = (await readdir(directory)).map(parseChunkFilename).sort((a, b) => a - b);
+    const result = [];
+    for (const start of names) {
+        if (start !== result.length)
+            throw new Error("Portable state resume chunks changed during validation");
+        const chunk = parseChunkEnvelope(await readPortableStateResumeFile(join(directory, `${start}.json`), MAX_RESUME_CHUNK_FILE_BYTES));
+        if (chunk.start !== start || start + chunk.items.length > total)
+            throw new Error("Invalid portable state resume chunk range");
+        result.push(...chunk.items);
+    }
+    if (result.length !== total)
+        throw new Error("Portable state resume is incomplete");
+    return result;
+}
+function parseChunkEnvelope(text) {
+    const value = JSON.parse(text);
+    if (value.version !== 1 || !Number.isSafeInteger(value.start) || Number(value.start) < 0 ||
+        !Array.isArray(value.items) || typeof value.checksum !== "string")
+        throw new Error("Corrupt portable state resume chunk");
+    const body = { version: 1, start: Number(value.start), items: value.items };
+    if (sha256Hex(canonicalJson(body)) !== value.checksum || text !== `${canonicalJson({ ...body, checksum: value.checksum })}\n`) {
+        throw new Error("Portable state resume chunk checksum mismatch");
+    }
+    return { ...body, checksum: value.checksum };
+}
+function parseChunkFilename(name) {
+    if (!/^(0|[1-9][0-9]*)\.json$/.test(name))
+        throw new Error("Unexpected portable state resume file");
+    const start = Number(name.slice(0, -5));
+    if (!Number.isSafeInteger(start) || start < 0)
+        throw new Error("Invalid portable state resume chunk filename");
+    return start;
+}
+async function atomicWrite(path, text, tempDir) {
+    const temporary = join(tempDir, `${process.pid}.${randomUUID()}.tmp`);
+    const handle = await open(temporary, "wx", 0o600);
+    try {
+        await handle.writeFile(text, "utf8");
+        await handle.sync();
+    }
+    finally {
+        await handle.close();
+    }
+    await rename(temporary, path);
+    const directory = await open(dirname(path), "r");
+    try {
+        await directory.sync();
+    }
+    finally {
+        await directory.close();
+    }
+}
+/**
+ * Read one untrusted resume file from exactly one opened object. The path must
+ * remain bound to that same regular file for the duration of the read. The
+ * descriptor-bound size determines the allocation, with one overflow byte to
+ * preserve fail-closed concurrent-growth detection under the hard maxBytes cap.
+ */
+export async function readPortableStateResumeFile(path, maxBytes, faultHooks = {}) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1)
+        throw new Error("Invalid portable state resume byte limit");
+    const pathBefore = await lstat(path);
+    if (!pathBefore.isFile() || pathBefore.isSymbolicLink() || pathBefore.size < 1 || pathBefore.size > maxBytes) {
+        throw new Error("Portable state resume file exceeds byte bounds or is not a regular file");
+    }
+    await faultHooks.afterPreflight?.();
+    const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+    const nonBlocking = process.platform === "win32" ? 0 : constants.O_NONBLOCK;
+    const handle = await open(path, constants.O_RDONLY | noFollow | nonBlocking);
+    try {
+        const opened = await handle.stat();
+        if (!opened.isFile() || opened.size < 1 || opened.size > maxBytes ||
+            opened.dev !== pathBefore.dev || opened.ino !== pathBefore.ino) {
+            throw new Error("Portable state resume file changed before descriptor binding");
+        }
+        await faultHooks.afterOpen?.();
+        const bufferLength = opened.size + 1;
+        faultHooks.onBufferAllocated?.(bufferLength);
+        const buffer = Buffer.allocUnsafe(bufferLength);
+        let total = 0;
+        while (total < buffer.length) {
+            const { bytesRead } = await handle.read(buffer, total, buffer.length - total, null);
+            if (bytesRead === 0)
+                break;
+            total += bytesRead;
+            if (total > opened.size || total > maxBytes)
+                throw new Error("Portable state resume file exceeds byte bounds");
+        }
+        if (total < 1)
+            throw new Error("Portable state resume file exceeds byte bounds or is not a regular file");
+        const pathAfter = await lstat(path);
+        if (!pathAfter.isFile() || pathAfter.isSymbolicLink() || pathAfter.dev !== opened.dev || pathAfter.ino !== opened.ino) {
+            throw new Error("Portable state resume file changed during bounded read");
+        }
+        return buffer.subarray(0, total).toString("utf8");
+    }
+    finally {
+        await handle.close();
+    }
+}
+async function assertRealDirectory(path) {
+    const info = await lstat(path);
+    if (!info.isDirectory() || info.isSymbolicLink())
+        throw new Error("Portable state resume path must be a real directory");
+}
+function isHash(value) {
+    return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+function isMissingFile(error) {
+    return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+}

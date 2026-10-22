@@ -1,0 +1,2 @@
+export const ATOMS_PER_ZYN = 100_000_000;
+export const MAX_SUPPLY_ATOMS = 50_000_000 * ATOMS_PER_ZYN;

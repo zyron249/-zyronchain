@@ -1,0 +1,200 @@
+import { constants } from "node:fs";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { lstat, open, realpath } from "node:fs/promises";
+import { resolve } from "node:path";
+export const MAX_PRIVATE_FILE_BYTES = 64 * 1024;
+/** @internal Shared by production validation and deterministic regression tests. */
+export function samePrivateFileIdentity(expectedDev, expectedIno, actualDev, actualIno) {
+    return expectedDev === actualDev && expectedIno === actualIno;
+}
+/** @internal Classify post-read descriptor metadata without trusting hard-link metadata as byte evidence. */
+export function classifyPrivateFileSnapshot(expected, actual) {
+    if (expected.dev !== actual.dev
+        || expected.ino !== actual.ino
+        || expected.size !== actual.size
+        || expected.mtimeMs !== actual.mtimeMs) {
+        return "changed";
+    }
+    if (expected.ctimeMs === actual.ctimeMs)
+        return "exact";
+    return expected.nlink !== actual.nlink ? "hardlink-metadata" : "changed";
+}
+/** @internal Compare bounded secret bytes by SHA-256 without exposing either value. */
+export function samePrivateFileBytes(expected, actual) {
+    const expectedDigest = createHash("sha256").update(expected).digest();
+    const actualDigest = createHash("sha256").update(actual).digest();
+    try {
+        return timingSafeEqual(expectedDigest, actualDigest);
+    }
+    finally {
+        expectedDigest.fill(0);
+        actualDigest.fill(0);
+    }
+}
+export async function assertPrivateRegularFile(path, label) {
+    const opened = await openValidatedPrivateFile(path, label);
+    await opened.handle.close();
+}
+/**
+ * Read a local secret only after validating the exact opened file descriptor.
+ * The path itself must not be a symlink, POSIX group/other permission bits must
+ * be clear, and the descriptor inode/device must still match both the initial
+ * pre-open path identity and the path after open on every platform so a path
+ * replacement between validation and read fails closed. Security-relevant
+ * device/inode identities are captured with BigInt-backed stat APIs so values
+ * above JavaScript's safe-integer range cannot alias through Number rounding.
+ * POSIX secret files must also be owned by the node process's effective UID so
+ * a privileged process does not silently expand custody to another local user.
+ * The canonical path is also re-resolved after open and after every bounded
+ * descriptor read; this catches parent junction/reparse substitution before
+ * secret bytes are returned. The descriptor content snapshot (identity, size,
+ * mtime and ctime) must remain stable across the read so an in-place writer
+ * cannot make callers consume bytes from a changed secret. A ctime/link-count-
+ * only transition used by atomic hard-link publication is accepted only after a
+ * second descriptor-bound bounded read has the same SHA-256 as the bytes about
+ * to be returned, the descriptor remains metadata-stable, and the current
+ * path/canonical identity is revalidated again after that reread. POSIX opens
+ * additionally use no-follow/non-blocking flags so symlink/FIFO substitution
+ * cannot redirect or block secret loading. Reads are capped and allocate only
+ * the bound descriptor size plus one overflow byte, so small secrets do not pay
+ * ceiling-sized transient allocations and concurrent growth still fails closed
+ * before bytes are returned. Mutable read buffers are explicitly zeroized
+ * before their operation-scoped lifetime ends; returned JavaScript strings
+ * remain GC-managed.
+ */
+export async function readPrivateRegularFile(path, label) {
+    const opened = await openValidatedPrivateFile(path, label);
+    let buffer;
+    try {
+        const metadata = await opened.handle.stat();
+        if (metadata.size > MAX_PRIVATE_FILE_BYTES) {
+            throw new Error(`${label} exceeds ${MAX_PRIVATE_FILE_BYTES} byte limit`);
+        }
+        buffer = Buffer.allocUnsafe(metadata.size + 1);
+        let total = 0;
+        while (total < buffer.length) {
+            const { bytesRead } = await opened.handle.read(buffer, total, buffer.length - total, null);
+            if (bytesRead === 0)
+                break;
+            total += bytesRead;
+            if (total > MAX_PRIVATE_FILE_BYTES) {
+                throw new Error(`${label} exceeds ${MAX_PRIVATE_FILE_BYTES} byte limit`);
+            }
+            if (total > metadata.size) {
+                throw new Error(`${label} content changed during reading`);
+            }
+        }
+        if (total !== metadata.size) {
+            throw new Error(`${label} content changed during reading`);
+        }
+        await requireSamePrivateRegularFile(opened.resolved, label, opened.canonical, opened.handle, "during reading");
+        const completedMetadata = await opened.handle.stat();
+        const disposition = classifyPrivateFileSnapshot(metadata, completedMetadata);
+        if (disposition === "changed") {
+            throw new Error(`${label} content changed during reading`);
+        }
+        const secretBytes = buffer.subarray(0, total);
+        if (disposition === "hardlink-metadata") {
+            await revalidatePrivateFileBytesAfterHardlinkTransition(opened.handle, secretBytes, completedMetadata, label);
+            await requireSamePrivateRegularFile(opened.resolved, label, opened.canonical, opened.handle, "after hard-link byte revalidation");
+        }
+        return secretBytes.toString("utf8");
+    }
+    finally {
+        buffer?.fill(0);
+        await opened.handle.close();
+    }
+}
+async function revalidatePrivateFileBytesAfterHardlinkTransition(handle, expectedBytes, expectedMetadata, label) {
+    if (expectedMetadata.size > MAX_PRIVATE_FILE_BYTES || expectedMetadata.size !== expectedBytes.byteLength) {
+        throw new Error(`${label} content changed during reading`);
+    }
+    const reread = Buffer.allocUnsafe(expectedMetadata.size);
+    try {
+        let total = 0;
+        while (total < reread.length) {
+            const { bytesRead } = await handle.read(reread, total, reread.length - total, total);
+            if (bytesRead === 0)
+                break;
+            total += bytesRead;
+        }
+        if (total !== expectedMetadata.size) {
+            throw new Error(`${label} content changed during reading`);
+        }
+        const afterRereadMetadata = await handle.stat();
+        if (classifyPrivateFileSnapshot(expectedMetadata, afterRereadMetadata) !== "exact") {
+            throw new Error(`${label} content changed during reading`);
+        }
+        if (!samePrivateFileBytes(expectedBytes, reread)) {
+            throw new Error(`${label} content changed during reading`);
+        }
+    }
+    finally {
+        reread.fill(0);
+    }
+}
+async function openValidatedPrivateFile(path, label) {
+    const resolved = resolve(path);
+    const initialPathMetadata = await lstat(resolved, { bigint: true });
+    if (initialPathMetadata.isSymbolicLink())
+        throw new Error(`${label} must not be a symbolic link`);
+    if (!initialPathMetadata.isFile())
+        throw new Error(`${label} must be a regular file`);
+    const canonical = await realpath(resolved);
+    const flags = process.platform === "win32"
+        ? "r"
+        : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+    const handle = await open(resolved, flags);
+    try {
+        await requireSamePrivateRegularFile(resolved, label, canonical, handle, "after opening", initialPathMetadata);
+        return { handle, resolved, canonical };
+    }
+    catch (error) {
+        await handle.close();
+        throw error;
+    }
+}
+async function requireSamePrivateRegularFile(resolved, label, expectedCanonical, handle, phase, initialPathMetadata) {
+    const descriptorMetadata = await handle.stat({ bigint: true });
+    const pathMetadata = await lstat(resolved, { bigint: true });
+    if (pathMetadata.isSymbolicLink())
+        throw new Error(`${label} must not be a symbolic link`);
+    if (!descriptorMetadata.isFile() || !pathMetadata.isFile()) {
+        throw new Error(`${label} must be a regular file`);
+    }
+    const observedCanonical = await realpath(resolved);
+    if (observedCanonical !== expectedCanonical) {
+        throw new Error(`${label} changed ${phase}`);
+    }
+    if (initialPathMetadata
+        && !samePrivateFileIdentity(initialPathMetadata.dev, initialPathMetadata.ino, descriptorMetadata.dev, descriptorMetadata.ino)) {
+        throw new Error(`${label} changed before opening`);
+    }
+    if (!samePrivateFileIdentity(descriptorMetadata.dev, descriptorMetadata.ino, pathMetadata.dev, pathMetadata.ino)) {
+        throw new Error(`${label} changed while being validated`);
+    }
+    if (process.platform !== "win32") {
+        const effectiveUid = typeof process.geteuid === "function" ? process.geteuid() : null;
+        if (effectiveUid !== null && descriptorMetadata.uid !== BigInt(effectiveUid)) {
+            throw new Error(`${label} must be owned by the effective user`);
+        }
+        if ((descriptorMetadata.mode & 63n) !== 0n) {
+            throw new Error(`${label} must not be readable, writable, or executable by group/other users (0600 recommended)`);
+        }
+    }
+}
+export function normalizeSecureRpcUrl(value) {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:")
+        throw new Error("RPC URL must use HTTP(S)");
+    if (url.username || url.password || url.search || url.hash)
+        throw new Error("Invalid RPC URL");
+    if (url.protocol === "http:" && !isLoopbackRpcHost(url.hostname)) {
+        throw new Error("Remote RPC URL must use HTTPS; plaintext HTTP is allowed only for loopback");
+    }
+    return url.toString().replace(/\/$/, "");
+}
+export function isLoopbackRpcHost(hostname) {
+    const normalized = hostname.toLowerCase();
+    return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
+}
