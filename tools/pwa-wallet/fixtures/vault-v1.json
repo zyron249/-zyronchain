@@ -1,0 +1,22 @@
+{
+  "format": "zyronchain-pwa-vault",
+  "version": 1,
+  "createdAt": "2026-10-01T00:00:00.000Z",
+  "address": "ZYN0ac2dbccbd2a299dea4fcc2ddf98d7dd77eebb41",
+  "publicKey": "c1c03507f87433e86902f9673cb296b3f00079f035489b8d8460b36e3b84de92b2ed8541368f1490164365e126b7b518c6cfb29c27b990bf12ecfa472d4a7d66",
+  "derivationPath": "m/44'/249249'/0'/0/0",
+  "words": 12,
+  "kdf": {
+    "name": "scrypt",
+    "n": 131072,
+    "r": 8,
+    "p": 1,
+    "dkLen": 32
+  },
+  "cipher": {
+    "name": "aes-256-gcm",
+    "iv": "6cf8e8a04bce89c2d60faf8c"
+  },
+  "salt": "ff29322d14aa1b981bfa8c1b92293e8d",
+  "ciphertext": "fdff3336ef4d14be35c0268fa80b19f921e7604bd71dbb92a529fb8d9cbe3959"
+}

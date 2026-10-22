@@ -356,7 +356,11 @@ try {
     assert.equal(await page.isDisabled('[data-tx-sign]'), true, 'signing needs a deliberate confirmation');
     assert.equal(await page.isVisible('[data-tx-out]'), false, 'nothing is signed on review');
     await shot(page, '6a-review-transfer');
+    assert.equal(await page.isVisible('[data-review-warnings]'), true, 'a first-time recipient shows a send-safety warning');
+    assert.deepEqual(await page.$$eval('[data-review-warning-list] li', (li) => li.map((x) => x.dataset.warning)), ['first-time']);
     await page.check('[data-review-ack]');
+    assert.equal(await page.isDisabled('[data-tx-sign]'), true, 'send-safety warnings need their own confirmation');
+    await page.check('[data-review-warn-ack]');
     await page.click('[data-tx-sign]');
     await page.waitForSelector('[data-tx-out]:not([hidden])');
     assert.match(await page.textContent('[data-tx-summary]'), /Signed locally\. Not broadcast\./);
@@ -400,10 +404,14 @@ try {
     assert.match(await page.textContent('[data-review-fee-warning]'), /100000 atoms \(0\.001 ZYN\)/);
     assert.equal(await page.isHidden('[data-review-fee-warning]'), false);
     assert.equal(await page.isDisabled('[data-review-ack]'), true, 'a rejected fee cannot be acknowledged into a signature');
-    assert.equal(await page.isDisabled('[data-tx-sign]'), true, 'a rejected fee is not signed');
+    assert.equal(await page.isHidden('[data-review-warnings]'), true, 'a recipient already sent to (history kept in the encrypted vault) shows no first-time warning');
     await page.click('[data-review-cancel]');
     await page.waitForSelector('[data-screen="home"]:not([hidden])');
     await page.click('[data-screen="home"] [data-go="send"]');
+    await page.fill('[data-tx-to]', address);
+    await page.click('[data-tx-review]');
+    assert.match(await page.textContent('[data-tx-check]'), /You can't send to your own address\. Enter a different recipient\./);
+    assert.equal(await visibleScreen(page), 'send', 'a self-send never reaches review');
     await page.fill('[data-tx-to]', core.MINING_TRACKER_ADDRESS);
     await page.click('[data-tx-review]');
     assert.match(await page.textContent('[data-tx-check]'), /reserved system address/);
@@ -511,7 +519,7 @@ try {
 
   await test('stored vault with an unknown version or malformed data is rejected and left untouched (fail closed)', async () => {
     const original = (await readVaultRecord(page))[0];
-    for (const bad of [{ ...original, version: 2 }, { ...original, kdf: { ...original.kdf, n: 1024 } }, 'garbage']) {
+    for (const bad of [{ ...original, version: 3 }, { ...original, version: 1 }, { ...original, kdf: { ...original.kdf, n: 1024 } }, 'garbage']) {
       await page.evaluate((value) => new Promise((r) => { const q = indexedDB.open('zyron-wallet-app'); q.onsuccess = () => { const db = q.result; db.transaction('vault', 'readwrite').objectStore('vault').put(value, 'primary').onsuccess = () => { db.close(); r(); }; }; }), bad);
       await page.reload({ waitUntil: 'load' });
       await page.waitForFunction(() => !document.querySelector('[data-unsupported]').hidden);
@@ -557,6 +565,70 @@ try {
     assert.ok(!text.includes('junk'), 'export does not contain the recovery phrase');
     assert.equal(requests.slice(before).filter((r) => r.url.startsWith('http')).length, 0, 'vault import and export make no network requests');
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  await test('version-1 vault upgrades on unlock; address book and threshold live in the encrypted vault', async () => {
+    const v1 = JSON.parse(readFileSync(join(here, 'fixtures', 'vault-v1.json'), 'utf8'));
+    const V1_PASSWORD = 'correct horse battery staple';
+    const before = requests.length;
+    await page.evaluate((value) => new Promise((r) => { const q = indexedDB.open('zyron-wallet-app'); q.onsuccess = () => { const db = q.result; db.transaction('vault', 'readwrite').objectStore('vault').put(value, 'primary').onsuccess = () => { db.close(); r(); }; }; }), v1);
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForFunction(() => document.body.dataset.current === 'unlock');
+    assert.deepEqual(await readVaultRecord(page), [v1], 'a stored version-1 vault is read and left as is until unlock');
+    await page.fill('[data-unlock-password]', 'wrong password here');
+    await page.click('[data-unlock-go]');
+    await page.waitForFunction(() => /Wrong password/.test(document.querySelector('[data-unlock-result]').textContent), null, { timeout: 60000 });
+    assert.deepEqual(await readVaultRecord(page), [v1], 'a failed unlock never rewrites the vault');
+    await page.fill('[data-unlock-password]', V1_PASSWORD);
+    await page.click('[data-unlock-go]');
+    await page.waitForSelector('[data-screen="home"]:not([hidden])', { timeout: 60000 });
+    const [upgraded] = await readVaultRecord(page);
+    assert.equal(upgraded.version, 2);
+    core.assertVaultShape(upgraded);
+    for (const k of ['address', 'publicKey', 'salt', 'createdAt']) assert.equal(upgraded[k], v1[k]);
+    await page.click('[data-screen="home"] [data-go="send"]');
+    await page.waitForSelector('[data-screen="send"]:not([hidden])');
+    await page.fill('[data-contact-name]', 'Fixture friend');
+    await page.fill('[data-contact-address]', RECEIVER);
+    await page.click('[data-contact-save]');
+    await page.waitForSelector('[data-contact-list] li');
+    await page.fill('[data-contact-name]', 'Me');
+    await page.fill('[data-contact-address]', v1.address);
+    await page.click('[data-contact-save]');
+    assert.match(await page.textContent('[data-contact-result]'), /own address/);
+    const stored = JSON.stringify(await readVaultRecord(page));
+    assert.ok(!stored.includes('Fixture friend') && !stored.toLowerCase().includes(RECEIVER.slice(3).toLowerCase()), 'contacts are encrypted');
+    await page.click('[data-screen="send"] [data-go="settings"]');
+    await page.fill('[data-threshold-input]', '2');
+    await page.click('[data-threshold-save]');
+    await page.waitForFunction(() => /2 ZYN/.test(document.querySelector('[data-threshold-current]').textContent));
+    await page.click('[data-lock]');
+    await page.fill('[data-unlock-password]', V1_PASSWORD);
+    await page.click('[data-unlock-go]');
+    await page.waitForSelector('[data-screen="home"]:not([hidden])', { timeout: 60000 });
+    await page.click('[data-screen="home"] [data-go="send"]');
+    assert.deepEqual(await page.$$eval('[data-contact-list] li strong', (els) => els.map((e) => e.textContent)), ['Fixture friend'], 'contact survives lock/unlock');
+    await page.click('[data-contact-list] li [data-contact-use]');
+    assert.equal(await page.inputValue('[data-tx-to]'), core.parseAddressInput(RECEIVER).canonical, 'picking a contact fills the receiver');
+    await page.fill('[data-tx-chain]', 'zyron-wallet-testnet-1');
+    await page.fill('[data-tx-nonce]', '1');
+    await page.fill('[data-tx-amount]', '2');
+    await page.fill('[data-tx-fee]', '0.001');
+    await page.selectOption('[data-tx-version]', '1');
+    await page.click('[data-tx-review]');
+    await page.waitForSelector('[data-screen="review"]:not([hidden])');
+    assert.deepEqual(await page.$$eval('[data-review-warning-list] li', (li) => li.map((x) => x.dataset.warning)), ['first-time', 'large-amount']);
+    await page.click('[data-review-cancel]');
+    await page.click('[data-screen="home"] [data-go="send"]');
+    await page.click('[data-contact-list] li [data-contact-edit]');
+    await page.fill('[data-contact-name]', 'Renamed friend');
+    await page.click('[data-contact-save]');
+    await page.waitForFunction(() => document.querySelector('[data-contact-list] li strong').textContent === 'Renamed friend');
+    await page.click('[data-contact-list] li [data-contact-delete]');
+    assert.equal(await page.$$eval('[data-contact-list] li', (li) => li.length), 1, 'delete needs a second click');
+    await page.click('[data-contact-list] li [data-contact-delete]');
+    await page.waitForFunction(() => document.querySelectorAll('[data-contact-list] li').length === 0);
+    assert.equal(requests.slice(before).filter((r) => r.url.startsWith('http') && new URL(r.url).origin !== new URL(page.url()).origin).length, 0, 'no requests leave the app origin');
   });
 
   await test('missing crypto libraries: the wallet refuses to run', async () => {
