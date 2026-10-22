@@ -399,8 +399,8 @@
     if (!isPlainObject(vault)) throw new Error('Vault is not a plain object');
     const known = vault.version === VAULT_VERSION || vault.version === VAULT_VERSION_V1;
     const keys = Object.keys(vault).sort();
-    if (keys.join(',') !== (vault.version === VAULT_VERSION_V1 ? VAULT_KEYS_V1 : VAULT_KEYS).join(',') &&
-        !(known === false && (keys.join(',') === VAULT_KEYS.join(',') || keys.join(',') === VAULT_KEYS_V1.join(',')))) throw new Error('Vault has unexpected fields');
+    const expected = vault.version === VAULT_VERSION_V1 ? VAULT_KEYS_V1 : VAULT_KEYS;
+    if (keys.join(',') !== expected.join(',')) throw new Error('Vault has unexpected fields');
     if (vault.format !== VAULT_FORMAT) throw new Error('Unsupported vault format');
     if (typeof vault.version !== 'number' || !known) throw new Error('Unsupported vault version (this app reads versions ' + VAULT_VERSION_V1 + ' and ' + VAULT_VERSION + '); nothing was changed');
     if (typeof vault.createdAt !== 'string' || !ISO_UTC_RE.test(vault.createdAt) || !Number.isFinite(Date.parse(vault.createdAt))) throw new Error('Vault creation time is invalid');
@@ -477,6 +477,35 @@
     const next = await sealVault(opened.entropy, opened.key, hexToBytes(vault.salt), opened.account, vault.createdAt, vault.words, opened.book || emptyBook());
     assertVaultShape(next);
     return next;
+  }
+  // Upgrade + proof: the new vault must open with the same password and give the same identity and seed before
+  // the caller may store it. Returns { vault, opened } (opened is the session from the v2 vault; caller wipes it).
+  async function upgradeVaultVerified(vault, opened, password) {
+    const next = await upgradeVault(vault, opened);
+    const check = await openVault(next, password);
+    const same = check.account.address === vault.address && check.account.publicKey === vault.publicKey &&
+      check.entropy.length === opened.entropy.length && check.entropy.every((b, i) => b === opened.entropy[i]);
+    if (!same) {
+      wipe(check.entropy, check.account.privateKey);
+      throw new Error('Vault upgrade check failed: the upgraded vault did not reopen to the same wallet; nothing was changed');
+    }
+    wipe(check.entropy);
+    return { vault: next, opened: check };
+  }
+  // Rollback marker: a small public record saying this device has opened a version-2 vault for this address.
+  const UPGRADE_MARKER_FORMAT = 'zyronchain-pwa-vault-v2-seen';
+  function upgradeMarker(address) {
+    if (!ADDRESS_RE.test(address)) throw new Error('Invalid address');
+    return { format: UPGRADE_MARKER_FORMAT, version: VAULT_VERSION, address };
+  }
+  function parseUpgradeMarker(value) {
+    if (!isPlainObject(value) || Object.keys(value).sort().join(',') !== 'address,format,version' ||
+        value.format !== UPGRADE_MARKER_FORMAT || value.version !== VAULT_VERSION || !ADDRESS_RE.test(value.address)) throw new Error('Upgrade marker is invalid');
+    return upgradeMarker(value.address);
+  }
+  // True when a version-1 vault must be refused because a version-2 vault for the same address was already seen.
+  function isRollback(vault, marker) {
+    return Boolean(marker) && vault && vault.version === VAULT_VERSION_V1 && parseUpgradeMarker(marker).address === vault.address;
   }
   // Returns a copy of a version-2 vault with the book re-sealed (fresh IV). Needs the key from openVault.
   async function updateVaultBook(vault, key, book) {
@@ -648,7 +677,7 @@
     TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, WALLET_TESTNET_CHAIN_ID, defaultTransferVersion,
     wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress,
     passwordStrength, normalizePhrase, generateEntropy, entropyToPhrase, phraseToEntropy, deriveAccount,
-    createVault, createVaultSession, openVault, assertVaultShape, parseVault, upgradeVault, updateVaultBook,
+    createVault, createVaultSession, openVault, upgradeVaultVerified, upgradeMarker, parseUpgradeMarker, isRollback, assertVaultShape, parseVault, upgradeVault, updateVaultBook,
     emptyBook, parseBook, addContact, updateContact, removeContact, findContact, recordSent, setThreshold, sendWarnings, zynToAtoms, atomsToZyn, buildTransfer, describeTransfer, fixedFeeRejection, signTransfer, verifyCanonical,
     LINK_SIGNING_DOMAIN, LINK_NETWORK, LINK_RETURN_URL, parseLinkMessage, parseLinkHash, signLinkProof, textToBase64Url,
     selfTest

@@ -163,6 +163,18 @@ async function createWallet(page, { snapshot = false } = {}) {
   assert.equal(await page.$$eval('[data-phrase-words] li, [data-quiz] input', (l) => l.length), 0, 'phrase cards and check inputs are gone after saving');
   return words;
 }
+async function readMetaRecords(page) {
+  return page.evaluate(() => new Promise((resolveRecord, reject) => {
+    const q = indexedDB.open('zyron-wallet-app');
+    q.onerror = () => reject(q.error);
+    q.onsuccess = () => {
+      const db = q.result;
+      if (!db.objectStoreNames.contains('meta')) { db.close(); resolveRecord({}); return; }
+      const out = {}; const st = db.transaction('meta').objectStore('meta'); const c = st.openCursor();
+      c.onsuccess = () => { const cur = c.result; if (cur) { out[cur.key] = cur.value; cur.continue(); } else { db.close(); resolveRecord(out); } };
+    };
+  }));
+}
 async function readVaultRecord(page) {
   return page.evaluate(() => new Promise((resolveRecord, reject) => {
     const q = indexedDB.open('zyron-wallet-app');
@@ -586,6 +598,9 @@ try {
     assert.equal(upgraded.version, 2);
     core.assertVaultShape(upgraded);
     for (const k of ['address', 'publicKey', 'salt', 'createdAt']) assert.equal(upgraded[k], v1[k]);
+    let meta = await readMetaRecords(page);
+    assert.deepEqual(meta['v1-backup'], v1, 'the v1 copy is kept until the v2 vault is opened from storage');
+    assert.deepEqual(meta['v2-seen'], { format: 'zyronchain-pwa-vault-v2-seen', version: 2, address: v1.address });
     await page.click('[data-screen="home"] [data-go="send"]');
     await page.waitForSelector('[data-screen="send"]:not([hidden])');
     await page.fill('[data-contact-name]', 'Fixture friend');
@@ -608,6 +623,9 @@ try {
     await page.waitForSelector('[data-screen="home"]:not([hidden])', { timeout: 60000 });
     await page.click('[data-screen="home"] [data-go="send"]');
     assert.deepEqual(await page.$$eval('[data-contact-list] li strong', (els) => els.map((e) => e.textContent)), ['Fixture friend'], 'contact survives lock/unlock');
+    meta = await readMetaRecords(page);
+    assert.equal(meta['v1-backup'], undefined, 'the v1 copy is removed after the v2 vault opened');
+    assert.ok(meta['v2-seen'], 'the rollback marker stays');
     await page.click('[data-contact-list] li [data-contact-use]');
     assert.equal(await page.inputValue('[data-tx-to]'), core.parseAddressInput(RECEIVER).canonical, 'picking a contact fills the receiver');
     await page.fill('[data-tx-chain]', 'zyron-wallet-testnet-1');
@@ -628,6 +646,24 @@ try {
     assert.equal(await page.$$eval('[data-contact-list] li', (li) => li.length), 1, 'delete needs a second click');
     await page.click('[data-contact-list] li [data-contact-delete]');
     await page.waitForFunction(() => document.querySelectorAll('[data-contact-list] li').length === 0);
+    // pagehide locks: the key and decrypted book are dropped before a back/forward cache snapshot.
+    await page.fill('[data-contact-name]', 'Kept friend');
+    await page.fill('[data-contact-address]', RECEIVER);
+    await page.click('[data-contact-save]');
+    await page.waitForSelector('[data-contact-list] li');
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+    assert.equal(await page.evaluate(() => document.body.dataset.current), 'unlock', 'pagehide locks the wallet');
+    assert.equal(await page.$$eval('[data-contact-list] li', (li) => li.length), 0, 'the decrypted address book is cleared on pagehide');
+    // Rollback: putting the old v1 vault back after v2 was seen is refused, with a recovery path.
+    const v2now = (await readVaultRecord(page))[0];
+    await page.evaluate((value) => new Promise((r) => { const q = indexedDB.open('zyron-wallet-app'); q.onsuccess = () => { const db = q.result; db.transaction('vault', 'readwrite').objectStore('vault').put(value, 'primary').onsuccess = () => { db.close(); r(); }; }; }), v1);
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForFunction(() => !document.querySelector('[data-unsupported]').hidden);
+    assert.match(await page.textContent('[data-unsupported]'), /already upgraded this wallet to vault version 2.*restore it from your recovery phrase/);
+    assert.deepEqual(await readVaultRecord(page), [v1], 'the refused vault is left untouched');
+    await page.evaluate((value) => new Promise((r) => { const q = indexedDB.open('zyron-wallet-app'); q.onsuccess = () => { const db = q.result; db.transaction('vault', 'readwrite').objectStore('vault').put(value, 'primary').onsuccess = () => { db.close(); r(); }; }; }), v2now);
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForFunction(() => document.body.dataset.current === 'unlock');
     assert.equal(requests.slice(before).filter((r) => r.url.startsWith('http') && new URL(r.url).origin !== new URL(page.url()).origin).length, 0, 'no requests leave the app origin');
   });
 

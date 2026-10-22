@@ -23,6 +23,10 @@
   const DB_NAME = 'zyron-wallet-app';
   const STORE = 'vault';
   const VAULT_KEY = 'primary';
+  // Second object store (DB version 2) for the vault upgrade: the pre-upgrade v1 copy and the rollback marker.
+  const META = 'meta';
+  const V1_BACKUP_KEY = 'v1-backup';
+  const MARKER_KEY = 'v2-seen';
 
   // ---------------- UI strings (English only) ----------------
   const STRINGS = { en: {} };
@@ -109,18 +113,22 @@
   // ---------------- IndexedDB (encrypted vault only) ----------------
   function openDb() {
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, 1);
-      request.onupgradeneeded = () => request.result.createObjectStore(STORE);
+      const request = indexedDB.open(DB_NAME, 2);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        for (const name of [STORE, META]) if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
+      };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
   }
-  async function dbRequest(mode, run) {
+  async function dbRequest(mode, run, storeName) {
+    const name = storeName || STORE;
     const db = await openDb();
     try {
       return await new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, mode);
-        const request = run(tx.objectStore(STORE));
+        const tx = db.transaction(name, mode);
+        const request = run(tx.objectStore(name));
         tx.oncomplete = () => resolve(request.result);
         tx.onerror = () => reject(tx.error);
         tx.onabort = () => reject(tx.error);
@@ -130,11 +138,27 @@
     }
   }
   const loadVault = () => dbRequest('readonly', (store) => store.get(VAULT_KEY));
+  // The only IndexedDB write path. The vault store gets only encrypted vaults; the meta store gets only an encrypted
+  // version-1 vault (the pre-upgrade copy) or the public rollback marker.
+  function putRecord(storeName, key, value) {
+    const record = storeName === STORE || key === V1_BACKUP_KEY ? core.parseVault(value) : core.parseUpgradeMarker(value);
+    if (key === V1_BACKUP_KEY && record.version !== core.VAULT_VERSION_V1) throw new Error('Only a version-1 vault is kept as the upgrade copy');
+    return dbRequest('readwrite', (store) => store.put(record, key), storeName);
+  }
   function saveVault(vault) {
     core.assertVaultShape(vault); // refuses to persist anything that is not an encrypted vault
-    return dbRequest('readwrite', (store) => store.put(core.parseVault(vault), VAULT_KEY));
+    return putRecord(STORE, VAULT_KEY, vault);
   }
   const deleteVault = () => dbRequest('readwrite', (store) => store.delete(VAULT_KEY));
+  const loadMeta = (key) => dbRequest('readonly', (store) => store.get(key), META);
+  const deleteMeta = (key) => dbRequest('readwrite', (store) => store.delete(key), META);
+  async function loadMarker() {
+    const value = await loadMeta(MARKER_KEY);
+    return value === undefined ? null : core.parseUpgradeMarker(value);
+  }
+  function rollbackMessage() {
+    return 'This device already upgraded this wallet to vault version 2, so an older version-1 vault for the same address was refused (possible rollback). Nothing was changed. To recover, delete this wallet and restore it from your recovery phrase, or import your exported version-2 vault file.';
+  }
 
   // ---------------- helpers ----------------
   function show(name) {
@@ -298,7 +322,8 @@
     }
   });
   window.addEventListener('blur', hideWords);
-  window.addEventListener('pagehide', () => { hideWords(); wipeAccount(state.account); if (state.pending) { wipeAccount(state.pending.account); core.wipe(state.pending.entropy); } wipeBackup(); });
+  // Lock before the page can enter the back/forward cache, so the vault key and decrypted book are dropped too.
+  window.addEventListener('pagehide', () => { hideWords(); if (state.pending) { wipeAccount(state.pending.account); core.wipe(state.pending.entropy); } wipeBackup(); lock(t('msgLocked')); });
 
   // ---------------- QR ----------------
   function renderQr(text) {
@@ -570,13 +595,26 @@
     const password = $('[data-unlock-password]').value;
     setMessage('[data-unlock-result]', '', '');
     try {
-      const opened = await busy(t('msgUnlocking'), () => core.openVault(state.vault, password));
+      if (core.isRollback(state.vault, await loadMarker())) throw new Error(rollbackMessage());
+      let opened = await busy(t('msgUnlocking'), () => core.openVault(state.vault, password));
       try {
-        // A version-1 vault is upgraded to version 2 only here, after the password opened it.
         if (state.vault.version !== core.VAULT_VERSION) {
-          const upgraded = await core.upgradeVault(state.vault, opened);
-          await saveVault(upgraded);
-          state.vault = core.parseVault(upgraded);
+          // Version 1 -> 2, only after the password opened it. The upgraded vault must reopen with the same
+          // password to the same wallet before it replaces v1, and the v1 copy is kept until a later v2 unlock.
+          const v1 = state.vault;
+          const result = await busy(t('msgUnlocking'), () => core.upgradeVaultVerified(v1, opened, password));
+          core.wipe(opened.entropy);
+          wipeAccount(opened.account);
+          opened = result.opened;
+          await putRecord(META, V1_BACKUP_KEY, v1);
+          await saveVault(result.vault);
+          await putRecord(META, MARKER_KEY, core.upgradeMarker(result.vault.address));
+          state.vault = core.parseVault(result.vault);
+        } else {
+          const marker = await loadMarker();
+          if (!marker || marker.address !== state.vault.address) await putRecord(META, MARKER_KEY, core.upgradeMarker(state.vault.address));
+          // A version-2 vault opened from storage: the pre-upgrade copy is no longer needed.
+          if (await loadMeta(V1_BACKUP_KEY) !== undefined) await deleteMeta(V1_BACKUP_KEY);
         }
       } catch (error) {
         core.wipe(opened.entropy);
@@ -957,6 +995,7 @@
     if (state.vault) { setMessage('[data-vault-import-result]', t('msgVaultExists'), 'bad'); return; }
     try {
       const vault = core.parseVault(await file.text());
+      if (core.isRollback(vault, await loadMarker())) throw new Error(rollbackMessage());
       await saveVault(vault);
       state.vault = vault;
       if (state.rejectedVault) {
@@ -983,6 +1022,8 @@
     if ($('[data-delete-go]').disabled) return;
     try {
       await deleteVault();
+      await deleteMeta(V1_BACKUP_KEY);
+      await deleteMeta(MARKER_KEY);
       wipeAccount(state.account);
       state.account = null;
       state.vault = null;
@@ -1207,6 +1248,7 @@
     try {
       const stored = await loadVault();
       if (stored !== undefined) state.vault = core.parseVault(stored); // unknown or malformed vaults are rejected, never rewritten
+      if (state.vault && core.isRollback(state.vault, await loadMarker())) { state.vault = null; throw new Error(rollbackMessage()); }
     } catch (error) {
       state.vault = null;
       state.rejectedVault = true;

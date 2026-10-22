@@ -241,6 +241,37 @@ await test('vault migration: a version-1 fixture still opens and upgrades to ver
   core.wipe(opened.entropy, opened.account.privateKey, again.entropy, again.account.privateKey);
 });
 
+await test('vault upgrade is verified before it may be stored; rollback marker refuses a v1 vault after v2', async () => {
+  const v1 = JSON.parse(readFileSync(join(here, 'fixtures', 'vault-v1.json'), 'utf8'));
+  const opened = await core.openVault(v1, PASSWORD);
+  const { vault: v2, opened: check } = await core.upgradeVaultVerified(v1, opened, PASSWORD);
+  assert.equal(v2.version, 2);
+  assert.equal(check.account.address, v1.address, 'the upgraded vault reopened to the same address');
+  await assert.rejects(core.upgradeVaultVerified(v1, opened, PASSWORD + '!'), /authentication failed/, 'a different password cannot pass the check');
+  // A broken upgrade (wrong seed sealed) is caught by the reopen check before anything could be stored.
+  const other = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
+  const forged = { ...opened, entropy: core.phraseToEntropy(SNAP_VECTORS[0].mnemonic) };
+  await assert.rejects(core.upgradeVaultVerified(v1, forged, PASSWORD), /different identity|upgrade check failed/);
+  // Rollback marker
+  const marker = core.upgradeMarker(v1.address);
+  assert.deepEqual(core.parseUpgradeMarker(JSON.parse(JSON.stringify(marker))), marker);
+  assert.equal(core.isRollback(v1, marker), true, 'v1 for an address already seen at v2 is refused');
+  assert.equal(core.isRollback(v2, marker), false);
+  assert.equal(core.isRollback(v1, null), false, 'no marker: v1 still opens and upgrades');
+  assert.equal(core.isRollback(v1, core.upgradeMarker(other.address)), false, 'marker for another wallet does not block');
+  for (const bad of [{}, { ...marker, version: 1 }, { ...marker, extra: 1 }, { ...marker, address: 'x' }, { ...marker, format: 'nope' }]) {
+    assert.throws(() => core.parseUpgradeMarker(bad), /marker is invalid/);
+    assert.throws(() => core.isRollback(v1, bad), /marker is invalid/, 'a malformed marker fails closed');
+  }
+  const appJs = readFileSync(join(app, 'app.js'), 'utf8');
+  const unlock = appJs.slice(appJs.indexOf('async function unlock()'), appJs.indexOf("$('[data-unlock-go]')"));
+  assert.ok(unlock.indexOf('upgradeVaultVerified(') > 0 && unlock.indexOf('upgradeVaultVerified(') < unlock.indexOf('saveVault('), 'reopen check runs before saveVault');
+  assert.ok(unlock.indexOf('V1_BACKUP_KEY, v1)') < unlock.indexOf('saveVault('), 'the v1 copy is stored before v1 is replaced');
+  assert.match(unlock, /deleteMeta\(V1_BACKUP_KEY\)/, 'the v1 copy is removed after a later v2 unlock');
+  assert.match(appJs, /window\.addEventListener\('pagehide', \(\) => \{[^\n]*lock\(t\('msgLocked'\)\); \}\);/, 'pagehide locks (drops key and book)');
+  core.wipe(opened.entropy, opened.account.privateKey, check.entropy, check.account.privateKey, other.privateKey, forged.entropy);
+});
+
 await test('vault address book: round-trip through the encrypted vault, tamper fails, nothing in plaintext', async () => {
   const entropy = core.phraseToEntropy(SNAP_VECTORS[0].mnemonic);
   const account = await core.deriveAccount(entropy);

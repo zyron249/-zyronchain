@@ -63,11 +63,27 @@ An installable web app for iOS and Android ("Add to Home Screen"). There is no a
   IndexedDB write path. The input vault object is not modified. A wrong password, a failed check or an unknown
   version never rewrites the stored record. Nothing is upgraded at startup or on import; an imported v1 file is
   upgraded at its first unlock. Upgrading a v2 vault is a no-op.
+  - **Verified before it is stored (`upgradeVaultVerified`)**: the upgraded vault is opened again with
+    `openVault(upgraded, password)` and must give the same address, public key and seed. Only then is it saved.
+  - **v1 copy until v2 is proven**: in this order the app (1) stores the original v1 record as `v1-backup` in the
+    `meta` object store, (2) saves the v2 vault, (3) writes the rollback marker. A crash at any step leaves a
+    vault that still opens. On the next unlock that opens the stored v2 vault, `v1-backup` is deleted.
+  - **Rollback marker**: `meta/v2-seen` = `{format: "zyronchain-pwa-vault-v2-seen", version: 2, address}`. If a v1
+    vault for that address shows up again (at startup, at unlock or on import), the app refuses it: "This browser
+    already upgraded this wallet to vault version 2 …". The stored record is left untouched. A malformed marker
+    is refused too (fail closed). The marker only protects this browser profile. It does not stop someone who can
+    write the whole IndexedDB database, and the core library still opens a v1 vault by design.
+  - **Recovery** when the marker refuses a vault: use **Delete this wallet** (this also clears `v1-backup` and
+    the marker), then restore from the recovery phrase or import the exported v2 vault file.
+  - IndexedDB database `zyron-wallet-app` is at **version 2**: store `vault` (key `primary`) and store `meta`
+    (marker and the temporary v1 copy). There is still a single write path (`putRecord`), and it validates every
+    record before writing it.
 - **In-memory vault key**: unlocking (or creating/restoring) keeps a **non-extractable** AES-GCM `CryptoKey`
   derived from the password, so the book can be re-sealed after a contact or threshold change or a signed
   transfer without asking for the password again. The raw scrypt output is zeroed right after import. The
-  `CryptoKey` and the decrypted book are memory only and are dropped on lock (manual, idle or background).
-  Nothing about the book is kept in localStorage, cookies or a second IndexedDB record.
+  `CryptoKey` and the decrypted book are memory only and are dropped on lock (manual, idle, background, and
+  `pagehide`, so neither survives into the back/forward cache). Nothing about the book is kept in localStorage,
+  cookies or a second IndexedDB record.
   - Exact KDF parameters are required, which blocks downgrades and memory-exhaustion vaults.
 - Byte buffers (entropy, seed, private key, scrypt output) are zeroed after use. JavaScript strings (the phrase
   while it is on screen, the password while it is typed) cannot be wiped; they are dropped as soon as possible.
