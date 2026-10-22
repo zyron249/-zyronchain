@@ -8,6 +8,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
+import { vaultSecretLeaks } from './vault-leaks.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..', '..');
@@ -102,6 +103,24 @@ await test("phrase -> m/44'/249249'/0'/0/0 -> address equals the MetaMask Snap v
     const ref = refAccount(phrase);
     assert.deepEqual({ publicKey: account.publicKey, address: account.address }, { publicKey: ref.publicKey, address: ref.address });
   }
+});
+
+await test('vault leak check: schema words are not leaks, secrets in values still are', async () => {
+  // Some BIP-39 words occur inside the fixed vault schema (keys and pinned constants). A random 12-word phrase
+  // contains one of them about 3% of the time, which made the browser test's leak check fail spuriously.
+  const words = V.bip39.wordlist;
+  const entropy = core.phraseToEntropy(SNAP_VECTORS[0].mnemonic);
+  const account = await core.deriveAccount(entropy);
+  const vault = await core.createVault(entropy, PASSWORD, account);
+  const schemaWords = ['address', 'dress', 'public', 'vault', 'version'];
+  for (const w of schemaWords) assert.ok(words.includes(w), `${w} is a BIP-39 word`);
+  assert.deepEqual(vaultSecretLeaks(vault, schemaWords), [], 'fixed schema text is not a leak');
+  const hex = V.bytesToHex(entropy);
+  assert.deepEqual(vaultSecretLeaks(vault, [hex, PASSWORD, 'abandon']), []);
+  assert.deepEqual(vaultSecretLeaks({ ...vault, ciphertext: vault.ciphertext + hex }, [hex]), [hex], 'secret inside a value is a leak');
+  assert.deepEqual(vaultSecretLeaks({ ...vault, note: 'public dress' }, ['public', 'dress']), ['public', 'dress'], 'schema words inside an extra value are leaks');
+  assert.deepEqual(vaultSecretLeaks({ ...vault, public: 1 }, ['public']), ['public'], 'an unknown key equal to a word is a leak');
+  assert.deepEqual(vaultSecretLeaks({ ...vault, createdAt: 'version' }, ['version']), ['version'], 'a schema token used as a variable value is a leak');
 });
 
 await test('recovery phrase validation rejects bad input', () => {
