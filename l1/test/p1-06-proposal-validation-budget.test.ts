@@ -222,3 +222,52 @@ test("P1-06: the budget is per slot and hash, pruned at the finalized height, an
   assert.throws(() => budget.assertAllowed(slot(9), "dd"), new RegExp(PROPOSAL_VALIDATION_BUDGET_MESSAGE));
   assert.throws(() => new ProposalValidationBudget(0), /Invalid proposal validation budget/);
 });
+
+test("P1-06: a validated proposal is not re-validated, and other proposals for its slot are refused before the expensive stage", { timeout: 120_000 }, async () => {
+  await withNode(validatorTwoPrivate, async (service, store) => {
+    // Count state replays (the expensive stage after the O(1) gates).
+    const chain = store.chain as unknown as { validateAndApply: (...args: unknown[]) => unknown };
+    const original = chain.validateAndApply.bind(store.chain);
+    let replays = 0;
+    chain.validateAndApply = (...args: unknown[]) => { replays += 1; return original(...args); };
+    const tip = store.chain.tip;
+    const transfer = (nonce: number) => createTransfer({
+      chainId: genesis().chainId,
+      nonce,
+      sender: alice,
+      receiver: validatorOne,
+      amountAtoms: 1,
+      feeAtoms: 1,
+      timestampMs: GENESIS_MS + 1
+    }, alicePrivate, alicePublic);
+    const validProposal = (timestampMs: number, transactions: Transaction[]): Block => {
+      const prepared = store.chain.prepareBlock(transactions, validatorOnePublic, { timestampMs });
+      const block = forgedBlock(tip, transactions, { signWith: validatorOnePrivate, timestampMs, stateRoot: prepared.header.stateRoot });
+      assert.equal(block.hash, prepared.hash);
+      return block;
+    };
+    const base = Date.now() - 3_000;
+    const valid = validProposal(base, [transfer(1), transfer(2), transfer(3)]);
+    const equivocation = validProposal(base + 1, [transfer(1)]);
+    replays = 0;
+    const first = await service.attestProposal(structuredClone(valid));
+    assert.equal(first.publicKey, validatorTwoPublic);
+    assert.equal(replays, 1);
+    // Repeats of the validated proposal (for example relayed through several peers)
+    // skip the expensive stage and return the existing attestation.
+    for (let index = 0; index < 4; index += 1) {
+      const again = await service.attestProposal(structuredClone(valid));
+      assert.equal(again.signature, first.signature);
+    }
+    assert.equal(replays, 1, "a repeat of a validated proposal must not be re-validated");
+    // A second, otherwise valid proposal for the same slot (an equivocation) is
+    // refused before the expensive stage.
+    for (let index = 0; index < 3; index += 1) {
+      await assert.rejects(service.attestProposal(structuredClone(equivocation)), BUDGET);
+    }
+    assert.equal(replays, 1, "an equivocating proposal for a validated slot must not be validated");
+    // The cheap gates still run for a cached hash: a forged signature on the
+    // validated block is refused.
+    await assert.rejects(service.attestProposal({ ...structuredClone(valid), signature: "11".repeat(64) }), /Invalid proposer signature/);
+  });
+});

@@ -95,3 +95,56 @@ test("P1-06 v6: distinct heavy invalid prepares from the leader cost one full va
     await closeValidators(validators);
   }
 });
+
+test("P1-06 v6: a validated prepare is not re-validated, and other proposals for its slot are refused before the expensive stage", { timeout: 180_000 }, async () => {
+  const network = testNetwork(4, 0xd7, "zyron-p106-v6-valid");
+  const prefix = finalizedPrefix(network, 6);
+  const validators: TestValidator[] = [];
+  for (let index = 0; index < 4; index += 1) validators.push(await openValidator(network, index, prefix));
+  const clock = { now: 0 };
+  const memory = new MemoryNetwork(validators, () => clock.now);
+  try {
+    const tip = validators[0]!.service.store.chain.tip.header.timestampMs;
+    const p0 = proposerIndex(network, H, 0);
+    const target = [0, 1, 2, 3].find((index) => index !== p0)!;
+    memory.drop = (_from, _to, kind) => kind === "v6-prepare" || kind === "v6-commit";
+    clock.now = roundStart(tip, 0) + 500;
+    assert.equal(await produceFinalizedBlock(validators[p0]!.service, memory.peersFor(p0), network.privateKeys[p0]!, clock.now), null);
+    const genuine = memory.captured.find((item) => item.kind === "v6-prepare")!.request as V6PrepareRequest;
+    const service = validators[target]!.service;
+    const chain = service.store.chain as unknown as { validateAndApply: (...args: unknown[]) => unknown };
+    const original = chain.validateAndApply.bind(service.store.chain);
+    let replays = 0;
+    chain.validateAndApply = (...args: unknown[]) => { replays += 1; return original(...args); };
+
+    const first = await service.v6Prepare(structuredClone(genuine), clock.now);
+    assert.equal(replays, 1);
+    for (let index = 0; index < 4; index += 1) {
+      const again = await service.v6Prepare(structuredClone(genuine), clock.now);
+      assert.deepEqual(again, first);
+    }
+    assert.equal(replays, 1, "a repeat of a validated prepare must not be re-validated");
+
+    // Another leader-signed proposal for the same slot is refused before the expensive stage.
+    const leaderKey = network.privateKeys[p0]!;
+    const signed = createSignedBlock({
+      version: genuine.block.header.version,
+      chainId: genuine.block.header.chainId,
+      height: genuine.block.header.height,
+      round: genuine.block.header.round,
+      previousHash: genuine.block.header.previousHash,
+      timestampMs: genuine.block.header.timestampMs + 1,
+      transactions: unfundedTransactions(50, network.chainId),
+      stateRoot: genuine.block.header.stateRoot,
+      proposerPrivateKey: leaderKey,
+      proposerPublicKey: publicKeyFromPrivate(leaderKey)
+    });
+    const block = { ...structuredClone(genuine.block), ...signed } as Block;
+    const unsignedProposal = { ...genuine.proposal, blockHash: block.hash };
+    const proposal = { ...unsignedProposal, signature: signCanonicalDomain(V6_PROPOSAL_DOMAIN, proposalPayload(unsignedProposal), leaderKey) };
+    await assert.rejects(service.v6Prepare({ proposal, block, tc: null }, clock.now), BUDGET);
+    assert.equal(replays, 1, "another proposal for a validated slot must not be validated");
+  } finally {
+    await closeValidators(validators);
+  }
+});
