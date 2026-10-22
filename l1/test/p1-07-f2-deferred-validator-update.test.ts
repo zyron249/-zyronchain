@@ -200,3 +200,49 @@ test("P1-07-F2: re-admitted updates are relayed whichever transport delivered th
     }
   });
 });
+
+// Codex P2s on #1104 (83c7928).
+test("P1-07-F2: proof-only variants of one approved update cannot evict another deferred re-add", async () => {
+  await withService("zyron-devnet-p107f2-variants", (service, chain) => {
+    const remove = update(chain, [0x21, 0x22, 0x23]);
+    const readd = update(chain, [0x21, 0x22, 0x23, 0x24], {
+      activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x24)], signers: [0x22, 0x23, 0x21]
+    });
+    assert.throws(() => service.submitTransaction(readd), MISSING);
+    // One quorum-approved update, re-signed with different (invalid) proofs:
+    // the approvals do not cover possessionProofs, so every variant has its own txid.
+    for (let index = 0; index < MAX_DEFERRED_VALIDATOR_UPDATES + 4; index += 1) {
+      const variant = update(chain, [0x21, 0x22, 0x23, 0x24], {
+        activationHeight: 400, nonce: 1, proofs: [proof(chain, 1_000 + index, 0x24)], signers: [0x23, 0x22, 0x21]
+      });
+      assert.throws(() => service.submitTransaction(variant));
+    }
+    assert.ok(service.deferredValidatorUpdateCount() < MAX_DEFERRED_VALIDATOR_UPDATES, "variants of one approved update share a bounded slot");
+    assert.equal(service.submitTransaction(remove), remove.txid);
+    assert.equal(service.mempool.values().some((tx) => tx.txid === readd.txid), true, "the legitimate re-add survives");
+  });
+});
+
+test("P1-07-F2: a re-add refused for an incomplete predecessor nonce prefix is re-tried when the prefix arrives", async () => {
+  await withService("zyron-devnet-p107f2-prefix", (service, chain) => {
+    // Gossip order: re-add, then the removal at a future nonce, then the sender's earlier transfer.
+    const readd = update(chain, [0x21, 0x22, 0x23, 0x24], {
+      activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x24)], signers: [0x23, 0x22, 0x21]
+    });
+    const remove = update(chain, [0x21, 0x22, 0x23], { nonce: 2, signers: [0x22, 0x23, 0x21] });
+    const transfer = createTransfer({
+      chainId: chain.genesis.chainId, nonce: 1, sender: addr(0x22), receiver: addr(0x30),
+      amountAtoms: 1 * ZYN, feeAtoms: 0, timestampMs: T0 + 10
+    }, key(0x22), pub(0x22));
+    assert.throws(() => service.submitTransaction(readd), MISSING);
+    assert.equal(service.submitTransaction(remove), remove.txid);
+    assert.equal(service.mempool.values().some((tx) => tx.txid === readd.txid), false, "the predecessor's nonce prefix is still incomplete");
+    assert.equal(service.submitTransaction(transfer), transfer.txid);
+    assert.equal(service.mempool.values().some((tx) => tx.txid === readd.txid), true, "the re-add is re-tried once the prefix is complete");
+    const at = chain.tip.header.timestampMs + 1_000;
+    assert.deepEqual(
+      chain.selectValidPending(service.mempool.values(), 10, undefined, at).map((tx) => tx.txid).sort(),
+      [transfer.txid, remove.txid, readd.txid].sort()
+    );
+  });
+});
