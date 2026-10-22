@@ -673,7 +673,10 @@ export class NodeService {
     }
     const stateNonce = this.store.chain.nonce(tx.sender);
     assertMempoolSenderNonce(tx.nonce, stateNonce);
-    this.store.chain.validateMempoolAdmission(tx);
+    // P1-07-F1: a validator_update may depend on a pending same-block predecessor.
+    const predecessor = this.store.chain.validateMempoolAdmission(
+      tx, undefined, tx.kind === "validator_update" ? this.mempool.values().filter((item) => item.kind === "validator_update") : []
+    );
     if (tx.kind === "transfer") {
       const conflicting = this.mempool.conflictingTransaction(tx.sender, tx.nonce);
       const replacedSpend = conflicting?.kind === "transfer"
@@ -690,7 +693,11 @@ export class NodeService {
         throw new Error("Pending transfers exceed unlocked balance");
       }
     }
-    if (tx.nonce === stateNonce + 1) this.store.chain.validatePending([tx]);
+    if (tx.nonce === stateNonce + 1) {
+      // A predecessor with the same sender holds this nonce slot first, so it
+      // is checked together with the update only when it is a different sender.
+      this.store.chain.validatePending(predecessor && predecessor.sender !== tx.sender ? [predecessor, tx] : [tx]);
+    }
     this.mempool.add(tx);
     return tx.txid;
   }

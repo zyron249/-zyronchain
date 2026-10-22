@@ -270,7 +270,8 @@ test("P1-07-F1: a pending update only counts as predecessor when it is admissibl
   // A predecessor never relaxes the update's own checks (a bad proof stays bad).
   const remove = update(chain, [0x21, 0x22, 0x23], { proofs: [] });
   const badProof = update(chain, [0x21, 0x22, 0x23, 0x24], { activationHeight: 300, nonce: 2, proofs: [proof(chain, 301, 0x24)] });
-  assert.throws(() => chain.validateMempoolAdmission(badProof, at, [remove]), INVALID);
+  assert.throws(() => chain.validateMempoolAdmission(badProof, at, [remove]), MISSING);
+  assert.equal(chain.selectValidPending([remove, badProof], 10, undefined, at).length, 1);
   const noQuorum = update(chain, [0x21, 0x22, 0x23, 0x24], { activationHeight: 300, nonce: 2, proofs: [proof(chain, 300, 0x24)], signers: [0x21, 0x22] });
   assert.throws(() => chain.validateMempoolAdmission(noQuorum, at, [remove]), /quorum/);
 });

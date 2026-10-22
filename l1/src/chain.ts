@@ -670,7 +670,14 @@ export class ZyronChain {
       activityEpochWindowExpired(tx.epoch, this.genesis.timestampMs, this.tip.header.timestampMs + 1);
   }
 
-  validateMempoolAdmission(tx: Transaction, nowMs = Date.now()): void {
+  /**
+   * Mempool admission (policy; block selection and validation stay
+   * authoritative). `pending` is the node's current mempool: it is only used
+   * for a `validator_update` (P1-07-F1, see validatorUpdateAdmissionPredecessor).
+   * Returns the pending same-block predecessor an update was admitted against,
+   * if it needed one.
+   */
+  validateMempoolAdmission(tx: Transaction, nowMs = Date.now(), pending: readonly Transaction[] = []): ValidatorSetUpdateTx | undefined {
     if (tx.chainId !== this.genesis.chainId) throw new Error("Wrong transaction chain ID");
     this.shape(tx);
     const protocolVersion = this.protocolVersionAt(this.height + 1);
@@ -731,20 +738,68 @@ export class ZyronChain {
     }
     const validators = this.validatorsAt(this.height + 1);
     if (tx.kind === "validator_update") {
-      validateValidatorUpdateAuthorization(
-        tx, validators, this.height + 1, this.lastValidatorActivationHeight(), minimumValidatorCount(this.genesis),
-        this.validatorAdmissionContext(this.lastScheduledValidators())
-      );
-      return;
+      try {
+        validateValidatorUpdateAuthorization(
+          tx, validators, this.height + 1, this.lastValidatorActivationHeight(), minimumValidatorCount(this.genesis),
+          this.validatorAdmissionContext(this.lastScheduledValidators())
+        );
+        return undefined;
+      } catch (error) {
+        const predecessor = this.validatorUpdateAdmissionPredecessor(tx, validators, pending);
+        if (predecessor) return predecessor;
+        throw error;
+      }
     }
     if (tx.kind === "activity_oracle_governance") {
       validateActivityOracleGovernanceAuthorization(
         tx, validators, this.height + 1, this.lastActivityOracleGovernanceHeight(), this.genesis,
         this.scheduledOracleRevocations(), this.oraclePauseScheduled()
       );
-      return;
+      return undefined;
     }
     validateProtocolUpgradeAuthorization(tx, validators, this.height + 1, this.lastProtocolActivationHeight(), this.lastScheduledProtocolVersion());
+    return undefined;
+  }
+
+  /**
+   * P1-07-F1: the set a `validator_update` replaces is the latest scheduled set
+   * when it is selected, which can be another update selected earlier in the
+   * same block (selectValidPending's per-block working schedule). Against the
+   * persisted schedule alone, a same-block remove-then-re-add could therefore
+   * never enter the mempool. An update that fails the persisted-schedule check
+   * is admitted when it is fully valid (quorum, activation order, possession
+   * proofs) as the direct successor of a pending update that is itself valid
+   * against the persisted schedule and activates earlier. Block selection and
+   * validation are unchanged, so nothing invalid is ever included.
+   */
+  private validatorUpdateAdmissionPredecessor(
+    tx: ValidatorSetUpdateTx,
+    validators: Validator[],
+    pending: readonly Transaction[]
+  ): ValidatorSetUpdateTx | undefined {
+    if (!hasValidatorAdmission(this.genesis)) return undefined;
+    const lastActivation = this.lastValidatorActivationHeight();
+    const minimum = minimumValidatorCount(this.genesis);
+    for (const candidate of pending) {
+      // Cheap filters first; signatures only for a plausible predecessor.
+      if (candidate.kind !== "validator_update" || candidate.txid === tx.txid || candidate.chainId !== this.genesis.chainId) continue;
+      if (candidate.activationHeight <= lastActivation || candidate.activationHeight >= tx.activationHeight) continue;
+      try {
+        this.shape(candidate);
+        validateValidatorUpdateAuthorization(
+          candidate, validators, this.height + 1, lastActivation, minimum,
+          this.validatorAdmissionContext(this.lastScheduledValidators())
+        );
+        validateValidatorUpdateAuthorization(
+          tx, validators, this.height + 1, candidate.activationHeight, minimum,
+          this.validatorAdmissionContext(candidate.validators)
+        );
+        return structuredClone(candidate);
+      } catch {
+        // Not a usable predecessor; try the next one.
+      }
+    }
+    return undefined;
   }
 
   selectValidPending(
