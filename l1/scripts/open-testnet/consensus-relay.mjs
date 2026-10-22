@@ -201,6 +201,8 @@ export class ConsensusRelay {
     }
     const bytes = Buffer.from(json.body, "base64");
     if (bytes.length > RELAY_MAX_CONSENSUS_REQUEST_BYTES) throw new RelayError(413, "relay forward too large");
+    // Only active validators may send consensus traffic to the hosted nodes.
+    if (!this.isVotingPeer(peer.address)) throw new RelayError(403, "relay peer is not an active validator");
     if (peer.forwards >= RELAY_MAX_FORWARDS_IN_FLIGHT) throw new RelayError(429, "too many relay forwards in flight");
     peer.forwards += 1;
     try {

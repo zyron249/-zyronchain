@@ -184,3 +184,15 @@ test("mailbox: candidates that are not active validators get no consensus reques
   assert.equal((await second).body.requests.length, 1);
   assert.equal((await vote).status, 504);
 });
+
+test("forward: candidates that are not active validators cannot send consensus requests to hosted nodes", async () => {
+  let voting = false;
+  const { relay, forwarded } = makeRelay({ isVotingPeer: () => voting });
+  const body = Buffer.from(JSON.stringify({ target: 0, path: "/v6/prepare", body: Buffer.from("{}").toString("base64") }));
+  await rejects(relay.handlePublic("forward", { [RELAY_AUTH_HEADER]: auth("forward", body) }, body), 403, /not an active validator/);
+  assert.equal(forwarded.length, 0);
+  voting = true;
+  const ok = await relay.handlePublic("forward", { [RELAY_AUTH_HEADER]: auth("forward", body) }, body);
+  assert.equal(ok.status, 200);
+  assert.equal(forwarded.length, 1);
+});
