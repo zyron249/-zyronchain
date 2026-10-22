@@ -112,6 +112,8 @@ export function relayVotingPeer(chain, address) {
 // RELAY_LOCK_STALE_MS is stale even if its pid is (re)used by another process.
 export const RELAY_LOCK_HEARTBEAT_MS = 5_000;
 export const RELAY_LOCK_STALE_MS = 30_000;
+/** Total time acquireLock keeps retrying (with backoff) while another process is mid-takeover. */
+export const RELAY_LOCK_ACQUIRE_MS = 2_000;
 // A takeover mutex is held only for a few file operations.
 const RELAY_TAKEOVER_STALE_MS = 10_000;
 
@@ -154,6 +156,9 @@ function lockLive(lock, staleMs, nowMs = Date.now()) {
 }
 
 const heldTokens = new Set();
+
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+function sleepSync(ms) { Atomics.wait(sleepCell, 0, 0, ms); }
 
 function ownerRecord() {
   const token = randomBytes(16).toString("hex");
@@ -217,16 +222,24 @@ export class RelaySeenStore {
     this.heartbeat = setInterval(() => this.beat(), heartbeatMs); this.heartbeat.unref?.();
   }
 
+  /** Takes the lock, retrying with backoff for up to RELAY_LOCK_ACQUIRE_MS (a concurrent takeover may briefly hold the path). */
   acquireLock() {
     const mine = ownerRecord();
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (createExclusive(this.lockPath, mine.text)) { this.token = mine.token; this.lockText = mine.text; heldTokens.add(mine.token); return; }
+    const deadline = Date.now() + RELAY_LOCK_ACQUIRE_MS;
+    for (let delay = 10; ; delay = Math.min(delay * 2, 250)) {
+      if (createExclusive(this.lockPath, mine.text)) {
+        this.token = mine.token; this.lockText = mine.text; heldTokens.add(mine.token); this.lastBeatAt = this.now(); return;
+      }
       const lock = readLock(this.lockPath);
-      if (!lock) continue;
-      if (lockLive(lock, this.staleMs)) throw new Error(`relay replay journal ${this.path} is in use by process ${lock.owner?.pid ?? "unknown"}`);
-      this.takeOver(lock.text);
+      if (lock) {
+        if (lockLive(lock, this.staleMs)) throw new Error(`relay replay journal ${this.path} is in use by process ${lock.owner?.pid ?? "unknown"}`);
+        this.takeOver(lock.text);
+      }
+      const left = deadline - Date.now();
+      if (left <= 0) break;
+      sleepSync(Math.min(delay, left));
     }
-    throw new Error(`relay replay journal ${this.path}: could not take the lock`);
+    throw new Error(`relay replay journal ${this.path}: could not take the lock within ${RELAY_LOCK_ACQUIRE_MS}ms`);
   }
 
   /** Removes a stale lock, serialized by an exclusive takeover mutex. */
@@ -248,6 +261,7 @@ export class RelaySeenStore {
     try {
       if (readFileSync(this.lockPath, "utf8") !== this.lockText) throw new Error("lock was taken by another process");
       const t = new Date(); utimesSync(this.lockPath, t, t);
+      this.lastBeatAt = this.now();
     } catch (error) {
       this.lost = true;
       this.failure = `relay replay journal ${this.path}: lock lost (${error instanceof Error ? error.message : String(error)}); refusing relay requests`;
@@ -302,6 +316,30 @@ export class RelaySeenStore {
   /** Throws when the journal cannot protect against replays (lock lost, journal closed); the relay then refuses requests. */
   assertUsable() {
     if (this.failure !== undefined || this.fd === undefined) throw new RelayError(503, "relay replay journal unavailable");
+    this.assertOwner();
+  }
+
+  /**
+   * Fails closed unless the lock still holds our token and our last successful
+   * heartbeat is younger than the stale limit. After a long stall another
+   * gateway may already have taken the lock, so a stale owner must not append.
+   */
+  assertOwner() {
+    let reason;
+    if (this.token === undefined) reason = "lock not held";
+    else if (!(this.now() - this.lastBeatAt < this.staleMs)) reason = `no successful heartbeat for ${this.now() - this.lastBeatAt}ms`;
+    else {
+      let text;
+      try { text = readFileSync(this.lockPath, "utf8"); } catch (error) { text = undefined; }
+      if (text !== this.lockText) reason = "lock was taken by another process";
+    }
+    if (reason === undefined) return;
+    if (this.failure === undefined) {
+      this.lost = true;
+      this.failure = `relay replay journal ${this.path}: lock ownership not confirmed (${reason}); refusing relay requests`;
+      this.log(this.failure);
+    }
+    throw new RelayError(503, "relay replay journal unavailable");
   }
 
   /** Durably records an accepted envelope before the relay acts on it. */

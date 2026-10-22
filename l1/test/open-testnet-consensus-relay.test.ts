@@ -320,6 +320,7 @@ test("the replay journal stays bounded by the seen window and the per-peer cap",
   const maxLines = (live: number) => 2 * live + RELAY_SEEN_COMPACT_SLACK;
   for (let i = 0; i < 3_000; i += 1) {
     clock += 100; // 3,000 accepts over 300 s: older entries leave the window
+    if (i % 50 === 0) store.beat(); // the 5 s heartbeat, on the fake clock
     relay.authenticate(auth("poll", Buffer.from("{}"), { issuedAtMs: clock }), "poll", Buffer.from("{}"));
     peer.rate.count = 0;
     assert.ok(store.lines <= maxLines(store.liveCount()) + 1);
@@ -424,13 +425,41 @@ test("journal lock: the owner heartbeats and fails closed if its lock is taken",
   relay.close();
 });
 
+test("journal lock: an owner stalled past the stale limit cannot append after another instance takes over", () => {
+  const lines: string[] = [];
+  let clock = 3_000_000_000_000; const now = () => clock;
+  const path = freshJournal();
+  const stalled = new RelaySeenStore(path, { now, peers: new Map(), log: (l: string) => lines.push(l), heartbeatMs: 3_600_000 });
+  stalled.record("0xabc", 1, clock);
+  // The owner stalls: no heartbeat for longer than the stale limit, so its lock looks abandoned.
+  clock += RELAY_LOCK_STALE_MS + 1_000;
+  const past = new Date(Date.now() - RELAY_LOCK_STALE_MS - 5_000); utimesSync(`${path}.lock`, past, past);
+  const successor = new RelaySeenStore(path, { peers: new Map(), log: quiet, heartbeatMs: 3_600_000 });
+  const before = readFileSync(path, "utf8");
+  assert.throws(() => stalled.record("0xabc", 2, clock), (e: { statusCode?: number }) => e.statusCode === 503);
+  assert.throws(() => stalled.assertUsable(), (e: { statusCode?: number }) => e.statusCode === 503);
+  assert.equal(readFileSync(path, "utf8"), before, "the stalled owner appended nothing");
+  assert.ok(lines.some((l) => /lock ownership not confirmed/.test(l)));
+  successor.record("0xabc", 3, Date.now());
+  stalled.close(); successor.close();
+});
+
+test("journal lock: an owner whose heartbeat is too old fails closed even before a takeover", () => {
+  let clock = 3_000_000_000_000; const now = () => clock;
+  const store = new RelaySeenStore(freshJournal(), { now, peers: new Map(), log: quiet, heartbeatMs: 3_600_000 });
+  store.record("0xabc", 1, clock);
+  clock += RELAY_LOCK_STALE_MS;
+  assert.throws(() => store.record("0xabc", 2, clock), (e: { statusCode?: number }) => e.statusCode === 503);
+  store.close();
+});
+
 test("journal: a failed compaction keeps the journal open, and a failed reopen fails closed", () => {
   const lines: string[] = [];
   let clock = 3_000_000_000_000; const now = () => clock;
   const { relay } = makeRelay({ now, log: (l: string) => lines.push(l) });
   const store = relay.seenStore; const peer = relay.peers.get(ADDRESS);
   const body = Buffer.from("{}");
-  const accept = () => { clock += 1_000; relay.authenticate(auth("poll", body, { issuedAtMs: clock }), "poll", body); peer.rate.count = 0; };
+  const accept = () => { clock += 1_000; store.beat(); relay.authenticate(auth("poll", body, { issuedAtMs: clock }), "poll", body); peer.rate.count = 0; };
   store.renameJournal = () => { throw new Error("disk full"); };
   for (let i = 0; i < 2_000; i += 1) accept();
   assert.ok(lines.some((l) => /compaction failed \(disk full\)/.test(l)));
