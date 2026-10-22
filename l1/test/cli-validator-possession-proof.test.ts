@@ -343,3 +343,40 @@ test("published entrypoint stages possession-proof inputs: a symlinked proof is 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("validator-submit --validator-admission true always sends possessionProofs (empty for a removal-only update); false refuses proofs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zyron-cli-pop-submit-admission-"));
+  const rpc = await startMockRpc();
+  try {
+    // Removal-only update: 0x24 leaves, nobody comes in (no proof needed, but the
+    // field is mandatory on an opted-in chain).
+    const removal = { ...proposal(), validators: proposal().validators.filter((validator) => validator.address !== addr(0x24) && validator.address !== addr(0x31) && validator.address !== addr(0x32)) };
+    const removalPath = join(dir, "removal.json");
+    await writeFile(removalPath, `${JSON.stringify(removal, null, 2)}\n`);
+    const approvals: string[] = [];
+    for (const id of VALIDATORS.slice(0, 3)) {
+      const path = join(dir, `removal-approval-${id}.json`);
+      await writeFile(path, JSON.stringify(createValidatorApproval(removal, key(id), pub(id), 1)));
+      approvals.push(path);
+    }
+    const signer = await writeKey(dir, 0x21);
+    const base = ["validator-submit", "--proposal", removalPath, ...approvals.flatMap((path) => ["--approval", path]), "--key", signer, "--rpc", rpc.url];
+    const result = await run([...base, "--validator-admission", "true"]);
+    assert.equal(result.code, 0, `stdout=${result.stdout} stderr=${result.stderr}`);
+    assert.equal(rpc.posted.length, 1);
+    assert.deepEqual((rpc.posted[0] as ValidatorSetUpdateTx).possessionProofs, []);
+
+    await writeProposalAndApprovals(dir);
+    const proof = await makeUpdateProof(dir, 0x31);
+    const refused = await run([...base, "--validator-admission", "false", "--possession-proof", proof]);
+    assert.notEqual(refused.code, 0);
+    assert.match(refused.stderr, /--possession-proof requires a chain with validatorAdmission/);
+    const invalid = await run([...base, "--validator-admission", "yes"]);
+    assert.notEqual(invalid.code, 0);
+    assert.match(invalid.stderr, /--validator-admission must be true or false/);
+    assert.equal(rpc.posted.length, 1);
+  } finally {
+    rpc.server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
