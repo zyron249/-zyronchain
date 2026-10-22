@@ -756,9 +756,30 @@ def explorer():
     )
 
 
+# Legacy in-browser wallet (holds a raw private key in page JS). Strict CSP:
+# only same-origin scripts/styles/fetches, no inline code, no framing.
+LEGACY_WALLET_CSP = (
+    "default-src 'none'; "
+    "script-src 'self'; "
+    "style-src 'self'; "
+    "connect-src 'self'; "
+    "img-src 'self'; "
+    "base-uri 'none'; "
+    "form-action 'none'; "
+    "frame-ancestors 'none'; "
+    "object-src 'none'"
+)
+
+
 @app.route("/wallet")
 def wallet_page():
-    return render_template("wallet.html")
+    response = app.make_response(render_template("wallet.html"))
+    response.headers["Content-Security-Policy"] = LEGACY_WALLET_CSP
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.route("/health")

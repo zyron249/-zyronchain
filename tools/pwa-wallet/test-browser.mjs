@@ -39,7 +39,7 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; ch
 const PROD_HEADERS = {
   'Content-Security-Policy': "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
   'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
-  'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), interest-cohort=()',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), interest-cohort=()',
   // Recommended (docs/WEBSITE_SECURITY_HEADERS.md); served here so the whole suite proves the wallet works with it.
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cache-Control': 'public, max-age=0, s-maxage=300'
