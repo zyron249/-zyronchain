@@ -10,12 +10,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { expectedValidator } from "../src/block.js";
 import { ZyronChain } from "../src/chain.js";
-import { MAX_DEFERRED_VALIDATOR_UPDATES, NodeService } from "../src/node.js";
+import { MAX_DEFERRED_VALIDATOR_UPDATES, NodeService, createRpcServer } from "../src/node.js";
 import { ChainStore } from "../src/storage.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { createTransfer, createValidatorApproval, createValidatorSetUpdate } from "../src/transaction.js";
-import { ATOMS_PER_ZYN, type GenesisConfig, type Validator, type ValidatorPossessionProof, type ValidatorSetUpdateTx } from "../src/types.js";
+import { ATOMS_PER_ZYN, type Transaction, type GenesisConfig, type Validator, type ValidatorPossessionProof, type ValidatorSetUpdateTx } from "../src/types.js";
 import { signGenesisPossessionProofs, signValidatorUpdatePossessionProof } from "../src/validator-admission.js";
 
 const ZYN = ATOMS_PER_ZYN;
@@ -133,5 +134,69 @@ test("P1-07-F2: the deferred set is bounded", async () => {
       assert.throws(() => service.submitTransaction(readd), MISSING);
     }
     assert.equal(service.deferredValidatorUpdateCount(), MAX_DEFERRED_VALIDATOR_UPDATES);
+  });
+});
+
+// Codex P2s on #1104 (ab04d3a).
+test("P1-07-F2: unauthorized updates are not deferred and cannot evict a deferred re-add", async () => {
+  await withService("zyron-devnet-p107f2-evict", (service, chain) => {
+    const remove = update(chain, [0x21, 0x22, 0x23]);
+    const readd = update(chain, [0x21, 0x22, 0x23, 0x24], {
+      activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x24)], signers: [0x22, 0x23, 0x21]
+    });
+    assert.throws(() => service.submitTransaction(readd), MISSING);
+    assert.equal(service.deferredValidatorUpdateCount(), 1);
+    // Shape-valid but unauthorized: signed and approved only by keys that are not active validators.
+    for (let index = 0; index < MAX_DEFERRED_VALIDATOR_UPDATES + 4; index += 1) {
+      const outsider = update(chain, [0x31, 0x32, 0x33, 0x34], {
+        activationHeight: 400 + index, nonce: 1, signers: [0x31, 0x32, 0x33],
+        proofs: [0x31, 0x32, 0x33, 0x34].map((id) => proof(chain, 400 + index, id))
+      });
+      assert.throws(() => service.submitTransaction(outsider), /not active|Unknown validator update approver/);
+    }
+    assert.equal(service.deferredValidatorUpdateCount(), 1, "unauthorized updates must not be deferred");
+    assert.equal(service.submitTransaction(remove), remove.txid);
+    assert.equal(service.mempool.values().some((tx) => tx.txid === readd.txid), true, "the legitimate re-add survives");
+  });
+});
+
+test("P1-07-F2: deferred updates are re-tried when the predecessor arrives in a finalized block", async () => {
+  await withService("zyron-devnet-p107f2-finalized", async (service, chain) => {
+    const remove = update(chain, [0x21, 0x22, 0x23]);
+    const readd = update(chain, [0x21, 0x22, 0x23, 0x24], {
+      activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x24)], signers: [0x22, 0x23, 0x21]
+    });
+    assert.throws(() => service.submitTransaction(readd), MISSING);
+    // This node never sees the removal's transaction gossip, only the finalized block.
+    const producer = new ZyronChain(chain.genesis);
+    const timestampMs = T0 + 1_000;
+    const proposer = expectedValidator(chain.genesis.validators, 1, 0);
+    const proposerId = GENESIS_SET.find((id) => pub(id) === proposer.publicKey)!;
+    let block = producer.produceBlock([remove], key(proposerId), { timestampMs });
+    for (const id of GENESIS_SET) block = producer.attestBlock(block, key(id));
+    await service.acceptFinalizedBlock(block);
+    assert.equal(chain.height, 1);
+    assert.equal(service.mempool.values().some((tx) => tx.txid === readd.txid), true, "the deferred re-add is re-tried after the finalized predecessor");
+  });
+});
+
+test("P1-07-F2: re-admitted updates are relayed whichever transport delivered the predecessor", async () => {
+  await withService("zyron-devnet-p107f2-native", async (service, chain) => {
+    const relayed: Transaction[] = [];
+    const server = createRpcServer(service, { onTransactionAccepted: (tx) => { relayed.push(tx); } });
+    try {
+      const remove = update(chain, [0x21, 0x22, 0x23]);
+      const readd = update(chain, [0x21, 0x22, 0x23, 0x24], {
+        activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x24)], signers: [0x22, 0x23, 0x21]
+      });
+      assert.throws(() => service.submitTransaction(readd), MISSING);
+      // The native consensus transport calls submitTransaction directly (p2p-consensus.ts).
+      assert.equal(service.submitTransaction(remove), remove.txid);
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(relayed.map((tx) => tx.txid), [readd.txid], "the re-admitted update is relayed once");
+    } finally {
+      server.close();
+    }
   });
 });
