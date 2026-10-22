@@ -7,6 +7,8 @@ on:
       - '.github/scripts/test-open-testnet-snapshot-keeper.mjs'
       - '.github/workflows/open-testnet-snapshot-keeper.yml'
       - '.github/workflows/open-testnet-snapshot-keeper-ci.yml'
+      - 'deploy/open-testnet/snapshot-keeper.sh'
+      - 'deploy/open-testnet/test-snapshot-keeper.mjs'
       # The keeper tests read the cold-start 404 grace from this file.
       - 'l1/scripts/open-testnet.mjs'
   push:
@@ -17,6 +19,8 @@ on:
       - '.github/scripts/test-open-testnet-snapshot-keeper.mjs'
       - '.github/workflows/open-testnet-snapshot-keeper.yml'
       - '.github/workflows/open-testnet-snapshot-keeper-ci.yml'
+      - 'deploy/open-testnet/snapshot-keeper.sh'
+      - 'deploy/open-testnet/test-snapshot-keeper.mjs'
       # The keeper tests read the cold-start 404 grace from this file.
       - 'l1/scripts/open-testnet.mjs'
 
@@ -38,3 +42,5 @@ jobs:
           node-version: 24
       - name: Keeper rules and workflow policy tests
         run: node --test .github/scripts/test-open-testnet-snapshot-keeper.mjs
+      - name: Legacy machine keeper refuses a foreign genesis
+        run: node --test deploy/open-testnet/test-snapshot-keeper.mjs
