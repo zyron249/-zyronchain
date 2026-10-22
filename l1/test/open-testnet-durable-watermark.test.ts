@@ -92,6 +92,24 @@ test("cold start from a snapshot behind the tip: followers never held a block th
     const marked = (await json(base, `/blocks?from=${h1}&limit=2`)).body.blocks;
     assert.deepEqual(marked.map((b: { durable: boolean }) => b.durable), [true, false], "blocks above durableHeight are marked non-durable");
     assert.equal((await json(base, "/health")).body.peerCap, "durable");
+    // State answers come from the live tip and say whether it is durable yet.
+    const probe = `ZYN${"ab".repeat(20)}`;
+    const note = "finalized blocks above durableHeight can be replaced by a cold start";
+    const checkDurability = (body: Record<string, unknown>, label: string) => {
+      assert.equal(body.peerCap, "durable", `${label} peerCap`);
+      assert.equal(typeof body.asOfHeight, "number", `${label} asOfHeight`);
+      assert.equal(typeof body.durableHeight, "number", `${label} durableHeight`);
+      assert.equal(body.durable, (body.asOfHeight as number) <= (body.durableHeight as number), `${label} durable flag`);
+      assert.equal(body.durabilityNote, note, `${label} note`);
+    };
+    for (const route of ["/balance/", "/nonce/", "/account/"]) {
+      const body = (await json(base, `${route}${probe}`)).body as Record<string, unknown>;
+      checkDurability(body, route);
+      assert.equal(body.durable, false, `${route} answers from a tip above the watermark`);
+    }
+    const drip = await fetch(`${base}/faucet`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ address: probe }) });
+    assert.equal(drip.status, 200);
+    checkDurability((await drip.json()) as Record<string, unknown>, "POST /faucet");
     // A real follower node syncs from the gateway's /peer surface.
     const followerPort = 33_000 + Math.floor(Math.random() * 2000);
     follower = spawn(process.execPath, [join(l1Root, "dist", "src", "cli.js"), "node", "--genesis", join(root, "a", "genesis.json"), "--data", join(root, "follower"), "--host", "127.0.0.1", "--port", String(followerPort), "--peer", `${base}/peer`], { cwd: l1Root, stdio: "ignore" });

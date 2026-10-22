@@ -1339,6 +1339,13 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // Blocks above durableHeight are finalized but not yet in a published
   // snapshot: a cold start can replace them (docs/OPEN_TESTNET.md).
   function durability() { return watermark ? { peerCap: "durable", durableHeight: watermark.height } : { peerCap: "off" }; }
+  const DURABILITY_NOTE = "finalized blocks above durableHeight can be replaced by a cold start";
+  // State answers (balances, nonces, accepted txids) come from the live tip; mark
+  // whether that tip is already covered by a published snapshot.
+  function durableView(asOfHeight) {
+    const d = durability();
+    return { asOfHeight, ...d, ...(watermark ? { durable: asOfHeight <= watermark.height, durabilityNote: DURABILITY_NOTE } : {}) };
+  }
   const PEER_RPC = { "x-zyron-rpc-version": "1" };
   const sendJson = writeJson;
   const explorerHtml = await readFile(join(l1Root, "scripts", "open-testnet", "explorer.html"));
@@ -1442,7 +1449,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           if (!ADDRESS_PATTERN.test(address)) return sendJson(response, 400, { error: "invalid address" });
           const [balance, nonce] = await Promise.all([anyNode(`/balance/${address}`), anyNode(`/nonce/${address}`)]);
           if (balance.status !== 200 || nonce.status !== 200) return sendJson(response, 502, { error: "node unavailable" });
-          const body = { network: "testnet", chainId, height: (await chainStatus()).height, address, balanceAtoms: balance.body.balanceAtoms, nonce: nonce.body.nonce };
+          const asOf = (await chainStatus()).height;
+          const body = { network: "testnet", chainId, height: asOf, address, balanceAtoms: balance.body.balanceAtoms, nonce: nonce.body.nonce, ...durableView(asOf) };
           if (prefix === "/balance/") delete body.nonce;
           if (prefix === "/nonce/") delete body.balanceAtoms;
           return sendJson(response, 200, body);
@@ -1459,7 +1467,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           if (tx.chainId !== chainId) return sendJson(response, 400, { error: `wrong chainId; this testnet is ${chainId}` });
           const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
           if (submitted.status < 200 || submitted.status > 299) return sendJson(response, 400, { error: String(submitted.body?.error ?? "rejected").slice(0, 300) });
-          return sendJson(response, 200, { accepted: true, txid: submitted.body.txid, note: "Included in a coming block (about 30 seconds)." });
+          return sendJson(response, 200, { accepted: true, txid: submitted.body.txid, note: "Included in a coming block (about 30 seconds).", ...durableView((await chainStatus()).height) });
         }
         if (path === "/faucet") {
           const ipRate = limits.faucetIp.take(ip);
@@ -1472,7 +1480,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const globalRate = limits.faucetGlobal.take("global");
           if (!globalRate.allowed) return limited(response, globalRate);
           const result = await faucetSend(address);
-          return sendJson(response, 200, { ...result, network: "testnet", valueBearing: false, note: "TESTNET — tokens have no value. Arrives in a coming block (about 30 seconds)." });
+          return sendJson(response, 200, { ...result, network: "testnet", valueBearing: false, note: "TESTNET — tokens have no value. Arrives in a coming block (about 30 seconds).", ...durableView((await chainStatus()).height) });
         }
         if (relay && path.startsWith("/relay/v1/")) {
           const relayRate = limits.relayIp.take(ip);

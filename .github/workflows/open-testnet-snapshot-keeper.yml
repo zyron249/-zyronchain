@@ -7,9 +7,12 @@ name: Open Testnet Snapshot Keeper
 # instance idles out after 15 minutes without inbound traffic) and every
 # 10 minutes downloads the gateway's sealed /state/snapshot and publishes it.
 #
-# - No secret is needed: the snapshot is sealed by the gateway with a key that
-#   exists only on the host. The job uses the workflow GITHUB_TOKEN with
-#   contents: write, which is what release asset uploads require.
+# - The job needs the ZYRON_TESTNET_STATE_SECRET Actions secret (the same value
+#   Render generated for the gateway) to authenticate snapshot reads; it is passed
+#   only as the keeper step's env. The job runs only on refs/heads/main, so a
+#   workflow_dispatch of a modified copy of this file on another branch cannot
+#   read the secret. Release uploads use the workflow GITHUB_TOKEN with
+#   contents: write.
 # - Only the expected genesis is ever published, the published height never goes
 #   backwards, and the published asset is renamed aside (never deleted) until
 #   its replacement is in place (see .github/scripts/open-testnet-snapshot-keeper.mjs and
@@ -48,7 +51,7 @@ concurrency:
 
 jobs:
   keep:
-    if: github.repository == 'zyron249/-zyronchain'
+    if: github.repository == 'zyron249/-zyronchain' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 355
     permissions:
