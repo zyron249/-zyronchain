@@ -175,7 +175,7 @@ The initiator must put the proof in the transaction's `possessionProofs`. The cu
 ## 5. Run a follower against the hosted testnet
 
 ```sh
-cd -- -zyronchain/l1
+# run from the l1/ directory of your checkout (section 3)
 curl -s https://zyron-open-testnet.onrender.com/genesis | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify(JSON.parse(s).genesis,null,2)))' > "$HOME/zyron-open-testnet-genesis.json"
 mkdir -m 700 -p "$HOME/zyron-follower"
 node dist/src/secure-cli.js node --genesis "$HOME/zyron-open-testnet-genesis.json" --data "$HOME/zyron-follower" \
