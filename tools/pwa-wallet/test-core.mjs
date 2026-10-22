@@ -247,11 +247,11 @@ await test('signing review: shows every field, refuses unknown types, messages a
     [{ ...unsigned, kind: 'mining_claim' }, /transfers only/], [{ ...unsigned, kind: 'message' }, /transfers only/], [{ ...unsigned, kind: undefined }, /transfers only/],
     [{ ...unsigned, memo: 'x' }, /Unexpected transfer fields/], [{ ...unsigned, data: '0x' }, /Unexpected transfer fields/],
     [{ ...unsigned, version: 3 }, /version/], [{ ...unsigned, chainId: '' }, /Chain ID/], [{ ...unsigned, chainId: 'zyron-mainnet-1' }, /testnet or devnet/], [{ ...unsigned, nonce: 0 }, /Nonce/],
-    [{ ...unsigned, receiver: core.MINING_TRACKER_ADDRESS }, /mining tracker/], [{ ...unsigned, sender: 'ZYN' + '1'.repeat(40) }, /Sender does not match/],
+    [{ ...unsigned, receiver: core.MINING_TRACKER_ADDRESS }, /reserved system address/], [{ ...unsigned, sender: 'ZYN' + '1'.repeat(40) }, /Sender does not match/],
     [JSON.stringify(unsigned), /Nothing to review/], [['transfer'], /Nothing to review/]
   ]) {
     assert.throws(() => core.describeTransfer(bad), pattern);
-    assert.throws(() => core.signTransfer(bad, account.privateKey), /transfers only|Unexpected|version|Chain ID|Nonce|mining tracker|Sender|Nothing/);
+    assert.throws(() => core.signTransfer(bad, account.privateKey), /transfers only|Unexpected|version|Chain ID|Nonce|reserved system address|Sender|Nothing/);
   }
   const html = readFileSync(join(app, 'index.html'), 'utf8');
   const appJs = readFileSync(join(app, 'app.js'), 'utf8');
@@ -286,7 +286,7 @@ await test('recovery phrase UX: privacy screen first, words hidden by default, n
   assert.match(html, /JavaScript cannot guarantee that memory is erased/);
   // copy is only offered for the address and a signed transfer
   const copyButtons = [...html.matchAll(/<button\b[^>]*>[^<]*<\/button>/g)].map((m) => m[0]).filter((b) => /copy/i.test(b)).map((b) => b.match(/data-([a-z-]+)/)[1]).sort();
-  assert.deepEqual(copyButtons, ['copy-address', 'copy-plain', 'link-copy', 'tx-copy']);
+  assert.deepEqual(copyButtons, ['copy-address', 'copy-plain', 'link-copy', 'signed-copy', 'tx-copy']); // signed-copy: the held signed transfer on Receive
   assert.ok(appJs.includes("msgCopied: 'Copied. This app will try to clear the clipboard in 60 seconds.'"));
   assert.ok(appJs.includes('msgClipboardKept'));
 });
@@ -349,6 +349,8 @@ await test('display checksum vectors (docs/ADDRESS_CHECKSUM.md) and password rul
   assert.equal(core.fixedFeeRejection({ chainId: 'zyron-devnet-1', feeAtoms: 3, feePolicyActive: true, fixedTransferFeeAtoms: 3 }), undefined);
   assert.equal(core.fixedFeeRejection({ chainId: 'zyron-devnet-1', feeAtoms: 0, feePolicyActive: true, fixedTransferFeeAtoms: 3 }), 'This network will reject this fee. The protocol fee is 3 atoms. Nothing was signed.');
   assert.throws(() => core.zynToAtoms('50000000.00000001'), /supply/);
+  for (const huge of ['999999999999', '1000000000', '99999999999.5']) assert.throws(() => core.zynToAtoms(huge), /Amount is too large/, huge);
+  assert.throws(() => core.zynToAtoms('1.123456789'), /8 decimal places/);
 });
 
 await test('transfer builder: only transfers, mining_claim impossible, strict inputs', async () => {
@@ -359,7 +361,7 @@ await test('transfer builder: only transfers, mining_claim impossible, strict in
   assert.equal(core.buildTransfer({ ...base, kind: 'mining_claim' }, account).kind, 'transfer', 'a kind input is ignored');
   assert.throws(() => core.signTransfer({ ...unsigned, kind: 'mining_claim' }, account.privateKey), /transfers only/);
   assert.throws(() => core.signTransfer({ ...unsigned, reward: 1 }, account.privateKey), /Unexpected/);
-  assert.throws(() => core.buildTransfer({ ...base, receiver: core.MINING_TRACKER_ADDRESS }, account), /mining tracker/);
+  assert.throws(() => core.buildTransfer({ ...base, receiver: core.MINING_TRACKER_ADDRESS }, account), /reserved system address/);
   assert.throws(() => core.buildTransfer({ ...base, receiver: account.address }, account), /differ/);
   assert.throws(() => core.buildTransfer({ ...base, chainId: 'Zyron Test' }, account), /Chain ID/);
   assert.throws(() => core.buildTransfer({ ...base, chainId: 'zyron-mainnet-1' }, account), /testnet or devnet/);
@@ -460,7 +462,9 @@ await test('ZYRON NODE wallet link: exact template only, expiry enforced, proof 
   const html = readFileSync(join(app, 'index.html'), 'utf8');
   assert.match(html, /data-link-sign disabled/, 'link approval starts disabled');
   assert.match(appJs, /if \(!state\.linkRequest \|\| !\$\('\[data-link-ack\]'\)\.checked\) return;/);
-  assert.match(html, /href="https:\/\/t\.me\/ZyronNodeBot"/, 'return target is fixed, never taken from the request');
+  // No return link at all: the user switches back to the chat they opened themselves (matches the scam warning).
+  assert.doesNotMatch(html, /data-link-return|t\.me\//, 'no chat link is offered after signing');
+  assert.doesNotMatch(appJs, /\.href\s*=\s*[^;]*linkRequest/, 'no link target is ever taken from the request');
   core.wipe(entropy, account.privateKey);
 });
 
