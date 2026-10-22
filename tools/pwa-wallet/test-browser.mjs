@@ -115,6 +115,7 @@ async function createWallet(page, { snapshot = false } = {}) {
   assert.ok((await page.$$eval('[data-phrase-words] [aria-label]', (b) => b.map((x) => x.getAttribute('aria-label')))).every((l) => /^Word \d+ of 12, hidden\./.test(l)), 'screen readers hear "hidden" with the word number');
   assert.equal(await page.$('[data-copy-phrase]'), null, 'no copy-phrase button');
   if (snapshot) await shot(page, '3b-phrase-hidden');
+  assert.equal(await page.isDisabled('[data-phrase-ack]'), true, 'paper confirmation needs every word revealed first');
   // tap-to-reveal each card, collecting the words
   const words = [];
   for (let i = 0; i < 12; i += 1) {
@@ -142,6 +143,7 @@ async function createWallet(page, { snapshot = false } = {}) {
   assert.equal(await page.textContent('[data-word-index="0"] .word-text'), words[0]);
   await page.waitForFunction(() => document.querySelector('[data-word-index="0"] .word-text').textContent === '•••••', null, { timeout: 25000 });
   assert.equal(await page.isDisabled('[data-phrase-next]'), true, 'cannot continue before acknowledging');
+  assert.equal(await page.isDisabled('[data-phrase-ack]'), false, 'all words were revealed, so the paper confirmation is enabled');
   await page.check('[data-phrase-ack]');
   await page.click('[data-phrase-next]');
   assert.equal(await page.$$eval('[data-phrase-words] li', (l) => l.length), 0, 'words leave the DOM during the quiz');
@@ -315,6 +317,9 @@ try {
     const before = requests.length;
     await page.click('[data-screen="home"] [data-go="send"]');
     await page.waitForSelector('[data-screen="send"]:not([hidden])');
+    assert.equal(await page.inputValue('[data-tx-chain]'), 'zyron-wallet-testnet-1', 'chain id starts at the wallet testnet');
+    assert.equal(await page.inputValue('[data-tx-version]'), '1', 'wallet testnet defaults to version 1');
+    assert.match(await page.textContent('[data-screen="send"]'), /Open the wallet testnet page/);
     await page.fill('[data-tx-chain]', 'zyron-wallet-testnet-1');
     assert.equal(await page.inputValue('[data-tx-version]'), '1', 'wallet testnet defaults to transaction version 1');
     assert.match(await page.textContent('[data-tx-version-hint]'), /default transaction version is 1/);
@@ -401,8 +406,17 @@ try {
     await page.click('[data-screen="home"] [data-go="send"]');
     await page.fill('[data-tx-to]', core.MINING_TRACKER_ADDRESS);
     await page.click('[data-tx-review]');
-    assert.match(await page.textContent('[data-tx-check]'), /mining tracker/);
+    assert.match(await page.textContent('[data-tx-check]'), /reserved system address/);
     assert.equal(await visibleScreen(page), 'send', 'invalid transfers never reach the review screen');
+    await page.fill('[data-tx-to]', RECEIVER);
+    await page.fill('[data-tx-amount]', '999999999999');
+    await page.click('[data-tx-review]');
+    assert.match(await page.textContent('[data-tx-check]'), /Amount is too large/);
+    await page.fill('[data-tx-to]', '');
+    await page.fill('[data-tx-amount]', '');
+    await page.click('[data-tx-review]');
+    assert.match(await page.textContent('[data-tx-check]'), /receiver address first/, 'an empty form asks for the receiver first');
+    await page.fill('[data-tx-amount]', '2.5');
     await page.fill('[data-tx-to]', RECEIVER);
     await page.fill('[data-tx-chain]', '');
     await page.click('[data-tx-review]');
