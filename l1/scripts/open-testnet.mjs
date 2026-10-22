@@ -46,7 +46,7 @@ const { canonicalJson } = await import(dist("codec.js"));
 const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist("tokenomics.js"));
 const { defaultPublicDistributionRelease } = await import(dist("public-distribution-release.js"));
 const { gatewayClientIdentity } = await import(dist("rpc-client-identity.js"));
-const { ConsensusRelay, RELAY_MAX_BODY_BYTES, RELAY_MAX_CONSENSUS_REQUEST_BYTES, parseRelayPeers, relayReplyHeaders } = await import("./open-testnet/consensus-relay.mjs");
+const { ConsensusRelay, RELAY_MAX_BODY_BYTES, RELAY_MAX_CONSENSUS_REQUEST_BYTES, parseRelayPeers, relayReplyHeaders, relayVotingPeer } = await import("./open-testnet/consensus-relay.mjs");
 
 export const DEFAULT_CHAIN_ID = "zyron-open-testnet-1";
 const VALIDATOR_NAMES = ["v1", "v2", "v3", "v4"];
@@ -1012,9 +1012,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     // Active validator set from the gateway's verified history (validator
     // updates are scheduled at least 100 blocks ahead, so the history knows
     // an activation before it happens).
-    const votingPeer = (address) => {
-      try { return snapshotHistory.chain.validatorsAt(Math.max(snapshotHistory.chain.height, statusCache?.height ?? 0) + 1).some((v) => v.address === address); } catch { return false; }
-    };
+    // The history is extended from the live chain every few seconds while the
+    // relay is on (refreshHistory below), not only by snapshot builds.
+    const votingPeer = (address) => relayVotingPeer(snapshotHistory.chain, address);
     relay = new ConsensusRelay({ chainId, genesisHash: info.genesisHash, peers: relayPeers, hostedCount: VALIDATOR_NAMES.length, isVotingPeer: votingPeer,
       async forwardToHosted(index, path, body) {
         const node = nodes.get(VALIDATOR_NAMES[index]);
@@ -1180,9 +1180,19 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     snapshotBuild ??= buildSnapshotNow().finally(() => { snapshotBuild = undefined; });
     return snapshotBuild;
   }
-  async function buildSnapshotNow() {
-    const { height: tip, tipHash } = await chainStatus();
-    const readers = VALIDATOR_NAMES.map((name) => ({
+  // One writer at a time for the verified history (snapshot builds and the
+  // relay's membership refresh both extend it).
+  let historyLock = Promise.resolve();
+  function extendHistory(readers, tip, tipHash) {
+    const run = historyLock.then(() => collectSnapshotBlocks(readers, {
+      tip, tipHash, chainId, genesisHash: info.genesisHash, history: snapshotHistory,
+      onReject: (name, error) => console.error(`snapshot: history from ${name} not used (${error instanceof Error ? error.message : String(error)})`)
+    }));
+    historyLock = run.then(() => undefined, () => undefined);
+    return run;
+  }
+  function historyReaders() {
+    return VALIDATOR_NAMES.map((name) => ({
       name,
       async read(from, limit) {
         const node = nodes.get(name);
@@ -1192,10 +1202,19 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
         return result.body.blocks;
       }
     }));
-    const blocks = await collectSnapshotBlocks(readers, {
-      tip, tipHash, chainId, genesisHash: info.genesisHash, history: snapshotHistory,
-      onReject: (name, error) => console.error(`snapshot: history from ${name} not used (${error instanceof Error ? error.message : String(error)})`)
-    });
+  }
+  let historyRefresh;
+  function refreshHistory() {
+    historyRefresh ??= (async () => {
+      const { height: tip, tipHash } = await chainStatus();
+      if (tip > snapshotHistory.chain.height) await extendHistory(historyReaders(), tip, tipHash);
+    })().catch((error) => console.error(`relay: validator history refresh failed (${error instanceof Error ? error.message : String(error)})`)).finally(() => { historyRefresh = undefined; });
+    return historyRefresh;
+  }
+  if (relay) { const timer = setInterval(() => { void refreshHistory(); }, 5_000); timer.unref(); }
+  async function buildSnapshotNow() {
+    const { height: tip, tipHash } = await chainStatus();
+    const blocks = await extendHistory(historyReaders(), tip, tipHash);
     const keys = {};
     for (const name of [...VALIDATOR_NAMES, "oracle1", "oracle2", "oracle3", "founder", "faucet", "liquidity", "ecosystem"]) keys[name] = (await readSecret(join(dir, "keys", `${name}.json`))).privateKey;
     const sealed = sealSnapshot({ format: SNAPSHOT_MAGIC, createdAtMs: Date.now(), genesis, network: info, keys, blocks }, stateSecret);
@@ -1368,7 +1387,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const relayRate = limits.relayIp.take(ip);
           if (!relayRate.allowed) return limited(response, relayRate);
           const body = await readRawBody(request, RELAY_MAX_BODY_BYTES);
-          const result = await relay.handlePublic(path.slice("/relay/v1/".length), request.headers, body);
+          const result = await relay.handlePublic(path.slice("/relay/v1/".length), request.headers, body, ip);
           return sendJson(response, result.status, result.body, { "cache-control": "no-store" });
         }
         return sendJson(response, 404, { error: "not found" });

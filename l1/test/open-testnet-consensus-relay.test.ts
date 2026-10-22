@@ -196,3 +196,62 @@ test("forward: candidates that are not active validators cannot send consensus r
   assert.equal(ok.status, 200);
   assert.equal(forwarded.length, 1);
 });
+
+test("pre-auth: forged envelopes under a known address are capped per client before signature work", async () => {
+  const { relay } = makeRelay();
+  const { RELAY_MAX_AUTH_FAILURES_PER_MINUTE } = relayModule;
+  assert.ok(Number.isSafeInteger(RELAY_MAX_AUTH_FAILURES_PER_MINUTE) && RELAY_MAX_AUTH_FAILURES_PER_MINUTE > 0);
+  const body = Buffer.from("{}");
+  const wrongKey = generatePrivateKey();
+  for (let i = 0; i < RELAY_MAX_AUTH_FAILURES_PER_MINUTE; i += 1) {
+    await rejects(relay.handlePublic("poll", { [RELAY_AUTH_HEADER]: auth("poll", body, {}, wrongKey) }, body, "attacker"), 401, /bad relay signature/);
+  }
+  const before = relay.signatureChecks;
+  await rejects(relay.handlePublic("poll", { [RELAY_AUTH_HEADER]: auth("poll", body, {}, wrongKey) }, body, "attacker"), 429, /authentication failures/);
+  assert.equal(relay.signatureChecks, before, "a capped client gets no further signature verification");
+  // Forged attempts are not charged to the legitimate peer's quota.
+  const ok = relay.handlePublic("poll", { [RELAY_AUTH_HEADER]: auth("poll", body) }, body, "honest");
+  assert.equal((await ok).status, 200);
+});
+
+test("forward: per hosted target, external traffic stays below the node's shared loopback consensus limit", async () => {
+  const { RELAY_MAX_FORWARDS_PER_TARGET, RELAY_MAX_FORWARDS_PER_PEER_TARGET } = relayModule;
+  assert.ok(RELAY_MAX_FORWARDS_PER_TARGET < 4, "node consensus inflight per loopback identity is 4");
+  const releases: Array<() => void> = [];
+  const second = generatePrivateKey(); const SECOND = `ZYN${"2".repeat(40)}`;
+  const { relay } = makeRelay({
+    peers: new Map([[ADDRESS, publicKeyFromPrivate(relayKey)], [SECOND, publicKeyFromPrivate(second)]]),
+    async forwardToHosted() { await new Promise<void>((d) => releases.push(d)); return { status: 200, body: Buffer.from("{}") }; }
+  });
+  const body = (target: number) => Buffer.from(JSON.stringify({ target, path: "/v6/prepare", body: Buffer.from("{}").toString("base64") }));
+  const send = (target: number, who: "a" | "b") => {
+    const b = body(target);
+    const header = who === "a" ? auth("forward", b) : createRelayAuthHeader({ chainId: CHAIN, genesisHash: GENESIS, address: SECOND, seq: seq++, op: "forward", body: b }, second);
+    return relay.handlePublic("forward", { [RELAY_AUTH_HEADER]: header }, b);
+  };
+  const held: Promise<unknown>[] = [];
+  for (let i = 0; i < RELAY_MAX_FORWARDS_PER_PEER_TARGET; i += 1) held.push(send(0, "a"));
+  await rejects(send(0, "a"), 429, /target/);
+  while (held.length < RELAY_MAX_FORWARDS_PER_TARGET) held.push(send(0, "b"));
+  await rejects(send(0, "b"), 429, /target/);
+  held.push(send(1, "a")); // other targets are independent
+  await new Promise((d) => setTimeout(d, 20));
+  for (const release of releases) release();
+  await Promise.all(held);
+});
+
+test("voting-peer predicate covers the next two heights of a fresh history", () => {
+  const { relayVotingPeer } = relayModule;
+  const sets: Record<number, string[]> = { 11: ["A"], 12: ["A", ADDRESS] };
+  const chain = { height: 10, validatorsAt: (h: number) => (sets[h] ?? ["A", ADDRESS]).map((address) => ({ address })) };
+  assert.equal(relayVotingPeer(chain, ADDRESS), true, "an update activating at the next-but-one height is already reachable");
+  assert.equal(relayVotingPeer({ height: 10, validatorsAt: () => [{ address: "A" }] }, ADDRESS), false);
+  assert.equal(relayVotingPeer({ height: 10, validatorsAt: () => { throw new Error("x"); } }, ADDRESS), false);
+});
+
+test("gateway refreshes the verified validator history from the live chain while the relay is on", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(join(l1Root, "scripts", "open-testnet.mjs"), "utf8");
+  assert.match(source, /relayVotingPeer\(snapshotHistory\.chain, address\)/);
+  assert.match(source, /setInterval\(\(\) => \{ void refreshHistory\(\)/, "history is extended on a timer, not only by snapshot builds");
+});

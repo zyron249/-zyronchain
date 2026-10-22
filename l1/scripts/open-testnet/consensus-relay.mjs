@@ -24,6 +24,16 @@ export const RELAY_POLL_WAIT_MS = 7_000;
 export const RELAY_MAX_QUEUE = 32;
 export const RELAY_MAX_FORWARDS_IN_FLIGHT = 8;
 export const RELAY_REQUESTS_PER_MINUTE = 600;
+// Forwards into one hosted node from all external peers together stay below
+// that node's consensus in-flight limit for its shared loopback identity (4),
+// so hosted validators' own traffic always has room.
+export const RELAY_MAX_FORWARDS_PER_TARGET = 2;
+export const RELAY_MAX_FORWARDS_PER_PEER_TARGET = 1;
+// Failed signature checks per client (IP) per minute; above it, the client
+// gets 429 before any further signature work. Successful requests are not
+// charged here, and forged requests are never charged to the claimed peer.
+export const RELAY_MAX_AUTH_FAILURES_PER_MINUTE = 20;
+const RELAY_MAX_TRACKED_CLIENTS = 10_000;
 export const RELAY_MAX_AUTH_HEADER_BYTES = 2_048;
 // Request bodies the hosted nodes send to an external peer, and that an
 // external leader forwards, are v6 requests (at most a block plus a QC).
@@ -86,6 +96,14 @@ class Window {
   }
 }
 
+/** True when `address` is a validator at either of the next two heights of a verified history (`chain.height`, `chain.validatorsAt`). */
+export function relayVotingPeer(chain, address) {
+  try {
+    for (const height of [chain.height + 1, chain.height + 2]) if (chain.validatorsAt(height).some((v) => v.address === address)) return true;
+    return false;
+  } catch { return false; }
+}
+
 export class ConsensusRelay {
   /**
    * @param {object} options
@@ -99,12 +117,13 @@ export class ConsensusRelay {
     // Consensus requests reach only peers that are in the active validator
     // set, so allowlisted candidates never take collector slots.
     this.isVotingPeer = isVotingPeer;
+    this.authFailures = new Map(); this.signatureChecks = 0; this.targetForwards = new Map();
     this.chainId = chainId; this.genesisHash = genesisHash; this.hostedCount = hostedCount;
     this.forwardToHosted = forwardToHosted; this.now = now; this.replyWaitMs = replyWaitMs; this.pollWaitMs = pollWaitMs;
     this.peers = new Map();
     for (const [address, publicKey] of peers) {
       this.peers.set(address, { address, publicKey, seen: new Map(), lastPollAt: -Infinity, queue: [], pending: new Map(), waiter: undefined,
-        rate: new Window(RELAY_REQUESTS_PER_MINUTE, 60_000, now), forwards: 0 });
+        rate: new Window(RELAY_REQUESTS_PER_MINUTE, 60_000, now), forwards: 0, targetForwards: new Map() });
     }
   }
 
@@ -116,7 +135,7 @@ export class ConsensusRelay {
   }
 
   /** Verifies the auth header for `op` over the exact body bytes; returns the peer. */
-  authenticate(headerValue, op, body) {
+  authenticate(headerValue, op, body, clientId = "unknown") {
     if (typeof headerValue !== "string" || headerValue.length === 0) throw new RelayError(401, "missing relay authentication");
     if (headerValue.length > RELAY_MAX_AUTH_HEADER_BYTES) throw new RelayError(401, "relay authentication too large");
     let parsed;
@@ -132,7 +151,10 @@ export class ConsensusRelay {
     if (!peer) throw new RelayError(401, "unknown relay peer");
     if (e.chainId !== this.chainId || e.genesisHash !== this.genesisHash) throw new RelayError(401, "wrong chain");
     if (e.op !== op) throw new RelayError(401, "wrong relay operation");
-    if (!verifyCanonicalDomain(RELAY_DOMAIN, e, parsed.signature, peer.publicKey)) throw new RelayError(401, "bad relay signature");
+    const failures = this.authFailureWindow(clientId);
+    if (failures.count >= RELAY_MAX_AUTH_FAILURES_PER_MINUTE) throw new RelayError(429, "too many relay authentication failures");
+    this.signatureChecks += 1;
+    if (!verifyCanonicalDomain(RELAY_DOMAIN, e, parsed.signature, peer.publicKey)) { failures.count += 1; throw new RelayError(401, "bad relay signature"); }
     const now = this.now();
     if (Math.abs(now - e.issuedAtMs) > RELAY_CLOCK_SKEW_MS) throw new RelayError(401, "stale relay envelope");
     if (sha256Hex(body) !== e.bodyHash) throw new RelayError(401, "relay body hash mismatch");
@@ -144,11 +166,25 @@ export class ConsensusRelay {
     return peer;
   }
 
-  /** Public gateway surface: POST /relay/v1/{poll,reply,forward}. */
-  async handlePublic(op, headers, body) {
+  authFailureWindow(clientId) {
+    const now = this.now();
+    let entry = this.authFailures.get(clientId);
+    if (entry && now - entry.start >= 60_000) { this.authFailures.delete(clientId); entry = undefined; }
+    if (!entry) {
+      if (this.authFailures.size >= RELAY_MAX_TRACKED_CLIENTS) {
+        for (const [key, value] of this.authFailures) if (now - value.start >= 60_000) this.authFailures.delete(key);
+        if (this.authFailures.size >= RELAY_MAX_TRACKED_CLIENTS) this.authFailures.delete(this.authFailures.keys().next().value);
+      }
+      entry = { start: now, count: 0 }; this.authFailures.set(clientId, entry);
+    }
+    return entry;
+  }
+
+  /** Public gateway surface: POST /relay/v1/{poll,reply,forward}. `clientId` is the caller's rate-limit identity (IP). */
+  async handlePublic(op, headers, body, clientId = "unknown") {
     if (!RELAY_OPS.includes(op)) throw new RelayError(404, "not found");
     if (body.length > RELAY_MAX_BODY_BYTES) throw new RelayError(413, "relay body too large");
-    const peer = this.authenticate(headers[RELAY_AUTH_HEADER], op, body);
+    const peer = this.authenticate(headers[RELAY_AUTH_HEADER], op, body, clientId);
     let json;
     try { json = JSON.parse(body.toString("utf8")); } catch { throw new RelayError(400, "invalid JSON"); }
     if (!json || typeof json !== "object" || Array.isArray(json)) throw new RelayError(400, "invalid relay body");
@@ -204,13 +240,18 @@ export class ConsensusRelay {
     // Only active validators may send consensus traffic to the hosted nodes.
     if (!this.isVotingPeer(peer.address)) throw new RelayError(403, "relay peer is not an active validator");
     if (peer.forwards >= RELAY_MAX_FORWARDS_IN_FLIGHT) throw new RelayError(429, "too many relay forwards in flight");
-    peer.forwards += 1;
+    const targetTotal = this.targetForwards.get(json.target) ?? 0;
+    const peerTarget = peer.targetForwards.get(json.target) ?? 0;
+    if (targetTotal >= RELAY_MAX_FORWARDS_PER_TARGET || peerTarget >= RELAY_MAX_FORWARDS_PER_PEER_TARGET) throw new RelayError(429, "too many relay forwards to this target");
+    peer.forwards += 1; this.targetForwards.set(json.target, targetTotal + 1); peer.targetForwards.set(json.target, peerTarget + 1);
     try {
       const result = await this.forwardToHosted(json.target, json.path, bytes);
       if (result.body.length > RELAY_MAX_REPLY_BYTES[json.path]) throw new RelayError(502, "hosted reply too large");
       return { status: 200, body: { status: result.status, body: result.body.toString("base64") } };
     } finally {
       peer.forwards -= 1;
+      this.targetForwards.set(json.target, (this.targetForwards.get(json.target) ?? 1) - 1);
+      peer.targetForwards.set(json.target, (peer.targetForwards.get(json.target) ?? 1) - 1);
     }
   }
 
