@@ -17,7 +17,7 @@ let passed = 0;
 const test = (name, fn) => { fn(); passed += 1; console.log(`ok - ${name}`); };
 
 test('English only: every page, script and stylesheet (no other-language letters, lang="en")', () => {
-  const files = [...pages, 'app/index.html', 'testnet/index.html', 'testnet/testnet.js', 'testnet/testnet.css', ...readdirSync(site).filter((n) => /\.(js|css|json|txt|xml)$/.test(n)), 'app/app.js', 'app/app.css', 'app/manifest.json', 'README.md'];
+  const files = [...pages, 'app/index.html', 'testnet/index.html', 'testnet/testnet.js', 'testnet/testnet.css', 'verify/index.html', 'verify/verify.js', 'verify/verify.css', 'verify/session.js', 'verify/light-client.js', 'verify/vendor/secp256k1-verify.js', ...readdirSync(site).filter((n) => /\.(js|css|json|txt|xml)$/.test(n)), 'app/app.js', 'app/app.css', 'app/manifest.json', 'README.md'];
   for (const file of files) {
     const text = read(file);
     const hit = text.match(NON_ENGLISH);
