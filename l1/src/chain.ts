@@ -8,7 +8,9 @@ import {
   expectedValidator,
   validateAttestationQuorum,
   validateBlockEnvelope,
+  validateBlockEnvelopeGates,
   validateBlockShape,
+  validateBlockTransactions,
   validateRoundCertificate
 } from "./block.js";
 import { CONSENSUS_V6_PROTOCOL_VERSION, isConsensusV6, validateCommitCertificate } from "./consensus-v6.js";
@@ -640,10 +642,18 @@ export class ZyronChain {
     return next;
   }
 
-  validateProposal(block: Block, nowMs = Date.now()): void {
+  /**
+   * `onAuthenticated` (P1-06) is called once the O(1) gates have passed
+   * (right tip, expected proposer, valid proposer signature, certificates) and
+   * before the per-transaction verification and state replay. The checks and
+   * their order are the same as `validateBlockEnvelope` followed by the replay.
+   */
+  validateProposal(block: Block, nowMs = Date.now(), onAuthenticated?: () => void): void {
     const protocolVersion = this.protocolVersionAt(block.header.height);
     assertSupportedProtocolVersion(protocolVersion);
-    validateBlockEnvelope(block, this.tip, this.validatorsAt(block.header.height), nowMs, false, protocolVersion);
+    validateBlockEnvelopeGates(block, this.tip, this.validatorsAt(block.header.height), nowMs, false, protocolVersion);
+    onAuthenticated?.();
+    validateBlockTransactions(block);
     if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
     const next = this.validateAndApply(
       block.transactions, this.state, block.header.height, block.header.timestampMs, feeProducerOf(block)

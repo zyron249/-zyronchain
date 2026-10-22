@@ -46,6 +46,7 @@ import { addressFromPublicKey } from "./crypto.js";
 import { assertMempoolSenderNonce, MAX_MEMPOOL_PENDING_PER_SENDER, readFeePolicy } from "./fee-policy.js";
 import { Mempool, type MempoolOptions } from "./mempool.js";
 import { PeerReputationStore } from "./peer-reputation.js";
+import { ProposalValidationBudget } from "./proposal-validation-budget.js";
 import { ipv6Prefix64 } from "./p2p-address.js";
 import { nativeP2PFrameBudgetMetrics } from "./p2p-frame.js";
 import { MAX_DISCOVERY_RESPONSE_RECORDS, PeerDirectory } from "./peer-directory.js";
@@ -455,6 +456,8 @@ export class NodeService {
   private nextSyncHandle = 0;
   private consensusQuorumFailure: { height: number; previousHash: string; phase: number } | undefined;
   private validatorSignerFailed = false;
+  /** P1-06: one failed expensive validation per authenticated proposer slot. */
+  private readonly proposalValidationBudget = new ProposalValidationBudget();
   readonly readinessMaxTipAgeMs: number;
 
   constructor(
@@ -730,7 +733,7 @@ export class NodeService {
       validateBlockStructure(value);
       const block = value as Block;
       this.assertLegacyConsensusHeight(block.header.height);
-      this.store.chain.validateProposal(block, nowMs);
+      this.validateProposalWithinBudget(block, block.header.round, nowMs);
       const publicKey = this.validatorSigner.publicKey;
       const validator = this.store.chain.validatorsAt(block.header.height).find((item) => item.publicKey === publicKey);
       if (!validator) throw new Error("Configured validator key is not in genesis");
@@ -746,6 +749,25 @@ export class NodeService {
         )
       };
     });
+  }
+
+  /**
+   * P1-06: `chain.validateProposal` under the per-slot budget. Call inside
+   * `exclusive`. A slot is (height, round, block proposer key); `round` is the
+   * round the proposal is voted in (the block round for legacy consensus, the
+   * proposal round for v6). Only a failure after the O(1) gates is recorded.
+   */
+  private validateProposalWithinBudget(block: Block, round: number, nowMs: number): void {
+    this.proposalValidationBudget.pruneThrough(this.store.chain.height);
+    const slot = ProposalValidationBudget.slotKey(block.header.height, round, String(block.proposerPublicKey));
+    this.proposalValidationBudget.assertAllowed(slot, block.hash);
+    let authenticated = false;
+    try {
+      this.store.chain.validateProposal(block, nowMs, () => { authenticated = true; });
+    } catch (error) {
+      if (authenticated) this.proposalValidationBudget.recordFailure(slot, block.header.height, block.hash);
+      throw error;
+    }
   }
 
   async signPreparedProposal(block: Block, nowMs = Date.now()): Promise<Block> {
@@ -939,7 +961,7 @@ export class NodeService {
       const { height, chainId, validators } = this.v6Context();
       const member = this.v6Member(validators, signer);
       const justify = validatePrepareRequestCertificates(request, validators, chainId, height);
-      this.store.chain.validateProposal(request.block, nowMs);
+      this.validateProposalWithinBudget(request.block, request.proposal.round, nowMs);
       const { round, justifyRound } = request.proposal;
       if (justify) await this.v6RecordQC(height, chainId, validators, justify);
       await journal.reserveV6Prepare(height, round, request.block.hash, justifyRound);
