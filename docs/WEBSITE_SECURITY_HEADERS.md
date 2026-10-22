@@ -21,7 +21,7 @@
 | `X-Frame-Options` | `DENY` |
 | `Content-Security-Policy` | `frame-ancestors 'none'; base-uri 'self'; object-src 'none'` |
 | `Referrer-Policy` | `no-referrer` |
-| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), interest-cohort=()` |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), interest-cohort=()` |
 | `X-Content-Type-Options` | `nosniff` |
 
 Browsers enforce both the header CSP above and the page's meta CSP (the stricter result applies), so this adds
