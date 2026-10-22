@@ -89,6 +89,16 @@ Both keepers fetch `/state/snapshot` about 6 times an hour (limit: 30 per hour f
 
 Free-plan budget: Actions minutes are free for public repositories, and the job occupies one hosted runner slot. A free web service that is kept awake all month uses about 720-744 of the 750 free instance hours a Render workspace gets per month. Other free web services in the same workspace share that allowance, and when it runs out Render suspends the workspace's free web services until the next month.
 
+## Founder-operated nodes
+
+These nodes are run by the project itself. They are **not independent** and never count toward the independent-validator requirement for launch.
+
+| Role | Operator | Address | Public key | Status |
+|---|---|---|---|---|
+| Founder-operated (project architect node), not independent | Project | `ZYN807a69D9473cDdBecC9929aF53D1C2468d7EEe43` | `1c90bfddae88023e56fa264c04dc91682957cdb3b8ea0bfd43fd25a8a98107069ff66d75b22982929c5f18560dd14912c0d62f705064f829ea8a3a9ea35c769f` | Follower, pending consensus endpoint. Not in the validator set; signs nothing. |
+
+The node runs on a machine that can be paused, so it is not a candidate for admission on its own: adding it as the only fifth validator would leave no fault margin whenever it is offline. See [`CONSENSUS_RELAY.md`](CONSENSUS_RELAY.md) for the admission plan.
+
 ## Consensus relay (outbound-only external validators)
 
 With `ZYRON_RELAY_PEERS=<validatorAddress>=<relayPublicKey>,...` set, the gateway also serves `POST /relay/v1/poll`, `/relay/v1/reply` and `/relay/v1/forward` for those peers only, and the hosted validators reach each peer through a loopback-only mailbox (`127.0.0.1:<validator base port + 50>`). The external side runs `scripts/consensus-relay-client.mjs`. Requests are signed with a separate relay transport key (never the validator key) and bound to the chain ID and genesis hash, with freshness, replay and size limits; votes are verified by the nodes' normal v6 rules. An allowlisted peer that is offline costs the hosted round nothing (immediate 503). Unset, the relay is off. Design, liveness analysis and admission plan: [`CONSENSUS_RELAY.md`](CONSENSUS_RELAY.md). Being reachable through the relay does not admit anyone: admission is still the on-chain validator-update flow below, and the public deployment does not yet enable the relay or admit any external validator.
