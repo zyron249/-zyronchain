@@ -56,7 +56,13 @@ import {
   validateTransactionShape,
   type TransactionVersion
 } from "./transaction.js";
-import type { Block, GenesisConfig, Validator, ValidatorApproval } from "./types.js";
+import type { Block, GenesisConfig, Validator, ValidatorApproval, ValidatorPossessionProof } from "./types.js";
+import {
+  POSSESSION_PROOF_POLICY_V1,
+  genesisPossessionChainBinding,
+  signPossessionProof,
+  verifyPossessionProof
+} from "./validator-admission.js";
 import { MAX_SUPPLY_ATOMS, type Address } from "./types.js";
 import { LocalValidatorSigner, RemoteValidatorSigner, type ValidatorSigner } from "./validator-signer.js";
 import {
@@ -102,6 +108,7 @@ async function main(): Promise<void> {
   if (command === "validator-proposal") return createValidatorProposalFile(args);
   if (command === "validator-approve") return approveValidatorProposal(args);
   if (command === "validator-submit") return submitValidatorProposal(args);
+  if (command === "validator-possession-proof") return createValidatorPossessionProofFile(args);
   if (command === "protocol-proposal") return createProtocolProposalFile(args);
   if (command === "protocol-approve") return approveProtocolProposal(args);
   if (command === "protocol-submit") return submitProtocolProposal(args);
@@ -860,8 +867,22 @@ async function approveValidatorProposal(args: string[]): Promise<void> {
 }
 
 async function submitValidatorProposal(args: string[]): Promise<void> {
-  assertKnownOptions(args, new Set(["--proposal", "--approval", "--key", "--rpc"]));
+  assertKnownOptions(args, new Set(["--proposal", "--approval", "--possession-proof", "--validator-admission", "--key", "--rpc"]));
   const proposal = await readValidatorProposal(resolve(requiredOption(args, "--proposal")));
+  // --validator-admission true: the chain uses validatorAdmission, so the
+  // field is mandatory and is sent even when empty (an update with no
+  // incoming validator). false: the chain refuses the field. Absent: the field
+  // is sent only when --possession-proof is given.
+  const admissionOption = option(args, "--validator-admission");
+  if (admissionOption !== undefined && admissionOption !== "true" && admissionOption !== "false") {
+    throw new Error("--validator-admission must be true or false");
+  }
+  const proofPaths = options(args, "--possession-proof");
+  if (admissionOption === "false" && proofPaths.length) {
+    throw new Error("--possession-proof requires a chain with validatorAdmission (--validator-admission false was given)");
+  }
+  const suppliedProofs: ValidatorPossessionProof[] = [];
+  for (const path of proofPaths) suppliedProofs.push(await readPossessionProofFile(resolve(path)));
   const privateKey = await readPrivateKey(resolve(requiredOption(args, "--key")));
   const publicKey = publicKeyFromPrivate(privateKey);
   if (addressFromPublicKey(publicKey) !== proposal.sender) throw new Error("Initiator key does not match validator proposal sender");
@@ -869,14 +890,22 @@ async function submitValidatorProposal(args: string[]): Promise<void> {
   if (!approvalPaths.length) throw new Error("At least one --approval is required");
   const approvals: ValidatorApproval[] = [];
   for (const path of approvalPaths) approvals.push(await readValidatorApproval(resolve(path)));
+  const rpc = normalizeRpcUrl(requiredOption(args, "--rpc"));
+  // possession-proof-v1 (P1-07): attach the incoming validators' proofs, in
+  // proposal validator order, after checking each one against this chain.
+  // Which validators count as incoming (and whether the chain requires the
+  // field at all) is decided by consensus; without --possession-proof the
+  // transaction carries no possessionProofs field, as before.
+  const possessionProofs = suppliedProofs.length
+    ? await orderAndVerifyPossessionProofs(proposal, suppliedProofs, rpc)
+    : admissionOption === "true" ? [] : undefined;
   const tx = createValidatorSetUpdate(
-    { ...proposal, approvals, timestampMs: Date.now() },
+    { ...proposal, approvals, ...(possessionProofs ? { possessionProofs } : {}), timestampMs: Date.now() },
     privateKey,
     publicKey,
     proposal.transactionVersion
   );
   validateTransactionShape(tx);
-  const rpc = normalizeRpcUrl(requiredOption(args, "--rpc"));
   const response = await fetch(`${rpc}/tx`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-zyron-rpc-version": String(RPC_API_VERSION) },
@@ -890,6 +919,95 @@ async function submitValidatorProposal(args: string[]): Promise<void> {
   const result = await readBoundedJson(response, 4_096, "RPC validator update response") as { txid?: unknown };
   if (result.txid !== tx.txid) throw new Error("RPC validator update transaction ID mismatch");
   console.log(`Submitted validator update ${tx.txid}`);
+}
+
+async function orderAndVerifyPossessionProofs(
+  proposal: ValidatorProposal,
+  proofs: readonly ValidatorPossessionProof[],
+  rpc: string
+): Promise<ValidatorPossessionProof[]> {
+  const status = await fetchJson(`${rpc}/status`) as { chainId?: unknown; genesisHash?: unknown };
+  if (typeof status.genesisHash !== "string" || !/^[0-9a-f]{64}$/.test(status.genesisHash)) {
+    throw new Error("RPC returned an invalid genesis hash");
+  }
+  if (status.chainId !== proposal.chainId) throw new Error("RPC chain ID does not match the validator proposal");
+  const byAddress = new Map<string, ValidatorPossessionProof>();
+  for (const proof of proofs) {
+    if (byAddress.has(proof.address)) throw new Error(`Duplicate possession proof for ${proof.address}`);
+    const validator = proposal.validators.find((candidate) => candidate.address === proof.address);
+    if (!validator) throw new Error(`Possession proof address ${proof.address} is not in the proposed validator set`);
+    const valid = verifyPossessionProof({
+      chainId: proposal.chainId,
+      chainBinding: status.genesisHash,
+      activationHeight: proposal.activationHeight,
+      address: validator.address,
+      publicKey: validator.publicKey
+    }, proof.signature);
+    if (!valid) throw new Error(`Invalid possession proof for ${proof.address} (chain, genesis hash or activation height differ)`);
+    byAddress.set(proof.address, proof);
+  }
+  return proposal.validators.flatMap((validator) => {
+    const proof = byAddress.get(validator.address);
+    return proof ? [{ address: proof.address, signature: proof.signature }] : [];
+  });
+}
+
+/**
+ * Signs a validator possession proof (possession-proof-v1, P1-07) with the
+ * operator's own key and writes only `{ address, signature }`.
+ *   --genesis <file>: genesis validator; activation height 0, chain binding =
+ *     the proof-independent genesis configuration commitment.
+ *   --proposal <file> --genesis-hash <hex>: validator added by a
+ *     `validator_update`; activation height of the proposal, chain binding =
+ *     the chain's genesis hash.
+ */
+async function createValidatorPossessionProofFile(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--genesis", "--proposal", "--genesis-hash", "--key", "--out"]));
+  const genesisPath = option(args, "--genesis");
+  const proposalPath = option(args, "--proposal");
+  if ((genesisPath === undefined) === (proposalPath === undefined)) {
+    throw new Error("Use exactly one of --genesis (genesis validator) or --proposal with --genesis-hash (validator_update)");
+  }
+  const output = resolve(requiredOption(args, "--out"));
+  let chainId: string;
+  let chainBinding: string;
+  let activationHeight: number;
+  let validators: readonly Validator[];
+  let notListed: string;
+  if (genesisPath !== undefined) {
+    if (option(args, "--genesis-hash") !== undefined) throw new Error("--genesis-hash applies only to --proposal");
+    const genesis = JSON.parse(await readCliGenesisUtf8(resolve(genesisPath))) as GenesisConfig;
+    if (!genesis || typeof genesis !== "object" || typeof genesis.chainId !== "string" || !Array.isArray(genesis.validators)) {
+      throw new Error("Invalid genesis file");
+    }
+    const unsigned: GenesisConfig = { ...genesis, validatorAdmission: { policy: POSSESSION_PROOF_POLICY_V1, genesisProofs: [] } };
+    chainId = genesis.chainId;
+    chainBinding = genesisPossessionChainBinding(unsigned);
+    activationHeight = 0;
+    validators = genesis.validators;
+    notListed = "Key is not a genesis validator";
+  } else {
+    const genesisHash = requiredOption(args, "--genesis-hash");
+    if (!/^[0-9a-f]{64}$/.test(genesisHash)) throw new Error("--genesis-hash must be 64 lowercase hex characters");
+    const proposal = await readValidatorProposal(resolve(proposalPath!));
+    chainId = proposal.chainId;
+    chainBinding = genesisHash;
+    activationHeight = proposal.activationHeight;
+    validators = proposal.validators;
+    notListed = "Key is not in the proposed validator set";
+  }
+  const privateKey = await readPrivateKey(resolve(requiredOption(args, "--key")));
+  const publicKey = publicKeyFromPrivate(privateKey);
+  const address = addressFromPublicKey(publicKey);
+  const validator = validators.find((candidate) => candidate.address === address && candidate.publicKey === publicKey);
+  if (!validator) throw new Error(notListed);
+  const statement = { chainId, chainBinding, activationHeight, address, publicKey };
+  const signature = signPossessionProof(statement, privateKey);
+  if (!verifyPossessionProof(statement, signature)) throw new Error("Possession proof self-check failed");
+  const proof: ValidatorPossessionProof = { address, signature };
+  await writeFile(output, `${JSON.stringify(proof, null, 2)}\n`, { flag: "wx", mode: 0o644 });
+  console.log(`Possession proof written: ${output}`);
+  console.log(`Signed statement (check every value before sending the proof): ${JSON.stringify(statement)}`);
 }
 
 async function createProtocolProposalFile(args: string[]): Promise<void> {
@@ -1168,6 +1286,17 @@ async function readAuthToken(path: string, label: string): Promise<string> {
   return readOperatorAuthToken(path, label);
 }
 
+async function readPossessionProofFile(path: string): Promise<ValidatorPossessionProof> {
+  const value = JSON.parse(await readCliGovernanceArtifactUtf8(path)) as Record<string, unknown>;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid possession proof file");
+  assertObjectFields(value, ["address", "signature"], "possession proof");
+  if (typeof value.address !== "string" || typeof value.signature !== "string" || !/^[0-9a-f]{128}$/.test(value.signature)) {
+    throw new Error("Invalid possession proof file");
+  }
+  assertAddress(value.address);
+  return { address: value.address, signature: value.signature };
+}
+
 async function readValidatorProposal(path: string): Promise<ValidatorProposal> {
   const value = JSON.parse(await readCliGovernanceArtifactUtf8(path)) as Record<string, unknown>;
   const hasTransactionVersion = Object.hasOwn(value, "transactionVersion");
@@ -1268,7 +1397,9 @@ function usage(): void {
   console.log("  zyron-l1 tx-submit --tx tx.json --rpc <url>");
   console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");
   console.log("  zyron-l1 validator-approve --proposal update.json --key validator.json --out approval.json");
-  console.log("  zyron-l1 validator-submit --proposal update.json --approval approval-a.json [...] --key initiator.json --rpc <url>");
+  console.log("  zyron-l1 validator-submit --proposal update.json --approval approval-a.json [...] [--possession-proof proof-x.json ...] [--validator-admission true|false] --key initiator.json --rpc <url>");
+  console.log("  zyron-l1 validator-possession-proof --genesis genesis.json --key validator-key.json --out proof.json   (genesis validator; activation height 0)");
+  console.log("  zyron-l1 validator-possession-proof --proposal update.json --genesis-hash <hex> --key validator-key.json --out proof.json   (incoming validator of a validator_update)");
   console.log("  zyron-l1 protocol-proposal --out upgrade.json --rpc <url> --key initiator.json --activation-height <n> --protocol-version <n>");
   console.log("  zyron-l1 protocol-approve --proposal upgrade.json --key validator.json --out approval.json");
   console.log("  zyron-l1 protocol-submit --proposal upgrade.json --approval approval-a.json [...] --key initiator.json --rpc <url>");
