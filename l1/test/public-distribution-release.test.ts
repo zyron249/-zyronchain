@@ -27,6 +27,7 @@ import {
   PUBLIC_DISTRIBUTION_MIN_LINEAR_MS
 } from "../src/public-distribution-release.js";
 import { ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, type GenesisConfig } from "../src/types.js";
+import { signGenesisPossessionProofs } from "../src/validator-admission.js";
 
 const ZYN = ATOMS_PER_ZYN;
 const T0 = 1_700_000_000_000;
@@ -68,7 +69,8 @@ function strictGenesis(schedule: GenesisConfig["publicDistributionRelease"] | "o
     networkClass: "mainnet"
   };
   if (schedule !== "omit") genesis.publicDistributionRelease = schedule;
-  return genesis;
+  // A value-bearing class also requires validator possession proofs (P1-07).
+  return signGenesisPossessionProofs(genesis, VALIDATORS.map(key));
 }
 
 function transfer(genesis: GenesisConfig, sender: number, amountAtoms: number, feeAtoms = 0, receiver = ALICE) {
@@ -242,6 +244,8 @@ test("inflows above the still-locked genesis allocation are spendable during the
 test("fixed-supply-v1 requires the release; a wallet testnet without the profile keeps day-one spend", () => {
   const open = strictGenesis();
   delete open.networkClass;
+  // The open-testnet shape carries no possession proofs (not a value-bearing class).
+  delete open.validatorAdmission;
   open.chainId = "zyron-open-testnet-1";
   const chain = new ZyronChain(open);
   assert.ok(chain.spendableBalance(addr(PUBLIC), T0 + 1_000) < PUBLIC_ATOMS);

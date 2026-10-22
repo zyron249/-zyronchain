@@ -99,6 +99,12 @@ import {
   validateGenesisFeePolicy,
   type FixedFeeApplication
 } from "./fee-policy.js";
+import {
+  assertGenesisPossessionProofs,
+  assertValueBearingClassRequiresValidatorAdmission,
+  hasValidatorAdmission,
+  validateValidatorAdmissionShape
+} from "./validator-admission.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
 export const MAX_BLOCK_TRANSACTION_BYTES = 1_500_000;
@@ -1362,7 +1368,18 @@ function assertTransactionVersionForProtocol(tx: Transaction, protocolVersion: n
   }
 }
 
-function validateGenesis(genesis: GenesisConfig): void {
+/**
+ * Launch-ceremony precheck (P1-07): every genesis rule except the possession
+ * proofs themselves. The genesis must declare `validatorAdmission` with an
+ * empty `genesisProofs`; the validators then sign its (proof-independent)
+ * configuration commitment, and the final check (`new ZyronChain`) verifies
+ * the proofs. Never use this to start a node.
+ */
+export function validateGenesisBeforePossessionProofs(genesis: GenesisConfig): void {
+  validateGenesis(genesis, { beforePossessionProofs: true });
+}
+
+function validateGenesis(genesis: GenesisConfig, options: { beforePossessionProofs?: boolean } = {}): void {
   assertPlainRecord(genesis, "genesis");
   assertExactKeys(genesis, [
     "chainId", "timestampMs", "validators", "activityOracles", "activityPool", "allocations",
@@ -1380,7 +1397,9 @@ function validateGenesis(genesis: GenesisConfig): void {
     // Optional: public-distribution release, version public-distribution-release-v1.
     ...(Object.prototype.hasOwnProperty.call(genesis, "publicDistributionRelease") ? ["publicDistributionRelease"] : []),
     // Optional: fixed-fee-v1 (docs/FEE_POLICY_V1.md). Absent: historical fee rules.
-    ...(Object.prototype.hasOwnProperty.call(genesis, "feePolicy") ? ["feePolicy"] : [])
+    ...(Object.prototype.hasOwnProperty.call(genesis, "feePolicy") ? ["feePolicy"] : []),
+    // Optional: validator admission, policy possession-proof-v1 (docs/VALIDATOR_POSSESSION_PROOF.md).
+    ...(Object.prototype.hasOwnProperty.call(genesis, "validatorAdmission") ? ["validatorAdmission"] : [])
   ], "genesis");
   const hasLaunchProfile = Object.prototype.hasOwnProperty.call(genesis, "launchProfile");
   if (hasLaunchProfile && genesis.launchProfile !== FIXED_SUPPLY_LAUNCH_PROFILE) {
@@ -1468,6 +1487,18 @@ function validateGenesis(genesis: GenesisConfig): void {
   validatePublicDistributionRelease(genesis);
   // fixed-fee-v1. Optional. Absent feePolicy leaves historical fee rules in place.
   validateGenesisFeePolicy(genesis);
+  // possession-proof-v1 (P1-07). Checked last, after every other genesis rule,
+  // so the proofs are verified over an otherwise valid configuration.
+  validateValidatorAdmissionShape(genesis);
+  assertValueBearingClassRequiresValidatorAdmission(genesis);
+  if (options.beforePossessionProofs) {
+    if (!hasValidatorAdmission(genesis)) throw new Error("The possession-proof precheck requires validatorAdmission");
+    if (genesis.validatorAdmission!.genesisProofs.length !== 0) {
+      throw new Error("The possession-proof precheck requires an empty validatorAdmission.genesisProofs");
+    }
+    return;
+  }
+  assertGenesisPossessionProofs(genesis);
 }
 
 function stateV2KeysForTransaction(tx: Transaction, genesis: GenesisConfig, producer?: Address | "GENESIS"): string[] {

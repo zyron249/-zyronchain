@@ -94,6 +94,14 @@ export interface GenesisConfig {
    * `fixedTransferFeeAtoms` (proposed default 100,000 atoms = 0.001 ZYN).
    */
   feePolicy?: FeePolicyV1;
+  /**
+   * Optional validator admission, policy possession-proof-v1
+   * (docs/VALIDATOR_POSSESSION_PROOF.md, P1-07). Every genesis validator proves
+   * possession of its private key. Absent on genesis files that predate it;
+   * validation and the genesis hash are then unchanged. Required for the
+   * public-launch, value-bearing and mainnet network classes.
+   */
+  validatorAdmission?: ValidatorAdmission;
 }
 
 /** Opt-in fixed transfer fee. See docs/FEE_POLICY_V1.md. Not activated on shipped genesis. */
@@ -101,6 +109,18 @@ export interface FeePolicyV1 {
   version: "fixed-fee-v1";
   /** Exact transfer fee in atoms. Proposed launch default: 100,000 (0.001 ZYN). */
   fixedTransferFeeAtoms: number;
+}
+
+export interface ValidatorPossessionProof {
+  /** Address of the validator slot (same order as `validators`). */
+  address: Address;
+  /** 64-byte compact secp256k1 signature, hex, under "zyronchain/validator-possession/v1". */
+  signature: string;
+}
+
+export interface ValidatorAdmission {
+  policy: "possession-proof-v1";
+  genesisProofs: ValidatorPossessionProof[];
 }
 
 export interface PublicDistributionRelease {

@@ -22,6 +22,7 @@ import { createTransfer } from "../src/transaction.js";
 import { ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, type GenesisConfig } from "../src/types.js";
 import { MINING_RETIRED } from "../src/mining.js";
 import { defaultPublicDistributionRelease } from "../src/public-distribution-release.js";
+import { signGenesisPossessionProofs } from "../src/validator-admission.js";
 
 const ZYN = ATOMS_PER_ZYN;
 const ZERO = "0".repeat(64);
@@ -82,6 +83,10 @@ function strictGenesis(networkClass: NonNullable<GenesisConfig["networkClass"]> 
     launchProfile: "fixed-supply-v1"
   };
   if (networkClass !== undefined) genesis.networkClass = networkClass;
+  // A value-bearing class also requires validator possession proofs (P1-07).
+  if (networkClass === "public-launch" || networkClass === "value-bearing" || networkClass === "mainnet") {
+    return signGenesisPossessionProofs(genesis, Array.from({ length: VALIDATOR_COUNT }, (_, index) => key(VALIDATOR + index)));
+  }
   return genesis;
 }
 
@@ -268,6 +273,8 @@ test("networkClass is bound into the genesis hash and key order does not matter"
   const classified = strictGenesis("mainnet", "zyron-bind-review");
   const unclassified = structuredClone(classified);
   delete unclassified.networkClass;
+  // The profile-only file does not need (and its commitment would not match) the class's possession proofs.
+  delete unclassified.validatorAdmission;
   const bound = new ZyronChain(classified);
   const profileOnly = new ZyronChain(unclassified);
   assert.notEqual(bound.genesisHash, profileOnly.genesisHash);

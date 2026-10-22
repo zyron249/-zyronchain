@@ -38,20 +38,38 @@ export const GENESIS_CONFIG_COMMITMENT_DOMAIN = "zyronchain/genesis-config/v1";
  * profile itself are bound. The caller must pass a validated genesis.
  */
 export function genesisConfigCommitment(genesis: GenesisConfig): string {
-  return sha256Hex(canonicalJson({ domain: GENESIS_CONFIG_COMMITMENT_DOMAIN, genesis }));
+  // Under validatorAdmission (P1-07) the genesis possession proofs are not
+  // part of the commitment: they sign it. Every other genesis is hashed as is.
+  return sha256Hex(canonicalJson({ domain: GENESIS_CONFIG_COMMITMENT_DOMAIN, genesis: genesisCommitmentView(genesis) }));
+}
+
+/**
+ * The genesis value the configuration commitment covers: identical to the
+ * input, except that an opted-in `validatorAdmission.genesisProofs` is an
+ * empty array (P1-07, docs/VALIDATOR_POSSESSION_PROOF.md). Genesis files
+ * without the field are returned unchanged, so their commitment (and genesis
+ * hash) is byte for byte the historical one.
+ */
+export function genesisCommitmentView(genesis: GenesisConfig): GenesisConfig {
+  if (!Object.prototype.hasOwnProperty.call(genesis, "validatorAdmission")) return genesis;
+  const admission = genesis.validatorAdmission as unknown;
+  if (admission === null || typeof admission !== "object" || Array.isArray(admission)) return genesis;
+  return { ...genesis, validatorAdmission: { ...(admission as NonNullable<GenesisConfig["validatorAdmission"]>), genesisProofs: [] } };
 }
 
 /**
  * Genesis block. Legacy genesis files (no `launchProfile`, no
  * `activityOracleThreshold`, no `activityOraclePolicy`, no
  * `activitySettlementCapAtoms`, no `networkClass`, no
- * `publicDistributionRelease`, and no `feePolicy`) keep the historical header
- * with a zero previous hash, so their genesis hash is unchanged. Under a
- * launch profile, when the genesis declares `activityOracleThreshold`,
- * `activityOraclePolicy` or `activitySettlementCapAtoms` (which change block
- * validity), when it declares `networkClass` (network-class-v1), when it
- * declares `publicDistributionRelease` (public-distribution-release-v1), or
- * when it declares `feePolicy` (fixed-fee-v1), the
+ * `publicDistributionRelease`, no `feePolicy` and no `validatorAdmission`) keep
+ * the historical header with a zero previous hash, so their genesis hash is
+ * unchanged. Under a launch profile, when the genesis declares
+ * `activityOracleThreshold`, `activityOraclePolicy` or
+ * `activitySettlementCapAtoms` (which change block validity), when it declares
+ * `networkClass` (network-class-v1), when it declares
+ * `publicDistributionRelease` (public-distribution-release-v1), when it
+ * declares `feePolicy` (fixed-fee-v1), or when it declares `validatorAdmission`
+ * (possession-proof-v1, P1-07), the
  * previous-hash slot of the genesis header carries
  * `genesisConfigCommitment(genesis)`, so the genesis hash (and therefore the
  * P2P chain identity, block 1's parent link, store metadata and light-client
@@ -64,7 +82,8 @@ export function createGenesisBlock(genesis: GenesisConfig, stateRoot: string): B
     Object.prototype.hasOwnProperty.call(genesis, "activitySettlementCapAtoms") ||
     Object.prototype.hasOwnProperty.call(genesis, "networkClass") ||
     Object.prototype.hasOwnProperty.call(genesis, "publicDistributionRelease") ||
-    Object.prototype.hasOwnProperty.call(genesis, "feePolicy");
+    Object.prototype.hasOwnProperty.call(genesis, "feePolicy") ||
+    Object.prototype.hasOwnProperty.call(genesis, "validatorAdmission");
   const header: BlockHeader = {
     version: 1,
     chainId: genesis.chainId,
