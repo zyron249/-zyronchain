@@ -101,7 +101,9 @@ Run current `main` (verified at `fdd1e792` or later). No minimum commit has been
 
 Use Node.js 22 or newer (`l1/package.json` requires `>=22`). On Node.js 20 the node has been reported to exit silently with code 139 (segmentation fault); check `node --version` first.
 
-1. **Confirm the expected hash independently.** Compare the `EXPECTED_GENESIS` pin in `.github/workflows/open-testnet-snapshot-keeper.yml` on `main`, this document, and the reset announcement. If they disagree, stop, keep your data directory and report it.
+**Which hash applies to you.** The pinned hash `e0212e57…a8ad` is for **followers of the public testnet** only. If you run your own copy (`open-testnet.mjs init`), `init` generates an independent TEST genesis; its hash is not the public pin. Verify the hash that `init` printed (also `genesisHash` in the directory's `network.json`) and that `GET /status` and the node's start-up line report that hash. Do not compare it with the public pin.
+
+1. **Confirm the expected hash independently (public-testnet followers).** Compare the `EXPECTED_GENESIS` pin in `.github/workflows/open-testnet-snapshot-keeper.yml` on `main`, this document, and the reset announcement. If they disagree, stop, keep your data directory and report it. Operators of their own copy have no public pin: after step 6, take the hash printed by `init` as the expected value.
 2. **Update the code** to the latest `main` and check that it includes `fdd1e792`:
    ```sh
    git fetch origin && git checkout main && git pull --ff-only origin main
@@ -111,17 +113,17 @@ Use Node.js 22 or newer (`l1/package.json` requires `>=22`). On Node.js 20 the n
    ```sh
    cd l1 && npm ci && npm run build
    ```
-4. **Re-fetch the genesis and verify its hash.** Fetch `GET /genesis` again (never reuse the old genesis file), and check the genesis hash that `GET /status` (or `GET /genesis`) reports equals `e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad`, the pin from step 1:
+4. **Re-fetch the genesis and verify its hash.** Fetch `GET /genesis` again (never reuse the old genesis file), and for a public-testnet follower, check the genesis hash that `GET /status` (or `GET /genesis`) reports equals `e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad`, the pin from step 1:
    ```sh
    curl -s https://zyron-open-testnet.onrender.com/status
    ```
-   A node prints `Genesis <hash>, height <n>` when it starts; that hash must equal the pin too.
+   A node prints `Genesis <hash>, height <n>` when it starts; that hash must equal the pin too. (Operators of their own copy: compare against the hash `init` printed instead, see step 6.)
 5. **Archive the old data directory, do not delete it.** Stop the node, then move the directory aside, for example `mv "$DIR" "$DIR.pre-e0212e57-$(date +%Y%m%d)"`. Keep it until the new chain is confirmed; it is the evidence if anything turns out wrong.
-6. **Restart** with a fresh, empty data directory against the new genesis (commands below), and check that the start-up line shows the pinned hash.
+6. **Restart** with a fresh, empty data directory against the new genesis (commands below), and check that the start-up line shows the expected hash: the pinned hash for a public-testnet follower, or the hash that `init` printed for your own copy.
 
 Restart commands, by setup:
 
-- **Your own copy** (`open-testnet.mjs`): `init` creates a fresh TEST genesis of its own, so its hash is not the public pin. Re-run `node scripts/open-testnet.mjs init --dir <new dir>` and `run --dir <new dir>` as in [Run your own copy](#run-your-own-copy).
+- **Your own copy** (`open-testnet.mjs`): `init` creates a fresh TEST genesis of its own, so its hash is not the public pin. Re-run `node scripts/open-testnet.mjs init --dir <new dir>` and `run --dir <new dir>` as in [Run your own copy](#run-your-own-copy), note the `genesisHash` that `init` prints, and check that `run` logs the same `genesis <hash>` and `GET /status` reports it.
 - **Follower of the public testnet**: re-fetch the genesis from `GET /genesis` and start `secure-cli.js node --genesis ... --data <new dir>` as in [`VALIDATOR_ONBOARDING.md`](VALIDATOR_ONBOARDING.md) section 5.1.
 
 ## Founder-operated nodes
