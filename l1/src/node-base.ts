@@ -470,6 +470,7 @@ export class NodeService {
   private readonly deferredValidatorUpdates = new Map<string, Transaction>();
   private readmittedTransactions: Transaction[] = [];
   private readmittedValidatorUpdateIds: string[] = [];
+  private readmittedTransactionRelay: ((transaction: Transaction) => void | Promise<void>) | undefined;
 
   constructor(
     readonly store: ChainStore,
@@ -691,11 +692,38 @@ export class NodeService {
     return txid;
   }
 
-  /** P1-07-F2: re-admitted deferred updates, handed out once for relaying to peers. */
+  /**
+   * P1-07-F2: re-admitted deferred updates, handed out once for relaying to
+   * peers. With a relay set (setReadmittedTransactionRelay) they are handed to
+   * it right after re-admission instead, whatever delivered the predecessor
+   * (HTTP /tx, the native transport, or a finalized block).
+   */
   takeReadmittedTransactions(): Transaction[] {
     const readmitted = this.readmittedTransactions;
     this.readmittedTransactions = [];
     return readmitted;
+  }
+
+  /** P1-07-F2: relay for re-admitted deferred updates (the RPC server's onTransactionAccepted). */
+  setReadmittedTransactionRelay(relay: ((transaction: Transaction) => void | Promise<void>) | undefined): void {
+    this.readmittedTransactionRelay = relay;
+    this.flushReadmittedTransactions();
+  }
+
+  clearReadmittedTransactionRelay(relay: (transaction: Transaction) => void | Promise<void>): void {
+    if (this.readmittedTransactionRelay === relay) this.readmittedTransactionRelay = undefined;
+  }
+
+  private flushReadmittedTransactions(): void {
+    const relay = this.readmittedTransactionRelay;
+    if (!relay || this.readmittedTransactions.length === 0) return;
+    const transactions = this.takeReadmittedTransactions();
+    // After the current task, so the predecessor's own relay is scheduled first.
+    setImmediate(() => {
+      for (const transaction of transactions) {
+        void Promise.resolve().then(() => relay(transaction)).catch(() => undefined);
+      }
+    });
   }
 
   private readmittedValidatorUpdate(value: unknown): string | undefined {
@@ -727,6 +755,14 @@ export class NodeService {
     if (tx.kind !== "validator_update" || tx.chainId !== genesis.chainId) return;
     if (tx.activationHeight <= this.store.chain.height + 1 || tx.nonce <= this.store.chain.nonce(tx.sender)) return;
     if (this.deferredValidatorUpdates.has(tx.txid) || this.mempool.values().some((item) => item.txid === tx.txid)) return;
+    // Codex P2 on #1104: only an update that a predecessor could still make
+    // admissible (active initiator, current-validator quorum, activation
+    // order) may use or evict a deferred slot.
+    try {
+      this.store.chain.assertValidatorUpdateAuthorizedExceptProofs(tx);
+    } catch {
+      return;
+    }
     while (this.deferredValidatorUpdates.size >= MAX_DEFERRED_VALIDATOR_UPDATES) {
       const oldest = this.deferredValidatorUpdates.keys().next().value;
       if (oldest === undefined) break;
@@ -765,6 +801,7 @@ export class NodeService {
     if (this.readmittedTransactions.length > MAX_DEFERRED_VALIDATOR_UPDATES) {
       this.readmittedTransactions = this.readmittedTransactions.slice(-MAX_DEFERRED_VALIDATOR_UPDATES);
     }
+    this.flushReadmittedTransactions();
   }
 
   private admitTransaction(value: unknown): string {
@@ -945,6 +982,12 @@ export class NodeService {
         (tx.kind === "mining_claim" &&
           (tx.height !== nextMiningHeight || tx.previousHash !== nextMiningPreviousHash))
       );
+      // P1-07-F2 (Codex P2 on #1104): a predecessor can also arrive only in a
+      // finalized block (sync, proposal finalization, /block); re-try the
+      // deferred updates against the new persisted schedule.
+      if (this.deferredValidatorUpdates.size > 0 && block.transactions.some((tx) => tx.kind === "validator_update")) {
+        this.retryDeferredValidatorUpdates();
+      }
     });
   }
 
@@ -1446,6 +1489,13 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
   server.timeout = socketIdleTimeoutMs;
   server.maxHeadersCount = RPC_MAX_HEADERS;
   server.maxRequestsPerSocket = RPC_MAX_REQUESTS_PER_SOCKET;
+  // P1-07-F2 (Codex P2 on #1104): re-admitted deferred validator updates are
+  // relayed whichever transport delivered their predecessor.
+  const relay = options.onTransactionAccepted;
+  if (relay) {
+    service.setReadmittedTransactionRelay(relay);
+    server.once("close", () => service.clearReadmittedTransactionRelay(relay));
+  }
   return server;
 }
 
@@ -1522,11 +1572,10 @@ async function route(
     const body = await readJsonBody(request, bodyReservation);
     const txid = service.submitTransaction(body);
     if (onTransactionAccepted) {
-      // P1-07-F2: also relay deferred validator updates this admission re-admitted.
-      const transactions = [structuredClone(body as Transaction), ...service.takeReadmittedTransactions()];
-      for (const transaction of transactions) {
-        void Promise.resolve().then(() => onTransactionAccepted(transaction)).catch(() => undefined);
-      }
+      // P1-07-F2: re-admitted deferred updates go out through the relay that
+      // createRpcServer registers (setReadmittedTransactionRelay).
+      const transaction = structuredClone(body as Transaction);
+      void Promise.resolve().then(() => onTransactionAccepted(transaction)).catch(() => undefined);
     }
     return writeJson(response, 202, { txid });
   }
