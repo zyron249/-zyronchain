@@ -95,6 +95,8 @@ test("P1-07-F2: a re-add gossiped before its removal is admitted once the remova
     // Re-admitted updates are handed out once, for relaying to peers.
     assert.deepEqual(service.takeReadmittedTransactions().map((tx) => tx.txid), [readd.txid]);
     assert.deepEqual(service.takeReadmittedTransactions(), []);
+    assert.equal(service.submitTransaction(readd), readd.txid, "re-submitting the re-admitted update still succeeds");
+    assert.throws(() => service.submitTransaction(remove), /already in mempool/, "other duplicates are unchanged");
     const at = chain.tip.header.timestampMs + 1_000;
     assert.deepEqual(chain.selectValidPending(service.mempool.values(), 10, undefined, at).map((tx) => tx.txid), [remove.txid, readd.txid]);
   });

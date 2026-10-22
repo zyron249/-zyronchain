@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
+import { isDeepStrictEqual } from "node:util";
 import { canonicalJson, sha256Hex } from "./codec.js";
 
 import {
@@ -62,6 +63,7 @@ import { ChainStore, SigningJournal } from "./storage.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
 import type { Block, BlockAttestation, RoundSkipVote, Transaction, Validator } from "./types.js";
 import { LocalValidatorSigner, signWithValidator, type ValidatorSigner } from "./validator-signer.js";
+import { hasValidatorAdmission } from "./validator-admission.js";
 
 const MAX_BODY_BYTES = 2_500_000;
 /** Consensus phases whose quorum readiness tracks (F-04); later phases rank higher. */
@@ -442,6 +444,15 @@ export function rpcRateLimitIdentity(
   );
 }
 
+/**
+ * P1-07-F2: transaction gossip can deliver a same-block re-add
+ * `validator_update` before its pending removal predecessor (P1-07-F1), and
+ * admission then refuses it. NodeService keeps at most this many refused
+ * validator updates (oldest evicted first) and re-tries each of them once,
+ * with full admission checks, after the next validator update is admitted.
+ */
+export const MAX_DEFERRED_VALIDATOR_UPDATES = 16;
+
 export class NodeService {
   readonly mempool: Mempool;
   readonly roundSkipVoteDiagnostics = new RoundSkipVoteDiagnostics();
@@ -456,6 +467,9 @@ export class NodeService {
   private consensusQuorumFailure: { height: number; previousHash: string; phase: number } | undefined;
   private validatorSignerFailed = false;
   readonly readinessMaxTipAgeMs: number;
+  private readonly deferredValidatorUpdates = new Map<string, Transaction>();
+  private readmittedTransactions: Transaction[] = [];
+  private readmittedValidatorUpdateIds: string[] = [];
 
   constructor(
     readonly store: ChainStore,
@@ -662,6 +676,98 @@ export class NodeService {
   }
 
   submitTransaction(value: unknown): string {
+    let txid: string;
+    try {
+      txid = this.admitTransaction(value);
+    } catch (error) {
+      // P1-07-F2: re-submitting an update this node already re-admitted from
+      // its deferred set succeeds as it would have without the deferral.
+      const readmitted = this.readmittedValidatorUpdate(value);
+      if (readmitted) return readmitted;
+      this.deferRefusedValidatorUpdate(value);
+      throw error;
+    }
+    if ((value as Transaction).kind === "validator_update") this.retryDeferredValidatorUpdates();
+    return txid;
+  }
+
+  /** P1-07-F2: re-admitted deferred updates, handed out once for relaying to peers. */
+  takeReadmittedTransactions(): Transaction[] {
+    const readmitted = this.readmittedTransactions;
+    this.readmittedTransactions = [];
+    return readmitted;
+  }
+
+  private readmittedValidatorUpdate(value: unknown): string | undefined {
+    const txid = (value as { txid?: unknown } | null)?.txid;
+    if (typeof txid !== "string" || !this.readmittedValidatorUpdateIds.includes(txid)) return undefined;
+    const pending = this.mempool.values().find((item) => item.txid === txid);
+    return pending && isDeepStrictEqual(pending, value) ? txid : undefined;
+  }
+
+  deferredValidatorUpdateCount(): number {
+    return this.deferredValidatorUpdates.size;
+  }
+
+  /**
+   * P1-07-F2: keep a refused `validator_update` that could still activate on a
+   * chain with validator admission (the only case where a pending predecessor
+   * can change the outcome). Nothing is admitted here; see
+   * retryDeferredValidatorUpdates.
+   */
+  private deferRefusedValidatorUpdate(value: unknown): void {
+    const genesis = this.store.chain.genesis;
+    if (!genesis || !hasValidatorAdmission(genesis)) return;
+    try {
+      validateTransactionShape(value, readFeePolicy(genesis)?.fixedTransferFeeAtoms);
+    } catch {
+      return;
+    }
+    const tx = value as Transaction;
+    if (tx.kind !== "validator_update" || tx.chainId !== genesis.chainId) return;
+    if (tx.activationHeight <= this.store.chain.height + 1 || tx.nonce <= this.store.chain.nonce(tx.sender)) return;
+    if (this.deferredValidatorUpdates.has(tx.txid) || this.mempool.values().some((item) => item.txid === tx.txid)) return;
+    while (this.deferredValidatorUpdates.size >= MAX_DEFERRED_VALIDATOR_UPDATES) {
+      const oldest = this.deferredValidatorUpdates.keys().next().value;
+      if (oldest === undefined) break;
+      this.deferredValidatorUpdates.delete(oldest);
+    }
+    this.deferredValidatorUpdates.set(tx.txid, structuredClone(tx));
+  }
+
+  /**
+   * P1-07-F2: after a validator update is admitted, re-try every deferred one
+   * through the full admission path, repeating while one more is admitted (an
+   * admitted update can be the predecessor of another). Updates still refused
+   * are dropped, so each deferred update is re-tried at most once per trigger
+   * and the work is bounded by MAX_DEFERRED_VALIDATOR_UPDATES.
+   */
+  private retryDeferredValidatorUpdates(): void {
+    let remaining = [...this.deferredValidatorUpdates.values()];
+    this.deferredValidatorUpdates.clear();
+    while (remaining.length > 0) {
+      const refused: Transaction[] = [];
+      for (const tx of remaining) {
+        try {
+          this.admitTransaction(tx);
+          this.readmittedTransactions.push(structuredClone(tx));
+          this.readmittedValidatorUpdateIds.push(tx.txid);
+        } catch {
+          refused.push(tx);
+        }
+      }
+      if (refused.length === remaining.length) break;
+      remaining = refused;
+    }
+    if (this.readmittedValidatorUpdateIds.length > MAX_DEFERRED_VALIDATOR_UPDATES) {
+      this.readmittedValidatorUpdateIds = this.readmittedValidatorUpdateIds.slice(-MAX_DEFERRED_VALIDATOR_UPDATES);
+    }
+    if (this.readmittedTransactions.length > MAX_DEFERRED_VALIDATOR_UPDATES) {
+      this.readmittedTransactions = this.readmittedTransactions.slice(-MAX_DEFERRED_VALIDATOR_UPDATES);
+    }
+  }
+
+  private admitTransaction(value: unknown): string {
     validateTransactionShape(value, readFeePolicy(this.store.chain.genesis)?.fixedTransferFeeAtoms);
     const tx = value as Transaction;
     if (tx.chainId !== this.store.chain.genesis.chainId) throw new Error("Wrong transaction chain ID");
@@ -1416,8 +1522,11 @@ async function route(
     const body = await readJsonBody(request, bodyReservation);
     const txid = service.submitTransaction(body);
     if (onTransactionAccepted) {
-      const transaction = structuredClone(body as Transaction);
-      void Promise.resolve().then(() => onTransactionAccepted(transaction)).catch(() => undefined);
+      // P1-07-F2: also relay deferred validator updates this admission re-admitted.
+      const transactions = [structuredClone(body as Transaction), ...service.takeReadmittedTransactions()];
+      for (const transaction of transactions) {
+        void Promise.resolve().then(() => onTransactionAccepted(transaction)).catch(() => undefined);
+      }
     }
     return writeJson(response, 202, { txid });
   }
