@@ -4,7 +4,8 @@
 // oversized) are rejected; consensus bytes pass through unchanged both ways.
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,11 +18,13 @@ const relayModule: any = await import(join(l1Root, "scripts", "open-testnet", "c
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const clientModule: any = await import(join(l1Root, "scripts", "consensus-relay-client.mjs"));
 const { ConsensusRelay, createRelayAuthHeader, parseRelayPeers, RELAY_AUTH_HEADER, RELAY_MAX_BODY_BYTES, RELAY_MAX_CONSENSUS_REQUEST_BYTES,
-  RELAY_CLOCK_SKEW_MS, RELAY_SEEN_WINDOW_MS, RELAY_MAX_SEEN_PER_PEER, RELAY_SEEN_COMPACT_SLACK } = relayModule;
+  RELAY_CLOCK_SKEW_MS, RELAY_SEEN_WINDOW_MS, RELAY_MAX_SEEN_PER_PEER, RELAY_SEEN_COMPACT_SLACK, RelaySeenStore, processStartTime, RELAY_LOCK_STALE_MS } = relayModule;
+const relayModulePath = join(l1Root, "scripts", "open-testnet", "consensus-relay.mjs");
 const journalRoot = mkdtempSync(join(tmpdir(), "zyron-relay-seen-test-"));
 process.on("exit", () => rmSync(journalRoot, { recursive: true, force: true }));
 let journalCount = 0;
-const freshJournal = () => join(journalRoot, `seen-${journalCount++}.jsonl`);
+// A journal left by an earlier run of this gateway (empty: nothing accepted yet).
+const freshJournal = () => { const path = join(journalRoot, `seen-${journalCount++}.jsonl`); writeFileSync(path, ""); return path; };
 
 const CHAIN = "zyron-relay-test-1";
 const GENESIS = "ab".repeat(32);
@@ -336,4 +339,129 @@ test("the replay journal stays bounded by the seen window and the per-peer cap",
   assert.equal(readFileSync(path, "utf8").trim().split("\n").length, RELAY_MAX_SEEN_PER_PEER, "expired, excess and unknown-peer entries are dropped");
   assert.equal(statSync(path).mode & 0o077, 0, "journal is private to the gateway user");
   reopened.relay.close();
+});
+
+const quiet = () => {};
+const deadPid = 2_147_483_646;
+const lockJson = (pid: number, extra: Record<string, unknown> = {}) => JSON.stringify({ pid, token: "f".repeat(32), ...extra });
+
+test("journal lock: concurrent takeovers of a stale lock never produce two owners (stress)", async () => {
+  const child = `const { RelaySeenStore } = await import(${JSON.stringify(relayModulePath)});
+const [path, startAt] = process.argv.slice(1);
+while (Date.now() < Number(startAt)) {}
+try { new RelaySeenStore(path, { peers: new Map(), log: () => {} }); console.log("ACQUIRED"); } catch (e) { console.log("REFUSED " + e.message); }
+setTimeout(() => {}, 60000); // every contender stays alive until all have answered, so holders overlap in time`;
+  const trials = 16; const contenders = 6; let multiple = 0; let none = 0;
+  for (let i = 0; i < trials; i += 1) {
+    const path = join(mkdtempSync(join(journalRoot, "race-")), "seen.jsonl");
+    writeFileSync(`${path}.lock`, lockJson(deadPid)); // stale: owner is dead
+    const startAt = Date.now() + 700;
+    const children: ChildProcess[] = [];
+    const outs = await Promise.all(Array.from({ length: contenders }, () => new Promise<string>((done) => {
+      let out = ""; const c = spawn(process.execPath, ["--input-type=module", "-e", child, path, String(startAt)]);
+      children.push(c);
+      c.stdout.on("data", (d) => { out += d; if (out.includes("\n")) done(out); }); c.on("close", () => done(out));
+    })));
+    for (const c of children) c.kill();
+    const acquired = outs.filter((o) => o.includes("ACQUIRED")).length;
+    if (acquired > 1) multiple += 1;
+    if (acquired === 0) none += 1;
+  }
+  assert.equal(multiple, 0, "no trial may end with more than one lock owner");
+  assert.ok(none < trials, "stale locks are taken over");
+});
+
+test("journal lock: close() removes only a lock that still holds its own token", () => {
+  const path = freshJournal();
+  const store = new RelaySeenStore(path, { peers: new Map(), log: quiet });
+  const lock = JSON.parse(readFileSync(`${path}.lock`, "utf8"));
+  assert.match(lock.token, /^[0-9a-f]{32}$/, "the lock carries a random owner token");
+  assert.equal(lock.pid, process.pid);
+  const other = lockJson(424242, { token: "1".repeat(32) });
+  writeFileSync(`${path}.lock`, other); // another owner took the lock
+  store.close();
+  assert.equal(readFileSync(`${path}.lock`, "utf8"), other, "someone else's lock is left in place");
+  const mine = new RelaySeenStore(freshJournal(), { peers: new Map(), log: quiet });
+  const minePath = `${mine.path}.lock`;
+  mine.close();
+  assert.equal(existsSync(minePath), false, "an owner's own lock is removed");
+});
+
+test("journal lock: a reused pid or a missing heartbeat does not keep a stale lock alive", async () => {
+  const sleeper: ChildProcess = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"]);
+  try {
+    await new Promise((r) => setTimeout(r, 200));
+    const pid = sleeper.pid!;
+    // Live pid, but the recorded start time belongs to an earlier process with that pid.
+    let path = freshJournal();
+    writeFileSync(`${path}.lock`, lockJson(pid, { startTime: "1" }));
+    if (processStartTime(pid) !== undefined) { const s = new RelaySeenStore(path, { peers: new Map(), log: quiet }); s.close(); }
+    // Live pid and matching start time, but no heartbeat for longer than the stale limit.
+    path = freshJournal();
+    writeFileSync(`${path}.lock`, lockJson(pid, { startTime: processStartTime(pid) }));
+    const old = new Date(Date.now() - RELAY_LOCK_STALE_MS - 5_000); utimesSync(`${path}.lock`, old, old);
+    const s2 = new RelaySeenStore(path, { peers: new Map(), log: quiet }); s2.close();
+    // Live pid, matching start time, fresh heartbeat: refused.
+    path = freshJournal();
+    writeFileSync(`${path}.lock`, lockJson(pid, { startTime: processStartTime(pid) }));
+    assert.throws(() => new RelaySeenStore(path, { peers: new Map(), log: quiet }), /in use by process/);
+  } finally { sleeper.kill(); }
+});
+
+test("journal lock: the owner heartbeats and fails closed if its lock is taken", async () => {
+  const lines: string[] = [];
+  const { relay } = makeRelay({ log: (l: string) => lines.push(l) });
+  const store = relay.seenStore;
+  const lockPath = `${store.path}.lock`;
+  const past = new Date(Date.now() - 20_000); utimesSync(lockPath, past, past);
+  store.beat();
+  assert.ok(Date.now() - statSync(lockPath).mtimeMs < 5_000, "heartbeat refreshes the lock");
+  writeFileSync(lockPath, lockJson(424242, { token: "2".repeat(32) }));
+  store.beat();
+  const body = Buffer.from("{}");
+  assert.throws(() => relay.authenticate(auth("poll", body), "poll", body), (e: { statusCode?: number }) => e.statusCode === 503);
+  assert.ok(lines.some((l) => /lock lost/.test(l)));
+  relay.close();
+});
+
+test("journal: a failed compaction keeps the journal open, and a failed reopen fails closed", () => {
+  const lines: string[] = [];
+  let clock = 3_000_000_000_000; const now = () => clock;
+  const { relay } = makeRelay({ now, log: (l: string) => lines.push(l) });
+  const store = relay.seenStore; const peer = relay.peers.get(ADDRESS);
+  const body = Buffer.from("{}");
+  const accept = () => { clock += 1_000; relay.authenticate(auth("poll", body, { issuedAtMs: clock }), "poll", body); peer.rate.count = 0; };
+  store.renameJournal = () => { throw new Error("disk full"); };
+  for (let i = 0; i < 2_000; i += 1) accept();
+  assert.ok(lines.some((l) => /compaction failed \(disk full\)/.test(l)));
+  assert.notEqual(store.fd, undefined, "the old journal stays open");
+  const seq = 777_000_001;
+  relay.authenticate(auth("poll", body, { seq, issuedAtMs: clock }), "poll", body);
+  assert.match(readFileSync(store.path, "utf8"), new RegExp(`"s":${seq}`), "entries are still made durable");
+  delete store.renameJournal;
+  store.openAppend = () => { throw new Error("EIO"); };
+  assert.throws(() => store.compact(), /EIO/);
+  assert.throws(() => relay.authenticate(auth("poll", body, { issuedAtMs: clock }), "poll", body), (e: { statusCode?: number }) => e.statusCode === 503);
+  assert.ok(lines.some((l) => /could not be reopened/.test(l)));
+  relay.close();
+});
+
+test("relay logs its replay-protection mode at startup; a brand-new journal also applies the boot fence", async () => {
+  const lines: string[] = [];
+  const saved = process.env.ZYRON_RELAY_SEEN_FILE; delete process.env.ZYRON_RELAY_SEEN_FILE;
+  try {
+    const { relay } = makeRelay({ seenStorePath: undefined, log: (l: string) => lines.push(l) });
+    assert.equal(relay.replayProtection, "boot-fence");
+    assert.ok(lines.some((l) => /boot fence only \(ZYRON_RELAY_SEEN_FILE unset\)/.test(l)));
+  } finally { if (saved !== undefined) process.env.ZYRON_RELAY_SEEN_FILE = saved; }
+  const path = join(journalRoot, "brand-new", "seen.jsonl");
+  const { relay } = makeRelay({ seenStorePath: path, log: (l: string) => lines.push(l) });
+  assert.equal(relay.replayProtection, "journal+boot-fence");
+  const body = Buffer.from("{}");
+  assert.throws(() => relay.authenticate(auth("poll", body), "poll", body), /predates/);
+  relay.close();
+  const again = makeRelay({ seenStorePath: path, log: (l: string) => lines.push(l) });
+  assert.equal(again.relay.replayProtection, "journal");
+  again.relay.authenticate(auth("poll", body), "poll", body);
+  again.relay.close();
 });

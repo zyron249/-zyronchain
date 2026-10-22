@@ -4,7 +4,7 @@
 // creates or changes a vote: it moves the exact request and reply bytes, and
 // every vote is verified by the receiving node's own v6 rules.
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -108,9 +108,80 @@ export function relayVotingPeer(chain, address) {
   } catch { return false; }
 }
 
-const heldJournals = new Set();
+// A live owner refreshes its lock at this interval; a lock not refreshed for
+// RELAY_LOCK_STALE_MS is stale even if its pid is (re)used by another process.
+export const RELAY_LOCK_HEARTBEAT_MS = 5_000;
+export const RELAY_LOCK_STALE_MS = 30_000;
+// A takeover mutex is held only for a few file operations.
+const RELAY_TAKEOVER_STALE_MS = 10_000;
+
+/** Process start time (clock ticks since boot) from /proc, or undefined where unavailable. */
+export function processStartTime(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    return fields[19];
+  } catch { return undefined; }
+}
+
 function processAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error?.code === "EPERM"; }
+}
+
+function readLock(path) {
+  try {
+    const text = readFileSync(path, "utf8");
+    const mtimeMs = statSync(path).mtimeMs;
+    let owner;
+    try { owner = JSON.parse(text); } catch { owner = undefined; }
+    return { text, owner, mtimeMs };
+  } catch (error) { if (error?.code === "ENOENT") return undefined; throw error; }
+}
+
+/**
+ * True while the lock's owner may still be running: its pid is alive, the
+ * process start time recorded in the lock still matches that pid (so a reused
+ * pid does not count), and the owner has refreshed the lock recently.
+ */
+function lockLive(lock, staleMs, nowMs = Date.now()) {
+  const o = lock.owner;
+  // Locks are created whole (exclusive link of a complete file), so one that does not parse is not ours to honour.
+  if (!o || typeof o.token !== "string" || !Number.isSafeInteger(o.pid) || o.pid <= 0) return false;
+  if (o.pid === process.pid) return heldTokens.has(o.token) && nowMs - lock.mtimeMs <= staleMs;
+  if (!processAlive(o.pid)) return false;
+  if (o.startTime !== undefined) { const current = processStartTime(o.pid); if (current !== undefined && current !== o.startTime) return false; }
+  return nowMs - lock.mtimeMs <= staleMs;
+}
+
+const heldTokens = new Set();
+
+function ownerRecord() {
+  const token = randomBytes(16).toString("hex");
+  return { token, text: JSON.stringify({ pid: process.pid, startTime: processStartTime(process.pid), token }) };
+}
+
+/** Atomically creates `path` holding `text` (write a private temp file, then link: fails with EEXIST if `path` exists). */
+function createExclusive(path, text) {
+  const temp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.new`;
+  writeFileSync(temp, text, { flag: "wx", mode: 0o600 });
+  try { linkSync(temp, path); return true; } catch (error) { if (error?.code === "EEXIST") return false; throw error; } finally { try { unlinkSync(temp); } catch { /* gone */ } }
+}
+
+/**
+ * Removes `path` only if it still holds exactly `expectedText`. Callers hold
+ * the takeover mutex, so the file cannot be replaced between the comparison
+ * and the atomic rename; the renamed file is compared again and put back with
+ * an exclusive link if it is not the expected one.
+ */
+function removeIfUnchanged(path, expectedText) {
+  // Compare first, so a file that is not the expected one is never moved (moving it would leave the path briefly empty).
+  try { if (readFileSync(path, "utf8") !== expectedText) return false; } catch (error) { if (error?.code === "ENOENT") return false; throw error; }
+  const aside = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.old`;
+  try { renameSync(path, aside); } catch (error) { if (error?.code === "ENOENT") return false; throw error; }
+  if (readFileSync(aside, "utf8") === expectedText) { unlinkSync(aside); return true; }
+  try { linkSync(aside, path); } catch (error) { if (error?.code !== "EEXIST") throw error; }
+  unlinkSync(aside);
+  return false;
 }
 
 /**
@@ -120,33 +191,72 @@ function processAlive(pid) {
  * dropped, each peer keeps at most RELAY_MAX_SEEN_PER_PEER entries, and the
  * file is rewritten atomically (temp file, fsync, rename). It is compacted the
  * same way once it holds RELAY_SEEN_COMPACT_SLACK lines beyond twice the live
- * entries, so its size stays bounded. A `<file>.lock` held by a live process
- * stops a second gateway from using the same journal.
+ * entries, so its size stays bounded.
+ *
+ * Single writer: `<file>.lock` holds `{pid, startTime, token}` and is created
+ * with an atomic exclusive link. The owner refreshes its mtime every
+ * RELAY_LOCK_HEARTBEAT_MS and checks that the token is still its own. A lock
+ * is taken over only when its owner is gone (dead pid, a pid reused by another
+ * process, or no heartbeat for RELAY_LOCK_STALE_MS), under an exclusive
+ * `<file>.lock.takeover` mutex, and only if the lock still holds the exact
+ * bytes judged stale. One gateway per journal; gateways on different hosts do
+ * not share replay state.
  */
 export class RelaySeenStore {
-  constructor(path, { now = () => Date.now(), peers }) {
-    this.path = resolve(path); this.now = now; this.peers = peers; this.lines = 0; this.fd = undefined;
+  constructor(path, { now = () => Date.now(), peers, log = (line) => console.error(line), heartbeatMs = RELAY_LOCK_HEARTBEAT_MS, staleMs = RELAY_LOCK_STALE_MS }) {
+    this.path = resolve(path); this.now = now; this.peers = peers; this.log = log; this.staleMs = staleMs;
+    this.lines = 0; this.fd = undefined; this.failure = undefined; this.lost = false; this.compactRetryAt = 0;
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     this.lockPath = `${this.path}.lock`;
     this.acquireLock();
-    try { this.load(); this.compact(); } catch (error) { this.close(); throw error; }
+    try {
+      // A journal that did not exist cannot vouch for what an earlier process accepted.
+      this.existed = existsSync(this.path);
+      this.load(); this.compact();
+    } catch (error) { this.close(); throw error; }
+    this.heartbeat = setInterval(() => this.beat(), heartbeatMs); this.heartbeat.unref?.();
   }
 
   acquireLock() {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try { writeFileSync(this.lockPath, String(process.pid), { flag: "wx", mode: 0o600 }); this.locked = true; heldJournals.add(this.lockPath); return; } catch (error) {
-        if (error?.code !== "EEXIST") throw error;
-        const pid = Number(readFileSync(this.lockPath, "utf8").trim());
-        const ours = pid === process.pid && heldJournals.has(this.lockPath);
-        if (ours || (Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid && processAlive(pid))) throw new Error(`relay replay journal ${this.path} is in use by process ${pid}`);
-        unlinkSync(this.lockPath);
-      }
+    const mine = ownerRecord();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (createExclusive(this.lockPath, mine.text)) { this.token = mine.token; this.lockText = mine.text; heldTokens.add(mine.token); return; }
+      const lock = readLock(this.lockPath);
+      if (!lock) continue;
+      if (lockLive(lock, this.staleMs)) throw new Error(`relay replay journal ${this.path} is in use by process ${lock.owner?.pid ?? "unknown"}`);
+      this.takeOver(lock.text);
     }
     throw new Error(`relay replay journal ${this.path}: could not take the lock`);
   }
 
+  /** Removes a stale lock, serialized by an exclusive takeover mutex. */
+  takeOver(staleText) {
+    const mutexPath = `${this.lockPath}.takeover`;
+    const mutex = ownerRecord();
+    if (!createExclusive(mutexPath, mutex.text)) {
+      const held = readLock(mutexPath);
+      if (held && !lockLive(held, RELAY_TAKEOVER_STALE_MS)) removeIfUnchanged(mutexPath, held.text);
+      return; // someone else is taking over; the caller retries
+    }
+    heldTokens.add(mutex.token);
+    try { removeIfUnchanged(this.lockPath, staleText); } finally { heldTokens.delete(mutex.token); removeIfUnchanged(mutexPath, mutex.text); }
+  }
+
+  /** Heartbeat: refresh the lock and confirm it is still ours. */
+  beat() {
+    if (this.token === undefined) return;
+    try {
+      if (readFileSync(this.lockPath, "utf8") !== this.lockText) throw new Error("lock was taken by another process");
+      const t = new Date(); utimesSync(this.lockPath, t, t);
+    } catch (error) {
+      this.lost = true;
+      this.failure = `relay replay journal ${this.path}: lock lost (${error instanceof Error ? error.message : String(error)}); refusing relay requests`;
+      this.log(this.failure);
+    }
+  }
+
   load() {
-    if (!existsSync(this.path)) return;
+    if (!this.existed) return;
     const now = this.now();
     for (const line of readFileSync(this.path, "utf8").split("\n")) {
       if (line === "") continue;
@@ -165,31 +275,58 @@ export class RelaySeenStore {
 
   liveCount() { let n = 0; for (const peer of this.peers.values()) n += peer.seen.size; return n; }
 
+  /** Atomic rewrite. On failure before the rename the old journal and its descriptor stay in use; a failure to reopen afterwards fails closed. */
   compact() {
-    if (this.fd !== undefined) { closeSync(this.fd); this.fd = undefined; }
     const now = this.now();
     const lines = [];
     for (const peer of this.peers.values()) for (const [s, t] of peer.seen) if (now - t <= RELAY_SEEN_WINDOW_MS) lines.push(JSON.stringify({ a: peer.address, s, t }));
     const temp = `${this.path}.${process.pid}.tmp`;
-    const fd = openSync(temp, "w", 0o600);
-    try { if (lines.length > 0) writeSync(fd, lines.join("\n") + "\n"); fsyncSync(fd); } finally { closeSync(fd); }
-    renameSync(temp, this.path);
+    try {
+      const fd = openSync(temp, "w", 0o600);
+      try { if (lines.length > 0) writeSync(fd, lines.join("\n") + "\n"); fsyncSync(fd); } finally { closeSync(fd); }
+      this.renameJournal(temp, this.path);
+    } catch (error) { try { unlinkSync(temp); } catch { /* not created */ } throw error; }
     try { const dir = openSync(dirname(this.path), "r"); try { fsyncSync(dir); } finally { closeSync(dir); } } catch { /* directory fsync is best effort */ }
+    if (this.fd !== undefined) { try { closeSync(this.fd); } catch { /* already closed */ } this.fd = undefined; }
+    try { this.fd = this.openAppend(this.path); } catch (error) {
+      this.failure = `relay replay journal ${this.path} could not be reopened (${error instanceof Error ? error.message : String(error)}); refusing relay requests`;
+      this.log(this.failure);
+      throw error;
+    }
     this.lines = lines.length;
-    this.fd = openSync(this.path, "a", 0o600);
+  }
+
+  renameJournal(from, to) { renameSync(from, to); }
+  openAppend(path) { return openSync(path, "a", 0o600); }
+
+  /** Throws when the journal cannot protect against replays (lock lost, journal closed); the relay then refuses requests. */
+  assertUsable() {
+    if (this.failure !== undefined || this.fd === undefined) throw new RelayError(503, "relay replay journal unavailable");
   }
 
   /** Durably records an accepted envelope before the relay acts on it. */
   record(address, seq, at) {
+    this.assertUsable();
     writeSync(this.fd, JSON.stringify({ a: address, s: seq, t: at }) + "\n");
     fsyncSync(this.fd);
     this.lines += 1;
-    if (this.lines > 2 * this.liveCount() + RELAY_SEEN_COMPACT_SLACK) this.compact();
+    if (this.lines > 2 * this.liveCount() + RELAY_SEEN_COMPACT_SLACK && this.now() >= this.compactRetryAt) {
+      try { this.compact(); } catch (error) {
+        // The entry above is already durable. If the old descriptor is still open the journal keeps working and compaction is retried later.
+        this.compactRetryAt = this.now() + 10_000;
+        this.log(`relay replay journal ${this.path}: compaction failed (${error instanceof Error ? error.message : String(error)})`);
+      }
+    }
   }
 
   close() {
-    if (this.fd !== undefined) { closeSync(this.fd); this.fd = undefined; }
-    if (this.locked) { try { unlinkSync(this.lockPath); } catch { /* already gone */ } heldJournals.delete(this.lockPath); this.locked = false; }
+    if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = undefined; }
+    if (this.fd !== undefined) { try { closeSync(this.fd); } catch { /* already closed */ } this.fd = undefined; }
+    if (this.token !== undefined) {
+      // Only our own lock is removed: a lock that now holds someone else's token is left alone.
+      try { removeIfUnchanged(this.lockPath, this.lockText); } catch { /* best effort */ }
+      heldTokens.delete(this.token); this.token = undefined;
+    }
   }
 }
 
@@ -205,7 +342,7 @@ export class ConsensusRelay {
    *   envelopes issued before boot + RELAY_CLOCK_SKEW_MS are refused, so nothing a previous process accepted can be replayed.
    */
   constructor({ chainId, genesisHash, peers, hostedCount, forwardToHosted, isVotingPeer = () => true, now = () => Date.now(), replyWaitMs = RELAY_REPLY_WAIT_MS, pollWaitMs = RELAY_POLL_WAIT_MS,
-    seenStorePath = process.env[RELAY_SEEN_FILE_ENV] || undefined }) {
+    seenStorePath = process.env[RELAY_SEEN_FILE_ENV] || undefined, log = (line) => console.error(line) }) {
     // Consensus requests reach only peers that are in the active validator
     // set, so allowlisted candidates never take collector slots.
     this.isVotingPeer = isVotingPeer;
@@ -220,8 +357,14 @@ export class ConsensusRelay {
     // Replay protection across restarts: a durable seen journal when one is
     // configured; otherwise a boot fence covering everything a previous
     // process could have accepted (issuedAtMs <= its clock + skew).
-    this.seenStore = seenStorePath ? new RelaySeenStore(seenStorePath, { now, peers: this.peers }) : undefined;
-    this.bootFenceMs = this.seenStore ? -Infinity : now() + RELAY_CLOCK_SKEW_MS;
+    this.seenStore = seenStorePath ? new RelaySeenStore(seenStorePath, { now, peers: this.peers, log }) : undefined;
+    // A journal created just now (first start, or a fresh disk) knows nothing about earlier processes, so the fence applies too.
+    this.bootFenceMs = this.seenStore?.existed ? -Infinity : now() + RELAY_CLOCK_SKEW_MS;
+    this.replayProtection = !this.seenStore ? "boot-fence" : this.seenStore.existed ? "journal" : "journal+boot-fence";
+    if (this.peers.size > 0) {
+      if (!this.seenStore) log(`consensus relay: replay protection = boot fence only (${RELAY_SEEN_FILE_ENV} unset): envelopes issued before ${new Date(this.bootFenceMs).toISOString()} are refused; set ${RELAY_SEEN_FILE_ENV} to a writable path to keep replay state across restarts`);
+      else log(`consensus relay: replay protection = journal ${this.seenStore.path}${this.seenStore.existed ? "" : " (new journal: boot fence until " + new Date(this.bootFenceMs).toISOString() + ")"}`);
+    }
   }
 
   /** Releases the replay journal and its lock. */
@@ -260,6 +403,7 @@ export class ConsensusRelay {
     if (sha256Hex(body) !== e.bodyHash) throw new RelayError(401, "relay body hash mismatch");
     for (const [seq, at] of peer.seen) { if (now - at > RELAY_SEEN_WINDOW_MS) peer.seen.delete(seq); else break; }
     if (peer.seen.has(e.seq)) throw new RelayError(401, "replayed relay envelope");
+    this.seenStore?.assertUsable();
     if (e.issuedAtMs < this.bootFenceMs) throw new RelayError(401, "relay envelope predates this relay instance");
     if (peer.seen.size >= RELAY_MAX_SEEN_PER_PEER) throw new RelayError(429, "relay rate limit exceeded");
     if (!peer.rate.take()) throw new RelayError(429, "relay rate limit exceeded");
