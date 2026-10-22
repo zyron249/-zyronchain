@@ -28,7 +28,8 @@ test("direct legacy CLI recovery and node-state commands use bounded recovery re
   const source = await readFile(new URL("../../src/cli.ts", import.meta.url), "utf8");
   assert.equal(source.includes('readFile(resolve(genesisPath), "utf8")'), false);
   assert.equal(source.includes('readFile(resolve(snapshotPath), "utf8")'), false);
-  assert.equal((source.match(/readCliGenesisUtf8\(resolve\(genesisPath\)\)/g) ?? []).length, 6);
+  // Inventory: six recovery/node-state commands plus validator-possession-proof --genesis.
+  assert.equal((source.match(/readCliGenesisUtf8\(resolve\(genesisPath\)\)/g) ?? []).length, 7);
   assert.match(source, /readCliCheckpointSnapshotAnchoredUtf8\(resolve\(snapshotPath\), snapshotSha256\)/);
 });
 

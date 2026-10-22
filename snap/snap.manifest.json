@@ -7,7 +7,7 @@
     "url": "https://github.com/zyron249/-zyronchain.git"
   },
   "source": {
-    "shasum": "Pj2saufgUMedWg5sqv0VHwd4G6euQHHFtQbARQP2MfU=",
+    "shasum": "CSLy/a31y9yeT0OhQJYgLUBea5lndgTk9PfG4u5PI4w=",
     "location": {
       "npm": {
         "filePath": "dist/bundle.js",
@@ -19,7 +19,7 @@
   },
   "initialPermissions": {
     "endowment:rpc": {
-      "allowedOrigins": ["https://zyronchain.com", "http://localhost:8000"]
+      "allowedOrigins": ["https://zyronchain.com"]
     },
     "endowment:network-access": {},
     "snap_dialog": {},
