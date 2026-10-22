@@ -198,3 +198,27 @@ test("P1-06: forged proposer signatures and wrong-tip proposals do not use up th
     assert.equal(attestation.publicKey, validatorTwoPublic);
   });
 });
+
+test("P1-06: the budget is per slot and hash, pruned at the finalized height, and bounded in size", async () => {
+  const { ProposalValidationBudget, PROPOSAL_VALIDATION_BUDGET_MESSAGE } = await import("../src/proposal-validation-budget.js");
+  const budget = new ProposalValidationBudget(1, 3);
+  const slot = (height: number, round = 0) => ProposalValidationBudget.slotKey(height, round, validatorOnePublic);
+  budget.assertAllowed(slot(5), "aa");
+  budget.recordFailure(slot(5), 5, "aa");
+  assert.throws(() => budget.assertAllowed(slot(5), "aa"), new RegExp(PROPOSAL_VALIDATION_BUDGET_MESSAGE));
+  assert.throws(() => budget.assertAllowed(slot(5), "bb"), new RegExp(PROPOSAL_VALIDATION_BUDGET_MESSAGE));
+  // Other rounds, heights and proposers are separate slots.
+  budget.assertAllowed(slot(5, 1), "bb");
+  budget.assertAllowed(slot(6), "bb");
+  budget.assertAllowed(ProposalValidationBudget.slotKey(5, 0, validatorTwoPublic), "bb");
+  // Finalizing height 5 drops its slots.
+  budget.pruneThrough(5);
+  assert.equal(budget.size(), 0);
+  budget.assertAllowed(slot(5), "aa");
+  // At most maxSlots slots are kept; the oldest goes first.
+  for (const height of [6, 7, 8, 9]) budget.recordFailure(slot(height), height, "cc");
+  assert.equal(budget.size(), 3);
+  budget.assertAllowed(slot(6), "dd");
+  assert.throws(() => budget.assertAllowed(slot(9), "dd"), new RegExp(PROPOSAL_VALIDATION_BUDGET_MESSAGE));
+  assert.throws(() => new ProposalValidationBudget(0), /Invalid proposal validation budget/);
+});
