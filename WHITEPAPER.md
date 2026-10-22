@@ -157,7 +157,7 @@ The standalone miner in `l1/scripts/mine.mjs` decrypts a local ZyronChain keysto
 
 ## 10. Proof of Activity
 
-Activity settlement uses oracle-signed receipt-root batches. A settlement can spend only the prefunded activity pool and cannot increase total supply. Consensus caps each settlement at 10,000 ZYN and allows only the most recently closed 24-hour epoch to be settled, once and in increasing epoch order, so one oracle key can move at most 10,000 ZYN per day (see `docs/ACTIVITY_ORACLE_CAP.md`).
+Activity settlement uses oracle-signed receipt-root batches. A settlement can spend only the prefunded activity pool and cannot increase total supply. Consensus allows only the most recently closed 24-hour epoch to be settled, once and in increasing epoch order, and caps each settlement. A public-launch genesis (`launchProfile: "fixed-supply-v1"`) must use `activityOraclePolicy: "threshold-v1"`: a settlement needs an m-of-n oracle attestation (at least 2-of-3), and at most 1,000 ZYN can be settled per epoch and inside any rolling 24-hour window by default (configurable only downward). A genesis without an oracle policy keeps the historical ceiling of 10,000 ZYN per settlement, which only development and test chains use (see `docs/ACTIVITY_ORACLE_CAP.md` and `docs/ACTIVITY_ORACLE_GOVERNANCE.md`).
 
 Before public-testnet activation, either:
 
