@@ -125,6 +125,10 @@ export function validateSnapshot({ status, headers, bytes }, expectedGenesis) {
 // authenticated. With the gateway's state secret the keeper opens the sealed
 // body (AES-256-GCM authenticates it) and takes the height and genesis from it;
 // headers that disagree with the body are refused.
+export class SnapshotAuthenticationError extends Error {
+  constructor(message) { super(message); this.name = "SnapshotAuthenticationError"; }
+}
+
 export function authenticatedSnapshotTip(bytes, secret) {
   const header = Buffer.from(SNAPSHOT_HEADER);
   if (bytes.length <= header.length + 28 || !bytes.subarray(0, header.length).equals(header)) throw new Error("not an open-testnet sealed state snapshot");
@@ -134,17 +138,17 @@ export function authenticatedSnapshotTip(bytes, secret) {
   decipher.setAuthTag(bytes.subarray(header.length + 12, header.length + 28));
   let bundle;
   try { bundle = JSON.parse(gunzipSync(Buffer.concat([decipher.update(bytes.subarray(header.length + 28)), decipher.final()]), { maxOutputLength: 512 * 1024 * 1024 }).toString("utf8")); }
-  catch { throw new Error("snapshot body does not authenticate with the state secret"); }
+  catch { throw new SnapshotAuthenticationError("snapshot body does not authenticate with the state secret; refusing to publish"); }
   const height = Array.isArray(bundle?.blocks) ? bundle.blocks.length : 0;
   const genesis = bundle?.network?.genesisHash;
-  if (!(height >= 1) || !GENESIS_PATTERN.test(String(genesis))) throw new Error("authenticated snapshot has no height or genesis");
+  if (!(height >= 1) || !GENESIS_PATTERN.test(String(genesis))) throw new SnapshotAuthenticationError("authenticated snapshot has no height or genesis; refusing to publish");
   return { height, genesis };
 }
 
 export function checkAuthenticated(snapshot, bytes, secret) {
   if (!secret) return snapshot;
   const body = authenticatedSnapshotTip(bytes, secret);
-  if (body.height !== snapshot.height || body.genesis !== snapshot.genesis) throw new Error(`snapshot headers (height ${snapshot.height}, genesis ${snapshot.genesis.slice(0, 12)}…) do not match the authenticated body (height ${body.height}, genesis ${body.genesis.slice(0, 12)}…)`);
+  if (body.height !== snapshot.height || body.genesis !== snapshot.genesis) throw new SnapshotAuthenticationError(`snapshot headers (height ${snapshot.height}, genesis ${snapshot.genesis.slice(0, 12)}…) do not match the authenticated body (height ${body.height}, genesis ${body.genesis.slice(0, 12)}…)`);
   return body;
 }
 
@@ -716,7 +720,7 @@ export async function keepAlive({ fetchImpl, gateway, signal }) {
 // and a publish cycle every publishIntervalMs.
 export async function runKeeper(options) {
   const { fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn } = options;
-  const stats = { cycles: 0, published: 0, notNewer: 0, refused: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null };
+  const stats = { cycles: 0, published: 0, notNewer: 0, refused: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null, authenticationFailures: 0 };
   const deadline = now() + runMs;
   // Aborted when the publish loop stops, so no pending wait (and no live timer)
   // outlives runKeeper.
@@ -758,6 +762,7 @@ export async function runKeeper(options) {
         else if (result.upToDate) stats.notNewer += 1;
         else { stats.refused += 1; warn(`state.enc not replaced: ${result.reason}`); }
       } catch (error) {
+        if (error instanceof SnapshotAuthenticationError) { stats.authenticationFailures += 1; warn(error.message); break; }
         if (error instanceof GenesisMismatchError) { stats.genesisMismatches += 1; warn(error.message); }
         else { stats.failures += 1; warn(`cycle failed: ${error instanceof Error ? error.message : String(error)}`); }
       }
@@ -773,6 +778,7 @@ export async function runKeeper(options) {
 // or every publication refused for a safety reason such as a foreign-genesis label).
 export function exitCodeFor(stats) {
   if (stats.genesisMismatches > 0) return 1;
+  if (stats.authenticationFailures > 0) return 1;
   if (stats.published === 0 && stats.notNewer === 0) return 1;
   return 0;
 }

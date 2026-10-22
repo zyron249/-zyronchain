@@ -67,6 +67,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          # Owner-approved 2026-10-22 (security review M2): lets the keeper
+          # authenticate the sealed snapshot body; headers that disagree with it
+          # are refused and nothing is published.
+          ZYRON_TESTNET_STATE_SECRET: ${{ secrets.ZYRON_TESTNET_STATE_SECRET }}
           GATEWAY: https://zyron-open-testnet.onrender.com
           TAG: open-testnet-state
           # Deployed genesis observed 2026-10-21 on GET /genesis and GET /status
