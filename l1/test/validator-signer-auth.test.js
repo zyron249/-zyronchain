@@ -1,0 +1,78 @@
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import test from "node:test";
+import { publicKeyFromPrivate, signCanonical } from "../src/crypto.js";
+import { RemoteValidatorSigner } from "../src/validator-signer.js";
+const privateKey = "41".padStart(64, "0");
+const publicKey = publicKeyFromPrivate(privateKey);
+const testToken = "signer-test-token-".padEnd(64, "x");
+test("remote validator signer authenticates requests without placing the token in the body", async () => {
+    const token = testToken;
+    let authorization;
+    let rawBody = "";
+    const server = createServer(async (request, response) => {
+        authorization = request.headers.authorization;
+        const chunks = [];
+        for await (const chunk of request)
+            chunks.push(Buffer.from(chunk));
+        rawBody = Buffer.concat(chunks).toString("utf8");
+        const body = JSON.parse(rawBody);
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ signature: signCanonical(body.payload, privateKey) }));
+    });
+    try {
+        await new Promise((resolveListen, reject) => {
+            server.once("error", reject);
+            server.listen(0, "127.0.0.1", resolveListen);
+        });
+        const address = server.address();
+        if (!address || typeof address === "string")
+            throw new Error("Signer auth test server has no TCP address");
+        const signer = new RemoteValidatorSigner(`http://127.0.0.1:${address.port}/sign`, publicKey, token);
+        const signature = await signer.signCanonical({ height: 1 }, "block-proposal");
+        assert.match(signature, /^[0-9a-f]{128}$/);
+        assert.equal(authorization, `Bearer ${token}`);
+        assert.equal(rawBody.includes(token), false);
+    }
+    finally {
+        if (server.listening) {
+            await new Promise((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+        }
+    }
+});
+test("remote validator signer rejects missing, weak or header-unsafe bearer tokens", () => {
+    assert.throws(() => new RemoteValidatorSigner("http://127.0.0.1:9138/sign", publicKey), /bearer token/);
+    assert.throws(() => new RemoteValidatorSigner("http://127.0.0.1:9138/sign", publicKey, ""), /bearer token/);
+    assert.throws(() => new RemoteValidatorSigner("http://127.0.0.1:9138/sign", publicKey, "short"), /bearer token/);
+    assert.throws(() => new RemoteValidatorSigner("http://127.0.0.1:9138/sign", publicKey, `valid-prefix-${"x".repeat(32)}\r\ninjected: true`), /bearer token/);
+});
+test("remote validator signer rejects non-JSON and oversized chunked responses", async () => {
+    const server = createServer((request, response) => {
+        if (request.url === "/wrong-type") {
+            response.setHeader("content-type", "text/plain");
+            response.end(JSON.stringify({ signature: "0".repeat(128) }));
+            return;
+        }
+        response.setHeader("content-type", "application/json; charset=utf-8");
+        response.write(`{"signature":"${"0".repeat(800)}`);
+        response.write(`${"0".repeat(800)}"}`);
+        response.end();
+    });
+    try {
+        await new Promise((resolveListen, reject) => {
+            server.once("error", reject);
+            server.listen(0, "127.0.0.1", resolveListen);
+        });
+        const address = server.address();
+        if (!address || typeof address === "string")
+            throw new Error("Signer bounds test server has no TCP address");
+        const base = `http://127.0.0.1:${address.port}`;
+        await assert.rejects(() => new RemoteValidatorSigner(`${base}/wrong-type`, publicKey, testToken).signCanonical({ height: 1 }, "block-proposal"), /must return application\/json/);
+        await assert.rejects(() => new RemoteValidatorSigner(`${base}/oversized`, publicKey, testToken).signCanonical({ height: 1 }, "block-proposal"), /response is too large/);
+    }
+    finally {
+        if (server.listening) {
+            await new Promise((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+        }
+    }
+});

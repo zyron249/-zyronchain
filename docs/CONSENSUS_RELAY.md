@@ -33,7 +33,7 @@ The hosted open testnet runs four v6 validators on loopback behind one public HT
 - Every relay request carries a JSON envelope `{ chainId, genesisHash, address, seq, issuedAtMs, op, bodyHash }` signed with `signCanonicalDomain("zyronchain/open-testnet-relay/v1", ...)`.
   - `chainId` and `genesisHash` must equal the gateway's: a wrong-chain envelope is rejected.
   - `issuedAtMs` must be within ±60 s of the gateway clock.
-  - `seq` must not repeat any `seq` accepted for that address within the last 130 s (replay protection for concurrent requests; kept in memory, and the ±60 s freshness window bounds replays across gateway restarts). The client uses microsecond timestamps plus a counter.
+  - `seq` must not repeat any `seq` accepted for that address within the last 130 s (replay protection for concurrent requests). Across gateway restarts: with `ZYRON_RELAY_SEEN_FILE=<path>` the accepted `(address, seq)` set is appended and fsynced to a private journal before the request is acted on, reloaded on start, pruned to the 130 s window and 20,000 entries per peer, and compacted by atomic rewrite, so its size stays bounded; a `<path>.lock` held by a live process stops a second gateway from sharing it. Without a journal, the gateway refuses envelopes with `issuedAtMs` earlier than its start time + 60 s, which covers everything a previous process could have accepted (external peers are paused for up to 60 s after a restart). Gateways on separate hosts do not share replay state: run one gateway per relay peer set. The client uses microsecond timestamps plus a counter.
   - `bodyHash` is the SHA-256 of the exact request body bytes; `op` is one of `poll`, `reply`, `forward`.
 - Failures answer `401` with no detail beyond the reason class.
 

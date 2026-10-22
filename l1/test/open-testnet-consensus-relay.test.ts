@@ -4,6 +4,8 @@
 // oversized) are rejected; consensus bytes pass through unchanged both ways.
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -14,7 +16,12 @@ const l1Root = fileURLToPath(new URL("../../", import.meta.url));
 const relayModule: any = await import(join(l1Root, "scripts", "open-testnet", "consensus-relay.mjs"));
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const clientModule: any = await import(join(l1Root, "scripts", "consensus-relay-client.mjs"));
-const { ConsensusRelay, createRelayAuthHeader, parseRelayPeers, RELAY_AUTH_HEADER, RELAY_MAX_BODY_BYTES, RELAY_MAX_CONSENSUS_REQUEST_BYTES } = relayModule;
+const { ConsensusRelay, createRelayAuthHeader, parseRelayPeers, RELAY_AUTH_HEADER, RELAY_MAX_BODY_BYTES, RELAY_MAX_CONSENSUS_REQUEST_BYTES,
+  RELAY_CLOCK_SKEW_MS, RELAY_SEEN_WINDOW_MS, RELAY_MAX_SEEN_PER_PEER, RELAY_SEEN_COMPACT_SLACK } = relayModule;
+const journalRoot = mkdtempSync(join(tmpdir(), "zyron-relay-seen-test-"));
+process.on("exit", () => rmSync(journalRoot, { recursive: true, force: true }));
+let journalCount = 0;
+const freshJournal = () => join(journalRoot, `seen-${journalCount++}.jsonl`);
 
 const CHAIN = "zyron-relay-test-1";
 const GENESIS = "ab".repeat(32);
@@ -25,7 +32,7 @@ const peers = new Map([[ADDRESS, publicKeyFromPrivate(relayKey)]]);
 function makeRelay(overrides: Record<string, unknown> = {}) {
   const forwarded: Array<{ index: number; path: string; body: Buffer }> = [];
   const relay = new ConsensusRelay({
-    chainId: CHAIN, genesisHash: GENESIS, peers, hostedCount: 4, replyWaitMs: 300, pollWaitMs: 200,
+    chainId: CHAIN, genesisHash: GENESIS, peers, hostedCount: 4, replyWaitMs: 300, pollWaitMs: 200, seenStorePath: freshJournal(),
     async forwardToHosted(index: number, path: string, body: Buffer) { forwarded.push({ index, path, body }); return { status: 200, body: Buffer.from('{"vote":{"x":1}}') }; },
     ...overrides
   });
@@ -254,4 +261,79 @@ test("gateway refreshes the verified validator history from the live chain while
   const source = await readFile(join(l1Root, "scripts", "open-testnet.mjs"), "utf8");
   assert.match(source, /relayVotingPeer\(snapshotHistory\.chain, address\)/);
   assert.match(source, /setInterval\(\(\) => \{ void refreshHistory\(\)/, "history is extended on a timer, not only by snapshot builds");
+});
+
+test("a replayed envelope is rejected after a simulated gateway restart (durable journal)", async () => {
+  const path = freshJournal();
+  const body = Buffer.from(JSON.stringify({ target: 0, path: "/v6/prepare", body: Buffer.from("{}").toString("base64") }));
+  const h = (value: string) => ({ [RELAY_AUTH_HEADER]: value });
+  const first = makeRelay({ seenStorePath: path });
+  const once = auth("forward", body);
+  await first.relay.handlePublic("forward", h(once), body);
+  // A second gateway on the same journal is refused while the first holds it.
+  assert.throws(() => makeRelay({ seenStorePath: path }), /in use by process/);
+  first.relay.close();
+  const second = makeRelay({ seenStorePath: path });
+  await rejects(second.relay.handlePublic("forward", h(once), body), 401, /replayed/);
+  assert.equal(second.forwarded.length, 0, "the replay never reached a hosted node");
+  await second.relay.handlePublic("forward", h(auth("forward", body)), body);
+  assert.equal(second.forwarded.length, 1, "fresh envelopes still pass after the restart");
+  second.relay.close();
+  // A crash leaves a lock from a dead process and possibly a torn final line; both are tolerated.
+  writeFileSync(`${path}.lock`, "2147483646");
+  writeFileSync(path, readFileSync(path, "utf8") + '{"a":"ZYN', { flag: "w" });
+  const third = makeRelay({ seenStorePath: path });
+  await rejects(third.relay.handlePublic("forward", h(once), body), 401, /replayed/);
+  third.relay.close();
+  assert.equal(existsSync(`${path}.lock`), false);
+});
+
+test("without a journal, envelopes from before the restart are fenced off", async () => {
+  const body = Buffer.from(JSON.stringify({ target: 0, path: "/v6/prepare", body: Buffer.from("{}").toString("base64") }));
+  const h = (value: string) => ({ [RELAY_AUTH_HEADER]: value });
+  let clock = 1_000_000_000_000;
+  const now = () => clock;
+  const first = makeRelay({ seenStorePath: undefined, now });
+  // A future-dated envelope (inside the skew) accepted just before the restart.
+  clock += RELAY_CLOCK_SKEW_MS + 1;
+  const once = auth("forward", body, { issuedAtMs: clock + RELAY_CLOCK_SKEW_MS - 1 });
+  await first.relay.handlePublic("forward", h(once), body);
+  clock += 1;
+  const second = makeRelay({ seenStorePath: undefined, now });
+  await rejects(second.relay.handlePublic("forward", h(once), body), 401, /predates this relay instance/);
+  assert.equal(second.forwarded.length, 0);
+  clock += RELAY_CLOCK_SKEW_MS;
+  await second.relay.handlePublic("forward", h(auth("forward", body, { issuedAtMs: clock })), body);
+  assert.equal(second.forwarded.length, 1, "envelopes issued after the fence are accepted");
+});
+
+test("the replay journal stays bounded by the seen window and the per-peer cap", async () => {
+  const path = freshJournal();
+  let clock = 2_000_000_000_000;
+  const now = () => clock;
+  const { relay } = makeRelay({ seenStorePath: path, now });
+  const store = relay.seenStore;
+  const peer = relay.peers.get(ADDRESS);
+  const maxLines = (live: number) => 2 * live + RELAY_SEEN_COMPACT_SLACK;
+  for (let i = 0; i < 3_000; i += 1) {
+    clock += 100; // 3,000 accepts over 300 s: older entries leave the window
+    relay.authenticate(auth("poll", Buffer.from("{}"), { issuedAtMs: clock }), "poll", Buffer.from("{}"));
+    peer.rate.count = 0;
+    assert.ok(store.lines <= maxLines(store.liveCount()) + 1);
+  }
+  assert.ok(peer.seen.size <= Math.ceil(RELAY_SEEN_WINDOW_MS / 100) + 1, `seen ${peer.seen.size}`);
+  const lines = readFileSync(path, "utf8").trim().split("\n").length;
+  assert.ok(lines <= maxLines(RELAY_SEEN_WINDOW_MS / 100 + 1) + 1, `journal lines ${lines}`);
+  relay.close();
+  // Reopening prunes to the window and to the per-peer cap and rewrites the file.
+  clock += RELAY_SEEN_WINDOW_MS + 1;
+  const big = [];
+  for (let s = 0; s < RELAY_MAX_SEEN_PER_PEER + 500; s += 1) big.push(JSON.stringify({ a: ADDRESS, s: 10_000_000 + s, t: clock }));
+  big.push(JSON.stringify({ a: `ZYN${"9".repeat(40)}`, s: 1, t: clock }));
+  writeFileSync(path, readFileSync(path, "utf8") + big.join("\n") + "\n");
+  const reopened = makeRelay({ seenStorePath: path, now });
+  assert.equal(reopened.relay.peers.get(ADDRESS).seen.size, RELAY_MAX_SEEN_PER_PEER);
+  assert.equal(readFileSync(path, "utf8").trim().split("\n").length, RELAY_MAX_SEEN_PER_PEER, "expired, excess and unknown-peer entries are dropped");
+  assert.equal(statSync(path).mode & 0o077, 0, "journal is private to the gateway user");
+  reopened.relay.close();
 });

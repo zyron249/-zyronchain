@@ -4,7 +4,8 @@
 // creates or changes a vote: it moves the exact request and reply bytes, and
 // every vote is verified by the receiving node's own v6 rules.
 import { createHash, randomBytes } from "node:crypto";
-import { join, resolve } from "node:path";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const l1Root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -18,6 +19,9 @@ export const MAX_RELAY_PEERS = 16;
 export const RELAY_CLOCK_SKEW_MS = 60_000;
 export const RELAY_SEEN_WINDOW_MS = 2 * RELAY_CLOCK_SKEW_MS + 10_000;
 export const RELAY_MAX_SEEN_PER_PEER = 20_000;
+// Journal lines beyond the live entries before the replay journal is compacted.
+export const RELAY_SEEN_COMPACT_SLACK = 1_000;
+export const RELAY_SEEN_FILE_ENV = "ZYRON_RELAY_SEEN_FILE";
 export const RELAY_PEER_ONLINE_MS = 10_000;
 export const RELAY_REPLY_WAIT_MS = 6_000;
 export const RELAY_POLL_WAIT_MS = 7_000;
@@ -104,6 +108,91 @@ export function relayVotingPeer(chain, address) {
   } catch { return false; }
 }
 
+const heldJournals = new Set();
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (error) { return error?.code === "EPERM"; }
+}
+
+/**
+ * Durable, bounded replay journal: one JSON line `{a,s,t}` per accepted
+ * envelope (address, seq, accept time), appended and fsynced before the
+ * request is acted on. On open, entries older than the seen window are
+ * dropped, each peer keeps at most RELAY_MAX_SEEN_PER_PEER entries, and the
+ * file is rewritten atomically (temp file, fsync, rename). It is compacted the
+ * same way once it holds RELAY_SEEN_COMPACT_SLACK lines beyond twice the live
+ * entries, so its size stays bounded. A `<file>.lock` held by a live process
+ * stops a second gateway from using the same journal.
+ */
+export class RelaySeenStore {
+  constructor(path, { now = () => Date.now(), peers }) {
+    this.path = resolve(path); this.now = now; this.peers = peers; this.lines = 0; this.fd = undefined;
+    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+    this.lockPath = `${this.path}.lock`;
+    this.acquireLock();
+    try { this.load(); this.compact(); } catch (error) { this.close(); throw error; }
+  }
+
+  acquireLock() {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try { writeFileSync(this.lockPath, String(process.pid), { flag: "wx", mode: 0o600 }); this.locked = true; heldJournals.add(this.lockPath); return; } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        const pid = Number(readFileSync(this.lockPath, "utf8").trim());
+        const ours = pid === process.pid && heldJournals.has(this.lockPath);
+        if (ours || (Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid && processAlive(pid))) throw new Error(`relay replay journal ${this.path} is in use by process ${pid}`);
+        unlinkSync(this.lockPath);
+      }
+    }
+    throw new Error(`relay replay journal ${this.path}: could not take the lock`);
+  }
+
+  load() {
+    if (!existsSync(this.path)) return;
+    const now = this.now();
+    for (const line of readFileSync(this.path, "utf8").split("\n")) {
+      if (line === "") continue;
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; } // a torn final line from a crash
+      if (!entry || typeof entry.a !== "string" || !Number.isSafeInteger(entry.s) || !Number.isSafeInteger(entry.t)) continue;
+      const peer = this.peers.get(entry.a);
+      if (!peer || now - entry.t > RELAY_SEEN_WINDOW_MS) continue;
+      peer.seen.delete(entry.s); peer.seen.set(entry.s, entry.t);
+    }
+    for (const peer of this.peers.values()) {
+      const sorted = [...peer.seen].sort((x, y) => x[1] - y[1]).slice(-RELAY_MAX_SEEN_PER_PEER);
+      peer.seen = new Map(sorted);
+    }
+  }
+
+  liveCount() { let n = 0; for (const peer of this.peers.values()) n += peer.seen.size; return n; }
+
+  compact() {
+    if (this.fd !== undefined) { closeSync(this.fd); this.fd = undefined; }
+    const now = this.now();
+    const lines = [];
+    for (const peer of this.peers.values()) for (const [s, t] of peer.seen) if (now - t <= RELAY_SEEN_WINDOW_MS) lines.push(JSON.stringify({ a: peer.address, s, t }));
+    const temp = `${this.path}.${process.pid}.tmp`;
+    const fd = openSync(temp, "w", 0o600);
+    try { if (lines.length > 0) writeSync(fd, lines.join("\n") + "\n"); fsyncSync(fd); } finally { closeSync(fd); }
+    renameSync(temp, this.path);
+    try { const dir = openSync(dirname(this.path), "r"); try { fsyncSync(dir); } finally { closeSync(dir); } } catch { /* directory fsync is best effort */ }
+    this.lines = lines.length;
+    this.fd = openSync(this.path, "a", 0o600);
+  }
+
+  /** Durably records an accepted envelope before the relay acts on it. */
+  record(address, seq, at) {
+    writeSync(this.fd, JSON.stringify({ a: address, s: seq, t: at }) + "\n");
+    fsyncSync(this.fd);
+    this.lines += 1;
+    if (this.lines > 2 * this.liveCount() + RELAY_SEEN_COMPACT_SLACK) this.compact();
+  }
+
+  close() {
+    if (this.fd !== undefined) { closeSync(this.fd); this.fd = undefined; }
+    if (this.locked) { try { unlinkSync(this.lockPath); } catch { /* already gone */ } heldJournals.delete(this.lockPath); this.locked = false; }
+  }
+}
+
 export class ConsensusRelay {
   /**
    * @param {object} options
@@ -112,8 +201,11 @@ export class ConsensusRelay {
    * @param {Map<string,string>} options.peers validator address → relay public key
    * @param {number} options.hostedCount number of hosted validators
    * @param {(index:number, path:string, body:Buffer) => Promise<{status:number, body:Buffer}>} options.forwardToHosted
+   * @param {string} [options.seenStorePath] durable replay journal (default: $ZYRON_RELAY_SEEN_FILE). Without one,
+   *   envelopes issued before boot + RELAY_CLOCK_SKEW_MS are refused, so nothing a previous process accepted can be replayed.
    */
-  constructor({ chainId, genesisHash, peers, hostedCount, forwardToHosted, isVotingPeer = () => true, now = () => Date.now(), replyWaitMs = RELAY_REPLY_WAIT_MS, pollWaitMs = RELAY_POLL_WAIT_MS }) {
+  constructor({ chainId, genesisHash, peers, hostedCount, forwardToHosted, isVotingPeer = () => true, now = () => Date.now(), replyWaitMs = RELAY_REPLY_WAIT_MS, pollWaitMs = RELAY_POLL_WAIT_MS,
+    seenStorePath = process.env[RELAY_SEEN_FILE_ENV] || undefined }) {
     // Consensus requests reach only peers that are in the active validator
     // set, so allowlisted candidates never take collector slots.
     this.isVotingPeer = isVotingPeer;
@@ -125,7 +217,15 @@ export class ConsensusRelay {
       this.peers.set(address, { address, publicKey, seen: new Map(), lastPollAt: -Infinity, queue: [], pending: new Map(), waiter: undefined,
         rate: new Window(RELAY_REQUESTS_PER_MINUTE, 60_000, now), forwards: 0, targetForwards: new Map() });
     }
+    // Replay protection across restarts: a durable seen journal when one is
+    // configured; otherwise a boot fence covering everything a previous
+    // process could have accepted (issuedAtMs <= its clock + skew).
+    this.seenStore = seenStorePath ? new RelaySeenStore(seenStorePath, { now, peers: this.peers }) : undefined;
+    this.bootFenceMs = this.seenStore ? -Infinity : now() + RELAY_CLOCK_SKEW_MS;
   }
+
+  /** Releases the replay journal and its lock. */
+  close() { this.seenStore?.close(); }
 
   addresses() { return [...this.peers.keys()]; }
 
@@ -160,8 +260,10 @@ export class ConsensusRelay {
     if (sha256Hex(body) !== e.bodyHash) throw new RelayError(401, "relay body hash mismatch");
     for (const [seq, at] of peer.seen) { if (now - at > RELAY_SEEN_WINDOW_MS) peer.seen.delete(seq); else break; }
     if (peer.seen.has(e.seq)) throw new RelayError(401, "replayed relay envelope");
+    if (e.issuedAtMs < this.bootFenceMs) throw new RelayError(401, "relay envelope predates this relay instance");
     if (peer.seen.size >= RELAY_MAX_SEEN_PER_PEER) throw new RelayError(429, "relay rate limit exceeded");
     if (!peer.rate.take()) throw new RelayError(429, "relay rate limit exceeded");
+    this.seenStore?.record(peer.address, e.seq, now);
     peer.seen.set(e.seq, now);
     return peer;
   }
