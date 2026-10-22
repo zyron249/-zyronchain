@@ -1,6 +1,6 @@
 # Open testnet consensus relay (outbound-only external validators)
 
-> **TESTNET ONLY. Not audited.** Design status: IMPLEMENTED — INDEPENDENT RETEST PENDING once the implementation PR merges. This document is a self-review / AI-assisted design, not an audit.
+> **TESTNET ONLY. Not audited.** Design status: PROPOSED. It becomes IMPLEMENTED — INDEPENDENT RETEST PENDING when the implementation (`scripts/open-testnet/consensus-relay.mjs`, `scripts/consensus-relay-client.mjs`) is on `main`. This document is a self-review / AI-assisted design, not an audit.
 
 ## 1. Problem
 
@@ -18,8 +18,9 @@ The hosted open testnet runs four v6 validators on loopback behind one public HT
 ### 3.1 Inbound direction (hosted leader → external validator)
 
 - For each configured external peer the gateway runs a **mailbox** on a separate loopback-only listener (`127.0.0.1:<basePort+50>`, never the public port). Each hosted validator gets `--peer http://127.0.0.1:<mailbox>/x/<address>` in addition to its loopback peers.
+- Consensus `POST`s reach a peer's mailbox only while that address is in the **active validator set** (read from the gateway's verified history; updates are scheduled at least 100 blocks ahead, so the activation is known in advance). For an allowlisted candidate that is not yet active the mailbox answers `503` at once, so candidates never hold one of the hosted collector's worker slots or its 8 s deadline.
 - A hosted node's consensus `POST` to the mailbox is queued for that external peer. If the peer has not polled in the last 10 s the mailbox answers `503` immediately, so an absent external peer costs the hosted round nothing beyond one loopback round trip. Otherwise it waits up to 6 s (below the node's 8 s deadline) for the reply, and answers `504` on timeout. `/block` (fire-and-forget) is acknowledged `202` at once.
-- Allowed paths: `/v6/prepare`, `/v6/commit`, `/v6/timeout`, `/v6/block`, `/block`. Anything else on the mailbox, including reads, is `404`; the hosted nodes sync from each other.
+- Allowed paths: `/v6/prepare`, `/v6/commit`, `/v6/timeout`, `/v6/block`, `/block`. Reads `GET /status` and `GET /blocks?from=` are relayed to the external peer too (`limit` capped at 2 blocks), so after a hosted snapshot restore that lost recent blocks the hosted nodes can sync forward from an external validator's durable history; every block is fully validated by the reader as in any peer sync. Anything else is `404`.
 - The external **relay client** (`scripts/consensus-relay-client.mjs`) long-polls `POST /relay/v1/poll` on the public gateway, replays each request against its own node on loopback, and returns the node's reply with `POST /relay/v1/reply`.
 
 ### 3.2 Outbound direction (external validator as leader → hosted validators)
@@ -39,7 +40,7 @@ The hosted open testnet runs four v6 validators on loopback behind one public HT
 ### 3.4 Limits
 
 - Per peer: 600 relay requests/minute, at most 1 long-poll in flight, at most 32 queued requests (older ones are failed with `503` to the hosted caller), at most 8 forwards in flight.
-- Size caps reuse the node's own: request bodies ≤ the node's consensus request caps (`MAX_BODY_BYTES` for `/v6/block` replies, 8 KiB for vote replies, 128 KB for timeout replies); a poll response ≤ 4 MB; anything larger is `413`.
+- Request and reply caps are separate. Consensus **request** bodies (a v6 prepare can carry a whole block): ≤ 2.7 MB, above the node's own 2.5 MB `MAX_BODY_BYTES`. **Reply** bodies, per path, mirror the node's peer response caps: 8 KiB for prepare/commit votes, 128 KB for timeouts, 2.6 MB for `/v6/block`, 64 KB for `/status`, 5.4 MB for 2 blocks. A relay HTTP body is ≤ 8 MB and a poll response ≤ 4 MB of queued requests (at least one is always delivered). Anything larger is `413`.
 - Unknown addresses are rate-limited per client IP like other public writes.
 
 ### 3.5 What the relay can and cannot do
@@ -67,7 +68,8 @@ BFT quorum is `floor(2n/3)+1`; fault margin `f = floor((n-1)/3)`.
 Decision:
 
 - The founder-operated node is **not** admitted alone: with it paused (the host can pause) the network would have no fault margin, which is below today.
-- First admission waits until at least **two** volunteer validators have relayed reliably (≥ 95 % of polls answered over 72 h as followers). Then admit the founder node and the volunteers in one `validator_update` (n = 7, quorum 5, margin 2). With all externals offline the chain would stall, so the update is only proposed once three external peers are healthy and any two of them keep the margin at 1 or more.
+- First admission waits until at least **two** volunteer validators have relayed reliably: ≥ 95 % of relayed consensus exchanges completed with a `/reply` from their own node (not just polls answered) over 72 h, measured with the candidates temporarily counted as voting peers on a rehearsal chain, since the live mailbox does not send consensus requests to inactive peers. Then admit the founder node and the volunteers in one `validator_update` (n = 7, quorum 5, margin 2). With all externals offline the chain would stall, so the update is only proposed once three external peers are healthy and any two of them keep the margin at 1 or more.
+- Before that `validator_update`, the gateway's `/health` and `/readyz` must derive quorum from the **active** validator set (not `genesis.validators.length` and the four hosted names) and count reachable external validators; otherwise health could report ready while the chain cannot finalize. This is a prerequisite PR.
 - Founder-operated nodes are always labelled as such and never count toward the independent-validator requirement.
 
 ## 5. Tests (failing first)
