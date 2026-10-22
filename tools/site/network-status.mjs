@@ -99,7 +99,7 @@ export function render(options = {}) {
     `    <p class="ns-live-state" data-ns-live-state>${liveState}</p>`,
     '    <p class="ns-live-detail" data-ns-live-detail></p>',
     '  </div>',
-    '  <p class="ns-foot">Source: docs/l1-launch-authorization.json (publicTestnetActivationAllowed=false, mainnetActivationAllowed=false) and docs/OPEN_TESTNET.md.</p>',
+    '  <p class="ns-foot">Source: docs/l1-launch-authorization.json (formal public testnet and mainnet activation: not allowed yet) and docs/OPEN_TESTNET.md.</p>',
     '</section>',
     '<!-- END NETWORK STATUS -->'
   ].join('\n');
