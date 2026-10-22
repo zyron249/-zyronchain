@@ -271,3 +271,40 @@ test("P1-06: a validated proposal is not re-validated, and other proposals for i
     await assert.rejects(service.attestProposal({ ...structuredClone(valid), signature: "11".repeat(64) }), /Invalid proposer signature/);
   });
 });
+
+test("P1-06: after a restart, an equivocation cannot spend the slot of the journaled proposal", { timeout: 120_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-p106-restart-"));
+  try {
+    const store = await ChainStore.open(genesis(), directory);
+    const journal = await SigningJournal.open(directory);
+    try {
+      const tip = store.chain.tip;
+      const transfer = (nonce: number) => createTransfer({
+        chainId: genesis().chainId, nonce, sender: alice, receiver: validatorOne,
+        amountAtoms: 1, feeAtoms: 1, timestampMs: GENESIS_MS + 1
+      }, alicePrivate, alicePublic);
+      const validProposal = (timestampMs: number, transactions: Transaction[]): Block => {
+        const prepared = store.chain.prepareBlock(transactions, validatorOnePublic, { timestampMs });
+        return forgedBlock(tip, transactions, { signWith: validatorOnePrivate, timestampMs, stateRoot: prepared.header.stateRoot });
+      };
+      const base = Date.now() - 3_000;
+      const journaled = validProposal(base, [transfer(1), transfer(2)]);
+      const equivocation = validProposal(base + 1, [transfer(1)]);
+      const first = await new NodeService(store, journal, validatorTwoPrivate).attestProposal(structuredClone(journaled));
+      // Restart: the journal keeps the vote for `journaled`, the in-memory budget is empty.
+      const service = new NodeService(store, journal, validatorTwoPrivate);
+      const chain = store.chain as unknown as { validateAndApply: (...args: unknown[]) => unknown };
+      const original = chain.validateAndApply.bind(store.chain);
+      let replays = 0;
+      chain.validateAndApply = (...args: unknown[]) => { replays += 1; return original(...args); };
+      await assert.rejects(service.attestProposal(structuredClone(equivocation)), /Conflicting validator action/);
+      assert.equal(replays, 0, "a proposal the journal must refuse is refused before the expensive stage");
+      const again = await service.attestProposal(structuredClone(journaled));
+      assert.equal(again.signature, first.signature, "the journaled vote can still be reissued");
+    } finally {
+      journal.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
