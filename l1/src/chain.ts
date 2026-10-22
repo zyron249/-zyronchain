@@ -101,9 +101,11 @@ import {
 } from "./fee-policy.js";
 import {
   assertGenesisPossessionProofs,
+  assertValidatorUpdatePossessionProofs,
   assertValueBearingClassRequiresValidatorAdmission,
   hasValidatorAdmission,
-  validateValidatorAdmissionShape
+  validateValidatorAdmissionShape,
+  type ValidatorUpdateAdmissionContext
 } from "./validator-admission.js";
 
 const MAX_BLOCK_BYTES = 2_000_000;
@@ -730,7 +732,8 @@ export class ZyronChain {
     const validators = this.validatorsAt(this.height + 1);
     if (tx.kind === "validator_update") {
       validateValidatorUpdateAuthorization(
-        tx, validators, this.height + 1, this.lastValidatorActivationHeight(), minimumValidatorCount(this.genesis)
+        tx, validators, this.height + 1, this.lastValidatorActivationHeight(), minimumValidatorCount(this.genesis),
+        this.validatorAdmissionContext(this.lastScheduledValidators())
       );
       return;
     }
@@ -775,6 +778,9 @@ export class ZyronChain {
     const seen = new Set<string>();
     let selectedBytes = 0;
     let lastActivation = this.lastValidatorActivationHeight();
+    // P1-07: per-block working schedule. The set an update replaces is the
+    // latest scheduled set, including one selected earlier in this block.
+    let lastScheduledValidators = this.lastScheduledValidators();
     let lastProtocolActivation = this.lastProtocolActivationHeight();
     let lastProtocolVersion = this.lastScheduledProtocolVersion();
     let lastOracleGovernance = this.lastActivityOracleGovernanceHeight();
@@ -807,7 +813,8 @@ export class ZyronChain {
           });
         } else if (tx.kind === "validator_update") {
           validateValidatorUpdateAuthorization(
-            tx, currentValidators, this.height + 1, lastActivation, minimumValidatorCount(this.genesis)
+            tx, currentValidators, this.height + 1, lastActivation, minimumValidatorCount(this.genesis),
+            this.validatorAdmissionContext(lastScheduledValidators)
           );
         } else if (tx.kind === "activity_oracle_governance") {
           validateActivityOracleGovernanceAuthorization(
@@ -832,7 +839,10 @@ export class ZyronChain {
         }
         // F-06: advance the governance cursors only once the transaction has
         // passed the byte budget and its state transition, i.e. is selected.
-        if (tx.kind === "validator_update") lastActivation = tx.activationHeight;
+        if (tx.kind === "validator_update") {
+          lastActivation = tx.activationHeight;
+          lastScheduledValidators = tx.validators;
+        }
         if (tx.kind === "activity_oracle_governance") {
           lastOracleGovernance = tx.activationHeight;
           if (tx.action === "pause") pauseScheduled = true;
@@ -879,7 +889,8 @@ export class ZyronChain {
       const validators = this.validatorsAt(this.height + 1);
       if (tx.kind === "validator_update") {
         validateValidatorUpdateAuthorization(
-          tx, validators, this.height + 1, this.lastValidatorActivationHeight(), minimumValidatorCount(this.genesis)
+          tx, validators, this.height + 1, this.lastValidatorActivationHeight(), minimumValidatorCount(this.genesis),
+          this.validatorAdmissionContext(this.lastScheduledValidators())
         );
       } else if (tx.kind === "activity_oracle_governance") {
         validateActivityOracleGovernanceAuthorization(
@@ -932,6 +943,8 @@ export class ZyronChain {
     const seen = new Set<string>();
     const currentValidators = this.validatorsAt(blockHeight);
     let lastActivation = this.lastValidatorActivationHeight();
+    // P1-07: per-block working schedule (see selectValidPending).
+    let lastScheduledValidators = this.lastScheduledValidators();
     let lastProtocolActivation = this.lastProtocolActivationHeight();
     let lastProtocolVersion = this.lastScheduledProtocolVersion();
     let lastOracleGovernance = this.lastActivityOracleGovernanceHeight();
@@ -969,9 +982,11 @@ export class ZyronChain {
         });
       } else if (tx.kind === "validator_update") {
         validateValidatorUpdateAuthorization(
-          tx, currentValidators, blockHeight, lastActivation, minimumValidatorCount(this.genesis)
+          tx, currentValidators, blockHeight, lastActivation, minimumValidatorCount(this.genesis),
+          this.validatorAdmissionContext(lastScheduledValidators)
         );
         lastActivation = tx.activationHeight;
+        lastScheduledValidators = tx.validators;
       } else if (tx.kind === "activity_oracle_governance") {
         validateActivityOracleGovernanceAuthorization(
           tx, currentValidators, blockHeight, lastOracleGovernance, this.genesis, scheduledRevoked, pauseScheduled
@@ -1031,6 +1046,20 @@ export class ZyronChain {
 
   private lastValidatorActivationHeight(): number {
     return Math.max(...this.validatorSchedule.keys());
+  }
+
+  /** The latest scheduled validator set (P1-07: the set the next update replaces). */
+  private lastScheduledValidators(): Validator[] {
+    return this.validatorSchedule.get(this.lastValidatorActivationHeight())!;
+  }
+
+  private validatorAdmissionContext(replacedValidators: readonly Validator[]): ValidatorUpdateAdmissionContext {
+    return {
+      optedIn: hasValidatorAdmission(this.genesis),
+      chainId: this.genesis.chainId,
+      genesisHash: this.genesisHash,
+      replacedValidators
+    };
   }
 
   private lastProtocolActivationHeight(): number {
@@ -1284,7 +1313,8 @@ function validateValidatorUpdateAuthorization(
   currentValidators: Validator[],
   blockHeight: number,
   lastActivationHeight: number,
-  minimumValidators = 1
+  minimumValidators: number,
+  admission: ValidatorUpdateAdmissionContext
 ): void {
   if (tx.validators.length < minimumValidators || tx.validators.length > 100) {
     throw new Error(minimumValidators > 1
@@ -1310,6 +1340,8 @@ function validateValidatorUpdateAuthorization(
   }
   const quorum = Math.floor((currentValidators.length * 2) / 3) + 1;
   if (valid < quorum) throw new Error(`Validator update quorum not reached: ${valid}/${quorum}`);
+  // possession-proof-v1 (P1-07): incoming keys consent and prove possession.
+  assertValidatorUpdatePossessionProofs(tx, admission);
 }
 
 /**

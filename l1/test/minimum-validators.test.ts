@@ -14,7 +14,7 @@ import { defaultPublicDistributionRelease } from "../src/public-distribution-rel
 import { ChainStore } from "../src/storage.js";
 import { createValidatorApproval, createValidatorSetUpdate } from "../src/transaction.js";
 import { ATOMS_PER_ZYN, MAX_SUPPLY_ATOMS, type GenesisConfig, type Validator } from "../src/types.js";
-import { signGenesisPossessionProofs } from "../src/validator-admission.js";
+import { signGenesisPossessionProofs, signValidatorUpdatePossessionProof } from "../src/validator-admission.js";
 
 const ZYN = ATOMS_PER_ZYN;
 const T0 = 1_700_000_000_000;
@@ -83,7 +83,9 @@ function signerId(genesis: GenesisConfig, signer: Validator): number {
   return base + index;
 }
 
-function validatorUpdate(genesis: GenesisConfig, next: Validator[]) {
+// `incoming` are the key ids of validators that are new relative to the genesis
+// set; on a chain with validatorAdmission (P1-07) each signs a possession proof.
+function validatorUpdate(genesis: GenesisConfig, next: Validator[], incoming: number[] = []) {
   const quorum = Math.floor((genesis.validators.length * 2) / 3) + 1;
   const signers = genesis.validators.slice(0, quorum);
   const sender = signers[0]!;
@@ -95,7 +97,18 @@ function validatorUpdate(genesis: GenesisConfig, next: Validator[]) {
     validators: next
   };
   const approvals = signers.map((signer) => createValidatorApproval(input, key(signerId(genesis, signer)), signer.publicKey));
-  return createValidatorSetUpdate({ ...input, approvals, timestampMs: T0 + 10 }, key(signerId(genesis, sender)), sender.publicKey);
+  const possessionProofs = genesis.validatorAdmission === undefined ? undefined : incoming.map((id) => signValidatorUpdatePossessionProof({
+    chainId: genesis.chainId,
+    genesisHash: new ZyronChain(genesis).genesisHash,
+    activationHeight: input.activationHeight,
+    validator: validator(id)
+  }, key(id)));
+  return createValidatorSetUpdate({
+    ...input,
+    approvals,
+    ...(possessionProofs === undefined ? {} : { possessionProofs }),
+    timestampMs: T0 + 10
+  }, key(signerId(genesis, sender)), sender.publicKey);
 }
 
 test("the value-bearing minimum is four distinct validators", () => {
@@ -169,7 +182,7 @@ test("a value-bearing chain refuses a validator update below four, including at 
   assert.deepEqual(chain.selectValidPending([tooSmall], 10), []);
   assert.throws(() => chain.produceBlock([tooSmall], key(0x21), { timestampMs: T0 + 1_000 }), TOO_FEW);
 
-  const replacement = validatorUpdate(genesis, [validator(0x41), validator(0x42), validator(0x43), validator(0x44)]);
+  const replacement = validatorUpdate(genesis, [validator(0x41), validator(0x42), validator(0x43), validator(0x44)], [0x41, 0x42, 0x43, 0x44]);
   assert.equal(chain.selectValidPending([replacement], 10).length, 1);
 
   const copied = validatorUpdate(genesis, [validator(0x41), validator(0x41), validator(0x43), validator(0x44)]);
