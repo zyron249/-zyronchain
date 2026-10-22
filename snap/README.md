@@ -34,7 +34,7 @@ Built from the official `@metamask/template-snap-monorepo` Snap package layout
 ## RPC API
 
 All methods are called via `wallet_invokeSnap` from an allowed origin
-(`https://zyronchain.com`, or `http://localhost:8000` for development).
+(`https://zyronchain.com` only).
 
 ### `zyron_getAddress`
 
@@ -163,10 +163,9 @@ m / 44' / 249249' / 0' / 0 / 0      curve: secp256k1
   binds the requesting `origin`, so a signature obtained on one site does not
   verify for another. The tests sign a message whose text *is* a canonical
   transfer payload and confirm l1 rejects it as a transaction signature (v1 and v2).
-- **Dev-only origin.** `http://localhost:8000` is in the allowlist for
-  development. **Remove it before any npm release/listing**, because any local
-  process serving that origin could otherwise request signatures, though each
-  one still needs user confirmation.
+- **No dev origin.** `http://localhost:8000` was removed from the allowlist
+  (manifest and `src/constants.ts`), because any local process serving that
+  origin could otherwise request signatures. A test asserts it is rejected.
 - **Not audited.** Treat everything here as review-pending code.
 
 ## Develop (MetaMask Flask)
@@ -180,9 +179,13 @@ npm ci
 npm run l1:build          # builds ../l1 (reference implementation used by the tests)
 npm test                  # builds the bundle, then runs Jest (@metamask/snaps-jest)
 npm start                 # watch + serve the Snap at http://localhost:8080
-# in another shell: the demo dapp on the one allowed dev origin
+# in another shell: the demo dapp
 python3 -m http.server 8000 --directory site
 ```
+
+`http://localhost:8000` is not allow-listed. To try the demo dapp in Flask,
+add it to `allowedOrigins` in `snap.manifest.json` and `ALLOWED_ORIGINS` in
+`src/constants.ts` in your local checkout only. Never commit that change.
 
 Open <http://localhost:8000>, click **Connect Snap**, approve the install in
 Flask (it shows the requested permissions and the derivation path), then use
@@ -244,8 +247,7 @@ loads the compiled `l1/dist` in a child process.
 
 1. **Derivation path decision**: register a SLIP-44 coin type or formally adopt
    `m/44'/249249'/0'/0/0`.
-2. **Remove `http://localhost:8000`** from `allowedOrigins` (manifest and
-   `src/constants.ts`).
+2. ~~Remove `http://localhost:8000` from `allowedOrigins`~~ (done).
 3. **Third-party security audit** by a MetaMask-approved auditor (required for
    any Snap using `snap_getBip32Entropy`). The audit must cover this Snap's
    source and key-management modules, and all medium-or-higher findings must be fixed.

@@ -31,11 +31,7 @@ export const DERIVATION_PATH = [
 export const DERIVATION_PATH_STRING = DERIVATION_PATH.join('/');
 
 /** Origins allowed to call the Snap (mirrors `endowment:rpc.allowedOrigins`). */
-export const ALLOWED_ORIGINS: readonly string[] = [
-  'https://zyronchain.com',
-  // Local development only. Remove before any listing/production release.
-  'http://localhost:8000',
-];
+export const ALLOWED_ORIGINS: readonly string[] = ['https://zyronchain.com'];
 
 /** Mirrors l1/src/types.ts. */
 export const ATOMS_PER_ZYN = 100_000_000;
