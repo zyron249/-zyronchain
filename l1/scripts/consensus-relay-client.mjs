@@ -12,7 +12,7 @@ import { createServer } from "node:http";
 import { chmod, open, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRelayAuthHeader, relayPublicKey, RELAY_AUTH_HEADER, RELAY_CONSENSUS_PATHS, RELAY_MAX_CONSENSUS_REQUEST_BYTES, RELAY_MAX_REPLY_BYTES } from "./open-testnet/consensus-relay.mjs";
+import { createRelayAuthHeader, relayPublicKey, RELAY_AUTH_HEADER, RELAY_CONSENSUS_PATHS, RELAY_READ_PATHS, RELAY_MAX_CONSENSUS_REQUEST_BYTES, RELAY_MAX_REPLY_BYTES } from "./open-testnet/consensus-relay.mjs";
 
 const l1Root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const { generatePrivateKey } = await import(join(l1Root, "dist/src/crypto.js"));
@@ -45,12 +45,16 @@ export function createRelayClient({ gateway, address, relayKey, chainId, genesis
   async function serveRequest(request) {
     let status = 502; let bytes = Buffer.from('{"error":"local node unavailable"}');
     try {
-      if (!RELAY_CONSENSUS_PATHS.includes(request.path)) throw new Error("path not allowed");
+      const isRead = request.method === "GET";
+      const basePath = isRead ? String(request.path).split("?")[0] : request.path;
+      if (isRead ? !(RELAY_READ_PATHS.includes(basePath) && /^\/(status|blocks\?from=\d{1,15}&limit=\d{1,3})$/.test(request.path)) : !RELAY_CONSENSUS_PATHS.includes(request.path)) throw new Error("path not allowed");
       const body = Buffer.from(request.body, "base64");
       if (body.length > RELAY_MAX_CONSENSUS_REQUEST_BYTES) throw new Error("request too large");
-      const response = await fetchImpl(`${nodeUrl}${request.path}`, { method: "POST", headers: { "content-type": "application/json", "x-zyron-rpc-version": "1" }, body, signal: AbortSignal.timeout(5_500) });
+      const response = await fetchImpl(`${nodeUrl}${request.path}`, isRead
+        ? { headers: { "x-zyron-rpc-version": "1" }, signal: AbortSignal.timeout(5_500) }
+        : { method: "POST", headers: { "content-type": "application/json", "x-zyron-rpc-version": "1" }, body, signal: AbortSignal.timeout(5_500) });
       status = response.status; bytes = Buffer.from(await response.arrayBuffer());
-      if (bytes.length > RELAY_MAX_REPLY_BYTES[request.path]) { status = 502; bytes = Buffer.from('{"error":"reply too large"}'); }
+      if (bytes.length > RELAY_MAX_REPLY_BYTES[basePath]) { status = 502; bytes = Buffer.from('{"error":"reply too large"}'); }
     } catch (error) { log(`relay: local ${request.path} failed: ${error instanceof Error ? error.message : String(error)}`); }
     if (request.path === "/block") return;
     await call("reply", { id: request.id, status, body: bytes.toString("base64") }).catch((error) => log(`relay: reply failed: ${error.message}`));

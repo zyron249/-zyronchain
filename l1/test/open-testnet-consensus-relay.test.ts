@@ -142,3 +142,29 @@ test("end to end: hosted→external and external→hosted bytes are relayed unch
     await new Promise((d) => gateway.close(() => d(undefined))); await new Promise((d) => externalNode.close(() => d(undefined)));
   }
 });
+
+test("mailbox: candidates that are not active validators get no consensus requests; reads are capped", async () => {
+  let voting = false;
+  const { relay } = makeRelay({ isVotingPeer: () => voting, replyWaitMs: 300, pollWaitMs: 300 });
+  const pollBody = Buffer.from("{}");
+  const poll = () => relay.handlePublic("poll", { [RELAY_AUTH_HEADER]: auth("poll", pollBody) }, pollBody);
+  const first = poll();
+  const started = Date.now();
+  const refused = await relay.mailbox(ADDRESS, "/v6/prepare", Buffer.from("{}"));
+  assert.equal(refused.status, 503);
+  assert.match(refused.body.toString(), /not an active validator/);
+  assert.ok(Date.now() - started < 100, "a non-voting candidate must not hold a collector slot");
+  assert.equal((await relay.mailbox(ADDRESS, "/blocks", Buffer.alloc(0), "GET", "from=abc")).status, 400);
+  assert.equal((await relay.mailbox(ADDRESS, "/tx", Buffer.alloc(0), "GET", "")).status, 404);
+  const read = relay.mailbox(ADDRESS, "/blocks", Buffer.alloc(0), "GET", "from=5&limit=100");
+  const { body: { requests } } = await first;
+  assert.deepEqual(requests.map((r: { method: string; path: string }) => [r.method, r.path]), [["GET", "/blocks?from=5&limit=2"]]);
+  const reply = Buffer.from(JSON.stringify({ id: requests[0].id, status: 200, body: Buffer.from('{"blocks":[]}').toString("base64") }));
+  await relay.handlePublic("reply", { [RELAY_AUTH_HEADER]: auth("reply", reply) }, reply);
+  assert.equal((await read).body.toString(), '{"blocks":[]}');
+  voting = true;
+  const second = poll();
+  const vote = relay.mailbox(ADDRESS, "/v6/prepare", Buffer.from("{}"));
+  assert.equal((await second).body.requests.length, 1);
+  assert.equal((await vote).status, 504);
+});

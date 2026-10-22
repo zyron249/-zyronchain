@@ -29,9 +29,14 @@ export const RELAY_MAX_AUTH_HEADER_BYTES = 2_048;
 // external leader forwards, are v6 requests (at most a block plus a QC).
 export const RELAY_MAX_CONSENSUS_REQUEST_BYTES = 2_700_000;
 // Replies: a vote (8 KiB), timeout certificates (128 KB) or a block (2.6 MB).
-export const RELAY_MAX_REPLY_BYTES = { "/v6/prepare": 8_192, "/v6/commit": 8_192, "/v6/timeout": 128_000, "/v6/block": 2_600_000, "/block": 4_096 };
+export const RELAY_MAX_REPLY_BYTES = { "/v6/prepare": 8_192, "/v6/commit": 8_192, "/v6/timeout": 128_000, "/v6/block": 2_600_000, "/block": 4_096, "/status": 64_000, "/blocks": 5_400_000 };
+// Read paths a hosted node may send to an external peer's mailbox, so that a
+// hosted restore that lost recent blocks can sync forward from an external
+// validator's durable history (blocks are fully validated by the reader).
+export const RELAY_READ_PATHS = Object.freeze(["/status", "/blocks"]);
+export const RELAY_MAX_SYNC_BLOCKS = 2;
 export const RELAY_MAX_POLL_RESPONSE_BYTES = 4_000_000;
-export const RELAY_MAX_BODY_BYTES = 4_000_000;
+export const RELAY_MAX_BODY_BYTES = 8_000_000;
 
 const ADDRESS = /^ZYN[0-9a-f]{40}$/;
 const PUBKEY = /^[0-9a-f]{128}$/;
@@ -86,7 +91,10 @@ export class ConsensusRelay {
    * @param {number} options.hostedCount number of hosted validators
    * @param {(index:number, path:string, body:Buffer) => Promise<{status:number, body:Buffer}>} options.forwardToHosted
    */
-  constructor({ chainId, genesisHash, peers, hostedCount, forwardToHosted, now = () => Date.now(), replyWaitMs = RELAY_REPLY_WAIT_MS, pollWaitMs = RELAY_POLL_WAIT_MS }) {
+  constructor({ chainId, genesisHash, peers, hostedCount, forwardToHosted, isVotingPeer = () => true, now = () => Date.now(), replyWaitMs = RELAY_REPLY_WAIT_MS, pollWaitMs = RELAY_POLL_WAIT_MS }) {
+    // Consensus requests reach only peers that are in the active validator
+    // set, so allowlisted candidates never take collector slots.
+    this.isVotingPeer = isVotingPeer;
     this.chainId = chainId; this.genesisHash = genesisHash; this.hostedCount = hostedCount;
     this.forwardToHosted = forwardToHosted; this.now = now; this.replyWaitMs = replyWaitMs; this.pollWaitMs = pollWaitMs;
     this.peers = new Map();
@@ -162,7 +170,7 @@ export class ConsensusRelay {
       if (requests.length > 0 && size + encoded.length > RELAY_MAX_POLL_RESPONSE_BYTES) break;
       peer.queue.shift();
       if (item.expired) continue;
-      requests.push({ id: item.id, path: item.path, body: encoded }); size += encoded.length;
+      requests.push({ id: item.id, method: item.method, path: item.path, body: encoded }); size += encoded.length;
     }
     return { status: 200, body: { requests } };
   }
@@ -200,26 +208,40 @@ export class ConsensusRelay {
     }
   }
 
-  /** Loopback mailbox: a hosted node's consensus request for an external peer. */
-  async mailbox(address, path, body) {
+  /** Loopback mailbox: a hosted node's request for an external peer. */
+  async mailbox(address, path, body, method = "POST", query = "") {
     const peer = this.peers.get(address);
-    if (!peer || !RELAY_CONSENSUS_PATHS.includes(path)) return { status: 404, body: Buffer.from('{"error":"Not found"}') };
+    const notFound = { status: 404, body: Buffer.from('{"error":"Not found"}') };
+    if (!peer) return notFound;
+    let target = path;
+    if (method === "GET") {
+      if (!RELAY_READ_PATHS.includes(path) || body.length > 0) return notFound;
+      if (path === "/blocks") {
+        const from = Number.parseInt(new URLSearchParams(query).get("from") ?? "", 10);
+        if (!Number.isSafeInteger(from) || from < 1) return { status: 400, body: Buffer.from('{"error":"from must be a positive integer"}') };
+        target = `/blocks?from=${from}&limit=${RELAY_MAX_SYNC_BLOCKS}`;
+      } else if (query !== "") return notFound;
+    } else if (method !== "POST" || !RELAY_CONSENSUS_PATHS.includes(path)) return notFound;
     if (body.length > RELAY_MAX_CONSENSUS_REQUEST_BYTES) return { status: 413, body: Buffer.from('{"error":"too large"}') };
     if (!this.isOnline(address)) return { status: 503, body: Buffer.from('{"error":"relay peer offline"}') };
+    if (method === "POST" && !this.isVotingPeer(address)) return { status: 503, body: Buffer.from('{"error":"relay peer is not an active validator"}') };
     const id = randomBytes(16).toString("hex");
     const fireAndForget = path === "/block";
-    const item = { id, path, body, expired: false };
-    if (peer.queue.length >= RELAY_MAX_QUEUE) { const dropped = peer.queue.shift(); dropped.expired = true; peer.pending.get(dropped.id)?.resolve({ status: 503, body: Buffer.from('{"error":"relay queue full"}') }); peer.pending.delete(dropped.id); }
+    const item = { id, method, path: target, capPath: path, body, expired: false };
+    if (peer.queue.length >= RELAY_MAX_QUEUE) {
+      const dropped = peer.queue.shift(); dropped.expired = true;
+      peer.pending.get(dropped.id)?.resolve({ status: 503, body: Buffer.from('{"error":"relay queue full"}') }); peer.pending.delete(dropped.id);
+    }
     peer.queue.push(item);
     if (peer.waiter) { peer.waiter.resolve(); peer.waiter = undefined; }
     if (fireAndForget) {
-      peer.pending.set(id, { path, resolve: () => {} });
+      peer.pending.set(id, { path: item.capPath, resolve: () => {} });
       setTimeout(() => peer.pending.delete(id), this.replyWaitMs).unref?.();
       return { status: 202, body: Buffer.from('{"accepted":true}') };
     }
     return new Promise((done) => {
       const timer = setTimeout(() => { item.expired = true; peer.pending.delete(id); done({ status: 504, body: Buffer.from('{"error":"relay peer timeout"}') }); }, this.replyWaitMs);
-      peer.pending.set(id, { path, resolve: (result) => { clearTimeout(timer); done(result); } });
+      peer.pending.set(id, { path: item.capPath, resolve: (result) => { clearTimeout(timer); done(result); } });
     });
   }
 }

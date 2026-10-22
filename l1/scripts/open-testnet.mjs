@@ -1009,7 +1009,13 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   const relayPeers = parseRelayPeers(process.env.ZYRON_RELAY_PEERS);
   let relay; let mailbox; let mailboxPort;
   if (relayPeers.size > 0) {
-    relay = new ConsensusRelay({ chainId, genesisHash: info.genesisHash, peers: relayPeers, hostedCount: VALIDATOR_NAMES.length,
+    // Active validator set from the gateway's verified history (validator
+    // updates are scheduled at least 100 blocks ahead, so the history knows
+    // an activation before it happens).
+    const votingPeer = (address) => {
+      try { return snapshotHistory.chain.validatorsAt(Math.max(snapshotHistory.chain.height, statusCache?.height ?? 0) + 1).some((v) => v.address === address); } catch { return false; }
+    };
+    relay = new ConsensusRelay({ chainId, genesisHash: info.genesisHash, peers: relayPeers, hostedCount: VALIDATOR_NAMES.length, isVotingPeer: votingPeer,
       async forwardToHosted(index, path, body) {
         const node = nodes.get(VALIDATOR_NAMES[index]);
         if (!node || node.exit) return { status: 503, body: Buffer.from('{"error":"validator not running"}') };
@@ -1019,10 +1025,10 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     mailboxPort = basePort + 50;
     mailbox = createServer({ headersTimeout: 5_000, requestTimeout: 10_000 }, async (request, response) => {
       try {
-        const match = /^\/x\/(ZYN[0-9a-f]{40})(\/[a-z0-9/]+)$/.exec(request.url ?? "");
-        if (request.method !== "POST" || !match) { response.writeHead(404, { "content-type": "application/json" }); return response.end('{"error":"Not found"}'); }
-        const body = await readRawBody(request, RELAY_MAX_CONSENSUS_REQUEST_BYTES);
-        const result = await relay.mailbox(match[1], match[2], body);
+        const match = /^\/x\/(ZYN[0-9a-f]{40})(\/[a-z0-9/]+)(?:\?([a-z0-9=&]{0,64}))?$/.exec(request.url ?? "");
+        if ((request.method !== "POST" && request.method !== "GET") || !match) { response.writeHead(404, { "content-type": "application/json" }); return response.end('{"error":"Not found"}'); }
+        const body = request.method === "POST" ? await readRawBody(request, RELAY_MAX_CONSENSUS_REQUEST_BYTES) : Buffer.alloc(0);
+        const result = await relay.mailbox(match[1], match[2], body, request.method, match[3] ?? "");
         response.writeHead(result.status, { "content-type": "application/json", "content-length": result.body.length });
         response.end(result.body);
       } catch (error) {
