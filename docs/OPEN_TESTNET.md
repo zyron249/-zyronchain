@@ -89,6 +89,10 @@ Both keepers fetch `/state/snapshot` about 6 times an hour (limit: 30 per hour f
 
 Free-plan budget: Actions minutes are free for public repositories, and the job occupies one hosted runner slot. A free web service that is kept awake all month uses about 720-744 of the 750 free instance hours a Render workspace gets per month. Other free web services in the same workspace share that allowance, and when it runs out Render suspends the workspace's free web services until the next month.
 
+## Consensus relay (outbound-only external validators)
+
+With `ZYRON_RELAY_PEERS=<validatorAddress>=<relayPublicKey>,...` set, the gateway also serves `POST /relay/v1/poll`, `/relay/v1/reply` and `/relay/v1/forward` for those peers only, and the hosted validators reach each peer through a loopback-only mailbox (`127.0.0.1:<validator base port + 50>`). The external side runs `scripts/consensus-relay-client.mjs`. Requests are signed with a separate relay transport key (never the validator key) and bound to the chain ID and genesis hash, with freshness, replay and size limits; votes are verified by the nodes' normal v6 rules. An allowlisted peer that is offline costs the hosted round nothing (immediate 503). Unset, the relay is off. Design, liveness analysis and admission plan: [`CONSENSUS_RELAY.md`](CONSENSUS_RELAY.md). Being reachable through the relay does not admit anyone: admission is still the on-chain validator-update flow below.
+
 ## Join as a validator (volunteers)
 
 The current validator set is run by the project from one host, so it is **not** yet an independent-operator network. Volunteers help close that gap. **Follower nodes can join now:** sync from the public peer endpoint `https://zyron-open-testnet.onrender.com/peer` with the genesis from `GET /genesis` (see the guide). **Validator activation is not possible yet:** the hosted validators are on loopback and only expose a read-only peer surface, so a volunteer cannot exchange v6 consensus messages with them. Full guide: [`VALIDATOR_VOLUNTEERS.md`](VALIDATOR_VOLUNTEERS.md).
