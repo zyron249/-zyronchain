@@ -5,12 +5,17 @@
 // activation height and the slot. Chains without the opt-in refuse the field.
 // Design: docs/VALIDATOR_POSSESSION_PROOF.md.
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { createBlockAttestation, createSignedBlock, expectedValidator } from "../src/block.js";
 import { ZyronChain } from "../src/chain.js";
+import { NodeService } from "../src/node.js";
+import { ChainStore } from "../src/storage.js";
 import { addressFromPublicKey, publicKeyFromPrivate, signCanonical, signCanonicalDomain } from "../src/crypto.js";
-import { createValidatorApproval, createValidatorSetUpdate, validateTransactionShape } from "../src/transaction.js";
+import { createTransfer, createValidatorApproval, createValidatorSetUpdate, validateTransactionShape } from "../src/transaction.js";
 import { ATOMS_PER_ZYN, type Block, type GenesisConfig, type Validator, type ValidatorPossessionProof, type ValidatorSetUpdateTx } from "../src/types.js";
 import {
   POSSESSION_PROOF_DOMAIN,
@@ -61,7 +66,7 @@ function proof(chain: ZyronChain, activationHeight: number, id: number): Validat
 function update(
   chain: ZyronChain,
   next: number[],
-  options: { activationHeight?: number; nonce?: number; proofs?: ValidatorPossessionProof[] | "omit"; signers?: number[] } = {}
+  options: { activationHeight?: number; nonce?: number; proofs?: ValidatorPossessionProof[] | "omit"; signers?: number[]; version?: 1 | 2 } = {}
 ): ValidatorSetUpdateTx {
   const activationHeight = options.activationHeight ?? 150;
   const signers = options.signers ?? GENESIS_SET.slice(0, 3);
@@ -73,14 +78,15 @@ function update(
     activationHeight,
     validators: next.map(validator)
   };
-  const approvals = signers.map((id) => createValidatorApproval(input, key(id), pub(id)));
+  const version = options.version ?? 1;
+  const approvals = signers.map((id) => createValidatorApproval(input, key(id), pub(id), version));
   const proofs = options.proofs ?? "omit";
   return createValidatorSetUpdate({
     ...input,
     approvals,
     timestampMs: T0 + 10,
     ...(proofs === "omit" ? {} : { possessionProofs: proofs })
-  }, key(sender), pub(sender));
+  }, key(sender), pub(sender), version);
 }
 
 function smuggle(chain: ZyronChain, transactions: ValidatorSetUpdateTx[], at: number): Block {
@@ -235,6 +241,124 @@ test("same block: remove then re-add needs a proof (per-block working schedule)"
   const readd = update(chain, [0x21, 0x22, 0x23, 0x24], { activationHeight: 300, nonce: 2, proofs: [proof(chain, 300, 0x24)] });
   acceptedEverywhere(chain, [remove, readd]);
   assert.deepEqual(chain.validatorsAt(300).map((item) => item.address), GENESIS_SET.map(addr));
+});
+
+test("P1-07-F1: mempool admits a same-block re-add whose proof a pending removal makes necessary", () => {
+  const chain = new ZyronChain(optedIn());
+  const at = T0 + 1_000;
+  const remove = update(chain, [0x21, 0x22, 0x23], { proofs: [] });
+  const readd = update(chain, [0x21, 0x22, 0x23, 0x24], { activationHeight: 300, nonce: 2, proofs: [proof(chain, 300, 0x24)] });
+  // Against the persisted schedule alone the proof is extra (0x24 is still scheduled): unchanged.
+  assert.throws(() => chain.validateMempoolAdmission(readd, at), /one possession proof per incoming validator/);
+  // With the pending removal as its same-block predecessor, the proof is exactly what selection will need.
+  assert.doesNotThrow(() => chain.validateMempoolAdmission(readd, at, [remove]));
+  assert.deepEqual(chain.selectValidPending([remove, readd], 10, undefined, at).map((tx) => tx.txid), [remove.txid, readd.txid]);
+});
+
+test("P1-07-F1: a pending update only counts as predecessor when it is admissible and activates earlier", () => {
+  const chain = new ZyronChain(optedIn());
+  const at = T0 + 1_000;
+  const readd = update(chain, [0x21, 0x22, 0x23, 0x24], { activationHeight: 300, nonce: 2, proofs: [proof(chain, 300, 0x24)] });
+  const later = update(chain, [0x21, 0x22, 0x23], { activationHeight: 300, proofs: [] });
+  const afterIt = update(chain, [0x21, 0x22, 0x23], { activationHeight: 400, proofs: [] });
+  const unapproved = update(chain, [0x21, 0x22, 0x23], { proofs: [], signers: [0x21, 0x22] });
+  const tooSoon = update(chain, [0x21, 0x22, 0x23], { activationHeight: 2, proofs: [] });
+  const otherChain = new ZyronChain(optedIn("zyron-devnet-other"));
+  const foreign = update(otherChain, [0x21, 0x22, 0x23], { proofs: [] });
+  // Transaction version 2 is not valid under this chain's protocol v1, so selection can never take it (Codex P2, #1095).
+  const staleVersion = update(chain, [0x21, 0x22, 0x23], { proofs: [], version: 2 });
+  for (const [name, pending] of [["same height", later], ["activates later", afterIt], ["no quorum", unapproved], ["too soon", tooSoon], ["other chain", foreign], ["wrong transaction version", staleVersion]] as const) {
+    assert.throws(() => chain.validateMempoolAdmission(readd, at, [pending]), /one possession proof per incoming validator/, name);
+  }
+  // Same sender: the predecessor must hold a lower nonce, or selection would reach the re-add first (Codex P2, #1095).
+  const removeAfter = update(chain, [0x21, 0x22, 0x23], { nonce: 3, proofs: [] });
+  assert.throws(() => chain.validateMempoolAdmission(readd, at, [removeAfter]), /one possession proof per incoming validator/, "same sender, higher nonce");
+  const removeSameNonce = update(chain, [0x21, 0x22, 0x23], { nonce: 2, proofs: [] });
+  assert.throws(() => chain.validateMempoolAdmission(readd, at, [removeSameNonce]), /one possession proof per incoming validator/, "same sender, same nonce");
+  // A predecessor never relaxes the update's own checks (a bad proof stays bad).
+  const remove = update(chain, [0x21, 0x22, 0x23], { proofs: [] });
+  const badProof = update(chain, [0x21, 0x22, 0x23, 0x24], { activationHeight: 300, nonce: 2, proofs: [proof(chain, 301, 0x24)] });
+  assert.throws(() => chain.validateMempoolAdmission(badProof, at, [remove]), MISSING);
+  assert.equal(chain.selectValidPending([remove, badProof], 10, undefined, at).length, 1);
+  const noQuorum = update(chain, [0x21, 0x22, 0x23, 0x24], { activationHeight: 300, nonce: 2, proofs: [proof(chain, 300, 0x24)], signers: [0x21, 0x22] });
+  assert.throws(() => chain.validateMempoolAdmission(noQuorum, at, [remove]), /quorum/);
+});
+
+test("P1-07-F1: NodeService.submitTransaction accepts the same-block remove-then-re-add pair", async () => {
+  const genesis = optedIn("zyron-devnet-admit-node");
+  const directory = await mkdtemp(join(tmpdir(), "zyron-p107f1-"));
+  try {
+    const store = await ChainStore.open(genesis, directory);
+    const service = new NodeService(store);
+    const chain = store.chain;
+    const remove = update(chain, [0x21, 0x22, 0x23], { proofs: [] });
+    // Same sender (nonce 2) and another sender (its nonce 1) both work.
+    const readd = update(chain, [0x21, 0x22, 0x23, 0x24], { activationHeight: 300, nonce: 2, proofs: [proof(chain, 300, 0x24)] });
+    const readdByOther = update(chain, [0x21, 0x22, 0x23, 0x24], { activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x24)], signers: [0x22, 0x23, 0x21] });
+    assert.throws(() => service.submitTransaction(readd), /one possession proof per incoming validator/, "no predecessor pending yet");
+    assert.equal(service.submitTransaction(remove), remove.txid);
+    assert.equal(service.submitTransaction(readd), readd.txid);
+    const at = chain.tip.header.timestampMs + 1_000;
+    assert.deepEqual(chain.selectValidPending(service.mempool.values(), 10, undefined, at).map((tx) => tx.txid), [remove.txid, readd.txid]);
+
+    const other = new NodeService(store);
+    assert.equal(other.submitTransaction(remove), remove.txid);
+    assert.equal(other.submitTransaction(readdByOther), readdByOther.txid);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("P1-07-F1: a predecessor from another sender is checked with that sender's pending nonce prefix", async () => {
+  const base = devGenesis("zyron-devnet-admit-prefix");
+  const genesis = signGenesisPossessionProofs({
+    ...base,
+    allocations: [...base.allocations, { address: addr(0x22), amountAtoms: 10 * ZYN }]
+  }, GENESIS_SET.map(key));
+  const directory = await mkdtemp(join(tmpdir(), "zyron-p107f1-prefix-"));
+  try {
+    const store = await ChainStore.open(genesis, directory);
+    const service = new NodeService(store);
+    const chain = store.chain;
+    const transfer = createTransfer({
+      chainId: genesis.chainId, nonce: 1, sender: addr(0x22), receiver: addr(0x23), amountAtoms: ZYN, feeAtoms: 0, timestampMs: T0 + 5
+    }, key(0x22), pub(0x22));
+    // 0x22: a pending transfer at nonce 1, then the removal at nonce 2.
+    const remove = update(chain, [0x21, 0x22, 0x23], { nonce: 2, proofs: [], signers: [0x22, 0x23, 0x21] });
+    // 0x21: the re-add at its nonce 1.
+    const readd = update(chain, [0x21, 0x22, 0x23, 0x24], { activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x24)] });
+    assert.equal(service.submitTransaction(transfer), transfer.txid);
+    assert.equal(service.submitTransaction(remove), remove.txid);
+    assert.equal(service.submitTransaction(readd), readd.txid);
+    const at = chain.tip.header.timestampMs + 1_000;
+    assert.deepEqual(
+      new Set(chain.selectValidPending(service.mempool.values(), 10, undefined, at).map((tx) => tx.txid)),
+      new Set([transfer.txid, remove.txid, readd.txid])
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("P1-07-F1: admission tries every usable predecessor, not only the first", async () => {
+  const genesis = optedIn("zyron-devnet-admit-many");
+  const directory = await mkdtemp(join(tmpdir(), "zyron-p107f1-many-"));
+  try {
+    const store = await ChainStore.open(genesis, directory);
+    const service = new NodeService(store);
+    const chain = store.chain;
+    // A: 0x22 at nonce 2 with its nonce 1 missing (not selectable yet). B: 0x23 at nonce 1, the same removal.
+    const removeA = update(chain, [0x21, 0x22, 0x23], { nonce: 2, proofs: [], signers: [0x22, 0x23, 0x21] });
+    const removeB = update(chain, [0x21, 0x22, 0x23], { activationHeight: 160, nonce: 1, proofs: [], signers: [0x23, 0x21, 0x22] });
+    const readd = update(chain, [0x21, 0x22, 0x23, 0x24], { activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x24)] });
+    assert.equal(service.submitTransaction(removeA), removeA.txid);
+    assert.equal(service.submitTransaction(removeB), removeB.txid);
+    assert.equal(service.submitTransaction(readd), readd.txid);
+    const at = chain.tip.header.timestampMs + 1_000;
+    assert.deepEqual(chain.selectValidPending(service.mempool.values(), 10, undefined, at).map((tx) => tx.txid), [removeB.txid, readd.txid]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("a chain without the opt-in refuses possessionProofs and is otherwise unchanged", () => {
