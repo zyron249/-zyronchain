@@ -1555,6 +1555,11 @@ export class SigningJournal {
     ], faultHooks);
   }
 
+  /** The legacy reservation at (height, round), as `attest:<hash>` or `skip:<hash>` (P1-06). */
+  legacyReservation(height: number, round: number): string | undefined {
+    return this.reservations.get(`${height}:${round}`);
+  }
+
   v6Lock(height: number): V6Lock | null {
     const lock = this.v6Heights.get(height)?.lock;
     return lock ? { ...lock } : null;

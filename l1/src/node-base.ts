@@ -733,11 +733,12 @@ export class NodeService {
       validateBlockStructure(value);
       const block = value as Block;
       this.assertLegacyConsensusHeight(block.header.height);
-      this.validateProposalWithinBudget(block, block.header.round, nowMs);
+      const reservation = this.signingJournal.legacyReservation(block.header.height, block.header.round);
+      const ticket = this.validateProposalWithinBudget(block, block.header.round, nowMs, reservation, `attest:${block.hash}`);
       const publicKey = this.validatorSigner.publicKey;
       const validator = this.store.chain.validatorsAt(block.header.height).find((item) => item.publicKey === publicKey);
       if (!validator) throw new Error("Configured validator key is not in genesis");
-      await this.signingJournal.reserveAttestation(block.header.height, block.header.round, block.hash);
+      await ticket.reserve(() => this.signingJournal!.reserveAttestation(block.header.height, block.header.round, block.hash));
       return {
         validator: validator.address,
         publicKey,
@@ -759,18 +760,45 @@ export class NodeService {
    * a failure, or a success (a repeat of a validated hash then runs only the
    * gates, and other hashes for the slot are refused before the expensive stage).
    */
-  private validateProposalWithinBudget(block: Block, round: number, nowMs: number): void {
+  private validateProposalWithinBudget(
+    block: Block,
+    round: number,
+    nowMs: number,
+    reservation: string | undefined,
+    expectedReservation: string
+  ): { reserve(write: () => Promise<void>): Promise<void> } {
     this.proposalValidationBudget.pruneThrough(this.store.chain.height);
-    const slot = ProposalValidationBudget.slotKey(block.header.height, round, String(block.proposerPublicKey));
-    const alreadyValidated = this.proposalValidationBudget.assertAllowed(slot, block.hash);
+    const height = block.header.height;
+    const slot = ProposalValidationBudget.slotKey(height, round, String(block.proposerPublicKey));
+    // The hash this validator already voted for in the journal is always allowed.
+    const alreadyValidated = this.proposalValidationBudget.assertAllowed(slot, block.hash, reservation === expectedReservation);
+    // The signing journal already holds another vote for this round: it would
+    // refuse this proposal after validation, so refuse it before (Codex P1 on
+    // #1102 at f38c619: it must not spend the journaled proposal's slot).
+    if (reservation !== undefined && reservation !== expectedReservation) {
+      throw new Error("Conflicting validator action prevented for consensus round");
+    }
     let authenticated = false;
     try {
       this.store.chain.validateProposal(block, nowMs, () => { authenticated = true; return alreadyValidated; });
     } catch (error) {
-      if (authenticated && !alreadyValidated) this.proposalValidationBudget.recordFailure(slot, block.header.height, block.hash);
+      if (authenticated && !alreadyValidated) this.proposalValidationBudget.recordFailure(slot, height, block.hash);
       throw error;
     }
-    if (!alreadyValidated) this.proposalValidationBudget.recordSuccess(slot, block.header.height, block.hash);
+    const budget = this.proposalValidationBudget;
+    return {
+      // Recorded as validated only once the journal accepted the vote; a
+      // journal refusal (lock conflict, closed round) is final for this hash.
+      async reserve(write: () => Promise<void>): Promise<void> {
+        try {
+          await write();
+        } catch (error) {
+          if (!alreadyValidated) budget.recordFailure(slot, height, block.hash);
+          throw error;
+        }
+        if (!alreadyValidated) budget.recordSuccess(slot, height, block.hash);
+      }
+    };
   }
 
   async signPreparedProposal(block: Block, nowMs = Date.now()): Promise<Block> {
@@ -964,10 +992,11 @@ export class NodeService {
       const { height, chainId, validators } = this.v6Context();
       const member = this.v6Member(validators, signer);
       const justify = validatePrepareRequestCertificates(request, validators, chainId, height);
-      this.validateProposalWithinBudget(request.block, request.proposal.round, nowMs);
       const { round, justifyRound } = request.proposal;
+      const reservation = journal.v6Row(height, round, "prepare");
+      const ticket = this.validateProposalWithinBudget(request.block, round, nowMs, reservation, request.block.hash);
       if (justify) await this.v6RecordQC(height, chainId, validators, justify);
-      await journal.reserveV6Prepare(height, round, request.block.hash, justifyRound);
+      await ticket.reserve(() => journal.reserveV6Prepare(height, round, request.block.hash, justifyRound));
       // Stored only once the journal accepted the vote (finding D-1): a refused
       // request (equivocation, lock conflict, closed round) leaves no file, so
       // at most one block per (H, r) is kept from prepare requests. Prepared

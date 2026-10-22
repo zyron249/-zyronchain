@@ -24,7 +24,12 @@
  * transaction verification and replay, whose result is the same. The validated
  * hash also spends the slot, so another proposal for it (an equivocation, valid
  * or not) is refused before the expensive stage; the signing journal would
- * refuse to vote for it anyway.
+ * refuse to vote for it anyway. A hash is recorded as validated only once the
+ * signing journal accepted the vote, and a hash the journal refused is
+ * recorded as failed. The hash already in the journal for the slot is always
+ * allowed, so a persisted vote can be reissued after a restart (Codex P1 on
+ * #1102 at f38c619); NodeService refuses any other hash for a journaled slot
+ * before validation.
  *
  * Memory: slots exist only for heights above the finalized tip, and the map
  * is capped at `maxSlots` entries, oldest evicted first. Eviction only allows
@@ -66,13 +71,16 @@ export class ProposalValidationBudget {
 
   /**
    * Throws when this hash already failed, or the slot already spent its budget
-   * on other hashes. Returns true when this hash already passed the expensive
-   * stage (the caller still runs the O(1) gates and skips the rest).
+   * on other hashes, unless `journaled` (the signing journal holds this
+   * validator's vote for this hash in the slot). Returns true when this hash
+   * already passed the expensive stage (the caller still runs the O(1) gates
+   * and skips the rest).
    */
-  assertAllowed(slotKey: string, blockHash: string): boolean {
+  assertAllowed(slotKey: string, blockHash: string, journaled = false): boolean {
     const slot = this.slots.get(slotKey);
     if (!slot) return false;
     if (slot.validated.has(blockHash)) return true;
+    if (journaled) return false;
     if (slot.hashes.has(blockHash) || slot.hashes.size + slot.validated.size >= this.perSlot) {
       throw new Error(PROPOSAL_VALIDATION_BUDGET_MESSAGE);
     }
