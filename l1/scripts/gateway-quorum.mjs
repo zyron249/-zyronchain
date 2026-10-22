@@ -15,6 +15,10 @@
 //   update was applied;
 // - without such agreement the trusted set (genesis at first) is used and the
 //   result says so (activeSetSource / activeSetFallback).
+// - `options.initial` seeds the trusted set at start-up (the gateway passes the
+//   set its VERIFIED history governs at tip+1, so a restart does not fall back
+//   to genesis); `options.minValidators` refuses to adopt an agreed set smaller
+//   than the floor (surfaced as activeSetRejected).
 // Only hosted validators that are up AND members of the trusted set count
 // toward the quorum.
 
@@ -59,10 +63,21 @@ const setKey = (validators) => validators.map((v) => v.publicKey).sort().join(",
  * hosted validator `{ name, publicKey, up, height, activeSet? }`.
  */
 export function createActiveSetTracker(genesisValidators, options = {}) {
-  let trusted = { source: "genesis", height: 0, validators: genesisValidators.map((v) => ({ ...v })) };
+  const { initial, minValidators = 1 } = options;
+  if (!Number.isSafeInteger(minValidators) || minValidators < 1) throw new Error(`invalid minValidators: ${minValidators}`);
+  let trusted;
+  if (initial !== undefined) {
+    if (!initial || !Number.isSafeInteger(initial.height) || initial.height < 0 || !Array.isArray(initial.validators) || initial.validators.length < 1) throw new Error("invalid initial active set");
+    trusted = { source: initial.source ?? "snapshot", height: initial.height, validators: initial.validators.map((v) => ({ ...v })) };
+  } else {
+    trusted = { source: "genesis", height: 0, validators: genesisValidators.map((v) => ({ ...v })) };
+  }
   trusted.key = setKey(trusted.validators);
+  const seededFrom = trusted.source;
+  let rejected;
   return {
     get trusted() { return { source: trusted.source, height: trusted.height, validators: trusted.validators.map((v) => ({ ...v })) }; },
+    get seededFrom() { return seededFrom; },
     evaluate(statuses) {
       const members = new Set(trusted.validators.map((v) => v.publicKey));
       const groups = new Map();
@@ -81,7 +96,13 @@ export function createActiveSetTracker(genesisValidators, options = {}) {
         if (group.reporters.size >= needed && (!agreed || group.reporters.size > agreed.group.reporters.size)) agreed = { key, group };
       }
       if (agreed && agreed.group.height > trusted.height && (agreed.key !== trusted.key || trusted.source === "genesis")) {
-        trusted = { source: "validators", height: agreed.group.height, validators: agreed.group.validators, key: agreed.key };
+        if (agreed.group.validators.length < minValidators) {
+          // A quorum agreed on a set below the floor: keep the trusted set.
+          rejected = { reason: "below_min_validators", size: agreed.group.validators.length, min: minValidators, height: agreed.group.height };
+        } else {
+          rejected = undefined;
+          trusted = { source: "validators", height: agreed.group.height, validators: agreed.group.validators, key: agreed.key };
+        }
       }
       const activeMembers = new Set(trusted.validators.map((v) => v.publicKey));
       const quorum = quorumThreshold(activeMembers.size);
@@ -94,10 +115,25 @@ export function createActiveSetTracker(genesisValidators, options = {}) {
         activeSetHeight: trusted.source === "genesis" ? null : trusted.height,
         activeSetSource: trusted.source,
         // True when no quorum of the trusted set agreed on a report this round.
-        activeSetFallback: !agreed
+        activeSetFallback: !agreed,
+        activeSetSeed: seededFrom,
+        ...(rejected ? { activeSetRejected: { ...rejected } } : {})
       };
     }
   };
+}
+
+/**
+ * Starting trusted active set from a verified history: the set governing the
+ * verified tip+1 (read-only). Undefined when there is no verified history.
+ */
+export function activeSetSeedFromHistory(history) {
+  const chain = history?.chain;
+  if (!chain || !Number.isSafeInteger(chain.height) || chain.height < 1) return undefined;
+  const height = chain.height + 1;
+  const validators = chain.validatorsAt(height);
+  if (!Array.isArray(validators) || validators.length < 1) return undefined;
+  return { source: "snapshot", height, validators: validators.map((v) => ({ address: v.address, publicKey: v.publicKey })) };
 }
 
 /** Stateless one-shot evaluation (fresh tracker starting at the genesis set). */

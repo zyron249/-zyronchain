@@ -23,7 +23,7 @@
 //
 // <secret dir> holds plaintext TEST validator/faucet keys (mode 0600) and the
 // chain data. It must live outside the repository and must never be shared.
-import { createActiveSetTracker } from "./gateway-quorum.mjs";
+import { activeSetSeedFromHistory, createActiveSetTracker } from "./gateway-quorum.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
@@ -46,6 +46,7 @@ const { merkleRoot } = await import(dist("merkle.js"));
 const { canonicalJson } = await import(dist("codec.js"));
 const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist("tokenomics.js"));
 const { defaultPublicDistributionRelease } = await import(dist("public-distribution-release.js"));
+const { STRICT_MIN_VALIDATORS } = await import(dist("network-class.js"));
 const { gatewayClientIdentity } = await import(dist("rpc-client-identity.js"));
 const { ConsensusRelay, RELAY_MAX_BODY_BYTES, RELAY_MAX_CONSENSUS_REQUEST_BYTES, parseRelayPeers, relayReplyHeaders, relayVotingPeer } = await import("./open-testnet/consensus-relay.mjs");
 
@@ -1007,8 +1008,6 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // each validator reports (GET /validator-set) for the gateway quorum.
   const validatorPublicKeys = new Map();
   for (const name of VALIDATOR_NAMES) validatorPublicKeys.set(name, publicKeyFromPrivate((await readSecret(join(dir, "keys", `${name}.json`))).privateKey));
-  // Trusted active set: genesis until a quorum of it agrees on a new set.
-  const activeSetTracker = createActiveSetTracker(genesis.validators, { addressOf: (publicKey) => addressFromPublicKey(publicKey) });
   const nodes = new Map();
   let shuttingDown = false;
   // Consensus relay (docs/CONSENSUS_RELAY.md): allowlisted external peers,
@@ -1186,6 +1185,12 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // Verified history (R28-1059): from the restore replay when there was one,
   // otherwise validated from genesis on the first build.
   const snapshotHistory = verifiedHistory ?? createSnapshotHistory(genesis);
+  // Trusted active set: seeded (read-only) from the verified history's set at
+  // tip+1, or genesis when there is no verified history; it then moves only
+  // when a quorum of it agrees on a new set of at least STRICT_MIN_VALIDATORS.
+  const activeSetSeed = activeSetSeedFromHistory(verifiedHistory);
+  const activeSetTracker = createActiveSetTracker(genesis.validators, { addressOf: (publicKey) => addressFromPublicKey(publicKey), minValidators: STRICT_MIN_VALIDATORS, ...(activeSetSeed ? { initial: activeSetSeed } : {}) });
+  if (log) console.log(`active set seeded from ${activeSetTracker.seededFrom}${activeSetSeed ? ` (height ${activeSetSeed.height}, ${activeSetSeed.validators.length} validators)` : ""}`);
   // One build at a time: concurrent requests share it, and the verified
   // history is never extended twice in parallel.
   function buildSnapshot() {
@@ -1307,7 +1312,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const up = statuses.filter((v) => v.up);
           const heights = up.map((v) => v.height);
           // Quorum of the ACTIVE validator set (follows validator_update).
-          const { ok, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback } = activeSetTracker.evaluate(statuses);
+          const { ok, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, activeSetRejected } = activeSetTracker.evaluate(statuses);
           const validators = statuses.map(({ activeSet: _activeSet, ...rest }) => rest);
           if (ok) everReady = true;
           // Until the validators first reach a quorum (bounded by STARTUP_GRACE_MS)
@@ -1316,7 +1321,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const starting = !ok && !everReady && Date.now() - runStartedAtMs < STARTUP_GRACE_MS;
           const status = ok ? "ready" : starting ? "starting" : "degraded";
           const code = ok || (starting && path !== "/readyz") ? 200 : 503;
-          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), network: "testnet", valueBearing: false, chainId, persistence, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
+          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), network: "testnet", valueBearing: false, chainId, persistence, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);

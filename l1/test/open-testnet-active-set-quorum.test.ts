@@ -18,17 +18,18 @@ import { createValidatorApproval, createValidatorSetUpdate } from "../src/transa
 import { ATOMS_PER_ZYN, type GenesisConfig, type Validator } from "../src/types.js";
 
 type Status = { name: string; publicKey?: string; up: boolean; height?: number; activeSet?: unknown };
-type Evaluation = { ok: boolean; quorum: number; activeValidatorCount: number; activeValidatorsUp: number; activeSetHeight: number | null; activeSetSource: string; activeSetFallback: boolean };
-type Options = { addressOf?: (publicKey: string) => string; maxValidators?: number };
+type Evaluation = { ok: boolean; quorum: number; activeValidatorCount: number; activeValidatorsUp: number; activeSetHeight: number | null; activeSetSource: string; activeSetFallback: boolean; activeSetSeed?: string; activeSetRejected?: { reason: string; size: number; min: number; height: number } };
+type Options = { addressOf?: (publicKey: string) => string; maxValidators?: number; minValidators?: number; initial?: { source?: string; height: number; validators: Validator[] } };
 // @ts-ignore -- plain ESM script without type declarations
 const quorumModule = (await import("../../scripts/gateway-quorum.mjs")) as {
   MAX_REPORTED_VALIDATORS: number;
   quorumThreshold(n: number): number;
   validateReportedSet(set: unknown, tipHeight: number | undefined, options?: Options): { height: number; validators: Validator[] } | undefined;
   evaluateQuorum(statuses: Status[], genesis: Validator[], options?: Options): Evaluation;
-  createActiveSetTracker(genesis: Validator[], options?: Options): { evaluate(statuses: Status[]): Evaluation; trusted: { source: string; height: number; validators: Validator[] } };
+  createActiveSetTracker(genesis: Validator[], options?: Options): { evaluate(statuses: Status[]): Evaluation; trusted: { source: string; height: number; validators: Validator[] }; seededFrom: string };
+  activeSetSeedFromHistory(history: unknown): { source: string; height: number; validators: Validator[] } | undefined;
 };
-const { MAX_REPORTED_VALIDATORS, quorumThreshold, validateReportedSet, evaluateQuorum, createActiveSetTracker } = quorumModule;
+const { activeSetSeedFromHistory, MAX_REPORTED_VALIDATORS, quorumThreshold, validateReportedSet, evaluateQuorum, createActiveSetTracker } = quorumModule;
 const options: Options = { addressOf: addressFromPublicKey };
 
 const T0 = 1_700_000_000_000;
@@ -208,4 +209,56 @@ test("node GET /validator-set reports the set governing the next height, across 
     await new Promise<void>((done) => server.close(() => done()));
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("restart seeding: a verified history past a validator_update seeds the tracker (read-only)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zyron-gateway-seed-"));
+  try {
+    const store = await ChainStore.open(devGenesis(), directory);
+    const chain = store.chain;
+    const activationHeight = 1 + 1 + 100;
+    const input = { chainId: chain.genesis.chainId, nonce: 1, sender: addr(0x21), activationHeight, validators: [0x21, 0x22, 0x23, 0x24, 0x25].map(validator) };
+    const approvals = [0x21, 0x22, 0x23].map((id) => createValidatorApproval(input, key(id), pub(id)));
+    const tx = createValidatorSetUpdate({ ...input, approvals, timestampMs: T0 + 10 }, key(0x21), pub(0x21));
+    produce(chain, [tx], [0x21, 0x22, 0x23]);
+    while (chain.height + 1 < activationHeight) produce(chain, [], [0x21, 0x22, 0x23]);
+    const heightBefore = chain.height;
+    const seed = activeSetSeedFromHistory({ chain });
+    assert.ok(seed);
+    assert.equal(chain.height, heightBefore, "seeding does not change the chain");
+    assert.deepEqual([seed.source, seed.height, seed.validators.length], ["snapshot", heightBefore + 1, 5]);
+    const genesisSet = devGenesis().validators;
+    const tracker = createActiveSetTracker(genesisSet, { ...options, initial: seed });
+    assert.equal(tracker.seededFrom, "snapshot");
+    const r = tracker.evaluate([0x21, 0x22, 0x23, 0x24].map((id) => ({ name: `v${id}`, publicKey: pub(id), up: true, height: chain.height })));
+    assert.deepEqual([r.activeSetSource, r.activeSetSeed, r.activeValidatorCount, r.quorum], ["snapshot", "snapshot", 5, 4]);
+
+    // Without verified history: genesis, quorum 3.
+    const g = createActiveSetTracker(genesisSet, options);
+    assert.equal(g.seededFrom, "genesis");
+    const gr = g.evaluate([0x21, 0x22, 0x23, 0x24].map((id) => ({ name: `v${id}`, publicKey: pub(id), up: true, height: chain.height })));
+    assert.deepEqual([gr.activeSetSource, gr.activeSetSeed, gr.activeValidatorCount, gr.quorum], ["genesis", "genesis", 4, 3]);
+    for (const history of [undefined, null, {}, { chain: { height: 0, validatorsAt: () => genesisSet } }, { chain: { height: undefined, validatorsAt: () => genesisSet } }]) {
+      assert.equal(activeSetSeedFromHistory(history), undefined);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("floor: a quorum-agreed set below minValidators is rejected and the trusted set is kept", () => {
+  const five = [1, 2, 3, 4, 5];
+  const opts: Options = { ...options, minValidators: 4, initial: { source: "snapshot", height: 10, validators: five.map(validator) } };
+  for (const shrunk of [[1], [1, 2, 3]]) {
+    const tracker = createActiveSetTracker([1, 2, 3, 4].map(validator), opts);
+    const r = tracker.evaluate(hosted(five, five, set(shrunk, 150)));
+    assert.deepEqual([r.activeSetSource, r.activeValidatorCount, r.quorum, r.ok], ["snapshot", 5, 4, true], `size=${shrunk.length}`);
+    assert.deepEqual(r.activeSetRejected, { reason: "below_min_validators", size: shrunk.length, min: 4, height: 150 });
+    assert.equal(tracker.trusted.validators.length, 5);
+  }
+  const tracker = createActiveSetTracker([1, 2, 3, 4].map(validator), opts);
+  const r = tracker.evaluate(hosted(five, five, set([1, 2, 3, 4], 150)));
+  assert.deepEqual([r.activeSetSource, r.activeValidatorCount, r.quorum, r.activeSetHeight, r.ok], ["validators", 4, 3, 150, true]);
+  assert.equal(r.activeSetRejected, undefined);
+  assert.throws(() => createActiveSetTracker([1, 2, 3, 4].map(validator), { minValidators: 0 }), /invalid minValidators/);
 });
