@@ -131,6 +131,10 @@ explorer endpoints (`/status`, `/blocks`, `/block/{height}`) still show the
 live tip; blocks above `durableHeight` can be replaced by a cold start. Set
 `ZYRON_TESTNET_DURABLE_PEERS=0` to turn the cap off.
 
+A cold start whose published snapshot cannot be downloaded, decrypted or
+re-validated stops instead of creating a fresh TEST genesis under the same chain
+ID. Only a confirmed 404 (nothing published) creates a fresh genesis.
+
 ## What this testnet does not prove
 
 - No independent operators yet, single host, single region.

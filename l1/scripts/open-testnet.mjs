@@ -1236,7 +1236,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       localHashAt: async (height) => { const r = await anyNode(`/blocks?from=${height}&limit=1`); if (r.status !== 200 || !Array.isArray(r.body?.blocks) || !r.body.blocks[0]) throw new Error(`local block ${height} unavailable`); return r.body.blocks[0].hash; },
       log: (line) => console.error(line)
     });
-    void watermark.refresh();
+    // The restored snapshot is already durable; the first check waits one
+    // interval so a cold start does not download the snapshot twice.
     const timer = setInterval(() => { void watermark.refresh(); }, durable.intervalMs ?? 120_000); timer.unref();
   }
   // One build at a time: concurrent requests share it, and the verified
@@ -1644,9 +1645,18 @@ if (!invokedDirectly) {
           await new Promise((done) => process.stdout.write("", done));
           process.exit(1);
         }
-        console.error(`STATE RESTORE FAILED (${error instanceof Error ? error.message : String(error)}); creating a fresh TEST genesis`);
-        const aside = await moveAsideIncompleteNetworkDir(dir);
+        // Fail closed: a snapshot that cannot be downloaded, decrypted or
+        // re-validated (tampering, a wrong state secret, a non-200 answer after
+        // every retry) must never be replaced by a fresh TEST genesis with new
+        // keys under the same chain ID. Only a confirmed 404 (nothing published)
+        // creates a fresh genesis. An operator who wants a new chain removes the
+        // published snapshot.
+        console.error(`STATE RESTORE FAILED (${error instanceof Error ? error.message : String(error)}); refusing to create a fresh TEST genesis under the published chain ID; stopping so the host restarts the instance`);
+        const aside = await moveAsideIncompleteNetworkDir(dir).catch(() => false);
         if (aside) console.error(`moved the failed restore directory to ${aside}`);
+        await new Promise((done) => process.stderr.write("", done));
+        await new Promise((done) => process.stdout.write("", done));
+        process.exit(1);
       }
     }
     if (!(await readNetworkMarker(dir))) {

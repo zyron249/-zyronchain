@@ -230,3 +230,28 @@ test("a cold start rides out a host outage longer than 7 s and restores the publ
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// M1 (security review): any restore failure other than a confirmed 404 fails
+// closed. A tampered snapshot or a wrong state secret never becomes a fresh
+// TEST genesis with new keys under the published chain ID.
+for (const label of ["a tampered snapshot", "a wrong state secret"] as const) {
+  test(`a cold start with ${label} stops instead of creating a fresh TEST genesis`, { timeout: 360_000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), "zyron-restore-closed-"));
+    let host: Awaited<ReturnType<typeof startHost>> | undefined;
+    try {
+      const secret = randomBytes(32).toString("base64");
+      const { sealed } = await sealedNetwork(root, secret);
+      const served = Buffer.from(sealed);
+      if (label === "a tampered snapshot") served[served.length - 5] = served[served.length - 5]! ^ 0xff;
+      host = await startHost(root, label === "a wrong state secret" ? randomBytes(32).toString("base64") : secret, 0, served);
+      const [code] = await Promise.race([once(host.child, "exit"), sleep(300_000).then(() => ["timeout"])]);
+      assert.equal(code, 1, host.log);
+      assert.match(host.log, /STATE RESTORE FAILED .*refusing to create a fresh TEST genesis/);
+      assert.doesNotMatch(host.log, /creating a fresh TEST genesis/);
+      assert.ok(!(await api.readNetworkMarker(join(root, "hosted"))), "no network was initialised");
+    } finally {
+      await stop(host);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
