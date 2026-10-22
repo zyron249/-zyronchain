@@ -43,6 +43,8 @@ test('talks only to the wallet testnet RPC and never handles keys', () => {
   assert.match(js, /\/status/);
   assert.match(js, /\/account\//);
   assert.match(js, /\/tx/);
+  assert.match(js, /request\('\/faucet', \{ method: 'POST', body: JSON\.stringify\(\{ address: parsed\.canonical \}\) \}\)/);
+  assert.match(html, /<button type="button" data-faucet>Request test ZYN<\/button>/);
   assert.doesNotMatch(js, /getRandomValues|generateKey|importKey|deriveKey|subtle\.(sign|encrypt|decrypt|wrapKey|unwrapKey)|secp256k1|localStorage|sessionStorage|indexedDB|innerHTML|outerHTML|eval\(|new Function/);
   assert.match(js, /credentials:\s*'omit'/);
   assert.match(js, /valueBearing !== false/);

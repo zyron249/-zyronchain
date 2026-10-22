@@ -54,8 +54,10 @@
         <h2 id="lookup-title">Address lookup</h2>
         <p class="lead">Lowercase or a correct checksum both work. A wrong checksum is rejected on this page.</p>
         <label><span>Address</span><input data-address autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ZYN…" aria-describedby="lookup-msg" /></label>
-        <div class="actions"><button class="primary" type="button" data-lookup>Look up</button></div>
+        <div class="actions"><button class="primary" type="button" data-lookup>Look up</button><button type="button" data-faucet>Request test ZYN</button></div>
         <p class="msg" id="lookup-msg" data-lookup-msg aria-live="polite"></p>
+        <p class="lead">Request test ZYN sends 100 test ZYN (no value) to the address above. Limit: one request per address per day.</p>
+        <p class="msg" data-faucet-msg aria-live="polite"></p>
         <dl class="kv" data-account hidden>
           <div><dt>Address</dt><dd data-acc-address>unknown</dd></div>
           <div><dt>Balance</dt><dd data-acc-zyn>unknown</dd></div>
@@ -91,6 +93,6 @@
       <span class="build" data-site-build>Build 3e555deb</span>
     </footer>
   </div>
-  <script src="./testnet.js?v=3dd885094a26" integrity="sha384-ky77aMBWEnZgWUzSnVhLbfjH52QlwxsRSH0bqBwH3+yf6pzvZTUj1K4sNL7Ws/Pn" defer></script>
+  <script src="./testnet.js?v=9e8de34dde6e" integrity="sha384-g/LEZ8L3EonVYDqzeJpLXZOCn5Z1ZO+DEMtxKxfw0VBrjk4wp7bAfJbqmT2b+hna" defer></script>
 </body>
 </html>
