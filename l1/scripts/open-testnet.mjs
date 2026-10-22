@@ -23,6 +23,7 @@
 //
 // <secret dir> holds plaintext TEST validator/faucet keys (mode 0600) and the
 // chain data. It must live outside the repository and must never be shared.
+import { evaluateQuorum } from "./gateway-quorum.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
@@ -1002,6 +1003,10 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   assert.equal(faucet.address, info.faucetAddress);
   const chainId = genesis.chainId;
   const ports = VALIDATOR_NAMES.map((_, i) => basePort + i);
+  // Hosted validator public keys, matched against the active validator set
+  // each validator reports (GET /validator-set) for the gateway quorum.
+  const validatorPublicKeys = new Map();
+  for (const name of VALIDATOR_NAMES) validatorPublicKeys.set(name, publicKeyFromPrivate((await readSecret(join(dir, "keys", `${name}.json`))).privateKey));
   const nodes = new Map();
   let shuttingDown = false;
   // Consensus relay (docs/CONSENSUS_RELAY.md): allowlisted external peers,
@@ -1120,10 +1125,15 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   async function validatorStatuses() {
     return Promise.all(VALIDATOR_NAMES.map(async (name) => {
       const node = nodes.get(name);
+      const publicKey = validatorPublicKeys.get(name);
       try {
-        const [status, ready] = await Promise.all([nodeFetch(node.port, "/status"), nodeFetch(node.port, "/readyz")]);
-        return { name, up: true, height: status.body.height, tipHash: status.body.tipHash, ready: ready.status === 200 };
-      } catch { return { name, up: false }; }
+        const [status, ready, set] = await Promise.all([
+          nodeFetch(node.port, "/status"), nodeFetch(node.port, "/readyz"),
+          nodeFetch(node.port, "/validator-set").catch(() => undefined)
+        ]);
+        const activeSet = set?.status === 200 ? set.body : undefined;
+        return { name, publicKey, up: true, height: status.body.height, tipHash: status.body.tipHash, ready: ready.status === 200, ...(activeSet ? { activeSet } : {}) };
+      } catch { return { name, publicKey, up: false }; }
     }));
   }
   let statusCache; let statusCacheAt = 0;
@@ -1290,11 +1300,12 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       const ip = clientIp(request);
       if (request.method === "GET") {
         if (path === "/health" || path === "/healthz" || path === "/readyz") {
-          const { validators, checkedAtMs } = await cachedValidatorStatuses();
-          const up = validators.filter((v) => v.up);
+          const { validators: statuses, checkedAtMs } = await cachedValidatorStatuses();
+          const up = statuses.filter((v) => v.up);
           const heights = up.map((v) => v.height);
-          const quorum = Math.floor((2 * genesis.validators.length) / 3) + 1;
-          const ok = up.length >= quorum;
+          // Quorum of the ACTIVE validator set (follows validator_update).
+          const { ok, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight } = evaluateQuorum(statuses, genesis.validators);
+          const validators = statuses.map(({ activeSet: _activeSet, ...rest }) => rest);
           if (ok) everReady = true;
           // Until the validators first reach a quorum (bounded by STARTUP_GRACE_MS)
           // liveness stays 200 "starting"; afterwards a lost quorum is a 503.
@@ -1302,7 +1313,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const starting = !ok && !everReady && Date.now() - runStartedAtMs < STARTUP_GRACE_MS;
           const status = ok ? "ready" : starting ? "starting" : "degraded";
           const code = ok || (starting && path !== "/readyz") ? 200 : 503;
-          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), network: "testnet", valueBearing: false, chainId, persistence, quorum, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
+          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), network: "testnet", valueBearing: false, chainId, persistence, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
@@ -1412,11 +1423,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     await Promise.all(VALIDATOR_NAMES.map((name) => stopValidator(name)));
   }
   async function waitForQuorum(timeoutMs = STARTUP_GRACE_MS) {
-    const quorum = Math.floor((2 * genesis.validators.length) / 3) + 1;
     const deadline = Date.now() + timeoutMs;
     while (!shuttingDown && Date.now() < deadline) {
-      const up = (await validatorStatuses()).filter((v) => v.up).length;
-      if (up >= quorum) return true;
+      if (evaluateQuorum(await validatorStatuses(), genesis.validators).ok) return true;
       await sleep(1_000);
     }
     return false;

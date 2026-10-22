@@ -512,6 +512,19 @@ export class NodeService {
     };
   }
 
+  /**
+   * Validator set that governs the next height (the one consensus must reach a
+   * quorum in), so callers follow `validator_update` activations instead of
+   * assuming the genesis set.
+   */
+  activeValidatorSet(): { height: number; validators: Validator[] } {
+    const height = this.store.chain.height + 1;
+    return {
+      height,
+      validators: this.store.chain.validatorsAt(height).map(({ address, publicKey }) => ({ address, publicKey }))
+    };
+  }
+
   protocolStatus(): NodeProtocolStatus {
     const height = this.store.chain.height;
     return {
@@ -1366,6 +1379,9 @@ async function route(
   }
   if (request.method === "GET" && url.pathname === "/status") {
     return writeJson(response, 200, service.status());
+  }
+  if (request.method === "GET" && url.pathname === "/validator-set") {
+    return writeJson(response, 200, service.activeValidatorSet());
   }
   if (request.method === "GET" && url.pathname === "/protocol") {
     return writeJson(response, 200, service.protocolStatus());
