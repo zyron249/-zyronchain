@@ -46,7 +46,7 @@ import { addressFromPublicKey } from "./crypto.js";
 import { assertMempoolSenderNonce, MAX_MEMPOOL_PENDING_PER_SENDER, readFeePolicy } from "./fee-policy.js";
 import { Mempool, type MempoolOptions } from "./mempool.js";
 import { PeerReputationStore } from "./peer-reputation.js";
-import { ProposalValidationBudget } from "./proposal-validation-budget.js";
+import { PROPOSAL_VALIDATION_BUDGET_MESSAGE, ProposalValidationBudget } from "./proposal-validation-budget.js";
 import { ipv6Prefix64 } from "./p2p-address.js";
 import { nativeP2PFrameBudgetMetrics } from "./p2p-frame.js";
 import { MAX_DISCOVERY_RESPONSE_RECORDS, PeerDirectory } from "./peer-directory.js";
@@ -770,14 +770,17 @@ export class NodeService {
     this.proposalValidationBudget.pruneThrough(this.store.chain.height);
     const height = block.header.height;
     const slot = ProposalValidationBudget.slotKey(height, round, String(block.proposerPublicKey));
-    // The hash this validator already voted for in the journal is always allowed.
-    const alreadyValidated = this.proposalValidationBudget.assertAllowed(slot, block.hash, reservation === expectedReservation);
     // The signing journal already holds another vote for this round: it would
     // refuse this proposal after validation, so refuse it before (Codex P1 on
-    // #1102 at f38c619: it must not spend the journaled proposal's slot).
+    // #1102 at f38c619: it must not spend the journaled proposal's slot). This
+    // O(1) check runs before the budget check so a conflicting proposal keeps
+    // the journal's "Conflicting validator action" refusal (peers and the v6
+    // equivocation tests rely on it); the journaled vote also spent the slot.
     if (reservation !== undefined && reservation !== expectedReservation) {
-      throw new Error("Conflicting validator action prevented for consensus round");
+      throw new Error(`Conflicting validator action prevented for consensus round (${PROPOSAL_VALIDATION_BUDGET_MESSAGE})`);
     }
+    // The hash this validator already voted for in the journal is always allowed.
+    const alreadyValidated = this.proposalValidationBudget.assertAllowed(slot, block.hash, reservation === expectedReservation);
     let authenticated = false;
     try {
       this.store.chain.validateProposal(block, nowMs, () => { authenticated = true; return alreadyValidated; });
