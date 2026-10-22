@@ -755,19 +755,22 @@ export class NodeService {
    * P1-06: `chain.validateProposal` under the per-slot budget. Call inside
    * `exclusive`. A slot is (height, round, block proposer key); `round` is the
    * round the proposal is voted in (the block round for legacy consensus, the
-   * proposal round for v6). Only a failure after the O(1) gates is recorded.
+   * proposal round for v6). Only results after the O(1) gates are recorded:
+   * a failure, or a success (a repeat of a validated hash then runs only the
+   * gates, and other hashes for the slot are refused before the expensive stage).
    */
   private validateProposalWithinBudget(block: Block, round: number, nowMs: number): void {
     this.proposalValidationBudget.pruneThrough(this.store.chain.height);
     const slot = ProposalValidationBudget.slotKey(block.header.height, round, String(block.proposerPublicKey));
-    this.proposalValidationBudget.assertAllowed(slot, block.hash);
+    const alreadyValidated = this.proposalValidationBudget.assertAllowed(slot, block.hash);
     let authenticated = false;
     try {
-      this.store.chain.validateProposal(block, nowMs, () => { authenticated = true; });
+      this.store.chain.validateProposal(block, nowMs, () => { authenticated = true; return alreadyValidated; });
     } catch (error) {
-      if (authenticated) this.proposalValidationBudget.recordFailure(slot, block.header.height, block.hash);
+      if (authenticated && !alreadyValidated) this.proposalValidationBudget.recordFailure(slot, block.header.height, block.hash);
       throw error;
     }
+    if (!alreadyValidated) this.proposalValidationBudget.recordSuccess(slot, block.header.height, block.hash);
   }
 
   async signPreparedProposal(block: Block, nowMs = Date.now()): Promise<Block> {

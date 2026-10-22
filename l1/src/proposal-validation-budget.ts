@@ -18,6 +18,14 @@
  * tip, or an unexpected proposer never uses up a slot, so another peer cannot
  * block an honest proposer.
  *
+ * A proposal that passes the expensive stage is recorded too (Codex P1 on
+ * #1102): a repeat of that hash runs only the O(1) gates again (which bind the
+ * hash to this node's tip and the proposer signature) and skips the
+ * transaction verification and replay, whose result is the same. The validated
+ * hash also spends the slot, so another proposal for it (an equivocation, valid
+ * or not) is refused before the expensive stage; the signing journal would
+ * refuse to vote for it anyway.
+ *
  * Memory: slots exist only for heights above the finalized tip, and the map
  * is capped at `maxSlots` entries, oldest evicted first. Eviction only allows
  * one more full validation.
@@ -28,7 +36,10 @@ export const DEFAULT_PROPOSAL_BUDGET_MAX_SLOTS = 1_024;
 
 interface SlotFailures {
   height: number;
+  /** Hashes that failed the expensive stage. */
   hashes: Set<string>;
+  /** Hashes that passed the expensive stage. */
+  validated: Set<string>;
 }
 
 export class ProposalValidationBudget {
@@ -53,16 +64,32 @@ export class ProposalValidationBudget {
     }
   }
 
-  /** Throws when the slot already spent its budget, or this hash already failed. */
-  assertAllowed(slotKey: string, blockHash: string): void {
+  /**
+   * Throws when this hash already failed, or the slot already spent its budget
+   * on other hashes. Returns true when this hash already passed the expensive
+   * stage (the caller still runs the O(1) gates and skips the rest).
+   */
+  assertAllowed(slotKey: string, blockHash: string): boolean {
     const slot = this.slots.get(slotKey);
-    if (slot && (slot.hashes.has(blockHash) || slot.hashes.size >= this.perSlot)) {
+    if (!slot) return false;
+    if (slot.validated.has(blockHash)) return true;
+    if (slot.hashes.has(blockHash) || slot.hashes.size + slot.validated.size >= this.perSlot) {
       throw new Error(PROPOSAL_VALIDATION_BUDGET_MESSAGE);
     }
+    return false;
   }
 
   /** Records a failure in the expensive stage of an authenticated proposal. */
   recordFailure(slotKey: string, height: number, blockHash: string): void {
+    this.slot(slotKey, height).hashes.add(blockHash);
+  }
+
+  /** Records an authenticated proposal that passed the expensive stage. */
+  recordSuccess(slotKey: string, height: number, blockHash: string): void {
+    this.slot(slotKey, height).validated.add(blockHash);
+  }
+
+  private slot(slotKey: string, height: number): SlotFailures {
     let slot = this.slots.get(slotKey);
     if (!slot) {
       while (this.slots.size >= this.maxSlots) {
@@ -70,10 +97,10 @@ export class ProposalValidationBudget {
         if (oldest === undefined) break;
         this.slots.delete(oldest);
       }
-      slot = { height, hashes: new Set() };
+      slot = { height, hashes: new Set(), validated: new Set() };
       this.slots.set(slotKey, slot);
     }
-    slot.hashes.add(blockHash);
+    return slot;
   }
 
   size(): number {

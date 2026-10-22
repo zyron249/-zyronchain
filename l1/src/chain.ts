@@ -647,14 +647,19 @@ export class ZyronChain {
    * (right tip, expected proposer, valid proposer signature, certificates) and
    * before the per-transaction verification and state replay. The checks and
    * their order are the same as `validateBlockEnvelope` followed by the replay.
+   * When `onAuthenticated` returns true, this exact block hash already passed
+   * the per-transaction verification and the replay against this tip (the
+   * gates just bound the hash to the tip), so only the byte limit is checked
+   * and those stages are skipped.
    */
-  validateProposal(block: Block, nowMs = Date.now(), onAuthenticated?: () => void): void {
+  validateProposal(block: Block, nowMs = Date.now(), onAuthenticated?: () => boolean | void): void {
     const protocolVersion = this.protocolVersionAt(block.header.height);
     assertSupportedProtocolVersion(protocolVersion);
     validateBlockEnvelopeGates(block, this.tip, this.validatorsAt(block.header.height), nowMs, false, protocolVersion);
-    onAuthenticated?.();
-    validateBlockTransactions(block);
+    const alreadyValidated = onAuthenticated?.() === true;
+    if (!alreadyValidated) validateBlockTransactions(block);
     if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
+    if (alreadyValidated) return;
     const next = this.validateAndApply(
       block.transactions, this.state, block.header.height, block.header.timestampMs, feeProducerOf(block)
     );
