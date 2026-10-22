@@ -23,7 +23,7 @@
 //
 // <secret dir> holds plaintext TEST validator/faucet keys (mode 0600) and the
 // chain data. It must live outside the repository and must never be shared.
-import { evaluateQuorum } from "./gateway-quorum.mjs";
+import { createActiveSetTracker } from "./gateway-quorum.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
@@ -1007,6 +1007,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // each validator reports (GET /validator-set) for the gateway quorum.
   const validatorPublicKeys = new Map();
   for (const name of VALIDATOR_NAMES) validatorPublicKeys.set(name, publicKeyFromPrivate((await readSecret(join(dir, "keys", `${name}.json`))).privateKey));
+  // Trusted active set: genesis until a quorum of it agrees on a new set.
+  const activeSetTracker = createActiveSetTracker(genesis.validators, { addressOf: (publicKey) => addressFromPublicKey(publicKey) });
   const nodes = new Map();
   let shuttingDown = false;
   // Consensus relay (docs/CONSENSUS_RELAY.md): allowlisted external peers,
@@ -1131,7 +1133,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           nodeFetch(node.port, "/status"), nodeFetch(node.port, "/readyz"),
           nodeFetch(node.port, "/validator-set").catch(() => undefined)
         ]);
-        const activeSet = set?.status === 200 ? set.body : undefined;
+        // Reports are untrusted; createActiveSetTracker validates them.
+        const activeSet = set?.status === 200 && set.body && typeof set.body === "object" ? set.body : undefined;
         return { name, publicKey, up: true, height: status.body.height, tipHash: status.body.tipHash, ready: ready.status === 200, ...(activeSet ? { activeSet } : {}) };
       } catch { return { name, publicKey, up: false }; }
     }));
@@ -1304,7 +1307,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const up = statuses.filter((v) => v.up);
           const heights = up.map((v) => v.height);
           // Quorum of the ACTIVE validator set (follows validator_update).
-          const { ok, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight } = evaluateQuorum(statuses, genesis.validators);
+          const { ok, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback } = activeSetTracker.evaluate(statuses);
           const validators = statuses.map(({ activeSet: _activeSet, ...rest }) => rest);
           if (ok) everReady = true;
           // Until the validators first reach a quorum (bounded by STARTUP_GRACE_MS)
@@ -1313,7 +1316,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const starting = !ok && !everReady && Date.now() - runStartedAtMs < STARTUP_GRACE_MS;
           const status = ok ? "ready" : starting ? "starting" : "degraded";
           const code = ok || (starting && path !== "/readyz") ? 200 : 503;
-          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), network: "testnet", valueBearing: false, chainId, persistence, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
+          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), network: "testnet", valueBearing: false, chainId, persistence, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
@@ -1425,7 +1428,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   async function waitForQuorum(timeoutMs = STARTUP_GRACE_MS) {
     const deadline = Date.now() + timeoutMs;
     while (!shuttingDown && Date.now() < deadline) {
-      if (evaluateQuorum(await validatorStatuses(), genesis.validators).ok) return true;
+      if (activeSetTracker.evaluate(await validatorStatuses()).ok) return true;
       await sleep(1_000);
     }
     return false;

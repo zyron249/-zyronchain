@@ -518,12 +518,18 @@ export class NodeService {
    * assuming the genesis set.
    */
   activeValidatorSet(): { height: number; validators: Validator[] } {
+    // Cached per height: GET /validator-set is unauthenticated and polled.
     const height = this.store.chain.height + 1;
-    return {
-      height,
-      validators: this.store.chain.validatorsAt(height).map(({ address, publicKey }) => ({ address, publicKey }))
-    };
+    if (this.activeValidatorSetCache?.height !== height) {
+      this.activeValidatorSetCache = {
+        height,
+        validators: this.store.chain.validatorsAt(height).map(({ address, publicKey }) => ({ address, publicKey }))
+      };
+    }
+    return structuredClone(this.activeValidatorSetCache);
   }
+
+  private activeValidatorSetCache?: { height: number; validators: Validator[] };
 
   protocolStatus(): NodeProtocolStatus {
     const height = this.store.chain.height;
