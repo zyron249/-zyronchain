@@ -14,30 +14,60 @@ An installable web app for iOS and Android ("Add to Home Screen"). There is no a
 | Restore | Accepts a 12/15/18/21/24-word BIP-39 phrase (English list, checksum verified, no BIP-39 passphrase). |
 | Derivation | BIP-32 secp256k1 `m/44'/249249'/0'/0/0`, the same path as the MetaMask Snap (PR #922), so the same words give the same address in both. `249249'` is a **provisional** coin type (not registered in SLIP-44); changing it later would change every address. |
 | Address | `ZYN` + first 40 hex of SHA-256(64-byte uncompressed public key), exactly as in `l1/src/crypto.ts`. Displayed with the display-only checksum from `docs/ADDRESS_CHECKSUM.md`. The primary Copy address action and the QR code use the canonical lower-case form. The checksummed form stays on screen and can be copied separately; it is display-only. |
-| Lock / unlock | Auto-lock after 5 minutes without activity, or after 60 s in the background. Lock wipes the key buffer. |
-| Sign transfer | Offline, on the Send screen. Produces exactly l1's `transfer`. For chain id `zyron-wallet-testnet-1` the default transaction version is **1**, because that network runs protocol version 1 and rejects version 2. Other testnet and devnet chain ids default to version 2 (domain-separated), and version 2 stays selectable on every allowed chain. Chain ID and the next nonce are typed in by hand. The next nonce is the network's current nonce + 1 (1 for a new account). Nothing is fetched or guessed. Only chain IDs that contain `testnet` or `devnet` are signed (same rule as the Snap). A **review screen** shows Type, From, To, Amount, Fee, Total, Chain ID, Nonce and Timestamp (`describeTransfer`), and signing needs a deliberate confirmation. The signed transfer stays on the device until the owner dismisses it. `describeTransfer`/`signTransfer` refuse any other kind, extra fields (memo/data), messages or arbitrary JSON, so `mining_claim` is impossible. The mining-tracker address and self-sends are refused. |
+| Lock / unlock | Auto-lock after 5 minutes without activity, or after 60 s in the background. Lock wipes the private-key buffer and drops the in-memory vault key (see Key storage). |
+| Sign transfer | Offline, on the Send screen. Produces exactly l1's `transfer`. For chain id `zyron-wallet-testnet-1` the default transaction version is **1**, because that network runs protocol version 1 and rejects version 2. Other testnet and devnet chain ids default to version 2 (domain-separated), and version 2 stays selectable on every allowed chain. Chain ID and the next nonce are typed in by hand. The next nonce is the network's current nonce + 1 (1 for a new account). Nothing is fetched or guessed. Only chain IDs that contain `testnet` or `devnet` are signed (same rule as the Snap). A **review screen** shows Type, From, To, Amount, Fee, Total, Chain ID, Nonce and Timestamp (`describeTransfer`), and signing needs a deliberate confirmation. The signed transfer stays on the device until the owner dismisses it. `describeTransfer`/`signTransfer` refuse any other kind, extra fields (memo/data), messages or arbitrary JSON, so `mining_claim` is impossible. The mining-tracker address and self-sends are refused. A self-send is stopped before review with "You can't send to your own address. Enter a different recipient." See **Send-safety warnings** below. |
 | Balance / broadcast | Disabled. The balance card says the balance isn't shown in this offline app and links to the separate read-only page at `/testnet/`. This app does not connect and does not show a balance number. A no-value testnet RPC exists for that page, the Snap and the CLI (`docs/WALLET_TESTNET_RPC.md`, chain id `zyron-wallet-testnet-1`). A signed `tx.json` can be submitted on `/testnet/` or later with the CLI (`tx-submit`). |
 | Receive | Home screen. Checksummed address for reading, plain-address QR, and copy. The primary copy action copies the canonical lower-case address. No incoming list and no balance: the app does not connect. |
-| Send / settings | Send holds the transfer form. Settings holds the ZYN ↔ atoms converter, security notes, encrypted-vault export and delete. |
+| Send / settings | Send holds the transfer form. Send also holds the address book: add, edit, delete (a second click confirms) and "Send to", which fills the receiver. Settings holds the large-amount warning threshold, the ZYN ↔ atoms converter, security notes, encrypted-vault export and delete. |
 | Backup re-quiz | After each unlock, home shows a reminder until this session passes a 4-word check. The check asks for the device password, calls `openVault` on this device, then wipes the entropy. The flag is memory only (not IndexedDB, localStorage or the vault). Creating a wallet counts as the check for that session. |
 | Other | Only the address and a signed transfer can be copied ("Copied. This app will try to clear the clipboard in 60 seconds."). If the browser blocks the timed clear, the screen says the clipboard was kept. Delete wallet = button → confirmation screen → acknowledgement + type DELETE (no secure-overwrite claim). Optional export and import of the password-encrypted vault file, read and written on this device only (the phrase is not in the file, and the file is not uploaded). Scam warning with "Official site: zyronchain.com"; static network status (`tools/site/network-status.mjs`); "Local wallet · Offline ready" indicator that never implies a network connection; English-only UI. |
 
 ## Key storage
 - IndexedDB `zyron-wallet-app` / store `vault` holds **one encrypted vault and nothing else**. The UI refuses to
   persist anything that fails `assertVaultShape`.
-- **Fail closed on load**: `parseVault` accepts only a plain object (or JSON text) that is exactly a version-1 vault
-  with the known fields, types, KDF/cipher parameters and identity. Unknown versions, malformed data, extra fields
-  or odd prototypes are rejected; the stored record is left untouched (never migrated or rewritten), creating or
-  restoring is blocked, and the only offered action is an explicit, confirmed delete.
+- **Fail closed on load**: `parseVault` accepts only a plain object (or JSON text, at most `MAX_VAULT_TEXT` =
+  69,632 characters, about 68 KB) that is exactly a version-1 or version-2 vault with the known fields for that
+  version, types, KDF/cipher parameters and identity. Unknown versions (for example 3), malformed data, extra
+  fields (including a `book` field on a version-1 vault) or odd prototypes are rejected. The stored record is left
+  untouched and never rewritten. Creating or restoring is blocked, and the only offered action is an explicit,
+  confirmed delete.
 - **Crypto self-test on start**: the app refuses to run if the vendored libraries are missing or incomplete, or if
   a SHA-256 vector or the BIP-39/BIP-32 → address vector fails.
-- Vault v1 contents:
-  - Plaintext encrypted: the BIP-39 entropy (16 bytes for 12 words).
+- Vault **version 2** (current; written by create, restore and the upgrade):
+  - Fields: `format`, `version` (2), `createdAt`, `address`, `publicKey`, `derivationPath`, `words`, `kdf`,
+    `cipher: { name, iv }`, `salt`, `ciphertext`, and **`book: { iv, ciphertext }`**.
+  - Seed plaintext: the BIP-39 entropy (16 bytes for 12 words), in `ciphertext` with `cipher.iv`.
   - KDF: **scrypt N=2^17, r=8, p=1**, dkLen 32, 128 MiB (same parameters as the CLI keystore v2), via the vendored `@noble/hashes`.
-  - Cipher: **AES-256-GCM** (Web Crypto) with a fresh 16-byte salt and 12-byte IV for every encryption.
-  - AAD: `zyronchain/pwa-vault/v1 \n scrypt:n=131072,r=8,p=1,dklen=32 \n aes-256-gcm \n <path> \n <publicKey> \n <address>`.
+  - Cipher: **AES-256-GCM** (Web Crypto). A new vault gets a fresh 16-byte salt. Every encryption uses a fresh
+    12-byte IV.
+  - Seed AAD: `zyronchain/pwa-vault/v2 \n scrypt:n=131072,r=8,p=1,dklen=32 \n aes-256-gcm \n <path> \n <publicKey> \n <address>`.
     Changing the version, KDF parameters, path or identity makes decryption fail. After decryption the key is
     re-derived and must match the stored public key and address.
+  - **Encrypted book**: `book.ciphertext` is AES-256-GCM under the same scrypt key with its own 12-byte
+    `book.iv`, which must differ from `cipher.iv` and is new on every save. The plaintext is canonical JSON
+    `{ contacts: [{ name, address }], sent: [address], thresholdAtoms }`, holding the address book, the sent-to
+    history and the large-amount threshold (`null` = off). Book AAD:
+    `zyronchain/pwa-vault/v2/book \n <kdf label> \n aes-256-gcm \n <salt> \n <cipher.iv> \n <publicKey> \n <address>`,
+    so a book cannot be moved to another vault or paired with another seed ciphertext. Saving the book re-seals
+    only `book` and leaves the seed ciphertext unchanged. A decrypted book is validated by `parseBook` (fail closed).
+  - Limits: at most **100 contacts** (names 1–64 characters after whitespace normalization, no control
+    characters, no duplicate addresses, not the reserved system address; the app also refuses your own address), **200 sent-to
+    history entries** (most recent first; older ones drop off), book plaintext at most 32 KB, vault JSON at most
+    about **68 KB**.
+- Vault **version 1** (older vaults, still readable): the same fields without `book`, seed AAD prefix
+  `zyronchain/pwa-vault/v1`. It opens with an empty book.
+- **v1 → v2 upgrade (`upgradeVault`)**: runs only in the unlock handler, after `openVault` succeeded with the
+  right password (the seed decrypted and re-derived to the stored identity). It keeps `salt`, `address`,
+  `publicKey`, `createdAt`, `derivationPath` and `words`, re-seals the seed under the v2 AAD with a fresh IV, adds
+  an empty encrypted book, checks the result with `assertVaultShape` and then saves it through the single
+  IndexedDB write path. The input vault object is not modified. A wrong password, a failed check or an unknown
+  version never rewrites the stored record. Nothing is upgraded at startup or on import; an imported v1 file is
+  upgraded at its first unlock. Upgrading a v2 vault is a no-op.
+- **In-memory vault key**: unlocking (or creating/restoring) keeps a **non-extractable** AES-GCM `CryptoKey`
+  derived from the password, so the book can be re-sealed after a contact or threshold change or a signed
+  transfer without asking for the password again. The raw scrypt output is zeroed right after import. The
+  `CryptoKey` and the decrypted book are memory only and are dropped on lock (manual, idle or background).
+  Nothing about the book is kept in localStorage, cookies or a second IndexedDB record.
   - Exact KDF parameters are required, which blocks downgrades and memory-exhaustion vaults.
 - Byte buffers (entropy, seed, private key, scrypt output) are zeroed after use. JavaScript strings (the phrase
   while it is on screen, the password while it is typed) cannot be wiped; they are dropped as soon as possible.
@@ -56,6 +86,18 @@ An installable web app for iOS and Android ("Add to Home Screen"). There is no a
 **Choice: scrypt N=2^17.** It is memory-hard (much costlier to attack with GPUs/ASICs than PBKDF2), matches the
 CLI keystore v2, and a 2–4 s unlock on a mid-range phone is acceptable for a wallet. On very old phones the
 128 MiB allocation could fail; the app then shows the error and nothing is lost (the phrase still restores elsewhere).
+
+## Send-safety warnings
+Checked on this device by `sendWarnings` before the transfer is built, against the decrypted book:
+- **Own address** (blocking): "You can't send to your own address. Enter a different recipient." The review
+  screen is not shown. `buildTransfer` refuses self-sends with the same text, and l1 rejects them too.
+- **First-time recipient**: the receiver is not in the sent-to history. A saved contact that was never paid still
+  warns, and the warning names the contact.
+- **Large amount**: the amount is at or above the threshold set in Settings (stored in the encrypted book).
+
+Non-blocking warnings are listed on the review screen and need their own checkbox ("I read these warnings and still
+want to sign") in addition to the review checkbox. The sign handler checks both again. After a transfer is signed,
+its receiver is added to the sent-to history and the book is re-saved. No warning check makes a network request.
 
 ## Security boundaries
 - **CSP** (meta):
@@ -104,12 +146,13 @@ its own stricter workflow, `.github/workflows/website-pwa-wallet.yml`, covering:
 - reproducible vendor bundles and current SRI/SW stamps;
 - Snap vectors, an independent node:crypto BIP-32 reference and l1 address rules;
 - signed transfers byte-identical to l1 `createTransfer`, plus l1 `validateTransactionShape` and mempool admission;
-- vault round-trip, wrong password, 13 tamper cases and the fail-closed parser (unknown versions, malformed data);
+- vault round-trip, wrong password, tamper cases (seed and book) and the fail-closed parser (unknown versions, malformed data);
+- v1 → v2 migration from a stored v1 fixture (`tools/pwa-wallet/fixtures/vault-v1.json`, public test phrase), address-book round-trip and send-safety warning unit tests;
 - signing review rows and refusal of unknown types/extra fields; crypto self-test; phrase-UX static checks;
 - the CSP/SRI/no-network scans;
 - headless-Chrome tests: SW install and offline load (also at `/app/`), Chrome installability, the full
   create → privacy → hidden cards (tap, hold, blur, auto-hide) → 4-word check (nothing saved before it passes) → home → QR → clipboard clear → review → confirmed sign → lock → wrong password → unlock → auto-lock → tamper →
-  delete (ack + DELETE) → restore → rejected-vault (v2 / bad KDF / garbage) flow, missing-crypto refusal, storage contents (only the vault; no localStorage/cookies), zero network requests while
+  delete (ack + DELETE) → restore → rejected-vault (v3 / v1 with a book field / bad KDF / garbage) flow, v1 → v2 upgrade on unlock with address book, threshold and warnings, missing-crypto refusal, storage contents (only the vault; no localStorage/cookies), zero network requests while
   creating/signing, no third-party requests, the update prompt (a simulated deploy waits, is deferred during
   creation, then activates and reloads on "Update now"), the build id, 360/390/414 px layouts, and frame blocking.
   The test server sends the production headers plus `Cross-Origin-Opener-Policy: same-origin`.
