@@ -1746,7 +1746,7 @@ export class PeerClient {
             progressed = true;
           } catch (error) {
             const height = (block as { header?: { height?: unknown } } | null)?.header?.height;
-            console.warn(`Peer sync rejected block: peer ${candidate.peer}, height ${String(height ?? "unknown")}, reason: ${peerLogReason(error)}`);
+            console.warn(`Peer sync rejected block: peer ${candidate.peer}, height ${Number.isSafeInteger(height) ? String(height) : "unknown"}, reason: ${peerLogReason(error)}`);
             poisoned = true;
             break;
           }
