@@ -14,6 +14,7 @@ import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 
 import { NodeService, PeerClient, createRpcServer } from "../src/node.js";
+import { PEER_LOG_REASON_MAX, peerLogReason } from "../src/node-base.js";
 import { ChainStore } from "../src/storage.js";
 import { PeerReputationStore } from "../src/peer-reputation.js";
 import { finalizedPrefixSchedule, testNetwork } from "./support/consensus-harness.js";
@@ -95,4 +96,14 @@ test("sync-stuck: per-peer sync failures are logged with peer, height and reason
     assert.match(line!, /height 1/);
     assert.match(line!, /reason: \S/);
   });
+});
+
+test("sync-stuck: peer-supplied failure reasons are sanitized and capped in log lines", () => {
+  const hostile = `bad block\nPeer sync: forged line\r\u0007${"x".repeat(500)}\u2028tail`;
+  const reason = peerLogReason(new Error(hostile));
+  assert.ok(!/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(reason), JSON.stringify(reason));
+  assert.ok(reason.length <= PEER_LOG_REASON_MAX + 1, `length ${reason.length}`);
+  assert.ok(reason.endsWith("\u2026"));
+  assert.ok(reason.startsWith("bad block Peer sync: forged line"));
+  assert.equal(peerLogReason(new Error("fetch failed")), "fetch failed");
 });

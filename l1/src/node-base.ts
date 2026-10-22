@@ -443,6 +443,13 @@ export function rpcRateLimitIdentity(
   );
 }
 
+/** Peer-supplied error text for a log line: control characters and newlines replaced, cut to 200 chars. */
+export const PEER_LOG_REASON_MAX = 200;
+export function peerLogReason(error: unknown): string {
+  const text = safeError(error).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ");
+  return text.length > PEER_LOG_REASON_MAX ? `${text.slice(0, PEER_LOG_REASON_MAX)}\u2026` : text;
+}
+
 export class NodeService {
   readonly mempool: Mempool;
   readonly roundSkipVoteDiagnostics = new RoundSkipVoteDiagnostics();
@@ -1712,7 +1719,7 @@ export class PeerClient {
           const result = attempts[index]!;
           const peer = batch[index]!;
           if (result.status === "rejected") {
-            console.warn(`Peer sync failed: peer ${peer}, local height ${startHeight}, reason: ${safeError(result.reason)}`);
+            console.warn(`Peer sync failed: peer ${peer}, local height ${startHeight}, reason: ${peerLogReason(result.reason)}`);
             await this.recordFailure(peer, nowMs);
             continue;
           }
@@ -1739,7 +1746,7 @@ export class PeerClient {
             progressed = true;
           } catch (error) {
             const height = (block as { header?: { height?: unknown } } | null)?.header?.height;
-            console.warn(`Peer sync rejected block: peer ${candidate.peer}, height ${String(height ?? "unknown")}, reason: ${safeError(error)}`);
+            console.warn(`Peer sync rejected block: peer ${candidate.peer}, height ${String(height ?? "unknown")}, reason: ${peerLogReason(error)}`);
             poisoned = true;
             break;
           }
