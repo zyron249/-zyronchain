@@ -66,7 +66,7 @@ function proof(chain: ZyronChain, activationHeight: number, id: number): Validat
 function update(
   chain: ZyronChain,
   next: number[],
-  options: { activationHeight?: number; nonce?: number; proofs?: ValidatorPossessionProof[] | "omit"; signers?: number[] } = {}
+  options: { activationHeight?: number; nonce?: number; proofs?: ValidatorPossessionProof[] | "omit"; signers?: number[]; version?: 1 | 2 } = {}
 ): ValidatorSetUpdateTx {
   const activationHeight = options.activationHeight ?? 150;
   const signers = options.signers ?? GENESIS_SET.slice(0, 3);
@@ -78,14 +78,15 @@ function update(
     activationHeight,
     validators: next.map(validator)
   };
-  const approvals = signers.map((id) => createValidatorApproval(input, key(id), pub(id)));
+  const version = options.version ?? 1;
+  const approvals = signers.map((id) => createValidatorApproval(input, key(id), pub(id), version));
   const proofs = options.proofs ?? "omit";
   return createValidatorSetUpdate({
     ...input,
     approvals,
     timestampMs: T0 + 10,
     ...(proofs === "omit" ? {} : { possessionProofs: proofs })
-  }, key(sender), pub(sender));
+  }, key(sender), pub(sender), version);
 }
 
 function smuggle(chain: ZyronChain, transactions: ValidatorSetUpdateTx[], at: number): Block {
@@ -264,7 +265,9 @@ test("P1-07-F1: a pending update only counts as predecessor when it is admissibl
   const tooSoon = update(chain, [0x21, 0x22, 0x23], { activationHeight: 2, proofs: [] });
   const otherChain = new ZyronChain(optedIn("zyron-devnet-other"));
   const foreign = update(otherChain, [0x21, 0x22, 0x23], { proofs: [] });
-  for (const [name, pending] of [["same height", later], ["activates later", afterIt], ["no quorum", unapproved], ["too soon", tooSoon], ["other chain", foreign]] as const) {
+  // Transaction version 2 is not valid under this chain's protocol v1, so selection can never take it (Codex P2, #1095).
+  const staleVersion = update(chain, [0x21, 0x22, 0x23], { proofs: [], version: 2 });
+  for (const [name, pending] of [["same height", later], ["activates later", afterIt], ["no quorum", unapproved], ["too soon", tooSoon], ["other chain", foreign], ["wrong transaction version", staleVersion]] as const) {
     assert.throws(() => chain.validateMempoolAdmission(readd, at, [pending]), /one possession proof per incoming validator/, name);
   }
   // Same sender: the predecessor must hold a lower nonce, or selection would reach the re-add first (Codex P2, #1095).
@@ -332,6 +335,27 @@ test("P1-07-F1: a predecessor from another sender is checked with that sender's 
       new Set(chain.selectValidPending(service.mempool.values(), 10, undefined, at).map((tx) => tx.txid)),
       new Set([transfer.txid, remove.txid, readd.txid])
     );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("P1-07-F1: admission tries every usable predecessor, not only the first", async () => {
+  const genesis = optedIn("zyron-devnet-admit-many");
+  const directory = await mkdtemp(join(tmpdir(), "zyron-p107f1-many-"));
+  try {
+    const store = await ChainStore.open(genesis, directory);
+    const service = new NodeService(store);
+    const chain = store.chain;
+    // A: 0x22 at nonce 2 with its nonce 1 missing (not selectable yet). B: 0x23 at nonce 1, the same removal.
+    const removeA = update(chain, [0x21, 0x22, 0x23], { nonce: 2, proofs: [], signers: [0x22, 0x23, 0x21] });
+    const removeB = update(chain, [0x21, 0x22, 0x23], { activationHeight: 160, nonce: 1, proofs: [], signers: [0x23, 0x21, 0x22] });
+    const readd = update(chain, [0x21, 0x22, 0x23, 0x24], { activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x24)] });
+    assert.equal(service.submitTransaction(removeA), removeA.txid);
+    assert.equal(service.submitTransaction(removeB), removeB.txid);
+    assert.equal(service.submitTransaction(readd), readd.txid);
+    const at = chain.tip.header.timestampMs + 1_000;
+    assert.deepEqual(chain.selectValidPending(service.mempool.values(), 10, undefined, at).map((tx) => tx.txid), [removeB.txid, readd.txid]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -674,8 +674,9 @@ export class NodeService {
     const stateNonce = this.store.chain.nonce(tx.sender);
     assertMempoolSenderNonce(tx.nonce, stateNonce);
     // P1-07-F1: a validator_update may depend on a pending same-block predecessor.
-    const predecessor = this.store.chain.validateMempoolAdmission(
-      tx, undefined, tx.kind === "validator_update" ? this.mempool.values().filter((item) => item.kind === "validator_update") : []
+    const pending = tx.kind === "validator_update" ? this.mempool.values() : [];
+    const predecessors = this.store.chain.validateMempoolAdmission(
+      tx, undefined, pending.filter((item) => item.kind === "validator_update")
     );
     if (tx.kind === "transfer") {
       const conflicting = this.mempool.conflictingTransaction(tx.sender, tx.nonce);
@@ -694,15 +695,27 @@ export class NodeService {
       }
     }
     if (tx.nonce === stateNonce + 1) {
-      // A same-sender predecessor holds a lower nonce, so this branch only sees
-      // a predecessor from another sender: check it after that sender's pending
-      // nonce prefix, then the update.
-      const prefix = predecessor
-        ? this.mempool.values()
-          .filter((item) => item.sender === predecessor.sender && item.nonce < predecessor.nonce)
-          .sort((left, right) => left.nonce - right.nonce)
-        : [];
-      this.store.chain.validatePending(predecessor ? [...prefix, predecessor, tx] : [tx]);
+      if (predecessors.length === 0) {
+        this.store.chain.validatePending([tx]);
+      } else {
+        // A same-sender predecessor holds a lower nonce, so here every
+        // predecessor is from another sender: the update is admissible when one
+        // of them applies after that sender's pending nonce prefix.
+        let lastError: unknown;
+        const applicable = predecessors.some((predecessor) => {
+          const prefix = pending
+            .filter((item) => item.sender === predecessor.sender && item.nonce < predecessor.nonce)
+            .sort((left, right) => left.nonce - right.nonce);
+          try {
+            this.store.chain.validatePending([...prefix, predecessor, tx]);
+            return true;
+          } catch (error) {
+            lastError = error;
+            return false;
+          }
+        });
+        if (!applicable) throw lastError;
+      }
     }
     this.mempool.add(tx);
     return tx.txid;

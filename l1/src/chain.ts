@@ -673,11 +673,11 @@ export class ZyronChain {
   /**
    * Mempool admission (policy; block selection and validation stay
    * authoritative). `pending` is the node's current mempool: it is only used
-   * for a `validator_update` (P1-07-F1, see validatorUpdateAdmissionPredecessor).
-   * Returns the pending same-block predecessor an update was admitted against,
-   * if it needed one.
+   * for a `validator_update` (P1-07-F1, see validatorUpdateAdmissionPredecessors).
+   * Returns the pending same-block predecessors an update can follow when it
+   * needed one (empty otherwise).
    */
-  validateMempoolAdmission(tx: Transaction, nowMs = Date.now(), pending: readonly Transaction[] = []): ValidatorSetUpdateTx | undefined {
+  validateMempoolAdmission(tx: Transaction, nowMs = Date.now(), pending: readonly Transaction[] = []): ValidatorSetUpdateTx[] {
     if (tx.chainId !== this.genesis.chainId) throw new Error("Wrong transaction chain ID");
     this.shape(tx);
     const protocolVersion = this.protocolVersionAt(this.height + 1);
@@ -692,7 +692,7 @@ export class ZyronChain {
         throw new Error("Insufficient balance");
       }
       assertAllocationLockOutflow(this.allocationLocksAt(this.nextBlockTimestampMs(nowMs)), tx.sender, this.balance(tx.sender), total);
-      return;
+      return [];
     }
     if (tx.kind === "activity_settlement") {
       const oracles = this.oracleSetAt(this.height + 1);
@@ -723,7 +723,7 @@ export class ZyronChain {
       assertAllocationLockOutflow(
         this.allocationLocksAt(this.nextBlockTimestampMs(nowMs)), tx.sender, this.balance(this.genesis.activityPool), total
       );
-      return;
+      return [];
     }
     if (tx.kind === "mining_claim") {
       assertMiningNotRetired();
@@ -734,7 +734,7 @@ export class ZyronChain {
         claimCount: this.miningClaimCount(),
         genesisSupplyAtoms: this.genesisSupplyAtomsValue
       });
-      return;
+      return [];
     }
     const validators = this.validatorsAt(this.height + 1);
     if (tx.kind === "validator_update") {
@@ -743,10 +743,10 @@ export class ZyronChain {
           tx, validators, this.height + 1, this.lastValidatorActivationHeight(), minimumValidatorCount(this.genesis),
           this.validatorAdmissionContext(this.lastScheduledValidators())
         );
-        return undefined;
+        return [];
       } catch (error) {
-        const predecessor = this.validatorUpdateAdmissionPredecessor(tx, validators, pending);
-        if (predecessor) return predecessor;
+        const predecessors = this.validatorUpdateAdmissionPredecessors(tx, validators, pending);
+        if (predecessors.length > 0) return predecessors;
         throw error;
       }
     }
@@ -755,10 +755,10 @@ export class ZyronChain {
         tx, validators, this.height + 1, this.lastActivityOracleGovernanceHeight(), this.genesis,
         this.scheduledOracleRevocations(), this.oraclePauseScheduled()
       );
-      return undefined;
+      return [];
     }
     validateProtocolUpgradeAuthorization(tx, validators, this.height + 1, this.lastProtocolActivationHeight(), this.lastScheduledProtocolVersion());
-    return undefined;
+    return [];
   }
 
   /**
@@ -770,15 +770,18 @@ export class ZyronChain {
    * is admitted when it is fully valid (quorum, activation order, possession
    * proofs) as the direct successor of a pending update that is itself valid
    * against the persisted schedule, activates earlier and, from the same
-   * sender, holds a lower nonce. Block selection and
+   * sender, holds a lower nonce; every such predecessor is returned so the
+   * node can check each with its pending nonce prefix. Block selection and
    * validation are unchanged, so nothing invalid is ever included.
    */
-  private validatorUpdateAdmissionPredecessor(
+  private validatorUpdateAdmissionPredecessors(
     tx: ValidatorSetUpdateTx,
     validators: Validator[],
     pending: readonly Transaction[]
-  ): ValidatorSetUpdateTx | undefined {
-    if (!hasValidatorAdmission(this.genesis)) return undefined;
+  ): ValidatorSetUpdateTx[] {
+    if (!hasValidatorAdmission(this.genesis)) return [];
+    const protocolVersion = this.protocolVersionAt(this.height + 1);
+    const found: ValidatorSetUpdateTx[] = [];
     const lastActivation = this.lastValidatorActivationHeight();
     const minimum = minimumValidatorCount(this.genesis);
     for (const candidate of pending) {
@@ -789,6 +792,7 @@ export class ZyronChain {
       if (candidate.sender === tx.sender && candidate.nonce >= tx.nonce) continue;
       try {
         this.shape(candidate);
+        assertTransactionVersionForProtocol(candidate, protocolVersion);
         validateValidatorUpdateAuthorization(
           candidate, validators, this.height + 1, lastActivation, minimum,
           this.validatorAdmissionContext(this.lastScheduledValidators())
@@ -797,12 +801,12 @@ export class ZyronChain {
           tx, validators, this.height + 1, candidate.activationHeight, minimum,
           this.validatorAdmissionContext(candidate.validators)
         );
-        return structuredClone(candidate);
+        found.push(structuredClone(candidate));
       } catch {
         // Not a usable predecessor; try the next one.
       }
     }
-    return undefined;
+    return found;
   }
 
   selectValidPending(
