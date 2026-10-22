@@ -518,6 +518,12 @@ export function faucetCorsHeaders(origin, allowed) {
   }
   return headers;
 }
+export function faucetOriginAllowed(origin, host, allowed) {
+  if (typeof origin !== "string") return false;
+  if (allowed.has(origin)) return true;
+  if (typeof host !== "string" || host === "") return false;
+  try { const url = new URL(origin); return (url.protocol === "https:" || url.protocol === "http:") && url.host === host.toLowerCase(); } catch { return false; }
+}
 // writeJson merges CORS first; a faucet response replaces it with these.
 function withoutCors(extra) { return { "access-control-allow-origin": undefined, "access-control-allow-methods": undefined, "access-control-allow-headers": undefined, "access-control-max-age": undefined, ...extra }; }
 export const FAUCET_UNAVAILABLE_MESSAGE = "faucet temporarily unavailable, retry later";
@@ -528,6 +534,17 @@ export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody
     const cors = withoutCors(faucetCorsHeaders(request.headers.origin, origins));
     const reply = (code, body, extra = {}) => writeJson(response, code, body, { ...cors, ...extra });
     const limited = (r) => reply(429, { error: "rate limit exceeded" }, { "retry-after": String(Math.max(1, Math.ceil(r.retryAfterMs / 1000))) });
+    // Origin and Content-Type are checked BEFORE any quota is taken, so a
+    // cross-site no-cors POST (text/plain, form, Origin: null) cannot burn a
+    // visitor's per-IP quota. A request with no Origin header (curl, scripts,
+    // server-side clients) is served on purpose: browsers always send Origin on
+    // a cross-origin POST, so a missing Origin is not a browser attack vector.
+    // An Origin whose host equals the Host header is the gateway's own
+    // explorer page (same-origin) and is allowed.
+    const origin = request.headers.origin;
+    if (origin !== undefined && !faucetOriginAllowed(origin, request.headers.host, origins)) return reply(403, { error: "origin not allowed" });
+    const contentType = String(request.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+    if (contentType !== "application/json") return reply(415, { error: "content-type must be application/json" });
     try {
       const ipRate = limits.faucetIp.take(ip);
       if (!ipRate.allowed) return limited(ipRate);
