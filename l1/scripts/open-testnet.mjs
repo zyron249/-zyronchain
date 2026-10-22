@@ -489,10 +489,73 @@ export const SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 20_000, 
 // Each wait is far below the 5-minute start-up stall limit.
 export const SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS = [3_000, 7_000, 15_000, 30_000, 45_000, 60_000];
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "600" };
+// POST /faucet spends a per-IP daily quota, so only the project's own pages may
+// call it cross-origin: zyronchain.com and the explorer page this gateway
+// serves itself (https://zyron-open-testnet.onrender.com). Other origins get no
+// Access-Control-Allow-Origin, so a browser blocks the call. Override with a
+// comma-separated ZYRON_FAUCET_ALLOWED_ORIGINS. Read-only routes keep "*".
+export const DEFAULT_FAUCET_ALLOWED_ORIGINS = Object.freeze(["https://zyronchain.com", "https://zyron-open-testnet.onrender.com"]);
+export function parseFaucetAllowedOrigins(value) {
+  if (typeof value !== "string" || value.trim() === "") return new Set(DEFAULT_FAUCET_ALLOWED_ORIGINS);
+  const origins = new Set();
+  for (const entry of value.split(",")) {
+    const raw = entry.trim();
+    if (raw === "") continue;
+    let url;
+    try { url = new URL(raw); } catch { throw new Error(`ZYRON_FAUCET_ALLOWED_ORIGINS: ${raw} is not an origin`); }
+    if ((url.protocol !== "https:" && url.protocol !== "http:") || url.origin !== raw.replace(/\/+$/, "")) throw new Error(`ZYRON_FAUCET_ALLOWED_ORIGINS: ${raw} is not an origin`);
+    origins.add(url.origin);
+  }
+  if (origins.size === 0) throw new Error("ZYRON_FAUCET_ALLOWED_ORIGINS lists no origin");
+  return origins;
+}
+// CORS headers for /faucet (responses and preflight). Always Vary: Origin;
+// ACAO only for an allowed origin, echoed exactly.
+export function faucetCorsHeaders(origin, allowed) {
+  const headers = { vary: "Origin" };
+  if (typeof origin === "string" && allowed.has(origin)) {
+    Object.assign(headers, { "access-control-allow-origin": origin, "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "600" });
+  }
+  return headers;
+}
+// writeJson merges CORS first; a faucet response replaces it with these.
+function withoutCors(extra) { return { "access-control-allow-origin": undefined, "access-control-allow-methods": undefined, "access-control-allow-headers": undefined, "access-control-max-age": undefined, ...extra }; }
+export const FAUCET_UNAVAILABLE_MESSAGE = "faucet temporarily unavailable, retry later";
+// POST /faucet. Rate limits run before the body is read. Errors are generic;
+// the details (node error text included) go to the server log only.
+export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody, send, log = (line) => console.error(line) }) {
+  return async (request, response, ip) => {
+    const cors = withoutCors(faucetCorsHeaders(request.headers.origin, origins));
+    const reply = (code, body, extra = {}) => writeJson(response, code, body, { ...cors, ...extra });
+    const limited = (r) => reply(429, { error: "rate limit exceeded" }, { "retry-after": String(Math.max(1, Math.ceil(r.retryAfterMs / 1000))) });
+    try {
+      const ipRate = limits.faucetIp.take(ip);
+      if (!ipRate.allowed) return limited(ipRate);
+      const body = await readJsonBody(request);
+      const address = body && typeof body === "object" ? body.address : undefined;
+      if (typeof address !== "string" || !ADDRESS_PATTERN.test(address) || address === faucetAddress) return reply(400, { error: "body must be {\"address\":\"ZYN...\"}" });
+      const addressRate = limits.faucetAddress.take(address);
+      if (!addressRate.allowed) return limited(addressRate);
+      const globalRate = limits.faucetGlobal.take("global");
+      if (!globalRate.allowed) return limited(globalRate);
+      const result = await send(address);
+      return reply(200, { ...result, network: "testnet", valueBearing: false, note: "TESTNET — tokens have no value. Arrives in a coming block (about 30 seconds)." });
+    } catch (error) {
+      // Only the gateway's own fixed request-validation messages are passed through.
+      const code = error?.statusCode;
+      const own = (code === 400 || code === 413 || code === 415) && FAUCET_REQUEST_ERRORS.has(error?.message);
+      if (!own) log(`faucet error: ${error instanceof Error ? error.message : String(error)}`);
+      return reply(own ? code : 503, { error: own ? error.message : FAUCET_UNAVAILABLE_MESSAGE });
+    }
+  };
+}
+const FAUCET_REQUEST_ERRORS = new Set(["content-type must be application/json", "request body too large", "invalid JSON"]);
 const SECURITY = { "x-content-type-options": "nosniff", "x-zyron-network": "testnet-no-value", "referrer-policy": "no-referrer" };
 function writeJson(response, code, body, extra = {}) {
   const payload = `${JSON.stringify(body, null, 2)}\n`;
-  response.writeHead(code, { ...CORS, ...SECURITY, "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(payload), ...extra });
+  const headers = { ...CORS, ...SECURITY, "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(payload), ...extra };
+  for (const name of Object.keys(headers)) if (headers[name] === undefined) delete headers[name];
+  response.writeHead(code, headers);
   response.end(payload);
 }
 
@@ -1237,13 +1300,14 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     const run = faucetQueue.then(async () => {
       const status = await chainStatus();
       const nonceResponse = await anyNode(`/nonce/${faucet.address}`);
-      if (nonceResponse.status !== 200) throw new Error("faucet nonce unavailable");
+      if (nonceResponse.status !== 200) throw new Error(`faucet nonce lookup failed (status ${nonceResponse.status})`);
       if (Date.now() - lastFaucetNonceAt > 180_000) lastFaucetNonce = 0;
       const nonce = Math.max(nonceResponse.body.nonce, lastFaucetNonce) + 1;
       const tx = createTransfer({ chainId, nonce, sender: faucet.address, receiver, amountAtoms: FAUCET_DRIP_ATOMS, feeAtoms: 0, timestampMs: Date.now() },
         faucet.privateKey, faucet.publicKey, status.transactionVersion);
       const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
-      if (submitted.status < 200 || submitted.status > 299) throw Object.assign(new Error(`faucet transfer rejected: ${String(submitted.body?.error ?? submitted.status).slice(0, 200)}`), { statusCode: 503 });
+      // The node's error text is logged by the faucet route, never returned.
+      if (submitted.status < 200 || submitted.status > 299) throw new Error(`faucet transfer rejected by node (status ${submitted.status}): ${String(submitted.body?.error ?? "").slice(0, 300)}`);
       lastFaucetNonce = nonce; lastFaucetNonceAt = Date.now();
       return { txid: tx.txid, receiver, amountAtoms: FAUCET_DRIP_ATOMS, nonce };
     });
@@ -1251,6 +1315,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     return run;
   }
 
+  const faucetOrigins = parseFaucetAllowedOrigins(process.env.ZYRON_FAUCET_ALLOWED_ORIGINS);
+  console.log(`faucet: cross-origin calls allowed from ${[...faucetOrigins].join(", ")}`);
   const PEER_RPC = { "x-zyron-rpc-version": "1" };
   const sendJson = writeJson;
   const explorerHtml = await readFile(join(l1Root, "scripts", "open-testnet", "explorer.html"));
@@ -1267,6 +1333,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     for await (const chunk of request) { size += chunk.length; if (size > MAX_BODY_BYTES) throw Object.assign(new Error("request body too large"), { statusCode: 413 }); chunks.push(chunk); }
     try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw Object.assign(new Error("invalid JSON"), { statusCode: 400 }); }
   }
+  const faucetRoute = createFaucetRoute({ origins: faucetOrigins, limits, faucetAddress: faucet.address, readJsonBody, send: faucetSend });
   // Explorer view of a block: summary fields only.
   function summarizeBlock(block) {
     return {
@@ -1286,7 +1353,10 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       if (!rawUrl.startsWith("/") || rawUrl.startsWith("//") || rawUrl.length > 256 || /[\u0000-\u001f\u007f\\]/.test(rawUrl)) return sendJson(response, 400, { error: "invalid request target" });
       const url = new URL(rawUrl, "http://gateway.invalid");
       const path = url.pathname.replace(/\/+$/, "") || "/";
-      if (request.method === "OPTIONS") { response.writeHead(204, CORS); return response.end(); }
+      if (request.method === "OPTIONS") {
+        if (path === "/faucet") { response.writeHead(204, faucetCorsHeaders(request.headers.origin, faucetOrigins)); return response.end(); }
+        response.writeHead(204, CORS); return response.end();
+      }
       const ip = clientIp(request);
       if (request.method === "GET") {
         if (path === "/health" || path === "/healthz" || path === "/readyz") {
@@ -1370,19 +1440,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           if (submitted.status < 200 || submitted.status > 299) return sendJson(response, 400, { error: String(submitted.body?.error ?? "rejected").slice(0, 300) });
           return sendJson(response, 200, { accepted: true, txid: submitted.body.txid, note: "Included in a coming block (about 30 seconds)." });
         }
-        if (path === "/faucet") {
-          const ipRate = limits.faucetIp.take(ip);
-          if (!ipRate.allowed) return limited(response, ipRate);
-          const body = await readJsonBody(request);
-          const address = body && typeof body === "object" ? body.address : undefined;
-          if (typeof address !== "string" || !ADDRESS_PATTERN.test(address) || address === faucet.address) return sendJson(response, 400, { error: "body must be {\"address\":\"ZYN...\"}" });
-          const addressRate = limits.faucetAddress.take(address);
-          if (!addressRate.allowed) return limited(response, addressRate);
-          const globalRate = limits.faucetGlobal.take("global");
-          if (!globalRate.allowed) return limited(response, globalRate);
-          const result = await faucetSend(address);
-          return sendJson(response, 200, { ...result, network: "testnet", valueBearing: false, note: "TESTNET — tokens have no value. Arrives in a coming block (about 30 seconds)." });
-        }
+        if (path === "/faucet") return await faucetRoute(request, response, ip);
         if (relay && path.startsWith("/relay/v1/")) {
           const relayRate = limits.relayIp.take(ip);
           if (!relayRate.allowed) return limited(response, relayRate);
