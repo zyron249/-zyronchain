@@ -127,13 +127,23 @@ surface (`/peer/status`, `/peer/blocks`) serves only blocks inside the newest
 published snapshot that matches the live chain (the durable height, shown as
 `durableHeight` in `/health`). Followers therefore trail the tip by up to one
 keeper interval, and a later restore never contradicts a block they hold. The
-explorer endpoints (`/status`, `/blocks`, `/block/{height}`) still show the
-live tip; blocks above `durableHeight` can be replaced by a cold start. Set
+explorer endpoints still show the live tip: `/status` reports `durableHeight`
+and `peerCap` (`durable` or `off`; also in `/health`), and every block from
+`/blocks` and `/block/{height}` carries `durable: false` when it is above
+`durableHeight`. Such a block is finalized but can still be replaced by a cold
+start; wait until it is durable before relying on it. Set
 `ZYRON_TESTNET_DURABLE_PEERS=0` to turn the cap off.
 
 A cold start whose published snapshot cannot be downloaded, decrypted or
-re-validated stops instead of creating a fresh TEST genesis under the same chain
-ID. Only a confirmed 404 (nothing published) creates a fresh genesis.
+re-validated stops (exit 1) instead of creating a fresh TEST genesis under the
+same chain ID. A snapshot that stays missing (404 after every retry) also stops,
+unless the operator sets `ZYRON_TESTNET_ALLOW_FRESH_GENESIS=1` to start a new
+chain on purpose.
+
+The snapshot keeper needs `ZYRON_TESTNET_STATE_SECRET` (a repository secret
+passed only to its step). With it, the snapshot height and genesis come from the
+authenticated body, and a mismatch stops the run without publishing. Without it,
+the keeper refuses to run unless `ZYRON_KEEPER_ALLOW_UNAUTHENTICATED=1` is set.
 
 ## What this testnet does not prove
 

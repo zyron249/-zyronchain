@@ -1627,3 +1627,11 @@ test("an authentication failure stops the keeper and fails the run", async () =>
   const source = await readFile(new URL("./open-testnet-snapshot-keeper.mjs", import.meta.url), "utf8");
   assert.match(source, /error instanceof SnapshotAuthenticationError\) \{ stats\.authenticationFailures \+= 1; warn\(error\.message\); break; \}/, "the publish loop stops on the first authentication failure");
 });
+
+test("without the state secret the keeper refuses to run unless explicitly opted in (M3)", async () => {
+  const { keeperSecretPolicy } = await import("./open-testnet-snapshot-keeper.mjs");
+  assert.throws(() => keeperSecretPolicy({}), /refusing to publish/);
+  assert.throws(() => keeperSecretPolicy({ ZYRON_TESTNET_STATE_SECRET: "", ZYRON_KEEPER_ALLOW_UNAUTHENTICATED: "yes" }), /refusing to publish/);
+  assert.deepEqual(keeperSecretPolicy({ ZYRON_TESTNET_STATE_SECRET: "s" }), { stateSecret: "s" });
+  assert.match(keeperSecretPolicy({ ZYRON_KEEPER_ALLOW_UNAUTHENTICATED: "1" }).warning, /unauthenticated/);
+});

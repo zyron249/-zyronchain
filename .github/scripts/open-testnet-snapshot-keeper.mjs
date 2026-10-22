@@ -791,6 +791,15 @@ function envNumber(env, name, fallback, min, max) {
   return value;
 }
 
+// M3 (security review): without the state secret the keeper refuses to run,
+// unless the operator opts in to unauthenticated headers explicitly.
+export function keeperSecretPolicy(env) {
+  const stateSecret = env.ZYRON_TESTNET_STATE_SECRET || undefined;
+  if (stateSecret) return { stateSecret };
+  if (env.ZYRON_KEEPER_ALLOW_UNAUTHENTICATED === "1") return { stateSecret: undefined, warning: "ZYRON_TESTNET_STATE_SECRET is not set and ZYRON_KEEPER_ALLOW_UNAUTHENTICATED=1: snapshot height and genesis come from unauthenticated response headers" };
+  throw new Error("ZYRON_TESTNET_STATE_SECRET is not set; refusing to publish snapshots ordered by unauthenticated headers (set ZYRON_KEEPER_ALLOW_UNAUTHENTICATED=1 to override)");
+}
+
 async function main() {
   const env = process.env;
   const expectedGenesis = env.EXPECTED_GENESIS ?? "";
@@ -801,8 +810,8 @@ async function main() {
   const runMinutes = envNumber(env, "RUN_MINUTES", 340, 1, 340);
   const github = createGitHub({ fetchImpl: fetch, token: env.GITHUB_TOKEN, repo: env.REPO ?? env.GITHUB_REPOSITORY ?? "" });
   const stamp = () => new Date().toISOString();
-  const stateSecret = env.ZYRON_TESTNET_STATE_SECRET || undefined;
-  if (!stateSecret) console.log(`::warning::${stamp()} ZYRON_TESTNET_STATE_SECRET is not set; snapshot height and genesis come from unauthenticated response headers`);
+  const { stateSecret, warning } = keeperSecretPolicy(env);
+  if (warning) console.log(`::warning::${stamp()} ${warning}`);
   const stats = await runKeeper({
     fetchImpl: fetch, github, gateway, tag, expectedGenesis, stateSecret,
     runMs: runMinutes * 60_000,

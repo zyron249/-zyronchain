@@ -644,14 +644,32 @@ export function createDurableWatermark({ height = 0, tipHash, fetchPublished, lo
 
 // Reads the published snapshot and returns its height and tip hash, or
 // undefined when none is published yet.
-export async function readPublishedSnapshotTip(url, secret, { fetchImpl = fetch, timeoutMs = 60_000 } = {}) {
+export async function readPublishedSnapshotTip(url, secret, { fetchImpl = fetch, timeoutMs = 60_000, cache } = {}) {
+  // A HEAD first: an unchanged asset (same ETag or Last-Modified and length)
+  // is not downloaded again.
+  let validator;
+  if (cache) {
+    const head = await fetchImpl(url, { method: "HEAD", redirect: "follow", signal: AbortSignal.timeout(timeoutMs) }).catch(() => undefined);
+    if (head?.status === 404) return undefined;
+    if (head?.status === 200) {
+      const tag = head.headers.get("etag") ?? head.headers.get("last-modified");
+      validator = tag ? `${tag}|${head.headers.get("content-length") ?? ""}` : undefined;
+      if (validator && cache.validator === validator) return cache.tip;
+    }
+  }
   const response = await fetchImpl(url, { redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
-  if (response.status === 404) return undefined;
-  if (response.status !== 200) throw new Error(`published snapshot returned ${response.status}`);
-  const bundle = openSnapshot(Buffer.from(await response.arrayBuffer()), secret);
+  if (response.status === 404) { await response.body?.cancel().catch(() => {}); return undefined; }
+  if (response.status !== 200) { await response.body?.cancel().catch(() => {}); throw new Error(`published snapshot returned ${response.status}`); }
+  const declared = Number(response.headers.get("content-length") ?? "0");
+  if (declared > MAX_SNAPSHOT_BYTES) { await response.body?.cancel().catch(() => {}); throw new Error("published snapshot is larger than the snapshot size limit"); }
+  const chunks = []; let size = 0;
+  for await (const chunk of response.body ?? []) { size += chunk.length; if (size > MAX_SNAPSHOT_BYTES) throw new Error("published snapshot is larger than the snapshot size limit"); chunks.push(chunk); }
+  const bundle = openSnapshot(Buffer.concat(chunks), secret);
   const blocks = bundle?.blocks;
   if (!Array.isArray(blocks) || blocks.length === 0) return undefined;
-  return { height: blocks.length, tipHash: blocks[blocks.length - 1].hash };
+  const tip = { height: blocks.length, tipHash: blocks[blocks.length - 1].hash };
+  if (cache) { cache.validator = validator; cache.tip = tip; }
+  return tip;
 }
 
 // Caps a follower status at the durable watermark.
@@ -1318,6 +1336,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     return run;
   }
 
+  // Blocks above durableHeight are finalized but not yet in a published
+  // snapshot: a cold start can replace them (docs/OPEN_TESTNET.md).
+  function durability() { return watermark ? { peerCap: "durable", durableHeight: watermark.height } : { peerCap: "off" }; }
   const PEER_RPC = { "x-zyron-rpc-version": "1" };
   const sendJson = writeJson;
   const explorerHtml = await readFile(join(l1Root, "scripts", "open-testnet", "explorer.html"));
@@ -1369,7 +1390,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const starting = !ok && !everReady && Date.now() - runStartedAtMs < STARTUP_GRACE_MS;
           const status = ok ? "ready" : starting ? "starting" : "degraded";
           const code = ok || (starting && path !== "/readyz") ? 200 : 503;
-          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), network: "testnet", valueBearing: false, chainId, persistence, ...(watermark ? watermark.status() : {}), quorum, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
+          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), network: "testnet", valueBearing: false, chainId, persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
@@ -1398,7 +1419,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
         }
         if (path === "/" || path === "/explorer") return sendHtml(response);
         if (path === "/api" ) return sendJson(response, 200, { name: "ZyronChain open TESTNET RPC", ...(await chainStatus()), endpoints: ["GET /health", "GET /status", "GET /network", "GET /genesis", "GET /account/{address}", "GET /balance/{address}", "GET /nonce/{address}", "GET /blocks?from=&limit=", "GET /block/{height}", "GET /peer/status", "GET /peer/blocks?from=&limit=", "POST /tx", "POST /faucet {address}"] });
-        if (path === "/status" || path === "/chain") return sendJson(response, 200, await chainStatus());
+        if (path === "/status" || path === "/chain") return sendJson(response, 200, { ...(await chainStatus()), ...durability() });
         if (path === "/network") return sendJson(response, 200, info);
         if (path === "/genesis") return sendJson(response, 200, { network: "testnet", valueBearing: false, genesisHash: info.genesisHash, genesis });
         if (path === "/blocks" || path.startsWith("/block/")) {
@@ -1412,7 +1433,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           if (!Number.isSafeInteger(from) || from < 1 || from > tip) return sendJson(response, 404, { error: "no such block" });
           const result = await anyNode(`/blocks?from=${from}&limit=${limit}`);
           if (result.status !== 200) return sendJson(response, 502, { error: "node unavailable" });
-          const blocks = result.body.blocks.map(summarizeBlock);
+          const blocks = result.body.blocks.map((block) => ({ ...summarizeBlock(block), ...(watermark ? { durable: block.header.height <= watermark.height } : {}) }));
           return sendJson(response, 200, path === "/blocks" ? { network: "testnet", tip, blocks } : blocks[0]);
         }
         for (const prefix of ["/balance/", "/nonce/", "/account/"]) {
@@ -1619,7 +1640,16 @@ if (!invokedDirectly) {
       try {
         boot.enter("download");
         const response = await downloadSnapshot(restoreUrl, { onAttempt: boot.progress, readBody: true });
-        if (response.status === 404) console.log("no state snapshot published yet; creating a fresh TEST genesis");
+        if (response.status === 404) {
+          // A fresh TEST genesis only on an explicit operator decision: a
+          // published chain whose asset is missing must not be silently replaced.
+          if (process.env.ZYRON_TESTNET_ALLOW_FRESH_GENESIS !== "1") {
+            console.error("STATE RESTORE FAILED (no state snapshot published after every retry); refusing to create a fresh TEST genesis without ZYRON_TESTNET_ALLOW_FRESH_GENESIS=1; stopping");
+            await new Promise((done) => process.stderr.write("", done));
+            process.exit(1);
+          }
+          console.log("no state snapshot published yet; ZYRON_TESTNET_ALLOW_FRESH_GENESIS=1 is set; creating a fresh TEST genesis");
+        }
         else {
           assert.equal(response.status, 200, `snapshot download returned ${response.status}`);
           const sealed = response.bytes;
@@ -1668,7 +1698,7 @@ if (!invokedDirectly) {
   boot.enter("validators");
   // Followers are served only blocks inside a published snapshot when the
   // chain lives in published snapshots (ZYRON_TESTNET_DURABLE_PEERS=0 opts out).
-  const durable = restoreUrl && stateSecret && process.env.ZYRON_TESTNET_DURABLE_PEERS !== "0" ? { fetchPublished: () => readPublishedSnapshotTip(restoreUrl, stateSecret) } : undefined;
+  const durable = restoreUrl && stateSecret && process.env.ZYRON_TESTNET_DURABLE_PEERS !== "0" ? { fetchPublished: (() => { const cache = {}; return () => readPublishedSnapshotTip(restoreUrl, stateSecret, { cache }); })() } : undefined;
   const network = await runNetwork(dir, { stateSecret, persistence, host, server, verifiedHistory, durable, basePort: Number(option("--validator-base-port", "9300")) });
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { void network.shutdown().then(() => process.exit(0)); });
   if (await network.waitForQuorum()) {

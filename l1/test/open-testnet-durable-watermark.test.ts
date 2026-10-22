@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
+import { spawn, type ChildProcess } from "node:child_process";
 import test from "node:test";
 
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
@@ -48,6 +49,19 @@ test("readPublishedSnapshotTip reads the sealed tip; 404 means none yet", async 
   await assert.rejects(api.readPublishedSnapshotTip("http://x.invalid/s", secret, { fetchImpl: async () => new Response("", { status: 500 }) }), /500/);
 });
 
+test("readPublishedSnapshotTip skips an unchanged asset (HEAD + ETag) and caps the size", async () => {
+  const secret = "s".repeat(32);
+  const sealed = api.sealSnapshot({ format: "ZYRON-OPEN-TESTNET-STATE-V1", blocks: [{ hash: H(1) }] }, secret);
+  const calls: string[] = [];
+  const fetchImpl = async (_url: string, init?: { method?: string }) => { calls.push(init?.method ?? "GET"); return init?.method === "HEAD" ? new Response(null, { status: 200, headers: { etag: "\"a\"", "content-length": String(sealed.length) } }) : new Response(sealed, { status: 200 }); };
+  const cache = {};
+  assert.deepEqual(await api.readPublishedSnapshotTip("http://x.invalid/s", secret, { fetchImpl, cache }), { height: 1, tipHash: H(1) });
+  assert.deepEqual(await api.readPublishedSnapshotTip("http://x.invalid/s", secret, { fetchImpl, cache }), { height: 1, tipHash: H(1) });
+  assert.deepEqual(calls, ["HEAD", "GET", "HEAD"], "the unchanged asset is not downloaded again");
+  const huge = async () => new Response("x", { status: 200, headers: { "content-length": String(512 * 1024 * 1024) } });
+  await assert.rejects(api.readPublishedSnapshotTip("http://x.invalid/s", secret, { fetchImpl: huge }), /size limit/);
+});
+
 test("cold start from a snapshot behind the tip: followers never held a block the restored chain contradicts", { timeout: 1_500_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "zyron-durable-"));
   await chmod(root, 0o700);
@@ -57,6 +71,7 @@ test("cold start from a snapshot behind the tip: followers never held a block th
   const durable = { intervalMs: 300, fetchPublished: async () => { if (!publishedSealed) return undefined; const b = api.openSnapshot(publishedSealed, secret); return { height: b.blocks.length, tipHash: b.blocks.at(-1).hash }; } };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let network: any;
+  let follower: ChildProcess | undefined;
   const until = async (label: string, check: () => Promise<unknown>, ms = 900_000) => { const end = Date.now() + ms; while (Date.now() < end) { const v = await check().catch(() => undefined); if (v) return v; await sleep(500); } throw new Error(`timed out: ${label}`); };
   const json = async (base: string, p: string) => { const r = await fetch(base + p); return { status: r.status, body: await r.json() }; };
   try {
@@ -72,14 +87,29 @@ test("cold start from a snapshot behind the tip: followers never held a block th
     const peerStatus = await until("peer status at watermark", async () => { const s = (await json(base, "/peer/status")).body; return s.height === h1 ? s : undefined; }) as { height: number };
     assert.equal(peerStatus.height, h1);
     assert.equal((await json(base, `/peer/blocks?from=${h1 + 1}&limit=10`)).status, 404, "blocks above the watermark are not served to followers");
+    const st = (await json(base, "/status")).body;
+    assert.equal(st.peerCap, "durable"); assert.equal(st.durableHeight, h1);
+    const marked = (await json(base, `/blocks?from=${h1}&limit=2`)).body.blocks;
+    assert.deepEqual(marked.map((b: { durable: boolean }) => b.durable), [true, false], "blocks above durableHeight are marked non-durable");
+    assert.equal((await json(base, "/health")).body.peerCap, "durable");
+    // A real follower node syncs from the gateway's /peer surface.
+    const followerPort = 33_000 + Math.floor(Math.random() * 2000);
+    follower = spawn(process.execPath, [join(l1Root, "dist", "src", "cli.js"), "node", "--genesis", join(root, "a", "genesis.json"), "--data", join(root, "follower"), "--host", "127.0.0.1", "--port", String(followerPort), "--peer", `${base}/peer`], { cwd: l1Root, stdio: "ignore" });
+    const followerAt = async () => { const r = await fetch(`http://127.0.0.1:${followerPort}/status`, { headers: { "x-zyron-rpc-version": "1" } }); return (await r.json()) as { height: number; tipHash: string }; };
+    await until("follower synced to the durable height", async () => (await followerAt()).height === h1);
+    await sleep(3_000);
+    assert.equal((await followerAt()).height, h1, "the follower never goes past the durable height");
     const served: string[] = [];
     for (let from = 1; from <= h1; from += 100) for (const b of (await json(base, `/peer/blocks?from=${from}&limit=100`)).body.blocks) served.push(b.hash);
     assert.equal(served.length, h1);
     const lostTip = (await json(base, "/status")).body.height;
     // The instance loses its disk; the next start restores the published (stale) snapshot.
     await network.shutdown(); network = undefined;
+    const followerPort2 = followerPort + 1;
     const restored = await api.restoreNetwork(join(root, "b"), api.openSnapshot(publishedSealed, secret), chainId);
     assert.ok(restored.height < lostTip, "the restore is behind the tip that was finalized before the restart");
+    // The follower now points at the restored gateway (new port, same chain).
+    follower?.kill("SIGTERM"); await sleep(1_000);
     network = await api.runNetwork(join(root, "b"), { gatewayPort: 0, basePort: 19300 + Math.floor(Math.random() * 500) * 4, log: false, stateSecret: secret, persistence: { mode: "snapshot-restore", restoredHeight: restored.height }, verifiedHistory: restored.verifiedHistory, durable });
     base = `http://127.0.0.1:${network.port}`;
     await until("restored chain finalizes past the lost tip", async () => (await json(base, "/status")).body.height > lostTip);
@@ -89,7 +119,18 @@ test("cold start from a snapshot behind the tip: followers never held a block th
     }
     const ps = (await json(base, "/peer/status")).body;
     assert.equal(ps.height, h1, "after the restore, followers still see only the durable prefix");
+    // The keeper publishes the restored chain; the follower (same data dir) syncs past the lost tip without a fork.
+    const snap2 = await fetch(`${base}/state/snapshot`);
+    publishedSealed = Buffer.from(await snap2.arrayBuffer());
+    const h2 = Number(snap2.headers.get("x-zyron-snapshot-height"));
+    assert.ok(h2 > lostTip);
+    follower = spawn(process.execPath, [join(l1Root, "dist", "src", "cli.js"), "node", "--genesis", join(root, "a", "genesis.json"), "--data", join(root, "follower"), "--host", "127.0.0.1", "--port", String(followerPort2), "--peer", `${base}/peer`], { cwd: l1Root, stdio: "ignore" });
+    const f2 = async () => { const r = await fetch(`http://127.0.0.1:${followerPort2}/status`, { headers: { "x-zyron-rpc-version": "1" } }); return (await r.json()) as { height: number; tipHash: string }; };
+    const synced = await until("follower syncs the restored chain past the lost tip", async () => { const f = await f2(); return f.height === h2 ? f : undefined; }) as { tipHash: string };
+    const gatewayBlock = (await json(base, `/block/${h2}`)).body;
+    assert.equal(synced.tipHash, gatewayBlock.hash, "the follower is on the restored chain (no fork)");
   } finally {
+    follower?.kill("SIGTERM");
     await network?.shutdown();
     await rm(root, { recursive: true, force: true });
   }
