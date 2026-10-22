@@ -63,7 +63,7 @@ import { ChainStore, SigningJournal } from "./storage.js";
 import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape, validatorUpdateApprovalPayload } from "./transaction.js";
 import type { Block, BlockAttestation, RoundSkipVote, Transaction, Validator, ValidatorSetUpdateTx } from "./types.js";
 import { LocalValidatorSigner, signWithValidator, type ValidatorSigner } from "./validator-signer.js";
-import { hasValidatorAdmission } from "./validator-admission.js";
+import { assertValidatorUpdatePossessionProofSignatures, hasValidatorAdmission } from "./validator-admission.js";
 
 const MAX_BODY_BYTES = 2_500_000;
 /** Consensus phases whose quorum readiness tracks (F-04); later phases rank higher. */
@@ -741,7 +741,7 @@ export class NodeService {
   private readmittedValidatorUpdate(value: unknown): string | undefined {
     const txid = (value as { txid?: unknown } | null)?.txid;
     if (typeof txid !== "string" || !this.readmittedValidatorUpdateIds.includes(txid)) return undefined;
-    const pending = this.mempool.values().find((item) => item.txid === txid);
+    const pending = this.mempool.get(txid);
     return pending && isDeepStrictEqual(pending, value) ? txid : undefined;
   }
 
@@ -755,7 +755,8 @@ export class NodeService {
     for (const variants of this.deferredValidatorUpdates.values()) {
       if (variants.some((tx) => tx.sender === sender)) return true;
     }
-    return this.mempool.values().some((tx) => tx.kind === "validator_update" && tx.sender === sender);
+    // Codex P2 on #1104 at 104e108: an O(1) query, no copy of the mempool.
+    return this.mempool.hasValidatorUpdateFrom(sender);
   }
 
   private static deferredValidatorUpdateKey(tx: ValidatorSetUpdateTx): string {
@@ -768,8 +769,14 @@ export class NodeService {
     // Codex P2 on #1104: only an update that a predecessor could still make
     // admissible (active initiator, current-validator quorum, activation
     // order) may use or evict a deferred slot.
+    // Codex P2 on #1104 at 104e108: the proofs it carries must verify too, so
+    // a re-signed variant with invalid proofs cannot evict a valid variant.
     try {
       this.store.chain.assertValidatorUpdateAuthorizedExceptProofs(tx);
+      assertValidatorUpdatePossessionProofSignatures(tx, {
+        chainId: this.store.chain.genesis.chainId,
+        genesisHash: this.store.chain.genesisHash
+      });
     } catch {
       return false;
     }
@@ -792,7 +799,7 @@ export class NodeService {
     }
     const tx = value as Transaction;
     if (tx.kind !== "validator_update" || tx.chainId !== genesis.chainId) return;
-    if (this.mempool.values().some((item) => item.txid === tx.txid)) return;
+    if (this.mempool.has(tx.txid)) return;
     const key = NodeService.deferredValidatorUpdateKey(tx);
     const variants = this.deferredValidatorUpdates.get(key);
     if (variants?.some((item) => item.txid === tx.txid)) return;

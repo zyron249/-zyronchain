@@ -247,3 +247,37 @@ export function assertValidatorUpdatePossessionProofs(tx: ValidatorSetUpdateTx, 
     if (!valid) throw new Error(`Invalid validator possession proof for ${validator.address}`);
   }
 }
+
+/**
+ * P1-07-F2 (Codex P2 on #1104 at 104e108): the part of the possession-proof
+ * rule that a pending predecessor cannot change. Which validators are
+ * incoming depends on the replaced set, but every proof of a valid update
+ * names a validator of the new set, in `validators` order, and its signature
+ * verifies. Used only before a refused update may enter the node's bounded
+ * deferred set (so variants with invalid proofs cannot evict a valid one);
+ * never for block validity.
+ */
+export function assertValidatorUpdatePossessionProofSignatures(
+  tx: ValidatorSetUpdateTx,
+  context: { chainId: string; genesisHash: string }
+): void {
+  if (!Array.isArray(tx.possessionProofs)) {
+    throw new Error("Validator update requires possessionProofs (one possession proof per incoming validator) under validatorAdmission");
+  }
+  let next = 0;
+  for (const proof of tx.possessionProofs) {
+    let index = next;
+    while (index < tx.validators.length && tx.validators[index]!.address !== proof.address) index += 1;
+    const validator = tx.validators[index];
+    if (!validator) throw new Error("Validator possession proof does not match the incoming validator order");
+    const valid = verifyPossessionProof({
+      chainId: context.chainId,
+      chainBinding: context.genesisHash,
+      activationHeight: tx.activationHeight,
+      address: validator.address,
+      publicKey: validator.publicKey
+    }, proof.signature);
+    if (!valid) throw new Error(`Invalid validator possession proof for ${validator.address}`);
+    next = index + 1;
+  }
+}

@@ -36,6 +36,8 @@ export class Mempool {
   private nonMiningEvictionCacheValid = false;
   private nonMiningEvictionCache: EvictionCandidate | undefined;
   private readonly pendingBySender = new Map<string, number>();
+  /** Pending `validator_update` count per sender (P1-07-F2: O(1) sender query). */
+  private readonly validatorUpdatesBySender = new Map<string, number>();
   private readonly disableFeeReplacement: boolean;
   private readonly fixedTransferFeeAtoms: number | undefined;
   private readonly maxPendingPerSender: number | undefined;
@@ -141,6 +143,7 @@ export class Mempool {
     this.adjustOccupancy(stored, 1, txBytes);
     this.adjustTransferSpend(stored, 1n);
     this.adjustSenderCount(stored.sender, 1);
+    if (stored.kind === "validator_update") this.adjustValidatorUpdateSender(stored.sender, 1);
     this.invalidateNonMiningEvictionCache();
   }
 
@@ -164,6 +167,21 @@ export class Mempool {
 
   values(): Transaction[] {
     return [...this.byId.values()].map((tx) => structuredClone(tx));
+  }
+
+  has(txid: string): boolean {
+    return this.byId.has(txid);
+  }
+
+  /** A copy of one pending transaction (no copy of the whole pool). */
+  get(txid: string): Transaction | undefined {
+    const tx = this.byId.get(txid);
+    return tx ? structuredClone(tx) : undefined;
+  }
+
+  /** Whether `sender` has a pending `validator_update` (O(1)). */
+  hasValidatorUpdateFrom(sender: string): boolean {
+    return this.validatorUpdatesBySender.has(sender);
   }
 
   pendingTransferSpend(sender: string): bigint {
@@ -209,7 +227,15 @@ export class Mempool {
     this.adjustOccupancy(tx, -1);
     this.adjustTransferSpend(tx, -1n);
     this.adjustSenderCount(tx.sender, -1);
+    if (tx.kind === "validator_update") this.adjustValidatorUpdateSender(tx.sender, -1);
     this.invalidateNonMiningEvictionCache();
+  }
+
+  private adjustValidatorUpdateSender(sender: string, direction: 1 | -1): void {
+    const next = (this.validatorUpdatesBySender.get(sender) ?? 0) + direction;
+    if (next < 0) throw new Error("Mempool occupancy invariant violated");
+    if (next === 0) this.validatorUpdatesBySender.delete(sender);
+    else this.validatorUpdatesBySender.set(sender, next);
   }
 
   private adjustSenderCount(sender: string, direction: 1 | -1): void {
