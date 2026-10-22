@@ -89,6 +89,16 @@ Both keepers fetch `/state/snapshot` about 6 times an hour (limit: 30 per hour f
 
 Free-plan budget: Actions minutes are free for public repositories, and the job occupies one hosted runner slot. A free web service that is kept awake all month uses about 720-744 of the 750 free instance hours a Render workspace gets per month. Other free web services in the same workspace share that allowance, and when it runs out Render suspends the workspace's free web services until the next month.
 
+## Founder-operated nodes
+
+These nodes are run by the project itself. They are **not independent** and never count toward the independent-validator requirement for launch.
+
+| Role | Operator | Address | Public key | Status |
+|---|---|---|---|---|
+| Founder-operated (project architect node), not independent | Project | `ZYN807a69D9473cDdBecC9929aF53D1C2468d7EEe43` | `1c90bfddae88023e56fa264c04dc91682957cdb3b8ea0bfd43fd25a8a98107069ff66d75b22982929c5f18560dd14912c0d62f705064f829ea8a3a9ea35c769f` | Follower, pending consensus endpoint. Not in the validator set; signs nothing. |
+
+The node runs on a machine that can be paused, so it is not a candidate for admission on its own: adding it as the only fifth validator would leave no fault margin whenever it is offline. See `docs/CONSENSUS_RELAY.md` for the admission plan.
+
 ## Join as a validator (volunteers)
 
 The current validator set is run by the project from one host, so it is **not** yet an independent-operator network. Volunteers help close that gap. **Follower nodes can join now:** sync from the public peer endpoint `https://zyron-open-testnet.onrender.com/peer` with the genesis from `GET /genesis` (see the guide). **Validator activation is not possible yet:** the hosted validators are on loopback and only expose a read-only peer surface, so a volunteer cannot exchange v6 consensus messages with them. Full guide: [`VALIDATOR_VOLUNTEERS.md`](VALIDATOR_VOLUNTEERS.md).
