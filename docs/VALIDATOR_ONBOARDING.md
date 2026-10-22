@@ -26,7 +26,9 @@ Every command below was run against `main` at the commit this file was added in,
 
 ```sh
 git clone https://github.com/zyron249/-zyronchain.git
-cd -- -zyronchain/l1
+cd -- -zyronchain
+git checkout --detach <APPROVED_COMMIT_SHA>   # validators only; followers and rehearsals can stay on main (see below)
+cd l1
 npm ci && npm run build
 npm run testnet:open:smoke      # optional disposable end-to-end check
 
@@ -34,15 +36,17 @@ umask 077
 mkdir -p "$HOME/zyron-validator"
 # Create the password file yourself: a regular file, mode 0600, 12 characters to 1 KiB.
 # (Or use --password-prompt instead of --password-file to type it interactively.)
-node dist/src/cli.js keygen --out "$HOME/zyron-validator/validator-key.json" \
+node dist/src/secure-cli.js keygen --out "$HOME/zyron-validator/validator-key.json" \
   --password-file "$HOME/zyron-validator/validator-key.password"
 ```
+
+Which commit: for a follower or a rehearsal, the latest `main` is fine. A validator that signs for a network must run the commit approved for that network, announced together with its admission (the same rule as `docs/V6_OPERATOR_GUIDE.md` section 2.1). Record the commit SHA, `node --version` and `sha256sum package-lock.json`. Use `node dist/src/secure-cli.js` (the entrypoint the published `zyron-l1` binary uses, `docs/CLI_RECOVERY_INPUT_SECURITY.md`); do not run `dist/src/cli.js` directly.
 
 `keygen` writes an encrypted keystore (v2, scrypt N=2^17) with mode 0600 and prints the address, the checksummed display address and the public key. Check that the file decrypts and re-derives the same identity:
 
 ```sh
 ZYRON_KEYSTORE_PASSWORD_FILE="$HOME/zyron-validator/validator-key.password" \
-  node dist/src/cli.js keystore-verify --key "$HOME/zyron-validator/validator-key.json"
+  node dist/src/secure-cli.js keystore-verify --key "$HOME/zyron-validator/validator-key.json"
 ```
 
 To register, open a GitHub issue titled `Open testnet validator: <your handle>` with **only** your public key and address, whether you can run always-on, and optionally a rough region.
@@ -125,10 +129,10 @@ R=$(mktemp -d) && umask 077
 # save sign-possession-proof.mjs (4.1) and genesis-binding.mjs (4.2) into "$R" first
 for i in 1 2 3 4; do
   head -c 24 /dev/urandom | base64 > "$R/pw$i"
-  node dist/src/cli.js keygen --out "$R/k$i.json" --password-file "$R/pw$i" | awk '/^Public key:/ {print $3}' > "$R/pub$i"
+  node dist/src/secure-cli.js keygen --out "$R/k$i.json" --password-file "$R/pw$i" | awk '/^Public key:/ {print $3}' > "$R/pub$i"
 done
-ADDR=$(ZYRON_KEYSTORE_PASSWORD_FILE="$R/pw1" node dist/src/cli.js keystore-verify --key "$R/k1.json" | awk '/^Address:/ {print $2}')
-node dist/src/cli.js genesis --out "$R/genesis.json" --chain-id zyron-scratch-1 \
+ADDR=$(ZYRON_KEYSTORE_PASSWORD_FILE="$R/pw1" node dist/src/secure-cli.js keystore-verify --key "$R/k1.json" | awk '/^Address:/ {print $2}')
+node dist/src/secure-cli.js genesis --out "$R/genesis.json" --chain-id zyron-scratch-1 \
   --validator-public-key "$(cat "$R/pub1")" --validator-public-key "$(cat "$R/pub2")" \
   --validator-public-key "$(cat "$R/pub3")" --validator-public-key "$(cat "$R/pub4")" \
   --oracle-public-key "$(cat "$R/pub1")" --activity-pool "$ADDR" --allocation "$ADDR:1000"
@@ -150,7 +154,7 @@ fs.writeFileSync(R + "/genesis-with-proofs.json", JSON.stringify(g, null, 2));
 console.log("genesis possession proofs OK");
 ' "$R"
 mkdir -m 700 "$R/data1"
-ZYRON_KEYSTORE_PASSWORD_FILE="$R/pw1" node dist/src/cli.js node --genesis "$R/genesis-with-proofs.json" \
+ZYRON_KEYSTORE_PASSWORD_FILE="$R/pw1" node dist/src/secure-cli.js node --genesis "$R/genesis-with-proofs.json" \
   --data "$R/data1" --validator-key "$R/k1.json" --host 127.0.0.1 --port 19371
 # prints "... node listening on http://127.0.0.1:19371" and "Genesis <hash>, height 0"; stop with Ctrl-C
 ```
@@ -174,15 +178,15 @@ The initiator must put the proof in the transaction's `possessionProofs`. The cu
 cd -- -zyronchain/l1
 curl -s https://zyron-open-testnet.onrender.com/genesis | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify(JSON.parse(s).genesis,null,2)))' > "$HOME/zyron-open-testnet-genesis.json"
 mkdir -m 700 -p "$HOME/zyron-follower"
-node dist/src/cli.js node --genesis "$HOME/zyron-open-testnet-genesis.json" --data "$HOME/zyron-follower" \
+node dist/src/secure-cli.js node --genesis "$HOME/zyron-open-testnet-genesis.json" --data "$HOME/zyron-follower" \
   --host 127.0.0.1 --port 9137 --peer https://zyron-open-testnet.onrender.com/peer
 # in another terminal; height should track https://zyron-open-testnet.onrender.com/status
 curl -s -H 'x-zyron-rpc-version: 1' http://127.0.0.1:9137/status
 ```
 
-The first sync downloads and re-validates every finalized block and certificate before the RPC starts listening (`Synced N finalized block(s) from configured peers`); this can take a minute or more. The follower holds no key and signs nothing. A genesis mismatch means the hosted network was reset: fetch the genesis again and use a new data directory.
+The first sync downloads and re-validates every finalized block and certificate before the RPC starts listening (`Synced N finalized block(s) from configured peers`); this can take a minute or more. The follower holds no key and signs nothing. A genesis mismatch can mean the hosted network was reset, but do not trust the endpoint alone for that. Before you fetch a new genesis and start a new data directory, confirm the new genesis hash through an independent channel: the pinned `EXPECTED_GENESIS` in `.github/workflows/open-testnet-snapshot-keeper.yml` on `main` and `docs/OPEN_TESTNET.md`, and the reset announcement. If they disagree, keep your old data directory and report it.
 
-To run as a validator on a network you are admitted to, add `--validator-key <key.json>` with the password in `ZYRON_KEYSTORE_PASSWORD_FILE`, or use a remote signer (`--validator-signer-url`, see `docs/V6_OPERATOR_GUIDE.md`).
+A signing key alone does not make this command a validator. The follower talks only to the hosted read-only HTTP peer on loopback, which carries no v6 prepare/commit traffic. An admitted validator also needs a native P2P listener (`--p2p-listen`), pinned bootstrap peers (`--p2p-peer`, `--p2p-peer-group`), every other validator as `--p2p-consensus-peer`, and its key (`--validator-key <key.json>` with the password in `ZYRON_KEYSTORE_PASSWORD_FILE`, or a remote signer, `--validator-signer-url`). See `docs/L1_OPERATIONS_RUNBOOK.md` and `docs/V6_OPERATOR_GUIDE.md`. The exact network-specific startup command (peer IDs, addresses, approved commit) is given to each operator at admission; none exists for the hosted testnet yet.
 
 ## 6. How admission works
 
