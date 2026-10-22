@@ -25,7 +25,7 @@ The hosted open testnet runs four v6 validators on loopback behind one public HT
 
 ### 3.2 Outbound direction (external validator as leader → hosted validators)
 
-- The relay client also serves a loopback HTTP endpoint that the external node uses as its peers: `--peer http://127.0.0.1:<client>/h/<i>` for each hosted validator. `POST`s on the consensus paths are sent to `POST /relay/v1/forward` with the target index; the gateway forwards to that hosted node on loopback and returns its reply verbatim. `GET /status` and `GET /blocks` go to the existing read-only `/peer/*` surface.
+- The relay client also serves a loopback HTTP endpoint that the external node uses as its peers: `--peer http://127.0.0.1:<client>/h/<i>` for each hosted validator. `POST`s on the consensus paths are sent to `POST /relay/v1/forward` with the target index; the gateway forwards to that hosted node on loopback and returns its reply verbatim. `GET /status` and `GET /blocks` go to the existing read-only `/peer/*` surface. `/relay/v1/forward` is accepted only while the peer's address is in the active validator set (`403` otherwise), so an allowlisted candidate cannot spend forward slots or hosted-node work before admission; candidates may still `poll` (to prove reachability) and serve relayed reads.
 
 ### 3.3 Transport authentication
 
@@ -74,4 +74,4 @@ Decision:
 
 ## 5. Tests (failing first)
 
-Adversarial tests on the gateway relay: forged envelope signature, unknown address, wrong `chainId`/`genesisHash`, stale and future `issuedAtMs`, replayed and non-increasing `seq`, wrong `bodyHash`, oversized bodies, disallowed paths on the mailbox and forward, mailbox `503` when the peer is absent, and an end-to-end round trip in which a vote relayed back is byte-identical to the one the external node produced.
+Adversarial tests on the gateway relay: forged envelope signature, unknown address, wrong `chainId`/`genesisHash`, stale and future `issuedAtMs`, replayed `seq` (an already-seen value, or one below the replay window; unseen out-of-order values inside the window are accepted), wrong `bodyHash`, oversized bodies, disallowed paths on the mailbox and forward, mailbox `503` when the peer is absent, and an end-to-end round trip in which a vote relayed back is byte-identical to the one the external node produced.
