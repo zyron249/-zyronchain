@@ -1,6 +1,6 @@
 # Volunteer testnet validators
 
-> Source of truth: [`OPEN_TESTNET.md`](OPEN_TESTNET.md).
+> Source of truth: [`OPEN_TESTNET.md`](OPEN_TESTNET.md). Long-form guide with key generation, proof of possession and admission: [`VALIDATOR_ONBOARDING.md`](VALIDATOR_ONBOARDING.md).
 
 **TESTNET: tokens have no value.** Test ZYN cannot be bought or sold and is not redeemable for mainnet ZYN. The network may be reset at any time. ZyronChain has **not** had a professional security audit.
 
