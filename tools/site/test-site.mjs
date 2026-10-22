@@ -48,7 +48,7 @@ test('network status: the same honest rows on home, Desktop Wallet Setup and Pho
   }
 });
 
-test('honesty: no mainnet/testnet-live, sale, price or hype claims; Buy/Sell stays disabled', () => {
+test('honesty: no mainnet/testnet-live, sale, price or hype claims; no Buy/Sell control', () => {
   for (const page of pages.filter((p) => p !== 'mining.html').concat('app/index.html')) {
     // Negated statements ("No presale", "not activated") are allowed; affirmative ones are not.
     const text = visible(read(page)).replace(/\s+/g, ' ').replace(/\b(no|not|never|without)\s+(a\s+|an\s+|the\s+)?[\w-]+/gi, ' ');
@@ -62,7 +62,7 @@ test('honesty: no mainnet/testnet-live, sale, price or hype claims; Buy/Sell sta
     }
   }
   const home = read('index.html');
-  assert.match(home, /<button class="btn" type="button" disabled>Buy \/ Sell not activated<\/button>/);
+  assert.doesNotMatch(home, /Buy \/ Sell|Buy ZYN|Sell ZYN/i, 'homepage must not show any buy/sell or trading control');
   assert.ok(home.includes('Final protocol fact') && home.includes('Proposed · under review') && home.includes('Pending governance'));
 });
 
