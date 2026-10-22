@@ -46,6 +46,7 @@ const { canonicalJson } = await import(dist("codec.js"));
 const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist("tokenomics.js"));
 const { defaultPublicDistributionRelease } = await import(dist("public-distribution-release.js"));
 const { gatewayClientIdentity } = await import(dist("rpc-client-identity.js"));
+const { ConsensusRelay, RELAY_MAX_BODY_BYTES, RELAY_MAX_CONSENSUS_REQUEST_BYTES, parseRelayPeers } = await import("./open-testnet/consensus-relay.mjs");
 
 export const DEFAULT_CHAIN_ID = "zyron-open-testnet-1";
 const VALIDATOR_NAMES = ["v1", "v2", "v3", "v4"];
@@ -1003,6 +1004,35 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   const ports = VALIDATOR_NAMES.map((_, i) => basePort + i);
   const nodes = new Map();
   let shuttingDown = false;
+  // Consensus relay (docs/CONSENSUS_RELAY.md): allowlisted external peers,
+  // reached by the hosted validators through a loopback-only mailbox.
+  const relayPeers = parseRelayPeers(process.env.ZYRON_RELAY_PEERS);
+  let relay; let mailbox; let mailboxPort;
+  if (relayPeers.size > 0) {
+    relay = new ConsensusRelay({ chainId, genesisHash: info.genesisHash, peers: relayPeers, hostedCount: VALIDATOR_NAMES.length,
+      async forwardToHosted(index, path, body) {
+        const node = nodes.get(VALIDATOR_NAMES[index]);
+        if (!node || node.exit) return { status: 503, body: Buffer.from('{"error":"validator not running"}') };
+        const response = await fetch(`http://127.0.0.1:${node.port}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-zyron-rpc-version": "1" }, body, signal: AbortSignal.timeout(8_000) });
+        return { status: response.status, body: Buffer.from(await response.arrayBuffer()) };
+      } });
+    mailboxPort = basePort + 50;
+    mailbox = createServer({ headersTimeout: 5_000, requestTimeout: 10_000 }, async (request, response) => {
+      try {
+        const match = /^\/x\/(ZYN[0-9a-f]{40})(\/[a-z0-9/]+)$/.exec(request.url ?? "");
+        if (request.method !== "POST" || !match) { response.writeHead(404, { "content-type": "application/json" }); return response.end('{"error":"Not found"}'); }
+        const body = await readRawBody(request, RELAY_MAX_CONSENSUS_REQUEST_BYTES);
+        const result = await relay.mailbox(match[1], match[2], body);
+        response.writeHead(result.status, { "content-type": "application/json", "content-length": result.body.length });
+        response.end(result.body);
+      } catch (error) {
+        const code = error?.statusCode ?? 500;
+        response.writeHead(code, { "content-type": "application/json" }); response.end(JSON.stringify({ error: code === 500 ? "internal error" : error.message }));
+      }
+    });
+    await new Promise((done, fail) => { mailbox.once("error", fail); mailbox.listen(mailboxPort, "127.0.0.1", () => { mailbox.off("error", fail); done(); }); });
+    console.log(`consensus relay: ${relayPeers.size} external peer(s); mailbox on 127.0.0.1:${mailboxPort}`);
+  }
 
   function startValidator(name) {
     const index = VALIDATOR_NAMES.indexOf(name);
@@ -1014,6 +1044,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       // shared one node RPC quota for 127.0.0.1.
       "--rpc-rate-limit-exempt", "127.0.0.1"];
     for (const [i, port] of ports.entries()) if (i !== index) args.push("--peer", `http://127.0.0.1:${port}`);
+    if (relay) for (const address of relay.addresses()) args.push("--peer", `http://127.0.0.1:${mailboxPort}/x/${address}`);
     const child = spawn(process.execPath, args, { cwd: l1Root, stdio: ["ignore", "pipe", "pipe"] });
     const prefix = `[${name}] `;
     for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => {
@@ -1040,6 +1071,13 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     clearTimeout(timer);
   }
 
+  async function readRawBody(request, max) {
+    if (!String(request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) throw Object.assign(new Error("content-type must be application/json"), { statusCode: 415 });
+    if (Number(request.headers["content-length"] ?? 0) > max) throw Object.assign(new Error("request body too large"), { statusCode: 413 });
+    let size = 0; const chunks = [];
+    for await (const chunk of request) { size += chunk.length; if (size > max) throw Object.assign(new Error("request body too large"), { statusCode: 413 }); chunks.push(chunk); }
+    return Buffer.concat(chunks);
+  }
   async function nodeFetch(port, path, init = {}) {
     const response = await fetch(`http://127.0.0.1:${port}${path}`, {
       ...init, headers: { "x-zyron-rpc-version": "1", ...(init.headers ?? {}) }, signal: AbortSignal.timeout(8_000)
@@ -1122,7 +1160,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     faucetIp: new WindowLimiter(5, DAY_MS),
     faucetAddress: new WindowLimiter(1, DAY_MS),
     faucetGlobal: new WindowLimiter(200, 3_600_000, 1),
-    snapshot: new WindowLimiter(30, 3_600_000, 1)
+    snapshot: new WindowLimiter(30, 3_600_000, 1),
+    relayIp: new WindowLimiter(Number(process.env.ZYRON_RELAY_REQUESTS_PER_MINUTE_PER_IP ?? 1200), 60_000)
   };
   let snapshotCache; let snapshotCacheAt = 0; let snapshotBuild;
   // Verified history (R28-1059): from the restore replay when there was one,
@@ -1319,6 +1358,13 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const result = await faucetSend(address);
           return sendJson(response, 200, { ...result, network: "testnet", valueBearing: false, note: "TESTNET — tokens have no value. Arrives in a coming block (about 30 seconds)." });
         }
+        if (relay && path.startsWith("/relay/v1/")) {
+          const relayRate = limits.relayIp.take(ip);
+          if (!relayRate.allowed) return limited(response, relayRate);
+          const body = await readRawBody(request, RELAY_MAX_BODY_BYTES);
+          const result = await relay.handlePublic(path.slice("/relay/v1/".length), request.headers, body);
+          return sendJson(response, result.status, result.body, { "cache-control": "no-store" });
+        }
         return sendJson(response, 404, { error: "not found" });
       }
       return sendJson(response, 405, { error: "method not allowed" });
@@ -1337,6 +1383,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   async function shutdown() {
     if (shuttingDown) return; shuttingDown = true;
     await new Promise((done) => gateway.close(() => done()));
+    if (mailbox) await new Promise((done) => mailbox.close(() => done()));
     await Promise.all(VALIDATOR_NAMES.map((name) => stopValidator(name)));
   }
   async function waitForQuorum(timeoutMs = STARTUP_GRACE_MS) {
