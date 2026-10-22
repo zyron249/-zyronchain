@@ -15,7 +15,7 @@ import { ZyronChain } from "../src/chain.js";
 import { NodeService } from "../src/node.js";
 import { ChainStore } from "../src/storage.js";
 import { addressFromPublicKey, publicKeyFromPrivate, signCanonical, signCanonicalDomain } from "../src/crypto.js";
-import { createValidatorApproval, createValidatorSetUpdate, validateTransactionShape } from "../src/transaction.js";
+import { createTransfer, createValidatorApproval, createValidatorSetUpdate, validateTransactionShape } from "../src/transaction.js";
 import { ATOMS_PER_ZYN, type Block, type GenesisConfig, type Validator, type ValidatorPossessionProof, type ValidatorSetUpdateTx } from "../src/types.js";
 import {
   POSSESSION_PROOF_DOMAIN,
@@ -267,6 +267,11 @@ test("P1-07-F1: a pending update only counts as predecessor when it is admissibl
   for (const [name, pending] of [["same height", later], ["activates later", afterIt], ["no quorum", unapproved], ["too soon", tooSoon], ["other chain", foreign]] as const) {
     assert.throws(() => chain.validateMempoolAdmission(readd, at, [pending]), /one possession proof per incoming validator/, name);
   }
+  // Same sender: the predecessor must hold a lower nonce, or selection would reach the re-add first (Codex P2, #1095).
+  const removeAfter = update(chain, [0x21, 0x22, 0x23], { nonce: 3, proofs: [] });
+  assert.throws(() => chain.validateMempoolAdmission(readd, at, [removeAfter]), /one possession proof per incoming validator/, "same sender, higher nonce");
+  const removeSameNonce = update(chain, [0x21, 0x22, 0x23], { nonce: 2, proofs: [] });
+  assert.throws(() => chain.validateMempoolAdmission(readd, at, [removeSameNonce]), /one possession proof per incoming validator/, "same sender, same nonce");
   // A predecessor never relaxes the update's own checks (a bad proof stays bad).
   const remove = update(chain, [0x21, 0x22, 0x23], { proofs: [] });
   const badProof = update(chain, [0x21, 0x22, 0x23, 0x24], { activationHeight: 300, nonce: 2, proofs: [proof(chain, 301, 0x24)] });
@@ -296,6 +301,37 @@ test("P1-07-F1: NodeService.submitTransaction accepts the same-block remove-then
     const other = new NodeService(store);
     assert.equal(other.submitTransaction(remove), remove.txid);
     assert.equal(other.submitTransaction(readdByOther), readdByOther.txid);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("P1-07-F1: a predecessor from another sender is checked with that sender's pending nonce prefix", async () => {
+  const base = devGenesis("zyron-devnet-admit-prefix");
+  const genesis = signGenesisPossessionProofs({
+    ...base,
+    allocations: [...base.allocations, { address: addr(0x22), amountAtoms: 10 * ZYN }]
+  }, GENESIS_SET.map(key));
+  const directory = await mkdtemp(join(tmpdir(), "zyron-p107f1-prefix-"));
+  try {
+    const store = await ChainStore.open(genesis, directory);
+    const service = new NodeService(store);
+    const chain = store.chain;
+    const transfer = createTransfer({
+      chainId: genesis.chainId, nonce: 1, sender: addr(0x22), receiver: addr(0x23), amountAtoms: ZYN, feeAtoms: 0, timestampMs: T0 + 5
+    }, key(0x22), pub(0x22));
+    // 0x22: a pending transfer at nonce 1, then the removal at nonce 2.
+    const remove = update(chain, [0x21, 0x22, 0x23], { nonce: 2, proofs: [], signers: [0x22, 0x23, 0x21] });
+    // 0x21: the re-add at its nonce 1.
+    const readd = update(chain, [0x21, 0x22, 0x23, 0x24], { activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x24)] });
+    assert.equal(service.submitTransaction(transfer), transfer.txid);
+    assert.equal(service.submitTransaction(remove), remove.txid);
+    assert.equal(service.submitTransaction(readd), readd.txid);
+    const at = chain.tip.header.timestampMs + 1_000;
+    assert.deepEqual(
+      new Set(chain.selectValidPending(service.mempool.values(), 10, undefined, at).map((tx) => tx.txid)),
+      new Set([transfer.txid, remove.txid, readd.txid])
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -769,7 +769,8 @@ export class ZyronChain {
    * never enter the mempool. An update that fails the persisted-schedule check
    * is admitted when it is fully valid (quorum, activation order, possession
    * proofs) as the direct successor of a pending update that is itself valid
-   * against the persisted schedule and activates earlier. Block selection and
+   * against the persisted schedule, activates earlier and, from the same
+   * sender, holds a lower nonce. Block selection and
    * validation are unchanged, so nothing invalid is ever included.
    */
   private validatorUpdateAdmissionPredecessor(
@@ -784,6 +785,8 @@ export class ZyronChain {
       // Cheap filters first; signatures only for a plausible predecessor.
       if (candidate.kind !== "validator_update" || candidate.txid === tx.txid || candidate.chainId !== this.genesis.chainId) continue;
       if (candidate.activationHeight <= lastActivation || candidate.activationHeight >= tx.activationHeight) continue;
+      // Same sender: selection walks nonces in order, so the predecessor must come first.
+      if (candidate.sender === tx.sender && candidate.nonce >= tx.nonce) continue;
       try {
         this.shape(candidate);
         validateValidatorUpdateAuthorization(

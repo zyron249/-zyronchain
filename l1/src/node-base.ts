@@ -694,9 +694,15 @@ export class NodeService {
       }
     }
     if (tx.nonce === stateNonce + 1) {
-      // A predecessor with the same sender holds this nonce slot first, so it
-      // is checked together with the update only when it is a different sender.
-      this.store.chain.validatePending(predecessor && predecessor.sender !== tx.sender ? [predecessor, tx] : [tx]);
+      // A same-sender predecessor holds a lower nonce, so this branch only sees
+      // a predecessor from another sender: check it after that sender's pending
+      // nonce prefix, then the update.
+      const prefix = predecessor
+        ? this.mempool.values()
+          .filter((item) => item.sender === predecessor.sender && item.nonce < predecessor.nonce)
+          .sort((left, right) => left.nonce - right.nonce)
+        : [];
+      this.store.chain.validatePending(predecessor ? [...prefix, predecessor, tx] : [tx]);
     }
     this.mempool.add(tx);
     return tx.txid;
