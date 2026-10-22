@@ -33,7 +33,9 @@ async function writePrivateKeyFile(path: string): Promise<void> {
 test("legacy governance readers all use the bounded governance artifact reader", async () => {
   const source = await readFile(new URL("../../src/cli.ts", import.meta.url), "utf8");
   assert.equal(source.includes('JSON.parse(await readFile(path, "utf8"))'), false);
-  assert.equal((source.match(/JSON\.parse\(await readCliGovernanceArtifactUtf8\(path\)\)/g) ?? []).length, 3);
+  // Inventory: validator proposal, approval reader, protocol proposal, and the
+  // possession-proof file reader (validator-submit --possession-proof).
+  assert.equal((source.match(/JSON\.parse\(await readCliGovernanceArtifactUtf8\(path\)\)/g) ?? []).length, 4);
 });
 
 test("direct legacy validator-approve rejects oversized proposal before key access", async () => {
