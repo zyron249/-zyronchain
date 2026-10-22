@@ -182,16 +182,18 @@ A signing key alone does not make this command a validator. The follower talks o
 
 ### 5.1 Upgrading after a genesis relaunch
 
-The genesis currently pinned for `zyron-open-testnet-render-1` is `e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad` (genesis timestamp 2026-10-20T22:09:28.767Z). That genesis carries fields that older code does not know: `activityOracleThreshold` and `activityOraclePolicy` (added in #1076, `f3913f2`) and `publicDistributionRelease` (added in #1075, `69171bf`). Genesis loading rejects unknown fields, so a node built before those changes stops at start with:
+The genesis currently pinned for `zyron-open-testnet-render-1` is `e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad` (genesis timestamp 2026-10-20T22:09:28.767Z). That genesis carries fields that older code does not know: `activityOracleThreshold` and `activityOraclePolicy` (added in #1076, `f3913f2`) and `publicDistributionRelease` (added in #1075, `69171bf`). Genesis loading rejects unknown fields, so a node built before those changes (for example from `ccd8efaa`) stops at start with:
 
 ```text
 Fatal: Invalid genesis fields
 ```
 
-Any `main` at or after `fdd1e792` contains both changes. (`fdd1e792` itself, #1092, only changes the stranded-pruning test fixtures of `l1/scripts/open-testnet.mjs`; it is used here as a known-good reference point, not as the commit that added the fields.)
+Run current `main` (verified at `fdd1e792` or later). No minimum commit has been proven; `fdd1e792` (#1092) is a verified reference point that contains both changes, not the commit that added the fields (it only changes stranded-pruning test fixtures). The previous chain, genesis `9ad75d777141de46df1fb008298a4d8a92fbce0a9c96aaf26ecf69474b7db8eb`, is retired; do not try to keep following it.
+
+Use Node.js 22 or newer (`l1/package.json` requires `>=22`). On Node.js 20 the node has been reported to exit silently with code 139 (segmentation fault); check `node --version` first.
 
 1. **Confirm the expected hash independently.** Compare the `EXPECTED_GENESIS` pin in `.github/workflows/open-testnet-snapshot-keeper.yml` on `main`, `docs/OPEN_TESTNET.md`, and the reset announcement. If they disagree, stop, keep your data directory and report it.
-2. **Update the code** to the latest `main` and check that `fdd1e792` is included:
+2. **Update the code** to the latest `main` and check that it includes `fdd1e792`:
    ```sh
    git fetch origin && git checkout main && git pull --ff-only origin main
    git merge-base --is-ancestor fdd1e792 HEAD && echo "includes fdd1e792"
@@ -200,7 +202,7 @@ Any `main` at or after `fdd1e792` contains both changes. (`fdd1e792` itself, #10
    ```sh
    cd l1 && npm ci && npm run build
    ```
-4. **Verify the genesis hash** the network reports. `GET /status` and `GET /genesis` return it; check it against the pin from step 1:
+4. **Re-fetch the genesis and verify its hash.** Fetch `GET /genesis` again (never reuse the old genesis file), and check the genesis hash that `GET /status` (or `GET /genesis`) reports equals `e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad`, the pin from step 1:
    ```sh
    curl -s https://zyron-open-testnet.onrender.com/status
    ```
