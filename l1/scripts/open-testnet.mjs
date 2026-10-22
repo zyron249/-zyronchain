@@ -608,6 +608,58 @@ async function readSecret(path) {
   return JSON.parse(await readFile(path, "utf8"));
 }
 
+// ---- durable watermark (follower forks after a cold start) ------------------
+// The hosted instance has no persistent disk: a cold start restores the last
+// snapshot the keeper published, which can be minutes behind the tip that was
+// already finalized and served. The validators then finalize those heights a
+// second time with different blocks, and every follower that synced the lost
+// blocks is stuck on a fork. The validators cannot know what they finalized
+// before the disk was lost, so the gateway never serves a block to followers
+// (the /peer surface) above the durable height: the height of the newest
+// published snapshot that matches this chain. Anything a follower syncs is
+// therefore inside every snapshot a later cold start can restore.
+export function createDurableWatermark({ height = 0, tipHash, fetchPublished, localHashAt, log = () => {} }) {
+  const state = { height, tipHash, checkedAtMs: undefined, lastError: undefined };
+  let pending;
+  async function check() {
+    const published = await fetchPublished();
+    if (!published) return state;
+    const { height: publishedHeight, tipHash: publishedHash } = published;
+    if (!Number.isSafeInteger(publishedHeight) || publishedHeight <= state.height) { state.checkedAtMs = Date.now(); return state; }
+    const local = await localHashAt(publishedHeight);
+    if (local !== publishedHash) throw new Error(`published snapshot block ${publishedHeight} (${String(publishedHash).slice(0, 12)}) is not on this chain (${String(local).slice(0, 12)})`);
+    state.height = publishedHeight; state.tipHash = publishedHash; state.checkedAtMs = Date.now(); state.lastError = undefined;
+    return state;
+  }
+  return {
+    get height() { return state.height; },
+    get tipHash() { return state.tipHash; },
+    status() { return { durableHeight: state.height, durableCheckedAtMs: state.checkedAtMs ?? null, ...(state.lastError ? { durableError: state.lastError } : {}) }; },
+    refresh() {
+      pending ??= check().catch((error) => { state.lastError = error instanceof Error ? error.message : String(error); log(`durable watermark: ${state.lastError}`); return state; }).finally(() => { pending = undefined; });
+      return pending;
+    }
+  };
+}
+
+// Reads the published snapshot and returns its height and tip hash, or
+// undefined when none is published yet.
+export async function readPublishedSnapshotTip(url, secret, { fetchImpl = fetch, timeoutMs = 60_000 } = {}) {
+  const response = await fetchImpl(url, { redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
+  if (response.status === 404) return undefined;
+  if (response.status !== 200) throw new Error(`published snapshot returned ${response.status}`);
+  const bundle = openSnapshot(Buffer.from(await response.arrayBuffer()), secret);
+  const blocks = bundle?.blocks;
+  if (!Array.isArray(blocks) || blocks.length === 0) return undefined;
+  return { height: blocks.length, tipHash: blocks[blocks.length - 1].hash };
+}
+
+// Caps a follower status at the durable watermark.
+export function capPeerStatus(status, watermark) {
+  if (!watermark || status.height <= watermark.height) return status;
+  return { ...status, height: watermark.height, tipHash: watermark.tipHash };
+}
+
 // ---- sealed state snapshots (TEST keys + public blocks) ---------------------------
 function snapshotKey(secret) {
   assert.ok(typeof secret === "string" && secret.length >= 32, "ZYRON_TESTNET_STATE_SECRET must be at least 32 characters");
@@ -990,7 +1042,7 @@ export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, ge
 }
 
 // ---- run: validators + gateway ---------------------------------------------------
-export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server, verifiedHistory } = {}) {
+export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server, verifiedHistory, durable } = {}) {
   const runStartedAtMs = Date.now();
   const genesisPath = join(dir, "genesis.json");
   const genesis = JSON.parse(await readFile(genesisPath, "utf8"));
@@ -1173,6 +1225,20 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // Verified history (R28-1059): from the restore replay when there was one,
   // otherwise validated from genesis on the first build.
   const snapshotHistory = verifiedHistory ?? createSnapshotHistory(genesis);
+  // Durable watermark (see createDurableWatermark): only when the chain lives
+  // in published snapshots. `durable.fetchPublished` reads the newest one.
+  let watermark;
+  if (durable) {
+    const restoredBlocks = verifiedHistory?.blocks ?? [];
+    watermark = createDurableWatermark({
+      height: restoredBlocks.length, tipHash: restoredBlocks.length ? restoredBlocks[restoredBlocks.length - 1].hash : undefined,
+      fetchPublished: durable.fetchPublished,
+      localHashAt: async (height) => { const r = await anyNode(`/blocks?from=${height}&limit=1`); if (r.status !== 200 || !Array.isArray(r.body?.blocks) || !r.body.blocks[0]) throw new Error(`local block ${height} unavailable`); return r.body.blocks[0].hash; },
+      log: (line) => console.error(line)
+    });
+    void watermark.refresh();
+    const timer = setInterval(() => { void watermark.refresh(); }, durable.intervalMs ?? 120_000); timer.unref();
+  }
   // One build at a time: concurrent requests share it, and the verified
   // history is never extended twice in parallel.
   function buildSnapshot() {
@@ -1302,7 +1368,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const starting = !ok && !everReady && Date.now() - runStartedAtMs < STARTUP_GRACE_MS;
           const status = ok ? "ready" : starting ? "starting" : "degraded";
           const code = ok || (starting && path !== "/readyz") ? 200 : 503;
-          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), network: "testnet", valueBearing: false, chainId, persistence, quorum, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
+          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), network: "testnet", valueBearing: false, chainId, persistence, ...(watermark ? watermark.status() : {}), quorum, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
@@ -1310,14 +1376,17 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
         // raw /status and /blocks only. Validator P2P write paths are never exposed.
         if (path === "/peer/status") {
           const result = await anyNode("/status");
-          return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? result.body : { error: "node unavailable" }, PEER_RPC);
+          if (result.status === 200 && watermark && !watermark.tipHash) return sendJson(response, 503, { error: "no durable block yet" }, PEER_RPC);
+          return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? capPeerStatus(result.body, watermark) : { error: "node unavailable" }, PEER_RPC);
         }
         if (path === "/peer/blocks") {
           const from = Number.parseInt(url.searchParams.get("from") ?? "", 10);
           const limit = Math.min(100, Math.max(1, Number.parseInt(url.searchParams.get("limit") ?? "100", 10) || 100));
           if (!Number.isSafeInteger(from) || from < 1) return sendJson(response, 400, { error: "from must be a positive integer" });
-          const result = await anyNode(`/blocks?from=${from}&limit=${limit}`);
-          return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? result.body : { error: "node unavailable" }, PEER_RPC);
+          if (watermark && from > watermark.height) return sendJson(response, 404, { error: "no durable block at that height yet" }, PEER_RPC);
+          const capped = watermark ? Math.min(limit, watermark.height - from + 1) : limit;
+          const result = await anyNode(`/blocks?from=${from}&limit=${capped}`);
+          return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? { ...result.body, blocks: result.body.blocks.slice(0, capped) } : { error: "node unavailable" }, PEER_RPC);
         }
         if (path === "/state/snapshot" && stateSecret) {
           const snapshotRate = limits.snapshot.take("global");
@@ -1537,10 +1606,10 @@ if (!invokedDirectly) {
   const stateSecret = process.env.ZYRON_TESTNET_STATE_SECRET || undefined;
   let persistence = { mode: "local-disk" };
   let verifiedHistory;
+  const restoreUrl = option("--restore-url", process.env.ZYRON_TESTNET_STATE_URL || undefined);
   if (rest.includes("--init-if-missing")) {
     const exists = Boolean(await readNetworkMarker(dir));
     const chainId = option("--chain-id", process.env.ZYRON_TESTNET_CHAIN_ID ?? DEFAULT_CHAIN_ID);
-    const restoreUrl = option("--restore-url", process.env.ZYRON_TESTNET_STATE_URL || undefined);
     if (!exists) {
       const aside = await moveAsideIncompleteNetworkDir(dir);
       if (aside) console.log(`moved an incomplete network directory left by an interrupted start-up to ${aside}`);
@@ -1587,7 +1656,10 @@ if (!invokedDirectly) {
     }
   }
   boot.enter("validators");
-  const network = await runNetwork(dir, { stateSecret, persistence, host, server, verifiedHistory, basePort: Number(option("--validator-base-port", "9300")) });
+  // Followers are served only blocks inside a published snapshot when the
+  // chain lives in published snapshots (ZYRON_TESTNET_DURABLE_PEERS=0 opts out).
+  const durable = restoreUrl && stateSecret && process.env.ZYRON_TESTNET_DURABLE_PEERS !== "0" ? { fetchPublished: () => readPublishedSnapshotTip(restoreUrl, stateSecret) } : undefined;
+  const network = await runNetwork(dir, { stateSecret, persistence, host, server, verifiedHistory, durable, basePort: Number(option("--validator-base-port", "9300")) });
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { void network.shutdown().then(() => process.exit(0)); });
   if (await network.waitForQuorum()) {
     boot.enter("ready");

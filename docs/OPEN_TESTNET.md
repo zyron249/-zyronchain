@@ -114,6 +114,23 @@ The current validator set is run by the project from one host, so it is **not** 
 
 Never send a private key, password file or signer token to anyone, including project maintainers.
 
+## Followers and cold starts (durable watermark)
+
+The hosted instance has no persistent disk. A cold start restores the newest
+snapshot published by the snapshot keeper, which can be several minutes behind
+the tip that was finalized before the restart. The validators then finalize
+those heights again with different blocks. Before this fix, every follower that
+had synced the lost blocks ended up on a fork.
+
+When the gateway runs with a restore URL and a state secret, the follower
+surface (`/peer/status`, `/peer/blocks`) serves only blocks inside the newest
+published snapshot that matches the live chain (the durable height, shown as
+`durableHeight` in `/health`). Followers therefore trail the tip by up to one
+keeper interval, and a later restore never contradicts a block they hold. The
+explorer endpoints (`/status`, `/blocks`, `/block/{height}`) still show the
+live tip; blocks above `durableHeight` can be replaced by a cold start. Set
+`ZYRON_TESTNET_DURABLE_PEERS=0` to turn the cap off.
+
 ## What this testnet does not prove
 
 - No independent operators yet, single host, single region.
