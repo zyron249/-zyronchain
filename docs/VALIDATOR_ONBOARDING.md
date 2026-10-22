@@ -160,7 +160,9 @@ node dist/src/secure-cli.js validator-submit --proposal update.json \
   --key initiator.json --rpc <url>
 ```
 
-Proofs are needed only for incoming validators. Validators that continue from the current set need none, and consensus refuses extra proofs. A validator that is removed and re-added needs a fresh proof. On a chain without `validatorAdmission`, leave out `--possession-proof`: consensus refuses the field there.
+Proofs are needed only for incoming validators. Validators that continue from the current set need none, and consensus refuses extra proofs. A validator that is removed and re-added needs a fresh proof.
+
+On a chain with `validatorAdmission`, the field is mandatory even when no validator comes in, for example in a removal-only update. Pass `--validator-admission true` and `validator-submit` sends `possessionProofs: []` when no `--possession-proof` is given. On a chain without `validatorAdmission`, consensus refuses the field, so leave out `--possession-proof`. `--validator-admission false` makes the command refuse any proof you pass.
 
 ## 5. Run a follower against the hosted testnet
 

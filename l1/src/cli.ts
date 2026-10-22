@@ -867,9 +867,20 @@ async function approveValidatorProposal(args: string[]): Promise<void> {
 }
 
 async function submitValidatorProposal(args: string[]): Promise<void> {
-  assertKnownOptions(args, new Set(["--proposal", "--approval", "--possession-proof", "--key", "--rpc"]));
+  assertKnownOptions(args, new Set(["--proposal", "--approval", "--possession-proof", "--validator-admission", "--key", "--rpc"]));
   const proposal = await readValidatorProposal(resolve(requiredOption(args, "--proposal")));
+  // --validator-admission true: the chain uses validatorAdmission, so the
+  // field is mandatory and is sent even when empty (an update with no
+  // incoming validator). false: the chain refuses the field. Absent: the field
+  // is sent only when --possession-proof is given.
+  const admissionOption = option(args, "--validator-admission");
+  if (admissionOption !== undefined && admissionOption !== "true" && admissionOption !== "false") {
+    throw new Error("--validator-admission must be true or false");
+  }
   const proofPaths = options(args, "--possession-proof");
+  if (admissionOption === "false" && proofPaths.length) {
+    throw new Error("--possession-proof requires a chain with validatorAdmission (--validator-admission false was given)");
+  }
   const suppliedProofs: ValidatorPossessionProof[] = [];
   for (const path of proofPaths) suppliedProofs.push(await readPossessionProofFile(resolve(path)));
   const privateKey = await readPrivateKey(resolve(requiredOption(args, "--key")));
@@ -887,7 +898,7 @@ async function submitValidatorProposal(args: string[]): Promise<void> {
   // transaction carries no possessionProofs field, as before.
   const possessionProofs = suppliedProofs.length
     ? await orderAndVerifyPossessionProofs(proposal, suppliedProofs, rpc)
-    : undefined;
+    : admissionOption === "true" ? [] : undefined;
   const tx = createValidatorSetUpdate(
     { ...proposal, approvals, ...(possessionProofs ? { possessionProofs } : {}), timestampMs: Date.now() },
     privateKey,
@@ -1386,7 +1397,7 @@ function usage(): void {
   console.log("  zyron-l1 tx-submit --tx tx.json --rpc <url>");
   console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");
   console.log("  zyron-l1 validator-approve --proposal update.json --key validator.json --out approval.json");
-  console.log("  zyron-l1 validator-submit --proposal update.json --approval approval-a.json [...] [--possession-proof proof-x.json ...] --key initiator.json --rpc <url>");
+  console.log("  zyron-l1 validator-submit --proposal update.json --approval approval-a.json [...] [--possession-proof proof-x.json ...] [--validator-admission true|false] --key initiator.json --rpc <url>");
   console.log("  zyron-l1 validator-possession-proof --genesis genesis.json --key validator-key.json --out proof.json   (genesis validator; activation height 0)");
   console.log("  zyron-l1 validator-possession-proof --proposal update.json --genesis-hash <hex> --key validator-key.json --out proof.json   (incoming validator of a validator_update)");
   console.log("  zyron-l1 protocol-proposal --out upgrade.json --rpc <url> --key initiator.json --activation-height <n> --protocol-version <n>");
