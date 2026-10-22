@@ -14,6 +14,7 @@ import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { chromium } from 'playwright-core';
+import { vaultSecretLeaks } from './vault-leaks.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..', '..');
@@ -272,8 +273,9 @@ try {
     const vault = records[0];
     core.assertVaultShape(vault);
     assert.equal(vault.address, address);
-    const text = JSON.stringify(vault);
-    for (const secret of [...words.filter((w) => w.length > 4), core.wipe ? Buffer.from(entropy).toString('hex') : '', PASSWORD]) if (secret) assert.ok(!text.includes(secret), 'vault leaks a secret');
+    const secrets = [...words.filter((w) => w.length > 4), core.wipe ? Buffer.from(entropy).toString('hex') : '', PASSWORD];
+    assert.deepEqual(vaultSecretLeaks(vault, secrets), [], 'vault leaks a secret');
+    assert.ok(!JSON.stringify(vault).includes(words.join(' ')), 'vault leaks the phrase');
     const storage = await page.evaluate(async () => ({ local: localStorage.length, session: sessionStorage.length, dbs: (await indexedDB.databases()).map((d) => d.name), cookie: document.cookie }));
     assert.deepEqual(storage, { local: 0, session: 0, dbs: ['zyron-wallet-app'], cookie: '' });
     assert.equal(requests.slice(before).filter((r) => r.url.startsWith('http')).length, 0, 'no network requests while creating (offline + CSP)');
