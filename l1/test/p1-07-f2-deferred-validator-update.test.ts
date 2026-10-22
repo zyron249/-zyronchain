@@ -246,3 +246,57 @@ test("P1-07-F2: a re-add refused for an incomplete predecessor nonce prefix is r
     );
   });
 });
+
+// Codex P2s on #1104 (104e108).
+test("P1-07-F2: variants with invalid possession-proof signatures cannot evict a deferred valid variant", async () => {
+  await withService("zyron-devnet-p107f2-invalid-proofs", (service, chain) => {
+    const remove = update(chain, [0x21, 0x22, 0x23]);
+    const readd = update(chain, [0x21, 0x22, 0x23, 0x24], {
+      activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x24)], signers: [0x22, 0x23, 0x21]
+    });
+    assert.throws(() => service.submitTransaction(readd), MISSING);
+    // The same quorum-approved update, re-signed by its sender with proofs whose
+    // signatures do not verify (wrong activation height, another key's signature).
+    const wrongHeight = update(chain, [0x21, 0x22, 0x23, 0x24], {
+      activationHeight: 300, nonce: 1, proofs: [proof(chain, 301, 0x24)], signers: [0x22, 0x23, 0x21]
+    });
+    const wrongKey = update(chain, [0x21, 0x22, 0x23, 0x24], {
+      activationHeight: 300, nonce: 1, signers: [0x22, 0x23, 0x21],
+      proofs: [{ address: addr(0x24), signature: proof(chain, 300, 0x25).signature }]
+    });
+    assert.notEqual(wrongHeight.txid, readd.txid);
+    assert.notEqual(wrongKey.txid, readd.txid);
+    assert.throws(() => service.submitTransaction(wrongHeight));
+    assert.throws(() => service.submitTransaction(wrongKey));
+    assert.equal(service.deferredValidatorUpdateCount(), 1, "variants with invalid proof signatures are not deferred");
+    assert.equal(service.submitTransaction(remove), remove.txid);
+    assert.equal(service.mempool.values().some((tx) => tx.txid === readd.txid), true, "the valid variant survives");
+  });
+});
+
+test("P1-07-F2: ordinary transactions do not copy the mempool while updates are deferred", async () => {
+  await withService("zyron-devnet-p107f2-no-clone", (service, chain) => {
+    const readd = update(chain, [0x21, 0x22, 0x23, 0x24], {
+      activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x24)], signers: [0x23, 0x22, 0x21]
+    });
+    assert.throws(() => service.submitTransaction(readd), MISSING);
+    assert.equal(service.deferredValidatorUpdateCount(), 1);
+    const mempool = service.mempool as unknown as { values: () => Transaction[] };
+    const original = mempool.values.bind(service.mempool);
+    let copies = 0;
+    mempool.values = () => { copies += 1; return original(); };
+    try {
+      // 0x22 sends no validator update: its transfers are not a retry trigger.
+      for (let nonce = 1; nonce <= 3; nonce += 1) {
+        const transfer = createTransfer({
+          chainId: chain.genesis.chainId, nonce, sender: addr(0x22), receiver: addr(0x30),
+          amountAtoms: 1 * ZYN, feeAtoms: 0, timestampMs: T0 + 10
+        }, key(0x22), pub(0x22));
+        assert.equal(service.submitTransaction(transfer), transfer.txid);
+      }
+    } finally {
+      mempool.values = original;
+    }
+    assert.equal(copies, 0, "admitting an ordinary transaction must not copy the whole mempool");
+  });
+});
