@@ -8,6 +8,9 @@
 
   const RPC = 'https://zyron-wallet-testnet-rpc.onrender.com';
   const COLD_START_MS = 60000;
+  const ATTEMPT_MS = 20000;
+  const WAKE_TOTAL_MS = 120000;
+  const RETRY_DELAY_MS = 4000;
   const POLL_MS = 3000;
   const POLL_TIMEOUT_MS = 90000;
   const ATOMS_PER_ZYN = 100000000;
@@ -72,7 +75,7 @@
 
   async function request(path, options) {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), COLD_START_MS);
+    const timer = setTimeout(() => ctrl.abort(), (options && options.timeoutMs) || COLD_START_MS);
     try {
       const response = await fetch(RPC + path, {
         method: options && options.method || 'GET',
@@ -99,6 +102,40 @@
     }
   }
 
+  // A sleeping free host answers slowly, with a gateway error, or while it restores saved state.
+  // GET requests are retried with a per-attempt timeout until WAKE_TOTAL_MS, then a clear message is shown.
+  function isWaking(error) {
+    if (!error) return false;
+    if (error.name === 'AbortError' || error.name === 'TypeError') return true;
+    if (error.status === 502 || error.status === 503 || error.status === 504) return true;
+    return /restor|starting|waking|not ready/i.test(String(error.message || ''));
+  }
+  async function getWithRetry(path, onWait) {
+    const started = Date.now();
+    let attempt = 0;
+    for (;;) {
+      attempt += 1;
+      try {
+        return await request(path, { timeoutMs: ATTEMPT_MS });
+      } catch (error) {
+        const elapsed = Date.now() - started;
+        if (!isWaking(error) || elapsed + RETRY_DELAY_MS >= WAKE_TOTAL_MS) {
+          if (isWaking(error)) {
+            const final = new Error('The wallet testnet did not answer within 2 minutes. The free host may still be starting or restoring its saved state. Try again in a minute.');
+            final.waking = true;
+            throw final;
+          }
+          throw error;
+        }
+        if (onWait) onWait(attempt, Math.round(elapsed / 1000));
+        await sleep(RETRY_DELAY_MS);
+      }
+    }
+  }
+  function wakeText(prefix) {
+    return (attempt, seconds) => prefix + ' The free host is waking up or restoring its saved state (try ' + (attempt + 1) + ', ' + seconds + ' s so far). This can take up to 2 minutes.';
+  }
+
   function renderStatus(next) {
     status = next;
     const ok = next && next.valueBearing === false && typeof next.chainId === 'string';
@@ -113,9 +150,9 @@
   }
 
   async function loadStatus() {
-    text('[data-net-state]', 'Waking the free host. This can take up to a minute.');
+    text('[data-net-state]', 'Contacting the wallet testnet. A sleeping free host can take up to 2 minutes to wake.');
     try {
-      const next = await request('/status');
+      const next = await getWithRetry('/status', (attempt, seconds) => text('[data-net-state]', wakeText('Still waiting.')(attempt, seconds)));
       if (!next || next.valueBearing !== false) throw new Error('Refusing to show a status that does not declare valueBearing: false');
       renderStatus(next);
     } catch (error) {
@@ -156,7 +193,8 @@
     }
     msg('[data-lookup-msg]', 'Looking up ' + parsed.canonical + '…', '');
     try {
-      const [account, live] = await Promise.all([request('/account/' + parsed.canonical), status ? Promise.resolve(status) : request('/status')]);
+      const onWait = (attempt, seconds) => msg('[data-lookup-msg]', wakeText('Still looking up ' + parsed.canonical + '.')(attempt, seconds), '');
+      const [account, live] = await Promise.all([getWithRetry('/account/' + parsed.canonical, onWait), status ? Promise.resolve(status) : getWithRetry('/status')]);
       if (!account || account.valueBearing === true) throw new Error('Refusing to show an account from a value-bearing response');
       if (live && live.valueBearing === false) renderStatus(live);
       if (account.address && account.address !== parsed.canonical) throw new Error('The network returned a different address');
@@ -261,7 +299,13 @@
   }
 
   $('[data-refresh]').addEventListener('click', () => { void loadStatus(); });
-  $('[data-lookup]').addEventListener('click', () => { void lookup(); });
+  let lookupBusy = false;
+  $('[data-lookup]').addEventListener('click', () => {
+    if (lookupBusy) return;
+    lookupBusy = true;
+    $('[data-lookup]').disabled = true;
+    void lookup().finally(() => { lookupBusy = false; $('[data-lookup]').disabled = false; });
+  });
   $('[data-address]').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); void lookup(); } });
   $('[data-tx-review]').addEventListener('click', () => { void reviewTransfer(); });
   $('[data-tx]').addEventListener('input', clearReview);

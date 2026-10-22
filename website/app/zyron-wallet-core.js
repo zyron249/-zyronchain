@@ -297,10 +297,11 @@
   // ---------- amounts ----------
   function zynToAtoms(value) {
     const text = String(value == null ? '' : value).trim().replace(/_/g, '');
+    if (/^\d{10,}(?:\.\d*)?$/.test(text)) throw new Error('Amount is too large: the total supply is 50,000,000 ZYN');
     const match = /^(\d{1,9})(?:\.(\d{1,8}))?$/.exec(text);
     if (!match) throw new Error('Use a plain decimal ZYN amount with at most 8 decimal places, e.g. 1.5');
     const atoms = Number(match[1]) * ATOMS_PER_ZYN + Number((match[2] || '').padEnd(8, '0') || '0');
-    if (!Number.isSafeInteger(atoms) || atoms > MAX_SUPPLY_ATOMS) throw new Error('Amount exceeds the 50,000,000 ZYN fixed-supply design');
+    if (!Number.isSafeInteger(atoms) || atoms > MAX_SUPPLY_ATOMS) throw new Error('Amount is too large: the total supply is 50,000,000 ZYN');
     return atoms;
   }
   function atomsToZyn(value) {
@@ -337,7 +338,7 @@
     const nonce = typeof input.nonce === 'number' ? input.nonce : Number(String(input.nonce == null ? '' : input.nonce).trim() || NaN);
     if (!Number.isSafeInteger(nonce) || nonce < 1) throw new Error('Nonce must be a whole number >= 1 (your next account nonce)');
     const receiver = parseAddressInput(input.receiver).canonical;
-    if (receiver === MINING_TRACKER_ADDRESS) throw new Error('Receiver is the protocol-reserved mining tracker address');
+    if (receiver === MINING_TRACKER_ADDRESS) throw new Error("This is a reserved system address and can't receive transfers");
     if (!account || !ADDRESS_RE.test(account.address) || !PUBLIC_KEY_RE.test(account.publicKey)) throw new Error('Wallet is locked');
     if (receiver === account.address) throw new Error('Receiver must differ from your own address');
     const amountAtoms = input.amountAtoms;
@@ -375,7 +376,7 @@
     if (!TEST_CHAIN_ID_RE.test(unsigned.chainId)) throw new Error('Chain ID must name a testnet or devnet network');
     if (!Number.isSafeInteger(unsigned.nonce) || unsigned.nonce < 1) throw new Error('Nonce is missing or invalid');
     if (!ADDRESS_RE.test(unsigned.sender) || !ADDRESS_RE.test(unsigned.receiver)) throw new Error('Address is invalid');
-    if (unsigned.receiver === MINING_TRACKER_ADDRESS) throw new Error('Receiver is the protocol-reserved mining tracker address');
+    if (unsigned.receiver === MINING_TRACKER_ADDRESS) throw new Error("This is a reserved system address and can't receive transfers");
     if (!Number.isSafeInteger(unsigned.amountAtoms) || unsigned.amountAtoms < 1 || !Number.isSafeInteger(unsigned.feeAtoms) || unsigned.feeAtoms < 0) throw new Error('Amount or fee is invalid');
     if (!PUBLIC_KEY_RE.test(unsigned.publicKey) || addressFromPublicKey(unsigned.publicKey) !== unsigned.sender) throw new Error('Sender does not match the signing key');
     return [
