@@ -19,7 +19,7 @@ The hosted open testnet runs four v6 validators on loopback behind one public HT
 
 - For each configured external peer the gateway runs a **mailbox** on a separate loopback-only listener (`127.0.0.1:<basePort+50>`, never the public port). Each hosted validator gets `--peer http://127.0.0.1:<mailbox>/x/<address>` in addition to its loopback peers.
 - A hosted node's consensus `POST` to the mailbox is queued for that external peer. If the peer has not polled in the last 10 s the mailbox answers `503` immediately, so an absent external peer costs the hosted round nothing beyond one loopback round trip. Otherwise it waits up to 6 s (below the node's 8 s deadline) for the reply, and answers `504` on timeout. `/block` (fire-and-forget) is acknowledged `202` at once.
-- Allowed paths: `/v6/prepare`, `/v6/commit`, `/v6/timeout`, `/v6/block`, `/block`. Read paths (`/status`, `/blocks`) on the mailbox are served from the hosted nodes so the node's peer bookkeeping keeps working. Anything else is `404`.
+- Allowed paths: `/v6/prepare`, `/v6/commit`, `/v6/timeout`, `/v6/block`, `/block`. Anything else on the mailbox, including reads, is `404`; the hosted nodes sync from each other.
 - The external **relay client** (`scripts/consensus-relay-client.mjs`) long-polls `POST /relay/v1/poll` on the public gateway, replays each request against its own node on loopback, and returns the node's reply with `POST /relay/v1/reply`.
 
 ### 3.2 Outbound direction (external validator as leader → hosted validators)
@@ -32,7 +32,7 @@ The hosted open testnet runs four v6 validators on loopback behind one public HT
 - Every relay request carries a JSON envelope `{ chainId, genesisHash, address, seq, issuedAtMs, op, bodyHash }` signed with `signCanonicalDomain("zyronchain/open-testnet-relay/v1", ...)`.
   - `chainId` and `genesisHash` must equal the gateway's: a wrong-chain envelope is rejected.
   - `issuedAtMs` must be within ±60 s of the gateway clock.
-  - `seq` must be strictly greater than the last accepted `seq` for that address (replay protection; kept in memory, the ±60 s window bounds replays across gateway restarts).
+  - `seq` must not repeat any `seq` accepted for that address within the last 130 s (replay protection for concurrent requests; kept in memory, and the ±60 s freshness window bounds replays across gateway restarts). The client uses microsecond timestamps plus a counter.
   - `bodyHash` is the SHA-256 of the exact request body bytes; `op` is one of `poll`, `reply`, `forward`.
 - Failures answer `401` with no detail beyond the reason class.
 
