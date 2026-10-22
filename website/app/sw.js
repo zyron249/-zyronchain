@@ -13,20 +13,20 @@
 'use strict';
 
 // BEGIN GENERATED (tools/pwa-wallet/stamp-app.mjs)
-const VERSION = '1442010fa498fca1';
+const VERSION = '8741af28d8d87d9d';
 const ASSETS = {
-  "./index.html": "e360e9ade32b6914be2ab10462be896a42e2b2a81e4f3173eda588f95f3aeb6a",
+  "./index.html": "3c092afabde7766ba015e7be09f6854952a869099b06c76673bae8b3eefdb57c",
   "./manifest.json": "83636b2a989ee4244d5e1d11c4575733f7341b15e9172196f400ec80c74f8498",
   "./icons/icon-192.png": null,
   "./icons/icon-512.png": null,
   "./icons/apple-touch-icon-180.png": null,
   "./icons/maskable-192.png": null,
   "./icons/maskable-512.png": null,
-  "./app.css?v=461d44b39721": "461d44b39721b15fdfd2ed64bf6de7510e5c1c30cadcd6d470f331894d54ce67",
+  "./app.css?v=2c477ce09709": "2c477ce09709fed0cb11241ee5795130c53e35e14bc54bc3f79868ad1848b168",
   "./vendor/noble-scure.js?v=8bc52c47d762": "8bc52c47d762268157b3c9828ca985424f3a0a7477a3e6547711313389e81705",
   "./vendor/qr.js?v=df7e5ee0f9db": "df7e5ee0f9db397a3f689313cc1bc8581e55e8752200309023df694d7e977612",
-  "./zyron-wallet-core.js?v=6a08c4a34402": "6a08c4a34402a2b3b505dac56d282bfe4ed76dc8642a2e3e63ba9591bfd20e2e",
-  "./app.js?v=acb9210c20df": "acb9210c20df0031db91356f91cdf4ffc9fe86dc9dc161c4361e520f5fcb9280"
+  "./zyron-wallet-core.js?v=74d7d39fc94c": "74d7d39fc94c74a6413214b210e8a011b169be18932e188262efb810538b9ebd",
+  "./app.js?v=09b50d7cdfbc": "09b50d7cdfbcabe6da19f940b664a5098b55bd3aa787161d385c780ae3a5559a"
 };
 // END GENERATED
 

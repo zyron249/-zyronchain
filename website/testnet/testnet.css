@@ -5,7 +5,7 @@
   --panel-2: #0c1728;
   --line: #1b2c46;
   --text: #e8eff6;
-  --muted: #9aa6b4;
+  --muted: #b3bdc9;
   --gold: #0a9ff5;
   --gold-2: #4fd8fb;
   --ok: #49b37c;
@@ -72,3 +72,4 @@ footer a { color: var(--muted); }
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
+footer a { display: inline-block; padding: 12px 4px; }
