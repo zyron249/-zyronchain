@@ -40,7 +40,11 @@
     msgCopyFailed: 'Could not copy; select and copy by hand.',
     msgImported: 'Encrypted vault imported on this device. Unlock it with its password. Nothing was uploaded.',
     msgImportEmpty: 'Choose the encrypted vault file from this device.',
-    msgWrongPassword: 'Wrong password, or the vault was modified.',
+    msgWrongPassword: 'Wrong password. Check it and try again. (If the password is right, the stored vault was modified.)',
+    msgReceiverFirst: 'Enter the receiver address first: ZYN followed by 40 hex characters.',
+    msgAmountFirst: 'Enter an amount in ZYN, for example 1.5.',
+    msgRevealFirst: 'Reveal every word (tap each card or hold to reveal all) before you confirm.',
+    msgRevealDone: 'All words revealed. Confirm once they are on paper, in order.',
     msgLocked: 'Locked.',
     msgSigned: 'Signed locally. Not broadcast. txid {txid}',
     msgChecksumOk: 'Receiver checksum verified.',
@@ -240,6 +244,7 @@
     }
     state.pending = null;
     state.quiz = null;
+    state.revealed = null;
     $('[data-phrase-words]').textContent = '';
     $('[data-quiz]').textContent = '';
   }
@@ -370,8 +375,11 @@
   $('[data-privacy-ack]').addEventListener('change', (event) => { $('[data-privacy-next]').disabled = !event.target.checked; });
   $('[data-privacy-next]').addEventListener('click', () => {
     if (!state.pending || !$('[data-privacy-ack]').checked) return;
+    state.revealed = new Set();
     renderWordCards();
     $('[data-phrase-ack]').checked = false;
+    $('[data-phrase-ack]').disabled = true;
+    setMessage('[data-phrase-ack-hint]', t('msgRevealFirst'), '');
     $('[data-phrase-next]').disabled = true;
     show('phrase');
   });
@@ -415,11 +423,22 @@
       text.textContent = word;
       button.dataset.revealed = 'true';
       button.setAttribute('aria-label', t('msgWordShown', { n: index + 1, total, word }));
+      noteRevealed(index, total);
       armWordTimer();
     } else {
       text.textContent = '•••••';
       button.dataset.revealed = 'false';
       button.setAttribute('aria-label', t('msgWordHidden', { n: index + 1, total }));
+    }
+  }
+  // The paper-backup confirmation unlocks only after every word was shown at least once.
+  function noteRevealed(index, total) {
+    if (!state.revealed) state.revealed = new Set();
+    state.revealed.add(index);
+    const ack = $('[data-phrase-ack]');
+    if (ack && ack.disabled && state.revealed.size >= total) {
+      ack.disabled = false;
+      setMessage('[data-phrase-ack-hint]', t('msgRevealDone'), 'good');
     }
   }
   function armWordTimer() {
@@ -601,6 +620,9 @@
   $('[data-tx-review]').addEventListener('click', () => {
     if (!state.account) return lock();
     try {
+      if (!$('[data-tx-to]').value.trim()) throw new Error(t('msgReceiverFirst'));
+      core.parseAddressInput($('[data-tx-to]').value);
+      if (!$('[data-tx-amount]').value.trim()) throw new Error(t('msgAmountFirst'));
       const unsigned = core.buildTransfer({
         version: Number($('[data-tx-version]').value),
         chainId: $('[data-tx-chain]').value,
@@ -672,6 +694,10 @@
   $('[data-review-done]').addEventListener('click', dismissSigned);
   const dismissHold = $('[data-signed-dismiss]');
   if (dismissHold) dismissHold.addEventListener('click', dismissSigned);
+  const holdCopy = $('[data-signed-copy]');
+  if (holdCopy) holdCopy.addEventListener('click', async () => {
+    if (state.lastTx) setMessage('[data-copy-result]', (await copyText(JSON.stringify(state.lastTx), '[data-copy-result]')) ? t('msgCopied') : t('msgCopyFailed'), '');
+  });
   $('[data-tx-copy]').addEventListener('click', async () => {
     if (state.lastTx) setMessage('[data-tx-copy-result]', (await copyText(JSON.stringify(state.lastTx), '[data-tx-copy-result]')) ? t('msgCopied') : t('msgCopyFailed'), '');
   });
@@ -1045,5 +1071,9 @@
     const linkError = $('[data-unlock-result]').textContent;
     lock(state.linkRequest ? t('msgLinkWaiting') : linkError);
   }
-  start();
+  start().then(() => {
+    // The install guide starts open on a first visit in a browser tab and collapsed otherwise.
+    const install = $('[data-install]');
+    if (install) install.open = !isStandalone && !state.vault;
+  });
 })();
