@@ -1594,3 +1594,25 @@ test("createGitHub creates the snapshot release as a prerelease", async () => {
   assert.equal(body.prerelease, true);
   assert.match(body.body, /no value/);
 });
+
+// M2 (security review): with the state secret, height and genesis come from the authenticated body.
+test("authenticatedSnapshotTip reads height and genesis from the sealed body; forged headers are refused", async () => {
+  const { authenticatedSnapshotTip, checkAuthenticated } = await import("./open-testnet-snapshot-keeper.mjs");
+  const { createCipheriv, createHash: hash, randomBytes: rnd } = await import("node:crypto");
+  const { gzipSync } = await import("node:zlib");
+  const secret = "k".repeat(32);
+  const seal = (bundle, key = secret) => {
+    const k = hash("sha256").update(`zyron-open-testnet-state\0${key}`).digest(); const iv = rnd(12);
+    const c = createCipheriv("aes-256-gcm", k, iv); c.setAAD(Buffer.from("ZYRON-OPEN-TESTNET-STATE-V1"));
+    const body = Buffer.concat([c.update(gzipSync(Buffer.from(JSON.stringify(bundle)))), c.final()]);
+    return Buffer.concat([Buffer.from(SNAPSHOT_HEADER), iv, c.getAuthTag(), body]);
+  };
+  const bytes = seal({ network: { genesisHash: GENESIS }, blocks: [{}, {}, {}] });
+  assert.deepEqual(authenticatedSnapshotTip(bytes, secret), { height: 3, genesis: GENESIS });
+  assert.throws(() => authenticatedSnapshotTip(bytes, "other".repeat(8)), /does not authenticate/);
+  const tampered = Buffer.from(bytes); tampered[tampered.length - 1] ^= 1;
+  assert.throws(() => authenticatedSnapshotTip(tampered, secret), /does not authenticate/);
+  assert.deepEqual(checkAuthenticated({ height: 3, genesis: GENESIS }, bytes, secret), { height: 3, genesis: GENESIS });
+  assert.throws(() => checkAuthenticated({ height: 999999, genesis: GENESIS }, bytes, secret), /do not match the authenticated body/);
+  assert.deepEqual(checkAuthenticated({ height: 5, genesis: GENESIS }, bytes, undefined), { height: 5, genesis: GENESIS }, "without a secret the header check is unchanged");
+});
