@@ -777,6 +777,23 @@ export class ZyronChain {
   }
 
   /**
+   * P1-07-F2: the part of `validator_update` admission that a pending
+   * predecessor cannot change: set size, activation delay and order, an active
+   * initiator and a quorum of valid approvals from the current validators. A
+   * pending predecessor only changes the replaced set, i.e. which validators
+   * are incoming and need possession proofs. Used before a refused update may
+   * enter the node's bounded deferred set; never for block validity.
+   */
+  assertValidatorUpdateAuthorizedExceptProofs(tx: ValidatorSetUpdateTx): void {
+    if (tx.chainId !== this.genesis.chainId) throw new Error("Wrong transaction chain ID");
+    this.shape(tx);
+    assertTransactionVersionForProtocol(tx, this.protocolVersionAt(this.height + 1));
+    validateValidatorUpdateQuorum(
+      tx, this.validatorsAt(this.height + 1), this.height + 1, this.lastValidatorActivationHeight(), minimumValidatorCount(this.genesis)
+    );
+  }
+
+  /**
    * P1-07-F1: the set a `validator_update` replaces is the latest scheduled set
    * when it is selected, which can be another update selected earlier in the
    * same block (selectValidPending's per-block working schedule). Against the
@@ -1393,6 +1410,19 @@ function validateValidatorUpdateAuthorization(
   minimumValidators: number,
   admission: ValidatorUpdateAdmissionContext
 ): void {
+  validateValidatorUpdateQuorum(tx, currentValidators, blockHeight, lastActivationHeight, minimumValidators);
+  // possession-proof-v1 (P1-07): incoming keys consent and prove possession.
+  assertValidatorUpdatePossessionProofs(tx, admission);
+}
+
+/** Every check of validateValidatorUpdateAuthorization except the possession proofs (same order). */
+function validateValidatorUpdateQuorum(
+  tx: ValidatorSetUpdateTx,
+  currentValidators: Validator[],
+  blockHeight: number,
+  lastActivationHeight: number,
+  minimumValidators: number
+): void {
   if (tx.validators.length < minimumValidators || tx.validators.length > 100) {
     throw new Error(minimumValidators > 1
       ? "fixed-supply-v1, public-launch, value-bearing, and mainnet chains require at least 4 and at most 100 distinct validators"
@@ -1417,8 +1447,6 @@ function validateValidatorUpdateAuthorization(
   }
   const quorum = Math.floor((currentValidators.length * 2) / 3) + 1;
   if (valid < quorum) throw new Error(`Validator update quorum not reached: ${valid}/${quorum}`);
-  // possession-proof-v1 (P1-07): incoming keys consent and prove possession.
-  assertValidatorUpdatePossessionProofs(tx, admission);
 }
 
 /**
