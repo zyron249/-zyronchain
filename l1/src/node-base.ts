@@ -862,11 +862,16 @@ export class NodeService {
     const entries = [...this.deferredValidatorUpdates.entries()];
     this.deferredValidatorUpdates.clear();
     let remaining = entries.flatMap(([key, variants]) => variants.map((tx) => ({ key, tx })));
+    const order = new Map(remaining.map((entry, index) => [entry.tx.txid, index]));
+    const kept: typeof remaining = [];
     while (remaining.length > 0) {
       const refused: typeof remaining = [];
       const admittedKeys = new Set<string>();
       for (const entry of remaining) {
-        if (admittedKeys.has(entry.key)) continue;
+        if (admittedKeys.has(entry.key)) {
+          refused.push(entry);
+          continue;
+        }
         try {
           this.admitTransaction(entry.tx);
           admittedKeys.add(entry.key);
@@ -876,9 +881,15 @@ export class NodeService {
           refused.push(entry);
         }
       }
+      // Codex P2 on #1104 at cb863e16: other variants of an admitted key are
+      // not re-tried in this pass (they share its sender nonce) but stay
+      // deferred below: a later predecessor can make another variant the one
+      // block selection accepts.
+      kept.push(...refused.filter((entry) => admittedKeys.has(entry.key)));
       remaining = refused.filter((entry) => !admittedKeys.has(entry.key));
       if (admittedKeys.size === 0) break;
     }
+    remaining = [...kept, ...remaining].sort((left, right) => order.get(left.tx.txid)! - order.get(right.tx.txid)!);
     // Keep the original (oldest-first) order of the keys that stay deferred.
     for (const { key, tx } of remaining) {
       if (tx.kind !== "validator_update" || !this.canStillDeferValidatorUpdate(tx)) continue;
@@ -886,9 +897,9 @@ export class NodeService {
       if (variants) variants.push(tx);
       else this.deferredValidatorUpdates.set(key, [tx]);
     }
-    if (this.readmittedValidatorUpdateIds.length > MAX_DEFERRED_VALIDATOR_UPDATES) {
-      this.readmittedValidatorUpdateIds = this.readmittedValidatorUpdateIds.slice(-MAX_DEFERRED_VALIDATOR_UPDATES);
-    }
+    // Codex P2 on #1104 at cb863e16: a marker lives while its update is
+    // pending (bounded by the mempool), not for a fixed number of re-admissions.
+    this.readmittedValidatorUpdateIds = this.readmittedValidatorUpdateIds.filter((txid) => this.mempool.has(txid));
     if (this.readmittedTransactions.length > MAX_DEFERRED_VALIDATOR_UPDATES) {
       this.readmittedTransactions = this.readmittedTransactions.slice(-MAX_DEFERRED_VALIDATOR_UPDATES);
     }
@@ -908,10 +919,10 @@ export class NodeService {
     const stateNonce = this.store.chain.nonce(tx.sender);
     assertMempoolSenderNonce(tx.nonce, stateNonce);
     // P1-07-F1: a validator_update may depend on a pending same-block predecessor.
-    const pending = tx.kind === "validator_update" ? this.mempool.values() : [];
-    const predecessors = this.store.chain.validateMempoolAdmission(
-      tx, undefined, pending.filter((item) => item.kind === "validator_update")
-    );
+    // P1-07-F2 (Codex P2 on #1104 at cb863e16): only the pending validator
+    // updates are copied, not the whole mempool (deferred re-tries repeat this).
+    const pendingUpdates = tx.kind === "validator_update" ? this.mempool.validatorUpdates() : [];
+    const predecessors = this.store.chain.validateMempoolAdmission(tx, undefined, pendingUpdates);
     if (tx.kind === "transfer") {
       const conflicting = this.mempool.conflictingTransaction(tx.sender, tx.nonce);
       const replacedSpend = conflicting?.kind === "transfer"
@@ -937,9 +948,12 @@ export class NodeService {
         // of them applies after that sender's pending nonce prefix.
         let lastError: unknown;
         const applicable = predecessors.some((predecessor) => {
-          const prefix = pending
-            .filter((item) => item.sender === predecessor.sender && item.nonce < predecessor.nonce)
-            .sort((left, right) => left.nonce - right.nonce);
+          // Pending entries always have nonces above the sender's state nonce
+          // (finalization prunes the rest), and the mempool nonce window
+          // bounds this range.
+          const prefix = this.mempool.senderNonceRange(
+            predecessor.sender, this.store.chain.nonce(predecessor.sender), predecessor.nonce
+          );
           try {
             this.store.chain.validatePending([...prefix, predecessor, tx]);
             return true;
