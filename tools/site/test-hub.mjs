@@ -68,6 +68,7 @@ test('English only, honest wording, no forbidden terms', () => {
 
 test('launch flags block is generated from docs/l1-launch-authorization.json', () => {
   assert.ok(html.includes(renderFlags()), 'run node tools/site/build-hub.mjs');
+  assert.match(html, /data-flag="mainnetAuthorized"><dt>[^<]+<\/dt><dd><span class="state state-(?:ok|off)">(?:Yes|No)<\/span> <strong class="state state-off hub-flag-notice">Mainnet is not live; activation is off<\/strong><\/dd>/, 'mainnet not-live notice must sit next to the authorization flag');
   assert.match(html, /data-flag="mainnetActivationAllowed"><dt>[^<]+<\/dt><dd><span class="state state-off">No</);
 });
 

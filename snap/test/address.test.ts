@@ -1,7 +1,8 @@
 import { describe, expect, it } from '@jest/globals';
 import { installSnap } from '@metamask/snaps-jest';
 
-import { DERIVATION_PATH_STRING } from '../src/constants';
+import manifest from '../snap.manifest.json';
+import { ALLOWED_ORIGINS, DERIVATION_PATH_STRING } from '../src/constants';
 import { DEV_ORIGIN, ORIGIN, VECTORS, deriveTestPrivateKey, l1Value } from './helpers';
 
 describe('zyron_getAddress', () => {
@@ -27,10 +28,17 @@ describe('zyron_getAddress', () => {
     expect(DERIVATION_PATH_STRING).toBe("m/44'/249249'/0'/0/0");
   });
 
-  it('is available to the localhost dev origin', async () => {
+  it('rejects the former localhost dev origin', async () => {
     const { request } = await installSnap({ options: { secretRecoveryPhrase: VECTORS[0]!.mnemonic } });
     const response = await request({ method: 'zyron_getAddress', origin: DEV_ORIGIN });
-    expect(response).toRespondWith(expect.objectContaining({ address: VECTORS[0]!.address }));
+    expect(response).toRespondWithError(
+      expect.objectContaining({ message: expect.stringMatching(/not allowed|not permitted|Unauthorized/iu) }),
+    );
+  });
+
+  it('allow-lists only https://zyronchain.com, in code and in the manifest', () => {
+    expect(ALLOWED_ORIGINS).toStrictEqual(['https://zyronchain.com']);
+    expect(manifest.initialPermissions['endowment:rpc'].allowedOrigins).toStrictEqual([...ALLOWED_ORIGINS]);
   });
 
   it('rejects origins that are not allow-listed', async () => {

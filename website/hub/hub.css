@@ -60,3 +60,4 @@
 .hub-input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .hub-error { color: var(--danger); min-height: 1em; }
 .hub-error:empty { display: none; }
+.hub-flag-notice { margin-left: var(--s-2); }

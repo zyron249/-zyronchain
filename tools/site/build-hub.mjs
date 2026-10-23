@@ -20,11 +20,13 @@ export const FLAGS = [
   ['mainnetAuthorized', 'Mainnet authorized by governance'],
   ['mainnetActivationAllowed', 'Mainnet activation allowed']
 ];
+// Shown beside the mainnet authorization flag so 'Yes' is never read as 'mainnet is live'.
+export const MAINNET_NOTICE = ' <strong class="state state-off hub-flag-notice">Mainnet is not live; activation is off</strong>';
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 export function renderFlags(a = auth) {
   const rows = FLAGS.map(([key, label]) => {
     if (typeof a[key] !== 'boolean') throw new Error(`authorization flag ${key} is not boolean`);
-    return `        <div class="hub-row" data-flag="${key}"><dt>${esc(label)}</dt><dd><span class="state state-${a[key] ? 'ok' : 'off'}">${a[key] ? 'Yes' : 'No'}</span></dd></div>`;
+    return `        <div class="hub-row" data-flag="${key}"><dt>${esc(label)}</dt><dd><span class="state state-${a[key] ? 'ok' : 'off'}">${a[key] ? 'Yes' : 'No'}</span>${key === 'mainnetAuthorized' && a.mainnetActivationAllowed !== true ? MAINNET_NOTICE : ''}</dd></div>`;
   });
   const reqs = (list) => list.map((r) => `          <li><code>${esc(r)}</code></li>`).join('\n');
   return [
