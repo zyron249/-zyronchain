@@ -109,12 +109,14 @@ node dist/src/cli.js protocol-submit --proposal v6-upgrade.json --approval appro
 | `persistence-unhealthy` | block/state persistence fault; node must not sign | stop signing, preserve forensic copies, restart (`L1_OPERATIONS_RUNBOOK.md` §6 "Disk/state corruption") |
 | `signing-journal-unhealthy` | journal append/fsync failed; journal refuses further reservations ("Signing journal persistence fault requires validator restart") | stop, check disk/filesystem, restart. **Never delete the journal** |
 | `validator-clock-unhealthy` | wall clock moved backwards beyond tolerance; latched until restart ("Validator clock fault requires process restart") | fix time sync, then restart |
-| `unsupported-next-protocol` | the binary does not support the protocol version scheduled for the next height | upgrade the binary (before A) |
+| `unsupported-next-protocol` | the binary does not support the protocol version scheduled for the next height | upgrade the binary (before A); watch `GET /protocol-schedule` to see this earlier |
 | `stale-tip` | finalized tip older than `--ready-max-tip-age-ms` (default 600,000 ms, `node-base.ts:102`) | finality-halt runbook (§5, §11) |
 | `consensus-catching-up` | **legacy only**: bounded skip-chain catch-up after a long stall (F-02) | wait; it does not apply at v6 heights |
 | `syncing` | a block sync is in progress towards a peer tip more than one block ahead (HTTP `syncFrom`/`syncAny` and native sync); lasts only while that sync runs | wait; if it recurs without progress, check the peer and `stale-tip` |
 | `consensus-quorum-unreachable` | this validator, as leader, could not form a TC, prepare QC or commit certificate for the current tip | check peer connectivity; clears at the next quorum or when the tip advances |
 | `validator-signer-unavailable` | the last signing request to the configured signer failed | check the remote signer; clears on the next successful signature |
+
+Pre-activation signal: `GET /protocol-schedule` returns `{height, currentVersion, supportedVersions, scheduled, firstUnsupported}`. `scheduled` lists future protocol activations in order (at most 64), each with `supported` for this binary. `firstUnsupported` is the first future activation this binary cannot run, searched over the whole schedule, or `null`. It is informational and does not change `/readyz`. Alert when `firstUnsupported` is not `null` and upgrade the binary before its `activationHeight`.
 
 There is no peer-count reason: lost peers show up as `consensus-quorum-unreachable` on a validator whose own attempt failed, and as `stale-tip` elsewhere. Monitor peer count separately.
 
@@ -251,4 +253,4 @@ Rules:
 5. Only the reference signer (P0-09) enforces the v6 journal rules; no production signer or HSM has been chosen or reviewed.
 6. The 2,000-block margin is mempool policy only. A block producer with a modified binary could include a v6 upgrade with a 100-block margin, but it still needs q approvals.
 7. UNVERIFIED: host-level disk-snapshot settings, NTP configuration and fsync honesty of the current validator hosts.
-8. No RPC exposes the scheduled protocol table, and `unsupported-next-protocol` fires only one block before activation. A pre-activation readiness signal (for example "scheduled version V at height A is unsupported by this binary") would help operators. This is an engineering follow-up, not implemented.
+8. `unsupported-next-protocol` on `/readyz` fires only one block before activation. The pre-activation signal is `GET /protocol-schedule` (§4): it lists the scheduled protocol table and reports the first scheduled version this binary does not support, as soon as it is scheduled. It is informational and does not change readiness.
