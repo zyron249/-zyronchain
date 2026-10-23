@@ -497,34 +497,52 @@ const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods
 // Access-Control-Allow-Origin, so a browser blocks the call. Override with a
 // comma-separated ZYRON_FAUCET_ALLOWED_ORIGINS. Read-only routes keep "*".
 export const DEFAULT_FAUCET_ALLOWED_ORIGINS = Object.freeze(["https://zyronchain.com", "https://zyron-open-testnet.onrender.com"]);
+// Canonical form of an http(s) origin: lowercase scheme and host, default
+// port dropped (https://x:443 and http://x:80 equal https://x and http://x).
+// Returns null for anything that is not a bare origin (path, query, userinfo,
+// other schemes, the opaque "null" origin).
+export function normalizeFaucetOrigin(value) {
+  if (typeof value !== "string") return null;
+  const raw = value.trim().replace(/\/+$/, "");
+  let url;
+  try { url = new URL(raw); } catch { return null; }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  if (url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname !== "")) return null;
+  if (!/^https?:\/\/[^/?#@]+$/i.test(raw)) return null;
+  return url.origin;
+}
 export function parseFaucetAllowedOrigins(value) {
   if (typeof value !== "string" || value.trim() === "") return new Set(DEFAULT_FAUCET_ALLOWED_ORIGINS);
   const origins = new Set();
   for (const entry of value.split(",")) {
     const raw = entry.trim();
     if (raw === "") continue;
-    let url;
-    try { url = new URL(raw); } catch { throw new Error(`ZYRON_FAUCET_ALLOWED_ORIGINS: ${raw} is not an origin`); }
-    if ((url.protocol !== "https:" && url.protocol !== "http:") || url.origin !== raw.replace(/\/+$/, "")) throw new Error(`ZYRON_FAUCET_ALLOWED_ORIGINS: ${raw} is not an origin`);
-    origins.add(url.origin);
+    const origin = normalizeFaucetOrigin(raw);
+    if (origin === null) throw new Error(`ZYRON_FAUCET_ALLOWED_ORIGINS: ${raw} is not an origin`);
+    origins.add(origin);
   }
   if (origins.size === 0) throw new Error("ZYRON_FAUCET_ALLOWED_ORIGINS lists no origin");
   return origins;
 }
 // CORS headers for /faucet (responses and preflight). Always Vary: Origin;
-// ACAO only for an allowed origin, echoed exactly.
+// ACAO only for an allowed origin (compared port-normalized), echoed exactly
+// as the browser sent it.
 export function faucetCorsHeaders(origin, allowed) {
   const headers = { vary: "Origin" };
-  if (typeof origin === "string" && allowed.has(origin)) {
+  if (faucetOriginAllowed(origin, allowed)) {
     Object.assign(headers, { "access-control-allow-origin": origin, "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "600" });
   }
   return headers;
 }
-export function faucetOriginAllowed(origin, host, allowed) {
-  if (typeof origin !== "string") return false;
-  if (allowed.has(origin)) return true;
-  if (typeof host !== "string" || host === "") return false;
-  try { const url = new URL(origin); return (url.protocol === "https:" || url.protocol === "http:") && url.host === host.toLowerCase(); } catch { return false; }
+// Only allowlisted origins pass. There is deliberately no "Origin matches the
+// Host header" exception: an attacker controlling DNS for evil.example can
+// rebind it to this gateway, so a page on http://evil.example would send
+// Host: evil.example and Origin: http://evil.example and look same-origin.
+// The gateway's own explorer page is covered by the default allowlist; local
+// and smoke gateways add theirs with ZYRON_FAUCET_ALLOWED_ORIGINS.
+export function faucetOriginAllowed(origin, allowed) {
+  const normalized = normalizeFaucetOrigin(origin);
+  return normalized !== null && allowed.has(normalized);
 }
 // writeJson merges CORS first; a faucet response replaces it with these.
 function withoutCors(extra) { return { "access-control-allow-origin": undefined, "access-control-allow-methods": undefined, "access-control-allow-headers": undefined, "access-control-max-age": undefined, ...extra }; }
@@ -541,10 +559,10 @@ export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody
     // visitor's per-IP quota. A request with no Origin header (curl, scripts,
     // server-side clients) is served on purpose: browsers always send Origin on
     // a cross-origin POST, so a missing Origin is not a browser attack vector.
-    // An Origin whose host equals the Host header is the gateway's own
-    // explorer page (same-origin) and is allowed.
+    // Only allowlisted origins pass; an Origin matching the Host header is
+    // NOT trusted (DNS rebinding can forge that), see faucetOriginAllowed.
     const origin = request.headers.origin;
-    if (origin !== undefined && !faucetOriginAllowed(origin, request.headers.host, origins)) return reply(403, { error: "origin not allowed" });
+    if (origin !== undefined && !faucetOriginAllowed(origin, origins)) return reply(403, { error: "origin not allowed" });
     const contentType = String(request.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
     if (contentType !== "application/json") return reply(415, { error: "content-type must be application/json" });
     try {

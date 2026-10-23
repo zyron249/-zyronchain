@@ -4,7 +4,7 @@
 // carries Vary: Origin, and a failed drip never echoes the node's error text.
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage, type Server } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
@@ -129,15 +129,90 @@ test("cross-site no-cors POSTs are refused before any quota is taken", async () 
     }
     assert.equal(takes, 0, "quota untouched by cross-site requests");
     assert.equal(sends, 0);
-    for (const origin of ["https://zyronchain.com", `http://127.0.0.1:${port}`, undefined]) {
+    // Behavior change (Security): a same-host Origin is no longer trusted.
+    const sameHost = await post(base, `http://127.0.0.1:${port}`);
+    assert.equal(sameHost.status, 403);
+    await sameHost.arrayBuffer();
+    assert.equal(takes, 0, "same-host 403 takes no quota");
+    for (const origin of ["https://zyronchain.com", undefined]) {
       const r = await post(base, origin);
       assert.equal(r.status, 200, String(origin));
       await r.arrayBuffer();
     }
-    assert.equal(takes, 3);
+    assert.equal(takes, 2);
     const plain = await fetch(`${base}/faucet`, { method: "POST", headers: { "content-type": "text/plain" }, body });
     assert.equal(plain.status, 415);
     await plain.arrayBuffer();
-    assert.equal(takes, 3, "415 does not take quota");
+    assert.equal(takes, 2, "415 does not take quota");
   } finally { await new Promise((done) => server.close(done)); }
+});
+
+async function countingGateway() {
+  const state = { takes: 0, sends: 0 };
+  const route = api.createFaucetRoute({ origins: ALLOWED, limits: { faucetIp: { take: () => { state.takes += 1; return { allowed: true, retryAfterMs: 0 }; } }, faucetAddress: open(), faucetGlobal: open() }, faucetAddress: `ZYN${"f".repeat(40)}`, readJsonBody, send: async () => { state.sends += 1; return { txid: "t" }; }, log: () => {} });
+  const server: Server = createServer((request, response) => { void route(request, response, "198.51.100.7"); });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  const port = (server.address() as { port: number }).port;
+  return { state, port, base: `http://127.0.0.1:${port}`, close: () => new Promise((done) => server.close(done)) };
+}
+// Raw http.request so the Host header can be set (fetch forbids it).
+function rawPost(port: number, headers: Record<string, string>): Promise<{ status: number; acao: string | undefined }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port, method: "POST", path: "/faucet", headers: { "content-type": "application/json", ...headers } }, (res) => { res.resume(); res.on("end", () => resolve({ status: res.statusCode ?? 0, acao: res.headers["access-control-allow-origin"] as string | undefined })); });
+    req.on("error", reject);
+    req.end(JSON.stringify({ address: ADDRESS }));
+  });
+}
+
+test("a same-host Origin that is not allowlisted is refused with 403 and takes no quota", async () => {
+  const gw = await countingGateway();
+  try {
+    for (const host of [`127.0.0.1:${gw.port}`, "localhost"]) {
+      const origin = `http://${host}`;
+      const r = await rawPost(gw.port, { host, origin });
+      assert.equal(r.status, 403, origin);
+      assert.equal(r.acao, undefined);
+    }
+    assert.equal(gw.state.takes, 0);
+    assert.equal(gw.state.sends, 0);
+  } finally { await gw.close(); }
+});
+
+test("DNS-rebinding style request (Host evil.example, Origin http://evil.example) is refused", async () => {
+  const gw = await countingGateway();
+  try {
+    for (const [host, origin] of <Array<[string, string]>>[["evil.example", "http://evil.example"], ["evil.example:80", "http://evil.example:80"], ["evil.example", "https://evil.example"]]) {
+      const r = await rawPost(gw.port, { host, origin });
+      assert.equal(r.status, 403, `${host} ${origin}`);
+      assert.equal(r.acao, undefined);
+    }
+    assert.equal(gw.state.takes, 0);
+  } finally { await gw.close(); }
+});
+
+test("port-normalized forms of allowed origins are accepted", async () => {
+  assert.equal(api.normalizeFaucetOrigin("https://zyronchain.com:443"), "https://zyronchain.com");
+  assert.equal(api.normalizeFaucetOrigin("http://localhost:80"), "http://localhost");
+  assert.equal(api.normalizeFaucetOrigin("HTTPS://ZyronChain.com"), "https://zyronchain.com");
+  assert.equal(api.normalizeFaucetOrigin("https://zyronchain.com:8443"), "https://zyronchain.com:8443");
+  for (const bad of ["null", "https://zyronchain.com/x", "https://u@zyronchain.com", "https://zyronchain.com?q", "ftp://zyronchain.com", undefined]) assert.equal(api.normalizeFaucetOrigin(bad), null, String(bad));
+  assert.deepEqual([...api.parseFaucetAllowedOrigins("https://a.example:443, http://b.example:80/, http://c.example:8080")], ["https://a.example", "http://b.example", "http://c.example:8080"]);
+  const local = api.parseFaucetAllowedOrigins("http://localhost:80");
+  assert.ok(api.faucetOriginAllowed("http://localhost", local));
+  assert.ok(api.faucetOriginAllowed("http://localhost:80", local));
+  assert.ok(!api.faucetOriginAllowed("http://localhost:8080", local));
+  assert.ok(!api.faucetOriginAllowed("https://localhost", local));
+  const gw = await countingGateway();
+  try {
+    for (const origin of ["https://zyronchain.com:443", "https://zyron-open-testnet.onrender.com:443", "https://zyronchain.com"]) {
+      const r = await rawPost(gw.port, { origin });
+      assert.equal(r.status, 200, origin);
+      assert.equal(r.acao, origin, "ACAO echoes the exact Origin");
+    }
+    for (const origin of ["http://zyronchain.com:80", "https://zyronchain.com:8443"]) {
+      const r = await rawPost(gw.port, { origin });
+      assert.equal(r.status, 403, origin);
+    }
+    assert.equal(gw.state.takes, 3);
+  } finally { await gw.close(); }
 });
