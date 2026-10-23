@@ -96,8 +96,8 @@ node dist/src/cli.js protocol-submit --proposal v6-upgrade.json --approval appro
 ```
 
 - `<RPC_PORT>` and the key file names are placeholders. Pass the keystore password through `ZYRON_KEYSTORE_PASSWORD_FILE` (a `0600` file), never on the command line.
-- `GET /protocol` only returns `{currentVersion, nextVersion}` for the current and next height (`node-base.ts:370-376`). `GET /status` returns `{chainId, genesisHash, height, tipHash}` (`:361-368`). **No RPC on main exposes the full scheduled protocol table.** Confirm inclusion of the upgrade transaction from the submitting node's output and block contents, and record the activation height in the operator log.
-- `unsupported-next-protocol` appears in `/readyz` only when the **next** height is A, i.e. one block before activation. It is not an early warning. Verify every validator's binary version (commit SHA) out of band before submitting the upgrade. **A node still on an old binary at A stops at A.**
+- `GET /protocol` only returns `{currentVersion, nextVersion}` for the current and next height (`node-base.ts:370-376`). `GET /status` returns `{chainId, genesisHash, height, tipHash}` (`:361-368`). `GET /protocol-schedule` lists the future scheduled protocol table (§4). After submitting, confirm that the upgrade appears there with the expected `activationHeight` and `supported: true` on every validator. Record the activation height in the operator log.
+- `unsupported-next-protocol` appears in `/readyz` only when the **next** height is A, i.e. one block before activation. It is not an early warning: use `firstUnsupported` from `GET /protocol-schedule` for that, and still verify every validator's binary version (commit SHA) out of band before submitting the upgrade. **A node still on an old binary at A stops at A.**
 - At A, each height runs under exactly one protocol (`protocolVersionAt(H)`). A legacy split (F-01) at a height < A still halts the chain **before** A, and activation cannot rescue it (`V6_CONSENSUS_SPEC.md` §12 item 3).
 
 ## 4. Readiness (`/readyz`) reasons
