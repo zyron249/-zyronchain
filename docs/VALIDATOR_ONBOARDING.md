@@ -180,6 +180,46 @@ The first sync downloads and re-validates every finalized block and certificate 
 
 A signing key alone does not make this command a validator. The follower talks only to the hosted read-only HTTP peer on loopback, which carries no v6 prepare/commit traffic. An admitted validator also needs a native P2P listener (`--p2p-listen`), pinned bootstrap peers (`--p2p-peer`, `--p2p-peer-group`), every other validator as `--p2p-consensus-peer`, and its key (`--validator-key <key.json>` with the password in `ZYRON_KEYSTORE_PASSWORD_FILE`, or a remote signer, `--validator-signer-url`). See `docs/L1_OPERATIONS_RUNBOOK.md` and `docs/V6_OPERATOR_GUIDE.md`. The exact network-specific startup command (peer IDs, addresses, approved commit) is given to each operator at admission; none exists for the hosted testnet yet.
 
+### 5.1 Upgrading after a genesis relaunch
+
+The genesis currently pinned for `zyron-open-testnet-render-1` is `e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad` (genesis timestamp 2026-10-20T22:09:28.767Z). That genesis carries fields that older code does not know: `activityOracleThreshold` and `activityOraclePolicy` (added in #1076, `f3913f2`) and `publicDistributionRelease` (added in #1075, `69171bf`). Genesis loading rejects unknown fields, so a node built before those changes (for example from `ccd8efaa`) stops at start with:
+
+```text
+Fatal: Invalid genesis fields
+```
+
+Run current `main` (verified at `fdd1e792` or later). No minimum commit has been proven; `fdd1e792` (#1092) is a verified reference point that contains both changes, not the commit that added the fields (it only changes stranded-pruning test fixtures). The previous chain, genesis `9ad75d777141de46df1fb008298a4d8a92fbce0a9c96aaf26ecf69474b7db8eb`, is retired; do not try to keep following it.
+
+Use Node.js 22 or newer (`l1/package.json` requires `>=22`). On Node.js 20 the node has been reported to exit silently with code 139 (segmentation fault); check `node --version` first.
+
+**Which hash applies to you.** The pinned hash `e0212e57…a8ad` is for **followers of the public testnet** only. If you run your own copy (`open-testnet.mjs init`), `init` generates an independent TEST genesis; its hash is not the public pin. Verify the hash that `init` printed (also `genesisHash` in the directory's `network.json`) and that `GET /status` and the node's start-up line report that hash. Do not compare it with the public pin.
+
+1. **Confirm the expected hash independently (public-testnet followers).** Compare the `EXPECTED_GENESIS` pin in `.github/workflows/open-testnet-snapshot-keeper.yml` on `main`, `docs/OPEN_TESTNET.md`, and the reset announcement. If they disagree, stop, keep your data directory and report it. Operators of their own copy have no public pin: after step 6, take the hash printed by `init` as the expected value.
+2. **Update the code** to the latest `main` and check that it includes `fdd1e792`:
+   ```sh
+   git fetch origin && git checkout main && git pull --ff-only origin main
+   git merge-base --is-ancestor fdd1e792 HEAD && echo "includes fdd1e792"
+   ```
+3. **Rebuild** (section 3):
+   ```sh
+   cd l1 && npm ci && npm run build
+   ```
+4. **Re-fetch the genesis and verify its hash.** Fetch `GET /genesis` again (never reuse the old genesis file), and for a public-testnet follower, check the genesis hash that `GET /status` (or `GET /genesis`) reports equals `e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad`, the pin from step 1:
+   ```sh
+   curl -s https://zyron-open-testnet.onrender.com/status
+   ```
+   A node prints `Genesis <hash>, height <n>` when it starts; that hash must equal the pin too. (Operators of their own copy: compare against the hash `init` printed instead, see step 6.)
+5. **Archive the old data directory, do not delete it.** Stop the node, then move the directory aside, for example `mv "$DIR" "$DIR.pre-e0212e57-$(date +%Y%m%d)"`. Keep it until the new chain is confirmed; it is the evidence if anything turns out wrong.
+6. **Restart** with a fresh, empty data directory against the new genesis (commands below), and check that the start-up line shows the expected hash: the pinned hash for a public-testnet follower, or the hash that `init` printed for your own copy.
+
+For the follower in section 5, the data directory is the `--data` path (`$HOME/zyron-follower` in the example):
+
+```sh
+mv "$HOME/zyron-follower" "$HOME/zyron-follower.pre-e0212e57-$(date +%Y%m%d)"
+```
+
+Then re-run the section 5 commands: fetch the genesis again, create the empty directory with `mkdir -m 700 -p`, and start the node.
+
 ## 6. How admission works
 
 **Open testnet (today).** Validators change only through on-chain governance: an existing validator creates a proposal (`validator-proposal --activation-height <n> --validator-public-key <hex> ...`), at least `floor(2n/3)+1` current validators approve it (`validator-approve`), and it is submitted (`validator-submit`). Activation must be at least 100 blocks ahead. A fixed-supply chain keeps between 4 and 100 validators. Because the hosted validators have no outside consensus endpoint yet, no outside key will be voted in until that exists; adding a validator that cannot reach the others would only weaken the quorum.

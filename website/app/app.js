@@ -23,6 +23,10 @@
   const DB_NAME = 'zyron-wallet-app';
   const STORE = 'vault';
   const VAULT_KEY = 'primary';
+  // Second object store (DB version 2) for the vault upgrade: the pre-upgrade v1 copy and the rollback marker.
+  const META = 'meta';
+  const V1_BACKUP_KEY = 'v1-backup';
+  const MARKER_KEY = 'v2-seen';
 
   // ---------------- UI strings (English only) ----------------
   const STRINGS = { en: {} };
@@ -89,6 +93,9 @@
     pending: null,   // { vault, account, entropy, count } during create (before the backup check passes)
     quiz: null,      // shuffled word indexes for the backup check
     unsigned: null,  // transfer under review (not signed)
+    vaultKey: null,  // non-extractable AES-GCM key, only while unlocked (re-seals the encrypted address book)
+    book: null,      // decrypted address book / sent-to history / warning threshold, only while unlocked
+    editingContact: '', // canonical address of the contact being edited
     lastTx: null,
     backupEntropy: null, // held only during a backup re-quiz; wiped after the check or on leave
     backupQuiz: null,
@@ -106,18 +113,22 @@
   // ---------------- IndexedDB (encrypted vault only) ----------------
   function openDb() {
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, 1);
-      request.onupgradeneeded = () => request.result.createObjectStore(STORE);
+      const request = indexedDB.open(DB_NAME, 2);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        for (const name of [STORE, META]) if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
+      };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
   }
-  async function dbRequest(mode, run) {
+  async function dbRequest(mode, run, storeName) {
+    const name = storeName || STORE;
     const db = await openDb();
     try {
       return await new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, mode);
-        const request = run(tx.objectStore(STORE));
+        const tx = db.transaction(name, mode);
+        const request = run(tx.objectStore(name));
         tx.oncomplete = () => resolve(request.result);
         tx.onerror = () => reject(tx.error);
         tx.onabort = () => reject(tx.error);
@@ -127,11 +138,27 @@
     }
   }
   const loadVault = () => dbRequest('readonly', (store) => store.get(VAULT_KEY));
+  // The only IndexedDB write path. The vault store gets only encrypted vaults; the meta store gets only an encrypted
+  // version-1 vault (the pre-upgrade copy) or the public rollback marker.
+  function putRecord(storeName, key, value) {
+    const record = storeName === STORE || key === V1_BACKUP_KEY ? core.parseVault(value) : core.parseUpgradeMarker(value);
+    if (key === V1_BACKUP_KEY && record.version !== core.VAULT_VERSION_V1) throw new Error('Only a version-1 vault is kept as the upgrade copy');
+    return dbRequest('readwrite', (store) => store.put(record, key), storeName);
+  }
   function saveVault(vault) {
     core.assertVaultShape(vault); // refuses to persist anything that is not an encrypted vault
-    return dbRequest('readwrite', (store) => store.put(core.parseVault(vault), VAULT_KEY));
+    return putRecord(STORE, VAULT_KEY, vault);
   }
   const deleteVault = () => dbRequest('readwrite', (store) => store.delete(VAULT_KEY));
+  const loadMeta = (key) => dbRequest('readonly', (store) => store.get(key), META);
+  const deleteMeta = (key) => dbRequest('readwrite', (store) => store.delete(key), META);
+  async function loadMarker() {
+    const value = await loadMeta(MARKER_KEY);
+    return value === undefined ? null : core.parseUpgradeMarker(value);
+  }
+  function rollbackMessage() {
+    return 'This device already upgraded this wallet to vault version 2, so an older version-1 vault for the same address was refused (possible rollback). Nothing was changed. To recover, delete this wallet and restore it from your recovery phrase, or import your exported version-2 vault file.';
+  }
 
   // ---------------- helpers ----------------
   function show(name) {
@@ -241,6 +268,8 @@
       core.wipe(state.pending.entropy);
       state.pending.entropy = null;
       state.pending.vault = null;
+      state.pending.key = null;
+      state.pending.book = null;
     }
     state.pending = null;
     state.quiz = null;
@@ -251,6 +280,10 @@
   function lock(message) {
     wipeAccount(state.account);
     state.account = null;
+    state.vaultKey = null;
+    state.book = null;
+    state.editingContact = '';
+    renderBook();
     clearPending();
     state.unsigned = null;
     state.backupConfirmed = false;
@@ -289,7 +322,8 @@
     }
   });
   window.addEventListener('blur', hideWords);
-  window.addEventListener('pagehide', () => { hideWords(); wipeAccount(state.account); if (state.pending) { wipeAccount(state.pending.account); core.wipe(state.pending.entropy); } wipeBackup(); });
+  // Lock before the page can enter the back/forward cache, so the vault key and decrypted book are dropped too.
+  window.addEventListener('pagehide', () => { hideWords(); if (state.pending) { wipeAccount(state.pending.account); core.wipe(state.pending.entropy); } wipeBackup(); lock(t('msgLocked')); });
 
   // ---------------- QR ----------------
   function renderQr(text) {
@@ -358,8 +392,8 @@
       const pending = await busy(t('msgDeriving'), async () => {
         entropy = core.generateEntropy();
         const account = await core.deriveAccount(entropy);
-        const vault = await core.createVault(entropy, first, account);
-        return { vault, account, entropy: Uint8Array.from(entropy), count: entropy.length * 3 / 4 };
+        const session = await core.createVaultSession(entropy, first, account);
+        return { vault: session.vault, key: session.key, book: session.book, account, entropy: Uint8Array.from(entropy), count: entropy.length * 3 / 4 };
       });
       clearInputs();
       clearPending();
@@ -509,7 +543,10 @@
       await saveVault(state.pending.vault);
       state.vault = core.parseVault(state.pending.vault);
       state.account = state.pending.account;
+      state.vaultKey = state.pending.key;
+      state.book = state.pending.book;
       state.pending.account = null;
+      renderBook();
       clearPending(); // wipes entropy, drops vault/words references, empties the word list and the check
       state.backupConfirmed = true; // the create check just passed; ask again only after the next unlock
       showHome();
@@ -535,13 +572,16 @@
     try {
       const result = await busy(t('msgDeriving'), async () => {
         const account = await core.deriveAccount(entropy);
-        const vault = await core.createVault(entropy, first, account);
-        return { vault, account };
+        const session = await core.createVaultSession(entropy, first, account);
+        return { vault: session.vault, key: session.key, book: session.book, account };
       });
       await saveVault(result.vault);
       clearInputs();
       state.vault = core.parseVault(result.vault);
       state.account = result.account;
+      state.vaultKey = result.key;
+      state.book = result.book;
+      renderBook();
       showHome();
     } catch (error) {
       setMessage('[data-restore-result]', errorText(error), 'bad');
@@ -555,10 +595,38 @@
     const password = $('[data-unlock-password]').value;
     setMessage('[data-unlock-result]', '', '');
     try {
-      const opened = await busy(t('msgUnlocking'), () => core.openVault(state.vault, password));
+      if (core.isRollback(state.vault, await loadMarker())) throw new Error(rollbackMessage());
+      let opened = await busy(t('msgUnlocking'), () => core.openVault(state.vault, password));
+      try {
+        if (state.vault.version !== core.VAULT_VERSION) {
+          // Version 1 -> 2, only after the password opened it. The upgraded vault must reopen with the same
+          // password to the same wallet before it replaces v1, and the v1 copy is kept until a later v2 unlock.
+          const v1 = state.vault;
+          const result = await busy(t('msgUnlocking'), () => core.upgradeVaultVerified(v1, opened, password));
+          core.wipe(opened.entropy);
+          wipeAccount(opened.account);
+          opened = result.opened;
+          await putRecord(META, V1_BACKUP_KEY, v1);
+          await saveVault(result.vault);
+          await putRecord(META, MARKER_KEY, core.upgradeMarker(result.vault.address));
+          state.vault = core.parseVault(result.vault);
+        } else {
+          const marker = await loadMarker();
+          if (!marker || marker.address !== state.vault.address) await putRecord(META, MARKER_KEY, core.upgradeMarker(state.vault.address));
+          // A version-2 vault opened from storage: the pre-upgrade copy is no longer needed.
+          if (await loadMeta(V1_BACKUP_KEY) !== undefined) await deleteMeta(V1_BACKUP_KEY);
+        }
+      } catch (error) {
+        core.wipe(opened.entropy);
+        wipeAccount(opened.account);
+        throw error;
+      }
       core.wipe(opened.entropy);
       clearInputs();
       state.account = opened.account;
+      state.vaultKey = opened.key;
+      state.book = opened.book;
+      renderBook();
       showHome();
     } catch (error) {
       setMessage('[data-unlock-result]', /authentication failed/.test(error.message) ? t('msgWrongPassword') : errorText(error), 'bad');
@@ -623,6 +691,9 @@
       if (!$('[data-tx-to]').value.trim()) throw new Error(t('msgReceiverFirst'));
       core.parseAddressInput($('[data-tx-to]').value);
       if (!$('[data-tx-amount]').value.trim()) throw new Error(t('msgAmountFirst'));
+      const warnings = core.sendWarnings({ receiver: $('[data-tx-to]').value, amountAtoms: core.zynToAtoms($('[data-tx-amount]').value) }, state.account, state.book || core.emptyBook());
+      const blocking = warnings.find((w) => w.blocking);
+      if (blocking) throw new Error(blocking.message);
       const unsigned = core.buildTransfer({
         version: Number($('[data-tx-version]').value),
         chainId: $('[data-tx-chain]').value,
@@ -637,6 +708,7 @@
       feeWarning.hidden = !rejection;
       feeWarning.textContent = rejection || '';
       state.unsigned = rejection ? null : unsigned;
+      renderWarnings(warnings);
       $('[data-review-ack]').checked = false;
       $('[data-review-ack]').disabled = Boolean(rejection);
       $('[data-tx-sign]').disabled = true;
@@ -650,12 +722,30 @@
       setMessage('[data-tx-check]', errorText(error), 'bad');
     }
   });
-  $('[data-review-ack]').addEventListener('change', (event) => {
-    $('[data-tx-sign]').disabled = !$('[data-review-fee-warning]').hidden || !event.target.checked;
-  });
+  // Send-safety warnings (first-time recipient, amount at/above the threshold) need their own confirmation.
+  function renderWarnings(warnings) {
+    const box = $('[data-review-warnings]');
+    const list = $('[data-review-warning-list]');
+    list.textContent = '';
+    for (const w of warnings) {
+      const li = document.createElement('li');
+      li.dataset.warning = w.code;
+      li.textContent = w.message;
+      list.appendChild(li);
+    }
+    box.hidden = warnings.length === 0;
+    $('[data-review-warn-ack]').checked = false;
+  }
+  function warningsAccepted() { return $('[data-review-warnings]').hidden || $('[data-review-warn-ack]').checked; }
+  function updateSignButton() {
+    $('[data-tx-sign]').disabled = !$('[data-review-fee-warning]').hidden || !$('[data-review-ack]').checked || !warningsAccepted();
+  }
+  $('[data-review-ack]').addEventListener('change', updateSignButton);
+  $('[data-review-warn-ack]').addEventListener('change', updateSignButton);
   $('[data-tx-sign]').addEventListener('click', () => {
     if (!state.account) return lock();
     if (!state.unsigned || !$('[data-review-ack]').checked) return;
+    if (!warningsAccepted()) return; // send-safety warnings need their own confirmation
     try {
       core.describeTransfer(state.unsigned); // re-check right before signing
       const rejection = core.fixedFeeRejection(state.unsigned);
@@ -668,9 +758,105 @@
       $('[data-review-confirm-box]').hidden = true;
       $('[data-tx-out]').hidden = false;
       setMessage('[data-tx-copy-result]', '', '');
+      persistBook(core.recordSent(state.book || core.emptyBook(), tx.receiver)).catch((error) => setMessage('[data-review-error]', errorText(error), 'bad'));
     } catch (error) {
       setMessage('[data-review-error]', errorText(error), 'bad');
     }
+  });
+
+  // ---------------- address book + send-warning threshold (inside the encrypted vault) ----------------
+  async function persistBook(book) {
+    if (!state.account || !state.vaultKey) throw new Error('Wallet is locked');
+    const next = await core.updateVaultBook(state.vault, state.vaultKey, book);
+    await saveVault(next);
+    state.vault = core.parseVault(next);
+    state.book = core.parseBook(book);
+    renderBook();
+  }
+  function resetContactForm() {
+    state.editingContact = '';
+    $('[data-contact-name]').value = '';
+    $('[data-contact-address]').value = '';
+    $('[data-contact-save]').textContent = 'Add contact';
+    $('[data-contact-cancel]').hidden = true;
+  }
+  function renderBook() {
+    const list = $('[data-contact-list]');
+    if (!list) return;
+    list.textContent = '';
+    const book = state.book;
+    $('[data-contact-empty]').hidden = Boolean(book && book.contacts.length);
+    const threshold = $('[data-threshold-current]');
+    if (threshold) threshold.textContent = book && book.thresholdAtoms !== null ? 'Current threshold: ' + core.atomsToZyn(String(book.thresholdAtoms)) + ' ZYN.' : 'No threshold set.';
+    if (!book) return;
+    for (const contact of book.contacts) {
+      const li = document.createElement('li');
+      li.dataset.contact = contact.address;
+      const name = document.createElement('strong');
+      name.textContent = contact.name;
+      const addr = document.createElement('span');
+      addr.className = 'address-raw';
+      addr.textContent = contact.address;
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      const use = document.createElement('button');
+      use.type = 'button'; use.dataset.contactUse = ''; use.textContent = 'Send to';
+      use.addEventListener('click', () => {
+        $('[data-tx-to]').value = contact.address;
+        $('[data-tx-to]').dispatchEvent(new Event('input'));
+        setMessage('[data-contact-result]', 'Receiver set to ' + contact.name + '.', 'good');
+      });
+      const edit = document.createElement('button');
+      edit.type = 'button'; edit.dataset.contactEdit = ''; edit.textContent = 'Edit';
+      edit.addEventListener('click', () => {
+        state.editingContact = contact.address;
+        $('[data-contact-name]').value = contact.name;
+        $('[data-contact-address]').value = contact.address;
+        $('[data-contact-save]').textContent = 'Save changes';
+        $('[data-contact-cancel]').hidden = false;
+      });
+      const del = document.createElement('button');
+      del.type = 'button'; del.className = 'danger'; del.dataset.contactDelete = ''; del.textContent = 'Delete';
+      del.addEventListener('click', async () => {
+        if (del.dataset.armed !== '1') { del.dataset.armed = '1'; del.textContent = 'Confirm delete'; return; }
+        try {
+          await persistBook(core.removeContact(state.book, contact.address));
+          if (state.editingContact === contact.address) resetContactForm();
+          setMessage('[data-contact-result]', 'Contact deleted.', 'good');
+        } catch (error) { setMessage('[data-contact-result]', errorText(error), 'bad'); }
+      });
+      actions.append(use, edit, del);
+      li.append(name, addr, actions);
+      list.appendChild(li);
+    }
+  }
+  $('[data-contact-save]').addEventListener('click', async () => {
+    if (!state.account) return lock();
+    try {
+      const input = { name: $('[data-contact-name]').value, address: $('[data-contact-address]').value };
+      if (core.parseAddressInput(input.address).canonical === state.account.address) throw new Error("This is your own address. Save another person's address.");
+      const book = state.editingContact ? core.updateContact(state.book, state.editingContact, input) : core.addContact(state.book, input);
+      await persistBook(book);
+      setMessage('[data-contact-result]', state.editingContact ? 'Contact updated.' : 'Contact added.', 'good');
+      resetContactForm();
+    } catch (error) { setMessage('[data-contact-result]', errorText(error), 'bad'); }
+  });
+  $('[data-contact-cancel]').addEventListener('click', () => { resetContactForm(); setMessage('[data-contact-result]', '', ''); });
+  $('[data-threshold-save]').addEventListener('click', async () => {
+    if (!state.account) return lock();
+    try {
+      const text = $('[data-threshold-input]').value.trim();
+      await persistBook(core.setThreshold(state.book, text ? core.zynToAtoms(text) : null));
+      $('[data-threshold-input]').value = '';
+      setMessage('[data-threshold-result]', 'Saved in the encrypted vault on this device.', 'good');
+    } catch (error) { setMessage('[data-threshold-result]', errorText(error), 'bad'); }
+  });
+  $('[data-threshold-clear]').addEventListener('click', async () => {
+    if (!state.account) return lock();
+    try {
+      await persistBook(core.setThreshold(state.book, null));
+      setMessage('[data-threshold-result]', 'Threshold cleared.', 'good');
+    } catch (error) { setMessage('[data-threshold-result]', errorText(error), 'bad'); }
   });
   function dismissSigned() {
     state.lastTx = null;
@@ -809,6 +995,7 @@
     if (state.vault) { setMessage('[data-vault-import-result]', t('msgVaultExists'), 'bad'); return; }
     try {
       const vault = core.parseVault(await file.text());
+      if (core.isRollback(vault, await loadMarker())) throw new Error(rollbackMessage());
       await saveVault(vault);
       state.vault = vault;
       if (state.rejectedVault) {
@@ -835,6 +1022,8 @@
     if ($('[data-delete-go]').disabled) return;
     try {
       await deleteVault();
+      await deleteMeta(V1_BACKUP_KEY);
+      await deleteMeta(MARKER_KEY);
       wipeAccount(state.account);
       state.account = null;
       state.vault = null;
@@ -1059,6 +1248,7 @@
     try {
       const stored = await loadVault();
       if (stored !== undefined) state.vault = core.parseVault(stored); // unknown or malformed vaults are rejected, never rewritten
+      if (state.vault && core.isRollback(state.vault, await loadMarker())) { state.vault = null; throw new Error(rollbackMessage()); }
     } catch (error) {
       state.vault = null;
       state.rejectedVault = true;
