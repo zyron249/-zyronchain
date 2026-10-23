@@ -7,7 +7,7 @@
 // positions, then searches what is left. A secret inside any value, an unknown key, or a schema token used as
 // a variable value is still reported.
 const KEYS = new Set([
-  'address', 'cipher', 'ciphertext', 'createdAt', 'derivationPath', 'format', 'kdf', 'publicKey', 'salt', 'version', 'words',
+  'address', 'book', 'cipher', 'ciphertext', 'createdAt', 'derivationPath', 'format', 'kdf', 'publicKey', 'salt', 'version', 'words',
   'iv', 'name', 'n', 'r', 'p', 'dkLen',
 ]);
 const TOP_CONSTANTS = new Map([['format', 'zyronchain-pwa-vault'], ['derivationPath', "m/44'/249249'/0'/0/0"]]);
