@@ -300,3 +300,65 @@ test("P1-07-F2: ordinary transactions do not copy the mempool while updates are 
     assert.equal(copies, 0, "admitting an ordinary transaction must not copy the whole mempool");
   });
 });
+
+// Codex P2s on #1104 (cb863e16).
+test("P1-07-F2: other variants of a re-admitted update stay deferred", async () => {
+  await withService("zyron-devnet-p107f2-keep-variants", (service, chain) => {
+    const remove = update(chain, [0x21, 0x22, 0x23]);
+    const readd = update(chain, [0x21, 0x22, 0x23, 0x24], {
+      activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x24)], signers: [0x22, 0x23, 0x21]
+    });
+    // The same approved update with another proof set (valid signatures),
+    // which a different predecessor could need.
+    const other = update(chain, [0x21, 0x22, 0x23, 0x24], {
+      activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x23), proof(chain, 300, 0x24)], signers: [0x22, 0x23, 0x21]
+    });
+    assert.throws(() => service.submitTransaction(readd), MISSING);
+    assert.throws(() => service.submitTransaction(other));
+    assert.equal(service.deferredValidatorUpdateCount(), 2);
+    assert.equal(service.submitTransaction(remove), remove.txid);
+    assert.equal(service.mempool.has(readd.txid), true);
+    assert.equal(service.deferredValidatorUpdateCount(), 1, "the variant that was not admitted is kept for a later re-try");
+  });
+});
+
+test("P1-07-F2: re-trying deferred updates does not copy the whole mempool", async () => {
+  await withService("zyron-devnet-p107f2-retry-no-clone", (service, chain) => {
+    const remove = update(chain, [0x21, 0x22, 0x23]);
+    const readd = update(chain, [0x21, 0x22, 0x23, 0x24], {
+      activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x24)], signers: [0x22, 0x23, 0x21]
+    });
+    assert.throws(() => service.submitTransaction(readd), MISSING);
+    const mempool = service.mempool as unknown as { values: () => Transaction[] };
+    const original = mempool.values.bind(service.mempool);
+    let copies = 0;
+    mempool.values = () => { copies += 1; return original(); };
+    try {
+      assert.equal(service.submitTransaction(remove), remove.txid);
+    } finally {
+      mempool.values = original;
+    }
+    assert.equal(service.mempool.has(readd.txid), true);
+    assert.equal(copies, 0, "validator update admission and its re-tries must not copy the whole mempool");
+  });
+});
+
+test("P1-07-F2: re-admission markers are kept while the update is still pending", async () => {
+  await withService("zyron-devnet-p107f2-markers", (service, chain) => {
+    const remove = update(chain, [0x21, 0x22, 0x23]);
+    const readd = update(chain, [0x21, 0x22, 0x23, 0x24], {
+      activationHeight: 300, nonce: 1, proofs: [proof(chain, 300, 0x24)], signers: [0x22, 0x23, 0x21]
+    });
+    assert.throws(() => service.submitTransaction(readd), MISSING);
+    assert.equal(service.submitTransaction(remove), remove.txid);
+    assert.equal(service.mempool.has(readd.txid), true);
+    // Later triggers re-admit more updates (here: markers of updates that are
+    // no longer pending) beyond the deferred-set size.
+    const internals = service as unknown as { readmittedValidatorUpdateIds: string[]; retryDeferredValidatorUpdates: () => void };
+    for (let index = 0; index < MAX_DEFERRED_VALIDATOR_UPDATES; index += 1) {
+      internals.readmittedValidatorUpdateIds.push(index.toString(16).padStart(64, "f"));
+    }
+    internals.retryDeferredValidatorUpdates();
+    assert.equal(service.submitTransaction(readd), readd.txid, "a pending re-admitted update is still an idempotent re-submit");
+  });
+});
