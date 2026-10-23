@@ -129,3 +129,23 @@ test("protocol schedule: the listed future entries are bounded", async () => {
     assert.deepEqual(response.body.firstUnsupported, { activationHeight: 5_000, protocolVersion: 77 });
   });
 });
+
+test("V6 operator guide §3 points operators at GET /protocol-schedule instead of saying no RPC exposes the schedule", async () => {
+  const { readFile, stat } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  let root = process.cwd();
+  for (let index = 0; index < 8; index += 1) {
+    try {
+      await stat(join(root, "docs", "V6_OPERATOR_GUIDE.md"));
+      await stat(join(root, "l1", "package.json"));
+      break;
+    } catch {
+      root = resolve(root, "..");
+    }
+  }
+  const guide = await readFile(join(root, "docs", "V6_OPERATOR_GUIDE.md"), "utf8");
+  assert.doesNotMatch(guide, /No RPC on main exposes the full scheduled protocol table/);
+  const section3 = guide.slice(guide.indexOf("## 3."), guide.indexOf("## 4."));
+  assert.ok(section3.length > 0, "guide has §3 and §4");
+  assert.match(section3, /GET \/protocol-schedule/);
+});
