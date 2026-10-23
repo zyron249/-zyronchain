@@ -1137,9 +1137,12 @@ test("the scheduled workflow keeps least privilege, one active run, a bounded jo
   const runMinutes = Number(/RUN_MINUTES: \$\{\{ inputs\.run_minutes \|\| '(\d+)' \}\}/.exec(active)?.[1]);
   assert.ok(timeout <= 360 && runMinutes > 0 && runMinutes + 10 <= timeout, `job timeout ${timeout} must exceed the run length ${runMinutes} and stay within 360`);
   assert.match(active, /EXPECTED_GENESIS: e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad$/m);
-  assert.match(active, /if: github\.repository == 'zyron249\/-zyronchain'/);
-  assert.deepEqual([...active.matchAll(/\$\{\{\s*([^}]*?)\s*\}\}/g)].map((match) => match[1]).sort(), ["github.repository", "github.token", "inputs.run_minutes || '340'"], "no secrets and no untrusted expression in a script");
-  assert.doesNotMatch(active, /secrets\./);
+  assert.match(active, /if: github\.repository == 'zyron249\/-zyronchain' && github\.ref == 'refs\/heads\/main'$/m, "only main can run the keeper: a dispatched branch must never get the state secret");
+  assert.deepEqual([...active.matchAll(/\$\{\{\s*([^}]*?)\s*\}\}/g)].map((match) => match[1]).sort(), ["github.repository", "github.token", "inputs.run_minutes || '340'", "secrets.ZYRON_TESTNET_STATE_SECRET"], "no secrets and no untrusted expression in a script");
+  // M2 (owner-approved 2026-10-22): exactly one secret, the state secret, only as a step env value.
+  assert.deepEqual([...active.matchAll(/secrets\.[A-Za-z0-9_]+/g)].map((match) => match[0]), ["secrets.ZYRON_TESTNET_STATE_SECRET"], "the state secret is the only secret");
+  assert.match(active, /^          ZYRON_TESTNET_STATE_SECRET: \$\{\{ secrets\.ZYRON_TESTNET_STATE_SECRET \}\}$/m, "the state secret is passed only as the keeper step's env");
+  assert.doesNotMatch(active, /run:[^\n]*secrets\./, "never in a script");
   for (const use of active.matchAll(/uses: (\S+)/g)) assert.match(use[1], /^actions\/(checkout|setup-node)@[0-9a-f]{40}$/, `unpinned or unexpected action ${use[1]}`);
   assert.match(active, /persist-credentials: false/);
   assert.match(active, /run: node \.github\/scripts\/open-testnet-snapshot-keeper\.mjs$/m);
@@ -1593,4 +1596,42 @@ test("createGitHub creates the snapshot release as a prerelease", async () => {
   assert.equal(body.tag_name, "open-testnet-state");
   assert.equal(body.prerelease, true);
   assert.match(body.body, /no value/);
+});
+
+// M2 (security review): with the state secret, height and genesis come from the authenticated body.
+test("authenticatedSnapshotTip reads height and genesis from the sealed body; forged headers are refused", async () => {
+  const { authenticatedSnapshotTip, checkAuthenticated } = await import("./open-testnet-snapshot-keeper.mjs");
+  const { createCipheriv, createHash: hash, randomBytes: rnd } = await import("node:crypto");
+  const { gzipSync } = await import("node:zlib");
+  const secret = "k".repeat(32);
+  const seal = (bundle, key = secret) => {
+    const k = hash("sha256").update(`zyron-open-testnet-state\0${key}`).digest(); const iv = rnd(12);
+    const c = createCipheriv("aes-256-gcm", k, iv); c.setAAD(Buffer.from("ZYRON-OPEN-TESTNET-STATE-V1"));
+    const body = Buffer.concat([c.update(gzipSync(Buffer.from(JSON.stringify(bundle)))), c.final()]);
+    return Buffer.concat([Buffer.from(SNAPSHOT_HEADER), iv, c.getAuthTag(), body]);
+  };
+  const bytes = seal({ network: { genesisHash: GENESIS }, blocks: [{}, {}, {}] });
+  assert.deepEqual(authenticatedSnapshotTip(bytes, secret), { height: 3, genesis: GENESIS });
+  assert.throws(() => authenticatedSnapshotTip(bytes, "other".repeat(8)), /does not authenticate/);
+  const tampered = Buffer.from(bytes); tampered[tampered.length - 1] ^= 1;
+  assert.throws(() => authenticatedSnapshotTip(tampered, secret), /does not authenticate/);
+  assert.deepEqual(checkAuthenticated({ height: 3, genesis: GENESIS }, bytes, secret), { height: 3, genesis: GENESIS });
+  assert.throws(() => checkAuthenticated({ height: 999999, genesis: GENESIS }, bytes, secret), /do not match the authenticated body/);
+  assert.deepEqual(checkAuthenticated({ height: 5, genesis: GENESIS }, bytes, undefined), { height: 5, genesis: GENESIS }, "without a secret the header check is unchanged");
+});
+
+test("an authentication failure stops the keeper and fails the run", async () => {
+  const { SnapshotAuthenticationError, checkAuthenticated, exitCodeFor } = await import("./open-testnet-snapshot-keeper.mjs");
+  assert.throws(() => checkAuthenticated({ height: 1, genesis: GENESIS }, sealed(), "k".repeat(32)), SnapshotAuthenticationError);
+  assert.equal(exitCodeFor({ genesisMismatches: 0, authenticationFailures: 1, published: 3, notNewer: 0 }), 1);
+  const source = await readFile(new URL("./open-testnet-snapshot-keeper.mjs", import.meta.url), "utf8");
+  assert.match(source, /error instanceof SnapshotAuthenticationError\) \{ stats\.authenticationFailures \+= 1; warn\(error\.message\); break; \}/, "the publish loop stops on the first authentication failure");
+});
+
+test("without the state secret the keeper refuses to run unless explicitly opted in (M3)", async () => {
+  const { keeperSecretPolicy } = await import("./open-testnet-snapshot-keeper.mjs");
+  assert.throws(() => keeperSecretPolicy({}), /refusing to publish/);
+  assert.throws(() => keeperSecretPolicy({ ZYRON_TESTNET_STATE_SECRET: "", ZYRON_KEEPER_ALLOW_UNAUTHENTICATED: "yes" }), /refusing to publish/);
+  assert.deepEqual(keeperSecretPolicy({ ZYRON_TESTNET_STATE_SECRET: "s" }), { stateSecret: "s" });
+  assert.match(keeperSecretPolicy({ ZYRON_KEEPER_ALLOW_UNAUTHENTICATED: "1" }).warning, /unauthenticated/);
 });

@@ -46,6 +46,7 @@ import { addressFromPublicKey } from "./crypto.js";
 import { assertMempoolSenderNonce, MAX_MEMPOOL_PENDING_PER_SENDER, readFeePolicy } from "./fee-policy.js";
 import { Mempool, type MempoolOptions } from "./mempool.js";
 import { PeerReputationStore } from "./peer-reputation.js";
+import { PROPOSAL_VALIDATION_BUDGET_MESSAGE, ProposalValidationBudget } from "./proposal-validation-budget.js";
 import { ipv6Prefix64 } from "./p2p-address.js";
 import { nativeP2PFrameBudgetMetrics } from "./p2p-frame.js";
 import { MAX_DISCOVERY_RESPONSE_RECORDS, PeerDirectory } from "./peer-directory.js";
@@ -442,6 +443,13 @@ export function rpcRateLimitIdentity(
   );
 }
 
+/** Peer-supplied error text for a log line: control characters and newlines replaced, cut to 200 chars. */
+export const PEER_LOG_REASON_MAX = 200;
+export function peerLogReason(error: unknown): string {
+  const text = safeError(error).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ");
+  return text.length > PEER_LOG_REASON_MAX ? `${text.slice(0, PEER_LOG_REASON_MAX)}\u2026` : text;
+}
+
 export class NodeService {
   readonly mempool: Mempool;
   readonly roundSkipVoteDiagnostics = new RoundSkipVoteDiagnostics();
@@ -455,6 +463,8 @@ export class NodeService {
   private nextSyncHandle = 0;
   private consensusQuorumFailure: { height: number; previousHash: string; phase: number } | undefined;
   private validatorSignerFailed = false;
+  /** P1-06: one failed expensive validation per authenticated proposer slot. */
+  private readonly proposalValidationBudget = new ProposalValidationBudget();
   readonly readinessMaxTipAgeMs: number;
 
   constructor(
@@ -511,6 +521,25 @@ export class NodeService {
       tipHash: this.store.chain.tip.hash
     };
   }
+
+  /**
+   * Validator set that governs the next height (the one consensus must reach a
+   * quorum in), so callers follow `validator_update` activations instead of
+   * assuming the genesis set.
+   */
+  activeValidatorSet(): { height: number; validators: Validator[] } {
+    // Cached per height: GET /validator-set is unauthenticated and polled.
+    const height = this.store.chain.height + 1;
+    if (this.activeValidatorSetCache?.height !== height) {
+      this.activeValidatorSetCache = {
+        height,
+        validators: this.store.chain.validatorsAt(height).map(({ address, publicKey }) => ({ address, publicKey }))
+      };
+    }
+    return structuredClone(this.activeValidatorSetCache);
+  }
+
+  private activeValidatorSetCache?: { height: number; validators: Validator[] };
 
   protocolStatus(): NodeProtocolStatus {
     const height = this.store.chain.height;
@@ -730,11 +759,12 @@ export class NodeService {
       validateBlockStructure(value);
       const block = value as Block;
       this.assertLegacyConsensusHeight(block.header.height);
-      this.store.chain.validateProposal(block, nowMs);
+      const reservation = this.signingJournal.legacyReservation(block.header.height, block.header.round);
+      const ticket = this.validateProposalWithinBudget(block, block.header.round, nowMs, reservation, `attest:${block.hash}`);
       const publicKey = this.validatorSigner.publicKey;
       const validator = this.store.chain.validatorsAt(block.header.height).find((item) => item.publicKey === publicKey);
       if (!validator) throw new Error("Configured validator key is not in genesis");
-      await this.signingJournal.reserveAttestation(block.header.height, block.header.round, block.hash);
+      await ticket.reserve(() => this.signingJournal!.reserveAttestation(block.header.height, block.header.round, block.hash));
       return {
         validator: validator.address,
         publicKey,
@@ -746,6 +776,58 @@ export class NodeService {
         )
       };
     });
+  }
+
+  /**
+   * P1-06: `chain.validateProposal` under the per-slot budget. Call inside
+   * `exclusive`. A slot is (height, round, block proposer key); `round` is the
+   * round the proposal is voted in (the block round for legacy consensus, the
+   * proposal round for v6). Only results after the O(1) gates are recorded:
+   * a failure, or a success (a repeat of a validated hash then runs only the
+   * gates, and other hashes for the slot are refused before the expensive stage).
+   */
+  private validateProposalWithinBudget(
+    block: Block,
+    round: number,
+    nowMs: number,
+    reservation: string | undefined,
+    expectedReservation: string
+  ): { reserve(write: () => Promise<void>): Promise<void> } {
+    this.proposalValidationBudget.pruneThrough(this.store.chain.height);
+    const height = block.header.height;
+    const slot = ProposalValidationBudget.slotKey(height, round, String(block.proposerPublicKey));
+    // The signing journal already holds another vote for this round: it would
+    // refuse this proposal after validation, so refuse it before (Codex P1 on
+    // #1102 at f38c619: it must not spend the journaled proposal's slot). This
+    // O(1) check runs before the budget check so a conflicting proposal keeps
+    // the journal's "Conflicting validator action" refusal (peers and the v6
+    // equivocation tests rely on it); the journaled vote also spent the slot.
+    if (reservation !== undefined && reservation !== expectedReservation) {
+      throw new Error(`Conflicting validator action prevented for consensus round (${PROPOSAL_VALIDATION_BUDGET_MESSAGE})`);
+    }
+    // The hash this validator already voted for in the journal is always allowed.
+    const alreadyValidated = this.proposalValidationBudget.assertAllowed(slot, block.hash, reservation === expectedReservation);
+    let authenticated = false;
+    try {
+      this.store.chain.validateProposal(block, nowMs, () => { authenticated = true; return alreadyValidated; });
+    } catch (error) {
+      if (authenticated && !alreadyValidated) this.proposalValidationBudget.recordFailure(slot, height, block.hash);
+      throw error;
+    }
+    const budget = this.proposalValidationBudget;
+    return {
+      // Recorded as validated only once the journal accepted the vote; a
+      // journal refusal (lock conflict, closed round) is final for this hash.
+      async reserve(write: () => Promise<void>): Promise<void> {
+        try {
+          await write();
+        } catch (error) {
+          if (!alreadyValidated) budget.recordFailure(slot, height, block.hash);
+          throw error;
+        }
+        if (!alreadyValidated) budget.recordSuccess(slot, height, block.hash);
+      }
+    };
   }
 
   async signPreparedProposal(block: Block, nowMs = Date.now()): Promise<Block> {
@@ -939,10 +1021,11 @@ export class NodeService {
       const { height, chainId, validators } = this.v6Context();
       const member = this.v6Member(validators, signer);
       const justify = validatePrepareRequestCertificates(request, validators, chainId, height);
-      this.store.chain.validateProposal(request.block, nowMs);
       const { round, justifyRound } = request.proposal;
+      const reservation = journal.v6Row(height, round, "prepare");
+      const ticket = this.validateProposalWithinBudget(request.block, round, nowMs, reservation, request.block.hash);
       if (justify) await this.v6RecordQC(height, chainId, validators, justify);
-      await journal.reserveV6Prepare(height, round, request.block.hash, justifyRound);
+      await ticket.reserve(() => journal.reserveV6Prepare(height, round, request.block.hash, justifyRound));
       // Stored only once the journal accepted the vote (finding D-1): a refused
       // request (equivocation, lock conflict, closed round) leaves no file, so
       // at most one block per (H, r) is kept from prepare requests. Prepared
@@ -1367,6 +1450,9 @@ async function route(
   if (request.method === "GET" && url.pathname === "/status") {
     return writeJson(response, 200, service.status());
   }
+  if (request.method === "GET" && url.pathname === "/validator-set") {
+    return writeJson(response, 200, service.activeValidatorSet());
+  }
   if (request.method === "GET" && url.pathname === "/protocol") {
     return writeJson(response, 200, service.protocolStatus());
   }
@@ -1616,8 +1702,19 @@ export class PeerClient {
     while (this.peers.length > 0) {
       const startHeight = service.status().height;
       const nowMs = Date.now();
-      const available = this.peers
+      let available = this.peers
         .filter((peer) => (this.failureUntil.get(peer) ?? 0) <= nowMs && (this.peerReputation?.isAvailable(peer, nowMs) ?? true));
+      if (available.length === 0) {
+        // Every configured peer is backed off. A backoff persisted across a
+        // restart (or built up while a peer was briefly down) must not wedge
+        // the follower silently: probe the peer whose backoff ends soonest,
+        // once per sync tick, and say so.
+        if (accepted > 0) break;
+        const probe = this.earliestBackoffPeer();
+        if (probe === undefined) break;
+        console.warn(`Peer sync: all ${this.peers.length} configured peer(s) in backoff at height ${startHeight}; probing ${probe}`);
+        available = [probe];
+      }
       let candidate: { peer: string; height: number; blocks: unknown[]; release: () => void } | undefined;
       for (const batch of peerSyncProbeBatches(available, this.syncCursor)) {
         const attempts = await Promise.allSettled(batch.map(async (peer) => {
@@ -1644,6 +1741,7 @@ export class PeerClient {
           const result = attempts[index]!;
           const peer = batch[index]!;
           if (result.status === "rejected") {
+            console.warn(`Peer sync failed: peer ${peer}, local height ${startHeight}, reason: ${peerLogReason(result.reason)}`);
             await this.recordFailure(peer, nowMs);
             continue;
           }
@@ -1668,7 +1766,9 @@ export class PeerClient {
             await service.acceptFinalizedBlock(block);
             accepted += 1;
             progressed = true;
-          } catch {
+          } catch (error) {
+            const height = (block as { header?: { height?: unknown } } | null)?.header?.height;
+            console.warn(`Peer sync rejected block: peer ${candidate.peer}, height ${Number.isSafeInteger(height) ? String(height) : "unknown"}, reason: ${peerLogReason(error)}`);
             poisoned = true;
             break;
           }
@@ -1686,6 +1786,17 @@ export class PeerClient {
       if (!progressed || service.status().height <= startHeight) break;
     }
     return accepted;
+  }
+
+  /** The configured peer whose backoff (in-memory or persisted) ends soonest. */
+  private earliestBackoffPeer(): string | undefined {
+    let best: string | undefined;
+    let bestUntil = Number.POSITIVE_INFINITY;
+    for (const peer of this.peers) {
+      const until = Math.max(this.failureUntil.get(peer) ?? 0, this.peerReputation?.backoffUntil(peer) ?? 0);
+      if (until < bestUntil) { best = peer; bestUntil = until; }
+    }
+    return best;
   }
 
   async requestAttestations(block: Block): Promise<BlockAttestation[]> {

@@ -48,7 +48,8 @@
 //     publish cycles start on a fixed interval from the previous cycle start.
 // The only credential is the workflow GITHUB_TOKEN (contents: write, for the
 // release assets).
-import { createHash, randomBytes } from "node:crypto";
+import { createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { gunzipSync } from "node:zlib";
 import { pathToFileURL } from "node:url";
 import { appendFile } from "node:fs/promises";
 
@@ -118,6 +119,37 @@ export function validateSnapshot({ status, headers, bytes }, expectedGenesis) {
   if (bytes.length <= SNAPSHOT_HEADER.length + 28 || bytes.length > MAX_SNAPSHOT_BYTES) throw new Error(`snapshot size ${bytes.length} is out of range`);
   if (!bytes.subarray(0, SNAPSHOT_HEADER.length).equals(Buffer.from(SNAPSHOT_HEADER))) throw new Error("not an open-testnet sealed state snapshot");
   return { height, genesis };
+}
+
+// M2 (security review): the height and genesis headers are not
+// authenticated. With the gateway's state secret the keeper opens the sealed
+// body (AES-256-GCM authenticates it) and takes the height and genesis from it;
+// headers that disagree with the body are refused.
+export class SnapshotAuthenticationError extends Error {
+  constructor(message) { super(message); this.name = "SnapshotAuthenticationError"; }
+}
+
+export function authenticatedSnapshotTip(bytes, secret) {
+  const header = Buffer.from(SNAPSHOT_HEADER);
+  if (bytes.length <= header.length + 28 || !bytes.subarray(0, header.length).equals(header)) throw new Error("not an open-testnet sealed state snapshot");
+  const key = createHash("sha256").update(`zyron-open-testnet-state\0${secret}`).digest();
+  const decipher = createDecipheriv("aes-256-gcm", key, bytes.subarray(header.length, header.length + 12));
+  decipher.setAAD(Buffer.from(SNAPSHOT_HEADER.trimEnd()));
+  decipher.setAuthTag(bytes.subarray(header.length + 12, header.length + 28));
+  let bundle;
+  try { bundle = JSON.parse(gunzipSync(Buffer.concat([decipher.update(bytes.subarray(header.length + 28)), decipher.final()]), { maxOutputLength: 512 * 1024 * 1024 }).toString("utf8")); }
+  catch { throw new SnapshotAuthenticationError("snapshot body does not authenticate with the state secret; refusing to publish"); }
+  const height = Array.isArray(bundle?.blocks) ? bundle.blocks.length : 0;
+  const genesis = bundle?.network?.genesisHash;
+  if (!(height >= 1) || !GENESIS_PATTERN.test(String(genesis))) throw new SnapshotAuthenticationError("authenticated snapshot has no height or genesis; refusing to publish");
+  return { height, genesis };
+}
+
+export function checkAuthenticated(snapshot, bytes, secret) {
+  if (!secret) return snapshot;
+  const body = authenticatedSnapshotTip(bytes, secret);
+  if (body.height !== snapshot.height || body.genesis !== snapshot.genesis) throw new SnapshotAuthenticationError(`snapshot headers (height ${snapshot.height}, genesis ${snapshot.genesis.slice(0, 12)}…) do not match the authenticated body (height ${body.height}, genesis ${body.genesis.slice(0, 12)}…)`);
+  return body;
 }
 
 export class GenesisMismatchError extends Error {
@@ -634,7 +666,7 @@ export async function readCapped(response, maxBytes) {
   return Buffer.concat(chunks, total);
 }
 
-export async function fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now }) {
+export async function fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now, stateSecret }) {
   const requestStartedMs = now();
   const response = await fetchImpl(`${gateway}/state/snapshot`, { signal: AbortSignal.timeout(300_000) });
   if (response.status !== 200) {
@@ -642,13 +674,13 @@ export async function fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now }
     throw new Error(`snapshot request returned HTTP ${response.status}`);
   }
   const bytes = await readCapped(response, MAX_SNAPSHOT_BYTES);
-  const snapshot = validateSnapshot({ status: response.status, headers: response.headers, bytes }, expectedGenesis);
+  const snapshot = checkAuthenticated(validateSnapshot({ status: response.status, headers: response.headers, bytes }, expectedGenesis), bytes, stateSecret);
   return { snapshot, bytes, requestStartedMs };
 }
 
 // One keeper cycle: download, check, publish state.enc then the per-genesis copy.
-export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity }) {
-  const { snapshot, bytes, requestStartedMs } = await fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now });
+export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity }) {
+  const { snapshot, bytes, requestStartedMs } = await fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now, stateSecret });
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   // A download that ended past the deadline starts neither publication
   // (publishAsset also refuses to start after swapBy).
@@ -687,8 +719,8 @@ export async function keepAlive({ fetchImpl, gateway, signal }) {
 // keepAliveIntervalMs (so a slow publish cycle never lets the instance idle)
 // and a publish cycle every publishIntervalMs.
 export async function runKeeper(options) {
-  const { fetchImpl, github, gateway, tag, expectedGenesis, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn } = options;
-  const stats = { cycles: 0, published: 0, notNewer: 0, refused: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null };
+  const { fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn } = options;
+  const stats = { cycles: 0, published: 0, notNewer: 0, refused: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null, authenticationFailures: 0 };
   const deadline = now() + runMs;
   // Aborted when the publish loop stops, so no pending wait (and no live timer)
   // outlives runKeeper.
@@ -724,12 +756,13 @@ export async function runKeeper(options) {
       // download or upload starts then.
       if (now() >= deadline) { warn("run deadline reached during repair; skipping publication"); break; }
       try {
-        const result = await publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, now, log, warn, sleep, swapBy: deadline });
+        const result = await publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, now, log, warn, sleep, swapBy: deadline });
         stats.lastHeight = result.height;
         if (result.published) { stats.published += 1; stats.lastPublishedHeight = result.height; log(`snapshot sha256 ${result.sha256} size ${result.size}`); }
         else if (result.upToDate) stats.notNewer += 1;
         else { stats.refused += 1; warn(`state.enc not replaced: ${result.reason}`); }
       } catch (error) {
+        if (error instanceof SnapshotAuthenticationError) { stats.authenticationFailures += 1; warn(error.message); break; }
         if (error instanceof GenesisMismatchError) { stats.genesisMismatches += 1; warn(error.message); }
         else { stats.failures += 1; warn(`cycle failed: ${error instanceof Error ? error.message : String(error)}`); }
       }
@@ -745,6 +778,7 @@ export async function runKeeper(options) {
 // or every publication refused for a safety reason such as a foreign-genesis label).
 export function exitCodeFor(stats) {
   if (stats.genesisMismatches > 0) return 1;
+  if (stats.authenticationFailures > 0) return 1;
   if (stats.published === 0 && stats.notNewer === 0) return 1;
   return 0;
 }
@@ -757,6 +791,15 @@ function envNumber(env, name, fallback, min, max) {
   return value;
 }
 
+// M3 (security review): without the state secret the keeper refuses to run,
+// unless the operator opts in to unauthenticated headers explicitly.
+export function keeperSecretPolicy(env) {
+  const stateSecret = env.ZYRON_TESTNET_STATE_SECRET || undefined;
+  if (stateSecret) return { stateSecret };
+  if (env.ZYRON_KEEPER_ALLOW_UNAUTHENTICATED === "1") return { stateSecret: undefined, warning: "ZYRON_TESTNET_STATE_SECRET is not set and ZYRON_KEEPER_ALLOW_UNAUTHENTICATED=1: snapshot height and genesis come from unauthenticated response headers" };
+  throw new Error("ZYRON_TESTNET_STATE_SECRET is not set; refusing to publish snapshots ordered by unauthenticated headers (set ZYRON_KEEPER_ALLOW_UNAUTHENTICATED=1 to override)");
+}
+
 async function main() {
   const env = process.env;
   const expectedGenesis = env.EXPECTED_GENESIS ?? "";
@@ -767,8 +810,10 @@ async function main() {
   const runMinutes = envNumber(env, "RUN_MINUTES", 340, 1, 340);
   const github = createGitHub({ fetchImpl: fetch, token: env.GITHUB_TOKEN, repo: env.REPO ?? env.GITHUB_REPOSITORY ?? "" });
   const stamp = () => new Date().toISOString();
+  const { stateSecret, warning } = keeperSecretPolicy(env);
+  if (warning) console.log(`::warning::${stamp()} ${warning}`);
   const stats = await runKeeper({
-    fetchImpl: fetch, github, gateway, tag, expectedGenesis,
+    fetchImpl: fetch, github, gateway, tag, expectedGenesis, stateSecret,
     runMs: runMinutes * 60_000,
     publishIntervalMs: envNumber(env, "PUBLISH_INTERVAL_SECONDS", 600, 60, 3600) * 1000,
     keepAliveIntervalMs: envNumber(env, "KEEPALIVE_INTERVAL_SECONDS", 300, 30, 840) * 1000,
