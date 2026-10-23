@@ -461,6 +461,13 @@ export function rpcRateLimitIdentity(
   );
 }
 
+/** Peer-supplied error text for a log line: control characters and newlines replaced, cut to 200 chars. */
+export const PEER_LOG_REASON_MAX = 200;
+export function peerLogReason(error: unknown): string {
+  const text = safeError(error).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ");
+  return text.length > PEER_LOG_REASON_MAX ? `${text.slice(0, PEER_LOG_REASON_MAX)}\u2026` : text;
+}
+
 export class NodeService {
   readonly mempool: Mempool;
   readonly roundSkipVoteDiagnostics = new RoundSkipVoteDiagnostics();
@@ -1744,8 +1751,19 @@ export class PeerClient {
     while (this.peers.length > 0) {
       const startHeight = service.status().height;
       const nowMs = Date.now();
-      const available = this.peers
+      let available = this.peers
         .filter((peer) => (this.failureUntil.get(peer) ?? 0) <= nowMs && (this.peerReputation?.isAvailable(peer, nowMs) ?? true));
+      if (available.length === 0) {
+        // Every configured peer is backed off. A backoff persisted across a
+        // restart (or built up while a peer was briefly down) must not wedge
+        // the follower silently: probe the peer whose backoff ends soonest,
+        // once per sync tick, and say so.
+        if (accepted > 0) break;
+        const probe = this.earliestBackoffPeer();
+        if (probe === undefined) break;
+        console.warn(`Peer sync: all ${this.peers.length} configured peer(s) in backoff at height ${startHeight}; probing ${probe}`);
+        available = [probe];
+      }
       let candidate: { peer: string; height: number; blocks: unknown[]; release: () => void } | undefined;
       for (const batch of peerSyncProbeBatches(available, this.syncCursor)) {
         const attempts = await Promise.allSettled(batch.map(async (peer) => {
@@ -1772,6 +1790,7 @@ export class PeerClient {
           const result = attempts[index]!;
           const peer = batch[index]!;
           if (result.status === "rejected") {
+            console.warn(`Peer sync failed: peer ${peer}, local height ${startHeight}, reason: ${peerLogReason(result.reason)}`);
             await this.recordFailure(peer, nowMs);
             continue;
           }
@@ -1796,7 +1815,9 @@ export class PeerClient {
             await service.acceptFinalizedBlock(block);
             accepted += 1;
             progressed = true;
-          } catch {
+          } catch (error) {
+            const height = (block as { header?: { height?: unknown } } | null)?.header?.height;
+            console.warn(`Peer sync rejected block: peer ${candidate.peer}, height ${Number.isSafeInteger(height) ? String(height) : "unknown"}, reason: ${peerLogReason(error)}`);
             poisoned = true;
             break;
           }
@@ -1814,6 +1835,17 @@ export class PeerClient {
       if (!progressed || service.status().height <= startHeight) break;
     }
     return accepted;
+  }
+
+  /** The configured peer whose backoff (in-memory or persisted) ends soonest. */
+  private earliestBackoffPeer(): string | undefined {
+    let best: string | undefined;
+    let bestUntil = Number.POSITIVE_INFINITY;
+    for (const peer of this.peers) {
+      const until = Math.max(this.failureUntil.get(peer) ?? 0, this.peerReputation?.backoffUntil(peer) ?? 0);
+      if (until < bestUntil) { best = peer; bestUntil = until; }
+    }
+    return best;
   }
 
   async requestAttestations(block: Block): Promise<BlockAttestation[]> {
