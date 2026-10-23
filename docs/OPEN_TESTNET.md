@@ -58,7 +58,7 @@ The directory holds plaintext **test** validator and faucet keys. Keep it outsid
 
 [`deploy/open-testnet/render.yaml`](../deploy/open-testnet/render.yaml) runs the same profile on a Render **free** web service with no persistent disk. State survives restarts through sealed snapshots:
 
-- With `ZYRON_TESTNET_STATE_SECRET` set (Render generates it; it is stored nowhere else), the gateway serves `GET /state/snapshot`: genesis, TEST keys and all finalized blocks, gzip + AES-256-GCM. Rate limited to 30 per hour. Before sealing, the gateway validates the history it reads from the validators the way a cold-start replay does: every block must pass full finalized-block validation (signatures, finality certificate, transactions, state root) on top of the blocks before it, and the history must end at the live tip. For each height the validators are tried in turn and the first valid block is used, so history corrupted on a validator's disk is not published, and honest validators that hold different valid finality certificates for the same block do not stop snapshots. If no validator serves a valid block at some height, no snapshot is served and the last published one stays in place. The gateway keeps the verified history in memory and only validates new blocks on later builds; after a restore it starts from the history the restore has just replayed.
+- With `ZYRON_TESTNET_STATE_SECRET` set (Render generates it; the snapshot keeper holds a copy as a GitHub Actions secret, see [Snapshot keepers](#snapshot-keepers)), the gateway serves `GET /state/snapshot`: genesis, TEST keys and all finalized blocks, gzip + AES-256-GCM. Rate limited to 30 per hour. Before sealing, the gateway validates the history it reads from the validators the way a cold-start replay does: every block must pass full finalized-block validation (signatures, finality certificate, transactions, state root) on top of the blocks before it, and the history must end at the live tip. For each height the validators are tried in turn and the first valid block is used, so history corrupted on a validator's disk is not published, and honest validators that hold different valid finality certificates for the same block do not stop snapshots. If no validator serves a valid block at some height, no snapshot is served and the last published one stays in place. The gateway keeps the verified history in memory and only validates new blocks on later builds; after a restore it starts from the history the restore has just replayed.
 - A snapshot keeper downloads the snapshot every 10 minutes and publishes it as the `state.enc` asset of the `open-testnet-state` prerelease, plus a per-genesis copy. Its polling also keeps the free instance from idling. See [Snapshot keepers](#snapshot-keepers).
 - On a cold start, `run --init-if-missing --restore-url <asset>` decrypts the snapshot, checks the genesis hash and keys, replays every block through normal validation once, writes a recovery checkpoint that the other validators verify and start from, and resumes the same chain. Below a recovery checkpoint a validator only line-scans its block log on open, so each validator's copied files are compared (SHA-256) with the replayed ones before they are opened, and every validator's files again right before the completion marker; a mismatch fails the restore. Every copy step reports start-up progress, so a long restore of a large log is not mistaken for a stall. A fresh genesis is created only if no snapshot exists or the restore fails, and the failure is logged. Transient download failures (5xx, network errors, a body cut off mid-transfer) are retried for 172 s first, so a short outage of the asset host does not reset the network. A 404 is retried for 160 s before it counts as "no snapshot published", because a keeper replacing the asset can leave it briefly missing. `network.json` is the completion marker: it is written last, through a temporary file that is fsynced and renamed into place. A directory without a valid marker (an interrupted restore or init, for example a restart after a stall, a failed restore, a marker torn by a crash, or one that does not match `genesis.json` and the faucet key) is moved aside to `<dir>.incomplete-<time>-<pid>/<dir name>`, a freshly reserved holder (never replacing an existing path), so the next attempt starts clean and the snapshot is restored again; a directory with top-level entries the testnet does not create is refused and left untouched. Only the newest 3 holders (including the one just created) are kept: an older holder is removed only if it holds nothing but what the testnet itself creates (keys, genesis, and in each validator data directory only the files a validator store writes; no operator file, symlink, special file, foreign name or unexpected layout); any other holder is never removed and does not count toward the bound. Old holders are pruned before the new holder is reserved, so a disk filled by earlier attempts can make room. Holder names keep creation order even if the clock moves back: the time in a new name is never below the newest existing holder's, and at an equal time its counter goes past that holder's. A holder is removed only if it is still the one that was inspected: it is first renamed to a private name, checked again there (same layout, and the same inodes, sizes and modification times), and renamed back and kept if anything changed. Leftover temporary or quarantined copies count as testnet-created only on the files whose writers create them. A holder with a mount point at or inside it (including a bind mount), or a directory on another device, is never removed; on Linux, a mount table that cannot be read keeps the holder. File and holder names count only if they are exactly what the writers produce. A holder left under its private name by a crash during removal is finished off on the next start if it is still prunable, and otherwise renamed back under its own name and kept. A holder that cannot be inspected, or a removal failure, is logged without failing the restart.
 - The gateway binds its port (`--port`, else `$PORT`, else 10000) before the restore starts, so hosts that scan for an open port see it immediately. The log reports how long each start-up phase took (`download`, `decrypt`, `replay`, `validators`).
@@ -69,7 +69,11 @@ Limits: up to about 10 minutes of the newest blocks can be lost on an unplanned 
 
 ### Snapshot keepers
 
-Two keepers can publish the snapshot. Neither needs the state secret: the gateway seals the snapshot itself, so a keeper only needs write access to the release assets.
+Two keepers can publish the snapshot. The gateway seals the snapshot itself, and a keeper also needs write access to the release assets.
+
+**State secret.** `ZYRON_TESTNET_STATE_SECRET` is generated by Render for the gateway and is also stored as the GitHub Actions secret `ZYRON_TESTNET_STATE_SECRET`, which the scheduled keeper needs to authenticate snapshot reads. Both copies must hold the same value. The keeper job runs only on `refs/heads/main`: a `workflow_dispatch` on another branch runs that branch's copy of the workflow, and a modified copy could otherwise expose the secret. The secret is passed only as the keeper step's environment and is never printed or committed.
+
+**Durability fields.** Blocks above the newest published snapshot are finalized but can be replaced by a cold start that restores that snapshot. State answers therefore say how far they are covered. `GET /balance`, `/nonce` and `/account`, and the responses of `POST /tx` and `POST /faucet`, include `asOfHeight` (the tip height the answer was read at), `peerCap` (`durable` when the gateway serves peers only up to the published snapshot, `off` otherwise), and, when a watermark is known, `durableHeight` (height of the newest verified published snapshot), `durable` (`true` when `asOfHeight` is at or below `durableHeight`) and `durabilityNote`. A balance, nonce or transaction with `durable: false` can roll back after a gateway cold start; wait until `durableHeight` passes it (about 10 minutes) before relying on it.
 
 - **Scheduled GitHub Actions job** ([`.github/workflows/open-testnet-snapshot-keeper.yml`](../.github/workflows/open-testnet-snapshot-keeper.yml), logic in [`.github/scripts/open-testnet-snapshot-keeper.mjs`](../.github/scripts/open-testnet-snapshot-keeper.mjs)). It does not depend on any machine being on. It polls `/health` every 5 minutes and publishes every 10 minutes, using the workflow `GITHUB_TOKEN` with `contents: write`. GitHub delays or drops scheduled runs under load, often by hours, so each run keeps working for about 5 h 40 min instead of exiting after one cycle. The concurrency group `open-testnet-snapshot-keeper` keeps exactly one run active. The next scheduled run waits as pending and takes over when the active run ends. GitHub cancels older pending runs, so cancelled scheduled runs in the list are expected. A manual `workflow_dispatch` run also waits behind an active run.
 - **Legacy machine keeper** ([`deploy/open-testnet/snapshot-keeper.sh`](../deploy/open-testnet/snapshot-keeper.sh)), run on an always-on machine with an authenticated `gh`. It only covers the time that machine is running. It is a fallback for when the scheduled workflow is disabled; do not run it next to the scheduled job (see below). Before every upload it reads `EXPECTED_GENESIS` from `.github/workflows/open-testnet-snapshot-keeper.yml` on `main` and refuses a snapshot of any other genesis, so a fresh-genesis cold start cannot replace `state.enc`.
@@ -88,6 +92,43 @@ Rules the Actions keeper enforces:
 Both keepers fetch `/state/snapshot` about 6 times an hour (limit: 30 per hour for all clients).
 
 Free-plan budget: Actions minutes are free for public repositories, and the job occupies one hosted runner slot. A free web service that is kept awake all month uses about 720-744 of the 750 free instance hours a Render workspace gets per month. Other free web services in the same workspace share that allowance, and when it runs out Render suspends the workspace's free web services until the next month.
+
+## Upgrading after a genesis relaunch
+
+The genesis currently pinned for `zyron-open-testnet-render-1` is `e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad` (genesis timestamp 2026-10-20T22:09:28.767Z). That genesis carries fields that older code does not know: `activityOracleThreshold` and `activityOraclePolicy` (added in #1076, `f3913f2`) and `publicDistributionRelease` (added in #1075, `69171bf`). Genesis loading rejects unknown fields, so a node built before those changes (for example from `ccd8efaa`) stops at start with:
+
+```text
+Fatal: Invalid genesis fields
+```
+
+Run current `main` (verified at `fdd1e792` or later). No minimum commit has been proven; `fdd1e792` (#1092) is a verified reference point that contains both changes, not the commit that added the fields (it only changes stranded-pruning test fixtures). The previous chain, genesis `9ad75d777141de46df1fb008298a4d8a92fbce0a9c96aaf26ecf69474b7db8eb`, is retired; do not try to keep following it.
+
+Use Node.js 22 or newer (`l1/package.json` requires `>=22`). On Node.js 20 the node has been reported to exit silently with code 139 (segmentation fault); check `node --version` first.
+
+**Which hash applies to you.** The pinned hash `e0212e57…a8ad` is for **followers of the public testnet** only. If you run your own copy (`open-testnet.mjs init`), `init` generates an independent TEST genesis; its hash is not the public pin. Verify the hash that `init` printed (also `genesisHash` in the directory's `network.json`) and that `GET /status` and the node's start-up line report that hash. Do not compare it with the public pin.
+
+1. **Confirm the expected hash independently (public-testnet followers).** Compare the `EXPECTED_GENESIS` pin in `.github/workflows/open-testnet-snapshot-keeper.yml` on `main`, this document, and the reset announcement. If they disagree, stop, keep your data directory and report it. Operators of their own copy have no public pin: after step 6, take the hash printed by `init` as the expected value.
+2. **Update the code** to the latest `main` and check that it includes `fdd1e792`:
+   ```sh
+   git fetch origin && git checkout main && git pull --ff-only origin main
+   git merge-base --is-ancestor fdd1e792 HEAD && echo "includes fdd1e792"
+   ```
+3. **Rebuild** from `l1/`:
+   ```sh
+   cd l1 && npm ci && npm run build
+   ```
+4. **Re-fetch the genesis and verify its hash.** Fetch `GET /genesis` again (never reuse the old genesis file), and for a public-testnet follower, check the genesis hash that `GET /status` (or `GET /genesis`) reports equals `e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad`, the pin from step 1:
+   ```sh
+   curl -s https://zyron-open-testnet.onrender.com/status
+   ```
+   A node prints `Genesis <hash>, height <n>` when it starts; that hash must equal the pin too. (Operators of their own copy: compare against the hash `init` printed instead, see step 6.)
+5. **Archive the old data directory, do not delete it.** Stop the node, then move the directory aside, for example `mv "$DIR" "$DIR.pre-e0212e57-$(date +%Y%m%d)"`. Keep it until the new chain is confirmed; it is the evidence if anything turns out wrong.
+6. **Restart** with a fresh, empty data directory against the new genesis (commands below), and check that the start-up line shows the expected hash: the pinned hash for a public-testnet follower, or the hash that `init` printed for your own copy.
+
+Restart commands, by setup:
+
+- **Your own copy** (`open-testnet.mjs`): `init` creates a fresh TEST genesis of its own, so its hash is not the public pin. Re-run `node scripts/open-testnet.mjs init --dir <new dir>` and `run --dir <new dir>` as in [Run your own copy](#run-your-own-copy), note the `genesisHash` that `init` prints, and check that `run` logs the same `genesis <hash>` and `GET /status` reports it.
+- **Follower of the public testnet**: re-fetch the genesis from `GET /genesis` and start `secure-cli.js node --genesis ... --data <new dir>` as in [`VALIDATOR_ONBOARDING.md`](VALIDATOR_ONBOARDING.md) section 5.1.
 
 ## Founder-operated nodes
 
@@ -113,6 +154,37 @@ The current validator set is run by the project from one host, so it is **not** 
 4. Keep your key and signing journal on durable local storage; never run two copies of one validator key.
 
 Never send a private key, password file or signer token to anyone, including project maintainers.
+
+## Followers and cold starts (durable watermark)
+
+The hosted instance has no persistent disk. A cold start restores the newest
+snapshot published by the snapshot keeper, which can be several minutes behind
+the tip that was finalized before the restart. The validators then finalize
+those heights again with different blocks. Before this fix, every follower that
+had synced the lost blocks ended up on a fork.
+
+When the gateway runs with a restore URL and a state secret, the follower
+surface (`/peer/status`, `/peer/blocks`) serves only blocks inside the newest
+published snapshot that matches the live chain (the durable height, shown as
+`durableHeight` in `/health`). Followers therefore trail the tip by up to one
+keeper interval, and a later restore never contradicts a block they hold. The
+explorer endpoints still show the live tip: `/status` reports `durableHeight`
+and `peerCap` (`durable` or `off`; also in `/health`), and every block from
+`/blocks` and `/block/{height}` carries `durable: false` when it is above
+`durableHeight`. Such a block is finalized but can still be replaced by a cold
+start; wait until it is durable before relying on it. Set
+`ZYRON_TESTNET_DURABLE_PEERS=0` to turn the cap off.
+
+A cold start whose published snapshot cannot be downloaded, decrypted or
+re-validated stops (exit 1) instead of creating a fresh TEST genesis under the
+same chain ID. A snapshot that stays missing (404 after every retry) also stops,
+unless the operator sets `ZYRON_TESTNET_ALLOW_FRESH_GENESIS=1` to start a new
+chain on purpose.
+
+The snapshot keeper needs `ZYRON_TESTNET_STATE_SECRET` (a repository secret
+passed only to its step). With it, the snapshot height and genesis come from the
+authenticated body, and a mismatch stops the run without publishing. Without it,
+the keeper refuses to run unless `ZYRON_KEEPER_ALLOW_UNAUTHENTICATED=1` is set.
 
 ## What this testnet does not prove
 

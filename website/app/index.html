@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Zyron Wallet" />
   <meta name="format-detection" content="telephone=no" />
-  <meta name="zyron-build" content="app=7ea52ab762a2b2ea;release=b5ea11bf2683a7241cd4bf819f9bda9c4e3759c7" />
+  <meta name="zyron-build" content="app=35e97d2b086f6305;release=d30814fd8ece54a657f6d6df872e2cb67180a960" />
   <title>ZyronChain Wallet (testnet)</title>
   <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys stay on this device. This app does not connect and does not show a balance. Sign locally." />
   <link rel="manifest" href="/app/manifest.json" />
@@ -279,6 +279,19 @@
           <button type="button" data-go="home" data-i18n="back">Back</button>
         </div>
       </div>
+      <div class="card" data-address-book>
+        <h2>Address book</h2>
+        <p class="hint">Saved inside the encrypted vault on this device. Nothing is uploaded.</p>
+        <p class="hint" data-contact-empty>No contacts yet.</p>
+        <ul class="contacts" data-contact-list></ul>
+        <label><span>Name</span><input data-contact-name autocomplete="off" maxlength="64" /></label>
+        <label><span>Address</span><input data-contact-address autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ZYN…" /></label>
+        <div class="actions">
+          <button type="button" data-contact-save>Add contact</button>
+          <button type="button" data-contact-cancel hidden>Cancel edit</button>
+        </div>
+        <p class="hint" data-contact-result aria-live="polite"></p>
+      </div>
     </section>
 
     <!-- SETTINGS -->
@@ -292,6 +305,17 @@
         <h2 data-i18n="backupRemindTitle">Confirm your paper backup</h2>
         <p class="hint" data-i18n="backupSettingsLead">A short word check confirms the paper backup for this session. The phrase stays on this device and is not shown.</p>
         <div class="actions"><button class="primary" type="button" data-go="backup" data-i18n="backupRemindGo">Check backup</button></div>
+      </div>
+      <div class="card" data-threshold-card>
+        <h2>Large-amount warning</h2>
+        <p class="hint">Ask for an extra confirmation when a transfer amount is at or above this many ZYN. Stored inside the encrypted vault on this device. Leave empty and save to turn it off.</p>
+        <label><span>Threshold (ZYN)</span><input data-threshold-input inputmode="decimal" autocomplete="off" placeholder="100" /></label>
+        <p class="hint" data-threshold-current></p>
+        <div class="actions">
+          <button type="button" data-threshold-save>Save threshold</button>
+          <button type="button" data-threshold-clear>Clear</button>
+        </div>
+        <p class="hint" data-threshold-result aria-live="polite"></p>
       </div>
       <div class="card">
         <h2 data-i18n="convTitle">ZYN ↔ atoms</h2>
@@ -355,6 +379,11 @@
       <p class="hint" data-i18n="reviewLead">Check every field. Signing happens on this device; nothing is broadcast.</p>
       <dl class="review" data-review-rows></dl>
       <p class="hint badtext" data-review-fee-warning hidden></p>
+      <div class="notice warn" data-review-warnings hidden>
+        <strong>Check before signing</strong>
+        <ul data-review-warning-list></ul>
+        <label class="check"><input type="checkbox" data-review-warn-ack /> <span>I read these warnings and still want to sign.</span></label>
+      </div>
       <div data-review-confirm-box>
         <label class="check"><input type="checkbox" data-review-ack /> <span data-i18n="reviewAck">I checked the receiver, amount, fee and chain ID.</span></label>
         <div class="actions">
@@ -502,7 +531,7 @@
   </div>
   <script src="/app/vendor/noble-scure.js?v=8bc52c47d762" integrity="sha384-8rRjvBX0v19QY1jV/tt980903+713cFYFQwMvCGJR+dGfUXeXlHhGh1Ommt20XpE"></script>
   <script src="/app/vendor/qr.js?v=df7e5ee0f9db" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
-  <script src="/app/zyron-wallet-core.js?v=74d7d39fc94c" integrity="sha384-9fj7ajY82xmlozWfEX98YPVAkhNgg4S5UyN7fXVPAr95B/Rxs68ZKomeCzXjdf61"></script>
-  <script src="/app/app.js?v=09b50d7cdfbc" integrity="sha384-HA8gfsZIDN9ZmQEtXZFeveMCKxxO98pFfCu9efUWbnYwOsjz3SPp2BzRYuSinKog"></script>
+  <script src="/app/zyron-wallet-core.js?v=86ec8474477c" integrity="sha384-Vn8O6/edLhLwN3AH0R2bjJcUALSqGKXEphI//Wh5uzuXU3CRIgotneSbqdpnqUJ5"></script>
+  <script src="/app/app.js?v=2a533c96b60c" integrity="sha384-j+idm4+xEuo55L0o1E0g0b7TqVvnN+igQYf0J4/JQG+GE1ss5+bc6P3j1no2nCX/"></script>
 </body>
 </html>

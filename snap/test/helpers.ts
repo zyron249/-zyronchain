@@ -6,6 +6,7 @@ import { DERIVATION_PATH } from '../src/constants';
 import vectorsFile from './vectors.json';
 
 export const ORIGIN = 'https://zyronchain.com';
+/** Former dev origin; no longer allow-listed (tests assert it is rejected). */
 export const DEV_ORIGIN = 'http://localhost:8000';
 export const VECTORS = vectorsFile.vectors;
 export const PRIMARY = VECTORS[0]!;

@@ -268,6 +268,26 @@ export function validateBlockEnvelope(
   expectedProtocolVersion: number,
   requireProposerSignature = true
 ): void {
+  validateBlockEnvelopeGates(block, previous, validators, nowMs, requireFinality, expectedProtocolVersion, requireProposerSignature);
+  validateBlockTransactions(block);
+}
+
+/**
+ * Every check of {@link validateBlockEnvelope} except the per-transaction
+ * verification that it runs last: structure, header, proposer binding,
+ * proposer signature and certificates (all O(1) in the transaction count apart
+ * from the Merkle root). A block that passes is authenticated by its expected
+ * proposer (P1-06 counts only failures after this point).
+ */
+export function validateBlockEnvelopeGates(
+  block: Block,
+  previous: Block,
+  validators: Validator[],
+  nowMs: number,
+  requireFinality: boolean,
+  expectedProtocolVersion: number,
+  requireProposerSignature = true
+): void {
   // Untyped callers that omit these arguments must fail closed: a missing
   // finality mode must never silently skip the attestation quorum check, and a
   // missing protocol version must never select legacy signature rules.
@@ -321,12 +341,10 @@ export function validateBlockEnvelope(
     } else if (block.commitRound !== null || block.attestations.length !== 0) {
       throw new Error("Protocol v6 proposals must not carry a commit certificate");
     }
-    validateBlockTransactions(block);
     return;
   }
   validateRoundCertificate(block, validators);
   if (requireFinality) validateAttestationQuorum(block, validators);
-  validateBlockTransactions(block);
 }
 
 export function validateRoundCertificate(block: Block, validators: Validator[]): void {
