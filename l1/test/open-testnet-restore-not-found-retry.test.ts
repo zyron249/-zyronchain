@@ -63,7 +63,7 @@ async function sealedNetwork(root: string, secret: string): Promise<{ sealed: Bu
 }
 
 // Serves `failStatus` (404 by default) for the first `missing` requests, then the snapshot.
-async function startHost(root: string, secret: string, missing: number, sealed: Buffer, failStatus = 404) {
+async function startHost(root: string, secret: string, missing: number, sealed: Buffer, failStatus = 404, extraEnv: Record<string, string> = {}) {
   let requests = 0;
   const server: Server = createServer((request, response) => {
     requests += 1;
@@ -80,7 +80,7 @@ async function startHost(root: string, secret: string, missing: number, sealed: 
   const basePort = 29_000 + Math.floor(Math.random() * 900) * 4;
   const child: ChildProcess = spawn(process.execPath, [script, "run", "--dir", join(root, "hosted"), "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
     "--chain-id", CHAIN_ID, "--validator-base-port", String(basePort), "--restore-url", `http://127.0.0.1:${snapshotPort}/state.enc`], {
-    cwd: l1Root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ZYRON_TESTNET_STATE_SECRET: secret, PORT: "" }
+    cwd: l1Root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ZYRON_TESTNET_STATE_SECRET: secret, PORT: "", ...extraEnv }
   });
   const state = { log: "", requests: () => requests, child, server };
   child.stdout!.on("data", (c) => { state.log += c; });
@@ -230,3 +230,54 @@ test("a cold start rides out a host outage longer than 7 s and restores the publ
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// M1 (security review): any restore failure other than a confirmed 404 fails
+// closed. A tampered snapshot or a wrong state secret never becomes a fresh
+// TEST genesis with new keys under the published chain ID.
+for (const label of ["a tampered snapshot", "a wrong state secret"] as const) {
+  test(`a cold start with ${label} stops instead of creating a fresh TEST genesis`, { timeout: 360_000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), "zyron-restore-closed-"));
+    let host: Awaited<ReturnType<typeof startHost>> | undefined;
+    try {
+      const secret = randomBytes(32).toString("base64");
+      const { sealed } = await sealedNetwork(root, secret);
+      const served = Buffer.from(sealed);
+      if (label === "a tampered snapshot") served[served.length - 5] = served[served.length - 5]! ^ 0xff;
+      host = await startHost(root, label === "a wrong state secret" ? randomBytes(32).toString("base64") : secret, 0, served);
+      const [code] = await Promise.race([once(host.child, "exit"), sleep(300_000).then(() => ["timeout"])]);
+      assert.equal(code, 1, host.log);
+      assert.match(host.log, /STATE RESTORE FAILED .*refusing to create a fresh TEST genesis/);
+      assert.doesNotMatch(host.log, /creating a fresh TEST genesis/);
+      assert.ok(!(await api.readNetworkMarker(join(root, "hosted"))), "no network was initialised");
+    } finally {
+      await stop(host);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+// Security re-review M2: a snapshot that stays missing (404 after the full
+// schedule) creates a fresh TEST genesis only with ZYRON_TESTNET_ALLOW_FRESH_GENESIS=1.
+for (const allow of [false, true]) {
+  test(`a snapshot that stays missing ${allow ? "creates a fresh TEST genesis with" : "stops start-up without"} ZYRON_TESTNET_ALLOW_FRESH_GENESIS=1`, { timeout: 420_000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), "zyron-restore-missing-"));
+    let host: Awaited<ReturnType<typeof startHost>> | undefined;
+    try {
+      const secret = randomBytes(32).toString("base64");
+      host = await startHost(root, secret, Number.MAX_SAFE_INTEGER, Buffer.alloc(0), 404, allow ? { ZYRON_TESTNET_ALLOW_FRESH_GENESIS: "1" } : {});
+      if (allow) {
+        const status = await servedStatus(host);
+        assert.equal(status.persistence.mode, "fresh-genesis");
+        assert.match(host.log, /ZYRON_TESTNET_ALLOW_FRESH_GENESIS=1 is set; creating a fresh TEST genesis/);
+      } else {
+        const [code] = await Promise.race([once(host.child, "exit"), sleep(400_000).then(() => ["timeout"])]);
+        assert.equal(code, 1, host.log);
+        assert.match(host.log, /refusing to create a fresh TEST genesis without ZYRON_TESTNET_ALLOW_FRESH_GENESIS=1/);
+        assert.ok(!(await api.readNetworkMarker(join(root, "hosted"))), "no network was initialised");
+      }
+    } finally {
+      await stop(host);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
