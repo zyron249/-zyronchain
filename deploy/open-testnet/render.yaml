@@ -38,3 +38,12 @@ services:
       # without passing through Cloudflare.
       - key: ZYRON_TRUST_CF_CONNECTING_IP
         value: "1"
+      # Consensus relay replay journal (used only when ZYRON_RELAY_PEERS is
+      # set). Free instances have no persistent disk: /tmp is writable and
+      # survives a process restart inside the same instance, but not a deploy
+      # or a new instance. A journal that does not exist at start applies the
+      # boot fence (envelopes issued before start + 60 s are refused), so a
+      # fresh instance is still protected. Kept outside --dir, which a failed
+      # restore may move aside. One gateway per relay peer set.
+      - key: ZYRON_RELAY_SEEN_FILE
+        value: /tmp/zyron-relay/seen.jsonl
