@@ -26,6 +26,7 @@ Scope: the node RPC server (`l1/src/node-base.ts`, `createRpcServer` and `route`
 | Route | Auth | Body cap | Response cap | Rate limit | CPU / cost |
 | --- | --- | --- | --- | --- | --- |
 | `GET /rpc-info`, `/status`, `/protocol`, `/healthz` | none | n/a | 4 MB serialization bound | per-client window | constant |
+| `GET /protocol-schedule` | none | n/a | 4 MB; at most 64 listed entries | per-client window | cached per tip; the schedule is scanned once per new tip |
 | `GET /readyz`, `/metrics` | none | n/a | 4 MB | per-client window | constant; `/metrics` exposes operational counters, no secrets |
 | `GET /peer-record`, `/peers?limit=` (only when configured) | none | n/a | 4 MB; `limit` <= discovery maximum | per-client window | bounded list |
 | `GET /blocks?from=&limit=` | none | n/a | 25 MB; `limit` 1..100; payload <= 20 MB | per-client window | disk read of <= 100 finalized blocks |

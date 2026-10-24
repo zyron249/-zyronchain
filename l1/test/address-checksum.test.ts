@@ -59,5 +59,5 @@ test("password strength check: length, repetition and ~60-bit estimate", () => {
   assert.equal(passwordStrength("correct horse battery staple").ok, true);
   assert.equal(passwordStrength("Tr0ub4dor&3xyz").ok, true);
   assert.equal(passwordStrength("a-strong-local-wallet-password").ok, true);
-  assert.equal(passwordStrength("şifrem-çok-güçlü-2026").ok, true);
+  assert.equal(passwordStrength("strong-wallet-passphrase-🔐-2026").ok, true);
 });
