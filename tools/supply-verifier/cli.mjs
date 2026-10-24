@@ -3,7 +3,7 @@
 // Exit codes: 0 verified, 1 verification failed (fail closed), 2 usage error.
 import { readFile } from "node:fs/promises";
 
-import { PINNED_GENESIS_HASH, verifySupply } from "./src/verify.mjs";
+import { PINNED_GENESIS_HASH, readCapped, verifySupply } from "./src/verify.mjs";
 
 const USAGE = `Usage: node tools/supply-verifier/cli.mjs --genesis <file|url> --endpoint <url> --endpoint <url> [...]
   --genesis <file|url>          genesis JSON (a GET /genesis body or a bare genesis config)
@@ -12,6 +12,7 @@ const USAGE = `Usage: node tools/supply-verifier/cli.mjs --genesis <file|url> --
   --expected-genesis-hash <hex> override the pinned genesis hash (default ${PINNED_GENESIS_HASH})
   --to-height <n>               verify up to this height (default: lowest endpoint tip)
   --timeout-ms <n>              per-request timeout (default 30000)
+  --max-tip-drift <n>           warn when endpoint tips differ by more than n blocks (default 3)
   --json                        print the report as JSON
   --help`;
 
@@ -27,6 +28,7 @@ function parse(argv) {
     else if (arg === "--expected-genesis-hash") options.expectedGenesisHash = value();
     else if (arg === "--to-height") options.toHeight = Number(value());
     else if (arg === "--timeout-ms") options.timeoutMs = Number(value());
+    else if (arg === "--max-tip-drift") options.maxTipDrift = Number(value());
     else throw new Error(`unknown option ${arg}`);
   }
   return options;
@@ -37,7 +39,7 @@ async function loadGenesis(source, timeoutMs) {
   if (/^https?:\/\//.test(source)) {
     const response = await fetch(source, { signal: AbortSignal.timeout(timeoutMs ?? 30_000), redirect: "error" });
     if (response.status !== 200) throw new Error(`genesis URL returned HTTP ${response.status}`);
-    text = await response.text();
+    text = await readCapped(response, "genesis URL", "");
   } else {
     text = await readFile(source, "utf8");
   }
@@ -65,6 +67,7 @@ try {
     genesis,
     onProgress: options.json ? undefined : ({ height, target }) => process.stderr.write(`replayed ${height}/${target}\r`)
   });
+  for (const warning of report.warnings) console.error(`WARNING: ${warning}`);
   if (options.json) console.log(JSON.stringify(report, null, 2));
   else {
     const zyn = (atoms) => { const a = BigInt(atoms); return `${a / 100_000_000n}.${(a % 100_000_000n).toString().padStart(8, "0")} ZYN`; };
@@ -72,6 +75,8 @@ try {
     console.log(`  genesis ${report.genesisHash} on ${report.chainId}, ${report.endpointsChecked} endpoints cross-checked`);
     for (const [name, value] of Object.entries(report.buckets)) console.log(`  ${name.padEnd(16)} ${zyn(value)}`);
     console.log(`  total            ${zyn(report.totalAtoms)}`);
+    console.log("Trust assumptions:");
+    for (const line of report.trustAssumptions) console.log(`  - ${line}`);
   }
 } catch (error) {
   console.error(`FAIL: ${error.message}`);

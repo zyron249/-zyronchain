@@ -1,0 +1,36 @@
+# Simulated feature-1 landing: added 'pendingTransfers?: unknown[]' to LedgerSnapshot in l1/src/state.ts (reverted afterwards). The guard must fail while verify.mjs hardcodes pendingAtoms = 0n.
+TAP version 13
+# Subtest: pendingAtoms guard: ledger has no escrow/pending state while the verifier hardcodes 0
+not ok 1 - pendingAtoms guard: ledger has no escrow/pending state while the verifier hardcodes 0
+  ---
+  duration_ms: 2.492975
+  type: 'test'
+  location: '/workspace/wt/core-supply-verifier-lows/tools/supply-verifier/test/verifier.test.mjs:197:1'
+  failureType: 'testCodeFailure'
+  error: 'LedgerSnapshot gained pending/escrow state: read it into pendingAtoms in verify.mjs'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    export interface LedgerSnapshot {
+      accounts: Array<{ address: Address; balanceAtoms: number; nonce: number }>;
+      settledActivityEpochs: number[];
+      pendingTransfers?: unknown[];
+    }
+  operator: 'doesNotMatch'
+  stack: |-
+    TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier-lows/tools/supply-verifier/test/verifier.test.mjs:207:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.start (node:internal/test_runner/test:944:17)
+    startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 301.136964

@@ -94,9 +94,24 @@ export function buildFixtureChain(options = {}) {
  * Fake node RPC: GET /status and GET /blocks?from=&limit= (the node and
  * gateway /peer surface), plus GET /genesis. `mutate` may rewrite responses.
  */
-export async function startEndpoint(fixture, { mutateBlocks, statusOverride, genesisHashOverride, failAll } = {}) {
+export async function startEndpoint(fixture, { mutateBlocks, statusOverride, genesisHashOverride, failAll, endlessBody, stats } = {}) {
   const server = createServer((request, response) => {
     const url = new URL(request.url, "http://x");
+    if (endlessBody) {
+      // Never-ending body: counts bytes written until the client aborts.
+      const chunk = Buffer.alloc(1024 * 1024, 0x20);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write("[");
+      const pump = () => {
+        while (!response.destroyed && stats.bytes < 256 * 1024 * 1024) {
+          stats.bytes += chunk.length;
+          if (!response.write(chunk)) return response.once("drain", pump);
+        }
+        if (!response.destroyed) response.end("]");
+      };
+      response.on("close", () => { stats.closed = true; });
+      return pump();
+    }
     const send = (code, body) => { response.writeHead(code, { "content-type": "application/json" }); response.end(JSON.stringify(body)); };
     if (failAll) return send(500, { error: "down" });
     const tip = fixture.blocks.at(-1);
