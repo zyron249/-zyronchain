@@ -6,3 +6,5 @@ button { background:#2563eb; color:white; border:none; padding:10px 14px; border
 button:hover { background:#1d4ed8; }
 pre { background:#020617; padding:12px; border-radius:8px; white-space:pre-wrap; word-break:break-word; }
 .warning { color:#facc15; }
+.retire-banner { background:#422006; color:#fde68a; border:1px solid #f59e0b; border-radius:12px; padding:14px 16px; margin:0 0 16px; }
+.retire-banner a { color:#fcd34d; font-weight:bold; }

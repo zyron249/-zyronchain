@@ -163,6 +163,24 @@ export interface NodeProtocolStatus {
   nextVersion: number;
 }
 
+/** Maximum future protocol schedule entries listed by GET /protocol-schedule. */
+export const PROTOCOL_SCHEDULE_LIST_LIMIT = 64;
+
+/**
+ * Pre-activation protocol readiness signal (V6_OPERATOR_GUIDE §12 item 8).
+ * Informational only: /readyz reports `unsupported-next-protocol` just one
+ * block before an activation; this shows it as soon as it is scheduled.
+ */
+export interface NodeProtocolSchedule {
+  height: number;
+  currentVersion: number;
+  supportedVersions: number[];
+  /** Future entries in activation order, at most PROTOCOL_SCHEDULE_LIST_LIMIT. */
+  scheduled: Array<{ activationHeight: number; protocolVersion: number; supported: boolean }>;
+  /** First future entry this binary cannot run (searched over all entries), or null. */
+  firstUnsupported: { activationHeight: number; protocolVersion: number } | null;
+}
+
 export interface NodeReadiness {
   ready: boolean;
   height: number;
@@ -568,6 +586,34 @@ export class NodeService {
       nextVersion: this.store.chain.protocolVersionAt(height + 1)
     };
   }
+
+  protocolSchedule(): NodeProtocolSchedule {
+    // Cached per height: GET /protocol-schedule is unauthenticated. The
+    // schedule only changes when a block (with a protocol_upgrade) is applied.
+    const chain = this.store.chain;
+    const height = chain.height;
+    if (this.protocolScheduleCache?.height !== height || this.protocolScheduleCache.tipHash !== chain.tip.hash) {
+      const future = chain.scheduledProtocolVersionsAbove(height);
+      const unsupported = future.find(({ protocolVersion }) => !SUPPORTED_PROTOCOL_VERSIONS.has(protocolVersion));
+      this.protocolScheduleCache = {
+        height,
+        tipHash: chain.tip.hash,
+        value: {
+          height,
+          currentVersion: chain.protocolVersionAt(height),
+          supportedVersions: [...SUPPORTED_PROTOCOL_VERSIONS].sort((a, b) => a - b),
+          scheduled: future.slice(0, PROTOCOL_SCHEDULE_LIST_LIMIT).map((entry) => ({
+            ...entry,
+            supported: SUPPORTED_PROTOCOL_VERSIONS.has(entry.protocolVersion)
+          })),
+          firstUnsupported: unsupported ? { ...unsupported } : null
+        }
+      };
+    }
+    return structuredClone(this.protocolScheduleCache.value);
+  }
+
+  private protocolScheduleCache?: { height: number; tipHash: string; value: NodeProtocolSchedule };
 
   readiness(nowMs = Date.now()): NodeReadiness {
     const reasons: string[] = [];
@@ -1688,6 +1734,9 @@ async function route(
   }
   if (request.method === "GET" && url.pathname === "/protocol") {
     return writeJson(response, 200, service.protocolStatus());
+  }
+  if (request.method === "GET" && url.pathname === "/protocol-schedule") {
+    return writeJson(response, 200, service.protocolSchedule());
   }
   if (request.method === "GET" && url.pathname === "/peer-record" && peerRecord) {
     validateSignedPeerRecord(peerRecord, service.status());

@@ -505,6 +505,18 @@ export class ZyronChain {
     return structuredClone(selected);
   }
 
+  /**
+   * Protocol versions scheduled to activate above `height`, in activation
+   * order (informational; used by GET /protocol-schedule).
+   */
+  scheduledProtocolVersionsAbove(height: number): Array<{ activationHeight: number; protocolVersion: number }> {
+    if (!Number.isSafeInteger(height) || height < 0) throw new Error("Invalid protocol height");
+    return [...this.protocolSchedule.entries()]
+      .filter(([activationHeight]) => activationHeight > height)
+      .sort(([a], [b]) => a - b)
+      .map(([activationHeight, protocolVersion]) => ({ activationHeight, protocolVersion }));
+  }
+
   protocolVersionAt(height: number): number {
     if (!Number.isSafeInteger(height) || height < 0) throw new Error("Invalid protocol height");
     let selectedVersion = 1;

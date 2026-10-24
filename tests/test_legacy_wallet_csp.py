@@ -50,3 +50,17 @@ def test_legacy_wallet_static_assets_are_served():
     js = client.get("/static/legacy-wallet/wallet.js").get_data(as_text=True)
     for action in re.findall(r'data-action="(\w+)"', html):
         assert re.search(rf"function {action}\b", js), action
+
+
+def test_legacy_wallet_shows_retirement_banner_pointing_to_pwa():
+    response = app_module.app.test_client().get("/wallet")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    banner = re.search(r'<div class="retire-banner" role="note" data-retire-banner>(.*?)</div>', html, re.S)
+    assert banner, "retirement banner missing"
+    text = banner.group(1)
+    assert 'href="https://zyronchain.com/app/"' in text
+    assert "deprecated" in text and "retired after a notice period" in text
+    assert html.index("data-retire-banner") < html.index("Create Wallet"), "banner is above the wallet flows"
+    css = app_module.app.test_client().get("/static/legacy-wallet/wallet.css").get_data(as_text=True)
+    assert ".retire-banner" in css
