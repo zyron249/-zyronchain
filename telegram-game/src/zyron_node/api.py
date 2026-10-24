@@ -47,6 +47,7 @@ from zyron_node.game import (
 from zyron_node.limits import RateLimitExceeded, hit
 from zyron_node import community, reminders, telegram_api
 from zyron_node.wallet_proof import issue_challenge, verify_proof
+from zyron_node import cards, chain_builder, cipher, events, maps, squads, wardrobe
 from zyron_node import web_login
 
 
@@ -68,6 +69,39 @@ class UpgradeBody(IdempotentBody):
 
 class TreeBody(IdempotentBody):
     upgrade: str = Field(min_length=3, max_length=20, pattern=r"^[a-z]+$")
+
+
+class WardrobeUnlockBody(IdempotentBody):
+    item: str = Field(min_length=3, max_length=32, pattern=r"^[a-z0-9_]+$")
+
+
+class WardrobeEquipBody(IdempotentBody):
+    helmet: str = Field(min_length=3, max_length=32, pattern=r"^[a-z0-9_]+$")
+    pickaxe: str = Field(min_length=3, max_length=32, pattern=r"^[a-z0-9_]+$")
+    color: str = Field(min_length=3, max_length=32, pattern=r"^[a-z0-9_]+$")
+    wolfMask: bool = False
+
+
+class ChainFinishBody(IdempotentBody):
+    attempt: int = Field(ge=1, le=12)
+    placed: list[str] = Field(min_length=1, max_length=5)
+
+
+class SquadCreateBody(IdempotentBody):
+    name: str = Field(min_length=3, max_length=24)
+    tag: str = Field(min_length=2, max_length=5)
+
+
+class SquadJoinBody(IdempotentBody):
+    tag: str = Field(min_length=2, max_length=5)
+
+
+class CipherBody(IdempotentBody):
+    guess: str = Field(min_length=3, max_length=12)
+
+
+class CountryBody(IdempotentBody):
+    country: str = Field(default="", max_length=2)
 
 
 class WalletBody(IdempotentBody):
@@ -262,6 +296,168 @@ def register_routes(app) -> None:
         limit_user(request, identity.id, "treehour", 120, 3600, now)
         player = _player_id(request, identity, ip_hash, now)
         return purchase_tree(request.app.state.pool, player, body.upgrade, body.idempotencyKey, now)
+
+    @app.post("/api/wardrobe/unlock")
+    def wardrobe_unlock(request: Request, body: WardrobeUnlockBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "wardrobe", 20, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return wardrobe.unlock(request.app.state.pool, player, body.item, body.idempotencyKey, now)
+
+    @app.post("/api/wardrobe/equip")
+    def wardrobe_equip(request: Request, body: WardrobeEquipBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "equip", 30, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return wardrobe.equip(
+            request.app.state.pool,
+            player,
+            body.idempotencyKey,
+            body.helmet,
+            body.pickaxe,
+            body.color,
+            body.wolfMask,
+            now,
+        )
+
+    @app.get("/api/chain")
+    def chain_status(request: Request):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "chain", 60, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        with request.app.state.pool.connection() as conn:
+            return chain_builder.chain_view(conn, player, now)
+
+    @app.post("/api/chain/start")
+    def chain_start(request: Request, body: IdempotentBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "chainstart", 12, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return chain_builder.start(request.app.state.pool, player, body.idempotencyKey, now)
+
+    @app.post("/api/chain/finish")
+    def chain_finish(request: Request, body: ChainFinishBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "chainfinish", 12, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return chain_builder.finish(
+            request.app.state.pool, player, body.idempotencyKey, body.attempt, list(body.placed), now
+        )
+
+    @app.post("/api/squads")
+    def squad_create(request: Request, body: SquadCreateBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "squadcreate", 8, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return squads.create_squad(request.app.state.pool, player, body.name, body.tag, body.idempotencyKey, now)
+
+    @app.post("/api/squads/join")
+    def squad_join(request: Request, body: SquadJoinBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "squadjoin", 12, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return squads.join_squad(request.app.state.pool, player, body.tag, body.idempotencyKey, now)
+
+    @app.post("/api/squads/leave")
+    def squad_leave(request: Request, body: IdempotentBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "squadleave", 8, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return squads.leave_squad(request.app.state.pool, player, body.idempotencyKey, now)
+
+    @app.get("/api/cipher")
+    def cipher_status(request: Request):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "cipher", 60, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        with request.app.state.pool.connection() as conn:
+            return cipher.cipher_view(conn, player, now)
+
+    @app.post("/api/cipher/answer")
+    def cipher_answer(request: Request, body: CipherBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "cipherguess", 20, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return cipher.answer(request.app.state.pool, player, body.guess, body.idempotencyKey, now)
+
+    @app.get("/api/events")
+    def event_status(request: Request):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "events", 60, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        with request.app.state.pool.connection() as conn:
+            return events.events_view(conn, player, now)
+
+    @app.post("/api/events/strike")
+    def event_strike(request: Request, body: IdempotentBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "strike", 12, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return events.strike(request.app.state.pool, player, body.idempotencyKey, now)
+
+    @app.post("/api/events/claim")
+    def event_claim(request: Request, body: IdempotentBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "eventclaim", 6, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return events.claim_goal(request.app.state.pool, player, body.idempotencyKey, now)
+
+    @app.get("/api/map")
+    def map_status(request: Request):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "map", 60, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        with request.app.state.pool.connection() as conn:
+            row = conn.execute("SELECT * FROM players WHERE id = %s", (player,)).fetchone()
+            return maps.map_view(conn, row)
+
+    @app.post("/api/map/country")
+    def map_country(request: Request, body: CountryBody):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "country", 12, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        return maps.set_country(request.app.state.pool, player, body.country, body.idempotencyKey, now)
+
+    @app.get("/api/cards")
+    def card_list(request: Request):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "cards", 30, 60, now)
+        player = _player_id(request, identity, ip_hash, now)
+        with request.app.state.pool.connection() as conn:
+            row = conn.execute("SELECT * FROM players WHERE id = %s", (player,)).fetchone()
+            payload = cards.cards_view(conn, row)
+            payload["serverTime"] = now.isoformat()
+            return payload
+
+    @app.get("/api/cards/{card_id}")
+    def card_one(request: Request, card_id: str):
+        now = request_now(request)
+        identity, ip_hash = authorize(request, now)
+        limit_user(request, identity.id, "card", 30, 60, now)
+        if not card_id.isascii() or not card_id.replace("_", "").isalnum() or not 3 <= len(card_id) <= 32:
+            return JSONResponse(error_payload("not_found", "Unknown card."), status_code=404)
+        player = _player_id(request, identity, ip_hash, now)
+        with request.app.state.pool.connection() as conn:
+            row = conn.execute("SELECT * FROM players WHERE id = %s", (player,)).fetchone()
+            payload = cards.card_view(conn, row, card_id)
+            payload["serverTime"] = now.isoformat()
+            return payload
 
     @app.get("/api/upgrades")
     def upgrades(request: Request):

@@ -84,6 +84,7 @@
         <a href="#security">Security</a>
         <a href="#developers">Developers</a>
         <a href="#network-status">Network</a>
+        <a href="./testnet/">Testnet</a>
         <a class="nav-wallet" href="#wallets">Wallet</a>
       </nav>
       <a class="header-source" href="https://github.com/zyron249/-zyronchain" rel="noopener noreferrer">Source</a>
@@ -124,8 +125,8 @@
         <h2 id="overview-title">An open-source Layer-1 you can inspect and run yourself.</h2>
         <p class="lead">ZyronChain is a TypeScript/Node.js Layer-1: secp256k1 accounts, signed transfers, a deterministic state machine, authenticated state commitments and validator-quorum finality. The canonical implementation is <a href="https://github.com/zyron249/-zyronchain/tree/main/l1" rel="noopener noreferrer"><code>l1/</code></a>. This site is documentation and local tooling, not a custody service, exchange or RPC.</p>
         <dl class="faq-grid">
-          <div><dt>Is it live?</dt><dd>No public network yet. The public testnet is authorized by governance but <strong>not activated</strong>; mainnet is not activated.</dd></div>
-          <div><dt>Can I use ZYN today?</dt><dd>No. There are no balances, transfers on a public network, token sale or market.</dd></div>
+          <div><dt>Is it live?</dt><dd>A public, no-value, unaudited open testnet exists (see <a href="./testnet/">Testnet</a>). Formal public-testnet activation is not granted and mainnet is not live.</dd></div>
+          <div><dt>Can I use ZYN today?</dt><dd>Only test ZYN on the no-value testnet, which has no value. There is no mainnet ZYN, token sale or market.</dd></div>
           <div><dt>Can I create a wallet?</dt><dd>Yes, locally. Keys are created and kept on your device. <a href="#wallets">Wallet options</a></dd></div>
           <div><dt>Can I run a validator?</dt><dd>You can prepare one locally. Public validator enrollment is not active. <a href="./validator.html">Validator Launchpad</a></dd></div>
           <div><dt>Where is the code?</dt><dd><a href="https://github.com/zyron249/-zyronchain" rel="noopener noreferrer">github.com/zyron249/-zyronchain</a> (canonical L1 in <code>l1/</code>).</dd></div>
@@ -178,7 +179,7 @@
           <li><strong>Local keys.</strong><span>Keys are generated and used on your device. The site never asks for a phrase, key or password.</span></li>
           <li><strong>Open source.</strong><span>Node, wallets, website and CI live in one public repository.</span></li>
           <li><strong>Explicit network state.</strong><span>Governance authorized ≠ network activated. Local devnet ≠ hosted public testnet. Can sign ≠ can broadcast.</span></li>
-          <li><strong>No fake metrics, market or mainnet.</strong><span>No price, volume, TVL, block height or user counts are shown, because none are real yet.</span></li>
+          <li><strong>No fake metrics, market or mainnet.</strong><span>No price, volume, TVL or user counts are shown. Testnet data is labeled as testnet and has no value.</span></li>
           <li><strong>No secret uploads.</strong><span>Nothing secret is sent anywhere. No analytics cookies, no telemetry.</span></li>
         </ul>
         <p class="more"><a href="https://github.com/zyron249/-zyronchain/blob/main/SECURITY.md" rel="noopener noreferrer">Security policy (SECURITY.md)</a> · <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PWA_WALLET.md" rel="noopener noreferrer">Phone Wallet security model</a></p>
@@ -212,11 +213,9 @@
             <h3>Not decided yet</h3>
             <ul class="plain">
               <li>Consensus-enforced founder vesting</li>
-              <li>Quote asset and on-chain liquidity model</li>
-              <li><strong>Mining retired:</strong> Mining has been shut down by owner decision (2026-09-30). Consensus rejection of all mining claims is under review and not yet merged to the main branch.</li>
+                            <li><strong>Mining retired:</strong> Mining has been shut down by owner decision (2026-09-30). Consensus rejection of all mining claims is under review and not yet merged to the main branch.</li>
             </ul>
-            <button class="btn" type="button" disabled>Buy / Sell not activated</button>
-            <p class="fine">No price, order book, volume or market cap exists, so none is shown.</p>
+            <p class="fine">Testnet only. There is no token sale, price, market or trading, so none is shown.</p>
           </article>
         </div>
       </div>
@@ -240,7 +239,7 @@
             <span class="card-cta">Open Desktop Wallet Setup <span aria-hidden="true">→</span></span>
           </a>
         </div>
-        <p class="fine">Both use the same accounts and address format. Balances and broadcasting stay unavailable until a public network is activated.</p>
+        <p class="fine">Both use the same accounts and address format. Broadcasting is limited to no-value testnet transfers; there are no mainnet balances.</p>
       </div>
     </section>
 
@@ -289,6 +288,7 @@ npm run devnet:check</code></pre>
             <p class="tag tag-review">Open testnet · unaudited</p>
             <h3>No-value profile hosted</h3>
             <p>A free-host open testnet gateway is documented in docs/OPEN_TESTNET.md. Formal public-testnet activation flags stay false. Test ZYN has no value. No mainnet and no live trading. The host may sleep when idle.</p>
+            <p><a href="./verify/">Verify headers in your browser</a>. The check runs on this device against the open testnet gateway. It does not produce blocks and it holds no keys.</p>
             <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/OPEN_TESTNET.md" rel="noopener noreferrer">Open testnet guide (docs/OPEN_TESTNET.md)</a>
             · <a href="https://github.com/zyron249/-zyronchain/blob/main/docs/PUBLIC_TEST.md" rel="noopener noreferrer">Public tester guide</a>
           </div>
@@ -323,7 +323,7 @@ npm run devnet:check</code></pre>
     <p class="ns-live-state" data-ns-live-state>Enable JavaScript to refresh <code>/readyz</code>, or open the gateway link.</p>
     <p class="ns-live-detail" data-ns-live-detail></p>
   </div>
-  <p class="ns-foot">Source: docs/l1-launch-authorization.json (publicTestnetActivationAllowed=false, mainnetActivationAllowed=false) and docs/OPEN_TESTNET.md.</p>
+  <p class="ns-foot">Source: docs/l1-launch-authorization.json (formal public testnet and mainnet activation: not allowed yet) and docs/OPEN_TESTNET.md.</p>
 </section>
 <!-- END NETWORK STATUS -->
     </div>
@@ -361,9 +361,11 @@ npm run devnet:check</code></pre>
       <nav class="footer-col" aria-label="Use">
         <strong>Use</strong>
         <a href="./app/">Phone Wallet — Testnet</a>
+        <a href="./testnet/">Wallet testnet</a>
         <a href="./wallet.html">Desktop Wallet Setup</a>
         <a href="./validator.html">Validator Launchpad</a>
         <a href="./hub/">ZYRON HUB</a>
+        <a href="./verify/">Light-client verify</a>
         <a href="#developers">Developers</a>
       </nav>
       <nav class="footer-col" aria-label="Source and community">
@@ -376,7 +378,7 @@ npm run devnet:check</code></pre>
     </div>
     <div class="wrap footer-bottom">
       <span>© ZyronChain · Open source · No analytics cookies</span>
-      <span><a href="./privacy.html">Privacy</a> · <a href="./terms.html">Terms</a> · <span class="build" data-site-build>Build c545a6cd</span></span>
+      <span><a href="./privacy.html">Privacy</a> · <a href="./terms.html">Terms</a> · <span class="build" data-site-build>Build d30814fd</span></span>
     </div>
   </footer>
 

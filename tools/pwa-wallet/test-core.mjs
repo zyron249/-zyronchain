@@ -8,6 +8,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
+import { vaultSecretLeaks } from './vault-leaks.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..', '..');
@@ -104,6 +105,24 @@ await test("phrase -> m/44'/249249'/0'/0/0 -> address equals the MetaMask Snap v
   }
 });
 
+await test('vault leak check: schema words are not leaks, secrets in values still are', async () => {
+  // Some BIP-39 words occur inside the fixed vault schema (keys and pinned constants). A random 12-word phrase
+  // contains one of them about 3% of the time, which made the browser test's leak check fail spuriously.
+  const words = V.bip39.wordlist;
+  const entropy = core.phraseToEntropy(SNAP_VECTORS[0].mnemonic);
+  const account = await core.deriveAccount(entropy);
+  const vault = await core.createVault(entropy, PASSWORD, account);
+  const schemaWords = ['address', 'dress', 'public', 'vault', 'version'];
+  for (const w of schemaWords) assert.ok(words.includes(w), `${w} is a BIP-39 word`);
+  assert.deepEqual(vaultSecretLeaks(vault, schemaWords), [], 'fixed schema text is not a leak');
+  const hex = V.bytesToHex(entropy);
+  assert.deepEqual(vaultSecretLeaks(vault, [hex, PASSWORD, 'abandon']), []);
+  assert.deepEqual(vaultSecretLeaks({ ...vault, ciphertext: vault.ciphertext + hex }, [hex]), [hex], 'secret inside a value is a leak');
+  assert.deepEqual(vaultSecretLeaks({ ...vault, note: 'public dress' }, ['public', 'dress']), ['public', 'dress'], 'schema words inside an extra value are leaks');
+  assert.deepEqual(vaultSecretLeaks({ ...vault, public: 1 }, ['public']), ['public'], 'an unknown key equal to a word is a leak');
+  assert.deepEqual(vaultSecretLeaks({ ...vault, createdAt: 'version' }, ['version']), ['version'], 'a schema token used as a variable value is a leak');
+});
+
 await test('recovery phrase validation rejects bad input', () => {
   assert.throws(() => core.phraseToEntropy('abandon abandon abandon'), /12/);
   assert.throws(() => core.phraseToEntropy(SNAP_VECTORS[0].mnemonic.replace('about', 'abandon')), /checksum/);
@@ -137,7 +156,10 @@ await test('vault: round-trip, fresh salt/IV, no plaintext, wrong password and e
     [{ ...vault, address: other.address }, /identity/],
     [{ ...vault, kdf: { ...vault.kdf, n: 16384 } }, /KDF/],
     [{ ...vault, kdf: { ...vault.kdf, n: 2 ** 30 } }, /KDF/],
-    [{ ...vault, version: 2 }, /version/],
+    [{ ...vault, version: 3 }, /version/],
+    [{ ...vault, version: 1 }, /unexpected fields/],
+    [{ ...vault, book: { ...vault.book, ciphertext: flip(vault.book.ciphertext, 3) } }, /authentication failed/],
+    [{ ...vault, book: { ...vault.book, iv: flip(vault.book.iv, 2) } }, /authentication failed/],
     [{ ...vault, derivationPath: "m/44'/60'/0'/0/0" }, /path/],
     [{ ...vault, words: 24 }, /ciphertext/],
     [{ ...vault, extra: 1 }, /unexpected/],
@@ -162,19 +184,20 @@ await test('vault parser fails closed: unknown versions, malformed data, prototy
   const parsed = core.parseVault(vault);
   assert.deepEqual(parsed, vault);
   assert.notEqual(parsed, vault, 'parseVault returns a fresh copy');
-  assert.deepEqual(core.parseVault(JSON.stringify(vault)), vault, 'JSON text is accepted when it is exactly a v1 vault');
+  assert.deepEqual(core.parseVault(JSON.stringify(vault)), vault, 'JSON text is accepted when it is exactly a v2 vault');
   const bad = [
     [null, /plain object/], [undefined, /plain object/], [42, /plain object/], ['not json', /valid JSON/], ['[]', /plain object/],
-    ['x'.repeat(5000), /too large/], [[vault], /plain object/],
+    ['x'.repeat(core.MAX_VAULT_TEXT + 1), /too large/], [[vault], /plain object/],
     [Object.assign(Object.create({ evil: true }), vault), /plain object/],
-    [{ ...vault, version: 0 }, /version/], [{ ...vault, version: 2 }, /version/], [{ ...vault, version: '1' }, /version/], [{ ...vault, version: 1.5 }, /version/],
+    [{ ...vault, version: 0 }, /version/], [{ ...vault, version: 3 }, /version/], [{ ...vault, version: '1' }, /version/], [{ ...vault, version: '2' }, /version/], [{ ...vault, version: 1.5 }, /version/],
     [{ ...vault, format: 'zyronchain-pwa-vault-v2' }, /format/],
     [{ ...vault, createdAt: 'yesterday' }, /creation time/], [{ ...vault, createdAt: 12 }, /creation time/],
     [{ ...vault, words: '12' }, /word count/],
     [{ ...vault, kdf: [] }, /KDF/], [{ ...vault, kdf: { ...vault.kdf, extra: 1 } }, /KDF/],
     [{ ...vault, cipher: { ...vault.cipher, name: 'aes-128-gcm' } }, /cipher/], [{ ...vault, cipher: 'aes' }, /cipher/],
     [{ ...vault, salt: 'zz' }, /salt/], [{ ...vault, ciphertext: 'ABC' }, /ciphertext/],
-    [(({ createdAt, ...rest }) => rest)(vault), /unexpected fields/], [{ ...vault, __proto__: null, extra: 1 }, /unexpected fields/]
+    [(({ createdAt, ...rest }) => rest)(vault), /unexpected fields/], [(({ book, ...rest }) => rest)(vault), /unexpected fields/],
+    [{ ...vault, book: 'x' }, /address book/], [{ ...vault, book: { ...vault.book, extra: 1 } }, /address book/], [{ ...vault, book: { ...vault.book, iv: vault.cipher.iv } }, /address book/], [{ ...vault, __proto__: null, extra: 1 }, /unexpected fields/]
   ];
   for (const [value, pattern] of bad) {
     assert.throws(() => core.parseVault(value), pattern, `parseVault(${String(JSON.stringify(value)).slice(0, 40)})`);
@@ -184,6 +207,151 @@ await test('vault parser fails closed: unknown versions, malformed data, prototy
   assert.match(appJs, /state\.vault = core\.parseVault\(stored\); \/\/ unknown or malformed vaults are rejected, never rewritten/);
   assert.doesNotMatch(appJs, /migrat/i, 'no silent vault migration');
   core.wipe(entropy, account.privateKey);
+});
+
+await test('vault migration: a version-1 fixture still opens and upgrades to version 2 with the same identity', async () => {
+  // Fixture written by the version-1 code (main before this change) for the public "test ... junk" phrase. NEVER fund it.
+  const v1 = JSON.parse(readFileSync(join(here, 'fixtures', 'vault-v1.json'), 'utf8'));
+  assert.equal(v1.version, 1);
+  assert.equal(core.VAULT_VERSION, 2);
+  assert.deepEqual(core.parseVault(v1), v1, 'version-1 vaults stay readable');
+  assert.deepEqual(core.parseVault(JSON.stringify(v1)), v1);
+  const opened = await core.openVault(v1, PASSWORD);
+  assert.equal(opened.account.address, SNAP_VECTORS[1].address);
+  assert.deepEqual(opened.book, core.emptyBook(), 'a version-1 vault opens with an empty address book');
+  await assert.rejects(core.openVault(v1, PASSWORD + '!'), /authentication failed/);
+  await assert.rejects(core.upgradeVault(v1, null), /Unlock/);
+  const before = JSON.stringify(v1);
+  const v2 = await core.upgradeVault(v1, opened);
+  assert.equal(JSON.stringify(v1), before, 'the input vault is not modified');
+  assert.equal(v2.version, 2);
+  for (const k of ['format', 'createdAt', 'address', 'publicKey', 'derivationPath', 'words', 'salt']) assert.deepEqual(v2[k], v1[k], k + ' is kept');
+  assert.notEqual(v2.cipher.iv, v1.cipher.iv, 'seed is re-sealed with a fresh IV');
+  assert.deepEqual(core.parseVault(v2), v2);
+  assert.deepEqual(vaultSecretLeaks(v2, [V.bytesToHex(opened.entropy), PASSWORD, 'test', 'junk']), []);
+  const again = await core.openVault(v2, PASSWORD);
+  assert.deepEqual([...again.entropy], [...opened.entropy]);
+  assert.deepEqual(again.book, core.emptyBook());
+  // Downgrade / mix-and-match: a v2 seed ciphertext under a v1 label fails authentication.
+  const { book: _b, ...noBook } = v2;
+  await assert.rejects(core.openVault({ ...noBook, version: 1 }, PASSWORD), /authentication failed/);
+  await assert.rejects(core.openVault({ ...v1, version: 2, book: v2.book }, PASSWORD), /authentication failed/);
+  const same = await core.upgradeVault(v2, again);
+  assert.deepEqual(same, v2, 'upgrading a version-2 vault is a no-op copy');
+  core.wipe(opened.entropy, opened.account.privateKey, again.entropy, again.account.privateKey);
+});
+
+await test('vault upgrade is verified before it may be stored; rollback marker refuses a v1 vault after v2', async () => {
+  const v1 = JSON.parse(readFileSync(join(here, 'fixtures', 'vault-v1.json'), 'utf8'));
+  const opened = await core.openVault(v1, PASSWORD);
+  const { vault: v2, opened: check } = await core.upgradeVaultVerified(v1, opened, PASSWORD);
+  assert.equal(v2.version, 2);
+  assert.equal(check.account.address, v1.address, 'the upgraded vault reopened to the same address');
+  await assert.rejects(core.upgradeVaultVerified(v1, opened, PASSWORD + '!'), /authentication failed/, 'a different password cannot pass the check');
+  // A broken upgrade (wrong seed sealed) is caught by the reopen check before anything could be stored.
+  const other = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
+  const forged = { ...opened, entropy: core.phraseToEntropy(SNAP_VECTORS[0].mnemonic) };
+  await assert.rejects(core.upgradeVaultVerified(v1, forged, PASSWORD), /different identity|upgrade check failed/);
+  // Rollback marker
+  const marker = core.upgradeMarker(v1.address);
+  assert.deepEqual(core.parseUpgradeMarker(JSON.parse(JSON.stringify(marker))), marker);
+  assert.equal(core.isRollback(v1, marker), true, 'v1 for an address already seen at v2 is refused');
+  assert.equal(core.isRollback(v2, marker), false);
+  assert.equal(core.isRollback(v1, null), false, 'no marker: v1 still opens and upgrades');
+  assert.equal(core.isRollback(v1, core.upgradeMarker(other.address)), false, 'marker for another wallet does not block');
+  for (const bad of [{}, { ...marker, version: 1 }, { ...marker, extra: 1 }, { ...marker, address: 'x' }, { ...marker, format: 'nope' }]) {
+    assert.throws(() => core.parseUpgradeMarker(bad), /marker is invalid/);
+    assert.throws(() => core.isRollback(v1, bad), /marker is invalid/, 'a malformed marker fails closed');
+  }
+  const appJs = readFileSync(join(app, 'app.js'), 'utf8');
+  const unlock = appJs.slice(appJs.indexOf('async function unlock()'), appJs.indexOf("$('[data-unlock-go]')"));
+  assert.ok(unlock.indexOf('upgradeVaultVerified(') > 0 && unlock.indexOf('upgradeVaultVerified(') < unlock.indexOf('saveVault('), 'reopen check runs before saveVault');
+  assert.ok(unlock.indexOf('V1_BACKUP_KEY, v1)') < unlock.indexOf('saveVault('), 'the v1 copy is stored before v1 is replaced');
+  assert.match(unlock, /deleteMeta\(V1_BACKUP_KEY\)/, 'the v1 copy is removed after a later v2 unlock');
+  assert.match(appJs, /window\.addEventListener\('pagehide', \(\) => \{[^\n]*lock\(t\('msgLocked'\)\); \}\);/, 'pagehide locks (drops key and book)');
+  core.wipe(opened.entropy, opened.account.privateKey, check.entropy, check.account.privateKey, other.privateKey, forged.entropy);
+});
+
+await test('vault address book: round-trip through the encrypted vault, tamper fails, nothing in plaintext', async () => {
+  const entropy = core.phraseToEntropy(SNAP_VECTORS[0].mnemonic);
+  const account = await core.deriveAccount(entropy);
+  const vault = await core.createVault(entropy, PASSWORD, account);
+  assert.equal(vault.version, 2);
+  const opened = await core.openVault(vault, PASSWORD);
+  assert.deepEqual(opened.book, core.emptyBook());
+  const friend = SNAP_VECTORS[1].address;
+  const third = 'ZYN' + '12'.repeat(20);
+  let book = core.addContact(opened.book, { name: '  Test   Friend ', address: core.toChecksumAddress(friend) });
+  assert.deepEqual(book.contacts, [{ name: 'Test Friend', address: friend }]);
+  assert.deepEqual(opened.book.contacts, [], 'book helpers return copies');
+  assert.throws(() => core.addContact(book, { name: 'Dup', address: friend }), /already/);
+  assert.throws(() => core.addContact(book, { name: '', address: third }), /name is required/);
+  assert.throws(() => core.addContact(book, { name: 'x'.repeat(65), address: third }), /too long/);
+  assert.throws(() => core.addContact(book, { name: 'Bad', address: 'ZYN123' }), /40 hex/);
+  assert.throws(() => core.addContact(book, { name: 'Sys', address: core.MINING_TRACKER_ADDRESS }), /reserved/);
+  book = core.addContact(book, { name: 'Third', address: third });
+  book = core.updateContact(book, third, { name: 'Third renamed', address: third });
+  assert.equal(core.findContact(book, third).name, 'Third renamed');
+  assert.throws(() => core.updateContact(book, third, { name: 'Clash', address: friend }), /already/);
+  assert.throws(() => core.updateContact(book, 'ZYN' + 'ab'.repeat(20), { name: 'X', address: third }), /not found/);
+  book = core.recordSent(book, friend);
+  book = core.setThreshold(book, 5 * core.ATOMS_PER_ZYN);
+  assert.throws(() => core.setThreshold(book, 0), /at least 1 atom/);
+  const updated = await core.updateVaultBook(vault, opened.key, book);
+  assert.notEqual(updated.book.iv, vault.book.iv, 'fresh IV on every save');
+  assert.equal(updated.ciphertext, vault.ciphertext, 'the seed ciphertext is untouched by a book save');
+  const text = JSON.stringify(updated);
+  for (const secret of ['Test Friend', 'Third renamed', friend.slice(3), third.slice(3)]) assert.ok(!text.includes(secret), 'book leaks ' + secret);
+  const reopened = await core.openVault(core.parseVault(JSON.stringify(updated)), PASSWORD);
+  assert.deepEqual(reopened.book, book, 'round-trip');
+  const flip = (hex, at) => hex.slice(0, at) + (hex[at] === '0' ? '1' : '0') + hex.slice(at + 1);
+  await assert.rejects(core.openVault({ ...updated, book: { ...updated.book, ciphertext: flip(updated.book.ciphertext, 1) } }, PASSWORD), /authentication failed/);
+  await assert.rejects(core.openVault({ ...updated, book: vault.book, cipher: { ...updated.cipher, iv: flip(updated.cipher.iv, 0) } }, PASSWORD), /authentication failed/);
+  const removed = core.removeContact(book, third);
+  assert.deepEqual(removed.contacts.map((c) => c.address), [friend]);
+  assert.throws(() => core.removeContact(removed, third), /not found/);
+  for (const bad of [null, {}, { ...book, extra: 1 }, { ...book, contacts: [{ name: 'a', address: 'nope' }] }, { ...book, thresholdAtoms: -1 }, { ...book, sent: [friend, friend] }]) {
+    assert.throws(() => core.parseBook(bad), /invalid/i);
+  }
+  core.wipe(entropy, account.privateKey, opened.entropy, opened.account.privateKey, reopened.entropy, reopened.account.privateKey);
+});
+
+await test('send-safety warnings: first-time recipient, own address, amount at or above the threshold', async () => {
+  const account = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
+  const friend = SNAP_VECTORS[1].address;
+  const one = core.ATOMS_PER_ZYN;
+  const codes = (list) => list.map((w) => w.code);
+  let book = core.emptyBook();
+  assert.deepEqual(codes(core.sendWarnings({ receiver: friend, amountAtoms: one }, account, book)), ['first-time']);
+  const self = core.sendWarnings({ receiver: core.toChecksumAddress(account.address), amountAtoms: one }, account, book);
+  assert.deepEqual(self.map((w) => [w.code, w.blocking]), [['self', true]]);
+  assert.equal(self[0].message, "You can't send to your own address. Enter a different recipient.");
+  assert.throws(() => core.buildTransfer({ version: 1, chainId: core.WALLET_TESTNET_CHAIN_ID, nonce: 1, receiver: account.address, amountAtoms: one, feeAtoms: 100000 }, account),
+    (error) => error.message === core.SELF_SEND_MESSAGE, 'builder uses the same plain wording');
+  book = core.addContact(book, { name: 'Friend', address: friend });
+  const saved = core.sendWarnings({ receiver: friend, amountAtoms: one }, account, book);
+  assert.deepEqual(codes(saved), ['first-time'], 'a saved contact that was never paid still warns');
+  assert.match(saved[0].message, /"Friend"/);
+  book = core.recordSent(book, core.toChecksumAddress(friend));
+  assert.deepEqual(codes(core.sendWarnings({ receiver: friend, amountAtoms: one }, account, book)), [], 'known recipient, no threshold: no warning');
+  book = core.setThreshold(book, 10 * one);
+  assert.deepEqual(codes(core.sendWarnings({ receiver: friend, amountAtoms: 10 * one - 1 }, account, book)), [], 'just below threshold');
+  assert.deepEqual(codes(core.sendWarnings({ receiver: friend, amountAtoms: 10 * one }, account, book)), ['large-amount'], 'exactly at threshold');
+  assert.deepEqual(codes(core.sendWarnings({ receiver: 'ZYN' + '34'.repeat(20), amountAtoms: 20 * one }, account, book)), ['first-time', 'large-amount']);
+  assert.match(core.sendWarnings({ receiver: friend, amountAtoms: 12 * one }, account, book)[0].message, /12 ZYN.*10 ZYN/);
+  assert.throws(() => core.sendWarnings({ receiver: 'bad', amountAtoms: one }, account, book), /40 hex/);
+  // sent history is bounded and most-recent-first
+  let big = core.emptyBook();
+  for (let i = 0; i < core.BOOK_MAX_SENT + 5; i += 1) big = core.recordSent(big, 'ZYN' + i.toString(16).padStart(40, '0').replace(/^0/, '1'));
+  assert.equal(big.sent.length, core.BOOK_MAX_SENT);
+  // app wiring: warnings are checked before building, need their own checkbox, and the sign handler re-checks it
+  const appJs = readFileSync(join(app, 'app.js'), 'utf8');
+  const html = readFileSync(join(app, 'index.html'), 'utf8');
+  assert.match(appJs, /const blocking = warnings\.find\(\(w\) => w\.blocking\);\n\s+if \(blocking\) throw new Error\(blocking\.message\);/);
+  assert.match(appJs, /\.checked\) return;\n\s+if \(!warningsAccepted\(\)\) return; \/\/ send-safety warnings need their own confirmation/);
+  assert.match(html, /data-review-warn-ack/);
+  assert.match(appJs, /state\.vaultKey = null;/, 'the vault key is dropped on lock');
+  core.wipe(account.privateKey);
 });
 
 await test('crypto self-test passes with the vendored libraries and refuses to run without them', async () => {
@@ -207,26 +375,32 @@ await test('crypto self-test passes with the vendored libraries and refuses to r
 await test('signing review: shows every field, refuses unknown types, messages and extra fields', async () => {
   const entropy = core.phraseToEntropy(SNAP_VECTORS[0].mnemonic);
   const account = await core.deriveAccount(entropy);
-  const unsigned = core.buildTransfer({ version: 2, chainId: 'zyron-review-test', nonce: 7, receiver: 'ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42', amountAtoms: 150000000, feeAtoms: 1000, timestampMs: 1700000000000 }, account);
+  const unsigned = core.buildTransfer({ version: 2, chainId: 'zyron-review-testnet', nonce: 7, receiver: 'ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42', amountAtoms: 150000000, feeAtoms: 1000, timestampMs: 1700000000000 }, account);
   const rows = core.describeTransfer(unsigned);
-  assert.deepEqual(rows.map((r) => r.key), ['type', 'from', 'to', 'amount', 'fee', 'chain', 'nonce', 'time']);
+  assert.deepEqual(rows.map((r) => r.key), ['type', 'from', 'to', 'amount', 'fee', 'total', 'chain', 'nonce', 'time']);
   const byKey = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   assert.match(byKey.type, /^Transfer \(kind "transfer", version 2\)$/);
   assert.equal(byKey.from, core.toChecksumAddress(account.address));
   assert.equal(byKey.to, 'ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42');
   assert.equal(byKey.amount, '1.5 ZYN (150000000 atoms)');
   assert.equal(byKey.fee, '0.00001 ZYN (1000 atoms)');
-  assert.equal(byKey.chain, 'zyron-review-test');
+  assert.equal(core.fixedFeeRejection(unsigned), undefined, 'a historical review chain may still use another fee');
+  assert.throws(() => core.signTransfer({ ...unsigned, chainId: 'zyron-open-testnet-1' }, account.privateKey), /will reject this fee/);
+  const allowed = core.buildTransfer({ ...unsigned, chainId: 'zyron-open-testnet-1', feeAtoms: 100000 }, account);
+  assert.equal(core.fixedFeeRejection(allowed), undefined);
+  assert.equal(core.signTransfer(allowed, account.privateKey).feeAtoms, 100000);
+  assert.equal(byKey.total, '1.50001 ZYN (150001000 atoms)');
+  assert.equal(byKey.chain, 'zyron-review-testnet');
   assert.equal(byKey.nonce, '7');
   for (const [bad, pattern] of [
     [{ ...unsigned, kind: 'mining_claim' }, /transfers only/], [{ ...unsigned, kind: 'message' }, /transfers only/], [{ ...unsigned, kind: undefined }, /transfers only/],
     [{ ...unsigned, memo: 'x' }, /Unexpected transfer fields/], [{ ...unsigned, data: '0x' }, /Unexpected transfer fields/],
-    [{ ...unsigned, version: 3 }, /version/], [{ ...unsigned, chainId: '' }, /Chain ID/], [{ ...unsigned, nonce: 0 }, /Nonce/],
-    [{ ...unsigned, receiver: core.MINING_TRACKER_ADDRESS }, /mining tracker/], [{ ...unsigned, sender: 'ZYN' + '1'.repeat(40) }, /Sender does not match/],
+    [{ ...unsigned, version: 3 }, /version/], [{ ...unsigned, chainId: '' }, /Chain ID/], [{ ...unsigned, chainId: 'zyron-mainnet-1' }, /testnet or devnet/], [{ ...unsigned, nonce: 0 }, /Nonce/],
+    [{ ...unsigned, receiver: core.MINING_TRACKER_ADDRESS }, /reserved system address/], [{ ...unsigned, sender: 'ZYN' + '1'.repeat(40) }, /Sender does not match/],
     [JSON.stringify(unsigned), /Nothing to review/], [['transfer'], /Nothing to review/]
   ]) {
     assert.throws(() => core.describeTransfer(bad), pattern);
-    assert.throws(() => core.signTransfer(bad, account.privateKey), /transfers only|Unexpected|version|Chain ID|Nonce|mining tracker|Sender|Nothing/);
+    assert.throws(() => core.signTransfer(bad, account.privateKey), /transfers only|Unexpected|version|Chain ID|Nonce|reserved system address|Sender|Nothing/);
   }
   const html = readFileSync(join(app, 'index.html'), 'utf8');
   const appJs = readFileSync(join(app, 'app.js'), 'utf8');
@@ -252,11 +426,18 @@ await test('recovery phrase UX: privacy screen first, words hidden by default, n
   assert.match(appJs, /for \(const type of \['copy', 'cut', 'dragstart'\]\)/);
   assert.doesNotMatch(appJs, /pending\.words|words: core\.entropyToPhrase/, 'the phrase is not kept as a long-lived string list');
   assert.match(appJs, /core\.wipe\(state\.pending\.entropy\);/);
+  assert.match(html, /data-screen="send"/);
+  assert.match(html, /data-screen="backup"/);
+  assert.match(html, /data-backup-reminder/);
+  assert.match(appJs, /state\.backupConfirmed = false;/);
+  assert.match(appJs, /if \(state\.backupEntropy\) core\.wipe\(state\.backupEntropy\);/);
+  assert.doesNotMatch(appJs, /backupConfirmed[\s\S]{0,120}(localStorage|sessionStorage|indexedDB)/);
   assert.match(html, /JavaScript cannot guarantee that memory is erased/);
   // copy is only offered for the address and a signed transfer
   const copyButtons = [...html.matchAll(/<button\b[^>]*>[^<]*<\/button>/g)].map((m) => m[0]).filter((b) => /copy/i.test(b)).map((b) => b.match(/data-([a-z-]+)/)[1]).sort();
-  assert.deepEqual(copyButtons, ['copy-address', 'copy-plain', 'link-copy', 'tx-copy']);
-  assert.ok(appJs.includes("msgCopied: 'Copied. Clipboard will be cleared automatically.'"));
+  assert.deepEqual(copyButtons, ['copy-address', 'copy-plain', 'link-copy', 'signed-copy', 'tx-copy']); // signed-copy: the held signed transfer on Receive
+  assert.ok(appJs.includes("msgCopied: 'Copied. This app will try to clear the clipboard in 60 seconds.'"));
+  assert.ok(appJs.includes('msgClipboardKept'));
 });
 
 await test('network status component: static, honest rows, identical everywhere it is used', async () => {
@@ -271,9 +452,15 @@ await test('network status component: static, honest rows, identical everywhere 
     if (!existsSync(file)) continue;
     const html = readFileSync(file, 'utf8');
     if (!html.includes('BEGIN NETWORK STATUS')) { assert.notEqual(page, 'website/app/index.html', 'the phone wallet shows network status'); continue; }
+    const expected = page.endsWith('website/app/index.html') ? render({ variant: 'wallet' }) : block;
     const got = html.match(/<!-- BEGIN NETWORK STATUS[\s\S]*?<!-- END NETWORK STATUS -->/)[0].split('\n').map((l) => l.trim()).join('\n');
-    assert.equal(got, block.split('\n').map((l) => l.trim()).join('\n'), `${page} network status is stale`);
+    assert.equal(got, expected.split('\n').map((l) => l.trim()).join('\n'), `${page} network status is stale`);
   }
+  const walletBlock = render({ variant: 'wallet' });
+  assert.match(walletBlock, /does not poll any network/);
+  assert.match(walletBlock, /does not connect, so it does not refresh/);
+  assert.match(walletBlock, /This phone app does not submit transfers/);
+  assert.doesNotMatch(walletBlock, /Enable JavaScript to refresh/);
   assert.doesNotMatch(block, /mainnet (is )?live|activated public testnet|public rpc: available|buy now|price target|\$\s?\d|live trading/i);
   assert.doesNotMatch(block, new RegExp(String.raw`https?:\/\/(?!github\.com|zyron-open-testnet\.onrender\.com)`), 'only documented open-testnet gateway or github');
 });
@@ -295,20 +482,46 @@ await test('display checksum vectors (docs/ADDRESS_CHECKSUM.md) and password rul
   }
   for (const value of ['0', '1', '0.00000001', '12.5', '50000000']) assert.equal(String(core.zynToAtoms(value)), siteCore.zynToAtoms(value));
   assert.equal(core.atomsToZyn('150000000'), '1.5');
+  assert.equal(core.FIXED_TRANSFER_FEE_ATOMS, 100000);
+  assert.equal(core.atomsToZyn(String(core.FIXED_TRANSFER_FEE_ATOMS)), '0.001');
+  assert.deepEqual(core.FIXED_SUPPLY_V1_CHAIN_IDS, ['zyron-open-testnet-1', 'zyron-open-testnet-render-1', 'zyron-public-testnet-1']);
+  const reject = 'This network will reject this fee. The protocol fee is 100000 atoms (0.001 ZYN). Nothing was signed.';
+  for (const chainId of core.FIXED_SUPPLY_V1_CHAIN_IDS) {
+    assert.equal(core.fixedFeeRejection({ chainId, feeAtoms: 0 }), reject, chainId);
+    assert.equal(core.fixedFeeRejection({ chainId, feeAtoms: 100000 }), undefined, chainId);
+  }
+  assert.equal(core.fixedFeeRejection({ chainId: 'zyron-wallet-testnet-1', feeAtoms: 0 }), undefined);
+  assert.equal(core.fixedFeeRejection({ chainId: 'zyron-review-testnet', feeAtoms: 1000 }), undefined);
+  assert.equal(core.fixedFeeRejection({ chainId: 'zyron-wallet-testnet-1', feeAtoms: 0, launchProfile: 'fixed-supply-v1' }), reject);
+  assert.equal(core.fixedFeeRejection({ chainId: 'zyron-wallet-testnet-1', feeAtoms: 0, feePolicyActive: true }), reject);
+  assert.equal(core.fixedFeeRejection({ chainId: 'zyron-open-testnet-1', feeAtoms: 0, launchProfile: 'legacy' }), undefined);
+  assert.equal(core.fixedFeeRejection({ chainId: 'zyron-devnet-1', feeAtoms: 3, feePolicyActive: true, fixedTransferFeeAtoms: 3 }), undefined);
+  assert.equal(core.fixedFeeRejection({ chainId: 'zyron-devnet-1', feeAtoms: 0, feePolicyActive: true, fixedTransferFeeAtoms: 3 }), 'This network will reject this fee. The protocol fee is 3 atoms. Nothing was signed.');
   assert.throws(() => core.zynToAtoms('50000000.00000001'), /supply/);
+  for (const huge of ['999999999999', '1000000000', '99999999999.5']) assert.throws(() => core.zynToAtoms(huge), /Amount is too large/, huge);
+  assert.throws(() => core.zynToAtoms('1.123456789'), /8 decimal places/);
 });
 
 await test('transfer builder: only transfers, mining_claim impossible, strict inputs', async () => {
   const account = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
-  const base = { version: 2, chainId: 'zyron-test-1', nonce: '1', receiver: SNAP_VECTORS[1].address, amountAtoms: 150000000, feeAtoms: 1000, timestampMs: 1700000000000 };
+  const base = { version: 2, chainId: 'zyron-testnet-1', nonce: '1', receiver: SNAP_VECTORS[1].address, amountAtoms: 150000000, feeAtoms: 1000, timestampMs: 1700000000000 };
   const unsigned = core.buildTransfer(base, account);
   assert.equal(unsigned.kind, 'transfer');
   assert.equal(core.buildTransfer({ ...base, kind: 'mining_claim' }, account).kind, 'transfer', 'a kind input is ignored');
   assert.throws(() => core.signTransfer({ ...unsigned, kind: 'mining_claim' }, account.privateKey), /transfers only/);
   assert.throws(() => core.signTransfer({ ...unsigned, reward: 1 }, account.privateKey), /Unexpected/);
-  assert.throws(() => core.buildTransfer({ ...base, receiver: core.MINING_TRACKER_ADDRESS }, account), /mining tracker/);
+  assert.throws(() => core.buildTransfer({ ...base, receiver: core.MINING_TRACKER_ADDRESS }, account), /reserved system address/);
   assert.throws(() => core.buildTransfer({ ...base, receiver: account.address }, account), /differ/);
   assert.throws(() => core.buildTransfer({ ...base, chainId: 'Zyron Test' }, account), /Chain ID/);
+  assert.throws(() => core.buildTransfer({ ...base, chainId: 'zyron-mainnet-1' }, account), /testnet or devnet/);
+  assert.throws(() => core.buildTransfer({ ...base, chainId: 'zyron-pwa-test' }, account), /testnet or devnet/);
+  assert.equal(core.buildTransfer({ ...base, chainId: core.WALLET_TESTNET_CHAIN_ID }, account).chainId, 'zyron-wallet-testnet-1');
+  assert.equal(core.defaultTransferVersion('zyron-wallet-testnet-1'), 1, 'wallet testnet default version is 1');
+  assert.equal(core.defaultTransferVersion(' zyron-wallet-testnet-1 '), 1);
+  assert.equal(core.defaultTransferVersion('zyron-devnet'), 2);
+  assert.equal(core.defaultTransferVersion('zyron-other-testnet'), 2);
+  assert.equal(core.defaultTransferVersion(''), 2);
+  assert.equal(core.buildTransfer({ ...base, version: core.defaultTransferVersion(core.WALLET_TESTNET_CHAIN_ID), chainId: core.WALLET_TESTNET_CHAIN_ID }, account).version, 1);
   assert.throws(() => core.buildTransfer({ ...base, nonce: '0' }, account), /Nonce/);
   assert.throws(() => core.buildTransfer({ ...base, version: 3 }, account), /version/);
   assert.throws(() => core.buildTransfer({ ...base, amountAtoms: 0 }, account), /Amount/);
@@ -335,7 +548,7 @@ if (existsSync(join(l1Dist, 'transaction.js'))) {
       assert.equal(l1crypto.addressFromPublicKey(vector.publicKey), vector.address);
       const receiver = vector === SNAP_VECTORS[0] ? SNAP_VECTORS[1].address : SNAP_VECTORS[0].address;
       for (const version of [1, 2]) {
-        const input = { version, chainId: 'zyron-pwa-test', nonce: 1, receiver, amountAtoms: 250000000, feeAtoms: 1000, timestampMs: 1700000000123 };
+        const input = { version, chainId: 'zyron-pwa-testnet', nonce: 1, receiver, amountAtoms: 250000000, feeAtoms: 1000, timestampMs: 1700000000123 };
         const tx = core.signTransfer(core.buildTransfer(input, account), account.privateKey);
         const reference = l1tx.createTransfer({ chainId: input.chainId, nonce: 1, sender: account.address, receiver, amountAtoms: input.amountAtoms, feeAtoms: input.feeAtoms, timestampMs: input.timestampMs }, privHex, account.publicKey, version);
         assert.equal(JSON.stringify(tx), JSON.stringify(reference), `v${version} byte-identical`);
@@ -398,7 +611,9 @@ await test('ZYRON NODE wallet link: exact template only, expiry enforced, proof 
   const html = readFileSync(join(app, 'index.html'), 'utf8');
   assert.match(html, /data-link-sign disabled/, 'link approval starts disabled');
   assert.match(appJs, /if \(!state\.linkRequest \|\| !\$\('\[data-link-ack\]'\)\.checked\) return;/);
-  assert.match(html, /href="https:\/\/t\.me\/ZyronNodeBot"/, 'return target is fixed, never taken from the request');
+  // No return link at all: the user switches back to the chat they opened themselves (matches the scam warning).
+  assert.doesNotMatch(html, /data-link-return|t\.me\//, 'no chat link is offered after signing');
+  assert.doesNotMatch(appJs, /\.href\s*=\s*[^;]*linkRequest/, 'no link target is ever taken from the request');
   core.wipe(entropy, account.privateKey);
 });
 
@@ -416,6 +631,8 @@ await test('static scan: app code makes no network requests and has no eval/inli
   assert.doesNotMatch(appJs, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/, 'no HTML injection sinks');
   const csp = html.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)[1];
   for (const directive of ["default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'none'", "object-src 'none'", "base-uri 'none'", "frame-src 'none'", "form-action 'none'", "worker-src 'self'", "manifest-src 'self'"]) assert.ok(csp.includes(directive), directive);
+  assert.match(html, /data-tx-fee[^>]*value="0\.001"/, 'send form fills the 0.001 ZYN protocol fee');
+  assert.match(readFileSync(join(app, 'app.js'), 'utf8'), /FIXED_TRANSFER_FEE_ATOMS/, 'an empty fee field falls back to the protocol fee');
   assert.doesNotMatch(csp, /unsafe-inline|unsafe-eval|wasm-unsafe-eval|\*|https?:|data:|blob:/);
   assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/, 'no inline scripts');
   assert.doesNotMatch(html, /<style|\sstyle=|\son[a-z]+=/i, 'no inline styles or event handlers');
@@ -498,8 +715,17 @@ await test('web app manifest is valid and installable (name, scope, standalone, 
   const html = readFileSync(join(app, 'index.html'), 'utf8');
   for (const marker of ['rel="manifest" href="/app/manifest.json"', 'rel="apple-touch-icon" sizes="180x180"', 'name="apple-mobile-web-app-capable" content="yes"', 'name="theme-color"', 'viewport-fit=cover']) assert.ok(html.includes(marker), marker);
   assert.deepEqual(pngSize(join(app, 'icons', 'apple-touch-icon-180.png')), [180, 180]);
-  for (const marker of ['TESTNET', 'Scam warning', 'No public RPC yet', 'unaudited', 'Add to Home Screen', 'Install app']) assert.ok(html.includes(marker), marker);
+  for (const marker of ['TESTNET', 'Scam warning', 'does not show a balance', 'unaudited', 'Add to Home Screen', 'Install app', 'Open in Safari', 'zyron-wallet-testnet-1', "Balance isn't shown in this offline app", "use the network's current nonce + 1 (1 for a new account)", 'href="/testnet/"']) assert.ok(html.includes(marker), marker);
+  assert.doesNotMatch(html, /empty-well|>--</, 'no balance placeholder');
+  assert.doesNotMatch(html.slice(html.indexOf('data-balance-card'), html.indexOf('data-screen="send"')), /\d+(?:\.\d+)?\s*ZYN/, 'balance card shows no amount');
+  const appSource = readFileSync(join(app, 'app.js'), 'utf8');
+  assert.match(appSource, /\[data-copy-address\]'\)\.addEventListener\([\s\S]*?copyText\(state\.account\.address/, 'primary copy is the canonical lowercase address');
+  assert.match(appSource, /defaultTransferVersion/);
+  assert.ok(html.indexOf('data-install') < html.indexOf('data-network-status'), 'install guidance is above the network status table');
+  assert.doesNotMatch(html, /No public RPC yet/);
   const appJs = readFileSync(join(app, 'app.js'), 'utf8');
+  assert.match(appJs, /IN_APP_RE/);
+  assert.match(appJs, /Telegram/);
   // English-only UI: no language toggle, no second dictionary, no locale auto-detect, no accented/non-English letters.
   for (const banned of ['data-lang-toggle', 'navigator.language', 'navigator.languages', 'hreflang', 'Intl.DateTimeFormat().resolvedOptions']) {
     assert.ok(!html.includes(banned), `index.html contains ${banned}`);

@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
+import { isDeepStrictEqual } from "node:util";
 import { canonicalJson, sha256Hex } from "./codec.js";
 
 import {
@@ -43,8 +44,10 @@ import {
 import { RoundSkipVoteDiagnostics, type RoundSkipVoteDiagnosticsMetrics } from "./consensus-diagnostics.js";
 import { SUPPORTED_PROTOCOL_VERSIONS } from "./chain.js";
 import { addressFromPublicKey } from "./crypto.js";
-import { Mempool } from "./mempool.js";
+import { assertMempoolSenderNonce, MAX_MEMPOOL_PENDING_PER_SENDER, readFeePolicy } from "./fee-policy.js";
+import { Mempool, type MempoolOptions } from "./mempool.js";
 import { PeerReputationStore } from "./peer-reputation.js";
+import { PROPOSAL_VALIDATION_BUDGET_MESSAGE, ProposalValidationBudget } from "./proposal-validation-budget.js";
 import { ipv6Prefix64 } from "./p2p-address.js";
 import { nativeP2PFrameBudgetMetrics } from "./p2p-frame.js";
 import { MAX_DISCOVERY_RESPONSE_RECORDS, PeerDirectory } from "./peer-directory.js";
@@ -58,9 +61,10 @@ import {
 import { clientAddressBucket, isLoopbackAddress } from "./rpc-client-identity.js";
 import { FixedWindowLimiter } from "./rpc-rate-limit.js";
 import { ChainStore, SigningJournal } from "./storage.js";
-import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape } from "./transaction.js";
-import type { Block, BlockAttestation, RoundSkipVote, Transaction, Validator } from "./types.js";
+import { assertAddress, assertExactKeys, assertPlainRecord, validateTransactionShape, validatorUpdateApprovalPayload } from "./transaction.js";
+import type { Block, BlockAttestation, RoundSkipVote, Transaction, Validator, ValidatorSetUpdateTx } from "./types.js";
 import { LocalValidatorSigner, signWithValidator, type ValidatorSigner } from "./validator-signer.js";
+import { assertValidatorUpdatePossessionProofSignatures, hasValidatorAdmission } from "./validator-admission.js";
 
 const MAX_BODY_BYTES = 2_500_000;
 /** Consensus phases whose quorum readiness tracks (F-04); later phases rank higher. */
@@ -441,8 +445,26 @@ export function rpcRateLimitIdentity(
   );
 }
 
+/**
+ * P1-07-F2: transaction gossip can deliver a same-block re-add
+ * `validator_update` before its pending removal predecessor (P1-07-F1), and
+ * admission then refuses it. NodeService keeps at most this many refused
+ * validator updates (oldest evicted first) and re-tries each of them once,
+ * with full admission checks, after the next validator update is admitted.
+ */
+export const MAX_DEFERRED_VALIDATOR_UPDATES = 16;
+/** P1-07-F2 (Codex P2 on #1104): variants kept per quorum-approved update payload. */
+export const MAX_DEFERRED_VARIANTS_PER_VALIDATOR_UPDATE = 2;
+
+/** Peer-supplied error text for a log line: control characters and newlines replaced, cut to 200 chars. */
+export const PEER_LOG_REASON_MAX = 200;
+export function peerLogReason(error: unknown): string {
+  const text = safeError(error).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ");
+  return text.length > PEER_LOG_REASON_MAX ? `${text.slice(0, PEER_LOG_REASON_MAX)}\u2026` : text;
+}
+
 export class NodeService {
-  readonly mempool = new Mempool();
+  readonly mempool: Mempool;
   readonly roundSkipVoteDiagnostics = new RoundSkipVoteDiagnostics();
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly startedAtMs = Date.now();
@@ -454,7 +476,16 @@ export class NodeService {
   private nextSyncHandle = 0;
   private consensusQuorumFailure: { height: number; previousHash: string; phase: number } | undefined;
   private validatorSignerFailed = false;
+  /** P1-06: one failed expensive validation per authenticated proposer slot. */
+  private readonly proposalValidationBudget = new ProposalValidationBudget();
   readonly readinessMaxTipAgeMs: number;
+  // Keyed by the quorum-approved payload; each key holds at most
+  // MAX_DEFERRED_VARIANTS_PER_VALIDATOR_UPDATE variants (they differ only in
+  // fields the approvals do not cover, such as possessionProofs).
+  private readonly deferredValidatorUpdates = new Map<string, Transaction[]>();
+  private readmittedTransactions: Transaction[] = [];
+  private readmittedValidatorUpdateIds: string[] = [];
+  private readmittedTransactionRelay: ((transaction: Transaction) => void | Promise<void>) | undefined;
 
   constructor(
     readonly store: ChainStore,
@@ -469,6 +500,14 @@ export class NodeService {
     this.readinessMaxTipAgeMs = maxTipAge;
     const signer = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
     this.validatorSigner = signer ? this.observeSignerAvailability(signer) : undefined;
+    // A test double may omit genesis. No genesis means the historical fee rules.
+    const policy = store.chain.genesis ? readFeePolicy(store.chain.genesis) : undefined;
+    const mempoolOptions: MempoolOptions = { maxPendingPerSender: MAX_MEMPOOL_PENDING_PER_SENDER };
+    if (policy) {
+      mempoolOptions.disableFeeReplacement = true;
+      mempoolOptions.fixedTransferFeeAtoms = policy.fixedTransferFeeAtoms;
+    }
+    this.mempool = new Mempool(undefined, undefined, undefined, undefined, mempoolOptions);
   }
 
   /**
@@ -502,6 +541,25 @@ export class NodeService {
       tipHash: this.store.chain.tip.hash
     };
   }
+
+  /**
+   * Validator set that governs the next height (the one consensus must reach a
+   * quorum in), so callers follow `validator_update` activations instead of
+   * assuming the genesis set.
+   */
+  activeValidatorSet(): { height: number; validators: Validator[] } {
+    // Cached per height: GET /validator-set is unauthenticated and polled.
+    const height = this.store.chain.height + 1;
+    if (this.activeValidatorSetCache?.height !== height) {
+      this.activeValidatorSetCache = {
+        height,
+        validators: this.store.chain.validatorsAt(height).map(({ address, publicKey }) => ({ address, publicKey }))
+      };
+    }
+    return structuredClone(this.activeValidatorSetCache);
+  }
+
+  private activeValidatorSetCache?: { height: number; validators: Validator[] };
 
   protocolStatus(): NodeProtocolStatus {
     const height = this.store.chain.height;
@@ -653,7 +711,203 @@ export class NodeService {
   }
 
   submitTransaction(value: unknown): string {
-    validateTransactionShape(value);
+    let txid: string;
+    try {
+      txid = this.admitTransaction(value);
+    } catch (error) {
+      // P1-07-F2: re-submitting an update this node already re-admitted from
+      // its deferred set succeeds as it would have without the deferral.
+      const readmitted = this.readmittedValidatorUpdate(value);
+      if (readmitted) return readmitted;
+      this.deferRefusedValidatorUpdate(value);
+      throw error;
+    }
+    // Codex P2 on #1104: a deferred update can also be waiting for the nonce
+    // prefix of a pending predecessor's sender, so a transaction from the sender
+    // of a pending or deferred update re-tries the set as well.
+    const admitted = value as Transaction;
+    if (this.deferredValidatorUpdates.size > 0
+      && (admitted.kind === "validator_update" || this.isValidatorUpdateSender(admitted.sender))) {
+      this.retryDeferredValidatorUpdates();
+    }
+    return txid;
+  }
+
+  /**
+   * P1-07-F2: re-admitted deferred updates, handed out once for relaying to
+   * peers. With a relay set (setReadmittedTransactionRelay) they are handed to
+   * it right after re-admission instead, whatever delivered the predecessor
+   * (HTTP /tx, the native transport, or a finalized block).
+   */
+  takeReadmittedTransactions(): Transaction[] {
+    const readmitted = this.readmittedTransactions;
+    this.readmittedTransactions = [];
+    return readmitted;
+  }
+
+  /** P1-07-F2: relay for re-admitted deferred updates (the RPC server's onTransactionAccepted). */
+  setReadmittedTransactionRelay(relay: ((transaction: Transaction) => void | Promise<void>) | undefined): void {
+    this.readmittedTransactionRelay = relay;
+    this.flushReadmittedTransactions();
+  }
+
+  clearReadmittedTransactionRelay(relay: (transaction: Transaction) => void | Promise<void>): void {
+    if (this.readmittedTransactionRelay === relay) this.readmittedTransactionRelay = undefined;
+  }
+
+  private flushReadmittedTransactions(): void {
+    const relay = this.readmittedTransactionRelay;
+    if (!relay || this.readmittedTransactions.length === 0) return;
+    const transactions = this.takeReadmittedTransactions();
+    // After the current task, so the predecessor's own relay is scheduled first.
+    setImmediate(() => {
+      for (const transaction of transactions) {
+        void Promise.resolve().then(() => relay(transaction)).catch(() => undefined);
+      }
+    });
+  }
+
+  private readmittedValidatorUpdate(value: unknown): string | undefined {
+    const txid = (value as { txid?: unknown } | null)?.txid;
+    if (typeof txid !== "string" || !this.readmittedValidatorUpdateIds.includes(txid)) return undefined;
+    const pending = this.mempool.get(txid);
+    return pending && isDeepStrictEqual(pending, value) ? txid : undefined;
+  }
+
+  deferredValidatorUpdateCount(): number {
+    let count = 0;
+    for (const variants of this.deferredValidatorUpdates.values()) count += variants.length;
+    return count;
+  }
+
+  private isValidatorUpdateSender(sender: string): boolean {
+    for (const variants of this.deferredValidatorUpdates.values()) {
+      if (variants.some((tx) => tx.sender === sender)) return true;
+    }
+    // Codex P2 on #1104 at 104e108: an O(1) query, no copy of the mempool.
+    return this.mempool.hasValidatorUpdateFrom(sender);
+  }
+
+  private static deferredValidatorUpdateKey(tx: ValidatorSetUpdateTx): string {
+    return sha256Hex(canonicalJson(validatorUpdateApprovalPayload(tx)));
+  }
+
+  /** Whether a deferred update can still be admitted later (else it is dropped). */
+  private canStillDeferValidatorUpdate(tx: ValidatorSetUpdateTx): boolean {
+    if (tx.activationHeight <= this.store.chain.height + 1 || tx.nonce <= this.store.chain.nonce(tx.sender)) return false;
+    // Codex P2 on #1104: only an update that a predecessor could still make
+    // admissible (active initiator, current-validator quorum, activation
+    // order) may use or evict a deferred slot.
+    // Codex P2 on #1104 at 104e108: the proofs it carries must verify too, so
+    // a re-signed variant with invalid proofs cannot evict a valid variant.
+    try {
+      this.store.chain.assertValidatorUpdateAuthorizedExceptProofs(tx);
+      assertValidatorUpdatePossessionProofSignatures(tx, {
+        chainId: this.store.chain.genesis.chainId,
+        genesisHash: this.store.chain.genesisHash
+      });
+    } catch {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * P1-07-F2: keep a refused `validator_update` that could still activate on a
+   * chain with validator admission (the only case where a pending predecessor
+   * can change the outcome). Nothing is admitted here; see
+   * retryDeferredValidatorUpdates.
+   */
+  private deferRefusedValidatorUpdate(value: unknown): void {
+    const genesis = this.store.chain.genesis;
+    if (!genesis || !hasValidatorAdmission(genesis)) return;
+    try {
+      validateTransactionShape(value, readFeePolicy(genesis)?.fixedTransferFeeAtoms);
+    } catch {
+      return;
+    }
+    const tx = value as Transaction;
+    if (tx.kind !== "validator_update" || tx.chainId !== genesis.chainId) return;
+    if (this.mempool.has(tx.txid)) return;
+    const key = NodeService.deferredValidatorUpdateKey(tx);
+    const variants = this.deferredValidatorUpdates.get(key);
+    if (variants?.some((item) => item.txid === tx.txid)) return;
+    if (!this.canStillDeferValidatorUpdate(tx)) return;
+    if (variants) {
+      // Codex P2 on #1104: variants of one approved update (the approvals do
+      // not cover possessionProofs) only replace each other.
+      while (variants.length >= MAX_DEFERRED_VARIANTS_PER_VALIDATOR_UPDATE) variants.shift();
+      variants.push(structuredClone(tx));
+      return;
+    }
+    while (this.deferredValidatorUpdates.size >= MAX_DEFERRED_VALIDATOR_UPDATES) {
+      const oldest = this.deferredValidatorUpdates.keys().next().value;
+      if (oldest === undefined) break;
+      this.deferredValidatorUpdates.delete(oldest);
+    }
+    this.deferredValidatorUpdates.set(key, [structuredClone(tx)]);
+  }
+
+  /**
+   * P1-07-F2: after a validator update (or a transaction from the sender of a
+   * pending or deferred update) is admitted, or a block finalized, re-try every
+   * deferred update through the full admission path, repeating while one more
+   * is admitted (an admitted update can be the predecessor of another). Updates
+   * still refused stay deferred while they can still be admitted (a missing
+   * predecessor or nonce prefix can arrive later) and are dropped otherwise, so
+   * each trigger re-tries each deferred update at most once per pass and the
+   * work is bounded by the deferred set's size.
+   */
+  private retryDeferredValidatorUpdates(): void {
+    const entries = [...this.deferredValidatorUpdates.entries()];
+    this.deferredValidatorUpdates.clear();
+    let remaining = entries.flatMap(([key, variants]) => variants.map((tx) => ({ key, tx })));
+    const order = new Map(remaining.map((entry, index) => [entry.tx.txid, index]));
+    const kept: typeof remaining = [];
+    while (remaining.length > 0) {
+      const refused: typeof remaining = [];
+      const admittedKeys = new Set<string>();
+      for (const entry of remaining) {
+        if (admittedKeys.has(entry.key)) {
+          refused.push(entry);
+          continue;
+        }
+        try {
+          this.admitTransaction(entry.tx);
+          admittedKeys.add(entry.key);
+          this.readmittedTransactions.push(structuredClone(entry.tx));
+          this.readmittedValidatorUpdateIds.push(entry.tx.txid);
+        } catch {
+          refused.push(entry);
+        }
+      }
+      // Codex P2 on #1104 at cb863e16: other variants of an admitted key are
+      // not re-tried in this pass (they share its sender nonce) but stay
+      // deferred below: a later predecessor can make another variant the one
+      // block selection accepts.
+      kept.push(...refused.filter((entry) => admittedKeys.has(entry.key)));
+      remaining = refused.filter((entry) => !admittedKeys.has(entry.key));
+      if (admittedKeys.size === 0) break;
+    }
+    remaining = [...kept, ...remaining].sort((left, right) => order.get(left.tx.txid)! - order.get(right.tx.txid)!);
+    // Keep the original (oldest-first) order of the keys that stay deferred.
+    for (const { key, tx } of remaining) {
+      if (tx.kind !== "validator_update" || !this.canStillDeferValidatorUpdate(tx)) continue;
+      const variants = this.deferredValidatorUpdates.get(key);
+      if (variants) variants.push(tx);
+      else this.deferredValidatorUpdates.set(key, [tx]);
+    }
+    // Codex P2 on #1104 at cb863e16: a marker lives while its update is
+    // pending (bounded by the mempool), not for a fixed number of re-admissions.
+    this.readmittedValidatorUpdateIds = this.readmittedValidatorUpdateIds.filter((txid) => this.mempool.has(txid));
+    if (this.readmittedTransactions.length > MAX_DEFERRED_VALIDATOR_UPDATES) {
+      this.readmittedTransactions = this.readmittedTransactions.slice(-MAX_DEFERRED_VALIDATOR_UPDATES);
+    }
+    this.flushReadmittedTransactions();
+  }
+
+  private admitTransaction(value: unknown): string {
+    validateTransactionShape(value, readFeePolicy(this.store.chain.genesis)?.fixedTransferFeeAtoms);
     const tx = value as Transaction;
     if (tx.chainId !== this.store.chain.genesis.chainId) throw new Error("Wrong transaction chain ID");
     // F-01 §16.9-9: mempool policy only (block validity is unchanged, so old
@@ -663,8 +917,12 @@ export class NodeService {
       throw new Error(`Protocol v6 upgrade activation must be at least ${V6_MIN_ACTIVATION_MARGIN_BLOCKS} blocks ahead (node policy)`);
     }
     const stateNonce = this.store.chain.nonce(tx.sender);
-    if (tx.nonce <= stateNonce || tx.nonce > stateNonce + 64) throw new Error("Transaction nonce outside mempool window");
-    this.store.chain.validateMempoolAdmission(tx);
+    assertMempoolSenderNonce(tx.nonce, stateNonce);
+    // P1-07-F1: a validator_update may depend on a pending same-block predecessor.
+    // P1-07-F2 (Codex P2 on #1104 at cb863e16): only the pending validator
+    // updates are copied, not the whole mempool (deferred re-tries repeat this).
+    const pendingUpdates = tx.kind === "validator_update" ? this.mempool.validatorUpdates() : [];
+    const predecessors = this.store.chain.validateMempoolAdmission(tx, undefined, pendingUpdates);
     if (tx.kind === "transfer") {
       const conflicting = this.mempool.conflictingTransaction(tx.sender, tx.nonce);
       const replacedSpend = conflicting?.kind === "transfer"
@@ -681,7 +939,32 @@ export class NodeService {
         throw new Error("Pending transfers exceed unlocked balance");
       }
     }
-    if (tx.nonce === stateNonce + 1) this.store.chain.validatePending([tx]);
+    if (tx.nonce === stateNonce + 1) {
+      if (predecessors.length === 0) {
+        this.store.chain.validatePending([tx]);
+      } else {
+        // A same-sender predecessor holds a lower nonce, so here every
+        // predecessor is from another sender: the update is admissible when one
+        // of them applies after that sender's pending nonce prefix.
+        let lastError: unknown;
+        const applicable = predecessors.some((predecessor) => {
+          // Pending entries always have nonces above the sender's state nonce
+          // (finalization prunes the rest), and the mempool nonce window
+          // bounds this range.
+          const prefix = this.mempool.senderNonceRange(
+            predecessor.sender, this.store.chain.nonce(predecessor.sender), predecessor.nonce
+          );
+          try {
+            this.store.chain.validatePending([...prefix, predecessor, tx]);
+            return true;
+          } catch (error) {
+            lastError = error;
+            return false;
+          }
+        });
+        if (!applicable) throw lastError;
+      }
+    }
     this.mempool.add(tx);
     return tx.txid;
   }
@@ -695,11 +978,12 @@ export class NodeService {
       validateBlockStructure(value);
       const block = value as Block;
       this.assertLegacyConsensusHeight(block.header.height);
-      this.store.chain.validateProposal(block, nowMs);
+      const reservation = this.signingJournal.legacyReservation(block.header.height, block.header.round);
+      const ticket = this.validateProposalWithinBudget(block, block.header.round, nowMs, reservation, `attest:${block.hash}`);
       const publicKey = this.validatorSigner.publicKey;
       const validator = this.store.chain.validatorsAt(block.header.height).find((item) => item.publicKey === publicKey);
       if (!validator) throw new Error("Configured validator key is not in genesis");
-      await this.signingJournal.reserveAttestation(block.header.height, block.header.round, block.hash);
+      await ticket.reserve(() => this.signingJournal!.reserveAttestation(block.header.height, block.header.round, block.hash));
       return {
         validator: validator.address,
         publicKey,
@@ -711,6 +995,58 @@ export class NodeService {
         )
       };
     });
+  }
+
+  /**
+   * P1-06: `chain.validateProposal` under the per-slot budget. Call inside
+   * `exclusive`. A slot is (height, round, block proposer key); `round` is the
+   * round the proposal is voted in (the block round for legacy consensus, the
+   * proposal round for v6). Only results after the O(1) gates are recorded:
+   * a failure, or a success (a repeat of a validated hash then runs only the
+   * gates, and other hashes for the slot are refused before the expensive stage).
+   */
+  private validateProposalWithinBudget(
+    block: Block,
+    round: number,
+    nowMs: number,
+    reservation: string | undefined,
+    expectedReservation: string
+  ): { reserve(write: () => Promise<void>): Promise<void> } {
+    this.proposalValidationBudget.pruneThrough(this.store.chain.height);
+    const height = block.header.height;
+    const slot = ProposalValidationBudget.slotKey(height, round, String(block.proposerPublicKey));
+    // The signing journal already holds another vote for this round: it would
+    // refuse this proposal after validation, so refuse it before (Codex P1 on
+    // #1102 at f38c619: it must not spend the journaled proposal's slot). This
+    // O(1) check runs before the budget check so a conflicting proposal keeps
+    // the journal's "Conflicting validator action" refusal (peers and the v6
+    // equivocation tests rely on it); the journaled vote also spent the slot.
+    if (reservation !== undefined && reservation !== expectedReservation) {
+      throw new Error(`Conflicting validator action prevented for consensus round (${PROPOSAL_VALIDATION_BUDGET_MESSAGE})`);
+    }
+    // The hash this validator already voted for in the journal is always allowed.
+    const alreadyValidated = this.proposalValidationBudget.assertAllowed(slot, block.hash, reservation === expectedReservation);
+    let authenticated = false;
+    try {
+      this.store.chain.validateProposal(block, nowMs, () => { authenticated = true; return alreadyValidated; });
+    } catch (error) {
+      if (authenticated && !alreadyValidated) this.proposalValidationBudget.recordFailure(slot, height, block.hash);
+      throw error;
+    }
+    const budget = this.proposalValidationBudget;
+    return {
+      // Recorded as validated only once the journal accepted the vote; a
+      // journal refusal (lock conflict, closed round) is final for this hash.
+      async reserve(write: () => Promise<void>): Promise<void> {
+        try {
+          await write();
+        } catch (error) {
+          if (!alreadyValidated) budget.recordFailure(slot, height, block.hash);
+          throw error;
+        }
+        if (!alreadyValidated) budget.recordSuccess(slot, height, block.hash);
+      }
+    };
   }
 
   async signPreparedProposal(block: Block, nowMs = Date.now()): Promise<Block> {
@@ -804,6 +1140,13 @@ export class NodeService {
         (tx.kind === "mining_claim" &&
           (tx.height !== nextMiningHeight || tx.previousHash !== nextMiningPreviousHash))
       );
+      // P1-07-F2 (Codex P2 on #1104): a predecessor can also arrive only in a
+      // finalized block (sync, proposal finalization, /block); re-try the
+      // deferred updates against the new persisted schedule (a finalized block
+      // can also complete a pending predecessor's nonce prefix).
+      if (this.deferredValidatorUpdates.size > 0) {
+        this.retryDeferredValidatorUpdates();
+      }
     });
   }
 
@@ -904,10 +1247,11 @@ export class NodeService {
       const { height, chainId, validators } = this.v6Context();
       const member = this.v6Member(validators, signer);
       const justify = validatePrepareRequestCertificates(request, validators, chainId, height);
-      this.store.chain.validateProposal(request.block, nowMs);
       const { round, justifyRound } = request.proposal;
+      const reservation = journal.v6Row(height, round, "prepare");
+      const ticket = this.validateProposalWithinBudget(request.block, round, nowMs, reservation, request.block.hash);
       if (justify) await this.v6RecordQC(height, chainId, validators, justify);
-      await journal.reserveV6Prepare(height, round, request.block.hash, justifyRound);
+      await ticket.reserve(() => journal.reserveV6Prepare(height, round, request.block.hash, justifyRound));
       // Stored only once the journal accepted the vote (finding D-1): a refused
       // request (equivocation, lock conflict, closed round) leaves no file, so
       // at most one block per (H, r) is kept from prepare requests. Prepared
@@ -1305,6 +1649,13 @@ export function createRpcServer(service: NodeService, options: RpcServerOptions 
   server.timeout = socketIdleTimeoutMs;
   server.maxHeadersCount = RPC_MAX_HEADERS;
   server.maxRequestsPerSocket = RPC_MAX_REQUESTS_PER_SOCKET;
+  // P1-07-F2 (Codex P2 on #1104): re-admitted deferred validator updates are
+  // relayed whichever transport delivered their predecessor.
+  const relay = options.onTransactionAccepted;
+  if (relay) {
+    service.setReadmittedTransactionRelay(relay);
+    server.once("close", () => service.clearReadmittedTransactionRelay(relay));
+  }
   return server;
 }
 
@@ -1331,6 +1682,9 @@ async function route(
   }
   if (request.method === "GET" && url.pathname === "/status") {
     return writeJson(response, 200, service.status());
+  }
+  if (request.method === "GET" && url.pathname === "/validator-set") {
+    return writeJson(response, 200, service.activeValidatorSet());
   }
   if (request.method === "GET" && url.pathname === "/protocol") {
     return writeJson(response, 200, service.protocolStatus());
@@ -1381,6 +1735,8 @@ async function route(
     const body = await readJsonBody(request, bodyReservation);
     const txid = service.submitTransaction(body);
     if (onTransactionAccepted) {
+      // P1-07-F2: re-admitted deferred updates go out through the relay that
+      // createRpcServer registers (setReadmittedTransactionRelay).
       const transaction = structuredClone(body as Transaction);
       void Promise.resolve().then(() => onTransactionAccepted(transaction)).catch(() => undefined);
     }
@@ -1581,8 +1937,19 @@ export class PeerClient {
     while (this.peers.length > 0) {
       const startHeight = service.status().height;
       const nowMs = Date.now();
-      const available = this.peers
+      let available = this.peers
         .filter((peer) => (this.failureUntil.get(peer) ?? 0) <= nowMs && (this.peerReputation?.isAvailable(peer, nowMs) ?? true));
+      if (available.length === 0) {
+        // Every configured peer is backed off. A backoff persisted across a
+        // restart (or built up while a peer was briefly down) must not wedge
+        // the follower silently: probe the peer whose backoff ends soonest,
+        // once per sync tick, and say so.
+        if (accepted > 0) break;
+        const probe = this.earliestBackoffPeer();
+        if (probe === undefined) break;
+        console.warn(`Peer sync: all ${this.peers.length} configured peer(s) in backoff at height ${startHeight}; probing ${probe}`);
+        available = [probe];
+      }
       let candidate: { peer: string; height: number; blocks: unknown[]; release: () => void } | undefined;
       for (const batch of peerSyncProbeBatches(available, this.syncCursor)) {
         const attempts = await Promise.allSettled(batch.map(async (peer) => {
@@ -1609,6 +1976,7 @@ export class PeerClient {
           const result = attempts[index]!;
           const peer = batch[index]!;
           if (result.status === "rejected") {
+            console.warn(`Peer sync failed: peer ${peer}, local height ${startHeight}, reason: ${peerLogReason(result.reason)}`);
             await this.recordFailure(peer, nowMs);
             continue;
           }
@@ -1633,7 +2001,9 @@ export class PeerClient {
             await service.acceptFinalizedBlock(block);
             accepted += 1;
             progressed = true;
-          } catch {
+          } catch (error) {
+            const height = (block as { header?: { height?: unknown } } | null)?.header?.height;
+            console.warn(`Peer sync rejected block: peer ${candidate.peer}, height ${Number.isSafeInteger(height) ? String(height) : "unknown"}, reason: ${peerLogReason(error)}`);
             poisoned = true;
             break;
           }
@@ -1651,6 +2021,17 @@ export class PeerClient {
       if (!progressed || service.status().height <= startHeight) break;
     }
     return accepted;
+  }
+
+  /** The configured peer whose backoff (in-memory or persisted) ends soonest. */
+  private earliestBackoffPeer(): string | undefined {
+    let best: string | undefined;
+    let bestUntil = Number.POSITIVE_INFINITY;
+    for (const peer of this.peers) {
+      const until = Math.max(this.failureUntil.get(peer) ?? 0, this.peerReputation?.backoffUntil(peer) ?? 0);
+      if (until < bestUntil) { best = peer; bestUntil = until; }
+    }
+    return best;
   }
 
   async requestAttestations(block: Block): Promise<BlockAttestation[]> {

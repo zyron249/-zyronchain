@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJson, compareCanonicalStrings } from "./codec.js";
+import { FIXED_FEE_MISMATCH_MESSAGE, splitFixedFee, type FixedFeeApplication } from "./fee-policy.js";
 import { addressFromPublicKey } from "./crypto.js";
 import { assertMiningNotRetired, MINING_TRACKER_ADDRESS } from "./mining.js";
 import {
@@ -9,6 +10,7 @@ import {
   ACTIVITY_WINDOW_RESERVED_MESSAGE,
   ACTIVITY_WINDOW_TIME_ADDRESS,
   activityRollingWindowEnforced,
+  activitySettlementCapAtoms,
   assertActivityRollingWindow,
   assertActivitySettlementWithinCap,
   assertNoActivityPoolDirectDebit,
@@ -141,27 +143,60 @@ export class SparseMerkleState {
 
   nodeRecords(): StateV2NodeRecord[] {
     const records: StateV2NodeRecord[] = [];
+    for (const batch of this.nodeRecordBatches(4_096)) {
+      for (const record of batch) records.push(record);
+    }
+    return records;
+  }
+
+  /**
+   * The records of nodeRecords(), in the same order (children before their
+   * branch), produced lazily in batches of at most `batchSize`. The traversal is
+   * iterative and resumes where the previous batch stopped, so a caller can
+   * yield to the event loop between batches of a large tree instead of building
+   * the whole list in one synchronous step (Codex P2 on #1060). The state is
+   * immutable, so interleaving other work between batches cannot change them.
+   */
+  *nodeRecordBatches(batchSize: number): Generator<StateV2NodeRecord[], void, undefined> {
+    if (!Number.isSafeInteger(batchSize) || batchSize < 1) throw new Error("Invalid State v2 node record batch size");
     const seen = new Set<string>();
-    const visit = (link: NodeLink | undefined, depth: number): void => {
+    const stack: Array<{ node: BranchNode; depth: number; next: 0 | 1 | 2 }> = [];
+    let batch: StateV2NodeRecord[] = [];
+    const enter = (link: NodeLink | undefined, depth: number): void => {
       if (!link || seen.has(link.hash)) return;
       const node = this.resolveNode(link, depth);
       seen.add(node.hash);
       if (node.kind === "leaf") {
-        records.push({
+        batch.push({
           kind: "leaf", hash: node.hash, keyHash: node.keyHash,
           valueHash: node.valueHash, valueJson: node.valueJson
         });
-        return;
+      } else {
+        stack.push({ node, depth, next: 0 });
       }
-      visit(node.left, depth + 1);
-      visit(node.right, depth + 1);
-      records.push({
-        kind: "branch", hash: node.hash,
-        leftHash: linkHash(node.left) ?? null, rightHash: linkHash(node.right) ?? null
-      });
     };
-    visit(this.rootNode, 0);
-    return records;
+    enter(this.rootNode, 0);
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1]!;
+      if (frame.next === 0) {
+        frame.next = 1;
+        enter(frame.node.left, frame.depth + 1);
+      } else if (frame.next === 1) {
+        frame.next = 2;
+        enter(frame.node.right, frame.depth + 1);
+      } else {
+        stack.pop();
+        batch.push({
+          kind: "branch", hash: frame.node.hash,
+          leftHash: linkHash(frame.node.left) ?? null, rightHash: linkHash(frame.node.right) ?? null
+        });
+      }
+      if (batch.length >= batchSize) {
+        yield batch;
+        batch = [];
+      }
+    }
+    if (batch.length > 0) yield batch;
   }
 
   /** Reachability metadata without duplicating full leaf payloads. */
@@ -316,6 +351,12 @@ export function verifySparseMerkleProof(
 export interface StateV2GovernanceSnapshot {
   validatorSchedule: Array<{ activationHeight: number; validators: Validator[] }>;
   protocolSchedule: Array<{ activationHeight: number; protocolVersion: number }>;
+  /** Present only after a pause, resume or revoke. Omitted when empty so older views stay canonical. */
+  activityOracleGovernance?: Array<{
+    activationHeight: number;
+    action: "pause" | "resume" | "revoke";
+    publicKeys: string[];
+  }>;
 }
 
 export interface StateV2PortableView {
@@ -336,7 +377,8 @@ export function stateV2KeyPreimages(
     ...snapshot.accounts.map((account) => accountKey(account.address)),
     ...snapshot.settledActivityEpochs.map(activityEpochKey),
     ...governance.validatorSchedule.map((entry) => validatorScheduleKey(entry.activationHeight)),
-    ...governance.protocolSchedule.map((entry) => protocolScheduleKey(entry.activationHeight))
+    ...governance.protocolSchedule.map((entry) => protocolScheduleKey(entry.activationHeight)),
+    ...(governance.activityOracleGovernance ?? []).map((entry) => activityOracleGovernanceKey(entry.activationHeight))
   ].sort();
 }
 
@@ -352,6 +394,8 @@ export function stateV2TransactionKeyPreimages(tx: Transaction): string[] {
     keys.add(accountKey(MINING_TRACKER_ADDRESS));
   } else if (tx.kind === "validator_update") {
     keys.add(validatorScheduleKey(tx.activationHeight));
+  } else if (tx.kind === "activity_oracle_governance") {
+    keys.add(activityOracleGovernanceKey(tx.activationHeight));
   } else {
     keys.add(protocolScheduleKey(tx.activationHeight));
   }
@@ -376,6 +420,7 @@ export function reconstructStateV2PortableView(
   const epochs: number[] = [];
   const validatorSchedule: StateV2GovernanceSnapshot["validatorSchedule"] = [];
   const protocolSchedule: StateV2GovernanceSnapshot["protocolSchedule"] = [];
+  const activityOracleGovernance: NonNullable<StateV2GovernanceSnapshot["activityOracleGovernance"]> = [];
 
   for (const key of keyPreimages) {
     if (typeof key !== "string" || key.length < 1 || key.length > 256) throw new Error("Invalid State v2 key preimage");
@@ -402,6 +447,14 @@ export function reconstructStateV2PortableView(
       const activationHeight = parseSemanticHeight(key.slice("protocol-schedule:".length), "protocol activation height");
       assertStateV2ProtocolScheduleValue(value);
       protocolSchedule.push({ activationHeight, protocolVersion: Number(value.protocolVersion) });
+    } else if (key.startsWith("activity-oracle-governance:")) {
+      const activationHeight = parseSemanticHeight(key.slice("activity-oracle-governance:".length), "activity oracle governance height");
+      assertStateV2ActivityOracleGovernanceValue(value);
+      activityOracleGovernance.push({
+        activationHeight,
+        action: value.action,
+        publicKeys: [...value.publicKeys]
+      });
     } else {
       throw new Error("Unknown State v2 semantic key");
     }
@@ -412,15 +465,21 @@ export function reconstructStateV2PortableView(
   epochs.sort((a, b) => a - b);
   validatorSchedule.sort((a, b) => a.activationHeight - b.activationHeight);
   protocolSchedule.sort((a, b) => a.activationHeight - b.activationHeight);
+  activityOracleGovernance.sort((a, b) => a.activationHeight - b.activationHeight);
   assertUniqueSemanticNumbers(epochs, "activity epoch");
   assertUniqueSemanticNumbers(validatorSchedule.map((entry) => entry.activationHeight), "validator activation height");
   assertUniqueSemanticNumbers(protocolSchedule.map((entry) => entry.activationHeight), "protocol activation height");
+  assertUniqueSemanticNumbers(activityOracleGovernance.map((entry) => entry.activationHeight), "activity oracle governance height");
   if (validatorSchedule[0]?.activationHeight !== 0 || protocolSchedule[0]?.activationHeight !== 0) {
     throw new Error("State v2 governance schedule must start at genesis");
   }
 
   const ledger = LedgerState.fromSnapshot({ accounts, settledActivityEpochs: epochs }).snapshot();
-  const governance = { validatorSchedule, protocolSchedule };
+  const governance = {
+    validatorSchedule,
+    protocolSchedule,
+    ...(activityOracleGovernance.length ? { activityOracleGovernance } : {})
+  };
   if (stateV2FromLedgerSnapshot(ledger, governance).root() !== state.root()) {
     throw new Error("Reconstructed State v2 portable view root mismatch");
   }
@@ -436,22 +495,58 @@ export function stateV2FromLedgerSnapshot(
   snapshot: LedgerSnapshot,
   governance?: StateV2GovernanceSnapshot
 ): SparseMerkleState {
+  const steps = stateV2FromLedgerSnapshotSteps(snapshot, governance);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Entries set per step of stateV2FromLedgerSnapshotSteps. */
+export const STATE_V2_REBUILD_STEP_ENTRIES = 1_024;
+
+/**
+ * stateV2FromLedgerSnapshot in bounded steps: the generator yields after every
+ * STATE_V2_REBUILD_STEP_ENTRIES entries and returns the same state. Each set()
+ * hashes a key path, so rebuilding a large state is slow; a caller can yield to
+ * the event loop between steps (Codex P2 on #1060).
+ */
+export function* stateV2FromLedgerSnapshotSteps(
+  snapshot: LedgerSnapshot,
+  governance?: StateV2GovernanceSnapshot
+): Generator<void, SparseMerkleState, undefined> {
   let state = SparseMerkleState.empty();
+  let entries = 0;
+  const counted = function* (): Generator<void, void, undefined> {
+    entries += 1;
+    if (entries % STATE_V2_REBUILD_STEP_ENTRIES === 0) yield;
+  };
   for (const account of [...snapshot.accounts].sort((a, b) => compareCanonicalStrings(a.address, b.address))) {
     state = state.set(accountKey(account.address), {
       balanceAtoms: account.balanceAtoms,
       nonce: account.nonce
     });
+    yield* counted();
   }
   for (const epoch of [...snapshot.settledActivityEpochs].sort((a, b) => a - b)) {
     state = state.set(activityEpochKey(epoch), { settled: true });
+    yield* counted();
   }
   if (governance) {
     for (const entry of [...governance.validatorSchedule].sort((a, b) => a.activationHeight - b.activationHeight)) {
       state = state.set(validatorScheduleKey(entry.activationHeight), { validators: entry.validators });
+      yield* counted();
     }
     for (const entry of [...governance.protocolSchedule].sort((a, b) => a.activationHeight - b.activationHeight)) {
       state = state.set(protocolScheduleKey(entry.activationHeight), { protocolVersion: entry.protocolVersion });
+      yield* counted();
+    }
+    for (const entry of [...(governance.activityOracleGovernance ?? [])].sort((a, b) => a.activationHeight - b.activationHeight)) {
+      state = state.set(activityOracleGovernanceKey(entry.activationHeight), {
+        action: entry.action,
+        publicKeys: [...entry.publicKeys]
+      });
+      yield* counted();
     }
   }
   return state;
@@ -495,13 +590,19 @@ export function applyStateV2Transaction(
   tx: Transaction,
   activityPool: Address,
   locks?: AllocationLockContext,
-  oracles?: ActivityOracleSet
+  oracles?: ActivityOracleSet,
+  fee?: FixedFeeApplication
 ): SparseMerkleState {
   const rollingWindow = activityRollingWindowEnforced(oracles);
   if (tx.kind === "transfer") {
     assertNoActivityPoolInflow(tx.receiver, activityPool);
     assertNoActivityPoolDirectDebit(tx.sender, activityPool, oracles);
     if (rollingWindow && isActivityWindowAddress(tx.receiver)) throw new Error(ACTIVITY_WINDOW_RESERVED_MESSAGE);
+    // Same reservation and precedence as LedgerState.applyTransfer (defence in
+    // depth; validateTransactionShape already rejects these on chain paths).
+    if (tx.sender === MINING_TRACKER_ADDRESS || tx.receiver === MINING_TRACKER_ADDRESS) {
+      throw new Error("Mining tracker address is protocol-reserved");
+    }
     requireStateV2Nonce(state, tx.sender, tx.nonce);
     const total = tx.amountAtoms + tx.feeAtoms;
     if (!Number.isSafeInteger(total)) throw new Error("Insufficient balance");
@@ -510,17 +611,29 @@ export function applyStateV2Transaction(
     assertAllocationLockOutflow(locks, tx.sender, senderBalance, total);
     let next = debitStateV2(state, tx.sender, total);
     next = creditStateV2(next, tx.receiver, tx.amountAtoms);
+    if (fee) next = creditStateV2ProducerFee(next, tx.feeAtoms, fee, activityPool);
     return setStateV2Nonce(next, tx.sender, tx.nonce);
   }
   if (tx.kind === "activity_settlement") {
-    if (oracles) assertActivitySettlementAuthorized(tx, oracles);
+    if (oracles) {
+      assertActivitySettlementAuthorized(tx, oracles, {
+        chainId: tx.chainId,
+        ...(locks?.blockTimestampMs !== undefined ? { blockTimestampMs: locks.blockTimestampMs } : {}),
+        ...(oracles.timestampMs !== undefined ? { genesisTimestampMs: oracles.timestampMs } : {})
+      });
+    }
     if (tx.sender !== activityPool) throw new Error("Invalid activity pool sender");
     for (const entry of tx.entries) assertNoActivityPoolInflow(entry.receiver, activityPool);
+    // Same reservation and precedence as LedgerState.applyActivity.
+    if (tx.entries.some((entry) => entry.receiver === MINING_TRACKER_ADDRESS)) {
+      throw new Error("Mining tracker address is protocol-reserved");
+    }
     if (state.get(activityEpochKey(tx.epoch)) !== undefined) throw new Error("Activity epoch already settled");
     // Adjacent-order defence in depth (see LedgerState.applyActivity).
     if (state.get(activityEpochKey(tx.epoch + 1)) !== undefined) throw new Error(ACTIVITY_ORDER_MESSAGE);
     requireStateV2Nonce(state, activityPool, tx.nonce);
-    const total = assertActivitySettlementWithinCap(tx.entries);
+    const capAtoms = activitySettlementCapAtoms(oracles);
+    const total = assertActivitySettlementWithinCap(tx.entries, capAtoms);
     if (rollingWindow) {
       // Rolling 24 h cap under fixed-supply-v1 (see activity.ts).
       if (tx.entries.some((entry) => isActivityWindowAddress(entry.receiver))) {
@@ -529,7 +642,7 @@ export function applyStateV2Transaction(
       assertActivityRollingWindow({
         timestampMs: stateV2Nonce(state, ACTIVITY_WINDOW_TIME_ADDRESS),
         amountAtoms: stateV2Nonce(state, ACTIVITY_WINDOW_AMOUNT_ADDRESS)
-      }, locks?.blockTimestampMs, total);
+      }, locks?.blockTimestampMs, total, capAtoms);
     }
     const poolBalance = stateV2Balance(state, activityPool);
     if (poolBalance < total) throw new Error("Insufficient balance");
@@ -547,10 +660,14 @@ export function applyStateV2Transaction(
     assertMiningNotRetired();
     throw new Error("Mining claim requires chain-context State-v2 application");
   }
+  // Same reservation as LedgerState.applyValidatorUpdate / applyProtocolUpgrade.
+  if (tx.sender === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
   requireStateV2Nonce(state, tx.sender, tx.nonce);
   let next = setStateV2Nonce(state, tx.sender, tx.nonce);
   if (tx.kind === "validator_update") {
     next = next.set(validatorScheduleKey(tx.activationHeight), { validators: tx.validators });
+  } else if (tx.kind === "activity_oracle_governance") {
+    next = next.set(activityOracleGovernanceKey(tx.activationHeight), { action: tx.action, publicKeys: [...tx.publicKeys] });
   } else {
     next = next.set(protocolScheduleKey(tx.activationHeight), { protocolVersion: tx.protocolVersion });
   }
@@ -611,6 +728,21 @@ function creditStateV2(state: SparseMerkleState, address: Address, amount: numbe
   return state.set(accountKey(address), { balanceAtoms, nonce: account.nonce });
 }
 
+/** fixed-fee-v1 producer share. A zero share does not create an account. */
+function creditStateV2ProducerFee(
+  state: SparseMerkleState,
+  feeAtoms: number,
+  fee: FixedFeeApplication,
+  activityPool: Address
+): SparseMerkleState {
+  if (feeAtoms !== fee.fixedTransferFeeAtoms) throw new Error(FIXED_FEE_MISMATCH_MESSAGE);
+  const { producerAtoms } = splitFixedFee(feeAtoms);
+  if (producerAtoms <= 0) return state;
+  if (fee.producer === MINING_TRACKER_ADDRESS) throw new Error("Mining tracker address is protocol-reserved");
+  assertNoActivityPoolInflow(fee.producer, activityPool);
+  return creditStateV2(state, fee.producer, producerAtoms);
+}
+
 function setStateV2Nonce(state: SparseMerkleState, address: Address, nonce: number): SparseMerkleState {
   const account = stateV2Account(state, address);
   return state.set(accountKey(address), { balanceAtoms: account.balanceAtoms, nonce });
@@ -630,6 +762,10 @@ export function validatorScheduleKey(activationHeight: number): string {
 
 export function protocolScheduleKey(activationHeight: number): string {
   return `protocol-schedule:${activationHeight}`;
+}
+
+export function activityOracleGovernanceKey(activationHeight: number): string {
+  return `activity-oracle-governance:${activationHeight}`;
 }
 
 /**
@@ -659,6 +795,32 @@ function assertStateV2ValidatorScheduleValue(value: unknown): asserts value is {
   if (!Array.isArray(value.validators)) throw new Error("Invalid State v2 validator schedule value");
 }
 
+function assertStateV2ActivityOracleGovernanceValue(value: unknown): asserts value is {
+  action: "pause" | "resume" | "revoke";
+  publicKeys: string[];
+} {
+  assertExactPortableRecord(value, ["action", "publicKeys"], "State v2 activity oracle governance value");
+  if (value.action !== "pause" && value.action !== "resume" && value.action !== "revoke") {
+    throw new Error("Invalid State v2 activity oracle governance value");
+  }
+  if (!Array.isArray(value.publicKeys) || value.publicKeys.length > 100) {
+    throw new Error("Invalid State v2 activity oracle governance value");
+  }
+  const seen = new Set<string>();
+  for (const publicKey of value.publicKeys) {
+    if (typeof publicKey !== "string" || !/^[0-9a-f]{128}$/.test(publicKey) || seen.has(publicKey)) {
+      throw new Error("Invalid State v2 activity oracle governance value");
+    }
+    seen.add(publicKey);
+  }
+  if ((value.action === "pause" || value.action === "resume") && value.publicKeys.length !== 0) {
+    throw new Error("Invalid State v2 activity oracle governance value");
+  }
+  if (value.action === "revoke" && value.publicKeys.length === 0) {
+    throw new Error("Invalid State v2 activity oracle governance value");
+  }
+}
+
 function assertStateV2ProtocolScheduleValue(value: unknown): asserts value is { protocolVersion: number } {
   assertExactPortableRecord(value, ["protocolVersion"], "State v2 protocol schedule value");
   if (!Number.isSafeInteger(value.protocolVersion) || Number(value.protocolVersion) < 1) {
@@ -683,9 +845,11 @@ export function assertStateV2LeafValueSchema(value: unknown): void {
     else if (fields === "validators") {
       assertStateV2ValidatorScheduleValue(value);
       assertPortableValidatorList(value.validators);
-    } else if (fields === "protocolVersion") {
+    }     else if (fields === "protocolVersion") {
       assertStateV2ProtocolScheduleValue(value);
       if (value.protocolVersion > MAX_PORTABLE_PROTOCOL_VERSION) throw new Error("protocol version out of range");
+    } else if (fields === "action,publicKeys") {
+      assertStateV2ActivityOracleGovernanceValue(value);
     } else throw new Error("unknown field set");
   } catch (cause) {
     throw new Error("Invalid portable State v2 leaf value schema", { cause });
@@ -726,6 +890,10 @@ export function assertStateV2SemanticKeyShape(key: string): void {
   }
   if (key.startsWith("protocol-schedule:")) {
     parseSemanticHeight(key.slice("protocol-schedule:".length), "protocol activation height");
+    return;
+  }
+  if (key.startsWith("activity-oracle-governance:")) {
+    parseSemanticHeight(key.slice("activity-oracle-governance:".length), "activity oracle governance height");
     return;
   }
   throw new Error("Unknown State v2 semantic key");

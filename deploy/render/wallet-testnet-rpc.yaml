@@ -21,6 +21,7 @@ services:
       paths:
         - src/**
         - scripts/public-testnet-rpc.mjs
+        - scripts/wallet-testnet-durable.mjs
         - package.json
         - package-lock.json
         - tsconfig.json
@@ -36,6 +37,15 @@ services:
       - key: ZYRON_TESTNET_CHAIN_ID
         value: zyron-wallet-testnet-1
       # Testnet-only secret so the validator and faucet keys survive restarts.
-      # Never reuse any mainnet or allocation key material here.
+      # Never reuse any mainnet or allocation key material here. Keep this value
+      # stable: durable replay submits transfers signed by the seed-derived faucet.
       - key: ZYRON_TESTNET_SEED
         generateValue: true
+      # Optional Neon Postgres URL for this testnet only. sync: false so the
+      # secret is entered in the dashboard and is never committed. Use a
+      # database and role that are not the game's. Leave it unset to keep
+      # ephemeral state. Do not add a keep-alive pinger; free instance hours
+      # are shared with another always-on service.
+      # postgresql://USER:PASSWORD@HOST/DBNAME?sslmode=require
+      - key: ZYRON_TESTNET_DATABASE_URL
+        sync: false

@@ -40,7 +40,7 @@ Compatibility note: this is a consensus rule change. Any existing chain data tha
 
 ## Mainnet genesis ceremony: mandatory supply check
 
-For a legacy genesis, consensus enforces only that it allocates at most 50,000,000 ZYN (and, with mining retired, nothing can be issued later). A genesis that declares `launchProfile: "fixed-supply-v1"` makes the rules "exactly 50,000,000 ZYN, split 5,000,000 / 20,000,000 / 20,000,000 / 5,000,000 across four distinct role addresses, the activity pool is the ecosystem/community reserve, and `allocationLocks` names exactly the founder and permanent-liquidity allocations" consensus rules, and its genesis hash commits to the entire configuration (see [`GENESIS_CONFIG_BINDING.md`](GENESIS_CONFIG_BINDING.md)). The offline verifier `assertFixedSupplyGenesis` additionally checks the four role addresses chosen by the owner, and `tokenomics:check` refuses a launch genesis without the profile. Therefore the mainnet genesis ceremony **MUST** run `npm run tokenomics:check` against the final genesis file and the four role addresses, and the genesis **MUST NOT** be published, signed, or used to start any validator unless the command exits 0. The ceremony record must include the exact command, its output (including the printed configuration commitment and genesis hash), the SHA-256 digest of the genesis file and the release commit it was built from. The same requirement is listed in [`PUBLIC_LAUNCH_CHECKLIST.md`](PUBLIC_LAUNCH_CHECKLIST.md) section 4.
+For a legacy genesis that omits `networkClass`, consensus enforces only that it allocates at most 50,000,000 ZYN (and, with mining retired, nothing can be issued later). A genesis that declares `launchProfile: "fixed-supply-v1"` makes the rules "exactly 50,000,000 ZYN, split 5,000,000 / 20,000,000 / 20,000,000 / 5,000,000 across four distinct role addresses, the activity pool is the ecosystem/community reserve, and `allocationLocks` names exactly the founder and permanent-liquidity allocations" consensus rules, and its genesis hash commits to the entire configuration (see [`GENESIS_CONFIG_BINDING.md`](GENESIS_CONFIG_BINDING.md)). A `networkClass` of `public-launch`, `value-bearing` or `mainnet` is refused unless that profile is set, so a value-bearing chain cannot skip the locks by omitting the profile or by choosing another one (see [`GENESIS_NETWORK_CLASS.md`](GENESIS_NETWORK_CLASS.md)). The offline verifier `assertFixedSupplyGenesis` additionally checks the four role addresses chosen by the owner, and `tokenomics:check` refuses a launch genesis without the profile and without a value-bearing network class. Therefore the mainnet genesis ceremony **MUST** run `npm run tokenomics:check` against the final genesis file and the four role addresses, and the genesis **MUST NOT** be published, signed, or used to start any validator unless the command exits 0. The one signature collected before that final run is the validator possession proof (P1-07, [`VALIDATOR_POSSESSION_PROOF.md`](VALIDATOR_POSSESSION_PROOF.md)), because the final check verifies it: first run `tokenomics:check ... --before-possession-proofs` on the file with `validatorAdmission: { "policy": "possession-proof-v1", "genesisProofs": [] }` (every other rule is checked and the command prints the configuration commitment the validators sign), then each validator operator signs locally, then run the command again **without** the flag on the file with every proof. Only that last run counts as the final check. The ceremony record must include the exact command, its output (including the printed configuration commitment and genesis hash), the SHA-256 digest of the genesis file and the release commit it was built from. The same requirement is listed in [`PUBLIC_LAUNCH_CHECKLIST.md`](PUBLIC_LAUNCH_CHECKLIST.md) section 4.
 
 Run it from the `l1/` directory:
 
@@ -64,7 +64,7 @@ Owner decision (2026-09-30, confirmed 2026-10-11): the Proof-of-Activity airdrop
 
 Consensus treats the activity pool as outflow-only: transfers and activity-settlement entries that credit the activity pool are rejected at mempool admission, block validation and state application (legacy and State-v2 appliers). Because the pool starts with exactly 5,000,000 ZYN and can never be refilled, cumulative activity airdrops can never exceed 5,000,000 ZYN. This is pinned by `l1/test/activity-airdrop-cap.test.ts` and `l1/test/fixed-supply-tokenomics.test.ts`.
 
-Oracle limits (ZC-CRY-20260930-010): consensus caps every settlement at 10,000 ZYN, allows only the most recently closed 24 h epoch to be settled, and requires epochs to settle once and in increasing order. Under `launchProfile: "fixed-supply-v1"` consensus also enforces that the settlements inside any rolling 24 h window total at most 10,000 ZYN. A single compromised oracle key can therefore move at most 10,000 ZYN in any 24 h, so paying out the whole 5,000,000 ZYN pool cannot complete earlier than 500 days after genesis. See [`ACTIVITY_ORACLE_CAP.md`](ACTIVITY_ORACLE_CAP.md). Multi-oracle (m-of-n) approval is available as an opt-in genesis threshold (`activityOracleThreshold`, see [`ACTIVITY_ORACLE_GOVERNANCE.md`](ACTIVITY_ORACLE_GOVERNANCE.md)); choosing m, n and the oracle key holders, and production oracle custody, remain open items. It does not change supply, allocations or the cap.
+Oracle limits (ZC-CRY-20260930-010, H3): a genesis without an activity-oracle policy still caps every settlement at 10,000 ZYN, allows only the most recently closed 24 h epoch, and requires epochs to settle once and in increasing order. `launchProfile: "fixed-supply-v1"` requires `activityOraclePolicy: "threshold-v1"` (at least 2-of-3 fail-closed attestation) and caps settlements at 1,000 ZYN per epoch and inside any rolling 24 h window, configurable only downward. One registered key cannot authorize a payout on that profile. See [`ACTIVITY_ORACLE_CAP.md`](ACTIVITY_ORACLE_CAP.md) and [`ACTIVITY_ORACLE_GOVERNANCE.md`](ACTIVITY_ORACLE_GOVERNANCE.md). Choosing m, n and the real oracle key holders, and production custody, remain open. This does not change the 50,000,000 ZYN supply or the allocations.
 
 ## Founder allocation
 
@@ -92,6 +92,8 @@ The liquidity reserve therefore remains a disclosed genesis role, not a live poo
 
 The 20,000,000 ZYN public-distribution allocation is a reserve for the eventual public distribution mechanism. It is not permission for a maintainer, website, or backend to custody purchaser funds.
 
+On a public-launch, value-bearing or mainnet genesis the allocation cannot be spent in full on day one. The genesis must declare `publicDistributionRelease` (version public-distribution-release-v1): an owner-supplied address plus an explicit cliff and linear length. The owner decided the default: no cliff (`cliffMs` 0) and a 365-day linear release (`linearMs` 31,536,000,000). The linear floor is 365 days, so day one releases only the accrued slice. See [`PUBLIC_DISTRIBUTION_RELEASE.md`](PUBLIC_DISTRIBUTION_RELEASE.md). `launchProfile: "fixed-supply-v1"` requires the field, including on the open testnet. Genesis files that omit both the profile and a value-bearing class keep the previous rule.
+
 Before enabling a public purchase surface, the project must freeze and review at least:
 
 - the quote asset and how it exists on ZyronChain;
@@ -103,6 +105,20 @@ Before enabling a public purchase surface, the project must freeze and review at
 - bridge or custody trust model, if any;
 - independent audit of the founder vesting and liquidity lock enforcement ([`ALLOCATION_LOCKS.md`](ALLOCATION_LOCKS.md));
 - applicable legal/compliance requirements for a public token distribution.
+
+## Fee policy v1 (implemented, not activated)
+
+The proposed transfer fee is a single launch-profile parameter: **0.001 ZYN (100,000 atoms)**. See [`FEE_POLICY_V1.md`](FEE_POLICY_V1.md).
+
+A genesis opts in by setting `feePolicy` to `{ "version": "fixed-fee-v1", "fixedTransferFeeAtoms": 100000 }` together with `launchProfile: "fixed-supply-v1"`. The integer is the only tunable value. Consensus then rejects every transfer whose fee is not that integer, at shape validation, mempool admission, and block validation. `floor(fee / 2)` is credited to the block producer. The rest is burned, and an odd atom goes to the burn. `sum(balances) + burned` stays equal to the genesis supply. Nothing mints. Block selection does not rank by fee, and a higher fee cannot replace a pending transaction.
+
+No shipped genesis sets the field. Current testnet and historical blocks keep a full burn and whatever fee they already carry. `docs/fixed-supply-launch-plan.json` leaves `fixedFeePolicyV1Activated` false.
+
+### Validator support from the ecosystem reserve (NOT IMPLEMENTED)
+
+This is a design note for the owner. It is not a transfer, a schedule, or a genesis field. It requires an explicit owner decision before any of those exist. No address is named here.
+
+The 5,000,000 ZYN ecosystem/community reserve is the only source under consideration for optional validator operating support. The founder allocation, the public-distribution allocation, and the permanent-liquidity reserve are not sources. If the owner later approves it, the support would be a public schedule (start, length, and a fixed amount per block or per epoch) debited from that reserve, visible in the block, and capped by the reserve's remaining balance. The reserve cannot be refilled. This change does not implement that debit.
 
 ## Activation discipline
 

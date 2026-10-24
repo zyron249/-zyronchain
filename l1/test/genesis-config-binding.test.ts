@@ -21,13 +21,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { blockHash } from "../src/block.js";
+import { blockHash, expectedValidator, validatorQuorumSize } from "../src/block.js";
 import { ZyronChain } from "../src/chain.js";
 import { canonicalJson, sha256Hex } from "../src/codec.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
 import { merkleRoot } from "../src/merkle.js";
 import { authenticateP2PPeer, createP2PNode, registerP2PIdentityProtocol } from "../src/p2p.js";
 import { loadOrCreateNodeIdentity } from "../src/peer-identity.js";
+import { defaultPublicDistributionRelease } from "../src/public-distribution-release.js";
 import { ChainStore } from "../src/storage.js";
 import { ATOMS_PER_ZYN, type GenesisConfig } from "../src/types.js";
 
@@ -42,8 +43,13 @@ const addr = (n: number) => addressFromPublicKey(pub(n));
 
 const VALIDATOR = 0x51;
 const VALIDATOR_2 = 0x52;
+const VALIDATOR_3 = 0x5e;
+const VALIDATOR_4 = 0x5f;
+const VALIDATOR_5 = 0x60;
 const ORACLE = 0x53;
 const ORACLE_2 = 0x54;
+const ORACLE_3 = 0x5c;
+const ORACLE_4 = 0x5d;
 const FOUNDER = 0x55;
 const PUBLIC_DISTRIBUTION = 0x56;
 const LIQUIDITY = 0x57;
@@ -71,7 +77,15 @@ function legacyFixedSupply(chainId = "zyron-genesis-bind"): GenesisConfig {
 }
 
 function profileGenesis(chainId = "zyron-genesis-bind"): ProfileGenesis {
-  return { ...legacyFixedSupply(chainId), launchProfile: PROFILE };
+  return {
+    ...legacyFixedSupply(chainId),
+    validators: [VALIDATOR, VALIDATOR_3, VALIDATOR_4, VALIDATOR_5].map((id) => ({ address: addr(id), publicKey: pub(id) })),
+    activityOracles: [pub(ORACLE), pub(ORACLE_3), pub(ORACLE_4)],
+    activityOracleThreshold: 2,
+    activityOraclePolicy: "threshold-v1",
+    publicDistributionRelease: defaultPublicDistributionRelease(addr(PUBLIC_DISTRIBUTION)),
+    launchProfile: PROFILE
+  };
 }
 
 function withoutLocks<T extends GenesisConfig>(genesis: T): T {
@@ -182,19 +196,24 @@ test("fixed-supply profile genesis commits to the full configuration", () => {
 });
 
 const TAMPERS: Record<string, (genesis: ProfileGenesis) => ProfileGenesis> = {
-  "activity oracle swapped": (genesis) => ({ ...genesis, activityOracles: [pub(ORACLE_2)] }),
-  "activity oracle added": (genesis) => ({ ...genesis, activityOracles: [pub(ORACLE), pub(ORACLE_2)] }),
-  "validator swapped": (genesis) => ({ ...genesis, validators: [{ address: addr(VALIDATOR_2), publicKey: pub(VALIDATOR_2) }] }),
+  "activity oracle swapped": (genesis) => ({ ...genesis, activityOracles: [pub(ORACLE_2), pub(ORACLE_3), pub(ORACLE_4)] }),
+  "activity oracle added": (genesis) => ({
+    ...genesis,
+    activityOracles: [pub(ORACLE), pub(ORACLE_3), pub(ORACLE_4), pub(ORACLE_2)],
+    activityOracleThreshold: 3
+  }),
+  "validator swapped": (genesis) => ({
+    ...genesis,
+    validators: genesis.validators.map((validator, index) =>
+      index === 0 ? { address: addr(VALIDATOR_2), publicKey: pub(VALIDATOR_2) } : validator)
+  }),
   "validator added": (genesis) => ({
     ...genesis,
     validators: [...genesis.validators, { address: addr(VALIDATOR_2), publicKey: pub(VALIDATOR_2) }]
   }),
   "validator order changed": (genesis) => ({
     ...genesis,
-    validators: [
-      { address: addr(VALIDATOR_2), publicKey: pub(VALIDATOR_2) },
-      { address: addr(VALIDATOR), publicKey: pub(VALIDATOR) }
-    ]
+    validators: [genesis.validators[1]!, genesis.validators[0]!, ...genesis.validators.slice(2)]
   })
 };
 
@@ -219,8 +238,15 @@ test("blocks from a chain with a tampered oracle configuration are refused", () 
   const honest = new ZyronChain(profileGenesis());
   const tampered = new ZyronChain(TAMPERS["activity oracle swapped"]!(profileGenesis()));
   const timestampMs = 1_700_000_010_000;
-  let block = tampered.produceBlock([], key(VALIDATOR), { timestampMs });
-  block = tampered.attestBlock(block, key(VALIDATOR));
+  const proposer = expectedValidator(tampered.genesis.validators, 1, 0);
+  const proposerId = [VALIDATOR, VALIDATOR_3, VALIDATOR_4, VALIDATOR_5].find((id) => addr(id) === proposer.address);
+  if (proposerId === undefined) throw new Error("unexpected proposer");
+  let block = tampered.produceBlock([], key(proposerId), { timestampMs });
+  for (const validator of tampered.genesis.validators.slice(0, validatorQuorumSize(tampered.genesis.validators.length))) {
+    const id = [VALIDATOR, VALIDATOR_3, VALIDATOR_4, VALIDATOR_5].find((candidate) => addr(candidate) === validator.address);
+    if (id === undefined) throw new Error("unexpected validator");
+    block = tampered.attestBlock(block, key(id));
+  }
   assert.throws(() => honest.acceptBlock(block, timestampMs));
   assert.equal(honest.height, 0);
 });
@@ -293,7 +319,20 @@ const INVALID_PROFILE_GENESIS: Record<string, () => ProfileGenesis> = {
     allocationLocks: { founderVesting: addr(LIQUIDITY), permanentLiquidity: addr(FOUNDER) }
   }),
   "unknown launch profile": () => ({ ...profileGenesis(), launchProfile: "fixed-supply-v2" }) as unknown as ProfileGenesis,
-  "non-string launch profile": () => ({ ...profileGenesis(), launchProfile: 1 }) as unknown as ProfileGenesis
+  "non-string launch profile": () => ({ ...profileGenesis(), launchProfile: 1 }) as unknown as ProfileGenesis,
+  "launch profile without oracle policy": () => {
+    const genesis = profileGenesis();
+    delete genesis.activityOraclePolicy;
+    delete genesis.activityOracleThreshold;
+    genesis.activityOracles = [pub(ORACLE)];
+    return genesis;
+  },
+  "public distribution release missing": () => {
+    const genesis = profileGenesis();
+    delete genesis.publicDistributionRelease;
+    return genesis;
+  },
+  "fewer than four validators": () => ({ ...profileGenesis(), validators: profileGenesis().validators.slice(0, 3) })
 };
 
 test("fixed-supply profile genesis that breaks the launch rules is refused at construction", () => {

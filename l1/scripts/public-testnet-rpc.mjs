@@ -15,21 +15,24 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { parseAddressInput, toChecksumAddress } from "../dist/src/address-checksum.js";
 import { ZyronChain } from "../dist/src/chain.js";
 import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "../dist/src/crypto.js";
 import { createTransfer } from "../dist/src/transaction.js";
 import { gatewayClientIdentity } from "../dist/src/rpc-client-identity.js";
+import { connectWalletTestnetDatabase, planStateRestore } from "./wallet-testnet-durable.mjs";
 
 export const DEFAULT_CHAIN_ID = "zyron-wallet-testnet-1";
 const ATOMS_PER_ZYN = 100_000_000;
 const FAUCET_ALLOCATION_ATOMS = 1_000_000 * ATOMS_PER_ZYN;
 const VALIDATOR_ALLOCATION_ATOMS = 1 * ATOMS_PER_ZYN;
 const POOL_ALLOCATION_ATOMS = 1 * ATOMS_PER_ZYN;
+const CONFIGURED_TEST_SUPPLY_ATOMS = FAUCET_ALLOCATION_ATOMS + VALIDATOR_ALLOCATION_ATOMS + POOL_ALLOCATION_ATOMS;
 const FAUCET_DRIP_ATOMS = 100 * ATOMS_PER_ZYN;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ADDRESS_PATTERN = /^ZYN[0-9a-f]{40}$/;
 const MAX_BODY_BYTES = 8 * 1024;
-const NOTICE = "ZyronChain wallet TESTNET. Test ZYN has no value, cannot be bought or sold, and the network can be reset at any time. Not mainnet.";
+const NOTICE = "ZyronChain wallet TESTNET. Test ZYN has no value, cannot be bought or sold, and is not mainnet. Balances and nonces survive a restart only when durable storage is on. The network can still be reset at any time.";
 
 const smokeMode = process.argv.includes("--smoke");
 const chainId = process.env.ZYRON_TESTNET_CHAIN_ID ?? DEFAULT_CHAIN_ID;
@@ -45,15 +48,18 @@ const nodePort = Number(process.env.ZYRON_TESTNET_NODE_PORT ?? 9237);
 const gatewayPort = smokeMode ? 0 : Number(process.env.PORT ?? 10000);
 const trustProxy = process.env.ZYRON_TRUST_PROXY === "1";
 // Legacy consensus derives the round from (now - tip time), so a fresh chain
-// must start from a recent genesis time. Each start is therefore a new genesis
-// (new genesis hash); clients should treat a genesis-hash change as a reset.
+// must start from a recent genesis time. The genesis hash therefore changes on
+// each process start even when balances were restored from durable storage.
+// A hash change is not, by itself, a wipe.
 const genesisTimestampMs = Date.now() - 60_000;
 assert.ok(Number.isSafeInteger(nodePort) && nodePort > 1024 && nodePort < 65535, "invalid ZYRON_TESTNET_NODE_PORT");
 
 // ---- keys and genesis ------------------------------------------------------
 // With ZYRON_TESTNET_SEED (a testnet-only secret, 32+ characters) the
-// validator and faucet keys are identical across restarts. Chain history lives
-// on the host's ephemeral disk, so a restart starts a fresh genesis.
+// validator and faucet keys are identical across restarts. Disk state is
+// ephemeral. ZYRON_TESTNET_DATABASE_URL, when it connects, restores included
+// transfers and faucet daily limits. The seed must stay the same or a faucet
+// transfer signed by the previous key cannot be replayed.
 const seedSecret = process.env.ZYRON_TESTNET_SEED;
 if (seedSecret !== undefined) assert.ok(seedSecret.length >= 32 && seedSecret.length <= 256, "ZYRON_TESTNET_SEED must be 32-256 characters");
 const seed = seedSecret ? createHash("sha256").update(`zyronchain/wallet-testnet-seed/${seedSecret}`).digest() : randomBytes(32);
@@ -73,7 +79,7 @@ const validator = account("validator");
 const faucet = account("faucet");
 const oracle = account("activity-oracle");
 const pool = account("activity-pool");
-const genesis = {
+let genesis = {
   chainId,
   timestampMs: genesisTimestampMs,
   validators: [{ publicKey: validator.publicKey, address: validator.address }],
@@ -85,8 +91,68 @@ const genesis = {
     { address: pool.address, amountAtoms: POOL_ALLOCATION_ATOMS }
   ]
 };
-const validatedGenesis = new ZyronChain(genesis);
-const genesisHash = validatedGenesis.genesisHash;
+// stateDurable is true only when this process will record new inclusions.
+// restoredTxCount / restoredAccounts describe what this start recovered.
+let durable = null;
+let restoreMode = "none";
+let restoreEntries = [];
+let plannedRestore = { restoredTxCount: 0, restoredAccounts: 0 };
+let faucetSeed = [];
+let stateDurable = false;
+let restoredTxCount = 0;
+let restoredAccounts = 0;
+let restoreReady = true;
+const databaseUrl = process.env.ZYRON_TESTNET_DATABASE_URL?.trim();
+if (databaseUrl) {
+  try {
+    durable = await connectWalletTestnetDatabase(databaseUrl);
+    const loaded = await durable.load(chainId);
+    const plan = planStateRestore({
+      genesis,
+      entries: loaded.entries,
+      baseline: loaded.baseline,
+      nowMs: Date.now(),
+      validatorPrivateKey: validator.privateKey,
+      configuredSupplyAtoms: CONFIGURED_TEST_SUPPLY_ATOMS
+    });
+    if (plan.baselineToSave) await durable.saveBaseline(chainId, plan.baselineToSave);
+    if (plan.error) console.warn(`wallet testnet restore: ${plan.error}`);
+    if (plan.mode === "abort" && plan.severe) {
+      console.warn("wallet testnet durable restore aborted; starting non-durable so new transfers are not appended to an unusable log");
+      await durable.close();
+      durable = null;
+    } else {
+      // A non-window failure with a saved baseline keeps those balances and
+      // does not replay the bad tail. Chain nonces in that baseline are 0
+      // unless a later replay advances them.
+      genesis = plan.genesis;
+      if (plan.mode === "abort") {
+        restoreMode = "none";
+        restoredAccounts = plan.restoredAccounts;
+      } else {
+        restoreMode = plan.mode;
+        restoreEntries = plan.entries;
+        plannedRestore = { restoredTxCount: plan.restoredTxCount, restoredAccounts: plan.restoredAccounts };
+        if (plan.mode === "replay") restoreReady = false;
+        else {
+          restoredTxCount = plan.restoredTxCount;
+          restoredAccounts = plan.restoredAccounts;
+        }
+      }
+      faucetSeed = await durable.loadFaucetLimits(chainId);
+    }
+    stateDurable = Boolean(durable);
+  } catch (error) {
+    console.warn(`wallet testnet durable state unavailable; starting non-durable: ${error instanceof Error ? error.message : String(error)}`);
+    if (durable) await durable.close().catch(() => undefined);
+    durable = null;
+    stateDurable = false;
+    restoreMode = "none";
+    restoreReady = true;
+    restoreEntries = [];
+  }
+}
+const genesisHash = new ZyronChain(genesis).genesisHash;
 
 const explicitRoot = process.env.ZYRON_TESTNET_DATA_ROOT;
 const root = explicitRoot ? resolve(explicitRoot) : await mkdtemp(join(tmpdir(), "zyron-wallet-testnet-"));
@@ -157,7 +223,10 @@ async function fetchChainStatus() {
     protocolVersion: nextProtocol,
     transactionVersion: nextProtocol >= 3 ? 2 : 1,
     blockIntervalSeconds: 30,
-    faucet: { address: faucet.address, dripZyn: FAUCET_DRIP_ATOMS / ATOMS_PER_ZYN, perAddressPerDay: 1 }
+    faucet: { address: faucet.address, dripZyn: FAUCET_DRIP_ATOMS / ATOMS_PER_ZYN, perAddressPerDay: 1 },
+    stateDurable,
+    restoredTxCount,
+    restoredAccounts
   };
   statusCacheAt = Date.now();
   return statusCache;
@@ -178,6 +247,16 @@ class WindowLimiter {
     entry.count += 1;
     return { allowed: true };
   }
+  snapshot(key) {
+    const entry = this.hits.get(key);
+    return entry ? { start: entry.start, count: entry.count } : null;
+  }
+  restore(key, start, count) {
+    if (typeof key !== "string" || key.length < 1 || key.length > 200) return;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(count) || count < 0) return;
+    if (!this.hits.has(key) && this.hits.size >= this.maxKeys) return;
+    this.hits.set(key, { start, count });
+  }
   sweep(now) { for (const [key, entry] of this.hits) if (now - entry.start >= this.windowMs) this.hits.delete(key); }
 }
 const limits = {
@@ -187,6 +266,22 @@ const limits = {
   faucetAddress: new WindowLimiter(1, DAY_MS),
   faucetGlobal: new WindowLimiter(200, 60 * 60 * 1000, 1)
 };
+for (const row of faucetSeed) {
+  const limiter = row.bucket === "address" ? limits.faucetAddress : row.bucket === "ip" ? limits.faucetIp : row.bucket === "global" ? limits.faucetGlobal : null;
+  if (!limiter) continue;
+  if (!Number.isSafeInteger(row.windowStartMs) || Date.now() - row.windowStartMs >= limiter.windowMs) continue;
+  limiter.restore(row.subject, row.windowStartMs, row.hits);
+}
+async function persistFaucetLimit(bucket, key, limiter) {
+  if (!durable) return;
+  const snap = limiter.snapshot(key);
+  if (!snap) return;
+  try {
+    await durable.saveFaucetLimit(chainId, bucket, key, snap.start, snap.count);
+  } catch (error) {
+    console.warn(`wallet testnet faucet limit was not saved: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 // Rate-limit identity (P1-02). ZYRON_TRUST_PROXY=1 means the service runs
 // behind Render's Cloudflare edge, which sets CF-Connecting-IP; the leftmost
@@ -262,9 +357,36 @@ async function readJsonBody(request) {
   }
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw Object.assign(new Error("invalid JSON"), { statusCode: 400 }); }
 }
+// Display checksum (docs/ADDRESS_CHECKSUM.md) is accepted on read and faucet
+// routes and folded to the canonical lowercase form before any node call or
+// rate-limit key. A wrong checksum is rejected; it is never "fixed".
+function canonicalAddress(input) {
+  if (typeof input !== "string" || input.length > 80) return { error: "invalid address" };
+  try {
+    return { canonical: parseAddressInput(input).canonical };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "invalid address" };
+  }
+}
 function addressFrom(path, prefix) {
-  const value = path.slice(prefix.length);
-  return ADDRESS_PATTERN.test(value) ? value : undefined;
+  let value;
+  try { value = decodeURIComponent(path.slice(prefix.length)); } catch { return { error: "invalid address" }; }
+  return canonicalAddress(value);
+}
+// POST /tx is forwarded byte-for-byte. Rewriting sender or receiver would
+// change the signed canonical JSON and make a valid signature fail, so a
+// checksummed or otherwise non-canonical address is rejected with the
+// lowercase form the client should submit instead.
+function nonCanonicalTxAddress(tx) {
+  if (!tx || typeof tx !== "object") return undefined;
+  for (const field of ["sender", "receiver"]) {
+    const value = tx[field];
+    if (typeof value !== "string" || ADDRESS_PATTERN.test(value)) continue;
+    const parsed = canonicalAddress(value);
+    if (parsed.error) return `${field}: ${parsed.error}`;
+    return `${field} must be the canonical lowercase address ${parsed.canonical}. POST /tx does not rewrite addresses: the signature covers sender and receiver, so a checksummed or mixed-case form would not verify. Submit the lowercase form.`;
+  }
+  return undefined;
 }
 
 let activeRequests = 0;
@@ -283,13 +405,17 @@ const gateway = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, ke
       return response.end();
     }
     const ip = clientIp(request);
+    if (request.method === "GET" && (path === "/health" || path === "/healthz")) {
+      const alive = child && child.exitCode === null && child.signalCode === null;
+      let height = null;
+      try { height = (await chainStatus()).height; } catch { /* starting */ }
+      return sendJson(response, alive && height !== null ? 200 : 503, { ok: Boolean(alive && height !== null), network: "testnet", valueBearing: false, chainId, height });
+    }
+    // /health stays available while included transfers are replayed so the host
+    // does not restart the process. Other routes wait so clients do not read
+    // the empty pre-replay balances or submit a conflicting nonce.
+    if (!restoreReady) return sendJson(response, 503, { error: "Restoring saved testnet state. Try again in a moment." }, { "retry-after": "2" });
     if (request.method === "GET") {
-      if (path === "/health" || path === "/healthz") {
-        const alive = child && child.exitCode === null && child.signalCode === null;
-        let height = null;
-        try { height = (await chainStatus()).height; } catch { /* starting */ }
-        return sendJson(response, alive && height !== null ? 200 : 503, { ok: Boolean(alive && height !== null), network: "testnet", valueBearing: false, chainId, height });
-      }
       const rate = limits.read.take(ip);
       if (!rate.allowed) return limited(response, rate);
       if (path === "/" ) {
@@ -303,8 +429,9 @@ const gateway = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, ke
       if (path === "/genesis") return sendJson(response, 200, { network: "testnet", valueBearing: false, genesisHash, genesis });
       for (const prefix of ["/balance/", "/nonce/", "/account/"]) {
         if (!path.startsWith(prefix)) continue;
-        const address = addressFrom(path, prefix);
-        if (!address) return sendJson(response, 400, { error: "invalid address" });
+        const parsed = addressFrom(path, prefix);
+        if (parsed.error) return sendJson(response, 400, { error: parsed.error });
+        const address = parsed.canonical;
         const [balance, nonce] = await Promise.all([nodeFetch(`/balance/${address}`), nodeFetch(`/nonce/${address}`)]);
         if (balance.status !== 200 || nonce.status !== 200) return sendJson(response, 502, { error: "node unavailable" });
         const status = await chainStatus();
@@ -323,20 +450,28 @@ const gateway = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, ke
         if (!tx || typeof tx !== "object" || Array.isArray(tx)) return sendJson(response, 400, { error: "transaction must be an object" });
         if (tx.kind !== "transfer") return sendJson(response, 400, { error: "only transfer transactions are accepted by this gateway" });
         if (tx.chainId !== chainId) return sendJson(response, 400, { error: `wrong chainId; this testnet is ${chainId}` });
+        const addressError = nonCanonicalTxAddress(tx);
+        if (addressError) return sendJson(response, 400, { error: addressError });
         const submitted = await nodeFetch("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
         if (submitted.status < 200 || submitted.status > 299) return sendJson(response, 400, { error: String(submitted.body?.error ?? "rejected").slice(0, 300) });
         return sendJson(response, 200, { accepted: true, txid: submitted.body.txid, note: "Included in the next block (about 30 seconds)." });
       }
       if (path === "/faucet") {
         const ipRate = limits.faucetIp.take(ip);
+        if (ipRate.allowed) await persistFaucetLimit("ip", ip, limits.faucetIp);
         if (!ipRate.allowed) return limited(response, ipRate);
         const body = await readJsonBody(request);
-        const address = body && typeof body === "object" ? body.address : undefined;
-        if (typeof address !== "string" || !ADDRESS_PATTERN.test(address)) return sendJson(response, 400, { error: "body must be {\"address\":\"ZYN...\"}" });
+        const rawAddress = body && typeof body === "object" ? body.address : undefined;
+        if (typeof rawAddress !== "string") return sendJson(response, 400, { error: "body must be {\"address\":\"ZYN...\"}" });
+        const parsed = canonicalAddress(rawAddress);
+        if (parsed.error) return sendJson(response, 400, { error: parsed.error });
+        const address = parsed.canonical;
         if (address === faucet.address) return sendJson(response, 400, { error: "invalid address" });
         const addressRate = limits.faucetAddress.take(address);
+        if (addressRate.allowed) await persistFaucetLimit("address", address, limits.faucetAddress);
         if (!addressRate.allowed) return limited(response, addressRate);
         const globalRate = limits.faucetGlobal.take("global");
+        if (globalRate.allowed) await persistFaucetLimit("global", "global", limits.faucetGlobal);
         if (!globalRate.allowed) return limited(response, globalRate);
         const result = await faucetSend(address);
         return sendJson(response, 200, { ...result, network: "testnet", valueBearing: false, note: "Test ZYN, no value. Arrives in the next block (about 30 seconds)." });
@@ -352,10 +487,148 @@ const gateway = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, ke
 });
 gateway.maxConnections = 256;
 
+let scannedHeight = 0;
+let scanTimer;
+let scanChain = Promise.resolve();
+
+function scheduleScan() {
+  if (!durable) return Promise.resolve();
+  scanChain = scanChain.then(() => scanIncludedTransactions()).catch((error) => {
+    console.warn(`wallet testnet inclusion scan failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  return scanChain;
+}
+
+async function scanIncludedTransactions(force = false) {
+  if (!durable || (shuttingDown && !force)) return;
+  let from = scannedHeight + 1;
+  for (;;) {
+    if (shuttingDown && !force) return;
+    const res = await nodeFetch(`/blocks?from=${from}&limit=50`);
+    if (res.status !== 200 || !Array.isArray(res.body?.blocks) || res.body.blocks.length === 0) return;
+    for (const block of res.body.blocks) {
+      const height = block?.header?.height;
+      for (const tx of block.transactions ?? []) {
+        if (tx?.kind === "transfer") await durable.insertIncluded(chainId, tx);
+      }
+      if (Number.isSafeInteger(height)) scannedHeight = height;
+    }
+    from = scannedHeight + 1;
+  }
+}
+
+async function waitForNodeReady() {
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (shuttingDown) return false;
+    const res = await nodeFetch("/healthz").catch(() => ({ status: 0 }));
+    if (res.status === 200) return true;
+    await new Promise((done) => setTimeout(done, 200));
+  }
+  return false;
+}
+
+async function replayStoredTransactions(entries) {
+  const pending = entries.map((entry) => entry.tx);
+  const done = new Set();
+  const deadline = Date.now() + 180_000;
+  while (pending.some((tx) => !done.has(tx.txid))) {
+    if (shuttingDown) return done.size;
+    if (Date.now() > deadline) throw new Error(`timed out replaying stored transfers (${done.size} included)`);
+    const confirmed = new Map();
+    const balances = new Map();
+    const reservedSpend = new Map();
+    const batch = [];
+    const queued = new Map();
+    for (const tx of pending) {
+      if (done.has(tx.txid)) continue;
+      let base = confirmed.get(tx.sender);
+      if (base === undefined) {
+        const res = await nodeFetch(`/nonce/${tx.sender}`);
+        if (res.status !== 200) throw new Error("nonce unavailable during restore");
+        base = res.body.nonce;
+        confirmed.set(tx.sender, base);
+      }
+      if (tx.nonce <= base) { done.add(tx.txid); continue; }
+      const tip = queued.get(tx.sender) ?? base;
+      if (tx.nonce !== tip + 1 || tx.nonce > base + 64) continue;
+      // A received drip is not spendable until the block that included it is
+      // confirmed. Submitting the spend in the same batch is rejected.
+      const cost = Number(tx.amountAtoms) + Number(tx.feeAtoms);
+      if (!Number.isSafeInteger(cost) || cost < 0) throw new Error("restore transfer has an invalid amount");
+      let balance = balances.get(tx.sender);
+      if (balance === undefined) {
+        const res = await nodeFetch(`/balance/${tx.sender}`);
+        if (res.status !== 200 || !Number.isSafeInteger(res.body?.balanceAtoms)) throw new Error("balance unavailable during restore");
+        balance = res.body.balanceAtoms;
+        balances.set(tx.sender, balance);
+      }
+      const reserved = reservedSpend.get(tx.sender) ?? 0;
+      if (reserved + cost > balance) continue;
+      batch.push(tx);
+      queued.set(tx.sender, tx.nonce);
+      reservedSpend.set(tx.sender, reserved + cost);
+    }
+    if (batch.length === 0) {
+      await new Promise((doneWait) => setTimeout(doneWait, 1_000));
+      continue;
+    }
+    for (const tx of batch) {
+      const res = await nodeFetch("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
+      const message = String(res.body?.error ?? "");
+      if ((res.status < 200 || res.status > 299) && !/already in mempool/i.test(message)) {
+        throw new Error(`restore submit failed: ${message || res.status}`);
+      }
+    }
+    const batchDeadline = Date.now() + 90_000;
+    const waiting = new Set(batch.map((tx) => tx.txid));
+    while (waiting.size && Date.now() < batchDeadline) {
+      if (shuttingDown) return done.size;
+      for (const tx of batch) {
+        if (!waiting.has(tx.txid)) continue;
+        const res = await nodeFetch(`/nonce/${tx.sender}`);
+        if (res.status === 200 && res.body.nonce >= tx.nonce) waiting.delete(tx.txid);
+      }
+      if (waiting.size) await new Promise((doneWait) => setTimeout(doneWait, 1_000));
+    }
+    if (waiting.size) throw new Error(`restore inclusion timed out for ${waiting.size} transfers`);
+    for (const tx of batch) done.add(tx.txid);
+    await scheduleScan();
+  }
+  return done.size;
+}
+
+async function beginDurableMaintenance() {
+  const ready = await waitForNodeReady();
+  if (!ready || shuttingDown) {
+    if (restoreMode === "replay") console.warn("wallet testnet validator did not become ready; stored transfers were not replayed");
+    restoreReady = true;
+    statusCache = undefined;
+    return;
+  }
+  scanTimer = setInterval(() => { void scheduleScan(); }, 1_000);
+  scanTimer.unref?.();
+  try {
+    if (restoreMode === "replay" && restoreEntries.length > 0) {
+      const included = await replayStoredTransactions(restoreEntries);
+      restoredTxCount = included;
+      restoredAccounts = included === restoreEntries.length ? plannedRestore.restoredAccounts : 0;
+      if (included !== restoreEntries.length) console.warn(`wallet testnet replay included ${included} of ${restoreEntries.length} stored transfers`);
+    }
+  } catch (error) {
+    console.warn(`wallet testnet replay failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    restoreReady = true;
+    statusCache = undefined;
+  }
+}
+
 async function shutdown(reason, exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`Shutting down wallet testnet: ${reason}`);
+  if (scanTimer) clearInterval(scanTimer);
+  await scanIncludedTransactions(true).catch(() => undefined);
   await new Promise((done) => gateway.close(() => done()));
   if (child && child.exitCode === null) {
     const exited = new Promise((done) => child.once("exit", done));
@@ -363,14 +636,16 @@ async function shutdown(reason, exitCode = 0) {
     await Promise.race([exited, new Promise((done) => setTimeout(done, 8_000))]);
     if (child.exitCode === null) child.kill("SIGKILL");
   }
+  if (durable) await durable.close().catch(() => undefined);
   if (!explicitRoot) await rm(root, { recursive: true, force: true });
-  process.exitCode = exitCode;
+  process.exit(exitCode);
 }
 
 startValidator();
 await new Promise((done, reject) => { gateway.once("error", reject); gateway.listen(gatewayPort, "0.0.0.0", () => done()); });
 const port = gateway.address().port;
-console.log(`ZyronChain wallet TESTNET RPC on 0.0.0.0:${port}; chain ${chainId}; genesis ${genesisHash}; faucet ${faucet.address}; stable keys=${Boolean(seedSecret)}; value-bearing=false`);
+console.log(`ZyronChain wallet TESTNET RPC on 0.0.0.0:${port}; chain ${chainId}; genesis ${genesisHash}; faucet ${faucet.address}; stable keys=${Boolean(seedSecret)}; stateDurable=${stateDurable}; restore=${restoreMode}; value-bearing=false`);
+if (durable) void beginDurableMaintenance();
 process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
 process.once("SIGINT", () => { void shutdown("SIGINT"); });
 
@@ -398,6 +673,11 @@ async function smokeTest() {
   assert.equal(status.body.chainId, chainId);
   assert.equal(status.body.valueBearing, false);
   assert.equal(status.headers.get("access-control-allow-origin"), "*");
+  if (!process.env.ZYRON_TESTNET_DATABASE_URL?.trim()) {
+    assert.equal(status.body.stateDurable, false);
+    assert.equal(status.body.restoredTxCount, 0);
+    assert.equal(status.body.restoredAccounts, 0);
+  }
   const preflight = await fetch(`${base}/tx`, { method: "OPTIONS" });
   assert.equal(preflight.status, 204);
   assert.equal((await get("/balance/not-an-address")).status, 400);
@@ -420,17 +700,48 @@ async function smokeTest() {
 
   const alice = account("smoke-alice-" + Date.now());
   const bob = account("smoke-bob-" + Date.now());
-  const drip = await post("/faucet", { address: alice.address });
+  const aliceChecksum = toChecksumAddress(alice.address);
+  const bobChecksum = toChecksumAddress(bob.address);
+  assert.notEqual(aliceChecksum, alice.address, "smoke address must exercise a real checksum");
+  // Published vector (docs/ADDRESS_CHECKSUM.md): one flipped letter is a checksum mismatch, not a new address.
+  const wrongChecksum = "ZYN09c0B2D1A486C439A87bCbA6b46A7a1A23F3897c";
+  assert.throws(() => parseAddressInput(wrongChecksum), /checksum mismatch/);
+  for (const path of [`/account/${wrongChecksum}`, `/balance/${wrongChecksum}`, `/nonce/${wrongChecksum}`]) {
+    const rejected = await get(path);
+    assert.equal(rejected.status, 400, path);
+    assert.match(rejected.body.error, /checksum mismatch/, path);
+  }
+  const wrongFaucet = await post("/faucet", { address: wrongChecksum });
+  assert.equal(wrongFaucet.status, 400);
+  assert.match(wrongFaucet.body.error, /checksum mismatch/);
+  // The daily faucet limit is one drip per canonical address, whatever case the client sent.
+  const drip = await post("/faucet", { address: aliceChecksum });
   assert.equal(drip.status, 200, JSON.stringify(drip.body));
-  assert.equal((await post("/faucet", { address: alice.address })).status, 429, "second drip for one address must be refused");
-  await until("faucet drip", async () => (await get(`/account/${alice.address}`)).body.balanceAtoms === FAUCET_DRIP_ATOMS);
-  const aliceNonce = (await get(`/nonce/${alice.address}`)).body.nonce;
+  assert.equal(drip.body.receiver, alice.address, "faucet response uses the canonical address");
+  assert.equal((await post("/faucet", { address: alice.address })).status, 429, "lowercase form of a checksummed drip must share the address limit");
+  await until("faucet drip", async () => (await get(`/account/${aliceChecksum}`)).body.balanceAtoms === FAUCET_DRIP_ATOMS);
+  const viaChecksum = (await get(`/account/${aliceChecksum}`)).body;
+  const viaLower = (await get(`/account/${alice.address}`)).body;
+  assert.equal(viaChecksum.address, alice.address);
+  assert.deepEqual(viaChecksum, viaLower, "checksummed and lowercase reads return the same canonical account");
+  assert.equal((await get(`/balance/${aliceChecksum}`)).body.address, alice.address);
+  assert.equal((await get(`/balance/${alice.address}`)).body.balanceAtoms, FAUCET_DRIP_ATOMS);
+  const aliceNonce = (await get(`/nonce/${aliceChecksum}`)).body.nonce;
+  assert.equal((await get(`/nonce/${alice.address}`)).body.address, alice.address);
   const st = (await get("/status")).body;
   const tx = createTransfer({ chainId, nonce: aliceNonce + 1, sender: alice.address, receiver: bob.address, amountAtoms: 25 * ATOMS_PER_ZYN, feeAtoms: 0, timestampMs: Date.now() }, alice.privateKey, alice.publicKey, st.transactionVersion);
   assert.equal((await post("/tx", { ...tx, chainId: "zyron-other-testnet" })).status, 400, "wrong chain must be refused");
+  const rewrittenSender = await post("/tx", { ...tx, sender: aliceChecksum });
+  assert.equal(rewrittenSender.status, 400, "checksummed sender must be refused, not rewritten");
+  assert.match(rewrittenSender.body.error, /canonical lowercase/);
+  assert.match(rewrittenSender.body.error, /signature/);
+  const rewrittenReceiver = await post("/tx", { ...tx, receiver: bobChecksum });
+  assert.equal(rewrittenReceiver.status, 400);
+  assert.match(rewrittenReceiver.body.error, new RegExp(bob.address));
   const sent = await post("/tx", tx);
   assert.equal(sent.status, 200, JSON.stringify(sent.body));
-  await until("transfer", async () => (await get(`/account/${bob.address}`)).body.balanceAtoms === 25 * ATOMS_PER_ZYN);
+  await until("transfer", async () => (await get(`/account/${bobChecksum}`)).body.balanceAtoms === 25 * ATOMS_PER_ZYN);
+  assert.equal((await get(`/account/${bobChecksum}`)).body.address, bob.address);
   const after = (await get(`/account/${alice.address}`)).body;
   assert.equal(after.balanceAtoms, 75 * ATOMS_PER_ZYN);
   assert.equal(after.nonce, aliceNonce + 1);

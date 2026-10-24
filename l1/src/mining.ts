@@ -19,6 +19,16 @@ export function assertMiningNotRetired(): void {
 }
 
 /**
+ * EXT-04: explicit, early rejection of the retired `mining_claim` kind. The
+ * state appliers keep a dispatch entry for the kind that only calls this, so a
+ * claim can never reach issuance logic and the observable outcome and message
+ * stay exactly MINING_RETIRED_MESSAGE.
+ */
+export function rejectRetiredMiningClaim(): never {
+  throw new Error(MINING_RETIRED_MESSAGE);
+}
+
+/**
  * Consensus-owned zero-balance account used only as a persistent mining-claim
  * counter. No private key controls this address and ordinary transactions are
  * never allowed to spend from it.

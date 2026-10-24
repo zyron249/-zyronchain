@@ -11,9 +11,9 @@
   <link rel="canonical" href="https://zyronchain.com/hub/" />
   <link rel="icon" href="../favicon-32.png" type="image/png" sizes="32x32" />
   <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
-  <link rel="stylesheet" href="../site.css?v=99006be00a32" />
+  <link rel="stylesheet" href="../site.css?v=7d42555bf97b" />
   <link rel="stylesheet" href="../season.css?v=a334ec2c7fbf" />
-  <link rel="stylesheet" href="./hub.css?v=c3c1a5b16b9c" />
+  <link rel="stylesheet" href="./hub.css?v=9553dd819488" />
 </head>
 <body class="hub">
   <a class="skip-link" href="#hub-main">Skip to content</a>
@@ -62,7 +62,7 @@
             <span class="tag tag-review">Testnet · no value</span>
             <h2>Wallet testnet</h2>
             <p class="hub-live" data-out="overview-rpc" aria-live="polite">Testnet status: checking…</p>
-            <a class="btn btn-quiet" href="#network">Network details</a>
+            <a class="btn btn-quiet" href="../testnet/">Open wallet testnet</a>
           </article>
           <article class="panel">
             <span class="tag tag-pending">Not activated</span>
@@ -82,7 +82,7 @@
           <div class="hub-row"><dt>Show address and QR code</dt><dd><span class="state state-ok">In Phone Wallet</span></dd></div>
           <div class="hub-row"><dt>Sign testnet transfers offline</dt><dd><span class="state state-ok">In Phone Wallet</span></dd></div>
           <div class="hub-row"><dt>Link wallet to the game (signed proof)</dt><dd><span class="state state-ok">Via Telegram game</span></dd></div>
-          <div class="hub-row"><dt>Balance in the Hub</dt><dd><span class="state state-off">Not available</span> <span class="hub-why">Needs a read-only lookup design (Phase 3). The testnet resets, so balances are not durable.</span></dd></div>
+          <div class="hub-row"><dt>Balance in the Hub</dt><dd><span class="state state-off">Not available</span> <span class="hub-why">Needs a read-only lookup design (Phase 3). Wallet-testnet balances stay across a restart only when that service has durable storage. This page does not show them.</span></dd></div>
           <div class="hub-row"><dt>Mainnet ZYN</dt><dd><span class="state state-off">Not available</span> <span class="hub-why">Mainnet is not activated.</span></dd></div>
         </dl>
         <p><a class="btn btn-primary" href="../app/">Open Phone Wallet</a> <a class="btn btn-quiet" href="../wallet.html">Desktop Wallet Setup</a></p>
@@ -132,7 +132,7 @@
         <p class="eyebrow">Network</p>
         <h2 id="h-network">Network state</h2>
         <h3>Wallet testnet (live read)</h3>
-        <p class="hub-note">A single no-value test service for the wallets. It runs on a free host that sleeps when idle and may come back as a fresh chain, so heights and balances can reset. It is not the public testnet.</p>
+        <p class="hub-note">A single no-value test service for the wallets. It runs on a free host that sleeps when idle. Heights start again after a restart. Balances and nonces are kept when durable storage is on, and can still reset if it is off or the network is deliberately reset. It is not the public testnet.</p>
         <dl class="hub-list" data-out="rpc-status" aria-live="polite">
           <div class="hub-row"><dt>Wallet testnet</dt><dd>Checking…</dd></div>
         </dl>
@@ -143,7 +143,7 @@
       <dl class="hub-list">
         <div class="hub-row" data-flag="publicTestnetAuthorized"><dt>Public testnet authorized by governance</dt><dd><span class="state state-ok">Yes</span></dd></div>
         <div class="hub-row" data-flag="publicTestnetActivationAllowed"><dt>Public testnet activation allowed</dt><dd><span class="state state-off">No</span></dd></div>
-        <div class="hub-row" data-flag="mainnetAuthorized"><dt>Mainnet authorized by governance</dt><dd><span class="state state-ok">Yes</span></dd></div>
+        <div class="hub-row" data-flag="mainnetAuthorized"><dt>Mainnet authorized by governance</dt><dd><span class="state state-ok">Yes</span> <strong class="state state-off hub-flag-notice">Mainnet is not live; activation is off</strong></dd></div>
         <div class="hub-row" data-flag="mainnetActivationAllowed"><dt>Mainnet activation allowed</dt><dd><span class="state state-off">No</span></dd></div>
       </dl>
       <details class="hub-details"><summary>Open public testnet requirements (10)</summary>
@@ -228,6 +228,6 @@
     </main>
   </div>
   <script src="../season.js?v=896de07a2bbb"></script>
-  <script src="./hub.js?v=b570b796665d"></script>
+  <script src="./hub.js?v=f176ba9dfab6"></script>
 </body>
 </html>

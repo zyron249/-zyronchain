@@ -47,7 +47,15 @@
     introStep: 0,
     modal: null,
     activityBusy: false,
-    boardBusy: false
+    boardBusy: false,
+    celebration: null,
+    cubeHandle: null,
+    chain: null,
+    chainOpen: false,
+    chainLocal: null,
+    chainResult: null,
+    chainFinishKey: "",
+    chainPending: null
   };
   let chromeKey = "";
 
@@ -151,7 +159,11 @@
     if (!tg || !tg.HapticFeedback) return;
     if (kind === "success" || kind === "error" || kind === "warning") tg.HapticFeedback.notificationOccurred(kind);
     else if (kind === "select") tg.HapticFeedback.selectionChanged();
-    else tg.HapticFeedback.impactOccurred(kind === "heavy" ? "medium" : "light");
+    else tg.HapticFeedback.impactOccurred(kind === "heavy" ? "heavy" : "light");
+  }
+
+  function playFx(kind) {
+    if (window.ZyronPolish) window.ZyronPolish.play(kind);
   }
 
   function formatPoints(value) {
@@ -319,17 +331,27 @@
     state.me = me;
     watchTier();
     state.energyReceivedAt = Date.now();
-    // The rest of the session loads in parallel once the profile is known (one round trip instead of four).
+    // The rest of the session loads in parallel once the profile is known.
     const rest = await Promise.all([
       api("/api/upgrades", { timeoutMs: timeoutMs }),
       api("/api/chests", { timeoutMs: timeoutMs }),
       api("/api/achievements", { timeoutMs: timeoutMs }),
-      api("/api/leaderboard?board=" + encodeURIComponent(state.board), { timeoutMs: timeoutMs })
+      api("/api/leaderboard?board=" + encodeURIComponent(state.board), { timeoutMs: timeoutMs }),
+      api("/api/chain", { timeoutMs: timeoutMs }),
+      api("/api/cipher", { timeoutMs: timeoutMs }),
+      api("/api/events", { timeoutMs: timeoutMs }),
+      api("/api/map", { timeoutMs: timeoutMs }),
+      api("/api/cards", { timeoutMs: timeoutMs })
     ]);
     state.upgrades = rest[0];
     state.chests = rest[1];
     state.achievements = rest[2];
     state.ranks = rest[3];
+    state.chain = rest[4];
+    state.cipher = rest[5];
+    state.events = rest[6];
+    state.map = rest[7];
+    state.cards = rest[8];
     if (!state.introChecked) {
       state.introChecked = true;
       if (!localStorage.getItem("zyronNodeIntro")) state.introStep = 1;
@@ -338,6 +360,11 @@
   }
 
   function render() {
+    if (state.cubeHandle) {
+      state.cubeHandle.stop();
+      state.cubeHandle = null;
+    }
+    if (window.ZyronSky) window.ZyronSky.apply(document);
     clear(root);
     if (!player()) hideMainButton();
     if (state.blocked) {
@@ -503,9 +530,30 @@
     ]);
   }
 
+  function soundToggle() {
+    const muted = window.ZyronPolish ? window.ZyronPolish.isMuted(localStorage) : false;
+    return el("button", {
+      class: "sound-toggle" + (muted ? " is-muted" : ""),
+      type: "button",
+      "aria-pressed": muted ? "true" : "false",
+      "aria-label": muted ? "Sound off" : "Sound on",
+      text: muted ? "Sound off" : "Sound on",
+      onclick: function () {
+        if (!window.ZyronPolish) return;
+        const next = window.ZyronPolish.toggleMuted(localStorage);
+        if (!next) playFx("tap");
+        haptic("select");
+        render();
+      }
+    });
+  }
+
   function header() {
     const bar = shellBrand();
-    bar.append(el("div", { class: "season", text: state.me.season ? state.me.season.name : "Off-season" }));
+    const tools = el("div", { class: "top-tools" });
+    if (window.ZyronPolish) tools.append(soundToggle());
+    tools.append(el("div", { class: "season", text: state.me.season ? state.me.season.name : "Off-season" }));
+    bar.append(tools);
     return bar;
   }
 
@@ -602,11 +650,13 @@
       tierTrack(p)
     ]));
     const visual = el("div", { class: "node-visual " + nodeMode(), "data-node": "1" }, [nodeArt(energy.current), buildersLayer(), chainTrack()]);
+    polishNode(visual);
     const pillClass = "status-pill " + (state.running ? "on" : state.phase === "routing" ? "busy" : "");
     const ticks = el("div", { class: "tick-log", "data-ticks": "1" });
     fillTicks(ticks);
     section.append(el("article", { class: "node-card" }, [
       visual,
+      evolutionPill(),
       el("div", { class: pillClass }, [
         el("i"),
         el("span", { "data-node-status": "1", text: statusText() })
@@ -633,7 +683,328 @@
       chip("Streak", p.streak.count + " days"),
       chip("Network Power", formatPoints(p.networkPower))
     ]));
+    section.append(stackCard());
+    section.append(cipherCard());
+    if (state.events && state.events.active) section.append(eventCard(state.events.active));
+    section.append(mapCard());
     return section;
+  }
+
+  function cipherCard() {
+    const data = state.cipher || {};
+    const card = el("article", { class: "card", "data-cipher": "1" }, [
+      el("h2", { text: "Daily cipher" }),
+      el("p", { class: "cipher-mask", text: data.mask || "— — —" }),
+      el("p", { class: "fine", text: data.solved ? "Solved for today." : "Guess the builder word. The server checks it. " + formatPoints(data.reward || 0) + " Zyron Points." })
+    ]);
+    if (!data.solved) {
+      card.append(el("input", { "data-cipher-guess": "1", maxlength: "12", placeholder: "Your guess" }));
+      card.append(el("button", {
+        class: "primary",
+        text: "Submit guess",
+        disabled: state.busy ? "disabled" : null,
+        onclick: submitCipher
+      }));
+    }
+    return card;
+  }
+
+  function submitCipher() {
+    if (state.busy) return;
+    const field = root.querySelector("[data-cipher-guess]");
+    const guess = field ? field.value : "";
+    state.busy = true;
+    render();
+    api("/api/cipher/answer", { method: "POST", body: { guess: guess, idempotencyKey: key("cipher") } })
+      .then(function (res) {
+        toast(res.correct ? "Cipher solved" : "Not that word", res.correct ? "ok" : "");
+        if (res.correct) playFx("reward");
+        return refresh();
+      })
+      .catch(fail);
+  }
+
+  function eventCard(active) {
+    const monster = active.kind === "bug_monster";
+    const ratio = window.ZyronEvents ? ZyronEvents.barRatio(active) : 0;
+    const bar = el("div", { class: "bar hp-bar" }, [el("i")]);
+    bar.firstChild.style.width = (ratio * 100) + "%";
+    const card = el("article", { class: "card" + (active.defeated ? " is-cleared" : ""), "data-event": active.kind }, [
+      el("h2", { text: active.title }),
+      el("p", { class: "fine", text: monster ? "Shared HP. Every builder's strike counts." : "Stack blocks together until the storm goal is met." }),
+      bar,
+      el("p", { text: monster ? active.hp + " / " + active.maxHp + " HP" : active.progress + " / " + active.goal })
+    ]);
+    if (active.defeated) {
+      const burst = el("div", { class: "event-burst", "data-event-burst": "1" });
+      const sparks = window.ZyronEvents ? ZyronEvents.sparkCount(active) : 0;
+      for (let i = 0; i < sparks; i += 1) {
+        const spark = el("i", { class: "event-spark" });
+        spark.style.setProperty("--deg", String((360 / sparks) * i) + "deg");
+        burst.append(spark);
+      }
+      card.append(burst);
+      card.append(el("div", { class: "event-boom", text: "Cleared" }));
+      if (!active.claimed) {
+        card.append(el("button", { class: "primary", text: "Claim goal", disabled: state.busy ? "disabled" : null, onclick: claimEvent }));
+      }
+    } else {
+      card.append(el("button", { class: "primary", text: "Strike", disabled: state.busy ? "disabled" : null, onclick: strikeEvent }));
+    }
+    return card;
+  }
+
+  function strikeEvent() {
+    if (state.busy) return;
+    state.busy = true;
+    render();
+    api("/api/events/strike", { method: "POST", body: { idempotencyKey: key("strike") } })
+      .then(function (res) {
+        if (res.finisher) playFx("rare");
+        toast(res.finisher ? "Community goal cleared" : "Strike landed", "ok");
+        return refresh();
+      })
+      .catch(fail);
+  }
+
+  function claimEvent() {
+    if (state.busy) return;
+    state.busy = true;
+    render();
+    api("/api/events/claim", { method: "POST", body: { idempotencyKey: key("eclaim") } })
+      .then(function (res) {
+        toast(res.points ? "+" + formatPoints(res.points) + " Zyron Points" : "Goal already claimed", res.points ? "ok" : "");
+        return refresh();
+      })
+      .catch(fail);
+  }
+
+  function mapCard() {
+    const data = state.map || {};
+    const galaxy = data.galaxy || {};
+    const nodes = window.ZyronMap ? ZyronMap.galaxy(galaxy.shown || 0, galaxy.seed || 1) : [];
+    const sky = svgBoard("galaxy");
+    nodes.forEach(function (node, index) {
+      if (index > 0) sky.append(svgLine(nodes[index - 1], node));
+      sky.append(svgDot(node.x, node.y, index % 7 === 0 ? 1.8 : 1.1));
+    });
+    const world = svgBoard("world-map");
+    (data.world || []).forEach(function (dot) {
+      const mark = svgDot(dot.x, dot.y, 3.2 + Math.min(1.4, (dot.builders || 1) / 12));
+      mark.setAttribute("data-country", dot.code);
+      world.append(mark);
+    });
+    const legend = (data.world || []).map(function (dot) { return dot.name + " " + dot.builders; }).join(" · ") || "No countries yet";
+    const yours = data.country || (player() && player().countryCode) || "";
+    const picker = el("select", { "data-country": "1" }, [
+      el("option", { value: "", text: "Hidden" })
+    ]);
+    (data.choices || []).forEach(function (choice) {
+      const option = el("option", { value: choice.code, text: choice.name });
+      if (choice.code === yours) option.selected = true;
+      picker.append(option);
+    });
+    return el("article", { class: "card", "data-map": "1" }, [
+      el("h2", { text: "Your chain" }),
+      el("p", { class: "fine", text: (galaxy.blocks || 0) + " blocks in your galaxy. " + (galaxy.notice || "") }),
+      sky,
+      el("h2", { text: "Builders by country" }),
+      el("p", { class: "fine", text: data.notice || "Country only, and only if you opt in." }),
+      world,
+      el("p", { class: "fine", "data-world-legend": "1", text: legend }),
+      picker,
+      el("button", {
+        class: "primary",
+        text: "Save country",
+        disabled: state.busy ? "disabled" : null,
+        onclick: saveCountry
+      })
+    ]);
+  }
+
+  function svgBoard(className) {
+    const board = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    board.setAttribute("viewBox", "0 0 100 100");
+    board.setAttribute("class", className);
+    board.setAttribute("role", "img");
+    return board;
+  }
+
+  function svgDot(x, y, r) {
+    const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    dot.setAttribute("cx", String(x));
+    dot.setAttribute("cy", String(y));
+    dot.setAttribute("r", String(r));
+    dot.setAttribute("class", "map-dot");
+    return dot;
+  }
+
+  function svgLine(a, b) {
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", String(a.x));
+    line.setAttribute("y1", String(a.y));
+    line.setAttribute("x2", String(b.x));
+    line.setAttribute("y2", String(b.y));
+    line.setAttribute("class", "map-link");
+    return line;
+  }
+
+  function saveCountry() {
+    if (state.busy) return;
+    const field = root.querySelector("[data-country]");
+    const country = field ? field.value : "";
+    state.busy = true;
+    render();
+    api("/api/map/country", { method: "POST", body: { country: country, idempotencyKey: key("country") } })
+      .then(function () {
+        toast("Country saved", "ok");
+        return refresh();
+      })
+      .catch(fail);
+  }
+
+  function stackCard() {
+    const daily = (state.chain && state.chain.daily) || { used: 0, cap: 40 };
+    return el("article", { class: "card", "data-chain-card": "1" }, [
+      el("h2", { text: "Chain Builder" }),
+      el("p", { class: "fine", text: "Drop blocks in blueprint order. " + formatPoints(daily.used) + " / " + formatPoints(daily.cap) + " pts today. The server scores the stack." }),
+      el("button", {
+        class: "primary",
+        text: "Play",
+        disabled: state.busy ? "disabled" : null,
+        onclick: function () {
+          state.chainOpen = true;
+          haptic("select");
+          render();
+        }
+      })
+    ]);
+  }
+
+  function chainBlock(id, ghost, fresh) {
+    return el("div", { class: "drop-block " + id + (ghost ? " is-ghost" : "") + (fresh ? " is-new" : ""), "data-block": id });
+  }
+
+  function chainModal() {
+    const data = state.chain || {};
+    const open = data.open;
+    const sheet = el("div", { class: "sheet chain-sheet", role: "dialog", "aria-modal": "true", "data-chain-game": "1" }, [
+      el("p", { class: "eyebrow", text: "Chain Builder" }),
+      el("h2", { text: "Stack the blueprint" }),
+      el("p", { class: "fine", text: "Drop blocks from bottom to top. Zyron Points only, not ZYN. The server checks the order." })
+    ]);
+    if (state.chainResult && !open) {
+      const gained = state.chainResult.points || 0;
+      sheet.append(el("p", { text: gained ? "+" + formatPoints(gained) + " Zyron Points" : "That stack missed. No points this run." }));
+      sheet.append(el("p", { class: "fine", text: "Correct blocks: " + (state.chainResult.correct || 0) + ". Today's Chain Builder total is capped." }));
+      sheet.append(el("button", { class: "primary", text: "Play again", disabled: state.busy ? "disabled" : null, onclick: startChain }));
+    } else if (!open) {
+      sheet.append(el("button", { class: "primary", text: state.busy ? "Starting…" : "Start stack", disabled: state.busy ? "disabled" : null, onclick: startChain }));
+    } else {
+      if (!state.chainLocal || state.chainLocal.attempt !== open.attempt) {
+        state.chainLocal = { attempt: open.attempt, placed: [] };
+      }
+      const sequence = open.sequence || [];
+      const placed = state.chainLocal.placed;
+      const board = el("div", { class: "chain-board" });
+      const plan = el("div", {}, [el("p", { class: "stack-label", text: "Blueprint" })]);
+      const planStack = el("div", { class: "stack-col", "data-blueprint": "1" });
+      sequence.forEach(function (id) { planStack.append(chainBlock(id, true, false)); });
+      plan.append(planStack);
+      const live = el("div", {}, [el("p", { class: "stack-label", text: "Your stack" })]);
+      const liveStack = el("div", { class: "stack-col", "data-live-stack": "1" });
+      placed.forEach(function (id, index) { liveStack.append(chainBlock(id, false, index === placed.length - 1)); });
+      live.append(liveStack);
+      board.append(plan, live);
+      sheet.append(board);
+      const remain = window.ZyronChain ? window.ZyronChain.tray(sequence, open.attempt) : sequence.slice();
+      placed.forEach(function (id) {
+        const at = remain.indexOf(id);
+        if (at >= 0) remain.splice(at, 1);
+      });
+      const tray = el("div", { class: "chain-tray", "data-tray": "1" });
+      remain.forEach(function (id) {
+        tray.append(el("button", {
+          type: "button",
+          "data-block": id,
+          disabled: state.busy ? "disabled" : null,
+          onclick: function () { dropBlock(id); }
+        }, [chainBlock(id, false, false)]));
+      });
+      sheet.append(tray);
+      if (state.chainPending) {
+        sheet.append(el("button", { class: "primary", text: "Submit stack", disabled: state.busy ? "disabled" : null, onclick: function () { finishChain(state.chainPending); } }));
+      }
+    }
+    sheet.append(el("button", {
+      class: "ghost buy",
+      text: "Close",
+      onclick: function () {
+        state.chainOpen = false;
+        state.chainResult = null;
+        haptic("select");
+        render();
+      }
+    }));
+    return el("div", { class: "modal-back" }, [sheet]);
+  }
+
+  function startChain() {
+    if (state.busy) return;
+    state.busy = true;
+    state.chainResult = null;
+    state.chainLocal = null;
+    state.chainPending = null;
+    render();
+    api("/api/chain/start", { method: "POST", body: { idempotencyKey: key("chain") } })
+      .then(function (res) {
+        state.chain = Object.assign({}, state.chain || {}, {
+          open: { attempt: res.attempt, sequence: res.sequence, startedAt: res.startedAt },
+          daily: res.daily
+        });
+        state.busy = false;
+        render();
+      })
+      .catch(fail);
+  }
+
+  function dropBlock(id) {
+    if (state.busy || !state.chain || !state.chain.open || !state.chainLocal) return;
+    const sequence = state.chain.open.sequence || [];
+    const placed = state.chainLocal.placed;
+    if (placed.length >= sequence.length) return;
+    placed.push(id);
+    haptic("light");
+    const missed = id !== sequence[placed.length - 1];
+    if (missed || placed.length === sequence.length) finishChain(placed.slice());
+    else render();
+  }
+
+  function finishChain(placed) {
+    const open = state.chain && state.chain.open;
+    if (!open || state.busy) return;
+    if (!state.chainFinishKey) state.chainFinishKey = key("chainfin");
+    const started = Date.parse(open.startedAt);
+    const wait = Math.max(0, 2500 - (Date.now() - started));
+    state.busy = true;
+    render();
+    sleep(wait).then(function () {
+      return api("/api/chain/finish", {
+        method: "POST",
+        body: { attempt: open.attempt, placed: placed, idempotencyKey: state.chainFinishKey }
+      });
+    }).then(function (res) {
+      state.chainResult = res;
+      state.chainFinishKey = "";
+      state.chainPending = null;
+      state.busy = false;
+      if (res.points > 0) playFx("reward");
+      toast(res.points > 0 ? "+" + formatPoints(res.points) + " Zyron Points" : "Stack missed. No points.", res.points > 0 ? "ok" : "");
+      return refresh();
+    }).catch(function (error) {
+      state.chainPending = placed.slice();
+      fail(error);
+    });
   }
 
   function chestLists() {
@@ -860,9 +1231,84 @@
       ]));
     }
     wrap.append(head);
+    if (player().wardrobe) wrap.append(wardrobeCard(player().wardrobe));
     (data.tree || []).forEach(function (item) { wrap.append(treeCard(item)); });
     [chestOddsCard(), collectionCard(), nodeView()].forEach(function (node) { if (node) wrap.append(node); });
     return wrap;
+  }
+
+  function wardrobeCard(wardrobe) {
+    const card = el("article", { class: "card", "data-wardrobe": "1" }, [
+      el("h2", { text: "Builder look" }),
+      el("p", { class: "fine", text: "Unlock helmets, pickaxes, colors, and a wolf mask with Zyron Points. Cosmetic only. Nothing here changes rewards." })
+    ]);
+    const grid = el("div", { class: "wardrobe-grid" });
+    (wardrobe.items || []).forEach(function (item) {
+      const row = el("div", { class: "wear-row" }, [
+        el("div", {}, [
+          el("strong", { text: item.title }),
+          el("p", { class: "fine", text: item.owned ? "Unlocked" : item.detail + " · " + formatPoints(item.cost) + " pts" })
+        ])
+      ]);
+      if (!item.owned) {
+        row.append(el("button", {
+          class: "ghost",
+          text: "Unlock",
+          disabled: state.busy ? "disabled" : null,
+          onclick: function () { unlockWearable(item); }
+        }));
+      } else {
+        row.append(el("button", {
+          class: "ghost",
+          text: equipped(wardrobe.loadout, item) ? "Equipped" : "Equip",
+          disabled: state.busy || equipped(wardrobe.loadout, item) ? "disabled" : null,
+          onclick: function () { equipWearable(wardrobe.loadout, item); }
+        }));
+      }
+      grid.append(row);
+    });
+    card.append(grid);
+    return card;
+  }
+
+  function equipped(loadout, item) {
+    loadout = loadout || {};
+    if (item.slot === "mask") return !!loadout.wolfMask;
+    return loadout[item.slot] === item.value;
+  }
+
+  function unlockWearable(item) {
+    if (state.busy) return;
+    state.busy = true;
+    playFx("tap");
+    api("/api/wardrobe/unlock", { method: "POST", body: { item: item.id, idempotencyKey: key("wear") } })
+      .then(function (res) {
+        toast(res.alreadyOwned ? item.title + " is already unlocked" : item.title + " unlocked", "ok");
+        haptic("success");
+        return refresh();
+      })
+      .catch(fail);
+  }
+
+  function equipWearable(loadout, item) {
+    if (state.busy) return;
+    const next = {
+      helmet: (loadout && loadout.helmet) || "stock",
+      pickaxe: (loadout && loadout.pickaxe) || "stock",
+      color: (loadout && loadout.color) || "electric",
+      wolfMask: !!(loadout && loadout.wolfMask)
+    };
+    if (item.slot === "mask") next.wolfMask = true;
+    else next[item.slot] = item.value;
+    state.busy = true;
+    playFx("tap");
+    api("/api/wardrobe/equip", { method: "POST", body: Object.assign({ idempotencyKey: key("equip") }, next) })
+      .then(function () {
+        toast(item.title + " equipped", "ok");
+        haptic("select");
+        return refresh();
+      })
+      .catch(fail);
   }
 
   function treeCard(item) {
@@ -1100,11 +1546,105 @@
         el("strong", { text: reward })
       ]));
     });
+    const chain = (player().streak && player().streak.chain) || { day: 0, length: 7 };
+    const chainRow = el("div", { class: "chain-pips", "data-streak-chain": String(chain.day || 0) });
+    for (let i = 1; i <= (chain.length || 7); i += 1) {
+      chainRow.append(el("i", { class: i <= chain.day ? "on" : "", text: String(i) }));
+    }
     return el("article", { class: "card" }, [
       el("h2", { text: "30-day streak track" }),
       el("p", { class: "fine", text: player().streak.claimedToday ? "Today's supply is collected." : "Today's chest pays " + player().streak.nextReward + " Zyron Points." }),
-      calendar
+      calendar,
+      el("h3", { text: "7-day chain" }),
+      el("p", { class: "fine", text: "Claim the daily chest on consecutive days. The server pays a small chain bonus, once each UTC day." }),
+      chainRow
     ]);
+  }
+
+  function squadPanel() {
+    const squad = (player() && player().squad) || { league: [], yours: null, week: "" };
+    const card = el("article", { class: "card", "data-squad": "1" }, [
+      el("h2", { text: "Weekly squad league" }),
+      el("p", { class: "fine", text: "Builders team up. This week " + (squad.week || "") + " sums Zyron Points. Top three earn a badge. Not ZYN." })
+    ]);
+    const rows = squad.league || [];
+    if (!rows.length) card.append(el("p", { class: "fine", text: "No squads on the board yet." }));
+    rows.forEach(function (row) {
+      card.append(el("div", { class: "rank-row league-row" + (row.badge ? " badge-" + row.badge : ""), "data-badge": row.badge || "none" }, [
+        el("span", { text: "#" + row.rank + " " + row.name + " · " + row.tag }),
+        el("strong", { text: formatPoints(row.score) })
+      ]));
+    });
+    const yours = squad.yours;
+    if (!yours) {
+      card.append(el("input", { "data-squad-name": "1", maxlength: "24", placeholder: "Squad name" }));
+      card.append(el("input", { "data-squad-tag": "1", maxlength: "5", placeholder: "TAG" }));
+      card.append(el("button", {
+        class: "primary",
+        text: "Create squad",
+        disabled: state.busy ? "disabled" : null,
+        onclick: function () {
+          createSquad(root.querySelector("[data-squad-name]").value, root.querySelector("[data-squad-tag]").value);
+        }
+      }));
+      card.append(el("button", {
+        class: "ghost buy",
+        text: "Join with tag",
+        disabled: state.busy ? "disabled" : null,
+        onclick: function () { joinSquad(root.querySelector("[data-squad-tag]").value); }
+      }));
+    } else {
+      card.append(el("p", { text: yours.name + " · " + yours.tag + " · " + (yours.role === "captain" ? "Team captain" : "Member") }));
+      (yours.members || []).forEach(function (member) {
+        card.append(el("div", { class: "rank-row" }, [
+          el("span", { text: member.displayName }),
+          el("span", { text: member.role === "captain" ? "Captain" : "Builder" })
+        ]));
+      });
+      card.append(el("button", {
+        class: "ghost buy",
+        text: "Leave squad",
+        disabled: state.busy ? "disabled" : null,
+        onclick: leaveSquad
+      }));
+    }
+    return card;
+  }
+
+  function createSquad(name, tag) {
+    if (state.busy) return;
+    state.busy = true;
+    render();
+    api("/api/squads", { method: "POST", body: { name: name, tag: tag, idempotencyKey: key("squad") } })
+      .then(function (res) {
+        toast((res.achievementsUnlocked || []).indexOf("team_captain") >= 0 ? "Team captain badge unlocked" : "Squad created", "ok");
+        return refresh();
+      })
+      .catch(fail);
+  }
+
+  function joinSquad(tag) {
+    if (state.busy) return;
+    state.busy = true;
+    render();
+    api("/api/squads/join", { method: "POST", body: { tag: tag, idempotencyKey: key("join") } })
+      .then(function () {
+        toast("Joined the squad", "ok");
+        return refresh();
+      })
+      .catch(fail);
+  }
+
+  function leaveSquad() {
+    if (state.busy) return;
+    state.busy = true;
+    render();
+    api("/api/squads/leave", { method: "POST", body: { idempotencyKey: key("leave") } })
+      .then(function () {
+        toast("Left the squad", "ok");
+        return refresh();
+      })
+      .catch(fail);
   }
 
   function boardView() {
@@ -1117,7 +1657,7 @@
         onclick: function () { loadBoard(item[0]); }
       }));
     });
-    wrap.append(el("h2", { text: "Rank" }), switcher);
+    wrap.append(el("h2", { text: "Rank" }), switcher, squadPanel());
     const profile = player();
     if (profile) wrap.append(tierTrack(profile));
     if (state.boardBusy || !state.ranks) {
@@ -1212,7 +1752,8 @@
   function rankRow(entry) {
     const medalClass = entry.rank <= 3 ? " medal m" + entry.rank : "";
     const top = entry.rank <= 3 ? " top" : "";
-    return el("div", { class: "rank-row" + (entry.you ? " you" : "") + top }, [
+    const podium = window.ZyronPolish ? window.ZyronPolish.podiumClass(entry.rank) : "";
+    return el("div", { class: "rank-row" + (entry.you ? " you" : "") + top + (podium ? " " + podium : "") }, [
       el("div", { class: "who" }, [
         el("div", { class: "medal" + medalClass, text: String(entry.rank) }),
         el("span", { text: entry.displayName + (entry.you ? " · you" : "") + " · Lv " + entry.nodeLevel }),
@@ -1240,6 +1781,7 @@
     wrap.append(referralCard(p));
     wrap.append(walletCard(p));
     wrap.append(achievementCard());
+    wrap.append(shareCards());
     wrap.append(chainCard());
     (state.me.notices || []).forEach(function (notice) {
       wrap.append(el("p", { class: "fine", text: notice }));
@@ -1376,7 +1918,7 @@
       bar.firstChild.style.width = (ratio * 100) + "%";
       card.append(el("div", { class: "rank-row" }, [
         el("div", {}, [
-          el("strong", { text: item.title + (item.unlocked ? " · unlocked" : "") }),
+          el("strong", { class: item.unlocked ? "badge-on" : "", text: item.title + (item.unlocked ? " · unlocked" : "") }),
           el("p", { class: "fine", text: item.description }),
           bar
         ]),
@@ -1384,6 +1926,80 @@
       ]));
     });
     return card;
+  }
+
+  function shareCards() {
+    const card = el("article", { class: "card", "data-share-cards": "1" }, [
+      el("h2", { text: "Share cards" }),
+      el("p", { class: "fine", text: "Earned cards only. Zyron Points stay separate from ZYN." })
+    ]);
+    const items = (state.cards && state.cards.cards) || [];
+    if (!items.length) card.append(el("p", { class: "muted", text: "No cards loaded." }));
+    items.forEach(function (item) {
+      const row = el("div", { class: "rank-row", "data-card": item.id }, [
+        el("strong", { class: item.earned ? "badge-on" : "", text: item.title }),
+        el("span", { text: item.earned ? "Ready" : "Locked" })
+      ]);
+      if (item.earned) {
+        row.append(el("button", {
+          class: "ghost",
+          text: "Open card",
+          onclick: function () { openShareCard(item.id); }
+        }));
+      }
+      card.append(row);
+    });
+    return card;
+  }
+
+  function openShareCard(id) {
+    if (state.busy) return;
+    state.busy = true;
+    api("/api/cards/" + encodeURIComponent(id))
+      .then(function (card) {
+        state.shareCard = card;
+        state.busy = false;
+        render();
+      })
+      .catch(fail);
+  }
+
+  function shareModal() {
+    const card = state.shareCard;
+    const links = window.ZyronCards ? ZyronCards.shareLinks(card) : { telegram: "", x: "" };
+    const canvas = el("canvas", { "data-share-canvas": "1" });
+    const sheet = el("div", { class: "sheet share-sheet", role: "dialog", "aria-modal": "true", "data-share-sheet": "1" }, [
+      el("h2", { text: card.title }),
+      el("p", { class: "fine", text: card.line || "" }),
+      canvas,
+      el("div", { class: "actions" }, [
+        el("button", { class: "primary", text: "Share on Telegram", "data-share": "telegram", onclick: function () { shareTelegram(links.telegram); } }),
+        el("button", { class: "ghost", text: "Share on X", "data-share": "x", onclick: function () { openExternal(links.x); } }),
+        el("button", { class: "ghost", text: "Save image", onclick: function () { saveCardImage(canvas, card.id); } }),
+        el("button", { class: "ghost", text: "Close", onclick: function () { state.shareCard = null; render(); } })
+      ])
+    ]);
+    window.setTimeout(function () {
+      if (window.ZyronCards) ZyronCards.paint(canvas, card);
+    }, 0);
+    return el("div", { class: "modal-back" }, [sheet]);
+  }
+
+  function shareTelegram(url) {
+    if (tg && typeof tg.openTelegramLink === "function") tg.openTelegramLink(url);
+    else openExternal(url);
+  }
+
+  function saveCardImage(canvas, id) {
+    if (!canvas.toBlob) return;
+    canvas.toBlob(function (blob) {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const link = el("a", { href: url, download: (id || "zyron-card") + ".png" });
+      document.body.append(link);
+      link.click();
+      link.remove();
+    });
   }
 
   function chainCard() {
@@ -1448,6 +2064,9 @@
       return;
     }
     if (state.modal) modals.append(chestModal());
+    if (state.celebration) modals.append(levelUpLayer());
+    if (state.chainOpen) modals.append(chainModal());
+    if (state.shareCard) modals.append(shareModal());
     syncChrome();
   }
 
@@ -1480,8 +2099,19 @@
 
   function chestModal() {
     const modal = state.modal;
-    const sheet = el("div", { class: "sheet", role: "dialog", "aria-modal": "true" }, [chestArt(modal.phase === "open")]);
-    if (modal.phase === "sealing") {
+    const ceremony = modal.phase === "ceremony" && window.ZyronPolish
+      ? window.ZyronPolish.chestClass(modal.step, modal.plan)
+      : "";
+    const rareOpen = modal.phase === "open" && modal.plan && modal.plan.gold;
+    const sheet = el("div", {
+      class: "sheet" + ((modal.plan && modal.plan.gold) ? " is-rare" : ""),
+      role: "dialog",
+      "aria-modal": "true"
+    }, [chestArt(modal.phase === "open" || rareOpen, ceremony)]);
+    if (modal.phase === "ceremony") {
+      sheet.append(el("h2", { text: modal.step === "burst" && modal.plan.rare ? "Rare supply" : "Unsealing" }));
+      sheet.append(el("p", { class: "fine", text: "The lock is giving way." }));
+    } else if (modal.phase === "sealing") {
       sheet.append(el("h2", { text: "Unsealing" }), el("p", { class: "fine", text: "Asking the server… " + modal.index + " / " + modal.count }));
     } else if (modal.phase === "error") {
       sheet.append(el("h2", { text: "Still sealed" }), el("p", { class: "error", text: modal.message }), el("button", { class: "primary", text: "Close", onclick: closeModal }));
@@ -1496,6 +2126,9 @@
       );
       const bonus = bonusLine(result);
       if (bonus) sheet.append(bonus);
+      if (result.chain && !result.replayed) {
+        sheet.append(el("p", { class: "fine", "data-streak-chain": "1", text: "7-day chain day " + result.chain.day + " of " + result.chain.length + " · +" + formatPoints(result.chain.points) }));
+      }
       sheet.append(
         el("p", { class: "fine", text: modal.count > 1 ? "Opened " + modal.index + " / " + modal.count + " · this batch +" + formatPoints(modal.total) : "Balance " + formatPoints(result.points) })
       );
@@ -1515,8 +2148,82 @@
 
   function closeModal() {
     state.modal = null;
+    document.documentElement.classList.remove("fx-shake");
     haptic("light");
     refresh().catch(fail);
+  }
+
+  function evolutionPill() {
+    if (!window.ZyronPolish || !player()) return null;
+    const evo = window.ZyronPolish.evolutionFor(player().level);
+    return el("p", { class: "evo-pill evo-" + evo.id, "data-evo-label": "1", text: evo.label + " node" });
+  }
+
+  function polishNode(visual) {
+    if (!visual || !window.ZyronPolish || !player()) return;
+    const level = player().level;
+    const evo = window.ZyronPolish.evolutionFor(level);
+    visual.setAttribute("data-evo", evo.id);
+    visual.setAttribute("data-intensity", String(evo.intensity));
+    visual.style.setProperty("--spark-lap", window.ZyronPolish.orbitSeconds(level) + "s");
+    let sparks = visual.querySelector("[data-sparks]");
+    if (!sparks) {
+      sparks = el("div", { class: "spark-orbit", "data-sparks": "1", "aria-hidden": "true" });
+      visual.append(sparks);
+    }
+    if (sparks.getAttribute("data-level") !== String(level)) {
+      clear(sparks);
+      sparks.append(window.ZyronPolish.buildSparks(svg, level));
+      sparks.setAttribute("data-level", String(level));
+    }
+    mountCube(visual);
+  }
+
+  function mountCube(visual) {
+    if (!visual || !window.ZyronCube || !player()) return;
+    const layers = String(window.ZyronCube.layerCount(player().level));
+    let cube = visual.querySelector("[data-cube]");
+    if (cube && cube.getAttribute("data-layers") === layers && state.cubeHandle) return;
+    if (state.cubeHandle) {
+      state.cubeHandle.stop();
+      state.cubeHandle = null;
+    }
+    if (cube) cube.remove();
+    cube = window.ZyronCube.build(el, player().level);
+    visual.append(cube);
+    state.cubeHandle = window.ZyronCube.attach(cube, player().level, {
+      reduced: window.ZyronPolish ? window.ZyronPolish.prefersReducedMotion() : false
+    });
+  }
+
+  function levelUpLayer() {
+    const plan = state.celebration;
+    const layer = el("div", { class: "levelup", role: "dialog", "aria-modal": "true", "aria-label": "Level up" }, [
+      el("canvas", { class: "confetti-canvas", "data-confetti": "1", width: "390", height: "700" }),
+      el("p", { class: "eyebrow", text: plan.label + " node" }),
+      el("h2", { text: plan.title }),
+      el("p", { text: "Node level " + plan.from + " to " + plan.to }),
+      el("button", {
+        class: "primary",
+        text: "Continue",
+        onclick: function () {
+          if (state.confettiStop) state.confettiStop();
+          state.celebration = null;
+          state.confettiStop = null;
+          haptic("light");
+          render();
+        }
+      })
+    ]);
+    return layer;
+  }
+
+  function startConfetti() {
+    if (!window.ZyronPolish || window.ZyronPolish.prefersReducedMotion()) return;
+    const canvas = modals.querySelector("[data-confetti]");
+    if (!canvas) return;
+    if (state.confettiStop) state.confettiStop();
+    state.confettiStop = window.ZyronPolish.paintConfetti(canvas, false);
   }
 
   // Zyron Points mark: the transparent ZyronChain wolf + Z (tight crop), 1x/2x/3x so it stays crisp on every
@@ -1582,7 +2289,8 @@
     if (!window.ZyronBuilders) return null;
     const owned = (player() && player().cosmetics) || [];
     const cos = owned.map(function (id) { return " cos-" + id.replace(/[^a-z0-9_]/g, ""); }).join("");
-    const layer = el("div", { class: "builders" + cos, "data-builders": "1", "data-builders-state": "idle", role: "img", "aria-label": window.ZyronBuilders.labelFor("idle") }, [window.ZyronBuilders.build(svg)]);
+    const look = window.ZyronWardrobe ? window.ZyronWardrobe.attrs((((player() && player().wardrobe) || {}).loadout)) : {};
+    const layer = el("div", Object.assign({ class: "builders" + cos, "data-builders": "1", "data-builders-state": "idle", role: "img", "aria-label": window.ZyronBuilders.labelFor("idle") }, look), [window.ZyronBuilders.build(svg)]);
     syncBuilders(layer);
     return layer;
   }
@@ -1659,14 +2367,16 @@
     ]);
   }
 
-  function chestArt(open) {
-    return svg("svg", { viewBox: "0 0 120 96", class: "chest-art" + (open ? " is-open" : "") }, [
+  function chestArt(open, extra) {
+    return svg("svg", { viewBox: "0 0 120 96", class: "chest-art" + (open ? " is-open" : "") + (extra ? " " + extra : "") }, [
       svg("g", { class: "lid", transform: open ? "rotate(-22 60 42) translate(0 -8)" : null }, [
         svg("path", { d: "M18 44 V32 Q18 14 60 14 Q102 14 102 32 V44 Z", fill: "#14243d", stroke: "#4fd8fb", "stroke-width": "2" }),
         svg("path", { d: "M30 30 H90", stroke: "rgba(216,220,224,0.35)", "stroke-width": "2", "stroke-linecap": "round" })
       ]),
       svg("rect", { x: "12", y: "42", width: "96", height: "42", rx: "8", fill: "#0b1526", stroke: "#4fd8fb", "stroke-width": "2" }),
       svg("path", { d: "M12 56 H108", stroke: "rgba(79,216,251,0.25)", "stroke-width": "1.5" }),
+      svg("path", { class: "chest-crack", d: "M60 48 L56 58 L64 66 L58 78", fill: "none", stroke: "#f4f7f9", "stroke-width": "1.4", opacity: "0" }),
+      svg("circle", { class: "chest-burst", cx: "60", cy: "50", r: "8", fill: "#4fd8fb", opacity: "0" }),
       svg("circle", { cx: "60", cy: "62", r: "9", fill: "#d8dce0", stroke: "#0a9ff5", "stroke-width": "2" }),
       svg("path", { d: "M60 58v8", stroke: "#02050a", "stroke-width": "2", "stroke-linecap": "round" })
     ]);
@@ -1733,6 +2443,7 @@
     if (visual) {
       visual.classList.remove("is-idle", "is-run", "is-routing", "is-down");
       visual.classList.add(nodeMode());
+      polishNode(visual);
       syncChain(visual.querySelector("[data-chain]"));
       syncBuilders(visual.querySelector("[data-builders]"));
     }
@@ -1807,6 +2518,7 @@
     state.looping = true;
     state.running = true;
     state.phase = "running";
+    playFx("tap");
     state.chainEpoch = Date.now();
     state.sessionPoints = 0;
     state.sessionCycles = 0;
@@ -1915,9 +2627,9 @@
           absorbTier(result);
           floatGain(result.gained || 0);
         }
-        state.modal = { phase: "open", result: result, total: total, index: i + 1, count: ids.length };
-        renderModal();
-        haptic(result.replayed ? "light" : "success");
+        await playChestCeremony(result, total, i + 1, ids.length);
+        const rareChest = window.ZyronPolish && window.ZyronPolish.ceremonyFor(result).rare;
+        haptic(result.replayed ? "light" : (rareChest ? "heavy" : "success"));
         (result.achievementsUnlocked || []).forEach(function (id) { toast(achievementTitle(id) + " unlocked", "ok"); });
         if (i < ids.length - 1) await sleep(700);
       }
@@ -1942,19 +2654,55 @@
     }).catch(fail);
   }
 
+  async function playChestCeremony(result, total, index, count) {
+    const plan = window.ZyronPolish ? window.ZyronPolish.ceremonyFor(result) : { steps: ["reveal"], rare: false, gold: false, shake: false, stepMs: {} };
+    const reduced = window.ZyronPolish ? window.ZyronPolish.prefersReducedMotion() : false;
+    const steps = reduced ? ["reveal"] : plan.steps;
+    for (let s = 0; s < steps.length; s += 1) {
+      const step = steps[s];
+      if (step === "reveal") break;
+      state.modal = { phase: "ceremony", step: step, plan: plan, result: result, total: total, index: index, count: count };
+      renderModal();
+      if (step === "shake" && plan.shake) document.documentElement.classList.add("fx-shake");
+      await sleep(plan.stepMs[step] || 0);
+    }
+    document.documentElement.classList.remove("fx-shake");
+    state.modal = { phase: "open", plan: plan, result: result, total: total, index: index, count: count };
+    renderModal();
+    playFx(plan.rare ? "rare" : "reward");
+  }
+
+  function celebrateLevel(previous, next) {
+    if (!window.ZyronPolish) return false;
+    const plan = window.ZyronPolish.levelUpFrom(previous, next);
+    if (!plan) return false;
+    state.celebration = plan;
+    playFx("level");
+    haptic(window.ZyronPolish.hapticPlan("level"));
+    if (tg && tg.HapticFeedback && typeof tg.HapticFeedback.impactOccurred === "function") {
+      try { tg.HapticFeedback.impactOccurred("heavy"); } catch (err) { /* older Telegram clients */ }
+    }
+    return true;
+  }
+
   function onUpgrade(module) {
     if (state.busy) return;
+    const previousLevel = player() ? player().level : 1;
     state.busy = true;
     state.busyModule = module.id;
     haptic("light");
+    playFx("tap");
     render();
     api("/api/upgrade", { method: "POST", body: { module: module.id, idempotencyKey: key("upgrade") } })
       .then(function (res) {
         absorbTier(res);
         toast(module.title + " installed", "ok");
         haptic("success");
+        const leveled = celebrateLevel(previousLevel, res.nodeLevel);
         (res.achievementsUnlocked || []).forEach(function (id) { toast(achievementTitle(id) + " unlocked", "ok"); });
-        return refresh();
+        return refresh().then(function () {
+          if (leveled) startConfetti();
+        });
       })
       .catch(fail);
   }

@@ -70,6 +70,7 @@
         <a href="./#security">Security</a>
         <a href="./#developers">Developers</a>
         <a href="./#network-status">Network</a>
+        <a href="./testnet/">Testnet</a>
         <a class="nav-wallet" href="./#wallets">Wallet</a>
       </nav>
       <a class="header-source" href="https://github.com/zyron249/-zyronchain" rel="noopener noreferrer">Source</a>
@@ -84,7 +85,7 @@
 
       <h2>1. What the site and its apps collect</h2>
       <ul>
-        <li><strong>No wallet secrets.</strong> No page asks for, receives or stores a recovery phrase, private key, wallet password or keystore. The Phone Wallet keeps <code>connect-src 'none'</code>. The homepage and Desktop Wallet Setup may poll only the documented no-value open-testnet gateway for readiness status.</li>
+        <li><strong>No wallet secrets.</strong> No page asks for, receives or stores a recovery phrase, private key, wallet password or keystore. The Phone Wallet keeps <code>connect-src 'none'</code>. The homepage and Desktop Wallet Setup may poll only the documented no-value open-testnet gateway for readiness status. The header verifier at <a href="./verify/">/verify/</a> reads headers from that same gateway and checks them in the browser. It does not send keys.</li>
         <li><strong>No accounts, analytics, advertising or tracking.</strong> No cookies are set, and no analytics or telemetry scripts are loaded.</li>
         <li><strong>Desktop Wallet Setup and Validator Launchpad</strong> build scripts in your browser. What you type (labels, genesis, peers) stays in the page and is not sent anywhere.</li>
       </ul>
@@ -126,6 +127,7 @@
       <nav class="footer-col" aria-label="Use">
         <strong>Use</strong>
         <a href="./app/">Phone Wallet — Testnet</a>
+        <a href="./testnet/">Wallet testnet</a>
         <a href="./wallet.html">Desktop Wallet Setup</a>
         <a href="./validator.html">Validator Launchpad</a>
         <a href="./#developers">Developers</a>
@@ -140,7 +142,7 @@
     </div>
     <div class="wrap footer-bottom">
       <span>© ZyronChain · Open source · No analytics cookies</span>
-      <span><a href="./privacy.html">Privacy</a> · <a href="./terms.html">Terms</a> · <span class="build" data-site-build>Build c545a6cd</span></span>
+      <span><a href="./privacy.html">Privacy</a> · <a href="./terms.html">Terms</a> · <span class="build" data-site-build>Build d30814fd</span></span>
     </div>
   </footer>
 

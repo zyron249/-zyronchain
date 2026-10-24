@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createBlockAttestation, expectedValidator } from "../src/block.js";
-import { ZyronChain, type ChainSnapshotV1 } from "../src/chain.js";
+import { ZyronChain, type ChainSnapshot, type ChainSnapshotV1 } from "../src/chain.js";
 import { canonicalJson, sha256Hex } from "../src/codec.js";
 import { V6_COMMIT_VOTE_DOMAIN, signV6, votePayload } from "../src/consensus-v6.js";
 import { addressFromPublicKey, publicKeyFromPrivate } from "../src/crypto.js";
@@ -136,7 +136,7 @@ function forgedV6Tips(tip: Block, keys: string[]): Array<[string, Block, RegExp]
   ];
 }
 
-function withTip(snapshot: ChainSnapshotV1, tip: Block): ChainSnapshotV1 {
+function withTip(snapshot: ChainSnapshot, tip: Block): ChainSnapshot {
   return { ...structuredClone(snapshot), tip: structuredClone(tip) };
 }
 

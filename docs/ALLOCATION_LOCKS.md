@@ -17,7 +17,7 @@ A genesis may carry an optional field:
 }
 ```
 
-Without the field, behaviour is unchanged (older genesis files and test networks keep working). When present it is validated fail-closed when the chain is constructed:
+Without the field, behaviour is unchanged for a genesis that omits both a value-bearing class and `launchProfile` (older genesis files and test networks that do not use the profile keep working). `launchProfile: "fixed-supply-v1"` and a value-bearing class must also declare `publicDistributionRelease` so the 20,000,000 ZYN public-distribution allocation cannot be spent in full on day one. The owner-decided default is no cliff and a 365-day linear release ([`PUBLIC_DISTRIBUTION_RELEASE.md`](PUBLIC_DISTRIBUTION_RELEASE.md)). A `networkClass` of `public-launch`, `value-bearing` or `mainnet` is refused at node start unless `launchProfile` is `fixed-supply-v1`, and that profile refuses the genesis unless this field is present, together with at least four distinct validators and `activityOraclePolicy: "threshold-v1"`. See [`GENESIS_NETWORK_CLASS.md`](GENESIS_NETWORK_CLASS.md). When the field is present it is validated fail-closed when the chain is constructed:
 
 - exactly the two keys `founderVesting` and `permanentLiquidity`;
 - both are valid, distinct ZYN addresses;
@@ -104,8 +104,9 @@ Trust assumption: a trusted snapshot or portable state is authoritative for the 
 
 Under `launchProfile: "fixed-supply-v1"` the activity pool (the 5M ZYN
 ecosystem/community allocation) can only be debited by authorized activity
-settlements (m-of-n oracle approval, per-epoch cap and the rolling
-10,000 ZYN / 24 h window). Any other debit signed by the pool key, such as a
+settlements (fail-closed `threshold-v1` oracle attestation, at least 2-of-3,
+per-epoch cap and the rolling window at the configured cap, default 1,000 ZYN
+/ 24 h). Any other debit signed by the pool key, such as a
 plain transfer or a fee-only transfer, is refused by consensus: in mempool admission,
 block production and validation, and both state appliers used for replay.
 Holding the pool key therefore gives no withdrawal path. Genesis files without

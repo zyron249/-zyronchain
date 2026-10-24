@@ -13,19 +13,21 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Zyron Wallet" />
   <meta name="format-detection" content="telephone=no" />
-  <meta name="zyron-build" content="app=4ce51a36df1161e4;release=c545a6cd1e90fe3b7c7d62190bceaa93967e225b" />
+  <meta name="zyron-build" content="app=35e97d2b086f6305;release=d30814fd8ece54a657f6d6df872e2cb67180a960" />
   <title>ZyronChain Wallet (testnet)</title>
-  <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys are generated and encrypted on this device. No public RPC; sign locally, nothing is broadcast." />
+  <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys stay on this device. This app does not connect and does not show a balance. Sign locally." />
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="icon" type="image/png" sizes="192x192" href="/app/icons/icon-192.png" />
+  <link rel="icon" type="image/png" sizes="512x512" href="/app/icons/icon-512.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/app/icons/apple-touch-icon-180.png" />
-  <link rel="stylesheet" href="/app/app.css?v=a5dcb0d66d6f" integrity="sha384-KPzWqQi09UoEoknuc7HFrO9SRJaIkFy83Swaz4YAAOCyodVVHEMiTxbut14wjx9c" />
+  <link rel="stylesheet" href="/app/app.css?v=2c477ce09709" integrity="sha384-b2l40OEVOMvsQ6Wec5fOizcx1Ew8JK8OisE3RkQD3mZkQ5g7lHQbfWb/J6jOwSB5" />
 </head>
 <body>
   <div class="app" id="app">
     <header class="bar">
-      <a class="brand" href="/" aria-label="ZyronChain home"><img src="/app/icons/icon-192.png" alt="" width="32" height="32" /><span>Phone Wallet</span></a>
+      <a class="brand" href="/" aria-label="ZyronChain home"><img src="/app/icons/icon-192.png" alt="" width="32" height="32" /><span>Zyron Wallet</span></a>
       <span class="badge" data-i18n="badge">TESTNET · UNAUDITED</span>
+      <button type="button" class="lock-btn" data-lock hidden data-i18n="lock">Lock</button>
       <span class="chip local" data-local-indicator title="Keys and vault stay on this device"><span aria-hidden="true">●</span> <span data-local-text>Local wallet</span></span>
     </header>
 
@@ -47,23 +49,31 @@
 
     <!-- WELCOME -->
     <section class="screen" data-screen="welcome">
+      <img class="hero-mark" src="/app/icons/icon-192.png" width="72" height="72" alt="" />
       <p class="eyebrow">ZYRONCHAIN · PHONE WALLET — TESTNET</p>
       <h1 data-i18n="welcomeTitle">Create and keep your keys on this device.</h1>
       <p class="lead" data-i18n="welcomeLead">Keys are generated here with the device's secure random generator and stored only as an encrypted vault. No account, no server, no app store.</p>
       <ul class="facts">
         <li data-i18n="fact1">Testnet only and unaudited. Do not use it for real value until an independent review is done.</li>
-        <li data-i18n="fact2">No public RPC yet: no balances and no broadcasting. You can create, back up, show your address and sign transfers locally.</li>
+        <li data-i18n="fact2">This app stays offline: it does not show a balance and it does not broadcast. A no-value testnet RPC exists for the Snap and the CLI. You can create, back up, show your address and sign transfers on this device.</li>
         <li data-i18n="fact3">Same derivation as the ZyronChain MetaMask Snap (m/44'/249249'/0'/0/0): the same recovery phrase gives the same address in both.</li>
       </ul>
       <div class="actions">
         <button class="primary" type="button" data-go="create" data-i18n="create">Create new wallet</button>
         <button type="button" data-go="restore" data-i18n="restoreStart">Restore from recovery phrase</button>
       </div>
+      <details class="danger-zone">
+        <summary data-i18n="importSummary">Import an encrypted vault</summary>
+        <p class="hint" data-i18n="importLead">The file is the password-encrypted vault from this app. It is read on this device and is not uploaded. The recovery phrase is not inside the file.</p>
+        <label><span data-i18n="importFile">Vault file</span><input type="file" data-vault-file accept="application/json,.json" /></label>
+        <p class="hint" data-vault-import-result aria-live="polite"></p>
+      </details>
       <button type="button" class="danger" data-go="delete" data-rejected-delete hidden data-i18n="deleteRejected">Delete the unreadable stored vault</button>
     </section>
 
     <!-- CREATE: PASSWORD -->
     <section class="screen" data-screen="create" hidden>
+      <div class="progress" data-progress="1" aria-hidden="true"><span></span></div>
       <p class="step">Step 1 of 4</p>
       <h2 data-i18n="createTitle">Choose a device password</h2>
       <div class="split-explain">
@@ -85,6 +95,7 @@
 
     <!-- CREATE: PRIVACY BEFORE REVEAL -->
     <section class="screen" data-screen="privacy" hidden>
+      <div class="progress" data-progress="2" aria-hidden="true"><span></span></div>
       <p class="step">Step 2 of 4</p>
       <h2 data-i18n="privacyTitle">Before you reveal your recovery phrase</h2>
       <ul class="privacy-list">
@@ -105,6 +116,7 @@
 
     <!-- CREATE: PHRASE -->
     <section class="screen" data-screen="phrase" hidden>
+      <div class="progress" data-progress="3" aria-hidden="true"><span></span></div>
       <p class="step">Step 3 of 4</p>
       <h2 data-i18n="phraseTitle">Write down your recovery phrase</h2>
       <p class="hint" data-i18n="phraseHint">Words are hidden. Tap a card to reveal it, or press and hold "Hold to reveal all". Words hide again after 20 seconds, or when you leave the app.</p>
@@ -114,7 +126,8 @@
         <button type="button" data-hide-words data-i18n="hideAll">Hide all</button>
       </div>
       <p class="sr-only" id="hold-hint">Keep pressing to show every word. Words hide when you release.</p>
-      <label class="check"><input type="checkbox" data-phrase-ack /> <span data-i18n="phraseAck">I wrote all 12 words on paper, in order.</span></label>
+      <p class="hint" data-phrase-ack-hint data-i18n="phraseAckHint">Reveal every word (tap each card or hold to reveal all) before you confirm.</p>
+      <label class="check"><input type="checkbox" data-phrase-ack disabled /> <span data-i18n="phraseAck">I wrote all 12 words on paper, in order.</span></label>
       <div class="actions">
         <button class="primary" type="button" data-phrase-next disabled data-i18n="continue">Continue</button>
         <button type="button" data-cancel-create data-i18n="cancel">Cancel</button>
@@ -123,6 +136,7 @@
 
     <!-- CREATE: QUIZ -->
     <section class="screen" data-screen="quiz" hidden>
+      <div class="progress" data-progress="4" aria-hidden="true"><span></span></div>
       <p class="step">Step 4 of 4</p>
       <h2 data-i18n="quizTitle">Check your backup</h2>
       <p data-i18n="quizLead">Type the requested words from your paper. The wallet is saved on this device only after this check passes.</p>
@@ -163,6 +177,7 @@
       <p class="hint" data-unlock-result aria-live="polite"></p>
       <div class="actions">
         <button class="primary" type="button" data-unlock-go data-i18n="unlock">Unlock</button>
+        <button type="button" data-vault-export data-i18n="exportVault">Export encrypted vault</button>
       </div>
       <details class="danger-zone">
         <summary data-i18n="forgot">Forgot the password?</summary>
@@ -171,48 +186,137 @@
       </details>
     </section>
 
-    <!-- HOME -->
+    <!-- HOME / RECEIVE -->
     <section class="screen" data-screen="home" hidden>
+      <nav class="dock" aria-label="Wallet">
+        <button type="button" data-go="home" aria-current="page" data-i18n="dockReceive">Receive</button>
+        <button type="button" data-go="send" data-i18n="dockSend">Send</button>
+        <button type="button" data-go="settings" data-i18n="dockSettings">Settings</button>
+      </nav>
+      <div class="banner" data-backup-reminder hidden>
+        <strong data-i18n="backupRemindTitle">Confirm your paper backup</strong>
+        <span data-i18n="backupRemindBody">Optional: a short word check confirms your paper still matches this wallet. The result is not stored, so the check is offered again after each unlock. The phrase is not shown.</span>
+        <button type="button" data-go="backup" data-i18n="backupRemindGo">Check backup</button>
+      </div>
       <p class="notice ok" data-created-note hidden data-i18n="createdNote">Wallet saved. The recovery phrase was removed from the screen and the app's references to it were cleared. JavaScript cannot guarantee that memory is erased, so close the app when you are done.</p>
       <div class="card receive">
-        <div class="row between"><h2 data-i18n="receiveTitle">Your address</h2><button type="button" data-lock data-i18n="lock">Lock</button></div>
+        <h2 data-i18n="receiveTitle">Receive</h2>
+        <p class="eyebrow" data-i18n="receiveKicker">Your address</p>
         <p class="address" data-home-address aria-label="Address, grouped for reading"></p>
         <p class="label-small" data-i18n="rawLabel">Full address (what the chain uses)</p>
         <p class="address-raw" data-home-raw></p>
-        <p class="hint" data-i18n="checksumNote">Upper/lower-case letters above are a display-only checksum, not consensus. The QR code holds the plain lower-case address.</p>
-        <div class="qr" data-qr role="img" aria-label="QR code of your address"></div>
+        <p class="hint" data-i18n="checksumNote">Upper/lower-case letters above are a display-only checksum, not consensus. Copy address copies the lowercase form the chain uses. The QR code holds that same lowercase address.</p>
+        <div class="qr-frame">
+          <div class="qr" data-qr role="img" aria-label="QR code of your address"></div>
+        </div>
+        <p class="hint" data-i18n="receiveEmpty">Show this code to receive test ZYN. Nothing incoming is listed: this app does not connect and does not show a balance.</p>
         <div class="actions">
-          <button class="primary" type="button" data-copy-address data-i18n="copyChecksummed">Copy address</button>
-          <button type="button" data-copy-plain data-i18n="copyPlain">Copy lower-case</button>
+          <button class="primary" type="button" data-copy-address data-i18n="copyAddress">Copy address</button>
+          <button type="button" data-copy-plain data-i18n="copyChecksummed">Copy checksummed</button>
         </div>
         <p class="hint" data-copy-result aria-live="polite"></p>
       </div>
 
-      <div class="card">
-        <h2 data-i18n="balanceTitle">Balance and broadcasting</h2>
-        <dl class="kv">
-          <div><dt>Balance</dt><dd data-balance>Unavailable: no public RPC</dd></div>
-          <div><dt>Broadcast</dt><dd>Unavailable until network activation</dd></div>
-        </dl>
-        <button type="button" disabled data-i18n="broadcastDisabled">Broadcast (disabled: no public RPC)</button>
+      <div class="card" data-signed-hold hidden>
+        <h2 data-i18n="signedHoldTitle">Signed transfer</h2>
+        <p class="hint" data-i18n="signedHoldLead">Still on this screen until you dismiss it. Nothing was broadcast. Locking the app keeps it until you unlock and dismiss it.</p>
+        <p class="hint" data-i18n="nextBody">This transfer is signed but not broadcast. To send it, copy it, open the wallet testnet page, paste it under "Submit a signed transfer" and press Submit.</p>
+        <pre data-signed-hold-json></pre>
+        <div class="actions">
+          <button class="primary" type="button" data-signed-copy data-i18n="copyTx">Copy signed transfer</button>
+          <a class="button" href="/testnet/" target="_blank" rel="noopener noreferrer" data-i18n="openTestnet">Open the wallet testnet page</a>
+          <button type="button" data-signed-dismiss data-i18n="dismissSigned">Dismiss signed transfer</button>
+        </div>
       </div>
 
+      <div class="card" data-balance-card>
+        <h2 data-i18n="balanceTitle">Balance</h2>
+        <p class="notice info" data-balance>Balance isn't shown in this offline app. <a href="/testnet/">Look up an address on the wallet testnet</a>. This page does not connect.</p>
+        <p class="hint" data-test-funds>New wallet with 0 test ZYN? <a href="/testnet/">Get test funds on the wallet testnet page</a> (Request test ZYN). That page connects; this app does not.</p>
+        <dl class="kv">
+          <div><dt>Broadcast</dt><dd>Off. Nothing from this app is sent to a network.</dd></div>
+        </dl>
+        <p class="hint" data-i18n="balanceEmpty">The link opens a separate read-only page. This wallet does not fetch a balance, a nonce or a transaction.</p>
+        <button type="button" disabled data-i18n="broadcastDisabled">Broadcast (off: this app stays offline)</button>
+      </div>
+    </section>
+
+    <!-- SEND -->
+    <section class="screen" data-screen="send" hidden>
+      <nav class="dock" aria-label="Wallet">
+        <button type="button" data-go="home" data-i18n="dockReceive">Receive</button>
+        <button type="button" data-go="send" aria-current="page" data-i18n="dockSend">Send</button>
+        <button type="button" data-go="settings" data-i18n="dockSettings">Settings</button>
+      </nav>
       <div class="card">
         <h2 data-i18n="signTitle">Sign a transfer locally</h2>
-        <p class="hint" data-i18n="signLead">Builds exactly the L1 transfer format. Enter the chain ID and your next nonce by hand from an official announcement; nothing is guessed. Only transfers can be signed.</p>
-        <label><span data-i18n="chainId">Chain ID</span><input data-tx-chain autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="from an official announcement" /></label>
+        <p class="hint" data-i18n="signLead">Builds exactly the L1 transfer format. Only transfers can be signed, and only for a testnet or devnet chain id.</p>
+        <div class="notice info" data-broadcast-steps>
+          <strong data-i18n="stepsTitle">How sending works</strong>
+          <ol class="steps">
+            <li data-i18n="step1">Fill in the form and sign here. This app stays offline, so signing alone sends nothing.</li>
+            <li data-i18n="step2">Copy the signed transfer.</li>
+            <li data-i18n="step3">Open the wallet testnet page, paste it under "Submit a signed transfer" and press Submit.</li>
+          </ol>
+          <a class="button" href="/testnet/" data-i18n="openTestnet">Open the wallet testnet page</a>
+        </div>
+        <p class="hint" data-i18n="chainHint">Chain ID is filled in with the no-value wallet testnet, zyron-wallet-testnet-1. Change it only for another testnet or devnet.</p>
+        <label><span data-i18n="chainId">Chain ID</span><input data-tx-chain autocomplete="off" autocapitalize="none" spellcheck="false" value="zyron-wallet-testnet-1" placeholder="zyron-wallet-testnet-1" /></label>
         <label><span data-i18n="nonce">Next nonce</span><input data-tx-nonce inputmode="numeric" autocomplete="off" placeholder="1" /></label>
+        <p class="hint" data-i18n="nonceHint">The nonce is a counter of how many transfers this address has sent. Your first transfer uses 1, the next one 2, and so on. In other words, use the network's current nonce + 1 (1 for a new account). This app does not look it up: the wallet testnet page shows "Next nonce to sign" when you look up your address.</p>
         <label><span data-i18n="receiver">Receiver address</span><input data-tx-to autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ZYN…" /></label>
         <div class="row two">
           <label><span data-i18n="amount">Amount (ZYN)</span><input data-tx-amount inputmode="decimal" autocomplete="off" placeholder="1.5" /></label>
-          <label><span data-i18n="fee">Fee (ZYN)</span><input data-tx-fee inputmode="decimal" autocomplete="off" value="0" /></label>
+          <label><span data-i18n="fee">Fee (ZYN)</span><input data-tx-fee inputmode="decimal" autocomplete="off" value="0.001" /></label>
         </div>
+        <p class="hint" data-i18n="feeHint">The protocol fee is filled in at 0.001 ZYN (100000 atoms). Review shows the fee and the total before anything is signed. This page does not look up a fee and does not connect to a network.</p>
         <label><span data-i18n="txVersion">Transaction version</span>
-          <select data-tx-version><option value="2" selected>2 (protocol 3+, domain-separated)</option><option value="1">1 (legacy)</option></select></label>
+          <select data-tx-version><option value="1" selected>1 (wallet testnet default)</option><option value="2">2 (other testnet or devnet, protocol 3+)</option></select></label>
+        <p class="hint" data-tx-version-hint>zyron-wallet-testnet-1 runs protocol version 1. The default transaction version is 1. Version 2 is rejected by that network. You can still select version 2 for another test or devnet chain.</p>
         <p class="hint" data-tx-check aria-live="polite"></p>
-        <div class="actions"><button class="primary" type="button" data-tx-review data-i18n="review">Review transfer</button></div>
+        <div class="actions">
+          <button class="primary" type="button" data-tx-review data-i18n="review">Review transfer</button>
+          <button type="button" data-go="home" data-i18n="back">Back</button>
+        </div>
       </div>
+      <div class="card" data-address-book>
+        <h2>Address book</h2>
+        <p class="hint">Saved inside the encrypted vault on this device. Nothing is uploaded.</p>
+        <p class="hint" data-contact-empty>No contacts yet.</p>
+        <ul class="contacts" data-contact-list></ul>
+        <label><span>Name</span><input data-contact-name autocomplete="off" maxlength="64" /></label>
+        <label><span>Address</span><input data-contact-address autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ZYN…" /></label>
+        <div class="actions">
+          <button type="button" data-contact-save>Add contact</button>
+          <button type="button" data-contact-cancel hidden>Cancel edit</button>
+        </div>
+        <p class="hint" data-contact-result aria-live="polite"></p>
+      </div>
+    </section>
 
+    <!-- SETTINGS -->
+    <section class="screen" data-screen="settings" hidden>
+      <nav class="dock" aria-label="Wallet">
+        <button type="button" data-go="home" data-i18n="dockReceive">Receive</button>
+        <button type="button" data-go="send" data-i18n="dockSend">Send</button>
+        <button type="button" data-go="settings" aria-current="page" data-i18n="dockSettings">Settings</button>
+      </nav>
+      <div class="card">
+        <h2 data-i18n="backupRemindTitle">Confirm your paper backup</h2>
+        <p class="hint" data-i18n="backupSettingsLead">A short word check confirms the paper backup for this session. The phrase stays on this device and is not shown.</p>
+        <div class="actions"><button class="primary" type="button" data-go="backup" data-i18n="backupRemindGo">Check backup</button></div>
+      </div>
+      <div class="card" data-threshold-card>
+        <h2>Large-amount warning</h2>
+        <p class="hint">Ask for an extra confirmation when a transfer amount is at or above this many ZYN. Stored inside the encrypted vault on this device. Leave empty and save to turn it off.</p>
+        <label><span>Threshold (ZYN)</span><input data-threshold-input inputmode="decimal" autocomplete="off" placeholder="100" /></label>
+        <p class="hint" data-threshold-current></p>
+        <div class="actions">
+          <button type="button" data-threshold-save>Save threshold</button>
+          <button type="button" data-threshold-clear>Clear</button>
+        </div>
+        <p class="hint" data-threshold-result aria-live="polite"></p>
+      </div>
       <div class="card">
         <h2 data-i18n="convTitle">ZYN ↔ atoms</h2>
         <div class="row two">
@@ -221,17 +325,51 @@
         </div>
         <p class="hint" data-conv-result aria-live="polite">1 ZYN = 100,000,000 atoms</p>
       </div>
-
       <div class="card">
         <h2 data-i18n="securityTitle">Security</h2>
         <ul class="facts">
           <li data-i18n="sec1">Only an encrypted vault is stored on this device (scrypt N=2^17 + AES-256-GCM). The key exists in memory only while unlocked.</li>
           <li data-i18n="sec2">Auto-locks after 5 minutes without activity, or 60 seconds after the app goes to the background.</li>
-          <li data-i18n="sec3">Only your address and signed transfers can be copied; the clipboard is cleared automatically after 60 seconds when the browser allows it.</li>
+          <li data-i18n="sec3">Only your address and a signed transfer can be copied. This app tries to clear the clipboard after 60 seconds and tells you if the browser keeps it.</li>
           <li data-i18n="sec4">iPhone/iPad: the browser may delete site data if storage runs low or the app is removed. Your paper recovery phrase is the only real backup.</li>
         </ul>
         <p class="hint" data-storage-status></p>
-        <button type="button" class="danger" data-go="delete" data-i18n="deleteWallet">Delete wallet</button>
+        <div class="actions">
+          <button type="button" data-vault-export data-i18n="exportVault">Export encrypted vault</button>
+          <button type="button" class="danger" data-go="delete" data-i18n="deleteWallet">Delete wallet</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- BACKUP RE-QUIZ -->
+    <section class="screen" data-screen="backup" hidden>
+      <nav class="dock" aria-label="Wallet">
+        <button type="button" data-go="home" data-i18n="dockReceive">Receive</button>
+        <button type="button" data-go="send" data-i18n="dockSend">Send</button>
+        <button type="button" data-go="settings" data-i18n="dockSettings">Settings</button>
+      </nav>
+      <div class="card">
+        <p class="eyebrow">PAPER BACKUP</p>
+        <h2 data-i18n="backupTitle">Check your recovery words</h2>
+        <div data-backup-unlock-box>
+          <p class="hint" data-i18n="backupLead">Enter the device password. This app opens the vault here, asks for four words from your paper, then wipes those words from memory. Nothing is uploaded.</p>
+          <label><span data-i18n="password">Password</span>
+            <input type="password" data-backup-password autocomplete="current-password" spellcheck="false" autocapitalize="none" /></label>
+          <p class="hint" data-backup-result aria-live="polite"></p>
+          <div class="actions">
+            <button class="primary" type="button" data-backup-open data-i18n="backupOpen">Unlock and start the check</button>
+            <button type="button" data-go="home" data-i18n="back">Back</button>
+          </div>
+        </div>
+        <div data-backup-quiz-box hidden>
+          <p class="hint" data-i18n="backupQuizLead">Type the requested words from your paper. The words are not shown.</p>
+          <div class="quiz" data-backup-quiz></div>
+          <p class="hint" data-backup-quiz-result aria-live="polite"></p>
+          <div class="actions">
+            <button class="primary" type="button" data-backup-check data-i18n="backupCheck">Check words</button>
+            <button type="button" data-backup-cancel data-i18n="cancel">Cancel</button>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -240,6 +378,12 @@
       <h2 data-i18n="reviewTitle">Review transfer</h2>
       <p class="hint" data-i18n="reviewLead">Check every field. Signing happens on this device; nothing is broadcast.</p>
       <dl class="review" data-review-rows></dl>
+      <p class="hint badtext" data-review-fee-warning hidden></p>
+      <div class="notice warn" data-review-warnings hidden>
+        <strong>Check before signing</strong>
+        <ul data-review-warning-list></ul>
+        <label class="check"><input type="checkbox" data-review-warn-ack /> <span>I read these warnings and still want to sign.</span></label>
+      </div>
       <div data-review-confirm-box>
         <label class="check"><input type="checkbox" data-review-ack /> <span data-i18n="reviewAck">I checked the receiver, amount, fee and chain ID.</span></label>
         <div class="actions">
@@ -247,15 +391,20 @@
           <button type="button" data-review-cancel data-i18n="cancel">Cancel</button>
         </div>
       </div>
-      <div class="tx-out" data-tx-out hidden>
+      <div class="tx-out result" data-tx-out hidden>
         <p class="notice ok" data-tx-summary></p>
+        <div class="notice warn" data-tx-next>
+          <strong data-i18n="nextTitle">Not sent yet</strong>
+          <span data-i18n="nextBody">This transfer is signed but not broadcast. To send it, copy it, open the wallet testnet page, paste it under "Submit a signed transfer" and press Submit.</span>
+        </div>
         <pre data-tx-json></pre>
         <div class="actions">
-          <button type="button" data-tx-copy data-i18n="copyTx">Copy signed transfer</button>
+          <button class="primary" type="button" data-tx-copy data-i18n="copyTx">Copy signed transfer</button>
+          <a class="button" href="/testnet/" target="_blank" rel="noopener noreferrer" data-i18n="openTestnet">Open the wallet testnet page</a>
           <button type="button" data-tx-download data-i18n="downloadTx">Download tx.json</button>
         </div>
         <p class="hint" data-tx-copy-result aria-live="polite"></p>
-        <div class="actions"><button class="primary" type="button" data-review-done data-i18n="done">Done</button></div>
+        <div class="actions"><button type="button" data-review-done data-i18n="dismissSigned">Dismiss signed transfer</button></div>
       </div>
       <p class="hint badtext" data-review-error aria-live="polite"></p>
     </section>
@@ -281,11 +430,10 @@
         </div>
       </div>
       <div class="tx-out" data-link-out hidden>
-        <p class="notice ok" data-i18n="linkDone">Signed on this device. Copy the proof code, go back to ZYRON NODE and paste it.</p>
+        <p class="notice ok" data-i18n="linkDone">Signed on this device. Copy the proof code, then switch back to the ZYRON NODE chat you started yourself and paste it there. Never paste it into a chat that messaged you first.</p>
         <pre data-link-proof></pre>
         <div class="actions">
           <button class="primary" type="button" data-link-copy data-i18n="linkCopy">Copy proof code</button>
-          <a class="button" data-link-return href="https://t.me/ZyronNodeBot" rel="noopener noreferrer" data-i18n="linkReturn">Back to Telegram</a>
         </div>
         <p class="hint" data-link-copy-result aria-live="polite"></p>
         <div class="actions"><button type="button" data-link-done data-i18n="done">Done</button></div>
@@ -306,12 +454,47 @@
       </div>
     </section>
 
-    <div class="card">
+    <details class="card install collapsible" data-install>
+      <summary><h2 id="install-title" data-i18n="installTitle">Install on your phone</h2></summary>
+      <p class="hint" data-installed hidden data-i18n="installed">Installed: you are using the home-screen app. Your paper recovery phrase is the only real backup.</p>
+      <div data-install-guide>
+        <p class="notice warn" data-install-wrong-browser hidden>
+          <span data-i18n="wrongBrowserLead">Add to Home Screen is available in Safari only.</span>
+          <span data-install-browser-line> This page is open in <strong data-install-browser-name>this browser</strong>, not Safari. Chrome, Telegram and X on iPhone do not offer Add to Home Screen. Open https://zyronchain.com/app/ in Safari. In Telegram or X, use the browser menu and choose Open in Safari.</span>
+        </p>
+        <p data-install-check data-i18n="installCheck">Before you add it, the Safari address bar must show https://zyronchain.com/app/ exactly. After you add it, that bar is hidden.</p>
+        <p class="hint" data-install-ios-only hidden data-i18n="iosNoButton">iPhone does not show an Install button on this page. Use the Share sheet.</p>
+        <button class="primary" type="button" data-install-button hidden data-i18n="installNow">Install app</button>
+        <div class="install-steps">
+          <div data-platform="ios">
+            <h3>iPhone / iPad (Safari)</h3>
+            <ol>
+              <li data-i18n="ios1">Open zyronchain.com/app/ in Safari, not in Chrome, Telegram or X.</li>
+              <li data-i18n="ios2">Confirm the address bar is https://zyronchain.com/app/ and you are not in a private tab. Private browsing hides Add to Home Screen.</li>
+              <li data-i18n="ios3">Tap Share (square with an arrow). Scroll the actions if needed, then choose Add to Home Screen. It may sit under More.</li>
+              <li data-i18n="ios4">Tap Add. The paper recovery phrase is the only real backup if this phone later deletes website data.</li>
+            </ol>
+          </div>
+          <div data-platform="android">
+            <h3>Android (Chrome)</h3>
+            <ol>
+              <li data-i18n="and1">Open zyronchain.com/app/ in Chrome.</li>
+              <li data-i18n="and2">Tap Install app above, or the menu, then Install app or Add to Home screen.</li>
+              <li data-i18n="and3">Confirm. The app opens full screen and works offline. Your paper recovery phrase is the only real backup.</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <details class="card collapsible" data-network-details>
+      <summary><h2 data-i18n="nsSummary">Network status and links</h2></summary>
+      <p class="hint" data-i18n="nsPlain">In short: this is a no-value testnet. Mainnet is not live, there is no token sale and mining is retired.</p>
       <!-- BEGIN NETWORK STATUS (generated by tools/site/network-status.mjs; edit the script, not this block) -->
       <section class="netstatus" id="network-status" aria-labelledby="network-status-title" data-network-status>
         <div class="ns-head">
           <h2 id="network-status-title">Network status</h2>
-          <p class="ns-sub">Repository facts below are static. A progressive script may poll the documented open-testnet gateway <code>/readyz</code> (no-value only). This page does not claim that mainnet exists or that trading is enabled.</p>
+          <p class="ns-sub">Repository facts below are static. This phone wallet does not poll any network. This page does not claim that mainnet exists or that trading is enabled.</p>
         </div>
         <table class="ns-table">
           <caption class="sr-only">ZyronChain network capabilities as of this build</caption>
@@ -322,46 +505,21 @@
             <tr data-ns-row="explorer"><th scope="row">Explorer</th><td><span class="ns-state ns-gov"><span aria-hidden="true">◐</span> Open testnet page</span><span class="ns-note">Explorer and faucet live on the same no-value gateway. Formal activation remains gated.</span></td></tr>
             <tr data-ns-row="wallet-creation"><th scope="row">Wallet creation</th><td><span class="ns-state ns-on"><span aria-hidden="true">✓</span> Available locally</span><span class="ns-note">Keys are created on your own device.</span></td></tr>
             <tr data-ns-row="offline-signing"><th scope="row">Offline signing</th><td><span class="ns-state ns-on"><span aria-hidden="true">✓</span> Available</span><span class="ns-note">Can sign ≠ can broadcast to mainnet.</span></td></tr>
-            <tr data-ns-row="broadcasting"><th scope="row">Broadcasting</th><td><span class="ns-state ns-gov"><span aria-hidden="true">◐</span> Testnet transfers only</span><span class="ns-note">Signed transfers may be submitted to the open no-value gateway only. Mainnet broadcasting remains unavailable.</span></td></tr>
+            <tr data-ns-row="broadcasting"><th scope="row">Broadcasting</th><td><span class="ns-state ns-gov"><span aria-hidden="true">◐</span> Testnet transfers only</span><span class="ns-note">This phone app does not submit transfers. The Snap and the CLI can submit no-value test transfers on their own. Mainnet broadcasting remains unavailable.</span></td></tr>
             <tr data-ns-row="mining"><th scope="row">Mining</th><td><span class="ns-state ns-retired"><span aria-hidden="true">—</span> Retired</span><span class="ns-note">Shut down on 2026-09-30. Do not run miner software.</span></td></tr>
             <tr data-ns-row="token-sale"><th scope="row">Token sale</th><td><span class="ns-state ns-none"><span aria-hidden="true">—</span> None</span><span class="ns-note">No sale, no price, no market.</span></td></tr>
           </tbody>
         </table>
         <div class="ns-live" data-ns-live aria-live="polite">
-          <p class="ns-live-label">Open-testnet readiness probe</p>
+          <p class="ns-live-label">Open-testnet link</p>
           <p class="ns-live-endpoint">Gateway: <a href="https://zyron-open-testnet.onrender.com" rel="noopener noreferrer">https://zyron-open-testnet.onrender.com</a> (Render free plan; may sleep when idle)</p>
-          <p class="ns-live-state" data-ns-live-state>Enable JavaScript to refresh <code>/readyz</code>, or open the gateway link.</p>
+          <p class="ns-live-state" data-ns-live-state>This phone wallet does not connect, so it does not refresh <code>/readyz</code>. Open the gateway link to check the no-value open testnet.</p>
           <p class="ns-live-detail" data-ns-live-detail></p>
         </div>
-        <p class="ns-foot">Source: docs/l1-launch-authorization.json (publicTestnetActivationAllowed=false, mainnetActivationAllowed=false) and docs/OPEN_TESTNET.md.</p>
+        <p class="ns-foot">Source: docs/l1-launch-authorization.json (formal public testnet and mainnet activation: not allowed yet) and docs/OPEN_TESTNET.md.</p>
       </section>
       <!-- END NETWORK STATUS -->
-    </div>
-
-    <!-- INSTALL -->
-    <section class="card install" data-install aria-labelledby="install-title">
-      <h2 id="install-title" data-i18n="installTitle">Install on phone</h2>
-      <p class="hint" data-installed hidden data-i18n="installed">Installed: you are using the home-screen app.</p>
-      <button class="primary" type="button" data-install-button hidden data-i18n="installNow">Install app</button>
-      <div class="install-steps">
-        <div data-platform="ios">
-          <h3>iPhone / iPad (Safari)</h3>
-          <ol>
-            <li data-i18n="ios1">Open zyronchain.com/app/ in Safari.</li>
-            <li data-i18n="ios2">Tap Share (square with an arrow).</li>
-            <li data-i18n="ios3">Choose "Add to Home Screen", then "Add".</li>
-          </ol>
-        </div>
-        <div data-platform="android">
-          <h3>Android (Chrome)</h3>
-          <ol>
-            <li data-i18n="and1">Open zyronchain.com/app/ in Chrome.</li>
-            <li data-i18n="and2">Tap "Install app" above, or ⋮ menu → "Install app" / "Add to Home screen".</li>
-            <li data-i18n="and3">Confirm. The app opens full-screen and works offline.</li>
-          </ol>
-        </div>
-      </div>
-    </section>
+    </details>
 
     <footer class="foot">
       <p data-i18n="foot">Open source, served only from zyronchain.com with pinned, integrity-checked libraries (@noble/curves, @noble/hashes, @scure/bip39, @scure/bip32, qr). Unaudited testnet software.</p>
@@ -373,7 +531,7 @@
   </div>
   <script src="/app/vendor/noble-scure.js?v=8bc52c47d762" integrity="sha384-8rRjvBX0v19QY1jV/tt980903+713cFYFQwMvCGJR+dGfUXeXlHhGh1Ommt20XpE"></script>
   <script src="/app/vendor/qr.js?v=df7e5ee0f9db" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
-  <script src="/app/zyron-wallet-core.js?v=cbd30fccb01e" integrity="sha384-WbWqxJS7Av62pZPmCgd0E5fS2d3ZYnNm+VwHvZ8IiGTSyocZvE9gOD261825+H2u"></script>
-  <script src="/app/app.js?v=3858be2cd80c" integrity="sha384-1b18kpOgy4HSSwljuT0xpLHaM5eh6wqCa7E9UdaX9oa3HcttLp6c3olgeeQYHYFv"></script>
+  <script src="/app/zyron-wallet-core.js?v=86ec8474477c" integrity="sha384-Vn8O6/edLhLwN3AH0R2bjJcUALSqGKXEphI//Wh5uzuXU3CRIgotneSbqdpnqUJ5"></script>
+  <script src="/app/app.js?v=2a533c96b60c" integrity="sha384-j+idm4+xEuo55L0o1E0g0b7TqVvnN+igQYf0J4/JQG+GE1ss5+bc6P3j1no2nCX/"></script>
 </body>
 </html>

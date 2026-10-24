@@ -47,9 +47,11 @@ Protocol v5 introduced permissionless proof-of-work mining claims (retired 2026-
 
 The chain stores a consensus-owned global mining-claim counter at the reserved zero-balance account `ZYN0000000000000000000000000000000000000000`. The account cannot be funded, spent, mined from, used as the activity pool or receive a genesis allocation. Its nonce tracks finalized mining claims and makes historical issuance independent of current spendable balances.
 
-Transfers debit `amount + fee`, credit only `amount`, and currently burn the fee. Burned ZYN remains permanently burned: fee destruction does not reopen mining headroom. Proof-of-Activity settlement cannot mint; it can distribute only atoms already assigned to its activity pool.
+Transfers debit `amount + fee` and credit `amount` to the receiver. On every shipped genesis the whole fee is burned. Burned ZYN remains permanently burned: fee destruction does not reopen mining headroom. Proof-of-Activity settlement cannot mint; it can distribute only atoms already assigned to its activity pool.
 
-The mainnet launch profile still must freeze the exact genesis, mining calibration/difficulty policy, validator compensation and any future fee/reward policy before value-bearing activation.
+Fee policy v1 (`fixed-fee-v1`, [`docs/FEE_POLICY_V1.md`](docs/FEE_POLICY_V1.md)) is implemented and **not activated**. A genesis opts in with `feePolicy` on `launchProfile: "fixed-supply-v1"`. The single parameter is `fixedTransferFeeAtoms`. The proposed default is 0.001 ZYN (100,000 atoms). A transfer whose fee is not that constant is rejected at shape validation, mempool admission, and block validation. Half of the fee, rounded down, is credited to the block producer. The remainder, including an odd atom, is burned. Sum of balances plus burned fees stays equal to the genesis supply. No path mints. Genesis files that omit `feePolicy`, including current testnets, keep the full burn and accept the fees already on their blocks. Block selection under the policy is arrival and nonce order. Replacement by a higher fee is disabled. Activation flags stay false.
+
+The mainnet launch profile still must freeze the exact genesis, validator compensation, and whether to set `feePolicy` before value-bearing activation. Mining stays retired.
 
 ## 4. Accounts and transactions
 
@@ -65,7 +67,7 @@ Accounts use addresses derived from secp256k1 public keys. Transactions bind:
 
 Protocol v3 and later domain-separated transaction formats use fixed signing domains so a signature authorized for one transaction, governance action or consensus intent cannot be replayed as another. Protocol v5 adds the `mining_claim` transaction kind, which is version-2 signed and carries a tip-bound proof-of-work solution plus the deterministic protocol reward.
 
-The mempool bounds capacity, serialized bytes, sender nonce windows and conflicts. Admission reserves pending sender balance where applicable and block selection respects nonce order and the transaction-byte budget. Mining claims are retired and are rejected outright at shape validation, mempool admission and block validation (historically they were revalidated against the current finalized tip and issuance counter). Local fee and replacement policy must not silently become a consensus rule.
+The mempool bounds capacity, serialized bytes, sender nonce windows and conflicts. A sender may have at most 64 pending transactions. A block may carry at most 10,000 transactions, 2,000,000 bytes, and 1,500,000 bytes of transactions. Admission reserves pending sender balance where applicable. On chains that have not opted into fee policy v1, block selection may still prefer a higher fee and a higher fee may replace the same nonce. That local policy is not a consensus rule. On a genesis that sets `feePolicy`, the fixed fee is the consensus rule, selection keeps arrival and nonce order, and replacement by fee is disabled. Mining claims are retired and are rejected outright at shape validation, mempool admission and block validation (historically they were revalidated against the current finalized tip and issuance counter).
 
 ## 5. Blocks and execution
 
@@ -155,7 +157,7 @@ The standalone miner in `l1/scripts/mine.mjs` decrypts a local ZyronChain keysto
 
 ## 10. Proof of Activity
 
-Activity settlement uses oracle-signed receipt-root batches. A settlement can spend only the prefunded activity pool and cannot increase total supply. Consensus caps each settlement at 10,000 ZYN and allows only the most recently closed 24-hour epoch to be settled, once and in increasing epoch order, so one oracle key can move at most 10,000 ZYN per day (see `docs/ACTIVITY_ORACLE_CAP.md`).
+Activity settlement uses oracle-signed receipt-root batches. A settlement can spend only the prefunded activity pool and cannot increase total supply. Consensus allows only the most recently closed 24-hour epoch to be settled, once and in increasing epoch order, and caps each settlement. A public-launch genesis (`launchProfile: "fixed-supply-v1"`) must use `activityOraclePolicy: "threshold-v1"`: a settlement needs an m-of-n oracle attestation (at least 2-of-3), and at most 1,000 ZYN can be settled per epoch and inside any rolling 24-hour window by default (configurable only downward). A genesis without an oracle policy keeps the historical ceiling of 10,000 ZYN per settlement, which only development and test chains use (see `docs/ACTIVITY_ORACLE_CAP.md` and `docs/ACTIVITY_ORACLE_GOVERNANCE.md`).
 
 Before public-testnet activation, either:
 

@@ -66,6 +66,11 @@ export class PeerReputationStore {
     return this.entries.size < MAX_STORED_PEERS;
   }
 
+  /** Read-only: when this peer's failure backoff ends (0 when it is not backed off or not tracked). */
+  backoffUntil(endpoint: string): number {
+    return this.entries.get(normalizeEndpoint(endpoint))?.backoffUntilMs ?? 0;
+  }
+
   failureCount(endpoint: string): number {
     return this.entries.get(normalizeEndpoint(endpoint))?.consecutiveFailures ?? 0;
   }

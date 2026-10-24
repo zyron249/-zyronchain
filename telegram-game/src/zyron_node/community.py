@@ -644,6 +644,33 @@ def rights_report(token: str, community_chat: str, call) -> dict:
 
 # ---------------------------------------------------------------------------- loop
 
+def post_cipher_hint(pool, settings, now: datetime, call, *, force: bool = False) -> dict:
+    """Post today's cipher mask once. The answer itself is never sent to the chat."""
+    from zyron_node.cipher import hint_text, word_for
+
+    period = now.date().isoformat()
+    del force  # the daily claim row is the only gate; the mask is safe to post any hour
+    with pool.connection() as conn:
+        if not claim_post(conn, "cipher_hint", period, now):
+            return {"posted": False, "reason": "already_done", "period": period}
+    text = hint_text(now.date())
+    if word_for(now.date()) in text:
+        text = "ZYRON NODE cipher is live in the game. Zyron Points only, not ZYN."
+    token = settings.telegram_bot_token
+    chat = settings.community_chat
+    try:
+        body = call(token, "sendMessage", {"chat_id": chat, "text": text, "disable_web_page_preview": True})
+        message = (body or {}).get("result") or {}
+        message_id = message.get("message_id")
+    except Exception as exc:  # noqa: BLE001 — record the failure and let the next tick retry after a new claim window
+        with pool.connection() as conn:
+            finish_post(conn, "cipher_hint", period, "failed", None, {"error": _err(exc)})
+        return {"posted": False, "reason": "send_failed", "period": period}
+    with pool.connection() as conn:
+        finish_post(conn, "cipher_hint", period, "posted", int(message_id) if message_id else None, {"mask": True})
+    return {"posted": True, "period": period}
+
+
 def community_tick(pool, settings, now: datetime, call) -> dict:
     token = settings.telegram_bot_token
     result = {"deleted": delete_due_welcomes(pool, token, now, call)}
@@ -654,6 +681,7 @@ def community_tick(pool, settings, now: datetime, call) -> dict:
             if settings.community_posts_enabled:
                 result["leaderboard"] = post_leaderboard(pool, settings, now, call)
                 result["quiz"] = post_quiz(pool, settings, now, call)
+                result["cipher"] = post_cipher_hint(pool, settings, now, call)
             result["stoppedPolls"] = stop_expired_quizzes(pool, token, now, call)
         finally:
             lock_conn.execute("SELECT pg_advisory_unlock(%s)", (LOCK_KEY,))

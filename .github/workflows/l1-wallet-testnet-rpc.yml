@@ -9,10 +9,31 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   wallet-testnet-rpc-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+        env:
+          POSTGRES_USER: zyron_testnet
+          POSTGRES_PASSWORD: zyron_testnet
+          POSTGRES_DB: zyron_wallet_testnet
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zyron_testnet -d zyron_wallet_testnet"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # Separate role and database from the game CI database.
+      ZYRON_TESTNET_DATABASE_URL: postgresql://zyron_testnet:zyron_testnet@127.0.0.1:5432/zyron_wallet_testnet
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,3 +53,7 @@ jobs:
         run: npm run build
       - name: Faucet, transfer, CORS and endpoint allowlist smoke
         run: node l1/scripts/public-testnet-rpc.mjs --smoke
+        env:
+          ZYRON_TESTNET_DATABASE_URL: ""
+      - name: Durable restart simulation
+        run: node l1/scripts/test-wallet-testnet-durable.mjs

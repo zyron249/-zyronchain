@@ -8,12 +8,13 @@
 // isolation, mobile layouts (360/390/414) and frame blocking.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { chromium } from 'playwright-core';
+import { vaultSecretLeaks } from './vault-leaks.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..', '..');
@@ -38,7 +39,7 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; ch
 const PROD_HEADERS = {
   'Content-Security-Policy': "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
   'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
-  'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), interest-cohort=()',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), interest-cohort=()',
   // Recommended (docs/WEBSITE_SECURITY_HEADERS.md); served here so the whole suite proves the wallet works with it.
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cache-Control': 'public, max-age=0, s-maxage=300'
@@ -114,6 +115,7 @@ async function createWallet(page, { snapshot = false } = {}) {
   assert.ok((await page.$$eval('[data-phrase-words] [aria-label]', (b) => b.map((x) => x.getAttribute('aria-label')))).every((l) => /^Word \d+ of 12, hidden\./.test(l)), 'screen readers hear "hidden" with the word number');
   assert.equal(await page.$('[data-copy-phrase]'), null, 'no copy-phrase button');
   if (snapshot) await shot(page, '3b-phrase-hidden');
+  assert.equal(await page.isDisabled('[data-phrase-ack]'), true, 'paper confirmation needs every word revealed first');
   // tap-to-reveal each card, collecting the words
   const words = [];
   for (let i = 0; i < 12; i += 1) {
@@ -129,6 +131,7 @@ async function createWallet(page, { snapshot = false } = {}) {
   assert.deepEqual(await visibleWords(), Array(12).fill('•••••'), 'blur hides all words');
   // hold-to-reveal-all shows words only while pressed
   const hold = await page.$('[data-hold-reveal]');
+  await hold.scrollIntoViewIfNeeded();
   const box = await hold.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
@@ -140,6 +143,7 @@ async function createWallet(page, { snapshot = false } = {}) {
   assert.equal(await page.textContent('[data-word-index="0"] .word-text'), words[0]);
   await page.waitForFunction(() => document.querySelector('[data-word-index="0"] .word-text').textContent === '•••••', null, { timeout: 25000 });
   assert.equal(await page.isDisabled('[data-phrase-next]'), true, 'cannot continue before acknowledging');
+  assert.equal(await page.isDisabled('[data-phrase-ack]'), false, 'all words were revealed, so the paper confirmation is enabled');
   await page.check('[data-phrase-ack]');
   await page.click('[data-phrase-next]');
   assert.equal(await page.$$eval('[data-phrase-words] li', (l) => l.length), 0, 'words leave the DOM during the quiz');
@@ -158,6 +162,18 @@ async function createWallet(page, { snapshot = false } = {}) {
   assert.equal(await page.isVisible('[data-created-note]'), true);
   assert.equal(await page.$$eval('[data-phrase-words] li, [data-quiz] input', (l) => l.length), 0, 'phrase cards and check inputs are gone after saving');
   return words;
+}
+async function readMetaRecords(page) {
+  return page.evaluate(() => new Promise((resolveRecord, reject) => {
+    const q = indexedDB.open('zyron-wallet-app');
+    q.onerror = () => reject(q.error);
+    q.onsuccess = () => {
+      const db = q.result;
+      if (!db.objectStoreNames.contains('meta')) { db.close(); resolveRecord({}); return; }
+      const out = {}; const st = db.transaction('meta').objectStore('meta'); const c = st.openCursor();
+      c.onsuccess = () => { const cur = c.result; if (cur) { out[cur.key] = cur.value; cur.continue(); } else { db.close(); resolveRecord(out); } };
+    };
+  }));
 }
 async function readVaultRecord(page) {
   return page.evaluate(() => new Promise((resolveRecord, reject) => {
@@ -197,6 +213,20 @@ try {
       rmSync(profile, { recursive: true, force: true });
     }
     assert.ok(await page.isVisible('[data-platform="android"]'));
+    assert.equal(await page.isVisible('[data-install-wrong-browser]'), false, 'Chrome on Android is not the iOS in-app warning');
+    const installBeforeStatus = await page.evaluate(() => {
+      const install = document.querySelector('[data-install]');
+      const status = document.querySelector('[data-network-status]');
+      return Boolean(install && status && install.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+    assert.equal(installBeforeStatus, true, 'install guidance is above the network status table');
+    const balanceCard = await page.textContent('[data-balance-card]');
+    assert.match(balanceCard, /Balance isn't shown in this offline app/);
+    assert.match(balanceCard, /does not connect/);
+    assert.doesNotMatch(balanceCard, /--|Not shown|\d+(?:\.\d+)?\s*ZYN/, 'no balance number or placeholder');
+    assert.equal(await page.getAttribute('[data-balance] a', 'href'), '/testnet/');
+    assert.equal(await page.getAttribute('[data-test-funds] a', 'href'), '/testnet/', 'test-funds link points to the testnet faucet page');
+    assert.match(await page.textContent('[data-test-funds]'), /Get test funds/);
     assert.ok(await noHorizontalScroll(page));
     await page.locator('[data-install]').scrollIntoViewIfNeeded();
     await shot(page, '1-install-instructions');
@@ -220,7 +250,7 @@ try {
     const shellKeys = Object.keys(JSON.parse(sw.match(/const ASSETS = (\{[\s\S]*?\});/)[1])).map((k) => '/app/' + k.slice(2)).sort();
     if (!live) assert.deepEqual(cachedUrls, shellKeys, 'cache holds exactly the stamped shell URLs');
     for (const file of ['app.js', 'app.css', 'zyron-wallet-core.js', 'vendor/noble-scure.js', 'vendor/qr.js']) assert.ok(cachedUrls.some((u) => new RegExp(`^/app/${file.replace('.', '\\.')}\\?v=[0-9a-f]{12}$`).test(u)), `${file} cached under its versioned URL`);
-    assert.deepEqual(cached[names[0]].filter((p) => !/\.(js|css)$/.test(p)), ['/app/icons/apple-touch-icon-180.png', '/app/icons/icon-192.png', '/app/icons/maskable-192.png', '/app/index.html', '/app/manifest.json'].sort());
+    assert.deepEqual(cached[names[0]].filter((p) => !/\.(js|css)$/.test(p)), ['/app/icons/apple-touch-icon-180.png', '/app/icons/icon-192.png', '/app/icons/icon-512.png', '/app/icons/maskable-192.png', '/app/icons/maskable-512.png', '/app/index.html', '/app/manifest.json'].sort());
     await context.setOffline(true);
     await page.reload({ waitUntil: 'load' });
     await page.waitForFunction(() => document.body.dataset.current === 'welcome' && !!globalThis.ZyronAppCore && !!globalThis.ZyronQR);
@@ -259,8 +289,9 @@ try {
     const vault = records[0];
     core.assertVaultShape(vault);
     assert.equal(vault.address, address);
-    const text = JSON.stringify(vault);
-    for (const secret of [...words.filter((w) => w.length > 4), core.wipe ? Buffer.from(entropy).toString('hex') : '', PASSWORD]) if (secret) assert.ok(!text.includes(secret), 'vault leaks a secret');
+    const secrets = [...words.filter((w) => w.length > 4), core.wipe ? Buffer.from(entropy).toString('hex') : '', PASSWORD];
+    assert.deepEqual(vaultSecretLeaks(vault, secrets), [], 'vault leaks a secret');
+    assert.ok(!JSON.stringify(vault).includes(words.join(' ')), 'vault leaks the phrase');
     const storage = await page.evaluate(async () => ({ local: localStorage.length, session: sessionStorage.length, dbs: (await indexedDB.databases()).map((d) => d.name), cookie: document.cookie }));
     assert.deepEqual(storage, { local: 0, session: 0, dbs: ['zyron-wallet-app'], cookie: '' });
     assert.equal(requests.slice(before).filter((r) => r.url.startsWith('http')).length, 0, 'no network requests while creating (offline + CSP)');
@@ -279,10 +310,18 @@ try {
     if (!live) {
       await page.clock.install();
       await page.click('[data-copy-address]');
-      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), core.toChecksumAddress(address));
-      assert.equal(await page.textContent('[data-copy-result]'), 'Copied. Clipboard will be cleared automatically.');
+      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), address, 'primary copy is the canonical lowercase address');
+      assert.equal(await page.textContent('[data-copy-result]'), 'Copied. This app will try to clear the clipboard in 60 seconds.');
       await page.clock.fastForward(61000);
       await page.waitForFunction(() => navigator.clipboard.readText().then((t) => t === ''));
+      assert.match(await page.textContent('[data-copy-result]'), /Clipboard cleared/);
+      await page.evaluate(() => {
+        navigator.clipboard.writeText = (text) => (text === '' ? Promise.reject(new Error('blocked')) : Promise.resolve());
+      });
+      await page.click('[data-copy-plain]');
+      assert.match(await page.textContent('[data-copy-result]'), /try to clear the clipboard/);
+      await page.clock.fastForward(61000);
+      await page.waitForFunction(() => /kept the clipboard/.test(document.querySelector('[data-copy-result]').textContent));
     }
   });
 
@@ -290,52 +329,116 @@ try {
   await test('sign transfer offline: exact l1 transfer, no network, broadcast disabled', async () => {
     assert.equal(await page.isDisabled('[data-screen="home"] button[disabled]'), true);
     const before = requests.length;
-    await page.fill('[data-tx-chain]', 'zyron-pwa-test');
+    await page.click('[data-screen="home"] [data-go="send"]');
+    await page.waitForSelector('[data-screen="send"]:not([hidden])');
+    assert.equal(await page.inputValue('[data-tx-chain]'), 'zyron-wallet-testnet-1', 'chain id starts at the wallet testnet');
+    assert.equal(await page.inputValue('[data-tx-version]'), '1', 'wallet testnet defaults to version 1');
+    assert.match(await page.textContent('[data-screen="send"]'), /Open the wallet testnet page/);
+    await page.fill('[data-tx-chain]', 'zyron-wallet-testnet-1');
+    assert.equal(await page.inputValue('[data-tx-version]'), '1', 'wallet testnet defaults to transaction version 1');
+    assert.match(await page.textContent('[data-tx-version-hint]'), /default transaction version is 1/);
+    assert.match(await page.textContent('[data-screen="send"]'), /use the network's current nonce \+ 1 \(1 for a new account\)/);
     await page.fill('[data-tx-nonce]', '1');
     await page.fill('[data-tx-to]', RECEIVER);
     assert.match(await page.textContent('[data-tx-check]'), /checksum verified/);
     await page.fill('[data-tx-amount]', '2.5');
     await page.fill('[data-tx-fee]', '0.00001');
+    await page.fill('[data-tx-chain]', 'zyron-mainnet-1');
+    await page.click('[data-tx-review]');
+    assert.match(await page.textContent('[data-tx-check]'), /testnet or devnet/);
+    assert.equal(await visibleScreen(page), 'send', 'a non-testnet chain id never reaches review');
+    await page.fill('[data-tx-chain]', 'zyron-other-testnet');
+    assert.equal(await page.inputValue('[data-tx-version]'), '2', 'other test chains keep version 2 selectable as the default');
+    await page.selectOption('[data-tx-version]', '1');
+    await page.selectOption('[data-tx-version]', '2');
+    await page.fill('[data-tx-chain]', 'zyron-wallet-testnet-1');
+    assert.equal(await page.inputValue('[data-tx-version]'), '2', 'an explicit version choice is kept');
+    await page.selectOption('[data-tx-version]', '1');
     await page.click('[data-tx-review]');
     await page.waitForSelector('[data-screen="review"]:not([hidden])');
     const rows = await page.$$eval('[data-review-rows] > div', (divs) => divs.map((d) => [d.dataset.reviewKey, d.querySelector('dt').textContent, d.querySelector('dd').textContent]));
-    assert.deepEqual(rows.map((r) => r[1]), ['Type', 'From', 'To', 'Amount', 'Fee', 'Chain ID', 'Nonce', 'Timestamp']);
+    assert.deepEqual(rows.map((r) => r[1]), ['Type', 'From', 'To', 'Amount', 'Fee', 'Total', 'Chain ID', 'Nonce', 'Timestamp']);
     const review = Object.fromEntries(rows.map((r) => [r[0], r[2]]));
     assert.equal(review.from, core.toChecksumAddress(address));
     assert.equal(review.to, RECEIVER);
     assert.equal(review.amount, '2.5 ZYN (250000000 atoms)');
     assert.equal(review.fee, '0.00001 ZYN (1000 atoms)');
-    assert.equal(review.chain, 'zyron-pwa-test');
+    assert.equal(review.total, '2.50001 ZYN (250001000 atoms)');
+    assert.equal(review.chain, 'zyron-wallet-testnet-1');
     assert.equal(review.nonce, '1');
-    assert.match(review.type, /Transfer \(kind "transfer", version 2\)/);
+    assert.match(review.type, /Transfer \(kind "transfer", version 1\)/);
     assert.equal(await page.isDisabled('[data-tx-sign]'), true, 'signing needs a deliberate confirmation');
     assert.equal(await page.isVisible('[data-tx-out]'), false, 'nothing is signed on review');
     await shot(page, '6a-review-transfer');
+    assert.equal(await page.isVisible('[data-review-warnings]'), true, 'a first-time recipient shows a send-safety warning');
+    assert.deepEqual(await page.$$eval('[data-review-warning-list] li', (li) => li.map((x) => x.dataset.warning)), ['first-time']);
     await page.check('[data-review-ack]');
+    assert.equal(await page.isDisabled('[data-tx-sign]'), true, 'send-safety warnings need their own confirmation');
+    await page.check('[data-review-warn-ack]');
     await page.click('[data-tx-sign]');
     await page.waitForSelector('[data-tx-out]:not([hidden])');
     assert.match(await page.textContent('[data-tx-summary]'), /Signed locally\. Not broadcast\./);
     signed = JSON.parse(await page.textContent('[data-tx-json]'));
     assert.equal(signed.kind, 'transfer');
-    assert.equal(signed.version, 2);
+    assert.equal(signed.version, 1);
     assert.equal(signed.sender, address);
     assert.equal(signed.receiver, RECEIVER.toLowerCase().replace('zyn', 'ZYN'));
     assert.equal(signed.amountAtoms, 250000000);
     assert.equal(signed.feeAtoms, 1000);
     if (l1) l1.validateTransactionShape(signed);
-    assert.ok(core.verifyCanonical({ domain: core.TRANSFER_SIGNING_DOMAIN_V2, payload: (({ signature, txid, ...rest }) => rest)(signed) }, signed.signature, signed.publicKey));
+    assert.ok(core.verifyCanonical((({ signature, txid, ...rest }) => rest)(signed), signed.signature, signed.publicKey));
     await page.locator('[data-tx-out]').scrollIntoViewIfNeeded();
     await shot(page, '6-sign-transfer');
     const download = page.waitForEvent('download');
     await page.click('[data-tx-download]');
     assert.match((await download).suggestedFilename(), /^zyron-transfer-nonce-1\.json$/);
     assert.equal(requests.slice(before).filter((r) => r.url.startsWith('http')).length, 0, 'signing makes no requests');
-    await page.click('[data-review-done]');
+    if (!live) {
+      await page.clock.fastForward(5 * 60 * 1000 + 1000);
+      await page.waitForFunction(() => document.body.dataset.current === 'unlock');
+      assert.equal(await page.textContent('[data-tx-json]'), '', 'signed JSON is not shown on the lock screen');
+      await page.fill('[data-unlock-password]', PASSWORD);
+      await page.click('[data-unlock-go]');
+      await page.waitForSelector('[data-screen="home"]:not([hidden])', { timeout: 60000 });
+      assert.equal(await page.isVisible('[data-signed-hold]'), true, 'signed transfer stays until dismissed');
+      assert.equal(JSON.parse(await page.textContent('[data-signed-hold-json]')).txid, signed.txid);
+      await page.click('[data-signed-dismiss]');
+      assert.equal(await page.isVisible('[data-signed-hold]'), false);
+    } else {
+      await page.click('[data-review-done]');
+      await page.waitForSelector('[data-screen="home"]:not([hidden])');
+    }
+    await page.click('[data-screen="home"] [data-go="send"]');
+    await page.waitForSelector('[data-screen="send"]:not([hidden])');
+    await page.fill('[data-tx-chain]', 'zyron-open-testnet-1');
+    await page.fill('[data-tx-fee]', '0');
+    await page.click('[data-tx-review]');
+    await page.waitForSelector('[data-screen="review"]:not([hidden])');
+    assert.match(await page.textContent('[data-review-fee-warning]'), /This network will reject this fee/);
+    assert.match(await page.textContent('[data-review-fee-warning]'), /100000 atoms \(0\.001 ZYN\)/);
+    assert.equal(await page.isHidden('[data-review-fee-warning]'), false);
+    assert.equal(await page.isDisabled('[data-review-ack]'), true, 'a rejected fee cannot be acknowledged into a signature');
+    assert.equal(await page.isHidden('[data-review-warnings]'), true, 'a recipient already sent to (history kept in the encrypted vault) shows no first-time warning');
+    await page.click('[data-review-cancel]');
     await page.waitForSelector('[data-screen="home"]:not([hidden])');
+    await page.click('[data-screen="home"] [data-go="send"]');
+    await page.fill('[data-tx-to]', address);
+    await page.click('[data-tx-review]');
+    assert.match(await page.textContent('[data-tx-check]'), /You can't send to your own address\. Enter a different recipient\./);
+    assert.equal(await visibleScreen(page), 'send', 'a self-send never reaches review');
     await page.fill('[data-tx-to]', core.MINING_TRACKER_ADDRESS);
     await page.click('[data-tx-review]');
-    assert.match(await page.textContent('[data-tx-check]'), /mining tracker/);
-    assert.equal(await visibleScreen(page), 'home', 'invalid transfers never reach the review screen');
+    assert.match(await page.textContent('[data-tx-check]'), /reserved system address/);
+    assert.equal(await visibleScreen(page), 'send', 'invalid transfers never reach the review screen');
+    await page.fill('[data-tx-to]', RECEIVER);
+    await page.fill('[data-tx-amount]', '999999999999');
+    await page.click('[data-tx-review]');
+    assert.match(await page.textContent('[data-tx-check]'), /Amount is too large/);
+    await page.fill('[data-tx-to]', '');
+    await page.fill('[data-tx-amount]', '');
+    await page.click('[data-tx-review]');
+    assert.match(await page.textContent('[data-tx-check]'), /receiver address first/, 'an empty form asks for the receiver first');
+    await page.fill('[data-tx-amount]', '2.5');
     await page.fill('[data-tx-to]', RECEIVER);
     await page.fill('[data-tx-chain]', '');
     await page.click('[data-tx-review]');
@@ -400,11 +503,37 @@ try {
     await page.waitForSelector('[data-screen="home"]:not([hidden])', { timeout: 60000 });
     assert.equal(await page.textContent('[data-home-address]'), core.groupAddress(core.toChecksumAddress(SNAP.address)));
     await shot(page, '7-home-restored');
+    assert.equal(await page.isVisible('[data-backup-reminder]'), true, 'restore has not passed a word check this session');
+  });
+
+  await test('backup re-quiz: password stays on device, four words, reminder hides until the next unlock', async () => {
+    await page.click('[data-screen="home"] [data-go="backup"]');
+    await page.waitForSelector('[data-screen="backup"]:not([hidden])');
+    await page.fill('[data-backup-password]', PASSWORD + 'no');
+    await page.click('[data-backup-open]');
+    await page.waitForFunction(() => /Wrong password/.test(document.querySelector('[data-backup-result]').textContent), null, { timeout: 60000 });
+    await page.fill('[data-backup-password]', PASSWORD);
+    await page.click('[data-backup-open]');
+    await page.waitForSelector('[data-backup-quiz-box]:not([hidden])', { timeout: 60000 });
+    const indexes = await page.$$eval('[data-backup-quiz] input', (inputs) => inputs.map((el) => Number(el.dataset.backupIndex)));
+    assert.equal(indexes.length, 4);
+    const phrase = SNAP.mnemonic.split(' ');
+    for (const index of indexes) await page.fill(`[data-backup-index="${index}"]`, phrase[index]);
+    const before = requests.length;
+    await page.click('[data-backup-check]');
+    await page.waitForSelector('[data-screen="home"]:not([hidden])');
+    assert.equal(await page.isVisible('[data-backup-reminder]'), false);
+    assert.equal(requests.slice(before).filter((r) => r.url.startsWith('http')).length, 0, 'the word check makes no requests');
+    await page.click('[data-lock]');
+    await page.fill('[data-unlock-password]', PASSWORD);
+    await page.click('[data-unlock-go]');
+    await page.waitForSelector('[data-screen="home"]:not([hidden])', { timeout: 60000 });
+    assert.equal(await page.isVisible('[data-backup-reminder]'), true, 'the reminder returns after lock');
   });
 
   await test('stored vault with an unknown version or malformed data is rejected and left untouched (fail closed)', async () => {
     const original = (await readVaultRecord(page))[0];
-    for (const bad of [{ ...original, version: 2 }, { ...original, kdf: { ...original.kdf, n: 1024 } }, 'garbage']) {
+    for (const bad of [{ ...original, version: 3 }, { ...original, version: 1 }, { ...original, kdf: { ...original.kdf, n: 1024 } }, 'garbage']) {
       await page.evaluate((value) => new Promise((r) => { const q = indexedDB.open('zyron-wallet-app'); q.onsuccess = () => { const db = q.result; db.transaction('vault', 'readwrite').objectStore('vault').put(value, 'primary').onsuccess = () => { db.close(); r(); }; }; }), bad);
       await page.reload({ waitUntil: 'load' });
       await page.waitForFunction(() => !document.querySelector('[data-unsupported]').hidden);
@@ -420,6 +549,124 @@ try {
     assert.deepEqual(await readVaultRecord(page), []);
     assert.equal(await page.isDisabled('[data-go="create"]'), false);
     assert.equal(await page.isVisible('[data-unsupported]'), false);
+  });
+
+  await test('encrypted vault file imports and exports on this device only', async () => {
+    const entropy = core.phraseToEntropy(SNAP.mnemonic);
+    const account = await core.deriveAccount(entropy);
+    const vault = await core.createVault(entropy, PASSWORD, account, 1700000000000);
+    core.wipe(entropy, account.privateKey);
+    const dir = mkdtempSync(join(tmpdir(), 'zyron-vault-'));
+    const incoming = join(dir, 'incoming.json');
+    writeFileSync(incoming, JSON.stringify(vault));
+    const before = requests.length;
+    await page.locator('[data-screen="welcome"] summary').click();
+    await page.setInputFiles('[data-vault-file]', incoming);
+    await page.waitForFunction(() => document.body.dataset.current === 'unlock', null, { timeout: 15000 });
+    assert.equal(await page.textContent('[data-unlock-address]'), core.groupAddress(core.toChecksumAddress(SNAP.address)));
+    const downloadPromise = page.waitForEvent('download');
+    await page.click('[data-screen="unlock"] [data-vault-export]');
+    const download = await downloadPromise;
+    assert.equal(download.suggestedFilename(), 'zyron-vault.json');
+    const saved = join(dir, 'exported.json');
+    await download.saveAs(saved);
+    const exported = JSON.parse(readFileSync(saved, 'utf8'));
+    core.assertVaultShape(exported);
+    assert.equal(exported.ciphertext, vault.ciphertext);
+    assert.equal(exported.address, SNAP.address);
+    const text = JSON.stringify(exported);
+    assert.ok(!text.includes(PASSWORD), 'export does not contain the password');
+    assert.ok(!text.includes('junk'), 'export does not contain the recovery phrase');
+    assert.equal(requests.slice(before).filter((r) => r.url.startsWith('http')).length, 0, 'vault import and export make no network requests');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  await test('version-1 vault upgrades on unlock; address book and threshold live in the encrypted vault', async () => {
+    const v1 = JSON.parse(readFileSync(join(here, 'fixtures', 'vault-v1.json'), 'utf8'));
+    const V1_PASSWORD = 'correct horse battery staple';
+    const before = requests.length;
+    await page.evaluate((value) => new Promise((r) => { const q = indexedDB.open('zyron-wallet-app'); q.onsuccess = () => { const db = q.result; db.transaction('vault', 'readwrite').objectStore('vault').put(value, 'primary').onsuccess = () => { db.close(); r(); }; }; }), v1);
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForFunction(() => document.body.dataset.current === 'unlock');
+    assert.deepEqual(await readVaultRecord(page), [v1], 'a stored version-1 vault is read and left as is until unlock');
+    await page.fill('[data-unlock-password]', 'wrong password here');
+    await page.click('[data-unlock-go]');
+    await page.waitForFunction(() => /Wrong password/.test(document.querySelector('[data-unlock-result]').textContent), null, { timeout: 60000 });
+    assert.deepEqual(await readVaultRecord(page), [v1], 'a failed unlock never rewrites the vault');
+    await page.fill('[data-unlock-password]', V1_PASSWORD);
+    await page.click('[data-unlock-go]');
+    await page.waitForSelector('[data-screen="home"]:not([hidden])', { timeout: 60000 });
+    const [upgraded] = await readVaultRecord(page);
+    assert.equal(upgraded.version, 2);
+    core.assertVaultShape(upgraded);
+    for (const k of ['address', 'publicKey', 'salt', 'createdAt']) assert.equal(upgraded[k], v1[k]);
+    let meta = await readMetaRecords(page);
+    assert.deepEqual(meta['v1-backup'], v1, 'the v1 copy is kept until the v2 vault is opened from storage');
+    assert.deepEqual(meta['v2-seen'], { format: 'zyronchain-pwa-vault-v2-seen', version: 2, address: v1.address });
+    await page.click('[data-screen="home"] [data-go="send"]');
+    await page.waitForSelector('[data-screen="send"]:not([hidden])');
+    await page.fill('[data-contact-name]', 'Fixture friend');
+    await page.fill('[data-contact-address]', RECEIVER);
+    await page.click('[data-contact-save]');
+    await page.waitForSelector('[data-contact-list] li');
+    await page.fill('[data-contact-name]', 'Me');
+    await page.fill('[data-contact-address]', v1.address);
+    await page.click('[data-contact-save]');
+    assert.match(await page.textContent('[data-contact-result]'), /own address/);
+    const stored = JSON.stringify(await readVaultRecord(page));
+    assert.ok(!stored.includes('Fixture friend') && !stored.toLowerCase().includes(RECEIVER.slice(3).toLowerCase()), 'contacts are encrypted');
+    await page.click('[data-screen="send"] [data-go="settings"]');
+    await page.fill('[data-threshold-input]', '2');
+    await page.click('[data-threshold-save]');
+    await page.waitForFunction(() => /2 ZYN/.test(document.querySelector('[data-threshold-current]').textContent));
+    await page.click('[data-lock]');
+    await page.fill('[data-unlock-password]', V1_PASSWORD);
+    await page.click('[data-unlock-go]');
+    await page.waitForSelector('[data-screen="home"]:not([hidden])', { timeout: 60000 });
+    await page.click('[data-screen="home"] [data-go="send"]');
+    assert.deepEqual(await page.$$eval('[data-contact-list] li strong', (els) => els.map((e) => e.textContent)), ['Fixture friend'], 'contact survives lock/unlock');
+    meta = await readMetaRecords(page);
+    assert.equal(meta['v1-backup'], undefined, 'the v1 copy is removed after the v2 vault opened');
+    assert.ok(meta['v2-seen'], 'the rollback marker stays');
+    await page.click('[data-contact-list] li [data-contact-use]');
+    assert.equal(await page.inputValue('[data-tx-to]'), core.parseAddressInput(RECEIVER).canonical, 'picking a contact fills the receiver');
+    await page.fill('[data-tx-chain]', 'zyron-wallet-testnet-1');
+    await page.fill('[data-tx-nonce]', '1');
+    await page.fill('[data-tx-amount]', '2');
+    await page.fill('[data-tx-fee]', '0.001');
+    await page.selectOption('[data-tx-version]', '1');
+    await page.click('[data-tx-review]');
+    await page.waitForSelector('[data-screen="review"]:not([hidden])');
+    assert.deepEqual(await page.$$eval('[data-review-warning-list] li', (li) => li.map((x) => x.dataset.warning)), ['first-time', 'large-amount']);
+    await page.click('[data-review-cancel]');
+    await page.click('[data-screen="home"] [data-go="send"]');
+    await page.click('[data-contact-list] li [data-contact-edit]');
+    await page.fill('[data-contact-name]', 'Renamed friend');
+    await page.click('[data-contact-save]');
+    await page.waitForFunction(() => document.querySelector('[data-contact-list] li strong').textContent === 'Renamed friend');
+    await page.click('[data-contact-list] li [data-contact-delete]');
+    assert.equal(await page.$$eval('[data-contact-list] li', (li) => li.length), 1, 'delete needs a second click');
+    await page.click('[data-contact-list] li [data-contact-delete]');
+    await page.waitForFunction(() => document.querySelectorAll('[data-contact-list] li').length === 0);
+    // pagehide locks: the key and decrypted book are dropped before a back/forward cache snapshot.
+    await page.fill('[data-contact-name]', 'Kept friend');
+    await page.fill('[data-contact-address]', RECEIVER);
+    await page.click('[data-contact-save]');
+    await page.waitForSelector('[data-contact-list] li');
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+    assert.equal(await page.evaluate(() => document.body.dataset.current), 'unlock', 'pagehide locks the wallet');
+    assert.equal(await page.$$eval('[data-contact-list] li', (li) => li.length), 0, 'the decrypted address book is cleared on pagehide');
+    // Rollback: putting the old v1 vault back after v2 was seen is refused, with a recovery path.
+    const v2now = (await readVaultRecord(page))[0];
+    await page.evaluate((value) => new Promise((r) => { const q = indexedDB.open('zyron-wallet-app'); q.onsuccess = () => { const db = q.result; db.transaction('vault', 'readwrite').objectStore('vault').put(value, 'primary').onsuccess = () => { db.close(); r(); }; }; }), v1);
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForFunction(() => !document.querySelector('[data-unsupported]').hidden);
+    assert.match(await page.textContent('[data-unsupported]'), /already upgraded this wallet to vault version 2.*restore it from your recovery phrase/);
+    assert.deepEqual(await readVaultRecord(page), [v1], 'the refused vault is left untouched');
+    await page.evaluate((value) => new Promise((r) => { const q = indexedDB.open('zyron-wallet-app'); q.onsuccess = () => { const db = q.result; db.transaction('vault', 'readwrite').objectStore('vault').put(value, 'primary').onsuccess = () => { db.close(); r(); }; }; }), v2now);
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForFunction(() => document.body.dataset.current === 'unlock');
+    assert.equal(requests.slice(before).filter((r) => r.url.startsWith('http') && new URL(r.url).origin !== new URL(page.url()).origin).length, 0, 'no requests leave the app origin');
   });
 
   await test('missing crypto libraries: the wallet refuses to run', async () => {
@@ -484,15 +731,37 @@ try {
       await m.page.waitForFunction(() => document.body.dataset.current === 'welcome');
       if (width === 390) {
         assert.equal(await m.page.$eval('.install-steps', (el) => el.firstElementChild.dataset.platform), 'ios');
+        assert.equal(await m.page.isVisible('[data-install-ios-only]'), true);
+        assert.equal(await m.page.isVisible('[data-install-wrong-browser]'), false, 'Safari is not warned');
+        assert.match(await m.page.textContent('[data-install]'), /address bar must show https:\/\/zyronchain.com\/app\//);
         await m.page.locator('[data-install]').scrollIntoViewIfNeeded();
         await shot(m.page, '1-install-ios');
       }
-      for (const screen of ['welcome', 'create', 'privacy', 'phrase', 'quiz', 'restore', 'review', 'delete']) {
+      for (const screen of ['welcome', 'create', 'privacy', 'phrase', 'quiz', 'restore', 'review', 'delete', 'send', 'settings', 'backup']) {
         await m.page.evaluate((name) => { for (const s of document.querySelectorAll('[data-screen]')) s.hidden = s.dataset.screen !== name; }, screen);
         assert.ok(await noHorizontalScroll(m.page), `${width}px ${screen}`);
       }
       await m.page.evaluate(() => { for (const s of document.querySelectorAll('[data-screen]')) s.hidden = s.dataset.screen !== 'home'; document.querySelector('[data-home-address]').textContent = 'ZYN 09C0 B2D1 A486 C439 A87b CbA6 b46A 7a1A 23F3 897c'; document.querySelector('[data-tx-out]').hidden = false; document.querySelector('[data-tx-json]').textContent = JSON.stringify({ kind: 'transfer', publicKey: 'ab'.repeat(64), signature: 'cd'.repeat(64) }, null, 2); });
       assert.ok(await noHorizontalScroll(m.page), `${width}px home`);
+      assert.deepEqual(m.problems, []);
+      await m.context.close();
+    }
+  });
+
+  await test('iOS in-app browsers are told to open Safari before Add to Home Screen', async () => {
+    const cases = [
+      ['Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Telegram/10.0', 'Telegram'],
+      ['Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Twitter for iPhone/10.0', 'X'],
+      ['Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/129.0.6668.69 Mobile/15E148 Safari/604.1', 'Chrome']
+    ];
+    for (const [agent, label] of cases) {
+      const m = await newMobile(390, 844, agent);
+      await m.page.goto(appUrl, { waitUntil: 'load' });
+      await m.page.waitForFunction(() => document.body.dataset.current === 'welcome');
+      assert.equal(await m.page.isVisible('[data-install-wrong-browser]'), true, label);
+      assert.equal(await m.page.textContent('[data-install-browser-name]'), label);
+      assert.match(await m.page.textContent('[data-install-wrong-browser]'), /Open in Safari/);
+      assert.equal(await m.page.isVisible('[data-install-button]'), false, 'no Android install button on iPhone');
       assert.deepEqual(m.problems, []);
       await m.context.close();
     }

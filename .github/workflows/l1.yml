@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   # Protocol v1 devnet: INFORMATIONAL, not a required check (backlog P1-04).
   # Protocol v1 keeps the legacy F-01 split, so this job passes about half the

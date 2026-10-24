@@ -13,7 +13,7 @@ import {
 
 const hardenedCommands = new Set([
   "snapshot", "checkpoint-install", "checkpoint-fetch-install", "state-fetch-install", "prune-finalized", "node",
-  "validator-approve", "validator-submit", "protocol-approve", "protocol-submit"
+  "validator-approve", "validator-submit", "protocol-approve", "protocol-submit", "validator-possession-proof"
 ]);
 
 function optionValueIndex(args: string[], name: string): number {
@@ -98,11 +98,14 @@ async function run(): Promise<void> {
       (path) => readCliCheckpointSnapshotAnchoredUtf8(path, expectedSha256)
     );
   }
-  if (["validator-approve", "validator-submit", "protocol-approve", "protocol-submit"].includes(command)) {
+  if (["validator-approve", "validator-submit", "protocol-approve", "protocol-submit", "validator-possession-proof"].includes(command)) {
     await stage(args, "--proposal", join(dir, "governance-proposal.json"), readCliGovernanceArtifactUtf8);
   }
   if (command === "validator-submit" || command === "protocol-submit") {
     await stageRepeated(args, "--approval", join(dir, "governance-approval"), readCliGovernanceArtifactUtf8);
+  }
+  if (command === "validator-submit") {
+    await stageRepeated(args, "--possession-proof", join(dir, "possession-proof"), readCliGovernanceArtifactUtf8);
   }
 
   // Apply the same canonical policy explicitly at the public entrypoint after

@@ -15,7 +15,7 @@ const workflowPath = '.github/workflows/website-release-pin-ci.yml';
 // The structural checks below still run, so a new pinned version must also
 // pass them.
 export const WEBSITE_RELEASE_PIN_WORKFLOW_SHA256 =
-  '6bb3ae463a7ae6caeea4ee016000420ace53622c1ad2b94b1a3bf4c9a3f856dd';
+  '9cefe32e4f4a5c9fd67c1b1dddab3baff765246907c53945eb957d4112614b1f';
 
 export function verifyWebsiteReleasePinWorkflow(text) {
 const digest = createHash('sha256').update(text, 'utf8').digest('hex');

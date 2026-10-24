@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { L1_TEST_SHARD_ENV, selectL1TestShard } from "./l1-test-shard.mjs";
 
 const legacyFlakyName = "signing journal releases its writer lease after hard crash without losing the reserved choice";
 const deterministicName = "signing journal hard-crash lease uses deterministic holder liveness";
@@ -27,10 +28,18 @@ if (!deterministicSuite.includes(deterministicName)) {
   throw new Error("Deterministic signing-lease crash regression title changed or disappeared");
 }
 
+// Every guard above checks the full inventory. A CI shard then runs its
+// round-robin part of it; shards 1..total together run every file once.
+const shardSpec = process.env[L1_TEST_SHARD_ENV];
+const shardFiles = selectL1TestShard(files, shardSpec);
+if (shardSpec) {
+  console.log(`L1 test shard ${shardSpec}: ${shardFiles.length} of ${files.length} compiled test files`);
+}
+
 const child = spawn(process.execPath, [
   "--test",
   `--test-timeout=${L1_TEST_TIMEOUT_MS}`,
-  ...files
+  ...shardFiles
 ], {
   stdio: "inherit"
 });

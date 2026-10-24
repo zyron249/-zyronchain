@@ -31,14 +31,13 @@ export const DERIVATION_PATH = [
 export const DERIVATION_PATH_STRING = DERIVATION_PATH.join('/');
 
 /** Origins allowed to call the Snap (mirrors `endowment:rpc.allowedOrigins`). */
-export const ALLOWED_ORIGINS: readonly string[] = [
-  'https://zyronchain.com',
-  // Local development only. Remove before any listing/production release.
-  'http://localhost:8000',
-];
+export const ALLOWED_ORIGINS: readonly string[] = ['https://zyronchain.com'];
 
 /** Mirrors l1/src/types.ts. */
 export const ATOMS_PER_ZYN = 100_000_000;
+
+/** Proposed fixed protocol fee: 0.001 ZYN. Mirrors l1 FIXED_TRANSFER_FEE_ATOMS. */
+export const FIXED_TRANSFER_FEE_ATOMS = ATOMS_PER_ZYN / 1_000;
 export const MAX_SUPPLY_ATOMS = 50_000_000 * ATOMS_PER_ZYN;
 
 /** Mirrors l1/src/mining.ts MINING_TRACKER_ADDRESS (protocol-reserved). */

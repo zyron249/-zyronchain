@@ -18,6 +18,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   production-website:
     runs-on: ubuntu-24.04
@@ -42,6 +46,11 @@ jobs:
           node --check website/validator.js
           node --check website/season.js
           node --check website/hero-chain.js
+          node --check website/testnet/testnet.js
+          node --check website/verify/vendor/secp256k1-verify.js
+          node --check website/verify/light-client.js
+          node --check website/verify/session.js
+          node --check website/verify/verify.js
           node --check website/app/app.js
           node --check website/app/zyron-wallet-core.js
           node --check website/app/sw.js
@@ -52,13 +61,20 @@ jobs:
       - name: Static network status component is current (build-time, never live RPC)
         run: node tools/site/network-status.mjs --check
       - name: Site CSS/JS references carry current content versions
-        run: node tools/site/stamp-site.mjs --check
+        run: |
+          node tools/site/stamp-site.mjs --check
+          node tools/site/stamp-testnet.mjs --check
+          node tools/site/stamp-verify.mjs --check
       - name: Seasonal theme date gating and overrides (Halloween 2026)
         run: node --test tools/site/test-season.mjs tools/site/test-hero-chain.mjs
       - name: Site regression tests (English-only, network-status honesty, naming, mining retired, build id, SEO)
         run: |
           node tools/site/test-site.mjs
           node tools/site/test-network-live.mjs
+          node tools/site/test-testnet.mjs
+          node website/verify/test-light-client.mjs
+          node website/verify/test-session.mjs
+          node tools/site/test-verify.mjs
       - name: Verify production website, wallet and validator contracts
         shell: bash
         run: |
@@ -95,7 +111,10 @@ jobs:
             'website/validator.css',
             'website/validator.js',
             'website/mining.html',
-            'website/mining.css'
+            'website/mining.css',
+            'website/testnet/index.html',
+            'website/testnet/testnet.js',
+            'website/testnet/testnet.css'
           ];
           for (const file of required) {
             if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
@@ -154,8 +173,7 @@ jobs:
             'Verifiable Layer-1 infrastructure',
             'Phone Wallet — Testnet',
             'Desktop Wallet Setup',
-            'Validator Launchpad',
-            'Buy / Sell not activated'
+            'Validator Launchpad'
           ]) {
             if (!html.includes(marker)) throw new Error(`Website HTML missing required marker: ${marker}`);
           }
@@ -165,8 +183,8 @@ jobs:
           if (positions.some((p) => p < 0) || positions.some((p, i) => i > 0 && p < positions[i - 1])) {
             throw new Error(`Homepage sections missing or out of order: ${order.join(' > ')}`);
           }
-          if (/<button[^>]*>\s*Buy \/ Sell not activated/.test(html) && !/<button[^>]*disabled[^>]*>\s*Buy \/ Sell not activated/.test(html)) {
-            throw new Error('Buy / Sell control must stay disabled');
+          if (/Buy \/ Sell|Buy ZYN|Sell ZYN/i.test(html)) {
+            throw new Error('Homepage must not show any buy/sell or trading control (testnet only)');
           }
           if (/mining\.html/.test(html + walletHtml + validatorHtml)) throw new Error('The retired mining page must not be linked');
           if (/\bV[1-9]\b/.test(html)) {
@@ -243,16 +261,13 @@ jobs:
             throw new Error('Validator launchpad canonical URL is missing');
           }
           if (!miningHtml.includes('<link rel="canonical" href="https://zyronchain.com/mining.html"')) {
-            throw new Error('Mining launchpad canonical URL is missing');
+            throw new Error('Retired mining page canonical URL is missing');
           }
-          for (const marker of [
-            'protocol v1',
-            'not public mining',
-            'docs/PUBLIC_TEST.md',
-            'printed-port',
-            'public mining is not activated'
-          ]) {
-            if (!miningHtml.includes(marker)) throw new Error(`Mining page missing honesty marker: ${marker}`);
+          for (const marker of ['Mining is retired', '2026-09-30', 'public mining is not activated']) {
+            if (!miningHtml.includes(marker)) throw new Error(`Mining page missing retired marker: ${marker}`);
+          }
+          if (/<button|<form|<script(?![^>]*application\/ld\+json)[^>]*>|npm run mine|hashrate|data-miner-platform/i.test(miningHtml.replace(/<script src="\.\/app\.js[^"]*" defer><\/script>/, ''))) {
+            throw new Error('Retired mining page must not carry any live mining UI (buttons, forms, miner commands, hashrate)');
           }
           if (miningHtml.includes('http://127.0.0.1:9137')) {
             throw new Error('Mining page must not present 9137 as a copy-paste local-devnet RPC');
@@ -506,5 +521,7 @@ jobs:
           CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
           export CHROME_PATH
           node tools/site/test-layout.mjs
+          node tools/site/test-verify-browser.mjs
           node tools/site/test-season-browser.mjs
           node tools/site/test-hero-chain-browser.mjs
+          node tools/site/test-testnet-browser.mjs

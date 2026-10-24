@@ -329,8 +329,12 @@ def claim_streak(pool, player_id: int, now: datetime) -> dict:
                     (new_count, now.date(), longest, player_id),
                 )
                 bonus = roll_daily_bonus(conn, player_id, now, season_id)
+                from zyron_node.streak_chain import advance_streak_chain
+
+                chain = advance_streak_chain(conn, player_id, season_id, now)
             else:
                 bonus = None
+                chain = None
             player = reload_player(conn, player_id)
             quests, achievements = sync_rewards(conn, player, levels, now, season_id, include_quests=False)
             player = reload_player(conn, player_id)
@@ -344,6 +348,7 @@ def claim_streak(pool, player_id: int, now: datetime) -> dict:
                 "points": int(player["points"]),
                 "questsCompleted": quests,
                 "achievementsUnlocked": achievements,
+                "chain": chain,
                 "serverTime": iso(now),
             }
             attach_tier(response, player, before_lifetime)
@@ -1430,6 +1435,7 @@ def open_daily_chest(pool, player_id: int, now: datetime) -> dict:
         "points": points,
         "lifetimePoints": lifetime,
         "achievementsUnlocked": [] if replayed else list(result.get("achievementsUnlocked") or []),
+        "chain": None if replayed else result.get("chain"),
         "serverTime": iso(now),
     }
     payload.update(tier_view(lifetime))
@@ -1886,7 +1892,31 @@ def build_context(conn, player, levels: dict[str, int], now: datetime) -> dict[s
         "network_power": network_power(levels),
         "cycle_count": int(player["cycle_count"]),
         "longest_streak": int(player["longest_streak"]),
+        "squad_captain": 1
+        if conn.execute(
+            "SELECT 1 FROM squad_members WHERE player_id = %s AND role = 'captain'",
+            (player["id"],),
+        ).fetchone()
+        else 0,
     }
+
+
+def _streak_chain_progress(conn, player_id: int, now: datetime) -> dict:
+    from zyron_node.streak_chain import chain_progress
+
+    return chain_progress(conn, player_id, now.date())
+
+
+def _squad_profile(conn, player_id: int, now: datetime) -> dict:
+    from zyron_node.squads import squad_view
+
+    return squad_view(conn, player_id, now)
+
+
+def _wardrobe_view(conn, player_id: int) -> dict:
+    from zyron_node.wardrobe import wardrobe_view
+
+    return wardrobe_view(conn, player_id)
 
 
 def build_profile(conn, player, levels: dict[str, int], now: datetime, bot_username: str) -> dict:
@@ -1919,6 +1949,7 @@ def build_profile(conn, player, levels: dict[str, int], now: datetime, bot_usern
             "networkPower": network_power(levels),
             "cycleReward": cycle_reward(levels, int(player["streak_count"])),
             "cycleCount": int(player["cycle_count"]),
+            "countryCode": player.get("country_code"),
             "energy": energy_view(player, levels, now),
             "streak": {
                 "count": int(player["streak_count"]),
@@ -1926,13 +1957,16 @@ def build_profile(conn, player, levels: dict[str, int], now: datetime, bot_usern
                 "claimedToday": claimed_today,
                 "nextReward": upcoming,
                 "calendar": list(STREAK_CALENDAR),
+                "chain": _streak_chain_progress(conn, int(player["id"]), now),
             },
+            "squad": _squad_profile(conn, int(player["id"]), now),
             "walletAddress": player["wallet_address"],
             "walletVerified": bool(player["wallet_address"] and player.get("wallet_verified_at")),
             "banned": bool(player["banned"]),
             "teamAccount": team,
             "teamNote": TEAM_ACCOUNT_NOTE if team else None,
             "cosmetics": sorted(owned_cosmetics(conn, int(player["id"]))),
+            "wardrobe": _wardrobe_view(conn, int(player["id"])),
             "dailyPoints": daily_points_view(player, now),
             "rank": ranks,
             **tier_view(int(player["lifetime_points"])),

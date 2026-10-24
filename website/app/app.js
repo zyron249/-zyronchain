@@ -23,6 +23,10 @@
   const DB_NAME = 'zyron-wallet-app';
   const STORE = 'vault';
   const VAULT_KEY = 'primary';
+  // Second object store (DB version 2) for the vault upgrade: the pre-upgrade v1 copy and the rollback marker.
+  const META = 'meta';
+  const V1_BACKUP_KEY = 'v1-backup';
+  const MARKER_KEY = 'v2-seen';
 
   // ---------------- UI strings (English only) ----------------
   const STRINGS = { en: {} };
@@ -34,9 +38,17 @@
     msgUnlocking: 'Unlocking… (can take a few seconds on phones)',
     msgQuizWord: 'Word #{n}',
     msgQuizWrong: 'One or more words are wrong. Check your paper or show the words again.',
-    msgCopied: 'Copied. Clipboard will be cleared automatically.',
+    msgCopied: 'Copied. This app will try to clear the clipboard in 60 seconds.',
+    msgClipboardCleared: 'Clipboard cleared.',
+    msgClipboardKept: 'The browser kept the clipboard. Clear it yourself if this device is shared.',
     msgCopyFailed: 'Could not copy; select and copy by hand.',
-    msgWrongPassword: 'Wrong password, or the vault was modified.',
+    msgImported: 'Encrypted vault imported on this device. Unlock it with its password. Nothing was uploaded.',
+    msgImportEmpty: 'Choose the encrypted vault file from this device.',
+    msgWrongPassword: 'Wrong password. Check it and try again. (If the password is right, the stored vault was modified.)',
+    msgReceiverFirst: 'Enter the receiver address first: ZYN followed by 40 hex characters.',
+    msgAmountFirst: 'Enter an amount in ZYN, for example 1.5.',
+    msgRevealFirst: 'Reveal every word (tap each card or hold to reveal all) before you confirm.',
+    msgRevealDone: 'All words revealed. Confirm once they are on paper, in order.',
     msgLocked: 'Locked.',
     msgSigned: 'Signed locally. Not broadcast. txid {txid}',
     msgChecksumOk: 'Receiver checksum verified.',
@@ -81,11 +93,18 @@
     pending: null,   // { vault, account, entropy, count } during create (before the backup check passes)
     quiz: null,      // shuffled word indexes for the backup check
     unsigned: null,  // transfer under review (not signed)
+    vaultKey: null,  // non-extractable AES-GCM key, only while unlocked (re-seals the encrypted address book)
+    book: null,      // decrypted address book / sent-to history / warning threshold, only while unlocked
+    editingContact: '', // canonical address of the contact being edited
     lastTx: null,
+    backupEntropy: null, // held only during a backup re-quiz; wiped after the check or on leave
+    backupQuiz: null,
+    backupConfirmed: false, // this unlock session only; never stored
     hiddenAt: 0,
     idleTimer: 0,
     wordTimer: 0,
     clipboardTimer: 0,
+    copyResultSelector: '',
     installPrompt: null,
     rejectedVault: false,
     linkRequest: null // ZYRON NODE wallet link request from the URL hash (public text only)
@@ -94,18 +113,22 @@
   // ---------------- IndexedDB (encrypted vault only) ----------------
   function openDb() {
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, 1);
-      request.onupgradeneeded = () => request.result.createObjectStore(STORE);
+      const request = indexedDB.open(DB_NAME, 2);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        for (const name of [STORE, META]) if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
+      };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
   }
-  async function dbRequest(mode, run) {
+  async function dbRequest(mode, run, storeName) {
+    const name = storeName || STORE;
     const db = await openDb();
     try {
       return await new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, mode);
-        const request = run(tx.objectStore(STORE));
+        const tx = db.transaction(name, mode);
+        const request = run(tx.objectStore(name));
         tx.oncomplete = () => resolve(request.result);
         tx.onerror = () => reject(tx.error);
         tx.onabort = () => reject(tx.error);
@@ -115,15 +138,32 @@
     }
   }
   const loadVault = () => dbRequest('readonly', (store) => store.get(VAULT_KEY));
+  // The only IndexedDB write path. The vault store gets only encrypted vaults; the meta store gets only an encrypted
+  // version-1 vault (the pre-upgrade copy) or the public rollback marker.
+  function putRecord(storeName, key, value) {
+    const record = storeName === STORE || key === V1_BACKUP_KEY ? core.parseVault(value) : core.parseUpgradeMarker(value);
+    if (key === V1_BACKUP_KEY && record.version !== core.VAULT_VERSION_V1) throw new Error('Only a version-1 vault is kept as the upgrade copy');
+    return dbRequest('readwrite', (store) => store.put(record, key), storeName);
+  }
   function saveVault(vault) {
     core.assertVaultShape(vault); // refuses to persist anything that is not an encrypted vault
-    return dbRequest('readwrite', (store) => store.put(core.parseVault(vault), VAULT_KEY));
+    return putRecord(STORE, VAULT_KEY, vault);
   }
   const deleteVault = () => dbRequest('readwrite', (store) => store.delete(VAULT_KEY));
+  const loadMeta = (key) => dbRequest('readonly', (store) => store.get(key), META);
+  const deleteMeta = (key) => dbRequest('readwrite', (store) => store.delete(key), META);
+  async function loadMarker() {
+    const value = await loadMeta(MARKER_KEY);
+    return value === undefined ? null : core.parseUpgradeMarker(value);
+  }
+  function rollbackMessage() {
+    return 'This device already upgraded this wallet to vault version 2, so an older version-1 vault for the same address was refused (possible rollback). Nothing was changed. To recover, delete this wallet and restore it from your recovery phrase, or import your exported version-2 vault file.';
+  }
 
   // ---------------- helpers ----------------
   function show(name) {
     if (name !== 'phrase') hideWords();
+    if (name !== 'backup') wipeBackup();
     for (const screen of $$('[data-screen]')) screen.hidden = screen.dataset.screen !== name;
     document.body.dataset.current = name;
     window.scrollTo(0, 0);
@@ -196,11 +236,19 @@
   $('[data-restore-password]').addEventListener('input', (event) => renderMeter('restore', event.target.value));
 
   // ---------------- clipboard (address and signed transfer only; auto-clear) ----------------
-  async function copyText(text) {
+  async function copyText(text, resultSelector) {
+    state.copyResultSelector = resultSelector || '';
     try {
       await navigator.clipboard.writeText(text);
       clearTimeout(state.clipboardTimer);
-      state.clipboardTimer = setTimeout(() => { navigator.clipboard.writeText('').catch(() => {}); }, CLIPBOARD_CLEAR_MS);
+      state.clipboardTimer = setTimeout(() => {
+        const target = state.copyResultSelector;
+        navigator.clipboard.writeText('').then(() => {
+          if (target) setMessage(target, t('msgClipboardCleared'), 'good');
+        }).catch(() => {
+          if (target) setMessage(target, t('msgClipboardKept'), 'bad');
+        });
+      }, CLIPBOARD_CLEAR_MS);
       return true;
     } catch (error) {
       return false;
@@ -209,7 +257,7 @@
   // The recovery phrase can never be copied: block copy/cut/drag from the word list and the backup check.
   for (const type of ['copy', 'cut', 'dragstart']) {
     document.addEventListener(type, (event) => {
-      if (event.target && event.target.closest && event.target.closest('[data-phrase-words], [data-quiz]')) event.preventDefault();
+      if (event.target && event.target.closest && event.target.closest('[data-phrase-words], [data-quiz], [data-backup-quiz]')) event.preventDefault();
     });
   }
 
@@ -220,18 +268,25 @@
       core.wipe(state.pending.entropy);
       state.pending.entropy = null;
       state.pending.vault = null;
+      state.pending.key = null;
+      state.pending.book = null;
     }
     state.pending = null;
     state.quiz = null;
+    state.revealed = null;
     $('[data-phrase-words]').textContent = '';
     $('[data-quiz]').textContent = '';
   }
   function lock(message) {
     wipeAccount(state.account);
     state.account = null;
+    state.vaultKey = null;
+    state.book = null;
+    state.editingContact = '';
+    renderBook();
     clearPending();
     state.unsigned = null;
-    state.lastTx = null;
+    state.backupConfirmed = false;
     $('[data-link-proof]').textContent = '';
     $('[data-link-out]').hidden = true;
     $('[data-tx-out]').hidden = true;
@@ -241,6 +296,7 @@
     $('[data-created-note]').hidden = true;
     clearInputs();
     clearTimeout(state.idleTimer);
+    $('[data-lock]').hidden = true;
     if (state.vault) {
       $('[data-unlock-address]').textContent = core.groupAddress(core.toChecksumAddress(state.vault.address));
       setMessage('[data-unlock-result]', message || '', '');
@@ -266,7 +322,8 @@
     }
   });
   window.addEventListener('blur', hideWords);
-  window.addEventListener('pagehide', () => { hideWords(); wipeAccount(state.account); if (state.pending) { wipeAccount(state.pending.account); core.wipe(state.pending.entropy); } });
+  // Lock before the page can enter the back/forward cache, so the vault key and decrypted book are dropped too.
+  window.addEventListener('pagehide', () => { hideWords(); if (state.pending) { wipeAccount(state.pending.account); core.wipe(state.pending.entropy); } wipeBackup(); lock(t('msgLocked')); });
 
   // ---------------- QR ----------------
   function renderQr(text) {
@@ -297,6 +354,20 @@
     $('[data-home-raw]').textContent = address;
     renderQr(address);
     setMessage('[data-copy-result]', '', '');
+    const hold = $('[data-signed-hold]');
+    const holdJson = $('[data-signed-hold-json]');
+    if (hold && holdJson) {
+      if (state.lastTx) {
+        holdJson.textContent = JSON.stringify(state.lastTx, null, 2);
+        hold.hidden = false;
+      } else {
+        holdJson.textContent = '';
+        hold.hidden = true;
+      }
+    }
+    const reminder = $('[data-backup-reminder]');
+    if (reminder) reminder.hidden = !!state.backupConfirmed;
+    $('[data-lock]').hidden = false;
     show('home');
     touch();
     refreshStorageStatus();
@@ -321,8 +392,8 @@
       const pending = await busy(t('msgDeriving'), async () => {
         entropy = core.generateEntropy();
         const account = await core.deriveAccount(entropy);
-        const vault = await core.createVault(entropy, first, account);
-        return { vault, account, entropy: Uint8Array.from(entropy), count: entropy.length * 3 / 4 };
+        const session = await core.createVaultSession(entropy, first, account);
+        return { vault: session.vault, key: session.key, book: session.book, account, entropy: Uint8Array.from(entropy), count: entropy.length * 3 / 4 };
       });
       clearInputs();
       clearPending();
@@ -338,8 +409,11 @@
   $('[data-privacy-ack]').addEventListener('change', (event) => { $('[data-privacy-next]').disabled = !event.target.checked; });
   $('[data-privacy-next]').addEventListener('click', () => {
     if (!state.pending || !$('[data-privacy-ack]').checked) return;
+    state.revealed = new Set();
     renderWordCards();
     $('[data-phrase-ack]').checked = false;
+    $('[data-phrase-ack]').disabled = true;
+    setMessage('[data-phrase-ack-hint]', t('msgRevealFirst'), '');
     $('[data-phrase-next]').disabled = true;
     show('phrase');
   });
@@ -383,11 +457,22 @@
       text.textContent = word;
       button.dataset.revealed = 'true';
       button.setAttribute('aria-label', t('msgWordShown', { n: index + 1, total, word }));
+      noteRevealed(index, total);
       armWordTimer();
     } else {
       text.textContent = '•••••';
       button.dataset.revealed = 'false';
       button.setAttribute('aria-label', t('msgWordHidden', { n: index + 1, total }));
+    }
+  }
+  // The paper-backup confirmation unlocks only after every word was shown at least once.
+  function noteRevealed(index, total) {
+    if (!state.revealed) state.revealed = new Set();
+    state.revealed.add(index);
+    const ack = $('[data-phrase-ack]');
+    if (ack && ack.disabled && state.revealed.size >= total) {
+      ack.disabled = false;
+      setMessage('[data-phrase-ack-hint]', t('msgRevealDone'), 'good');
     }
   }
   function armWordTimer() {
@@ -400,8 +485,17 @@
   }
   function revealAll() { if (state.pending) for (const button of $$('[data-phrase-words] .word-card')) setCard(button, true); }
   const hold = $('[data-hold-reveal]');
-  hold.addEventListener('pointerdown', (event) => { event.preventDefault(); revealAll(); });
-  for (const type of ['pointerup', 'pointerleave', 'pointercancel', 'blur']) hold.addEventListener(type, hideWords);
+  hold.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    // Keep the press if revealing the words shifts the button under the finger.
+    try { hold.setPointerCapture(event.pointerId); } catch (error) { /* pointer capture is optional */ }
+    revealAll();
+  });
+  for (const type of ['pointerup', 'pointercancel', 'blur']) hold.addEventListener(type, hideWords);
+  hold.addEventListener('pointerleave', (event) => {
+    if (typeof hold.hasPointerCapture === 'function' && hold.hasPointerCapture(event.pointerId)) return;
+    hideWords();
+  });
   hold.addEventListener('keydown', (event) => { if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) { event.preventDefault(); revealAll(); } });
   hold.addEventListener('keyup', (event) => { if (event.key === ' ' || event.key === 'Enter') hideWords(); });
   hold.addEventListener('contextmenu', (event) => event.preventDefault());
@@ -449,8 +543,12 @@
       await saveVault(state.pending.vault);
       state.vault = core.parseVault(state.pending.vault);
       state.account = state.pending.account;
+      state.vaultKey = state.pending.key;
+      state.book = state.pending.book;
       state.pending.account = null;
+      renderBook();
       clearPending(); // wipes entropy, drops vault/words references, empties the word list and the check
+      state.backupConfirmed = true; // the create check just passed; ask again only after the next unlock
       showHome();
       $('[data-created-note]').hidden = false;
     } catch (error) {
@@ -474,13 +572,16 @@
     try {
       const result = await busy(t('msgDeriving'), async () => {
         const account = await core.deriveAccount(entropy);
-        const vault = await core.createVault(entropy, first, account);
-        return { vault, account };
+        const session = await core.createVaultSession(entropy, first, account);
+        return { vault: session.vault, key: session.key, book: session.book, account };
       });
       await saveVault(result.vault);
       clearInputs();
       state.vault = core.parseVault(result.vault);
       state.account = result.account;
+      state.vaultKey = result.key;
+      state.book = result.book;
+      renderBook();
       showHome();
     } catch (error) {
       setMessage('[data-restore-result]', errorText(error), 'bad');
@@ -494,10 +595,38 @@
     const password = $('[data-unlock-password]').value;
     setMessage('[data-unlock-result]', '', '');
     try {
-      const opened = await busy(t('msgUnlocking'), () => core.openVault(state.vault, password));
+      if (core.isRollback(state.vault, await loadMarker())) throw new Error(rollbackMessage());
+      let opened = await busy(t('msgUnlocking'), () => core.openVault(state.vault, password));
+      try {
+        if (state.vault.version !== core.VAULT_VERSION) {
+          // Version 1 -> 2, only after the password opened it. The upgraded vault must reopen with the same
+          // password to the same wallet before it replaces v1, and the v1 copy is kept until a later v2 unlock.
+          const v1 = state.vault;
+          const result = await busy(t('msgUnlocking'), () => core.upgradeVaultVerified(v1, opened, password));
+          core.wipe(opened.entropy);
+          wipeAccount(opened.account);
+          opened = result.opened;
+          await putRecord(META, V1_BACKUP_KEY, v1);
+          await saveVault(result.vault);
+          await putRecord(META, MARKER_KEY, core.upgradeMarker(result.vault.address));
+          state.vault = core.parseVault(result.vault);
+        } else {
+          const marker = await loadMarker();
+          if (!marker || marker.address !== state.vault.address) await putRecord(META, MARKER_KEY, core.upgradeMarker(state.vault.address));
+          // A version-2 vault opened from storage: the pre-upgrade copy is no longer needed.
+          if (await loadMeta(V1_BACKUP_KEY) !== undefined) await deleteMeta(V1_BACKUP_KEY);
+        }
+      } catch (error) {
+        core.wipe(opened.entropy);
+        wipeAccount(opened.account);
+        throw error;
+      }
       core.wipe(opened.entropy);
       clearInputs();
       state.account = opened.account;
+      state.vaultKey = opened.key;
+      state.book = opened.book;
+      renderBook();
       showHome();
     } catch (error) {
       setMessage('[data-unlock-result]', /authentication failed/.test(error.message) ? t('msgWrongPassword') : errorText(error), 'bad');
@@ -510,12 +639,26 @@
   // ---------------- copy address ----------------
   $('[data-copy-address]').addEventListener('click', async () => {
     if (!state.account) return;
-    setMessage('[data-copy-result]', (await copyText(core.toChecksumAddress(state.account.address))) ? t('msgCopied') : t('msgCopyFailed'), '');
+    setMessage('[data-copy-result]', (await copyText(state.account.address, '[data-copy-result]')) ? t('msgCopied') : t('msgCopyFailed'), '');
   });
   $('[data-copy-plain]').addEventListener('click', async () => {
     if (!state.account) return;
-    setMessage('[data-copy-result]', (await copyText(state.account.address)) ? t('msgCopied') : t('msgCopyFailed'), '');
+    setMessage('[data-copy-result]', (await copyText(core.toChecksumAddress(state.account.address), '[data-copy-result]')) ? t('msgCopied') : t('msgCopyFailed'), '');
   });
+
+  // Known-chain default: zyron-wallet-testnet-1 signs version 1 unless the owner picks another version.
+  let txVersionTouched = false;
+  function applyDefaultTxVersion() {
+    const chainId = $('[data-tx-chain]').value.trim();
+    if (!txVersionTouched) $('[data-tx-version]').value = String(core.defaultTransferVersion(chainId));
+    const hint = $('[data-tx-version-hint]');
+    if (!hint) return;
+    hint.textContent = chainId === core.WALLET_TESTNET_CHAIN_ID
+      ? 'zyron-wallet-testnet-1 runs protocol version 1. The default transaction version is 1. Version 2 is rejected by that network. You can still select version 2 for another test or devnet chain.'
+      : 'Other testnet and devnet chains default to transaction version 2. zyron-wallet-testnet-1 defaults to version 1.';
+  }
+  $('[data-tx-chain]').addEventListener('input', applyDefaultTxVersion);
+  $('[data-tx-version]').addEventListener('change', () => { txVersionTouched = true; });
 
   // ---------------- transfer: build -> review -> deliberate confirm -> sign locally ----------------
   $('[data-tx-to]').addEventListener('input', () => {
@@ -545,18 +688,29 @@
   $('[data-tx-review]').addEventListener('click', () => {
     if (!state.account) return lock();
     try {
+      if (!$('[data-tx-to]').value.trim()) throw new Error(t('msgReceiverFirst'));
+      core.parseAddressInput($('[data-tx-to]').value);
+      if (!$('[data-tx-amount]').value.trim()) throw new Error(t('msgAmountFirst'));
+      const warnings = core.sendWarnings({ receiver: $('[data-tx-to]').value, amountAtoms: core.zynToAtoms($('[data-tx-amount]').value) }, state.account, state.book || core.emptyBook());
+      const blocking = warnings.find((w) => w.blocking);
+      if (blocking) throw new Error(blocking.message);
       const unsigned = core.buildTransfer({
         version: Number($('[data-tx-version]').value),
         chainId: $('[data-tx-chain]').value,
         nonce: $('[data-tx-nonce]').value,
         receiver: $('[data-tx-to]').value,
         amountAtoms: core.zynToAtoms($('[data-tx-amount]').value),
-        feeAtoms: core.zynToAtoms($('[data-tx-fee]').value || '0')
+        feeAtoms: core.zynToAtoms($('[data-tx-fee]').value.trim() || core.atomsToZyn(String(core.FIXED_TRANSFER_FEE_ATOMS)))
       }, state.account);
       renderReview(core.describeTransfer(unsigned));
-      state.unsigned = unsigned;
-      state.lastTx = null;
+      const rejection = core.fixedFeeRejection(unsigned);
+      const feeWarning = $('[data-review-fee-warning]');
+      feeWarning.hidden = !rejection;
+      feeWarning.textContent = rejection || '';
+      state.unsigned = rejection ? null : unsigned;
+      renderWarnings(warnings);
       $('[data-review-ack]').checked = false;
+      $('[data-review-ack]').disabled = Boolean(rejection);
       $('[data-tx-sign]').disabled = true;
       $('[data-review-confirm-box]').hidden = false;
       $('[data-tx-out]').hidden = true;
@@ -568,12 +722,34 @@
       setMessage('[data-tx-check]', errorText(error), 'bad');
     }
   });
-  $('[data-review-ack]').addEventListener('change', (event) => { $('[data-tx-sign]').disabled = !event.target.checked; });
+  // Send-safety warnings (first-time recipient, amount at/above the threshold) need their own confirmation.
+  function renderWarnings(warnings) {
+    const box = $('[data-review-warnings]');
+    const list = $('[data-review-warning-list]');
+    list.textContent = '';
+    for (const w of warnings) {
+      const li = document.createElement('li');
+      li.dataset.warning = w.code;
+      li.textContent = w.message;
+      list.appendChild(li);
+    }
+    box.hidden = warnings.length === 0;
+    $('[data-review-warn-ack]').checked = false;
+  }
+  function warningsAccepted() { return $('[data-review-warnings]').hidden || $('[data-review-warn-ack]').checked; }
+  function updateSignButton() {
+    $('[data-tx-sign]').disabled = !$('[data-review-fee-warning]').hidden || !$('[data-review-ack]').checked || !warningsAccepted();
+  }
+  $('[data-review-ack]').addEventListener('change', updateSignButton);
+  $('[data-review-warn-ack]').addEventListener('change', updateSignButton);
   $('[data-tx-sign]').addEventListener('click', () => {
     if (!state.account) return lock();
     if (!state.unsigned || !$('[data-review-ack]').checked) return;
+    if (!warningsAccepted()) return; // send-safety warnings need their own confirmation
     try {
       core.describeTransfer(state.unsigned); // re-check right before signing
+      const rejection = core.fixedFeeRejection(state.unsigned);
+      if (rejection) throw new Error(rejection);
       const tx = core.signTransfer(state.unsigned, state.account.privateKey);
       state.unsigned = null;
       state.lastTx = tx;
@@ -582,21 +758,134 @@
       $('[data-review-confirm-box]').hidden = true;
       $('[data-tx-out]').hidden = false;
       setMessage('[data-tx-copy-result]', '', '');
+      persistBook(core.recordSent(state.book || core.emptyBook(), tx.receiver)).catch((error) => setMessage('[data-review-error]', errorText(error), 'bad'));
     } catch (error) {
       setMessage('[data-review-error]', errorText(error), 'bad');
     }
   });
-  function leaveReview() {
-    state.unsigned = null;
+
+  // ---------------- address book + send-warning threshold (inside the encrypted vault) ----------------
+  async function persistBook(book) {
+    if (!state.account || !state.vaultKey) throw new Error('Wallet is locked');
+    const next = await core.updateVaultBook(state.vault, state.vaultKey, book);
+    await saveVault(next);
+    state.vault = core.parseVault(next);
+    state.book = core.parseBook(book);
+    renderBook();
+  }
+  function resetContactForm() {
+    state.editingContact = '';
+    $('[data-contact-name]').value = '';
+    $('[data-contact-address]').value = '';
+    $('[data-contact-save]').textContent = 'Add contact';
+    $('[data-contact-cancel]').hidden = true;
+  }
+  function renderBook() {
+    const list = $('[data-contact-list]');
+    if (!list) return;
+    list.textContent = '';
+    const book = state.book;
+    $('[data-contact-empty]').hidden = Boolean(book && book.contacts.length);
+    const threshold = $('[data-threshold-current]');
+    if (threshold) threshold.textContent = book && book.thresholdAtoms !== null ? 'Current threshold: ' + core.atomsToZyn(String(book.thresholdAtoms)) + ' ZYN.' : 'No threshold set.';
+    if (!book) return;
+    for (const contact of book.contacts) {
+      const li = document.createElement('li');
+      li.dataset.contact = contact.address;
+      const name = document.createElement('strong');
+      name.textContent = contact.name;
+      const addr = document.createElement('span');
+      addr.className = 'address-raw';
+      addr.textContent = contact.address;
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      const use = document.createElement('button');
+      use.type = 'button'; use.dataset.contactUse = ''; use.textContent = 'Send to';
+      use.addEventListener('click', () => {
+        $('[data-tx-to]').value = contact.address;
+        $('[data-tx-to]').dispatchEvent(new Event('input'));
+        setMessage('[data-contact-result]', 'Receiver set to ' + contact.name + '.', 'good');
+      });
+      const edit = document.createElement('button');
+      edit.type = 'button'; edit.dataset.contactEdit = ''; edit.textContent = 'Edit';
+      edit.addEventListener('click', () => {
+        state.editingContact = contact.address;
+        $('[data-contact-name]').value = contact.name;
+        $('[data-contact-address]').value = contact.address;
+        $('[data-contact-save]').textContent = 'Save changes';
+        $('[data-contact-cancel]').hidden = false;
+      });
+      const del = document.createElement('button');
+      del.type = 'button'; del.className = 'danger'; del.dataset.contactDelete = ''; del.textContent = 'Delete';
+      del.addEventListener('click', async () => {
+        if (del.dataset.armed !== '1') { del.dataset.armed = '1'; del.textContent = 'Confirm delete'; return; }
+        try {
+          await persistBook(core.removeContact(state.book, contact.address));
+          if (state.editingContact === contact.address) resetContactForm();
+          setMessage('[data-contact-result]', 'Contact deleted.', 'good');
+        } catch (error) { setMessage('[data-contact-result]', errorText(error), 'bad'); }
+      });
+      actions.append(use, edit, del);
+      li.append(name, addr, actions);
+      list.appendChild(li);
+    }
+  }
+  $('[data-contact-save]').addEventListener('click', async () => {
+    if (!state.account) return lock();
+    try {
+      const input = { name: $('[data-contact-name]').value, address: $('[data-contact-address]').value };
+      if (core.parseAddressInput(input.address).canonical === state.account.address) throw new Error("This is your own address. Save another person's address.");
+      const book = state.editingContact ? core.updateContact(state.book, state.editingContact, input) : core.addContact(state.book, input);
+      await persistBook(book);
+      setMessage('[data-contact-result]', state.editingContact ? 'Contact updated.' : 'Contact added.', 'good');
+      resetContactForm();
+    } catch (error) { setMessage('[data-contact-result]', errorText(error), 'bad'); }
+  });
+  $('[data-contact-cancel]').addEventListener('click', () => { resetContactForm(); setMessage('[data-contact-result]', '', ''); });
+  $('[data-threshold-save]').addEventListener('click', async () => {
+    if (!state.account) return lock();
+    try {
+      const text = $('[data-threshold-input]').value.trim();
+      await persistBook(core.setThreshold(state.book, text ? core.zynToAtoms(text) : null));
+      $('[data-threshold-input]').value = '';
+      setMessage('[data-threshold-result]', 'Saved in the encrypted vault on this device.', 'good');
+    } catch (error) { setMessage('[data-threshold-result]', errorText(error), 'bad'); }
+  });
+  $('[data-threshold-clear]').addEventListener('click', async () => {
+    if (!state.account) return lock();
+    try {
+      await persistBook(core.setThreshold(state.book, null));
+      setMessage('[data-threshold-result]', 'Threshold cleared.', 'good');
+    } catch (error) { setMessage('[data-threshold-result]', errorText(error), 'bad'); }
+  });
+  function dismissSigned() {
     state.lastTx = null;
+    state.unsigned = null;
     $('[data-tx-json]').textContent = '';
     $('[data-review-rows]').textContent = '';
+    const hold = $('[data-signed-hold]');
+    const holdJson = $('[data-signed-hold-json]');
+    if (holdJson) holdJson.textContent = '';
+    if (hold) hold.hidden = true;
+    if (state.account) showHome(); else lock();
+  }
+  function leaveReview() {
+    state.unsigned = null;
+    $('[data-review-rows]').textContent = '';
+    const feeWarning = $('[data-review-fee-warning]');
+    if (feeWarning) { feeWarning.hidden = true; feeWarning.textContent = ''; }
     if (state.account) showHome(); else lock();
   }
   $('[data-review-cancel]').addEventListener('click', leaveReview);
-  $('[data-review-done]').addEventListener('click', leaveReview);
+  $('[data-review-done]').addEventListener('click', dismissSigned);
+  const dismissHold = $('[data-signed-dismiss]');
+  if (dismissHold) dismissHold.addEventListener('click', dismissSigned);
+  const holdCopy = $('[data-signed-copy]');
+  if (holdCopy) holdCopy.addEventListener('click', async () => {
+    if (state.lastTx) setMessage('[data-copy-result]', (await copyText(JSON.stringify(state.lastTx), '[data-copy-result]')) ? t('msgCopied') : t('msgCopyFailed'), '');
+  });
   $('[data-tx-copy]').addEventListener('click', async () => {
-    if (state.lastTx) setMessage('[data-tx-copy-result]', (await copyText(JSON.stringify(state.lastTx))) ? t('msgCopied') : t('msgCopyFailed'), '');
+    if (state.lastTx) setMessage('[data-tx-copy-result]', (await copyText(JSON.stringify(state.lastTx), '[data-tx-copy-result]')) ? t('msgCopied') : t('msgCopyFailed'), '');
   });
   $('[data-tx-download]').addEventListener('click', () => {
     if (!state.lastTx) return;
@@ -657,7 +946,7 @@
   $('[data-link-done]').addEventListener('click', leaveLink);
   $('[data-link-copy]').addEventListener('click', async () => {
     const proof = $('[data-link-proof]').textContent;
-    if (proof) setMessage('[data-link-copy-result]', (await copyText(proof)) ? t('msgCopied') : t('msgCopyFailed'), '');
+    if (proof) setMessage('[data-link-copy-result]', (await copyText(proof, '[data-link-copy-result]')) ? t('msgCopied') : t('msgCopyFailed'), '');
   });
   function readLinkRequest() {
     if (!/^#link=/.test(window.location.hash)) return;
@@ -681,6 +970,47 @@
     catch (error) { setMessage('[data-conv-result]', error.message, 'bad'); }
   });
 
+  // ---------------- encrypted vault file (on this device only; never uploaded) ----------------
+  function downloadJson(filename, value) {
+    const blob = new Blob([JSON.stringify(value, null, 2) + '\n'], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function exportVault() {
+    if (!state.vault) return;
+    downloadJson('zyron-vault.json', core.parseVault(state.vault));
+  }
+  for (const button of $$('[data-vault-export]')) button.addEventListener('click', exportVault);
+  const vaultFile = $('[data-vault-file]');
+  if (vaultFile) vaultFile.addEventListener('change', async (event) => {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = '';
+    if (!file) { setMessage('[data-vault-import-result]', t('msgImportEmpty'), 'bad'); return; }
+    if (state.vault) { setMessage('[data-vault-import-result]', t('msgVaultExists'), 'bad'); return; }
+    try {
+      const vault = core.parseVault(await file.text());
+      if (core.isRollback(vault, await loadMarker())) throw new Error(rollbackMessage());
+      await saveVault(vault);
+      state.vault = vault;
+      if (state.rejectedVault) {
+        state.rejectedVault = false;
+        $('[data-unsupported]').hidden = true;
+        $('[data-rejected-delete]').hidden = true;
+        for (const button of $$('[data-go="create"], [data-go="restore"], [data-unlock-go]')) button.disabled = false;
+      }
+      setMessage('[data-vault-import-result]', t('msgImported'), 'good');
+      lock(t('msgImported'));
+    } catch (error) {
+      setMessage('[data-vault-import-result]', errorText(error), 'bad');
+    }
+  });
+
   // ---------------- delete: button -> confirmation screen -> explicit confirmation ----------------
   function updateDeleteButton() {
     const typed = $('[data-delete-confirm]').value.trim().toUpperCase() === 'DELETE';
@@ -692,6 +1022,8 @@
     if ($('[data-delete-go]').disabled) return;
     try {
       await deleteVault();
+      await deleteMeta(V1_BACKUP_KEY);
+      await deleteMeta(MARKER_KEY);
       wipeAccount(state.account);
       state.account = null;
       state.vault = null;
@@ -710,20 +1042,120 @@
   });
   $('[data-delete-cancel]').addEventListener('click', () => (state.account ? showHome() : lock()));
 
+  // ---------------- backup re-quiz (password opens the vault on this device; four words; then wipe) ----------------
+  function resetBackupQuizUi() {
+    const quizBox = $('[data-backup-quiz-box]');
+    const unlockBox = $('[data-backup-unlock-box]');
+    const quiz = $('[data-backup-quiz]');
+    const password = $('[data-backup-password]');
+    if (quiz) quiz.textContent = '';
+    if (password) password.value = '';
+    if (quizBox) quizBox.hidden = true;
+    if (unlockBox) unlockBox.hidden = false;
+    const result = $('[data-backup-result]');
+    const quizResult = $('[data-backup-quiz-result]');
+    if (result) result.textContent = '';
+    if (quizResult) quizResult.textContent = '';
+  }
+  function wipeBackup() {
+    if (state.backupEntropy) core.wipe(state.backupEntropy);
+    state.backupEntropy = null;
+    state.backupQuiz = null;
+    resetBackupQuizUi();
+  }
+  function renderBackupQuiz() {
+    const box = $('[data-backup-quiz]');
+    box.textContent = '';
+    state.backupQuiz.forEach((index) => {
+      const label = document.createElement('label');
+      const span = document.createElement('span');
+      span.textContent = t('msgQuizWord', { n: index + 1 });
+      const input = document.createElement('input');
+      for (const [name, value] of [['autocomplete', 'off'], ['autocapitalize', 'none'], ['autocorrect', 'off'], ['spellcheck', 'false'], ['data-1p-ignore', ''], ['data-lpignore', 'true']]) input.setAttribute(name, value);
+      input.dataset.backupIndex = String(index);
+      label.append(span, input);
+      box.appendChild(label);
+    });
+  }
+  $('[data-backup-open]').addEventListener('click', async () => {
+    if (!state.vault || !state.account) return lock();
+    const password = $('[data-backup-password]').value;
+    setMessage('[data-backup-result]', '', '');
+    try {
+      const opened = await busy(t('msgUnlocking'), () => core.openVault(state.vault, password));
+      wipeAccount(opened.account);
+      if (state.backupEntropy) core.wipe(state.backupEntropy);
+      state.backupEntropy = opened.entropy;
+      state.backupQuiz = randomIndexes(QUIZ_WORDS, opened.entropy.length * 3 / 4);
+      $('[data-backup-password]').value = '';
+      renderBackupQuiz();
+      $('[data-backup-unlock-box]').hidden = true;
+      $('[data-backup-quiz-box]').hidden = false;
+      setMessage('[data-backup-quiz-result]', '', '');
+    } catch (error) {
+      setMessage('[data-backup-result]', /authentication failed/.test(error.message) ? t('msgWrongPassword') : errorText(error), 'bad');
+    }
+  });
+  $('[data-backup-check]').addEventListener('click', () => {
+    if (!state.backupEntropy || !state.backupQuiz) return;
+    const words = core.entropyToPhrase(state.backupEntropy).split(' ');
+    const inputs = $$('[data-backup-quiz] input');
+    const ok = inputs.length === QUIZ_WORDS && inputs.every((input) => core.normalizePhrase(input.value) === words[Number(input.dataset.backupIndex)]);
+    words.fill('');
+    if (!ok) { setMessage('[data-backup-quiz-result]', t('msgQuizWrong'), 'bad'); return; }
+    wipeBackup();
+    state.backupConfirmed = true;
+    showHome();
+  });
+  $('[data-backup-cancel]').addEventListener('click', () => {
+    wipeBackup();
+    if (state.account) showHome(); else lock();
+  });
+
   // ---------------- navigation ----------------
   for (const button of $$('[data-go]')) {
     button.addEventListener('click', () => {
       const target = button.dataset.go;
       if (target === 'delete') { $('[data-delete-confirm]').value = ''; $('[data-delete-ack]').checked = false; $('[data-delete-go]').disabled = true; }
       setMessage('[data-strength]', t('ruleText'), '');
+      if (target === 'home') { if (state.account) showHome(); else lock(); return; }
+      if ((target === 'send' || target === 'settings' || target === 'backup') && !state.account) return lock();
       show(target);
     });
   }
 
-  // ---------------- install (Android prompt + iOS instructions) ----------------
+  // ---------------- install (Android prompt + iOS Safari walkthrough) ----------------
+  const ua = navigator.userAgent || '';
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-  const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isIos = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const IN_APP_RE = /CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo|GSA\/|Telegram|Twitter|Instagram|FBAN|FBAV|FB_IAB|Line\/|MicroMessenger|Snapchat|TikTok|BytedanceWebview|Musical_ly/i;
+  const isInAppBrowser = isIos && (IN_APP_RE.test(ua) || !/Safari/i.test(ua));
+  function browserLabel() {
+    if (/Telegram/i.test(ua)) return 'Telegram';
+    if (/Twitter/i.test(ua)) return 'X';
+    if (/Instagram/i.test(ua)) return 'Instagram';
+    if (/FBAN|FBAV|FB_IAB/i.test(ua)) return 'Facebook';
+    if (/CriOS/i.test(ua)) return 'Chrome';
+    if (/FxiOS/i.test(ua)) return 'Firefox';
+    if (/EdgiOS/i.test(ua)) return 'Edge';
+    if (/OPiOS/i.test(ua)) return 'Opera';
+    if (/Snapchat/i.test(ua)) return 'Snapchat';
+    if (/TikTok|Bytedance|Musical_ly/i.test(ua)) return 'TikTok';
+    if (/DuckDuckGo/i.test(ua)) return 'DuckDuckGo';
+    if (/MicroMessenger/i.test(ua)) return 'WeChat';
+    return 'this browser';
+  }
   $('[data-installed]').hidden = !isStandalone;
+  const installGuide = $('[data-install-guide]');
+  if (installGuide) installGuide.hidden = isStandalone;
+  const iosOnly = $('[data-install-ios-only]');
+  if (iosOnly) iosOnly.hidden = !isIos || isStandalone;
+  const wrongBrowser = $('[data-install-wrong-browser]');
+  if (wrongBrowser) wrongBrowser.hidden = !isInAppBrowser || isStandalone;
+  if (isInAppBrowser) {
+    const name = $('[data-install-browser-name]');
+    if (name) name.textContent = browserLabel();
+  }
   for (const block of $$('[data-platform]')) block.classList.toggle('current', (block.dataset.platform === 'ios') === isIos);
   if (isIos) $('.install-steps').prepend($('[data-platform="ios"]'));
   window.addEventListener('beforeinstallprompt', (event) => {
@@ -816,6 +1248,7 @@
     try {
       const stored = await loadVault();
       if (stored !== undefined) state.vault = core.parseVault(stored); // unknown or malformed vaults are rejected, never rewritten
+      if (state.vault && core.isRollback(state.vault, await loadMarker())) { state.vault = null; throw new Error(rollbackMessage()); }
     } catch (error) {
       state.vault = null;
       state.rejectedVault = true;
@@ -828,5 +1261,9 @@
     const linkError = $('[data-unlock-result]').textContent;
     lock(state.linkRequest ? t('msgLinkWaiting') : linkError);
   }
-  start();
+  start().then(() => {
+    // The install guide starts open on a first visit in a browser tab and collapsed otherwise.
+    const install = $('[data-install]');
+    if (install) install.open = !isStandalone && !state.vault;
+  });
 })();

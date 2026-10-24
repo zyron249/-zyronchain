@@ -1,6 +1,16 @@
 import { canonicalJson } from "./codec.js";
+import { FIXED_FEE_MISMATCH_MESSAGE } from "./fee-policy.js";
 import { assertMiningNotRetired, miningWorkHash } from "./mining.js";
 import type { MiningClaimTx, Transaction } from "./types.js";
+
+export interface MempoolOptions {
+  /** fixed-fee-v1: same-nonce replacement by a higher fee is rejected. */
+  disableFeeReplacement?: boolean;
+  /** fixed-fee-v1: transfers whose fee is not this value are rejected. */
+  fixedTransferFeeAtoms?: number;
+  /** Per-sender pending cap. Unset: no count cap beyond the caller's other checks. */
+  maxPendingPerSender?: number;
+}
 
 const REPLACEMENT_BUMP_NUMERATOR = 11n;
 const REPLACEMENT_BUMP_DENOMINATOR = 10n;
@@ -25,12 +35,21 @@ export class Mempool {
   private nonMiningBytes = 0;
   private nonMiningEvictionCacheValid = false;
   private nonMiningEvictionCache: EvictionCandidate | undefined;
+  private readonly pendingBySender = new Map<string, number>();
+  /** Pending `validator_update` count per sender (P1-07-F2: O(1) sender query). */
+  private readonly validatorUpdatesBySender = new Map<string, number>();
+  /** Pending `validator_update` txids (P1-07-F2: admission copies only these, not the pool). */
+  private readonly validatorUpdateIds = new Set<string>();
+  private readonly disableFeeReplacement: boolean;
+  private readonly fixedTransferFeeAtoms: number | undefined;
+  private readonly maxPendingPerSender: number | undefined;
 
   constructor(
     maxNonMiningSize?: number,
     miningReserve?: number,
     maxNonMiningBytes = DEFAULT_MEMPOOL_NON_MINING_MAX_BYTES,
-    maxMiningBytes = DEFAULT_MINING_MEMPOOL_MAX_BYTES
+    maxMiningBytes = DEFAULT_MINING_MEMPOOL_MAX_BYTES,
+    options?: MempoolOptions
   ) {
     this.maxNonMiningSize = maxNonMiningSize ?? DEFAULT_MEMPOOL_NON_MINING_CAPACITY;
     this.miningReserve = miningReserve ?? (maxNonMiningSize === undefined ? MAX_MINING_MEMPOOL_CLAIMS : 0);
@@ -49,11 +68,25 @@ export class Mempool {
     if (!Number.isSafeInteger(this.maxMiningBytes) || this.maxMiningBytes < 1) {
       throw new Error("Invalid mining mempool byte capacity");
     }
+    this.disableFeeReplacement = options?.disableFeeReplacement === true;
+    this.fixedTransferFeeAtoms = options?.fixedTransferFeeAtoms;
+    this.maxPendingPerSender = options?.maxPendingPerSender;
+    if (this.fixedTransferFeeAtoms !== undefined &&
+        (!Number.isSafeInteger(this.fixedTransferFeeAtoms) || this.fixedTransferFeeAtoms < 1)) {
+      throw new Error("Invalid fixed transfer fee");
+    }
+    if (this.maxPendingPerSender !== undefined &&
+        (!Number.isSafeInteger(this.maxPendingPerSender) || this.maxPendingPerSender < 1)) {
+      throw new Error("Invalid per-sender mempool cap");
+    }
   }
 
   add(tx: Transaction): void {
     // Mining is retired: the mining reserve can never be occupied.
     if (tx.kind === "mining_claim") assertMiningNotRetired();
+    if (this.fixedTransferFeeAtoms !== undefined && tx.kind === "transfer" && tx.feeAtoms !== this.fixedTransferFeeAtoms) {
+      throw new Error(FIXED_FEE_MISMATCH_MESSAGE);
+    }
     if (this.byId.has(tx.txid)) throw new Error("Transaction already in mempool");
     const txBytes = transactionBytes(tx);
     if (tx.kind === "mining_claim") {
@@ -66,7 +99,7 @@ export class Mempool {
     const conflictingId = this.nonceIds.get(nonceKey);
     if (conflictingId) {
       const conflicting = this.byId.get(conflictingId)!;
-      if (!isValidReplacement(conflicting, tx)) throw new Error("Conflicting sender nonce");
+      if (!isValidReplacement(conflicting, tx, this.disableFeeReplacement)) throw new Error("Conflicting sender nonce");
       const conflictingBytes = transactionBytes(conflicting);
       if (tx.kind === "mining_claim") {
         if (this.miningBytes - conflictingBytes + txBytes > this.maxMiningBytes) {
@@ -76,6 +109,9 @@ export class Mempool {
         throw new Error("Mempool full");
       }
       this.deleteTransaction(conflictingId, conflicting);
+    } else if (this.maxPendingPerSender !== undefined &&
+        (this.pendingBySender.get(tx.sender) ?? 0) >= this.maxPendingPerSender) {
+      throw new Error("Per-sender mempool cap exceeded");
     }
 
     if (tx.kind === "mining_claim") {
@@ -94,6 +130,7 @@ export class Mempool {
       }
     } else if (this.nonMiningSize >= this.maxNonMiningSize ||
         this.nonMiningBytes + txBytes > this.maxNonMiningBytes) {
+      if (this.disableFeeReplacement) throw new Error("Mempool full");
       const eviction = this.lowestPriorityEvictableTransfer();
       if (!eviction || (tx.kind === "transfer" && !hasRequiredFeeRateBump(eviction.tx, tx)) ||
           this.nonMiningBytes - transactionBytes(eviction.tx) + txBytes > this.maxNonMiningBytes) {
@@ -107,6 +144,11 @@ export class Mempool {
     this.nonceIds.set(nonceKey, tx.txid);
     this.adjustOccupancy(stored, 1, txBytes);
     this.adjustTransferSpend(stored, 1n);
+    this.adjustSenderCount(stored.sender, 1);
+    if (stored.kind === "validator_update") {
+      this.adjustValidatorUpdateSender(stored.sender, 1);
+      this.validatorUpdateIds.add(stored.txid);
+    }
     this.invalidateNonMiningEvictionCache();
   }
 
@@ -130,6 +172,42 @@ export class Mempool {
 
   values(): Transaction[] {
     return [...this.byId.values()].map((tx) => structuredClone(tx));
+  }
+
+  has(txid: string): boolean {
+    return this.byId.has(txid);
+  }
+
+  /** A copy of one pending transaction (no copy of the whole pool). */
+  get(txid: string): Transaction | undefined {
+    const tx = this.byId.get(txid);
+    return tx ? structuredClone(tx) : undefined;
+  }
+
+  /** Copies of the pending `validator_update` transactions only (no copy of the whole pool). */
+  validatorUpdates(): Transaction[] {
+    return [...this.validatorUpdateIds].map((txid) => structuredClone(this.byId.get(txid)!));
+  }
+
+  /**
+   * Copies of `sender`'s pending transactions with nonces in
+   * (`afterNonce`, `beforeNonce`), in nonce order, looked up by nonce (at most
+   * `beforeNonce - afterNonce - 1` lookups; callers bound the range by the
+   * mempool nonce window).
+   */
+  senderNonceRange(sender: string, afterNonce: number, beforeNonce: number): Transaction[] {
+    const range: Transaction[] = [];
+    for (let nonce = afterNonce + 1; nonce < beforeNonce; nonce += 1) {
+      const txid = this.nonceIds.get(`${sender}:${nonce}`);
+      const tx = txid ? this.byId.get(txid) : undefined;
+      if (tx) range.push(structuredClone(tx));
+    }
+    return range;
+  }
+
+  /** Whether `sender` has a pending `validator_update` (O(1)). */
+  hasValidatorUpdateFrom(sender: string): boolean {
+    return this.validatorUpdatesBySender.has(sender);
   }
 
   pendingTransferSpend(sender: string): bigint {
@@ -174,7 +252,26 @@ export class Mempool {
     this.nonceIds.delete(`${tx.sender}:${tx.nonce}`);
     this.adjustOccupancy(tx, -1);
     this.adjustTransferSpend(tx, -1n);
+    this.adjustSenderCount(tx.sender, -1);
+    if (tx.kind === "validator_update") {
+      this.adjustValidatorUpdateSender(tx.sender, -1);
+      this.validatorUpdateIds.delete(tx.txid);
+    }
     this.invalidateNonMiningEvictionCache();
+  }
+
+  private adjustValidatorUpdateSender(sender: string, direction: 1 | -1): void {
+    const next = (this.validatorUpdatesBySender.get(sender) ?? 0) + direction;
+    if (next < 0) throw new Error("Mempool occupancy invariant violated");
+    if (next === 0) this.validatorUpdatesBySender.delete(sender);
+    else this.validatorUpdatesBySender.set(sender, next);
+  }
+
+  private adjustSenderCount(sender: string, direction: 1 | -1): void {
+    const next = (this.pendingBySender.get(sender) ?? 0) + direction;
+    if (next < 0) throw new Error("Mempool occupancy invariant violated");
+    if (next === 0) this.pendingBySender.delete(sender);
+    else this.pendingBySender.set(sender, next);
   }
 
   private invalidateNonMiningEvictionCache(): void {
@@ -222,8 +319,9 @@ function transactionBytes(tx: Transaction): number {
   return bytes;
 }
 
-function isValidReplacement(existing: Transaction, incoming: Transaction): boolean {
+function isValidReplacement(existing: Transaction, incoming: Transaction, disableFeeReplacement: boolean): boolean {
   if (existing.kind === "transfer" && incoming.kind === "transfer") {
+    if (disableFeeReplacement) return false;
     return hasRequiredFeeRateBump(existing, incoming);
   }
   if (existing.kind === "mining_claim" && incoming.kind === "mining_claim") {

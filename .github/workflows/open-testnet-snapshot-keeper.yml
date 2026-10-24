@@ -1,0 +1,89 @@
+name: Open Testnet Snapshot Keeper
+
+# Keeps the hosted open TESTNET (tokens have no value) durable and awake without
+# depending on any always-on machine. The free web service has no persistent
+# disk: on a cold start it restores from the `state.enc` asset of the
+# `open-testnet-state` release. This job polls /health every 5 minutes (the free
+# instance idles out after 15 minutes without inbound traffic) and every
+# 10 minutes downloads the gateway's sealed /state/snapshot and publishes it.
+#
+# - The job needs the ZYRON_TESTNET_STATE_SECRET Actions secret (the same value
+#   Render generated for the gateway) to authenticate snapshot reads; it is passed
+#   only as the keeper step's env. The job runs only on refs/heads/main, so a
+#   workflow_dispatch of a modified copy of this file on another branch cannot
+#   read the secret. Release uploads use the workflow GITHUB_TOKEN with
+#   contents: write.
+# - Only the expected genesis is ever published, the published height never goes
+#   backwards, and the published asset is renamed aside (never deleted) until
+#   its replacement is in place (see .github/scripts/open-testnet-snapshot-keeper.mjs and
+#   docs/OPEN_TESTNET.md "Snapshot keepers"). While it runs, stop the legacy
+#   machine keeper (deploy/open-testnet/snapshot-keeper.sh); running both loses
+#   nothing but lets the legacy delete-then-upload remove state.enc briefly.
+# - Scheduled runs are delayed or dropped under load, often by hours, so each run
+#   loops for about 5 h 40 min instead of exiting after one cycle. The concurrency
+#   group keeps exactly one run active; the next scheduled run waits as pending
+#   and starts when the active one ends. GitHub cancels older pending runs of the
+#   group, so cancelled scheduled runs in the list are expected. A manual run also
+#   waits behind an active run.
+# - GitHub disables scheduled workflows after 60 days without repository
+#   activity. If that happens the keeper stops: re-enable it with
+#   `gh workflow enable open-testnet-snapshot-keeper.yml` (or the Actions tab).
+# - Budget: Actions minutes are free for public repositories; the job occupies one
+#   hosted runner slot. Keeping the instance awake uses about 720-744 of the 750
+#   free instance hours a Render workspace gets per month, so other free web
+#   services in the same workspace can exhaust the shared allowance.
+
+on:
+  schedule:
+    - cron: '11,41 * * * *'
+  workflow_dispatch:
+    inputs:
+      run_minutes:
+        description: 'Minutes to keep running (1-340)'
+        required: false
+        default: '340'
+
+permissions: {}
+
+concurrency:
+  group: open-testnet-snapshot-keeper
+  cancel-in-progress: false
+
+jobs:
+  keep:
+    if: github.repository == 'zyron249/-zyronchain' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout keeper script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Keep the open testnet awake and publish its sealed snapshot
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # Owner-approved 2026-10-22 (security review M2): lets the keeper
+          # authenticate the sealed snapshot body; headers that disagree with it
+          # are refused and nothing is published.
+          ZYRON_TESTNET_STATE_SECRET: ${{ secrets.ZYRON_TESTNET_STATE_SECRET }}
+          GATEWAY: https://zyron-open-testnet.onrender.com
+          TAG: open-testnet-state
+          # Deployed genesis observed 2026-10-21 on GET /genesis and GET /status
+          # (chain zyron-open-testnet-render-1, genesis timestamp
+          # 2026-10-20T22:09:28.767Z). The previous pin 9ad75d77… is the earlier
+          # chain still stored as release asset state-9ad75d777141.enc
+          # (2026-10-20T20:38:27Z). The Actions keeper refused e0212e57… until
+          # this pin matched the chain the host is serving.
+          EXPECTED_GENESIS: e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad
+          RUN_MINUTES: ${{ inputs.run_minutes || '340' }}
+          PUBLISH_INTERVAL_SECONDS: '600'
+          KEEPALIVE_INTERVAL_SECONDS: '300'
+        run: node .github/scripts/open-testnet-snapshot-keeper.mjs

@@ -17,7 +17,7 @@ let passed = 0;
 const test = (name, fn) => { fn(); passed += 1; console.log(`ok - ${name}`); };
 
 test('English only: every page, script and stylesheet (no other-language letters, lang="en")', () => {
-  const files = [...pages, 'app/index.html', ...readdirSync(site).filter((n) => /\.(js|css|json|txt|xml)$/.test(n)), 'app/app.js', 'app/app.css', 'app/manifest.json', 'README.md'];
+  const files = [...pages, 'app/index.html', 'testnet/index.html', 'testnet/testnet.js', 'testnet/testnet.css', 'verify/index.html', 'verify/verify.js', 'verify/verify.css', 'verify/session.js', 'verify/light-client.js', 'verify/vendor/secp256k1-verify.js', ...readdirSync(site).filter((n) => /\.(js|css|json|txt|xml)$/.test(n)), 'app/app.js', 'app/app.css', 'app/manifest.json', 'README.md'];
   for (const file of files) {
     const text = read(file);
     const hit = text.match(NON_ENGLISH);
@@ -48,7 +48,7 @@ test('network status: the same honest rows on home, Desktop Wallet Setup and Pho
   }
 });
 
-test('honesty: no mainnet/testnet-live, sale, price or hype claims; Buy/Sell stays disabled', () => {
+test('honesty: no mainnet/testnet-live, sale, price or hype claims; no Buy/Sell control', () => {
   for (const page of pages.filter((p) => p !== 'mining.html').concat('app/index.html')) {
     // Negated statements ("No presale", "not activated") are allowed; affirmative ones are not.
     const text = visible(read(page)).replace(/\s+/g, ' ').replace(/\b(no|not|never|without)\s+(a\s+|an\s+|the\s+)?[\w-]+/gi, ' ');
@@ -62,7 +62,7 @@ test('honesty: no mainnet/testnet-live, sale, price or hype claims; Buy/Sell sta
     }
   }
   const home = read('index.html');
-  assert.match(home, /<button class="btn" type="button" disabled>Buy \/ Sell not activated<\/button>/);
+  assert.doesNotMatch(home, /Buy \/ Sell|Buy ZYN|Sell ZYN/i, 'homepage must not show any buy/sell or trading control');
   assert.ok(home.includes('Final protocol fact') && home.includes('Proposed · under review') && home.includes('Pending governance'));
 });
 
@@ -74,7 +74,8 @@ test('naming: Phone Wallet — Testnet (/app/) vs Desktop Wallet Setup (/wallet.
   assert.match(home, /<a href="\.\/wallet\.html">Desktop Wallet Setup<\/a>/);
   assert.match(home, /<a href="\.\/validator\.html">Validator Launchpad<\/a>/);
   const nav = home.match(/<nav class="site-nav"[\s\S]*?<\/nav>/)[0];
-  assert.deepEqual([...nav.matchAll(/<a[^>]*>([^<]+)<\/a>/g)].map((m) => m[1]), ['Overview', 'Protocol', 'ZYN', 'Security', 'Developers', 'Network', 'Wallet']);
+  assert.deepEqual([...nav.matchAll(/<a[^>]*>([^<]+)<\/a>/g)].map((m) => m[1]), ['Overview', 'Protocol', 'ZYN', 'Security', 'Developers', 'Network', 'Testnet', 'Wallet']);
+  assert.match(home, /<a href="\.\/testnet\/">Wallet testnet<\/a>/);
   for (const page of pages) assert.doesNotMatch(read(page), /Install on phone|📱|>Wallet Setup</, `${page}: old wallet naming`);
   assert.ok(read('wallet.html').includes('<title>ZyronChain — Desktop Wallet Setup</title>'));
 });

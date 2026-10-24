@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#02050a" />
+  <title>ZyronChain — Verify testnet headers</title>
+  <meta name="description" content="A browser light client for the ZyronChain open testnet. Your browser checks header hashes, validator signatures, and quorum. Test ZYN has no value. This page is not a validator." />
+  <meta name="referrer" content="no-referrer" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src https://zyron-open-testnet.onrender.com; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'" />
+  <link rel="canonical" href="https://zyronchain.com/verify/" />
+  <link rel="icon" href="../favicon-32.png" type="image/png" sizes="32x32" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="ZyronChain" />
+  <meta property="og:title" content="ZyronChain — Verify testnet headers" />
+  <meta property="og:description" content="Your browser verifies open-testnet headers. No keys, no block production, no mainnet." />
+  <meta property="og:url" content="https://zyronchain.com/verify/" />
+  <meta property="og:image" content="https://zyronchain.com/brand/og-image.jpg" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://zyronchain.com/brand/og-image.jpg" />
+  <link rel="stylesheet" href="../site.css?v=7d42555bf97b" integrity="sha384-PqJfblrfH4JhjgtLhNsCo3YVRXV0fsUbBHXF/HYmtmeDJcGLClWfN9WUc18grKyf" />
+  <link rel="stylesheet" href="./verify.css?v=09801a27e624" integrity="sha384-1uE9p6zYB0rewoiCslIkqED2byCcaio+JuS0Ye3+rzlcLr13LyeniNGJKh87Kfot" />
+</head>
+<body class="site verify-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <aside class="status-notice" aria-label="Network status notice">
+    <div class="wrap status-notice-inner">
+      <p><strong>Open testnet only.</strong> Test ZYN has no value. No mainnet and no trading. This page is not a validator. It does not produce blocks and it holds no keys.</p>
+    </div>
+  </aside>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="../" aria-label="ZyronChain home">
+        <img class="brand-mark" src="../brand-mark.png" alt="" width="192" height="192" /><img class="brand-wordmark" src="../brand/zyron-wordmark.png" alt="ZyronChain" width="712" height="80" />
+      </a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="../">Home</a>
+        <a href="./" aria-current="page">Verify</a>
+        <a href="../testnet/">Testnet</a>
+        <a class="nav-wallet" href="../app/">Wallet</a>
+      </nav>
+      <a class="header-source" href="https://github.com/zyron249/-zyronchain" rel="noopener noreferrer">Source</a>
+    </div>
+  </header>
+  <main id="main" class="verify-main">
+    <div class="wrap">
+      <p class="eyebrow verify-kicker">Light client · testnet</p>
+      <h1><span class="chrome">Verify</span> headers in this browser</h1>
+      <p class="lead">This page asks the public open-testnet gateway for block headers and checks them here: hash chaining, proposer signatures, and a quorum of distinct validator signatures. The launch profile on that network requires at least 4 distinct validators. Nothing on this page is a price, a balance, or a mainnet claim.</p>
+
+      <section class="verify-banner" data-banner data-kind="checking" aria-labelledby="verify-summary">
+        <h2 id="verify-summary" class="verify-summary" data-summary>Checking the open testnet</h2>
+        <p class="verify-detail" data-summary-detail>Network: testnet. JavaScript fetches the public gateway and fills the report below.</p>
+        <p class="verify-host" data-host>Waiting for the gateway.</p>
+        <div class="verify-actions">
+          <button class="btn btn-primary" type="button" data-verify>Verify again</button>
+        </div>
+      </section>
+
+      <dl class="verify-grid">
+        <div class="verify-fact"><dt>Network</dt><dd>testnet</dd></div>
+        <div class="verify-fact"><dt>Chain ID</dt><dd data-chain>unknown</dd></div>
+        <div class="verify-fact"><dt>Gateway tip height</dt><dd data-height>unknown</dd></div>
+        <div class="verify-fact"><dt>Latest verified height</dt><dd data-verified-height>none</dd></div>
+        <div class="verify-fact"><dt>Served genesis hash</dt><dd data-genesis>unknown</dd></div>
+        <div class="verify-fact"><dt>Distinct validators</dt><dd data-validators>unknown</dd></div>
+      </dl>
+
+      <section class="verify-section" aria-labelledby="checks-title">
+        <h2 id="checks-title">Checks</h2>
+        <p class="fine">Passed means this browser checked it. Failed means a check did not hold. "Not available on this network" means the gateway does not serve the data, so the result is not invented.</p>
+        <noscript><p>JavaScript is off, so this browser cannot verify headers. No substitute result is shown.</p></noscript>
+        <ul class="verify-checks" data-checks></ul>
+      </section>
+
+      <section class="verify-section" aria-labelledby="limits-title">
+        <h2 id="limits-title">What this page does not do</h2>
+        <ul class="verify-notes">
+          <li>It does not produce blocks, sign messages, or hold a validator key.</li>
+          <li>A matching signature means a quorum of the served genesis validator set signed that header. It does not by itself prove an independent operator set.</li>
+          <li>The repository snapshot pin is compared with the served genesis hash. A mismatch is reported. It is not rewritten to match.</li>
+          <li>State inclusion proofs, non-membership proofs, and validator-set transition proofs are listed when the gateway does not serve them.</li>
+        </ul>
+        <p class="fine">Gateway: <a href="https://zyron-open-testnet.onrender.com" rel="noopener noreferrer">https://zyron-open-testnet.onrender.com</a>. The free host can sleep. This page retries with backoff and says so.</p>
+      </section>
+    </div>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap footer-bottom">
+      <span><a href="../">Home</a> · <a href="../testnet/">Wallet testnet</a> · <a href="../privacy.html">Privacy</a></span>
+      <span class="build" data-site-build>Build d30814fd</span>
+    </div>
+  </footer>
+  <script src="./vendor/secp256k1-verify.js?v=d698a325bc0a" integrity="sha384-nSFDBVTi/hbUNpjAOoYgGjZ8hIXMvkV9tb6AwNPNnWkp07tQY4EOiAkbYAlr/lTa" defer></script>
+  <script src="./light-client.js?v=e09d18e9698e" integrity="sha384-8ygRQKPkcS8StPvRnlm4RJKKYpJLPjAX017ptzx+/DMQdq/D7SEUXjPeYEJb3wXD" defer></script>
+  <script src="./session.js?v=d0a5d088b78b" integrity="sha384-dcm5lAbclFnQwyvpMRGj28by/iw4emnP7WoF2HOi5MRZx4iem8GF/kZCa5TFxZlT" defer></script>
+  <script src="./verify.js?v=3e2cd4d4380d" integrity="sha384-wfe8mDavEm57aZ40b/fCt/NuSXrXcgblWzwwA9cVxwMvgvBv+zMSDtq+w444/P5r" defer></script>
+</body>
+</html>
