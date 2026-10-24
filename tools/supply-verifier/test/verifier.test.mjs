@@ -52,13 +52,11 @@ test("happy path: replay from genesis reconciles to exactly 50,000,000 ZYN", asy
 });
 
 test("mismatched header hash between endpoints fails closed", async () => {
-  const forked = buildFixtureChain({ blocks: 5, chainId: fixture.genesis.chainId });
   // Same genesis, but block 3 differs on the second endpoint.
   const mutateBlocks = (blocks) => blocks.map((b) => (b.header.height === 3 ? { ...b, hash: "f".repeat(64) } : b));
   await withEndpoints([{}, { mutateBlocks }], async (endpoints) => {
     await assert.rejects(verifySupply(opts(endpoints)), /header hash mismatch at height 3/);
   });
-  assert.ok(forked);
 });
 
 test("wrong genesis hash fails closed", async () => {
@@ -106,7 +104,7 @@ test("tampered block served by every endpoint fails replay validation", async ()
 });
 
 test("genesis supply other than 50M fails even on a valid chain", async () => {
-  const small = buildFixtureChain({ founderZyn: 4_000_000, blocks: 2 });
+  const small = buildFixtureChain({ founderZyn: 4_000_000, blocks: 2, profile: false });
   await withEndpoints([{ fixture: small }, { fixture: small }], async (endpoints) => {
     await assert.rejects(
       verifySupply({ endpoints, genesis: small.genesis, expectedGenesisHash: small.genesisHash }),

@@ -15,8 +15,8 @@ const FOUNDER = 73, PUBLIC_DISTRIBUTION = 74, LIQUIDITY = 75, ECOSYSTEM = 76, AL
 const IDS = [...VALIDATOR_IDS, PUBLIC_DISTRIBUTION, ALICE, BOB];
 export const FEE = feePolicy.FIXED_TRANSFER_FEE_ATOMS;
 
-export function fixtureGenesis({ chainId = "zyron-supply-verifier-test", founderZyn = 5_000_000 } = {}) {
-  return {
+export function fixtureGenesis({ chainId = "zyron-supply-verifier-test", founderZyn = 5_000_000, profile = true } = {}) {
+  const genesis = {
     chainId,
     timestampMs: 1_700_000_000_000,
     validators: VALIDATOR_IDS.map((id) => ({ address: addr(id), publicKey: pub(id) })),
@@ -35,6 +35,13 @@ export function fixtureGenesis({ chainId = "zyron-supply-verifier-test", founder
     launchProfile: "fixed-supply-v1",
     feePolicy: { version: "fixed-fee-v1", fixedTransferFeeAtoms: FEE }
   };
+  if (!profile) {
+    // Legacy (non fixed-supply-v1) genesis: consensus does not pin 50M, so the
+    // verifier itself must reject a supply other than 50M. Full fee burn.
+    for (const field of ["launchProfile", "feePolicy", "publicDistributionRelease", "activityOraclePolicy", "activityOracleThreshold", "allocationLocks"]) delete genesis[field];
+    genesis.activityOracles = genesis.activityOracles.slice(0, 1);
+  }
+  return genesis;
 }
 
 function idFor(address) {
