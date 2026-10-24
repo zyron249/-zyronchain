@@ -31,12 +31,11 @@
   const BOOK_MAX_SENT = 200;
   const BOOK_NAME_MAX = 64;
   const BOOK_MAX_PLAINTEXT = 32768;
-  // Lookalike (address-poisoning) check: a known address whose first LOOKALIKE_PREFIX and last
-  // LOOKALIKE_SUFFIX hex characters equal the receiver's, or that differs in at most
-  // LOOKALIKE_MAX_DIFF hex positions, but is NOT the same full address. At most
-  // LOOKALIKE_MAX_COMPARISONS known addresses (contacts first, then sent history) are compared.
-  const LOOKALIKE_PREFIX = 4;
-  const LOOKALIKE_SUFFIX = 4;
+  // Lookalike (address-poisoning) check: a known address that is NOT the same full address but whose
+  // common hex prefix length + common hex suffix length (non-overlapping) is at least LOOKALIKE_MIN_SHARED,
+  // for any split (3+3, 5+1, 6+0, 0+6, ...), or that differs in at most LOOKALIKE_MAX_DIFF hex positions.
+  // At most LOOKALIKE_MAX_COMPARISONS known addresses (contacts first, then sent history) are compared.
+  const LOOKALIKE_MIN_SHARED = 6;
   const LOOKALIKE_MAX_DIFF = 2;
   const LOOKALIKE_MAX_COMPARISONS = 250;
   const LOOKALIKE_MAX_MATCHES = 3;
@@ -347,12 +346,16 @@
     for (const k of checked) {
       if (k.address === receiver) continue; // exact full match: the receiver is this known address
       const kx = k.address.slice(3);
-      const ends = kx.slice(0, LOOKALIKE_PREFIX) === rx.slice(0, LOOKALIKE_PREFIX) && kx.slice(40 - LOOKALIKE_SUFFIX) === rx.slice(40 - LOOKALIKE_SUFFIX);
+      let prefix = 0;
+      while (prefix < 40 && kx[prefix] === rx[prefix]) prefix += 1;
+      let suffix = 0; // bounded by 40 - prefix so no character counts twice
+      while (suffix < 40 - prefix && kx[39 - suffix] === rx[39 - suffix]) suffix += 1;
+      const ends = prefix + suffix >= LOOKALIKE_MIN_SHARED;
       const diff = [];
       for (let i = 0; i < 40; i += 1) if (kx[i] !== rx[i]) diff.push(i);
       if (diff.length === 0) continue;
       if (ends || diff.length <= LOOKALIKE_MAX_DIFF) {
-        matches.push({ address: k.address, name: k.name, source: k.source, diff });
+        matches.push({ address: k.address, name: k.name, source: k.source, diff, prefix, suffix });
         if (matches.length >= LOOKALIKE_MAX_MATCHES) break;
       }
     }
@@ -727,7 +730,7 @@
   }
 
   const api = Object.freeze({
-    DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_VERSION_V1, SELF_SEND_MESSAGE, VAULT_KDF, MAX_VAULT_TEXT, BOOK_MAX_CONTACTS, BOOK_MAX_SENT, BOOK_NAME_MAX, LOOKALIKE_PREFIX, LOOKALIKE_SUFFIX, LOOKALIKE_MAX_DIFF, LOOKALIKE_MAX_COMPARISONS, LOOKALIKE_MAX_MATCHES, ATOMS_PER_ZYN, FIXED_TRANSFER_FEE_ATOMS, FIXED_SUPPLY_V1_CHAIN_IDS, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
+    DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_VERSION_V1, SELF_SEND_MESSAGE, VAULT_KDF, MAX_VAULT_TEXT, BOOK_MAX_CONTACTS, BOOK_MAX_SENT, BOOK_NAME_MAX, LOOKALIKE_MIN_SHARED, LOOKALIKE_MAX_DIFF, LOOKALIKE_MAX_COMPARISONS, LOOKALIKE_MAX_MATCHES, ATOMS_PER_ZYN, FIXED_TRANSFER_FEE_ATOMS, FIXED_SUPPLY_V1_CHAIN_IDS, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
     TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, WALLET_TESTNET_CHAIN_ID, defaultTransferVersion,
     wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress, displayAddress, addressDiff,
     passwordStrength, normalizePhrase, generateEntropy, entropyToPhrase, phraseToEntropy, deriveAccount,

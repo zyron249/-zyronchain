@@ -118,12 +118,15 @@ its receiver is added to the sent-to history and the book is re-saved. No warnin
 ### Lookalike addresses (address poisoning)
 `lookalikeMatches(receiver, book)` (in `zyron-wallet-core.js`) compares the receiver with the saved contacts and
 then the sent-to history (newest first). A known address is flagged when it is a **different full address** and
-either its first `LOOKALIKE_PREFIX` (4) and last `LOOKALIKE_SUFFIX` (4) hex characters equal the receiver's, or it
-differs in at most `LOOKALIKE_MAX_DIFF` (2) hex positions. Rules:
+either the length of its common hex prefix with the receiver plus the length of the common hex suffix is at least
+`LOOKALIKE_MIN_SHARED` (6), for any split (3+3, 5+1, 6+0, 0+6, ...), or it differs in at most `LOOKALIKE_MAX_DIFF` (2)
+hex positions. The suffix count stops where the prefix ends, so no character is counted twice. Rules:
 - The whole 40-character address is always compared (case-insensitive, after checksum validation). The ends alone
   never decide, and an exact full match is never a lookalike.
 - At most `LOOKALIKE_MAX_COMPARISONS` (250) known addresses are compared, so the oldest history entries can fall
   outside the check when the book is full (100 contacts + 200 history). At most `LOOKALIKE_MAX_MATCHES` (3) are reported.
+- False positives: for two random addresses, P(prefix + suffix >= 6) is about 7/16^6 (seven splits, 0+6 to 6+0),
+  roughly 4 in 10 million per pair, or about 1 in 10,000 per transfer even with 250 known addresses compared. This is negligible.
 - `sendWarnings` returns it as the non-blocking `lookalike` warning, carrying the matches and differing positions.
 
 The review screen shows it in its own red box (`[data-review-lookalike]`), apart from the other warnings. The box

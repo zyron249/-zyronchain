@@ -319,8 +319,8 @@ await test('vault address book: round-trip through the encrypted vault, tamper f
 await test('lookalike detection: crafted prefix/suffix collisions, exact matches, case/checksum variants, cap', async () => {
   const account = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
   const one = core.ATOMS_PER_ZYN;
-  assert.equal(core.LOOKALIKE_PREFIX, 4);
-  assert.equal(core.LOOKALIKE_SUFFIX, 4);
+  assert.equal(core.LOOKALIKE_MIN_SHARED, 6);
+  assert.equal(core.LOOKALIKE_PREFIX, undefined, 'the fixed 4+4 rule is replaced');
   const known = 'ZYN' + 'abcd' + '0123456789'.repeat(3) + '01' + 'ef01';
   assert.match(known, /^ZYN[0-9a-f]{40}$/);
   // same first 4 and last 4 hex characters, every middle character different
@@ -349,14 +349,38 @@ await test('lookalike detection: crafted prefix/suffix collisions, exact matches
   // prefix only or suffix only (with a large middle difference) is not flagged
   assert.deepEqual(core.lookalikeMatches('ZYN' + 'abcd' + 'f'.repeat(32) + '9999', book).matches, []);
   assert.deepEqual(core.lookalikeMatches('ZYN' + '9999' + 'f'.repeat(32) + 'ef01', book).matches, []);
-  // prefix length off by one (first 3 match, 4th differs) is not an ends match
-  assert.deepEqual(core.lookalikeMatches('ZYN' + 'abc0' + 'f'.repeat(32) + 'ef01', book).matches, []);
+  // 3 prefix + 4 suffix = 7 shared: flagged under the prefix+suffix >= 6 rule
+  assert.equal(core.lookalikeMatches('ZYN' + 'abc0' + 'f'.repeat(32) + 'ef01', book).matches.length, 1);
   // small edit distance (1-2 hex positions) is flagged even if the ends differ
   const oneOff = 'ZYN' + '0bcd' + known.slice(7);
   assert.deepEqual(core.lookalikeMatches(oneOff, book).matches[0].diff, [0]);
-  const threeOff = 'ZYN' + '012' + known.slice(6);
+  const flip = (addr, idx) => 'ZYN' + [...addr.slice(3)].map((c, i) => (idx.includes(i) ? (c === 'f' ? '0' : 'f') : c)).join('');
+  const threeOff = flip(known, [0, 20, 39]);
   assert.equal(core.addressDiff(threeOff, known).length, 3);
-  assert.deepEqual(core.lookalikeMatches(threeOff, book).matches, [], 'three differences with different ends are not flagged');
+  assert.deepEqual(core.lookalikeMatches(threeOff, book).matches, [], 'three differences with no shared ends are not flagged');
+  // prefix + suffix >= LOOKALIKE_MIN_SHARED for any split; build a candidate sharing exactly p prefix and s suffix chars
+  const shared = (p, sfx) => flip(known, [...Array(40).keys()].filter((i) => i >= p && i < 40 - sfx));
+  for (const [p, sfx] of [[3, 3], [5, 3], [6, 0], [0, 6], [4, 4], [1, 5]]) {
+    const cand = shared(p, sfx);
+    const m = core.lookalikeMatches(cand, book).matches;
+    assert.equal(m.length, 1, p + '+' + sfx + ' is flagged');
+    assert.deepEqual([m[0].prefix, m[0].suffix], [p, sfx]);
+  }
+  for (const [p, sfx] of [[3, 2], [5, 0], [0, 5], [2, 3], [0, 0]]) {
+    assert.deepEqual(core.lookalikeMatches(shared(p, sfx), book).matches, [], p + '+' + sfx + ' (under 6) is not flagged');
+  }
+  // overlap: one difference in the middle gives prefix + suffix = 39, never more than 40 minus the differences
+  const mid = core.lookalikeMatches(flip(known, [17]), book).matches[0];
+  assert.equal(mid.prefix + mid.suffix, 39);
+  // random non-match control (deterministic PRNG): unrelated addresses are not flagged
+  let seed = 0x2545f491;
+  const rnd = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0) % 16; };
+  let flagged = 0;
+  for (let n = 0; n < 2000; n += 1) {
+    const a = 'ZYN' + Array.from({ length: 40 }, () => rnd().toString(16)).join('');
+    if (core.lookalikeMatches(a, book).matches.length) flagged += 1;
+  }
+  assert.equal(flagged, 0, 'random addresses are not flagged against an unrelated contact');
   // sent history is compared too
   book = core.recordSent(core.emptyBook(), core.toChecksumAddress(known));
   r = core.lookalikeMatches(poison, book);
