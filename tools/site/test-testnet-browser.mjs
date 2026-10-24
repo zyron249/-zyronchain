@@ -26,6 +26,8 @@ const statusBody = { network: 'testnet', valueBearing: false, chainId: 'zyron-wa
 const balances = new Map([[ADDR, 250000000], [RECEIVER, 0]]);
 const nonces = new Map([[ADDR, 0], [RECEIVER, 0]]);
 let posted = null;
+const faucetPosts = [];
+let faucetMode = 'ok';
 const accountReads = [];
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
@@ -75,6 +77,13 @@ try {
       posted = JSON.parse(request.postData());
       balances.set(posted.receiver, (balances.get(posted.receiver) ?? 0) + posted.amountAtoms);
       return route.fulfill({ status: 200, headers: cors, body: JSON.stringify({ accepted: true, txid: posted.txid }) });
+    }
+    if (url.pathname === '/faucet' && request.method() === 'POST') {
+      const body = JSON.parse(request.postData());
+      faucetPosts.push({ body, contentType: request.headers()['content-type'] });
+      if (faucetMode === 'limited') return route.fulfill({ status: 429, headers: { ...cors, 'retry-after': '86400' }, body: JSON.stringify({ error: 'rate limit exceeded' }) });
+      if (faucetMode === 'down') return route.fulfill({ status: 500, headers: cors, body: JSON.stringify({ error: 'internal error' }) });
+      return route.fulfill({ status: 200, headers: cors, body: JSON.stringify({ txid: '12'.repeat(32), receiver: body.address, amountAtoms: 10000000000, nonce: 1, network: 'testnet', valueBearing: false, note: 'Test ZYN, no value.' }) });
     }
     return route.fulfill({ status: 404, headers: cors, body: JSON.stringify({ error: 'not found' }) });
   });
@@ -145,6 +154,30 @@ try {
     assert.equal(posted.receiver, RECEIVER);
     assert.match(await page.textContent('[data-submit-msg]'), new RegExp(posted.txid));
     assert.match(await page.textContent('[data-submit-msg]'), /1 ZYN/);
+  });
+
+  await test('Request test ZYN posts {address} to /faucet and shows success, limit and error messages', async () => {
+    await page.fill('[data-address]', WRONG);
+    await page.click('[data-faucet]');
+    await page.waitForFunction(() => /checksum mismatch/i.test(document.querySelector('[data-faucet-msg]').textContent));
+    assert.equal(faucetPosts.length, 0, 'wrong checksum does not call the faucet');
+    await page.fill('[data-address]', CHECKSUM);
+    await page.click('[data-faucet]');
+    await page.waitForFunction(() => /^Sent /.test(document.querySelector('[data-faucet-msg]').textContent));
+    assert.deepEqual(faucetPosts[0].body, { address: ADDR }, 'canonical lowercase address is posted');
+    assert.equal(faucetPosts[0].contentType, 'application/json');
+    const ok = await page.textContent('[data-faucet-msg]');
+    assert.match(ok, /100 ZYN/);
+    assert.match(ok, /no value/);
+    assert.match(ok, new RegExp('12'.repeat(32)));
+    faucetMode = 'limited';
+    await page.click('[data-faucet]');
+    await page.waitForFunction(() => /Faucet limit reached/.test(document.querySelector('[data-faucet-msg]').textContent));
+    faucetMode = 'down';
+    await page.click('[data-faucet]');
+    await page.waitForFunction(() => /Faucet request failed: internal error/.test(document.querySelector('[data-faucet-msg]').textContent));
+    assert.equal(faucetPosts.length, 3, 'each click posts once (no automatic retry)');
+    faucetMode = 'ok';
   });
 
   await test('desktop layout has no horizontal overflow and the CSP is the page policy', async () => {

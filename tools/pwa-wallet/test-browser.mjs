@@ -225,6 +225,8 @@ try {
     assert.match(balanceCard, /does not connect/);
     assert.doesNotMatch(balanceCard, /--|Not shown|\d+(?:\.\d+)?\s*ZYN/, 'no balance number or placeholder');
     assert.equal(await page.getAttribute('[data-balance] a', 'href'), '/testnet/');
+    assert.equal(await page.getAttribute('[data-test-funds] a', 'href'), '/testnet/', 'test-funds link points to the testnet faucet page');
+    assert.match(await page.textContent('[data-test-funds]'), /Get test funds/);
     assert.ok(await noHorizontalScroll(page));
     await page.locator('[data-install]').scrollIntoViewIfNeeded();
     await shot(page, '1-install-instructions');

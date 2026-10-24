@@ -298,6 +298,34 @@
     }
   }
 
+  // POST /faucet {"address":"ZYN..."} (docs/WALLET_TESTNET_RPC.md). Not retried: a retry could
+  // spend the one daily drip of the address or the client's request budget.
+  function faucetErrorText(error) {
+    if (error && error.status === 429) return 'Faucet limit reached: one request per address per day and five per day from your network. Try again tomorrow.';
+    if (error && /checksum/i.test(String(error.message))) return error.message;
+    if (error && error.status === 400) return 'The faucet rejected this address: ' + error.message;
+    return 'Faucet request failed: ' + (error instanceof Error ? error.message : 'unknown error') + '. If the free host was asleep, wait a minute and try again.';
+  }
+  async function requestFaucet() {
+    let parsed;
+    try {
+      parsed = await parseAddress($('[data-address]').value);
+    } catch (error) {
+      msg('[data-faucet-msg]', error instanceof Error ? error.message : 'Invalid address', 'bad');
+      return;
+    }
+    msg('[data-faucet-msg]', 'Requesting test ZYN for ' + parsed.canonical + '…', '');
+    try {
+      const result = await request('/faucet', { method: 'POST', body: JSON.stringify({ address: parsed.canonical }) });
+      if (!result || result.valueBearing !== false) throw new Error('unexpected faucet response');
+      const amount = Number.isSafeInteger(result.amountAtoms) ? formatZyn(result.amountAtoms) : 'Test ZYN';
+      const txid = typeof result.txid === 'string' ? ' Transaction id ' + result.txid + '.' : '';
+      msg('[data-faucet-msg]', 'Sent ' + amount + ' (test ZYN, no value) to ' + parsed.canonical + '.' + txid + ' It arrives in the next block (about 30 seconds). Then press Look up.', 'good');
+    } catch (error) {
+      msg('[data-faucet-msg]', faucetErrorText(error), 'bad');
+    }
+  }
+
   $('[data-refresh]').addEventListener('click', () => { void loadStatus(); });
   let lookupBusy = false;
   $('[data-lookup]').addEventListener('click', () => {
@@ -310,5 +338,12 @@
   $('[data-tx-review]').addEventListener('click', () => { void reviewTransfer(); });
   $('[data-tx]').addEventListener('input', clearReview);
   $('[data-submit]').addEventListener('click', () => { void submitTransfer(); });
+  let faucetBusy = false;
+  $('[data-faucet]').addEventListener('click', () => {
+    if (faucetBusy) return;
+    faucetBusy = true;
+    $('[data-faucet]').disabled = true;
+    void requestFaucet().finally(() => { faucetBusy = false; $('[data-faucet]').disabled = false; });
+  });
   void loadStatus();
 })();
