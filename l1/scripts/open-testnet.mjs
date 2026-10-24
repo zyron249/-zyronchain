@@ -1465,6 +1465,14 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     const d = durability();
     return { asOfHeight, ...d, ...(watermark ? { durable: asOfHeight <= watermark.height, durabilityNote: DURABILITY_NOTE } : {}) };
   }
+  // POST /tx and POST /faucet answer before the transfer is in any block, so a
+  // `durable` flag computed from the tip would say nothing about the transfer.
+  // They report only the watermark; the caller waits for durableHeight to pass
+  // the block that includes the transfer.
+  function submitDurableView(asOfHeight) {
+    const { durable: _tipOnly, ...view } = durableView(asOfHeight);
+    return view;
+  }
   const faucetOrigins = parseFaucetAllowedOrigins(process.env.ZYRON_FAUCET_ALLOWED_ORIGINS);
   console.log(`faucet: cross-origin calls allowed from ${[...faucetOrigins].join(", ")}`);
   const PEER_RPC = { "x-zyron-rpc-version": "1" };
@@ -1483,7 +1491,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     for await (const chunk of request) { size += chunk.length; if (size > MAX_BODY_BYTES) throw Object.assign(new Error("request body too large"), { statusCode: 413 }); chunks.push(chunk); }
     try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw Object.assign(new Error("invalid JSON"), { statusCode: 400 }); }
   }
-  const faucetRoute = createFaucetRoute({ origins: faucetOrigins, limits, faucetAddress: faucet.address, readJsonBody, send: faucetSend, durabilityView: async () => durableView((await chainStatus()).height) });
+  const faucetRoute = createFaucetRoute({ origins: faucetOrigins, limits, faucetAddress: faucet.address, readJsonBody, send: faucetSend, durabilityView: async () => submitDurableView((await chainStatus()).height) });
   // Explorer view of a block: summary fields only.
   function summarizeBlock(block) {
     return {
@@ -1593,7 +1601,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           if (tx.chainId !== chainId) return sendJson(response, 400, { error: `wrong chainId; this testnet is ${chainId}` });
           const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
           if (submitted.status < 200 || submitted.status > 299) return sendJson(response, 400, { error: String(submitted.body?.error ?? "rejected").slice(0, 300) });
-          return sendJson(response, 200, { accepted: true, txid: submitted.body.txid, note: "Included in a coming block (about 30 seconds).", ...durableView((await chainStatus()).height) });
+          return sendJson(response, 200, { accepted: true, txid: submitted.body.txid, note: "Included in a coming block (about 30 seconds).", ...submitDurableView((await chainStatus()).height) });
         }
         if (path === "/faucet") return await faucetRoute(request, response, ip);
         if (relay && path.startsWith("/relay/v1/")) {
