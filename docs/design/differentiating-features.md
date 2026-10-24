@@ -1,6 +1,6 @@
 # Differentiating features: threat model, feasibility and priority
 
-Status: **design proposal**. Docs only. Nothing in this document is implemented unless it says "shipped". Based on `origin/main` at `4a92fb7c` (after #1110, #1113, #1114).
+Status: **design proposal**. Docs only. Nothing in this document is implemented unless it says "shipped". Based on `origin/main` at `4a92fb7c` (after #1110 and #1114).
 
 Inputs: the Security threat-model input, the wallet feasibility note (features 3, 6, 7) and the protocol feasibility note (features 1, 2, 6). All security input so far is AI review, not an audit. External human review is still required where this document says so.
 
@@ -10,7 +10,20 @@ Inputs: the Security threat-model input, the wallet feasibility note (features 3
 - **No feature touches supply or allocations.** No feature adds a credit path. Every new state transition is a move between existing balances, or into an escrow bucket that is counted in `totalSupplyAtoms()`. The only supply reduction stays the existing fee burn.
 - **Every consensus feature ships with activation off** (activation flags false, no public-testnet or mainnet activation), following the `feePolicy` pattern in [FEE_POLICY_V1.md](../FEE_POLICY_V1.md), and needs **owner review** before activation.
 - Today `SUPPORTED_PROTOCOL_VERSIONS = {1, 2, 3, 5, 6}` (`l1/src/chain.ts`). New consensus rules land behind a new protocol version, activated by a `protocol_upgrade` transaction and gated in `assertTransactionVersionForProtocol`.
+- **No supply changes anywhere.** None of the features or defaults below mints, burns (beyond the existing fee burn), reallocates or unlocks any ZYN.
 - Effort figures below are estimates from the feasibility notes, not commitments.
+
+## Decided defaults
+
+These defaults are **set by the project architect**. They are **not owner-approved**: each remains subject to the owner's review and final go.
+
+1. **Cancel authority**: only the sender may cancel, and only during the delay window. An opt-in guardian co-cancel may come later and is never on by default. Validators and the team never get cancel or freeze power.
+2. **Delay and threshold**: a default delay of 24 hours for sends of 1,000 ZYN or more. Users may tighten the delay or threshold at any time; loosening either takes effect only after the current delay has elapsed.
+3. **Guardians**: 3-of-5 by default, minimum 2-of-3, with a 72-hour recovery time lock during which the existing key can veto. Guardian changes are time-locked too. Validator keys and locked allocation addresses are excluded.
+4. **State-v2 on the wallet chain**: testnet only, activation off, and only after the wallet-side features ship plus a 30-day testnet soak. State-v2 for the wallet chain is its own future decision.
+5. **Supply verifier**: recompute from genesis by full replay of blocks, against the genesis hash pinned in the repo and docs. As a cross-check, compare headers from at least 2 endpoints. Today those endpoints are project-operated, not independent, so the cross-check detects inconsistency but is not independent attestation. Fail closed on any mismatch and reconcile every bucket to exactly 50,000,000 ZYN.
+6. **Intents**: 6B goes ahead after 6A. Wallets sign only known transaction types (transfer, stake/unstake, delayed-send/cancel) and refuse anything unknown. Note: stake/unstake and delayed-send/cancel kinds do not exist on main today; only transfer is wallet-signable now, and each new kind enters the allowlist only when it exists and has golden vectors.
+7. **Rollout**: wallet-only features (7, 5, 6A and the wallet-side delayed send) ship normally on the testnet and PWA. Chain features stay activation-off, go to testnet first and soak for 30 days. Any mainnet activation needs the owner's final go.
 
 ## Priority order (agreed)
 
@@ -39,7 +52,9 @@ Inputs: the Security threat-model input, the wallet feasibility note (features 3
 
 **Feasibility**: pure local logic, no chain dependency. Estimated S (2-3 days) with tests using crafted prefix/suffix collisions.
 
-**Owner decisions**: prefix/suffix lengths and edit-distance rule; whether a lookalike warning is blocking or acknowledge-only.
+**Rollout**: wallet-only; ships normally on testnet and PWA (decided default 7).
+
+**Still open**: prefix/suffix lengths and edit-distance rule; whether a lookalike warning is blocking or acknowledge-only.
 
 ## 2. Feature 5: public fixed-supply verifier
 
@@ -51,7 +66,9 @@ Inputs: the Security threat-model input, the wallet feasibility note (features 3
 
 **Feasibility**: no consensus change. Reuses existing state-apply code. Must be extended when new buckets (escrow in feature 1) are added.
 
-**Owner decisions**: whether signed snapshots are accepted as a starting point or only full replay from genesis; who signs snapshots; where reproducible-build hashes are published.
+**Decided default (5)**: full replay from genesis against the pinned genesis hash, header cross-check against at least 2 endpoints (project-operated today, not independent), fail closed on mismatch, every bucket reconciled to exactly 50M. Signed snapshots are not the default trust root.
+
+**Still open**: where reproducible-build hashes are published.
 
 ## 3. Feature 6A: shared fail-closed intent renderer
 
@@ -63,7 +80,7 @@ Inputs: the Security threat-model input, the wallet feasibility note (features 3
 
 **Feasibility**: estimated S-M (2-4 days wallet side; 4-6 days including CLI and signer).
 
-**Owner decisions**: which kinds, if any, become signable beyond transfers.
+**Decided default (6)**: signable allowlist is transfer, stake/unstake and delayed-send/cancel, added only as each kind exists; everything else is refused. Wallet-only rollout (default 7).
 
 ## 4. Feature 1: reversible large transfers
 
@@ -78,7 +95,9 @@ Inputs: the Security threat-model input, the wallet feasibility note (features 3
 
 **Threat model**: if the sending key also holds cancel authority, a thief can cancel too, so it covers mistakes and recipient-side compromise only; split-transfer evasion of the threshold (rolling-window cap); state bloat griefing (per-sender caps, fees); proposer timestamp drift shifting release; receivers and exchanges must treat pending funds as unconfirmed (pending/final API).
 
-**Owner decisions**: **cancel authority** (sender key vs separate key); **threshold defaults**, minimum amount, delay, per-account cap and rolling window; auto-release vs release transaction.
+**Decided defaults (1, 2)**: sender-only cancel during the window; no validator or team cancel/freeze power; optional guardian co-cancel later, opt-in, never default. 24h delay at 1,000 ZYN or more; tightening is immediate, loosening waits out the current delay. The escrow step stays activation-off, testnet first, 30-day soak (default 7).
+
+**Still open**: per-account cap and rolling-window parameters; auto-release vs release transaction.
 
 ## 5. Feature 3: wallet light-client verification via an imported proof bundle
 
@@ -92,7 +111,9 @@ Inputs: the Security threat-model input, the wallet feasibility note (features 3
 
 **Feasibility**: headers-only M (4-6 days); state proofs +M (3-5 days) once served.
 
-**Owner decisions**: **State-v2 timing** for the wallet chain; anchor pin and update process.
+**Decided default (4)**: State-v2 on the wallet chain is testnet only, activation off, after the wallet-side features ship plus a 30-day soak.
+
+**Still open**: anchor pin and update process.
 
 ## 6. Feature 6B: `intentHash` in signing payload v3
 
@@ -102,7 +123,7 @@ Inputs: the Security threat-model input, the wallet feasibility note (features 3
 
 **Feasibility**: depends on 6A; estimated +6-8 days. New protocol version, activation off, owner review.
 
-**Owner decisions**: whether 6B is needed at all while transactions stay fully structured.
+**Decided default (6)**: 6B goes ahead after 6A, activation off, testnet first with a 30-day soak.
 
 ## 7. Feature 2: seedless recovery (last)
 
@@ -116,7 +137,9 @@ Ships only behind **its own spec and external human review**.
 
 **Feasibility**: estimated 20-30 engineering days without passkeys; +10-15 with P-256 passkeys.
 
-**Owner decisions**: **guardian rules** (count, threshold, bond, delay, veto); passkey support.
+**Decided default (3)**: 3-of-5 default, minimum 2-of-3, 72h time lock with existing-key veto, time-locked guardian changes, validator keys and locked allocation addresses excluded.
+
+**Still open**: guardian bond and rate limits; passkey support.
 
 ## Feature 4: fee v1 (shipped)
 
@@ -124,10 +147,11 @@ Implemented in #1086, **not activated** ([FEE_POLICY_V1.md](../FEE_POLICY_V1.md)
 
 ## Open owner decisions (summary)
 
-1. **Cancel authority** for reversible transfers (sender key or separate key).
-2. **Threshold defaults** for reversible transfers (threshold, delay, minimum, per-account cap, rolling window) and for wallet warnings.
-3. **Guardian rules** for seedless recovery.
-4. **State-v2 timing** on the wallet chain, which gates balance/nonce proofs in feature 3.
-5. Supply verifier trust root (full replay vs signed snapshot, who signs).
-6. Whether 6B proceeds, and which further kinds become wallet-signable.
-7. Activation of any consensus feature (each stays off until owner review).
+Every decided default above still needs the owner's review and final go. Beyond those, these remain open:
+
+1. Lookalike rule parameters and whether the warning blocks.
+2. Reversible-transfer per-account cap, rolling window, and auto-release vs release transaction.
+3. Guardian bond and rate limits; passkey support.
+4. Light-client anchor pin and update process.
+5. Where reproducible-build hashes for the supply verifier are published.
+6. Activation of any consensus feature, and any mainnet activation (owner's final go).
