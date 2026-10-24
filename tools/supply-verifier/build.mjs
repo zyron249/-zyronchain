@@ -22,7 +22,7 @@ export const ARTIFACT = join(here, "dist", "zyron-supply-verifier.tar");
 
 if (process.argv.includes("--clean-l1")) {
   rmSync(join(l1Dir, "dist"), { recursive: true, force: true });
-  execFileSync("npm", ["ci", "--no-audit", "--no-fund", "--ignore-scripts"], { cwd: l1Dir, stdio: "inherit" });
+  execFileSync("npm", ["ci", "--no-audit", "--no-fund"], { cwd: l1Dir, stdio: "inherit" });
   execFileSync("npm", ["run", "build"], { cwd: l1Dir, stdio: "inherit" });
 }
 
