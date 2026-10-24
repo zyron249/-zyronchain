@@ -64,7 +64,7 @@ No hashes are published yet. For a release:
 node --test tools/supply-verifier/test/verifier.test.mjs tools/supply-verifier/test/build.test.mjs
 ```
 
-The tests use a deterministic fixture chain with test keys and fake endpoints. They cover the happy path at exactly 50M, a header mismatch between endpoints, a wrong genesis hash, a single endpoint, an unreachable or failing endpoint, missing blocks, a tampered block, a genesis supply other than 50M, and tampered balance or burn totals. The failing-first log is in `tools/supply-verifier/evidence/failing-first.log`.
+The tests use a deterministic fixture chain with test keys and fake endpoints. They cover the happy path at exactly 50M, a header mismatch between endpoints, a wrong genesis hash, a single endpoint, an unreachable or failing endpoint, missing blocks, a tampered block, a genesis supply other than 50M, and tampered balance or burn totals. The failing-first log is in `tools/supply-verifier/evidence/failing-first.txt`.
 
 ## Known limits
 

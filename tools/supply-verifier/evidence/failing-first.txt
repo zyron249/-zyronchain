@@ -1,0 +1,384 @@
+# failing-first run 2026-10-24T18:53:09-04:00 before src/verify.mjs and cli.mjs exist
+TAP version 13
+# node:internal/modules/esm/resolve:274
+#     throw new ERR_MODULE_NOT_FOUND(
+#           ^
+# Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/workspace/wt/core-supply-verifier/tools/supply-verifier/src/verify.mjs' imported from /workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs
+#     at finalizeResolution (node:internal/modules/esm/resolve:274:11)
+#     at moduleResolve (node:internal/modules/esm/resolve:859:10)
+#     at defaultResolve (node:internal/modules/esm/resolve:983:11)
+#     at \#cachedDefaultResolve (node:internal/modules/esm/loader:717:20)
+#     at ModuleLoader.resolve (node:internal/modules/esm/loader:694:38)
+#     at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:308:38)
+#     at ModuleJob._link (node:internal/modules/esm/module_job:183:49) {
+#   code: 'ERR_MODULE_NOT_FOUND',
+#   url: 'file:///workspace/wt/core-supply-verifier/tools/supply-verifier/src/verify.mjs'
+# }
+# Node.js v22.19.0
+# Subtest: tools/supply-verifier/test/verifier.test.mjs
+not ok 1 - tools/supply-verifier/test/verifier.test.mjs
+  ---
+  duration_ms: 47.091737
+  type: 'test'
+  location: '/workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:1:1'
+  failureType: 'testCodeFailure'
+  exitCode: 1
+  signal: ~
+  error: 'test failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 53.342874
+
+# failing-first run 2 2026-10-24T18:53:15-04:00 with stub src/verify.mjs and cli.mjs (no logic)
+TAP version 13
+# Subtest: pinned genesis hash matches the repo docs and the web verifier
+not ok 1 - pinned genesis hash matches the repo docs and the web verifier
+  ---
+  duration_ms: 1.030384
+  type: 'test'
+  location: '/workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:29:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /^[0-9a-f]{64}$/. Input:
+    
+    ''
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: ''
+  operator: 'match'
+  stack: |-
+    TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:30:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.start (node:internal/test_runner/test:944:17)
+    startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17)
+  ...
+# Subtest: happy path: replay from genesis reconciles to exactly 50,000,000 ZYN
+not ok 2 - happy path: replay from genesis reconciles to exactly 50,000,000 ZYN
+  ---
+  duration_ms: 7.363581
+  type: 'test'
+  location: '/workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:35:1'
+  failureType: 'testCodeFailure'
+  error: 'not implemented'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    verifySupply (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/src/verify.mjs:4:46)
+    file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:37:26
+    withEndpoints (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:21:18)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:36:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: mismatched header hash between endpoints fails closed
+not ok 3 - mismatched header hash between endpoints fails closed
+  ---
+  duration_ms: 165.991518
+  type: 'test'
+  location: '/workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:54:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /header hash mismatch at height 3/. Input:
+    
+    'Error: not implemented'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual:
+  error: 'not implemented'
+  stack: |-
+    verifySupply (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/src/verify.mjs:4:46)
+    file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:59:26
+    withEndpoints (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:21:18)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:58:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:59:5
+    async withEndpoints (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:21:12)
+    async TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:58:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: wrong genesis hash fails closed
+not ok 4 - wrong genesis hash fails closed
+  ---
+  duration_ms: 1.290525
+  type: 'test'
+  location: '/workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:64:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /genesis hash mismatch/. Input:
+    
+    'Error: not implemented'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual:
+  error: 'not implemented'
+  stack: |-
+    verifySupply (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/src/verify.mjs:4:46)
+    file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:66:26
+    withEndpoints (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:21:18)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:65:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:66:5
+    async withEndpoints (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:21:12)
+    async TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:65:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: fewer than two endpoints fails closed
+not ok 5 - fewer than two endpoints fails closed
+  ---
+  duration_ms: 0.905244
+  type: 'test'
+  location: '/workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:73:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /at least 2 distinct endpoints/. Input:
+    
+    'Error: not implemented'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual:
+  error: 'not implemented'
+  stack: |-
+    verifySupply (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/src/verify.mjs:4:46)
+    file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:75:26
+    withEndpoints (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:21:18)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:74:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:75:5
+    async withEndpoints (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:21:12)
+    async TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:74:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: unreachable endpoint fails closed
+not ok 6 - unreachable endpoint fails closed
+  ---
+  duration_ms: 2.250798
+  type: 'test'
+  location: '/workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:80:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /unreachable|failed/. Input:
+    
+    'Error: not implemented'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual:
+  error: 'not implemented'
+  stack: |-
+    verifySupply (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/src/verify.mjs:4:46)
+    file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:83:26
+    withEndpoints (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:21:18)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:82:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:83:5
+    async withEndpoints (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:21:12)
+    async TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:82:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: missing blocks fail closed
+not ok 7 - missing blocks fail closed
+  ---
+  duration_ms: 1.401959
+  type: 'test'
+  location: '/workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:90:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /missing|expected block/. Input:
+    
+    'Error: not implemented'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual:
+  error: 'not implemented'
+  stack: |-
+    verifySupply (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/src/verify.mjs:4:46)
+    file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:93:26
+    withEndpoints (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:21:18)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:92:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:93:5
+    async withEndpoints (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:21:12)
+    async TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:92:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: tampered block served by every endpoint fails replay validation
+not ok 8 - tampered block served by every endpoint fails replay validation
+  ---
+  duration_ms: 1.594366
+  type: 'test'
+  location: '/workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:97:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /replay rejected block 2/. Input:
+    
+    'Error: not implemented'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual:
+  error: 'not implemented'
+  stack: |-
+    verifySupply (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/src/verify.mjs:4:46)
+    file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:104:26
+    withEndpoints (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:21:18)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:103:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:104:5
+    async withEndpoints (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:21:12)
+    async TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:103:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: genesis supply other than 50M fails even on a valid chain
+not ok 9 - genesis supply other than 50M fails even on a valid chain
+  ---
+  duration_ms: 8.397497
+  type: 'test'
+  location: '/workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:108:1'
+  failureType: 'testCodeFailure'
+  error: 'Genesis allocation does not match the frozen fixed-supply plan'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    assertFixedSupplyAllocations (file:///workspace/wt/core-supply-verifier/l1/dist/src/tokenomics.js:50:19)
+    assertFixedSupplyGenesis (file:///workspace/wt/core-supply-verifier/l1/dist/src/tokenomics.js:63:5)
+    assertFixedSupplyLaunchProfile (file:///workspace/wt/core-supply-verifier/l1/dist/src/tokenomics.js:119:5)
+    validateGenesis (file:///workspace/wt/core-supply-verifier/l1/dist/src/chain.js:1433:9)
+    new ZyronChain (file:///workspace/wt/core-supply-verifier/l1/dist/src/chain.js:44:9)
+    buildFixtureChain (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/fixture.mjs:72:17)
+    TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:109:17)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+  ...
+# Subtest: reconcile rejects tampered balances or burn totals
+not ok 10 - reconcile rejects tampered balances or burn totals
+  ---
+  duration_ms: 0.454564
+  type: 'test'
+  location: '/workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:118:1'
+  failureType: 'testCodeFailure'
+  error: 'not implemented'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    reconcile (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/src/verify.mjs:3:37)
+    TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:120:16)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: CLI exits non-zero with a clear reason and zero on success
+not ok 11 - CLI exits non-zero with a clear reason and zero on success
+  ---
+  duration_ms: 29.924204
+  type: 'test'
+  location: '/workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:128:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    FAIL: not implemented
+    
+    
+    1 !== 0
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  actual: 1
+  operator: 'strictEqual'
+  stack: |-
+    file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:146:12
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async withEndpoints (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:21:12)
+    async TestContext.<anonymous> (file:///workspace/wt/core-supply-verifier/tools/supply-verifier/test/verifier.test.mjs:135:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..11
+# tests 11
+# suites 0
+# pass 0
+# fail 11
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 519.984188
+
+# run 3 2026-10-24T18:54:56-04:00 after implementing src/verify.mjs and cli.mjs: 10 pass, 1 fail.
+# Test 9 failed in fixture setup, not in the verifier: a fixed-supply-v1 genesis
+# cannot be built with 49M (consensus enforces the frozen plan), so the fixture
+# gained a legacy-profile option (profile: false) where only the verifier
+# enforces 50M. The assertion itself is unchanged.
+
+# run 4 2026-10-24T18:54:56-04:00 final
+ok 1 - pinned genesis hash matches the repo docs and the web verifier
+ok 2 - happy path: replay from genesis reconciles to exactly 50,000,000 ZYN
+ok 3 - mismatched header hash between endpoints fails closed
+ok 4 - wrong genesis hash fails closed
+ok 5 - fewer than two endpoints fails closed
+ok 6 - unreachable endpoint fails closed
+ok 7 - missing blocks fail closed
+ok 8 - tampered block served by every endpoint fails replay validation
+ok 9 - genesis supply other than 50M fails even on a valid chain
+ok 10 - reconcile rejects tampered balances or burn totals
+ok 11 - CLI exits non-zero with a clear reason and zero on success
+# pass 11
+# fail 0
