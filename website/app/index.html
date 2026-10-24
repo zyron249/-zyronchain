@@ -13,14 +13,14 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Zyron Wallet" />
   <meta name="format-detection" content="telephone=no" />
-  <meta name="zyron-build" content="app=35e97d2b086f6305;release=d30814fd8ece54a657f6d6df872e2cb67180a960" />
+  <meta name="zyron-build" content="app=e28b5d9c5505af8a;release=9cbeeb145ee643af842f017e7e0a3238a0fb1969" />
   <title>ZyronChain Wallet (testnet)</title>
   <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys stay on this device. This app does not connect and does not show a balance. Sign locally." />
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="icon" type="image/png" sizes="192x192" href="/app/icons/icon-192.png" />
   <link rel="icon" type="image/png" sizes="512x512" href="/app/icons/icon-512.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/app/icons/apple-touch-icon-180.png" />
-  <link rel="stylesheet" href="/app/app.css?v=2c477ce09709" integrity="sha384-b2l40OEVOMvsQ6Wec5fOizcx1Ew8JK8OisE3RkQD3mZkQ5g7lHQbfWb/J6jOwSB5" />
+  <link rel="stylesheet" href="/app/app.css?v=6ee97491bd63" integrity="sha384-Pb1yP00zE+3RupwaRTpvDwwF/CSClznPl8t+mBP8vNuy4JxFVoGN3ZsgvEnoIvb8" />
 </head>
 <body>
   <div class="app" id="app">
@@ -221,6 +221,7 @@
         <h2 data-i18n="signedHoldTitle">Signed transfer</h2>
         <p class="hint" data-i18n="signedHoldLead">Still on this screen until you dismiss it. Nothing was broadcast. Locking the app keeps it until you unlock and dismiss it.</p>
         <p class="hint" data-i18n="nextBody">This transfer is signed but not broadcast. To send it, copy it, open the wallet testnet page, paste it under "Submit a signed transfer" and press Submit.</p>
+        <p class="hint">To: <span class="address-raw" data-signed-hold-to></span></p>
         <pre data-signed-hold-json></pre>
         <div class="actions">
           <button class="primary" type="button" data-signed-copy data-i18n="copyTx">Copy signed transfer</button>
@@ -284,6 +285,10 @@
         <p class="hint">Saved inside the encrypted vault on this device. Nothing is uploaded.</p>
         <p class="hint" data-contact-empty>No contacts yet.</p>
         <ul class="contacts" data-contact-list></ul>
+        <h3>Sent-to history</h3>
+        <p class="hint">Addresses this wallet signed transfers to, stored in the encrypted vault. Shown for checking only: the app never fills in or suggests a receiver from this list.</p>
+        <p class="hint" data-history-empty>No transfers signed yet.</p>
+        <ul class="contacts" data-history-list></ul>
         <label><span>Name</span><input data-contact-name autocomplete="off" maxlength="64" /></label>
         <label><span>Address</span><input data-contact-address autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ZYN…" /></label>
         <div class="actions">
@@ -379,6 +384,12 @@
       <p class="hint" data-i18n="reviewLead">Check every field. Signing happens on this device; nothing is broadcast.</p>
       <dl class="review" data-review-rows></dl>
       <p class="hint badtext" data-review-fee-warning hidden></p>
+      <div class="notice bad" data-review-lookalike hidden>
+        <strong>Lookalike address</strong>
+        <p data-review-lookalike-message></p>
+        <div data-review-lookalike-compare></div>
+        <label class="check"><input type="checkbox" data-review-lookalike-ack /> <span>I compared every character. This is not my known address, and I still want to sign to it.</span></label>
+      </div>
       <div class="notice warn" data-review-warnings hidden>
         <strong>Check before signing</strong>
         <ul data-review-warning-list></ul>
@@ -393,6 +404,7 @@
       </div>
       <div class="tx-out result" data-tx-out hidden>
         <p class="notice ok" data-tx-summary></p>
+        <p class="hint">To: <span class="address-raw" data-tx-to-grouped></span></p>
         <div class="notice warn" data-tx-next>
           <strong data-i18n="nextTitle">Not sent yet</strong>
           <span data-i18n="nextBody">This transfer is signed but not broadcast. To send it, copy it, open the wallet testnet page, paste it under "Submit a signed transfer" and press Submit.</span>
@@ -531,7 +543,7 @@
   </div>
   <script src="/app/vendor/noble-scure.js?v=8bc52c47d762" integrity="sha384-8rRjvBX0v19QY1jV/tt980903+713cFYFQwMvCGJR+dGfUXeXlHhGh1Ommt20XpE"></script>
   <script src="/app/vendor/qr.js?v=df7e5ee0f9db" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
-  <script src="/app/zyron-wallet-core.js?v=86ec8474477c" integrity="sha384-Vn8O6/edLhLwN3AH0R2bjJcUALSqGKXEphI//Wh5uzuXU3CRIgotneSbqdpnqUJ5"></script>
-  <script src="/app/app.js?v=2a533c96b60c" integrity="sha384-j+idm4+xEuo55L0o1E0g0b7TqVvnN+igQYf0J4/JQG+GE1ss5+bc6P3j1no2nCX/"></script>
+  <script src="/app/zyron-wallet-core.js?v=43904c7b42db" integrity="sha384-dHIUd0eFvnnPkKDsKHf7EsVbTA9Lddo2NFArCJoj/oiI6FBNeodIvsM2qNYT3Fbt"></script>
+  <script src="/app/app.js?v=20b0d38df77b" integrity="sha384-E0sFV2ylGbyAaXcvWtvTAWaFxjjz/gHl5aG/fvrm/XTyWDPm9qprSm3LpDU3IeU0"></script>
 </body>
 </html>

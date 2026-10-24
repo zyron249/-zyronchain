@@ -291,6 +291,7 @@
     $('[data-link-out]').hidden = true;
     $('[data-tx-out]').hidden = true;
     $('[data-tx-json]').textContent = '';
+    $('[data-tx-to-grouped]').textContent = '';
     $('[data-review-rows]').textContent = '';
     $('[data-qr]').textContent = '';
     $('[data-created-note]').hidden = true;
@@ -359,9 +360,11 @@
     if (hold && holdJson) {
       if (state.lastTx) {
         holdJson.textContent = JSON.stringify(state.lastTx, null, 2);
+        $('[data-signed-hold-to]').textContent = core.displayAddress(state.lastTx.receiver);
         hold.hidden = false;
       } else {
         holdJson.textContent = '';
+        $('[data-signed-hold-to]').textContent = '';
         hold.hidden = true;
       }
     }
@@ -680,9 +683,26 @@
       const dt = document.createElement('dt');
       dt.textContent = row.label;
       const dd = document.createElement('dd');
-      dd.textContent = row.value;
+      dd.textContent = row.key === 'from' || row.key === 'to' ? core.groupAddress(row.value) : row.value;
       wrap.append(dt, dd);
       box.appendChild(wrap);
+    }
+  }
+  // Read-only sent-to history (grouped checksummed addresses). No buttons: nothing here fills the receiver.
+  function renderHistory(book) {
+    const list = $('[data-history-list]');
+    if (!list) return;
+    list.textContent = '';
+    $('[data-history-empty]').hidden = Boolean(book && book.sent.length);
+    if (!book) return;
+    for (const address of book.sent) {
+      const li = document.createElement('li');
+      li.dataset.history = address;
+      const addr = document.createElement('span');
+      addr.className = 'address-raw';
+      addr.textContent = core.displayAddress(address);
+      li.appendChild(addr);
+      list.appendChild(li);
     }
   }
   $('[data-tx-review]').addEventListener('click', () => {
@@ -708,13 +728,15 @@
       feeWarning.hidden = !rejection;
       feeWarning.textContent = rejection || '';
       state.unsigned = rejection ? null : unsigned;
-      renderWarnings(warnings);
+      renderWarnings(warnings.filter((w) => w.code !== 'lookalike'));
+      renderLookalike(warnings.find((w) => w.code === 'lookalike') || null);
       $('[data-review-ack]').checked = false;
       $('[data-review-ack]').disabled = Boolean(rejection);
       $('[data-tx-sign]').disabled = true;
       $('[data-review-confirm-box]').hidden = false;
       $('[data-tx-out]').hidden = true;
       $('[data-tx-json]').textContent = '';
+      $('[data-tx-to-grouped]').textContent = '';
       setMessage('[data-review-error]', '', '');
       setMessage('[data-tx-check]', '', '');
       show('review');
@@ -736,12 +758,61 @@
     box.hidden = warnings.length === 0;
     $('[data-review-warn-ack]').checked = false;
   }
-  function warningsAccepted() { return $('[data-review-warnings]').hidden || $('[data-review-warn-ack]').checked; }
+  // Grouped checksummed address with the characters at `diff` (hex indices 0..39) in <mark>.
+  // Built from DOM nodes and textContent only; no HTML from data.
+  function markedAddress(address, diff) {
+    const el = document.createElement('span');
+    el.className = 'address-raw';
+    const shown = core.toChecksumAddress(core.parseAddressInput(address).canonical);
+    const marks = new Set(diff);
+    el.appendChild(document.createTextNode('ZYN'));
+    for (let i = 0; i < 40; i += 1) {
+      if (i % 4 === 0) el.appendChild(document.createTextNode(' '));
+      const ch = shown[3 + i];
+      if (marks.has(i)) {
+        const m = document.createElement('mark');
+        m.textContent = ch;
+        el.appendChild(m);
+      } else if (el.lastChild && el.lastChild.nodeType === 3) {
+        el.lastChild.appendData(ch);
+      } else {
+        el.appendChild(document.createTextNode(ch));
+      }
+    }
+    return el;
+  }
+  // Lookalike (address-poisoning) warning: its own box and its own acknowledgement checkbox.
+  function renderLookalike(warning) {
+    const box = $('[data-review-lookalike]');
+    const compare = $('[data-review-lookalike-compare]');
+    compare.textContent = '';
+    $('[data-review-lookalike-message]').textContent = warning ? warning.message : '';
+    if (warning) {
+      for (const m of warning.matches) {
+        const row = document.createElement('div');
+        row.className = 'lookalike-row';
+        row.dataset.lookalikeMatch = m.source;
+        const a = document.createElement('p');
+        a.textContent = 'Receiver you entered:';
+        a.appendChild(markedAddress(warning.receiver, m.diff)).dataset.lookalikeReceiver = '';
+        const b = document.createElement('p');
+        b.textContent = m.source === 'contact' ? 'Your saved contact "' + m.name + '":' : 'Address you sent to before:';
+        b.appendChild(markedAddress(m.address, m.diff)).dataset.lookalikeKnown = '';
+        row.append(a, b);
+        compare.appendChild(row);
+      }
+    }
+    box.hidden = !warning;
+    $('[data-review-lookalike-ack]').checked = false;
+  }
+  function lookalikeAccepted() { return $('[data-review-lookalike]').hidden || $('[data-review-lookalike-ack]').checked; }
+  function warningsAccepted() { return lookalikeAccepted() && ($('[data-review-warnings]').hidden || $('[data-review-warn-ack]').checked); }
   function updateSignButton() {
     $('[data-tx-sign]').disabled = !$('[data-review-fee-warning]').hidden || !$('[data-review-ack]').checked || !warningsAccepted();
   }
   $('[data-review-ack]').addEventListener('change', updateSignButton);
   $('[data-review-warn-ack]').addEventListener('change', updateSignButton);
+  $('[data-review-lookalike-ack]').addEventListener('change', updateSignButton);
   $('[data-tx-sign]').addEventListener('click', () => {
     if (!state.account) return lock();
     if (!state.unsigned || !$('[data-review-ack]').checked) return;
@@ -755,6 +826,7 @@
       state.lastTx = tx;
       $('[data-tx-json]').textContent = JSON.stringify(tx, null, 2);
       $('[data-tx-summary]').textContent = t('msgSigned', { txid: tx.txid });
+      $('[data-tx-to-grouped]').textContent = core.displayAddress(tx.receiver);
       $('[data-review-confirm-box]').hidden = true;
       $('[data-tx-out]').hidden = false;
       setMessage('[data-tx-copy-result]', '', '');
@@ -788,6 +860,7 @@
     $('[data-contact-empty]').hidden = Boolean(book && book.contacts.length);
     const threshold = $('[data-threshold-current]');
     if (threshold) threshold.textContent = book && book.thresholdAtoms !== null ? 'Current threshold: ' + core.atomsToZyn(String(book.thresholdAtoms)) + ' ZYN.' : 'No threshold set.';
+    renderHistory(book);
     if (!book) return;
     for (const contact of book.contacts) {
       const li = document.createElement('li');
@@ -796,7 +869,7 @@
       name.textContent = contact.name;
       const addr = document.createElement('span');
       addr.className = 'address-raw';
-      addr.textContent = contact.address;
+      addr.textContent = core.displayAddress(contact.address);
       const actions = document.createElement('div');
       actions.className = 'actions';
       const use = document.createElement('button');
@@ -862,6 +935,7 @@
     state.lastTx = null;
     state.unsigned = null;
     $('[data-tx-json]').textContent = '';
+    $('[data-tx-to-grouped]').textContent = '';
     $('[data-review-rows]').textContent = '';
     const hold = $('[data-signed-hold]');
     const holdJson = $('[data-signed-hold-json]');
@@ -910,7 +984,7 @@
       setMessage('[data-copy-result]', errorText(error), 'bad');
       return showHome();
     }
-    $('[data-link-address]').textContent = state.account.address;
+    $('[data-link-address]').textContent = core.displayAddress(state.account.address);
     $('[data-link-network]').textContent = request.network + ' (testnet)';
     $('[data-link-expires]').textContent = request.expires;
     $('[data-link-message]').textContent = request.message;
