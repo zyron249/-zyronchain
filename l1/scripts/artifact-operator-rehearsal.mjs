@@ -2,11 +2,11 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -17,6 +17,13 @@ const operatorDir = join(root, "operator");
 const packageDir = join(operatorDir, "node_modules", "@zyronchain", "l1");
 const cliPath = join(packageDir, "dist", "src", "cli.js");
 const chainId = `zyron-artifact-operator-${process.pid}`;
+// The rehearsal runs consensus protocol v6 (F-01 fix). Protocol v1 keeps the
+// legacy F-01 round-timer split and stalls about half the time; that path stays
+// covered by the informational local-devnet job. MIN_PROTOCOL_UPDATE_DELAY is
+// 100 blocks, so heights 1-100 are pre-built offline with the installed
+// artifact's own modules (block 1 carries the quorum-approved upgrade) and v6
+// is active from height 101 for every block the validators finalize.
+const V6_ACTIVATION_HEIGHT = 101;
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -71,6 +78,71 @@ async function fetchStatus(port) {
   });
   if (!response.ok) throw new Error(`status HTTP ${response.status}`);
   return response.json();
+}
+
+async function fetchJson(port, path) {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+    headers: { "x-zyron-rpc-version": "1" },
+    signal: AbortSignal.timeout(3_000)
+  });
+  if (!response.ok) throw new Error(`${path} HTTP ${response.status}`);
+  return response.json();
+}
+
+// Uses only modules from the installed release artifact, never the source tree.
+async function prebuildV6Prefix(genesis, validators) {
+  const dist = (name) => pathToFileURL(join(packageDir, "dist", "src", name)).href;
+  const { ZyronChain } = await import(dist("chain.js"));
+  const { ChainStore } = await import(dist("storage.js"));
+  const { decryptPrivateKey } = await import(dist("keystore.js"));
+  const { createProtocolUpgrade, createProtocolUpgradeApproval } = await import(dist("transaction.js"));
+  const { expectedValidator } = await import(dist("block.js"));
+  const privateKeys = new Map();
+  for (const { keystore, passwordPath } of validators) {
+    const password = (await readFile(passwordPath, "utf8")).trim();
+    privateKeys.set(keystore.publicKey, decryptPrivateKey(keystore, password));
+  }
+  const initiator = validators[1].keystore;
+  const proposal = { chainId: genesis.chainId, nonce: 1, sender: initiator.address, activationHeight: V6_ACTIVATION_HEIGHT, protocolVersion: 6 };
+  const upgrade = createProtocolUpgrade({
+    ...proposal,
+    approvals: validators.map(({ keystore }) => createProtocolUpgradeApproval(proposal, privateKeys.get(keystore.publicKey), keystore.publicKey)),
+    timestampMs: genesis.timestampMs + 1
+  }, privateKeys.get(initiator.publicKey), initiator.publicKey);
+  const chain = new ZyronChain(genesis);
+  const blocks = [];
+  for (let height = 1; height < V6_ACTIVATION_HEIGHT; height += 1) {
+    const timestampMs = genesis.timestampMs + (height * 10);
+    const proposer = expectedValidator(genesis.validators, height, 0);
+    let block = chain.produceBlock(height === 1 ? [upgrade] : [], privateKeys.get(proposer.publicKey), { timestampMs });
+    for (const key of privateKeys.values()) block = chain.attestBlock(block, key);
+    chain.acceptBlock(block, timestampMs);
+    blocks.push(block);
+  }
+  privateKeys.clear();
+  assert.equal(chain.protocolVersionAt(V6_ACTIVATION_HEIGHT), 6);
+  assert.equal(chain.protocolVersionAt(V6_ACTIVATION_HEIGHT - 1), 1);
+  for (const { dataDirectory } of validators) {
+    await mkdir(dataDirectory, { mode: 0o700 });
+    const store = await ChainStore.open(genesis, dataDirectory);
+    for (const block of blocks) await store.commitFinalizedBlock(block);
+  }
+}
+
+async function verifyV6Blocks(ports, height) {
+  let v6Heights = 0;
+  for (const port of ports) {
+    const { blocks } = await fetchJson(port, `/blocks?from=${V6_ACTIVATION_HEIGHT}&limit=${height - V6_ACTIVATION_HEIGHT + 1}`);
+    assert.equal(blocks.length, height - V6_ACTIVATION_HEIGHT + 1);
+    for (const block of blocks) {
+      assert.equal(block.header.version, 6, `height ${block.header.height} is not a v6 block`);
+      assert.ok(Number.isSafeInteger(block.commitRound) && block.commitRound >= block.header.round);
+      assert.deepEqual(block.roundCertificate, []);
+      assert.equal(block.attestations.length, 2);
+    }
+    v6Heights = blocks.length;
+  }
+  return v6Heights;
 }
 
 async function waitForConvergence(ports, minHeight, timeoutMs = 150_000) {
@@ -162,13 +234,20 @@ try {
   const [portOne, portTwo] = await Promise.all([freePort(), freePort()]);
   const dataOne = join(operatorDir, "data-one");
   const dataTwo = join(operatorDir, "data-two");
+  await prebuildV6Prefix(genesis, [
+    { keystore: validatorOne, passwordPath: validatorOnePasswordPath, dataDirectory: dataOne },
+    { keystore: validatorTwo, passwordPath: validatorTwoPasswordPath, dataDirectory: dataTwo }
+  ]);
   const nodeOneArgs = ["--genesis", genesisPath, "--data", dataOne, "--host", "127.0.0.1", "--port", String(portOne), "--validator-key", validatorOnePath, "--peer", `http://127.0.0.1:${portTwo}`];
   const nodeTwoArgs = ["--genesis", genesisPath, "--data", dataTwo, "--host", "127.0.0.1", "--port", String(portTwo), "--validator-key", validatorTwoPath, "--peer", `http://127.0.0.1:${portOne}`];
 
   const nodeOne = startNode("artifact-validator-one", nodeOneArgs, { ZYRON_KEYSTORE_PASSWORD_FILE: validatorOnePasswordPath });
   let nodeTwo = startNode("artifact-validator-two", nodeTwoArgs, { ZYRON_KEYSTORE_PASSWORD_FILE: validatorTwoPasswordPath });
   processes.push(nodeOne, nodeTwo);
-  const beforeRestart = await waitForConvergence([portOne, portTwo], 2);
+  const beforeRestart = await waitForConvergence([portOne, portTwo], V6_ACTIVATION_HEIGHT + 1);
+  for (const port of [portOne, portTwo]) {
+    assert.equal((await fetchJson(port, "/protocol")).currentVersion, 6, "Rehearsal validators must run consensus protocol v6");
+  }
   const preRestartHeight = beforeRestart[0].height;
   const preRestartTip = beforeRestart[0].tipHash;
   const genesisHash = beforeRestart[0].genesisHash;
@@ -179,6 +258,7 @@ try {
   const afterRestart = await waitForConvergence([portOne, portTwo], preRestartHeight);
   assert.equal(afterRestart[0].tipHash, afterRestart[1].tipHash);
   assert.equal(afterRestart[0].genesisHash, genesisHash);
+  const v6Heights = await verifyV6Blocks([portOne, portTwo], afterRestart[0].height);
 
   console.log(JSON.stringify({
     status: "ok",
@@ -196,6 +276,9 @@ try {
     preRestartTip,
     finalHeight: afterRestart[0].height,
     finalTip: afterRestart[0].tipHash,
+    protocolVersion: 6,
+    v6ActivationHeight: V6_ACTIVATION_HEIGHT,
+    v6Heights,
     restartRecovered: true,
     converged: true,
     publicTestnetAuthorized: false,

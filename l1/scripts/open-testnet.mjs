@@ -23,6 +23,7 @@
 //
 // <secret dir> holds plaintext TEST validator/faucet keys (mode 0600) and the
 // chain data. It must live outside the repository and must never be shared.
+import { activeSetSeedFromHistory, createActiveSetTracker } from "./gateway-quorum.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
@@ -45,6 +46,7 @@ const { merkleRoot } = await import(dist("merkle.js"));
 const { canonicalJson } = await import(dist("codec.js"));
 const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist("tokenomics.js"));
 const { defaultPublicDistributionRelease } = await import(dist("public-distribution-release.js"));
+const { STRICT_MIN_VALIDATORS } = await import(dist("network-class.js"));
 const { gatewayClientIdentity } = await import(dist("rpc-client-identity.js"));
 const { ConsensusRelay, RELAY_MAX_BODY_BYTES, RELAY_MAX_CONSENSUS_REQUEST_BYTES, parseRelayPeers, relayReplyHeaders, relayVotingPeer } = await import("./open-testnet/consensus-relay.mjs");
 
@@ -489,10 +491,110 @@ export const SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 20_000, 
 // Each wait is far below the 5-minute start-up stall limit.
 export const SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS = [3_000, 7_000, 15_000, 30_000, 45_000, 60_000];
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "600" };
+// POST /faucet spends a per-IP daily quota, so only the project's own pages may
+// call it cross-origin: zyronchain.com and the explorer page this gateway
+// serves itself (https://zyron-open-testnet.onrender.com). Other origins get no
+// Access-Control-Allow-Origin, so a browser blocks the call. Override with a
+// comma-separated ZYRON_FAUCET_ALLOWED_ORIGINS. Read-only routes keep "*".
+export const DEFAULT_FAUCET_ALLOWED_ORIGINS = Object.freeze(["https://zyronchain.com", "https://zyron-open-testnet.onrender.com"]);
+// Canonical form of an http(s) origin: lowercase scheme and host, default
+// port dropped (https://x:443 and http://x:80 equal https://x and http://x).
+// Returns null for anything that is not a bare origin (path, query, userinfo,
+// other schemes, the opaque "null" origin).
+export function normalizeFaucetOrigin(value) {
+  if (typeof value !== "string") return null;
+  const raw = value.trim().replace(/\/+$/, "");
+  let url;
+  try { url = new URL(raw); } catch { return null; }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  if (url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname !== "")) return null;
+  if (!/^https?:\/\/[^/?#@]+$/i.test(raw)) return null;
+  return url.origin;
+}
+export function parseFaucetAllowedOrigins(value) {
+  if (typeof value !== "string" || value.trim() === "") return new Set(DEFAULT_FAUCET_ALLOWED_ORIGINS);
+  const origins = new Set();
+  for (const entry of value.split(",")) {
+    const raw = entry.trim();
+    if (raw === "") continue;
+    const origin = normalizeFaucetOrigin(raw);
+    if (origin === null) throw new Error(`ZYRON_FAUCET_ALLOWED_ORIGINS: ${raw} is not an origin`);
+    origins.add(origin);
+  }
+  if (origins.size === 0) throw new Error("ZYRON_FAUCET_ALLOWED_ORIGINS lists no origin");
+  return origins;
+}
+// CORS headers for /faucet (responses and preflight). Always Vary: Origin;
+// ACAO only for an allowed origin (compared port-normalized), echoed exactly
+// as the browser sent it.
+export function faucetCorsHeaders(origin, allowed) {
+  const headers = { vary: "Origin" };
+  if (faucetOriginAllowed(origin, allowed)) {
+    Object.assign(headers, { "access-control-allow-origin": origin, "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "600" });
+  }
+  return headers;
+}
+// Only allowlisted origins pass. There is deliberately no "Origin matches the
+// Host header" exception: an attacker controlling DNS for evil.example can
+// rebind it to this gateway, so a page on http://evil.example would send
+// Host: evil.example and Origin: http://evil.example and look same-origin.
+// The gateway's own explorer page is covered by the default allowlist; local
+// and smoke gateways add theirs with ZYRON_FAUCET_ALLOWED_ORIGINS.
+export function faucetOriginAllowed(origin, allowed) {
+  const normalized = normalizeFaucetOrigin(origin);
+  return normalized !== null && allowed.has(normalized);
+}
+// writeJson merges CORS first; a faucet response replaces it with these.
+function withoutCors(extra) { return { "access-control-allow-origin": undefined, "access-control-allow-methods": undefined, "access-control-allow-headers": undefined, "access-control-max-age": undefined, ...extra }; }
+export const FAUCET_UNAVAILABLE_MESSAGE = "faucet temporarily unavailable, retry later";
+// POST /faucet. Rate limits run before the body is read. Errors are generic;
+// the details (node error text included) go to the server log only.
+export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody, send, log = (line) => console.error(line), durabilityView = async () => ({}) }) {
+  return async (request, response, ip) => {
+    const cors = withoutCors(faucetCorsHeaders(request.headers.origin, origins));
+    const reply = (code, body, extra = {}) => writeJson(response, code, body, { ...cors, ...extra });
+    const limited = (r) => reply(429, { error: "rate limit exceeded" }, { "retry-after": String(Math.max(1, Math.ceil(r.retryAfterMs / 1000))) });
+    // Origin and Content-Type are checked BEFORE any quota is taken, so a
+    // cross-site no-cors POST (text/plain, form, Origin: null) cannot burn a
+    // visitor's per-IP quota. A request with no Origin header (curl, scripts,
+    // server-side clients) is served on purpose: browsers always send Origin on
+    // a cross-origin POST, so a missing Origin is not a browser attack vector.
+    // Only allowlisted origins pass; an Origin matching the Host header is
+    // NOT trusted (DNS rebinding can forge that), see faucetOriginAllowed.
+    const origin = request.headers.origin;
+    if (origin !== undefined && !faucetOriginAllowed(origin, origins)) return reply(403, { error: "origin not allowed" });
+    const contentType = String(request.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+    if (contentType !== "application/json") return reply(415, { error: "content-type must be application/json" });
+    try {
+      const ipRate = limits.faucetIp.take(ip);
+      if (!ipRate.allowed) return limited(ipRate);
+      const body = await readJsonBody(request);
+      const address = body && typeof body === "object" ? body.address : undefined;
+      if (typeof address !== "string" || !ADDRESS_PATTERN.test(address) || address === faucetAddress) return reply(400, { error: "body must be {\"address\":\"ZYN...\"}" });
+      const addressRate = limits.faucetAddress.take(address);
+      if (!addressRate.allowed) return limited(addressRate);
+      const globalRate = limits.faucetGlobal.take("global");
+      if (!globalRate.allowed) return limited(globalRate);
+      const result = await send(address);
+      // The transfer is already queued: a failed durability lookup must not turn it into an error.
+      const durability = await durabilityView().catch(() => ({}));
+      return reply(200, { ...result, network: "testnet", valueBearing: false, note: "TESTNET — tokens have no value. Arrives in a coming block (about 30 seconds).", ...durability });
+    } catch (error) {
+      // Only the gateway's own fixed request-validation messages are passed through.
+      const code = error?.statusCode;
+      const own = (code === 400 || code === 413 || code === 415) && FAUCET_REQUEST_ERRORS.has(error?.message);
+      if (!own) log(`faucet error: ${error instanceof Error ? error.message : String(error)}`);
+      return reply(own ? code : 503, { error: own ? error.message : FAUCET_UNAVAILABLE_MESSAGE });
+    }
+  };
+}
+const FAUCET_REQUEST_ERRORS = new Set(["content-type must be application/json", "request body too large", "invalid JSON"]);
 const SECURITY = { "x-content-type-options": "nosniff", "x-zyron-network": "testnet-no-value", "referrer-policy": "no-referrer" };
 function writeJson(response, code, body, extra = {}) {
   const payload = `${JSON.stringify(body, null, 2)}\n`;
-  response.writeHead(code, { ...CORS, ...SECURITY, "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(payload), ...extra });
+  const headers = { ...CORS, ...SECURITY, "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(payload), ...extra };
+  for (const name of Object.keys(headers)) if (headers[name] === undefined) delete headers[name];
+  response.writeHead(code, headers);
   response.end(payload);
 }
 
@@ -606,6 +708,76 @@ async function readSecret(path) {
   const info = await stat(path);
   assert.equal(info.mode & 0o077, 0, `${path} must not be readable by group/other`);
   return JSON.parse(await readFile(path, "utf8"));
+}
+
+// ---- durable watermark (follower forks after a cold start) ------------------
+// The hosted instance has no persistent disk: a cold start restores the last
+// snapshot the keeper published, which can be minutes behind the tip that was
+// already finalized and served. The validators then finalize those heights a
+// second time with different blocks, and every follower that synced the lost
+// blocks is stuck on a fork. The validators cannot know what they finalized
+// before the disk was lost, so the gateway never serves a block to followers
+// (the /peer surface) above the durable height: the height of the newest
+// published snapshot that matches this chain. Anything a follower syncs is
+// therefore inside every snapshot a later cold start can restore.
+export function createDurableWatermark({ height = 0, tipHash, fetchPublished, localHashAt, log = () => {} }) {
+  const state = { height, tipHash, checkedAtMs: undefined, lastError: undefined };
+  let pending;
+  async function check() {
+    const published = await fetchPublished();
+    if (!published) return state;
+    const { height: publishedHeight, tipHash: publishedHash } = published;
+    if (!Number.isSafeInteger(publishedHeight) || publishedHeight <= state.height) { state.checkedAtMs = Date.now(); return state; }
+    const local = await localHashAt(publishedHeight);
+    if (local !== publishedHash) throw new Error(`published snapshot block ${publishedHeight} (${String(publishedHash).slice(0, 12)}) is not on this chain (${String(local).slice(0, 12)})`);
+    state.height = publishedHeight; state.tipHash = publishedHash; state.checkedAtMs = Date.now(); state.lastError = undefined;
+    return state;
+  }
+  return {
+    get height() { return state.height; },
+    get tipHash() { return state.tipHash; },
+    status() { return { durableHeight: state.height, durableCheckedAtMs: state.checkedAtMs ?? null, ...(state.lastError ? { durableError: state.lastError } : {}) }; },
+    refresh() {
+      pending ??= check().catch((error) => { state.lastError = error instanceof Error ? error.message : String(error); log(`durable watermark: ${state.lastError}`); return state; }).finally(() => { pending = undefined; });
+      return pending;
+    }
+  };
+}
+
+// Reads the published snapshot and returns its height and tip hash, or
+// undefined when none is published yet.
+export async function readPublishedSnapshotTip(url, secret, { fetchImpl = fetch, timeoutMs = 60_000, cache } = {}) {
+  // A HEAD first: an unchanged asset (same ETag or Last-Modified and length)
+  // is not downloaded again.
+  let validator;
+  if (cache) {
+    const head = await fetchImpl(url, { method: "HEAD", redirect: "follow", signal: AbortSignal.timeout(timeoutMs) }).catch(() => undefined);
+    if (head?.status === 404) return undefined;
+    if (head?.status === 200) {
+      const tag = head.headers.get("etag") ?? head.headers.get("last-modified");
+      validator = tag ? `${tag}|${head.headers.get("content-length") ?? ""}` : undefined;
+      if (validator && cache.validator === validator) return cache.tip;
+    }
+  }
+  const response = await fetchImpl(url, { redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
+  if (response.status === 404) { await response.body?.cancel().catch(() => {}); return undefined; }
+  if (response.status !== 200) { await response.body?.cancel().catch(() => {}); throw new Error(`published snapshot returned ${response.status}`); }
+  const declared = Number(response.headers.get("content-length") ?? "0");
+  if (declared > MAX_SNAPSHOT_BYTES) { await response.body?.cancel().catch(() => {}); throw new Error("published snapshot is larger than the snapshot size limit"); }
+  const chunks = []; let size = 0;
+  for await (const chunk of response.body ?? []) { size += chunk.length; if (size > MAX_SNAPSHOT_BYTES) throw new Error("published snapshot is larger than the snapshot size limit"); chunks.push(chunk); }
+  const bundle = openSnapshot(Buffer.concat(chunks), secret);
+  const blocks = bundle?.blocks;
+  if (!Array.isArray(blocks) || blocks.length === 0) return undefined;
+  const tip = { height: blocks.length, tipHash: blocks[blocks.length - 1].hash };
+  if (cache) { cache.validator = validator; cache.tip = tip; }
+  return tip;
+}
+
+// Caps a follower status at the durable watermark.
+export function capPeerStatus(status, watermark) {
+  if (!watermark || status.height <= watermark.height) return status;
+  return { ...status, height: watermark.height, tipHash: watermark.tipHash };
 }
 
 // ---- sealed state snapshots (TEST keys + public blocks) ---------------------------
@@ -990,7 +1162,7 @@ export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, ge
 }
 
 // ---- run: validators + gateway ---------------------------------------------------
-export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server, verifiedHistory } = {}) {
+export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server, verifiedHistory, durable } = {}) {
   const runStartedAtMs = Date.now();
   const genesisPath = join(dir, "genesis.json");
   const genesis = JSON.parse(await readFile(genesisPath, "utf8"));
@@ -1002,6 +1174,10 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   assert.equal(faucet.address, info.faucetAddress);
   const chainId = genesis.chainId;
   const ports = VALIDATOR_NAMES.map((_, i) => basePort + i);
+  // Hosted validator public keys, matched against the active validator set
+  // each validator reports (GET /validator-set) for the gateway quorum.
+  const validatorPublicKeys = new Map();
+  for (const name of VALIDATOR_NAMES) validatorPublicKeys.set(name, publicKeyFromPrivate((await readSecret(join(dir, "keys", `${name}.json`))).privateKey));
   const nodes = new Map();
   let shuttingDown = false;
   // Consensus relay (docs/CONSENSUS_RELAY.md): allowlisted external peers,
@@ -1120,10 +1296,16 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   async function validatorStatuses() {
     return Promise.all(VALIDATOR_NAMES.map(async (name) => {
       const node = nodes.get(name);
+      const publicKey = validatorPublicKeys.get(name);
       try {
-        const [status, ready] = await Promise.all([nodeFetch(node.port, "/status"), nodeFetch(node.port, "/readyz")]);
-        return { name, up: true, height: status.body.height, tipHash: status.body.tipHash, ready: ready.status === 200 };
-      } catch { return { name, up: false }; }
+        const [status, ready, set] = await Promise.all([
+          nodeFetch(node.port, "/status"), nodeFetch(node.port, "/readyz"),
+          nodeFetch(node.port, "/validator-set").catch(() => undefined)
+        ]);
+        // Reports are untrusted; createActiveSetTracker validates them.
+        const activeSet = set?.status === 200 && set.body && typeof set.body === "object" ? set.body : undefined;
+        return { name, publicKey, up: true, height: status.body.height, tipHash: status.body.tipHash, ready: ready.status === 200, ...(activeSet ? { activeSet } : {}) };
+      } catch { return { name, publicKey, up: false }; }
     }));
   }
   let statusCache; let statusCacheAt = 0;
@@ -1173,6 +1355,27 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // Verified history (R28-1059): from the restore replay when there was one,
   // otherwise validated from genesis on the first build.
   const snapshotHistory = verifiedHistory ?? createSnapshotHistory(genesis);
+  // Durable watermark (see createDurableWatermark): only when the chain lives
+  // in published snapshots. `durable.fetchPublished` reads the newest one.
+  let watermark;
+  if (durable) {
+    const restoredBlocks = verifiedHistory?.blocks ?? [];
+    watermark = createDurableWatermark({
+      height: restoredBlocks.length, tipHash: restoredBlocks.length ? restoredBlocks[restoredBlocks.length - 1].hash : undefined,
+      fetchPublished: durable.fetchPublished,
+      localHashAt: async (height) => { const r = await anyNode(`/blocks?from=${height}&limit=1`); if (r.status !== 200 || !Array.isArray(r.body?.blocks) || !r.body.blocks[0]) throw new Error(`local block ${height} unavailable`); return r.body.blocks[0].hash; },
+      log: (line) => console.error(line)
+    });
+    // The restored snapshot is already durable; the first check waits one
+    // interval so a cold start does not download the snapshot twice.
+    const timer = setInterval(() => { void watermark.refresh(); }, durable.intervalMs ?? 120_000); timer.unref();
+  }
+  // Trusted active set: seeded (read-only) from the verified history's set at
+  // tip+1, or genesis when there is no verified history; it then moves only
+  // when a quorum of it agrees on a new set of at least STRICT_MIN_VALIDATORS.
+  const activeSetSeed = activeSetSeedFromHistory(verifiedHistory);
+  const activeSetTracker = createActiveSetTracker(genesis.validators, { addressOf: (publicKey) => addressFromPublicKey(publicKey), minValidators: STRICT_MIN_VALIDATORS, ...(activeSetSeed ? { initial: activeSetSeed } : {}) });
+  if (log) console.log(`active set seeded from ${activeSetTracker.seededFrom}${activeSetSeed ? ` (height ${activeSetSeed.height}, ${activeSetSeed.validators.length} validators)` : ""}`);
   // One build at a time: concurrent requests share it, and the verified
   // history is never extended twice in parallel.
   function buildSnapshot() {
@@ -1237,13 +1440,14 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     const run = faucetQueue.then(async () => {
       const status = await chainStatus();
       const nonceResponse = await anyNode(`/nonce/${faucet.address}`);
-      if (nonceResponse.status !== 200) throw new Error("faucet nonce unavailable");
+      if (nonceResponse.status !== 200) throw new Error(`faucet nonce lookup failed (status ${nonceResponse.status})`);
       if (Date.now() - lastFaucetNonceAt > 180_000) lastFaucetNonce = 0;
       const nonce = Math.max(nonceResponse.body.nonce, lastFaucetNonce) + 1;
       const tx = createTransfer({ chainId, nonce, sender: faucet.address, receiver, amountAtoms: FAUCET_DRIP_ATOMS, feeAtoms: 0, timestampMs: Date.now() },
         faucet.privateKey, faucet.publicKey, status.transactionVersion);
       const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
-      if (submitted.status < 200 || submitted.status > 299) throw Object.assign(new Error(`faucet transfer rejected: ${String(submitted.body?.error ?? submitted.status).slice(0, 200)}`), { statusCode: 503 });
+      // The node's error text is logged by the faucet route, never returned.
+      if (submitted.status < 200 || submitted.status > 299) throw new Error(`faucet transfer rejected by node (status ${submitted.status}): ${String(submitted.body?.error ?? "").slice(0, 300)}`);
       lastFaucetNonce = nonce; lastFaucetNonceAt = Date.now();
       return { txid: tx.txid, receiver, amountAtoms: FAUCET_DRIP_ATOMS, nonce };
     });
@@ -1251,6 +1455,26 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     return run;
   }
 
+  // Blocks above durableHeight are finalized but not yet in a published
+  // snapshot: a cold start can replace them (docs/OPEN_TESTNET.md).
+  function durability() { return watermark ? { peerCap: "durable", durableHeight: watermark.height } : { peerCap: "off" }; }
+  const DURABILITY_NOTE = "finalized blocks above durableHeight can be replaced by a cold start";
+  // State answers (balances, nonces, accepted txids) come from the live tip; mark
+  // whether that tip is already covered by a published snapshot.
+  function durableView(asOfHeight) {
+    const d = durability();
+    return { asOfHeight, ...d, ...(watermark ? { durable: asOfHeight <= watermark.height, durabilityNote: DURABILITY_NOTE } : {}) };
+  }
+  // POST /tx and POST /faucet answer before the transfer is in any block, so a
+  // `durable` flag computed from the tip would say nothing about the transfer.
+  // They report only the watermark; the caller waits for durableHeight to pass
+  // the block that includes the transfer.
+  function submitDurableView(asOfHeight) {
+    const { durable: _tipOnly, ...view } = durableView(asOfHeight);
+    return view;
+  }
+  const faucetOrigins = parseFaucetAllowedOrigins(process.env.ZYRON_FAUCET_ALLOWED_ORIGINS);
+  console.log(`faucet: cross-origin calls allowed from ${[...faucetOrigins].join(", ")}`);
   const PEER_RPC = { "x-zyron-rpc-version": "1" };
   const sendJson = writeJson;
   const explorerHtml = await readFile(join(l1Root, "scripts", "open-testnet", "explorer.html"));
@@ -1267,6 +1491,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     for await (const chunk of request) { size += chunk.length; if (size > MAX_BODY_BYTES) throw Object.assign(new Error("request body too large"), { statusCode: 413 }); chunks.push(chunk); }
     try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw Object.assign(new Error("invalid JSON"), { statusCode: 400 }); }
   }
+  const faucetRoute = createFaucetRoute({ origins: faucetOrigins, limits, faucetAddress: faucet.address, readJsonBody, send: faucetSend, durabilityView: async () => submitDurableView((await chainStatus()).height) });
   // Explorer view of a block: summary fields only.
   function summarizeBlock(block) {
     return {
@@ -1286,15 +1511,19 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       if (!rawUrl.startsWith("/") || rawUrl.startsWith("//") || rawUrl.length > 256 || /[\u0000-\u001f\u007f\\]/.test(rawUrl)) return sendJson(response, 400, { error: "invalid request target" });
       const url = new URL(rawUrl, "http://gateway.invalid");
       const path = url.pathname.replace(/\/+$/, "") || "/";
-      if (request.method === "OPTIONS") { response.writeHead(204, CORS); return response.end(); }
+      if (request.method === "OPTIONS") {
+        if (path === "/faucet") { response.writeHead(204, faucetCorsHeaders(request.headers.origin, faucetOrigins)); return response.end(); }
+        response.writeHead(204, CORS); return response.end();
+      }
       const ip = clientIp(request);
       if (request.method === "GET") {
         if (path === "/health" || path === "/healthz" || path === "/readyz") {
-          const { validators, checkedAtMs } = await cachedValidatorStatuses();
-          const up = validators.filter((v) => v.up);
+          const { validators: statuses, checkedAtMs } = await cachedValidatorStatuses();
+          const up = statuses.filter((v) => v.up);
           const heights = up.map((v) => v.height);
-          const quorum = Math.floor((2 * genesis.validators.length) / 3) + 1;
-          const ok = up.length >= quorum;
+          // Quorum of the ACTIVE validator set (follows validator_update).
+          const { ok, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, activeSetRejected } = activeSetTracker.evaluate(statuses);
+          const validators = statuses.map(({ activeSet: _activeSet, ...rest }) => rest);
           if (ok) everReady = true;
           // Until the validators first reach a quorum (bounded by STARTUP_GRACE_MS)
           // liveness stays 200 "starting"; afterwards a lost quorum is a 503.
@@ -1302,7 +1531,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const starting = !ok && !everReady && Date.now() - runStartedAtMs < STARTUP_GRACE_MS;
           const status = ok ? "ready" : starting ? "starting" : "degraded";
           const code = ok || (starting && path !== "/readyz") ? 200 : 503;
-          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), network: "testnet", valueBearing: false, chainId, persistence, quorum, validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
+          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), network: "testnet", valueBearing: false, chainId, persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
@@ -1310,14 +1539,17 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
         // raw /status and /blocks only. Validator P2P write paths are never exposed.
         if (path === "/peer/status") {
           const result = await anyNode("/status");
-          return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? result.body : { error: "node unavailable" }, PEER_RPC);
+          if (result.status === 200 && watermark && !watermark.tipHash) return sendJson(response, 503, { error: "no durable block yet" }, PEER_RPC);
+          return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? capPeerStatus(result.body, watermark) : { error: "node unavailable" }, PEER_RPC);
         }
         if (path === "/peer/blocks") {
           const from = Number.parseInt(url.searchParams.get("from") ?? "", 10);
           const limit = Math.min(100, Math.max(1, Number.parseInt(url.searchParams.get("limit") ?? "100", 10) || 100));
           if (!Number.isSafeInteger(from) || from < 1) return sendJson(response, 400, { error: "from must be a positive integer" });
-          const result = await anyNode(`/blocks?from=${from}&limit=${limit}`);
-          return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? result.body : { error: "node unavailable" }, PEER_RPC);
+          if (watermark && from > watermark.height) return sendJson(response, 404, { error: "no durable block at that height yet" }, PEER_RPC);
+          const capped = watermark ? Math.min(limit, watermark.height - from + 1) : limit;
+          const result = await anyNode(`/blocks?from=${from}&limit=${capped}`);
+          return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? { ...result.body, blocks: result.body.blocks.slice(0, capped) } : { error: "node unavailable" }, PEER_RPC);
         }
         if (path === "/state/snapshot" && stateSecret) {
           const snapshotRate = limits.snapshot.take("global");
@@ -1328,7 +1560,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
         }
         if (path === "/" || path === "/explorer") return sendHtml(response);
         if (path === "/api" ) return sendJson(response, 200, { name: "ZyronChain open TESTNET RPC", ...(await chainStatus()), endpoints: ["GET /health", "GET /status", "GET /network", "GET /genesis", "GET /account/{address}", "GET /balance/{address}", "GET /nonce/{address}", "GET /blocks?from=&limit=", "GET /block/{height}", "GET /peer/status", "GET /peer/blocks?from=&limit=", "POST /tx", "POST /faucet {address}"] });
-        if (path === "/status" || path === "/chain") return sendJson(response, 200, await chainStatus());
+        if (path === "/status" || path === "/chain") return sendJson(response, 200, { ...(await chainStatus()), ...durability() });
         if (path === "/network") return sendJson(response, 200, info);
         if (path === "/genesis") return sendJson(response, 200, { network: "testnet", valueBearing: false, genesisHash: info.genesisHash, genesis });
         if (path === "/blocks" || path.startsWith("/block/")) {
@@ -1342,7 +1574,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           if (!Number.isSafeInteger(from) || from < 1 || from > tip) return sendJson(response, 404, { error: "no such block" });
           const result = await anyNode(`/blocks?from=${from}&limit=${limit}`);
           if (result.status !== 200) return sendJson(response, 502, { error: "node unavailable" });
-          const blocks = result.body.blocks.map(summarizeBlock);
+          const blocks = result.body.blocks.map((block) => ({ ...summarizeBlock(block), ...(watermark ? { durable: block.header.height <= watermark.height } : {}) }));
           return sendJson(response, 200, path === "/blocks" ? { network: "testnet", tip, blocks } : blocks[0]);
         }
         for (const prefix of ["/balance/", "/nonce/", "/account/"]) {
@@ -1351,7 +1583,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           if (!ADDRESS_PATTERN.test(address)) return sendJson(response, 400, { error: "invalid address" });
           const [balance, nonce] = await Promise.all([anyNode(`/balance/${address}`), anyNode(`/nonce/${address}`)]);
           if (balance.status !== 200 || nonce.status !== 200) return sendJson(response, 502, { error: "node unavailable" });
-          const body = { network: "testnet", chainId, height: (await chainStatus()).height, address, balanceAtoms: balance.body.balanceAtoms, nonce: nonce.body.nonce };
+          const asOf = (await chainStatus()).height;
+          const body = { network: "testnet", chainId, height: asOf, address, balanceAtoms: balance.body.balanceAtoms, nonce: nonce.body.nonce, ...durableView(asOf) };
           if (prefix === "/balance/") delete body.nonce;
           if (prefix === "/nonce/") delete body.balanceAtoms;
           return sendJson(response, 200, body);
@@ -1368,21 +1601,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           if (tx.chainId !== chainId) return sendJson(response, 400, { error: `wrong chainId; this testnet is ${chainId}` });
           const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
           if (submitted.status < 200 || submitted.status > 299) return sendJson(response, 400, { error: String(submitted.body?.error ?? "rejected").slice(0, 300) });
-          return sendJson(response, 200, { accepted: true, txid: submitted.body.txid, note: "Included in a coming block (about 30 seconds)." });
+          return sendJson(response, 200, { accepted: true, txid: submitted.body.txid, note: "Included in a coming block (about 30 seconds).", ...submitDurableView((await chainStatus()).height) });
         }
-        if (path === "/faucet") {
-          const ipRate = limits.faucetIp.take(ip);
-          if (!ipRate.allowed) return limited(response, ipRate);
-          const body = await readJsonBody(request);
-          const address = body && typeof body === "object" ? body.address : undefined;
-          if (typeof address !== "string" || !ADDRESS_PATTERN.test(address) || address === faucet.address) return sendJson(response, 400, { error: "body must be {\"address\":\"ZYN...\"}" });
-          const addressRate = limits.faucetAddress.take(address);
-          if (!addressRate.allowed) return limited(response, addressRate);
-          const globalRate = limits.faucetGlobal.take("global");
-          if (!globalRate.allowed) return limited(response, globalRate);
-          const result = await faucetSend(address);
-          return sendJson(response, 200, { ...result, network: "testnet", valueBearing: false, note: "TESTNET — tokens have no value. Arrives in a coming block (about 30 seconds)." });
-        }
+        if (path === "/faucet") return await faucetRoute(request, response, ip);
         if (relay && path.startsWith("/relay/v1/")) {
           const relayRate = limits.relayIp.take(ip);
           if (!relayRate.allowed) return limited(response, relayRate);
@@ -1412,11 +1633,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     await Promise.all(VALIDATOR_NAMES.map((name) => stopValidator(name)));
   }
   async function waitForQuorum(timeoutMs = STARTUP_GRACE_MS) {
-    const quorum = Math.floor((2 * genesis.validators.length) / 3) + 1;
     const deadline = Date.now() + timeoutMs;
     while (!shuttingDown && Date.now() < deadline) {
-      const up = (await validatorStatuses()).filter((v) => v.up).length;
-      if (up >= quorum) return true;
+      if (activeSetTracker.evaluate(await validatorStatuses()).ok) return true;
       await sleep(1_000);
     }
     return false;
@@ -1537,10 +1756,10 @@ if (!invokedDirectly) {
   const stateSecret = process.env.ZYRON_TESTNET_STATE_SECRET || undefined;
   let persistence = { mode: "local-disk" };
   let verifiedHistory;
+  const restoreUrl = option("--restore-url", process.env.ZYRON_TESTNET_STATE_URL || undefined);
   if (rest.includes("--init-if-missing")) {
     const exists = Boolean(await readNetworkMarker(dir));
     const chainId = option("--chain-id", process.env.ZYRON_TESTNET_CHAIN_ID ?? DEFAULT_CHAIN_ID);
-    const restoreUrl = option("--restore-url", process.env.ZYRON_TESTNET_STATE_URL || undefined);
     if (!exists) {
       const aside = await moveAsideIncompleteNetworkDir(dir);
       if (aside) console.log(`moved an incomplete network directory left by an interrupted start-up to ${aside}`);
@@ -1549,7 +1768,16 @@ if (!invokedDirectly) {
       try {
         boot.enter("download");
         const response = await downloadSnapshot(restoreUrl, { onAttempt: boot.progress, readBody: true });
-        if (response.status === 404) console.log("no state snapshot published yet; creating a fresh TEST genesis");
+        if (response.status === 404) {
+          // A fresh TEST genesis only on an explicit operator decision: a
+          // published chain whose asset is missing must not be silently replaced.
+          if (process.env.ZYRON_TESTNET_ALLOW_FRESH_GENESIS !== "1") {
+            console.error("STATE RESTORE FAILED (no state snapshot published after every retry); refusing to create a fresh TEST genesis without ZYRON_TESTNET_ALLOW_FRESH_GENESIS=1; stopping");
+            await new Promise((done) => process.stderr.write("", done));
+            process.exit(1);
+          }
+          console.log("no state snapshot published yet; ZYRON_TESTNET_ALLOW_FRESH_GENESIS=1 is set; creating a fresh TEST genesis");
+        }
         else {
           assert.equal(response.status, 200, `snapshot download returned ${response.status}`);
           const sealed = response.bytes;
@@ -1575,9 +1803,18 @@ if (!invokedDirectly) {
           await new Promise((done) => process.stdout.write("", done));
           process.exit(1);
         }
-        console.error(`STATE RESTORE FAILED (${error instanceof Error ? error.message : String(error)}); creating a fresh TEST genesis`);
-        const aside = await moveAsideIncompleteNetworkDir(dir);
+        // Fail closed: a snapshot that cannot be downloaded, decrypted or
+        // re-validated (tampering, a wrong state secret, a non-200 answer after
+        // every retry) must never be replaced by a fresh TEST genesis with new
+        // keys under the same chain ID. Only a confirmed 404 (nothing published)
+        // creates a fresh genesis. An operator who wants a new chain removes the
+        // published snapshot.
+        console.error(`STATE RESTORE FAILED (${error instanceof Error ? error.message : String(error)}); refusing to create a fresh TEST genesis under the published chain ID; stopping so the host restarts the instance`);
+        const aside = await moveAsideIncompleteNetworkDir(dir).catch(() => false);
         if (aside) console.error(`moved the failed restore directory to ${aside}`);
+        await new Promise((done) => process.stderr.write("", done));
+        await new Promise((done) => process.stdout.write("", done));
+        process.exit(1);
       }
     }
     if (!(await readNetworkMarker(dir))) {
@@ -1587,7 +1824,10 @@ if (!invokedDirectly) {
     }
   }
   boot.enter("validators");
-  const network = await runNetwork(dir, { stateSecret, persistence, host, server, verifiedHistory, basePort: Number(option("--validator-base-port", "9300")) });
+  // Followers are served only blocks inside a published snapshot when the
+  // chain lives in published snapshots (ZYRON_TESTNET_DURABLE_PEERS=0 opts out).
+  const durable = restoreUrl && stateSecret && process.env.ZYRON_TESTNET_DURABLE_PEERS !== "0" ? { fetchPublished: (() => { const cache = {}; return () => readPublishedSnapshotTip(restoreUrl, stateSecret, { cache }); })() } : undefined;
+  const network = await runNetwork(dir, { stateSecret, persistence, host, server, verifiedHistory, durable, basePort: Number(option("--validator-base-port", "9300")) });
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { void network.shutdown().then(() => process.exit(0)); });
   if (await network.waitForQuorum()) {
     boot.enter("ready");

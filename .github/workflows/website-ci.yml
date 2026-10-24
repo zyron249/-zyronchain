@@ -18,6 +18,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   production-website:
     runs-on: ubuntu-24.04
@@ -169,8 +173,7 @@ jobs:
             'Verifiable Layer-1 infrastructure',
             'Phone Wallet — Testnet',
             'Desktop Wallet Setup',
-            'Validator Launchpad',
-            'Buy / Sell not activated'
+            'Validator Launchpad'
           ]) {
             if (!html.includes(marker)) throw new Error(`Website HTML missing required marker: ${marker}`);
           }
@@ -180,8 +183,8 @@ jobs:
           if (positions.some((p) => p < 0) || positions.some((p, i) => i > 0 && p < positions[i - 1])) {
             throw new Error(`Homepage sections missing or out of order: ${order.join(' > ')}`);
           }
-          if (/<button[^>]*>\s*Buy \/ Sell not activated/.test(html) && !/<button[^>]*disabled[^>]*>\s*Buy \/ Sell not activated/.test(html)) {
-            throw new Error('Buy / Sell control must stay disabled');
+          if (/Buy \/ Sell|Buy ZYN|Sell ZYN/i.test(html)) {
+            throw new Error('Homepage must not show any buy/sell or trading control (testnet only)');
           }
           if (/mining\.html/.test(html + walletHtml + validatorHtml)) throw new Error('The retired mining page must not be linked');
           if (/\bV[1-9]\b/.test(html)) {
@@ -258,16 +261,13 @@ jobs:
             throw new Error('Validator launchpad canonical URL is missing');
           }
           if (!miningHtml.includes('<link rel="canonical" href="https://zyronchain.com/mining.html"')) {
-            throw new Error('Mining launchpad canonical URL is missing');
+            throw new Error('Retired mining page canonical URL is missing');
           }
-          for (const marker of [
-            'protocol v1',
-            'not public mining',
-            'docs/PUBLIC_TEST.md',
-            'printed-port',
-            'public mining is not activated'
-          ]) {
-            if (!miningHtml.includes(marker)) throw new Error(`Mining page missing honesty marker: ${marker}`);
+          for (const marker of ['Mining is retired', '2026-09-30', 'public mining is not activated']) {
+            if (!miningHtml.includes(marker)) throw new Error(`Mining page missing retired marker: ${marker}`);
+          }
+          if (/<button|<form|<script(?![^>]*application\/ld\+json)[^>]*>|npm run mine|hashrate|data-miner-platform/i.test(miningHtml.replace(/<script src="\.\/app\.js[^"]*" defer><\/script>/, ''))) {
+            throw new Error('Retired mining page must not carry any live mining UI (buttons, forms, miner commands, hashrate)');
           }
           if (miningHtml.includes('http://127.0.0.1:9137')) {
             throw new Error('Mining page must not present 9137 as a copy-paste local-devnet RPC');

@@ -6,6 +6,9 @@
  *   - ZyronChain address = "ZYN" + first 40 hex of SHA-256(64-byte uncompressed public key) (l1/src/crypto.ts)
  *   - display-only checksum (docs/ADDRESS_CHECKSUM.md)
  *   - encrypted vault: scrypt(N=2^17, r=8, p=1) + AES-256-GCM, AAD binds version, KDF params, path, public key, address
+ *     version 2 adds an encrypted "book" (address book, sent-to history, send-warning threshold) sealed with the same
+ *     key; version 1 vaults stay readable and are upgraded only after a successful unlock (upgradeVault)
+ *   - local send-safety checks (sendWarnings): first-time recipient, own address, amount at or above a threshold
  *   - offline l1 `transfer` signing, byte-identical to l1 createTransfer (only `transfer`; mining_claim is impossible)
  *
  * Needs globalThis.ZyronVendor (website/app/vendor/noble-scure.js) and Web Crypto (getRandomValues, subtle AES-GCM).
@@ -16,10 +19,19 @@
 
   const DERIVATION_PATH = "m/44'/249249'/0'/0/0";
   const VAULT_FORMAT = 'zyronchain-pwa-vault';
-  const VAULT_VERSION = 1;
+  const VAULT_VERSION = 2;
+  const VAULT_VERSION_V1 = 1;
+  const SELF_SEND_MESSAGE = "You can't send to your own address. Enter a different recipient.";
   const VAULT_KDF = Object.freeze({ name: 'scrypt', n: 131072, r: 8, p: 1, dkLen: 32 });
   const VAULT_CIPHER = 'aes-256-gcm';
-  const VAULT_KEYS = ['address', 'cipher', 'ciphertext', 'createdAt', 'derivationPath', 'format', 'kdf', 'publicKey', 'salt', 'version', 'words'];
+  const VAULT_KEYS_V1 = ['address', 'cipher', 'ciphertext', 'createdAt', 'derivationPath', 'format', 'kdf', 'publicKey', 'salt', 'version', 'words'];
+  const VAULT_KEYS = ['address', 'book', 'cipher', 'ciphertext', 'createdAt', 'derivationPath', 'format', 'kdf', 'publicKey', 'salt', 'version', 'words'];
+  // Encrypted book limits (keep the stored vault small and bounded).
+  const BOOK_MAX_CONTACTS = 100;
+  const BOOK_MAX_SENT = 200;
+  const BOOK_NAME_MAX = 64;
+  const BOOK_MAX_PLAINTEXT = 32768;
+  const MAX_VAULT_TEXT = 2 * BOOK_MAX_PLAINTEXT + 4096;
   const ATOMS_PER_ZYN = 100000000;
   // Proposed fixed protocol fee: 0.001 ZYN. Same constant as l1 FIXED_TRANSFER_FEE_ATOMS.
   const FIXED_TRANSFER_FEE_ATOMS = ATOMS_PER_ZYN / 1000;
@@ -197,6 +209,10 @@
   function vaultAad(vault) {
     return encoder.encode(['zyronchain/pwa-vault/v' + vault.version, kdfLabel(vault.kdf), vault.cipher.name, vault.derivationPath, vault.publicKey, vault.address].join('\n'));
   }
+  // The book is sealed separately (own IV) so it can be rewritten while unlocked without touching the seed ciphertext.
+  function bookAad(vault) {
+    return encoder.encode(['zyronchain/pwa-vault/v' + vault.version + '/book', kdfLabel(vault.kdf), vault.cipher.name, vault.salt, vault.cipher.iv, vault.publicKey, vault.address].join('\n'));
+  }
   async function deriveVaultKey(password, salt, usage) {
     const v = vendor();
     if (typeof password !== 'string' || !password) throw new Error('Password required');
@@ -204,37 +220,175 @@
     let dk = null;
     try {
       dk = await v.scryptAsync(pw, salt, { N: VAULT_KDF.n, r: VAULT_KDF.r, p: VAULT_KDF.p, dkLen: VAULT_KDF.dkLen, maxmem: 256 * VAULT_KDF.n * VAULT_KDF.r });
-      return await webCrypto().subtle.importKey('raw', dk, { name: 'AES-GCM' }, false, [usage]);
+      return await webCrypto().subtle.importKey('raw', dk, { name: 'AES-GCM' }, false, Array.isArray(usage) ? usage : [usage]);
     } finally {
       wipe(pw, dk);
     }
   }
-  async function createVault(entropy, password, account, now) {
-    const strength = passwordStrength(password);
-    if (!strength.ok) throw new Error(strength.reason);
-    if (!account || !ADDRESS_RE.test(account.address) || !PUBLIC_KEY_RE.test(account.publicKey)) throw new Error('Invalid account');
-    const salt = randomBytes(16);
+
+  // ---------- encrypted book: address book + sent-to history + warning threshold ----------
+  function emptyBook() { return { contacts: [], sent: [], thresholdAtoms: null }; }
+  function normalizeContactName(name) {
+    const text = String(name == null ? '' : name).normalize('NFC').replace(/\s+/g, ' ').trim();
+    if (!text) throw new Error('Contact name is required');
+    if (text.length > BOOK_NAME_MAX) throw new Error('Contact name is too long (at most ' + BOOK_NAME_MAX + ' characters)');
+    if (/[\u0000-\u001f\u007f]/.test(text)) throw new Error('Contact name has control characters');
+    return text;
+  }
+  // Validates untrusted book data (decrypted plaintext) and returns a fresh normalized copy. Fails closed.
+  function parseBook(value) {
+    if (!isPlainObject(value) || Object.keys(value).sort().join(',') !== 'contacts,sent,thresholdAtoms') throw new Error('Address book data is invalid');
+    if (!Array.isArray(value.contacts) || value.contacts.length > BOOK_MAX_CONTACTS) throw new Error('Address book contacts are invalid');
+    if (!Array.isArray(value.sent) || value.sent.length > BOOK_MAX_SENT) throw new Error('Address book history is invalid');
+    const seen = new Set();
+    const contacts = value.contacts.map((c) => {
+      if (!isPlainObject(c) || Object.keys(c).sort().join(',') !== 'address,name') throw new Error('Address book contact is invalid');
+      if (typeof c.address !== 'string' || !ADDRESS_RE.test(c.address) || seen.has(c.address)) throw new Error('Address book contact address is invalid');
+      seen.add(c.address);
+      const name = normalizeContactName(c.name);
+      if (name !== c.name) throw new Error('Address book contact name is invalid');
+      return { name, address: c.address };
+    });
+    const sentSeen = new Set();
+    const sent = value.sent.map((a) => {
+      if (typeof a !== 'string' || !ADDRESS_RE.test(a) || sentSeen.has(a)) throw new Error('Address book history is invalid');
+      sentSeen.add(a);
+      return a;
+    });
+    const t = value.thresholdAtoms;
+    if (t !== null && !(Number.isSafeInteger(t) && t >= 1 && t <= MAX_SUPPLY_ATOMS)) throw new Error('Send-warning threshold is invalid');
+    return { contacts, sent, thresholdAtoms: t };
+  }
+  function contactAddress(address) { return parseAddressInput(address).canonical; }
+  function addContact(book, input) {
+    const b = parseBook(book);
+    const address = contactAddress(input && input.address);
+    const name = normalizeContactName(input && input.name);
+    if (address === MINING_TRACKER_ADDRESS) throw new Error("This is a reserved system address and can't receive transfers");
+    if (b.contacts.some((c) => c.address === address)) throw new Error('This address is already in the address book');
+    if (b.contacts.length >= BOOK_MAX_CONTACTS) throw new Error('The address book is full (' + BOOK_MAX_CONTACTS + ' contacts)');
+    b.contacts.push({ name, address });
+    return b;
+  }
+  function updateContact(book, originalAddress, input) {
+    const b = parseBook(book);
+    const original = contactAddress(originalAddress);
+    const index = b.contacts.findIndex((c) => c.address === original);
+    if (index < 0) throw new Error('Contact not found');
+    const address = contactAddress(input && input.address);
+    if (address === MINING_TRACKER_ADDRESS) throw new Error("This is a reserved system address and can't receive transfers");
+    if (address !== original && b.contacts.some((c) => c.address === address)) throw new Error('This address is already in the address book');
+    b.contacts[index] = { name: normalizeContactName(input && input.name), address };
+    return b;
+  }
+  function removeContact(book, address) {
+    const b = parseBook(book);
+    const target = contactAddress(address);
+    const next = b.contacts.filter((c) => c.address !== target);
+    if (next.length === b.contacts.length) throw new Error('Contact not found');
+    b.contacts = next;
+    return b;
+  }
+  function findContact(book, address) {
+    let canonical;
+    try { canonical = contactAddress(address); } catch (error) { return null; }
+    const hit = parseBook(book).contacts.find((c) => c.address === canonical);
+    return hit || null;
+  }
+  // Records a signed transfer's receiver (most recent first, bounded, no duplicates).
+  function recordSent(book, receiver) {
+    const b = parseBook(book);
+    const address = contactAddress(receiver);
+    b.sent = [address, ...b.sent.filter((a) => a !== address)].slice(0, BOOK_MAX_SENT);
+    return b;
+  }
+  // null clears the threshold; otherwise a positive atom amount.
+  function setThreshold(book, atoms) {
+    const b = parseBook(book);
+    if (atoms !== null && !(Number.isSafeInteger(atoms) && atoms >= 1 && atoms <= MAX_SUPPLY_ATOMS)) throw new Error('Threshold must be at least 1 atom');
+    b.thresholdAtoms = atoms;
+    return b;
+  }
+  // Local send-safety checks. input: { receiver, amountAtoms }, account: { address }. Returns a list of
+  // { code, blocking, message }. 'self' is blocking because the transfer builder (and l1) reject self-transfers.
+  function sendWarnings(input, account, book) {
+    const b = parseBook(book);
+    const out = [];
+    const receiver = contactAddress(input && input.receiver);
+    if (account && receiver === account.address) {
+      out.push({ code: 'self', blocking: true, message: SELF_SEND_MESSAGE });
+      return out;
+    }
+    const contact = b.contacts.find((c) => c.address === receiver);
+    if (!b.sent.includes(receiver)) {
+      out.push({ code: 'first-time', blocking: false, message: contact
+        ? 'You have not sent to this address from this wallet before (saved contact "' + contact.name + '"). Check every character of the address.'
+        : 'You have never sent to this address from this wallet, and it is not in your address book. Check every character of the address.' });
+    }
+    const amount = input && input.amountAtoms;
+    if (b.thresholdAtoms !== null && Number.isSafeInteger(amount) && amount >= b.thresholdAtoms) {
+      out.push({ code: 'large-amount', blocking: false, message: 'The amount (' + atomsToZyn(String(amount)) + ' ZYN) is at or above your warning threshold of ' + atomsToZyn(String(b.thresholdAtoms)) + ' ZYN.' });
+    }
+    return out;
+  }
+  async function sealBook(vault, key, book) {
+    const plain = encoder.encode(canonicalJson(parseBook(book)));
+    if (plain.length > BOOK_MAX_PLAINTEXT) throw new Error('Address book is too large');
+    const iv = randomBytes(12);
+    const sealed = new Uint8Array(await webCrypto().subtle.encrypt({ name: 'AES-GCM', iv, additionalData: bookAad(vault), tagLength: 128 }, key, plain));
+    wipe(plain);
+    return { iv: bytesToHex(iv), ciphertext: bytesToHex(sealed) };
+  }
+  async function openBook(vault, key) {
+    let plain;
+    try {
+      plain = new Uint8Array(await webCrypto().subtle.decrypt({ name: 'AES-GCM', iv: hexToBytes(vault.book.iv), additionalData: bookAad(vault), tagLength: 128 }, key, hexToBytes(vault.book.ciphertext)));
+    } catch (error) {
+      throw new Error('Wrong password, or the vault was modified (authentication failed)');
+    }
+    let value;
+    try { value = JSON.parse(new TextDecoder().decode(plain)); } catch (error) { throw new Error('Address book data is invalid'); } finally { wipe(plain); }
+    return parseBook(value);
+  }
+  // Seals entropy (+ book) into a fresh v2 vault object with the given key/salt.
+  async function sealVault(entropy, key, salt, account, createdAt, words, book) {
     const iv = randomBytes(12);
     const vault = {
       format: VAULT_FORMAT,
       version: VAULT_VERSION,
-      createdAt: new Date(now == null ? Date.now() : now).toISOString(),
+      createdAt,
       address: account.address,
       publicKey: account.publicKey,
       derivationPath: DERIVATION_PATH,
-      words: entropy.length * 3 / 4,
+      words,
       kdf: { name: VAULT_KDF.name, n: VAULT_KDF.n, r: VAULT_KDF.r, p: VAULT_KDF.p, dkLen: VAULT_KDF.dkLen },
       cipher: { name: VAULT_CIPHER, iv: bytesToHex(iv) },
       salt: bytesToHex(salt),
-      ciphertext: ''
+      ciphertext: '',
+      book: { iv: '', ciphertext: '' }
     };
-    const key = await deriveVaultKey(password, salt, 'encrypt');
     const sealed = new Uint8Array(await webCrypto().subtle.encrypt({ name: 'AES-GCM', iv, additionalData: vaultAad(vault), tagLength: 128 }, key, entropy));
     vault.ciphertext = bytesToHex(sealed);
+    vault.book = await sealBook(vault, key, book || emptyBook());
     return vault;
   }
-  // Fail closed: anything that is not exactly a version-1 vault written by this app is rejected before any
-  // decryption is attempted. Unknown versions are never "best-effort" parsed or migrated.
+  // Returns { vault, key, book }: key is a non-extractable AES-GCM key kept by the app while unlocked so the
+  // encrypted book can be re-sealed without asking for the password again.
+  async function createVaultSession(entropy, password, account, now, book) {
+    const strength = passwordStrength(password);
+    if (!strength.ok) throw new Error(strength.reason);
+    if (!account || !ADDRESS_RE.test(account.address) || !PUBLIC_KEY_RE.test(account.publicKey)) throw new Error('Invalid account');
+    const salt = randomBytes(16);
+    const key = await deriveVaultKey(password, salt, ['encrypt', 'decrypt']);
+    const initial = parseBook(book || emptyBook());
+    const vault = await sealVault(entropy, key, salt, account, new Date(now == null ? Date.now() : now).toISOString(), entropy.length * 3 / 4, initial);
+    return { vault, key, book: initial };
+  }
+  async function createVault(entropy, password, account, now, book) {
+    return (await createVaultSession(entropy, password, account, now, book)).vault;
+  }
+  // Fail closed: anything that is not exactly a version-1 or version-2 vault written by this app is rejected before
+  // any decryption is attempted. Unknown versions are never "best-effort" parsed.
   function isPlainObject(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     const proto = Object.getPrototypeOf(value);
@@ -243,10 +397,12 @@
   const ISO_UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
   function assertVaultShape(vault) {
     if (!isPlainObject(vault)) throw new Error('Vault is not a plain object');
+    const known = vault.version === VAULT_VERSION || vault.version === VAULT_VERSION_V1;
     const keys = Object.keys(vault).sort();
-    if (keys.join(',') !== VAULT_KEYS.join(',')) throw new Error('Vault has unexpected fields');
+    const expected = vault.version === VAULT_VERSION_V1 ? VAULT_KEYS_V1 : VAULT_KEYS;
+    if (keys.join(',') !== expected.join(',')) throw new Error('Vault has unexpected fields');
     if (vault.format !== VAULT_FORMAT) throw new Error('Unsupported vault format');
-    if (typeof vault.version !== 'number' || vault.version !== VAULT_VERSION) throw new Error('Unsupported vault version (this app reads only version ' + VAULT_VERSION + '); nothing was changed');
+    if (typeof vault.version !== 'number' || !known) throw new Error('Unsupported vault version (this app reads versions ' + VAULT_VERSION_V1 + ' and ' + VAULT_VERSION + '); nothing was changed');
     if (typeof vault.createdAt !== 'string' || !ISO_UTC_RE.test(vault.createdAt) || !Number.isFinite(Date.parse(vault.createdAt))) throw new Error('Vault creation time is invalid');
     const k = vault.kdf;
     if (!isPlainObject(k) || Object.keys(k).sort().join(',') !== 'dkLen,n,name,p,r' ||
@@ -259,27 +415,38 @@
     if (typeof vault.words !== 'number' || ![12, 15, 18, 21, 24].includes(vault.words)) throw new Error('Vault word count is invalid');
     if (!ADDRESS_RE.test(vault.address) || !PUBLIC_KEY_RE.test(vault.publicKey) || addressFromPublicKey(vault.publicKey) !== vault.address) throw new Error('Vault identity is invalid');
     if (typeof vault.ciphertext !== 'string' || !HEX_RE.test(vault.ciphertext) || vault.ciphertext.length !== (vault.words * 4 / 3 + 16) * 2) throw new Error('Vault ciphertext is invalid');
+    if (vault.version === VAULT_VERSION) {
+      const b = vault.book;
+      if (!isPlainObject(b) || Object.keys(b).sort().join(',') !== 'ciphertext,iv' || !/^[0-9a-f]{24}$/.test(b.iv) ||
+          typeof b.ciphertext !== 'string' || !HEX_RE.test(b.ciphertext) || b.ciphertext.length < 34 || b.ciphertext.length % 2 !== 0 ||
+          b.ciphertext.length > (BOOK_MAX_PLAINTEXT + 16) * 2) throw new Error('Vault address book is invalid');
+      if (b.iv === vault.cipher.iv) throw new Error('Vault address book is invalid');
+    }
   }
   // Parses an untrusted stored value (IndexedDB record or JSON text) into a fresh vault object containing only the
   // known fields. Throws (fail closed) on anything else.
   function parseVault(raw) {
     let value = raw;
     if (typeof raw === 'string') {
-      if (raw.length > 4096) throw new Error('Vault is too large');
+      if (raw.length > MAX_VAULT_TEXT) throw new Error('Vault is too large');
       try { value = JSON.parse(raw); } catch (error) { throw new Error('Vault is not valid JSON'); }
     }
     assertVaultShape(value);
-    return {
+    const out = {
       format: value.format, version: value.version, createdAt: value.createdAt, address: value.address, publicKey: value.publicKey,
       derivationPath: value.derivationPath, words: value.words,
       kdf: { name: value.kdf.name, n: value.kdf.n, r: value.kdf.r, p: value.kdf.p, dkLen: value.kdf.dkLen },
       cipher: { name: value.cipher.name, iv: value.cipher.iv }, salt: value.salt, ciphertext: value.ciphertext
     };
+    if (value.version === VAULT_VERSION) out.book = { iv: value.book.iv, ciphertext: value.book.ciphertext };
+    return out;
   }
-  // Returns { entropy, account } — caller must wipe entropy and account.privateKey.
+  // Returns { entropy, account, book, key } — caller must wipe entropy and account.privateKey, and drop key on lock.
+  // book is the decrypted address book (an empty book for a version-1 vault). key is a non-extractable AES-GCM key
+  // used to re-seal the book while unlocked (sealBook / upgradeVault).
   async function openVault(vault, password) {
     assertVaultShape(vault);
-    const key = await deriveVaultKey(password, hexToBytes(vault.salt), 'decrypt');
+    const key = await deriveVaultKey(password, hexToBytes(vault.salt), ['encrypt', 'decrypt']);
     let entropy;
     try {
       entropy = new Uint8Array(await webCrypto().subtle.decrypt({ name: 'AES-GCM', iv: hexToBytes(vault.cipher.iv), additionalData: vaultAad(vault), tagLength: 128 }, key, hexToBytes(vault.ciphertext)));
@@ -291,7 +458,62 @@
       wipe(entropy, account.privateKey);
       throw new Error('Vault decrypted to a different identity');
     }
-    return { entropy, account };
+    let book;
+    try {
+      book = vault.version === VAULT_VERSION ? await openBook(vault, key) : emptyBook();
+    } catch (error) {
+      wipe(entropy, account.privateKey);
+      throw error;
+    }
+    return { entropy, account, book, key };
+  }
+  // Version 1 -> 2 upgrade, run only after openVault succeeded (so the password was right and the seed decrypted).
+  // Keeps salt, identity, createdAt and the seed; re-seals the seed under the v2 AAD with a fresh IV and adds the
+  // encrypted book. The input vault is not modified. A version-2 vault is returned unchanged (copied).
+  async function upgradeVault(vault, opened) {
+    assertVaultShape(vault);
+    if (vault.version === VAULT_VERSION) return parseVault(vault);
+    if (!opened || !opened.entropy || !opened.key || !opened.account || opened.account.address !== vault.address) throw new Error('Unlock the vault before upgrading it');
+    const next = await sealVault(opened.entropy, opened.key, hexToBytes(vault.salt), opened.account, vault.createdAt, vault.words, opened.book || emptyBook());
+    assertVaultShape(next);
+    return next;
+  }
+  // Upgrade + proof: the new vault must open with the same password and give the same identity and seed before
+  // the caller may store it. Returns { vault, opened } (opened is the session from the v2 vault; caller wipes it).
+  async function upgradeVaultVerified(vault, opened, password) {
+    const next = await upgradeVault(vault, opened);
+    const check = await openVault(next, password);
+    const same = check.account.address === vault.address && check.account.publicKey === vault.publicKey &&
+      check.entropy.length === opened.entropy.length && check.entropy.every((b, i) => b === opened.entropy[i]);
+    if (!same) {
+      wipe(check.entropy, check.account.privateKey);
+      throw new Error('Vault upgrade check failed: the upgraded vault did not reopen to the same wallet; nothing was changed');
+    }
+    wipe(check.entropy);
+    return { vault: next, opened: check };
+  }
+  // Rollback marker: a small public record saying this device has opened a version-2 vault for this address.
+  const UPGRADE_MARKER_FORMAT = 'zyronchain-pwa-vault-v2-seen';
+  function upgradeMarker(address) {
+    if (!ADDRESS_RE.test(address)) throw new Error('Invalid address');
+    return { format: UPGRADE_MARKER_FORMAT, version: VAULT_VERSION, address };
+  }
+  function parseUpgradeMarker(value) {
+    if (!isPlainObject(value) || Object.keys(value).sort().join(',') !== 'address,format,version' ||
+        value.format !== UPGRADE_MARKER_FORMAT || value.version !== VAULT_VERSION || !ADDRESS_RE.test(value.address)) throw new Error('Upgrade marker is invalid');
+    return upgradeMarker(value.address);
+  }
+  // True when a version-1 vault must be refused because a version-2 vault for the same address was already seen.
+  function isRollback(vault, marker) {
+    return Boolean(marker) && vault && vault.version === VAULT_VERSION_V1 && parseUpgradeMarker(marker).address === vault.address;
+  }
+  // Returns a copy of a version-2 vault with the book re-sealed (fresh IV). Needs the key from openVault.
+  async function updateVaultBook(vault, key, book) {
+    const current = parseVault(vault);
+    if (current.version !== VAULT_VERSION) throw new Error('Upgrade the vault before saving the address book');
+    current.book = await sealBook(current, key, book);
+    assertVaultShape(current);
+    return current;
   }
 
   // ---------- amounts ----------
@@ -340,7 +562,7 @@
     const receiver = parseAddressInput(input.receiver).canonical;
     if (receiver === MINING_TRACKER_ADDRESS) throw new Error("This is a reserved system address and can't receive transfers");
     if (!account || !ADDRESS_RE.test(account.address) || !PUBLIC_KEY_RE.test(account.publicKey)) throw new Error('Wallet is locked');
-    if (receiver === account.address) throw new Error('Receiver must differ from your own address');
+    if (receiver === account.address) throw new Error(SELF_SEND_MESSAGE);
     const amountAtoms = input.amountAtoms;
     const feeAtoms = input.feeAtoms;
     if (!Number.isSafeInteger(amountAtoms) || amountAtoms < 1 || amountAtoms > MAX_SUPPLY_ATOMS) throw new Error('Amount must be at least 1 atom');
@@ -451,11 +673,12 @@
   }
 
   const api = Object.freeze({
-    DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_KDF, ATOMS_PER_ZYN, FIXED_TRANSFER_FEE_ATOMS, FIXED_SUPPLY_V1_CHAIN_IDS, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
+    DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_VERSION_V1, SELF_SEND_MESSAGE, VAULT_KDF, MAX_VAULT_TEXT, BOOK_MAX_CONTACTS, BOOK_MAX_SENT, BOOK_NAME_MAX, ATOMS_PER_ZYN, FIXED_TRANSFER_FEE_ATOMS, FIXED_SUPPLY_V1_CHAIN_IDS, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
     TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, WALLET_TESTNET_CHAIN_ID, defaultTransferVersion,
     wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress,
     passwordStrength, normalizePhrase, generateEntropy, entropyToPhrase, phraseToEntropy, deriveAccount,
-    createVault, openVault, assertVaultShape, parseVault, zynToAtoms, atomsToZyn, buildTransfer, describeTransfer, fixedFeeRejection, signTransfer, verifyCanonical,
+    createVault, createVaultSession, openVault, upgradeVaultVerified, upgradeMarker, parseUpgradeMarker, isRollback, assertVaultShape, parseVault, upgradeVault, updateVaultBook,
+    emptyBook, parseBook, addContact, updateContact, removeContact, findContact, recordSent, setThreshold, sendWarnings, zynToAtoms, atomsToZyn, buildTransfer, describeTransfer, fixedFeeRejection, signTransfer, verifyCanonical,
     LINK_SIGNING_DOMAIN, LINK_NETWORK, LINK_RETURN_URL, parseLinkMessage, parseLinkHash, signLinkProof, textToBase64Url,
     selfTest
   });

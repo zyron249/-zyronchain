@@ -15,7 +15,7 @@ If a legitimate regression needs more than ten minutes, the test should be decom
 
 `local-devnet` runs the two-validator chain on protocol v1, which still has the legacy F-01 consensus split (see [`V6_SAFETY_PROOF_OBLIGATIONS.md`](V6_SAFETY_PROOF_OBLIGATIONS.md) and the F-01 entries in [`L1_OPERATIONS_RUNBOOK.md`](L1_OPERATIONS_RUNBOOK.md)). Whether a run passes depends on which validator starts its round timer first. A controlled A/B on the same CI image gave 13/27 passes before the F-01 fix and 12/27 after, which is no statistical difference: the F-01 change did not cause it, and only activating v6 removes it. The fix lives in protocol v6, which `local-devnet-v6` exercises.
 
-The known flake fails with exactly one of these messages, in `local-devnet` or in the artifact operator rehearsal that starts the same v1 devnet:
+The known flake fails with exactly one of these messages in `local-devnet`. The artifact operator rehearsal (`l1/scripts/artifact-operator-rehearsal.mjs`) runs its validators under protocol v6 and is no longer affected; any of these messages there is a real failure:
 
 - `Timed out: transfer finalized by both validators`
 - `Timed out: finality resumes after validator restart`

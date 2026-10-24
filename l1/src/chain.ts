@@ -8,7 +8,9 @@ import {
   expectedValidator,
   validateAttestationQuorum,
   validateBlockEnvelope,
+  validateBlockEnvelopeGates,
   validateBlockShape,
+  validateBlockTransactions,
   validateRoundCertificate
 } from "./block.js";
 import { CONSENSUS_V6_PROTOCOL_VERSION, isConsensusV6, validateCommitCertificate } from "./consensus-v6.js";
@@ -640,11 +642,24 @@ export class ZyronChain {
     return next;
   }
 
-  validateProposal(block: Block, nowMs = Date.now()): void {
+  /**
+   * `onAuthenticated` (P1-06) is called once the O(1) gates have passed
+   * (right tip, expected proposer, valid proposer signature, certificates) and
+   * before the per-transaction verification and state replay. The checks and
+   * their order are the same as `validateBlockEnvelope` followed by the replay.
+   * When `onAuthenticated` returns true, this exact block hash already passed
+   * the per-transaction verification and the replay against this tip (the
+   * gates just bound the hash to the tip), so only the byte limit is checked
+   * and those stages are skipped.
+   */
+  validateProposal(block: Block, nowMs = Date.now(), onAuthenticated?: () => boolean | void): void {
     const protocolVersion = this.protocolVersionAt(block.header.height);
     assertSupportedProtocolVersion(protocolVersion);
-    validateBlockEnvelope(block, this.tip, this.validatorsAt(block.header.height), nowMs, false, protocolVersion);
+    validateBlockEnvelopeGates(block, this.tip, this.validatorsAt(block.header.height), nowMs, false, protocolVersion);
+    const alreadyValidated = onAuthenticated?.() === true;
+    if (!alreadyValidated) validateBlockTransactions(block);
     if (Buffer.byteLength(canonicalJson(block), "utf8") > MAX_BLOCK_BYTES) throw new Error("Block exceeds byte limit");
+    if (alreadyValidated) return;
     const next = this.validateAndApply(
       block.transactions, this.state, block.header.height, block.header.timestampMs, feeProducerOf(block)
     );
@@ -759,6 +774,23 @@ export class ZyronChain {
     }
     validateProtocolUpgradeAuthorization(tx, validators, this.height + 1, this.lastProtocolActivationHeight(), this.lastScheduledProtocolVersion());
     return [];
+  }
+
+  /**
+   * P1-07-F2: the part of `validator_update` admission that a pending
+   * predecessor cannot change: set size, activation delay and order, an active
+   * initiator and a quorum of valid approvals from the current validators. A
+   * pending predecessor only changes the replaced set, i.e. which validators
+   * are incoming and need possession proofs. Used before a refused update may
+   * enter the node's bounded deferred set; never for block validity.
+   */
+  assertValidatorUpdateAuthorizedExceptProofs(tx: ValidatorSetUpdateTx): void {
+    if (tx.chainId !== this.genesis.chainId) throw new Error("Wrong transaction chain ID");
+    this.shape(tx);
+    assertTransactionVersionForProtocol(tx, this.protocolVersionAt(this.height + 1));
+    validateValidatorUpdateQuorum(
+      tx, this.validatorsAt(this.height + 1), this.height + 1, this.lastValidatorActivationHeight(), minimumValidatorCount(this.genesis)
+    );
   }
 
   /**
@@ -1378,6 +1410,19 @@ function validateValidatorUpdateAuthorization(
   minimumValidators: number,
   admission: ValidatorUpdateAdmissionContext
 ): void {
+  validateValidatorUpdateQuorum(tx, currentValidators, blockHeight, lastActivationHeight, minimumValidators);
+  // possession-proof-v1 (P1-07): incoming keys consent and prove possession.
+  assertValidatorUpdatePossessionProofs(tx, admission);
+}
+
+/** Every check of validateValidatorUpdateAuthorization except the possession proofs (same order). */
+function validateValidatorUpdateQuorum(
+  tx: ValidatorSetUpdateTx,
+  currentValidators: Validator[],
+  blockHeight: number,
+  lastActivationHeight: number,
+  minimumValidators: number
+): void {
   if (tx.validators.length < minimumValidators || tx.validators.length > 100) {
     throw new Error(minimumValidators > 1
       ? "fixed-supply-v1, public-launch, value-bearing, and mainnet chains require at least 4 and at most 100 distinct validators"
@@ -1402,8 +1447,6 @@ function validateValidatorUpdateAuthorization(
   }
   const quorum = Math.floor((currentValidators.length * 2) / 3) + 1;
   if (valid < quorum) throw new Error(`Validator update quorum not reached: ${valid}/${quorum}`);
-  // possession-proof-v1 (P1-07): incoming keys consent and prove possession.
-  assertValidatorUpdatePossessionProofs(tx, admission);
 }
 
 /**

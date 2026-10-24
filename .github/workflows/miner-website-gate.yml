@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   fail-closed-miner-entrypoint:
     runs-on: ubuntu-24.04
@@ -32,7 +36,7 @@ jobs:
 
           // Mining is retired (owner decision 2026-09-30). The historical page stays noindex and unlinked, and the site
           // script carries no miner distribution, download or activation code at all (stronger than a disabled one).
-          for (const marker of ['Mining is retired', '<meta name="robots" content="noindex" />', 'id="start"', 'Encrypted key custody is mandatory']) {
+          for (const marker of ['Mining is retired', '<meta name="robots" content="noindex" />', '2026-09-30']) {
             if (!html.includes(marker)) throw new Error(`Mining page missing ${marker}`);
           }
           if (!html.includes("connect-src 'none'")) throw new Error('Mining CSP must keep connect-src none');

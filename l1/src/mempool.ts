@@ -36,6 +36,10 @@ export class Mempool {
   private nonMiningEvictionCacheValid = false;
   private nonMiningEvictionCache: EvictionCandidate | undefined;
   private readonly pendingBySender = new Map<string, number>();
+  /** Pending `validator_update` count per sender (P1-07-F2: O(1) sender query). */
+  private readonly validatorUpdatesBySender = new Map<string, number>();
+  /** Pending `validator_update` txids (P1-07-F2: admission copies only these, not the pool). */
+  private readonly validatorUpdateIds = new Set<string>();
   private readonly disableFeeReplacement: boolean;
   private readonly fixedTransferFeeAtoms: number | undefined;
   private readonly maxPendingPerSender: number | undefined;
@@ -141,6 +145,10 @@ export class Mempool {
     this.adjustOccupancy(stored, 1, txBytes);
     this.adjustTransferSpend(stored, 1n);
     this.adjustSenderCount(stored.sender, 1);
+    if (stored.kind === "validator_update") {
+      this.adjustValidatorUpdateSender(stored.sender, 1);
+      this.validatorUpdateIds.add(stored.txid);
+    }
     this.invalidateNonMiningEvictionCache();
   }
 
@@ -164,6 +172,42 @@ export class Mempool {
 
   values(): Transaction[] {
     return [...this.byId.values()].map((tx) => structuredClone(tx));
+  }
+
+  has(txid: string): boolean {
+    return this.byId.has(txid);
+  }
+
+  /** A copy of one pending transaction (no copy of the whole pool). */
+  get(txid: string): Transaction | undefined {
+    const tx = this.byId.get(txid);
+    return tx ? structuredClone(tx) : undefined;
+  }
+
+  /** Copies of the pending `validator_update` transactions only (no copy of the whole pool). */
+  validatorUpdates(): Transaction[] {
+    return [...this.validatorUpdateIds].map((txid) => structuredClone(this.byId.get(txid)!));
+  }
+
+  /**
+   * Copies of `sender`'s pending transactions with nonces in
+   * (`afterNonce`, `beforeNonce`), in nonce order, looked up by nonce (at most
+   * `beforeNonce - afterNonce - 1` lookups; callers bound the range by the
+   * mempool nonce window).
+   */
+  senderNonceRange(sender: string, afterNonce: number, beforeNonce: number): Transaction[] {
+    const range: Transaction[] = [];
+    for (let nonce = afterNonce + 1; nonce < beforeNonce; nonce += 1) {
+      const txid = this.nonceIds.get(`${sender}:${nonce}`);
+      const tx = txid ? this.byId.get(txid) : undefined;
+      if (tx) range.push(structuredClone(tx));
+    }
+    return range;
+  }
+
+  /** Whether `sender` has a pending `validator_update` (O(1)). */
+  hasValidatorUpdateFrom(sender: string): boolean {
+    return this.validatorUpdatesBySender.has(sender);
   }
 
   pendingTransferSpend(sender: string): bigint {
@@ -209,7 +253,18 @@ export class Mempool {
     this.adjustOccupancy(tx, -1);
     this.adjustTransferSpend(tx, -1n);
     this.adjustSenderCount(tx.sender, -1);
+    if (tx.kind === "validator_update") {
+      this.adjustValidatorUpdateSender(tx.sender, -1);
+      this.validatorUpdateIds.delete(tx.txid);
+    }
     this.invalidateNonMiningEvictionCache();
+  }
+
+  private adjustValidatorUpdateSender(sender: string, direction: 1 | -1): void {
+    const next = (this.validatorUpdatesBySender.get(sender) ?? 0) + direction;
+    if (next < 0) throw new Error("Mempool occupancy invariant violated");
+    if (next === 0) this.validatorUpdatesBySender.delete(sender);
+    else this.validatorUpdatesBySender.set(sender, next);
   }
 
   private adjustSenderCount(sender: string, direction: 1 | -1): void {
