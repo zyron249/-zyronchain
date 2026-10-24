@@ -43,6 +43,7 @@ That command is the supported public-test surface today: local-only RPC on `127.
 - Launch authorization: [`docs/L1_LAUNCH_AUTHORIZATION.md`](docs/L1_LAUNCH_AUTHORIZATION.md)
 - Operations and disaster recovery: [`docs/L1_OPERATIONS_RUNBOOK.md`](docs/L1_OPERATIONS_RUNBOOK.md)
 - Threat model: [`docs/L1_THREAT_MODEL.md`](docs/L1_THREAT_MODEL.md)
+- Differentiating features design (proposals, not shipped): [`docs/design/differentiating-features.md`](docs/design/differentiating-features.md)
 - Security disclosure: [`SECURITY.md`](SECURITY.md)
 - Maintainer and security succession: [`docs/L1_MAINTAINER_SUCCESSION.md`](docs/L1_MAINTAINER_SUCCESSION.md)
 - Technical paper: [`WHITEPAPER.md`](WHITEPAPER.md)
