@@ -316,6 +316,92 @@ await test('vault address book: round-trip through the encrypted vault, tamper f
   core.wipe(entropy, account.privateKey, opened.entropy, opened.account.privateKey, reopened.entropy, reopened.account.privateKey);
 });
 
+await test('lookalike detection: crafted prefix/suffix collisions, exact matches, case/checksum variants, cap', async () => {
+  const account = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
+  const one = core.ATOMS_PER_ZYN;
+  assert.equal(core.LOOKALIKE_PREFIX, 4);
+  assert.equal(core.LOOKALIKE_SUFFIX, 4);
+  const known = 'ZYN' + 'abcd' + '0123456789'.repeat(3) + '01' + 'ef01';
+  assert.match(known, /^ZYN[0-9a-f]{40}$/);
+  // same first 4 and last 4 hex characters, every middle character different
+  const poison = 'ZYN' + 'abcd' + 'f'.repeat(32) + 'ef01';
+  let book = core.addContact(core.emptyBook(), { name: 'Alice', address: known });
+  let r = core.lookalikeMatches(poison, book);
+  assert.equal(r.matches.length, 1);
+  assert.equal(r.matches[0].address, known);
+  assert.equal(r.matches[0].source, 'contact');
+  assert.equal(r.matches[0].name, 'Alice');
+  assert.equal(r.matches[0].diff.length, 32, 'the full address is compared, not just the ends');
+  assert.deepEqual(r.matches[0].diff, core.addressDiff(poison, known));
+  const w = core.sendWarnings({ receiver: poison, amountAtoms: one }, account, book);
+  assert.deepEqual(w.map((x) => x.code), ['lookalike', 'first-time']);
+  assert.equal(w[0].blocking, false);
+  assert.equal(w[0].receiver, poison);
+  assert.match(w[0].message, /"Alice".*DIFFERENT/);
+  // exact full match (any case / checksummed form) is never a lookalike
+  for (const v of [known, known.toUpperCase().replace(/^ZYN/, 'ZYN'), core.toChecksumAddress(known), '  ' + core.toChecksumAddress(known) + ' ']) {
+    if (v === known.toUpperCase().replace(/^ZYN/, 'ZYN')) { assert.throws(() => core.lookalikeMatches(v, book), /Checksum/); continue; }
+    assert.deepEqual(core.lookalikeMatches(v, book).matches, [], 'exact match: ' + v);
+    assert.ok(!core.sendWarnings({ receiver: v, amountAtoms: one }, account, book).some((x) => x.code === 'lookalike'));
+  }
+  // checksummed poison input still detected; a wrong checksum is rejected before any comparison
+  assert.equal(core.lookalikeMatches(core.toChecksumAddress(poison), book).matches.length, 1);
+  // prefix only or suffix only (with a large middle difference) is not flagged
+  assert.deepEqual(core.lookalikeMatches('ZYN' + 'abcd' + 'f'.repeat(32) + '9999', book).matches, []);
+  assert.deepEqual(core.lookalikeMatches('ZYN' + '9999' + 'f'.repeat(32) + 'ef01', book).matches, []);
+  // prefix length off by one (first 3 match, 4th differs) is not an ends match
+  assert.deepEqual(core.lookalikeMatches('ZYN' + 'abc0' + 'f'.repeat(32) + 'ef01', book).matches, []);
+  // small edit distance (1-2 hex positions) is flagged even if the ends differ
+  const oneOff = 'ZYN' + '0bcd' + known.slice(7);
+  assert.deepEqual(core.lookalikeMatches(oneOff, book).matches[0].diff, [0]);
+  const threeOff = 'ZYN' + '012' + known.slice(6);
+  assert.equal(core.addressDiff(threeOff, known).length, 3);
+  assert.deepEqual(core.lookalikeMatches(threeOff, book).matches, [], 'three differences with different ends are not flagged');
+  // sent history is compared too
+  book = core.recordSent(core.emptyBook(), core.toChecksumAddress(known));
+  r = core.lookalikeMatches(poison, book);
+  assert.equal(r.matches[0].source, 'history');
+  assert.equal(r.matches[0].name, null);
+  assert.match(core.sendWarnings({ receiver: poison, amountAtoms: one }, account, book)[0].message, /sent to before/);
+  // the receiver itself in history plus a lookalike contact: the contact is still flagged, the exact entry is not
+  book = core.addContact(core.recordSent(core.emptyBook(), poison), { name: 'Alice', address: known });
+  assert.deepEqual(core.lookalikeMatches(poison, book).matches.map((m) => m.address), [known]);
+  // cap: at most LOOKALIKE_MAX_COMPARISONS known addresses are compared (contacts first, then newest history)
+  const hex = (i, p) => 'ZYN' + p + i.toString(16).padStart(36, '0');
+  let big = core.emptyBook();
+  for (let i = 0; i < core.BOOK_MAX_CONTACTS; i += 1) big = core.addContact(big, { name: 'C' + i, address: hex(i, '1111') });
+  const oldest = 'ZYN' + '7777' + '5'.repeat(32) + '7777';
+  big = core.recordSent(big, oldest);
+  for (let i = 0; i < core.BOOK_MAX_SENT - 1; i += 1) big = core.recordSent(big, hex(i, '2222'));
+  assert.equal(big.sent.length, core.BOOK_MAX_SENT);
+  assert.equal(big.sent[big.sent.length - 1], oldest);
+  const probe = 'ZYN' + '7777' + 'a'.repeat(32) + '7777';
+  r = core.lookalikeMatches(probe, big);
+  assert.ok(core.LOOKALIKE_MAX_COMPARISONS < core.BOOK_MAX_CONTACTS + core.BOOK_MAX_SENT);
+  assert.equal(r.compared, core.LOOKALIKE_MAX_COMPARISONS);
+  assert.equal(r.truncated, true);
+  assert.deepEqual(r.matches, [], 'an entry beyond the cap is not compared');
+  const fresh = core.recordSent(big, oldest); // moves to most recent
+  assert.deepEqual(core.lookalikeMatches(probe, fresh).matches.map((m) => m.address), [oldest]);
+  // number of reported matches is bounded
+  let many = core.emptyBook();
+  for (let i = 0; i < 6; i += 1) many = core.addContact(many, { name: 'M' + i, address: 'ZYN' + 'abcd' + String(i).repeat(32) + 'ef01' });
+  assert.equal(core.lookalikeMatches(poison, many).matches.length, core.LOOKALIKE_MAX_MATCHES);
+  // grouped display
+  assert.equal(core.displayAddress(known), core.groupAddress(core.toChecksumAddress(known)));
+  assert.match(core.displayAddress(known), /^ZYN( [0-9a-fA-F]{4}){10}$/);
+  // app wiring: separate acknowledgement, DOM-built highlight, no innerHTML, history is display-only
+  const appJs = readFileSync(join(app, 'app.js'), 'utf8');
+  const html = readFileSync(join(app, 'index.html'), 'utf8');
+  assert.match(html, /data-review-lookalike-ack/);
+  assert.match(appJs, /function warningsAccepted\(\) \{ return lookalikeAccepted\(\) && /);
+  assert.ok(!/innerHTML|insertAdjacentHTML|outerHTML/.test(appJs), 'no HTML injection APIs in app.js');
+  assert.ok(!/<datalist/.test(html), 'no receiver suggestions');
+  assert.match(html, /<input data-tx-to autocomplete="off"/);
+  assert.ok(!/history[^\n]*data-tx-to|data-tx-to[^\n]*sent\[/.test(appJs), 'history never fills the receiver');
+  core.wipe(account.privateKey);
+});
+
 await test('send-safety warnings: first-time recipient, own address, amount at or above the threshold', async () => {
   const account = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
   const friend = SNAP_VECTORS[1].address;

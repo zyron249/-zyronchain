@@ -115,6 +115,32 @@ Non-blocking warnings are listed on the review screen and need their own checkbo
 want to sign") in addition to the review checkbox. The sign handler checks both again. After a transfer is signed,
 its receiver is added to the sent-to history and the book is re-saved. No warning check makes a network request.
 
+### Lookalike addresses (address poisoning)
+`lookalikeMatches(receiver, book)` (in `zyron-wallet-core.js`) compares the receiver with the saved contacts and
+then the sent-to history (newest first). A known address is flagged when it is a **different full address** and
+either its first `LOOKALIKE_PREFIX` (4) and last `LOOKALIKE_SUFFIX` (4) hex characters equal the receiver's, or it
+differs in at most `LOOKALIKE_MAX_DIFF` (2) hex positions. Rules:
+- The whole 40-character address is always compared (case-insensitive, after checksum validation). The ends alone
+  never decide, and an exact full match is never a lookalike.
+- At most `LOOKALIKE_MAX_COMPARISONS` (250) known addresses are compared, so the oldest history entries can fall
+  outside the check when the book is full (100 contacts + 200 history). At most `LOOKALIKE_MAX_MATCHES` (3) are reported.
+- `sendWarnings` returns it as the non-blocking `lookalike` warning, carrying the matches and differing positions.
+
+The review screen shows it in its own red box (`[data-review-lookalike]`), apart from the other warnings. The box
+shows both full addresses, checksummed and grouped, with the differing characters in `<mark>`. These are built from
+text nodes and elements only, never from HTML strings. The box has its own checkbox
+(`[data-review-lookalike-ack]`). Sign stays disabled until the review checkbox, the general warnings checkbox (when
+shown) and the lookalike checkbox are all ticked. The sign handler checks them all again.
+
+The app never fills in or suggests a receiver from the history: there is no autocomplete or datalist, and the
+history list (Send screen) is display-only. Only an explicit "Send to" on a saved contact fills the receiver.
+
+### Address display
+Every displayed address uses the full checksummed form in 4-character blocks (`displayAddress`, for example
+`ZYN 5D99 EE96 …`): home/receive, unlock, review From/To, contacts, sent-to history, the signed-transfer view, the
+held signed transfer and the wallet-link screen. Raw lower-case forms are kept only where a machine needs them
+(the signed JSON, the QR and "Copy plain address").
+
 ## Security boundaries
 - **CSP** (meta):
   ```
