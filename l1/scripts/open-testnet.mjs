@@ -471,7 +471,35 @@ const SNAPSHOT_MAGIC = "ZYRON-OPEN-TESTNET-STATE-V1";
 const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 const RESERVED_CHAIN_IDS = new Set(["zyron-mainnet-1", "zyron-public-testnet-1"]);
 
-const STARTUP_GRACE_MS = 10 * 60_000;
+// Validators-phase liveness: once the validator processes start, /health
+// answers 200 "starting" while they make start-up progress (replay can take
+// longer than any fixed timer on a small instance), 503 after
+// ZYRON_STARTUP_STALL_MS without progress, and 503 past ZYRON_STARTUP_MAX_MS
+// from that point even while progressing. /readyz is always strict.
+export const STARTUP_STALL_MS = 5 * 60_000;
+export const STARTUP_MAX_MS = 90 * 60_000;
+export function parseStartupLimits(env = process.env) {
+  const read = (value, fallback) => (/^[1-9][0-9]*$/.test(String(value ?? "")) && Number.isSafeInteger(Number(value)) ? Number(value) : fallback);
+  return { stallMs: read(env.ZYRON_STARTUP_STALL_MS, STARTUP_STALL_MS), maxMs: read(env.ZYRON_STARTUP_MAX_MS, STARTUP_MAX_MS) };
+}
+// observe(fingerprint) records progress whenever the fingerprint changes
+// (validator heights and reachability, data-directory sizes and mtimes,
+// validator CPU time). liveness() maps the quorum result to the /health answer.
+export function createStartupProgress({ stallMs = STARTUP_STALL_MS, maxMs = STARTUP_MAX_MS, now = Date.now, startedAtMs = now() } = {}) {
+  let last; let lastProgressAtMs = startedAtMs;
+  return {
+    observe(fingerprint) { if (fingerprint !== last) { last = fingerprint; lastProgressAtMs = now(); } },
+    liveness({ ok, everReady, path }) {
+      const t = now();
+      const elapsedMs = t - startedAtMs; const sinceProgressMs = t - lastProgressAtMs;
+      const stalled = sinceProgressMs > stallMs; const capped = elapsedMs > maxMs;
+      const starting = !ok && !everReady && !stalled && !capped;
+      const status = ok ? "ready" : starting ? "starting" : "degraded";
+      const code = ok || (starting && path !== "/readyz") ? 200 : 503;
+      return { code, status, starting, progress: { elapsedMs, sinceProgressMs, stallMs, maxMs, stalled, capped } };
+    }
+  };
+}
 // Boot liveness (download/decrypt/replay/init): /health stays 200 only while
 // start-up makes progress (a phase change, a download attempt, a replayed
 // block, a validator copy, a block produced or committed by a fresh init). Longer than one 180 s download attempt; no wall-clock cap,
@@ -1162,7 +1190,7 @@ export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, ge
 }
 
 // ---- run: validators + gateway ---------------------------------------------------
-export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server, verifiedHistory, durable } = {}) {
+export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server, verifiedHistory, durable, startupLimits = parseStartupLimits() } = {}) {
   const runStartedAtMs = Date.now();
   const genesisPath = join(dir, "genesis.json");
   const genesis = JSON.parse(await readFile(genesisPath, "utf8"));
@@ -1503,6 +1531,25 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   }
 
   let active = 0; let everReady = false;
+  const startup = createStartupProgress({ ...startupLimits, startedAtMs: runStartedAtMs });
+  // Cheap start-up progress signal: replay is silent in the node logs, so the
+  // fingerprint also covers each validator data directory (top-level sizes and
+  // mtimes) and each validator's CPU time (Linux /proc), besides heights.
+  async function startupFingerprint(statuses) {
+    const parts = await Promise.all(VALIDATOR_NAMES.map(async (name, i) => {
+      const s = statuses[i] ?? {};
+      let files = "";
+      try {
+        const base = join(dir, `data-${name}`);
+        for (const entry of (await readdir(base)).sort()) { const st = await stat(join(base, entry)).catch(() => undefined); if (st) files += `${entry}:${st.size}:${st.mtimeMs};`; }
+      } catch {}
+      let cpu = "";
+      const pid = nodes.get(name)?.child?.pid;
+      if (pid) try { const f = (await readFile(`/proc/${pid}/stat`, "utf8")).split(") ")[1].split(" "); cpu = `${pid}:${Math.floor((Number(f[11]) + Number(f[12])) / 100)}`; } catch {}
+      return `${s.up ? 1 : 0}:${s.height ?? ""}:${cpu}|${files}`;
+    }));
+    return parts.join("#");
+  }
   const handler = async (request, response) => {
     if (active >= 64) return sendJson(response, 503, { error: "busy, retry shortly" }, { "retry-after": "1" });
     active += 1; response.once("close", () => { active -= 1; });
@@ -1525,13 +1572,13 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const { ok, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, activeSetRejected } = activeSetTracker.evaluate(statuses);
           const validators = statuses.map(({ activeSet: _activeSet, ...rest }) => rest);
           if (ok) everReady = true;
-          // Until the validators first reach a quorum (bounded by STARTUP_GRACE_MS)
-          // liveness stays 200 "starting"; afterwards a lost quorum is a 503.
-          // /readyz is always strict.
-          const starting = !ok && !everReady && Date.now() - runStartedAtMs < STARTUP_GRACE_MS;
-          const status = ok ? "ready" : starting ? "starting" : "degraded";
-          const code = ok || (starting && path !== "/readyz") ? 200 : 503;
-          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), network: "testnet", valueBearing: false, chainId, persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
+          // Until the validators first reach a quorum, liveness stays 200
+          // "starting" while start-up progresses (bounded by the stall window
+          // and the hard cap); afterwards a lost quorum is a 503. /readyz is
+          // always strict.
+          if (!ok && !everReady) startup.observe(await startupFingerprint(statuses));
+          const { code, status, starting, progress } = startup.liveness({ ok, everReady, path });
+          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
@@ -1632,7 +1679,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     if (mailbox) await new Promise((done) => mailbox.close(() => done()));
     await Promise.all(VALIDATOR_NAMES.map((name) => stopValidator(name)));
   }
-  async function waitForQuorum(timeoutMs = STARTUP_GRACE_MS) {
+  async function waitForQuorum(timeoutMs = startupLimits.maxMs) {
     const deadline = Date.now() + timeoutMs;
     while (!shuttingDown && Date.now() < deadline) {
       if (activeSetTracker.evaluate(await validatorStatuses()).ok) return true;
@@ -1832,7 +1879,7 @@ if (!invokedDirectly) {
   if (await network.waitForQuorum()) {
     boot.enter("ready");
     console.log(`startup complete in ${Date.now() - boot.startedAtMs}ms; phase timings ${JSON.stringify(boot.timings)}`);
-  } else console.error(`validators did not reach a quorum within ${STARTUP_GRACE_MS}ms of start-up`);
+  } else console.error(`validators did not reach a quorum within ${parseStartupLimits().maxMs}ms of start-up`);
 } else if (command === "smoke") {
   await smoke();
   process.exit(0);

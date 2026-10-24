@@ -25,6 +25,10 @@ services:
     buildCommand: cd l1 && npm ci && npm run build
     startCommand: cd l1 && node scripts/open-testnet.mjs run --dir /tmp/zyron-open-testnet --host 0.0.0.0 --init-if-missing --restore-url https://github.com/zyron249/-zyronchain/releases/download/open-testnet-state/state.enc
     healthCheckPath: /health
+    # /health stays 200 "starting" while start-up (restore, replay) makes
+    # progress; optional ZYRON_STARTUP_STALL_MS (default 5 min without progress)
+    # and ZYRON_STARTUP_MAX_MS (default 90 min hard cap) tune it. See
+    # docs/OPEN_TESTNET.md.
     envVars:
       - key: NODE_VERSION
         value: "24"
