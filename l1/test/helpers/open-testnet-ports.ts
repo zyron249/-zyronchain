@@ -21,10 +21,25 @@ export const OPEN_TESTNET_PORT_WINDOWS = {
   "durable-watermark": [15_000, 17_000],
   "restore-log-digest": [17_000, 19_000],
   // 19300-21349: open-testnet.mjs smoke (not a test file; kept clear).
-  "early-listen": [21_500, 24_000],
+  "early-listen": [21_500, 23_500],
   "interrupted-restore": [24_000, 26_500],
   "restore-not-found-retry": [26_500, 29_000]
 } as const satisfies Record<string, readonly [number, number]>;
+
+// Fail at module load if a window edit ever makes two files overlap, reaches
+// the ephemeral range, or enters the smoke script's 19300-21349 block.
+const SMOKE_RESERVED = [19_300, 21_350] as const;
+{
+  const windows = Object.entries(OPEN_TESTNET_PORT_WINDOWS as Record<string, readonly [number, number]>).sort((a, b) => a[1][0] - b[1][0]);
+  for (const [name, [lo, hi]] of windows) {
+    if (!(lo < hi) || hi > 32_768) throw new Error(`open-testnet port window ${name} [${lo}, ${hi}) must be non-empty and below 32768`);
+    if (lo < SMOKE_RESERVED[1] && hi > SMOKE_RESERVED[0]) throw new Error(`open-testnet port window ${name} [${lo}, ${hi}) overlaps the smoke range 19300-21349`);
+  }
+  windows.reduce((previous, current) => {
+    if (current[1][0] < previous[1][1]) throw new Error(`open-testnet port windows ${previous[0]} and ${current[0]} overlap`);
+    return current;
+  });
+}
 
 export type OpenTestnetPortWindow = keyof typeof OPEN_TESTNET_PORT_WINDOWS;
 
@@ -37,6 +52,10 @@ function canBind(port: number, host: string): Promise<boolean> {
   });
 }
 
+// Probe-bind gap: the probe releases each port before the network binds it,
+// so an unrelated process (outside these tests) could take a port in between.
+// Disjoint windows rule out collisions between the open-testnet test files;
+// the probe only narrows, and cannot eliminate, collisions with anything else.
 /** A base port in this file's window whose validator and mailbox ports are all free right now. */
 export async function allocateValidatorBasePort(window: OpenTestnetPortWindow, host = "127.0.0.1"): Promise<number> {
   const [lo, hi] = OPEN_TESTNET_PORT_WINDOWS[window];
@@ -50,6 +69,7 @@ export async function allocateValidatorBasePort(window: OpenTestnetPortWindow, h
   throw new Error(`no free validator port block in window ${window} [${lo}, ${hi})`);
 }
 
+// Same gap as above: the port is free when returned, not reserved.
 /** A kernel-assigned free TCP port (bind port 0, then release it). */
 export async function freePort(host = "127.0.0.1"): Promise<number> {
   return new Promise((resolve, reject) => {
