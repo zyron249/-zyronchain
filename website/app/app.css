@@ -227,3 +227,8 @@ details.collapsible[open] > summary { margin-bottom: 10px; }
 .steps li { margin: 0 0 4px; }
 [data-tx-next] strong { display: block; margin-bottom: 2px; }
 .foot a { display: inline-block; padding: 12px 2px; }
+
+/* Lookalike-address comparison: differing characters are marked. */
+.lookalike-row { margin: 6px 0; }
+.lookalike-row .address-raw { display: block; }
+.address-raw mark { background: var(--bad); color: #fff; border-radius: 2px; padding: 0 1px; }

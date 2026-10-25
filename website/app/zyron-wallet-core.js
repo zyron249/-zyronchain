@@ -31,6 +31,14 @@
   const BOOK_MAX_SENT = 200;
   const BOOK_NAME_MAX = 64;
   const BOOK_MAX_PLAINTEXT = 32768;
+  // Lookalike (address-poisoning) check: a known address that is NOT the same full address but whose
+  // common hex prefix length + common hex suffix length (non-overlapping) is at least LOOKALIKE_MIN_SHARED,
+  // for any split (3+3, 5+1, 6+0, 0+6, ...), or that differs in at most LOOKALIKE_MAX_DIFF hex positions.
+  // At most LOOKALIKE_MAX_COMPARISONS known addresses (contacts first, then sent history) are compared.
+  const LOOKALIKE_MIN_SHARED = 6;
+  const LOOKALIKE_MAX_DIFF = 2;
+  const LOOKALIKE_MAX_COMPARISONS = 250;
+  const LOOKALIKE_MAX_MATCHES = 3;
   const MAX_VAULT_TEXT = 2 * BOOK_MAX_PLAINTEXT + 4096;
   const ATOMS_PER_ZYN = 100000000;
   // Proposed fixed protocol fee: 0.001 ZYN. Same constant as l1 FIXED_TRANSFER_FEE_ATOMS.
@@ -143,6 +151,18 @@
   }
   function groupAddress(address) {
     return 'ZYN ' + address.slice(3).match(/.{1,4}/g).join(' ');
+  }
+  // Full checksummed address in 4-character blocks, for every place an address is shown.
+  function displayAddress(address) {
+    return groupAddress(toChecksumAddress(parseAddressInput(address).canonical));
+  }
+  // Indices (0..39) of the hex characters that differ between two addresses (case-insensitive).
+  function addressDiff(a, b) {
+    const x = parseAddressInput(a).canonical.slice(3);
+    const y = parseAddressInput(b).canonical.slice(3);
+    const out = [];
+    for (let i = 0; i < 40; i += 1) if (x[i] !== y[i]) out.push(i);
+    return out;
   }
 
   // ---------- password rule (identical to website/wallet-core.js and l1 password-prompt.ts) ----------
@@ -311,6 +331,36 @@
   }
   // Local send-safety checks. input: { receiver, amountAtoms }, account: { address }. Returns a list of
   // { code, blocking, message }. 'self' is blocking because the transfer builder (and l1) reject self-transfers.
+  // Known addresses (contacts, then sent history) that look like the receiver but are a different
+  // full address. The full 40-character address is always compared: an exact match is never a lookalike.
+  function lookalikeMatches(receiverInput, book) {
+    const b = parseBook(book);
+    const receiver = parseAddressInput(receiverInput).canonical;
+    const rx = receiver.slice(3);
+    const known = [];
+    const seen = new Set();
+    for (const c of b.contacts) if (!seen.has(c.address)) { seen.add(c.address); known.push({ address: c.address, name: c.name, source: 'contact' }); }
+    for (const a of b.sent) if (!seen.has(a)) { seen.add(a); known.push({ address: a, name: null, source: 'history' }); }
+    const checked = known.slice(0, LOOKALIKE_MAX_COMPARISONS);
+    const matches = [];
+    for (const k of checked) {
+      if (k.address === receiver) continue; // exact full match: the receiver is this known address
+      const kx = k.address.slice(3);
+      let prefix = 0;
+      while (prefix < 40 && kx[prefix] === rx[prefix]) prefix += 1;
+      let suffix = 0; // bounded by 40 - prefix so no character counts twice
+      while (suffix < 40 - prefix && kx[39 - suffix] === rx[39 - suffix]) suffix += 1;
+      const ends = prefix + suffix >= LOOKALIKE_MIN_SHARED;
+      const diff = [];
+      for (let i = 0; i < 40; i += 1) if (kx[i] !== rx[i]) diff.push(i);
+      if (diff.length === 0) continue;
+      if (ends || diff.length <= LOOKALIKE_MAX_DIFF) {
+        matches.push({ address: k.address, name: k.name, source: k.source, diff, prefix, suffix });
+        if (matches.length >= LOOKALIKE_MAX_MATCHES) break;
+      }
+    }
+    return { receiver, matches, compared: checked.length, truncated: known.length > checked.length };
+  }
   function sendWarnings(input, account, book) {
     const b = parseBook(book);
     const out = [];
@@ -318,6 +368,13 @@
     if (account && receiver === account.address) {
       out.push({ code: 'self', blocking: true, message: SELF_SEND_MESSAGE });
       return out;
+    }
+    const look = lookalikeMatches(receiver, b);
+    if (look.matches.length) {
+      const m = look.matches[0];
+      out.push({ code: 'lookalike', blocking: false, receiver, matches: look.matches, message:
+        'This address looks like ' + (m.source === 'contact' ? 'your saved contact "' + m.name + '"' : 'an address you sent to before') +
+        ' but it is a DIFFERENT address. Scammers create lookalike addresses with the same start and end. Compare every character.' });
     }
     const contact = b.contacts.find((c) => c.address === receiver);
     if (!b.sent.includes(receiver)) {
@@ -673,12 +730,12 @@
   }
 
   const api = Object.freeze({
-    DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_VERSION_V1, SELF_SEND_MESSAGE, VAULT_KDF, MAX_VAULT_TEXT, BOOK_MAX_CONTACTS, BOOK_MAX_SENT, BOOK_NAME_MAX, ATOMS_PER_ZYN, FIXED_TRANSFER_FEE_ATOMS, FIXED_SUPPLY_V1_CHAIN_IDS, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
+    DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_VERSION_V1, SELF_SEND_MESSAGE, VAULT_KDF, MAX_VAULT_TEXT, BOOK_MAX_CONTACTS, BOOK_MAX_SENT, BOOK_NAME_MAX, LOOKALIKE_MIN_SHARED, LOOKALIKE_MAX_DIFF, LOOKALIKE_MAX_COMPARISONS, LOOKALIKE_MAX_MATCHES, ATOMS_PER_ZYN, FIXED_TRANSFER_FEE_ATOMS, FIXED_SUPPLY_V1_CHAIN_IDS, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
     TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, WALLET_TESTNET_CHAIN_ID, defaultTransferVersion,
-    wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress,
+    wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress, displayAddress, addressDiff,
     passwordStrength, normalizePhrase, generateEntropy, entropyToPhrase, phraseToEntropy, deriveAccount,
     createVault, createVaultSession, openVault, upgradeVaultVerified, upgradeMarker, parseUpgradeMarker, isRollback, assertVaultShape, parseVault, upgradeVault, updateVaultBook,
-    emptyBook, parseBook, addContact, updateContact, removeContact, findContact, recordSent, setThreshold, sendWarnings, zynToAtoms, atomsToZyn, buildTransfer, describeTransfer, fixedFeeRejection, signTransfer, verifyCanonical,
+    emptyBook, parseBook, addContact, updateContact, removeContact, findContact, recordSent, setThreshold, lookalikeMatches, sendWarnings, zynToAtoms, atomsToZyn, buildTransfer, describeTransfer, fixedFeeRejection, signTransfer, verifyCanonical,
     LINK_SIGNING_DOMAIN, LINK_NETWORK, LINK_RETURN_URL, parseLinkMessage, parseLinkHash, signLinkProof, textToBase64Url,
     selfTest
   });
