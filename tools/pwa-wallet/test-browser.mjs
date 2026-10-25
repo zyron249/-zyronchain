@@ -359,8 +359,8 @@ try {
     const rows = await page.$$eval('[data-review-rows] > div', (divs) => divs.map((d) => [d.dataset.reviewKey, d.querySelector('dt').textContent, d.querySelector('dd').textContent]));
     assert.deepEqual(rows.map((r) => r[1]), ['Type', 'From', 'To', 'Amount', 'Fee', 'Total', 'Chain ID', 'Nonce', 'Timestamp']);
     const review = Object.fromEntries(rows.map((r) => [r[0], r[2]]));
-    assert.equal(review.from, core.toChecksumAddress(address));
-    assert.equal(review.to, RECEIVER);
+    assert.equal(review.from, core.groupAddress(core.toChecksumAddress(address)), 'review shows the grouped checksummed sender');
+    assert.equal(review.to, core.groupAddress(RECEIVER), 'review shows the grouped checksummed receiver');
     assert.equal(review.amount, '2.5 ZYN (250000000 atoms)');
     assert.equal(review.fee, '0.00001 ZYN (1000 atoms)');
     assert.equal(review.total, '2.50001 ZYN (250001000 atoms)');
@@ -378,6 +378,7 @@ try {
     await page.click('[data-tx-sign]');
     await page.waitForSelector('[data-tx-out]:not([hidden])');
     assert.match(await page.textContent('[data-tx-summary]'), /Signed locally\. Not broadcast\./);
+    assert.equal(await page.textContent('[data-tx-to-grouped]'), core.displayAddress(RECEIVER), 'signed view shows the grouped checksummed receiver');
     signed = JSON.parse(await page.textContent('[data-tx-json]'));
     assert.equal(signed.kind, 'transfer');
     assert.equal(signed.version, 1);
@@ -402,6 +403,7 @@ try {
       await page.waitForSelector('[data-screen="home"]:not([hidden])', { timeout: 60000 });
       assert.equal(await page.isVisible('[data-signed-hold]'), true, 'signed transfer stays until dismissed');
       assert.equal(JSON.parse(await page.textContent('[data-signed-hold-json]')).txid, signed.txid);
+      assert.equal(await page.textContent('[data-signed-hold-to]'), core.displayAddress(RECEIVER), 'held signed transfer shows the grouped receiver');
       await page.click('[data-signed-dismiss]');
       assert.equal(await page.isVisible('[data-signed-hold]'), false);
     } else {
@@ -421,7 +423,57 @@ try {
     assert.equal(await page.isHidden('[data-review-warnings]'), true, 'a recipient already sent to (history kept in the encrypted vault) shows no first-time warning');
     await page.click('[data-review-cancel]');
     await page.waitForSelector('[data-screen="home"]:not([hidden])');
+    // Lookalike (address poisoning): same first/last 4 hex characters as an address in the sent history.
     await page.click('[data-screen="home"] [data-go="send"]');
+    assert.equal(await page.$$eval('datalist', (d) => d.length), 0, 'no receiver suggestions');
+    assert.equal(await page.getAttribute('[data-tx-to]', 'list'), null);
+    assert.deepEqual(await page.$$eval('[data-history-list] li', (li) => li.map((x) => x.textContent)), [core.displayAddress(RECEIVER)], 'history shows grouped checksummed addresses');
+    assert.equal(await page.$$eval('[data-history-list] button, [data-history-list] a', (b) => b.length), 0, 'history has no action that fills the receiver');
+    const knownCanon = core.parseAddressInput(RECEIVER).canonical;
+    const poison = 'ZYN' + knownCanon.slice(3, 7) + [...knownCanon.slice(7, 39)].map((c) => (c === 'a' ? 'b' : 'a')).join('') + knownCanon.slice(39);
+    await page.fill('[data-tx-to]', poison);
+    await page.fill('[data-tx-chain]', 'zyron-wallet-testnet-1');
+    await page.fill('[data-tx-fee]', '0.00001');
+    await page.click('[data-tx-review]');
+    await page.waitForSelector('[data-screen="review"]:not([hidden])');
+    assert.equal(await page.isVisible('[data-review-lookalike]'), true, 'a lookalike of a known address is flagged');
+    assert.match(await page.textContent('[data-review-lookalike-message]'), /DIFFERENT address/);
+    assert.deepEqual(await page.$$eval('[data-review-warning-list] li', (li) => li.map((x) => x.dataset.warning)), ['first-time'], 'the lookalike warning is not mixed into the other warnings');
+    const shown = await page.$eval('[data-review-lookalike-compare]', (el) => ({
+      receiver: el.querySelector('[data-lookalike-receiver]').textContent,
+      known: el.querySelector('[data-lookalike-known]').textContent,
+      rMarks: [...el.querySelectorAll('[data-lookalike-receiver] mark')].map((m) => m.textContent).join(''),
+      kMarks: [...el.querySelectorAll('[data-lookalike-known] mark')].map((m) => m.textContent).join(''),
+      elements: [...el.querySelectorAll('[data-lookalike-receiver] *')].map((n) => n.tagName)
+    }));
+    assert.equal(shown.receiver, core.displayAddress(poison), 'both full addresses are shown grouped');
+    assert.equal(shown.known, core.displayAddress(RECEIVER));
+    const diff = core.addressDiff(poison, RECEIVER);
+    assert.equal(diff.length, 32);
+    assert.equal(shown.rMarks, diff.map((i) => core.toChecksumAddress(core.parseAddressInput(poison).canonical)[3 + i]).join(''), 'differing characters are highlighted');
+    assert.equal(shown.kMarks, diff.map((i) => RECEIVER[3 + i]).join(''));
+    assert.ok(shown.elements.every((t) => t === 'MARK'), 'highlight is built from text nodes and <mark> only');
+    await shot(page, '6c-lookalike-warning');
+    await page.check('[data-review-ack]');
+    await page.check('[data-review-warn-ack]');
+    assert.equal(await page.isDisabled('[data-tx-sign]'), true, 'the lookalike warning needs its own acknowledgement');
+    await page.check('[data-review-lookalike-ack]');
+    assert.equal(await page.isDisabled('[data-tx-sign]'), false);
+    await page.uncheck('[data-review-warn-ack]');
+    assert.equal(await page.isDisabled('[data-tx-sign]'), true, 'the lookalike acknowledgement does not replace the other one');
+    await page.click('[data-review-cancel]');
+    await page.waitForSelector('[data-screen="home"]:not([hidden])');
+    // the exact known address is not a lookalike
+    await page.click('[data-screen="home"] [data-go="send"]');
+    await page.fill('[data-tx-to]', RECEIVER);
+    await page.click('[data-tx-review]');
+    await page.waitForSelector('[data-screen="review"]:not([hidden])');
+    assert.equal(await page.isHidden('[data-review-lookalike]'), true, 'an exact full match is not a lookalike');
+    await page.click('[data-review-cancel]');
+    await page.waitForSelector('[data-screen="home"]:not([hidden])');
+    await page.click('[data-screen="home"] [data-go="send"]');
+    await page.fill('[data-tx-chain]', 'zyron-open-testnet-1');
+    await page.fill('[data-tx-fee]', '0');
     await page.fill('[data-tx-to]', address);
     await page.click('[data-tx-review]');
     assert.match(await page.textContent('[data-tx-check]'), /You can't send to your own address\. Enter a different recipient\./);
@@ -625,6 +677,8 @@ try {
     await page.waitForSelector('[data-screen="home"]:not([hidden])', { timeout: 60000 });
     await page.click('[data-screen="home"] [data-go="send"]');
     assert.deepEqual(await page.$$eval('[data-contact-list] li strong', (els) => els.map((e) => e.textContent)), ['Fixture friend'], 'contact survives lock/unlock');
+    assert.equal(await page.textContent('[data-contact-list] li .address-raw'), core.displayAddress(RECEIVER), 'contacts show the grouped checksummed address');
+    assert.equal(await page.inputValue('[data-tx-to]'), '', 'unlocking never pre-fills the receiver');
     meta = await readMetaRecords(page);
     assert.equal(meta['v1-backup'], undefined, 'the v1 copy is removed after the v2 vault opened');
     assert.ok(meta['v2-seen'], 'the rollback marker stays');
