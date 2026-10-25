@@ -48,6 +48,7 @@ import { assertMempoolSenderNonce, MAX_MEMPOOL_PENDING_PER_SENDER, readFeePolicy
 import { Mempool, type MempoolOptions } from "./mempool.js";
 import { spendableAtoms } from "./allocation-locks.js";
 import { supplyReport, type SupplyReport } from "./supply-report.js";
+import { buildCommit } from "./build-info.js";
 import { PeerReputationStore } from "./peer-reputation.js";
 import { PROPOSAL_VALIDATION_BUDGET_MESSAGE, ProposalValidationBudget } from "./proposal-validation-budget.js";
 import { ipv6Prefix64 } from "./p2p-address.js";
@@ -158,6 +159,16 @@ export const DEFAULT_MEMPOOL_PARKED_TX_TTL_MS = 10 * 60_000;
 export const MAX_MEMPOOL_PARKED_TX_TTL_MS = 24 * 60 * 60_000;
 /** Admission-path TTL sweeps run at most this often (finalization always sweeps). */
 const PARKED_TX_SWEEP_INTERVAL_MS = 1_000;
+/** GET /supply rescans accounts at most this often (the report is labelled with its own tip). */
+export const SUPPLY_MIN_RECOMPUTE_MS = 5_000;
+/**
+ * LOW-2 (Red Team S1 retest): parked txs evicted by the TTL are remembered by
+ * txid for SEEN_EXPIRED_CACHE_TTL_MS, at most SEEN_EXPIRED_CACHE_MAX_ENTRIES
+ * (oldest dropped first), so the same signed bytes cannot be resubmitted for a
+ * fresh TTL while the nonce gap is still open.
+ */
+export const SEEN_EXPIRED_CACHE_MAX_ENTRIES = 10_000;
+export const SEEN_EXPIRED_CACHE_TTL_MS = 60 * 60_000;
 
 /**
  * Legacy (protocol v1-v5) skip-certificate catch-up progress for one tip
@@ -525,6 +536,8 @@ export class NodeService {
   readonly mempoolParkedTxTtlMs: number;
   private readonly clock: () => number;
   private lastParkedSweepMs = Number.NEGATIVE_INFINITY;
+  /** LOW-2: txid -> eviction time of parked txs the TTL evicted, oldest first (bounded). */
+  private readonly seenExpired = new Map<string, number>();
   // Keyed by the quorum-approved payload; each key holds at most
   // MAX_DEFERRED_VARIANTS_PER_VALIDATOR_UPDATE variants (they differ only in
   // fields the approvals do not cover, such as possessionProofs).
@@ -616,11 +629,17 @@ export class NodeService {
 
   /**
    * Read-only supply report for GET /supply (Red Team Session 1, INFO #5).
-   * Cached per tip: the account scan is O(accounts) and the route is public.
+   * Cached per tip, and recomputed at most once per SUPPLY_MIN_RECOMPUTE_MS:
+   * the account scan is O(accounts) and the route is public, so a moving tip
+   * under load cannot make every request rescan. The report carries its own
+   * height and tipHash, so a cached answer is never mislabelled.
    */
   supply(): SupplyReport {
     const chain = this.store.chain;
-    if (this.supplyCache?.tipHash !== chain.tip.hash) {
+    const nowMs = this.clock();
+    if (this.supplyCache?.tipHash !== chain.tip.hash &&
+        (this.supplyCache === undefined || nowMs - this.supplyComputedAtMs >= SUPPLY_MIN_RECOMPUTE_MS || nowMs < this.supplyComputedAtMs)) {
+      this.supplyComputedAtMs = nowMs;
       const locks = chain.allocationLocksAt(chain.tip.header.timestampMs);
       this.supplyCache = supplyReport({
         height: chain.height,
@@ -634,6 +653,7 @@ export class NodeService {
   }
 
   private supplyCache?: SupplyReport;
+  private supplyComputedAtMs = 0;
 
   /**
    * Validator set that governs the next height (the one consensus must reach a
@@ -1041,6 +1061,7 @@ export class NodeService {
     assertMempoolSenderNonce(tx.nonce, stateNonce);
     const nowMs = this.clock();
     this.sweepExpiredParked(nowMs, false);
+    this.assertNotRecentlyExpired(tx, stateNonce, nowMs);
     this.assertFutureNonceCap(tx, stateNonce);
     // P1-07-F1: a validator_update may depend on a pending same-block predecessor.
     // P1-07-F2 (Codex P2 on #1104 at cb863e16): only the pending validator
@@ -1144,7 +1165,47 @@ export class NodeService {
       if (entry.nonce > gap) evict.push(entry.txid);
     }
     this.mempool.remove(evict);
+    for (const txid of evict) {
+      this.seenExpired.delete(txid);
+      this.seenExpired.set(txid, nowMs);
+    }
+    while (this.seenExpired.size > SEEN_EXPIRED_CACHE_MAX_ENTRIES) {
+      this.seenExpired.delete(this.seenExpired.keys().next().value!);
+    }
     return evict.length;
+  }
+
+  /**
+   * LOW-2: a transaction the parked TTL evicted is refused for
+   * SEEN_EXPIRED_CACHE_TTL_MS while it would be parked again (its sender's
+   * nonce gap is still open). Once the gap closes it is admissible as usual.
+   */
+  private assertNotRecentlyExpired(tx: Transaction, stateNonce: number, nowMs: number): void {
+    const expiredAtMs = this.seenExpired.get(tx.txid);
+    if (expiredAtMs === undefined) return;
+    if (nowMs - expiredAtMs >= SEEN_EXPIRED_CACHE_TTL_MS || nowMs < expiredAtMs) {
+      this.seenExpired.delete(tx.txid);
+      return;
+    }
+    const gap = this.firstNonceGap(tx.sender, stateNonce);
+    if (tx.nonce <= gap) {
+      this.seenExpired.delete(tx.txid);
+      return;
+    }
+    throw new Error(
+      `Transaction expired from this node's mempool while parked (nonce ${tx.nonce}); ` +
+      `it is refused until nonce ${gap} is submitted first`
+    );
+  }
+
+  /**
+   * LOW-1: whether an admitted transaction is ready (`pending`) or parked
+   * behind a nonce gap (`parked`, with the first missing nonce). Policy view of
+   * this node's mempool only.
+   */
+  admissionStatus(tx: Pick<Transaction, "sender" | "nonce">): { status: "pending" } | { status: "parked"; waitingForNonce: number } {
+    const gap = this.firstNonceGap(tx.sender, this.store.chain.nonce(tx.sender));
+    return tx.nonce > gap ? { status: "parked", waitingForNonce: gap } : { status: "pending" };
   }
 
   async attestProposal(value: unknown, nowMs = Date.now()): Promise<BlockAttestation> {
@@ -1893,7 +1954,8 @@ async function route(
   }
   if (request.method === "GET" && url.pathname === "/readyz") {
     const readiness = service.readiness();
-    return writeJson(response, readiness.ready ? 200 : 503, readiness);
+    // Build commit SHA (hex only, "unknown" when absent); never other env values.
+    return writeJson(response, readiness.ready ? 200 : 503, { ...readiness, commit: buildCommit() });
   }
   if (request.method === "GET" && url.pathname === "/metrics") {
     // consensusV6 appears only while protocol v6 governs the next height, so
@@ -1929,7 +1991,8 @@ async function route(
       const transaction = structuredClone(body as Transaction);
       void Promise.resolve().then(() => onTransactionAccepted(transaction)).catch(() => undefined);
     }
-    return writeJson(response, 202, { txid });
+    // LOW-1: `status` is additive; existing clients keep reading `txid`.
+    return writeJson(response, 202, { txid, ...service.admissionStatus(body as Transaction) });
   }
   if (request.method === "POST" && url.pathname === "/proposal/attest") {
     preauthorizeConsensusRequest(request, url.pathname, peerAuthToken, peerRequestAuthenticator);

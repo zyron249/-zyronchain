@@ -59,7 +59,10 @@ async function withLocalAndRemote(
       remoteBase,
       readyz: async () => {
         const response = await fetch(`${localBase}/readyz`);
-        return { status: response.status, body: await response.json() as Readyz["body"] };
+        // The build commit (hardening batch) is checked here, the rest by deepEqual.
+        const { commit, ...rest } = await response.json() as Readyz["body"] & { commit: unknown };
+        assert.ok(typeof commit === "string" && /^([0-9a-f]{7,64}|unknown)$/.test(commit), "readyz commit");
+        return { status: response.status, body: rest };
       }
     });
   } finally {
