@@ -9,6 +9,7 @@ import { V6LeaderScheduler } from "./v6-scheduler.js";
 import { addressFromPublicKey, assertValidPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
 import { decryptPrivateKey, encryptPrivateKey, isEncryptedKeystore, keystoreVersion, migrateKeystore, normalizePasswordFile } from "./keystore.js";
 import { parseAddressInput, toChecksumAddress } from "./address-checksum.js";
+import { displayAddress, groupAddress, lookalikeMatches, parseKnownAddresses, sendWarnings, type KnownAddresses } from "./send-warnings.js";
 import { assertPasswordStrength, promptHiddenLine } from "./password-prompt.js";
 import { readPrivateRegularFile } from "./local-security.js";
 import { readCliCheckpointSnapshotAnchoredUtf8, readCliGenesisUtf8 } from "./cli-recovery-file.js";
@@ -104,6 +105,7 @@ async function main(): Promise<void> {
   if (command === "keystore-verify") return verifyKeystore(args);
   if (command === "keystore-migrate") return migrateKeystoreFile(args);
   if (command === "address-checksum") return showAddressChecksum(args);
+  if (command === "send-check") return sendCheck(args);
   if (command === "transfer-sign") return signTransferOffline(args);
   if (command === "tx-submit") return submitSignedTransaction(args);
   if (command === "validator-proposal") return createValidatorProposalFile(args);
@@ -772,6 +774,53 @@ async function showAddressChecksum(args: string[]): Promise<void> {
 }
 
 /**
+ * Advisory, offline send-safety check (feature 7). Reads an optional local known-address file
+ * ({contacts, sent, thresholdAtoms}, same shape as the PWA book) and prints warnings. No network,
+ * no keys; it never changes what a node accepts. Exits non-zero only for the blocking self-send case.
+ */
+async function sendCheck(args: string[]): Promise<void> {
+  assertKnownOptions(args, new Set(["--to", "--from", "--amount-atoms", "--known-file", "--format"]));
+  const receiver = parseAddressInput(requiredOption(args, "--to")).canonical;
+  const fromText = option(args, "--from");
+  const from = fromText === undefined ? null : parseAddressInput(fromText).canonical;
+  const amountText = option(args, "--amount-atoms");
+  const amountAtoms = amountText === undefined ? undefined : parseSafeInteger(amountText, "amount-atoms");
+  const format = option(args, "--format") ?? "text";
+  if (format !== "text" && format !== "json") throw new Error("--format must be text or json");
+  const knownPath = option(args, "--known-file");
+  let known: KnownAddresses = { contacts: [], sent: [], thresholdAtoms: null };
+  if (knownPath !== undefined) {
+    const text = await readFile(resolve(knownPath), "utf8");
+    if (Buffer.byteLength(text, "utf8") > 65_536) throw new Error("Known-address file is too large");
+    known = parseKnownAddresses(JSON.parse(text) as unknown);
+  }
+  const warnings = sendWarnings(amountAtoms === undefined ? { receiver } : { receiver, amountAtoms }, from ? { address: from } : null, known);
+  const blocking = warnings.find((warning) => warning.blocking);
+  if (format === "json") {
+    console.log(JSON.stringify({ receiver, display: displayAddress(receiver), advisory: true, warnings }, null, 2));
+  } else {
+    console.log(`Receiver (checksummed, grouped): ${displayAddress(receiver)}`);
+    const look = lookalikeMatches(receiver, known);
+    if (look.truncated) {
+      const total = new Set([...known.contacts.map((c) => c.address), ...known.sent]).size;
+      console.log(`note: only the first ${look.compared} of ${total} known addresses were compared for lookalikes`);
+    }
+    if (warnings.length === 0) console.log("No send warnings. Still compare every character of the address.");
+    for (const warning of warnings) {
+      console.log(`WARNING (${warning.code}${warning.blocking ? ", blocking" : ""}): ${warning.message}`);
+      if (warning.code === "lookalike") {
+        for (const match of warning.matches) {
+          const label = match.source === "contact" ? `contact "${match.name}"` : "sent history";
+          console.log(`  known (${label}): ${groupAddress(toChecksumAddress(match.address))}`);
+          console.log(`  differs at hex positions: ${match.diff.join(", ")}`);
+        }
+      }
+    }
+  }
+  if (blocking) throw new Error(blocking.message);
+}
+
+/**
  * Offline transfer signing: no network access. The caller supplies the chain ID, the next
  * account nonce and the transaction version for the target network, so the signed transfer
  * can be carried to an online machine and broadcast later with `tx-submit`.
@@ -1408,6 +1457,7 @@ function usage(): void {
   console.log("  zyron-l1 keystore-verify --key wallet.json            (password: ZYRON_KEYSTORE_PASSWORD_FILE, ZYRON_KEYSTORE_PASSWORD or a terminal prompt; prints only public data)");
   console.log("  zyron-l1 keystore-migrate --key old.json --out new.json   (v1 -> v2, scrypt N=2^17)");
   console.log("  zyron-l1 address-checksum --address <ZYN...>           (display-only mixed-case checksum; consensus uses lower-case)");
+  console.log("  zyron-l1 send-check --to <ZYN...> [--from <ZYN...>] [--amount-atoms N] [--known-file book.json] [--format text|json]  (offline, advisory send warnings)");
   console.log("  zyron-l1 transfer-sign --key wallet.json --chain-id <id> --to <address> --amount-atoms <n> [--fee-atoms <n>] --nonce <next-nonce> --tx-version <1|2> --out tx.json   (offline)");
   console.log("  zyron-l1 tx-submit --tx tx.json --rpc <url>");
   console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");

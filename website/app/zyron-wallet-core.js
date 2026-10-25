@@ -365,7 +365,7 @@
     const b = parseBook(book);
     const out = [];
     const receiver = contactAddress(input && input.receiver);
-    if (account && receiver === account.address) {
+    if (account && receiver === contactAddress(account.address)) {
       out.push({ code: 'self', blocking: true, message: SELF_SEND_MESSAGE });
       return out;
     }

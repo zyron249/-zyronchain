@@ -1,0 +1,133 @@
+TAP version 13
+# Subtest: send-warnings: lookalike rule constants match the decided PWA defaults
+ok 1 - send-warnings: lookalike rule constants match the decided PWA defaults
+  ---
+  duration_ms: 0.677805
+  type: 'test'
+  ...
+# Subtest: send-warnings: grouped checksummed display
+ok 2 - send-warnings: grouped checksummed display
+  ---
+  duration_ms: 1.433972
+  type: 'test'
+  ...
+# Subtest: send-warnings: prefix/suffix lookalike of a contact warns, exact match does not
+ok 3 - send-warnings: prefix/suffix lookalike of a contact warns, exact match does not
+  ---
+  duration_ms: 6.814355
+  type: 'test'
+  ...
+# Subtest: send-warnings: lookalike of a history address warns even though history cannot be poisoned
+ok 4 - send-warnings: lookalike of a history address warns even though history cannot be poisoned
+  ---
+  duration_ms: 1.075532
+  type: 'test'
+  ...
+# Subtest: send-warnings: self-send is blocking and short-circuits
+ok 5 - send-warnings: self-send is blocking and short-circuits
+  ---
+  duration_ms: 1.158324
+  type: 'test'
+  ...
+# Subtest: send-warnings: first-time and large-amount warnings
+ok 6 - send-warnings: first-time and large-amount warnings
+  ---
+  duration_ms: 0.3601
+  type: 'test'
+  ...
+# Subtest: send-warnings: comparisons and matches are capped
+ok 7 - send-warnings: comparisons and matches are capped
+  ---
+  duration_ms: 0.727819
+  type: 'test'
+  ...
+# Subtest: send-warnings: known-address input is validated strictly
+ok 8 - send-warnings: known-address input is validated strictly
+  ---
+  duration_ms: 0.30879
+  type: 'test'
+  ...
+# Subtest: send-warnings: matches the PWA wallet core byte for byte
+ok 9 - send-warnings: matches the PWA wallet core byte for byte
+  ---
+  duration_ms: 49.3837
+  type: 'test'
+  ...
+# Subtest: send-warnings: CLI send-check is offline and advisory
+ok 10 - send-warnings: CLI send-check is offline and advisory
+  ---
+  duration_ms: 2288.151344
+  type: 'test'
+  ...
+# Subtest: send-warnings: own address is normalized before the self-send check (library and PWA copies)
+not ok 11 - send-warnings: own address is normalized before the self-send check (library and PWA copies)
+  ---
+  duration_ms: 15.041546
+  type: 'test'
+  location: '<repo>/l1/dist/test/send-warnings.test.js:126:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    library ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42
+    + actual - expected
+    
+      [
+        [
+    +     'first-time',
+    +     false
+    -     'self',
+    -     true
+        ]
+      ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0:
+      0: 'self'
+      1: true
+  actual:
+    0:
+      0: 'first-time'
+      1: false
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/send-warnings.test.js:140:16)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: send-warnings: CLI send-check notes when the known-address list was truncated
+not ok 12 - send-warnings: CLI send-check notes when the known-address list was truncated
+  ---
+  duration_ms: 499.74312
+  type: 'test'
+  location: '<repo>/l1/dist/test/send-warnings.test.js:150:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /note: only the first 250 of 260 known addresses were compared/. Input:
+    
+    'Receiver (checksummed, grouped): ZYN 5D99 EE96 6b42 cD8f C7bd D136 4B38 9153 A9E7 8B42\n' +
+      'WARNING (first-time): You have never sent to this address from this wallet, and it is not in your address book. Check every character of the address.\n'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    Receiver (checksummed, grouped): ZYN 5D99 EE96 6b42 cD8f C7bd D136 4B38 9153 A9E7 8B42
+    WARNING (first-time): You have never sent to this address from this wallet, and it is not in your address book. Check every character of the address.
+    
+  operator: 'match'
+  stack: |-
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/send-warnings.test.js:159:16)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..12
+# tests 12
+# suites 0
+# pass 10
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2970.813019
