@@ -1,0 +1,127 @@
+Failing-first evidence: l1/test/mempool-parked-followup.test.ts on origin/main d477d934 (before the fix; only the MAX_MEMPOOL_PARKED_TX_TTL_MS constant added so the test compiles)
+== node --test dist/test/mempool-parked-followup.test.js ==
+TAP version 13
+# Subtest: PARKED-FOLLOWUP: a fee-bump replacement of a parked tx keeps the original admission time
+not ok 1 - PARKED-FOLLOWUP: a fee-bump replacement of a parked tx keeps the original admission time
+  ---
+  duration_ms: 111.572974
+  type: 'test'
+  location: '<repo>/l1/dist/test/mempool-parked-followup.test.js:57:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    0 !== 1
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1
+  actual: 0
+  operator: 'strictEqual'
+  stack: |-
+    file://<repo>/l1/dist/test/mempool-parked-followup.test.js:69:16
+    withService (file://<repo>/l1/dist/test/mempool-parked-followup.test.js:51:15)
+    async TestContext.<anonymous> (file://<repo>/l1/dist/test/mempool-parked-followup.test.js:59:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: PARKED-FOLLOWUP: repeated replacements cannot keep a parked tx alive
+not ok 2 - PARKED-FOLLOWUP: repeated replacements cannot keep a parked tx alive
+  ---
+  duration_ms: 73.887918
+  type: 'test'
+  location: '<repo>/l1/dist/test/mempool-parked-followup.test.js:73:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    0 !== 1
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1
+  actual: 0
+  operator: 'strictEqual'
+  stack: |-
+    file://<repo>/l1/dist/test/mempool-parked-followup.test.js:87:16
+    withService (file://<repo>/l1/dist/test/mempool-parked-followup.test.js:51:15)
+    async TestContext.<anonymous> (file://<repo>/l1/dist/test/mempool-parked-followup.test.js:75:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: PARKED-FOLLOWUP: replacement keeps admission order so older parked txs still expire
+not ok 3 - PARKED-FOLLOWUP: replacement keeps admission order so older parked txs still expire
+  ---
+  duration_ms: 30.207113
+  type: 'test'
+  location: '<repo>/l1/dist/test/mempool-parked-followup.test.js:91:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    1 !== 2
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 2
+  actual: 1
+  operator: 'strictEqual'
+  stack: |-
+    file://<repo>/l1/dist/test/mempool-parked-followup.test.js:103:16
+    withService (file://<repo>/l1/dist/test/mempool-parked-followup.test.js:51:15)
+    async TestContext.<anonymous> (file://<repo>/l1/dist/test/mempool-parked-followup.test.js:93:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: PARKED-FOLLOWUP: Mempool.add keeps the original admission time on replacement
+not ok 4 - PARKED-FOLLOWUP: Mempool.add keeps the original admission time on replacement
+  ---
+  duration_ms: 9.721465
+  type: 'test'
+  location: '<repo>/l1/dist/test/mempool-parked-followup.test.js:108:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    0 !== 1
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1
+  actual: 0
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/mempool-parked-followup.test.js:114:12)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: PARKED-FOLLOWUP: the parked TTL is capped at 24 hours
+not ok 5 - PARKED-FOLLOWUP: the parked TTL is capped at 24 hours
+  ---
+  duration_ms: 40.414879
+  type: 'test'
+  location: '<repo>/l1/dist/test/mempool-parked-followup.test.js:116:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (file://<repo>/l1/dist/test/mempool-parked-followup.test.js:120:9)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..5
+# tests 5
+# suites 0
+# pass 0
+# fail 5
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 426.918865

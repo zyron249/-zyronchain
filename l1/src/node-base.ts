@@ -147,6 +147,8 @@ export interface NodeServiceOptions {
 
 export const DEFAULT_MEMPOOL_MAX_FUTURE_NONCE_PER_SENDER = 16;
 export const DEFAULT_MEMPOOL_PARKED_TX_TTL_MS = 10 * 60_000;
+/** Upper sanity bound for the parked TTL (24 hours); larger values fail closed. */
+export const MAX_MEMPOOL_PARKED_TX_TTL_MS = 24 * 60 * 60_000;
 /** Admission-path TTL sweeps run at most this often (finalization always sweeps). */
 const PARKED_TX_SWEEP_INTERVAL_MS = 1_000;
 
@@ -541,8 +543,8 @@ export class NodeService {
     }
     this.mempoolMaxFutureNoncePerSender = futureCap;
     const parkedTtl = options.mempoolParkedTxTtlMs ?? DEFAULT_MEMPOOL_PARKED_TX_TTL_MS;
-    if (!Number.isSafeInteger(parkedTtl) || parkedTtl < 1) {
-      throw new Error("Mempool parked transaction TTL must be a positive integer (ms)");
+    if (!Number.isSafeInteger(parkedTtl) || parkedTtl < 1 || parkedTtl > MAX_MEMPOOL_PARKED_TX_TTL_MS) {
+      throw new Error(`Mempool parked transaction TTL must be an integer from 1 to ${MAX_MEMPOOL_PARKED_TX_TTL_MS} ms`);
     }
     this.mempoolParkedTxTtlMs = parkedTtl;
     this.clock = options.nowMs ?? Date.now;

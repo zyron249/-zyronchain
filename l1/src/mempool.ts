@@ -64,6 +64,7 @@ export class Mempool {
   private readonly fixedTransferFeeAtoms: number | undefined;
   private readonly maxPendingPerSender: number | undefined;
   /** Node policy only: admission time per txid, in insertion (admission) order. */
+  /** Admission time per `sender:nonce` slot, in admission order; kept across replacement. */
   private readonly admittedAtMs = new Map<string, number>();
 
   constructor(
@@ -142,7 +143,9 @@ export class Mempool {
       } else if (this.nonMiningBytes - conflictingBytes + txBytes > this.maxNonMiningBytes) {
         throw new Error("Mempool full");
       }
-      this.deleteTransaction(conflictingId, conflicting);
+      // A replacement keeps the original admission time and its position in
+      // admission order, so fee bumps cannot extend the parked TTL.
+      this.deleteTransaction(conflictingId, conflicting, true);
     } else if (this.maxPendingPerSender !== undefined &&
         (this.pendingBySender.get(tx.sender) ?? 0) >= this.maxPendingPerSender) {
       throw new Error("Per-sender mempool cap exceeded");
@@ -183,7 +186,8 @@ export class Mempool {
     const stored = structuredClone(tx);
     this.byId.set(tx.txid, stored);
     this.nonceIds.set(nonceKey, tx.txid);
-    this.admittedAtMs.set(tx.txid, admittedAtMs);
+    const originalAdmittedAtMs = this.admittedAtMs.get(nonceKey);
+    this.admittedAtMs.set(nonceKey, originalAdmittedAtMs ?? admittedAtMs);
     this.adjustOccupancy(stored, 1, txBytes);
     this.adjustTransferSpend(stored, 1n);
     this.adjustSenderCount(stored.sender, 1);
@@ -280,10 +284,11 @@ export class Mempool {
    */
   admittedAtOrBefore(cutoffMs: number): Array<{ txid: string; sender: Transaction["sender"]; nonce: number }> {
     const result: Array<{ txid: string; sender: Transaction["sender"]; nonce: number }> = [];
-    for (const [txid, admittedAtMs] of this.admittedAtMs) {
+    for (const [nonceKey, admittedAtMs] of this.admittedAtMs) {
       if (admittedAtMs > cutoffMs) break;
-      const tx = this.byId.get(txid);
-      if (tx) result.push({ txid, sender: tx.sender, nonce: tx.nonce });
+      const txid = this.nonceIds.get(nonceKey);
+      const tx = txid === undefined ? undefined : this.byId.get(txid);
+      if (txid !== undefined && tx) result.push({ txid, sender: tx.sender, nonce: tx.nonce });
     }
     return result;
   }
@@ -319,10 +324,11 @@ export class Mempool {
     else this.transferSpendBySender.set(tx.sender, next);
   }
 
-  private deleteTransaction(txid: string, tx: Transaction): void {
+  private deleteTransaction(txid: string, tx: Transaction, keepAdmission = false): void {
     this.byId.delete(txid);
-    this.nonceIds.delete(`${tx.sender}:${tx.nonce}`);
-    this.admittedAtMs.delete(txid);
+    const nonceKey = `${tx.sender}:${tx.nonce}`;
+    this.nonceIds.delete(nonceKey);
+    if (!keepAdmission) this.admittedAtMs.delete(nonceKey);
     this.adjustOccupancy(tx, -1);
     this.adjustTransferSpend(tx, -1n);
     this.adjustSenderCount(tx.sender, -1);
