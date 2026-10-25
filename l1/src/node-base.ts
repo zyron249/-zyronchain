@@ -595,6 +595,14 @@ export class NodeService {
     };
   }
 
+  /** Fee hints for GET /status (see the route). */
+  feeStatus(): { minTransferFeeAtoms: number; fixedTransferFeeAtoms: number | null } {
+    return {
+      minTransferFeeAtoms: this.mempool.effectiveMinTransferFeeAtoms,
+      fixedTransferFeeAtoms: this.mempool.fixedTransferFee ?? null
+    };
+  }
+
   status(): NodeStatus {
     return {
       chainId: this.store.chain.genesis.chainId,
@@ -1829,7 +1837,11 @@ async function route(
     });
   }
   if (request.method === "GET" && url.pathname === "/status") {
-    return writeJson(response, 200, service.status());
+    // HTTP only: the P2P NodeStatus shape is unchanged. minTransferFeeAtoms is
+    // the effective mempool floor (0 when off, and 0 under fixed-fee-v1, where
+    // fixedTransferFeeAtoms is the exact fee). Both are node policy hints for
+    // faucets and wallets, not block-validity rules.
+    return writeJson(response, 200, { ...service.status(), ...service.feeStatus() });
   }
   if (request.method === "GET" && url.pathname === "/validator-set") {
     return writeJson(response, 200, service.activeValidatorSet());
@@ -2313,8 +2325,17 @@ export function peerSyncProbeBatches(peers: readonly string[], groupOffset = 0):
   return batches;
 }
 
-function parseStatus(value: unknown): NodeStatus {
-  assertPlainRecord(value, "peer status");
+function parseStatus(raw: unknown): NodeStatus {
+  assertPlainRecord(raw, "peer status");
+  // GET /status may carry the two fee hints (both or neither). They are
+  // validated, then dropped: sync only uses the chain identity and tip.
+  let value: Record<string, unknown> = raw;
+  if ("minTransferFeeAtoms" in raw || "fixedTransferFeeAtoms" in raw) {
+    const { minTransferFeeAtoms: min, fixedTransferFeeAtoms: fixed, ...rest } = raw;
+    if (!Number.isSafeInteger(min) || Number(min) < 0 ||
+        (fixed !== null && (!Number.isSafeInteger(fixed) || Number(fixed) < 1))) throw new Error("Invalid peer status");
+    value = rest;
+  }
   assertExactKeys(value, ["chainId", "genesisHash", "height", "tipHash"], "peer status");
   if (typeof value.chainId !== "string" || typeof value.genesisHash !== "string" || typeof value.tipHash !== "string" ||
       !Number.isSafeInteger(value.height) || Number(value.height) < 0 || !/^[0-9a-f]{64}$/.test(value.genesisHash) ||

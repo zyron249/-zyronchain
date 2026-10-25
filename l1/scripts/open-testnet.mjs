@@ -469,6 +469,24 @@ const FAUCET_DRIP_ATOMS = 100 * ATOMS_PER_ZYN;
 // from this process, so the faucet (and the smoke transfer) pay that floor.
 // The open-testnet genesis has no fee policy. A bad value fails closed here.
 const NODE_TRANSFER_FEE_ATOMS = nodeTransferFeeAtoms(undefined, parseMempoolMinFeeAtoms(process.env[MEMPOOL_MIN_FEE_ENV], MEMPOOL_MIN_FEE_ENV));
+// The faucet and the smoke transfer pay max(own env floor, the target node's
+// GET /status minTransferFeeAtoms), read fresh for every drip. If the node's
+// floor cannot be read or is invalid, the drip FAILS LOUDLY (error-level log
+// and a clear 503 to the caller) instead of sending a transfer that would be
+// rejected.
+export class FaucetFeeFloorError extends Error {
+  constructor(detail) { super(`faucet cannot meet the node's minimum transfer fee: ${detail}`); this.name = "FaucetFeeFloorError"; this.code = "fee-floor"; }
+}
+export function faucetTransferFeeAtoms(envFloorAtoms, statusResponse) {
+  if (!statusResponse || statusResponse.status !== 200 || !statusResponse.body || typeof statusResponse.body !== "object") {
+    throw new FaucetFeeFloorError(`node /status unavailable (status ${statusResponse?.status ?? "none"})`);
+  }
+  const floor = statusResponse.body.minTransferFeeAtoms;
+  if (typeof floor !== "number" || !Number.isSafeInteger(floor) || floor < 0) throw new FaucetFeeFloorError("node /status has no valid minTransferFeeAtoms");
+  const fee = Math.max(envFloorAtoms, floor);
+  if (!Number.isSafeInteger(fee) || fee < floor) throw new FaucetFeeFloorError(`fee ${fee} atoms is below the node floor of ${floor} atoms`);
+  return fee;
+}
 const DAY_MS = 86_400_000;
 const ADDRESS_PATTERN = /^ZYN[0-9a-f]{40}$/;
 const MAX_BODY_BYTES = 8 * 1024;
@@ -617,6 +635,10 @@ export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody
       // Only the gateway's own fixed request-validation messages are passed through.
       const code = error?.statusCode;
       const own = (code === 400 || code === 413 || code === 415) && FAUCET_REQUEST_ERRORS.has(error?.message);
+      if (error instanceof FaucetFeeFloorError) {
+        log(`faucet error (fee floor): ${error.message}`);
+        return reply(503, { error: error.message, code: error.code });
+      }
       if (!own) log(`faucet error: ${error instanceof Error ? error.message : String(error)}`);
       return reply(own ? code : 503, { error: own ? error.message : FAUCET_UNAVAILABLE_MESSAGE });
     }
@@ -810,8 +832,12 @@ export async function readPublishedSnapshotTip(url, secret, { fetchImpl = fetch,
 
 // Caps a follower status at the durable watermark.
 export function capPeerStatus(status, watermark) {
-  if (!watermark || status.height <= watermark.height) return status;
-  return { ...status, height: watermark.height, tipHash: watermark.tipHash };
+  // Only the P2P identity/tip shape is served to followers, so a follower on
+  // an older binary (strict four-key parser) keeps syncing; the fee hints stay
+  // on the gateway's GET /status.
+  const { chainId, genesisHash, height, tipHash } = status;
+  if (!watermark || height <= watermark.height) return { chainId, genesisHash, height, tipHash };
+  return { chainId, genesisHash, height: watermark.height, tipHash: watermark.tipHash };
 }
 
 // ---- sealed state snapshots (TEST keys + public blocks) ---------------------------
@@ -1353,6 +1379,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       launchProfile: genesis.launchProfile, activityOraclePolicy: genesis.activityOraclePolicy,
       activityOracleThreshold: genesis.activityOracleThreshold, activityOracleCount: genesis.activityOracles.length,
       height: status.body.height, tipHash: status.body.tipHash,
+      minTransferFeeAtoms: status.body.minTransferFeeAtoms, fixedTransferFeeAtoms: status.body.fixedTransferFeeAtoms,
       protocolVersion: nextProtocol, transactionVersion: nextProtocol >= 3 ? 2 : 1, blockIntervalSeconds: 30,
       validatorCount: genesis.validators.length, persistence,
       faucet: { address: faucet.address, dripZyn: FAUCET_DRIP_ATOMS / ATOMS_PER_ZYN, perAddressPerDay: 1 }
@@ -1473,11 +1500,13 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   function faucetSend(receiver) {
     const run = faucetQueue.then(async () => {
       const status = await chainStatus();
+      // Fresh (uncached) read of the node floor; throws FaucetFeeFloorError.
+      const feeAtoms = faucetTransferFeeAtoms(NODE_TRANSFER_FEE_ATOMS, await anyNode("/status"));
       const nonceResponse = await anyNode(`/nonce/${faucet.address}`);
       if (nonceResponse.status !== 200) throw new Error(`faucet nonce lookup failed (status ${nonceResponse.status})`);
       if (Date.now() - lastFaucetNonceAt > 180_000) lastFaucetNonce = 0;
       const nonce = Math.max(nonceResponse.body.nonce, lastFaucetNonce) + 1;
-      const tx = createTransfer({ chainId, nonce, sender: faucet.address, receiver, amountAtoms: FAUCET_DRIP_ATOMS, feeAtoms: NODE_TRANSFER_FEE_ATOMS, timestampMs: Date.now() },
+      const tx = createTransfer({ chainId, nonce, sender: faucet.address, receiver, amountAtoms: FAUCET_DRIP_ATOMS, feeAtoms, timestampMs: Date.now() },
         faucet.privateKey, faucet.publicKey, status.transactionVersion);
       const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
       // The node's error text is logged by the faucet route, never returned.
@@ -1754,7 +1783,7 @@ async function smoke() {
     assert.equal((await post("/faucet", { address: alice.address })).status, 429);
     await until("faucet drip", async () => (await get(`/account/${alice.address}`)).body.balanceAtoms === FAUCET_DRIP_ATOMS);
     const nonce = (await get(`/nonce/${alice.address}`)).body.nonce;
-    const tx = createTransfer({ chainId: info.chainId, nonce: nonce + 1, sender: alice.address, receiver: bob.address, amountAtoms: 25 * ATOMS_PER_ZYN, feeAtoms: NODE_TRANSFER_FEE_ATOMS, timestampMs: Date.now() }, alice.privateKey, alice.publicKey, status.transactionVersion);
+    const tx = createTransfer({ chainId: info.chainId, nonce: nonce + 1, sender: alice.address, receiver: bob.address, amountAtoms: 25 * ATOMS_PER_ZYN, feeAtoms: faucetTransferFeeAtoms(NODE_TRANSFER_FEE_ATOMS, await get("/status")), timestampMs: Date.now() }, alice.privateKey, alice.publicKey, status.transactionVersion);
     assert.equal((await post("/tx", tx)).status, 200);
     await until("transfer", async () => (await get(`/account/${bob.address}`)).body.balanceAtoms === 25 * ATOMS_PER_ZYN);
     // Liveness with one validator down (3 of 4 is a quorum), then rejoin.
