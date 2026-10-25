@@ -132,6 +132,17 @@ switch (request.op) {
   case "txid":
     response = result(() => codec.sha256Hex(codec.canonicalJson(request.payload)));
     break;
+  case "sendWarnings":
+    response = await (async () => {
+      const sw = await load("send-warnings.js");
+      return result(() => ({
+        warnings: sw.sendWarnings(request.input, request.account, request.known),
+        lookalike: sw.lookalikeMatches(request.input.receiver, request.known),
+        display: sw.displayAddress(request.input.receiver),
+        constants: [sw.SELF_SEND_MESSAGE, sw.KNOWN_MAX_CONTACTS, sw.KNOWN_MAX_SENT, sw.KNOWN_NAME_MAX, sw.LOOKALIKE_MIN_SHARED, sw.LOOKALIKE_MAX_DIFF, sw.LOOKALIKE_MAX_COMPARISONS, sw.LOOKALIKE_MAX_MATCHES],
+      }));
+    })();
+    break;
   case "constants":
     response = result(() => ({
       atomsPerZyn: types.ATOMS_PER_ZYN,
