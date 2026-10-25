@@ -79,6 +79,10 @@ export class Mempool {
   private readonly fixedTransferFeeAtoms: number | undefined;
   private readonly maxPendingPerSender: number | undefined;
   private readonly minTransferFeeAtoms: number;
+  /** Effective transfer-fee floor (0 when off and under fixed-fee-v1). Reported on GET /status. */
+  get effectiveMinTransferFeeAtoms(): number { return this.minTransferFeeAtoms; }
+  /** The exact fixed-fee-v1 transfer fee, or undefined when no fixed fee applies. */
+  get fixedTransferFee(): number | undefined { return this.fixedTransferFeeAtoms; }
   /** Node policy only: admission time per txid, in insertion (admission) order. */
   private readonly admittedAtMs = new Map<string, number>();
 

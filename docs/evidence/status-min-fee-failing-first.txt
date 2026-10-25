@@ -1,0 +1,157 @@
+# Failing-first run: l1/test/status-min-fee.test.ts against the pre-change code (branch core-status-min-fee, based on #1134 head 2565561d)
+# node --test dist/test/status-min-fee.test.js
+TAP version 13
+# Subtest: STATUS-MIN-FEE: /status reports minTransferFeeAtoms 0 when the floor is off
+not ok 1 - STATUS-MIN-FEE: /status reports minTransferFeeAtoms 0 when the floor is off
+  ---
+  duration_ms: 82.099242
+  type: 'test'
+  location: '<repo>/l1/dist/test/status-min-fee.test.js:63:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    undefined !== 0
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/status-min-fee.test.js:66:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: STATUS-MIN-FEE: /status reports the configured floor when it is on
+not ok 2 - STATUS-MIN-FEE: /status reports the configured floor when it is on
+  ---
+  duration_ms: 22.519244
+  type: 'test'
+  location: '<repo>/l1/dist/test/status-min-fee.test.js:69:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+    
+    + undefined
+    - 1000
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1000
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/status-min-fee.test.js:71:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: STATUS-MIN-FEE: under fixed-fee-v1 the effective floor is 0 and the exact fee is reported separately
+not ok 3 - STATUS-MIN-FEE: under fixed-fee-v1 the effective floor is 0 and the exact fee is reported separately
+  ---
+  duration_ms: 18.87388
+  type: 'test'
+  location: '<repo>/l1/dist/test/status-min-fee.test.js:73:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    undefined !== 0
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/status-min-fee.test.js:75:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: STATUS-MIN-FEE: the faucet pays max(own env floor, node /status floor)
+not ok 4 - STATUS-MIN-FEE: the faucet pays max(own env floor, node /status floor)
+  ---
+  duration_ms: 0.310164
+  type: 'test'
+  location: '<repo>/l1/dist/test/status-min-fee.test.js:80:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    faucetTransferFeeAtoms must be exported
+    + actual - expected
+    
+    + 'undefined'
+    - 'function'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 'function'
+  actual: 'undefined'
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/status-min-fee.test.js:81:12)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: STATUS-MIN-FEE: the faucet fails loudly when it cannot learn or meet the floor
+not ok 5 - STATUS-MIN-FEE: the faucet fails loudly when it cannot learn or meet the floor
+  ---
+  duration_ms: 0.380677
+  type: 'test'
+  location: '<repo>/l1/dist/test/status-min-fee.test.js:87:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    FaucetFeeFloorError must be exported
+    + actual - expected
+    
+    + 'undefined'
+    - 'function'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 'function'
+  actual: 'undefined'
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/status-min-fee.test.js:88:12)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: STATUS-MIN-FEE: a fee-floor failure reaches the faucet caller with a clear error and is logged at error level
+not ok 6 - STATUS-MIN-FEE: a fee-floor failure reaches the faucet caller with a clear error and is logged at error level
+  ---
+  duration_ms: 5.301788
+  type: 'test'
+  location: '<repo>/l1/dist/test/status-min-fee.test.js:121:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+    
+    + undefined
+    - 'fee-floor'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 'fee-floor'
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/status-min-fee.test.js:134:12)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..6
+# tests 6
+# suites 0
+# pass 0
+# fail 6
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 262.436305

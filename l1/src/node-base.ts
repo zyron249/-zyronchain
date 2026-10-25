@@ -593,6 +593,14 @@ export class NodeService {
     };
   }
 
+  /** Fee hints for GET /status (see the route). */
+  feeStatus(): { minTransferFeeAtoms: number; fixedTransferFeeAtoms: number | null } {
+    return {
+      minTransferFeeAtoms: this.mempool.effectiveMinTransferFeeAtoms,
+      fixedTransferFeeAtoms: this.mempool.fixedTransferFee ?? null
+    };
+  }
+
   status(): NodeStatus {
     return {
       chainId: this.store.chain.genesis.chainId,
@@ -1827,7 +1835,11 @@ async function route(
     });
   }
   if (request.method === "GET" && url.pathname === "/status") {
-    return writeJson(response, 200, service.status());
+    // HTTP only: the P2P NodeStatus shape is unchanged. minTransferFeeAtoms is
+    // the effective mempool floor (0 when off, and 0 under fixed-fee-v1, where
+    // fixedTransferFeeAtoms is the exact fee). Both are node policy hints for
+    // faucets and wallets, not block-validity rules.
+    return writeJson(response, 200, { ...service.status(), ...service.feeStatus() });
   }
   if (request.method === "GET" && url.pathname === "/validator-set") {
     return writeJson(response, 200, service.activeValidatorSet());
