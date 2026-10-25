@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Zyron Wallet" />
   <meta name="format-detection" content="telephone=no" />
-  <meta name="zyron-build" content="app=02ec4742043fa1be;release=8e17a927535300a489fb7900452b73aded4e0f77" />
+  <meta name="zyron-build" content="app=4636a2bba51162ac;release=e81ab20a3b1d823eeddf742703eee254d5c39205" />
   <title>ZyronChain Wallet (testnet)</title>
   <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys stay on this device. This app does not connect and does not show a balance. Sign locally." />
   <link rel="manifest" href="/app/manifest.json" />
@@ -274,6 +274,7 @@
         <label><span data-i18n="txVersion">Transaction version</span>
           <select data-tx-version><option value="1" selected>1 (wallet testnet default)</option><option value="2">2 (other testnet or devnet, protocol 3+)</option></select></label>
         <p class="hint" data-tx-version-hint>zyron-wallet-testnet-1 runs protocol version 1. The default transaction version is 1. Version 2 is rejected by that network. You can still select version 2 for another test or devnet chain.</p>
+        <p class="address-raw" data-tx-to-preview aria-label="Receiver, checksummed and grouped for reading"></p>
         <p class="hint" data-tx-check aria-live="polite"></p>
         <div class="actions">
           <button class="primary" type="button" data-tx-review data-i18n="review">Review transfer</button>
@@ -543,7 +544,7 @@
   </div>
   <script src="/app/vendor/noble-scure.js?v=8bc52c47d762" integrity="sha384-8rRjvBX0v19QY1jV/tt980903+713cFYFQwMvCGJR+dGfUXeXlHhGh1Ommt20XpE"></script>
   <script src="/app/vendor/qr.js?v=df7e5ee0f9db" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
-  <script src="/app/zyron-wallet-core.js?v=3813f48d9b12" integrity="sha384-73aTBK6dIKM/TgjyetG1zlC6ZHwk7KsJBgwtB7BR8UrGnzhxkfFd9qCK/qE9heOE"></script>
-  <script src="/app/app.js?v=20b0d38df77b" integrity="sha384-E0sFV2ylGbyAaXcvWtvTAWaFxjjz/gHl5aG/fvrm/XTyWDPm9qprSm3LpDU3IeU0"></script>
+  <script src="/app/zyron-wallet-core.js?v=9c5d28fe8663" integrity="sha384-Dez5TQOr+smHjGLUi8ZIyF/gj+XmRCCpQkWQR+gL8L7u3SHJBSmtNTyPtVA/3/M6"></script>
+  <script src="/app/app.js?v=864cf2739e0d" integrity="sha384-LRD+hQrvK/Nkli8aiU9ZPRfjuR1M2hs4XoTJ8dyxYlTz7oNYz5ZTU/bqYFloQQqP"></script>
 </body>
 </html>

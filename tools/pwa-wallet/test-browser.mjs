@@ -341,6 +341,10 @@ try {
     await page.fill('[data-tx-nonce]', '1');
     await page.fill('[data-tx-to]', RECEIVER);
     assert.match(await page.textContent('[data-tx-check]'), /checksum verified/);
+    assert.equal(await page.textContent('[data-tx-to-preview]'), core.displayAddress(RECEIVER), 'the typed receiver is echoed grouped and checksummed');
+    await page.fill('[data-tx-to]', 'ZYN12');
+    assert.equal(await page.textContent('[data-tx-to-preview]'), '', 'no preview for an invalid receiver');
+    await page.fill('[data-tx-to]', RECEIVER);
     await page.fill('[data-tx-amount]', '2.5');
     await page.fill('[data-tx-fee]', '0.00001');
     await page.fill('[data-tx-chain]', 'zyron-mainnet-1');
