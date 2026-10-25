@@ -39,8 +39,14 @@ export function assertDisjointPortWindows(windows = OPEN_TESTNET_PORT_WINDOWS) {
     if (lo < prevHi) throw new Error(`open-testnet port windows ${prevName} and ${name} overlap`);
   }
 }
-// Fail at module load if a window edit ever breaks disjointness.
-assertDisjointPortWindows();
+// Checked lazily, on the first allocation, not at import: open-testnet.mjs
+// imports this module on the hosted `run` path too, and a bad window edit must
+// never stop the gateway from starting. Only callers that allocate (smoke and
+// the tests) validate the layout.
+let windowsChecked = false;
+function ensureDisjointPortWindows() {
+  if (!windowsChecked) { assertDisjointPortWindows(); windowsChecked = true; }
+}
 
 function canBind(port, host) {
   return new Promise((resolve) => {
@@ -57,6 +63,7 @@ function canBind(port, host) {
 // the probe only narrows, and cannot eliminate, collisions with anything else.
 /** A base port in this window whose validator and mailbox ports are all free right now. */
 export async function allocateValidatorBasePort(window, host = "127.0.0.1") {
+  ensureDisjointPortWindows();
   const range = OPEN_TESTNET_PORT_WINDOWS[window];
   if (!range) throw new Error(`unknown open-testnet port window ${window}`);
   const [lo, hi] = range;
