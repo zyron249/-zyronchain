@@ -1,64 +1,31 @@
-// Port allocation for the open-testnet tests.
-//
-// `runNetwork` (and `open-testnet.mjs run --validator-base-port`) binds four
-// validator ports at basePort..basePort+3 and the consensus mailbox at
-// basePort+50. node --test runs test files in parallel processes, so two files
-// drawing random base ports from overlapping ranges can bind, or talk to,
-// each other's validators. Each file therefore gets its own disjoint window,
-// every candidate block is probed by binding all of its ports before use, and
-// one-off ports (followers) come from the kernel via port 0.
-//
-// All windows sit below the Linux ephemeral range (32768+), so port-0
-// listeners in any test can never land inside a validator block, and they
-// avoid 19300-21349, which `open-testnet.mjs smoke` uses.
-import { createServer } from "node:net";
+// Typed wrapper around scripts/open-testnet-ports.mjs, the single source of the
+// per-caller validator port windows (shared with `open-testnet.mjs smoke`).
+// See that module for the window layout, the module-load disjointness check
+// and the probe-bind gap.
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const VALIDATOR_PORT_OFFSETS = [0, 1, 2, 3, 50] as const;
-const SPAN = 51;
+const l1Root = fileURLToPath(new URL("../../../", import.meta.url));
 
-export const OPEN_TESTNET_PORT_WINDOWS = {
-  "restore-local-io-retry": [13_000, 15_000],
-  "durable-watermark": [15_000, 17_000],
-  "restore-log-digest": [17_000, 19_000],
-  // 19300-21349: open-testnet.mjs smoke (not a test file; kept clear).
-  "early-listen": [21_500, 24_000],
-  "interrupted-restore": [24_000, 26_500],
-  "restore-not-found-retry": [26_500, 29_000]
-} as const satisfies Record<string, readonly [number, number]>;
+interface PortsModule {
+  VALIDATOR_PORT_OFFSETS: readonly number[];
+  EPHEMERAL_PORT_FLOOR: number;
+  OPEN_TESTNET_PORT_WINDOWS: Readonly<Record<string, readonly [number, number]>>;
+  assertDisjointPortWindows(windows?: Readonly<Record<string, readonly [number, number]>>): void;
+  allocateValidatorBasePort(window: string, host?: string): Promise<number>;
+  freePort(host?: string): Promise<number>;
+}
+const ports = (await import(pathToFileURL(join(l1Root, "scripts", "open-testnet-ports.mjs")).href)) as PortsModule;
 
-export type OpenTestnetPortWindow = keyof typeof OPEN_TESTNET_PORT_WINDOWS;
+export type OpenTestnetPortWindow =
+  | "restore-local-io-retry" | "durable-watermark" | "restore-log-digest" | "smoke"
+  | "early-listen" | "interrupted-restore" | "restore-not-found-retry";
 
-function canBind(port: number, host: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = createServer();
-    server.unref();
-    server.once("error", () => resolve(false));
-    server.listen({ port, host, exclusive: true }, () => server.close(() => resolve(true)));
-  });
+const typed: OpenTestnetPortWindow[] = ["restore-local-io-retry", "durable-watermark", "restore-log-digest", "smoke", "early-listen", "interrupted-restore", "restore-not-found-retry"];
+if (JSON.stringify([...typed].sort()) !== JSON.stringify(Object.keys(ports.OPEN_TESTNET_PORT_WINDOWS).sort())) {
+  throw new Error("OpenTestnetPortWindow is out of sync with scripts/open-testnet-ports.mjs");
 }
 
-/** A base port in this file's window whose validator and mailbox ports are all free right now. */
-export async function allocateValidatorBasePort(window: OpenTestnetPortWindow, host = "127.0.0.1"): Promise<number> {
-  const [lo, hi] = OPEN_TESTNET_PORT_WINDOWS[window];
-  const slots = Math.floor((hi - lo - SPAN) / 4);
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    const base = lo + Math.floor(Math.random() * slots) * 4;
-    let free = true;
-    for (const offset of VALIDATOR_PORT_OFFSETS) if (!(await canBind(base + offset, host))) { free = false; break; }
-    if (free) return base;
-  }
-  throw new Error(`no free validator port block in window ${window} [${lo}, ${hi})`);
-}
-
-/** A kernel-assigned free TCP port (bind port 0, then release it). */
-export async function freePort(host = "127.0.0.1"): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.unref();
-    server.once("error", reject);
-    server.listen({ port: 0, host, exclusive: true }, () => {
-      const { port } = server.address() as { port: number };
-      server.close(() => resolve(port));
-    });
-  });
-}
+export const { VALIDATOR_PORT_OFFSETS, EPHEMERAL_PORT_FLOOR, OPEN_TESTNET_PORT_WINDOWS, assertDisjointPortWindows } = ports;
+export const allocateValidatorBasePort = (window: OpenTestnetPortWindow, host?: string): Promise<number> => ports.allocateValidatorBasePort(window, host);
+export const freePort = (host?: string): Promise<number> => ports.freePort(host);
