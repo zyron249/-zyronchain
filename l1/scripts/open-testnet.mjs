@@ -476,14 +476,29 @@ const NODE_TRANSFER_FEE_ATOMS = nodeTransferFeeAtoms(undefined, parseMempoolMinF
 export class FaucetFeeFloorError extends Error {
   constructor(detail) { super(`faucet cannot meet the node's minimum transfer fee: ${detail}`); this.name = "FaucetFeeFloorError"; this.code = "fee-floor"; }
 }
+// Upper bound on the fee the faucet (and the smoke transfer) will pay per
+// transfer: 1,000,000 atoms = 0.01 test ZYN, 1,000x the open-testnet floor of
+// 1,000 atoms and 1/10,000 of a 100 ZYN drip. A node /status reporting a
+// higher floor (or fixed fee) is treated as misconfigured: the drip fails with
+// fee-floor (503, error-level log) and no transfer is sent.
+export const MAX_FAUCET_FEE_ATOMS = 1_000_000;
+// When /status reports fixedTransferFeeAtoms (fee-v1 is active), the faucet
+// pays EXACTLY that fee and the floor logic is not used.
 export function faucetTransferFeeAtoms(envFloorAtoms, statusResponse) {
   if (!statusResponse || statusResponse.status !== 200 || !statusResponse.body || typeof statusResponse.body !== "object") {
     throw new FaucetFeeFloorError(`node /status unavailable (status ${statusResponse?.status ?? "none"})`);
+  }
+  const fixed = statusResponse.body.fixedTransferFeeAtoms;
+  if (fixed !== undefined && fixed !== null) {
+    if (typeof fixed !== "number" || !Number.isSafeInteger(fixed) || fixed < 0) throw new FaucetFeeFloorError("node /status has an invalid fixedTransferFeeAtoms");
+    if (fixed > MAX_FAUCET_FEE_ATOMS) throw new FaucetFeeFloorError(`node fixed fee of ${fixed} atoms exceeds MAX_FAUCET_FEE_ATOMS (${MAX_FAUCET_FEE_ATOMS})`);
+    return fixed;
   }
   const floor = statusResponse.body.minTransferFeeAtoms;
   if (typeof floor !== "number" || !Number.isSafeInteger(floor) || floor < 0) throw new FaucetFeeFloorError("node /status has no valid minTransferFeeAtoms");
   const fee = Math.max(envFloorAtoms, floor);
   if (!Number.isSafeInteger(fee) || fee < floor) throw new FaucetFeeFloorError(`fee ${fee} atoms is below the node floor of ${floor} atoms`);
+  if (fee > MAX_FAUCET_FEE_ATOMS) throw new FaucetFeeFloorError(`fee floor of ${fee} atoms exceeds MAX_FAUCET_FEE_ATOMS (${MAX_FAUCET_FEE_ATOMS})`);
   return fee;
 }
 const DAY_MS = 86_400_000;
