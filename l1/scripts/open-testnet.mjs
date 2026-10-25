@@ -831,8 +831,12 @@ export async function readPublishedSnapshotTip(url, secret, { fetchImpl = fetch,
 
 // Caps a follower status at the durable watermark.
 export function capPeerStatus(status, watermark) {
-  if (!watermark || status.height <= watermark.height) return status;
-  return { ...status, height: watermark.height, tipHash: watermark.tipHash };
+  // Only the P2P identity/tip shape is served to followers, so a follower on
+  // an older binary (strict four-key parser) keeps syncing; the fee hints stay
+  // on the gateway's GET /status.
+  const { chainId, genesisHash, height, tipHash } = status;
+  if (!watermark || height <= watermark.height) return { chainId, genesisHash, height, tipHash };
+  return { chainId, genesisHash, height: watermark.height, tipHash: watermark.tipHash };
 }
 
 // ---- sealed state snapshots (TEST keys + public blocks) ---------------------------

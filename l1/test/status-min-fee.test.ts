@@ -137,3 +137,9 @@ test("STATUS-MIN-FEE: a fee-floor failure reaches the faucet caller with a clear
   assert.equal(logged.length, 1);
   assert.match(logged[0]!, /^faucet error \(fee floor\): /);
 });
+
+test("STATUS-MIN-FEE: the gateway /peer/status keeps the strict four-key peer shape for older followers", () => {
+  const status = { chainId: "c", genesisHash: "a".repeat(64), height: 5, tipHash: "b".repeat(64), minTransferFeeAtoms: 1_000, fixedTransferFeeAtoms: null };
+  assert.deepEqual(Object.keys(api.capPeerStatus(status, undefined)).sort(), ["chainId", "genesisHash", "height", "tipHash"]);
+  assert.deepEqual(api.capPeerStatus(status, { height: 3, tipHash: "c".repeat(64) }), { chainId: "c", genesisHash: "a".repeat(64), height: 3, tipHash: "c".repeat(64) });
+});
