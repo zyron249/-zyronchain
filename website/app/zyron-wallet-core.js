@@ -71,10 +71,15 @@
   // Feature 6A v1 exception (PWA only, time-boxed, hard-coded; issue #1147): version 1 is signed only for
   // zyron-wallet-testnet-1 (protocol 1) and only for timestampMs before 2026-11-08T00:00:00Z. Not configurable.
   const V1_EXCEPTION_END_MS = 1794096000000;
+  // Maximum distance (10 minutes) between a v1 transaction timestampMs and Date.now(). Not configurable.
+  const V1_CLOCK_WINDOW_MS = 600000;
   function assertV1Exception(version, chainId, timestampMs) {
     if (version !== 1) return;
     if (chainId !== WALLET_TESTNET_CHAIN_ID) throw new Error('Transaction version 1 is signed only for ' + WALLET_TESTNET_CHAIN_ID + '; use version 2. Nothing was signed.');
-    if (!Number.isSafeInteger(timestampMs) || timestampMs >= V1_EXCEPTION_END_MS) throw new Error('The version 1 exception for ' + WALLET_TESTNET_CHAIN_ID + ' ended on 2026-11-08T00:00:00Z. Nothing was signed.');
+    const nowMs = Date.now();
+    if (!Number.isSafeInteger(timestampMs) || timestampMs >= V1_EXCEPTION_END_MS || !Number.isFinite(nowMs) || nowMs >= V1_EXCEPTION_END_MS) throw new Error('The version 1 exception for ' + WALLET_TESTNET_CHAIN_ID + ' ended on 2026-11-08T00:00:00Z. Nothing was signed.');
+    // A backdated or future-dated timestamp cannot extend the exception: it must be within V1_CLOCK_WINDOW_MS of this device's clock.
+    if (Math.abs(timestampMs - nowMs) > V1_CLOCK_WINDOW_MS) throw new Error('Transaction version 1 needs a timestamp within 10 minutes of this device clock. Nothing was signed.');
   }
   // That chain runs protocol version 1 and rejects transaction version 2.
   // Every other testnet or devnet id keeps version 2 as the selectable default.
@@ -745,7 +750,8 @@
 
   const api = Object.freeze({
     DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_VERSION_V1, SELF_SEND_MESSAGE, VAULT_KDF, MAX_VAULT_TEXT, BOOK_MAX_CONTACTS, BOOK_MAX_SENT, BOOK_NAME_MAX, LOOKALIKE_MIN_SHARED, LOOKALIKE_MAX_DIFF, LOOKALIKE_MAX_COMPARISONS, LOOKALIKE_MAX_MATCHES, ATOMS_PER_ZYN, FIXED_TRANSFER_FEE_ATOMS, FIXED_SUPPLY_V1_CHAIN_IDS, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
-    TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, RENDERABLE_CHAIN_IDS, WALLET_TESTNET_CHAIN_ID, V1_EXCEPTION_END_MS, defaultTransferVersion,
+    TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, RENDERABLE_CHAIN_IDS, WALLET_TESTNET_CHAIN_ID, V1_EXCEPTION_END_MS,
+    V1_CLOCK_WINDOW_MS, defaultTransferVersion,
     wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress, displayAddress, addressDiff,
     passwordStrength, normalizePhrase, generateEntropy, entropyToPhrase, phraseToEntropy, deriveAccount,
     createVault, createVaultSession, openVault, upgradeVaultVerified, upgradeMarker, parseUpgradeMarker, isRollback, assertVaultShape, parseVault, upgradeVault, updateVaultBook,

@@ -224,7 +224,7 @@ test("F-01 v6 T13 control: the same transient fault under the legacy fixed 30 s 
   }
 });
 
-test("F-01 local-devnet --v6 is a test-only mode: refuses --local-v5, default devnet:check stays protocol v1", async () => {
+test("F-01 local-devnet --v6 is a test-only mode: refuses --local-v5, default devnet:check is protocol v6, v1 is devnet:check:v1-legacy", async () => {
   const refused = spawnSync(process.execPath, ["scripts/local-devnet.mjs", "--check", "--v6", "--local-v5"], { encoding: "utf8", windowsHide: true });
   assert.notEqual(refused.status, 0);
   // Mining is retired: --local-v5 is refused outright (with or without --v6)
@@ -236,6 +236,8 @@ test("F-01 local-devnet --v6 is a test-only mode: refuses --local-v5, default de
   assert.match(help.stdout, /--v6 \(F-01 test mode\)/);
   assert.match(help.stdout, /never use this on a live network/);
   const pkg = JSON.parse(await readFile("package.json", "utf8")) as { scripts: Record<string, string> };
-  assert.equal(pkg.scripts["devnet:check"], "npm run build && node scripts/local-devnet.mjs --check");
-  assert.equal(pkg.scripts["devnet:check:v6"], "npm run build && node scripts/local-devnet.mjs --check --v6");
+  // 6A/#1147: the default check is the v6 devnet; the protocol-1 path is the opt-in v1-legacy script.
+  assert.equal(pkg.scripts["devnet:check"], "npm run build && node scripts/local-devnet.mjs --check --v6");
+  assert.equal(pkg.scripts["devnet:check:v6"], "npm run devnet:check");
+  assert.equal(pkg.scripts["devnet:check:v1-legacy"], "npm run build && node scripts/local-devnet.mjs --check");
 });

@@ -42,7 +42,8 @@ place validator state under `/mnt/c` or another Windows-mounted filesystem.
 
 You can also run verification entirely on GitHub without installing WSL:
 open **Actions → Standalone L1 CI → Run workflow**, choose the branch, and run
-the workflow. The **local-devnet** job uses Ubuntu and the same command below.
+the workflow. The **local-devnet-v6** job uses Ubuntu and the same command below (the informational
+**local-devnet** job runs `devnet:check:v1-legacy`).
 This checks a disposable network; a GitHub Actions job is not a persistent node
 hosting service.
 
@@ -51,6 +52,12 @@ hosting service.
 ```sh
 npm run devnet:check
 ```
+
+`npm run devnet:check` runs the two-validator devnet under protocol v6 (`--check --v6`);
+`npm run devnet:check:v6` is an alias. The protocol-1 path is `npm run devnet:check:v1-legacy`,
+and it **fails by design** at its transfer step until
+[#1147](https://github.com/zyron249/-zyronchain/issues/1147): the CLI never signs transaction
+version 1 (feature 6A), and a protocol-1 chain needs version 1.
 
 The check requires actual CLI processes, encrypted key loading, real local HTTP
 RPC, both validator signatures, identical finalized tips and balances, correct

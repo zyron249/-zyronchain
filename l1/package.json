@@ -18,8 +18,9 @@
   "scripts": {
     "build": "tsc --outDir dist",
     "devnet": "npm run build && node scripts/local-devnet.mjs",
-    "devnet:check": "npm run build && node scripts/local-devnet.mjs --check",
-    "devnet:check:v6": "npm run build && node scripts/local-devnet.mjs --check --v6",
+    "devnet:check": "npm run build && node scripts/local-devnet.mjs --check --v6",
+    "devnet:check:v6": "npm run devnet:check",
+    "devnet:check:v1-legacy": "npm run build && node scripts/local-devnet.mjs --check",
     "testnet:open:smoke": "npm run build && node scripts/open-testnet.mjs smoke",
     "mine": "node scripts/mine.mjs",
     "mine:local": "npm run build && node scripts/local-devnet.mjs --local-v5",

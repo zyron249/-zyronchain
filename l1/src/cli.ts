@@ -1406,7 +1406,8 @@ async function advertisedProtocolForRpc(rpc: string): Promise<number> {
   }
   transactionVersionForProtocolVersion(Number(value.currentVersion));
   transactionVersionForProtocolVersion(Number(value.nextVersion));
-  return Number(value.nextVersion);
+  // Security: sign for the currently ACTIVE protocol (the tip's version), not the scheduled next one.
+  return Number(value.currentVersion);
 }
 
 async function readPrivateKey(path: string): Promise<string> {

@@ -53,7 +53,11 @@ This generates fresh encrypted development keys, starts both validators, and
 verifies a transfer before reporting readiness. Press Ctrl+C to stop both nodes.
 `npm run devnet:check` additionally verifies quorum loss and recovery plus a
 full restart, then stops the processes and removes the successful temporary
-test chain. See [LOCAL_DEVNET.md](LOCAL_DEVNET.md) for Windows/WSL instructions,
+test chain. `npm run devnet:check` runs the two-validator devnet under protocol v6 (`--check --v6`);
+`npm run devnet:check:v6` is an alias. The protocol-1 path is `npm run devnet:check:v1-legacy`,
+and it **fails by design** at its transfer step until
+[#1147](https://github.com/zyron249/-zyronchain/issues/1147): the CLI never signs transaction
+version 1 (feature 6A), and a protocol-1 chain needs version 1. See [LOCAL_DEVNET.md](LOCAL_DEVNET.md) for Windows/WSL instructions,
 temporary-key handling, and GitHub Actions verification. External testers who
 want wallet, RPC, and token steps should use [docs/PUBLIC_TEST.md](../docs/PUBLIC_TEST.md).
 This local launcher is not a hosted public testnet. Default `npm run devnet` stays protocol v1. Mining is retired (owner decision 2026-09-30, confirmed 2026-10-11): consensus rejects every `mining_claim`, and `npm run mine` / `npm run mine:local` exit with an error. See [`MINING.md`](MINING.md) and [`docs/PUBLIC_LAUNCH_CHECKLIST.md`](../docs/PUBLIC_LAUNCH_CHECKLIST.md).

@@ -15,9 +15,13 @@ const repo = resolve(here, '..', '..');
 const app = join(repo, 'website', 'app');
 const requireL1 = process.argv.includes('--require-l1');
 let passed = 0;
-async function test(name, fn) {
+// clockMs stubs Date.now() for the test (the PWA v1 exception checks the device clock).
+const realDateNow = Date.now;
+async function test(name, fn, { clockMs } = {}) {
+  if (clockMs !== undefined) Date.now = () => clockMs;
   try { await fn(); passed += 1; console.log(`ok - ${name}`); }
   catch (error) { console.error(`not ok - ${name}`); throw error; }
+  finally { Date.now = realDateNow; }
 }
 
 for (const file of ['vendor/noble-scure.js', 'vendor/qr.js', 'zyron-wallet-core.js']) {
@@ -643,7 +647,7 @@ await test('transfer builder: only transfers, mining_claim impossible, strict in
     const source = readFileSync(join(app, file), 'utf8');
     assert.doesNotMatch(source, /mining_claim['"]?\s*[,:}]|kind:\s*['"](?!transfer)/, `${file} must not build other transaction kinds`);
   }
-});
+}, { clockMs: 1700000000000 });
 
 await test('6A R3 (PWA): only the fixed chain ID list is signed, identical to l1; mainnet-looking IDs are refused', async () => {
   const account = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
@@ -670,7 +674,7 @@ await test('6A confinement (b): the PWA refuses version 1 on every chain ID exce
   }
   const v1 = core.buildTransfer({ ...base, chainId: core.WALLET_TESTNET_CHAIN_ID }, account);
   assert.equal(core.signTransfer(v1, account.privateKey).version, 1, 'the documented exception still signs before the end');
-});
+}, { clockMs: 1700000000000 });
 
 await test('6A confinement (c): the PWA refuses version 1 at or after the hard-coded end 2026-11-08T00:00:00Z (fail closed)', async () => {
   const account = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
@@ -688,11 +692,51 @@ await test('6A confinement (c): the PWA refuses version 1 at or after the hard-c
   }
   // Version 2 on the same chain is not time-boxed.
   assert.equal(core.buildTransfer({ ...base, version: 2, timestampMs: core.V1_EXCEPTION_END_MS + 1 }, account).version, 2);
-});
+}, { clockMs: core.V1_EXCEPTION_END_MS - 1 });
+
+// Regression for Security's PoC /workspace/zr-poc/1146/v1-backdate.mjs: after the end, a caller-chosen
+// timestampMs just before the end must not sign version 1.
+await test('6A confinement (c) backdate: after the end, a backdated v1 timestampMs is refused (PoC v1-backdate)', async () => {
+  const account = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
+  const base = { version: 1, chainId: core.WALLET_TESTNET_CHAIN_ID, nonce: 1, receiver: SNAP_VECTORS[1].address, amountAtoms: 1000, feeAtoms: 1000 };
+  assert.throws(() => core.buildTransfer({ ...base, timestampMs: core.V1_EXCEPTION_END_MS }, account), /ended on 2026-11-08T00:00:00Z/);
+  for (const timestampMs of [core.V1_EXCEPTION_END_MS - 1, core.V1_EXCEPTION_END_MS - 60000, 1700000000000]) {
+    assert.throws(() => core.buildTransfer({ ...base, timestampMs }, account), /ended on 2026-11-08T00:00:00Z/, String(timestampMs));
+  }
+  Date.now = () => core.V1_EXCEPTION_END_MS - 120000;
+  const signedBefore = core.buildTransfer({ ...base, timestampMs: core.V1_EXCEPTION_END_MS - 60000 }, account);
+  Date.now = () => core.V1_EXCEPTION_END_MS + 1;
+  assert.throws(() => core.signTransfer(signedBefore, account.privateKey), /ended on 2026-11-08T00:00:00Z/, 'built before the end, signed after: refused');
+  assert.throws(() => core.describeTransfer(signedBefore), /ended on 2026-11-08T00:00:00Z/);
+  assert.equal(core.defaultTransferVersion(core.WALLET_TESTNET_CHAIN_ID), 2, 'the default moves to v2 after the end');
+  for (const broken of [() => Number.NaN, () => Infinity, () => 'now']) {
+    Date.now = broken;
+    assert.throws(() => core.buildTransfer({ ...base, timestampMs: 1700000000000 }, account), /ended on 2026-11-08T00:00:00Z/, 'an unreadable clock fails closed');
+  }
+}, { clockMs: Date.UTC(2026, 10, 8, 0, 0, 0, 0) });
+
+await test('6A confinement (c) skew: a v1 timestampMs more than V1_CLOCK_WINDOW_MS (10 min) from the device clock is refused', async () => {
+  const account = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
+  const now = 1700000000000;
+  assert.equal(core.V1_CLOCK_WINDOW_MS, 10 * 60 * 1000);
+  const base = { version: 1, chainId: core.WALLET_TESTNET_CHAIN_ID, nonce: 1, receiver: SNAP_VECTORS[1].address, amountAtoms: 1000, feeAtoms: 1000 };
+  for (const delta of [0, 1, -1, core.V1_CLOCK_WINDOW_MS, -core.V1_CLOCK_WINDOW_MS]) {
+    assert.equal(core.signTransfer(core.buildTransfer({ ...base, timestampMs: now + delta }, account), account.privateKey).version, 1, String(delta));
+  }
+  for (const delta of [core.V1_CLOCK_WINDOW_MS + 1, -core.V1_CLOCK_WINDOW_MS - 1, 86400000, -86400000 * 365]) {
+    assert.throws(() => core.buildTransfer({ ...base, timestampMs: now + delta }, account), /within 10 minutes of this device clock/, String(delta));
+  }
+  const ok = core.buildTransfer({ ...base, timestampMs: now }, account);
+  Date.now = () => now + core.V1_CLOCK_WINDOW_MS + 1;
+  assert.throws(() => core.signTransfer(ok, account.privateKey), /within 10 minutes/, 'a stale prepared v1 transfer is refused at signing');
+  // Version 2 has no clock window.
+  assert.equal(core.buildTransfer({ ...base, version: 2, chainId: 'zyron-devnet-1', feeAtoms: 100000, timestampMs: 1 }, account).version, 2);
+}, { clockMs: 1700000000000 });
 
 await test('6A confinement (d): the chain list, the v1 chain and the v1 end are hard-coded and cannot be configured', async () => {
   const source = readFileSync(join(app, 'zyron-wallet-core.js'), 'utf8');
   assert.match(source, /const V1_EXCEPTION_END_MS = 1794096000000;/);
+  assert.match(source, /const V1_CLOCK_WINDOW_MS = 600000;/);
   assert.match(source, /const RENDERABLE_CHAIN_IDS = Object\.freeze\(\['zyron-devnet-1', 'zyron-wallet-testnet-1', 'zyron-open-testnet-1'\]\);/);
   assert.doesNotMatch(source, /localStorage|sessionStorage|process\.env|location\.|URLSearchParams|indexedDB|document\.cookie/, 'no storage, URL or environment input in the core');
   assert.ok(Object.isFrozen(core));
@@ -743,7 +787,7 @@ if (existsSync(join(l1Dist, 'transaction.js'))) {
       }
       core.wipe(account.privateKey);
     }
-  });
+  }, { clockMs: 1700000000123 });
 } else if (requireL1) {
   throw new Error('l1/dist is not built (cd l1 && npm ci && npm run build)');
 } else {

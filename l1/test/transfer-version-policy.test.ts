@@ -64,7 +64,7 @@ async function setup() {
 }
 
 /** A fake node that advertises `protocol` on /protocol (or 404) and counts POSTs. */
-async function fakeNode(address: Address, protocol: number | "404") {
+async function fakeNode(address: Address, protocol: number | "404", nextProtocol: number | undefined = undefined) {
   const posted: Transaction[] = [];
   const server = createServer((request, response) => {
     const send = (status: number, body: unknown) => {
@@ -74,7 +74,7 @@ async function fakeNode(address: Address, protocol: number | "404") {
     };
     if (request.method === "GET" && request.url === `/nonce/${address}`) return send(200, { nonce: 0 });
     if (request.method === "GET" && request.url === "/protocol") {
-      return protocol === "404" ? send(404, { error: "not found" }) : send(200, { currentVersion: protocol, nextVersion: protocol });
+      return protocol === "404" ? send(404, { error: "not found" }) : send(200, { currentVersion: protocol, nextVersion: nextProtocol ?? protocol });
     }
     if (request.method === "POST" && request.url === "/tx") {
       const chunks: Buffer[] = [];
@@ -190,6 +190,26 @@ test("downgrade-proof CLI: a protocol-3 node always gets version 2; transfer has
     assert.equal((JSON.parse(await readFile(out, "utf8")) as Transaction).version, 2);
   } finally {
     await node.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("active protocol: the CLI uses /protocol currentVersion, not nextVersion (an upcoming v3 activation does not unlock signing early)", async () => {
+  const { root, address, env } = await setup();
+  try {
+    const base = ["transfer", "--key", join(root, "wallet.json"), "--chain-id", "zyron-devnet-1", "--to", receiver, "--amount-atoms", "5", "--yes"];
+    const pending = await fakeNode(address, 1, 3);
+    try {
+      await assert.rejects(cli([...base, "--rpc", pending.rpc], env), /advertises protocol 1 \(node\).*#?1147|advertises protocol 1 \(node\)/s);
+      assert.equal(pending.posted.length, 0);
+    } finally { await pending.close(); }
+    const active = await fakeNode(address, 3, 6);
+    try {
+      await cli([...base, "--rpc", active.rpc], env);
+      assert.equal(active.posted.length, 1);
+      assert.equal(active.posted[0]!.version, 2);
+    } finally { await active.close(); }
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

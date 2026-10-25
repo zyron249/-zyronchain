@@ -187,7 +187,7 @@ consensus-critical.
 Patron chose option 3 for PR #1146: the transaction version comes from the chain's
 advertised protocol, never from a flag, a toggle or the payload.
 
-- **Online (`zyron-l1 transfer`)**: the CLI reads `GET /protocol` and uses `nextVersion`
+- **Online (`zyron-l1 transfer`)**: the CLI reads `GET /protocol` and uses the ACTIVE protocol `currentVersion` (not `nextVersion`)
   (404 means protocol 1). See `l1/src/cli.ts` `advertisedProtocolForRpc` and
   `submitTransfer` (`resolveTransferVersion(chainId, …, "node")`). There is no version flag.
 - **Offline (`zyron-l1 transfer-sign`)**: the version comes from a fixed, frozen
@@ -206,7 +206,7 @@ cannot sign for `zyron-wallet-testnet-1` (protocol 1) or the local v1 devnet.
 **PWA-only, time-boxed v1 exception.** `website/app/zyron-wallet-core.js` still signs v1,
 but only for `zyron-wallet-testnet-1` and only while the transaction `timestampMs` is before
 `V1_EXCEPTION_END_MS = 1794096000000` (2026-11-08T00:00:00Z). Anything else fails closed.
-The exception is hard-coded (not env- or config-driven) and ends when testnet-1 reaches
+It is also refused when `Date.now()` is at or after the end (so a backdated `timestampMs` cannot extend it), when the device clock is unreadable, and when `timestampMs` is more than `V1_CLOCK_WINDOW_MS = 600000` (10 minutes) from `Date.now()`. The exception is hard-coded (not env- or config-driven) and ends when testnet-1 reaches
 protocol 3 (#1147), whichever comes first.
 
 ### R3: fixed chain ID list
@@ -226,8 +226,8 @@ the list.
    belong to Wallet Dev.
 3. `zyron-open-testnet-1` runs protocol 1 until its v6 activation height; during those
    bootstrap heights CLI transfers are refused.
-4. `npm run devnet:check` (protocol 1) fails at its transfer step, because
+4. `npm run devnet:check:v1-legacy` (protocol 1) fails by design at its transfer step, because
    `l1/scripts/local-devnet.mjs` uses the CLI `transfer` (wallet path). It is not weakened;
-   #1147 moves the local devnet to protocol 3. `devnet:check:v6` uses `zyron-devnet-1`.
+   #1147 moves the local devnet to protocol 3. `npm run devnet:check` now runs the v6 devnet (alias `devnet:check:v6`) on `zyron-devnet-1`.
 
 Follow-up: https://github.com/zyron249/-zyronchain/issues/1147
