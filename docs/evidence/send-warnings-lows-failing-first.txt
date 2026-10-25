@@ -1,0 +1,126 @@
+TAP version 13
+# Subtest: send-warnings: lookalike rule constants match the decided PWA defaults
+ok 1 - send-warnings: lookalike rule constants match the decided PWA defaults
+  ---
+  duration_ms: 0.67808
+  type: 'test'
+  ...
+# Subtest: send-warnings: grouped checksummed display
+ok 2 - send-warnings: grouped checksummed display
+  ---
+  duration_ms: 1.454246
+  type: 'test'
+  ...
+# Subtest: send-warnings: prefix/suffix lookalike of a contact warns, exact match does not
+ok 3 - send-warnings: prefix/suffix lookalike of a contact warns, exact match does not
+  ---
+  duration_ms: 1.131867
+  type: 'test'
+  ...
+# Subtest: send-warnings: lookalike of a history address warns even though history cannot be poisoned
+ok 4 - send-warnings: lookalike of a history address warns even though history cannot be poisoned
+  ---
+  duration_ms: 0.177258
+  type: 'test'
+  ...
+# Subtest: send-warnings: self-send is blocking and short-circuits
+ok 5 - send-warnings: self-send is blocking and short-circuits
+  ---
+  duration_ms: 1.135889
+  type: 'test'
+  ...
+# Subtest: send-warnings: first-time and large-amount warnings
+ok 6 - send-warnings: first-time and large-amount warnings
+  ---
+  duration_ms: 0.418567
+  type: 'test'
+  ...
+# Subtest: send-warnings: comparisons and matches are capped
+ok 7 - send-warnings: comparisons and matches are capped
+  ---
+  duration_ms: 0.724103
+  type: 'test'
+  ...
+# Subtest: send-warnings: known-address input is validated strictly
+ok 8 - send-warnings: known-address input is validated strictly
+  ---
+  duration_ms: 0.300136
+  type: 'test'
+  ...
+# Subtest: send-warnings: matches the PWA wallet core byte for byte
+ok 9 - send-warnings: matches the PWA wallet core byte for byte
+  ---
+  duration_ms: 21.528816
+  type: 'test'
+  ...
+# Subtest: send-warnings: CLI send-check is offline and advisory
+ok 10 - send-warnings: CLI send-check is offline and advisory
+  ---
+  duration_ms: 1406.627454
+  type: 'test'
+  ...
+# Subtest: send-warnings: own address is normalized before the self-send check (library and PWA copies)
+not ok 11 - send-warnings: own address is normalized before the self-send check (library and PWA copies)
+  ---
+  duration_ms: 6.695725
+  type: 'test'
+  location: '<repo>/l1/dist/test/send-warnings.test.js:126:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    library ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42
+    + actual - expected
+    
+      [
+        [
+    +     'first-time',
+    +     false
+    -     'self',
+    -     true
+        ]
+      ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0:
+      0: 'self'
+      1: true
+  actual:
+    0:
+      0: 'first-time'
+      1: false
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/send-warnings.test.js:140:16)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: send-warnings: CLI send-check notes when the known-address list was truncated
+not ok 12 - send-warnings: CLI send-check notes when the known-address list was truncated
+  ---
+  duration_ms: 353.162984
+  type: 'test'
+  location: '<repo>/l1/dist/test/send-warnings.test.js:150:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Command failed: /home/box/.local/node-v22.19.0-linux-x64/bin/node <repo>/l1/dist/src/cli.js send-check --to ZYN5d99ee966b42cd8fc7bdd1364b389153a9e78b42 --known-file /tmp/zyron-send-check-trunc-DGPxLB/known.json
+    Fatal: Known-address history is invalid
+    
+  code: 1
+  stack: |-
+    genericNodeError (node:internal/errors:983:15)
+    wrappedFn (node:internal/errors:537:14)
+    ChildProcess.exithandler (node:child_process:417:12)
+    ChildProcess.emit (node:events:519:28)
+    maybeClose (node:internal/child_process:1101:16)
+    ChildProcess._handle.onexit (node:internal/child_process:304:5)
+  ...
+1..12
+# tests 12
+# suites 0
+# pass 10
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1848.693577

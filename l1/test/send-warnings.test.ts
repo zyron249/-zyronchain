@@ -157,3 +157,47 @@ test("send-warnings: CLI send-check is offline and advisory", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("send-warnings: own address is normalized before the self-send check (library and PWA copies)", async () => {
+  const ctx: Record<string, unknown> = { crypto: globalThis.crypto, TextEncoder, TextDecoder, Uint8Array };
+  ctx.globalThis = ctx;
+  vm.createContext(ctx);
+  for (const file of ["website/app/vendor/noble-scure.js", "website/app/zyron-wallet-core.js"]) {
+    vm.runInContext(await readFile(join(repoRoot, file), "utf8"), ctx);
+  }
+  const pwa = ctx.ZyronAppCore as { sendWarnings: (input: unknown, account: unknown, book: unknown) => Array<{ code: string; blocking: boolean }> };
+  const inCtx = (value: unknown): unknown => vm.runInContext(`(${JSON.stringify(value)})`, ctx);
+  const raw = { contacts: [], sent: [], thresholdAtoms: null };
+  const checksummed = displayAddress(STRANGER).replace(/ /g, "");
+  assert.notEqual(checksummed, STRANGER, "fixture must differ from the canonical form");
+  for (const own of [checksummed, STRANGER]) {
+    const lib = sendWarnings({ receiver: STRANGER }, { address: own }, parseKnownAddresses(raw));
+    assert.deepEqual(lib.map((w) => [w.code, w.blocking]), [["self", true]], `library ${own}`);
+    const web = pwa.sendWarnings(inCtx({ receiver: STRANGER }), inCtx({ address: own }), inCtx(raw));
+    assert.deepEqual(JSON.parse(JSON.stringify(web.map((w) => [w.code, w.blocking]))), [["self", true]], `pwa ${own}`);
+  }
+  // An invalid own address fails closed in both copies.
+  const bad = "ZYN" + STRANGER.slice(3).toUpperCase().replace(/^5D/, "5d");
+  assert.throws(() => sendWarnings({ receiver: STRANGER }, { address: bad }, parseKnownAddresses(raw)));
+  assert.throws(() => sendWarnings({ receiver: STRANGER }, { address: "not-an-address" }, parseKnownAddresses(raw)));
+  assert.throws(() => pwa.sendWarnings(inCtx({ receiver: STRANGER }), inCtx({ address: "not-an-address" }), inCtx(raw)));
+});
+
+test("send-warnings: CLI send-check notes when the known-address list was truncated", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zyron-send-check-trunc-"));
+  try {
+    const file = join(dir, "known.json");
+    const addr = (i: number) => "ZYN" + (i + 1).toString(16).padStart(8, "0").repeat(5);
+    const contacts = Array.from({ length: 100 }, (_, i) => ({ name: `C${i}`, address: addr(i) }));
+    const sent = Array.from({ length: 160 }, (_, i) => addr(100 + i));
+    await writeFile(file, JSON.stringify({ contacts, sent, thresholdAtoms: null }));
+    const human = await run(process.execPath, [cliPath, "send-check", "--to", STRANGER, "--known-file", file]);
+    assert.match(human.stdout, new RegExp(`note: only the first ${LOOKALIKE_MAX_COMPARISONS} of 260 known addresses were compared`));
+    const small = join(dir, "small.json");
+    await writeFile(small, JSON.stringify({ contacts: [], sent: sent.slice(0, 3), thresholdAtoms: null }));
+    const quiet = await run(process.execPath, [cliPath, "send-check", "--to", STRANGER, "--known-file", small]);
+    assert.doesNotMatch(quiet.stdout, /only the first/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

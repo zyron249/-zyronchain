@@ -158,7 +158,7 @@ export function sendWarnings(
   const book = parseKnownAddresses(known);
   const out: SendWarning[] = [];
   const receiver = parseAddressInput(input.receiver).canonical;
-  if (account && receiver === account.address) {
+  if (account && receiver === parseAddressInput(account.address).canonical) {
     out.push({ code: "self", blocking: true, message: SELF_SEND_MESSAGE });
     return out;
   }
