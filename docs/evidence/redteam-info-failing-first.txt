@@ -1,0 +1,162 @@
+# Red Team Session 1 INFO items: failing-first run (stub modules, before the fix)
+# node --test dist/test/redteam-info.test.js
+TAP version 13
+# Subtest: supply report: fixed 50M total as a string, burned derived from state, reconciles
+not ok 1 - supply report: fixed 50M total as a string, burned derived from state, reconciles
+  ---
+  duration_ms: 0.561576
+  type: 'test'
+  location: '<repo>/l1/dist/test/redteam-info.test.js:24:1'
+  failureType: 'testCodeFailure'
+  error: 'not implemented'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    supplyReport (file://<repo>/l1/dist/src/supply-report.js:1:47)
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/redteam-info.test.js:25:20)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.start (node:internal/test_runner/test:944:17)
+    startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17)
+  ...
+# Subtest: supply report: locked is a subset of balances and circulating = balances - locked
+not ok 2 - supply report: locked is a subset of balances and circulating = balances - locked
+  ---
+  duration_ms: 0.165701
+  type: 'test'
+  location: '<repo>/l1/dist/test/redteam-info.test.js:35:1'
+  failureType: 'testCodeFailure'
+  error: 'not implemented'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    supplyReport (file://<repo>/l1/dist/src/supply-report.js:1:47)
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/redteam-info.test.js:36:20)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: supply report: balances above the genesis supply do not reconcile (fail closed, no negative burn)
+not ok 3 - supply report: balances above the genesis supply do not reconcile (fail closed, no negative burn)
+  ---
+  duration_ms: 0.070854
+  type: 'test'
+  location: '<repo>/l1/dist/test/redteam-info.test.js:41:1'
+  failureType: 'testCodeFailure'
+  error: 'not implemented'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    supplyReport (file://<repo>/l1/dist/src/supply-report.js:1:47)
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/redteam-info.test.js:42:20)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: replay error: a used nonce names the replay, a far-future nonce keeps the window text
+not ok 4 - replay error: a used nonce names the replay, a far-future nonce keeps the window text
+  ---
+  duration_ms: 0.639017
+  type: 'test'
+  location: '<repo>/l1/dist/test/redteam-info.test.js:46:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /nonce already used.*replayed or stale/. Input:
+    
+    'Error: Transaction nonce outside mempool window'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual:
+  error: 'Transaction nonce outside mempool window'
+  stack: |-
+    assertMempoolSenderNonce (file://<repo>/l1/dist/src/fee-policy.js:79:15)
+    file://<repo>/l1/dist/test/redteam-info.test.js:47:25
+    getActual (node:assert:609:5)
+    Function.throws (node:assert:757:24)
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/redteam-info.test.js:47:12)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+  operator: 'throws'
+  stack: |-
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/redteam-info.test.js:47:12)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: faucet nonce: resyncs from chain state when the chain nonce goes backwards (restore)
+not ok 5 - faucet nonce: resyncs from chain state when the chain nonce goes backwards (restore)
+  ---
+  duration_ms: 0.110321
+  type: 'test'
+  location: '<repo>/l1/dist/test/redteam-info.test.js:52:1'
+  failureType: 'testCodeFailure'
+  error: 'not implemented'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    Module.createFaucetNonceTracker (file://<repo>/l1/scripts/faucet-nonce.mjs:1:52)
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/redteam-info.test.js:53:33)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: faucet nonce: a rejected drip drops the local cache so the next one uses chain state
+not ok 6 - faucet nonce: a rejected drip drops the local cache so the next one uses chain state
+  ---
+  duration_ms: 0.067705
+  type: 'test'
+  location: '<repo>/l1/dist/test/redteam-info.test.js:62:1'
+  failureType: 'testCodeFailure'
+  error: 'not implemented'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    Module.createFaucetNonceTracker (file://<repo>/l1/scripts/faucet-nonce.mjs:1:52)
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/redteam-info.test.js:63:33)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: faucet nonce: stale cache expires and invalid chain nonces fail closed
+not ok 7 - faucet nonce: stale cache expires and invalid chain nonces fail closed
+  ---
+  duration_ms: 0.129119
+  type: 'test'
+  location: '<repo>/l1/dist/test/redteam-info.test.js:70:1'
+  failureType: 'testCodeFailure'
+  error: 'not implemented'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    Module.createFaucetNonceTracker (file://<repo>/l1/scripts/faucet-nonce.mjs:1:52)
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/redteam-info.test.js:71:33)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..7
+# tests 7
+# suites 0
+# pass 0
+# fail 7
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 55.209633

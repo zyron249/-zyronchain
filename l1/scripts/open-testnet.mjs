@@ -24,6 +24,7 @@
 // <secret dir> holds plaintext TEST validator/faucet keys (mode 0600) and the
 // chain data. It must live outside the repository and must never be shared.
 import { activeSetSeedFromHistory, createActiveSetTracker } from "./gateway-quorum.mjs";
+import { createFaucetNonceTracker } from "./faucet-nonce.mjs";
 import { allocateValidatorBasePort } from "./open-testnet-ports.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -477,14 +478,29 @@ const NODE_TRANSFER_FEE_ATOMS = nodeTransferFeeAtoms(undefined, parseMempoolMinF
 export class FaucetFeeFloorError extends Error {
   constructor(detail) { super(`faucet cannot meet the node's minimum transfer fee: ${detail}`); this.name = "FaucetFeeFloorError"; this.code = "fee-floor"; }
 }
+// Upper bound on the fee the faucet (and the smoke transfer) will pay per
+// transfer: 1,000,000 atoms = 0.01 test ZYN, 1,000x the open-testnet floor of
+// 1,000 atoms and 1/10,000 of a 100 ZYN drip. A node /status reporting a
+// higher floor (or fixed fee) is treated as misconfigured: the drip fails with
+// fee-floor (503, error-level log) and no transfer is sent.
+export const MAX_FAUCET_FEE_ATOMS = 1_000_000;
+// When /status reports fixedTransferFeeAtoms (fee-v1 is active), the faucet
+// pays EXACTLY that fee and the floor logic is not used.
 export function faucetTransferFeeAtoms(envFloorAtoms, statusResponse) {
   if (!statusResponse || statusResponse.status !== 200 || !statusResponse.body || typeof statusResponse.body !== "object") {
     throw new FaucetFeeFloorError(`node /status unavailable (status ${statusResponse?.status ?? "none"})`);
+  }
+  const fixed = statusResponse.body.fixedTransferFeeAtoms;
+  if (fixed !== undefined && fixed !== null) {
+    if (typeof fixed !== "number" || !Number.isSafeInteger(fixed) || fixed < 0) throw new FaucetFeeFloorError("node /status has an invalid fixedTransferFeeAtoms");
+    if (fixed > MAX_FAUCET_FEE_ATOMS) throw new FaucetFeeFloorError(`node fixed fee of ${fixed} atoms exceeds MAX_FAUCET_FEE_ATOMS (${MAX_FAUCET_FEE_ATOMS})`);
+    return fixed;
   }
   const floor = statusResponse.body.minTransferFeeAtoms;
   if (typeof floor !== "number" || !Number.isSafeInteger(floor) || floor < 0) throw new FaucetFeeFloorError("node /status has no valid minTransferFeeAtoms");
   const fee = Math.max(envFloorAtoms, floor);
   if (!Number.isSafeInteger(fee) || fee < floor) throw new FaucetFeeFloorError(`fee ${fee} atoms is below the node floor of ${floor} atoms`);
+  if (fee > MAX_FAUCET_FEE_ATOMS) throw new FaucetFeeFloorError(`fee floor of ${fee} atoms exceeds MAX_FAUCET_FEE_ATOMS (${MAX_FAUCET_FEE_ATOMS})`);
   return fee;
 }
 const DAY_MS = 86_400_000;
@@ -1496,7 +1512,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     return gatewayClientIdentity(request.socket.remoteAddress, request.headers, { trustCloudflareConnectingIp });
   }
 
-  let faucetQueue = Promise.resolve(); let lastFaucetNonce = 0; let lastFaucetNonceAt = 0;
+  let faucetQueue = Promise.resolve(); const faucetNonce = createFaucetNonceTracker();
   function faucetSend(receiver) {
     const run = faucetQueue.then(async () => {
       const status = await chainStatus();
@@ -1504,14 +1520,14 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       const feeAtoms = faucetTransferFeeAtoms(NODE_TRANSFER_FEE_ATOMS, await anyNode("/status"));
       const nonceResponse = await anyNode(`/nonce/${faucet.address}`);
       if (nonceResponse.status !== 200) throw new Error(`faucet nonce lookup failed (status ${nonceResponse.status})`);
-      if (Date.now() - lastFaucetNonceAt > 180_000) lastFaucetNonce = 0;
-      const nonce = Math.max(nonceResponse.body.nonce, lastFaucetNonce) + 1;
+      // Chain state wins after a restore or a rejected drip (Red Team INFO #9).
+      const nonce = faucetNonce.next(nonceResponse.body.nonce, Date.now());
       const tx = createTransfer({ chainId, nonce, sender: faucet.address, receiver, amountAtoms: FAUCET_DRIP_ATOMS, feeAtoms, timestampMs: Date.now() },
         faucet.privateKey, faucet.publicKey, status.transactionVersion);
       const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
       // The node's error text is logged by the faucet route, never returned.
-      if (submitted.status < 200 || submitted.status > 299) throw new Error(`faucet transfer rejected by node (status ${submitted.status}): ${String(submitted.body?.error ?? "").slice(0, 300)}`);
-      lastFaucetNonce = nonce; lastFaucetNonceAt = Date.now();
+      if (submitted.status < 200 || submitted.status > 299) { faucetNonce.rejected(); throw new Error(`faucet transfer rejected by node (status ${submitted.status}): ${String(submitted.body?.error ?? "").slice(0, 300)}`); }
+      faucetNonce.accepted(nonce, Date.now());
       return { txid: tx.txid, receiver, amountAtoms: FAUCET_DRIP_ATOMS, nonce };
     });
     faucetQueue = run.catch(() => undefined);
@@ -1641,9 +1657,14 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           return response.end(sealed);
         }
         if (path === "/" || path === "/explorer") return sendHtml(response);
-        if (path === "/api" ) return sendJson(response, 200, { name: "ZyronChain open TESTNET RPC", ...(await chainStatus()), endpoints: ["GET /health", "GET /status", "GET /network", "GET /genesis", "GET /account/{address}", "GET /balance/{address}", "GET /nonce/{address}", "GET /blocks?from=&limit=", "GET /block/{height}", "GET /peer/status", "GET /peer/blocks?from=&limit=", "POST /tx", "POST /faucet {address}"] });
+        if (path === "/api" ) return sendJson(response, 200, { name: "ZyronChain open TESTNET RPC", ...(await chainStatus()), endpoints: ["GET /health", "GET /status", "GET /network", "GET /genesis", "GET /supply", "GET /account/{address}", "GET /balance/{address}", "GET /nonce/{address}", "GET /blocks?from=&limit=", "GET /block/{height}", "GET /peer/status", "GET /peer/blocks?from=&limit=", "POST /tx", "POST /faucet {address}"] });
         if (path === "/status" || path === "/chain") return sendJson(response, 200, { ...(await chainStatus()), ...durability() });
         if (path === "/network") return sendJson(response, 200, info);
+        if (path === "/supply") {
+          const result = await anyNode("/supply");
+          if (result.status !== 200) return sendJson(response, 502, { error: "node unavailable" });
+          return sendJson(response, 200, { network: "testnet", valueBearing: false, ...result.body, ...durableView(result.body.height) });
+        }
         if (path === "/genesis") return sendJson(response, 200, { network: "testnet", valueBearing: false, genesisHash: info.genesisHash, genesis });
         if (path === "/blocks" || path.startsWith("/block/")) {
           const tip = (await chainStatus()).height;
@@ -1786,6 +1807,13 @@ async function smoke() {
     const tx = createTransfer({ chainId: info.chainId, nonce: nonce + 1, sender: alice.address, receiver: bob.address, amountAtoms: 25 * ATOMS_PER_ZYN, feeAtoms: faucetTransferFeeAtoms(NODE_TRANSFER_FEE_ATOMS, await get("/status")), timestampMs: Date.now() }, alice.privateKey, alice.publicKey, status.transactionVersion);
     assert.equal((await post("/tx", tx)).status, 200);
     await until("transfer", async () => (await get(`/account/${bob.address}`)).body.balanceAtoms === 25 * ATOMS_PER_ZYN);
+    // GET /supply (Red Team INFO #5): read-only, reconciles, fees burned.
+    const supply = (await get("/supply")).body;
+    assert.equal(supply.reconciles, true, JSON.stringify(supply));
+    assert.equal(supply.totalSupplyAtoms, String(published.allocations.reduce((sum, a) => sum + BigInt(a.amountAtoms), 0n)));
+    assert.equal(BigInt(supply.balancesAtoms) + BigInt(supply.pendingAtoms) + BigInt(supply.burnedAtoms), BigInt(supply.totalSupplyAtoms));
+    assert.ok(BigInt(supply.burnedAtoms) >= 2n * BigInt(NODE_TRANSFER_FEE_ATOMS), "faucet and transfer fees are burned");
+    assert.ok(BigInt(supply.lockedAtoms) <= BigInt(supply.balancesAtoms));
     // Liveness with one validator down (3 of 4 is a quorum), then rejoin.
     const before = (await get("/status")).body.height;
     await network.stopValidator("v2");
