@@ -14,6 +14,9 @@ interface PortsModule {
   assertDisjointPortWindows(windows?: Readonly<Record<string, readonly [number, number]>>): void;
   allocateValidatorBasePort(window: string, host?: string): Promise<number>;
   freePort(host?: string): Promise<number>;
+  OPEN_TESTNET_FIXED_PORTS: Readonly<Record<string, number>>;
+  openTestnetFixedPort(name: string): number;
+  assertFixedPortsOutsideWindows(fixed?: Readonly<Record<string, number>>, windows?: Readonly<Record<string, readonly [number, number]>>): void;
 }
 const ports = (await import(pathToFileURL(join(l1Root, "scripts", "open-testnet-ports.mjs")).href)) as PortsModule;
 
@@ -29,3 +32,4 @@ if (JSON.stringify([...typed].sort()) !== JSON.stringify(Object.keys(ports.OPEN_
 export const { VALIDATOR_PORT_OFFSETS, EPHEMERAL_PORT_FLOOR, OPEN_TESTNET_PORT_WINDOWS, assertDisjointPortWindows } = ports;
 export const allocateValidatorBasePort = (window: OpenTestnetPortWindow, host?: string): Promise<number> => ports.allocateValidatorBasePort(window, host);
 export const freePort = (host?: string): Promise<number> => ports.freePort(host);
+export const { OPEN_TESTNET_FIXED_PORTS, assertFixedPortsOutsideWindows } = ports;
