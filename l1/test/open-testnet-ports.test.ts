@@ -20,3 +20,11 @@ test("allocated base ports keep the whole validator and mailbox block inside the
     assert.equal((base - lo) % 4, 0);
   }
 });
+
+test("importing the ports module does not validate windows eagerly (hosted run path)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../../scripts/open-testnet-ports.mjs", import.meta.url), "utf8");
+  // No top-level guard call; the only call sites are inside function bodies.
+  assert.equal(/^assertDisjointPortWindows\(/m.test(source), false, "guard must not run at import");
+  assert.match(source, /ensureDisjointPortWindows\(\);\n\s+const range = OPEN_TESTNET_PORT_WINDOWS\[window\]/, "allocation runs the guard first");
+});
