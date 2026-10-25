@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import test from "node:test";
+import { allocateValidatorBasePort } from "./helpers/open-testnet-ports.js";
 
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
 const script = join(l1Root, "scripts", "open-testnet.mjs");
@@ -89,7 +90,7 @@ test("open testnet binds its port before snapshot restore and resumes the restor
     const snapshotPort = (snapshotServer.address() as { port: number }).port;
 
     const target = join(root, "hosted");
-    const basePort = 21_000 + Math.floor(Math.random() * 1_000) * 4;
+    const basePort = await allocateValidatorBasePort("early-listen");
     child = spawn(process.execPath, [script, "run", "--dir", target, "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
       "--chain-id", CHAIN_ID, "--validator-base-port", String(basePort), "--restore-url", `http://127.0.0.1:${snapshotPort}/state.enc`], {
       cwd: l1Root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ZYRON_TESTNET_STATE_SECRET: secret, PORT: "" }

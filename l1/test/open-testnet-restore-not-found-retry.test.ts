@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import test from "node:test";
+import { allocateValidatorBasePort } from "./helpers/open-testnet-ports.js";
 
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
 const script = join(l1Root, "scripts", "open-testnet.mjs");
@@ -74,10 +75,8 @@ async function startHost(root: string, secret: string, missing: number, sealed: 
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const snapshotPort = (server.address() as { port: number }).port;
-  // 29000-32599: disjoint from the other open-testnet tests (21000-28999), which
-  // run concurrently in the same `node --test` invocation, and below the Linux
-  // ephemeral port range.
-  const basePort = 29_000 + Math.floor(Math.random() * 900) * 4;
+  // Per-file disjoint, probed validator port block (see helpers/open-testnet-ports.ts).
+  const basePort = await allocateValidatorBasePort("restore-not-found-retry");
   const child: ChildProcess = spawn(process.execPath, [script, "run", "--dir", join(root, "hosted"), "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
     "--chain-id", CHAIN_ID, "--validator-base-port", String(basePort), "--restore-url", `http://127.0.0.1:${snapshotPort}/state.enc`], {
     cwd: l1Root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ZYRON_TESTNET_STATE_SECRET: secret, PORT: "", ...extraEnv }
