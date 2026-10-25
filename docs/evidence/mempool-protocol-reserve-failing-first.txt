@@ -1,0 +1,24 @@
+# Failing-first run on origin/main c6133fb2 (fix stashed), Sat Oct 24 20:52:50 EDT 2026
+
+test/mempool-protocol-reserve.test.ts(55,76): error TS2353: Object literal may only specify known properties, and 'protocolReserve' does not exist in type 'MempoolOptions'.
+test/mempool-protocol-reserve.test.ts(62,76): error TS2353: Object literal may only specify known properties, and 'protocolReserve' does not exist in type 'MempoolOptions'.
+test/mempool-protocol-reserve.test.ts(83,75): error TS2353: Object literal may only specify known properties, and 'protocolReserve' does not exist in type 'MempoolOptions'.
+test/mempool-protocol-reserve.test.ts(95,65): error TS2353: Object literal may only specify known properties, and 'protocolReserve' does not exist in type 'MempoolOptions'.
+test/mempool-protocol-reserve.test.ts(96,65): error TS2353: Object literal may only specify known properties, and 'protocolReserve' does not exist in type 'MempoolOptions'.
+not ok 1 - fee-v1 off: transfers cannot use the protocol reserve
+  error: |-
+ok 2 - fee-v1 off: full mempool of transfers still admits protocol txs
+ok 3 - fee-v1 off: default reserve applies at default capacity (Red Team PoC)
+ok 4 - fee-v1 off: admitted protocol tx is selected ahead of transfers
+not ok 5 - fee-v1 on: transfers cannot use the protocol reserve
+  error: |-
+not ok 6 - fee-v1 on: full mempool of transfers still admits protocol txs
+  error: 'Mempool full'
+not ok 7 - fee-v1 on: default reserve applies at default capacity (Red Team PoC)
+  error: 'Mempool full'
+not ok 8 - fee-v1 on: admitted protocol tx is selected ahead of transfers
+  error: 'Mempool full'
+not ok 9 - protocol reserve must be smaller than capacity
+  error: 'Missing expected exception.'
+# pass 3
+# fail 6
