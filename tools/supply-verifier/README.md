@@ -32,8 +32,9 @@ To update the pin intentionally:
 
 3. Commit `EXPECTED_SHA256` in the same PR as the change that caused it, and say
    in the PR why the verifier output changed.
-4. A pin bump needs an independent hash confirmation in review: a reviewer reruns
-   `npm run pin-hash` on the same merged tree and confirms the same hash.
+4. Any pin bump needs the security reviewer (Zyron Security) to rebuild independently
+   with `npm run pin-hash` on the same merged tree and confirm the hash before merge
+   (see CONTRIBUTING.md).
 5. Confirm the workflow passes on the PR; its log prints the hash it built.
 
 Never update the pin to silence a mismatch you cannot explain: an unexplained change

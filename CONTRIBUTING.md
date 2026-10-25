@@ -61,8 +61,9 @@ npm run pin-hash
 ```
 
 Then commit `EXPECTED_SHA256` in the same PR and say why the verifier output changed.
-A pin bump needs an independent hash confirmation in review: reviewers rerun
-`npm run pin-hash` on the same tree and confirm they get the same hash.
+Any `EXPECTED_SHA256` bump needs the security reviewer (Zyron Security) to rebuild
+independently with `npm run pin-hash` on the same merged tree and confirm the hash
+before the PR merges.
 Never update the pin to hide a mismatch nobody can explain. See
 [tools/supply-verifier/README.md](tools/supply-verifier/README.md).
 
