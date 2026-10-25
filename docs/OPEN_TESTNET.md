@@ -186,6 +186,14 @@ passed only to its step). With it, the snapshot height and genesis come from the
 authenticated body, and a mismatch stops the run without publishing. Without it,
 the keeper refuses to run unless `ZYRON_KEEPER_ALLOW_UNAUTHENTICATED=1` is set.
 
+## Mempool: future-nonce transactions
+
+A transaction whose nonce leaves a gap above your confirmed nonce is held
+("parked") until the gap is filled. Each node keeps at most 16 parked
+transactions per address and evicts a parked transaction after 10 minutes.
+Operators can change both (`ZYRON_MEMPOOL_MAX_FUTURE_PER_SENDER`,
+`ZYRON_MEMPOOL_PARKED_TTL_MS`); see [MEMPOOL_FUTURE_NONCE_POLICY.md](MEMPOOL_FUTURE_NONCE_POLICY.md).
+
 ## What this testnet does not prove
 
 - No independent operators yet, single host, single region.

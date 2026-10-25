@@ -79,6 +79,8 @@ export class Mempool {
   private readonly fixedTransferFeeAtoms: number | undefined;
   private readonly maxPendingPerSender: number | undefined;
   private readonly minTransferFeeAtoms: number;
+  /** Node policy only: admission time per txid, in insertion (admission) order. */
+  private readonly admittedAtMs = new Map<string, number>();
 
   constructor(
     maxNonMiningSize?: number,
@@ -123,7 +125,7 @@ export class Mempool {
     }
   }
 
-  add(tx: Transaction): void {
+  add(tx: Transaction, admittedAtMs = Date.now()): void {
     // Mining is retired: the mining reserve can never be occupied.
     if (tx.kind === "mining_claim") assertMiningNotRetired();
     if (this.fixedTransferFeeAtoms !== undefined && tx.kind === "transfer" && tx.feeAtoms !== this.fixedTransferFeeAtoms) {
@@ -187,6 +189,7 @@ export class Mempool {
     const stored = structuredClone(tx);
     this.byId.set(tx.txid, stored);
     this.nonceIds.set(nonceKey, tx.txid);
+    this.admittedAtMs.set(tx.txid, admittedAtMs);
     this.adjustOccupancy(stored, 1, txBytes);
     this.adjustTransferSpend(stored, 1n);
     this.adjustSenderCount(stored.sender, 1);
@@ -265,6 +268,32 @@ export class Mempool {
     return tx ? structuredClone(tx) : undefined;
   }
 
+  /** Whether `sender` has a pending transaction with exactly `nonce` (O(1), no copy). */
+  hasSenderNonce(sender: string, nonce: number): boolean {
+    return this.nonceIds.has(`${sender}:${nonce}`);
+  }
+
+  /** Number of `sender`'s pending transactions (O(1)). */
+  senderPendingCount(sender: string): number {
+    return this.pendingBySender.get(sender) ?? 0;
+  }
+
+  /**
+   * Sender and nonce of the pending transactions admitted at or before
+   * `cutoffMs`, oldest first (no transaction copies). Admission times are in
+   * insertion order, so the scan stops at the first younger entry when the
+   * clock is monotonic.
+   */
+  admittedAtOrBefore(cutoffMs: number): Array<{ txid: string; sender: Transaction["sender"]; nonce: number }> {
+    const result: Array<{ txid: string; sender: Transaction["sender"]; nonce: number }> = [];
+    for (const [txid, admittedAtMs] of this.admittedAtMs) {
+      if (admittedAtMs > cutoffMs) break;
+      const tx = this.byId.get(txid);
+      if (tx) result.push({ txid, sender: tx.sender, nonce: tx.nonce });
+    }
+    return result;
+  }
+
   get size(): number {
     return this.byId.size;
   }
@@ -295,6 +324,7 @@ export class Mempool {
   private deleteTransaction(txid: string, tx: Transaction): void {
     this.byId.delete(txid);
     this.nonceIds.delete(`${tx.sender}:${tx.nonce}`);
+    this.admittedAtMs.delete(txid);
     this.adjustOccupancy(tx, -1);
     this.adjustTransferSpend(tx, -1n);
     this.adjustSenderCount(tx.sender, -1);
