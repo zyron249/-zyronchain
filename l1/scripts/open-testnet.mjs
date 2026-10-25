@@ -1500,7 +1500,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
         faucet.privateKey, faucet.publicKey, status.transactionVersion);
       const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
       // The node's error text is logged by the faucet route, never returned.
-      if (submitted.status < 200 || submitted.status > 299) { faucetNonce.rejected(nonce, { status: submitted.status, error: submitted.body?.error }); throw new Error(`faucet transfer rejected by node (status ${submitted.status}): ${String(submitted.body?.error ?? "").slice(0, 300)}`); }
+      if (submitted.status < 200 || submitted.status > 299) { faucetNonce.rejected(nonce, { status: submitted.status, error: submitted.body?.error }, Date.now()); throw new Error(`faucet transfer rejected by node (status ${submitted.status}): ${String(submitted.body?.error ?? "").slice(0, 300)}`); }
       faucetNonce.accepted(nonce, Date.now());
       return { txid: tx.txid, receiver, amountAtoms: FAUCET_DRIP_ATOMS, nonce };
     });

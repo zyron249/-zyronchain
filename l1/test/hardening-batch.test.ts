@@ -117,6 +117,25 @@ test("HARDEN-1: chain state still wins: a nonce the chain has passed is never re
   assert.equal(tracker.next(1, now), 3);
 });
 
+test("HARDEN-1: a proven-taken nonce stays taken before the first accepted drip and after an idle period", async () => {
+  const { createFaucetNonceTracker } = await import(script("faucet-nonce.mjs"));
+  // Before any accepted drip: ambiguous first drip, then a conflict on the retry.
+  const fresh = createFaucetNonceTracker();
+  const now = 1_000_000;
+  assert.equal(fresh.next(0, now), 1);
+  fresh.rejected(1, { status: 502, error: "upstream timeout" }, now);
+  assert.equal(fresh.next(0, now), 1, "ambiguous drip: retry the same nonce");
+  fresh.rejected(1, { status: 400, error: "Conflicting sender nonce" }, now);
+  assert.equal(fresh.next(0, now), 2, "nonce 1 is proven taken; never reuse it");
+  // After more than staleMs idle since the last accepted drip.
+  const idle = createFaucetNonceTracker({ staleMs: 180_000 });
+  assert.equal(idle.next(0, now), 1); idle.accepted(1, now);
+  const later = now + 200_000;
+  assert.equal(idle.next(0, later), 1, "stale cache falls back to chain state");
+  idle.rejected(1, { status: 400, error: "Conflicting sender nonce" }, later);
+  assert.equal(idle.next(0, later), 2, "nonce 1 is proven taken; never reuse it");
+});
+
 // ---- 2. /supply -------------------------------------------------------------
 
 test("HARDEN-2: /supply recomputes at most once per SUPPLY_MIN_RECOMPUTE_MS even when the tip moves", async () => {

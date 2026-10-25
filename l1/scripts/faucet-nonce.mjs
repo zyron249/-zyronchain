@@ -32,11 +32,19 @@ export function createFaucetNonceTracker({ staleMs = 180_000 } = {}) {
     accepted(nonce, nowMs) { last = nonce; lastAt = nowMs; },
     /**
      * `nonce` is the nonce of the rejected drip; `result` is the node's
-     * `{ status, error }`. lastAt is kept, so the stale timer still applies.
+     * `{ status, error }`; `nowMs` is the current time (defaults to Date.now()). A proven-taken nonce
+     * refreshes lastAt, so the stale timer cannot drop it and reuse the nonce
+     * (before the first accepted drip or after an idle period). Otherwise
+     * lastAt is kept, so the stale timer still applies.
      */
-    rejected(nonce, result = {}) {
+    rejected(nonce, result = {}, nowMs) {
       if (!Number.isSafeInteger(nonce) || nonce < 1) { last = 0; lastAt = 0; return; }
-      last = NONCE_TAKEN.test(String(result.error ?? "")) ? nonce : nonce - 1;
+      if (NONCE_TAKEN.test(String(result.error ?? ""))) {
+        last = nonce;
+        lastAt = Number.isFinite(nowMs) ? nowMs : Date.now();
+      } else {
+        last = nonce - 1;
+      }
     }
   };
 }

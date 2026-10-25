@@ -314,7 +314,7 @@ function faucetSend(receiver) {
       faucet.privateKey, faucet.publicKey, status.transactionVersion
     );
     const submitted = await nodeFetch("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
-    if (submitted.status < 200 || submitted.status > 299) { faucetNonce.rejected(nonce, { status: submitted.status, error: submitted.body?.error }); throw new Error(`faucet transfer rejected: ${submitted.body?.error ?? submitted.status}`); }
+    if (submitted.status < 200 || submitted.status > 299) { faucetNonce.rejected(nonce, { status: submitted.status, error: submitted.body?.error }, Date.now()); throw new Error(`faucet transfer rejected: ${submitted.body?.error ?? submitted.status}`); }
     faucetNonce.accepted(nonce, Date.now());
     return { txid: tx.txid, receiver, amountAtoms: FAUCET_DRIP_ATOMS, nonce };
   });
