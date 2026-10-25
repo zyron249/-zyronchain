@@ -194,6 +194,25 @@ transactions per address and evicts a parked transaction after 10 minutes.
 Operators can change both (`ZYRON_MEMPOOL_MAX_FUTURE_PER_SENDER`,
 `ZYRON_MEMPOOL_PARKED_TTL_MS`); see [MEMPOOL_FUTURE_NONCE_POLICY.md](MEMPOOL_FUTURE_NONCE_POLICY.md).
 
+## Release note: minimum transfer fee in /status (#1137)
+
+**Upgrade all validators together.** From #1137, `GET /status` adds
+`minTransferFeeAtoms` and `fixedTransferFeeAtoms`. A node built before #1137
+parses a peer's HTTP `/status` strictly (`parseStatus` in
+`l1/src/node-base.ts`) and rejects unknown fields, so during a rolling upgrade
+an older validator rejects the `/status` of every upgraded peer. Stop all
+validators, upgrade them, then start them again. Gateway followers are not
+affected: the gateway's `/peer/status` keeps the four-key peer shape
+(`capPeerStatus`), which older followers still accept.
+
+The faucet and the smoke transfer read the fee from the node's `/status` on
+every drip. When `fixedTransferFeeAtoms` is not null (fee-v1) they pay exactly
+that fee; otherwise they pay the larger of their own `ZYRON_MEMPOOL_MIN_FEE_ATOMS`
+and the node's `minTransferFeeAtoms`. Either way the fee must not exceed
+`MAX_FAUCET_FEE_ATOMS` (1,000,000 atoms, 0.01 test ZYN). Above that, or if the
+fee cannot be read, the drip returns 503 with code `fee-floor`, logs at error
+level and sends no transfer.
+
 ## What this testnet does not prove
 
 - No independent operators yet, single host, single region.
