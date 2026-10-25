@@ -25,6 +25,8 @@
 // chain data. It must live outside the repository and must never be shared.
 import { activeSetSeedFromHistory, createActiveSetTracker } from "./gateway-quorum.mjs";
 import { createFaucetNonceTracker } from "./faucet-nonce.mjs";
+import { FaucetFeeFloorError, MAX_FAUCET_FEE_ATOMS, faucetTransferFeeAtoms } from "./faucet-fee.mjs";
+import { submitAcceptedView } from "./submit-view.mjs";
 import { allocateValidatorBasePort } from "./open-testnet-ports.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -46,6 +48,7 @@ const { createProtocolUpgrade, createProtocolUpgradeApproval, createTransfer } =
 const { blockHash, expectedValidator } = await import(dist("block.js"));
 const { merkleRoot } = await import(dist("merkle.js"));
 const { canonicalJson } = await import(dist("codec.js"));
+const { buildCommit } = await import(dist("build-info.js"));
 const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist("tokenomics.js"));
 const { defaultPublicDistributionRelease } = await import(dist("public-distribution-release.js"));
 const { MEMPOOL_MIN_FEE_ENV, nodeTransferFeeAtoms, parseMempoolMinFeeAtoms } = await import(dist("mempool.js"));
@@ -470,39 +473,10 @@ const FAUCET_DRIP_ATOMS = 100 * ATOMS_PER_ZYN;
 // from this process, so the faucet (and the smoke transfer) pay that floor.
 // The open-testnet genesis has no fee policy. A bad value fails closed here.
 const NODE_TRANSFER_FEE_ATOMS = nodeTransferFeeAtoms(undefined, parseMempoolMinFeeAtoms(process.env[MEMPOOL_MIN_FEE_ENV], MEMPOOL_MIN_FEE_ENV));
-// The faucet and the smoke transfer pay max(own env floor, the target node's
-// GET /status minTransferFeeAtoms), read fresh for every drip. If the node's
-// floor cannot be read or is invalid, the drip FAILS LOUDLY (error-level log
-// and a clear 503 to the caller) instead of sending a transfer that would be
-// rejected.
-export class FaucetFeeFloorError extends Error {
-  constructor(detail) { super(`faucet cannot meet the node's minimum transfer fee: ${detail}`); this.name = "FaucetFeeFloorError"; this.code = "fee-floor"; }
-}
-// Upper bound on the fee the faucet (and the smoke transfer) will pay per
-// transfer: 1,000,000 atoms = 0.01 test ZYN, 1,000x the open-testnet floor of
-// 1,000 atoms and 1/10,000 of a 100 ZYN drip. A node /status reporting a
-// higher floor (or fixed fee) is treated as misconfigured: the drip fails with
-// fee-floor (503, error-level log) and no transfer is sent.
-export const MAX_FAUCET_FEE_ATOMS = 1_000_000;
-// When /status reports fixedTransferFeeAtoms (fee-v1 is active), the faucet
-// pays EXACTLY that fee and the floor logic is not used.
-export function faucetTransferFeeAtoms(envFloorAtoms, statusResponse) {
-  if (!statusResponse || statusResponse.status !== 200 || !statusResponse.body || typeof statusResponse.body !== "object") {
-    throw new FaucetFeeFloorError(`node /status unavailable (status ${statusResponse?.status ?? "none"})`);
-  }
-  const fixed = statusResponse.body.fixedTransferFeeAtoms;
-  if (fixed !== undefined && fixed !== null) {
-    if (typeof fixed !== "number" || !Number.isSafeInteger(fixed) || fixed < 0) throw new FaucetFeeFloorError("node /status has an invalid fixedTransferFeeAtoms");
-    if (fixed > MAX_FAUCET_FEE_ATOMS) throw new FaucetFeeFloorError(`node fixed fee of ${fixed} atoms exceeds MAX_FAUCET_FEE_ATOMS (${MAX_FAUCET_FEE_ATOMS})`);
-    return fixed;
-  }
-  const floor = statusResponse.body.minTransferFeeAtoms;
-  if (typeof floor !== "number" || !Number.isSafeInteger(floor) || floor < 0) throw new FaucetFeeFloorError("node /status has no valid minTransferFeeAtoms");
-  const fee = Math.max(envFloorAtoms, floor);
-  if (!Number.isSafeInteger(fee) || fee < floor) throw new FaucetFeeFloorError(`fee ${fee} atoms is below the node floor of ${floor} atoms`);
-  if (fee > MAX_FAUCET_FEE_ATOMS) throw new FaucetFeeFloorError(`fee floor of ${fee} atoms exceeds MAX_FAUCET_FEE_ATOMS (${MAX_FAUCET_FEE_ATOMS})`);
-  return fee;
-}
+// The faucet fee helper (max(own env floor, node /status floor), the exact
+// fixed fee under fee-v1, capped at MAX_FAUCET_FEE_ATOMS) lives in
+// faucet-fee.mjs so the wallet-testnet gateway uses the same rule.
+export { FaucetFeeFloorError, MAX_FAUCET_FEE_ATOMS, faucetTransferFeeAtoms };
 const DAY_MS = 86_400_000;
 const ADDRESS_PATTERN = /^ZYN[0-9a-f]{40}$/;
 const MAX_BODY_BYTES = 8 * 1024;
@@ -1526,7 +1500,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
         faucet.privateKey, faucet.publicKey, status.transactionVersion);
       const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
       // The node's error text is logged by the faucet route, never returned.
-      if (submitted.status < 200 || submitted.status > 299) { faucetNonce.rejected(); throw new Error(`faucet transfer rejected by node (status ${submitted.status}): ${String(submitted.body?.error ?? "").slice(0, 300)}`); }
+      if (submitted.status < 200 || submitted.status > 299) { faucetNonce.rejected(nonce, { status: submitted.status, error: submitted.body?.error }, Date.now()); throw new Error(`faucet transfer rejected by node (status ${submitted.status}): ${String(submitted.body?.error ?? "").slice(0, 300)}`); }
       faucetNonce.accepted(nonce, Date.now());
       return { txid: tx.txid, receiver, amountAtoms: FAUCET_DRIP_ATOMS, nonce };
     });
@@ -1629,7 +1603,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           // always strict.
           if (!ok && !everReady) startup.observe(await startupFingerprint(statuses));
           const { code, status, starting, progress } = startup.liveness({ ok, everReady, path });
-          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
+          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, commit: buildCommit(), persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
@@ -1704,7 +1678,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           if (tx.chainId !== chainId) return sendJson(response, 400, { error: `wrong chainId; this testnet is ${chainId}` });
           const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
           if (submitted.status < 200 || submitted.status > 299) return sendJson(response, 400, { error: String(submitted.body?.error ?? "rejected").slice(0, 300) });
-          return sendJson(response, 200, { accepted: true, txid: submitted.body.txid, note: "Included in a coming block (about 30 seconds).", ...submitDurableView((await chainStatus()).height) });
+          return sendJson(response, 200, submitAcceptedView(submitted.body, submitDurableView((await chainStatus()).height)));
         }
         if (path === "/faucet") return await faucetRoute(request, response, ip);
         if (relay && path.startsWith("/relay/v1/")) {

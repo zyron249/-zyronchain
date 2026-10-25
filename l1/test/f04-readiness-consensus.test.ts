@@ -56,7 +56,10 @@ async function withNode(
       setNow: (value) => { nowMs = value; },
       readyz: async () => {
         const response = await fetch(`${base}/readyz`);
-        return { status: response.status, body: await response.json() as { ready: boolean; height: number; reasons: string[] } };
+        // The build commit (hardening batch) is checked here, the rest by deepEqual.
+        const { commit, ...rest } = await response.json() as { ready: boolean; height: number; reasons: string[]; commit: unknown };
+        assert.ok(typeof commit === "string" && /^([0-9a-f]{7,64}|unknown)$/.test(commit), "readyz commit");
+        return { status: response.status, body: rest };
       }
     });
   } finally {

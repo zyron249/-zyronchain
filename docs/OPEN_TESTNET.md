@@ -193,6 +193,35 @@ A transaction whose nonce leaves a gap above your confirmed nonce is held
 transactions per address and evicts a parked transaction after 10 minutes.
 Operators can change both (`ZYRON_MEMPOOL_MAX_FUTURE_PER_SENDER`,
 `ZYRON_MEMPOOL_PARKED_TTL_MS`); see [MEMPOOL_FUTURE_NONCE_POLICY.md](MEMPOOL_FUTURE_NONCE_POLICY.md).
+`POST /tx` answers `status: "parked"` with `waitingForNonce` for such a
+transaction instead of "Included in a coming block", and an evicted parked
+transaction cannot be resubmitted for a fresh TTL while its gap is open.
+
+## Mempool fee floor stays env-only until fee-v1
+
+The mempool minimum transfer fee is node policy, set per node with
+`ZYRON_MEMPOOL_MIN_FEE_ATOMS` and reported on `GET /status`
+(`minTransferFeeAtoms`). It is not a consensus rule: a validator running
+without it can still include 0-fee transfers in its blocks. It stays env-only
+(no genesis field, no CLI default change) until fee-v1 activates at consensus,
+which is the full fix for Red Team M-2. When fee-v1 is active, `/status`
+reports `fixedTransferFeeAtoms` and the floor does not apply.
+
+## GET /supply and GET /readyz
+
+`GET /supply` reports `totalSupplyAtoms`, which is the genesis supply
+(50,000,000 ZYN on the fixed-supply genesis) and **never changes**: nothing
+mints and fees are burned. It also reports `burnedAtoms`, `lockedAtoms` and
+`circulatingAtoms` (= total - burned - pending - locked; pending is always 0),
+and `supplyChanges: false`. Read live circulation from `circulatingAtoms`, not
+from `totalSupplyAtoms`. The node rescans accounts at most once every 5 seconds
+(`SUPPLY_MIN_RECOMPUTE_MS`); every answer carries the `height` and `tipHash` it
+was computed at.
+
+`GET /readyz` (node and gateway) reports `commit`, the build commit SHA from
+`ZYRON_BUILD_COMMIT`, `RENDER_GIT_COMMIT`, `SOURCE_VERSION` or `GIT_COMMIT`
+(first one set). A value that is not a hex SHA, or no value, is reported as
+`unknown`; no other environment value is ever exposed.
 
 ## Release note: minimum transfer fee in /status (#1137)
 
@@ -212,6 +241,14 @@ and the node's `minTransferFeeAtoms`. Either way the fee must not exceed
 `MAX_FAUCET_FEE_ATOMS` (1,000,000 atoms, 0.01 test ZYN). Above that, or if the
 fee cannot be read, the drip returns 503 with code `fee-floor`, logs at error
 level and sends no transfer.
+
+Faucet nonces resync from chain state. When the node answers a drip with a
+non-2xx status, the faucet does not reset to the chain nonce (which would
+reuse nonces of drips still pending) or skip ahead (which could leave a gap).
+If the error proves the nonce is taken (nonce conflict, already pending or
+already used) the next drip uses the next nonce; otherwise it retries the same
+nonce on top of the pending ones. Chain state still wins on a regression, a
+stale cache (3 minutes) or a cache more than 64 nonces ahead.
 
 ## What this testnet does not prove
 

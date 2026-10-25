@@ -22,6 +22,8 @@ import { createTransfer } from "../dist/src/transaction.js";
 import { gatewayClientIdentity } from "../dist/src/rpc-client-identity.js";
 import { connectWalletTestnetDatabase, planStateRestore } from "./wallet-testnet-durable.mjs";
 import { createFaucetNonceTracker } from "./faucet-nonce.mjs";
+import { faucetTransferFeeAtoms } from "./faucet-fee.mjs";
+import { submitAcceptedView } from "./submit-view.mjs";
 
 export const DEFAULT_CHAIN_ID = "zyron-wallet-testnet-1";
 const ATOMS_PER_ZYN = 100_000_000;
@@ -298,6 +300,9 @@ const faucetNonce = createFaucetNonceTracker();
 function faucetSend(receiver) {
   const run = faucetQueue.then(async () => {
     const status = await chainStatus();
+    // Fresh read of the node's fee floor (or fixed fee) from GET /status; a
+    // missing or invalid floor fails the drip (FaucetFeeFloorError).
+    const feeAtoms = faucetTransferFeeAtoms(0, await nodeFetch("/status"));
     const nonceResponse = await nodeFetch(`/nonce/${faucet.address}`);
     if (nonceResponse.status !== 200) throw new Error("faucet nonce unavailable");
     const chainNonce = nonceResponse.body.nonce;
@@ -305,11 +310,11 @@ function faucetSend(receiver) {
     // (Red Team INFO #9); a dropped faucet transaction cannot leave a gap.
     const nonce = faucetNonce.next(chainNonce, Date.now());
     const tx = createTransfer(
-      { chainId, nonce, sender: faucet.address, receiver, amountAtoms: FAUCET_DRIP_ATOMS, feeAtoms: 0, timestampMs: Date.now() },
+      { chainId, nonce, sender: faucet.address, receiver, amountAtoms: FAUCET_DRIP_ATOMS, feeAtoms, timestampMs: Date.now() },
       faucet.privateKey, faucet.publicKey, status.transactionVersion
     );
     const submitted = await nodeFetch("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
-    if (submitted.status < 200 || submitted.status > 299) { faucetNonce.rejected(); throw new Error(`faucet transfer rejected: ${submitted.body?.error ?? submitted.status}`); }
+    if (submitted.status < 200 || submitted.status > 299) { faucetNonce.rejected(nonce, { status: submitted.status, error: submitted.body?.error }, Date.now()); throw new Error(`faucet transfer rejected: ${submitted.body?.error ?? submitted.status}`); }
     faucetNonce.accepted(nonce, Date.now());
     return { txid: tx.txid, receiver, amountAtoms: FAUCET_DRIP_ATOMS, nonce };
   });
@@ -458,7 +463,7 @@ const gateway = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, ke
         if (addressError) return sendJson(response, 400, { error: addressError });
         const submitted = await nodeFetch("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
         if (submitted.status < 200 || submitted.status > 299) return sendJson(response, 400, { error: String(submitted.body?.error ?? "rejected").slice(0, 300) });
-        return sendJson(response, 200, { accepted: true, txid: submitted.body.txid, note: "Included in the next block (about 30 seconds)." });
+        return sendJson(response, 200, submitAcceptedView(submitted.body));
       }
       if (path === "/faucet") {
         const ipRate = limits.faucetIp.take(ip);
