@@ -46,6 +46,8 @@ import { SUPPORTED_PROTOCOL_VERSIONS } from "./chain.js";
 import { addressFromPublicKey } from "./crypto.js";
 import { assertMempoolSenderNonce, MAX_MEMPOOL_PENDING_PER_SENDER, readFeePolicy } from "./fee-policy.js";
 import { Mempool, type MempoolOptions } from "./mempool.js";
+import { spendableAtoms } from "./allocation-locks.js";
+import { supplyReport, type SupplyReport } from "./supply-report.js";
 import { PeerReputationStore } from "./peer-reputation.js";
 import { PROPOSAL_VALIDATION_BUDGET_MESSAGE, ProposalValidationBudget } from "./proposal-validation-budget.js";
 import { ipv6Prefix64 } from "./p2p-address.js";
@@ -611,6 +613,27 @@ export class NodeService {
       tipHash: this.store.chain.tip.hash
     };
   }
+
+  /**
+   * Read-only supply report for GET /supply (Red Team Session 1, INFO #5).
+   * Cached per tip: the account scan is O(accounts) and the route is public.
+   */
+  supply(): SupplyReport {
+    const chain = this.store.chain;
+    if (this.supplyCache?.tipHash !== chain.tip.hash) {
+      const locks = chain.allocationLocksAt(chain.tip.header.timestampMs);
+      this.supplyCache = supplyReport({
+        height: chain.height,
+        tipHash: chain.tip.hash,
+        genesisSupplyAtoms: () => chain.genesisSupplyAtoms(),
+        accounts: () => chain.getState().snapshot().accounts,
+        lockedAtoms: (address, balanceAtoms) => balanceAtoms - spendableAtoms(locks, address, balanceAtoms)
+      });
+    }
+    return structuredClone(this.supplyCache);
+  }
+
+  private supplyCache?: SupplyReport;
 
   /**
    * Validator set that governs the next height (the one consensus must reach a
@@ -1842,6 +1865,9 @@ async function route(
     // fixedTransferFeeAtoms is the exact fee). Both are node policy hints for
     // faucets and wallets, not block-validity rules.
     return writeJson(response, 200, { ...service.status(), ...service.feeStatus() });
+  }
+  if (request.method === "GET" && url.pathname === "/supply") {
+    return writeJson(response, 200, service.supply());
   }
   if (request.method === "GET" && url.pathname === "/validator-set") {
     return writeJson(response, 200, service.activeValidatorSet());

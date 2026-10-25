@@ -85,7 +85,12 @@ export function validateGenesisFeePolicy(genesis: GenesisConfig): void {
 /** Mempool nonce window. The error text is part of the node admission contract. */
 export function assertMempoolSenderNonce(txNonce: number, stateNonce: number): void {
   if (!Number.isSafeInteger(txNonce) || !Number.isSafeInteger(stateNonce) ||
-      txNonce <= stateNonce || txNonce > stateNonce + MAX_MEMPOOL_PENDING_PER_SENDER) {
+      txNonce > stateNonce + MAX_MEMPOOL_PENDING_PER_SENDER) {
     throw new Error("Transaction nonce outside mempool window");
+  }
+  // Red Team Session 1 INFO #8: a nonce at or below the confirmed one is a
+  // replayed or stale transaction, not a window problem.
+  if (txNonce <= stateNonce) {
+    throw new Error(`Transaction nonce already used (nonce ${txNonce}, account nonce ${stateNonce}): replayed or stale transaction`);
   }
 }

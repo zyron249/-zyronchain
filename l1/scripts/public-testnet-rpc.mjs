@@ -21,6 +21,7 @@ import { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } from "
 import { createTransfer } from "../dist/src/transaction.js";
 import { gatewayClientIdentity } from "../dist/src/rpc-client-identity.js";
 import { connectWalletTestnetDatabase, planStateRestore } from "./wallet-testnet-durable.mjs";
+import { createFaucetNonceTracker } from "./faucet-nonce.mjs";
 
 export const DEFAULT_CHAIN_ID = "zyron-wallet-testnet-1";
 const ATOMS_PER_ZYN = 100_000_000;
@@ -293,25 +294,23 @@ function clientIp(request) {
 
 // ---- faucet ----------------------------------------------------------------
 let faucetQueue = Promise.resolve();
-let lastFaucetNonce = 0;
-let lastFaucetNonceAt = 0;
+const faucetNonce = createFaucetNonceTracker();
 function faucetSend(receiver) {
   const run = faucetQueue.then(async () => {
     const status = await chainStatus();
     const nonceResponse = await nodeFetch(`/nonce/${faucet.address}`);
     if (nonceResponse.status !== 200) throw new Error("faucet nonce unavailable");
     const chainNonce = nonceResponse.body.nonce;
-    // A dropped faucet transaction would leave a gap; resync after 3 minutes.
-    if (Date.now() - lastFaucetNonceAt > 180_000) lastFaucetNonce = 0;
-    const nonce = Math.max(chainNonce, lastFaucetNonce) + 1;
+    // Chain state wins after a restore, a rejected drip, or 3 minutes
+    // (Red Team INFO #9); a dropped faucet transaction cannot leave a gap.
+    const nonce = faucetNonce.next(chainNonce, Date.now());
     const tx = createTransfer(
       { chainId, nonce, sender: faucet.address, receiver, amountAtoms: FAUCET_DRIP_ATOMS, feeAtoms: 0, timestampMs: Date.now() },
       faucet.privateKey, faucet.publicKey, status.transactionVersion
     );
     const submitted = await nodeFetch("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
-    if (submitted.status < 200 || submitted.status > 299) throw new Error(`faucet transfer rejected: ${submitted.body?.error ?? submitted.status}`);
-    lastFaucetNonce = nonce;
-    lastFaucetNonceAt = Date.now();
+    if (submitted.status < 200 || submitted.status > 299) { faucetNonce.rejected(); throw new Error(`faucet transfer rejected: ${submitted.body?.error ?? submitted.status}`); }
+    faucetNonce.accepted(nonce, Date.now());
     return { txid: tx.txid, receiver, amountAtoms: FAUCET_DRIP_ATOMS, nonce };
   });
   faucetQueue = run.catch(() => undefined);
@@ -422,11 +421,16 @@ const gateway = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, ke
         return sendJson(response, 200, {
           name: "ZyronChain wallet testnet RPC",
           ...(await chainStatus()),
-          endpoints: ["GET /health", "GET /status", "GET /account/{address}", "GET /balance/{address}", "GET /nonce/{address}", "POST /tx", "POST /faucet {address}"]
+          endpoints: ["GET /health", "GET /status", "GET /supply", "GET /account/{address}", "GET /balance/{address}", "GET /nonce/{address}", "POST /tx", "POST /faucet {address}"]
         });
       }
       if (path === "/status" || path === "/chain") return sendJson(response, 200, await chainStatus());
       if (path === "/genesis") return sendJson(response, 200, { network: "testnet", valueBearing: false, genesisHash, genesis });
+      if (path === "/supply") {
+        const result = await nodeFetch("/supply");
+        if (result.status !== 200) return sendJson(response, 502, { error: "node unavailable" });
+        return sendJson(response, 200, { network: "testnet", valueBearing: false, ...result.body });
+      }
       for (const prefix of ["/balance/", "/nonce/", "/account/"]) {
         if (!path.startsWith(prefix)) continue;
         const parsed = addressFrom(path, prefix);
