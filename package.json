@@ -1,0 +1,8 @@
+{
+  "name": "zyronchain-repo-tools",
+  "private": true,
+  "description": "Repository-level helper scripts. Packages live in l1/, tools/, and website/.",
+  "scripts": {
+    "pin-hash": "node tools/supply-verifier/pin-hash.mjs"
+  }
+}
