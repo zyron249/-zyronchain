@@ -10,13 +10,14 @@ import {
   IntentRenderRefusal,
   RENDERER_VERSION,
   RENDERABLE_KINDS,
-  TEST_CHAIN_ID_RE,
+  RENDERABLE_CHAIN_IDS,
   TRANSFER_INTENT_DOMAIN,
   assertRenderMatchesSigningBytes,
   formatAtoms,
   formatTimestampMs,
   isAllowedTestnetChainId,
   parseRenderedLines,
+  signingBytesFor,
   renderIntent,
   type RenderedIntent
 } from "../src/intent-render.js";
@@ -31,10 +32,27 @@ interface VectorCase {
   signingBytesHex: string | null;
   expected: { lines: { label: string; value: string }[]; text: string } | { refusal: string };
 }
+interface LineTamperingCase {
+  name: string;
+  from: string;
+  lines: { label: string; value: string }[];
+  expected: { refusal: string };
+}
 interface VectorFile {
   rendererVersion: number;
   signer: { privateKeyHex: string; publicKey: string; address: string };
   cases: VectorCase[];
+  lineTampering: LineTamperingCase[];
+}
+
+/** Rebuilds a vector payload with the non-plain prototype named by its `construct` field (see the generator). */
+function constructPayload(payload: Record<string, unknown>): unknown {
+  const { construct, ...fields } = payload;
+  if (construct === undefined) return payload;
+  if (construct === "null-prototype") return Object.assign(Object.create(null) as object, fields);
+  if (construct === "class-instance") return Object.assign(new (class TransferLike {})(), fields);
+  if (construct === "array") return Object.assign([], fields);
+  throw new Error(`unknown construct ${String(construct)}`);
 }
 
 const vectors = JSON.parse(await readFile(new URL("../../test/vectors/intent-render-v1.json", import.meta.url), "utf8")) as VectorFile;
@@ -89,12 +107,41 @@ test("intent-render vectors: every refusal case is refused with the recorded rea
     if (!("refusal" in vector.expected)) continue;
     refused += 1;
     assert.throws(
-      () => renderIntent({ domain: vector.domain, payload: vector.payload }),
+      () => renderIntent({ domain: vector.domain, payload: constructPayload(vector.payload) }),
       (error: unknown) => error instanceof IntentRenderRefusal && error.message === (vector.expected as { refusal: string }).refusal,
       vector.name
     );
   }
-  assert.ok(refused >= 20);
+  assert.ok(refused >= 50);
+  // Security L4: the refusal classes that must stay covered by the shared vectors.
+  const names = vectors.cases.map((vector) => vector.name);
+  for (const required of [
+    "non-plain prototype (null prototype)", "non-plain prototype (class instance)", "non-string publicKey (number)",
+    "non-string domain (number)", "non-ASCII domain", "unsafe nonce", "wrong type nonce (string)", "unsafe fee",
+    "wrong type fee (string)", "unsafe timestamp", "wrong type timestamp (string)",
+    "mainnet token before testnet (R3 fixed list)", "mainnet-devnet (R3 fixed list)", "devnet-mainnet-1 (R3 fixed list)", "bare testnet (R3 fixed list)"
+  ]) {
+    assert.ok(names.includes(required), required);
+  }
+});
+
+test("intent-render vectors: every rendered-line tampering case is refused or rebuilds different bytes", () => {
+  assert.ok(vectors.lineTampering.length >= 12);
+  for (const vector of vectors.lineTampering) {
+    const reference = vectors.cases.find((entry) => entry.name === vector.from);
+    assert.ok(reference?.signingBytesHex, vector.name);
+    let refusal: string | undefined;
+    try {
+      const parsed = parseRenderedLines(vector.lines);
+      if (Buffer.from(signingBytesFor(parsed.domain, parsed.payload)).toString("hex") !== reference.signingBytesHex) {
+        refusal = "Refusing to sign: signing bytes do not match the rendered intent";
+      }
+    } catch (error) {
+      assert.ok(error instanceof IntentRenderRefusal, vector.name);
+      refusal = error.message;
+    }
+    assert.equal(refusal, vector.expected.refusal, vector.name);
+  }
 });
 
 test("R1 single signing path: signTransfer signs exactly the renderer-rebuilt bytes and nothing else", () => {
@@ -140,11 +187,22 @@ test("R1 single signing path: rendered lines that disagree with each other canno
   assert.throws(() => parseRenderedLines(render().lines.slice(0, 11)), IntentRenderRefusal);
 });
 
-test("R1 single signing path: CLI signers never call the protocol-level createTransfer", async () => {
+test("R1 single signing path: CLI signers never reach a signing primitive except through signTransfer(rendered)", async () => {
   const cli = await readFile(new URL("../../src/cli.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(cli, /\bcreateTransfer\b/);
-  assert.match(cli, /signTransfer\(rendered, key\)/);
-  assert.equal((cli.match(/renderAndConfirmTransfer\(args, yes,/g) ?? []).length, 2, "transfer and transfer-sign both render and confirm");
+  // Security L2: no namespace import of transaction.js or crypto.js (no aliased or computed access).
+  assert.doesNotMatch(cli, /import\s+\*\s+as\s+\w+\s+from\s+["']\.\/(transaction|crypto)\.js["']/);
+  assert.doesNotMatch(cli, /import\s*\(\s*["'`]\.\/(transaction|crypto)\.js/, "no dynamic import of transaction.js or crypto.js");
+  const named = (module: string) => [...cli.matchAll(new RegExp(`import\\s*(?:type\\s*)?\\{([^}]*)\\}\\s*from\\s*["']\\./${module}\\.js["']`, "g"))]
+    .flatMap((match) => match[1]!.split(",").map((name) => name.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0]!).filter(Boolean));
+  const imported = [...named("transaction"), ...named("crypto")];
+  assert.ok(imported.includes("signTransfer"));
+  for (const forbidden of ["createTransfer", "signCanonicalDomain", "signCanonical", "signMessageBytes"]) {
+    assert.equal(imported.includes(forbidden), false, `cli.ts imports ${forbidden}`);
+    assert.doesNotMatch(cli, new RegExp(`\\b${forbidden}\\b`), `cli.ts names ${forbidden}`);
+  }
+  // Both wallet commands render, confirm and sign through the single path.
+  assert.equal((cli.match(/const rendered = await renderAndConfirmTransfer\(args, yes, \{/g) ?? []).length, 2);
+  assert.equal((cli.match(/const tx = signTransfer\(rendered, key\);/g) ?? []).length, 2);
 });
 
 test("R2 canonical input only: mixed-case payload addresses are refused, never normalized", () => {
@@ -162,17 +220,22 @@ test("R2 canonical input only: mixed-case payload addresses are refused, never n
   assert.equal(parseAddressInput(inputVector.userInputReceiver!).canonical, inputVector.payload.receiver);
 });
 
-test("R3 chainId allowlist: only testnet/devnet IDs, identical to the PWA describeTransfer rules", async () => {
+test("R3 chainId allowlist: a fixed list of chain IDs, identical to the PWA list; everything else is refused", async () => {
+  assert.deepEqual([...RENDERABLE_CHAIN_IDS], ["zyron-devnet-1", "zyron-wallet-testnet-1", "zyron-open-testnet-1"]);
+  assert.ok(Object.isFrozen(RENDERABLE_CHAIN_IDS));
   const pwa = await readFile(new URL("../../../website/app/zyron-wallet-core.js", import.meta.url), "utf8");
-  const chainRe = /const CHAIN_ID_RE = \/(.+)\/;/.exec(pwa);
-  const testRe = /const TEST_CHAIN_ID_RE = \/(.+)\/;/.exec(pwa);
-  assert.equal(chainRe?.[1], CHAIN_ID_RE.source);
-  assert.equal(testRe?.[1], TEST_CHAIN_ID_RE.source);
-  for (const id of ["zyron-open-testnet-1", "zyron-public-testnet-1", "zyron-wallet-testnet-1", "zyron-devnet-1", "devnet-abc"]) {
+  const pwaList = /const RENDERABLE_CHAIN_IDS = Object\.freeze\(\[([^\]]*)\]\);/.exec(pwa);
+  assert.ok(pwaList, "the PWA declares RENDERABLE_CHAIN_IDS");
+  assert.deepEqual([...pwaList[1]!.matchAll(/'([^']+)'/g)].map((match) => match[1]), [...RENDERABLE_CHAIN_IDS]);
+  assert.match(CHAIN_ID_RE.source, /^\^\[a-z0-9-\]\{3,64\}\$$/);
+  for (const id of RENDERABLE_CHAIN_IDS) {
     assert.equal(isAllowedTestnetChainId(id), true, id);
     assert.doesNotThrow(() => render({ chainId: id }), id);
   }
-  for (const id of ["zyron-mainnet-1", "zyron-1", "zyron-cli-v5", "zyron-testnets-1", "zyrontestnet-1", "ZYRON-TESTNET-1", "zyron-testnet-1 ", ""]) {
+  for (const id of [
+    "zyron-mainnet-1", "zyron-mainnet-testnet", "mainnet-devnet", "devnet-mainnet-1", "testnet", "devnet", "zyron-mainnet-1-testnet",
+    "zyron-public-testnet-1", "zyron-testnet-1", "zyron-devnet-2", "devnet-abc", "zyron-1", "zyron-cli-v5", "ZYRON-DEVNET-1", "zyron-devnet-1 ", ""
+  ]) {
     assert.equal(isAllowedTestnetChainId(id), false, id);
     assert.throws(() => render({ chainId: id }), IntentRenderRefusal, id);
   }
@@ -234,23 +297,40 @@ test("intent-render property: random valid transfers render, round-trip and sign
 });
 
 /** Returns the transfer-named intents in a remote-signer source that lack renderIntent. */
-export function unguardedTransferIntents(source: string): string[] {
-  const match = /const KNOWN_INTENTS[^=]*=\s*new Set[^(]*\(\[([\s\S]*?)\]\)/.exec(source);
-  if (!match) throw new Error("KNOWN_INTENTS not found in remote-signer-service.ts");
-  const intents = [...match[1]!.matchAll(/"([^"]+)"/g)].map((item) => item[1]!);
-  if (intents.length === 0) throw new Error("KNOWN_INTENTS is empty");
-  const transferNamed = intents.filter((intent) => /transfer|send|payment|spend/i.test(intent));
-  return /\brenderIntent\(/.test(source) ? [] : transferNamed;
+/**
+ * Security L3: the exact remote-signer intents reviewed for 6A. None of them is a wallet spend.
+ * Adding, removing or renaming ANY intent fails until this list is updated in review (no comment
+ * or keyword matching: a transfer intent needs a renderIntent path and a new 6A review).
+ */
+export const REVIEWED_REMOTE_SIGNER_INTENTS: readonly string[] = Object.freeze([
+  "block-proposal", "block-attestation", "round-skip", "consensus-proposal", "prepare-vote", "commit-vote", "round-timeout"
+]);
+
+/** Returns the KNOWN_INTENTS entries, refusing anything but a plain list of string literals. */
+export function knownRemoteSignerIntents(source: string): string[] {
+  const matches = [...source.matchAll(/const KNOWN_INTENTS\b[^=]*=\s*new Set(?:<[^>]*>)?\(\[([\s\S]*?)\]\)/g)];
+  if (matches.length !== 1) throw new Error("expected exactly one KNOWN_INTENTS declaration in remote-signer-service.ts");
+  const body = matches[0]![1]!;
+  if (body.replace(/"[a-z-]+"/g, "").replace(/[\s,]/g, "") !== "") throw new Error("KNOWN_INTENTS must be a plain list of string literals");
+  if ((source.match(/\bKNOWN_INTENTS\b/g) ?? []).length !== 2) throw new Error("KNOWN_INTENTS must be declared once and only read by has()");
+  return [...body.matchAll(/"([a-z-]+)"/g)].map((item) => item[1]!);
 }
 
-test("resolved 6: remote-signer-service has no transfer intent without renderIntent", async () => {
+test("resolved 6: remote-signer KNOWN_INTENTS equals the reviewed allowlist exactly (no transfer intent)", async () => {
   const source = await readFile(new URL("../../src/remote-signer-service.ts", import.meta.url), "utf8");
-  assert.deepEqual(unguardedTransferIntents(source), []);
-  // The guard itself fails when a transfer-named intent is added without renderIntent.
-  const addIntent = (name: string) => source.replace(/(const KNOWN_INTENTS[^=]*=\s*new Set[^(]*\(\[)/, `$1"${name}", `);
-  assert.notEqual(addIntent("transfer"), source);
-  assert.deepEqual(unguardedTransferIntents(addIntent("transfer")), ["transfer"]);
-  assert.deepEqual(unguardedTransferIntents(addIntent("wallet-send")), ["wallet-send"]);
-  // With renderIntent wired in, a transfer intent is allowed.
-  assert.deepEqual(unguardedTransferIntents(`${addIntent("transfer")}\nrenderIntent({ domain, payload });`), []);
+  assert.deepEqual(knownRemoteSignerIntents(source), [...REVIEWED_REMOTE_SIGNER_INTENTS]);
+  const edit = (replacement: string) => source.replace(/(const KNOWN_INTENTS\b[^[]*\[\s*)("block-proposal", )/, replacement);
+  const differs = (changed: string) => {
+    assert.notEqual(changed, source);
+    let intents: string[] | undefined;
+    try { intents = knownRemoteSignerIntents(changed); } catch { return true; }
+    return JSON.stringify(intents) !== JSON.stringify(REVIEWED_REMOTE_SIGNER_INTENTS);
+  };
+  // Any change fails the guard, whatever the name, and a comment cannot satisfy it.
+  assert.ok(differs(edit(`$1"transfer", $2`)));
+  assert.ok(differs(edit(`$1"wallet-tx", $2`)));
+  assert.ok(differs(`${edit(`$1"wallet-tx", $2`)}\n// renderIntent( wired later\n`));
+  assert.ok(differs(edit("$1")));
+  assert.ok(differs(edit(`$1...EXTRA, $2`)));
+  assert.ok(differs(`${source}\nconst KNOWN_INTENTS_2 = KNOWN_INTENTS;\n`));
 });

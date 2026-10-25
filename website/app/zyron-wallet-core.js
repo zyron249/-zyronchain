@@ -64,12 +64,24 @@
   const TRANSFER_SIGNING_DOMAIN_V2 = 'zyronchain/transaction/transfer/v2';
   const ADDRESS_CHECKSUM_DOMAIN = 'zyronchain/address-checksum/v1:';
   const CHAIN_ID_RE = /^[a-z0-9-]{3,64}$/;
-  const TEST_CHAIN_ID_RE = /(^|-)(testnet|devnet)(-|$)/;
+  // Feature 6A R3 (Security L1): a FIXED list, identical to l1 RENDERABLE_CHAIN_IDS (l1/src/intent-render.ts).
+  const RENDERABLE_CHAIN_IDS = Object.freeze(['zyron-devnet-1', 'zyron-wallet-testnet-1', 'zyron-open-testnet-1']);
+  const TEST_CHAIN_ID_RE = new RegExp('^(' + RENDERABLE_CHAIN_IDS.join('|') + ')$');
   const WALLET_TESTNET_CHAIN_ID = 'zyron-wallet-testnet-1';
-  // Feature 6A (resolved question 1): every chain defaults to transaction version 2, including
-  // zyron-wallet-testnet-1. Version 1 stays selectable until the Wallet Dev 6A PR.
-  function defaultTransferVersion(chainId) {
-    return 2;
+  // Feature 6A v1 exception (PWA only, time-boxed, hard-coded; issue #1147): version 1 is signed only for
+  // zyron-wallet-testnet-1 (protocol 1) and only for timestampMs before 2026-11-08T00:00:00Z. Not configurable.
+  const V1_EXCEPTION_END_MS = 1794096000000;
+  function assertV1Exception(version, chainId, timestampMs) {
+    if (version !== 1) return;
+    if (chainId !== WALLET_TESTNET_CHAIN_ID) throw new Error('Transaction version 1 is signed only for ' + WALLET_TESTNET_CHAIN_ID + '; use version 2. Nothing was signed.');
+    if (!Number.isSafeInteger(timestampMs) || timestampMs >= V1_EXCEPTION_END_MS) throw new Error('The version 1 exception for ' + WALLET_TESTNET_CHAIN_ID + ' ended on 2026-11-08T00:00:00Z. Nothing was signed.');
+  }
+  // That chain runs protocol version 1 and rejects transaction version 2.
+  // Every other testnet or devnet id keeps version 2 as the selectable default.
+  // zyron-wallet-testnet-1 defaults to v1 until the hard-coded end of the v1 exception.
+  function defaultTransferVersion(chainId, nowMs = Date.now()) {
+    if (String(chainId == null ? '' : chainId).trim() !== WALLET_TESTNET_CHAIN_ID) return 2;
+    return Number.isSafeInteger(nowMs) && nowMs < V1_EXCEPTION_END_MS ? 1 : 2;
   }
   const ADDRESS_RE = /^ZYN[0-9a-f]{40}$/;
   const ADDRESS_INPUT_RE = /^ZYN[0-9a-fA-F]{40}$/;
@@ -613,7 +625,7 @@
     if (version !== 1 && version !== 2) throw new Error('Transaction version must be 1 or 2 (protocol 3+ requires 2)');
     const chainId = String(input.chainId == null ? '' : input.chainId).trim();
     if (!CHAIN_ID_RE.test(chainId)) throw new Error('Chain ID must match ^[a-z0-9-]{3,64}$ (copy it from the network announcement)');
-    if (!TEST_CHAIN_ID_RE.test(chainId)) throw new Error('This unaudited wallet signs only testnet or devnet chain IDs. The no-value wallet testnet id is ' + WALLET_TESTNET_CHAIN_ID);
+    if (!TEST_CHAIN_ID_RE.test(chainId)) throw new Error('This unaudited wallet signs only these testnet or devnet chain IDs: ' + RENDERABLE_CHAIN_IDS.join(', '));
     const nonce = typeof input.nonce === 'number' ? input.nonce : Number(String(input.nonce == null ? '' : input.nonce).trim() || NaN);
     if (!Number.isSafeInteger(nonce) || nonce < 1) throw new Error('Nonce must be a whole number >= 1 (your next account nonce)');
     const receiver = parseAddressInput(input.receiver).canonical;
@@ -627,6 +639,7 @@
     if (amountAtoms + feeAtoms > MAX_SUPPLY_ATOMS) throw new Error('Amount + fee exceeds the 50,000,000 ZYN supply');
     const timestampMs = input.timestampMs == null ? Date.now() : input.timestampMs;
     if (!Number.isSafeInteger(timestampMs) || timestampMs < 0) throw new Error('Invalid timestamp');
+    assertV1Exception(version, chainId, timestampMs);
     return { kind: 'transfer', version, chainId, nonce, sender: account.address, receiver, amountAtoms, feeAtoms, timestampMs, publicKey: account.publicKey };
   }
   function signTransfer(unsigned, privateKey) {
@@ -653,6 +666,7 @@
     if (unsigned.version !== 1 && unsigned.version !== 2) throw new Error('Unsupported transfer version');
     if (!CHAIN_ID_RE.test(unsigned.chainId)) throw new Error('Chain ID is missing or invalid');
     if (!TEST_CHAIN_ID_RE.test(unsigned.chainId)) throw new Error('Chain ID must name a testnet or devnet network');
+    assertV1Exception(unsigned.version, unsigned.chainId, unsigned.timestampMs);
     if (!Number.isSafeInteger(unsigned.nonce) || unsigned.nonce < 1) throw new Error('Nonce is missing or invalid');
     if (!ADDRESS_RE.test(unsigned.sender) || !ADDRESS_RE.test(unsigned.receiver)) throw new Error('Address is invalid');
     if (unsigned.receiver === MINING_TRACKER_ADDRESS) throw new Error("This is a reserved system address and can't receive transfers");
@@ -731,7 +745,7 @@
 
   const api = Object.freeze({
     DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_VERSION_V1, SELF_SEND_MESSAGE, VAULT_KDF, MAX_VAULT_TEXT, BOOK_MAX_CONTACTS, BOOK_MAX_SENT, BOOK_NAME_MAX, LOOKALIKE_MIN_SHARED, LOOKALIKE_MAX_DIFF, LOOKALIKE_MAX_COMPARISONS, LOOKALIKE_MAX_MATCHES, ATOMS_PER_ZYN, FIXED_TRANSFER_FEE_ATOMS, FIXED_SUPPLY_V1_CHAIN_IDS, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
-    TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, WALLET_TESTNET_CHAIN_ID, defaultTransferVersion,
+    TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, RENDERABLE_CHAIN_IDS, WALLET_TESTNET_CHAIN_ID, V1_EXCEPTION_END_MS, defaultTransferVersion,
     wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress, displayAddress, addressDiff,
     passwordStrength, normalizePhrase, generateEntropy, entropyToPhrase, phraseToEntropy, deriveAccount,
     createVault, createVaultSession, openVault, upgradeVaultVerified, upgradeMarker, parseUpgradeMarker, isRollback, assertVaultShape, parseVault, upgradeVault, updateVaultBook,

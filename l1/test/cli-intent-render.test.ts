@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -105,44 +104,15 @@ test("6A CLI: --expect-receiver and --expect-amount fail closed", async () => {
   }
 });
 
-test("6A CLI: transfer-sign refuses tx-version 1 and non-testnet chain IDs", async () => {
+test("6A CLI: transfer-sign refuses a tx-version that disagrees with the chain protocol, and non-testnet chain IDs", async () => {
   const { root, env, base } = await setup();
   try {
     const out = join(root, "tx.json");
-    await assert.rejects(cli([...base, "--yes", "--tx-version", "1", "--out", out], env), /tx-version 1 .* no longer signed/);
+    await assert.rejects(cli([...base, "--yes", "--tx-version", "1", "--out", out], env), /tx-version 1 is refused.*cannot be overridden/);
     const mainnet = base.map((arg) => (arg === "zyron-devnet-1" ? "zyron-mainnet-1" : arg));
-    await assert.rejects(cli([...mainnet, "--yes", "--out", out], env), /not an allowed testnet or devnet chain ID/);
+    await assert.rejects(cli([...mainnet, "--yes", "--out", out], env), /not in the fixed list of renderable testnet or devnet chain IDs/);
     assert.equal(await exists(out), false);
   } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("6A CLI: transfer refuses a protocol-1 network (v1 transfers) before signing or posting", async () => {
-  const { root, address, env } = await setup();
-  let posted = 0;
-  const server = createServer((request, response) => {
-    const send = (status: number, body: unknown) => {
-      const text = JSON.stringify(body);
-      response.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(text), "x-zyron-rpc-version": "1" });
-      response.end(text);
-    };
-    if (request.method === "GET" && request.url === `/nonce/${address}`) return send(200, { nonce: 0 });
-    if (request.method === "GET" && request.url === "/protocol") return send(200, { currentVersion: 1, nextVersion: 1 });
-    if (request.method === "POST") posted += 1;
-    send(404, { error: "not found" });
-  });
-  try {
-    server.listen(0, "127.0.0.1");
-    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
-    const port = (server.address() as { port: number }).port;
-    await assert.rejects(cli([
-      "transfer", "--key", join(root, "wallet.json"), "--rpc", `http://127.0.0.1:${port}`, "--chain-id", "zyron-devnet-1",
-      "--to", receiver, "--amount-atoms", "100", "--yes"
-    ], env), /expects transaction version 1/);
-    assert.equal(posted, 0);
-  } finally {
-    server.close();
     await rm(root, { recursive: true, force: true });
   }
 });

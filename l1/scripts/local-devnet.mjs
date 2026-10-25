@@ -206,7 +206,7 @@ try {
     assert.equal(keys[name].cipher, 'aes-256-gcm');
     assert.equal(Object.hasOwn(keys[name], 'privateKey'), false);
   }
-  const chainId = `zyron-local-devnet-${randomBytes(8).toString('hex')}`; // 6A: the CLI signs testnet/devnet IDs only
+  const chainId = "zyron-devnet-1"; // 6A R3: the CLI signs only the fixed chain ID list (local, throwaway data directory)
   command('a', 'genesis', '--out', 'genesis.json', '--chain-id', chainId,
     '--validator-public-key', keys.a.publicKey, '--validator-public-key', keys.b.publicKey,
     '--oracle-public-key', keys.oracle.publicKey, '--activity-pool', keys.oracle.address,

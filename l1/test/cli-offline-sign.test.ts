@@ -75,8 +75,8 @@ test("transfer-sign produces a consensus-valid transfer offline and tx-submit br
   try {
     const w = await wallet(root);
     const env = { ZYRON_KEYSTORE_PASSWORD_FILE: w.passwordPath };
-    // Feature 6A: the CLI signs only testnet/devnet chain IDs (R3) and only version 2 (protocol >= 3).
-    const chainId = "zyron-offline-sign-testnet";
+    // Feature 6A: the CLI signs only the fixed R3 chain IDs and only version 2 (protocol >= 3).
+    const chainId = "zyron-devnet-1";
     const out = join(root, "tx.json");
     const { stdout } = await cli([
       "transfer-sign", "--key", w.keyPath, "--chain-id", chainId, "--to", receiver,
@@ -156,7 +156,7 @@ test("transfer-sign requires explicit nonce and a valid receiver, refuses tx-ver
     const base = ["transfer-sign", "--key", w.keyPath, "--chain-id", "zyron-devnet-1", "--amount-atoms", "5", "--yes"];
     const out = join(root, "tx.json");
     await assert.rejects(cli([...base, "--to", receiver, "--tx-version", "2", "--out", out], env), /--nonce/);
-    await assert.rejects(cli([...base, "--to", receiver, "--nonce", "1", "--tx-version", "1", "--out", out], env), /tx-version 1 .* no longer signed/);
+    await assert.rejects(cli([...base, "--to", receiver, "--nonce", "1", "--tx-version", "1", "--out", out], env), /tx-version 1 is refused/);
     await assert.rejects(cli([...base, "--to", receiver, "--nonce", "0", "--tx-version", "2", "--out", out], env), /next account nonce/);
     await assert.rejects(cli([...base, "--to", receiver, "--nonce", "1", "--tx-version", "3", "--out", out], env), /tx-version must be 2/);
     await assert.rejects(cli([...base, "--to", "ZYNnot-an-address", "--nonce", "1", "--tx-version", "2", "--out", out], env));

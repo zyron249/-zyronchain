@@ -485,7 +485,7 @@ await test('crypto self-test passes with the vendored libraries and refuses to r
 await test('signing review: shows every field, refuses unknown types, messages and extra fields', async () => {
   const entropy = core.phraseToEntropy(SNAP_VECTORS[0].mnemonic);
   const account = await core.deriveAccount(entropy);
-  const unsigned = core.buildTransfer({ version: 2, chainId: 'zyron-review-testnet', nonce: 7, receiver: 'ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42', amountAtoms: 150000000, feeAtoms: 1000, timestampMs: 1700000000000 }, account);
+  const unsigned = core.buildTransfer({ version: 2, chainId: 'zyron-devnet-1', nonce: 7, receiver: 'ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42', amountAtoms: 150000000, feeAtoms: 1000, timestampMs: 1700000000000 }, account);
   const rows = core.describeTransfer(unsigned);
   assert.deepEqual(rows.map((r) => r.key), ['type', 'from', 'to', 'amount', 'fee', 'total', 'chain', 'nonce', 'time']);
   const byKey = Object.fromEntries(rows.map((r) => [r.key, r.value]));
@@ -500,7 +500,7 @@ await test('signing review: shows every field, refuses unknown types, messages a
   assert.equal(core.fixedFeeRejection(allowed), undefined);
   assert.equal(core.signTransfer(allowed, account.privateKey).feeAtoms, 100000);
   assert.equal(byKey.total, '1.50001 ZYN (150001000 atoms)');
-  assert.equal(byKey.chain, 'zyron-review-testnet');
+  assert.equal(byKey.chain, 'zyron-devnet-1');
   assert.equal(byKey.nonce, '7');
   for (const [bad, pattern] of [
     [{ ...unsigned, kind: 'mining_claim' }, /transfers only/], [{ ...unsigned, kind: 'message' }, /transfers only/], [{ ...unsigned, kind: undefined }, /transfers only/],
@@ -614,7 +614,7 @@ await test('display checksum vectors (docs/ADDRESS_CHECKSUM.md) and password rul
 
 await test('transfer builder: only transfers, mining_claim impossible, strict inputs', async () => {
   const account = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
-  const base = { version: 2, chainId: 'zyron-testnet-1', nonce: '1', receiver: SNAP_VECTORS[1].address, amountAtoms: 150000000, feeAtoms: 1000, timestampMs: 1700000000000 };
+  const base = { version: 2, chainId: 'zyron-devnet-1', nonce: '1', receiver: SNAP_VECTORS[1].address, amountAtoms: 150000000, feeAtoms: 1000, timestampMs: 1700000000000 };
   const unsigned = core.buildTransfer(base, account);
   assert.equal(unsigned.kind, 'transfer');
   assert.equal(core.buildTransfer({ ...base, kind: 'mining_claim' }, account).kind, 'transfer', 'a kind input is ignored');
@@ -626,13 +626,12 @@ await test('transfer builder: only transfers, mining_claim impossible, strict in
   assert.throws(() => core.buildTransfer({ ...base, chainId: 'zyron-mainnet-1' }, account), /testnet or devnet/);
   assert.throws(() => core.buildTransfer({ ...base, chainId: 'zyron-pwa-test' }, account), /testnet or devnet/);
   assert.equal(core.buildTransfer({ ...base, chainId: core.WALLET_TESTNET_CHAIN_ID }, account).chainId, 'zyron-wallet-testnet-1');
-  // Feature 6A (resolved question 1): every chain, including zyron-wallet-testnet-1, defaults to version 2.
-  assert.equal(core.defaultTransferVersion('zyron-wallet-testnet-1'), 2, 'wallet testnet default version is 2 (6A)');
-  assert.equal(core.defaultTransferVersion(' zyron-wallet-testnet-1 '), 2);
+  assert.equal(core.defaultTransferVersion('zyron-wallet-testnet-1'), 1, 'wallet testnet default version is 1');
+  assert.equal(core.defaultTransferVersion(' zyron-wallet-testnet-1 '), 1);
   assert.equal(core.defaultTransferVersion('zyron-devnet'), 2);
   assert.equal(core.defaultTransferVersion('zyron-other-testnet'), 2);
   assert.equal(core.defaultTransferVersion(''), 2);
-  assert.equal(core.buildTransfer({ ...base, version: core.defaultTransferVersion(core.WALLET_TESTNET_CHAIN_ID), chainId: core.WALLET_TESTNET_CHAIN_ID }, account).version, 2);
+  assert.equal(core.buildTransfer({ ...base, version: core.defaultTransferVersion(core.WALLET_TESTNET_CHAIN_ID), chainId: core.WALLET_TESTNET_CHAIN_ID }, account).version, 1);
   assert.throws(() => core.buildTransfer({ ...base, nonce: '0' }, account), /Nonce/);
   assert.throws(() => core.buildTransfer({ ...base, version: 3 }, account), /version/);
   assert.throws(() => core.buildTransfer({ ...base, amountAtoms: 0 }, account), /Amount/);
@@ -643,6 +642,72 @@ await test('transfer builder: only transfers, mining_claim impossible, strict in
   for (const file of ['app.js', 'zyron-wallet-core.js', 'index.html', 'sw.js']) {
     const source = readFileSync(join(app, file), 'utf8');
     assert.doesNotMatch(source, /mining_claim['"]?\s*[,:}]|kind:\s*['"](?!transfer)/, `${file} must not build other transaction kinds`);
+  }
+});
+
+await test('6A R3 (PWA): only the fixed chain ID list is signed, identical to l1; mainnet-looking IDs are refused', async () => {
+  const account = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
+  assert.deepEqual([...core.RENDERABLE_CHAIN_IDS], ['zyron-devnet-1', 'zyron-wallet-testnet-1', 'zyron-open-testnet-1']);
+  assert.ok(Object.isFrozen(core.RENDERABLE_CHAIN_IDS));
+  const base = { version: 2, nonce: 1, receiver: SNAP_VECTORS[1].address, amountAtoms: 150000000, feeAtoms: 100000, timestampMs: 1700000000000 };
+  for (const chainId of core.RENDERABLE_CHAIN_IDS) assert.equal(core.buildTransfer({ ...base, chainId }, account).chainId, chainId);
+  for (const chainId of ['zyron-mainnet-testnet', 'mainnet-devnet', 'devnet-mainnet-1', 'testnet', 'devnet', 'zyron-mainnet-1-testnet', 'zyron-testnet-1', 'zyron-public-testnet-1', 'zyron-other-testnet', 'zyron-devnet-2']) {
+    assert.equal(core.TEST_CHAIN_ID_RE.test(chainId), false, chainId);
+    assert.throws(() => core.buildTransfer({ ...base, chainId }, account), /testnet or devnet/, chainId);
+    const unsigned = core.buildTransfer({ ...base, chainId: 'zyron-devnet-1' }, account);
+    assert.throws(() => core.signTransfer({ ...unsigned, chainId }, account.privateKey), /testnet or devnet/, chainId);
+  }
+});
+
+await test('6A confinement (b): the PWA refuses version 1 on every chain ID except zyron-wallet-testnet-1', async () => {
+  const account = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
+  const base = { version: 1, nonce: 1, receiver: SNAP_VECTORS[1].address, amountAtoms: 150000000, feeAtoms: 1000, timestampMs: 1700000000000 };
+  for (const chainId of ['zyron-devnet-1', 'zyron-open-testnet-1']) {
+    assert.throws(() => core.buildTransfer({ ...base, chainId }, account), /version 1 is signed only for zyron-wallet-testnet-1/, chainId);
+    const v2 = core.buildTransfer({ ...base, version: 2, chainId, feeAtoms: 100000 }, account);
+    assert.throws(() => core.describeTransfer({ ...v2, version: 1 }), /version 1 is signed only/, chainId);
+    assert.throws(() => core.signTransfer({ ...v2, version: 1 }, account.privateKey), /version 1 is signed only/, chainId);
+  }
+  const v1 = core.buildTransfer({ ...base, chainId: core.WALLET_TESTNET_CHAIN_ID }, account);
+  assert.equal(core.signTransfer(v1, account.privateKey).version, 1, 'the documented exception still signs before the end');
+});
+
+await test('6A confinement (c): the PWA refuses version 1 at or after the hard-coded end 2026-11-08T00:00:00Z (fail closed)', async () => {
+  const account = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
+  assert.equal(core.V1_EXCEPTION_END_MS, Date.UTC(2026, 10, 8, 0, 0, 0, 0));
+  assert.equal(new Date(core.V1_EXCEPTION_END_MS).toISOString(), '2026-11-08T00:00:00.000Z');
+  const base = { version: 1, chainId: core.WALLET_TESTNET_CHAIN_ID, nonce: 1, receiver: SNAP_VECTORS[1].address, amountAtoms: 150000000, feeAtoms: 1000 };
+  const ok = core.buildTransfer({ ...base, timestampMs: core.V1_EXCEPTION_END_MS - 1 }, account);
+  assert.equal(core.signTransfer(ok, account.privateKey).version, 1);
+  for (const timestampMs of [core.V1_EXCEPTION_END_MS, core.V1_EXCEPTION_END_MS + 1, 253402300799999]) {
+    assert.throws(() => core.buildTransfer({ ...base, timestampMs }, account), /ended on 2026-11-08T00:00:00Z/, String(timestampMs));
+    assert.throws(() => core.signTransfer({ ...ok, timestampMs }, account.privateKey), /ended on 2026-11-08T00:00:00Z/, String(timestampMs));
+  }
+  for (const timestampMs of [Number.NaN, 1.5, '1700000000000', null, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => core.describeTransfer({ ...ok, timestampMs }), Error, String(timestampMs));
+  }
+  // Version 2 on the same chain is not time-boxed.
+  assert.equal(core.buildTransfer({ ...base, version: 2, timestampMs: core.V1_EXCEPTION_END_MS + 1 }, account).version, 2);
+});
+
+await test('6A confinement (d): the chain list, the v1 chain and the v1 end are hard-coded and cannot be configured', async () => {
+  const source = readFileSync(join(app, 'zyron-wallet-core.js'), 'utf8');
+  assert.match(source, /const V1_EXCEPTION_END_MS = 1794096000000;/);
+  assert.match(source, /const RENDERABLE_CHAIN_IDS = Object\.freeze\(\['zyron-devnet-1', 'zyron-wallet-testnet-1', 'zyron-open-testnet-1'\]\);/);
+  assert.doesNotMatch(source, /localStorage|sessionStorage|process\.env|location\.|URLSearchParams|indexedDB|document\.cookie/, 'no storage, URL or environment input in the core');
+  assert.ok(Object.isFrozen(core));
+  assert.throws(() => { 'use strict'; core.V1_EXCEPTION_END_MS = 9999999999999; }, TypeError);
+  assert.throws(() => { core.RENDERABLE_CHAIN_IDS.push('zyron-mainnet-1'); }, TypeError);
+  globalThis.ZYRON_V1_EXCEPTION_END_MS = 9999999999999;
+  globalThis.ZYRON_RENDERABLE_CHAIN_IDS = ['zyron-mainnet-1'];
+  try {
+    const account = await core.deriveAccount(core.phraseToEntropy(SNAP_VECTORS[0].mnemonic));
+    const base = { version: 1, chainId: core.WALLET_TESTNET_CHAIN_ID, nonce: 1, receiver: SNAP_VECTORS[1].address, amountAtoms: 1, feeAtoms: 0 };
+    assert.throws(() => core.buildTransfer({ ...base, timestampMs: core.V1_EXCEPTION_END_MS }, account), /ended/);
+    assert.throws(() => core.buildTransfer({ ...base, version: 2, chainId: 'zyron-mainnet-1', timestampMs: 1 }, account), /testnet or devnet/);
+  } finally {
+    delete globalThis.ZYRON_V1_EXCEPTION_END_MS;
+    delete globalThis.ZYRON_RENDERABLE_CHAIN_IDS;
   }
 });
 
@@ -659,7 +724,7 @@ if (existsSync(join(l1Dist, 'transaction.js'))) {
       assert.equal(l1crypto.addressFromPublicKey(vector.publicKey), vector.address);
       const receiver = vector === SNAP_VECTORS[0] ? SNAP_VECTORS[1].address : SNAP_VECTORS[0].address;
       for (const version of [1, 2]) {
-        const input = { version, chainId: 'zyron-pwa-testnet', nonce: 1, receiver, amountAtoms: 250000000, feeAtoms: 1000, timestampMs: 1700000000123 };
+        const input = { version, chainId: version === 1 ? core.WALLET_TESTNET_CHAIN_ID : 'zyron-devnet-1', nonce: 1, receiver, amountAtoms: 250000000, feeAtoms: 1000, timestampMs: 1700000000123 };
         const tx = core.signTransfer(core.buildTransfer(input, account), account.privateKey);
         const reference = l1tx.createTransfer({ chainId: input.chainId, nonce: 1, sender: account.address, receiver, amountAtoms: input.amountAtoms, feeAtoms: input.feeAtoms, timestampMs: input.timestampMs }, privHex, account.publicKey, version);
         assert.equal(JSON.stringify(tx), JSON.stringify(reference), `v${version} byte-identical`);

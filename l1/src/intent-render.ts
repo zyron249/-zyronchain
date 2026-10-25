@@ -27,9 +27,18 @@ export const TRANSFER_PAYLOAD_KEYS: readonly string[] = Object.freeze([
   "amountAtoms", "chainId", "feeAtoms", "kind", "nonce", "publicKey", "receiver", "sender", "timestampMs", "version"
 ]);
 
-/** Same rules as the PWA's describeTransfer (website/app/zyron-wallet-core.js CHAIN_ID_RE + TEST_CHAIN_ID_RE). */
 export const CHAIN_ID_RE = /^[a-z0-9-]{3,64}$/;
-export const TEST_CHAIN_ID_RE = /(^|-)(testnet|devnet)(-|$)/;
+/**
+ * R3 (Security L1): the FIXED list of chain IDs renderer version 1 may sign for. Any other ID is
+ * refused, including every ID with a "mainnet" token. Identical to the PWA's RENDERABLE_CHAIN_IDS
+ * (website/app/zyron-wallet-core.js). zyron-wallet-testnet-1 is listed for the PWA; the CLI still
+ * refuses it because it advertises protocol 1 (transfer-version-policy.ts).
+ */
+export const RENDERABLE_CHAIN_IDS: readonly string[] = Object.freeze([
+  "zyron-devnet-1",
+  "zyron-wallet-testnet-1",
+  "zyron-open-testnet-1"
+]);
 
 /** 9999-12-31T23:59:59.999Z: the largest timestamp with a 4-digit ISO-8601 year. */
 export const MAX_RENDERABLE_TIMESTAMP_MS = 253_402_300_799_999;
@@ -81,9 +90,9 @@ const LINE_ORDER = [
   LABELS.feeAtoms, LABELS.total, LABELS.nonce, LABELS.timestampMs, LABELS.publicKey, LABELS.domain
 ];
 
-/** True only for chain IDs the renderer may sign for (testnet/devnet; mainnet needs a renderer version bump). */
+/** True only for the fixed RENDERABLE_CHAIN_IDS (any other chain needs a renderer version bump). */
 export function isAllowedTestnetChainId(chainId: unknown): chainId is string {
-  return typeof chainId === "string" && CHAIN_ID_RE.test(chainId) && TEST_CHAIN_ID_RE.test(chainId);
+  return typeof chainId === "string" && RENDERABLE_CHAIN_IDS.includes(chainId);
 }
 
 /** `<ZYN> ZYN (<atoms> atoms)` with BigInt division; trailing zeros trimmed; no separators. */
@@ -157,7 +166,7 @@ function canonicalAddress(value: unknown, field: string): Address {
 function validateTransferPayload(payload: unknown): TransferPayload {
   if (payload === null || typeof payload !== "object" || Array.isArray(payload)) refuse("payload is not a plain object");
   const prototype = Object.getPrototypeOf(payload);
-  if (prototype !== Object.prototype && prototype !== null) refuse("payload is not a plain object");
+  if (prototype !== Object.prototype) refuse("payload is not a plain object");
   const record = payload as Record<string, unknown>;
   const keys = Object.keys(record).sort();
   if (keys.length !== TRANSFER_PAYLOAD_KEYS.length || keys.some((key, index) => key !== TRANSFER_PAYLOAD_KEYS[index])) {
@@ -170,7 +179,7 @@ function validateTransferPayload(payload: unknown): TransferPayload {
   if (record.version !== 2) refuse("unsupported transaction version");
   if (typeof record.chainId !== "string") refuse("chainId is not a string");
   assertSafeAscii(record.chainId, "chainId");
-  if (!isAllowedTestnetChainId(record.chainId)) refuse("chainId is not an allowed testnet or devnet chain ID");
+  if (!isAllowedTestnetChainId(record.chainId)) refuse("chainId is not in the fixed list of renderable testnet or devnet chain IDs");
   const sender = canonicalAddress(record.sender, "sender");
   const receiver = canonicalAddress(record.receiver, "receiver");
   const amount = safeInteger(record.amountAtoms, "amountAtoms", 1, MAX_SUPPLY_ATOMS);
