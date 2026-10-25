@@ -19,9 +19,17 @@ its own is pending. Otherwise it is **parked**.
 | Setting | Default | CLI flag | Environment variable |
 |---|---|---|---|
 | Parked transactions per address | 16 | `--mempool-max-future-per-sender <n>` (1 to 64) | `ZYRON_MEMPOOL_MAX_FUTURE_PER_SENDER` |
-| Parked transaction TTL | 600000 ms (10 min) | `--mempool-parked-ttl-ms <ms>` | `ZYRON_MEMPOOL_PARKED_TTL_MS` |
+| Parked transaction TTL | 600000 ms (10 min) | `--mempool-parked-ttl-ms <ms>` (1 to 86400000, i.e. at most 24 h) | `ZYRON_MEMPOOL_PARKED_TTL_MS` |
 
-The CLI flag takes precedence over the environment variable.
+The CLI flag takes precedence over the environment variable. A TTL outside
+1 to 86400000 ms fails closed at startup with
+`Mempool parked transaction TTL must be an integer from 1 to 86400000 ms`.
+The 24 hour bound keeps a misconfigured node from holding parked
+transactions practically forever.
+
+- **Replacement keeps the admission time:** a same-nonce fee-bump replacement
+  inherits the original admission time of that sender and nonce, so repeated
+  replacements cannot extend the parked TTL.
 
 - **Cap:** a new transaction that would be parked is rejected when the sender
   already has the maximum number of parked transactions, with
