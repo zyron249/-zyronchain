@@ -1,0 +1,49 @@
+Feature 6A intent renderer: failing-first evidence
+==================================================
+
+Method: a detached worktree of origin/main at ef76d5da (before this PR) received ONLY the new or
+changed tests from this PR, with no source changes. Each behavior change below fails there, then
+passes on this branch. Paths are replaced by <repo>/. Node v22.19.0.
+
+1. l1/test/intent-render.test.ts (new module; renderer, R1-R4, vectors, resolved questions)
+   On main the test does not compile: the module and the signTransfer export do not exist.
+
+   $ cd <repo>/l1 && npx tsc --outDir dist
+   test/intent-render.test.ts(22,8): error TS2307: Cannot find module '../src/intent-render.js' or its corresponding type declarations.
+   test/intent-render.test.ts(23,26): error TS2305: Module '"../src/transaction.js"' has no exported member 'signTransfer'.
+   tsc exit: 2
+
+2. l1/test/cli-intent-render.test.ts (CLI render + confirm, --yes, --expect-*, v1 refusal, R3)
+   On main every test fails (no render, no confirmation, unknown --yes/--expect-* options,
+   tx-version required and 1 accepted, protocol-1 network signed with v1).
+
+   $ cd <repo>/l1 && node --test dist/test/cli-intent-render.test.js
+   not ok 1 - 6A CLI: transfer-sign refuses without confirmation and no TTY, after printing the full render
+       reason: Fatal: --tx-version is required
+   not ok 2 - 6A CLI: --yes cannot be enabled by environment variables
+       reason: 'Fatal: --tx-version is required\n'
+   not ok 3 - 6A CLI: --yes still prints the full render to stderr and signs a version-2 transfer by default
+       reason: Fatal: Unknown option: --yes
+   not ok 4 - 6A CLI: --expect-receiver and --expect-amount fail closed
+       reason: 'Fatal: Unknown option: --yes\n'
+   not ok 5 - 6A CLI: transfer-sign refuses tx-version 1 and non-testnet chain IDs
+       reason: Fatal: Unknown option: --yes
+   not ok 6 - 6A CLI: transfer refuses a protocol-1 network (v1 transfers) before signing or posting
+       reason: 'Fatal: Unknown option: --yes\n'
+   # tests 6
+   # pass 0
+   # fail 6
+
+3. tools/pwa-wallet/test-core.mjs (PWA default transfer version becomes 2 on every chain)
+   With the updated assertions and the unchanged website/app/zyron-wallet-core.js:
+
+   $ node tools/pwa-wallet/test-core.mjs
+   not ok - transfer builder: only transfers, mining_claim impossible, strict inputs
+   AssertionError [ERR_ASSERTION]: wallet testnet default version is 2 (6A)
+   1 !== 2
+       at file://<repo>/tools/pwa-wallet/test-core.mjs:630:10
+   exit: 1
+
+After the change (this branch): intent-render.test 16/16, cli-intent-render.test 6/6,
+cli-offline-sign.test and cli-rpc-v5.test pass with the adapted call sites, and
+test-core.mjs --require-l1 passes 22/22.

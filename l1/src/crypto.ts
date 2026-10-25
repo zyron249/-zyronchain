@@ -44,7 +44,14 @@ export function generatePrivateKey(): string {
 }
 
 export function signCanonical(payload: unknown, privateKeyHex: string): string {
-  const message = encoder.encode(canonicalJson(payload));
+  return signMessageBytes(encoder.encode(canonicalJson(payload)), privateKeyHex);
+}
+
+/**
+ * Signs exact message bytes (the bytes signCanonical would derive from a payload). Used by the
+ * feature 6A transfer signer so it signs only the bytes rebuilt from the rendered intent.
+ */
+export function signMessageBytes(message: Uint8Array, privateKeyHex: string): string {
   const signature = secp256k1.sign(
     message,
     Uint8Array.from(Buffer.from(privateKeyHex, "hex")),

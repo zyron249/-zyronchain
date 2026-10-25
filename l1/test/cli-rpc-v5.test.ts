@@ -69,10 +69,11 @@ test("canonical CLI submits a transaction-v2 transfer when protocol v5 is next",
       "transfer",
       "--key", keyPath,
       "--rpc", `http://127.0.0.1:${port}`,
-      "--chain-id", "zyron-cli-v5",
+      "--chain-id", "zyron-cli-v5-devnet",
       "--to", receiver,
       "--amount-atoms", "100",
-      "--fee-atoms", "1"
+      "--fee-atoms", "1",
+      "--yes"
     ], { maxBuffer: 1024 * 1024 });
 
     assert.match(stdout, /Submitted transaction [0-9a-f]{64}/);
@@ -81,7 +82,7 @@ test("canonical CLI submits a transaction-v2 transfer when protocol v5 is next",
     assert.equal(submitted.kind, "transfer");
     assert.equal(submitted.sender, sender);
     assert.equal(submitted.receiver, receiver);
-    assert.equal(submitted.chainId, "zyron-cli-v5");
+    assert.equal(submitted.chainId, "zyron-cli-v5-devnet");
   } finally {
     await close(server);
     await rm(root, { recursive: true, force: true });

@@ -66,10 +66,10 @@
   const CHAIN_ID_RE = /^[a-z0-9-]{3,64}$/;
   const TEST_CHAIN_ID_RE = /(^|-)(testnet|devnet)(-|$)/;
   const WALLET_TESTNET_CHAIN_ID = 'zyron-wallet-testnet-1';
-  // That chain runs protocol version 1 and rejects transaction version 2.
-  // Every other testnet or devnet id keeps version 2 as the selectable default.
+  // Feature 6A (resolved question 1): every chain defaults to transaction version 2, including
+  // zyron-wallet-testnet-1. Version 1 stays selectable until the Wallet Dev 6A PR.
   function defaultTransferVersion(chainId) {
-    return String(chainId == null ? '' : chainId).trim() === WALLET_TESTNET_CHAIN_ID ? 1 : 2;
+    return 2;
   }
   const ADDRESS_RE = /^ZYN[0-9a-f]{40}$/;
   const ADDRESS_INPUT_RE = /^ZYN[0-9a-fA-F]{40}$/;

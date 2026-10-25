@@ -626,12 +626,13 @@ await test('transfer builder: only transfers, mining_claim impossible, strict in
   assert.throws(() => core.buildTransfer({ ...base, chainId: 'zyron-mainnet-1' }, account), /testnet or devnet/);
   assert.throws(() => core.buildTransfer({ ...base, chainId: 'zyron-pwa-test' }, account), /testnet or devnet/);
   assert.equal(core.buildTransfer({ ...base, chainId: core.WALLET_TESTNET_CHAIN_ID }, account).chainId, 'zyron-wallet-testnet-1');
-  assert.equal(core.defaultTransferVersion('zyron-wallet-testnet-1'), 1, 'wallet testnet default version is 1');
-  assert.equal(core.defaultTransferVersion(' zyron-wallet-testnet-1 '), 1);
+  // Feature 6A (resolved question 1): every chain, including zyron-wallet-testnet-1, defaults to version 2.
+  assert.equal(core.defaultTransferVersion('zyron-wallet-testnet-1'), 2, 'wallet testnet default version is 2 (6A)');
+  assert.equal(core.defaultTransferVersion(' zyron-wallet-testnet-1 '), 2);
   assert.equal(core.defaultTransferVersion('zyron-devnet'), 2);
   assert.equal(core.defaultTransferVersion('zyron-other-testnet'), 2);
   assert.equal(core.defaultTransferVersion(''), 2);
-  assert.equal(core.buildTransfer({ ...base, version: core.defaultTransferVersion(core.WALLET_TESTNET_CHAIN_ID), chainId: core.WALLET_TESTNET_CHAIN_ID }, account).version, 1);
+  assert.equal(core.buildTransfer({ ...base, version: core.defaultTransferVersion(core.WALLET_TESTNET_CHAIN_ID), chainId: core.WALLET_TESTNET_CHAIN_ID }, account).version, 2);
   assert.throws(() => core.buildTransfer({ ...base, nonce: '0' }, account), /Nonce/);
   assert.throws(() => core.buildTransfer({ ...base, version: 3 }, account), /version/);
   assert.throws(() => core.buildTransfer({ ...base, amountAtoms: 0 }, account), /Amount/);
