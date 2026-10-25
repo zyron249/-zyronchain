@@ -58,14 +58,18 @@ jobs:
             exit 1
           fi
           expected="tools/supply-verifier/EXPECTED_SHA256"
-          if [ -f "${expected}" ]; then
-            want="$(awk 'NF {print $1; exit}' "${expected}")"
-            got="$(awk '{print $1}' "${RUNNER_TEMP}/hash-1.txt")"
-            if [ "${want}" != "${got}" ]; then
-              echo "::error::tar sha256 ${got} does not match ${expected} (${want})"
-              exit 1
-            fi
-            echo "matches ${expected}"
-          else
-            echo "no ${expected} committed; only build-to-build equality is checked"
+          if [ ! -f "${expected}" ]; then
+            echo "::error::${expected} is missing. Build with Node $(cat tools/supply-verifier/.nvmrc) and commit the hash (see tools/supply-verifier/README.md, 'Pinned tarball hash')."
+            exit 1
           fi
+          want="$(awk 'NF {print $1; exit}' "${expected}")"
+          got="$(awk '{print $1}' "${RUNNER_TEMP}/hash-1.txt")"
+          if [ "${want}" != "${got}" ]; then
+            echo "::error::supply-verifier tar sha256 ${got} does not match ${expected} (${want})."
+            echo "If this change to the verifier or l1/src is intentional, update the pin in the same PR:"
+            echo "  node tools/supply-verifier/build.mjs --clean-l1 && node tools/supply-verifier/hash.mjs > ${expected}"
+            echo "using Node $(cat tools/supply-verifier/.nvmrc) from a clean checkout, then commit ${expected}."
+            echo "If you did not intend to change the verifier output, the build is no longer reproducible: investigate before updating."
+            exit 1
+          fi
+          echo "matches ${expected}: ${got}"
