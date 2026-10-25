@@ -8,6 +8,12 @@ export interface MempoolOptions {
   disableFeeReplacement?: boolean;
   /** fixed-fee-v1: transfers whose fee is not this value are rejected. */
   fixedTransferFeeAtoms?: number;
+  /**
+   * Node policy floor for `transfer` fees (Red Team M2 option A). Mempool and
+   * relay admission only, never block validity. 0 or unset: no floor. Ignored
+   * when `fixedTransferFeeAtoms` is set (fixed-fee-v1: the exact fee wins).
+   */
+  minTransferFeeAtoms?: number;
   /** Per-sender pending cap. Unset: no count cap beyond the caller's other checks. */
   maxPendingPerSender?: number;
   /**
@@ -22,6 +28,35 @@ export interface MempoolOptions {
    * capacity, 0 for a caller-chosen byte capacity.
    */
   protocolReserveBytes?: number;
+}
+
+/** Environment variable for the node's mempool transfer-fee floor. */
+export const MEMPOOL_MIN_FEE_ENV = "ZYRON_MEMPOOL_MIN_FEE_ATOMS";
+
+/**
+ * Parses a configured transfer-fee floor. Unset or empty means no floor.
+ * Anything other than a non-negative safe decimal integer fails closed.
+ */
+export function parseMempoolMinFeeAtoms(value: string | undefined, name = "mempool-min-fee-atoms"): number | undefined {
+  if (value === undefined || value === "") return undefined;
+  if (!/^(0|[1-9][0-9]*)$/.test(value)) throw new Error(`Invalid ${name}: expected a non-negative integer number of atoms`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`Invalid ${name}: expected a non-negative integer number of atoms`);
+  return parsed;
+}
+
+/**
+ * The transfer fee a node-side builder (faucet, smoke tests) must use so the
+ * node admits its transfers: the exact fixed-fee-v1 fee when active, else the
+ * node's floor (0 when none).
+ */
+export function nodeTransferFeeAtoms(fixedTransferFeeAtoms: number | undefined, minTransferFeeAtoms: number | undefined): number {
+  return fixedTransferFeeAtoms ?? minTransferFeeAtoms ?? 0;
+}
+
+export function belowMinTransferFeeMessage(feeAtoms: number, minTransferFeeAtoms: number): string {
+  return `Transfer fee ${feeAtoms} atoms is below this node's minimum transfer fee of ${minTransferFeeAtoms} atoms; ` +
+    `resend with a fee of at least ${minTransferFeeAtoms} atoms (CLI: --fee-atoms ${minTransferFeeAtoms})`;
 }
 
 const REPLACEMENT_BUMP_NUMERATOR = 11n;
@@ -63,6 +98,7 @@ export class Mempool {
   private readonly disableFeeReplacement: boolean;
   private readonly fixedTransferFeeAtoms: number | undefined;
   private readonly maxPendingPerSender: number | undefined;
+  private readonly minTransferFeeAtoms: number;
   /** Node policy only: admission time per txid, in insertion (admission) order. */
   /** Admission time per `sender:nonce` slot, in admission order; kept across replacement. */
   private readonly admittedAtMs = new Map<string, number>();
@@ -110,6 +146,12 @@ export class Mempool {
         (!Number.isSafeInteger(this.fixedTransferFeeAtoms) || this.fixedTransferFeeAtoms < 1)) {
       throw new Error("Invalid fixed transfer fee");
     }
+    const minFee = options?.minTransferFeeAtoms;
+    if (minFee !== undefined && (!Number.isSafeInteger(minFee) || minFee < 0)) {
+      throw new Error("Invalid minimum transfer fee");
+    }
+    // fixed-fee-v1: the exact fee is the only rule; the floor does not apply.
+    this.minTransferFeeAtoms = this.fixedTransferFeeAtoms === undefined ? minFee ?? 0 : 0;
     if (this.maxPendingPerSender !== undefined &&
         (!Number.isSafeInteger(this.maxPendingPerSender) || this.maxPendingPerSender < 1)) {
       throw new Error("Invalid per-sender mempool cap");
@@ -121,6 +163,9 @@ export class Mempool {
     if (tx.kind === "mining_claim") assertMiningNotRetired();
     if (this.fixedTransferFeeAtoms !== undefined && tx.kind === "transfer" && tx.feeAtoms !== this.fixedTransferFeeAtoms) {
       throw new Error(FIXED_FEE_MISMATCH_MESSAGE);
+    }
+    if (tx.kind === "transfer" && tx.feeAtoms < this.minTransferFeeAtoms) {
+      throw new Error(belowMinTransferFeeMessage(tx.feeAtoms, this.minTransferFeeAtoms));
     }
     if (this.byId.has(tx.txid)) throw new Error("Transaction already in mempool");
     const txBytes = transactionBytes(tx);

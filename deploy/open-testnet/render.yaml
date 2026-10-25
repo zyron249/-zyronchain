@@ -41,6 +41,11 @@ services:
       # rate-limit identity. Without it every client would share the Render
       # proxy's bucket. Never set this where clients can reach the gateway
       # without passing through Cloudflare.
+      # Red Team M2 option A: node mempool/relay floor for transfer fees
+      # (atoms). Policy only, not block validity; protocol txs are exempt and
+      # fixed-fee-v1 ignores it. The faucet pays this floor. Code default: 0.
+      - key: ZYRON_MEMPOOL_MIN_FEE_ATOMS
+        value: "1000"
       - key: ZYRON_TRUST_CF_CONNECTING_IP
         value: "1"
       # Consensus relay replay journal (used only when ZYRON_RELAY_PEERS is

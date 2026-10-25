@@ -46,6 +46,7 @@ const { merkleRoot } = await import(dist("merkle.js"));
 const { canonicalJson } = await import(dist("codec.js"));
 const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist("tokenomics.js"));
 const { defaultPublicDistributionRelease } = await import(dist("public-distribution-release.js"));
+const { MEMPOOL_MIN_FEE_ENV, nodeTransferFeeAtoms, parseMempoolMinFeeAtoms } = await import(dist("mempool.js"));
 const { STRICT_MIN_VALIDATORS } = await import(dist("network-class.js"));
 const { gatewayClientIdentity } = await import(dist("rpc-client-identity.js"));
 const { ConsensusRelay, RELAY_MAX_BODY_BYTES, RELAY_MAX_CONSENSUS_REQUEST_BYTES, parseRelayPeers, relayReplyHeaders, relayVotingPeer } = await import("./open-testnet/consensus-relay.mjs");
@@ -463,6 +464,10 @@ export async function pruneIncompleteHolders(dir, { keep = MAX_INCOMPLETE_HOLDER
 const V6_ACTIVATION_HEIGHT = 101;
 const ATOMS_PER_ZYN = 100_000_000;
 const FAUCET_DRIP_ATOMS = 100 * ATOMS_PER_ZYN;
+// Red Team M2 option A: the validators inherit ZYRON_MEMPOOL_MIN_FEE_ATOMS
+// from this process, so the faucet (and the smoke transfer) pay that floor.
+// The open-testnet genesis has no fee policy. A bad value fails closed here.
+const NODE_TRANSFER_FEE_ATOMS = nodeTransferFeeAtoms(undefined, parseMempoolMinFeeAtoms(process.env[MEMPOOL_MIN_FEE_ENV], MEMPOOL_MIN_FEE_ENV));
 const DAY_MS = 86_400_000;
 const ADDRESS_PATTERN = /^ZYN[0-9a-f]{40}$/;
 const MAX_BODY_BYTES = 8 * 1024;
@@ -1471,7 +1476,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       if (nonceResponse.status !== 200) throw new Error(`faucet nonce lookup failed (status ${nonceResponse.status})`);
       if (Date.now() - lastFaucetNonceAt > 180_000) lastFaucetNonce = 0;
       const nonce = Math.max(nonceResponse.body.nonce, lastFaucetNonce) + 1;
-      const tx = createTransfer({ chainId, nonce, sender: faucet.address, receiver, amountAtoms: FAUCET_DRIP_ATOMS, feeAtoms: 0, timestampMs: Date.now() },
+      const tx = createTransfer({ chainId, nonce, sender: faucet.address, receiver, amountAtoms: FAUCET_DRIP_ATOMS, feeAtoms: NODE_TRANSFER_FEE_ATOMS, timestampMs: Date.now() },
         faucet.privateKey, faucet.publicKey, status.transactionVersion);
       const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
       // The node's error text is logged by the faucet route, never returned.
@@ -1748,7 +1753,7 @@ async function smoke() {
     assert.equal((await post("/faucet", { address: alice.address })).status, 429);
     await until("faucet drip", async () => (await get(`/account/${alice.address}`)).body.balanceAtoms === FAUCET_DRIP_ATOMS);
     const nonce = (await get(`/nonce/${alice.address}`)).body.nonce;
-    const tx = createTransfer({ chainId: info.chainId, nonce: nonce + 1, sender: alice.address, receiver: bob.address, amountAtoms: 25 * ATOMS_PER_ZYN, feeAtoms: 0, timestampMs: Date.now() }, alice.privateKey, alice.publicKey, status.transactionVersion);
+    const tx = createTransfer({ chainId: info.chainId, nonce: nonce + 1, sender: alice.address, receiver: bob.address, amountAtoms: 25 * ATOMS_PER_ZYN, feeAtoms: NODE_TRANSFER_FEE_ATOMS, timestampMs: Date.now() }, alice.privateKey, alice.publicKey, status.transactionVersion);
     assert.equal((await post("/tx", tx)).status, 200);
     await until("transfer", async () => (await get(`/account/${bob.address}`)).body.balanceAtoms === 25 * ATOMS_PER_ZYN);
     // Liveness with one validator down (3 of 4 is a quorum), then rejoin.

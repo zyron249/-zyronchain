@@ -1,0 +1,139 @@
+# Red Team M2 option A: failing-first run of l1/test/mempool-min-fee.test.ts
+# against origin/main 870e5ec0 (implementation stashed; test file only)
+
+TAP version 13
+# Subtest: MIN-FEE: a transfer below the floor is rejected with a clear error; at and above the floor it is admitted
+not ok 1 - MIN-FEE: a transfer below the floor is rejected with a clear error; at and above the floor it is admitted
+  ---
+  duration_ms: 32.696516
+  type: 'test'
+  location: '<repo>/l1/dist/test/mempool-min-fee.test.js:100:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected exception.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'throws'
+  stack: |-
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/mempool-min-fee.test.js:102:12)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.start (node:internal/test_runner/test:944:17)
+    startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17)
+  ...
+# Subtest: MIN-FEE: floor 0 and an unset floor keep today's behaviour (zero-fee transfers admitted)
+ok 2 - MIN-FEE: floor 0 and an unset floor keep today's behaviour (zero-fee transfers admitted)
+  ---
+  duration_ms: 52.617037
+  type: 'test'
+  ...
+# Subtest: MIN-FEE: the node wires the floor into its mempool (single admission point for RPC and relay)
+not ok 3 - MIN-FEE: the node wires the floor into its mempool (single admission point for RPC and relay)
+  ---
+  duration_ms: 32.366395
+  type: 'test'
+  location: '<repo>/l1/dist/test/mempool-min-fee.test.js:116:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected exception.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'throws'
+  stack: |-
+    file://<repo>/l1/dist/test/mempool-min-fee.test.js:118:16
+    withService (file://<repo>/l1/dist/test/mempool-min-fee.test.js:94:22)
+    async TestContext.<anonymous> (file://<repo>/l1/dist/test/mempool-min-fee.test.js:117:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: MIN-FEE: protocol transactions are exempt from the floor
+ok 4 - MIN-FEE: protocol transactions are exempt from the floor
+  ---
+  duration_ms: 2.358469
+  type: 'test'
+  ...
+# Subtest: MIN-FEE: invalid floor configuration fails closed
+not ok 5 - MIN-FEE: invalid floor configuration fails closed
+  ---
+  duration_ms: 0.403368
+  type: 'test'
+  location: '<repo>/l1/dist/test/mempool-min-fee.test.js:131:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected exception: mempool must refuse -1'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'throws'
+  stack: |-
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/mempool-min-fee.test.js:133:16)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: MIN-FEE: under fixed-fee-v1 the floor is ignored and the exact fee still applies
+ok 6 - MIN-FEE: under fixed-fee-v1 the floor is ignored and the exact fee still applies
+  ---
+  duration_ms: 28.43971
+  type: 'test'
+  ...
+# Subtest: MIN-FEE: a zero-fee transfer inside a received block still validates (no consensus change)
+not ok 7 - MIN-FEE: a zero-fee transfer inside a received block still validates (no consensus change)
+  ---
+  duration_ms: 10.592748
+  type: 'test'
+  location: '<repo>/l1/dist/test/mempool-min-fee.test.js:162:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected exception.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'throws'
+  stack: |-
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/mempool-min-fee.test.js:167:12)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: MIN-FEE: the faucet fee builder meets the configured floor and its drip is admitted and mined
+not ok 8 - MIN-FEE: the faucet fee builder meets the configured floor and its drip is admitted and mined
+  ---
+  duration_ms: 0.721008
+  type: 'test'
+  location: '<repo>/l1/dist/test/mempool-min-fee.test.js:180:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    nodeTransferFeeAtoms must be exported for the faucet
+    + actual - expected
+    
+    + 'undefined'
+    - 'function'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 'function'
+  actual: 'undefined'
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file://<repo>/l1/dist/test/mempool-min-fee.test.js:182:12)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..8
+# tests 8
+# suites 0
+# pass 3
+# fail 5
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 301.729583
