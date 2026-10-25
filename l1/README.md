@@ -244,6 +244,17 @@ Addresses also have a display-only checksum (mixed case, see `docs/ADDRESS_CHECK
 prints it and accepts it for `--to`, but transactions always carry the canonical lower-case form and
 consensus is unchanged.
 
+`send-check` runs the same advisory send warnings as the PWA wallet (feature 7, `src/send-warnings.ts`):
+blocking self-send, lookalike address (shared prefix+suffix of at least 6 hex characters, or at most 2
+differing characters, against at most 250 known addresses), first-time recipient, and amount at or above
+a threshold. It is offline: the optional `--known-file` (`{"contacts":[{"name","address"}],"sent":[],
+"thresholdAtoms":null}`, canonical addresses) never leaves the machine. Warnings never change what a node
+accepts; only the self-send case exits non-zero.
+
+```sh
+node dist/src/cli.js send-check --to <ZYN...> --from <ZYN...> --amount-atoms 100000000 --known-file book.json
+```
+
 Verify a keystore (or a backup copy) without printing the private key, and sign a transfer on an
 offline machine for later broadcast. The offline signer never touches the network, so the chain
 ID, the next account nonce (current nonce + 1) and the transaction version (1 before protocol 3,
