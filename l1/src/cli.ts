@@ -9,7 +9,7 @@ import { V6LeaderScheduler } from "./v6-scheduler.js";
 import { addressFromPublicKey, assertValidPublicKey, generatePrivateKey, publicKeyFromPrivate } from "./crypto.js";
 import { decryptPrivateKey, encryptPrivateKey, isEncryptedKeystore, keystoreVersion, migrateKeystore, normalizePasswordFile } from "./keystore.js";
 import { parseAddressInput, toChecksumAddress } from "./address-checksum.js";
-import { displayAddress, groupAddress, parseKnownAddresses, sendWarnings, type KnownAddresses } from "./send-warnings.js";
+import { displayAddress, groupAddress, lookalikeMatches, parseKnownAddresses, sendWarnings, type KnownAddresses } from "./send-warnings.js";
 import { assertPasswordStrength, promptHiddenLine } from "./password-prompt.js";
 import { readPrivateRegularFile } from "./local-security.js";
 import { readCliCheckpointSnapshotAnchoredUtf8, readCliGenesisUtf8 } from "./cli-recovery-file.js";
@@ -800,6 +800,11 @@ async function sendCheck(args: string[]): Promise<void> {
     console.log(JSON.stringify({ receiver, display: displayAddress(receiver), advisory: true, warnings }, null, 2));
   } else {
     console.log(`Receiver (checksummed, grouped): ${displayAddress(receiver)}`);
+    const look = lookalikeMatches(receiver, known);
+    if (look.truncated) {
+      const total = new Set([...known.contacts.map((c) => c.address), ...known.sent]).size;
+      console.log(`note: only the first ${look.compared} of ${total} known addresses were compared for lookalikes`);
+    }
     if (warnings.length === 0) console.log("No send warnings. Still compare every character of the address.");
     for (const warning of warnings) {
       console.log(`WARNING (${warning.code}${warning.blocking ? ", blocking" : ""}): ${warning.message}`);
