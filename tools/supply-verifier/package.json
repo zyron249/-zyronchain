@@ -5,7 +5,7 @@
   "description": "Read-only verifier that replays ZyronChain from the pinned genesis and reconciles the supply to exactly 50,000,000 ZYN.",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22 <23"
   },
   "bin": {
     "zyron-supply-verifier": "cli.mjs"

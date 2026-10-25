@@ -149,3 +149,61 @@ test("CLI exits non-zero with a clear reason and zero on success", async () => {
   });
   assert.equal(spawnSync(process.execPath, [cli, "--help"]).status, 0);
 });
+
+test("endpoint tips that differ by more than the drift limit warn but do not fail", async () => {
+  await withEndpoints([{}, { statusOverride: { height: 15 } }], async (endpoints) => {
+    const report = await verifySupply(opts(endpoints));
+    assert.equal(report.ok, true);
+    assert.equal(report.height, 5);
+    assert.equal(report.maxTipDrift, 3);
+    assert.equal(report.warnings.length, 1);
+    assert.match(report.warnings[0], /endpoint tips differ by 10 blocks/);
+    const relaxed = await verifySupply(opts(endpoints, { maxTipDrift: 10 }));
+    assert.deepEqual(relaxed.warnings, []);
+  });
+  await withEndpoints([{}, { statusOverride: { height: 8 } }], async (endpoints) => {
+    assert.deepEqual((await verifySupply(opts(endpoints))).warnings, []);
+  });
+  await assert.rejects(verifySupply(opts(["http://127.0.0.1:1", "http://127.0.0.1:2"], { maxTipDrift: -1 })), /tip drift/);
+});
+
+test("oversized response body aborts early at the 32 MiB cap and fails closed", async () => {
+  const stats = { bytes: 0, closed: false };
+  await withEndpoints([{}, { endlessBody: true, stats }], async (endpoints) => {
+    await assert.rejects(verifySupply(opts(endpoints)), /response for \/status exceeds 33554432 bytes/);
+    for (let i = 0; i < 50 && !stats.closed; i += 1) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(stats.closed, true, "client must abort the connection");
+    assert.ok(stats.bytes < 48 * 1024 * 1024, `read must stop near the cap, server wrote ${stats.bytes} bytes`);
+  });
+});
+
+test("report and docs state the trust assumptions plainly", async () => {
+  const trust = [/trusts the l1 consensus code at the verified commit/i, /not an independent second implementation/i, /not proven independent/i];
+  for (const file of [join(repo, "docs", "SUPPLY_VERIFIER.md"), join(here, "..", "README.md")]) {
+    const text = readFileSync(file, "utf8");
+    for (const re of trust) assert.match(text, re, file);
+  }
+  await withEndpoints([{}, {}], async (endpoints) => {
+    const report = await verifySupply(opts(endpoints));
+    for (const re of trust) assert.ok(report.trustAssumptions.some((line) => re.test(line)), String(re));
+  });
+});
+
+// Guard for feature 1 (reversible-transfer escrow). The verifier hardcodes
+// pendingAtoms = 0 because the ledger has no escrow state. If the ledger
+// snapshot or LedgerSnapshot type gains any field (e.g. pendingTransfers),
+// this test fails until verify.mjs reads that state into pendingAtoms and
+// this guard is updated.
+test("pendingAtoms guard: ledger has no escrow/pending state while the verifier hardcodes 0", () => {
+  const source = readFileSync(join(here, "..", "src", "verify.mjs"), "utf8");
+  const hardcoded = /const pendingAtoms = 0n;/.test(source);
+  const snapshot = fixture.chain.getState().snapshot();
+  const stateTs = readFileSync(join(repo, "l1", "src", "state.ts"), "utf8");
+  const iface = stateTs.match(/export interface LedgerSnapshot \{[\s\S]*?\n\}/)?.[0] ?? "";
+  assert.ok(iface, "LedgerSnapshot interface not found in l1/src/state.ts");
+  if (!hardcoded) return;
+  assert.deepEqual(Object.keys(snapshot).sort(), ["accounts", "settledActivityEpochs"], "ledger snapshot gained a field: read it into pendingAtoms in verify.mjs");
+  for (const account of snapshot.accounts) assert.deepEqual(Object.keys(account).sort(), ["address", "balanceAtoms", "nonce"]);
+  assert.doesNotMatch(iface, /pending|escrow|reversible|held/i, "LedgerSnapshot gained pending/escrow state: read it into pendingAtoms in verify.mjs");
+  assert.doesNotMatch(stateTs, /pendingTransfers|escrow/i, "LedgerState gained escrow state: read it into pendingAtoms in verify.mjs");
+});

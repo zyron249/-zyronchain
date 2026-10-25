@@ -13,7 +13,13 @@ export const ATOMS_PER_ZYN = 100_000_000n;
 export const FIXED_SUPPLY_ATOMS = 50_000_000n * ATOMS_PER_ZYN;
 export const DEFAULT_BATCH_SIZE = 100;
 export const DEFAULT_TIMEOUT_MS = 30_000;
-const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+export const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+export const DEFAULT_MAX_TIP_DRIFT = 3;
+/** Printed in every report; see docs/SUPPLY_VERIFIER.md "Trust assumptions". */
+export const TRUST_ASSUMPTIONS = Object.freeze([
+  "This verifier trusts the l1 consensus code at the verified commit (l1/dist/src); it is not an independent second implementation.",
+  "Endpoints are not proven independent: two URLs may front the same node or operator, and the tool cannot detect that."
+]);
 const HASH = /^[0-9a-f]{64}$/;
 
 export class VerificationError extends Error {
@@ -65,9 +71,38 @@ async function getJson(endpoint, path, { fetchImpl, timeoutMs }) {
     fail(`endpoint ${endpoint} unreachable for ${path}: ${error.cause?.code ?? error.message}`);
   }
   if (response.status !== 200) fail(`endpoint ${endpoint} returned HTTP ${response.status} for ${path}`);
-  const text = await response.text().catch((error) => fail(`endpoint ${endpoint} failed reading ${path}: ${error.message}`));
-  if (text.length > MAX_RESPONSE_BYTES) fail(`endpoint ${endpoint} response for ${path} is too large`);
+  const text = await readCapped(response, endpoint, path);
   try { return JSON.parse(text); } catch { fail(`endpoint ${endpoint} returned invalid JSON for ${path}`); }
+}
+
+/** Streams the body with a running byte cap and aborts the read as soon as it is exceeded. */
+export async function readCapped(response, endpoint, path) {
+  const tooLarge = () => fail(`endpoint ${endpoint} response for ${path} exceeds ${MAX_RESPONSE_BYTES} bytes`);
+  const declared = Number(response.headers?.get?.("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+    await response.body?.cancel().catch(() => {});
+    tooLarge();
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    for (;;) {
+      let step;
+      try { step = await reader.read(); } catch (error) { fail(`endpoint ${endpoint} failed reading ${path}: ${error.message}`); }
+      if (step.done) break;
+      total += step.value.byteLength;
+      if (total > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => {});
+        tooLarge();
+      }
+      chunks.push(step.value);
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, total)); } catch { fail(`endpoint ${endpoint} returned invalid UTF-8 for ${path}`); }
 }
 
 /**
@@ -76,6 +111,7 @@ async function getJson(endpoint, path, { fetchImpl, timeoutMs }) {
  * @param {object} options.genesis      genesis config (its hash must equal expectedGenesisHash)
  * @param {string} [options.expectedGenesisHash] defaults to PINNED_GENESIS_HASH
  * @param {number} [options.toHeight]   verify up to this height (default: lowest endpoint tip)
+ * @param {number} [options.maxTipDrift] warn (not fail) when endpoint tips differ by more blocks (default 3)
  */
 export async function verifySupply(options) {
   const { genesis, toHeight, onProgress } = options;
@@ -84,6 +120,9 @@ export async function verifySupply(options) {
   const io = { fetchImpl: options.fetchImpl ?? fetch, timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS };
   if (!HASH.test(expectedGenesisHash)) fail("expected genesis hash must be 64 lowercase hex characters");
   if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 100) fail("batch size must be 1..100");
+  const maxTipDrift = options.maxTipDrift ?? DEFAULT_MAX_TIP_DRIFT;
+  if (!Number.isSafeInteger(maxTipDrift) || maxTipDrift < 0) fail("max tip drift must be a non-negative integer");
+  const warnings = [];
 
   const endpoints = [...new Set((options.endpoints ?? []).map(normalizeEndpoint))];
   if (endpoints.length < 2) fail(`at least 2 distinct endpoints are required to cross-check headers (got ${endpoints.length})`);
@@ -109,6 +148,10 @@ export async function verifySupply(options) {
     if (!Number.isSafeInteger(status.height) || status.height < 0) fail(`endpoint ${endpoints[index]} reports an invalid height`);
   });
   const lowestTip = Math.min(...statuses.map((status) => status.height));
+  const tipDrift = Math.max(...statuses.map((status) => status.height)) - lowestTip;
+  if (tipDrift > maxTipDrift) {
+    warnings.push(`endpoint tips differ by ${tipDrift} blocks (more than ${maxTipDrift}): ${endpoints.map((e, i) => `${e}=${statuses[i].height}`).join(", ")}; verifying up to the lowest tip. A lagging or forked endpoint weakens the cross-check.`);
+  }
   const target = toHeight ?? lowestTip;
   if (!Number.isSafeInteger(target) || target < 0) fail("target height must be a non-negative integer");
   if (target > lowestTip) fail(`target height ${target} is above the lowest endpoint tip ${lowestTip}`);
@@ -162,6 +205,9 @@ export async function verifySupply(options) {
   }
   // The protocol has no escrow or pending-balance state: a transaction moves
   // value only when its block is final, so mempool contents are not supply.
+  // TODO(feature 1, reversible transfers): once LedgerState gains escrow state
+  // (e.g. pendingTransfers), sum it here from the replayed snapshot. The
+  // "pendingAtoms guard" test fails until this is done.
   const pendingAtoms = 0n;
   const balances = accounts.map((account) => BigInt(account.balanceAtoms));
   const result = reconcile({ genesisSupplyAtoms, burnedAtoms, balances, lockedAtoms, pendingAtoms });
@@ -185,6 +231,9 @@ export async function verifySupply(options) {
       burnedAtoms: result.burnedAtoms.toString()
     },
     lockedAccounts,
-    accountCount: accounts.length
+    accountCount: accounts.length,
+    maxTipDrift,
+    warnings,
+    trustAssumptions: [...TRUST_ASSUMPTIONS]
   };
 }
