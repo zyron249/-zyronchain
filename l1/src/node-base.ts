@@ -133,7 +133,22 @@ export const READINESS_MAX_SYNC_LAG_BLOCKS = 1;
 export interface NodeServiceOptions {
   /** Finalized-tip age above which /readyz reports `stale-tip` (default DEFAULT_READINESS_MAX_TIP_AGE_MS). */
   readinessMaxTipAgeMs?: number | undefined;
+  /**
+   * Red Team S1 MEDIUM 1 (mempool policy only): most transactions per address
+   * whose nonce leaves a gap above the confirmed nonce ("parked"). Default
+   * DEFAULT_MEMPOOL_MAX_FUTURE_NONCE_PER_SENDER.
+   */
+  mempoolMaxFutureNoncePerSender?: number | undefined;
+  /** Parked transactions older than this are evicted. Default DEFAULT_MEMPOOL_PARKED_TX_TTL_MS. */
+  mempoolParkedTxTtlMs?: number | undefined;
+  /** Injectable clock for mempool admission times (tests). Default Date.now. */
+  nowMs?: (() => number) | undefined;
 }
+
+export const DEFAULT_MEMPOOL_MAX_FUTURE_NONCE_PER_SENDER = 16;
+export const DEFAULT_MEMPOOL_PARKED_TX_TTL_MS = 10 * 60_000;
+/** Admission-path TTL sweeps run at most this often (finalization always sweeps). */
+const PARKED_TX_SWEEP_INTERVAL_MS = 1_000;
 
 /**
  * Legacy (protocol v1-v5) skip-certificate catch-up progress for one tip
@@ -497,6 +512,10 @@ export class NodeService {
   /** P1-06: one failed expensive validation per authenticated proposer slot. */
   private readonly proposalValidationBudget = new ProposalValidationBudget();
   readonly readinessMaxTipAgeMs: number;
+  readonly mempoolMaxFutureNoncePerSender: number;
+  readonly mempoolParkedTxTtlMs: number;
+  private readonly clock: () => number;
+  private lastParkedSweepMs = Number.NEGATIVE_INFINITY;
   // Keyed by the quorum-approved payload; each key holds at most
   // MAX_DEFERRED_VARIANTS_PER_VALIDATOR_UPDATE variants (they differ only in
   // fields the approvals do not cover, such as possessionProofs).
@@ -516,6 +535,17 @@ export class NodeService {
       throw new Error("Readiness tip-age bound must be an integer of at least one block interval");
     }
     this.readinessMaxTipAgeMs = maxTipAge;
+    const futureCap = options.mempoolMaxFutureNoncePerSender ?? DEFAULT_MEMPOOL_MAX_FUTURE_NONCE_PER_SENDER;
+    if (!Number.isSafeInteger(futureCap) || futureCap < 1 || futureCap > MAX_MEMPOOL_PENDING_PER_SENDER) {
+      throw new Error(`Mempool future-nonce cap must be an integer from 1 to ${MAX_MEMPOOL_PENDING_PER_SENDER}`);
+    }
+    this.mempoolMaxFutureNoncePerSender = futureCap;
+    const parkedTtl = options.mempoolParkedTxTtlMs ?? DEFAULT_MEMPOOL_PARKED_TX_TTL_MS;
+    if (!Number.isSafeInteger(parkedTtl) || parkedTtl < 1) {
+      throw new Error("Mempool parked transaction TTL must be a positive integer (ms)");
+    }
+    this.mempoolParkedTxTtlMs = parkedTtl;
+    this.clock = options.nowMs ?? Date.now;
     const signer = typeof validator === "string" ? new LocalValidatorSigner(validator) : validator;
     this.validatorSigner = signer ? this.observeSignerAvailability(signer) : undefined;
     // A test double may omit genesis. No genesis means the historical fee rules.
@@ -964,6 +994,9 @@ export class NodeService {
     }
     const stateNonce = this.store.chain.nonce(tx.sender);
     assertMempoolSenderNonce(tx.nonce, stateNonce);
+    const nowMs = this.clock();
+    this.sweepExpiredParked(nowMs, false);
+    this.assertFutureNonceCap(tx, stateNonce);
     // P1-07-F1: a validator_update may depend on a pending same-block predecessor.
     // P1-07-F2 (Codex P2 on #1104 at cb863e16): only the pending validator
     // updates are copied, not the whole mempool (deferred re-tries repeat this).
@@ -1011,8 +1044,62 @@ export class NodeService {
         if (!applicable) throw lastError;
       }
     }
-    this.mempool.add(tx);
+    this.mempool.add(tx, nowMs);
     return tx.txid;
+  }
+
+  /**
+   * Red Team S1 MEDIUM 1 (mempool policy only): the first missing nonce above
+   * `stateNonce` among `sender`'s pending transactions. Pending transactions
+   * below it are ready; those above it are parked. Bounded by the nonce window.
+   */
+  private firstNonceGap(sender: string, stateNonce: number): number {
+    let nonce = stateNonce + 1;
+    while (nonce <= stateNonce + MAX_MEMPOOL_PENDING_PER_SENDER && this.mempool.hasSenderNonce(sender, nonce)) nonce += 1;
+    return nonce;
+  }
+
+  private assertFutureNonceCap(tx: Transaction, stateNonce: number): void {
+    // A same-nonce replacement does not add a transaction.
+    if (this.mempool.hasSenderNonce(tx.sender, tx.nonce)) return;
+    const gap = this.firstNonceGap(tx.sender, stateNonce);
+    // The incoming transaction fills the gap or extends the ready chain.
+    if (tx.nonce <= gap) return;
+    const ready = gap - stateNonce - 1;
+    const parked = this.mempool.senderPendingCount(tx.sender) - ready;
+    if (parked >= this.mempoolMaxFutureNoncePerSender) {
+      throw new Error(
+        `Too many future-nonce transactions for sender (limit ${this.mempoolMaxFutureNoncePerSender}); ` +
+        `submit nonce ${gap} first`
+      );
+    }
+  }
+
+  /**
+   * Evicts parked (nonce-gap) transactions admitted more than the parked TTL
+   * ago. Ready transactions are not affected. Returns the number evicted.
+   */
+  evictExpiredParkedTransactions(): number {
+    return this.sweepExpiredParked(this.clock(), true);
+  }
+
+  private sweepExpiredParked(nowMs: number, force: boolean): number {
+    if (!force && nowMs - this.lastParkedSweepMs < PARKED_TX_SWEEP_INTERVAL_MS) return 0;
+    this.lastParkedSweepMs = nowMs;
+    const expired = this.mempool.admittedAtOrBefore(nowMs - this.mempoolParkedTxTtlMs);
+    if (expired.length === 0) return 0;
+    const gaps = new Map<string, number>();
+    const evict: string[] = [];
+    for (const entry of expired) {
+      let gap = gaps.get(entry.sender);
+      if (gap === undefined) {
+        gap = this.firstNonceGap(entry.sender, this.store.chain.nonce(entry.sender));
+        gaps.set(entry.sender, gap);
+      }
+      if (entry.nonce > gap) evict.push(entry.txid);
+    }
+    this.mempool.remove(evict);
+    return evict.length;
   }
 
   async attestProposal(value: unknown, nowMs = Date.now()): Promise<BlockAttestation> {
@@ -1186,6 +1273,7 @@ export class NodeService {
         (tx.kind === "mining_claim" &&
           (tx.height !== nextMiningHeight || tx.previousHash !== nextMiningPreviousHash))
       );
+      this.sweepExpiredParked(this.clock(), true);
       // P1-07-F2 (Codex P2 on #1104): a predecessor can also arrive only in a
       // finalized block (sync, proposal finalization, /block); re-try the
       // deferred updates against the new persisted schedule (a finalized block
