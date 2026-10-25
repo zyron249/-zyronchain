@@ -24,6 +24,7 @@
 // <secret dir> holds plaintext TEST validator/faucet keys (mode 0600) and the
 // chain data. It must live outside the repository and must never be shared.
 import { activeSetSeedFromHistory, createActiveSetTracker } from "./gateway-quorum.mjs";
+import { allocateValidatorBasePort } from "./open-testnet-ports.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
@@ -1747,7 +1748,7 @@ async function smoke() {
   try {
     const info = await initNetwork(join(dir, "net"), "zyron-smoke-testnet-1");
     var smokeSecret = randomBytes(32).toString("base64");
-    network = await runNetwork(join(dir, "net"), { gatewayPort: 0, basePort: 19300 + Math.floor(Math.random() * 500) * 4, log: false, stateSecret: smokeSecret });
+    network = await runNetwork(join(dir, "net"), { gatewayPort: 0, basePort: await allocateValidatorBasePort("smoke"), log: false, stateSecret: smokeSecret });
     const base = `http://127.0.0.1:${network.port}`;
     const get = async (p) => { const r = await fetch(base + p); return { status: r.status, body: r.headers.get("content-type")?.includes("json") ? await r.json() : await r.text() }; };
     const post = async (p, b) => { const r = await fetch(base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }); return { status: r.status, body: await r.json() }; };
@@ -1815,7 +1816,7 @@ async function smoke() {
     await network.shutdown(); network = undefined;
     const restored = await restoreNetwork(join(dir, "restored"), openSnapshot(sealed, smokeSecret), info.chainId);
     assert.equal(restored.genesisHash, info.genesisHash);
-    network = await runNetwork(join(dir, "restored"), { gatewayPort: 0, basePort: 19300 + Math.floor(Math.random() * 500) * 4, log: false, stateSecret: smokeSecret, persistence: { mode: "snapshot-restore" }, verifiedHistory: restored.verifiedHistory });
+    network = await runNetwork(join(dir, "restored"), { gatewayPort: 0, basePort: await allocateValidatorBasePort("smoke"), log: false, stateSecret: smokeSecret, persistence: { mode: "snapshot-restore" }, verifiedHistory: restored.verifiedHistory });
     const base2 = `http://127.0.0.1:${network.port}`;
     await until("restored chain finalizes past the snapshot", async () => { const s = await (await fetch(`${base2}/status`)).json(); return s.genesisHash === info.genesisHash && s.height > snapHeight; }, 360_000);
     assert.equal((await (await fetch(`${base2}/account/${bob.address}`)).json()).balanceAtoms, 25 * ATOMS_PER_ZYN);
