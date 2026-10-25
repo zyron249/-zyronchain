@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import test from "node:test";
+import { allocateValidatorBasePort, freePort } from "./helpers/open-testnet-ports.js";
 
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -76,7 +77,8 @@ test("cold start from a snapshot behind the tip: followers never held a block th
   const json = async (base: string, p: string) => { const r = await fetch(base + p); return { status: r.status, body: await r.json() }; };
   try {
     await api.initNetwork(join(root, "a"), chainId);
-    network = await api.runNetwork(join(root, "a"), { gatewayPort: 0, basePort: 19300 + Math.floor(Math.random() * 500) * 4, log: false, stateSecret: secret, durable });
+    network = await api.runNetwork(join(root, "a"), { gatewayPort: 0, basePort: await allocateValidatorBasePort("durable-watermark"), log: false, stateSecret: secret, durable });
+    const expectedGenesis: string = network.info.genesisHash;
     let base = `http://127.0.0.1:${network.port}`;
     await until("height past v6", async () => (await json(base, "/status")).body.height >= 102);
     assert.equal((await json(base, "/peer/status")).status, 503, "no durable block before the first publish");
@@ -113,7 +115,7 @@ test("cold start from a snapshot behind the tip: followers never held a block th
     assert.equal(drip.status, 200);
     checkDurability((await drip.json()) as Record<string, unknown>, "POST /faucet", { flag: false });
     // A real follower node syncs from the gateway's /peer surface.
-    const followerPort = 33_000 + Math.floor(Math.random() * 2000);
+    const followerPort = await freePort();
     follower = spawn(process.execPath, [join(l1Root, "dist", "src", "cli.js"), "node", "--genesis", join(root, "a", "genesis.json"), "--data", join(root, "follower"), "--host", "127.0.0.1", "--port", String(followerPort), "--peer", `${base}/peer`], { cwd: l1Root, stdio: "ignore" });
     const followerAt = async () => { const r = await fetch(`http://127.0.0.1:${followerPort}/status`, { headers: { "x-zyron-rpc-version": "1" } }); return (await r.json()) as { height: number; tipHash: string }; };
     await until("follower synced to the durable height", async () => (await followerAt()).height === h1);
@@ -125,17 +127,22 @@ test("cold start from a snapshot behind the tip: followers never held a block th
     const lostTip = (await json(base, "/status")).body.height;
     // The instance loses its disk; the next start restores the published (stale) snapshot.
     await network.shutdown(); network = undefined;
-    const followerPort2 = followerPort + 1;
+    const followerPort2 = await freePort();
     const restored = await api.restoreNetwork(join(root, "b"), api.openSnapshot(publishedSealed, secret), chainId);
     assert.ok(restored.height < lostTip, "the restore is behind the tip that was finalized before the restart");
     // The follower now points at the restored gateway (new port, same chain).
     follower?.kill("SIGTERM"); await sleep(1_000);
-    network = await api.runNetwork(join(root, "b"), { gatewayPort: 0, basePort: 19300 + Math.floor(Math.random() * 500) * 4, log: false, stateSecret: secret, persistence: { mode: "snapshot-restore", restoredHeight: restored.height }, verifiedHistory: restored.verifiedHistory, durable });
+    assert.equal(restored.genesisHash, expectedGenesis, "the restore is of the same genesis");
+    const restoredBasePort = await allocateValidatorBasePort("durable-watermark");
+    network = await api.runNetwork(join(root, "b"), { gatewayPort: 0, basePort: restoredBasePort, log: false, stateSecret: secret, persistence: { mode: "snapshot-restore", restoredHeight: restored.height }, verifiedHistory: restored.verifiedHistory, durable });
     base = `http://127.0.0.1:${network.port}`;
     await until("restored chain finalizes past the lost tip", async () => (await json(base, "/status")).body.height > lostTip);
+    // A port collision with another test's network would answer with a foreign chain; name the port that answered.
+    const where = `gateway port ${network.port}, validator base port ${restoredBasePort}`;
+    assert.equal((await json(base, "/status")).body.genesisHash, expectedGenesis, `restored gateway answers for the expected genesis (${where})`);
     for (let from = 1; from <= h1; from += 20) {
       const blocks = (await json(base, `/blocks?from=${from}&limit=20`)).body.blocks as Array<{ height: number; hash: string }>;
-      for (const b of blocks) if (b.height <= h1) assert.equal(b.hash, served[b.height - 1], `block ${b.height} served to followers is unchanged after the restore`);
+      for (const b of blocks) if (b.height <= h1) assert.equal(b.hash, served[b.height - 1], `block ${b.height} served to followers is unchanged after the restore (${where})`);
     }
     const ps = (await json(base, "/peer/status")).body;
     assert.equal(ps.height, h1, "after the restore, followers still see only the durable prefix");

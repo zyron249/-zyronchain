@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { allocateValidatorBasePort } from "./helpers/open-testnet-ports.js";
 
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -343,7 +344,7 @@ test("the gateway does not seal history corrupted on one validator's disk into t
     // Same-length corruption of block 50 in the first validator's log after
     // the restore; its checkpoint fast path accepts it on open.
     const { original, corrupted } = corruptBlockHashSync(join(target, "data-v1", "blocks.ndjson"));
-    const basePort = 21_000 + Math.floor(Math.random() * 2_000) * 4;
+    const basePort = await allocateValidatorBasePort("restore-log-digest");
     network = await api.runNetwork(target, { gatewayPort: 0, basePort, log: false, stateSecret: SECRET, persistence: { mode: "snapshot-restore" } });
     assert.ok(await network.waitForQuorum(120_000), "validators did not reach a quorum");
     const base = `http://127.0.0.1:${network.port}`;

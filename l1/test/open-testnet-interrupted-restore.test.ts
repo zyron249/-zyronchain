@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import test from "node:test";
+import { allocateValidatorBasePort } from "./helpers/open-testnet-ports.js";
 
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
 const script = join(l1Root, "scripts", "open-testnet.mjs");
@@ -82,8 +83,8 @@ async function publishSnapshot(root: string) {
   return { source, network, secret, server, url: `http://127.0.0.1:${(server.address() as { port: number }).port}/state.enc` };
 }
 
-function startHosted(target: string, published: { secret: string; url: string }) {
-  const basePort = 23_000 + Math.floor(Math.random() * 1_000) * 4;
+async function startHosted(target: string, published: { secret: string; url: string }) {
+  const basePort = await allocateValidatorBasePort("interrupted-restore");
   const child = spawn(process.execPath, [script, "run", "--dir", target, "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
     "--chain-id", CHAIN_ID, "--validator-base-port", String(basePort), "--restore-url", published.url], {
     cwd: l1Root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ZYRON_TESTNET_STATE_SECRET: published.secret, PORT: "" }
@@ -91,7 +92,7 @@ function startHosted(target: string, published: { secret: string; url: string })
   const output = { log: "" };
   child.stdout!.on("data", (c) => { output.log += c; });
   child.stderr!.on("data", (c) => { output.log += c; });
-  return { child, output };
+  return { child, output, basePort };
 }
 
 async function stop(child: ChildProcess | undefined) {
@@ -115,7 +116,7 @@ test("an interrupted restore leaves a partial directory; the next start removes 
     await cp(join(source, "genesis.json"), join(target, "genesis.json"));
     await cp(join(source, "data-v1"), join(target, "data-v1"), { recursive: true });
 
-    const hosted = startHosted(target, published);
+    const hosted = await startHosted(target, published);
     child = hosted.child;
     const port = await until("gateway listening line", async () => Number(/gateway listening on 127\.0\.0\.1:(\d+)/.exec(hosted.output.log)?.[1] ?? 0) || false, 30_000);
     const status = await until("chain served", async () => {
@@ -154,7 +155,7 @@ test("a network.json torn by a crash is not a completion marker; the next start 
     const tornLength = Math.floor(marker.length / 2);
     await truncate(join(target, "network.json"), tornLength);
 
-    const hosted = startHosted(target, published);
+    const hosted = await startHosted(target, published);
     child = hosted.child;
     const port = await until("gateway listening line", async () => Number(/gateway listening on 127\.0\.0\.1:(\d+)/.exec(hosted.output.log)?.[1] ?? 0) || false, 30_000);
     const status = await until("chain served or start-up crashed", async () => {
