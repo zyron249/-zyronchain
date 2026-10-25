@@ -10,6 +10,18 @@ export interface MempoolOptions {
   fixedTransferFeeAtoms?: number;
   /** Per-sender pending cap. Unset: no count cap beyond the caller's other checks. */
   maxPendingPerSender?: number;
+  /**
+   * Non-mining slots that only protocol transactions (every non-transfer,
+   * non-mining kind) may use. Transfers fill at most capacity minus this.
+   * Unset: min(DEFAULT_MEMPOOL_PROTOCOL_RESERVE, floor(capacity / 8)).
+   * Mempool admission policy only; block validity is unaffected.
+   */
+  protocolReserve?: number;
+  /**
+   * Byte analogue of `protocolReserve`. Unset: 1 MiB at the default byte
+   * capacity, 0 for a caller-chosen byte capacity.
+   */
+  protocolReserveBytes?: number;
 }
 
 const REPLACEMENT_BUMP_NUMERATOR = 11n;
@@ -18,6 +30,10 @@ export const MAX_MINING_MEMPOOL_CLAIMS = 256;
 export const DEFAULT_MEMPOOL_NON_MINING_CAPACITY = 10_000;
 export const DEFAULT_MEMPOOL_NON_MINING_MAX_BYTES = 64 * 1024 * 1024;
 export const DEFAULT_MINING_MEMPOOL_MAX_BYTES = 4 * 1024 * 1024;
+/** Default protocol-only reserve (slots) inside the non-mining capacity. */
+export const DEFAULT_MEMPOOL_PROTOCOL_RESERVE = 256;
+/** Default protocol-only reserve (bytes) inside the non-mining byte capacity. */
+export const DEFAULT_MEMPOOL_PROTOCOL_RESERVE_BYTES = 1024 * 1024;
 
 type EvictionCandidate = { txid: string; tx: Transaction };
 
@@ -33,6 +49,10 @@ export class Mempool {
   private nonMiningSize = 0;
   private miningBytes = 0;
   private nonMiningBytes = 0;
+  private transferSize = 0;
+  private transferBytes = 0;
+  private readonly protocolReserve: number;
+  private readonly protocolReserveBytes: number;
   private nonMiningEvictionCacheValid = false;
   private nonMiningEvictionCache: EvictionCandidate | undefined;
   private readonly pendingBySender = new Map<string, number>();
@@ -73,6 +93,18 @@ export class Mempool {
     this.disableFeeReplacement = options?.disableFeeReplacement === true;
     this.fixedTransferFeeAtoms = options?.fixedTransferFeeAtoms;
     this.maxPendingPerSender = options?.maxPendingPerSender;
+    this.protocolReserve = options?.protocolReserve ??
+      Math.min(DEFAULT_MEMPOOL_PROTOCOL_RESERVE, Math.floor(this.maxNonMiningSize / 8));
+    this.protocolReserveBytes = options?.protocolReserveBytes ??
+      (this.maxNonMiningBytes === DEFAULT_MEMPOOL_NON_MINING_MAX_BYTES ? DEFAULT_MEMPOOL_PROTOCOL_RESERVE_BYTES : 0);
+    if (!Number.isSafeInteger(this.protocolReserve) || this.protocolReserve < 0 ||
+        this.protocolReserve >= this.maxNonMiningSize) {
+      throw new Error("Invalid protocol mempool reserve");
+    }
+    if (!Number.isSafeInteger(this.protocolReserveBytes) || this.protocolReserveBytes < 0 ||
+        this.protocolReserveBytes >= this.maxNonMiningBytes) {
+      throw new Error("Invalid protocol mempool byte reserve");
+    }
     if (this.fixedTransferFeeAtoms !== undefined &&
         (!Number.isSafeInteger(this.fixedTransferFeeAtoms) || this.fixedTransferFeeAtoms < 1)) {
       throw new Error("Invalid fixed transfer fee");
@@ -130,9 +162,16 @@ export class Mempool {
         }
         this.deleteTransaction(weakest.txid, weakest.tx);
       }
-    } else if (this.nonMiningSize >= this.maxNonMiningSize ||
-        this.nonMiningBytes + txBytes > this.maxNonMiningBytes) {
-      if (this.disableFeeReplacement) throw new Error("Mempool full");
+    } else if (tx.kind === "transfer"
+      ? (this.nonMiningSize >= this.maxNonMiningSize ||
+          this.nonMiningBytes + txBytes > this.maxNonMiningBytes ||
+          this.transferSize >= this.maxNonMiningSize - this.protocolReserve ||
+          this.transferBytes + txBytes > this.maxNonMiningBytes - this.protocolReserveBytes)
+      : (this.nonMiningSize >= this.maxNonMiningSize ||
+          this.nonMiningBytes + txBytes > this.maxNonMiningBytes)) {
+      // Protocol txs may always evict the lowest-priority transfer (even under
+      // fixed-fee-v1), so transfers cannot starve them (Red Team S1 LOW #4).
+      if (this.disableFeeReplacement && tx.kind === "transfer") throw new Error("Mempool full");
       const eviction = this.lowestPriorityEvictableTransfer();
       if (!eviction || (tx.kind === "transfer" && !hasRequiredFeeRateBump(eviction.tx, tx)) ||
           this.nonMiningBytes - transactionBytes(eviction.tx) + txBytes > this.maxNonMiningBytes) {
@@ -260,6 +299,10 @@ export class Mempool {
     } else {
       this.nonMiningSize += direction;
       this.nonMiningBytes += direction * bytes;
+      if (tx.kind === "transfer") {
+        this.transferSize += direction;
+        this.transferBytes += direction * bytes;
+      }
     }
     if (this.miningSize < 0 || this.nonMiningSize < 0 || this.miningBytes < 0 || this.nonMiningBytes < 0 ||
         this.miningBytes > this.maxMiningBytes || this.nonMiningBytes > this.maxNonMiningBytes ||
