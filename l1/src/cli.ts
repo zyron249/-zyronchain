@@ -25,6 +25,7 @@ import {
   RPC_API_VERSION,
   type ConsensusPeerClient
 } from "./node.js";
+import { MEMPOOL_MIN_FEE_ENV, parseMempoolMinFeeAtoms } from "./mempool.js";
 import { ChainStore, NodeDataDirectoryLease, SigningJournal } from "./storage.js";
 import { createSignedPeerRecord, loadOrCreateNodeIdentity } from "./peer-identity.js";
 import { PeerReputationStore } from "./peer-reputation.js";
@@ -318,7 +319,7 @@ async function runNode(args: string[]): Promise<void> {
   assertKnownOptions(args, new Set([
     "--genesis", "--data", "--host", "--port", "--peer", "--advertise-peer", "--validator-key", "--peer-token-file",
     "--trusted-peer-public-key", "--rpc-trusted-proxy", "--p2p-listen", "--p2p-peer", "--p2p-peer-group", "--validator-signer-url",
-    "--validator-public-key", "--validator-signer-token-file", "--validator-signer-allow-v6", "--ready-max-tip-age-ms",
+    "--validator-public-key", "--validator-signer-token-file", "--validator-signer-allow-v6", "--ready-max-tip-age-ms", "--mempool-min-fee-atoms",
     "--p2p-consensus-peer", "--rpc-rate-limit-exempt", "--rpc-submit-per-minute"
   ]));
   const genesisPath = option(args, "--genesis");
@@ -415,8 +416,14 @@ async function runNode(args: string[]): Promise<void> {
   const peerTokenPath = option(args, "--peer-token-file");
   const peerAuthToken = peerTokenPath ? await readAuthToken(resolve(peerTokenPath), "Peer") : undefined;
   const readyMaxTipAgeText = option(args, "--ready-max-tip-age-ms");
+  const minFeeFlag = option(args, "--mempool-min-fee-atoms");
+  // The flag wins over the env var; either one fails closed on a bad value.
+  const mempoolMinTransferFeeAtoms = minFeeFlag !== undefined
+    ? parseMempoolMinFeeAtoms(minFeeFlag === "" ? "invalid" : minFeeFlag)
+    : parseMempoolMinFeeAtoms(process.env[MEMPOOL_MIN_FEE_ENV], MEMPOOL_MIN_FEE_ENV);
   const service = new NodeService(store, journal, validatorSigner, {
-    readinessMaxTipAgeMs: readyMaxTipAgeText === undefined ? undefined : parseSafeInteger(readyMaxTipAgeText, "ready-max-tip-age-ms")
+    readinessMaxTipAgeMs: readyMaxTipAgeText === undefined ? undefined : parseSafeInteger(readyMaxTipAgeText, "ready-max-tip-age-ms"),
+    mempoolMinTransferFeeAtoms
   });
   const advertisedPeerUrls = options(args, "--advertise-peer");
   const trustedPeerPublicKeys = options(args, "--trusted-peer-public-key");

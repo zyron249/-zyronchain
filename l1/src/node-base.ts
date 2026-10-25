@@ -133,6 +133,11 @@ export const READINESS_MAX_SYNC_LAG_BLOCKS = 1;
 export interface NodeServiceOptions {
   /** Finalized-tip age above which /readyz reports `stale-tip` (default DEFAULT_READINESS_MAX_TIP_AGE_MS). */
   readinessMaxTipAgeMs?: number | undefined;
+  /**
+   * Red Team M2 option A: mempool/relay floor for `transfer` fees (default 0,
+   * off). Ignored under fixed-fee-v1. Never a block-validity rule.
+   */
+  mempoolMinTransferFeeAtoms?: number | undefined;
 }
 
 /**
@@ -521,9 +526,16 @@ export class NodeService {
     // A test double may omit genesis. No genesis means the historical fee rules.
     const policy = store.chain.genesis ? readFeePolicy(store.chain.genesis) : undefined;
     const mempoolOptions: MempoolOptions = { maxPendingPerSender: MAX_MEMPOOL_PENDING_PER_SENDER };
+    const minFee = options.mempoolMinTransferFeeAtoms;
+    // Fails closed even when fixed-fee-v1 would ignore the value.
+    if (minFee !== undefined && (!Number.isSafeInteger(minFee) || minFee < 0)) {
+      throw new Error("Invalid minimum transfer fee");
+    }
     if (policy) {
       mempoolOptions.disableFeeReplacement = true;
       mempoolOptions.fixedTransferFeeAtoms = policy.fixedTransferFeeAtoms;
+    } else if (minFee !== undefined) {
+      mempoolOptions.minTransferFeeAtoms = minFee;
     }
     this.mempool = new Mempool(undefined, undefined, undefined, undefined, mempoolOptions);
   }
