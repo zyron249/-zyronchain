@@ -9,6 +9,7 @@ on:
       - 'l1/package-lock.json'
       - 'l1/tsconfig*.json'
       - '.github/workflows/supply-verifier-reproducible.yml'
+      - 'package.json'
   push:
     branches:
       - main
@@ -19,6 +20,7 @@ on:
       - 'l1/package-lock.json'
       - 'l1/tsconfig*.json'
       - '.github/workflows/supply-verifier-reproducible.yml'
+      - 'package.json'
 
 permissions:
   contents: read
@@ -50,22 +52,31 @@ jobs:
             dir="${RUNNER_TEMP}/clone-${n}"
             git clone --quiet --no-local "${GITHUB_WORKSPACE}" "${dir}"
             git -C "${dir}" checkout --quiet --detach "${SOURCE_SHA}"
-            (cd "${dir}" && node tools/supply-verifier/build.mjs --clean-l1 >/dev/null)
-            (cd "${dir}" && node tools/supply-verifier/hash.mjs) | tee "${RUNNER_TEMP}/hash-${n}.txt"
+            (cd "${dir}" && node tools/supply-verifier/pin-hash.mjs --print) | tee "${RUNNER_TEMP}/hash-${n}.txt"
           done
           if ! cmp -s "${RUNNER_TEMP}/hash-1.txt" "${RUNNER_TEMP}/hash-2.txt"; then
             echo "::error::supply-verifier tar sha256 differs between two fresh builds"
             exit 1
           fi
           expected="tools/supply-verifier/EXPECTED_SHA256"
-          if [ -f "${expected}" ]; then
-            want="$(awk 'NF {print $1; exit}' "${expected}")"
-            got="$(awk '{print $1}' "${RUNNER_TEMP}/hash-1.txt")"
-            if [ "${want}" != "${got}" ]; then
-              echo "::error::tar sha256 ${got} does not match ${expected} (${want})"
-              exit 1
-            fi
-            echo "matches ${expected}"
-          else
-            echo "no ${expected} committed; only build-to-build equality is checked"
+          if [ ! -f "${expected}" ]; then
+            echo "::error::${expected} is missing. Run 'npm run pin-hash' with Node $(cat tools/supply-verifier/.nvmrc) and commit ${expected} (see CONTRIBUTING.md)."
+            exit 1
           fi
+          if ! node tools/supply-verifier/pin-hash.mjs --validate; then
+            echo "::error::${expected} is malformed: it must hold exactly 64 lowercase hex characters, optionally followed by whitespace and a filename."
+            exit 1
+          fi
+          want="$(awk 'NF {print $1; exit}' "${expected}")"
+          got="$(awk '{print $1}' "${RUNNER_TEMP}/hash-1.txt")"
+          if [ "${want}" != "${got}" ]; then
+            echo "::error::supply-verifier tar sha256 ${got} does not match ${expected} (${want})."
+            echo "On pull requests CI hashes the test merge with main, not your PR head."
+            echo "If you changed l1/src or the verifier on purpose: merge the latest origin/main into your"
+            echo "branch (a normal merge, never a rebase), then run 'npm run pin-hash' at the repository root"
+            echo "with Node $(cat tools/supply-verifier/.nvmrc) and commit ${expected} in this PR (see CONTRIBUTING.md)."
+            echo "Never update the pin to hide a mismatch nobody can explain: that means the build is"
+            echo "no longer reproducible or its inputs changed unexpectedly. Investigate first."
+            exit 1
+          fi
+          echo "matches ${expected}: ${got}"

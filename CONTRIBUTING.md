@@ -46,6 +46,30 @@ Copy [`.env.example`](.env.example) as a variable checklist. The processes do no
 4. **No hidden admin authority.** Do not introduce emergency mint, recovery, or founder-only bypasses.
 5. **Keep canonical and legacy separate.** Do not rebrand `zyron-testnet-1` or the quarantined Render hostname as the canonical L1.
 
+## Supply-verifier pin
+
+`tools/supply-verifier/EXPECTED_SHA256` pins the hash of the reproducible supply-verifier
+tar, which bundles `l1/src`. Any change under `l1/src` or `tools/supply-verifier` can make
+the `Supply Verifier Reproducible Build` check fail with a hash mismatch. If you made that
+change on purpose, first merge the latest `origin/main` into your branch (a normal merge,
+never a rebase), because on pull requests CI hashes the test merge with `main`, not your
+PR head. Then run this at the repository root with the Node version in
+`tools/supply-verifier/.nvmrc`:
+
+```sh
+npm run pin-hash
+```
+
+Then commit `EXPECTED_SHA256` in the same PR and say why the verifier output changed.
+Any `EXPECTED_SHA256` bump needs the security reviewer (Zyron Security) to rebuild
+independently with `npm run pin-hash` on the same merged tree and confirm the hash
+before the PR merges. The same rule applies to any PR that edits
+`tools/supply-verifier/*.mjs` (for example `pin-hash.mjs`, `build.mjs` or `hash.mjs`),
+because CI runs those scripts from the PR's own tree; the reviewer rebuilds with the
+scripts from `main`.
+Never update the pin to hide a mismatch nobody can explain. See
+[tools/supply-verifier/README.md](tools/supply-verifier/README.md).
+
 ## Security reports
 
 Follow [`SECURITY.md`](SECURITY.md). Do not open a public issue that includes exploit details, keys, or live endpoints.
