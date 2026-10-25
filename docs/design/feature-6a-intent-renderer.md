@@ -1,6 +1,6 @@
 # Feature 6A: shared fail-closed intent renderer (design)
 
-Status: **design proposal, awaiting Security review. No code until approved.**
+Status: **design approved by Security subject to the required conditions in section 10.**
 Parent document: section 3 of `docs/design/differentiating-features.md` (PR #1126).
 Consensus impact: **none**. Ships with the wallet and signer tooling only.
 
@@ -67,7 +67,7 @@ validator update, oracle governance, protocol upgrade, messages, arbitrary JSON)
 | Field | Rendered as |
 |---|---|
 | `kind` | `Transfer` |
-| `version` | `2` (v1 is refused, see open question 1) |
+| `version` | `2` (v1 is refused, see resolved question 1) |
 | `chainId` | verbatim; must match the chain ID regex |
 | `sender` | checksummed address (`toChecksumAddress`, ZMC-1) |
 | `receiver` | checksummed address |
@@ -107,9 +107,8 @@ exact integers. The same file is consumed by the PWA and Snap tests.
 
 1. CLI signer (`cli.ts` transfer): render, print, require confirmation
    (or `--yes` for scripts, still rendered to stderr), then sign. Core PR.
-2. `remote-signer-service.ts`: no transfer intent exists. The core PR adds no new
-   intent; it adds a guard so a future transfer intent must go through
-   `renderIntent`. Validator consensus intents keep their existing validators.
+2. `remote-signer-service.ts`: no transfer intent exists, and 6A adds none. A
+   test fails if a transfer-named intent is added without `renderIntent`. Validator consensus intents keep their existing validators.
 3. PWA (`zyron-wallet-core.js`) and Snap: separate Wallet Dev PR, using the same
    vectors; `describeTransfer` and Snap `ui.tsx` take their rows from the vectors'
    format. Parity test as for send warnings.
@@ -144,21 +143,40 @@ supply-verifier pin and is batched per the interim pin policy.
 therefore built byte-exact from day one, but 6A itself is advisory and not
 consensus-critical.
 
-## 10. Open questions
+## 10. Required conditions (Security approval)
 
-1. `createTransfer` defaults to `version = 1` (no signing domain). Should the
-   renderer refuse v1 (proposed), or render it with a "legacy, no domain" line?
-2. Amounts are `number`, not BigInt, in `types.ts`. The renderer converts with
-   `BigInt()` after safe-integer checks; is that sufficient, or should 6B move to
-   string atoms?
-3. Snap does not show `timestampMs` and `publicKey`; the PWA should be checked too.
-   Showing all fields may need a collapsed "details" section; is that acceptable as
-   "rendered"?
-4. Snap computes `Total` with `number` addition; move it to the shared formatter.
-5. Should the CLI `--yes` flag exist at all for transfers?
-6. Should the remote signer ever sign transfers? Proposed: not in 6A.
+- **R1 Single signing path.** `signTransfer`/`createTransfer` take the
+  `RenderedIntent` (or its rebuilt bytes) and sign only those. There is no path where
+  a caller passes its own payload after rendering.
+- **R2 Canonical input only.** The payload must carry the exact canonical address
+  string. A non-canonical (mixed-case) address in the payload is refused, never
+  normalized. Normalization happens only at user input, before the payload is built.
+  The mixed-case vectors test refusal.
+- **R3 chainId allowlist.** Only the known testnet chain IDs, matching the PWA's
+  `describeTransfer`. Mainnet IDs are added only on the owner's mainnet activation,
+  with a renderer version bump.
+- **R4 publicKey binding.** Before signing, the signer checks that the payload's
+  `publicKey` equals its own key and that `sender` is derived from it.
 
-## 11. Timeline
+## 11. Resolved questions
+
+1. **v1 refused.** The same core PR switches the CLI and PWA transfer defaults to
+   v2. A later, activation-gated consensus deprecation of v1 is future work only.
+2. **Number amounts are acceptable.** Each value is checked with
+   `Number.isSafeInteger` before `BigInt()`, and the total is computed in BigInt.
+   String atoms come with 6B.
+3. **Collapsing.** Only `publicKey`, `timestampMs` and the domain may be collapsed
+   into a details section, and only together with R4. Kind, chainId, sender,
+   receiver, amount, fee, total and nonce are on the first screen, covered by a Snap
+   UI test.
+4. **Snap total** uses the shared BigInt formatter.
+5. **`--yes` stays.** It still prints the full render to stderr and can never be
+   enabled by env or config. Optional `--expect-receiver` and `--expect-amount`
+   flags add a fail-closed check.
+6. **No transfers in `remote-signer-service`.** A test fails if a transfer-named
+   intent is added without `renderIntent`.
+
+## 12. Timeline
 
 - Design to Security: Oct 27, 18:00 ET.
 - Core PR (module, vectors, CLI, signer guard): Oct 30, after design approval.

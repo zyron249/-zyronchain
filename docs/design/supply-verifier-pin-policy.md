@@ -1,7 +1,6 @@
 # Supply-verifier pin policy (threat-model proposal)
 
-Status: **proposal for Security review. Not a decision.** The current rule in
-`CONTRIBUTING.md` stays in force until Patron decides otherwise.
+Status: **threat-model comparison. Decision recorded below: rule A kept.**
 
 ## Background
 
@@ -32,16 +31,17 @@ computes the hash and reports it as info (job summary), without failing.
 Neither option removes the need for an independent rebuild; they differ in how
 often it happens and when a mismatch is caught.
 
+## Decision
+
+Patron kept rule A, with no exception.
+
 ## Interim policy (in force now)
 
-Batch `l1/src` changes so there is one pin rebuild per batch: the core PRs of a
-batch are reviewed as usual, and the pin is refreshed once, on the last PR of the
-batch (or a dedicated pin PR merged last), with one Security rebuild. Open point:
-under rule A the pin check fails on the earlier PRs of a batch, so the batch needs
-an explicit, recorded exception for that check from Patron.
+Batch `l1/src` changes inside ONE PR. Run `npm run pin-hash` once at the end of that
+PR, and Security does one independent rebuild before merge.
 
-## Suggested option (proposal only)
+## Documented alternative (not adopted)
 
-B, combined with a protected-branch rule that main is never released with a failing
-pin check, and the same Security rebuild rule at each release tag. This is offered
-for discussion; the decision belongs to Patron after Security review.
+Option B stays documented as the alternative only. If it is ever adopted, Security's
+conditions apply: at each release tag, rebuild using the scripts from main at that
+tag, and treat a red pin check on main as a release blocker.
