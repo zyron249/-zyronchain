@@ -62,6 +62,8 @@ test("package mine scripts now route only to retired, fail-closed entry points",
   };
   assert.equal(pkg.scripts.mine, "node scripts/mine.mjs");
   assert.match(pkg.scripts["mine:local"] ?? "", /local-devnet\.mjs --local-v5/);
-  assert.equal(pkg.scripts["devnet:check"], "npm run build && node scripts/local-devnet.mjs --check");
+  assert.equal(pkg.scripts["devnet:check"], "npm run build && node scripts/local-devnet.mjs --check --v6");
   assert.doesNotMatch(pkg.scripts["devnet:check"], /local-v5/);
+  assert.equal(pkg.scripts["devnet:check:v1-legacy"], "npm run build && node scripts/local-devnet.mjs --check");
+  assert.doesNotMatch(pkg.scripts["devnet:check:v1-legacy"], /local-v5/);
 });

@@ -206,7 +206,7 @@ try {
     assert.equal(keys[name].cipher, 'aes-256-gcm');
     assert.equal(Object.hasOwn(keys[name], 'privateKey'), false);
   }
-  const chainId = `zyron-local-${randomBytes(8).toString('hex')}`;
+  const chainId = "zyron-devnet-1"; // 6A R3: the CLI signs only the fixed chain ID list (local, throwaway data directory)
   command('a', 'genesis', '--out', 'genesis.json', '--chain-id', chainId,
     '--validator-public-key', keys.a.publicKey, '--validator-public-key', keys.b.publicKey,
     '--oracle-public-key', keys.oracle.publicKey, '--activity-pool', keys.oracle.address,
@@ -232,7 +232,7 @@ try {
     }
   }
   command('a', 'transfer', '--key', keyFile('a'), '--rpc', `http://127.0.0.1:${portA}`, '--chain-id', chainId,
-    '--to', keys.b.address, '--amount-atoms', '100000000', '--fee-atoms', '1000');
+    '--to', keys.b.address, '--amount-atoms', '100000000', '--fee-atoms', '1000', '--yes');
   const transferred = await waitFor('transfer finalized by both validators', async () => {
     const state = await pair(initial.a.height + 1);
     if (!state) return false;

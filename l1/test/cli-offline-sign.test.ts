@@ -75,11 +75,12 @@ test("transfer-sign produces a consensus-valid transfer offline and tx-submit br
   try {
     const w = await wallet(root);
     const env = { ZYRON_KEYSTORE_PASSWORD_FILE: w.passwordPath };
-    const chainId = "zyron-offline-sign-test";
+    // Feature 6A: the CLI signs only the fixed R3 chain IDs and only version 2 (protocol >= 3).
+    const chainId = "zyron-devnet-1";
     const out = join(root, "tx.json");
     const { stdout } = await cli([
       "transfer-sign", "--key", w.keyPath, "--chain-id", chainId, "--to", receiver,
-      "--amount-atoms", "150000000", "--fee-atoms", "1000", "--nonce", "1", "--tx-version", "1", "--out", out
+      "--amount-atoms", "150000000", "--fee-atoms", "1000", "--nonce", "1", "--yes", "--out", out
     ], env);
     assert.match(stdout, /Transaction ID: [0-9a-f]{64}/);
     const text = await readFile(out, "utf8");
@@ -88,6 +89,7 @@ test("transfer-sign produces a consensus-valid transfer offline and tx-submit br
     validateTransactionShape(tx);
     assert.equal(tx.kind, "transfer");
     assert.equal(tx.sender, w.address);
+    assert.equal(tx.version, 2, "transfer-sign defaults to version 2");
 
     // The offline-signed transfer is accepted by consensus admission on a chain that funds the sender.
     const validatorPrivate = "63".padStart(64, "0");
@@ -101,18 +103,26 @@ test("transfer-sign produces a consensus-valid transfer offline and tx-submit br
       activityPool: poolAddress,
       allocations: [{ address: poolAddress, amountAtoms: 0 }, { address: w.address, amountAtoms: 1_000_000_000 }]
     };
-    const chain = new ZyronChain(genesis);
+    // Version-2 transfers are valid from protocol 3; schedule it from genesis like the protocol-schedule tests do.
+    const atProtocol3 = (config: GenesisConfig) => {
+      const created = new ZyronChain(config);
+      (created as unknown as { protocolSchedule: Map<number, number> }).protocolSchedule.set(0, 3);
+      return created;
+    };
+    const chain = atProtocol3(genesis);
     assert.doesNotThrow(() => chain.validateMempoolAdmission(tx));
+    // A protocol-1 chain still rejects the version-2 transfer (consensus is unchanged).
+    assert.throws(() => new ZyronChain(genesis).validateMempoolAdmission(tx), /Transaction version 2 is not valid under protocol version 1/);
 
     // A different chain ID must not accept it (replay protection is in the signed payload).
-    const other = new ZyronChain({ ...genesis, chainId: "zyron-other-chain" });
+    const other = atProtocol3({ ...genesis, chainId: "zyron-other-chain" });
     assert.throws(() => other.validateMempoolAdmission(tx));
 
-    // Version 2 (protocol >= 3) signing also produces a valid transfer.
+    // Explicit --tx-version 2 also produces a valid transfer.
     const outV2 = join(root, "tx-v2.json");
     await cli([
       "transfer-sign", "--key", w.keyPath, "--chain-id", chainId, "--to", receiver,
-      "--amount-atoms", "1", "--nonce", "2", "--tx-version", "2", "--out", outV2
+      "--amount-atoms", "1", "--nonce", "2", "--tx-version", "2", "--yes", "--out", outV2
     ], env);
     const txV2 = JSON.parse(await readFile(outV2, "utf8")) as Transaction;
     validateTransactionShape(txV2);
@@ -138,21 +148,21 @@ test("transfer-sign produces a consensus-valid transfer offline and tx-submit br
   }
 });
 
-test("transfer-sign requires explicit nonce, tx-version and a valid receiver; never overwrites", async () => {
+test("transfer-sign requires explicit nonce and a valid receiver, refuses tx-version 1; never overwrites", async () => {
   const root = await mkdtemp(join(tmpdir(), "zyron-offline-sign-args-"));
   try {
     const w = await wallet(root);
     const env = { ZYRON_KEYSTORE_PASSWORD_FILE: w.passwordPath };
-    const base = ["transfer-sign", "--key", w.keyPath, "--chain-id", "zyron-devnet-1", "--amount-atoms", "5"];
+    const base = ["transfer-sign", "--key", w.keyPath, "--chain-id", "zyron-devnet-1", "--amount-atoms", "5", "--yes"];
     const out = join(root, "tx.json");
-    await assert.rejects(cli([...base, "--to", receiver, "--tx-version", "1", "--out", out], env), /--nonce/);
-    await assert.rejects(cli([...base, "--to", receiver, "--nonce", "1", "--out", out], env), /--tx-version/);
-    await assert.rejects(cli([...base, "--to", receiver, "--nonce", "0", "--tx-version", "1", "--out", out], env), /next account nonce/);
-    await assert.rejects(cli([...base, "--to", receiver, "--nonce", "1", "--tx-version", "3", "--out", out], env), /tx-version must be 1 or 2/);
-    await assert.rejects(cli([...base, "--to", "ZYNnot-an-address", "--nonce", "1", "--tx-version", "1", "--out", out], env));
-    await assert.rejects(cli([...base, "--to", w.address, "--nonce", "1", "--tx-version", "1", "--out", out], env), /differ from the sender/);
-    await cli([...base, "--to", receiver, "--nonce", "1", "--tx-version", "1", "--out", out], env);
-    await assert.rejects(cli([...base, "--to", receiver, "--nonce", "1", "--tx-version", "1", "--out", out], env), /EEXIST/);
+    await assert.rejects(cli([...base, "--to", receiver, "--tx-version", "2", "--out", out], env), /--nonce/);
+    await assert.rejects(cli([...base, "--to", receiver, "--nonce", "1", "--tx-version", "1", "--out", out], env), /tx-version 1 is refused/);
+    await assert.rejects(cli([...base, "--to", receiver, "--nonce", "0", "--tx-version", "2", "--out", out], env), /next account nonce/);
+    await assert.rejects(cli([...base, "--to", receiver, "--nonce", "1", "--tx-version", "3", "--out", out], env), /tx-version must be 2/);
+    await assert.rejects(cli([...base, "--to", "ZYNnot-an-address", "--nonce", "1", "--tx-version", "2", "--out", out], env));
+    await assert.rejects(cli([...base, "--to", w.address, "--nonce", "1", "--tx-version", "2", "--out", out], env), /differ from the sender/);
+    await cli([...base, "--to", receiver, "--nonce", "1", "--tx-version", "2", "--out", out], env);
+    await assert.rejects(cli([...base, "--to", receiver, "--nonce", "1", "--tx-version", "2", "--out", out], env), /EEXIST/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -197,7 +207,7 @@ test("keystore-migrate upgrades v1 to v2 without overwriting; ZYRON_KEYSTORE_PAS
     const out = join(root, "tx.json");
     await cli([
       "transfer-sign", "--key", newPath, "--chain-id", "zyron-devnet-1", "--to", toChecksum(receiver),
-      "--amount-atoms", "5", "--nonce", "1", "--tx-version", "1", "--out", out
+      "--amount-atoms", "5", "--nonce", "1", "--yes", "--out", out
     ], env);
     assert.equal((JSON.parse(await readFile(out, "utf8")) as { receiver: string }).receiver, receiver);
     // Without a password source and without a TTY, the CLI refuses instead of hanging.

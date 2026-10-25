@@ -347,7 +347,7 @@ try {
     await page.click('[data-tx-review]');
     assert.match(await page.textContent('[data-tx-check]'), /testnet or devnet/);
     assert.equal(await visibleScreen(page), 'send', 'a non-testnet chain id never reaches review');
-    await page.fill('[data-tx-chain]', 'zyron-other-testnet');
+    await page.fill('[data-tx-chain]', 'zyron-devnet-1');
     assert.equal(await page.inputValue('[data-tx-version]'), '2', 'other test chains keep version 2 selectable as the default');
     await page.selectOption('[data-tx-version]', '1');
     await page.selectOption('[data-tx-version]', '2');
