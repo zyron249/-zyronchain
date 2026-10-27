@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-labelledby="title">
+<title id="title">ZyronChain mark</title>
+<circle cx="96" cy="96" r="77" fill="none" stroke="#F6B21A" stroke-width="10"/>
+<path d="M71 62h50v13L71 117h50v13H71v-13l50-42H71z" fill="#F6B21A"/>
+<path d="M84 45v17M108 45v17M84 130v17M108 130v17" stroke="#F6B21A" stroke-width="10" stroke-linecap="square"/>
+</svg>
