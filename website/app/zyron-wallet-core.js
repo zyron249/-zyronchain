@@ -729,13 +729,21 @@
     return true;
   }
 
+  // Callers run this before sendWarnings: a malformed own address makes sendWarnings throw (fail closed,
+  // #1143), and the user needs a message about their own wallet, not about the receiver they typed.
+  const OWN_ADDRESS_INVALID_MESSAGE = "This wallet's own address could not be read, so the send-safety checks cannot run and nothing was signed. Lock the wallet and unlock it again. If this keeps happening, restore the wallet from your recovery phrase.";
+  function assertOwnAccount(account) {
+    try { parseAddressInput(account && account.address); } catch (_) { throw new Error(OWN_ADDRESS_INVALID_MESSAGE); }
+    return account;
+  }
+
   const api = Object.freeze({
     DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_VERSION_V1, SELF_SEND_MESSAGE, VAULT_KDF, MAX_VAULT_TEXT, BOOK_MAX_CONTACTS, BOOK_MAX_SENT, BOOK_NAME_MAX, LOOKALIKE_MIN_SHARED, LOOKALIKE_MAX_DIFF, LOOKALIKE_MAX_COMPARISONS, LOOKALIKE_MAX_MATCHES, ATOMS_PER_ZYN, FIXED_TRANSFER_FEE_ATOMS, FIXED_SUPPLY_V1_CHAIN_IDS, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
     TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, WALLET_TESTNET_CHAIN_ID, defaultTransferVersion,
     wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress, displayAddress, addressDiff,
     passwordStrength, normalizePhrase, generateEntropy, entropyToPhrase, phraseToEntropy, deriveAccount,
     createVault, createVaultSession, openVault, upgradeVaultVerified, upgradeMarker, parseUpgradeMarker, isRollback, assertVaultShape, parseVault, upgradeVault, updateVaultBook,
-    emptyBook, parseBook, addContact, updateContact, removeContact, findContact, recordSent, setThreshold, lookalikeMatches, sendWarnings, zynToAtoms, atomsToZyn, buildTransfer, describeTransfer, fixedFeeRejection, signTransfer, verifyCanonical,
+    emptyBook, parseBook, addContact, updateContact, removeContact, findContact, recordSent, setThreshold, lookalikeMatches, sendWarnings, OWN_ADDRESS_INVALID_MESSAGE, assertOwnAccount, zynToAtoms, atomsToZyn, buildTransfer, describeTransfer, fixedFeeRejection, signTransfer, verifyCanonical,
     LINK_SIGNING_DOMAIN, LINK_NETWORK, LINK_RETURN_URL, parseLinkMessage, parseLinkHash, signLinkProof, textToBase64Url,
     selfTest
   });
