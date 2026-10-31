@@ -27,6 +27,22 @@ export const OPEN_TESTNET_PORT_WINDOWS = Object.freeze({
   "restore-not-found-retry": Object.freeze([26_500, 29_000])
 });
 
+// Single fixed ports (default listen ports of long-running helpers). Each sits
+// outside every validator window and below the ephemeral range, and is claimed
+// by exactly one file via openTestnetFixedPort (checked by
+// test/open-testnet-port-claims.test.ts).
+export const OPEN_TESTNET_FIXED_PORTS = Object.freeze({
+  // consensus-relay-client.mjs default --listen; in the gap between smoke and early-listen.
+  "consensus-relay-listen": 21_400
+});
+
+/** The registered fixed port for this name. */
+export function openTestnetFixedPort(name) {
+  const port = OPEN_TESTNET_FIXED_PORTS[name];
+  if (port === undefined) throw new Error(`unknown open-testnet fixed port ${name}`);
+  return port;
+}
+
 /** Throws if any window is empty, too small for one block, reaches the ephemeral range, or overlaps another. */
 export function assertDisjointPortWindows(windows = OPEN_TESTNET_PORT_WINDOWS) {
   const sorted = Object.entries(windows).sort((a, b) => a[1][0] - b[1][0]);
@@ -37,6 +53,16 @@ export function assertDisjointPortWindows(windows = OPEN_TESTNET_PORT_WINDOWS) {
     const [prevName, [, prevHi]] = sorted[i - 1];
     const [name, [lo]] = sorted[i];
     if (lo < prevHi) throw new Error(`open-testnet port windows ${prevName} and ${name} overlap`);
+  }
+}
+
+/** Throws if any fixed port reaches the ephemeral range or falls inside a window. */
+export function assertFixedPortsOutsideWindows(fixed = OPEN_TESTNET_FIXED_PORTS, windows = OPEN_TESTNET_PORT_WINDOWS) {
+  for (const [name, port] of Object.entries(fixed)) {
+    if (!Number.isInteger(port) || port <= 0 || port >= EPHEMERAL_PORT_FLOOR) throw new Error(`open-testnet fixed port ${name} ${port} must be below ${EPHEMERAL_PORT_FLOOR}`);
+    for (const [wname, [lo, hi]] of Object.entries(windows)) {
+      if (port >= lo && port < hi) throw new Error(`open-testnet fixed port ${name} ${port} is inside window ${wname} [${lo}, ${hi})`);
+    }
   }
 }
 // Checked lazily, on the first allocation, not at import: open-testnet.mjs

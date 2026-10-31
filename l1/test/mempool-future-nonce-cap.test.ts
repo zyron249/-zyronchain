@@ -157,7 +157,11 @@ test("FUTURE-CAP: Red Team PoC (gap nonce parks, resubmit says already in mempoo
     const fresh = transfer(g, BOB, 1);
     service.submitTransaction(fresh);
     assert.equal(service.mempool.size, 1);
-    // A resubmitted gap-nonce tx is admitted again rather than reported as already pending.
-    service.submitTransaction(transfer(g, ALICE, 2));
+    // The expired tx is no longer pending: resubmitting the identical bytes is
+    // not reported as already pending, but refused by the seen-expired cache
+    // while the gap is open (Red Team S1 retest LOW-2), and a newly signed tx
+    // for the same nonce is admitted because the slot was freed.
+    assert.throws(() => service.submitTransaction(transfer(g, ALICE, 2)), /expired from this node's mempool while parked \(nonce 2\).*nonce 1/);
+    service.submitTransaction(transfer(g, ALICE, 2, 1_000));
   });
 });
