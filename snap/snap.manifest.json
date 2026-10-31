@@ -7,7 +7,7 @@
     "url": "https://github.com/zyron249/-zyronchain.git"
   },
   "source": {
-    "shasum": "CSLy/a31y9yeT0OhQJYgLUBea5lndgTk9PfG4u5PI4w=",
+    "shasum": "FZ/0Xw7MyzNUQhuTUoL9xRpdENaPQF+wGvSAGuKlkPE=",
     "location": {
       "npm": {
         "filePath": "dist/bundle.js",
@@ -28,7 +28,8 @@
         "path": ["m", "44'", "249249'", "0'", "0", "0"],
         "curve": "secp256k1"
       }
-    ]
+    ],
+    "snap_manageState": {}
   },
   "platformVersion": "12.0.1",
   "manifestVersion": "0.1"

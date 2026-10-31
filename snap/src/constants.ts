@@ -80,4 +80,5 @@ export const RPC_METHODS = {
   signMessage: 'zyron_signMessage',
   getBalance: 'zyron_getBalance',
   sendTransfer: 'zyron_sendTransfer',
+  setWarningThreshold: 'zyron_setWarningThreshold',
 } as const;
