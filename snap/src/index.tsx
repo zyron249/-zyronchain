@@ -21,7 +21,7 @@ import { getAccount, withAccountKey } from './keys';
 import { RpcError, TESTNET_RPC_URL, getAccountState, getStatus, submitTransfer } from './rpc';
 import { fixedFeeRejection, type FeeGuardInput } from './fee-guard';
 import { FeeRejectedWarning, MessageConfirmation, ThresholdConfirmation, TransferConfirmation } from './ui';
-import { loadKnown, saveKnown } from './known-state';
+import { loadKnown, updateKnown } from './known-state';
 import type { KnownAddresses, SendWarning } from './send-warnings';
 import { recordSent, sendWarnings, setThreshold } from './send-warnings';
 import { parseMessageRequest, signMessagePayload } from './zyron/message';
@@ -239,7 +239,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
         assertSameAccount(account, signer);
         return signTransfer(unsigned, privateKey);
       });
-      await saveKnown(recordSent(checks.known, unsigned.receiver));
+      await updateKnown((latest) => recordSent(latest, unsigned.receiver));
       return { transaction } as unknown as Json;
     }
 
@@ -315,7 +315,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
         assertSameAccount(account, signer);
         return signTransfer(unsigned, privateKey);
       });
-      await saveKnown(recordSent(checks.known, unsigned.receiver));
+      await updateKnown((latest) => recordSent(latest, unsigned.receiver));
       const txid = await withRpc(async () => submitTransfer(transaction));
       return {
         network: 'testnet',
@@ -327,9 +327,10 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
 
     case RPC_METHODS.setWarningThreshold: {
       const thresholdAtoms = validated(() => parseThresholdRequest(request.params));
-      const known = await loadKnown();
+      // Unreadable saved data fails closed before the dialog; the write below re-reads the latest data.
+      await loadKnown();
       await confirmOrReject(<ThresholdConfirmation origin={origin} thresholdAtoms={thresholdAtoms} />);
-      await saveKnown(setThreshold(known, thresholdAtoms));
+      await updateKnown((latest) => setThreshold(latest, thresholdAtoms));
       return { thresholdAtoms };
     }
 

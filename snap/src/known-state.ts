@@ -33,3 +33,25 @@ export async function saveKnown(known: KnownAddresses): Promise<void> {
     params: { operation: 'update', newState: { known: book } },
   });
 }
+
+let queue: Promise<unknown> = Promise.resolve();
+
+/**
+ * Applies one change to the latest saved send-warning data. Changes are
+ * serialized inside this Snap instance, and each one re-reads the saved data
+ * right before writing, so a request that waited on a dialog never writes back
+ * a snapshot from before the dialog (which would drop another request's
+ * recipient or threshold change).
+ *
+ * @param change - Pure change applied to the latest validated data.
+ * @returns The saved data.
+ */
+export async function updateKnown(change: (latest: KnownAddresses) => KnownAddresses): Promise<KnownAddresses> {
+  const run = queue.then(async () => {
+    const next = change(await loadKnown());
+    await saveKnown(next);
+    return next;
+  });
+  queue = run.catch(() => undefined);
+  return run;
+}
