@@ -78,13 +78,13 @@ for (const cls of ["builder-body", "builder-arm", "builder-pop", "builder-chip"]
 const flight = builders.buildFlight(make);
 assert.strictEqual(flight.attrs.class, "builder-flight");
 assert.ok(!("transform" in flight.attrs));
-const allowed = new Set(["#f4f7f9", "#d8dce0", "#b1b8c0", "#24282d", "#0a9ff5", "#4fd8fb", "#1ccbfb", "none"]);
+const allowed = new Set(["#faf8f2", "#e6e1d6", "#c2bcae", "#26241f", "#f9b700", "#ffcc33", "#ffc21a", "none"]);
 nodes.forEach((n) => {
   ["fill", "stroke"].forEach((k) => { if (n.attrs[k]) assert.ok(allowed.has(n.attrs[k]), "palette color " + n.attrs[k]); });
   assert.ok(!["image", "use", "script", "foreignObject", "style", "text"].includes(n.tag), "no external, scripted or text content: " + n.tag);
   Object.keys(n.attrs).forEach((k) => assert.ok(!/href|^on/i.test(k), "no links or handlers: " + k));
 });
 // Helmet light in cyan.
-assert.ok(nodes.some((n) => n.tag === "circle" && n.attrs.fill === "#4fd8fb"));
+assert.ok(nodes.some((n) => n.tag === "circle" && n.attrs.fill === "#ffcc33"));
 
 console.log("builders ok");

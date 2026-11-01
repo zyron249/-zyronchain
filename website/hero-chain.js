@@ -1,6 +1,6 @@
 /* ZyronChain homepage hero: a subtle animated blockchain layer over the cover image.
  * One canvas inside .hero-banner, aria-hidden, pointer-events: none, screen-blended at low opacity.
- * Translucent cube nodes drift in the side regions only (the ZYRON logo and the wolf stay clear), thin links join
+ * Translucent cube nodes drift in the side regions only (the wordmark and the gold Z coin stay clear), thin links join
  * neighbours, light pulses travel along the links and every few seconds a new block appends with a soft glow.
  * Starts lazily after window load (idle), pauses when the hero is offscreen or the tab is hidden, caps DPR at 2,
  * uses fewer nodes on small screens, and draws nothing at all with prefers-reduced-motion. No dependencies, CSP-safe.
@@ -10,8 +10,8 @@
   if (root) root.ZyronHeroChain = api;
   if (typeof module === "object" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  // Free regions as [x0, y0, x1, y1] fractions of the banner. Desktop art: logo ~0.10-0.53, wolf ~0.53-0.79.
-  var ZONES_WIDE = [[0.005, 0.04, 0.10, 0.80], [0.12, 0.03, 0.46, 0.24], [0.81, 0.04, 0.995, 0.80]];
+  // Free regions as [x0, y0, x1, y1] fractions of the banner. Desktop art: wordmark ~0.10-0.45, gold Z coin ~0.53-0.87.
+  var ZONES_WIDE = [[0.005, 0.04, 0.10, 0.80], [0.12, 0.03, 0.46, 0.24], [0.85, 0.04, 0.995, 0.80]];
   var ZONES_NARROW = [[0.01, 0.03, 0.55, 0.22], [0.9, 0.05, 0.995, 0.6]];
   var APPEND_MS = 4200;
 
@@ -84,10 +84,10 @@
       ctx.globalAlpha = a;
       if (glow > 0) {
         var g = ctx.createRadialGradient(x, y, 0, x, y, s * 3.2);
-        g.addColorStop(0, "rgba(80,190,255," + (0.55 * glow) + ")"); g.addColorStop(1, "rgba(80,190,255,0)");
+        g.addColorStop(0, "rgba(255,196,40," + (0.55 * glow) + ")"); g.addColorStop(1, "rgba(255,196,40,0)");
         ctx.fillStyle = g; ctx.fillRect(x - s * 3.2, y - s * 3.2, s * 6.4, s * 6.4);
       }
-      ctx.strokeStyle = "rgba(120,210,255,0.9)"; ctx.fillStyle = "rgba(40,140,255,0.18)"; ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(255,214,110,0.9)"; ctx.fillStyle = "rgba(249,183,0,0.16)"; ctx.lineWidth = 1;
       ctx.beginPath(); // isometric cube: top face, then two side faces
       ctx.moveTo(x, y - s); ctx.lineTo(x + s, y - h); ctx.lineTo(x, y); ctx.lineTo(x - s, y - h); ctx.closePath();
       ctx.moveTo(x - s, y - h); ctx.lineTo(x - s, y + h); ctx.lineTo(x, y + s); ctx.lineTo(x, y);
@@ -106,7 +106,7 @@
       ctx.lineWidth = 1;
       for (i = 0; i < links.length; i++) {
         var a = p[links[i][0]], b = p[links[i][1]];
-        ctx.globalAlpha = 0.32; ctx.strokeStyle = "rgba(90,180,255,1)";
+        ctx.globalAlpha = 0.32; ctx.strokeStyle = "rgba(249,183,0,1)";
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       }
       if (links.length && pulses.length < Math.ceil(links.length / 3) && Math.random() < dt / 700) {
@@ -118,7 +118,7 @@
         if (q.k >= 1 || !p[q.l[0]] || !p[q.l[1]]) { pulses.splice(i, 1); continue; }
         var A = p[q.l[0]], B = p[q.l[1]], x = A.x + (B.x - A.x) * q.k, y = A.y + (B.y - A.y) * q.k;
         var g = ctx.createRadialGradient(x, y, 0, x, y, 8);
-        g.addColorStop(0, "rgba(200,240,255,0.9)"); g.addColorStop(1, "rgba(80,190,255,0)");
+        g.addColorStop(0, "rgba(255,240,200,0.9)"); g.addColorStop(1, "rgba(255,196,40,0)");
         ctx.globalAlpha = Math.sin(q.k * Math.PI); ctx.fillStyle = g; ctx.fillRect(x - 8, y - 8, 16, 16);
       }
       for (i = 0; i < nodes.length; i++) {
