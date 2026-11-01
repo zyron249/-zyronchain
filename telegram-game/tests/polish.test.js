@@ -69,7 +69,7 @@ function make(tag, attrs, children) {
 const sparks = polish.buildSparks(make, 10);
 assert.strictEqual(sparks.tag, "svg");
 assert.strictEqual(nodes.filter((n) => n.tag === "circle").length, polish.sparkCount(10));
-const allowed = new Set(["#4fd8fb", "#0a9ff5", "#f4f7f9", "#1ccbfb"]);
+const allowed = new Set(["#ffcc33", "#f9b700", "#faf8f2", "#ffc21a"]);
 nodes.forEach((n) => {
   if (n.attrs.fill) assert.ok(allowed.has(n.attrs.fill), n.attrs.fill);
 });

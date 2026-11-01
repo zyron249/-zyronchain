@@ -46,18 +46,18 @@
   // Chrome witch on a broomstick with an orange-trimmed hat and blue glow, facing right. viewBox 0 0 64 40.
   function witch(doc) {
     return node(doc, "svg", { viewBox: "0 0 64 40", width: "64", height: "40", focusable: "false", "aria-hidden": "true" }, [
-      node(doc, "path", { d: "M4 30 L50 25", stroke: "#b1b8c0", "stroke-width": "2", "stroke-linecap": "round", fill: "none" }),
+      node(doc, "path", { d: "M4 30 L50 25", stroke: "#c2bcae", "stroke-width": "2", "stroke-linecap": "round", fill: "none" }),
       node(doc, "path", { d: "M2 26 L10 29 L3 34 Z", fill: "#ff8a1f" }),
-      node(doc, "path", { d: "M22 28 L30 14 L38 27 Z", fill: "#d8dce0", stroke: "#4fd8fb", "stroke-width": "1" }),
-      node(doc, "circle", { cx: "31", cy: "12", r: "4", fill: "#f4f7f9", stroke: "#4fd8fb", "stroke-width": "1" }),
-      node(doc, "path", { d: "M24 9 L38 9 L33 6 L30 -2 L28 6 Z", fill: "#24282d", stroke: "#ff8a1f", "stroke-width": "1.2" }),
-      node(doc, "path", { d: "M30 20 L44 24", stroke: "#d8dce0", "stroke-width": "2.2", "stroke-linecap": "round" })
+      node(doc, "path", { d: "M22 28 L30 14 L38 27 Z", fill: "#e6e1d6", stroke: "#ffcc33", "stroke-width": "1" }),
+      node(doc, "circle", { cx: "31", cy: "12", r: "4", fill: "#faf8f2", stroke: "#ffcc33", "stroke-width": "1" }),
+      node(doc, "path", { d: "M24 9 L38 9 L33 6 L30 -2 L28 6 Z", fill: "#26241f", stroke: "#ff8a1f", "stroke-width": "1.2" }),
+      node(doc, "path", { d: "M30 20 L44 24", stroke: "#e6e1d6", "stroke-width": "2.2", "stroke-linecap": "round" })
     ]);
   }
 
   function bat(doc) {
     return node(doc, "svg", { viewBox: "0 0 24 12", width: "24", height: "12", focusable: "false", "aria-hidden": "true" }, [
-      node(doc, "path", { d: "M12 4 C10 1 6 0 0 3 C3 4 4 6 4 8 C6 6 8 7 10 9 L12 7 L14 9 C16 7 18 6 20 8 C20 6 21 4 24 3 C18 0 14 1 12 4 Z", fill: "#24282d", stroke: "#ff8a1f", "stroke-width": "1" })
+      node(doc, "path", { d: "M12 4 C10 1 6 0 0 3 C3 4 4 6 4 8 C6 6 8 7 10 9 L12 7 L14 9 C16 7 18 6 20 8 C20 6 21 4 24 3 C18 0 14 1 12 4 Z", fill: "#26241f", stroke: "#ff8a1f", "stroke-width": "1" })
     ]);
   }
 

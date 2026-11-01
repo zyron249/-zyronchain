@@ -3,7 +3,7 @@
 .season-layer { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 40; contain: strict; }
 .season-layer * { pointer-events: none; }
 .season-witch, .season-bat { position: absolute; left: 0; will-change: transform; opacity: 0; }
-.season-witch svg, .season-bat svg { display: block; filter: drop-shadow(0 0 5px rgba(10, 159, 245, .7)); }
+.season-witch svg, .season-bat svg { display: block; filter: drop-shadow(0 0 5px rgba(249, 183, 0, .7)); }
 .season-witch svg { width: 80px; height: 50px; }
 @media (max-width: 600px) { .season-witch svg { width: 60px; height: 38px; } }
 .season-witch-1 { top: 18vh; animation: season-fly 26s linear 0.5s infinite; }

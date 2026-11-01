@@ -15,7 +15,7 @@
     { id: "gold", label: "Gold", min: 6, intensity: 3 },
     { id: "legendary", label: "Legendary", min: 10, intensity: 4 }
   ];
-  var SPARK_COLORS = ["#4fd8fb", "#0a9ff5", "#f4f7f9", "#1ccbfb"];
+  var SPARK_COLORS = ["#ffcc33", "#f9b700", "#faf8f2", "#ffc21a"];
   var TONES = {
     tap: [{ f: 640, d: 0.045, type: "square", g: 0.035 }],
     reward: [
@@ -186,7 +186,7 @@
       s = (s * 16807) % 2147483647;
       return (s - 1) / 2147483646;
     }
-    var colors = ["#4fd8fb", "#0a9ff5", "#f4f7f9", "#d8dce0", "#e6c36a"];
+    var colors = ["#ffcc33", "#f9b700", "#faf8f2", "#e6e1d6", "#e6c36a"];
     for (var i = 0; i < 42; i += 1) {
       pieces.push({
         x: rnd(),
