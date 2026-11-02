@@ -828,32 +828,78 @@ export async function readPublishedSnapshotTip(url, secret, { fetchImpl = fetch,
 // past the cached height, checked every `refreshMs`), one build at a time, and
 // the route serves the newest sealed snapshot immediately. Only one snapshot is
 // kept: a finished build replaces the previous one.
+//
+// Hardening (Security Lows on #1159):
+// - L1: a failed build starts an exponential backoff (`backoffBaseMs` doubling
+//   up to `backoffMaxMs`). Until it ends, refresh() (timer ticks and 503
+//   requests alike) does not start a build, so at most one build runs per
+//   backoff window however many requests arrive. A successful build resets it.
+// - L2: build() is raced against `buildTimeoutMs`. On timeout the single-flight
+//   slot is released (so building() is false and the relay refresh resumes),
+//   the previous cache is kept, and the timeout counts as a failure (backoff).
+//   The abandoned build's late result is ignored.
+// - L3: a snapshot whose age (time since it last covered the tip) exceeds
+//   `maxAgeMs` (ZYRON_SNAPSHOT_MAX_AGE_MS) is not served (503 + Retry-After);
+//   every served snapshot carries x-zyron-snapshot-age-s.
 export const SNAPSHOT_REFRESH_MS = 60_000;
 export const SNAPSHOT_RETRY_AFTER_SECONDS = 30;
-export function createSnapshotCache({ build, currentHeight, refreshMs = SNAPSHOT_REFRESH_MS, log = (line) => console.error(line), now = Date.now }) {
-  let cached; let inFlight; let timer; let lastError;
+export const SNAPSHOT_BUILD_TIMEOUT_MS = 15 * 60_000;
+export const SNAPSHOT_MAX_AGE_MS = 30 * 60_000;
+export const SNAPSHOT_BACKOFF_BASE_MS = 30_000;
+export const SNAPSHOT_BACKOFF_MAX_MS = 15 * 60_000;
+export class SnapshotBuildTimeoutError extends Error {
+  constructor(ms) { super(`snapshot build timed out after ${ms} ms`); this.name = "SnapshotBuildTimeoutError"; }
+}
+export function createSnapshotCache({
+  build, currentHeight, refreshMs = SNAPSHOT_REFRESH_MS, log = (line) => console.error(line), now = Date.now,
+  buildTimeoutMs = SNAPSHOT_BUILD_TIMEOUT_MS, maxAgeMs = SNAPSHOT_MAX_AGE_MS,
+  backoffBaseMs = SNAPSHOT_BACKOFF_BASE_MS, backoffMaxMs = SNAPSHOT_BACKOFF_MAX_MS
+}) {
+  let cached; let inFlight; let timer; let lastError; let failures = 0; let nextAttemptAtMs = 0;
+  function withTimeout(promise) {
+    if (!(buildTimeoutMs > 0) || !Number.isFinite(buildTimeoutMs)) return promise;
+    let handle;
+    const timeout = new Promise((_, reject) => { handle = setTimeout(() => reject(new SnapshotBuildTimeoutError(buildTimeoutMs)), buildTimeoutMs); });
+    // A late rejection of the abandoned build must not become unhandled.
+    promise.catch(() => {});
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(handle));
+  }
+  function backoffMs() { return failures > 0 ? Math.min(backoffMaxMs, backoffBaseMs * 2 ** (failures - 1)) : 0; }
   function refresh({ force = false } = {}) {
-    inFlight ??= (async () => {
+    if (inFlight) return inFlight;
+    if (!force && failures > 0 && now() < nextAttemptAtMs) return Promise.resolve(cached);
+    inFlight = (async () => {
       if (cached && !force) {
         const height = await currentHeight();
-        if (!(height > cached.height)) return cached;
+        // Still the tip: the snapshot is current, so its age restarts.
+        if (!(height > cached.height)) { cached.confirmedAtMs = now(); return cached; }
       }
       const startedAtMs = now();
-      const next = await build();
-      cached = { sealed: next.sealed, height: next.height, builtAtMs: now(), buildMs: now() - startedAtMs };
-      lastError = undefined;
+      const next = await withTimeout(Promise.resolve().then(() => build()));
+      const doneAtMs = now();
+      cached = { sealed: next.sealed, height: next.height, builtAtMs: doneAtMs, confirmedAtMs: doneAtMs, buildMs: doneAtMs - startedAtMs };
+      lastError = undefined; failures = 0; nextAttemptAtMs = 0;
       return cached;
     })().catch((error) => {
       lastError = error instanceof Error ? error.message : String(error);
-      log(`snapshot: background build failed (${lastError})`);
+      failures += 1; nextAttemptAtMs = now() + backoffMs();
+      log(`snapshot: background build failed (${lastError}); next attempt in ${Math.round(backoffMs() / 1000)} s`);
       return cached;
     }).finally(() => { inFlight = undefined; });
     return inFlight;
   }
+  // Age = time since the snapshot was last known to cover the chain tip (built,
+  // or re-checked with no new blocks). A stalled rebuild makes it grow.
+  function ageMs() { return cached ? Math.max(0, now() - cached.confirmedAtMs) : undefined; }
   return {
     current: () => cached,
+    // The cached snapshot if it is younger than maxAgeMs, else undefined.
+    fresh: () => (cached && !(maxAgeMs > 0 && ageMs() > maxAgeMs) ? cached : undefined),
+    ageSeconds: () => (cached ? Math.floor(ageMs() / 1000) : undefined),
     building: () => inFlight !== undefined,
     lastError: () => lastError,
+    failures: () => failures,
+    nextAttemptAtMs: () => nextAttemptAtMs,
     refresh,
     start() {
       if (timer) return;
@@ -861,6 +907,44 @@ export function createSnapshotCache({ build, currentHeight, refreshMs = SNAPSHOT
       timer = setInterval(() => { void refresh(); }, refreshMs); timer.unref?.();
     },
     stop() { if (timer) clearInterval(timer); timer = undefined; }
+  };
+}
+
+// GET /state/snapshot from the cache. Never builds inline: a missing or stale
+// snapshot answers 503 + Retry-After and asks the cache for a background
+// refresh (which honours the failure backoff). `takeRate` runs only when a
+// snapshot is actually served.
+export function serveSnapshotRoute(response, snapshots, { genesisHash, takeRate = () => ({ allowed: true }), limited = () => {} } = {}) {
+  const fresh = snapshots.fresh();
+  if (!fresh) {
+    void snapshots.refresh();
+    const cached = snapshots.current();
+    const error = cached ? "cached snapshot is older than the max age, retry later" : "snapshot not built yet, retry later";
+    const headers = { "retry-after": String(SNAPSHOT_RETRY_AFTER_SECONDS) };
+    if (cached) headers["x-zyron-snapshot-age-s"] = String(snapshots.ageSeconds());
+    return writeJson(response, 503, { error }, headers);
+  }
+  const rate = takeRate();
+  if (!rate.allowed) return limited(response, rate);
+  const { sealed, height } = fresh;
+  response.writeHead(200, { ...SECURITY, "content-type": "application/octet-stream", "cache-control": "no-store", "content-length": sealed.length,
+    "x-zyron-snapshot-height": String(height), "x-zyron-snapshot-age-s": String(snapshots.ageSeconds()), "x-zyron-genesis-hash": genesisHash });
+  return response.end(sealed);
+}
+
+// The relay's validator-history refresh. A snapshot build extends the same
+// history; while one runs the refresh is skipped rather than queued behind it
+// on the shared lock (the next tick catches up).
+export function createHistoryRefresher({ snapshots, extend, log = (line) => console.error(line) }) {
+  let running;
+  return function refreshHistory() {
+    running ??= (async () => {
+      if (snapshots?.building()) return "skipped";
+      await extend();
+      return "extended";
+    })().catch((error) => { log(`relay: validator history refresh failed (${error instanceof Error ? error.message : String(error)})`); return "failed"; })
+      .finally(() => { running = undefined; });
+    return running;
   };
 }
 
@@ -1255,7 +1339,7 @@ export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, ge
 }
 
 // ---- run: validators + gateway ---------------------------------------------------
-export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server, verifiedHistory, durable, startupLimits = parseStartupLimits(), snapshotRefreshMs = Number(process.env.ZYRON_SNAPSHOT_REFRESH_MS ?? SNAPSHOT_REFRESH_MS) || SNAPSHOT_REFRESH_MS } = {}) {
+export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server, verifiedHistory, durable, startupLimits = parseStartupLimits(), snapshotRefreshMs = Number(process.env.ZYRON_SNAPSHOT_REFRESH_MS ?? SNAPSHOT_REFRESH_MS) || SNAPSHOT_REFRESH_MS, snapshotBuildTimeoutMs = Number(process.env.ZYRON_SNAPSHOT_BUILD_TIMEOUT_MS ?? SNAPSHOT_BUILD_TIMEOUT_MS) || SNAPSHOT_BUILD_TIMEOUT_MS, snapshotMaxAgeMs = Number(process.env.ZYRON_SNAPSHOT_MAX_AGE_MS ?? SNAPSHOT_MAX_AGE_MS) || SNAPSHOT_MAX_AGE_MS } = {}) {
   const runStartedAtMs = Date.now();
   const genesisPath = join(dir, "genesis.json");
   const genesis = JSON.parse(await readFile(genesisPath, "utf8"));
@@ -1492,17 +1576,13 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       }
     }));
   }
-  let historyRefresh;
-  function refreshHistory() {
-    historyRefresh ??= (async () => {
-      // A snapshot build extends the same history; do not queue behind it on
-      // the shared lock (the next 5 s tick catches up if needed).
-      if (snapshots?.building()) return;
+  const refreshHistory = createHistoryRefresher({
+    snapshots: { building: () => snapshots?.building() ?? false },
+    extend: async () => {
       const { height: tip, tipHash } = await chainStatus();
       if (tip > snapshotHistory.chain.height) await extendHistory(historyReaders(), tip, tipHash);
-    })().catch((error) => console.error(`relay: validator history refresh failed (${error instanceof Error ? error.message : String(error)})`)).finally(() => { historyRefresh = undefined; });
-    return historyRefresh;
-  }
+    }
+  });
   if (relay) { const timer = setInterval(() => { void refreshHistory(); }, 5_000); timer.unref(); }
   async function buildSnapshotNow() {
     const { height: tip, tipHash } = await chainStatus();
@@ -1515,7 +1595,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // Background builds (see createSnapshotCache); the route never builds inline.
   const snapshots = stateSecret ? createSnapshotCache({
     build: buildSnapshotNow, currentHeight: async () => (await chainStatus()).height,
-    refreshMs: snapshotRefreshMs
+    refreshMs: snapshotRefreshMs, buildTimeoutMs: snapshotBuildTimeoutMs, maxAgeMs: snapshotMaxAgeMs
   }) : undefined;
   // Rate-limit identity (P1-02). ZYRON_TRUST_CF_CONNECTING_IP=1 (Render, whose
   // Cloudflare edge sets CF-Connecting-IP): that header. Otherwise, from a
@@ -1666,13 +1746,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? { ...result.body, blocks: result.body.blocks.slice(0, capped) } : { error: "node unavailable" }, PEER_RPC);
         }
         if (path === "/state/snapshot" && stateSecret) {
-          const cached = snapshots.current();
-          if (!cached) { void snapshots.refresh(); return sendJson(response, 503, { error: "snapshot not built yet, retry later" }, { "retry-after": String(SNAPSHOT_RETRY_AFTER_SECONDS) }); }
-          const snapshotRate = limits.snapshot.take("global");
-          if (!snapshotRate.allowed) return limited(response, snapshotRate);
-          const { sealed, height } = cached;
-          response.writeHead(200, { ...SECURITY, "content-type": "application/octet-stream", "cache-control": "no-store", "content-length": sealed.length, "x-zyron-snapshot-height": String(height), "x-zyron-genesis-hash": info.genesisHash });
-          return response.end(sealed);
+          return serveSnapshotRoute(response, snapshots, { genesisHash: info.genesisHash, takeRate: () => limits.snapshot.take("global"), limited });
         }
         if (path === "/" || path === "/explorer") return sendHtml(response);
         if (path === "/api" ) return sendJson(response, 200, { name: "ZyronChain open TESTNET RPC", ...(await chainStatus()), endpoints: ["GET /health", "GET /status", "GET /network", "GET /genesis", "GET /supply", "GET /account/{address}", "GET /balance/{address}", "GET /nonce/{address}", "GET /blocks?from=&limit=", "GET /block/{height}", "GET /peer/status", "GET /peer/blocks?from=&limit=", "POST /tx", "POST /faucet {address}"] });
