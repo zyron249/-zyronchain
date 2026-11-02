@@ -2045,7 +2045,7 @@ test("#1176 L1 a body missing maxHeight or durableHeight counts as unreadable, n
 
 test("#1176 L2 lag env options must be whole numbers and are validated at start-up", () => {
   const { lagOptionsFromEnv, validateLagOptions } = keeper;
-  assert.deepEqual(lagOptionsFromEnv({}), { maxLag: 20, consecutive: 3, staleMinutes: 20, maxTrail: 20, maxUnreadable: 5, maxSamples: 1000, minSpacingMs: 40_000 });
+  assert.deepEqual(lagOptionsFromEnv({}), { maxLag: 20, consecutive: 3, staleMinutes: 20, maxTrail: 20, maxUnreadable: 5, maxSamples: 1000, minSpacingMs: 40_000, resetDropBlocks: 20 });
   assert.equal(lagOptionsFromEnv({ LAG_CONSECUTIVE: "4", LAG_MAX_BLOCKS: "30" }).consecutive, 4);
   for (const [name, raw] of [["LAG_CONSECUTIVE", "1.5"], ["LAG_MAX_BLOCKS", "-1"], ["LAG_STALE_MINUTES", "1e3"], ["PUBLISH_TRAIL_MAX_BLOCKS", " 20"], ["LAG_CONSECUTIVE", "0"], ["LAG_MAX_UNREADABLE", "0x5"], ["LAG_STALE_MINUTES", "0"]]) {
     assert.throws(() => lagOptionsFromEnv({ [name]: raw }), new RegExp(name), `${name}=${JSON.stringify(raw)}`);
@@ -2079,7 +2079,7 @@ test("#1176 L3 a spike or a new chain does not latch the alarm; the buffer reset
   step(healthBody(10, 9, 10, { chainId: "other-chain" }));
   assert.equal(m.stats.resets, before + 1, "a chainId change resets the buffer");
   assert.equal(m.samples.length, 1);
-  step(healthBody(20, 19, 20, { chainId: "other-chain" }));
+  step(healthBody(60, 59, 60, { chainId: "other-chain" }));
   step(healthBody(3, 2, 3, { chainId: "other-chain" }));
   assert.equal(m.stats.resets, before + 2, "a durableHeight drop (rollback, new genesis) resets it");
   for (let i = 0; i < 5; i += 1) step(healthBody(4 + i, 3 + i, 4 + i, { chainId: "other-chain" }));
@@ -2114,4 +2114,52 @@ test("#1176 Info runKeeper feeds the monitor from the sampling loop only", async
   monitorSamples = Math.floor(30 * 60_000 / 45_000);
   assert.deepEqual(stats.alarms, []);
   assert.ok(healthReads > monitorSamples, "watch and keep-alive reads exist but are not fed to the monitor");
+});
+
+// ---- #1176 follow-up (Security re-review Low-1 and Info) ----
+test("follow-up Low-1 P7: durableHeight flapping 100/99 no longer resets the buffer and hides the lag", () => {
+  let t = 0;
+  const errors = [];
+  const m = keeper.createLagMonitor({ now: () => t, error: (line) => errors.push(line) });
+  for (let i = 0; i < 60; i += 1) { t += 60_000; m.observe(healthBody(500 + i * 2, i % 2 ? 99 : 100, 500)); }
+  assert.equal(m.stats.resets, 0, "a 1-block drop is within the 20-block threshold");
+  assert.ok(m.alarms.some((a) => a.reason === "lag"), JSON.stringify(m.alarms.map((a) => a.reason)));
+});
+
+test("follow-up Low-1: only a drop larger than LAG_RESET_DROP_BLOCKS resets", () => {
+  let t = 0;
+  const m = keeper.createLagMonitor({ now: () => t });
+  const step = (h, d) => { t += 45_000; m.observe(healthBody(h, d)); };
+  step(100, 100); step(101, 80);
+  assert.equal(m.stats.resets, 0, "a 20-block drop does not reset");
+  step(102, 59);
+  assert.equal(m.stats.resets, 1, "a 21-block drop resets");
+  const strict = keeper.createLagMonitor({ now: () => t, resetDropBlocks: 0 });
+  t += 45_000; strict.observe(healthBody(10, 10)); t += 45_000; strict.observe(healthBody(10, 9));
+  assert.equal(strict.stats.resets, 1);
+  assert.equal(keeper.lagOptionsFromEnv({ LAG_RESET_DROP_BLOCKS: "50" }).resetDropBlocks, 50);
+  for (const raw of ["2.5", "-1", " 20", "1e2"]) assert.throws(() => keeper.lagOptionsFromEnv({ LAG_RESET_DROP_BLOCKS: raw }), /LAG_RESET_DROP_BLOCKS/);
+});
+
+test("follow-up Low-1: more than 3 resets within the stale window raise 'flapping' and fail the run", () => {
+  let t = 0;
+  const errors = [];
+  const m = keeper.createLagMonitor({ now: () => t, error: (line) => errors.push(line) });
+  for (let i = 0; i < 8; i += 1) { t += 60_000; m.observe(healthBody(1000, i % 2 ? 900 : 1000)); }
+  assert.equal(m.stats.resets, 4);
+  assert.deepEqual(m.alarms.map((a) => a.reason), ["flapping"]);
+  assert.match(errors[0], /reset 4 times within 20 min/);
+  assert.equal(exitCodeFor({ published: 1, notNewer: 0, genesisMismatches: 0, authenticationFailures: 0, alarms: m.alarms }), 1);
+  // 3 resets spread over more than the stale window: no alarm.
+  let u = 0;
+  const slow = keeper.createLagMonitor({ now: () => u });
+  for (let i = 0; i < 8; i += 1) { u += 8 * 60_000; slow.observe(healthBody(1000, i % 2 ? 900 : 1000)); }
+  assert.equal(slow.stats.resets, 4);
+  assert.deepEqual(slow.alarms.filter((a) => a.reason === "flapping"), []);
+});
+
+test("follow-up Info: LAG_MAX_BLOCKS and PUBLISH_TRAIL_MAX_BLOCKS must be at least 1", () => {
+  assert.throws(() => keeper.lagOptionsFromEnv({ LAG_MAX_BLOCKS: "0" }), /LAG_MAX_BLOCKS must be an integer from 1/);
+  assert.throws(() => keeper.lagOptionsFromEnv({ PUBLISH_TRAIL_MAX_BLOCKS: "0" }), /PUBLISH_TRAIL_MAX_BLOCKS must be an integer from 1/);
+  assert.equal(keeper.lagOptionsFromEnv({ LAG_MAX_BLOCKS: "1", PUBLISH_TRAIL_MAX_BLOCKS: "1" }).maxTrail, 1);
 });

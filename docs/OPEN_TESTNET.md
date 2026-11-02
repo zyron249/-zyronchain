@@ -170,7 +170,7 @@ Never send a private key, password file or signer token to anyone, including pro
 
 Blocks above `durableHeight` are lost on a cold start, so the Actions snapshot keeper raises an alarm when publishing falls behind. On 2026-11-02, `durableHeight` stayed at 12966 from about 10:28 to 11:52 ET while the tip reached 13131. The 10:41 ET deploy then restored 12966 and replaced 165 blocks.
 
-A sampling loop of its own reads `/health` every 45 seconds. It runs independently of the publish loop, so a long publish cycle never pauses it. Reads closer together than 40 seconds are ignored. Each usable read adds `{ts, height: maxHeight, durableHeight}` to a rolling buffer of at most 1000 samples. The buffer resets when `chainId` changes or `durableHeight` goes down (a rollback or new genesis). Lag is computed per sample (`height - durableHeight`), so a single spike cannot latch the alarm. The keeper evaluates these conditions:
+A sampling loop of its own reads `/health` every 45 seconds. It runs independently of the publish loop, so a long publish cycle never pauses it. Reads closer together than 40 seconds are ignored. Each usable read adds `{ts, height: maxHeight, durableHeight}` to a rolling buffer of at most 1000 samples. The buffer resets when `chainId` changes or `durableHeight` drops by more than 20 blocks (`LAG_RESET_DROP_BLOCKS`; a rollback or new genesis). More than 3 resets within the stale window raise a `flapping` alarm that fails the run. Lag is computed per sample (`height - durableHeight`), so a single spike cannot latch the alarm. The keeper evaluates these conditions:
 
 | Alarm | Fires when | Defaults (workflow env to change) |
 |---|---|---|
@@ -180,7 +180,7 @@ A sampling loop of its own reads `/health` every 45 seconds. It runs independent
 | `detector-error` | The detector throws; sampling continues | - |
 | `trail` | The published snapshot height trails `snapshotCache.lastBuiltHeight` by more than the limit, continuously, for longer than the stale window | 20 blocks (`PUBLISH_TRAIL_MAX_BLOCKS`) |
 
-All five settings must be whole numbers (digits only). The keeper validates them once at start-up and refuses to start if any is invalid.
+All six settings must be whole numbers (digits only); `LAG_MAX_BLOCKS` and `PUBLISH_TRAIL_MAX_BLOCKS` must be at least 1. The keeper validates them once at start-up and refuses to start if any is invalid.
 
 For `trail`, the published height is the higher of the keeper's own last published (or confirmed up-to-date) height and the gateway's `durableHeight`.
 
