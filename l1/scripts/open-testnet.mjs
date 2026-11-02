@@ -30,8 +30,11 @@ import { submitAcceptedView } from "./submit-view.mjs";
 import { allocateValidatorBasePort } from "./open-testnet-ports.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { gunzipSync } from "node:zlib";
+import { Worker } from "node:worker_threads";
+import { SNAPSHOT_MAGIC, sealSnapshot, snapshotKey } from "./open-testnet/snapshot-seal.mjs";
+import { verifySnapshotBlocks } from "./open-testnet/snapshot-verify.mjs";
 import { createServer } from "node:http";
 import { createReadStream, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
@@ -45,8 +48,7 @@ const { ZyronChain } = await import(dist("chain.js"));
 const { ChainStore } = await import(dist("storage.js"));
 const { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } = await import(dist("crypto.js"));
 const { createProtocolUpgrade, createProtocolUpgradeApproval, createTransfer } = await import(dist("transaction.js"));
-const { blockHash, expectedValidator } = await import(dist("block.js"));
-const { merkleRoot } = await import(dist("merkle.js"));
+const { expectedValidator } = await import(dist("block.js"));
 const { canonicalJson } = await import(dist("codec.js"));
 const { buildCommit } = await import(dist("build-info.js"));
 const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist("tokenomics.js"));
@@ -481,7 +483,6 @@ const DAY_MS = 86_400_000;
 const ADDRESS_PATTERN = /^ZYN[0-9a-f]{40}$/;
 const MAX_BODY_BYTES = 8 * 1024;
 const NOTICE = "TESTNET — tokens have no value. ZyronChain open testnet: test ZYN cannot be bought or sold, is not redeemable for mainnet ZYN, and the network may be reset at any time. Not audited.";
-const SNAPSHOT_MAGIC = "ZYRON-OPEN-TESTNET-STATE-V1";
 const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 const RESERVED_CHAIN_IDS = new Set(["zyron-mainnet-1", "zyron-public-testnet-1"]);
 
@@ -850,16 +851,88 @@ export const SNAPSHOT_BACKOFF_MAX_MS = 15 * 60_000;
 export class SnapshotBuildTimeoutError extends Error {
   constructor(ms) { super(`snapshot build timed out after ${ms} ms`); this.name = "SnapshotBuildTimeoutError"; }
 }
+// lastError as shown in logs and GET /health: one line, at most 200
+// characters, no control characters, any `redact` value (the state secret,
+// private keys) and any 64+ hex-digit run (key- or hash-sized) replaced.
+export function sanitizeSnapshotError(error, { redact = [] } = {}) {
+  let text = error instanceof Error ? error.message : String(error ?? "unknown error");
+  for (const value of redact) if (typeof value === "string" && value.length >= 8) text = text.split(value).join("[redacted]");
+  text = text.replace(/[0-9a-fA-F]{64,}/g, "[redacted]").replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+  return text.length > 200 ? `${text.slice(0, 197)}...` : text || "unknown error";
+}
+
+// Runs the whole-chain part of a snapshot build (final linkage check,
+// serialise, gzip, seal) in a worker_thread so the gateway's event loop and
+// GET /health never block on it. The worker keeps its own copy of the
+// verified blocks: each build ships only the blocks added since the last one
+// (in chunks, yielding between them). The secret goes to the worker once, in
+// workerData. A worker crash, error or abort (the cache's build timeout)
+// terminates it; the next build starts a fresh worker and ships the whole
+// history again.
+export const SNAPSHOT_WORKER_URL = new URL("./open-testnet/snapshot-worker.mjs", import.meta.url);
+export function createSnapshotWorkerBuilder({ secret, workerUrl = SNAPSHOT_WORKER_URL, chunkSize = 250, resourceLimits } = {}) {
+  let worker; let sent = 0; let nextId = 0; let pending;
+  function stop(reason) {
+    const current = worker;
+    worker = undefined; sent = 0;
+    if (current) void current.terminate().catch(() => {});
+    const waiting = pending; pending = undefined;
+    waiting?.reject(new Error(reason));
+  }
+  function spawnWorker() {
+    const created = new Worker(workerUrl, { workerData: { secret }, stdout: false, stderr: false, ...(resourceLimits ? { resourceLimits } : {}) });
+    created.unref?.();
+    created.on("message", (message) => {
+      if (created !== worker || !pending || message?.id !== pending.id) return;
+      const waiting = pending; pending = undefined;
+      if (message.type === "built") waiting.resolve({ sealed: Buffer.from(message.sealed), height: message.height });
+      else waiting.reject(new Error(`snapshot worker: ${sanitizeSnapshotError(message.error, { redact: [secret] })}`));
+    });
+    created.on("error", (error) => { if (created === worker) stop(`snapshot worker crashed (${sanitizeSnapshotError(error, { redact: [secret] })})`); });
+    created.on("exit", (code) => { if (created === worker) stop(`snapshot worker exited (code ${code})`); });
+    return created;
+  }
+  async function build({ blocks, tip, tipHash, chainId, genesisHash, genesis, network, keys, createdAtMs = Date.now() }, { signal } = {}) {
+    if (pending) throw new Error("snapshot worker is busy");
+    if (signal?.aborted) throw new Error("snapshot build aborted");
+    worker ??= spawnWorker();
+    const target = worker;
+    const onAbort = () => { if (target === worker) stop("snapshot build aborted"); };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      // Ship only what the worker does not hold yet (history only grows).
+      while (sent < blocks.length) {
+        if (target !== worker) throw new Error("snapshot worker stopped while receiving blocks");
+        const chunk = blocks.slice(sent, sent + chunkSize);
+        target.postMessage({ type: "append", blocks: chunk });
+        sent += chunk.length;
+        await new Promise((done) => setImmediate(done));
+      }
+      if (target !== worker) throw new Error("snapshot worker stopped while receiving blocks");
+      const id = ++nextId;
+      const result = new Promise((resolveBuild, rejectBuild) => { pending = { id, resolve: resolveBuild, reject: rejectBuild }; });
+      target.postMessage({ type: "build", id, tip, tipHash, chainId, genesisHash, genesis, network, keys, createdAtMs });
+      return await result;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
+  }
+  return { build, terminate: () => stop("snapshot worker terminated"), running: () => worker !== undefined };
+}
+
 export function createSnapshotCache({
   build, currentHeight, refreshMs = SNAPSHOT_REFRESH_MS, log = (line) => console.error(line), now = Date.now,
   buildTimeoutMs = SNAPSHOT_BUILD_TIMEOUT_MS, maxAgeMs = SNAPSHOT_MAX_AGE_MS,
   backoffBaseMs = SNAPSHOT_BACKOFF_BASE_MS, backoffMaxMs = SNAPSHOT_BACKOFF_MAX_MS
 }) {
   let cached; let inFlight; let timer; let lastError; let failures = 0; let nextAttemptAtMs = 0;
-  function withTimeout(promise) {
+  let buildStartedAtMs; let lastBuildMs;
+  function withTimeout(promise, controller) {
     if (!(buildTimeoutMs > 0) || !Number.isFinite(buildTimeoutMs)) return promise;
     let handle;
-    const timeout = new Promise((_, reject) => { handle = setTimeout(() => reject(new SnapshotBuildTimeoutError(buildTimeoutMs)), buildTimeoutMs); });
+    // On timeout the build is also aborted (the worker builder terminates its
+    // worker), so a hung build does not keep running in the background.
+    const timeout = new Promise((_, reject) => { handle = setTimeout(() => { reject(new SnapshotBuildTimeoutError(buildTimeoutMs)); controller.abort(); }, buildTimeoutMs); });
     // A late rejection of the abandoned build must not become unhandled.
     promise.catch(() => {});
     return Promise.race([promise, timeout]).finally(() => clearTimeout(handle));
@@ -874,14 +947,16 @@ export function createSnapshotCache({
         // Still the tip: the snapshot is current, so its age restarts.
         if (!(height > cached.height)) { cached.confirmedAtMs = now(); return cached; }
       }
-      const startedAtMs = now();
-      const next = await withTimeout(Promise.resolve().then(() => build()));
-      const doneAtMs = now();
+      const startedAtMs = now(); buildStartedAtMs = startedAtMs; lastBuildMs = undefined;
+      const controller = new AbortController();
+      const next = await withTimeout(Promise.resolve().then(() => build({ signal: controller.signal })), controller);
+      const doneAtMs = now(); lastBuildMs = doneAtMs - startedAtMs;
       cached = { sealed: next.sealed, height: next.height, builtAtMs: doneAtMs, confirmedAtMs: doneAtMs, buildMs: doneAtMs - startedAtMs };
       lastError = undefined; failures = 0; nextAttemptAtMs = 0;
       return cached;
     })().catch((error) => {
-      lastError = error instanceof Error ? error.message : String(error);
+      if (buildStartedAtMs !== undefined && lastBuildMs === undefined) lastBuildMs = now() - buildStartedAtMs;
+      lastError = sanitizeSnapshotError(error);
       failures += 1; nextAttemptAtMs = now() + backoffMs();
       log(`snapshot: background build failed (${lastError}); next attempt in ${Math.round(backoffMs() / 1000)} s`);
       return cached;
@@ -900,6 +975,19 @@ export function createSnapshotCache({
     lastError: () => lastError,
     failures: () => failures,
     nextAttemptAtMs: () => nextAttemptAtMs,
+    // Cache status for GET /health (no snapshot bytes, no secrets).
+    status() {
+      const building = inFlight !== undefined && buildStartedAtMs !== undefined && lastBuildMs === undefined;
+      return {
+        building,
+        startedAt: buildStartedAtMs === undefined ? null : new Date(buildStartedAtMs).toISOString(),
+        durationMs: building ? Math.max(0, now() - buildStartedAtMs) : (lastBuildMs ?? null),
+        lastError: lastError ?? null,
+        lastBuiltHeight: cached?.height ?? null,
+        age: cached ? Math.floor(ageMs() / 1000) : null,
+        failures
+      };
+    },
     refresh,
     start() {
       if (timer) return;
@@ -958,17 +1046,7 @@ export function capPeerStatus(status, watermark) {
 }
 
 // ---- sealed state snapshots (TEST keys + public blocks) ---------------------------
-function snapshotKey(secret) {
-  assert.ok(typeof secret === "string" && secret.length >= 32, "ZYRON_TESTNET_STATE_SECRET must be at least 32 characters");
-  return createHash("sha256").update(`zyron-open-testnet-state\0${secret}`).digest();
-}
-export function sealSnapshot(bundle, secret) {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", snapshotKey(secret), iv);
-  cipher.setAAD(Buffer.from(SNAPSHOT_MAGIC));
-  const body = Buffer.concat([cipher.update(gzipSync(Buffer.from(JSON.stringify(bundle)))), cipher.final()]);
-  return Buffer.concat([Buffer.from(`${SNAPSHOT_MAGIC}\n`), iv, cipher.getAuthTag(), body]);
-}
+export { sealSnapshot, verifySnapshotBlocks };
 export function openSnapshot(bytes, secret) {
   const header = Buffer.from(`${SNAPSHOT_MAGIC}\n`);
   assert.ok(bytes.length > header.length + 28 && bytes.length <= MAX_SNAPSHOT_BYTES, "snapshot size out of range");
@@ -1230,21 +1308,8 @@ export async function initNetwork(dir, chainId, { onProgress = () => {} } = {}) 
 // certificates for one block, and identical bytes can still be invalid
 // (R28-1059-M1/M2). If no validator serves a valid block at some height,
 // nothing is sealed and the last published snapshot stays in place.
-export function verifySnapshotBlocks(blocks, { tip, tipHash, chainId, genesisHash }) {
-  assert.ok(Array.isArray(blocks) && blocks.length === tip, `snapshot history has ${Array.isArray(blocks) ? blocks.length : "no"} blocks, expected ${tip}`);
-  let previous = genesisHash;
-  for (const [index, block] of blocks.entries()) {
-    const height = index + 1;
-    const header = block?.header;
-    assert.ok(header && typeof header === "object" && header.height === height && header.chainId === chainId, `snapshot block ${height} has the wrong height or chain ID`);
-    assert.equal(header.previousHash, previous, `snapshot block ${height} does not link to block ${height - 1}`);
-    assert.equal(blockHash(header), block.hash, `snapshot block ${height} hash does not match its header`);
-    assert.ok(Array.isArray(block.transactions) && merkleRoot(block.transactions) === header.transactionRoot, `snapshot block ${height} transactions do not match its header`);
-    assert.equal(new Set(block.transactions.map((tx) => tx?.txid)).size, block.transactions.length, `snapshot block ${height} repeats a transaction`);
-    previous = block.hash;
-  }
-  assert.equal(previous, tipHash, "snapshot history does not end at the live tip");
-}
+// verifySnapshotBlocks lives in open-testnet/snapshot-verify.mjs (the
+// snapshot worker runs it too).
 
 // Verified snapshot history: the in-memory chain after the verified blocks.
 // The gateway keeps one and extends it on each build, so full validation is
@@ -1259,7 +1324,7 @@ const yieldToEventLoop = () => new Promise((done) => setImmediate(done));
 // finalized-block validation on top of the verified history; a reader that
 // fails, serves nothing or serves an invalid block is reported (once per
 // build) through onReject and the next reader is tried for that height.
-export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, genesisHash, genesis, history, pageSize = 100, onReject = () => {} } = {}) {
+export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, genesisHash, genesis, history, pageSize = 100, onReject = () => {}, verifyFinal = true } = {}) {
   const expected = { tip, tipHash, chainId, genesisHash };
   assert.ok(Number.isSafeInteger(tip) && tip >= 1, "snapshot tip must be a positive height");
   const verified = history ?? createSnapshotHistory(genesis);
@@ -1334,7 +1399,8 @@ export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, ge
     await yieldToEventLoop();
   }
   const blocks = verified.blocks.slice(0, tip);
-  verifySnapshotBlocks(blocks, expected);
+  // verifyFinal: false defers this whole-chain pass to the snapshot worker.
+  if (verifyFinal) verifySnapshotBlocks(blocks, expected);
   return blocks;
 }
 
@@ -1556,9 +1622,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // One writer at a time for the verified history (snapshot builds and the
   // relay's membership refresh both extend it).
   let historyLock = Promise.resolve();
-  function extendHistory(readers, tip, tipHash) {
+  function extendHistory(readers, tip, tipHash, { verifyFinal = true } = {}) {
     const run = historyLock.then(() => collectSnapshotBlocks(readers, {
-      tip, tipHash, chainId, genesisHash: info.genesisHash, history: snapshotHistory,
+      tip, tipHash, chainId, genesisHash: info.genesisHash, history: snapshotHistory, verifyFinal,
       onReject: (name, error) => console.error(`snapshot: history from ${name} not used (${error instanceof Error ? error.message : String(error)})`)
     }));
     historyLock = run.then(() => undefined, () => undefined);
@@ -1584,13 +1650,14 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     }
   });
   if (relay) { const timer = setInterval(() => { void refreshHistory(); }, 5_000); timer.unref(); }
-  async function buildSnapshotNow() {
+  const snapshotWorker = stateSecret ? createSnapshotWorkerBuilder({ secret: stateSecret }) : undefined;
+  async function buildSnapshotNow({ signal } = {}) {
     const { height: tip, tipHash } = await chainStatus();
-    const blocks = await extendHistory(historyReaders(), tip, tipHash);
+    const blocks = await extendHistory(historyReaders(), tip, tipHash, { verifyFinal: false });
     const keys = {};
     for (const name of [...VALIDATOR_NAMES, "oracle1", "oracle2", "oracle3", "founder", "faucet", "liquidity", "ecosystem"]) keys[name] = (await readSecret(join(dir, "keys", `${name}.json`))).privateKey;
-    const sealed = sealSnapshot({ format: SNAPSHOT_MAGIC, createdAtMs: Date.now(), genesis, network: info, keys, blocks }, stateSecret);
-    return { sealed, height: tip };
+    // Final linkage check, serialise, gzip and seal run in the worker.
+    return snapshotWorker.build({ blocks, tip, tipHash, chainId, genesisHash: info.genesisHash, genesis, network: info, keys, createdAtMs: Date.now() }, { signal });
   }
   // Background builds (see createSnapshotCache); the route never builds inline.
   const snapshots = stateSecret ? createSnapshotCache({
@@ -1725,7 +1792,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           // always strict.
           if (!ok && !everReady) startup.observe(await startupFingerprint(statuses));
           const { code, status, starting, progress } = startup.liveness({ ok, everReady, path });
-          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, commit: buildCommit(), persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
+          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, commit: buildCommit(), persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), ...(snapshots ? { snapshotCache: snapshots.status() } : {}), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
@@ -1825,6 +1892,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   async function shutdown() {
     if (shuttingDown) return; shuttingDown = true;
     snapshots?.stop();
+    snapshotWorker?.terminate();
     await new Promise((done) => gateway.close(() => done()));
     if (mailbox) await new Promise((done) => mailbox.close(() => done()));
     await Promise.all(VALIDATOR_NAMES.map((name) => stopValidator(name)));
