@@ -640,6 +640,12 @@ await test('transfer builder: only transfers, mining_claim impossible, strict in
   assert.equal(core.nextNonce(Number.MAX_SAFE_INTEGER), 1);
   assert.equal(core.nextNonce(1), 2, 'after signing nonce 1 the field pre-fills 2');
   assert.equal(core.nextNonce(41), 42);
+  assert.equal(typeof core.heldNoncePrefill, 'function', 'a held signed transfer drives the prefill after unlock');
+  assert.deepEqual(core.heldNoncePrefill(null), { value: '1', warn: false }, 'nothing held pre-fills 1');
+  assert.deepEqual(core.heldNoncePrefill({ nonce: 7 }), { value: '8', warn: false }, 'held nonce 7 pre-fills 8, not 1');
+  for (const nonce of [undefined, 'x', '7', 0, -1, 1.5, Number.MAX_SAFE_INTEGER]) {
+    assert.deepEqual(core.heldNoncePrefill({ nonce }), { value: '', warn: true }, 'an unreadable held nonce warns and never falls back to 1');
+  }
   assert.equal(core.buildTransfer({ ...base, nonce: String(core.nextNonce(null)) }, account).nonce, 1, 'the pre-filled value is valid as-is');
   assert.throws(() => core.buildTransfer({ ...base, nonce: '' }, account), /Nonce must be a whole number >= 1/, 'an emptied nonce field is still rejected');
   assert.equal(core.buildTransfer({ ...base, version: core.defaultTransferVersion(core.WALLET_TESTNET_CHAIN_ID), chainId: core.WALLET_TESTNET_CHAIN_ID }, account).version, 1);
