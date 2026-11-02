@@ -38,8 +38,14 @@ parentPort.on("message", async (message) => {
     verifySnapshotBlocks(blocks, { tip, tipHash, chainId, genesisHash });
     const sealed = await sealSnapshotStream({ format: SNAPSHOT_MAGIC, createdAtMs, genesis, network, keys, blocks }, secret);
     const buffer = sealed.buffer.slice(sealed.byteOffset, sealed.byteOffset + sealed.byteLength);
-    parentPort.postMessage({ type: "built", id, height: tip, sealed: buffer }, [buffer]);
+    parentPort.postMessage({ type: "built", id, height: tip, sealed: buffer, memory: workerMemory() }, [buffer]);
   } catch (error) {
-    parentPort.postMessage({ type: "failed", id, error: error instanceof Error ? error.message : String(error) });
+    parentPort.postMessage({ type: "failed", id, error: error instanceof Error ? error.message : String(error), memory: workerMemory() });
   }
 });
+
+// Self-reported worker memory (bytes) for GET /health snapshotCache memory.
+function workerMemory() {
+  const { heapUsed, heapTotal, external, arrayBuffers } = process.memoryUsage();
+  return { heapUsed, heapTotal, external, arrayBuffers };
+}

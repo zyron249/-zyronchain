@@ -28,6 +28,12 @@ export function memoryReport({ gateway = gatewayMemory(), validators = {}, snaps
 }
 
 const mb = (bytes) => (Number.isFinite(bytes) ? (bytes / MB).toFixed(1) : "?");
+// Same report in MB (one decimal) for GET /health; timestamps and flags pass through.
+export function memoryReportMb(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? Math.round((value / MB) * 10) / 10 : null;
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, typeof v === "number" || (v && typeof v === "object") ? memoryReportMb(v) : v]));
+  return value;
+}
 // One compact line, e.g. "memory: total=412.3MB gw rss=80.1 heap=40.2/55.0 ext=3.1 ab=1.2 | v1=80.0 v2=81.2 | child peak=103.0".
 export function formatMemoryLine(report) {
   const { gateway: g, validators, snapshotChild, totalRss } = report;

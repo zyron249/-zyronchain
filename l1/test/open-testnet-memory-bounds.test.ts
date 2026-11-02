@@ -27,6 +27,8 @@ test("memory report: gateway memoryUsage fields, validator RSS from /proc, one c
   const line = mem.formatMemoryLine(report);
   assert.match(line, /^memory: total=[\d.]+MB gw rss=[\d.]+ heap=[\d.]+\/[\d.]+ ext=[\d.]+ ab=[\d.]+ \| v1=80\.0 v2=\? \| child peak=100\.0$/);
   assert.equal(line.includes("\n"), false);
+  const inMb = mem.memoryReportMb({ gateway: { rss: 80 * 1024 * 1024, heapUsed: 1.5 * 1024 * 1024 }, snapshotChild: { running: true, maxRss: 2 * 1024 * 1024, lastBuildAt: "t" } });
+  assert.deepEqual(inMb, { gateway: { rss: 80, heapUsed: 1.5 }, snapshotChild: { running: true, maxRss: 2, lastBuildAt: "t" } });
 });
 
 test("snapshot readiness gate: no quorum or a far-behind / rebuilding history defers the build", () => {
@@ -69,4 +71,29 @@ test("relay forward counters drop a target at zero, so client-chosen targets can
   assert.equal(map.size, 0);
   map.set("a", 2); relay.releaseForward(map, "a"); assert.equal(map.get("a"), 1);
   relay.releaseForward(map, "missing"); assert.equal(map.has("missing"), false);
+});
+
+test("boot: a not-ready first build fails fast and is retried after ~30 s by its own timer, never hanging to build_timeout", async () => {
+  let calls = 0; let ready = false; const logs: string[] = [];
+  const cache = api.createSnapshotCache({
+    buildTimeoutMs: 900_000, refreshMs: 3_600_000, notReadyRetryMs: 50, log: (l: string) => logs.push(l), currentHeight: async () => 7,
+    build: async () => {
+      calls += 1;
+      if (!ready) throw Object.assign(new Error("snapshot build deferred (node_not_ready)"), { code: "node_not_ready" });
+      return { sealed: Buffer.from("x"), height: 7 };
+    }
+  });
+  const started = Date.now();
+  cache.start();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(calls, 1); assert.equal(cache.status().waitingFor, "node_not_ready"); assert.equal(cache.status().failures, 0);
+  ready = true;
+  await new Promise((r) => setTimeout(r, 150));
+  cache.stop();
+  assert.equal(calls, 2, "retried by the not-ready timer, not the hourly tick");
+  assert.equal(cache.status().lastBuiltHeight, 7);
+  assert.equal(cache.status().lastError, null);
+  assert.ok(Date.now() - started < 2_000, "no 900 s hang");
+  assert.equal(api.SNAPSHOT_NOT_READY_RETRY_MS, 30_000);
+  assert.ok(!logs.some((l) => /build_timeout/.test(l)));
 });

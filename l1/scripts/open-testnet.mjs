@@ -23,7 +23,7 @@
 //
 // <secret dir> holds plaintext TEST validator/faucet keys (mode 0600) and the
 // chain data. It must live outside the repository and must never be shared.
-import { formatMemoryLine, gatewayMemory, memoryReport, MEMORY_LOG_INTERVAL_MS, processRssBytes } from "./open-testnet/memory-report.mjs";
+import { formatMemoryLine, gatewayMemory, memoryReport, memoryReportMb, MEMORY_LOG_INTERVAL_MS, processRssBytes } from "./open-testnet/memory-report.mjs";
 import { activeSetSeedFromHistory, createActiveSetTracker } from "./gateway-quorum.mjs";
 import { createFaucetNonceTracker } from "./faucet-nonce.mjs";
 import { FaucetFeeFloorError, MAX_FAUCET_FEE_ATOMS, faucetTransferFeeAtoms } from "./faucet-fee.mjs";
@@ -881,8 +881,9 @@ export const SNAPSHOT_DEFERRED_CODES = new Set(["busy", "node_not_ready", "histo
 // Above this many blocks behind the tip the build does not catch the history
 // up itself (inside its timeout); the background refresher does.
 export const SNAPSHOT_MAX_BUILD_CATCHUP = 2_000;
-// Retry delay for a build deferred by the readiness gate, once its in-flight window ends.
-export const SNAPSHOT_DEFERRED_RETRY_MS = 5_000;
+// Retry delay for a build deferred by the readiness gate, counted from the
+// end of its in-flight window (#1165 Low-1).
+export const SNAPSHOT_NOT_READY_RETRY_MS = 30_000;
 // Gate for a snapshot build: undefined when it may start, else a deferred code.
 export function snapshotBuildReadiness({ quorumOk, tip, historyHeight, historyRebuilding = false, maxCatchup = SNAPSHOT_MAX_BUILD_CATCHUP }) {
   if (!quorumOk || !Number.isSafeInteger(tip) || tip < 1) return "node_not_ready";
@@ -920,7 +921,7 @@ export function sanitizeSnapshotError(error, { redact = [] } = {}) {
 // history again.
 export const SNAPSHOT_WORKER_URL = new URL("./open-testnet/snapshot-worker.mjs", import.meta.url);
 export function createSnapshotWorkerBuilder({ secret, workerUrl = SNAPSHOT_WORKER_URL, chunkSize = 250, resourceLimits = SNAPSHOT_WORKER_RESOURCE_LIMITS } = {}) {
-  let worker; let sent = 0; let nextId = 0; let pending;
+  let worker; let sent = 0; let nextId = 0; let pending; let lastMemory = null;
   function stop(reason, code = "worker_crashed") {
     const current = worker;
     worker = undefined; sent = 0;
@@ -935,6 +936,7 @@ export function createSnapshotWorkerBuilder({ secret, workerUrl = SNAPSHOT_WORKE
     created.on("message", (message) => {
       if (created !== worker || !pending || message?.id !== pending.id) return;
       const waiting = pending; pending = undefined;
+      if (message.memory) lastMemory = { ...message.memory, at: new Date().toISOString() };
       if (message.type === "built") waiting.resolve({ sealed: Buffer.from(message.sealed), height: message.height });
       else waiting.reject(new Error(`snapshot worker: ${sanitizeSnapshotError(message.error, { redact: [secret] })}`));
     });
@@ -977,7 +979,7 @@ export function createSnapshotWorkerBuilder({ secret, workerUrl = SNAPSHOT_WORKE
       signal?.removeEventListener("abort", onAbort);
     }
   }
-  return { build, terminate: () => stop("snapshot worker terminated"), running: () => worker !== undefined };
+  return { build, terminate: () => stop("snapshot worker terminated"), running: () => worker !== undefined, lastMemory: () => lastMemory };
 }
 
 // Disk design: the snapshot build runs in a child process with
@@ -1041,10 +1043,12 @@ export function createSnapshotChildBuilder({ secret, outDir, childUrl = SNAPSHOT
 export function createSnapshotCache({
   build, currentHeight, refreshMs = SNAPSHOT_REFRESH_MS, log = (line) => console.error(line), now = Date.now,
   buildTimeoutMs = SNAPSHOT_BUILD_TIMEOUT_MS, maxAgeMs = SNAPSHOT_MAX_AGE_MS,
-  backoffBaseMs = SNAPSHOT_BACKOFF_BASE_MS, backoffMaxMs = SNAPSHOT_BACKOFF_MAX_MS, redact = [], deferredRetryMs = SNAPSHOT_DEFERRED_RETRY_MS
+  backoffBaseMs = SNAPSHOT_BACKOFF_BASE_MS, backoffMaxMs = SNAPSHOT_BACKOFF_MAX_MS, redact = [],
+  notReadyRetryMs = SNAPSHOT_NOT_READY_RETRY_MS
 }) {
+  let retryTimer;
   let cached; let inFlight; let timer; let lastError; let lastErrorCode; let failures = 0; let nextAttemptAtMs = 0;
-  let buildStartedAtMs; let lastBuildMs; let waiting; let retryAfterSettle = false; let deferredTimer;
+  let buildStartedAtMs; let lastBuildMs; let waiting; let retryAfterSettle = false;
   function withTimeout(promise, controller) {
     if (!(buildTimeoutMs > 0) || !Number.isFinite(buildTimeoutMs)) return promise;
     let handle;
@@ -1081,6 +1085,8 @@ export function createSnapshotCache({
         // retry on the next tick, no backoff.
         waiting = code === "busy" ? undefined : code;
         log(`snapshot: build skipped (${code})`);
+        // Not ready yet: retry soon (not only at the next refresh tick), once
+        // this in-flight window has ended (see finally below).
         if (waiting) retryAfterSettle = true;
         return cached;
       }
@@ -1092,9 +1098,8 @@ export function createSnapshotCache({
       inFlight = undefined;
       // A deferred build (node or history not ready) is retried shortly after
       // this in-flight window ends, not only on the next refreshMs tick.
-      if (retryAfterSettle && !deferredTimer && deferredRetryMs > 0) {
-        retryAfterSettle = false;
-        deferredTimer = setTimeout(() => { deferredTimer = undefined; void refresh(); }, deferredRetryMs); deferredTimer.unref?.();
+      if (retryAfterSettle && timer && !retryTimer && notReadyRetryMs > 0) {
+        retryTimer = setTimeout(() => { retryTimer = undefined; void refresh(); }, notReadyRetryMs); retryTimer.unref?.();
       }
       retryAfterSettle = false;
     });
@@ -1134,7 +1139,7 @@ export function createSnapshotCache({
       void refresh();
       timer = setInterval(() => { void refresh(); }, refreshMs); timer.unref?.();
     },
-    stop() { if (timer) clearInterval(timer); timer = undefined; if (deferredTimer) clearTimeout(deferredTimer); deferredTimer = undefined; }
+    stop() { if (timer) clearInterval(timer); timer = undefined; if (retryTimer) clearTimeout(retryTimer); retryTimer = undefined; }
   };
 }
 
@@ -1896,7 +1901,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     const validators = {};
     for (const name of VALIDATOR_NAMES) { const node = nodes.get(name); validators[name] = node && !node.exit ? processRssBytes(node.child.pid) ?? null : null; }
     const childPid = snapshotBuilder?.pid();
-    const snapshotChild = snapshotBuilder ? { running: childPid !== undefined, rss: childPid !== undefined ? processRssBytes(childPid) ?? null : null, maxRss: snapshotBuilder.lastStats()?.maxRss ?? null, lastBuild: snapshotBuilder.lastStats() } : null;
+    const lastBuild = snapshotBuilder?.lastStats();
+    const snapshotChild = snapshotBuilder ? { running: childPid !== undefined, rss: childPid !== undefined ? processRssBytes(childPid) ?? null : null, maxRss: lastBuild?.maxRss ?? null, lastBuildAt: lastBuild?.at ?? null } : null;
     return memoryReport({ gateway: gatewayMemory(), validators, snapshotChild });
   }
   const memoryTimer = setInterval(() => { if (log) console.log(formatMemoryLine(currentMemory())); }, Number(process.env.ZYRON_MEMORY_LOG_INTERVAL_MS) || MEMORY_LOG_INTERVAL_MS); memoryTimer.unref();
@@ -2033,7 +2039,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           // always strict.
           if (!ok && !everReady) startup.observe(await startupFingerprint(statuses));
           const { code, status, starting, progress } = startup.liveness({ ok, everReady, path });
-          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, commit: buildCommit(), persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), ...(snapshots ? { snapshotCache: snapshots.status() } : {}), memory: currentMemory(), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
+          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, commit: buildCommit(), persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), ...(snapshots ? { snapshotCache: snapshots.status() } : {}), memory: memoryReportMb(currentMemory()), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);

@@ -478,7 +478,7 @@ test("relay off: restore far behind plus a history read error recovers and build
       }
       built += 1; return { sealed: Buffer.from("s"), height: tip };
     },
-    currentHeight: async () => tip, log: silent, refreshMs: 3_600_000, deferredRetryMs: 10
+    currentHeight: async () => tip, log: silent, refreshMs: 3_600_000, notReadyRetryMs: 10
   });
   refreshHistory = api.createHistoryRefresher({
     snapshots: cache, retryMs: 5, log: silent,
