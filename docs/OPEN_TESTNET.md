@@ -93,6 +93,15 @@ Both keepers fetch `/state/snapshot` about 6 times an hour (limit: 30 per hour f
 
 Free-plan budget: Actions minutes are free for public repositories, and the job occupies one hosted runner slot. A free web service that is kept awake all month uses about 720-744 of the 750 free instance hours a Render workspace gets per month. Other free web services in the same workspace share that allowance, and when it runs out Render suspends the workspace's free web services until the next month.
 
+#### Testnet rollback runbook (published snapshot on an abandoned branch)
+
+The keeper labels each asset `state snapshot height=<h> genesis=<g> tip=<tip block hash> rollbacks=<n>`. On every cycle it checks that the published tip is on the live chain (from the authenticated snapshot when it reaches the published height, otherwise from `GET /block/<published height>` on the gateway). When it is not, for example after an operator rollback to a lower height, the keeper republishes the live chain's snapshot even though it is lower, increments `rollbacks`, warns `ROLLBACK DETECTED` and fails the run so the rollback is seen. Without `ZYRON_TESTNET_STATE_SECRET`, or for an asset with an older label (no `tip=`), it cannot check the tip, so follow these steps for every rollback:
+
+1. Before or right after the rollback, while the gateway is up and serving the new chain, move the old `state.enc` aside: rename it, and the per-genesis copy `state-<genesis12>.enc`, to `rolledback-<YYYYMMDD>-<name>` with an empty label (`env -u GH_TOKEN gh api -X PATCH repos/<owner>/<repo>/releases/assets/<id> -f name=rolledback-<YYYYMMDD>-state.enc -f label=`). Also rename every keeper copy (`prev-…`/`next-…`) whose label height is above the rollback height, because the keeper's repair step would otherwise reinstall the highest copy, which is on the old branch. Do not delete them; they are the evidence.
+2. Run the keeper at once (`workflow_dispatch` on `main`), so `state.enc` is missing for as short a time as possible. A cold start waits 160 s for a missing `state.enc` before it creates a fresh TEST genesis, so do not restart the instance until the keeper has published.
+3. Check that `GET /health` reports `durableHeight` at or above the rollback height with no `durableError`, and that the new `state.enc` label has the live `tip=` (`GET /block/<height>`).
+4. Record the rollback (heights, times, the old tip hash) for the rollback notes, and tell operators of follower nodes to resync from the new chain.
+
 ## Upgrading after a genesis relaunch
 
 The genesis currently pinned for `zyron-open-testnet-render-1` is `e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad` (genesis timestamp 2026-10-20T22:09:28.767Z). That genesis carries fields that older code does not know: `activityOracleThreshold` and `activityOraclePolicy` (added in #1076, `f3913f2`) and `publicDistributionRelease` (added in #1075, `69171bf`). Genesis loading rejects unknown fields, so a node built before those changes (for example from `ccd8efaa`) stops at start with:
