@@ -1,0 +1,11 @@
+Failing-first evidence: tools/pwa-wallet/test-browser.mjs 'sign transfer offline' with the new reset assertion, run before the website/app/app.js fix (Node v22.19.0, headless Chrome), 2026-11-02.
+
+ok - first load: no errors, same-origin GETs only, installable per Chrome, iOS/Android install help shown
+ok - service worker: versioned cache holds exactly the app shell; offline reload works
+ok - build id is shown and matches the stamped worker version and release
+ok - create (offline): password rules, phrase shown once, forced backup quiz, encrypted vault only
+ok - home: checksummed address, QR encodes the plain address, clipboard copy auto-clears
+not ok - sign transfer offline: exact l1 transfer, no network, broadcast disabled
+AssertionError [ERR_ASSERTION]: leaving the wallet testnet resets the version to the chain default
+  actual: '1',
+  expected: '2',

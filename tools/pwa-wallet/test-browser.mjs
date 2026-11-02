@@ -417,6 +417,10 @@ try {
     await page.click('[data-screen="home"] [data-go="send"]');
     await page.waitForSelector('[data-screen="send"]:not([hidden])');
     await page.fill('[data-tx-chain]', 'zyron-open-testnet-1');
+    // 6A: version 1 is signed only for zyron-wallet-testnet-1, so leaving that chain resets an explicit
+    // version-1 choice to the new chain's default instead of carrying it into a refused review.
+    assert.equal(await page.inputValue('[data-tx-version]'), '2', 'leaving the wallet testnet resets the version to the chain default');
+    assert.match(await page.textContent('[data-tx-version-hint]'), /default to transaction version 2/);
     await page.fill('[data-tx-fee]', '0');
     await page.click('[data-tx-review]');
     await page.waitForSelector('[data-screen="review"]:not([hidden])');
