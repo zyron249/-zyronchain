@@ -32,6 +32,9 @@ for (const file of ['website/app/vendor/noble-scure.js', 'website/app/vendor/qr.
 const core = globalThis.ZyronAppCore;
 const SNAP = { mnemonic: 'test test test test test test test test test test test junk', address: 'ZYN0ac2dbccbd2a299dea4fcc2ddf98d7dd77eebb41' };
 const PASSWORD = 'Correct-Horse-Battery-9';
+// Fixed page-clock start for the offline flow, safely before the PWA v1 exception end (2026-11-08T00:00:00Z).
+const V1_EXCEPTION_TEST_CLOCK_MS = Date.parse('2026-11-01T12:00:00Z');
+assert.ok(V1_EXCEPTION_TEST_CLOCK_MS < core.V1_EXCEPTION_END_MS, 'the pinned test clock must precede the v1 exception end');
 const RECEIVER = 'ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42'; // checksummed docs vector
 
 // ---------- local server with the production response headers ----------
@@ -308,7 +311,10 @@ try {
     assert.equal(qrPath, d, 'QR matrix encodes the canonical address');
     await shot(page, '5-home-qr');
     if (!live) {
-      await page.clock.install();
+      // Pin the page clock before the hard-coded v1 exception end (core.V1_EXCEPTION_END_MS) so the
+      // exception-path tests below (wallet-testnet default version 1, a signed v1 transfer) do not start
+      // failing on the wall-clock date. The expiry path is covered with a stubbed clock in test-core.mjs.
+      await page.clock.install({ time: V1_EXCEPTION_TEST_CLOCK_MS });
       await page.click('[data-copy-address]');
       assert.equal(await page.evaluate(() => navigator.clipboard.readText()), address, 'primary copy is the canonical lowercase address');
       assert.equal(await page.textContent('[data-copy-result]'), 'Copied. This app will try to clear the clipboard in 60 seconds.');
