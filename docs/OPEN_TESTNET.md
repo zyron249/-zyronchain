@@ -205,8 +205,10 @@ validators produce those heights again with different blocks.
 
 **What wallet users see.** The tip height drops back to `durableHeight` and then climbs again.
 Balances, nonces and transfers that were only in blocks above `durableHeight` (`durable: false`) can
-disappear. If one of yours is missing, check `/nonce` and send it again. Anything that was `durable:
-true` is kept.
+disappear. Anything that was `durable: true` is kept. A missing transfer is still validly signed, so
+anyone holding a copy can re-broadcast it on the new chain, and it may come back without you sending it.
+Before you send it again, check `/nonce` and your balance: if the nonce has already moved past it or the
+balance already reflects it, do not re-send, or you may pay twice. [PENDING SECURITY REVIEW]
 
 **What operators see.** Followers with the durable cap on only ever received blocks up to
 `durableHeight`, so they keep their chain and continue from it. `/health` shows `durableHeight`
