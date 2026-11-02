@@ -338,7 +338,7 @@ try {
     assert.equal(await page.inputValue('[data-tx-version]'), '1', 'wallet testnet defaults to transaction version 1');
     assert.match(await page.textContent('[data-tx-version-hint]'), /default transaction version is 1/);
     assert.match(await page.textContent('[data-screen="send"]'), /use the network's current nonce \+ 1 \(1 for a new account\)/);
-    await page.fill('[data-tx-nonce]', '1');
+    assert.equal(await page.inputValue('[data-tx-nonce]'), '1', 'the nonce field is pre-filled (not a placeholder), so an untouched field is valid');
     await page.fill('[data-tx-to]', RECEIVER);
     assert.match(await page.textContent('[data-tx-check]'), /checksum verified/);
     assert.equal(await page.textContent('[data-tx-to-preview]'), core.displayAddress(RECEIVER), 'the typed receiver is echoed grouped and checksummed');
@@ -384,6 +384,7 @@ try {
     assert.match(await page.textContent('[data-tx-summary]'), /Signed locally\. Not broadcast\./);
     assert.equal(await page.textContent('[data-tx-to-grouped]'), core.displayAddress(RECEIVER), 'signed view shows the grouped checksummed receiver');
     signed = JSON.parse(await page.textContent('[data-tx-json]'));
+    assert.equal(await page.inputValue('[data-tx-nonce]'), String(signed.nonce + 1), 'after signing, the nonce field pre-fills the next nonce');
     assert.equal(signed.kind, 'transfer');
     assert.equal(signed.version, 1);
     assert.equal(signed.sender, address);
@@ -780,6 +781,36 @@ try {
       swTestSuffix = '';
     }
     await m.context.close();
+  });
+
+  await test('signed card at 360/390: grouped "To:" address wraps inside the card', async () => {
+    for (const width of [360, 390]) {
+      const m = await newMobile(width, 800);
+      await m.page.goto(appUrl, { waitUntil: 'load' });
+      await m.page.waitForFunction(() => document.body.dataset.current === 'welcome');
+      const grouped = core.displayAddress('ZYN57fc0bdb01c571b60de4218eee898b37960e5a4c'); // receiver from the QA report
+      const result = await m.page.evaluate((text) => {
+        for (const s of document.querySelectorAll('[data-screen]')) s.hidden = s.dataset.screen !== 'review';
+        const out = document.querySelector('[data-tx-out]');
+        out.hidden = false;
+        const to = document.querySelector('[data-tx-to-grouped]');
+        to.textContent = text;
+        // Measure every line fragment (an inline box can stick out on one line only) against the card's content edge.
+        const card = out.getBoundingClientRect();
+        const pad = getComputedStyle(out);
+        const contentRight = Math.min(card.right - parseFloat(pad.paddingRight), document.querySelector('[data-tx-summary]').getBoundingClientRect().right);
+        const contentLeft = card.left + parseFloat(pad.paddingLeft);
+        const rects = [...to.getClientRects()];
+        return { fragments: rects.length, cardRight: contentRight, boxRight: Math.max(...rects.map((r) => r.right)), boxLeft: Math.min(...rects.map((r) => r.left)), cardLeft: contentLeft, text: to.textContent };
+      }, grouped);
+      assert.ok(result.boxRight <= result.cardRight + 0.5, `${width}px: To box right ${result.boxRight} > card right ${result.cardRight}`);
+      assert.ok(result.boxLeft >= result.cardLeft - 0.5, `${width}px: To box left edge`);
+      assert.equal(result.fragments, 1, `${width}px: the To box is one block, not an inline box split across lines`);
+      assert.equal(result.text, grouped, 'grouped display is unchanged');
+      assert.ok(await noHorizontalScroll(m.page), `${width}px signed card`);
+      assert.deepEqual(m.problems, []);
+      await m.context.close();
+    }
   });
 
   await test('mobile layouts 360/390/414: no horizontal scroll on every screen; iOS shows Safari steps first', async () => {
