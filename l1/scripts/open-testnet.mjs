@@ -1836,9 +1836,10 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       if (tip > snapshotHistory.chain.height || historyNeedsRebuild) await extendHistory(historyReaders(), tip, tipHash);
     }
   });
-  // The history is kept near the tip in the background (relay or snapshot
-  // builds), so a build only appends a short delta inside its timeout.
-  if (relay || stateSecret) { const timer = setInterval(() => { void refreshHistory(); }, 5_000); timer.unref(); }
+  // With the relay on, the history follows the tip every 5 s. Otherwise a
+  // build deferred as history_catching_up starts this refresh (to the tip,
+  // outside the build timeout), so the next build only appends a short delta.
+  if (relay) { const timer = setInterval(() => { void refreshHistory(); }, 5_000); timer.unref(); }
   const snapshotBuilder = stateSecret ? createSnapshotChildBuilder({ secret: stateSecret, outDir: join(dir, "snapshot-history", "builds") }) : undefined;
   async function buildSnapshotNow({ signal } = {}) {
     // Readiness gate: a build after a restart must not start (and then run
