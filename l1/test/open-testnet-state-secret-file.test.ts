@@ -2,7 +2,7 @@
 // same-uid process (a compromised validator) cannot read it from
 // /proc/<gateway pid>/environ. The env var stays as a fallback.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -92,4 +92,55 @@ test("a configured but unusable file never falls back to the env var, and errors
 
 test("no secret configured", () => {
   assert.deepEqual(mod.loadStateSecret({}), { secret: undefined, source: "none", envAlsoSet: false });
+});
+
+function rawFile(dir: string, name: string, data: string | Buffer) { const p = join(dir, name); writeFileSync(p, data); chmodSync(p, 0o600); return p; }
+
+test("a FIFO at the configured path is refused without hanging start-up", { skip: !linux }, () => {
+  const dir = tmp();
+  try {
+    const fifo = join(dir, "fifo");
+    execFileSync("mkfifo", ["-m", "600", fifo]);
+    // In a child with a timeout: before O_NONBLOCK, openSync blocked forever here.
+    const r = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      const mod = await import(${JSON.stringify(secretModUrl)});
+      try { mod.loadStateSecret({ ZYRON_TESTNET_STATE_SECRET_FILE: process.argv[1] }); process.stdout.write("loaded"); }
+      catch (e) { process.stdout.write((e instanceof mod.StateSecretFileError ? "refused:" : "other:") + e.message); }
+    `, fifo], { encoding: "utf8", timeout: 5000 });
+    assert.equal(r.signal, null, "loadStateSecret hung on the FIFO");
+    assert.match(r.stdout, /^refused:.*not a regular file/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("one trailing newline is stripped; a BOM, other whitespace or extra newlines are refused", () => {
+  const dir = tmp();
+  try {
+    for (const [name, data] of [["nl", SECRET + "\n"], ["crlf", SECRET + "\r\n"], ["bare", SECRET]] as const) {
+      assert.equal(mod.loadStateSecret({ ZYRON_TESTNET_STATE_SECRET_FILE: rawFile(dir, name, data) }).secret, SECRET, name);
+    }
+    const bad: Array<[string, string | Buffer]> = [
+      ["bom", "\ufeff" + SECRET], ["bom-bytes", Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(SECRET + "\n")])],
+      ["lead-space", " " + SECRET], ["lead-tab", "\t" + SECRET], ["lead-nl", "\n" + SECRET],
+      ["trail-space", SECRET + " "], ["trail-space-nl", SECRET + " \n"], ["two-nl", SECRET + "\n\n"],
+      ["trail-cr", SECRET + "\r"], ["trail-tab", SECRET + "\t\n"], ["nbsp", SECRET + "\u00a0"],
+    ];
+    for (const [name, data] of bad) {
+      assert.throws(() => mod.loadStateSecret({ ZYRON_TESTNET_STATE_SECRET_FILE: rawFile(dir, name, data) }),
+        (e: Error) => e instanceof mod.StateSecretFileError && !e.message.includes(SECRET), name);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a secret shorter than 32 characters fails fast at load, from a file or the env var", () => {
+  const dir = tmp();
+  try {
+    const short = "s".repeat(31);
+    assert.equal(mod.MIN_STATE_SECRET_LENGTH, 32);
+    assert.throws(() => mod.loadStateSecret({ ZYRON_TESTNET_STATE_SECRET_FILE: rawFile(dir, "short", short + "\n") }), (e: Error) => e instanceof mod.StateSecretFileError && /at least 32/.test(e.message) && !e.message.includes(short));
+    const env: Record<string, string> = { ZYRON_TESTNET_STATE_SECRET: short };
+    assert.throws(() => mod.loadStateSecret(env), (e: Error) => e instanceof mod.StateSecretFileError && /at least 32/.test(e.message));
+    assert.equal(env.ZYRON_TESTNET_STATE_SECRET, undefined, "deleted from env even when refused");
+    assert.equal(mod.loadStateSecret({ ZYRON_TESTNET_STATE_SECRET_FILE: rawFile(dir, "exact", "s".repeat(32)) }).secret, "s".repeat(32));
+    assert.equal(mod.loadStateSecret({ ZYRON_TESTNET_STATE_SECRET: "s".repeat(32) }).secret, "s".repeat(32));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
