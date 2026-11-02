@@ -1876,6 +1876,7 @@ test("chain: another active run or the daily dispatch cap skips with a warning",
   assert.ok(!result.dispatched); assert.match(result.out, /::warning title=Keeper not chained::1 other run/);
   result = await runChain({ job: full, dispatches: 10 });
   assert.ok(!result.dispatched); assert.match(result.out, /::warning title=Keeper not chained::10 workflow_dispatch runs/);
+});
 
 test("keeper caps the /health body it reads at MAX_HEALTH_BYTES", async () => {
   const { readSnapshotCache, keepAlive, MAX_HEALTH_BYTES } = keeper;
