@@ -104,7 +104,8 @@ jobs:
   # workflow_dispatch events created with GITHUB_TOKEN still create workflow
   # runs (an exception to its no-recursion rule; see docs/OPEN_TESTNET.md
   # "Snapshot keepers"). Only this job gets actions: write, and it never sees
-  # the state secret. It first warns when the published state.enc is older than
+  # the state secret. It first emits an ::error:: annotation (not blocking
+  # the chain decision) when the published state.enc is older than
   # MAX_SNAPSHOT_AGE_MINUTES. It chains only when the keep job succeeded (needs
   # result and the jobs API conclusion), the keep job ran at least
   # MIN_RUN_MINUTES (measured from its own started_at; shorter means a crash
@@ -137,12 +138,12 @@ jobs:
           if asset=$(gh api "repos/$REPO/releases/tags/$TAG" --jq '[.assets[] | select(.name == "state.enc")][0].updated_at // empty' 2>/dev/null) && [ -n "$asset" ]; then
             age=$(( (now - $(date -u -d "$asset" +%s)) / 60 ))
             if [ "$age" -gt "$MAX_SNAPSHOT_AGE_MINUTES" ]; then
-              echo "::warning title=Stale published snapshot::state.enc was last updated ${age} min ago (> ${MAX_SNAPSHOT_AGE_MINUTES})"
+              echo "::error title=Stale published snapshot::state.enc was last updated ${age} min ago (> ${MAX_SNAPSHOT_AGE_MINUTES})"
             else
               echo "state.enc age: ${age} min"
             fi
           else
-            echo "::warning title=Stale published snapshot::could not read state.enc from release $TAG"
+            echo "::error title=Stale published snapshot::could not read state.enc from release $TAG"
           fi
           [ "$KEEP_RESULT" = "success" ] || skip "keep job result is $KEEP_RESULT"
           job=$(gh api "repos/$REPO/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" --jq '[.jobs[] | select(.name == "keep")][0] | "\(.conclusion) \(.started_at) \(.completed_at)"')

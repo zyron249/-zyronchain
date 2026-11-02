@@ -1177,7 +1177,10 @@ test("the chain job self-dispatches on main only, with its own minimal permissio
   const run = chain.slice(chain.indexOf("run: |"));
   assert.doesNotMatch(run.replace(/skip\(\) \{[^}]*\}/, ""), /exit 0/, "no silent skip path");
   assert.match(chain, /MAX_SNAPSHOT_AGE_MINUTES: '\d+'/);
-  assert.match(chain, /::warning title=Stale published snapshot::state\.enc was last updated/);
+  // Patron I3: a stale or unreadable published snapshot is an error annotation, not only a warning.
+  assert.match(chain, /::error title=Stale published snapshot::state\.enc was last updated/);
+  assert.match(chain, /::error title=Stale published snapshot::could not read state\.enc/);
+  assert.doesNotMatch(chain, /::warning title=Stale published snapshot/);
 });
 
 // ---- Codex round 4 at 72276b7: the missing-name window and repair installs ----
