@@ -51,13 +51,15 @@ import { MIN_PROTOCOL_UPDATE_DELAY, MIN_VALIDATOR_UPDATE_DELAY, ZyronChain } fro
 import {
   createProtocolUpgrade,
   createProtocolUpgradeApproval,
-  createTransfer,
   createValidatorApproval,
   createValidatorSetUpdate,
   assertAddress,
+  signTransfer,
   validateTransactionShape,
   type TransactionVersion
 } from "./transaction.js";
+import { IntentRenderRefusal, renderIntent, TRANSFER_INTENT_DOMAIN, type RenderedIntent, type TransferPayload } from "./intent-render.js";
+import { offlineProtocolForChain, resolveTransferVersion } from "./transfer-version-policy.js";
 import type { Block, GenesisConfig, Validator, ValidatorApproval, ValidatorPossessionProof } from "./types.js";
 import {
   POSSESSION_PROOF_POLICY_V1,
@@ -683,8 +685,9 @@ async function runNode(args: string[]): Promise<void> {
   }, 60_000);
 }
 
-async function submitTransfer(args: string[]): Promise<void> {
-  assertKnownOptions(args, new Set(["--key", "--rpc", "--chain-id", "--to", "--amount-atoms", "--fee-atoms"]));
+async function submitTransfer(rawArgs: string[]): Promise<void> {
+  const { args, yes } = takeYesFlag(rawArgs);
+  assertKnownOptions(args, new Set(["--key", "--rpc", "--chain-id", "--to", "--amount-atoms", "--fee-atoms", "--expect-receiver", "--expect-amount"]));
   const key = await readPrivateKey(resolve(requiredOption(args, "--key")));
   const publicKey = publicKeyFromPrivate(key);
   const sender = addressFromPublicKey(publicKey);
@@ -699,13 +702,13 @@ async function submitTransfer(args: string[]): Promise<void> {
     throw new Error("RPC returned invalid nonce");
   }
   const nonce = Number((nonceResponse as { nonce: number }).nonce) + 1;
-  const transactionVersion = await transactionVersionForRpc(rpc);
-  const tx = createTransfer(
-    { chainId, nonce, sender, receiver, amountAtoms, feeAtoms, timestampMs: Date.now() },
-    key,
-    publicKey,
-    transactionVersion
-  );
+  // Option 3: the version comes from the node's advertised protocol, never from a flag.
+  // Protocol < 3 is refused (the CLI never signs version 1; see issue #1147).
+  const version = resolveTransferVersion(chainId, await advertisedProtocolForRpc(rpc), "node");
+  const rendered = await renderAndConfirmTransfer(args, yes, {
+    kind: "transfer", version, chainId, nonce, sender, receiver, amountAtoms, feeAtoms, timestampMs: Date.now(), publicKey
+  });
+  const tx = signTransfer(rendered, key);
   const response = await fetch(`${rpc}/tx`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-zyron-rpc-version": String(RPC_API_VERSION) },
@@ -821,13 +824,16 @@ async function sendCheck(args: string[]): Promise<void> {
 }
 
 /**
- * Offline transfer signing: no network access. The caller supplies the chain ID, the next
- * account nonce and the transaction version for the target network, so the signed transfer
+ * Offline transfer signing: no network access. The caller supplies the chain ID and the next
+ * account nonce; the transaction version comes from OFFLINE_CHAIN_PROTOCOLS (transfer-version-policy.ts),
+ * and an optional --tx-version may only confirm it. The signed transfer
  * can be carried to an online machine and broadcast later with `tx-submit`.
  */
-async function signTransferOffline(args: string[]): Promise<void> {
+async function signTransferOffline(rawArgs: string[]): Promise<void> {
+  const { args, yes } = takeYesFlag(rawArgs);
   assertKnownOptions(args, new Set([
-    "--key", "--chain-id", "--to", "--amount-atoms", "--fee-atoms", "--nonce", "--tx-version", "--timestamp-ms", "--out"
+    "--key", "--chain-id", "--to", "--amount-atoms", "--fee-atoms", "--nonce", "--tx-version", "--timestamp-ms", "--out",
+    "--expect-receiver", "--expect-amount"
   ]));
   const output = resolve(requiredOption(args, "--out"));
   const chainId = requiredOption(args, "--chain-id");
@@ -838,24 +844,87 @@ async function signTransferOffline(args: string[]): Promise<void> {
   const feeAtoms = parseSafeInteger(option(args, "--fee-atoms") ?? "0", "fee-atoms");
   const nonce = parseSafeInteger(requiredOption(args, "--nonce"), "nonce");
   if (nonce < 1) throw new Error("nonce must be the next account nonce (current nonce + 1, starting at 1)");
-  const versionText = requiredOption(args, "--tx-version");
-  if (versionText !== "1" && versionText !== "2") throw new Error("tx-version must be 1 or 2 (2 for protocol version 3 and later)");
+  const versionText = option(args, "--tx-version");
+  if (versionText !== undefined && versionText !== "1" && versionText !== "2") {
+    throw new Error("tx-version must be 2 (it only confirms the version of the chain's advertised protocol; version 1 is never signed)");
+  }
+  // Option 3: the version comes from the fixed offline protocol table (unknown chain: v2-capable);
+  // --tx-version may only confirm it.
+  const version = resolveTransferVersion(
+    chainId, offlineProtocolForChain(chainId), "offline-table", versionText === undefined ? undefined : Number(versionText)
+  );
   const timestampMs = parseSafeInteger(option(args, "--timestamp-ms") ?? String(Date.now()), "timestamp-ms");
   const key = await readPrivateKey(resolve(requiredOption(args, "--key")));
   const publicKey = publicKeyFromPrivate(key);
   const sender = addressFromPublicKey(publicKey);
   if (receiver === sender) throw new Error("Receiver must differ from the sender");
-  const tx = createTransfer(
-    { chainId, nonce, sender, receiver, amountAtoms, feeAtoms, timestampMs },
-    key,
-    publicKey,
-    Number(versionText) as 1 | 2
-  );
+  const rendered = await renderAndConfirmTransfer(args, yes, {
+    kind: "transfer", version, chainId, nonce, sender, receiver, amountAtoms, feeAtoms, timestampMs, publicKey
+  });
+  const tx = signTransfer(rendered, key);
   validateTransactionShape(tx);
   await writeFile(output, `${JSON.stringify(tx, null, 2)}\n`, { flag: "wx", mode: 0o644 });
   console.log(`Signed transfer written (public data, no secrets): ${output}`);
   console.log(`Transaction ID: ${tx.txid}`);
   console.log(`From ${sender} to ${receiver}: ${amountAtoms} atoms, fee ${feeAtoms} atoms, nonce ${nonce}, chain ${chainId}`);
+}
+
+/**
+ * Removes the bare `--yes` flag (feature 6A, resolved question 5). It is only ever read from the
+ * command line: no environment variable or config file can enable it.
+ */
+function takeYesFlag(rawArgs: string[]): { args: string[]; yes: boolean } {
+  const count = rawArgs.filter((arg) => arg === "--yes").length;
+  if (count > 1) throw new Error("--yes may only be supplied once");
+  return { args: rawArgs.filter((arg) => arg !== "--yes"), yes: count === 1 };
+}
+
+/**
+ * Feature 6A: renders the transfer with the shared fail-closed renderer, prints the full render to
+ * stderr (always, including with --yes), applies the optional fail-closed --expect-* checks and
+ * requires confirmation before anything is signed.
+ */
+async function renderAndConfirmTransfer(args: string[], yes: boolean, payload: TransferPayload): Promise<RenderedIntent> {
+  const rendered = renderIntent({ domain: TRANSFER_INTENT_DOMAIN, payload });
+  process.stderr.write(`Review the transfer to sign (renderer v${rendered.rendererVersion}):\n${rendered.text}`);
+  assertExpectations(args, rendered.payload.receiver, rendered.payload.amountAtoms);
+  if (yes) {
+    process.stderr.write("Confirmed by --yes.\n");
+    return rendered;
+  }
+  if (!process.stdin.isTTY) {
+    throw new IntentRenderRefusal("no interactive terminal to confirm; review the render above and pass --yes. Nothing was signed.");
+  }
+  const { createInterface } = await import("node:readline/promises");
+  const prompt = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
+  try {
+    const answer = (await prompt.question("Type yes to sign this transfer: ")).trim();
+    if (answer !== "yes") throw new IntentRenderRefusal("not confirmed. Nothing was signed.");
+  } finally {
+    prompt.close();
+  }
+  return rendered;
+}
+
+/** Fail-closed --expect-receiver / --expect-amount checks (feature 6A). */
+function assertExpectations(args: string[], receiver: string, amountAtoms: number): void {
+  const expectReceiver = option(args, "--expect-receiver");
+  if (expectReceiver !== undefined) {
+    let expected: string;
+    try {
+      expected = parseAddressInput(expectReceiver).canonical;
+    } catch {
+      throw new IntentRenderRefusal("--expect-receiver is not a valid address");
+    }
+    if (expected !== receiver) throw new IntentRenderRefusal("receiver does not match --expect-receiver");
+  }
+  const expectAmount = option(args, "--expect-amount");
+  if (expectAmount !== undefined) {
+    if (!/^(0|[1-9][0-9]*)$/.test(expectAmount) || !Number.isSafeInteger(Number(expectAmount))) {
+      throw new IntentRenderRefusal("--expect-amount must be a whole number of atoms");
+    }
+    if (Number(expectAmount) !== amountAtoms) throw new IntentRenderRefusal("amount does not match --expect-amount");
+  }
 }
 
 /** Broadcasts a transfer produced by `transfer-sign`. Verifies shape, txid and signature first. */
@@ -1321,6 +1390,26 @@ async function transactionVersionForRpc(rpc: string): Promise<TransactionVersion
   return transactionVersionForProtocolVersion(Number(value.nextVersion));
 }
 
+/** The next protocol version the node advertises (404 from an old node means protocol 1, as on main). */
+async function advertisedProtocolForRpc(rpc: string): Promise<number> {
+  const response = await fetch(`${rpc}/protocol`, {
+    headers: { "x-zyron-rpc-version": String(RPC_API_VERSION) },
+    signal: AbortSignal.timeout(8_000)
+  });
+  assertRpcApiVersion(response, RPC_API_VERSION);
+  if (response.status === 404) return 1;
+  if (!response.ok) throw new Error(`RPC protocol status returned HTTP ${response.status}`);
+  const value = await readBoundedJson(response, 4_096, "RPC protocol status response") as Record<string, unknown>;
+  assertObjectFields(value, ["currentVersion", "nextVersion"], "protocol status");
+  if (!Number.isSafeInteger(value.currentVersion) || !Number.isSafeInteger(value.nextVersion)) {
+    throw new Error("RPC returned invalid protocol status");
+  }
+  transactionVersionForProtocolVersion(Number(value.currentVersion));
+  transactionVersionForProtocolVersion(Number(value.nextVersion));
+  // Security: sign for the currently ACTIVE protocol (the tip's version), not the scheduled next one.
+  return Number(value.currentVersion);
+}
+
 async function readPrivateKey(path: string): Promise<string> {
   return readOperatorPrivateKey(path, process.env.ZYRON_KEYSTORE_PASSWORD_FILE, keystorePasswordFromEnvOrPrompt);
 }
@@ -1452,13 +1541,13 @@ function usage(): void {
   console.log("  zyron-l1 keygen --out validator-key.json (--password-file password.txt | --password-prompt)");
   console.log("  zyron-l1 genesis --out genesis.json --chain-id zyron-devnet-1 --validator-public-key <hex> --oracle-public-key <hex> --activity-pool <address> --allocation <address:atoms>");
   console.log("  zyron-l1 node --genesis genesis.json --data ./data [--validator-key validator-key.json | --validator-signer-url https://signer/sign --validator-public-key <hex> --validator-signer-token-file signer-token.txt [--validator-signer-allow-v6 true|false]] [--peer https://node:9137] [--rpc-trusted-proxy <ip> ...] [--p2p-listen /ip4/0.0.0.0/tcp/9140] [--p2p-peer /dns4/node.example/tcp/9140/p2p/<PeerId>] [--p2p-peer-group <PeerId>=<failure-domain>] [--ready-max-tip-age-ms 600000] [--mempool-max-future-per-sender 16] [--mempool-parked-ttl-ms 600000] [--p2p-consensus-peer <PeerId> ...] [--rpc-rate-limit-exempt <loopback-ip> ...] [--rpc-submit-per-minute <n>]");
-  console.log("  zyron-l1 transfer --key wallet-key.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms <n> [--fee-atoms <n>]");
+  console.log("  zyron-l1 transfer --key wallet-key.json --rpc http://127.0.0.1:9137 --chain-id zyron-devnet-1 --to <address> --amount-atoms <n> [--fee-atoms <n>] [--expect-receiver <address>] [--expect-amount <atoms>] [--yes]   (renders and asks for confirmation before signing; v2 transfers only)");
   console.log("  zyron-l1 keygen --out wallet.json --password-prompt     (interactive; no password file is written)");
   console.log("  zyron-l1 keystore-verify --key wallet.json            (password: ZYRON_KEYSTORE_PASSWORD_FILE, ZYRON_KEYSTORE_PASSWORD or a terminal prompt; prints only public data)");
   console.log("  zyron-l1 keystore-migrate --key old.json --out new.json   (v1 -> v2, scrypt N=2^17)");
   console.log("  zyron-l1 address-checksum --address <ZYN...>           (display-only mixed-case checksum; consensus uses lower-case)");
   console.log("  zyron-l1 send-check --to <ZYN...> [--from <ZYN...>] [--amount-atoms N] [--known-file book.json] [--format text|json]  (offline, advisory send warnings)");
-  console.log("  zyron-l1 transfer-sign --key wallet.json --chain-id <id> --to <address> --amount-atoms <n> [--fee-atoms <n>] --nonce <next-nonce> --tx-version <1|2> --out tx.json   (offline)");
+  console.log("  zyron-l1 transfer-sign --key wallet.json --chain-id <id> --to <address> --amount-atoms <n> [--fee-atoms <n>] --nonce <next-nonce> [--tx-version 2] [--expect-receiver <address>] [--expect-amount <atoms>] [--yes] --out tx.json   (offline; version from the chain's protocol table; protocol-1 chains and v1 are refused; renders and confirms)");
   console.log("  zyron-l1 tx-submit --tx tx.json --rpc <url>");
   console.log("  zyron-l1 validator-proposal --out update.json --rpc <url> --key initiator.json --activation-height <n> --validator-public-key <hex> [...]");
   console.log("  zyron-l1 validator-approve --proposal update.json --key validator.json --out approval.json");

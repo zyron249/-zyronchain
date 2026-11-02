@@ -45,7 +45,7 @@ jobs:
       - name: Verify live two-validator local devnet (protocol v1)
         id: devnet
         shell: bash
-        run: npm run devnet:check 2>&1 | tee "$RUNNER_TEMP/local-devnet-v1.log"
+        run: npm run devnet:check:v1-legacy 2>&1 | tee "$RUNNER_TEMP/local-devnet-v1.log"
       - name: Classify protocol-v1 devnet result (F-01)
         if: always()
         shell: bash

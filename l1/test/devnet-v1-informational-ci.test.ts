@@ -151,7 +151,7 @@ test("P1-04 workflow: both devnet jobs run the unmodified checks and neither swa
     assert.match(block, /timeout-minutes: 10\n/);
   }
   assert.match(v1, /name: local-devnet \(protocol v1, informational, known F-01 flake\)/);
-  assert.match(v1, /shell: bash\n\s+run: npm run devnet:check 2>&1 \| tee "\$RUNNER_TEMP\/local-devnet-v1\.log"\n/);
+  assert.match(v1, /shell: bash\n\s+run: npm run devnet:check:v1-legacy 2>&1 \| tee "\$RUNNER_TEMP\/local-devnet-v1\.log"\n/);
   assert.match(v1, /if: always\(\)\n[\s\S]*run: node scripts\/classify-devnet-v1-result\.mjs/);
   assert.match(v6, /run: npm run devnet:check:v6\n/);
   assert.equal(/^    name:/m.test(v6), false, "the v6 job keeps its id as the check name (candidate required check)");

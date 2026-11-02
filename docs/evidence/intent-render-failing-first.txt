@@ -1,0 +1,71 @@
+Feature 6A intent renderer: failing-first evidence
+==================================================
+
+Method: a detached worktree of origin/main at ef76d5da (before this PR) received ONLY the new or
+changed tests from this PR, with no source changes. Each behavior change below fails there, then
+passes on this branch. Paths are replaced by <repo>/. Node v22.19.0.
+
+1. l1/test/intent-render.test.ts (new module; renderer, R1-R4, vectors, resolved questions)
+   On main the test does not compile: the module and the signTransfer export do not exist.
+
+   $ cd <repo>/l1 && npx tsc --outDir dist
+   test/intent-render.test.ts(22,8): error TS2307: Cannot find module '../src/intent-render.js' or its corresponding type declarations.
+   test/intent-render.test.ts(23,26): error TS2305: Module '"../src/transaction.js"' has no exported member 'signTransfer'.
+   tsc exit: 2
+
+2. l1/test/cli-intent-render.test.ts (CLI render + confirm, --yes, --expect-*, v1 refusal, R3)
+   On main every test fails (no render, no confirmation, unknown --yes/--expect-* options,
+   tx-version required and 1 accepted, protocol-1 network signed with v1).
+
+   $ cd <repo>/l1 && node --test dist/test/cli-intent-render.test.js
+   not ok 1 - 6A CLI: transfer-sign refuses without confirmation and no TTY, after printing the full render
+       reason: Fatal: --tx-version is required
+   not ok 2 - 6A CLI: --yes cannot be enabled by environment variables
+       reason: 'Fatal: --tx-version is required\n'
+   not ok 3 - 6A CLI: --yes still prints the full render to stderr and signs a version-2 transfer by default
+       reason: Fatal: Unknown option: --yes
+   not ok 4 - 6A CLI: --expect-receiver and --expect-amount fail closed
+       reason: 'Fatal: Unknown option: --yes\n'
+   not ok 5 - 6A CLI: transfer-sign refuses tx-version 1 and non-testnet chain IDs
+       reason: Fatal: Unknown option: --yes
+   not ok 6 - 6A CLI: transfer refuses a protocol-1 network (v1 transfers) before signing or posting
+       reason: 'Fatal: Unknown option: --yes\n'
+   # tests 6
+   # pass 0
+   # fail 6
+
+3. tools/pwa-wallet/test-core.mjs (PWA default transfer version becomes 2 on every chain)
+   With the updated assertions and the unchanged website/app/zyron-wallet-core.js:
+
+   $ node tools/pwa-wallet/test-core.mjs
+   not ok - transfer builder: only transfers, mining_claim impossible, strict inputs
+   AssertionError [ERR_ASSERTION]: wallet testnet default version is 2 (6A)
+   1 !== 2
+       at file://<repo>/tools/pwa-wallet/test-core.mjs:630:10
+   exit: 1
+
+After the change (this branch): intent-render.test 16/16, cli-intent-render.test 6/6,
+cli-offline-sign.test and cli-rpc-v5.test pass with the adapted call sites, and
+test-core.mjs --require-l1 passes 22/22.
+
+=== Option 3 / Security Lows / confinement: new tests run against 24848c92 (scratch worktree, tests copied in) ===
+--- l1 tsc (new tests need transfer-version-policy.ts and RENDERABLE_CHAIN_IDS, which do not exist at 24848c92) ---
+test/intent-render.test.ts(13,3): error TS2724: '"../src/intent-render.js"' has no exported member named 'RENDERABLE_CHAIN_IDS'. Did you mean 'RENDERABLE_KINDS'?
+test/transfer-version-policy.test.ts(12,31): error TS2724: '"../src/intent-render.js"' has no exported member named 'RENDERABLE_CHAIN_IDS'. Did you mean 'RENDERABLE_KINDS'?
+test/transfer-version-policy.test.ts(20,8): error TS2307: Cannot find module '../src/transfer-version-policy.js' or its corresponding type declarations.
+--- L1 PoC at 24848c92: mainnet-looking IDs passed the old regex ---
+HEAD isAllowedTestnetChainId zyron-mainnet-testnet true
+HEAD isAllowedTestnetChainId mainnet-devnet true
+HEAD isAllowedTestnetChainId devnet-mainnet-1 true
+HEAD isAllowedTestnetChainId testnet true
+HEAD isAllowedTestnetChainId zyron-mainnet-1-testnet true
+--- PWA test-core.mjs (new) against 24848c92 wallet-core.js ---
+AssertionError [ERR_ASSERTION]: wallet testnet default version is 1  (24848c92 defaulted the PWA to v2; the confinement tests (b)-(d) never ran)
+--- CLI transfer-sign --tx-version 1 (note: 24848c92 already refused offline v1; the new code refuses it via the chain protocol) ---
+== <repo@24848c92>/l1/dist/src/cli.js
+$ zyron-l1 transfer-sign --chain-id zyron-devnet-1 ... --nonce 1 --tx-version 1 --yes
+Fatal: Refusing to sign: tx-version 1 (domainless signature) is no longer signed by the CLI; use 2 (the default). Nothing was signed.
+== <repo>/l1/dist/src/cli.js
+$ zyron-l1 transfer-sign --chain-id zyron-devnet-1 ... --nonce 1 --tx-version 1 --yes
+Fatal: Refusing to sign: tx-version 1 is refused: zyron-devnet-1 advertises protocol 3 (offline-table), which requires version 2, and the version cannot be overridden. Nothing was signed.
+--- After the fix (<repo> head): targeted l1 tests 34/34 pass, pwa-core 26 pass ---
