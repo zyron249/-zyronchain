@@ -79,3 +79,56 @@ test("/health validator entries carry restarts and the last exit, labelled oom f
   assert.equal(out[1].lastExitReason, "exit"); assert.equal(out[1].lastExitCode, 1); assert.equal(out[1].restarts, 1);
   assert.equal(out[2].restarts, 0); assert.equal(out[2].lastExitReason, null);
 });
+
+test("maxOldSpaceMb is the cap actually passed, or null when off", () => {
+  assert.equal(api.maxOldSpaceMbFromFlags(api.validatorNodeFlags({})), 96);
+  assert.equal(api.maxOldSpaceMbFromFlags(api.validatorNodeFlags({ ZYRON_VALIDATOR_MAX_OLD_MB: "128" })), 128);
+  assert.equal(api.maxOldSpaceMbFromFlags(api.validatorNodeFlags({ ZYRON_VALIDATOR_MAX_OLD_MB: "0" })), null);
+});
+
+const MB = 1048576;
+const report = { type: "zyron-validator-memory", rss: 120 * MB, heapTotal: 60 * MB, heapUsed: 30.04 * MB, external: 3 * MB, arrayBuffers: 0.5 * MB };
+
+test("validator memory: reported fields in MB, null before the first report", () => {
+  const c = clock(); const t = api.createValidatorMemoryTracker({ now: c.now });
+  t.started("v1", 96);
+  assert.deepEqual(t.status("v1"), { maxOldSpaceMb: 96, heapUsedMb: null, heapTotalMb: null, rssMb: null, externalMb: null, arrayBuffersMb: null, memoryReportedAt: null });
+  assert.equal(t.message("v1", report), true);
+  assert.deepEqual(t.status("v1"), { maxOldSpaceMb: 96, heapUsedMb: 30, heapTotalMb: 60, rssMb: 120, externalMb: 3, arrayBuffersMb: 0.5, memoryReportedAt: new Date(c.now()).toISOString() });
+  t.started("v2", null);
+  assert.equal(t.status("v2").maxOldSpaceMb, null);
+  const [row] = api.withValidatorMemory([{ name: "v1", up: true }], t);
+  assert.equal(row.up, true); assert.equal(row.rssMb, 120);
+});
+
+test("validator memory: a sample older than 2 minutes reads as null", () => {
+  const c = clock(); const t = api.createValidatorMemoryTracker({ now: c.now });
+  t.started("v1", 96); t.message("v1", report);
+  c.advance(120_000); assert.equal(t.status("v1").rssMb, 120);
+  c.advance(1); assert.equal(t.status("v1").rssMb, null); assert.equal(t.status("v1").memoryReportedAt, null);
+  assert.equal(t.status("v1").maxOldSpaceMb, 96);
+});
+
+test("validator memory: a restart drops the old sample; bad messages are ignored", () => {
+  const c = clock(); const t = api.createValidatorMemoryTracker({ now: c.now });
+  t.started("v1", 96); t.message("v1", report);
+  t.started("v1", 96); assert.equal(t.status("v1").rssMb, null);
+  for (const bad of [null, "x", {}, { ...report, type: "other" }, { ...report, rss: "1" }, { ...report, rss: -1 }, { ...report, rss: Infinity }, { ...report, heapUsed: undefined }, { ...report, rss: 2 ** 46 }]) assert.equal(t.message("v1", bad), false);
+  assert.equal(t.status("v1").rssMb, null);
+  assert.equal(t.message("unknown", report), false);
+  // Names are bounded.
+  const b = api.createValidatorMemoryTracker({ maxNames: 2 });
+  b.started("a", 1); b.started("b", 1); b.started("c", 1);
+  assert.equal(b.message("c", report), false);
+});
+
+test("the preload reports process.memoryUsage over IPC and does not keep the child alive", async () => {
+  const { fork } = await import("node:child_process");
+  const child = fork("-e", ["setTimeout(() => {}, 3000)"], { execArgv: ["--require", api.VALIDATOR_MEMORY_PRELOAD], stdio: ["ignore", "ignore", "inherit", "ipc"], serialization: "json" });
+  const msg: any = await new Promise((done, fail) => { child.once("message", done); child.once("exit", () => fail(new Error("exited before reporting"))); });
+  const t = api.createValidatorMemoryTracker(); t.started("v1", null);
+  assert.equal(t.message("v1", msg), true);
+  assert.ok(t.status("v1").rssMb > 0 && t.status("v1").heapUsedMb > 0);
+  const code = await new Promise((done) => child.once("exit", done));
+  assert.equal(code, 0);
+});

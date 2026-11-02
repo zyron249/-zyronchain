@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import * as keeper from "./open-testnet-snapshot-keeper.mjs";
 import {
-  GITHUB_CALL_TIMEOUT_MS, cancellableSleep, SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, fetchSnapshot, formatLabel,
+  GITHUB_CALL_TIMEOUT_MS, cancellableSleep, confirmLiveChain, CONFIRM_DELAY_MS, SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, fetchSnapshot, formatLabel,
   isCompleteAsset, keeperAssetName, parseKeeperAssetName, parseLabel, perGenesisName, publishAsset, publishCycle, readCapped, repairAndCleanup, runKeeper, validateSnapshot
 } from "./open-testnet-snapshot-keeper.mjs";
 
@@ -1131,14 +1131,14 @@ test("the scheduled workflow keeps least privilege, one active run, a bounded jo
   const active = workflow.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
   assert.match(active, /^on:\n  schedule:\n    - cron: '[^']+'\n  workflow_dispatch:/m);
   assert.match(active, /^permissions: \{\}$/m, "no workflow-level permissions");
-  assert.deepEqual([...active.matchAll(/^\s+permissions:\n\s+(\S.*)$/gm)].map((match) => match[1]), ["contents: write"], "only the job gets contents: write");
+  assert.deepEqual([...active.matchAll(/^\s+permissions:\n\s+(\S.*)$/gm)].map((match) => match[1]), ["contents: write", "actions: write"], "only the keep job gets contents: write and only the chain job gets actions: write");
   assert.match(active, /^concurrency:\n  group: open-testnet-snapshot-keeper\n  cancel-in-progress: false$/m, "exactly one active run; never cancel a run mid-upload");
   const timeout = Number(/^\s+timeout-minutes: (\d+)$/m.exec(active)?.[1]);
   const runMinutes = Number(/RUN_MINUTES: \$\{\{ inputs\.run_minutes \|\| '(\d+)' \}\}/.exec(active)?.[1]);
   assert.ok(timeout <= 360 && runMinutes > 0 && runMinutes + 10 <= timeout, `job timeout ${timeout} must exceed the run length ${runMinutes} and stay within 360`);
   assert.match(active, /EXPECTED_GENESIS: e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad$/m);
   assert.match(active, /if: github\.repository == 'zyron249\/-zyronchain' && github\.ref == 'refs\/heads\/main'$/m, "only main can run the keeper: a dispatched branch must never get the state secret");
-  assert.deepEqual([...active.matchAll(/\$\{\{\s*([^}]*?)\s*\}\}/g)].map((match) => match[1]).sort(), ["github.repository", "github.token", "inputs.run_minutes || '340'", "secrets.ZYRON_TESTNET_STATE_SECRET"], "no secrets and no untrusted expression in a script");
+  assert.deepEqual([...active.matchAll(/\$\{\{\s*([^}]*?)\s*\}\}/g)].map((match) => match[1]).sort(), ["github.repository", "github.repository", "github.token", "github.token", "inputs.run_minutes || '340'", "inputs.run_minutes || '340'", "needs.keep.result", "secrets.ZYRON_TESTNET_STATE_SECRET"], "no secrets and no untrusted expression in a script");
   // M2 (owner-approved 2026-10-22): exactly one secret, the state secret, only as a step env value.
   assert.deepEqual([...active.matchAll(/secrets\.[A-Za-z0-9_]+/g)].map((match) => match[0]), ["secrets.ZYRON_TESTNET_STATE_SECRET"], "the state secret is the only secret");
   assert.match(active, /^          ZYRON_TESTNET_STATE_SECRET: \$\{\{ secrets\.ZYRON_TESTNET_STATE_SECRET \}\}$/m, "the state secret is passed only as the keeper step's env");
@@ -1146,6 +1146,41 @@ test("the scheduled workflow keeps least privilege, one active run, a bounded jo
   for (const use of active.matchAll(/uses: (\S+)/g)) assert.match(use[1], /^actions\/(checkout|setup-node)@[0-9a-f]{40}$/, `unpinned or unexpected action ${use[1]}`);
   assert.match(active, /persist-credentials: false/);
   assert.match(active, /run: node \.github\/scripts\/open-testnet-snapshot-keeper\.mjs$/m);
+});
+
+test("the chain job self-dispatches on main only, with its own minimal permission and runaway guards", async () => {
+  const workflow = await readFile(new URL("../workflows/open-testnet-snapshot-keeper.yml", import.meta.url), "utf8");
+  const active = workflow.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+  const chain = active.slice(active.indexOf("\n  chain:\n"));
+  const keep = active.slice(active.indexOf("\n  keep:\n"), active.indexOf("\n  chain:\n"));
+  assert.ok(chain.length > 20 && keep.length > 20, "keep and chain jobs exist");
+  assert.match(chain, /^    needs: keep$/m);
+  assert.match(chain, /^    if: always\(\) && github\.repository == 'zyron249\/-zyronchain' && github\.ref == 'refs\/heads\/main' && \(github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'\)$/m);
+  assert.match(chain, /^    permissions:\n      actions: write$/m);
+  assert.doesNotMatch(chain, /secrets\.|contents: write|uses:/, "the chain job gets no secret, no contents write and no actions");
+  assert.doesNotMatch(keep, /actions: write/, "the keep job does not get actions: write");
+  assert.match(chain, /dispatches" -f ref=main$/m, "dispatches only main");
+  assert.match(chain, /MIN_RUN_MINUTES: '30'/, "crash-loop guard");
+  assert.match(chain, /MAX_DISPATCHES_PER_DAY: '\d+'/, "daily chain cap");
+  for (const status of ["queued", "pending", "waiting", "requested", "in_progress"]) assert.match(chain, new RegExp(`for status in [^\\n]*\\b${status}\\b`), `skips when a ${status} run exists`);
+  assert.match(chain, /select\(\.id != \$GITHUB_RUN_ID\)/, "ignores only the current run");
+  // Red Team S2-5: only a successful keep run chains, and manual dispatches count toward the cap.
+  assert.match(chain, /case "\$KEEP_RESULT" in success\|failure\) ;; \*\) skip/, "needs.keep.result must be success or failure");
+  assert.match(chain, /case "\$conclusion" in success\|failure\) ;; \*\) skip/, "the keep job's API conclusion must be success or failure");
+  assert.match(chain, /runs\?event=workflow_dispatch&created=>=\$since&per_page=100" --jq '\.total_count'/, "every workflow_dispatch run counts toward the cap");
+  assert.doesNotMatch(chain, /triggering_actor/, "the cap does not filter by actor");
+  // Security Low-1: duration comes from the keep job, not the run.
+  assert.match(chain, /actions\/runs\/\$GITHUB_RUN_ID\/jobs/);
+  assert.doesNotMatch(chain, /run_started_at/);
+  // Security Low-2: every skip warns, and a stale published snapshot warns.
+  assert.match(chain, /skip\(\) \{ echo "::warning title=Keeper not chained::\$1"; exit 0; \}/);
+  const run = chain.slice(chain.indexOf("run: |"));
+  assert.doesNotMatch(run.replace(/skip\(\) \{[^}]*\}/, "").replace(/stop\(\) \{ echo "::error [^}]*\}/, ""), /exit 0/, "no silent skip path");
+  assert.match(chain, /MAX_SNAPSHOT_AGE_MINUTES: '\d+'/);
+  // Patron I3: a stale or unreadable published snapshot is an error annotation, not only a warning.
+  assert.match(chain, /::error title=Stale published snapshot::state\.enc was last updated/);
+  assert.match(chain, /::error title=Stale published snapshot::could not read state\.enc/);
+  assert.doesNotMatch(chain, /::warning title=Stale published snapshot/);
 });
 
 // ---- Codex round 4 at 72276b7: the missing-name window and repair installs ----
@@ -1722,6 +1757,127 @@ test("keeper workflow enables the snapshot watch with a short fetch timeout and 
   assert.ok(value("SNAPSHOT_RETRIES") >= 1);
 });
 
+// ---- Security Medium-1 on #1171: chain decisions, run against a fake `gh` ----
+// Extracts the chain step's bash script from the workflow and runs it with a
+// fake `gh` that answers from fixtures (and applies --jq with the real jq), so
+// the decisions below exercise the exact script the workflow runs.
+async function chainScript() {
+  const workflow = await readFile(new URL("../workflows/open-testnet-snapshot-keeper.yml", import.meta.url), "utf8");
+  const chain = workflow.slice(workflow.indexOf("\n  chain:\n"));
+  const lines = chain.slice(chain.indexOf("        run: |\n") + "        run: |\n".length).split("\n");
+  const body = [];
+  for (const line of lines) { if (line.trim() && !line.startsWith("          ")) break; body.push(line.slice(10)); }
+  return body.join("\n");
+}
+
+const RUN_ID = 999;
+function iso(ms) { return new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z"); }
+
+async function runChain({ keepResult = "success", job, prior = [], active = 0, dispatches = 0, runMinutes = "340" }) {
+  const { mkdtemp, writeFile, chmod, readFile: rf } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { execFile } = await import("node:child_process");
+  const dir = await mkdtemp(join(tmpdir(), "chain-"));
+  const now = Date.now();
+  const fixtures = {
+    release: { assets: [{ name: "state.enc", updated_at: iso(now - 5 * 60_000) }] },
+    jobs: { jobs: [{ name: "keep", ...job }] },
+    completed: { workflow_runs: [{ id: RUN_ID, conclusion: job.conclusion }, ...prior.map((conclusion, i) => ({ id: i + 1, conclusion }))] },
+    active: { workflow_runs: [{ id: RUN_ID }, ...Array.from({ length: active }, (_, i) => ({ id: 500 + i }))] },
+    dispatches: { total_count: dispatches, workflow_runs: [] }
+  };
+  for (const [name, value] of Object.entries(fixtures)) await writeFile(join(dir, `${name}.json`), JSON.stringify(value));
+  await writeFile(join(dir, "gh"), `#!/usr/bin/env bash
+set -euo pipefail
+shift # api
+method=GET; url=""; jqexpr="."
+while [ $# -gt 0 ]; do case "$1" in -X) method=$2; shift 2;; --jq) jqexpr=$2; shift 2;; -f) shift 2;; *) url=$1; shift;; esac; done
+echo "$method $url" >> "${dir}/calls.log"
+if [ "$method" = POST ]; then exit 0; fi
+case "$url" in
+  *releases/tags/*) f=release;;
+  */runs/${RUN_ID}/jobs*) f=jobs;;
+  *status=completed*) f=completed;;
+  *status=in_progress*) f=active;;
+  *status=*) f=none;;
+  *event=workflow_dispatch*) f=dispatches;;
+  *) echo "unexpected $url" >&2; exit 9;;
+esac
+if [ "$f" = none ]; then echo '{"workflow_runs":[]}' | jq -r "$jqexpr"; else jq -r "$jqexpr" "${dir}/$f.json"; fi
+`);
+  await chmod(join(dir, "gh"), 0o755);
+  await writeFile(join(dir, "calls.log"), "");
+  const env = {
+    PATH: `${dir}:${process.env.PATH}`, GITHUB_RUN_ID: String(RUN_ID), REPO: "o/r", KEEP_RESULT: keepResult, RUN_MINUTES: runMinutes,
+    WORKFLOW_FILE: "open-testnet-snapshot-keeper.yml", TAG: "open-testnet-state", MAX_SNAPSHOT_AGE_MINUTES: "30", MIN_RUN_MINUTES: "30",
+    FULL_LOOP_SLACK_MINUTES: "15", MAX_CONSECUTIVE_FAILURES: "3", MAX_DISPATCHES_PER_DAY: "10"
+  };
+  const script = await chainScript();
+  const out = await new Promise((resolve, reject) => execFile("bash", ["-c", script], { env }, (error, stdout, stderr) => (error ? reject(Object.assign(error, { stdout, stderr })) : resolve(stdout))));
+  const calls = await rf(join(dir, "calls.log"), "utf8");
+  return { out, dispatched: /^POST .*\/dispatches$/m.test(calls) };
+}
+
+const keepJob = (conclusion, startedAt, completedAt) => ({ conclusion, started_at: startedAt, completed_at: completedAt });
+
+test("chain: run 41369177821 (keep failed at the final step after ~5h40m) still chains", async () => {
+  const { out, dispatched } = await runChain({ keepResult: "failure", job: keepJob("failure", "2026-11-02T04:08:33Z", "2026-11-02T09:48:40Z"), prior: ["success"] });
+  assert.ok(dispatched, out);
+  assert.match(out, /::warning title=Keeper failed at the end of a full loop::keep job failed after 340 min \(failure 1 in a row\)/);
+});
+
+test("chain: a successful full run chains", async () => {
+  const { out, dispatched } = await runChain({ job: keepJob("success", "2026-11-02T04:08:33Z", "2026-11-02T09:48:40Z") });
+  assert.ok(dispatched, out);
+  assert.doesNotMatch(out, /::warning|::error/);
+});
+
+test("chain: a 3rd failed keep run in a row stops the chain with an error", async () => {
+  const { out, dispatched } = await runChain({ keepResult: "failure", job: keepJob("failure", "2026-11-02T04:08:33Z", "2026-11-02T09:48:40Z"), prior: ["failure", "cancelled", "failure", "success"] });
+  assert.ok(!dispatched, out);
+  assert.match(out, /::error title=Keeper chain stopped::3 failed keep runs in a row/);
+});
+
+test("chain: a 2nd failure in a row still chains", async () => {
+  const { out, dispatched } = await runChain({ keepResult: "failure", job: keepJob("failure", "2026-11-02T04:08:33Z", "2026-11-02T09:48:40Z"), prior: ["failure", "success", "failure"] });
+  assert.ok(dispatched, out);
+  assert.match(out, /failure 2 in a row/);
+});
+
+test("chain: a cancelled keep run skips with a warning", async () => {
+  for (const keepResult of ["cancelled", "skipped"]) {
+    const { out, dispatched } = await runChain({ keepResult, job: keepJob("cancelled", "2026-11-02T04:08:33Z", "2026-11-02T09:48:40Z") });
+    assert.ok(!dispatched, out);
+    assert.match(out, new RegExp(`::warning title=Keeper not chained::keep job result is ${keepResult}`));
+  }
+  const { out, dispatched } = await runChain({ keepResult: "success", job: keepJob("cancelled", "2026-11-02T04:08:33Z", "2026-11-02T09:48:40Z") });
+  assert.ok(!dispatched, out);
+  assert.match(out, /::warning title=Keeper not chained::keep job conclusion is cancelled/);
+});
+
+test("chain: a short crash skips with a warning, failed or not", async () => {
+  for (const conclusion of ["failure", "success"]) {
+    const { out, dispatched } = await runChain({ keepResult: conclusion, job: keepJob(conclusion, "2026-11-02T04:08:33Z", "2026-11-02T04:20:00Z") });
+    assert.ok(!dispatched, out);
+    assert.match(out, new RegExp(`::warning title=Keeper not chained::keep job ${conclusion} after 11 min \\(< 30\\); possible crash loop`));
+  }
+});
+
+test("chain: a failure well before the end of the loop skips with a warning", async () => {
+  const { out, dispatched } = await runChain({ keepResult: "failure", job: keepJob("failure", "2026-11-02T04:00:00Z", "2026-11-02T06:00:00Z") });
+  assert.ok(!dispatched, out);
+  assert.match(out, /::warning title=Keeper not chained::keep job failed after 120 min \(< 325, not a full loop\)/);
+});
+
+test("chain: another active run or the daily dispatch cap skips with a warning", async () => {
+  const full = keepJob("success", "2026-11-02T04:08:33Z", "2026-11-02T09:48:40Z");
+  let result = await runChain({ job: full, active: 1 });
+  assert.ok(!result.dispatched); assert.match(result.out, /::warning title=Keeper not chained::1 other run/);
+  result = await runChain({ job: full, dispatches: 10 });
+  assert.ok(!result.dispatched); assert.match(result.out, /::warning title=Keeper not chained::10 workflow_dispatch runs/);
+});
+
 test("keeper caps the /health body it reads at MAX_HEALTH_BYTES", async () => {
   const { readSnapshotCache, keepAlive, MAX_HEALTH_BYTES } = keeper;
   assert.equal(MAX_HEALTH_BYTES, 64 * 1024);
@@ -1766,4 +1922,191 @@ test("runKeeper starts watch-triggered cycles at most once per WATCH_MIN_GAP_MS"
   assert.ok(stats.watchTriggers >= 3 && stats.watchTriggers <= 5, `watchTriggers ${stats.watchTriggers}`);
   const triggered = snapshots.slice(1);
   for (let i = 1; i < triggered.length; i += 1) assert.ok(triggered[i] - triggered[i - 1] >= 2, `cycles at ${triggered.join(",")}`);
+});
+
+// S2-1 (Red Team session 2): after an operator rollback the live chain is at or
+// below the published height on another branch. Before the fix every such
+// snapshot was "not newer" (the PoC in the report); now it is a rollback.
+const TIP_A = "a".repeat(64);
+const TIP_B = "b".repeat(64);
+function chainSnapshot(height, tipHash, hashes = {}) {
+  return { height, genesis: GENESIS, tipHash, hashAt: (h) => (h === height ? tipHash : hashes[h]) };
+}
+
+test("S2-1 labels carry the tip hash and rollback counter and still parse old labels", () => {
+  assert.equal(formatLabel(13045, GENESIS, { tipHash: TIP_A, rollbackCounter: 2 }), `state snapshot height=13045 genesis=${GENESIS} tip=${TIP_A} rollbacks=2`);
+  assert.deepEqual(parseLabel(formatLabel(13045, GENESIS, { tipHash: TIP_A, rollbackCounter: 2 })), { height: 13045, genesis: GENESIS, tipHash: TIP_A, rollbackCounter: 2 });
+  assert.deepEqual(parseLabel(formatLabel(13045, GENESIS)), { height: 13045, genesis: GENESIS });
+  assert.equal(parseLabel(`state snapshot height=5 genesis=${GENESIS} tip=${TIP_A}`), null);
+});
+
+test("S2-1 PoC: a rolled-back live chain at or below the published height is republished, not 'not newer'", () => {
+  const asset = { label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 0 }) };
+  for (const height of [12966, 13000, 13399]) {
+    const d = decideReplace({ snapshot: chainSnapshot(height, TIP_B), asset, expectedGenesis: GENESIS, requestStartedMs: T0, liveHashAtPublished: null });
+    assert.equal(d.publish, true, `height ${height}`);
+    assert.equal(d.fork, true);
+    assert.equal(d.rollbackCounter, 1);
+    assert.notEqual(d.upToDate, true);
+  }
+  // Same height, different tip: a fork, detected from the snapshot itself.
+  const same = decideReplace({ snapshot: chainSnapshot(13400, TIP_B), asset, expectedGenesis: GENESIS, requestStartedMs: T0 });
+  assert.equal(same.fork, true);
+  // Higher snapshot on the other branch: also a rollback, not a plain height bump.
+  const higher = decideReplace({ snapshot: chainSnapshot(13401, TIP_B, { 13400: TIP_B }), asset, expectedGenesis: GENESIS, requestStartedMs: T0 });
+  assert.equal(higher.fork, true);
+  assert.equal(higher.rollbackCounter, 1);
+});
+
+test("S2-1 the same chain keeps the monotonic rules and carries the counter", () => {
+  const asset = { label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 3 }) };
+  const up = decideReplace({ snapshot: chainSnapshot(13401, TIP_B, { 13400: TIP_A }), asset, expectedGenesis: GENESIS, requestStartedMs: T0 });
+  assert.deepEqual([up.publish, up.fork, up.rollbackCounter], [true, undefined, 3]);
+  const same = decideReplace({ snapshot: chainSnapshot(13400, TIP_A), asset, expectedGenesis: GENESIS, requestStartedMs: T0 });
+  assert.deepEqual([same.publish, same.upToDate], [false, true]);
+  const lower = decideReplace({ snapshot: chainSnapshot(13390, TIP_B), asset, expectedGenesis: GENESIS, requestStartedMs: T0, liveHashAtPublished: TIP_A });
+  assert.deepEqual([lower.publish, lower.upToDate], [false, true]);
+  // A lower snapshot whose chain cannot be checked is refused (not "up to date").
+  const unknown = decideReplace({ snapshot: chainSnapshot(13390, TIP_B), asset, expectedGenesis: GENESIS, requestStartedMs: T0 });
+  assert.deepEqual([unknown.publish, unknown.upToDate === true], [false, false]);
+});
+
+test("S2-1 publishAsset republishes the live chain after a rollback and labels the new tip", async () => {
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 0 }), state: "uploaded", size: 100_000 }] });
+  const asked = [];
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: chainSnapshot(12970, TIP_B), expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, sleep: async () => {}, liveHashAt: async (h) => { asked.push(h); return null; } });
+  assert.deepEqual(asked.slice(0, 1), [13400]);
+  assert.equal(result.published, true);
+  assert.equal(result.fork, true);
+  assert.equal(result.rollbackCounter, 1);
+  assert.deepEqual(parseLabel(state.assets.find((asset) => asset.name === "state.enc").label), { height: 12970, genesis: GENESIS, tipHash: TIP_B, rollbackCounter: 1 });
+});
+
+test("S2-1 a detected rollback fails the run as an alert", () => {
+  assert.equal(exitCodeFor({ published: 1, notNewer: 0, genesisMismatches: 0, authenticationFailures: 0, rollbacks: 1 }), 1);
+  assert.equal(exitCodeFor({ published: 1, notNewer: 0, genesisMismatches: 0, authenticationFailures: 0, rollbacks: 0 }), 0);
+});
+
+// #1177 Security Medium-1 (PoC repair-reversal.mjs): after a rollback republish
+// the abandoned asset must never become a restorable backup.
+test("#1177 M-1 a rollback moves the abandoned asset aside outside the keeper pattern and repair never reinstalls it", async () => {
+  let t = T0;
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 0 }), state: "uploaded", size: 100_000, updated_at: new Date(T0).toISOString() }], now: () => t });
+  const quiet = { log() {}, warn() {}, sleep: async () => {} };
+  const r = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: chainSnapshot(12970, TIP_B), expectedGenesis: GENESIS, requestStartedMs: t, now: () => t, ...quiet, liveHashAt: async () => null });
+  assert.equal(r.fork, true);
+  const aside = state.assets.find((asset) => asset.id === 7);
+  assert.match(aside.name, /^rolledback-\d{13}-[0-9a-f]{8}\.state\.enc$/);
+  assert.equal(parseKeeperAssetName(aside.name), null);
+  for (const h of [12990, 13010, 13030]) { t += 10 * 60_000; await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: chainSnapshot(h, TIP_B, { 12970: TIP_B, 12990: TIP_B, 13010: TIP_B }), expectedGenesis: GENESIS, requestStartedMs: t, now: () => t, ...quiet }); }
+  t += 31 * 60_000;
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => t, ...quiet });
+  Object.assign(state.assets.find((asset) => asset.name === "state.enc"), { size: 0 });
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => t, ...quiet });
+  const installed = parseLabel(state.assets.find((asset) => asset.name === "state.enc").label);
+  assert.equal(installed.tipHash, TIP_B, "repair installs a copy of the live branch");
+  assert.ok(state.assets.some((asset) => asset.id === 7), "the abandoned asset is kept as evidence");
+});
+
+test("#1177 M-1 repair skips copies from before the newest rollback", async () => {
+  const { github, state } = fakeGitHub({ assets: [
+    { id: 1, name: keeperAssetName("prev", "state.enc", T0 - 3_600_000), label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 0 }), state: "uploaded", size: 100_000 },
+    { id: 2, name: keeperAssetName("prev", "state.enc", T0 - 3_000_000), label: formatLabel(13010, GENESIS, { tipHash: TIP_B, rollbackCounter: 1 }), state: "uploaded", size: 100_000 },
+    { id: 3, name: "state.enc", label: formatLabel(13030, GENESIS, { tipHash: TIP_B, rollbackCounter: 1 }), state: "uploaded", size: 0 }
+  ] });
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 2);
+});
+
+test("#1177 L-2 the rollback counter is carried forward without a tip and over an unlabeled asset", async () => {
+  assert.deepEqual(parseLabel(formatLabel(5, GENESIS, { rollbackCounter: 4 })), { height: 5, genesis: GENESIS, rollbackCounter: 4 });
+  const { github, state } = fakeGitHub({ assets: [
+    { id: 7, name: "state.enc", label: "", state: "uploaded", size: 100_000, updated_at: new Date(T0 - 600_000).toISOString() },
+    { id: 8, name: keeperAssetName("prev", "state.enc", T0 - 900_000), label: formatLabel(100, GENESIS, { tipHash: TIP_A, rollbackCounter: 2 }), state: "uploaded", size: 100_000 }
+  ] });
+  const warnings = [];
+  const r = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn: (line) => warnings.push(line), sleep: async () => {} });
+  assert.equal(r.published, true);
+  assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc").label).rollbackCounter, 2);
+  assert.ok(warnings.some((line) => /unlabeled/.test(line)));
+});
+
+test("I1: labels parse regardless of key order and refuse duplicates or unknown keys", () => {
+  const expected = { height: 13400, genesis: GENESIS, tipHash: TIP_A, rollbackCounter: 2 };
+  assert.deepEqual(parseLabel(`state snapshot rollbacks=2 tip=${TIP_A} genesis=${GENESIS} height=13400`), expected);
+  assert.deepEqual(parseLabel(`state snapshot tip=${TIP_A} height=13400 rollbacks=2 genesis=${GENESIS}`), expected);
+  assert.deepEqual(parseLabel(`state snapshot genesis=${GENESIS} height=7`), { height: 7, genesis: GENESIS });
+  for (const bad of [`state snapshot height=7 height=8 genesis=${GENESIS}`, `state snapshot height=7 genesis=${GENESIS} extra=1`, `state snapshot height=7 genesis=${GENESIS}  rollbacks=1`, `state snapshot height=7 genesis=${GENESIS} tip=${TIP_A}`, `state snapshot height=7 genesis=${GENESIS} genesisHash=${TIP_B} rollbacks=0`]) assert.equal(parseLabel(bad), null, bad);
+});
+
+// #1177 follow-up: 404 retry-then-confirm.
+const published = { height: 13400, genesis: GENESIS, tipHash: TIP_A, rollbackCounter: 0 };
+function reads(...list) { let i = 0; return async () => list[Math.min(i++, list.length - 1)]; }
+const confirmBase = { now: () => T0, sleep: async () => {} };
+
+test("404 confirm: a 404 with maxHeight below the published height on both reads is a rollback", async () => {
+  const slept = [];
+  assert.equal(await confirmLiveChain({ label: published, read: reads({ maxHeight: 12970, hashAtPublished: null }, { maxHeight: 12975, hashAtPublished: null }), now: () => T0, sleep: async (ms) => slept.push(ms) }), "rollback");
+  assert.deepEqual(slept, [CONFIRM_DELAY_MS]);
+  assert.ok(CONFIRM_DELAY_MS >= 30_000 && CONFIRM_DELAY_MS <= 60_000);
+});
+
+test("404 confirm: a gateway that caught up with the published block refuses the rollback with a warning", async () => {
+  const warnings = [];
+  assert.equal(await confirmLiveChain({ label: published, read: reads({ maxHeight: 13399, hashAtPublished: null }, { maxHeight: 13401, hashAtPublished: TIP_A }), ...confirmBase, warn: (line) => warnings.push(line) }), "unconfirmed");
+  assert.ok(warnings.some((line) => /ROLLBACK NOT CONFIRMED/.test(line)));
+  // maxHeight at or above the published height on either read is not confirmed either.
+  assert.equal(await confirmLiveChain({ label: published, read: reads({ maxHeight: 13400, hashAtPublished: null }, { maxHeight: 13405, hashAtPublished: null }), ...confirmBase }), "unconfirmed");
+  assert.equal(await confirmLiveChain({ label: published, read: reads({ maxHeight: 13399, hashAtPublished: null }, { maxHeight: 13400, hashAtPublished: null }), ...confirmBase }), "unconfirmed");
+});
+
+test("404 confirm: a different hash at an existing block is a rollback without a re-read", async () => {
+  let n = 0;
+  assert.equal(await confirmLiveChain({ label: published, read: async () => { n += 1; return { maxHeight: 13500, hashAtPublished: TIP_B }; }, ...confirmBase }), "rollback");
+  assert.equal(n, 1);
+  assert.equal(await confirmLiveChain({ label: published, read: reads({ maxHeight: 13500, hashAtPublished: TIP_A }), ...confirmBase }), "same");
+  // A 404 whose re-read shows another hash there is a rollback.
+  assert.equal(await confirmLiveChain({ label: published, read: reads({ maxHeight: 13399, hashAtPublished: null }, { maxHeight: 13401, hashAtPublished: TIP_B }), ...confirmBase }), "rollback");
+});
+
+test("404 confirm: no re-read past the run deadline", async () => {
+  let n = 0;
+  assert.equal(await confirmLiveChain({ label: published, read: async () => { n += 1; return { maxHeight: 12970, hashAtPublished: null }; }, now: () => T0, sleep: async () => {}, swapBy: T0 + CONFIRM_DELAY_MS - 1 }), "unconfirmed");
+  assert.equal(n, 1);
+});
+
+test("404 confirm: publishAsset republishes only a confirmed rollback", async () => {
+  const asset = () => [{ id: 7, name: "state.enc", label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 0 }), state: "uploaded", size: 100_000 }];
+  const run = async (liveChain) => { const { github, state } = fakeGitHub({ assets: asset() }); const r = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: chainSnapshot(12970, TIP_B), expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {}, liveChain }); return { r, state }; };
+  const confirmed = await run(reads({ maxHeight: 12970, hashAtPublished: null }, { maxHeight: 12971, hashAtPublished: null }));
+  assert.deepEqual([confirmed.r.published, confirmed.r.fork], [true, true]);
+  const caughtUp = await run(reads({ maxHeight: 13399, hashAtPublished: null }, { maxHeight: 13401, hashAtPublished: TIP_A }));
+  assert.deepEqual([caughtUp.r.published, caughtUp.r.upToDate, caughtUp.r.fork], [false, true, undefined]);
+  assert.equal(caughtUp.state.assets.length, 1);
+});
+
+test("I2: an incomplete copy with a huge rollbacks= does not block repair", async () => {
+  const { github, state } = fakeGitHub({ assets: [
+    { id: 1, name: keeperAssetName("next", "state.enc", T0 - 60_000), label: formatLabel(13500, GENESIS, { tipHash: TIP_A, rollbackCounter: 999999999 }), state: "uploaded", size: 0 },
+    { id: 2, name: keeperAssetName("prev", "state.enc", T0 - 3_000_000), label: formatLabel(13010, GENESIS, { tipHash: TIP_B, rollbackCounter: 1 }), state: "uploaded", size: 100_000 },
+    { id: 3, name: "state.enc", label: formatLabel(13030, GENESIS, { tipHash: TIP_B, rollbackCounter: 1 }), state: "uploaded", size: 0 }
+  ] });
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 2);
+});
+
+test("I3: runKeeper stops and fails the run after a rollback republish", async () => {
+  const errors = [];
+  let cycles = 0;
+  const github = { release: async () => ({ id: 1, assets: [] }) };
+  const stats = await runKeeper({
+    fetchImpl: async (url) => new Response(JSON.stringify({ status: "ready", maxHeight: 12970, snapshotCache: {} }), { status: 200 }),
+    github, gateway: "https://gw.example", tag: "t", expectedGenesis: GENESIS, runMs: 3_600_000, publishIntervalMs: 600_000, keepAliveIntervalMs: 300_000,
+    now: (() => { let t = T0; return () => (t += 1_000); })(), sleep: async () => {}, log() {}, warn() {}, error: (line) => errors.push(line),
+    publish: async () => { cycles += 1; return { height: 12970, published: true, fork: true, rollbackCounter: 1, sha256: "x", size: 1 }; }
+  });
+  assert.equal(cycles, 1, "no further cycle after the rollback");
+  assert.equal(stats.rollbacks, 1);
+  assert.ok(errors.some((line) => /ROLLBACK DETECTED/.test(line)));
+  assert.equal(exitCodeFor(stats), 1);
 });

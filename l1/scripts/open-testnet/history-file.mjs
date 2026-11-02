@@ -39,7 +39,9 @@ async function writeAll(handle, buffer) {
 // only advances the in-RAM tip after the line is completely written.
 // Symlinks are refused (lstat on the directory, O_NOFOLLOW on the file), the
 // directory is forced to 0700 and the file to 0600.
-const WRITE_FLAGS = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | (fsConstants.O_NOFOLLOW ?? 0);
+const WRITE_FLAGS = fsConstants.O_WRONLY | fsConstants.O_CREAT | (fsConstants.O_NOFOLLOW ?? 0);
+// No O_TRUNC: truncation happens through the handle only after the nlink check
+// on that handle, so a link created between lstat and open never loses data.
 const READ_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 async function ensurePrivateDir(dir) {
   await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -47,12 +49,26 @@ async function ensurePrivateDir(dir) {
   if (info.isSymbolicLink() || !info.isDirectory()) throw new HistoryFileError("history directory is not a plain directory");
   await chmod(dir, 0o700);
 }
-async function openForWrite(path) {
+// Refuses a file with more than one hard link (checked on the open handle, so
+// a link created between lstat and open is caught too).
+async function refuseHardLink(handle) {
+  const info = await handle.stat();
+  if (!info.isFile() || info.nlink > 1) throw new HistoryFileError("history path is a hard link");
+}
+// `beforeOpen` is a test hook that runs between the lstat check and open().
+export async function openForWrite(path, { beforeOpen } = {}) {
   const existing = await lstat(path).catch((error) => { if (error?.code === "ENOENT") return undefined; throw error; });
   if (existing && (existing.isSymbolicLink() || !existing.isFile())) throw new HistoryFileError("history path is not a regular file");
+  // A hard link would let truncation and later writes reach another name.
+  if (existing && existing.nlink > 1) throw new HistoryFileError("history path is a hard link");
+  if (beforeOpen) await beforeOpen();
   let handle;
   try { handle = await open(path, WRITE_FLAGS, 0o600); } catch (error) { if (error?.code === "ELOOP") throw new HistoryFileError("history path is a symlink"); throw error; }
-  await handle.chmod(0o600);
+  try {
+    await refuseHardLink(handle);
+    await handle.truncate(0);
+    await handle.chmod(0o600);
+  } catch (error) { await handle.close().catch(() => {}); throw error; }
   return handle;
 }
 export async function createHistoryFile(path, { chainId, genesisHash }) {
@@ -111,6 +127,7 @@ export async function* readHistoryLines({ path, tip, tipHash, runningHash, chain
   if (tip > 0) {
     let readHandle;
     try { readHandle = await open(path, READ_FLAGS); } catch (error) { throw new HistoryFileError(error?.code === "ELOOP" ? "history path is a symlink" : `read failed (${error?.code ?? "io"})`); }
+    try { await refuseHardLink(readHandle); } catch (error) { await readHandle.close().catch(() => {}); throw error instanceof HistoryFileError ? error : new HistoryFileError(`read failed (${error?.code ?? "io"})`); }
     const stream = readHandle.createReadStream({ highWaterMark: 256 * 1024, autoClose: false });
     try {
       outer: for await (const chunk of stream) {
