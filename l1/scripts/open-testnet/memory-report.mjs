@@ -34,10 +34,10 @@ export function memoryReportMb(value) {
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, typeof v === "number" || (v && typeof v === "object") ? memoryReportMb(v) : v]));
   return value;
 }
-// One compact line, e.g. "memory: total=412.3MB gw rss=80.1 heap=40.2/55.0 ext=3.1 ab=1.2 | v1=80.0 v2=81.2 | worker heap=103.0".
+// One compact line, e.g. "memory: total=412.3MB gw rss=80.1 heap=40.2/55.0 ext=3.1 ab=1.2 | v1=80.0 v2=81.2 | child peak=103.0".
 export function formatMemoryLine(report) {
   const { gateway: g, validators, snapshotChild, totalRss } = report;
   const vs = Object.entries(validators).map(([name, rss]) => `${name}=${mb(rss)}`).join(" ");
-  const child = snapshotChild?.last?.heapUsed ? ` | worker heap=${mb(snapshotChild.last.heapUsed)}` : "";
+  const child = snapshotChild?.maxRss ? ` | child peak=${mb(snapshotChild.maxRss)}` : "";
   return `memory: total=${mb(totalRss)}MB gw rss=${mb(g.rss)} heap=${mb(g.heapUsed)}/${mb(g.heapTotal)} ext=${mb(g.external)} ab=${mb(g.arrayBuffers)}${vs ? ` | ${vs}` : ""}${child}`;
 }
