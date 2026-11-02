@@ -186,6 +186,41 @@ passed only to its step). With it, the snapshot height and genesis come from the
 authenticated body, and a mismatch stops the run without publishing. Without it,
 the keeper refuses to run unless `ZYRON_KEEPER_ALLOW_UNAUTHENTICATED=1` is set.
 
+## Testnet rollbacks
+
+The open testnet has no value, and it can roll back. When the gateway restarts, it restores the
+newest published snapshot (see the section above). Any blocks above that snapshot are lost, and the
+validators produce those heights again with different blocks.
+
+**What wallet users see.** The tip height drops back to `durableHeight` and then climbs again.
+Balances, nonces and transfers that were only in blocks above `durableHeight` (`durable: false`) can
+disappear. If one of yours is missing, check `/nonce` and send it again. Anything that was `durable:
+true` is kept.
+
+**What operators see.** Followers with the durable cap on only ever received blocks up to
+`durableHeight`, so they keep their chain and continue from it. `/health` shows `durableHeight`
+staying put until the keeper publishes a new snapshot. A follower that synced past `durableHeight`
+(cap off) may be on a fork. Resync procedure: [TO CONFIRM WITH OPS].
+
+### Nov 2, 2026 rollback
+
+All times are ET.
+
+- **What happened.** The last keeper run before the incident ended at 10:28 and published 4 of its
+  34 cycles. The other 30 failed with 503 while the gateway restarted. Its last publish was height
+  12966. GitHub dropped the next scheduled keeper run. A deploy started at about 10:40, restored
+  from 12966 and replayed until about 11:16. That was the deploy finishing its replay, not a crash.
+  The gateway was ready at 11:18 at height 12967.
+- **Blocks lost.** About 130 (estimate) [TO CONFIRM WITH OPS].
+- **Detection.** Between 11:20 and 11:26, `durableHeight` in `/health` stayed at 12966. No alarm
+  fired. A keeper run was started by hand at 11:26. At 12:02, `/health` showed `durableHeight` 13045,
+  `maxHeight` 13055, status ready, and 4 of 4 validators.
+- **Operator nodes.** The rehearsal node caught up on its own, and its fork check was OK at 12966.
+- **Fixes.** [#1167](https://github.com/zyron249/-zyronchain/pull/1167) (the keeper publishes right
+  after a new build) and [#1170](https://github.com/zyron249/-zyronchain/pull/1170) (caps on
+  watch-triggered keeper cycles) are merged. A self-chaining keeper and a lag alarm (planned by
+  Nov 5) are in progress.
+
 ## Mempool: future-nonce transactions
 
 A transaction whose nonce leaves a gap above your confirmed nonce is held
