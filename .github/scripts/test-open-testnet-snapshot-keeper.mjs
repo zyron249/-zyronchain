@@ -1976,3 +1976,142 @@ test("#1177 L-2 the rollback counter is carried forward without a tip and over a
   assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc").label).rollbackCounter, 2);
   assert.ok(warnings.some((line) => /unlabeled/.test(line)));
 });
+
+// ---- #1176 Security review fixes ----
+const healthBody = (height, durableHeight, built = height, extra = {}) => ({ maxHeight: height, durableHeight, snapshotCache: { lastBuiltHeight: built }, chainId: "zyron-open-testnet", ...extra });
+
+test("#1176 M1 five unreadable /health reads in a row raise 'unreadable'; a good read re-arms it", () => {
+  let clock = T0;
+  const errors = [];
+  const m = keeper.createLagMonitor({ now: () => clock, error: (line) => errors.push(line) });
+  const step = (body) => { clock += 45_000; return m.observe(body); };
+  step(healthBody(100, 99));
+  for (let i = 0; i < 4; i += 1) step(null);
+  assert.deepEqual(m.alarms, [], "4 unreadable reads are below the limit");
+  step(null);
+  assert.deepEqual(m.alarms.map((a) => a.reason), ["unreadable"]);
+  assert.match(errors[0], /5 unreadable \/health reads in a row/);
+  step(null);
+  assert.equal(m.alarms.length, 1, "one annotation per episode");
+  step(healthBody(105, 104));
+  for (let i = 0; i < 5; i += 1) step(null);
+  assert.deepEqual(m.alarms.map((a) => a.reason), ["unreadable", "unreadable"], "a new episode after a good read");
+  assert.equal(exitCodeFor({ published: 1, notNewer: 0, genesisMismatches: 0, authenticationFailures: 0, alarms: m.alarms }), 1);
+});
+
+test("#1176 M1 no usable sample within the stale window raises 'unreadable' even with sparse reads", () => {
+  let clock = T0;
+  const m = keeper.createLagMonitor({ now: () => clock, maxUnreadable: 1000 });
+  clock += 10 * 60_000; m.observe(null);
+  clock += 9 * 60_000; m.observe(null);
+  assert.deepEqual(m.alarms, []);
+  clock += 2 * 60_000; m.observe(null);
+  assert.deepEqual(m.alarms.map((a) => a.reason), ["unreadable"]);
+  assert.match(m.alarms[0].message, /no usable \/health sample for 21 min/);
+});
+
+test("#1176 M1 runKeeper: an unreachable /health fails the run while publishing continues", async () => {
+  const time = virtualTime();
+  const { github } = fakeGitHub({ now: time.now });
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/health")) return new Response("bad gateway", { status: 502 });
+    const height = 2000 + Math.floor((time.now() - T0) / 60_000) * 2;
+    return new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": String(height), "x-zyron-genesis-hash": GENESIS } });
+  };
+  const errors = [];
+  const stats = await time.run(runKeeper({
+    fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS,
+    runMs: 30 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000,
+    lag: {}, error: (line) => errors.push(line), now: time.now, sleep: time.sleep, log() {}, warn() {}
+  }));
+  assert.ok(stats.published >= 2);
+  assert.deepEqual(stats.alarms.map((a) => a.reason), ["unreadable"]);
+  assert.equal(exitCodeFor(stats), 1);
+  // Parse errors and timeouts are unreadable too.
+  assert.equal(await keeper.readHealthSample({ fetchImpl: async () => new Response("not json", { status: 200 }), gateway: "https://gw" }), null);
+  assert.equal(await keeper.readHealthSample({ fetchImpl: async () => { throw new DOMException("timed out", "TimeoutError"); }, gateway: "https://gw" }), null);
+});
+
+test("#1176 L1 a body missing maxHeight or durableHeight counts as unreadable, not a silent drop", () => {
+  let clock = T0;
+  const m = keeper.createLagMonitor({ now: () => clock });
+  for (const body of [{ durableHeight: 5 }, { maxHeight: 5 }, { maxHeight: "9", durableHeight: 1 }, { maxHeight: 1.5, durableHeight: 1 }, {}]) {
+    clock += 45_000;
+    assert.ok(m.observe(body).unreadable > 0);
+  }
+  assert.equal(m.samples.length, 0);
+  assert.deepEqual(m.alarms.map((a) => a.reason), ["unreadable"]);
+});
+
+test("#1176 L2 lag env options must be whole numbers and are validated at start-up", () => {
+  const { lagOptionsFromEnv, validateLagOptions } = keeper;
+  assert.deepEqual(lagOptionsFromEnv({}), { maxLag: 20, consecutive: 3, staleMinutes: 20, maxTrail: 20, maxUnreadable: 5, maxSamples: 1000, minSpacingMs: 40_000 });
+  assert.equal(lagOptionsFromEnv({ LAG_CONSECUTIVE: "4", LAG_MAX_BLOCKS: "30" }).consecutive, 4);
+  for (const [name, raw] of [["LAG_CONSECUTIVE", "1.5"], ["LAG_MAX_BLOCKS", "-1"], ["LAG_STALE_MINUTES", "1e3"], ["PUBLISH_TRAIL_MAX_BLOCKS", " 20"], ["LAG_CONSECUTIVE", "0"], ["LAG_MAX_UNREADABLE", "0x5"], ["LAG_STALE_MINUTES", "0"]]) {
+    assert.throws(() => lagOptionsFromEnv({ [name]: raw }), new RegExp(name), `${name}=${JSON.stringify(raw)}`);
+  }
+  assert.throws(() => validateLagOptions({ consecutive: 1.5 }), /consecutive must be an integer/);
+  assert.throws(() => keeper.createLagMonitor({ now: () => T0, consecutive: 1.5 }), /consecutive/, "the monitor refuses invalid options at construction");
+});
+
+test("#1176 L2 a detector error is an ::error alarm and sampling continues", () => {
+  let clock = T0;
+  const errors = [];
+  let fail = true;
+  const m = keeper.createLagMonitor({ now: () => clock, error: (line) => errors.push(line), detect: (...args) => { if (fail) throw new Error("boom"); return { alarm: false, reason: null, lag: 0, staleMs: 0 }; } });
+  clock += 45_000; m.observe(healthBody(10, 10));
+  clock += 45_000; m.observe(healthBody(11, 11));
+  assert.deepEqual(m.alarms.map((a) => a.reason), ["detector-error"]);
+  assert.match(errors[0], /durable lag detector error: boom/);
+  fail = false;
+  clock += 45_000; m.observe(healthBody(12, 12));
+  assert.equal(m.samples.length, 3, "the watch keeps sampling");
+});
+
+test("#1176 L3 a spike or a new chain does not latch the alarm; the buffer resets", () => {
+  let clock = T0;
+  const m = keeper.createLagMonitor({ now: () => clock });
+  const step = (body) => { clock += 45_000; m.observe(body); };
+  step(healthBody(500, 495)); step(healthBody(5000, 495)); // one bogus spike
+  for (let i = 0; i < 5; i += 1) step(healthBody(501 + i, 496 + i));
+  assert.deepEqual(m.alarms, [], "the spike counts once, not for every later sample");
+  const before = m.stats.resets;
+  step(healthBody(10, 9, 10, { chainId: "other-chain" }));
+  assert.equal(m.stats.resets, before + 1, "a chainId change resets the buffer");
+  assert.equal(m.samples.length, 1);
+  step(healthBody(20, 19, 20, { chainId: "other-chain" }));
+  step(healthBody(3, 2, 3, { chainId: "other-chain" }));
+  assert.equal(m.stats.resets, before + 2, "a durableHeight drop (rollback, new genesis) resets it");
+  for (let i = 0; i < 5; i += 1) step(healthBody(4 + i, 3 + i, 4 + i, { chainId: "other-chain" }));
+  assert.deepEqual(m.alarms, []);
+});
+
+test("#1176 Info samples closer than 40 s are ignored, so 3 in a row spans at least 80 s", () => {
+  let clock = T0;
+  const m = keeper.createLagMonitor({ now: () => clock });
+  for (let i = 0; i < 10; i += 1) { clock += 5_000; m.observe(healthBody(200, 100)); }
+  assert.equal(m.samples.length, 2, "50 s of 5 s reads yields 2 samples");
+  assert.deepEqual(m.alarms, []);
+  clock += 40_000; m.observe(healthBody(201, 100));
+  assert.deepEqual(m.alarms.map((a) => a.reason), ["lag"]);
+  assert.ok(m.samples.at(-1).ts - m.samples.at(-3).ts >= 80_000);
+});
+
+test("#1176 Info runKeeper feeds the monitor from the sampling loop only", async () => {
+  const time = virtualTime();
+  const { github } = fakeGitHub({ now: time.now });
+  let healthReads = 0;
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/health")) { healthReads += 1; const h = 2000 + Math.floor((time.now() - T0) / 60_000); return new Response(JSON.stringify(healthBody(h, h - 1)), { status: 200 }); }
+    return new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": "2000", "x-zyron-genesis-hash": GENESIS } });
+  };
+  let monitorSamples = 0;
+  const stats = await time.run(runKeeper({
+    fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS,
+    runMs: 30 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000, watchIntervalMs: 45_000,
+    lag: {}, error() {}, now: time.now, sleep: time.sleep, log() {}, warn() {}
+  }));
+  monitorSamples = Math.floor(30 * 60_000 / 45_000);
+  assert.deepEqual(stats.alarms, []);
+  assert.ok(healthReads > monitorSamples, "watch and keep-alive reads exist but are not fed to the monitor");
+});

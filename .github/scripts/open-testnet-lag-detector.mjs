@@ -10,9 +10,11 @@
 //
 // Reasons (checked in this order):
 //   'lag'   - the last `consecutive` valid samples each have
-//             maxHeightSeenSoFar - durableHeight > maxLag.
+//             sample.height - sample.durableHeight > maxLag (per sample, so
+//             one height spike or a restart cannot latch the alarm).
 //   'stale' - durableHeight has not advanced for more than staleMinutes up to
-//             `now`, AND height advanced in that window. If height is frozen
+//             `now`, AND the latest height is above the height of the first
+//             sample at that durableHeight. If height is frozen
 //             too (whole chain halted, not a durability gap) no stale alarm.
 //   'insufficient-data' - no valid samples (alarm: false).
 //   null    - healthy.
@@ -24,7 +26,7 @@
 //     is skipped: ignored, never alarms, never breaks or extends a lag run.
 //   - `now` earlier than the last ts throws.
 //
-// lag:     maxHeightSeen - durableHeight of the last valid sample (null if none).
+// lag:     height - durableHeight of the last valid sample (null if none).
 // staleMs: now - ts of the first sample at the current durableHeight (null if none).
 
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
@@ -53,26 +55,26 @@ export function detect(samples, opts = {}) {
   const valid = samples.filter((s) => isNum(s.height) && isNum(s.durableHeight));
   if (valid.length === 0) return { alarm: false, reason: "insufficient-data", lag: null, staleMs: null };
 
-  let maxH = -Infinity;
+  let lastH = -Infinity;
   let run = 0;
   let lag = 0;
   let maxD = -Infinity;
   let durableSince = null; // first sample at the current max durable height
   let heightAtDurableSince = null;
   for (const s of valid) {
-    maxH = Math.max(maxH, s.height);
-    lag = maxH - s.durableHeight;
+    lastH = s.height;
+    lag = s.height - s.durableHeight;
     run = lag > maxLag ? run + 1 : 0;
     if (s.durableHeight > maxD) {
       maxD = s.durableHeight;
       durableSince = s.ts;
-      heightAtDurableSince = maxH;
+      heightAtDurableSince = s.height;
     }
   }
   const staleMs = now - durableSince;
 
   if (run >= consecutive) return { alarm: true, reason: "lag", lag, staleMs };
-  if (staleMs > staleMinutes * 60_000 && maxH > heightAtDurableSince) {
+  if (staleMs > staleMinutes * 60_000 && lastH > heightAtDurableSince) {
     return { alarm: true, reason: "stale", lag, staleMs };
   }
   return { alarm: false, reason: null, lag, staleMs };

@@ -800,13 +800,12 @@ export async function fetchSnapshotWithRetry({ retries = 0, retryBaseMs = 2_000,
 export const MAX_HEALTH_BYTES = 64 * 1024;
 // Watch-triggered cycles start at most once per this interval.
 export const WATCH_MIN_GAP_MS = 120_000;
-export async function readSnapshotCache({ fetchImpl, gateway, signal, timeoutMs = 20_000, onHealth }) {
+export async function readSnapshotCache({ fetchImpl, gateway, signal, timeoutMs = 20_000 }) {
   try {
     const timeout = AbortSignal.timeout(timeoutMs);
     const response = await fetchImpl(`${gateway}/health`, { signal: signal ? AbortSignal.any([timeout, signal]) : timeout });
     if (response.status !== 200) { await response.body?.cancel().catch(() => {}); return null; }
     const body = JSON.parse((await readCapped(response, MAX_HEALTH_BYTES)).toString("utf8"));
-    if (onHealth && body && typeof body === "object") onHealth(body);
     const cache = body?.snapshotCache;
     if (!cache || typeof cache !== "object") return null;
     const built = Number.isSafeInteger(cache.lastBuiltHeight) && cache.lastBuiltHeight > 0 ? cache.lastBuiltHeight : null;
@@ -817,20 +816,30 @@ export async function readSnapshotCache({ fetchImpl, gateway, signal, timeoutMs 
 }
 
 // ---- durable lag alarm --------------------------------------------------------
-// Every /health read (the 45 s snapshot watch and the keep-alive) adds a sample
-// { ts, height: maxHeight, durableHeight } to a rolling buffer and runs the lag
-// detector (open-testnet-lag-detector.mjs). A second check (Security): the
-// published snapshot height may trail snapshotCache.lastBuiltHeight by at most
-// `maxTrail` blocks for no longer than the stale window. The published height is
-// the higher of the keeper's own last published (or confirmed up-to-date) height
-// and the gateway's durableHeight; both are lower bounds of the real asset.
+// One sampling loop (every LAG_SAMPLE_INTERVAL_MS, independent of the publish
+// loop so a long cycle never pauses it) reads /health and feeds the monitor.
+// A readable sample { ts, height: maxHeight, durableHeight } goes to a rolling
+// buffer and the lag detector (open-testnet-lag-detector.mjs). Security review
+// of #1176:
+// - M1/L1: a read that is not usable (non-200, bad JSON, timeout, or a body
+//   without integer maxHeight and durableHeight) counts as unreadable. N in a
+//   row, or no usable sample within the stale window, raise 'unreadable'.
+// - L2: options are validated once at start-up; a detector error raises
+//   'detector-error' (an ::error, the run fails) and sampling continues.
+// - L3: the buffer is reset when chainId changes or durableHeight goes down.
+// - Samples closer than minSpacingMs to the previous one are ignored, so
+//   'N consecutive' always spans real time.
+// A second check (Security): the published snapshot height may trail
+// snapshotCache.lastBuiltHeight by at most `maxTrail` blocks for no longer than
+// the stale window. The published height is the higher of the keeper's own last
+// published (or confirmed up-to-date) height and the gateway's durableHeight.
 // An alarm never stops the publish loop: it is reported once per episode
 // (::error annotation), listed in the job summary and fails the run at the end.
 export const LAG_MAX_SAMPLES = 1000;
+export const LAG_SAMPLE_INTERVAL_MS = 45_000;
+export const LAG_MIN_SPACING_MS = 40_000;
+export const LAG_MAX_UNREADABLE = 5;
 
-// Pure: does publishedHeight trail lastBuiltHeight by more than maxTrail for
-// longer than windowMs, continuously up to `now`? Samples are oldest first;
-// samples missing either height are skipped.
 export function detectPublishTrail(samples, { maxTrail = LAG_DEFAULTS.maxLag, windowMs = LAG_DEFAULTS.staleMinutes * 60_000, now } = {}) {
   let since = null;
   let trail = null;
@@ -847,46 +856,114 @@ export function detectPublishTrail(samples, { maxTrail = LAG_DEFAULTS.maxLag, wi
   return { alarm: since !== null && trailMs > windowMs, trail, trailMs };
 }
 
-const finiteOrNull = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const safeIntOrNull = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null);
 
-export function createLagMonitor({ maxLag = LAG_DEFAULTS.maxLag, consecutive = LAG_DEFAULTS.consecutive, staleMinutes = LAG_DEFAULTS.staleMinutes, maxTrail = LAG_DEFAULTS.maxLag, maxSamples = LAG_MAX_SAMPLES, now, error = () => {} }) {
+// L2: every option must be a whole number in range; refuse to start otherwise.
+export function validateLagOptions(options = {}) {
+  const spec = { maxLag: [LAG_DEFAULTS.maxLag, 0, 1_000_000], consecutive: [LAG_DEFAULTS.consecutive, 1, 1000], staleMinutes: [LAG_DEFAULTS.staleMinutes, 1, 10_000], maxTrail: [LAG_DEFAULTS.maxLag, 0, 1_000_000], maxUnreadable: [LAG_MAX_UNREADABLE, 1, 1000], maxSamples: [LAG_MAX_SAMPLES, 10, 100_000], minSpacingMs: [LAG_MIN_SPACING_MS, 0, 3_600_000] };
+  const out = {};
+  for (const [name, [fallback, min, max]] of Object.entries(spec)) {
+    const value = options[name] ?? fallback;
+    if (!Number.isSafeInteger(value) || value < min || value > max) throw new RangeError(`lag option ${name} must be an integer from ${min} to ${max}`);
+    out[name] = value;
+  }
+  return out;
+}
+
+export function createLagMonitor({ now, error = () => {}, detect = detectDurableLag, ...options }) {
+  const { maxLag, consecutive, staleMinutes, maxTrail, maxUnreadable, maxSamples, minSpacingMs } = validateLagOptions(options);
+  const staleMs = staleMinutes * 60_000;
   const samples = [];
   const alarms = [];
-  const active = { lag: false, stale: false, trail: false };
+  const active = {};
+  const startedMs = now();
   let published = null;
+  let unreadable = 0;
+  let lastAttemptMs = null;
+  let lastValidMs = null;
+  let chainId;
+  const stats = { reads: 0, unreadable: 0, resets: 0 };
   const raise = (reason, atMs, message) => {
     if (active[reason]) return;
     active[reason] = true;
     alarms.push({ reason, atMs, message });
     error(message);
   };
+  const clear = (reason) => { active[reason] = false; };
+  const reset = () => { samples.length = 0; stats.resets += 1; };
+  const checkUnreadable = (ts) => {
+    const since = lastValidMs ?? startedMs;
+    if (unreadable >= maxUnreadable) raise("unreadable", ts, `durable lag alarm: ${unreadable} unreadable /health reads in a row (>= ${maxUnreadable})`);
+    else if (ts - since > staleMs) raise("unreadable", ts, `durable lag alarm: no usable /health sample for ${Math.round((ts - since) / 60_000)} min (> ${staleMinutes})`);
+    else clear("unreadable");
+  };
   return {
     samples,
     alarms,
+    stats,
     // The keeper's own knowledge of the published asset height.
     notePublished(height) { if (Number.isSafeInteger(height) && height > (published ?? 0)) published = height; },
+    // body: the parsed /health JSON, or null for an unreadable read.
     observe(body) {
       const ts = now();
-      if (samples.length && ts <= samples[samples.length - 1].ts) return null;
+      // Too close to the previous read (or the clock went back): not a new sample.
+      if (lastAttemptMs !== null && ts < lastAttemptMs + minSpacingMs) {
+        if (ts < lastAttemptMs) { reset(); lastAttemptMs = ts; }
+        return null;
+      }
+      lastAttemptMs = ts;
+      stats.reads += 1;
+      const height = safeIntOrNull(body?.maxHeight);
       const durableHeight = safeIntOrNull(body?.durableHeight);
+      if (height === null || durableHeight === null) {
+        unreadable += 1; stats.unreadable += 1;
+        checkUnreadable(ts);
+        return { unreadable };
+      }
+      unreadable = 0; lastValidMs = ts;
+      checkUnreadable(ts);
+      const id = typeof body.chainId === "string" ? body.chainId : undefined;
+      const last = samples[samples.length - 1];
+      if ((chainId !== undefined && id !== chainId) || (last && durableHeight < last.durableHeight)) { reset(); published = null; }
+      chainId = id;
       const lastBuiltHeight = safeIntOrNull(body?.snapshotCache?.lastBuiltHeight);
-      const sample = { ts, height: finiteOrNull(body?.maxHeight), durableHeight, lastBuiltHeight, publishedHeight: published === null && durableHeight === null ? null : Math.max(published ?? 0, durableHeight ?? 0) };
+      const sample = { ts, height, durableHeight, lastBuiltHeight, publishedHeight: Math.max(published ?? 0, durableHeight) };
       samples.push(sample);
       if (samples.length > maxSamples) samples.splice(0, samples.length - maxSamples);
-      const lag = detectDurableLag(samples, { maxLag, consecutive, staleMinutes, now: ts });
-      for (const reason of ["lag", "stale"]) if (lag.reason !== reason) active[reason] = false;
+      let lag;
+      let trail;
+      try {
+        lag = detect(samples, { maxLag, consecutive, staleMinutes, now: ts });
+        trail = detectPublishTrail(samples, { maxTrail, windowMs: staleMs, now: ts });
+        clear("detector-error");
+      } catch (caught) {
+        raise("detector-error", ts, `durable lag detector error: ${caught instanceof Error ? caught.message : String(caught)}`);
+        return { error: caught };
+      }
+      for (const reason of ["lag", "stale"]) if (lag.reason !== reason) clear(reason);
       if (lag.alarm) {
         raise(lag.reason, ts, lag.reason === "lag"
-          ? `durable lag alarm: durableHeight ${sample.durableHeight} trails height by ${lag.lag} blocks (> ${maxLag}) for ${consecutive} consecutive samples`
+          ? `durable lag alarm: durableHeight ${durableHeight} trails height by ${lag.lag} blocks (> ${maxLag}) for ${consecutive} consecutive samples`
           : `durable stale alarm: durableHeight has not advanced for ${Math.round(lag.staleMs / 60_000)} min (> ${staleMinutes}) while height advanced`);
       }
-      const trail = detectPublishTrail(samples, { maxTrail, windowMs: staleMinutes * 60_000, now: ts });
-      if (!trail.alarm) active.trail = false;
+      if (!trail.alarm) clear("trail");
       else raise("trail", ts, `publish trail alarm: published snapshot height trails snapshotCache.lastBuiltHeight by ${trail.trail} blocks (> ${maxTrail}) for ${Math.round(trail.trailMs / 60_000)} min (> ${staleMinutes})`);
       return { lag, trail };
     }
   };
+}
+
+// One /health read for the lag monitor: the parsed body, or null when unusable.
+export async function readHealthSample({ fetchImpl, gateway, signal, timeoutMs = 20_000 }) {
+  try {
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const response = await fetchImpl(`${gateway}/health`, { signal: signal ? AbortSignal.any([timeout, signal]) : timeout });
+    if (response.status !== 200) { await response.body?.cancel().catch(() => {}); return null; }
+    const body = JSON.parse((await readCapped(response, MAX_HEALTH_BYTES)).toString("utf8"));
+    return body && typeof body === "object" ? body : null;
+  } catch {
+    return null;
+  }
 }
 
 // One keeper cycle: download, check, publish state.enc then the per-genesis copy.
@@ -926,14 +1003,13 @@ export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGe
 }
 
 // `signal` (optional) aborts the request early, for example when the keeper stops.
-export async function keepAlive({ fetchImpl, gateway, signal, onHealth }) {
+export async function keepAlive({ fetchImpl, gateway, signal }) {
   try {
     const timeout = AbortSignal.timeout(90_000);
     const response = await fetchImpl(`${gateway}/health`, { signal: signal ? AbortSignal.any([timeout, signal]) : timeout });
     const text = (await readCapped(response, MAX_HEALTH_BYTES)).toString("utf8");
     let body = {};
     try { body = JSON.parse(text); } catch {}
-    if (onHealth && response.status === 200 && body && typeof body === "object") onHealth(body);
     return { status: response.status, phase: body.status ?? body.phase ?? "?", height: body.maxHeight ?? null };
   } catch (error) {
     return { status: 0, phase: error instanceof Error ? error.message : String(error), height: null };
@@ -948,12 +1024,11 @@ export async function keepAlive({ fetchImpl, gateway, signal, onHealth }) {
 // fetched (once per built height), so short serving windows after each gateway
 // build are not missed.
 export async function runKeeper(options) {
-  const { fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn, error: reportError = warn, watchIntervalMs = null, watchMinGapMs = WATCH_MIN_GAP_MS, fetch: fetchOptions = {}, lag = null } = options;
+  const { fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn, error: reportError = warn, watchIntervalMs = null, watchMinGapMs = WATCH_MIN_GAP_MS, fetch: fetchOptions = {}, lag = null, lagSampleIntervalMs = LAG_SAMPLE_INTERVAL_MS } = options;
   const stats = { cycles: 0, published: 0, notNewer: 0, refused: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null, authenticationFailures: 0, watchTriggers: 0, rollbacks: 0 };
   // Opt-in (main() turns it on): the durable lag and publish trail alarms.
   const monitor = lag ? createLagMonitor({ ...lag, now, error: reportError }) : null;
   if (monitor) stats.alarms = monitor.alarms;
-  const onHealth = monitor ? (body) => monitor.observe(body) : undefined;
   const deadline = now() + runMs;
   // Aborted when the publish loop stops, so no pending wait (and no live timer)
   // outlives runKeeper.
@@ -972,7 +1047,7 @@ export async function runKeeper(options) {
     while (now() < end) {
       await sleep(Math.min(watchIntervalMs, end - now()), stop.signal);
       if (now() >= deadline) return;
-      const cache = await readSnapshotCache({ fetchImpl, gateway, signal: stop.signal, onHealth });
+      const cache = await readSnapshotCache({ fetchImpl, gateway, signal: stop.signal });
       const built = cache?.lastBuiltHeight ?? null;
       // A newer build seen too soon after the last watch trigger waits for a
       // later poll (or the fallback interval); it is not dropped.
@@ -994,10 +1069,21 @@ export async function runKeeper(options) {
   const keepAliveLoop = async () => {
     while (!publishStopped) {
       // The stop signal also aborts a request still in flight when publishing stops.
-      const health = await keepAlive({ fetchImpl, gateway, signal: stop.signal, onHealth });
+      const health = await keepAlive({ fetchImpl, gateway, signal: stop.signal });
       log(`health HTTP ${health.status} ${health.phase}${health.height === null ? "" : ` height ${health.height}`}`);
       if (publishStopped) break;
       await Promise.race([sleep(keepAliveIntervalMs, stop.signal), stopped]);
+    }
+  };
+  // The one loop that feeds the lag monitor (see createLagMonitor).
+  const sampleLoop = async () => {
+    if (!monitor) return;
+    while (!publishStopped) {
+      await Promise.race([sleep(lagSampleIntervalMs, stop.signal), stopped]);
+      if (publishStopped) break;
+      const body = await readHealthSample({ fetchImpl, gateway, signal: stop.signal });
+      if (publishStopped) break;
+      monitor.observe(body);
     }
   };
   const publishLoop = async () => {
@@ -1028,7 +1114,7 @@ export async function runKeeper(options) {
       await waitForNextCycle(cycleStartedMs + publishIntervalMs);
     }
   };
-  await Promise.all([keepAliveLoop(), publishLoop().finally(() => { publishStopped = true; markStopped(); stop.abort(); })]);
+  await Promise.all([keepAliveLoop(), sampleLoop(), publishLoop().finally(() => { publishStopped = true; markStopped(); stop.abort(); })]);
   return stats;
 }
 
@@ -1052,6 +1138,21 @@ export function exitCodeFor(stats) {
 export function lagSummary(alarms) {
   if (alarms.length === 0) return "\nDurable lag alarm: none\n";
   return `\n**Durable lag alarm: ${alarms.length} raised; this run fails.**\n\n${alarms.map((a) => `- ${new Date(a.atMs).toISOString()} ${a.reason}: ${a.message}`).join("\n")}\n`;
+}
+
+// L2: LAG_* and PUBLISH_TRAIL_MAX_BLOCKS are whole numbers (/^\d+$/), checked
+// once at start-up together with every other lag option.
+export function lagOptionsFromEnv(env) {
+  const names = { maxLag: "LAG_MAX_BLOCKS", consecutive: "LAG_CONSECUTIVE", staleMinutes: "LAG_STALE_MINUTES", maxTrail: "PUBLISH_TRAIL_MAX_BLOCKS", maxUnreadable: "LAG_MAX_UNREADABLE" };
+  const options = {};
+  for (const [key, name] of Object.entries(names)) {
+    const raw = env[name];
+    if (raw === undefined || raw === "") continue;
+    if (!/^\d+$/.test(raw)) throw new Error(`${name} must be a whole number (digits only)`);
+    options[key] = Number(raw);
+  }
+  try { return validateLagOptions(options); }
+  catch (error) { throw new Error(error.message.replace(/^lag option (\w+)/, (_, key) => names[key] ?? key)); }
 }
 
 function envNumber(env, name, fallback, min, max) {
@@ -1083,6 +1184,8 @@ async function main() {
   const stamp = () => new Date().toISOString();
   const { stateSecret, warning } = keeperSecretPolicy(env);
   if (warning) console.log(`::warning::${stamp()} ${warning}`);
+  // L2: refuse to start on an invalid lag option.
+  const lag = lagOptionsFromEnv(env);
   const stats = await runKeeper({
     fetchImpl: fetch, github, gateway, tag, expectedGenesis, stateSecret,
     runMs: runMinutes * 60_000,
@@ -1094,12 +1197,7 @@ async function main() {
       retries: envNumber(env, "SNAPSHOT_RETRIES", 0, 0, 10),
       retryBaseMs: 2_000
     },
-    lag: {
-      maxLag: envNumber(env, "LAG_MAX_BLOCKS", LAG_DEFAULTS.maxLag, 1, 10_000),
-      consecutive: envNumber(env, "LAG_CONSECUTIVE", LAG_DEFAULTS.consecutive, 1, 100),
-      staleMinutes: envNumber(env, "LAG_STALE_MINUTES", LAG_DEFAULTS.staleMinutes, 1, 340),
-      maxTrail: envNumber(env, "PUBLISH_TRAIL_MAX_BLOCKS", LAG_DEFAULTS.maxLag, 1, 10_000)
-    },
+    lag,
     now: Date.now, sleep: cancellableSleep,
     log: (line) => console.log(`${stamp()} ${line}`),
     warn: (line) => console.log(`::warning::${stamp()} ${line}`),

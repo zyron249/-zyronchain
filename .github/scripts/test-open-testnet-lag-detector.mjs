@@ -37,10 +37,15 @@ test("run resets when lag recovers between samples", () => {
   assert.equal(r2.reason, "lag");
 });
 
-test("lag uses max height seen so far, not the current sample", () => {
+test("L3: lag is per sample, so one height spike cannot latch the alarm", () => {
   const r = detect([s(0, 130, 100), s(1, 110, 100), s(2, 110, 100)]);
-  assert.equal(r.reason, "lag");
-  assert.equal(r.lag, 30);
+  assert.equal(r.alarm, false);
+  assert.equal(r.lag, 10);
+  const lagging = detect([s(0, 125, 100), s(1, 126, 100), s(2, 127, 100)]);
+  assert.deepEqual([lagging.reason, lagging.lag], ["lag", 27]);
+  // A restart to a lower height (new genesis or rollback) clears the lag at once.
+  const reset = detect([s(0, 5000, 4900), s(1, 5001, 4900), s(2, 3, 2)]);
+  assert.equal(reset.alarm, false);
 });
 
 test("stale timer: 19 minutes no alarm, 21 minutes alarm", () => {
