@@ -200,3 +200,44 @@ test("PoC Q4: a 2 s flood of lines is parsed, rejected and bounded", async () =>
   assert.ok(t.status("v1").memoryDropped.malformed > 1000);
   assert.ok(rssGrowthMb < 100, `gateway RSS grew ${rssGrowthMb.toFixed(0)} MB`);
 });
+
+// Security #1185 Low-1 (PoC /workspace/zr-poc/1185/b1b.mjs): with the gateway
+// not draining fd 3, a blocking fs.write in the preload hung process.exit and
+// the SIGTERM handler until SIGKILL. Here the child fills the pipe, the
+// preload's first report (at ~1 s) lands on the full pipe, and the validator
+// must still exit promptly on SIGTERM (handler and default) and on exit().
+for (const how of ["sigterm-handler", "sigterm-default", "exit"] as const) {
+  test(`preload never blocks exit with fd 3 undrained (${how})`, async () => {
+    const { spawn } = await import("node:child_process");
+    // The PoC's fill loop: async fs.write until it errors. With the old
+    // preload fd 3 stayed blocking and this (like the preload's own fs.write)
+    // parked a libuv worker forever; the socket preload makes the fd
+    // non-blocking, so the loop stops at EAGAIN once the pipe is full.
+    const code = `const fs=require('fs');const b='x'.repeat(4000)+'\\n';(function f(){fs.write(3,b,(e)=>{if(!e)f()})})();
+      ${how === "sigterm-handler" ? "process.on('SIGTERM',()=>process.exit(0));" : ""}
+      setInterval(()=>{},1000); ${how === "exit" ? "setTimeout(()=>process.exit(0),1800);" : ""}`;
+    const child = spawn(process.execPath, ["--require", api.VALIDATOR_MEMORY_PRELOAD, "-e", code], { stdio: ["ignore", "ignore", "inherit", "pipe"], env: api.validatorChildEnv() });
+    const pipe: any = child.stdio[api.VALIDATOR_MEMORY_FD]; pipe.pause(); pipe.on("error", () => {});
+    const exit: Promise<[number | null, string | null]> = new Promise((done) => child.once("exit", (c, s) => done([c, s])));
+    await new Promise((done) => setTimeout(done, 1500));
+    const t0 = Date.now();
+    if (how !== "exit") child.kill("SIGTERM");
+    const killer = setTimeout(() => child.kill("SIGKILL"), 5000);
+    const [ec, sig] = await exit; clearTimeout(killer);
+    assert.notEqual(sig, "SIGKILL", "validator hung until SIGKILL");
+    assert.ok(Date.now() - t0 < 2000, `exit took ${Date.now() - t0} ms`);
+    if (how === "sigterm-default") assert.equal(sig, "SIGTERM"); else assert.equal(ec, 0);
+  });
+}
+
+test("validator child env is an allowlist: no seal secret or other secrets reach validators", () => {
+  const env = api.validatorChildEnv({ PATH: "/bin", HOME: "/h", ZYRON_TESTNET_STATE_SECRET: "s3cret", ZYRON_TESTNET_STATE_URL: "u", ZYRON_KEYSTORE_PASSWORD: "p", ZYRON_KEYSTORE_PASSWORD_FILE: "/p", GH_TOKEN: "t", AWS_SECRET_ACCESS_KEY: "a", NODE_OPTIONS: "--require /x", ZYRON_MEMPOOL_MIN_FEE_ATOMS: "5", RENDER_GIT_COMMIT: "abcdef1" });
+  for (const name of Object.keys(env)) assert.ok(api.VALIDATOR_ENV_ALLOWLIST.includes(name) || name === "ZYRON_VALIDATOR_MEMORY_FD", name);
+  assert.equal(env.ZYRON_TESTNET_STATE_SECRET, undefined);
+  assert.ok(!Object.values(env).includes("s3cret"));
+  for (const name of Object.keys(env)) assert.doesNotMatch(name, /SECRET|SEAL|PASSWORD|TOKEN|KEY/);
+  assert.equal(env.PATH, "/bin"); assert.equal(env.ZYRON_MEMPOOL_MIN_FEE_ATOMS, "5"); assert.equal(env.RENDER_GIT_COMMIT, "abcdef1");
+  // The real spawn path too: the gateway's own secret is absent from the child env.
+  process.env.ZYRON_TESTNET_STATE_SECRET = "from-process-env";
+  try { assert.equal(api.validatorChildEnv().ZYRON_TESTNET_STATE_SECRET, undefined); } finally { delete process.env.ZYRON_TESTNET_STATE_SECRET; }
+});
