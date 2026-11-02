@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import * as keeper from "./open-testnet-snapshot-keeper.mjs";
 import {
-  GITHUB_CALL_TIMEOUT_MS, cancellableSleep, confirmLiveChain, CONFIRM_DELAY_MS, SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, fetchSnapshot, formatLabel,
+  GITHUB_CALL_TIMEOUT_MS, cancellableSleep, confirmLiveChain, CONFIRM_DELAY_MS, UNCONFIRMED_STREAK, SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, fetchSnapshot, formatLabel,
   isCompleteAsset, keeperAssetName, parseKeeperAssetName, parseLabel, perGenesisName, publishAsset, publishCycle, readCapped, repairAndCleanup, runKeeper, validateSnapshot
 } from "./open-testnet-snapshot-keeper.mjs";
 
@@ -1138,7 +1138,7 @@ test("the scheduled workflow keeps least privilege, one active run, a bounded jo
   assert.ok(timeout <= 360 && runMinutes > 0 && runMinutes + 10 <= timeout, `job timeout ${timeout} must exceed the run length ${runMinutes} and stay within 360`);
   assert.match(active, /EXPECTED_GENESIS: e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad$/m);
   assert.match(active, /if: github\.repository == 'zyron249\/-zyronchain' && github\.ref == 'refs\/heads\/main'$/m, "only main can run the keeper: a dispatched branch must never get the state secret");
-  assert.deepEqual([...active.matchAll(/\$\{\{\s*([^}]*?)\s*\}\}/g)].map((match) => match[1]).sort(), ["github.repository", "github.repository", "github.token", "github.token", "inputs.run_minutes || '340'", "inputs.run_minutes || '340'", "needs.keep.result", "secrets.ZYRON_TESTNET_STATE_SECRET"], "no secrets and no untrusted expression in a script");
+  assert.deepEqual([...active.matchAll(/\$\{\{\s*([^}]*?)\s*\}\}/g)].map((match) => match[1]).sort(), ["github.repository", "github.repository", "github.token", "github.token", "inputs.run_minutes || '340'", "inputs.run_minutes || '340'", "inputs.run_minutes || '340'", "needs.keep.result", "secrets.ZYRON_TESTNET_STATE_SECRET"], "no secrets and no untrusted expression in a script");
   // M2 (owner-approved 2026-10-22): exactly one secret, the state secret, only as a step env value.
   assert.deepEqual([...active.matchAll(/secrets\.[A-Za-z0-9_]+/g)].map((match) => match[0]), ["secrets.ZYRON_TESTNET_STATE_SECRET"], "the state secret is the only secret");
   assert.match(active, /^          ZYRON_TESTNET_STATE_SECRET: \$\{\{ secrets\.ZYRON_TESTNET_STATE_SECRET \}\}$/m, "the state secret is passed only as the keeper step's env");
@@ -2109,4 +2109,87 @@ test("I3: runKeeper stops and fails the run after a rollback republish", async (
   assert.equal(stats.rollbacks, 1);
   assert.ok(errors.some((line) => /ROLLBACK DETECTED/.test(line)));
   assert.equal(exitCodeFor(stats), 1);
+});
+
+// fix/keeper-followups: #1179 Low-1 (repeated unconfirmed rollbacks fail the run).
+async function runWithResults(results) {
+  const time = virtualTime();
+  const { github } = fakeGitHub({ now: time.now });
+  const errors = [];
+  let i = 0;
+  const stats = await time.run(runKeeper({
+    fetchImpl: async () => new Response("{}", { status: 200 }), github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS,
+    runMs: results.length * 10 * 60_000 - 1, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000,
+    now: time.now, sleep: time.sleep, log() {}, warn() {}, error: (line) => errors.push(line),
+    publish: async () => results[Math.min(i++, results.length - 1)]
+  }));
+  assert.equal(i, results.length, "one cycle per scripted result");
+  return { stats, errors };
+}
+const UNCONF = { height: 12970, published: false, upToDate: true, unconfirmed: true, reason: "a missing live block was not confirmed" };
+const GOOD = { height: 12970, published: false, upToDate: true, reason: "not newer" };
+
+test("Low-1: UNCONFIRMED_STREAK unconfirmed cycles in a row raise ROLLBACK UNCONFIRMED (repeated) and fail without republishing", async () => {
+  assert.equal(UNCONFIRMED_STREAK, 3);
+  const { stats, errors } = await runWithResults([GOOD, UNCONF, UNCONF, UNCONF, GOOD]);
+  assert.equal(stats.unconfirmedAlarm, true);
+  assert.equal(stats.published, 0);
+  assert.equal(errors.filter((line) => /ROLLBACK UNCONFIRMED \(repeated\)/.test(line)).length, 1);
+  assert.equal(exitCodeFor(stats), 1);
+});
+
+test("Low-1: a run whose every cycle was unconfirmed fails even below the streak", async () => {
+  const { stats, errors } = await runWithResults([UNCONF, UNCONF]);
+  assert.equal(stats.unconfirmed, 2);
+  assert.equal(stats.unconfirmedAlarm, true);
+  assert.ok(errors.some((line) => /ROLLBACK UNCONFIRMED \(repeated\): every cycle/.test(line)));
+  assert.equal(exitCodeFor(stats), 1);
+});
+
+test("Low-1: a confirmed-good cycle resets the unconfirmed streak", async () => {
+  const { stats, errors } = await runWithResults([UNCONF, UNCONF, GOOD, UNCONF, UNCONF, GOOD]);
+  assert.equal(stats.unconfirmed, 4);
+  assert.equal(stats.unconfirmedAlarm, false);
+  assert.equal(errors.length, 0);
+  assert.equal(exitCodeFor(stats), 0);
+});
+
+test("Low-1: a missing or non-numeric /health maxHeight counts as unconfirmed, not a pass", async () => {
+  for (const maxHeight of [undefined, "12970", null, Number.NaN]) {
+    assert.equal(await confirmLiveChain({ label: published, read: reads({ maxHeight, hashAtPublished: null }, { maxHeight, hashAtPublished: null }), ...confirmBase }), "unconfirmed", String(maxHeight));
+  }
+  const { github } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 0 }), state: "uploaded", size: 100_000 }] });
+  const r = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: chainSnapshot(12970, TIP_B), expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {}, liveChain: reads({ hashAtPublished: null }) });
+  assert.deepEqual([r.published, r.unconfirmed], [false, true]);
+});
+
+// #1171 Info items.
+test("#1171 Info: run_minutes must be digits only in both jobs", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const workflow = await readFile(new URL("../workflows/open-testnet-snapshot-keeper.yml", import.meta.url), "utf8");
+  const keepStep = /- name: Validate run_minutes\n\s+env:\n\s+RUN_MINUTES_INPUT: .*\n\s+run: (.*)$/m.exec(workflow)?.[1];
+  assert.ok(keepStep, "the keep job validates run_minutes before checkout");
+  assert.ok(workflow.indexOf("- name: Validate run_minutes") < workflow.indexOf("- name: Checkout keeper script"));
+  const chainCheck = /^\s+(if ! \[\[ "\$RUN_MINUTES" =~ \^\[0-9\]\+\$ \]\]; then .*; exit 1; fi)$/m.exec(workflow)?.[1];
+  assert.ok(chainCheck, "the chain job validates RUN_MINUTES before any API call");
+  assert.ok(workflow.indexOf(chainCheck) < workflow.indexOf("gh api"), "validated before any gh call");
+  const run = (script, name, value) => spawnSync("bash", ["-c", script], { env: { PATH: process.env.PATH, [name]: value }, encoding: "utf8" });
+  for (const good of ["340", "1", "60"]) {
+    assert.equal(run(keepStep, "RUN_MINUTES_INPUT", good).status, 0, good);
+    assert.equal(run(chainCheck, "RUN_MINUTES", good).status, 0, good);
+  }
+  for (const bad of ["", "1e2", "-5", "34 0", "340; echo x", "0x10", "١٢"]) {
+    const keep = run(keepStep, "RUN_MINUTES_INPUT", bad);
+    assert.equal(keep.status, 1, JSON.stringify(bad));
+    assert.match(keep.stdout, /::error title=Invalid run_minutes::/);
+    assert.equal(run(chainCheck, "RUN_MINUTES", bad).status, 1, JSON.stringify(bad));
+  }
+});
+
+test("#1171 Info: the failure-streak runs query is limited to main", async () => {
+  const workflow = await readFile(new URL("../workflows/open-testnet-snapshot-keeper.yml", import.meta.url), "utf8");
+  const query = /prior=\$\(gh api "([^"]+)"/.exec(workflow)?.[1];
+  assert.ok(query, "failure-streak query present");
+  assert.match(query, /[?&]branch=main(&|$)/);
+  assert.match(query, /[?&]status=completed(&|$)/);
 });

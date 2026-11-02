@@ -60,6 +60,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # inputs.run_minutes must be digits only (#1171 Info); anything else fails clearly.
+      - name: Validate run_minutes
+        env:
+          RUN_MINUTES_INPUT: ${{ inputs.run_minutes || '340' }}
+        run: if [[ "$RUN_MINUTES_INPUT" =~ ^[0-9]+$ ]]; then echo "run_minutes $RUN_MINUTES_INPUT"; else echo "::error title=Invalid run_minutes::run_minutes must match ^[0-9]+$ (got '${RUN_MINUTES_INPUT:0:40}')"; exit 1; fi
       - name: Checkout keeper script
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -138,6 +143,7 @@ jobs:
           MAX_DISPATCHES_PER_DAY: '10'
         run: |
           set -euo pipefail
+          if ! [[ "$RUN_MINUTES" =~ ^[0-9]+$ ]]; then echo "::error title=Invalid run_minutes::run_minutes must match ^[0-9]+$ (got '${RUN_MINUTES:0:40}'); not chaining"; exit 1; fi
           skip() { echo "::warning title=Keeper not chained::$1"; exit 0; }
           stop() { echo "::error title=Keeper chain stopped::$1"; exit 0; }
           now=$(date -u +%s)
@@ -162,7 +168,7 @@ jobs:
             [ "$minutes" -ge "$full" ] || skip "keep job failed after ${minutes} min (< ${full}, not a full loop)"
             # Consecutive failed runs before this one, newest first; cancelled
             # and skipped runs (superseded pending runs) neither count nor break the streak.
-            prior=$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?status=completed&per_page=20" \
+            prior=$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?branch=main&status=completed&per_page=20" \
               --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID) | select(.conclusion != \"cancelled\" and .conclusion != \"skipped\") | .conclusion] | ((to_entries | map(select(.value == \"success\")) | .[0].key) // length)")
             failures=$(( prior + 1 ))
             [ "$failures" -lt "$MAX_CONSECUTIVE_FAILURES" ] || stop "${failures} failed keep runs in a row; not chaining until a run succeeds"
