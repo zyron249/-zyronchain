@@ -459,3 +459,52 @@ test("L-D: a busy worker does not count toward the backoff", async () => {
   const failing = api.createSnapshotCache({ build: async () => { throw new Error("boom"); }, currentHeight: async () => 1, log: silent });
   await failing.refresh(); assert.equal(failing.failures(), 1);
 });
+
+// Security Medium-1 on #1164 and #1165 Low-1: with the relay off, the only
+// history catch-up trigger is a build deferred as history_catching_up, which
+// calls refreshHistory() from inside its own in-flight window. That refresh
+// must not be lost, and the deferred build must be retried once the window
+// ends, so builds resume without a restart (also after a history read error).
+test("relay off: restore far behind plus a history read error recovers and builds resume without a restart", async () => {
+  const tip = 10_000; let historyHeight = 100; let readFailures = 1; let extendCalls = 0; let built = 0;
+  // eslint-disable-next-line prefer-const
+  let refreshHistory: any;
+  const cache = api.createSnapshotCache({
+    build: async () => {
+      const deferredCode = api.snapshotBuildReadiness({ quorumOk: true, tip, historyHeight });
+      if (deferredCode) {
+        if (deferredCode === "history_catching_up") void refreshHistory();
+        throw Object.assign(new Error(`snapshot build deferred (${deferredCode})`), { code: deferredCode });
+      }
+      built += 1; return { sealed: Buffer.from("s"), height: tip };
+    },
+    currentHeight: async () => tip, log: silent, refreshMs: 3_600_000, deferredRetryMs: 10
+  });
+  refreshHistory = api.createHistoryRefresher({
+    snapshots: cache, retryMs: 5, log: silent,
+    extend: async () => { extendCalls += 1; if (readFailures > 0) { readFailures -= 1; throw new Error("history file: read failed (EIO)"); } historyHeight = tip; }
+  });
+  cache.start(); // no relay timer; only the cache's own (hour-long) tick
+  try {
+    const deadline = Date.now() + 3_000;
+    while (built === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(built, 1, "a build completed without a restart");
+    assert.ok(extendCalls >= 2, "the read error was retried");
+    assert.equal(cache.fresh().height, tip);
+    assert.equal(cache.status().waitingFor, null);
+  } finally { cache.stop(); refreshHistory.cancel(); }
+});
+
+test("a refresh skipped during an in-flight build runs once the build ends", async () => {
+  const gate = deferred<{ sealed: Buffer; height: number }>();
+  const cache = api.createSnapshotCache({ build: () => gate.promise, currentHeight: async () => 1, log: silent });
+  let extends_ = 0;
+  const refreshHistory = api.createHistoryRefresher({ snapshots: cache, extend: async () => { extends_ += 1; }, log: silent, retryMs: 5 });
+  const run = cache.refresh();
+  assert.equal(await refreshHistory(), "skipped");
+  await new Promise((r) => setTimeout(r, 30)); assert.equal(extends_, 0, "still building: retry waits");
+  gate.resolve({ sealed: Buffer.from("s"), height: 1 }); await run;
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(extends_, 1, "deferred refresh ran after inFlight cleared");
+  refreshHistory.cancel();
+});

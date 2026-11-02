@@ -210,3 +210,29 @@ test("Low-2: /health error codes come from a fixed allowlist", () => {
   for (const code of ["ENOENT", "ERR_STREAM_DESTROYED", "made_up_code"]) assert.equal(api.snapshotErrorCode(Object.assign(new Error("x"), { code })), "build_failed");
 });
 void createReadStream;
+
+test("history file refuses symlinks and keeps the directory 0700 and the file 0600", { skip: process.platform === "win32" }, async () => {
+  const { symlink, mkdir, chmod } = await import("node:fs/promises");
+  const dir = await tempDir();
+  try {
+    const hdir = join(dir, "h"); await mkdir(hdir, { mode: 0o755 }); await chmod(hdir, 0o755);
+    const path = join(hdir, "history.ndjson");
+    const file = await hf.createHistoryFile(path, { chainId: CHAIN, genesisHash: GENESIS });
+    assert.equal((await stat(hdir)).mode & 0o777, 0o700);
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+    await file.appendMany(syntheticChain(2));
+    await file.close();
+    // File path is a symlink: refused on create, and the target is untouched.
+    const target = join(dir, "target.txt"); await writeFile(target, "keep");
+    const linked = join(hdir, "linked.ndjson"); await symlink(target, linked);
+    await assert.rejects(hf.createHistoryFile(linked, { chainId: CHAIN, genesisHash: GENESIS }), /symlink|regular file/);
+    assert.equal(await readFile(target, "utf8"), "keep");
+    // Reading through a symlink is refused (O_NOFOLLOW).
+    const readLink = join(hdir, "read-link.ndjson"); await symlink(path, readLink);
+    const view = { ...file.view(), path: readLink };
+    await assert.rejects((async () => { for await (const _ of hf.readHistoryLines(view)) { /* drain */ } })(), (e: any) => e?.code === "history_file_corrupt");
+    // Directory is a symlink: refused.
+    const realDir = join(dir, "real"); await mkdir(realDir); const dirLink = join(dir, "dirlink"); await symlink(realDir, dirLink);
+    await assert.rejects(hf.createHistoryFile(join(dirLink, "x.ndjson"), { chainId: CHAIN, genesisHash: GENESIS }), /plain directory/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

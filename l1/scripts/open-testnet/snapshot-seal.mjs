@@ -11,6 +11,8 @@ export function snapshotKey(secret) {
   assert.ok(typeof secret === "string" && secret.length >= 32, "ZYRON_TESTNET_STATE_SECRET must be at least 32 characters");
   return createHash("sha256").update(`zyron-open-testnet-state\0${secret}`).digest();
 }
+// The `iv` option exists for tests only (byte-identical seal checks); production
+// callers must omit it so every seal gets a fresh random 96-bit IV.
 export function sealSnapshot(bundle, secret, { iv = randomBytes(12) } = {}) {
   const cipher = createCipheriv("aes-256-gcm", snapshotKey(secret), iv);
   cipher.setAAD(Buffer.from(SNAPSHOT_MAGIC));

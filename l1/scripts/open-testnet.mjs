@@ -881,6 +881,8 @@ export const SNAPSHOT_DEFERRED_CODES = new Set(["busy", "node_not_ready", "histo
 // Above this many blocks behind the tip the build does not catch the history
 // up itself (inside its timeout); the background refresher does.
 export const SNAPSHOT_MAX_BUILD_CATCHUP = 2_000;
+// Retry delay for a build deferred by the readiness gate, once its in-flight window ends.
+export const SNAPSHOT_DEFERRED_RETRY_MS = 5_000;
 // Gate for a snapshot build: undefined when it may start, else a deferred code.
 export function snapshotBuildReadiness({ quorumOk, tip, historyHeight, historyRebuilding = false, maxCatchup = SNAPSHOT_MAX_BUILD_CATCHUP }) {
   if (!quorumOk || !Number.isSafeInteger(tip) || tip < 1) return "node_not_ready";
@@ -1039,10 +1041,10 @@ export function createSnapshotChildBuilder({ secret, outDir, childUrl = SNAPSHOT
 export function createSnapshotCache({
   build, currentHeight, refreshMs = SNAPSHOT_REFRESH_MS, log = (line) => console.error(line), now = Date.now,
   buildTimeoutMs = SNAPSHOT_BUILD_TIMEOUT_MS, maxAgeMs = SNAPSHOT_MAX_AGE_MS,
-  backoffBaseMs = SNAPSHOT_BACKOFF_BASE_MS, backoffMaxMs = SNAPSHOT_BACKOFF_MAX_MS, redact = []
+  backoffBaseMs = SNAPSHOT_BACKOFF_BASE_MS, backoffMaxMs = SNAPSHOT_BACKOFF_MAX_MS, redact = [], deferredRetryMs = SNAPSHOT_DEFERRED_RETRY_MS
 }) {
   let cached; let inFlight; let timer; let lastError; let lastErrorCode; let failures = 0; let nextAttemptAtMs = 0;
-  let buildStartedAtMs; let lastBuildMs; let waiting;
+  let buildStartedAtMs; let lastBuildMs; let waiting; let retryAfterSettle = false; let deferredTimer;
   function withTimeout(promise, controller) {
     if (!(buildTimeoutMs > 0) || !Number.isFinite(buildTimeoutMs)) return promise;
     let handle;
@@ -1079,13 +1081,23 @@ export function createSnapshotCache({
         // retry on the next tick, no backoff.
         waiting = code === "busy" ? undefined : code;
         log(`snapshot: build skipped (${code})`);
+        if (waiting) retryAfterSettle = true;
         return cached;
       }
       lastError = detail; lastErrorCode = code;
       failures += 1; nextAttemptAtMs = now() + backoffMs();
       log(`snapshot: background build failed (${code}: ${detail}); next attempt in ${Math.round(backoffMs() / 1000)} s`);
       return cached;
-    }).finally(() => { inFlight = undefined; });
+    }).finally(() => {
+      inFlight = undefined;
+      // A deferred build (node or history not ready) is retried shortly after
+      // this in-flight window ends, not only on the next refreshMs tick.
+      if (retryAfterSettle && !deferredTimer && deferredRetryMs > 0) {
+        retryAfterSettle = false;
+        deferredTimer = setTimeout(() => { deferredTimer = undefined; void refresh(); }, deferredRetryMs); deferredTimer.unref?.();
+      }
+      retryAfterSettle = false;
+    });
     return inFlight;
   }
   // Age = time since the snapshot was last known to cover the chain tip (built,
@@ -1122,7 +1134,7 @@ export function createSnapshotCache({
       void refresh();
       timer = setInterval(() => { void refresh(); }, refreshMs); timer.unref?.();
     },
-    stop() { if (timer) clearInterval(timer); timer = undefined; }
+    stop() { if (timer) clearInterval(timer); timer = undefined; if (deferredTimer) clearTimeout(deferredTimer); deferredTimer = undefined; }
   };
 }
 
@@ -1151,17 +1163,26 @@ export function serveSnapshotRoute(response, snapshots, { genesisHash, takeRate 
 // The relay's validator-history refresh. A snapshot build extends the same
 // history; while one runs the refresh is skipped rather than queued behind it
 // on the shared lock (the next tick catches up).
-export function createHistoryRefresher({ snapshots, extend, log = (line) => console.error(line) }) {
-  let running;
-  return function refreshHistory() {
+// A refresh skipped because a build is in flight is not lost: it is retried
+// every `retryMs` until the build has ended (a build deferred as
+// history_catching_up calls this from inside its own in-flight window).
+export function createHistoryRefresher({ snapshots, extend, log = (line) => console.error(line), retryMs = 1_000 }) {
+  let running; let retryTimer;
+  function scheduleRetry() {
+    if (retryTimer) return;
+    retryTimer = setTimeout(() => { retryTimer = undefined; void refreshHistory(); }, retryMs); retryTimer.unref?.();
+  }
+  function refreshHistory() {
     running ??= (async () => {
-      if (snapshots?.building()) return "skipped";
+      if (snapshots?.building()) { scheduleRetry(); return "skipped"; }
       await extend();
       return "extended";
     })().catch((error) => { log(`relay: validator history refresh failed (${error instanceof Error ? error.message : String(error)})`); return "failed"; })
       .finally(() => { running = undefined; });
     return running;
-  };
+  }
+  refreshHistory.cancel = () => { if (retryTimer) clearTimeout(retryTimer); retryTimer = undefined; };
+  return refreshHistory;
 }
 
 export function capPeerStatus(status, watermark) {
@@ -1839,7 +1860,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // With the relay on, the history follows the tip every 5 s. Otherwise a
   // build deferred as history_catching_up starts this refresh (to the tip,
   // outside the build timeout), so the next build only appends a short delta.
-  if (relay) { const timer = setInterval(() => { void refreshHistory(); }, 5_000); timer.unref(); }
+  // The refresher also runs whenever snapshots are built (stateSecret), so a
+  // restore far behind or a history-file read error recovers without relay.
+  if (relay || stateSecret) { const timer = setInterval(() => { void refreshHistory(); }, 5_000); timer.unref(); }
   const snapshotBuilder = stateSecret ? createSnapshotChildBuilder({ secret: stateSecret, outDir: join(dir, "snapshot-history", "builds") }) : undefined;
   async function buildSnapshotNow({ signal } = {}) {
     // Readiness gate: a build after a restart must not start (and then run

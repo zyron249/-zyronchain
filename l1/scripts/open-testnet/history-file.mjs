@@ -14,8 +14,8 @@
 // HistoryFileError (code history_file_corrupt); the gateway then rebuilds
 // the file from validator history with full validation.
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { mkdir, open } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { chmod, lstat, mkdir, open } from "node:fs/promises";
 import { dirname } from "node:path";
 import { verifySnapshotBlock } from "./snapshot-verify.mjs";
 
@@ -37,9 +37,27 @@ async function writeAll(handle, buffer) {
 // Creates (truncates) the history file. append() checks linkage again before
 // writing (the caller has already run full finalized-block validation) and
 // only advances the in-RAM tip after the line is completely written.
+// Symlinks are refused (lstat on the directory, O_NOFOLLOW on the file), the
+// directory is forced to 0700 and the file to 0600.
+const WRITE_FLAGS = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | (fsConstants.O_NOFOLLOW ?? 0);
+const READ_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+async function ensurePrivateDir(dir) {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const info = await lstat(dir);
+  if (info.isSymbolicLink() || !info.isDirectory()) throw new HistoryFileError("history directory is not a plain directory");
+  await chmod(dir, 0o700);
+}
+async function openForWrite(path) {
+  const existing = await lstat(path).catch((error) => { if (error?.code === "ENOENT") return undefined; throw error; });
+  if (existing && (existing.isSymbolicLink() || !existing.isFile())) throw new HistoryFileError("history path is not a regular file");
+  let handle;
+  try { handle = await open(path, WRITE_FLAGS, 0o600); } catch (error) { if (error?.code === "ELOOP") throw new HistoryFileError("history path is a symlink"); throw error; }
+  await handle.chmod(0o600);
+  return handle;
+}
 export async function createHistoryFile(path, { chainId, genesisHash }) {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  let handle = await open(path, "w", 0o600);
+  await ensurePrivateDir(dirname(path));
+  let handle = await openForWrite(path);
   const state = { height: 0, tipHash: genesisHash, runningHash: historySeed(genesisHash), broken: undefined };
   let queue = Promise.resolve();
   const serial = (task) => { const run = queue.then(task); queue = run.then(() => undefined, () => undefined); return run; };
@@ -67,7 +85,7 @@ export async function createHistoryFile(path, { chainId, genesisHash }) {
     view: () => ({ path, tip: state.height, tipHash: state.tipHash, runningHash: state.runningHash, chainId, genesisHash }),
     reset: () => serial(async () => {
       await handle.close().catch(() => {});
-      handle = await open(path, "w", 0o600);
+      handle = await openForWrite(path);
       state.height = 0; state.tipHash = genesisHash; state.runningHash = historySeed(genesisHash); state.broken = undefined;
     }),
     close: () => serial(() => handle.close().catch(() => {}))
@@ -91,7 +109,9 @@ export async function* readHistoryLines({ path, tip, tipHash, runningHash, chain
     return line;
   };
   if (tip > 0) {
-    const stream = createReadStream(path, { highWaterMark: 256 * 1024 });
+    let readHandle;
+    try { readHandle = await open(path, READ_FLAGS); } catch (error) { throw new HistoryFileError(error?.code === "ELOOP" ? "history path is a symlink" : `read failed (${error?.code ?? "io"})`); }
+    const stream = readHandle.createReadStream({ highWaterMark: 256 * 1024, autoClose: false });
     try {
       outer: for await (const chunk of stream) {
         if (signal?.aborted) throw Object.assign(new Error("snapshot build aborted"), { code: "aborted" });
@@ -114,6 +134,7 @@ export async function* readHistoryLines({ path, tip, tipHash, runningHash, chain
       throw new HistoryFileError(`read failed (${error?.code ?? "io"})`);
     } finally {
       stream.destroy();
+      await readHandle.close().catch(() => {});
     }
   }
   if (height !== tip) throw new HistoryFileError(`truncated: ${height} of ${tip} lines`);
