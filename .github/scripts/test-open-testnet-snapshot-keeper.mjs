@@ -1876,4 +1876,49 @@ test("chain: another active run or the daily dispatch cap skips with a warning",
   assert.ok(!result.dispatched); assert.match(result.out, /::warning title=Keeper not chained::1 other run/);
   result = await runChain({ job: full, dispatches: 10 });
   assert.ok(!result.dispatched); assert.match(result.out, /::warning title=Keeper not chained::10 workflow_dispatch runs/);
+
+test("keeper caps the /health body it reads at MAX_HEALTH_BYTES", async () => {
+  const { readSnapshotCache, keepAlive, MAX_HEALTH_BYTES } = keeper;
+  assert.equal(MAX_HEALTH_BYTES, 64 * 1024);
+  const pad = "x".repeat(MAX_HEALTH_BYTES);
+  const big = JSON.stringify({ status: "ready", maxHeight: 5, pad, snapshotCache: { lastBuiltHeight: 5 } });
+  // No content-length (streamed) and a declared content-length: both refused.
+  const streamed = async () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(big)); c.close(); } }), { status: 200 });
+  const declared = async () => new Response(big, { status: 200, headers: { "content-length": String(Buffer.byteLength(big)) } });
+  assert.equal(await readSnapshotCache({ fetchImpl: streamed, gateway: "https://gw" }), null);
+  assert.equal(await readSnapshotCache({ fetchImpl: declared, gateway: "https://gw" }), null);
+  const health = await keepAlive({ fetchImpl: streamed, gateway: "https://gw" });
+  assert.equal(health.status, 0);
+  assert.match(health.phase, /exceeds/);
+  // A body just under the cap is still read.
+  const small = JSON.stringify({ status: "ready", maxHeight: 7, snapshotCache: { lastBuiltHeight: 7 } });
+  assert.deepEqual(await readSnapshotCache({ fetchImpl: async () => new Response(small, { status: 200 }), gateway: "https://gw" }), { lastBuiltHeight: 7, building: false });
+  assert.deepEqual(await keepAlive({ fetchImpl: async () => new Response(small, { status: 200 }), gateway: "https://gw" }), { status: 200, phase: "ready", height: 7 });
+});
+
+test("runKeeper starts watch-triggered cycles at most once per WATCH_MIN_GAP_MS", async () => {
+  assert.equal(keeper.WATCH_MIN_GAP_MS, 120_000);
+  const time = virtualTime();
+  const { github } = fakeGitHub({ now: time.now });
+  let height = 2150;
+  const snapshots = [];
+  // The gateway reports a new build every 30 s from t=1 min on.
+  const builtAt = () => { const m = (time.now() - T0) / 60_000; return m < 1 ? null : 2150 + Math.floor(m * 2) * 10; };
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/health")) return new Response(JSON.stringify({ status: "ready", maxHeight: height, snapshotCache: { lastBuiltHeight: builtAt(), building: false } }), { status: 200 });
+    snapshots.push((time.now() - T0) / 60_000);
+    const built = builtAt();
+    if (built === null || built <= height) return new Response("busy", { status: 503 });
+    height = built;
+    return new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": String(height), "x-zyron-genesis-hash": GENESIS } });
+  };
+  const stats = await time.run(runKeeper({
+    fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS,
+    runMs: 9 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000, watchIntervalMs: 30_000,
+    now: time.now, sleep: time.sleep, log() {}, warn() {}
+  }));
+  // Without the cap the watch would trigger every 30 s (about 16 times).
+  assert.ok(stats.watchTriggers >= 3 && stats.watchTriggers <= 5, `watchTriggers ${stats.watchTriggers}`);
+  const triggered = snapshots.slice(1);
+  for (let i = 1; i < triggered.length; i += 1) assert.ok(triggered[i] - triggered[i - 1] >= 2, `cycles at ${triggered.join(",")}`);
 });
