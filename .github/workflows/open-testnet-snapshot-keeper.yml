@@ -25,7 +25,9 @@ name: Open Testnet Snapshot Keeper
 #   group keeps exactly one run active; the next scheduled run waits as pending
 #   and starts when the active one ends. GitHub cancels older pending runs of the
 #   group, so cancelled scheduled runs in the list are expected. A manual run also
-#   waits behind an active run.
+#   waits behind an active run. Because schedules can still leave gaps, the
+#   final `chain` job dispatches the next run on main when a run ends (guarded
+#   against duplicates and crash loops; see the comment on that job).
 # - GitHub disables scheduled workflows after 60 days without repository
 #   activity. If that happens the keeper stops: re-enable it with
 #   `gh workflow enable open-testnet-snapshot-keeper.yml` (or the Actions tab).
@@ -95,3 +97,57 @@ jobs:
           SNAPSHOT_TIMEOUT_SECONDS: '120'
           SNAPSHOT_RETRIES: '4'
         run: node .github/scripts/open-testnet-snapshot-keeper.mjs
+
+  # Self-chain: GitHub delays or drops scheduled runs, which left gaps with no
+  # keeper running (2026-11-02 10:28 to 11:26 ET). When a keep run ends, this
+  # job dispatches the next run of this workflow on main. GitHub documents that
+  # workflow_dispatch events created with GITHUB_TOKEN still create workflow
+  # runs (an exception to its no-recursion rule; see docs/OPEN_TESTNET.md
+  # "Snapshot keepers"). Only this job gets actions: write, and it never sees
+  # the state secret. It skips when another run of this workflow is queued,
+  # pending, waiting or in progress, when this run lasted under 30 minutes (a
+  # crash loop), when the keep job was cancelled, and when 10 or more
+  # bot-dispatched runs were created in the last 24 hours.
+  chain:
+    needs: keep
+    if: always() && github.repository == 'zyron249/-zyronchain' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch the next keeper run on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          KEEP_RESULT: ${{ needs.keep.result }}
+          WORKFLOW_FILE: open-testnet-snapshot-keeper.yml
+          MIN_RUN_MINUTES: '30'
+          MAX_DISPATCHES_PER_DAY: '10'
+        run: |
+          set -euo pipefail
+          if [ "$KEEP_RESULT" = "cancelled" ] || [ "$KEEP_RESULT" = "skipped" ]; then
+            echo "keep job was $KEEP_RESULT; not chaining"; exit 0
+          fi
+          started=$(gh api "repos/$REPO/actions/runs/$GITHUB_RUN_ID" --jq '.run_started_at')
+          minutes=$(( ($(date -u +%s) - $(date -u -d "$started" +%s)) / 60 ))
+          if [ "$minutes" -lt "$MIN_RUN_MINUTES" ]; then
+            echo "this run lasted ${minutes} min (< ${MIN_RUN_MINUTES}); possible crash loop, not chaining"; exit 0
+          fi
+          others=0
+          for status in queued pending waiting requested in_progress; do
+            n=$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?status=$status&per_page=100" \
+              --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID)] | length")
+            others=$(( others + n ))
+          done
+          if [ "$others" -gt 0 ]; then
+            echo "$others other run(s) of this workflow are active or waiting; not chaining"; exit 0
+          fi
+          since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+          recent=$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?event=workflow_dispatch&created=>=$since&per_page=100" \
+            --jq '[.workflow_runs[] | select(.triggering_actor.login == "github-actions[bot]")] | length')
+          if [ "$recent" -ge "$MAX_DISPATCHES_PER_DAY" ]; then
+            echo "$recent chained runs in the last 24 h (>= ${MAX_DISPATCHES_PER_DAY}); not chaining"; exit 0
+          fi
+          gh api -X POST "repos/$REPO/actions/workflows/$WORKFLOW_FILE/dispatches" -f ref=main
+          echo "dispatched the next keeper run on main (this run: ${minutes} min)"

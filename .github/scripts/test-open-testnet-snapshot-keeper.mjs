@@ -1131,14 +1131,14 @@ test("the scheduled workflow keeps least privilege, one active run, a bounded jo
   const active = workflow.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
   assert.match(active, /^on:\n  schedule:\n    - cron: '[^']+'\n  workflow_dispatch:/m);
   assert.match(active, /^permissions: \{\}$/m, "no workflow-level permissions");
-  assert.deepEqual([...active.matchAll(/^\s+permissions:\n\s+(\S.*)$/gm)].map((match) => match[1]), ["contents: write"], "only the job gets contents: write");
+  assert.deepEqual([...active.matchAll(/^\s+permissions:\n\s+(\S.*)$/gm)].map((match) => match[1]), ["contents: write", "actions: write"], "only the keep job gets contents: write and only the chain job gets actions: write");
   assert.match(active, /^concurrency:\n  group: open-testnet-snapshot-keeper\n  cancel-in-progress: false$/m, "exactly one active run; never cancel a run mid-upload");
   const timeout = Number(/^\s+timeout-minutes: (\d+)$/m.exec(active)?.[1]);
   const runMinutes = Number(/RUN_MINUTES: \$\{\{ inputs\.run_minutes \|\| '(\d+)' \}\}/.exec(active)?.[1]);
   assert.ok(timeout <= 360 && runMinutes > 0 && runMinutes + 10 <= timeout, `job timeout ${timeout} must exceed the run length ${runMinutes} and stay within 360`);
   assert.match(active, /EXPECTED_GENESIS: e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad$/m);
   assert.match(active, /if: github\.repository == 'zyron249\/-zyronchain' && github\.ref == 'refs\/heads\/main'$/m, "only main can run the keeper: a dispatched branch must never get the state secret");
-  assert.deepEqual([...active.matchAll(/\$\{\{\s*([^}]*?)\s*\}\}/g)].map((match) => match[1]).sort(), ["github.repository", "github.token", "inputs.run_minutes || '340'", "secrets.ZYRON_TESTNET_STATE_SECRET"], "no secrets and no untrusted expression in a script");
+  assert.deepEqual([...active.matchAll(/\$\{\{\s*([^}]*?)\s*\}\}/g)].map((match) => match[1]).sort(), ["github.repository", "github.repository", "github.token", "github.token", "inputs.run_minutes || '340'", "needs.keep.result", "secrets.ZYRON_TESTNET_STATE_SECRET"], "no secrets and no untrusted expression in a script");
   // M2 (owner-approved 2026-10-22): exactly one secret, the state secret, only as a step env value.
   assert.deepEqual([...active.matchAll(/secrets\.[A-Za-z0-9_]+/g)].map((match) => match[0]), ["secrets.ZYRON_TESTNET_STATE_SECRET"], "the state secret is the only secret");
   assert.match(active, /^          ZYRON_TESTNET_STATE_SECRET: \$\{\{ secrets\.ZYRON_TESTNET_STATE_SECRET \}\}$/m, "the state secret is passed only as the keeper step's env");
@@ -1146,6 +1146,24 @@ test("the scheduled workflow keeps least privilege, one active run, a bounded jo
   for (const use of active.matchAll(/uses: (\S+)/g)) assert.match(use[1], /^actions\/(checkout|setup-node)@[0-9a-f]{40}$/, `unpinned or unexpected action ${use[1]}`);
   assert.match(active, /persist-credentials: false/);
   assert.match(active, /run: node \.github\/scripts\/open-testnet-snapshot-keeper\.mjs$/m);
+});
+
+test("the chain job self-dispatches on main only, with its own minimal permission and runaway guards", async () => {
+  const workflow = await readFile(new URL("../workflows/open-testnet-snapshot-keeper.yml", import.meta.url), "utf8");
+  const active = workflow.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+  const chain = active.slice(active.indexOf("\n  chain:\n"));
+  const keep = active.slice(active.indexOf("\n  keep:\n"), active.indexOf("\n  chain:\n"));
+  assert.ok(chain.length > 20 && keep.length > 20, "keep and chain jobs exist");
+  assert.match(chain, /^    needs: keep$/m);
+  assert.match(chain, /^    if: always\(\) && github\.repository == 'zyron249\/-zyronchain' && github\.ref == 'refs\/heads\/main' && \(github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'\)$/m);
+  assert.match(chain, /^    permissions:\n      actions: write$/m);
+  assert.doesNotMatch(chain, /secrets\.|contents: write|uses:/, "the chain job gets no secret, no contents write and no actions");
+  assert.doesNotMatch(keep, /actions: write/, "the keep job does not get actions: write");
+  assert.match(chain, /dispatches" -f ref=main$/m, "dispatches only main");
+  assert.match(chain, /MIN_RUN_MINUTES: '30'/, "crash-loop guard");
+  assert.match(chain, /MAX_DISPATCHES_PER_DAY: '\d+'/, "daily chain cap");
+  for (const status of ["queued", "pending", "waiting", "requested", "in_progress"]) assert.match(chain, new RegExp(`for status in [^\\n]*\\b${status}\\b`), `skips when a ${status} run exists`);
+  assert.match(chain, /select\(\.id != \$GITHUB_RUN_ID\)/, "ignores only the current run");
 });
 
 // ---- Codex round 4 at 72276b7: the missing-name window and repair installs ----
