@@ -996,7 +996,7 @@ export function createSnapshotChildBuilder({ secret, outDir, childUrl = SNAPSHOT
         // "close" (not "exit"): stderr is fully read by then, so the
         // out-of-memory message is seen on every platform.
         child.once("close", (code, exitSignal) => {
-          const oom = /heap out of memory|allocation failed/i.test(stderrTail);
+          const oom = /out of memory|allocation failed|ERR_WORKER_OUT_OF_MEMORY/i.test(stderrTail);
           finish(fail, Object.assign(new Error(oom ? "snapshot child out of memory" : `snapshot child exited (code ${code}${exitSignal ? `, signal ${exitSignal}` : ""})`), { code: oom ? "worker_out_of_memory" : "worker_crashed" }));
         });
         child.send({ type: "build", view, head: { format: SNAPSHOT_MAGIC, createdAtMs, genesis, network, keys }, secret, outPath, ...(iv ? { iv: Buffer.from(iv).toString("base64") } : {}) }, (error) => {

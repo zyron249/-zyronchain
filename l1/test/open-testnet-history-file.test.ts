@@ -167,7 +167,7 @@ test("child process: running out of heap fails the build with worker_out_of_memo
   const dir = await tempDir();
   try {
     const hog = await childScript(dir, `const hog = []; process.once("message", () => { for (;;) hog.push(new Array(1e5).fill({ x: Math.random() })); });`);
-    const builder = api.createSnapshotChildBuilder({ secret: SECRET, outDir: join(dir, "out"), childUrl: hog, maxOldSpaceMb: 24 });
+    const builder = api.createSnapshotChildBuilder({ secret: SECRET, outDir: join(dir, "out"), childUrl: hog, maxOldSpaceMb: 32 });
     const cache = api.createSnapshotCache({ build: ({ signal }: { signal: AbortSignal }) => builder.build({ view: { path: "x", tip: 0 }, ...head }, { signal }), currentHeight: async () => 1, log: () => {} });
     await cache.refresh();
     assert.equal(cache.status().lastError, "worker_out_of_memory");
