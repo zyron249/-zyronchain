@@ -1,13 +1,13 @@
 /* Wallet testnet lookup. Same dark palette as the phone wallet. No remote fonts. */
 :root {
-  --bg: #02050a;
+  --bg: #0a0a0b;
   --panel: #08111f;
-  --panel-2: #0c1728;
-  --line: #1b2c46;
-  --text: #e8eff6;
+  --panel-2: #17150f;
+  --line: #2c2718;
+  --text: #f5f2ea;
   --muted: #b3bdc9;
-  --gold: #0a9ff5;
-  --gold-2: #4fd8fb;
+  --gold: #f9b700;
+  --gold-2: #ffcc33;
   --ok: #49b37c;
   --warn: #e0a43a;
   --bad: #e5604f;
@@ -20,8 +20,8 @@ body {
   font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   min-height: 100vh;
   background-image:
-    radial-gradient(520px 320px at 10% -4%, rgba(10, 159, 245, .18), transparent 62%),
-    radial-gradient(420px 300px at 100% 0%, rgba(28, 203, 251, .10), transparent 60%);
+    radial-gradient(520px 320px at 10% -4%, rgba(249, 183, 0, .18), transparent 62%),
+    radial-gradient(420px 300px at 100% 0%, rgba(255, 194, 26, .10), transparent 60%);
 }
 .skip { position: absolute; left: -999px; top: 8px; background: var(--panel-2); color: var(--text); padding: 8px 12px; z-index: 5; }
 .skip:focus { left: 8px; }
@@ -35,7 +35,7 @@ h2 { font-size: 1.12rem; margin: 0 0 10px; }
 p { margin: 0 0 12px; }
 a { color: var(--gold-2); }
 .lead { color: var(--muted); }
-.card { background: linear-gradient(180deg, rgba(14, 27, 48, .82), rgba(6, 12, 22, .9)); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin: 0 0 14px; }
+.card { background: linear-gradient(180deg, rgba(30, 28, 24, .82), rgba(14, 13, 12, .9)); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin: 0 0 14px; }
 .notice { border-radius: 12px; padding: 12px 14px; margin: 0 0 14px; border: 1px solid var(--warn); background: #24190a; }
 .notice strong { display: block; }
 .quiet { border-color: var(--line); background: var(--panel-2); color: var(--muted); font-size: .92rem; }
@@ -50,7 +50,7 @@ button {
   font: 600 15px/1.2 system-ui, -apple-system, sans-serif; background: var(--panel-2); border: 1px solid var(--line);
   border-radius: 12px; padding: 12px 14px; min-height: 46px; cursor: pointer; color: var(--text);
 }
-button.primary { background: linear-gradient(135deg, #8be9ff 0%, #1ccbfb 38%, #0a9ff5 100%); color: #02050a; border-color: #8be9ff; }
+button.primary { background: linear-gradient(135deg, #ffe08a 0%, #ffc21a 38%, #f9b700 100%); color: #0a0a0b; border-color: #ffe08a; }
 button:disabled { opacity: .45; cursor: not-allowed; }
 .actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .actions button { flex: 1 1 180px; }

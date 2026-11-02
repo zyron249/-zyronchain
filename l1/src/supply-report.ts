@@ -1,9 +1,16 @@
 // Read-only supply report for GET /supply (Red Team Session 1, INFO #5).
 // Derived from current ledger state only; it changes no supply logic.
 // Reconciles like tools/supply-verifier: balances + pending + burned = total,
-// with locked a subset of balances. Mining is retired and nothing mints, so
-// burned is the genesis supply minus current balances. The protocol has no
-// escrow state, so pending is 0.
+// with locked a subset of balances. The protocol has no escrow state, so
+// pending is 0.
+//
+// NO-MINT ASSUMPTION: the whole supply is allocated at genesis, mining is
+// retired and no transaction kind mints, so totalSupplyAtoms is the genesis
+// supply (50,000,000 ZYN on the fixed-supply genesis) and never changes. Fees
+// are burned, so burned = total - balances - pending can only grow, and
+// circulating = total - burned - pending - locked. If a minting path were ever
+// added this report would have to change, and reconciles would no longer prove
+// anything; supplyChanges is therefore a constant false, not a measurement.
 import { MAX_SUPPLY_ATOMS, type Address } from "./types.js";
 
 export interface SupplySource {
@@ -25,6 +32,8 @@ export interface SupplyReport {
   circulatingAtoms: string;
   pendingAtoms: string;
   burnedAtoms: string | null;
+  /** Always false: total supply is fixed at genesis (see the no-mint assumption above). */
+  supplyChanges: false;
   reconciles: boolean;
   note: string;
 }
@@ -50,10 +59,13 @@ export function supplyReport(source: SupplySource): SupplyReport {
     totalSupplyAtoms: total.toString(),
     balancesAtoms: balances.toString(),
     lockedAtoms: locked.toString(),
-    circulatingAtoms: (balances - locked).toString(),
+    // = balances - locked whenever the report reconciles.
+    circulatingAtoms: (reconciles ? total - burned - pending - locked : balances - locked).toString(),
     pendingAtoms: pending.toString(),
     burnedAtoms: reconciles ? burned.toString() : null,
+    supplyChanges: false,
     reconciles,
-    note: "balances + pending + burned = totalSupply; locked is part of balances; circulating = balances - locked"
+    note: "totalSupply is fixed at genesis and never changes (nothing mints; fees are burned); " +
+      "balances + pending + burned = totalSupply; locked is part of balances; circulating = totalSupply - burned - pending - locked"
   };
 }

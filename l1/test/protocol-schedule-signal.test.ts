@@ -5,6 +5,7 @@
 // the running binary. It is informational: /readyz and the strict
 // /protocol shape (read by the CLI) stay unchanged.
 import assert from "node:assert/strict";
+import { buildCommit } from "../src/build-info.js";
 import test from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -102,7 +103,7 @@ test("protocol schedule: a scheduled unsupported version is visible long before 
     });
     // Informational only: far from activation the node stays ready, and the
     // strict /protocol shape read by the CLI is unchanged.
-    assert.deepEqual(await get("/readyz"), { status: 200, body: { ready: true, height: 0, reasons: [] } });
+    assert.deepEqual(await get("/readyz"), { status: 200, body: { ready: true, height: 0, reasons: [], commit: buildCommit() } });
     assert.deepEqual(await get("/protocol"), { status: 200, body: { currentVersion: 1, nextVersion: 1 } });
   });
 });

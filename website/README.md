@@ -10,7 +10,7 @@ Production static website for `https://zyronchain.com`. The website is intention
 - `app.js` — progressive enhancement only (copy buttons for public commands, legacy menu toggle). No network, storage or analytics.
 - Brand palette and asset pipeline: [`tools/brand/README.md`](../tools/brand/README.md) (near-black, electric blue/cyan, chrome; no remote fonts or scripts).
 - `brand/` — generated brand assets: header wordmark, hero banner (`zyron-banner-*.webp|jpg`, mobile crop `zyron-banner-m-*`), `og-image.jpg` (1200×630), `icon-512.png`, small favicons.
-- `brand-mark.png` — wolf + Z mark (transparent) for header, footer and wallet identity.
+- `brand-mark.png` — gold Z coin mark (transparent) for header, footer and wallet identity.
 - `favicon.ico` (16/32/48), `favicon-32.png`, `apple-touch-icon.png`, `icon-192.png` — browser and home-screen icons from the same mark.
 - `logo.svg` / `favicon.svg` — SVG wrappers (system-font wordmark + embedded raster mark).
 - `wallet.html` — **Desktop Wallet Setup**: local-first wallet onboarding for the canonical CLI and security education. The installable **Phone Wallet — Testnet** is `app/`.
