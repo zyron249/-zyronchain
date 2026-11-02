@@ -858,6 +858,57 @@ export class SnapshotBuildTimeoutError extends Error {
 export class SnapshotWorkerBusyError extends Error {
   constructor() { super("snapshot worker is busy"); this.name = "SnapshotWorkerBusyError"; this.code = "busy"; }
 }
+// Validator heap cap. Measured locally (4 validators, 25 min): the live JS
+// heap after a full GC stays ~27 MB, but with no limit V8 keeps adding 256 KB
+// old-space pages of uncollected garbage, so each validator's RSS creeps up
+// ~0.3-0.6 MB/min. A bounded old generation makes V8 collect instead of grow.
+// ZYRON_VALIDATOR_MAX_OLD_MB overrides the default; 0 disables the flag.
+export const VALIDATOR_MAX_OLD_MB_DEFAULT = 96;
+export function validatorNodeFlags(env = process.env) {
+  const raw = env.ZYRON_VALIDATOR_MAX_OLD_MB;
+  if (raw === "0") return [];
+  // Strict: digits only; anything else (signs, decimals, spaces, units) is the default.
+  const value = typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : VALIDATOR_MAX_OLD_MB_DEFAULT;
+  const mb = value >= 32 && value <= 4096 ? value : VALIDATOR_MAX_OLD_MB_DEFAULT;
+  return [`--max-old-space-size=${mb}`];
+}
+// A validator killed by a V8 heap OOM aborts (SIGABRT; exit code 134 when a
+// shell reports it).
+export function classifyValidatorExit(code, signal) {
+  if (signal === "SIGABRT" || code === 134) return "oom";
+  return signal ? "signal" : "exit";
+}
+// Validator supervisor: exponential restart backoff (base doubling to max),
+// reset once a validator has run for stableMs, plus per-validator restart
+// counts and the last exit for GET /health.
+export const VALIDATOR_RESTART_BASE_MS = 5_000;
+export const VALIDATOR_RESTART_MAX_MS = 300_000;
+export const VALIDATOR_RESTART_STABLE_MS = 600_000;
+export function createValidatorSupervisor({ baseMs = VALIDATOR_RESTART_BASE_MS, maxMs = VALIDATOR_RESTART_MAX_MS, stableMs = VALIDATOR_RESTART_STABLE_MS, now = Date.now } = {}) {
+  const records = new Map();
+  const record = (name) => { let r = records.get(name); if (!r) { r = { restarts: 0, failures: 0, startedAtMs: undefined, lastExit: undefined }; records.set(name, r); } return r; };
+  return {
+    started(name) { record(name).startedAtMs = now(); },
+    // Returns the delay before the restart.
+    exited(name, { code = null, signal = null } = {}) {
+      const r = record(name); const t = now();
+      if (r.startedAtMs !== undefined && t - r.startedAtMs >= stableMs) r.failures = 0;
+      const delayMs = Math.min(baseMs * 2 ** r.failures, maxMs);
+      r.failures += 1;
+      r.lastExit = { code, signal, atMs: t, reason: classifyValidatorExit(code, signal) };
+      return delayMs;
+    },
+    restarting(name) { record(name).restarts += 1; },
+    status(name) {
+      const r = records.get(name);
+      return { restarts: r?.restarts ?? 0, lastExitCode: r?.lastExit?.code ?? null, lastExitSignal: r?.lastExit?.signal ?? null,
+        lastExitAt: r?.lastExit ? new Date(r.lastExit.atMs).toISOString() : null, lastExitReason: r?.lastExit?.reason ?? null };
+    }
+  };
+}
+export function withSupervisorStatus(validators, supervisor) {
+  return validators.map((v) => ({ ...v, ...supervisor.status(v.name) }));
+}
 export class SnapshotBuildAbortedError extends Error {
   constructor() { super("snapshot build aborted"); this.name = "SnapshotBuildAbortedError"; this.code = "aborted"; }
 }
@@ -1627,6 +1678,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     console.log(`consensus relay: ${relayPeers.size} external peer(s); mailbox on 127.0.0.1:${mailboxPort}`);
   }
 
+  const supervisor = createValidatorSupervisor();
   function startValidator(name) {
     const index = VALIDATOR_NAMES.indexOf(name);
     const args = [dist("cli.js"), "node", "--genesis", genesisPath, "--data", join(dir, `data-${name}`),
@@ -1638,18 +1690,21 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       "--rpc-rate-limit-exempt", "127.0.0.1"];
     for (const [i, port] of ports.entries()) if (i !== index) args.push("--peer", `http://127.0.0.1:${port}`);
     if (relay) for (const address of relay.addresses()) args.push("--peer", `http://127.0.0.1:${mailboxPort}/x/${address}`);
-    const child = spawn(process.execPath, args, { cwd: l1Root, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [...validatorNodeFlags(), ...args], { cwd: l1Root, stdio: ["ignore", "pipe", "pipe"] });
     const prefix = `[${name}] `;
     for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => {
       if (log) process.stdout.write(chunk.toString("utf8").split("\n").filter(Boolean).map((l) => prefix + l).join("\n") + "\n");
     });
     const node = { name, child, port: ports[index], startedAt: Date.now() };
     node.closed = new Promise((done) => child.once("exit", (code, signal) => { node.exit = { code, signal }; done(); }));
+    supervisor.started(name);
     child.once("exit", () => {
       if (shuttingDown || node.stopping) return;
-      // Supervisor: a crashed validator restarts from its durable data directory.
-      console.error(`${name} exited (${JSON.stringify(node.exit)}); restarting in 5s`);
-      setTimeout(() => { if (!shuttingDown) startValidator(name); }, 5_000);
+      // Supervisor: a crashed validator restarts from its durable data
+      // directory, with exponential backoff.
+      const delayMs = supervisor.exited(name, node.exit);
+      console.error(`${name} exited (${JSON.stringify(node.exit)}, ${supervisor.status(name).lastExitReason}); restarting in ${Math.round(delayMs / 1000)}s`);
+      setTimeout(() => { if (!shuttingDown) { supervisor.restarting(name); startValidator(name); } }, delayMs);
     });
     nodes.set(name, node);
     return node;
@@ -2031,7 +2086,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const heights = up.map((v) => v.height);
           // Quorum of the ACTIVE validator set (follows validator_update).
           const { ok, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, activeSetRejected } = activeSetTracker.evaluate(statuses);
-          const validators = statuses.map(({ activeSet: _activeSet, ...rest }) => rest);
+          const validators = withSupervisorStatus(statuses.map(({ activeSet: _activeSet, ...rest }) => rest), supervisor);
           if (ok) everReady = true;
           // Until the validators first reach a quorum, liveness stays 200
           // "starting" while start-up progresses (bounded by the stall window
