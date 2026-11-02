@@ -913,12 +913,22 @@ export function withSupervisorStatus(validators, supervisor) {
 // One sample per validator (bounded); older than staleMs reads as null.
 export const VALIDATOR_MEMORY_PRELOAD = fileURLToPath(new URL("./open-testnet/validator-memory-preload.cjs", import.meta.url));
 export const VALIDATOR_MEMORY_STALE_MS = 120_000;
+export const MEMORY_CACHE_MS = 1_000;
 const VALIDATOR_MEMORY_FIELDS = ["heapUsed", "heapTotal", "rss", "external", "arrayBuffers"];
-// Validator child env: the gateway's env plus MALLOC_ARENA_MAX=2 (fewer
-// glibc malloc arenas, which caps the native RssAnon growth seen live) and
-// the fd the memory preload writes to. An explicit MALLOC_ARENA_MAX wins.
+// Validator child env: an allowlist, never the gateway's whole env, so the
+// seal secret (ZYRON_TESTNET_STATE_SECRET) and any other secret never reach a
+// validator or its grandchildren. Allowed: the basic process vars, the
+// mempool knobs l1/src/cli.ts reads, and the build-commit vars /readyz reads.
+// NODE_OPTIONS is left out on purpose (the gateway passes node flags itself).
+// Plus MALLOC_ARENA_MAX=2 (fewer glibc malloc arenas, which caps the native
+// RssAnon growth seen live; an explicit value wins) and the preload's fd.
+export const VALIDATOR_ENV_ALLOWLIST = Object.freeze(["PATH", "HOME", "TMPDIR", "TZ", "LANG", "LC_ALL", "NODE_ENV", "MALLOC_ARENA_MAX",
+  "ZYRON_MEMPOOL_MIN_FEE_ATOMS", "ZYRON_MEMPOOL_MAX_FUTURE_PER_SENDER", "ZYRON_MEMPOOL_PARKED_TTL_MS",
+  "ZYRON_BUILD_COMMIT", "RENDER_GIT_COMMIT", "SOURCE_VERSION", "GIT_COMMIT"]);
 export function validatorChildEnv(env = process.env) {
-  return { ...env, MALLOC_ARENA_MAX: env.MALLOC_ARENA_MAX || "2", ZYRON_VALIDATOR_MEMORY_FD: String(VALIDATOR_MEMORY_FD) };
+  const out = {};
+  for (const name of VALIDATOR_ENV_ALLOWLIST) if (typeof env[name] === "string") out[name] = env[name];
+  return { ...out, MALLOC_ARENA_MAX: env.MALLOC_ARENA_MAX || "2", ZYRON_VALIDATOR_MEMORY_FD: String(VALIDATOR_MEMORY_FD) };
 }
 export function maxOldSpaceMbFromFlags(flags) {
   for (const flag of flags) { const m = /^--max-old-space-size=(\d+)$/.exec(flag); if (m) return Number(m[1]); }
@@ -2044,7 +2054,14 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       throw error;
     }
   }
+  // /health and the log timer share one /proc read per ~1 s (like healthCache).
+  let memoryCache; let memoryCacheAt = 0;
   function currentMemory() {
+    if (memoryCache && Date.now() - memoryCacheAt < MEMORY_CACHE_MS) return memoryCache;
+    memoryCache = readCurrentMemory(); memoryCacheAt = Date.now();
+    return memoryCache;
+  }
+  function readCurrentMemory() {
     // totalRss (and the RSS alarm on it) uses Pss, else RssAnon; VmRSS
     // double-counts shared pages and is kept only as a reference.
     const procs = {};
