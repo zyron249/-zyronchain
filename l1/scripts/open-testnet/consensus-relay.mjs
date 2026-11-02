@@ -534,8 +534,9 @@ export class ConsensusRelay {
       return { status: 200, body: { status: result.status, body: result.body.toString("base64") } };
     } finally {
       peer.forwards -= 1;
-      this.targetForwards.set(json.target, (this.targetForwards.get(json.target) ?? 1) - 1);
-      peer.targetForwards.set(json.target, (peer.targetForwards.get(json.target) ?? 1) - 1);
+      // Drop a target at zero in flight, so the maps hold only live forwards
+      // (targets are client-chosen and would otherwise accumulate forever).
+      releaseForward(this.targetForwards, json.target); releaseForward(peer.targetForwards, json.target);
     }
   }
 
@@ -575,4 +576,9 @@ export class ConsensusRelay {
       peer.pending.set(id, { path: item.capPath, resolve: (result) => { clearTimeout(timer); done(result); } });
     });
   }
+}
+
+export function releaseForward(map, key) {
+  const left = (map.get(key) ?? 1) - 1;
+  if (left > 0) map.set(key, left); else map.delete(key);
 }
