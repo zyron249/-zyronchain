@@ -66,8 +66,7 @@ export const KEEPER_ASSET_MAX_AGE_MS = 30 * 60_000;
 // bounds the time a swap can take once started; see publishAsset's swapBy.
 export const GITHUB_CALL_TIMEOUT_MS = 60_000;
 // S2-1: newer labels also carry the tip block hash and a rollback counter
-// (`tip=<64 hex> rollbacks=<n>`). Older labels without them still parse.
-const LABEL_PATTERN = /^state snapshot height=([1-9][0-9]{0,15}) genesis=([0-9a-f]{64})(?:(?: tip=([0-9a-f]{64}))? rollbacks=(0|[1-9][0-9]{0,8}))?$/;
+// (`tip=<64 hex> rollbacks=<n>`, keys in any order). Older labels still parse.
 const HASH_PATTERN = /^[0-9a-f]{64}$/;
 const GENESIS_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -78,13 +77,30 @@ export function formatLabel(height, genesis, { tipHash, rollbackCounter = 0 } = 
   return rollbackCounter > 0 ? `${base} rollbacks=${rollbackCounter}` : base;
 }
 
+// I1 (#1177 review): keys may come in any order. Each key appears at most once,
+// unknown keys are refused, `height` and `genesis` are required and `tip`
+// needs `rollbacks` (as formatLabel writes them).
+const LABEL_KEYS = {
+  height: /^[1-9][0-9]{0,15}$/, genesis: HASH_PATTERN, tip: HASH_PATTERN, rollbacks: /^(0|[1-9][0-9]{0,8})$/
+};
 export function parseLabel(label) {
-  const match = LABEL_PATTERN.exec(typeof label === "string" ? label : "");
-  if (!match) return null;
-  const height = Number(match[1]);
+  if (typeof label !== "string" || !label.startsWith("state snapshot ")) return null;
+  const fields = {};
+  for (const token of label.slice("state snapshot ".length).split(" ")) {
+    const eq = token.indexOf("=");
+    if (eq <= 0) return null;
+    const key = token.slice(0, eq), value = token.slice(eq + 1);
+    if (!Object.hasOwn(LABEL_KEYS, key) || Object.hasOwn(fields, key) || !LABEL_KEYS[key].test(value)) return null;
+    fields[key] = value;
+  }
+  if (!fields.height || !fields.genesis) return null;
+  if (fields.tip && fields.rollbacks === undefined) return null;
+  const height = Number(fields.height);
   if (!Number.isSafeInteger(height)) return null;
-  if (match[3]) return { height, genesis: match[2], tipHash: match[3], rollbackCounter: Number(match[4]) };
-  return match[4] ? { height, genesis: match[2], rollbackCounter: Number(match[4]) } : { height, genesis: match[2] };
+  const parsed = { height, genesis: fields.genesis };
+  if (fields.tip) parsed.tipHash = fields.tip;
+  if (fields.rollbacks !== undefined) parsed.rollbackCounter = Number(fields.rollbacks);
+  return parsed;
 }
 
 export function perGenesisName(genesis) {
@@ -185,7 +201,11 @@ export class GenesisMismatchError extends Error {
 // a fork): the live chain's snapshot replaces it whatever its height, the
 // label's rollback counter is incremented and the decision is marked `fork`, so
 // the run alerts. A lower snapshot whose chain cannot be checked is refused.
-export function decideReplace({ snapshot, asset, expectedGenesis, requestStartedMs, liveHashAtPublished }) {
+//
+// 404 guard (#1177): for a lower snapshot publishAsset passes `liveVerdict`
+// from confirmLiveChain: "rollback", "same", "unconfirmed" (a 404 that was not
+// confirmed; refused, never a rollback) or undefined (unknown).
+export function decideReplace({ snapshot, asset, expectedGenesis, requestStartedMs, liveHashAtPublished, liveVerdict }) {
   if (snapshot.genesis !== expectedGenesis) return { publish: false, reason: "genesis-mismatch" };
   if (!asset) return { publish: true, reason: "no asset published yet", rollbackCounter: 0 };
   const label = parseLabel(asset.label);
@@ -193,7 +213,9 @@ export function decideReplace({ snapshot, asset, expectedGenesis, requestStarted
     if (label.genesis !== expectedGenesis) return { publish: false, reason: `published asset is labeled for genesis ${label.genesis.slice(0, 12)}…` };
     const rollbackCounter = label.rollbackCounter ?? 0;
     if (label.tipHash && snapshot.tipHash) {
-      const onChain = snapshot.height >= label.height ? snapshot.hashAt?.(label.height) : liveHashAtPublished;
+      if (snapshot.height < label.height && liveVerdict === "unconfirmed") return { publish: false, upToDate: true, unconfirmed: true, reason: `a missing live block at the published height ${label.height} was not confirmed on a re-read; not a rollback, not republished` };
+      const fromVerdict = liveVerdict === "rollback" ? null : liveVerdict === "same" ? label.tipHash : undefined;
+      const onChain = snapshot.height >= label.height ? snapshot.hashAt?.(label.height) : (liveVerdict !== undefined ? fromVerdict : liveHashAtPublished);
       if (onChain === undefined) {
         if (snapshot.height > label.height) return { publish: true, reason: `height ${label.height} -> ${snapshot.height} (published tip not checked)`, rollbackCounter };
         return { publish: false, reason: `cannot check the published tip ${label.tipHash.slice(0, 12)}… at height ${label.height} against the live chain (snapshot ${snapshot.height})` };
@@ -216,8 +238,8 @@ export function decideReplace({ snapshot, asset, expectedGenesis, requestStarted
 // a restore) is always replaced, unless it is labeled for another genesis. A
 // fresh `starter` asset may be another keeper's newer snapshot still uploading,
 // so the normal rules apply to it.
-function decidePublish({ snapshot, asset, expectedGenesis, requestStartedMs, nowMs, liveHashAtPublished }) {
-  const decision = decideReplace({ snapshot, asset, expectedGenesis, requestStartedMs, liveHashAtPublished });
+function decidePublish({ snapshot, asset, expectedGenesis, requestStartedMs, nowMs, liveHashAtPublished, liveVerdict }) {
+  const decision = decideReplace({ snapshot, asset, expectedGenesis, requestStartedMs, liveHashAtPublished, liveVerdict });
   if (decision.publish || !asset || !isBrokenCanonical(asset, nowMs) || snapshot.genesis !== expectedGenesis) return decision;
   const label = parseLabel(asset.label);
   if (label && label.genesis !== expectedGenesis) return decision;
@@ -319,6 +341,28 @@ async function listWithin(github, tag, { untilMs, now }) {
   return github.release(tag, { timeoutMs: Math.min(SWAP_CALL_TIMEOUT_MS, left) });
 }
 
+// 404 guard (#1177): retry-then-confirm. `read()` returns { maxHeight (from
+// /health), hashAtPublished (null on a 404) }.
+//   - an existing block with another hash -> "rollback"; the same hash -> "same";
+//   - a 404 -> re-read after CONFIRM_DELAY_MS (only within the run deadline).
+//     It is a rollback only when /health maxHeight is below the published
+//     height on BOTH reads (and the re-read has no matching block); otherwise
+//     (it caught up, the block exists with the published hash) "unconfirmed".
+export const CONFIRM_DELAY_MS = 45_000;
+export async function confirmLiveChain({ label, read, now, sleep, swapBy = Infinity, warn = () => {} }) {
+  const first = await read();
+  if (first?.hashAtPublished === undefined) return undefined;
+  if (first.hashAtPublished !== null) return first.hashAtPublished === label.tipHash ? "same" : "rollback";
+  if (now() + CONFIRM_DELAY_MS > swapBy) { warn(`GET /block/${label.height} returned 404 but no time is left to confirm it; not a rollback this run`); return "unconfirmed"; }
+  await sleep(CONFIRM_DELAY_MS);
+  const second = await read();
+  if (typeof second?.hashAtPublished === "string" && second.hashAtPublished !== label.tipHash) return "rollback";
+  const below = (r) => Number.isSafeInteger(r?.maxHeight) && r.maxHeight < label.height;
+  if (second?.hashAtPublished === null && below(first) && below(second)) return "rollback";
+  warn(`ROLLBACK NOT CONFIRMED: GET /block/${label.height} returned 404, but on the re-read /health maxHeight was ${second?.maxHeight ?? "unknown"} (first read ${first.maxHeight ?? "unknown"}) and the block is ${second?.hashAtPublished === label.tipHash ? "there with the published hash" : "not confirmed missing"}; refusing the rollback`);
+  return "unconfirmed";
+}
+
 // Publishes one snapshot as asset `name` if it is newer. publishAsset never
 // deletes anything: copies it leaves behind are this keeper's next-/prev-
 // copies, which repairAndCleanup installs (when the name is missing or broken)
@@ -330,7 +374,7 @@ async function listWithin(github, tag, { untilMs, now }) {
 // missing name or is refused. From the first aside request until the name is
 // held again, all calls share MISSING_NAME_BUDGET_MS. The swap is not started
 // after `swapBy`, so it can finish or roll back before the job is killed.
-export async function publishAsset({ github, tag, name, bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity, liveHashAt }) {
+export async function publishAsset({ github, tag, name, bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity, liveHashAt, liveChain }) {
   // S2-1: the live chain's hash at a published height above the snapshot (only
   // read when the published label has a tip hash and the snapshot is lower).
   const liveFor = async (asset) => {
@@ -339,12 +383,20 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
     try { return await liveHashAt(label.height); }
     catch (error) { warn(`could not read the live block at height ${label.height} (${error instanceof Error ? error.message : String(error)})`); return undefined; }
   };
+  // With `liveChain`, the 404 guard (retry-then-confirm, confirmLiveChain).
+  const verdictFor = async (asset) => {
+    const label = parseLabel(asset?.label);
+    if (!liveChain || !label?.tipHash || !snapshot.tipHash || snapshot.height >= label.height) return undefined;
+    try { return await confirmLiveChain({ label, read: () => liveChain(label.height), now, sleep, swapBy, warn }); }
+    catch (error) { warn(`could not read the live chain at height ${label.height} (${error instanceof Error ? error.message : String(error)})`); return undefined; }
+  };
+  const decideLive = async (asset) => (liveChain ? { liveVerdict: await verdictFor(asset) } : { liveHashAtPublished: await liveFor(asset) });
   // A call made after the run deadline (for example after a snapshot download
   // that overran it) starts no request at all.
   if (now() > swapBy) return { published: false, reason: "run deadline reached before the listing; left for the next run" };
   let release = await github.release(tag);
   let current = release.assets.find((asset) => asset.name === name) ?? null;
-  const first = decidePublish({ snapshot, asset: current, expectedGenesis, requestStartedMs, nowMs: now(), liveHashAtPublished: await liveFor(current) });
+  const first = decidePublish({ snapshot, asset: current, expectedGenesis, requestStartedMs, nowMs: now(), ...(await decideLive(current)) });
   if (!first.publish) return { published: false, upToDate: first.upToDate === true, reason: first.reason };
   if (now() > swapBy) return { published: false, reason: "run deadline reached before the upload; left for the next run" };
   // Low-2 (#1177): the counter never goes down, even when an unlabeled asset or
@@ -380,7 +432,7 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
   }
   const latest = release.assets.find((asset) => asset.name === name) ?? null;
   if ((latest?.id ?? null) !== (current?.id ?? null)) {
-    const again = decidePublish({ snapshot, asset: latest, expectedGenesis, requestStartedMs, nowMs: now(), liveHashAtPublished: await liveFor(latest) });
+    const again = decidePublish({ snapshot, asset: latest, expectedGenesis, requestStartedMs, nowMs: now(), ...(await decideLive(latest)) });
     if (!again.publish) {
       if (!isCompleteAsset(latest)) warn(`${name} is now held by an incomplete asset (state ${latest?.state}, ${latest?.size} bytes), probably an upload in progress; keeping the upload ${temp.name ?? temp.id} for the next cycle to repair`);
       return { published: false, upToDate: again.upToDate === true && isCompleteAsset(latest), reason: kept(`another keeper published first: ${again.reason}`) };
@@ -704,6 +756,9 @@ function highestRollbackCounter(assets, name) {
   let highest = 0;
   for (const asset of assets) {
     if (asset.name !== name && parseKeeperAssetName(asset.name)?.finalName !== name) continue;
+    // I2 (#1177 review): only a complete copy with a valid label counts, so an
+    // empty or failed upload with a huge rollbacks= cannot block repair.
+    if (!isCompleteAsset(asset)) continue;
     highest = Math.max(highest, parseLabel(asset.label)?.rollbackCounter ?? 0);
   }
   return highest;
@@ -980,18 +1035,28 @@ export async function fetchLiveHashAt({ fetchImpl, gateway, height }) {
   return block.hash;
 }
 
-export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity, fetch: fetchOptions = {}, liveHashAt = (height) => fetchLiveHashAt({ fetchImpl, gateway, height }) }) {
+// The live chain for the 404 guard: /health maxHeight and the hash at
+// `height` (null on 404).
+export async function fetchLiveChain({ fetchImpl, gateway, height }) {
+  const health = await fetchImpl(`${gateway}/health`, { signal: AbortSignal.timeout(30_000) });
+  const body = JSON.parse((await readCapped(health, MAX_HEALTH_BYTES)).toString("utf8"));
+  const maxHeight = Number.isSafeInteger(body?.maxHeight) ? body.maxHeight : undefined;
+  const hashAtPublished = await fetchLiveHashAt({ fetchImpl, gateway, height });
+  return { maxHeight, hashAtPublished };
+}
+
+export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity, fetch: fetchOptions = {}, liveHashAt = (height) => fetchLiveHashAt({ fetchImpl, gateway, height }), liveChain = (height) => fetchLiveChain({ fetchImpl, gateway, height }) }) {
   const { snapshot, bytes, requestStartedMs } = await fetchSnapshotWithRetry({ fetchImpl, gateway, expectedGenesis, now, stateSecret, sleep, warn, until: swapBy, ...fetchOptions });
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   // A download that ended past the deadline starts neither publication
   // (publishAsset also refuses to start after swapBy).
-  const main = await publishAsset({ github, tag, name: "state.enc", bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep, swapBy, liveHashAt });
+  const main = await publishAsset({ github, tag, name: "state.enc", bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep, swapBy, liveHashAt, liveChain });
   // The state.enc result stands even when the per-genesis copy fails.
   // The per-genesis copy is not started once the state.enc call overran the deadline.
   let copy;
   if (now() > swapBy) copy = { published: false, reason: "run deadline reached; left for the next run" };
   else {
-    try { copy = await publishAsset({ github, tag, name: perGenesisName(snapshot.genesis), bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep, swapBy, liveHashAt }); }
+    try { copy = await publishAsset({ github, tag, name: perGenesisName(snapshot.genesis), bytes, snapshot, expectedGenesis, requestStartedMs, now, log, warn, sleep, swapBy, liveHashAt, liveChain }); }
     catch (error) {
       warn(`publishing ${perGenesisName(snapshot.genesis)} failed: ${error instanceof Error ? error.message : String(error)}`);
       copy = { published: false, reason: "failed" };
@@ -1024,7 +1089,7 @@ export async function keepAlive({ fetchImpl, gateway, signal }) {
 // fetched (once per built height), so short serving windows after each gateway
 // build are not missed.
 export async function runKeeper(options) {
-  const { fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn, error: reportError = warn, watchIntervalMs = null, watchMinGapMs = WATCH_MIN_GAP_MS, fetch: fetchOptions = {}, lag = null, lagSampleIntervalMs = LAG_SAMPLE_INTERVAL_MS } = options;
+  const { fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn, error: reportError = warn, publish: runCycle = publishCycle, watchIntervalMs = null, watchMinGapMs = WATCH_MIN_GAP_MS, fetch: fetchOptions = {}, lag = null, lagSampleIntervalMs = LAG_SAMPLE_INTERVAL_MS } = options;
   const stats = { cycles: 0, published: 0, notNewer: 0, refused: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null, authenticationFailures: 0, watchTriggers: 0, rollbacks: 0 };
   // Opt-in (main() turns it on): the durable lag and publish trail alarms.
   const monitor = lag ? createLagMonitor({ ...lag, now, error: reportError }) : null;
@@ -1098,7 +1163,7 @@ export async function runKeeper(options) {
       // download or upload starts then.
       if (now() >= deadline) { warn("run deadline reached during repair; skipping publication"); break; }
       try {
-        const result = await publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, now, log, warn, sleep, swapBy: deadline, fetch: fetchOptions });
+        const result = await runCycle({ fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, now, log, warn, sleep, swapBy: deadline, fetch: fetchOptions });
         stats.lastHeight = result.height;
         if (monitor && (result.published || result.upToDate)) monitor.notePublished(result.height);
         if (result.published) { stats.published += 1; stats.lastPublishedHeight = result.height; log(`snapshot sha256 ${result.sha256} size ${result.size}`); }

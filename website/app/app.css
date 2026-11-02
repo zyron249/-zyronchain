@@ -231,4 +231,6 @@ details.collapsible[open] > summary { margin-bottom: 10px; }
 /* Lookalike-address comparison: differing characters are marked. */
 .lookalike-row { margin: 6px 0; }
 .lookalike-row .address-raw { display: block; }
+.signed-to { min-width: 0; max-width: 100%; }
+.signed-to .address-raw { display: block; max-width: 100%; min-width: 0; box-sizing: border-box; margin-top: 4px; white-space: normal; }
 .address-raw mark { background: var(--bad); color: #fff; border-radius: 2px; padding: 0 1px; }
