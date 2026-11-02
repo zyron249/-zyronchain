@@ -1767,3 +1767,110 @@ test("runKeeper starts watch-triggered cycles at most once per WATCH_MIN_GAP_MS"
   const triggered = snapshots.slice(1);
   for (let i = 1; i < triggered.length; i += 1) assert.ok(triggered[i] - triggered[i - 1] >= 2, `cycles at ${triggered.join(",")}`);
 });
+
+// S2-1 (Red Team session 2): after an operator rollback the live chain is at or
+// below the published height on another branch. Before the fix every such
+// snapshot was "not newer" (the PoC in the report); now it is a rollback.
+const TIP_A = "a".repeat(64);
+const TIP_B = "b".repeat(64);
+function chainSnapshot(height, tipHash, hashes = {}) {
+  return { height, genesis: GENESIS, tipHash, hashAt: (h) => (h === height ? tipHash : hashes[h]) };
+}
+
+test("S2-1 labels carry the tip hash and rollback counter and still parse old labels", () => {
+  assert.equal(formatLabel(13045, GENESIS, { tipHash: TIP_A, rollbackCounter: 2 }), `state snapshot height=13045 genesis=${GENESIS} tip=${TIP_A} rollbacks=2`);
+  assert.deepEqual(parseLabel(formatLabel(13045, GENESIS, { tipHash: TIP_A, rollbackCounter: 2 })), { height: 13045, genesis: GENESIS, tipHash: TIP_A, rollbackCounter: 2 });
+  assert.deepEqual(parseLabel(formatLabel(13045, GENESIS)), { height: 13045, genesis: GENESIS });
+  assert.equal(parseLabel(`state snapshot height=5 genesis=${GENESIS} tip=${TIP_A}`), null);
+});
+
+test("S2-1 PoC: a rolled-back live chain at or below the published height is republished, not 'not newer'", () => {
+  const asset = { label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 0 }) };
+  for (const height of [12966, 13000, 13399]) {
+    const d = decideReplace({ snapshot: chainSnapshot(height, TIP_B), asset, expectedGenesis: GENESIS, requestStartedMs: T0, liveHashAtPublished: null });
+    assert.equal(d.publish, true, `height ${height}`);
+    assert.equal(d.fork, true);
+    assert.equal(d.rollbackCounter, 1);
+    assert.notEqual(d.upToDate, true);
+  }
+  // Same height, different tip: a fork, detected from the snapshot itself.
+  const same = decideReplace({ snapshot: chainSnapshot(13400, TIP_B), asset, expectedGenesis: GENESIS, requestStartedMs: T0 });
+  assert.equal(same.fork, true);
+  // Higher snapshot on the other branch: also a rollback, not a plain height bump.
+  const higher = decideReplace({ snapshot: chainSnapshot(13401, TIP_B, { 13400: TIP_B }), asset, expectedGenesis: GENESIS, requestStartedMs: T0 });
+  assert.equal(higher.fork, true);
+  assert.equal(higher.rollbackCounter, 1);
+});
+
+test("S2-1 the same chain keeps the monotonic rules and carries the counter", () => {
+  const asset = { label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 3 }) };
+  const up = decideReplace({ snapshot: chainSnapshot(13401, TIP_B, { 13400: TIP_A }), asset, expectedGenesis: GENESIS, requestStartedMs: T0 });
+  assert.deepEqual([up.publish, up.fork, up.rollbackCounter], [true, undefined, 3]);
+  const same = decideReplace({ snapshot: chainSnapshot(13400, TIP_A), asset, expectedGenesis: GENESIS, requestStartedMs: T0 });
+  assert.deepEqual([same.publish, same.upToDate], [false, true]);
+  const lower = decideReplace({ snapshot: chainSnapshot(13390, TIP_B), asset, expectedGenesis: GENESIS, requestStartedMs: T0, liveHashAtPublished: TIP_A });
+  assert.deepEqual([lower.publish, lower.upToDate], [false, true]);
+  // A lower snapshot whose chain cannot be checked is refused (not "up to date").
+  const unknown = decideReplace({ snapshot: chainSnapshot(13390, TIP_B), asset, expectedGenesis: GENESIS, requestStartedMs: T0 });
+  assert.deepEqual([unknown.publish, unknown.upToDate === true], [false, false]);
+});
+
+test("S2-1 publishAsset republishes the live chain after a rollback and labels the new tip", async () => {
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 0 }), state: "uploaded", size: 100_000 }] });
+  const asked = [];
+  const result = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: chainSnapshot(12970, TIP_B), expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, sleep: async () => {}, liveHashAt: async (h) => { asked.push(h); return null; } });
+  assert.deepEqual(asked.slice(0, 1), [13400]);
+  assert.equal(result.published, true);
+  assert.equal(result.fork, true);
+  assert.equal(result.rollbackCounter, 1);
+  assert.deepEqual(parseLabel(state.assets.find((asset) => asset.name === "state.enc").label), { height: 12970, genesis: GENESIS, tipHash: TIP_B, rollbackCounter: 1 });
+});
+
+test("S2-1 a detected rollback fails the run as an alert", () => {
+  assert.equal(exitCodeFor({ published: 1, notNewer: 0, genesisMismatches: 0, authenticationFailures: 0, rollbacks: 1 }), 1);
+  assert.equal(exitCodeFor({ published: 1, notNewer: 0, genesisMismatches: 0, authenticationFailures: 0, rollbacks: 0 }), 0);
+});
+
+// #1177 Security Medium-1 (PoC repair-reversal.mjs): after a rollback republish
+// the abandoned asset must never become a restorable backup.
+test("#1177 M-1 a rollback moves the abandoned asset aside outside the keeper pattern and repair never reinstalls it", async () => {
+  let t = T0;
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 0 }), state: "uploaded", size: 100_000, updated_at: new Date(T0).toISOString() }], now: () => t });
+  const quiet = { log() {}, warn() {}, sleep: async () => {} };
+  const r = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: chainSnapshot(12970, TIP_B), expectedGenesis: GENESIS, requestStartedMs: t, now: () => t, ...quiet, liveHashAt: async () => null });
+  assert.equal(r.fork, true);
+  const aside = state.assets.find((asset) => asset.id === 7);
+  assert.match(aside.name, /^rolledback-\d{13}-[0-9a-f]{8}\.state\.enc$/);
+  assert.equal(parseKeeperAssetName(aside.name), null);
+  for (const h of [12990, 13010, 13030]) { t += 10 * 60_000; await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: chainSnapshot(h, TIP_B, { 12970: TIP_B, 12990: TIP_B, 13010: TIP_B }), expectedGenesis: GENESIS, requestStartedMs: t, now: () => t, ...quiet }); }
+  t += 31 * 60_000;
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => t, ...quiet });
+  Object.assign(state.assets.find((asset) => asset.name === "state.enc"), { size: 0 });
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => t, ...quiet });
+  const installed = parseLabel(state.assets.find((asset) => asset.name === "state.enc").label);
+  assert.equal(installed.tipHash, TIP_B, "repair installs a copy of the live branch");
+  assert.ok(state.assets.some((asset) => asset.id === 7), "the abandoned asset is kept as evidence");
+});
+
+test("#1177 M-1 repair skips copies from before the newest rollback", async () => {
+  const { github, state } = fakeGitHub({ assets: [
+    { id: 1, name: keeperAssetName("prev", "state.enc", T0 - 3_600_000), label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 0 }), state: "uploaded", size: 100_000 },
+    { id: 2, name: keeperAssetName("prev", "state.enc", T0 - 3_000_000), label: formatLabel(13010, GENESIS, { tipHash: TIP_B, rollbackCounter: 1 }), state: "uploaded", size: 100_000 },
+    { id: 3, name: "state.enc", label: formatLabel(13030, GENESIS, { tipHash: TIP_B, rollbackCounter: 1 }), state: "uploaded", size: 0 }
+  ] });
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 2);
+});
+
+test("#1177 L-2 the rollback counter is carried forward without a tip and over an unlabeled asset", async () => {
+  assert.deepEqual(parseLabel(formatLabel(5, GENESIS, { rollbackCounter: 4 })), { height: 5, genesis: GENESIS, rollbackCounter: 4 });
+  const { github, state } = fakeGitHub({ assets: [
+    { id: 7, name: "state.enc", label: "", state: "uploaded", size: 100_000, updated_at: new Date(T0 - 600_000).toISOString() },
+    { id: 8, name: keeperAssetName("prev", "state.enc", T0 - 900_000), label: formatLabel(100, GENESIS, { tipHash: TIP_A, rollbackCounter: 2 }), state: "uploaded", size: 100_000 }
+  ] });
+  const warnings = [];
+  const r = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn: (line) => warnings.push(line), sleep: async () => {} });
+  assert.equal(r.published, true);
+  assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc").label).rollbackCounter, 2);
+  assert.ok(warnings.some((line) => /unlabeled/.test(line)));
+});
