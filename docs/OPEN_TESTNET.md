@@ -194,10 +194,9 @@ validators produce those heights again with different blocks.
 
 **What wallet users see.** The tip height drops back to `durableHeight` and then climbs again.
 Balances, nonces and transfers that were only in blocks above `durableHeight` (`durable: false`) can
-disappear. Anything that was `durable: true` is kept. A missing transfer is still validly signed, so
-anyone holding a copy can re-broadcast it on the new chain, and it may come back without you sending it.
-Before you send it again, check `/nonce` and your balance: if the nonce has already moved past it or the
-balance already reflects it, do not re-send, or you may pay twice. [PENDING SECURITY REVIEW]
+disappear. Anything that was `durable: true` is kept. A missing transfer is still validly signed and has no expiry: it is bound to this chain and to its sender nonce, and anyone holding a copy (it was served publicly in the rolled-back blocks) can re-broadcast it, so it may come back without you sending it. It stays valid until a transaction with that nonce is included. Before sending again, check `/nonce` and your balance. If the nonce has already moved past the transfer's nonce, or your balance already reflects it, it was re-included: do not re-send. Otherwise, re-broadcast the original signed transaction, or sign the new one with the **same nonce** as the original (your wallet does this when it reads the nonce from `/nonce`). Only one transaction per nonce can be included, so the original and your re-send cannot both land. Never sign the payment again at a higher nonce while the original is still unconfirmed; if someone re-broadcasts the original, both are valid and you pay twice. A re-send at the same nonce while the original is pending is refused as "Conflicting sender nonce" unless it pays a higher fee rate, which replaces the original.
+
+Incoming transfers can disappear too; a payment you received above `durableHeight` is not final until it is `durable: true`.
 
 **What operators see.** Followers with the durable cap on only ever received blocks up to
 `durableHeight`, so they keep their chain and continue from it. `/health` shows `durableHeight`
