@@ -909,6 +909,46 @@ export function createValidatorSupervisor({ baseMs = VALIDATOR_RESTART_BASE_MS, 
 export function withSupervisorStatus(validators, supervisor) {
   return validators.map((v) => ({ ...v, ...supervisor.status(v.name) }));
 }
+// Validator self-reported memory (via the preload above) for GET /health.
+// One sample per validator (bounded); older than staleMs reads as null.
+export const VALIDATOR_MEMORY_PRELOAD = fileURLToPath(new URL("./open-testnet/validator-memory-preload.cjs", import.meta.url));
+export const VALIDATOR_MEMORY_STALE_MS = 120_000;
+const VALIDATOR_MEMORY_FIELDS = ["heapUsed", "heapTotal", "rss", "external", "arrayBuffers"];
+export function maxOldSpaceMbFromFlags(flags) {
+  for (const flag of flags) { const m = /^--max-old-space-size=(\d+)$/.exec(flag); if (m) return Number(m[1]); }
+  return null;
+}
+export function createValidatorMemoryTracker({ staleMs = VALIDATOR_MEMORY_STALE_MS, now = Date.now, maxNames = 16 } = {}) {
+  const samples = new Map();
+  const caps = new Map();
+  const toMb = (bytes) => Math.round((bytes / 1048576) * 10) / 10;
+  return {
+    // A (re)started validator: record its cap and drop the old sample.
+    started(name, maxOldSpaceMb) {
+      if (!caps.has(name) && caps.size >= maxNames) return;
+      caps.set(name, Number.isSafeInteger(maxOldSpaceMb) ? maxOldSpaceMb : null); samples.delete(name);
+    },
+    // Ignores anything that is not a well-formed report.
+    message(name, msg) {
+      if (!caps.has(name) || !msg || typeof msg !== "object" || msg.type !== "zyron-validator-memory") return false;
+      const sample = {};
+      for (const field of VALIDATOR_MEMORY_FIELDS) { const v = msg[field]; if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 2 ** 45) return false; sample[field] = v; }
+      samples.set(name, { atMs: now(), ...sample });
+      return true;
+    },
+    status(name) {
+      const s = samples.get(name);
+      const fresh = s && now() - s.atMs <= staleMs && now() >= s.atMs;
+      const out = { maxOldSpaceMb: caps.get(name) ?? null };
+      for (const field of VALIDATOR_MEMORY_FIELDS) out[`${field}Mb`] = fresh ? toMb(s[field]) : null;
+      out.memoryReportedAt = fresh ? new Date(s.atMs).toISOString() : null;
+      return out;
+    }
+  };
+}
+export function withValidatorMemory(validators, tracker) {
+  return validators.map((v) => ({ ...v, ...tracker.status(v.name) }));
+}
 export class SnapshotBuildAbortedError extends Error {
   constructor() { super("snapshot build aborted"); this.name = "SnapshotBuildAbortedError"; this.code = "aborted"; }
 }
@@ -1679,6 +1719,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   }
 
   const supervisor = createValidatorSupervisor();
+  const validatorMemory = createValidatorMemoryTracker();
   function startValidator(name) {
     const index = VALIDATOR_NAMES.indexOf(name);
     const args = [dist("cli.js"), "node", "--genesis", genesisPath, "--data", join(dir, `data-${name}`),
@@ -1690,7 +1731,11 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       "--rpc-rate-limit-exempt", "127.0.0.1"];
     for (const [i, port] of ports.entries()) if (i !== index) args.push("--peer", `http://127.0.0.1:${port}`);
     if (relay) for (const address of relay.addresses()) args.push("--peer", `http://127.0.0.1:${mailboxPort}/x/${address}`);
-    const child = spawn(process.execPath, [...validatorNodeFlags(), ...args], { cwd: l1Root, stdio: ["ignore", "pipe", "pipe"] });
+    const flags = validatorNodeFlags();
+    const child = spawn(process.execPath, [...flags, "--require", VALIDATOR_MEMORY_PRELOAD, ...args], { cwd: l1Root, stdio: ["ignore", "pipe", "pipe", "ipc"], serialization: "json" });
+    validatorMemory.started(name, maxOldSpaceMbFromFlags(flags));
+    child.on("message", (msg) => { validatorMemory.message(name, msg); });
+    child.channel?.unref?.();
     const prefix = `[${name}] `;
     for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => {
       if (log) process.stdout.write(chunk.toString("utf8").split("\n").filter(Boolean).map((l) => prefix + l).join("\n") + "\n");
@@ -2086,7 +2131,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const heights = up.map((v) => v.height);
           // Quorum of the ACTIVE validator set (follows validator_update).
           const { ok, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, activeSetRejected } = activeSetTracker.evaluate(statuses);
-          const validators = withSupervisorStatus(statuses.map(({ activeSet: _activeSet, ...rest }) => rest), supervisor);
+          const validators = withValidatorMemory(withSupervisorStatus(statuses.map(({ activeSet: _activeSet, ...rest }) => rest), supervisor), validatorMemory);
           if (ok) everReady = true;
           // Until the validators first reach a quorum, liveness stays 200
           // "starting" while start-up progresses (bounded by the stall window
