@@ -727,6 +727,18 @@ await test('ZYRON NODE wallet link: exact template only, expiry enforced, proof 
   core.wipe(entropy, account.privateKey);
 });
 
+await test('malformed own address: assertOwnAccount gives a clear message before sendWarnings throws (#1143)', async () => {
+  const account = await core.deriveAccount(core.phraseToEntropy(core.entropyToPhrase(new Uint8Array(16).fill(7))));
+  assert.equal(core.assertOwnAccount(account), account);
+  const book = core.emptyBook();
+  const receiver = 'ZYN' + 'ab'.repeat(20);
+  for (const bad of [{ address: 'ZYN123' }, { address: '' }, { address: null }, {}, null, { address: 'ZYN' + 'g'.repeat(40) }]) {
+    assert.throws(() => core.assertOwnAccount(bad), (e) => e.message === core.OWN_ADDRESS_INVALID_MESSAGE);
+    if (bad) assert.throws(() => core.sendWarnings({ receiver, amountAtoms: 1 }, bad, book), 'core still fails closed on its own');
+  }
+  assert.doesNotMatch(core.OWN_ADDRESS_INVALID_MESSAGE, /receiver|recipient/i, 'the message is about this wallet, not the receiver');
+});
+
 await test('static scan: app code makes no network requests and has no eval/inline code; CSP is strict; SRI is complete', () => {
   const html = readFileSync(join(app, 'index.html'), 'utf8');
   for (const file of ['app.js', 'zyron-wallet-core.js', 'vendor/noble-scure.js', 'vendor/qr.js']) {

@@ -194,6 +194,9 @@
   function wipeAccount(account) {
     if (account && account.privateKey) core.wipe(account.privateKey);
   }
+  // The core's sendWarnings throws on a malformed own address (#1143, fail closed). Check it first so the
+  // user sees what is wrong instead of a receiver-format error. Nothing is signed when this throws.
+  function ownAccount() { return core.assertOwnAccount(state.account); }
   function errorText(error) { return t('msgError', { message: error && error.message ? error.message : String(error) }); }
   function checkPasswordPair(first, second, target) {
     const strength = core.passwordStrength(first);
@@ -666,9 +669,12 @@
   // ---------------- transfer: build -> review -> deliberate confirm -> sign locally ----------------
   $('[data-tx-to]').addEventListener('input', () => {
     const value = $('[data-tx-to]').value.trim();
+    const preview = $('[data-tx-to-preview]');
+    preview.textContent = '';
     if (!value) return setMessage('[data-tx-check]', '', '');
     try {
       const parsed = core.parseAddressInput(value);
+      preview.textContent = core.displayAddress(parsed.canonical);
       setMessage('[data-tx-check]', parsed.checksumVerified ? t('msgChecksumOk') : t('msgChecksumNone'), parsed.checksumVerified ? 'good' : '');
     } catch (error) {
       setMessage('[data-tx-check]', error.message, 'bad');
@@ -711,7 +717,7 @@
       if (!$('[data-tx-to]').value.trim()) throw new Error(t('msgReceiverFirst'));
       core.parseAddressInput($('[data-tx-to]').value);
       if (!$('[data-tx-amount]').value.trim()) throw new Error(t('msgAmountFirst'));
-      const warnings = core.sendWarnings({ receiver: $('[data-tx-to]').value, amountAtoms: core.zynToAtoms($('[data-tx-amount]').value) }, state.account, state.book || core.emptyBook());
+      const warnings = core.sendWarnings({ receiver: $('[data-tx-to]').value, amountAtoms: core.zynToAtoms($('[data-tx-amount]').value) }, ownAccount(), state.book || core.emptyBook());
       const blocking = warnings.find((w) => w.blocking);
       if (blocking) throw new Error(blocking.message);
       const unsigned = core.buildTransfer({
@@ -907,7 +913,7 @@
     if (!state.account) return lock();
     try {
       const input = { name: $('[data-contact-name]').value, address: $('[data-contact-address]').value };
-      if (core.parseAddressInput(input.address).canonical === state.account.address) throw new Error("This is your own address. Save another person's address.");
+      if (core.parseAddressInput(input.address).canonical === core.parseAddressInput(ownAccount().address).canonical) throw new Error("This is your own address. Save another person's address.");
       const book = state.editingContact ? core.updateContact(state.book, state.editingContact, input) : core.addContact(state.book, input);
       await persistBook(book);
       setMessage('[data-contact-result]', state.editingContact ? 'Contact updated.' : 'Contact added.', 'good');
