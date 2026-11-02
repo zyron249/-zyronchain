@@ -1131,14 +1131,14 @@ test("the scheduled workflow keeps least privilege, one active run, a bounded jo
   const active = workflow.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
   assert.match(active, /^on:\n  schedule:\n    - cron: '[^']+'\n  workflow_dispatch:/m);
   assert.match(active, /^permissions: \{\}$/m, "no workflow-level permissions");
-  assert.deepEqual([...active.matchAll(/^\s+permissions:\n\s+(\S.*)$/gm)].map((match) => match[1]), ["contents: write"], "only the job gets contents: write");
+  assert.deepEqual([...active.matchAll(/^\s+permissions:\n\s+(\S.*)$/gm)].map((match) => match[1]), ["contents: write", "actions: write"], "only the keep job gets contents: write and only the chain job gets actions: write");
   assert.match(active, /^concurrency:\n  group: open-testnet-snapshot-keeper\n  cancel-in-progress: false$/m, "exactly one active run; never cancel a run mid-upload");
   const timeout = Number(/^\s+timeout-minutes: (\d+)$/m.exec(active)?.[1]);
   const runMinutes = Number(/RUN_MINUTES: \$\{\{ inputs\.run_minutes \|\| '(\d+)' \}\}/.exec(active)?.[1]);
   assert.ok(timeout <= 360 && runMinutes > 0 && runMinutes + 10 <= timeout, `job timeout ${timeout} must exceed the run length ${runMinutes} and stay within 360`);
   assert.match(active, /EXPECTED_GENESIS: e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad$/m);
   assert.match(active, /if: github\.repository == 'zyron249\/-zyronchain' && github\.ref == 'refs\/heads\/main'$/m, "only main can run the keeper: a dispatched branch must never get the state secret");
-  assert.deepEqual([...active.matchAll(/\$\{\{\s*([^}]*?)\s*\}\}/g)].map((match) => match[1]).sort(), ["github.repository", "github.token", "inputs.run_minutes || '340'", "secrets.ZYRON_TESTNET_STATE_SECRET"], "no secrets and no untrusted expression in a script");
+  assert.deepEqual([...active.matchAll(/\$\{\{\s*([^}]*?)\s*\}\}/g)].map((match) => match[1]).sort(), ["github.repository", "github.repository", "github.token", "github.token", "inputs.run_minutes || '340'", "inputs.run_minutes || '340'", "needs.keep.result", "secrets.ZYRON_TESTNET_STATE_SECRET"], "no secrets and no untrusted expression in a script");
   // M2 (owner-approved 2026-10-22): exactly one secret, the state secret, only as a step env value.
   assert.deepEqual([...active.matchAll(/secrets\.[A-Za-z0-9_]+/g)].map((match) => match[0]), ["secrets.ZYRON_TESTNET_STATE_SECRET"], "the state secret is the only secret");
   assert.match(active, /^          ZYRON_TESTNET_STATE_SECRET: \$\{\{ secrets\.ZYRON_TESTNET_STATE_SECRET \}\}$/m, "the state secret is passed only as the keeper step's env");
@@ -1146,6 +1146,41 @@ test("the scheduled workflow keeps least privilege, one active run, a bounded jo
   for (const use of active.matchAll(/uses: (\S+)/g)) assert.match(use[1], /^actions\/(checkout|setup-node)@[0-9a-f]{40}$/, `unpinned or unexpected action ${use[1]}`);
   assert.match(active, /persist-credentials: false/);
   assert.match(active, /run: node \.github\/scripts\/open-testnet-snapshot-keeper\.mjs$/m);
+});
+
+test("the chain job self-dispatches on main only, with its own minimal permission and runaway guards", async () => {
+  const workflow = await readFile(new URL("../workflows/open-testnet-snapshot-keeper.yml", import.meta.url), "utf8");
+  const active = workflow.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+  const chain = active.slice(active.indexOf("\n  chain:\n"));
+  const keep = active.slice(active.indexOf("\n  keep:\n"), active.indexOf("\n  chain:\n"));
+  assert.ok(chain.length > 20 && keep.length > 20, "keep and chain jobs exist");
+  assert.match(chain, /^    needs: keep$/m);
+  assert.match(chain, /^    if: always\(\) && github\.repository == 'zyron249\/-zyronchain' && github\.ref == 'refs\/heads\/main' && \(github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'\)$/m);
+  assert.match(chain, /^    permissions:\n      actions: write$/m);
+  assert.doesNotMatch(chain, /secrets\.|contents: write|uses:/, "the chain job gets no secret, no contents write and no actions");
+  assert.doesNotMatch(keep, /actions: write/, "the keep job does not get actions: write");
+  assert.match(chain, /dispatches" -f ref=main$/m, "dispatches only main");
+  assert.match(chain, /MIN_RUN_MINUTES: '30'/, "crash-loop guard");
+  assert.match(chain, /MAX_DISPATCHES_PER_DAY: '\d+'/, "daily chain cap");
+  for (const status of ["queued", "pending", "waiting", "requested", "in_progress"]) assert.match(chain, new RegExp(`for status in [^\\n]*\\b${status}\\b`), `skips when a ${status} run exists`);
+  assert.match(chain, /select\(\.id != \$GITHUB_RUN_ID\)/, "ignores only the current run");
+  // Red Team S2-5: only a successful keep run chains, and manual dispatches count toward the cap.
+  assert.match(chain, /case "\$KEEP_RESULT" in success\|failure\) ;; \*\) skip/, "needs.keep.result must be success or failure");
+  assert.match(chain, /case "\$conclusion" in success\|failure\) ;; \*\) skip/, "the keep job's API conclusion must be success or failure");
+  assert.match(chain, /runs\?event=workflow_dispatch&created=>=\$since&per_page=100" --jq '\.total_count'/, "every workflow_dispatch run counts toward the cap");
+  assert.doesNotMatch(chain, /triggering_actor/, "the cap does not filter by actor");
+  // Security Low-1: duration comes from the keep job, not the run.
+  assert.match(chain, /actions\/runs\/\$GITHUB_RUN_ID\/jobs/);
+  assert.doesNotMatch(chain, /run_started_at/);
+  // Security Low-2: every skip warns, and a stale published snapshot warns.
+  assert.match(chain, /skip\(\) \{ echo "::warning title=Keeper not chained::\$1"; exit 0; \}/);
+  const run = chain.slice(chain.indexOf("run: |"));
+  assert.doesNotMatch(run.replace(/skip\(\) \{[^}]*\}/, "").replace(/stop\(\) \{ echo "::error [^}]*\}/, ""), /exit 0/, "no silent skip path");
+  assert.match(chain, /MAX_SNAPSHOT_AGE_MINUTES: '\d+'/);
+  // Patron I3: a stale or unreadable published snapshot is an error annotation, not only a warning.
+  assert.match(chain, /::error title=Stale published snapshot::state\.enc was last updated/);
+  assert.match(chain, /::error title=Stale published snapshot::could not read state\.enc/);
+  assert.doesNotMatch(chain, /::warning title=Stale published snapshot/);
 });
 
 // ---- Codex round 4 at 72276b7: the missing-name window and repair installs ----
@@ -1720,6 +1755,127 @@ test("keeper workflow enables the snapshot watch with a short fetch timeout and 
   assert.ok(value("WATCH_INTERVAL_SECONDS") >= 30 && value("WATCH_INTERVAL_SECONDS") <= 60);
   assert.ok(value("SNAPSHOT_TIMEOUT_SECONDS") > 0 && value("SNAPSHOT_TIMEOUT_SECONDS") < 300);
   assert.ok(value("SNAPSHOT_RETRIES") >= 1);
+});
+
+// ---- Security Medium-1 on #1171: chain decisions, run against a fake `gh` ----
+// Extracts the chain step's bash script from the workflow and runs it with a
+// fake `gh` that answers from fixtures (and applies --jq with the real jq), so
+// the decisions below exercise the exact script the workflow runs.
+async function chainScript() {
+  const workflow = await readFile(new URL("../workflows/open-testnet-snapshot-keeper.yml", import.meta.url), "utf8");
+  const chain = workflow.slice(workflow.indexOf("\n  chain:\n"));
+  const lines = chain.slice(chain.indexOf("        run: |\n") + "        run: |\n".length).split("\n");
+  const body = [];
+  for (const line of lines) { if (line.trim() && !line.startsWith("          ")) break; body.push(line.slice(10)); }
+  return body.join("\n");
+}
+
+const RUN_ID = 999;
+function iso(ms) { return new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z"); }
+
+async function runChain({ keepResult = "success", job, prior = [], active = 0, dispatches = 0, runMinutes = "340" }) {
+  const { mkdtemp, writeFile, chmod, readFile: rf } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { execFile } = await import("node:child_process");
+  const dir = await mkdtemp(join(tmpdir(), "chain-"));
+  const now = Date.now();
+  const fixtures = {
+    release: { assets: [{ name: "state.enc", updated_at: iso(now - 5 * 60_000) }] },
+    jobs: { jobs: [{ name: "keep", ...job }] },
+    completed: { workflow_runs: [{ id: RUN_ID, conclusion: job.conclusion }, ...prior.map((conclusion, i) => ({ id: i + 1, conclusion }))] },
+    active: { workflow_runs: [{ id: RUN_ID }, ...Array.from({ length: active }, (_, i) => ({ id: 500 + i }))] },
+    dispatches: { total_count: dispatches, workflow_runs: [] }
+  };
+  for (const [name, value] of Object.entries(fixtures)) await writeFile(join(dir, `${name}.json`), JSON.stringify(value));
+  await writeFile(join(dir, "gh"), `#!/usr/bin/env bash
+set -euo pipefail
+shift # api
+method=GET; url=""; jqexpr="."
+while [ $# -gt 0 ]; do case "$1" in -X) method=$2; shift 2;; --jq) jqexpr=$2; shift 2;; -f) shift 2;; *) url=$1; shift;; esac; done
+echo "$method $url" >> "${dir}/calls.log"
+if [ "$method" = POST ]; then exit 0; fi
+case "$url" in
+  *releases/tags/*) f=release;;
+  */runs/${RUN_ID}/jobs*) f=jobs;;
+  *status=completed*) f=completed;;
+  *status=in_progress*) f=active;;
+  *status=*) f=none;;
+  *event=workflow_dispatch*) f=dispatches;;
+  *) echo "unexpected $url" >&2; exit 9;;
+esac
+if [ "$f" = none ]; then echo '{"workflow_runs":[]}' | jq -r "$jqexpr"; else jq -r "$jqexpr" "${dir}/$f.json"; fi
+`);
+  await chmod(join(dir, "gh"), 0o755);
+  await writeFile(join(dir, "calls.log"), "");
+  const env = {
+    PATH: `${dir}:${process.env.PATH}`, GITHUB_RUN_ID: String(RUN_ID), REPO: "o/r", KEEP_RESULT: keepResult, RUN_MINUTES: runMinutes,
+    WORKFLOW_FILE: "open-testnet-snapshot-keeper.yml", TAG: "open-testnet-state", MAX_SNAPSHOT_AGE_MINUTES: "30", MIN_RUN_MINUTES: "30",
+    FULL_LOOP_SLACK_MINUTES: "15", MAX_CONSECUTIVE_FAILURES: "3", MAX_DISPATCHES_PER_DAY: "10"
+  };
+  const script = await chainScript();
+  const out = await new Promise((resolve, reject) => execFile("bash", ["-c", script], { env }, (error, stdout, stderr) => (error ? reject(Object.assign(error, { stdout, stderr })) : resolve(stdout))));
+  const calls = await rf(join(dir, "calls.log"), "utf8");
+  return { out, dispatched: /^POST .*\/dispatches$/m.test(calls) };
+}
+
+const keepJob = (conclusion, startedAt, completedAt) => ({ conclusion, started_at: startedAt, completed_at: completedAt });
+
+test("chain: run 41369177821 (keep failed at the final step after ~5h40m) still chains", async () => {
+  const { out, dispatched } = await runChain({ keepResult: "failure", job: keepJob("failure", "2026-11-02T04:08:33Z", "2026-11-02T09:48:40Z"), prior: ["success"] });
+  assert.ok(dispatched, out);
+  assert.match(out, /::warning title=Keeper failed at the end of a full loop::keep job failed after 340 min \(failure 1 in a row\)/);
+});
+
+test("chain: a successful full run chains", async () => {
+  const { out, dispatched } = await runChain({ job: keepJob("success", "2026-11-02T04:08:33Z", "2026-11-02T09:48:40Z") });
+  assert.ok(dispatched, out);
+  assert.doesNotMatch(out, /::warning|::error/);
+});
+
+test("chain: a 3rd failed keep run in a row stops the chain with an error", async () => {
+  const { out, dispatched } = await runChain({ keepResult: "failure", job: keepJob("failure", "2026-11-02T04:08:33Z", "2026-11-02T09:48:40Z"), prior: ["failure", "cancelled", "failure", "success"] });
+  assert.ok(!dispatched, out);
+  assert.match(out, /::error title=Keeper chain stopped::3 failed keep runs in a row/);
+});
+
+test("chain: a 2nd failure in a row still chains", async () => {
+  const { out, dispatched } = await runChain({ keepResult: "failure", job: keepJob("failure", "2026-11-02T04:08:33Z", "2026-11-02T09:48:40Z"), prior: ["failure", "success", "failure"] });
+  assert.ok(dispatched, out);
+  assert.match(out, /failure 2 in a row/);
+});
+
+test("chain: a cancelled keep run skips with a warning", async () => {
+  for (const keepResult of ["cancelled", "skipped"]) {
+    const { out, dispatched } = await runChain({ keepResult, job: keepJob("cancelled", "2026-11-02T04:08:33Z", "2026-11-02T09:48:40Z") });
+    assert.ok(!dispatched, out);
+    assert.match(out, new RegExp(`::warning title=Keeper not chained::keep job result is ${keepResult}`));
+  }
+  const { out, dispatched } = await runChain({ keepResult: "success", job: keepJob("cancelled", "2026-11-02T04:08:33Z", "2026-11-02T09:48:40Z") });
+  assert.ok(!dispatched, out);
+  assert.match(out, /::warning title=Keeper not chained::keep job conclusion is cancelled/);
+});
+
+test("chain: a short crash skips with a warning, failed or not", async () => {
+  for (const conclusion of ["failure", "success"]) {
+    const { out, dispatched } = await runChain({ keepResult: conclusion, job: keepJob(conclusion, "2026-11-02T04:08:33Z", "2026-11-02T04:20:00Z") });
+    assert.ok(!dispatched, out);
+    assert.match(out, new RegExp(`::warning title=Keeper not chained::keep job ${conclusion} after 11 min \\(< 30\\); possible crash loop`));
+  }
+});
+
+test("chain: a failure well before the end of the loop skips with a warning", async () => {
+  const { out, dispatched } = await runChain({ keepResult: "failure", job: keepJob("failure", "2026-11-02T04:00:00Z", "2026-11-02T06:00:00Z") });
+  assert.ok(!dispatched, out);
+  assert.match(out, /::warning title=Keeper not chained::keep job failed after 120 min \(< 325, not a full loop\)/);
+});
+
+test("chain: another active run or the daily dispatch cap skips with a warning", async () => {
+  const full = keepJob("success", "2026-11-02T04:08:33Z", "2026-11-02T09:48:40Z");
+  let result = await runChain({ job: full, active: 1 });
+  assert.ok(!result.dispatched); assert.match(result.out, /::warning title=Keeper not chained::1 other run/);
+  result = await runChain({ job: full, dispatches: 10 });
+  assert.ok(!result.dispatched); assert.match(result.out, /::warning title=Keeper not chained::10 workflow_dispatch runs/);
 });
 
 test("keeper caps the /health body it reads at MAX_HEALTH_BYTES", async () => {
