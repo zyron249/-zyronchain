@@ -6,11 +6,13 @@ This timeout does not skip or filter security, consensus, finality, recovery, mi
 
 If a legitimate regression needs more than ten minutes, the test should be decomposed or moved to a dedicated bounded evidence workflow rather than weakening the canonical timeout.
 
-## Devnet CI jobs and the known protocol-v1 flake
+## Devnet CI jobs and the known protocol-v1 F-01 stall
+
+Note: the v1 failures are not test flakiness. Protocol v1 has the known F-01 round-timer split that stalls finality; the fix is protocol v6. PR #1146 makes the CLI refuse protocol-1 chains (tracked in #1147). After #1146 merges, the `local-devnet` job moves to `npm run devnet:check:v1-legacy` (TODO in `.github/workflows/l1.yml`). The job stays informational and not required.
 
 | Job (check name) | Command | Protocol | Required check | Expected result |
 |---|---|---|---|---|
-| `local-devnet (protocol v1, informational, known F-01 flake)` | `npm run devnet:check` | v1 | no, informational | Known flake, about 50% pass (54/118 job attempts, 2026-10-13..16) |
+| `local-devnet (protocol v1, informational, F-01 round-timer stall, fixed in v6)` | `npm run devnet:check` | v1 | no, informational | Known flake, about 50% pass (54/118 job attempts, 2026-10-13..16) |
 | `local-devnet-v6` | `npm run devnet:check:v6` | v6 | no; candidate (owner setting) | Pass: 117/118 job attempts over 98 runs, 2026-10-13..16; the one failure was a genuine TypeScript build break on a dependency PR |
 
 `local-devnet` runs the two-validator chain on protocol v1, which still has the legacy F-01 consensus split (see [`V6_SAFETY_PROOF_OBLIGATIONS.md`](V6_SAFETY_PROOF_OBLIGATIONS.md) and the F-01 entries in [`L1_OPERATIONS_RUNBOOK.md`](L1_OPERATIONS_RUNBOOK.md)). Whether a run passes depends on which validator starts its round timer first. A controlled A/B on the same CI image gave 13/27 passes before the F-01 fix and 12/27 after, which is no statistical difference: the F-01 change did not cause it, and only activating v6 removes it. The fix lives in protocol v6, which `local-devnet-v6` exercises.
@@ -28,7 +30,7 @@ The job's last step, `scripts/classify-devnet-v1-result.mjs`, runs after the dev
 2. `last-status` shows both validators at the same height H with the same tip.
 3. Both validator logs show the protocol-v1 round-skip quorum failing at height H+1, and neither validator finalized a block above H.
 
-That failure gets a warning annotation "Known protocol-v1 flake (F-01), not a regression". Any other failure gets an error annotation "NOT the known F-01 flake" and the classify step fails as well. This includes a timeout caused by a wrong balance or nonce, a chain that kept finalizing, diverged validators, or missing validator logs. A "success" without the devnet summary is treated the same way. A pass gets a notice that the job is informational. Each outcome is also written to the job summary, and on failure the step prints the last 200 lines of both validator logs so the stall can be analysed from the job log. Neither devnet job uses `continue-on-error`: a v1 failure stays visible as a failed informational job instead of being hidden. `l1/test/devnet-v1-informational-ci.test.ts` pins the classifier and these workflow properties.
+That failure gets a warning annotation "Protocol-v1 F-01 round-timer stall (fixed in v6), not a regression". Any other failure gets an error annotation "NOT the F-01 round-timer stall" and the classify step fails as well. This includes a timeout caused by a wrong balance or nonce, a chain that kept finalizing, diverged validators, or missing validator logs. A "success" without the devnet summary is treated the same way. A pass gets a notice that the job is informational. Each outcome is also written to the job summary, and on failure the step prints the last 200 lines of both validator logs so the stall can be analysed from the job log. Neither devnet job uses `continue-on-error`: a v1 failure stays visible as a failed informational job instead of being hidden. `l1/test/devnet-v1-informational-ci.test.ts` pins the classifier and these workflow properties.
 
 Recommendation (P1-04): make `local-devnet-v6` a required check. That is a branch-protection setting the owner controls; this repository does not change it.
 
