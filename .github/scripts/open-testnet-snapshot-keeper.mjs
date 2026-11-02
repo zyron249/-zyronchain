@@ -839,6 +839,11 @@ export const LAG_MAX_SAMPLES = 1000;
 export const LAG_SAMPLE_INTERVAL_MS = 45_000;
 export const LAG_MIN_SPACING_MS = 40_000;
 export const LAG_MAX_UNREADABLE = 5;
+// Follow-up (Security Low-1): a durableHeight drop resets the buffer only when
+// larger than this; more than LAG_MAX_RESETS resets within the stale window
+// raise 'flapping'.
+export const LAG_RESET_DROP_BLOCKS = 20;
+export const LAG_MAX_RESETS = 3;
 
 export function detectPublishTrail(samples, { maxTrail = LAG_DEFAULTS.maxLag, windowMs = LAG_DEFAULTS.staleMinutes * 60_000, now } = {}) {
   let since = null;
@@ -860,7 +865,7 @@ const safeIntOrNull = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null);
 
 // L2: every option must be a whole number in range; refuse to start otherwise.
 export function validateLagOptions(options = {}) {
-  const spec = { maxLag: [LAG_DEFAULTS.maxLag, 0, 1_000_000], consecutive: [LAG_DEFAULTS.consecutive, 1, 1000], staleMinutes: [LAG_DEFAULTS.staleMinutes, 1, 10_000], maxTrail: [LAG_DEFAULTS.maxLag, 0, 1_000_000], maxUnreadable: [LAG_MAX_UNREADABLE, 1, 1000], maxSamples: [LAG_MAX_SAMPLES, 10, 100_000], minSpacingMs: [LAG_MIN_SPACING_MS, 0, 3_600_000] };
+  const spec = { maxLag: [LAG_DEFAULTS.maxLag, 1, 1_000_000], consecutive: [LAG_DEFAULTS.consecutive, 1, 1000], staleMinutes: [LAG_DEFAULTS.staleMinutes, 1, 10_000], maxTrail: [LAG_DEFAULTS.maxLag, 1, 1_000_000], resetDropBlocks: [LAG_RESET_DROP_BLOCKS, 0, 1_000_000], maxUnreadable: [LAG_MAX_UNREADABLE, 1, 1000], maxSamples: [LAG_MAX_SAMPLES, 10, 100_000], minSpacingMs: [LAG_MIN_SPACING_MS, 0, 3_600_000] };
   const out = {};
   for (const [name, [fallback, min, max]] of Object.entries(spec)) {
     const value = options[name] ?? fallback;
@@ -871,7 +876,7 @@ export function validateLagOptions(options = {}) {
 }
 
 export function createLagMonitor({ now, error = () => {}, detect = detectDurableLag, ...options }) {
-  const { maxLag, consecutive, staleMinutes, maxTrail, maxUnreadable, maxSamples, minSpacingMs } = validateLagOptions(options);
+  const { maxLag, consecutive, staleMinutes, maxTrail, maxUnreadable, maxSamples, minSpacingMs, resetDropBlocks } = validateLagOptions(options);
   const staleMs = staleMinutes * 60_000;
   const samples = [];
   const alarms = [];
@@ -890,7 +895,13 @@ export function createLagMonitor({ now, error = () => {}, detect = detectDurable
     error(message);
   };
   const clear = (reason) => { active[reason] = false; };
-  const reset = () => { samples.length = 0; stats.resets += 1; };
+  const resetTimes = [];
+  const reset = (ts) => {
+    samples.length = 0; stats.resets += 1;
+    resetTimes.push(ts);
+    while (resetTimes.length && resetTimes[0] < ts - staleMs) resetTimes.shift();
+    if (resetTimes.length > LAG_MAX_RESETS) raise("flapping", ts, `durable lag alarm: sample buffer reset ${resetTimes.length} times within ${staleMinutes} min (> ${LAG_MAX_RESETS}); durableHeight or chainId is flapping`);
+  };
   const checkUnreadable = (ts) => {
     const since = lastValidMs ?? startedMs;
     if (unreadable >= maxUnreadable) raise("unreadable", ts, `durable lag alarm: ${unreadable} unreadable /health reads in a row (>= ${maxUnreadable})`);
@@ -908,7 +919,7 @@ export function createLagMonitor({ now, error = () => {}, detect = detectDurable
       const ts = now();
       // Too close to the previous read (or the clock went back): not a new sample.
       if (lastAttemptMs !== null && ts < lastAttemptMs + minSpacingMs) {
-        if (ts < lastAttemptMs) { reset(); lastAttemptMs = ts; }
+        if (ts < lastAttemptMs) { reset(ts); lastAttemptMs = ts; }
         return null;
       }
       lastAttemptMs = ts;
@@ -924,7 +935,7 @@ export function createLagMonitor({ now, error = () => {}, detect = detectDurable
       checkUnreadable(ts);
       const id = typeof body.chainId === "string" ? body.chainId : undefined;
       const last = samples[samples.length - 1];
-      if ((chainId !== undefined && id !== chainId) || (last && durableHeight < last.durableHeight)) { reset(); published = null; }
+      if ((chainId !== undefined && id !== chainId) || (last && last.durableHeight - durableHeight > resetDropBlocks)) { reset(ts); published = null; }
       chainId = id;
       const lastBuiltHeight = safeIntOrNull(body?.snapshotCache?.lastBuiltHeight);
       const sample = { ts, height, durableHeight, lastBuiltHeight, publishedHeight: Math.max(published ?? 0, durableHeight) };
@@ -1143,7 +1154,7 @@ export function lagSummary(alarms) {
 // L2: LAG_* and PUBLISH_TRAIL_MAX_BLOCKS are whole numbers (/^\d+$/), checked
 // once at start-up together with every other lag option.
 export function lagOptionsFromEnv(env) {
-  const names = { maxLag: "LAG_MAX_BLOCKS", consecutive: "LAG_CONSECUTIVE", staleMinutes: "LAG_STALE_MINUTES", maxTrail: "PUBLISH_TRAIL_MAX_BLOCKS", maxUnreadable: "LAG_MAX_UNREADABLE" };
+  const names = { maxLag: "LAG_MAX_BLOCKS", consecutive: "LAG_CONSECUTIVE", staleMinutes: "LAG_STALE_MINUTES", maxTrail: "PUBLISH_TRAIL_MAX_BLOCKS", maxUnreadable: "LAG_MAX_UNREADABLE", resetDropBlocks: "LAG_RESET_DROP_BLOCKS" };
   const options = {};
   for (const [key, name] of Object.entries(names)) {
     const raw = env[name];
