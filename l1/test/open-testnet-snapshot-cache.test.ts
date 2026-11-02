@@ -338,7 +338,8 @@ test("worker: a crashed worker fails the build, is replaced, and the next build 
   try {
     await cache.refresh();
     assert.equal(cache.current(), undefined);
-    assert.match(cache.status().lastError, /snapshot worker exited \(code 3\)/);
+    assert.equal(cache.status().lastError, "worker_crashed");
+    assert.match(cache.lastError(), /snapshot worker exited \(code 3\)/);
     assert.equal(cache.status().building, false); assert.equal(builder.running(), false);
     height = 3;
     // The same builder starts a fresh worker, ships the whole history again and builds.
@@ -362,7 +363,8 @@ test("worker: a hung worker is terminated at the build timeout and the previous 
     const started = performance.now();
     await cache.refresh();
     assert.ok(performance.now() - started < 5_000);
-    assert.match(cache.status().lastError, /timed out after 300 ms/);
+    assert.equal(cache.status().lastError, "build_timeout");
+    assert.match(cache.lastError(), /timed out after 300 ms/);
     assert.equal(cache.status().building, false);
     assert.equal(cache.status().lastBuiltHeight, 1);
     assert.equal(cache.current().sealed.toString(), "old");
@@ -380,5 +382,80 @@ test("lastError is sanitised: secret and key-sized hex redacted, one line, bound
   assert.match(clean, /^boom \[redacted\] key \[redacted\] line2/);
   // The cache always stores a sanitised message.
   const cache = api.createSnapshotCache({ build: async () => { throw new Error(`bad ${"cd".repeat(40)}`); }, currentHeight: async () => 1, log: silent });
-  return cache.refresh().then(() => { assert.equal(cache.status().lastError, "bad [redacted]"); assert.equal(cache.status().lastBuiltHeight, null); assert.equal(cache.status().age, null); });
+  return cache.refresh().then(() => { assert.equal(cache.lastError(), "bad [redacted]"); assert.equal(cache.status().lastError, "build_failed"); assert.equal(cache.status().lastBuiltHeight, null); assert.equal(cache.status().age, null); });
+});
+
+// ---- Security Lows on #1161 --------------------------------------------------
+test("L-A: collectSnapshotBlocks passes the abort signal to readers and stops when aborted", async () => {
+  const { blocks, chainId, genesisHash } = syntheticChain(5);
+  const controller = new AbortController();
+  const seen: (AbortSignal | undefined)[] = [];
+  const readers = [{ name: "v1", read: async (from: number, limit: number, options: { signal?: AbortSignal } = {}) => {
+    seen.push(options.signal); controller.abort();
+    return blocks.slice(from - 1, from - 1 + Math.min(limit, 1));
+  } }];
+  const history = { chain: { genesisHash, height: 0, acceptBlock() { history.chain.height += 1; } }, blocks: [] as unknown[] };
+  await assert.rejects(api.collectSnapshotBlocks(readers, { tip: 5, tipHash: blocks[4]?.hash, chainId, genesisHash, history, pageSize: 1, signal: controller.signal }), (error: Error & { code?: string }) => error.code === "aborted");
+  assert.equal(seen[0], controller.signal);
+  assert.ok(history.blocks.length <= 1, `kept reading after abort (${history.blocks.length} blocks)`);
+  // Already aborted: no reader is called at all.
+  let calls = 0;
+  await assert.rejects(api.collectSnapshotBlocks([{ name: "v1", read: async () => { calls += 1; return []; } }], { tip: 1, tipHash: H(1), chainId, genesisHash, history: { chain: { genesisHash, height: 0 }, blocks: [] }, signal: AbortSignal.abort() }));
+  assert.equal(calls, 0);
+});
+
+test("L-A: the cache's build timeout aborts the signal its build received", async () => {
+  let aborted = false;
+  const cache = api.createSnapshotCache({ build: ({ signal }: { signal: AbortSignal }) => { signal.addEventListener("abort", () => { aborted = true; }); return new Promise(() => {}); }, currentHeight: async () => 1, log: silent, buildTimeoutMs: 30 });
+  await cache.refresh();
+  assert.equal(aborted, true); assert.equal(cache.status().lastError, "build_timeout");
+});
+
+test("L-B: /health lastError is a fixed code; the cache redacts its redact list and paths in the logged detail", async () => {
+  const secret = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0NTY3ODk=";
+  const lines: string[] = [];
+  const cache = api.createSnapshotCache({ build: async () => { throw new Error(`ENOENT: open '/srv/net/keys/founder.json' ${secret}`); }, currentHeight: async () => 1, log: (line: string) => lines.push(line), redact: [secret] });
+  await cache.refresh();
+  assert.equal(cache.status().lastError, "build_failed");
+  const detail = cache.lastError();
+  assert.ok(!detail.includes(secret)); assert.ok(!detail.includes("/srv/net")); assert.ok(!detail.includes("founder.json"));
+  assert.ok(lines.every((line) => !line.includes(secret) && !line.includes("/srv/net")));
+  assert.equal(api.sanitizeSnapshotError(new Error("open C:\\data\\keys\\v1.json failed")), "open [path] failed");
+  assert.equal(api.snapshotErrorCode(new api.SnapshotBuildTimeoutError(5)), "build_timeout");
+  assert.equal(api.snapshotErrorCode(new Error("snapshot history: no validator served a block 3 that passes finalized-block validation")), "history_unavailable");
+  assert.equal(api.snapshotErrorCode(Object.assign(new Error("x"), { code: "Bad Code!" })), "build_failed");
+});
+
+test("L-C: the worker has resource limits by default and streams the same bundle as sealSnapshot", { timeout: 60_000 }, async () => {
+  assert.ok(api.SNAPSHOT_WORKER_RESOURCE_LIMITS.maxOldGenerationSizeMb > 0);
+  assert.ok(api.SNAPSHOT_WORKER_RESOURCE_LIMITS.maxOldGenerationSizeMb < 512);
+  const { sealSnapshotStream } = await import(pathToFileURL(join(l1Root, "scripts", "open-testnet", "snapshot-seal.mjs")).href);
+  const { blocks, chainId } = syntheticChain(300);
+  const bundle = { format: "ZYRON-OPEN-TESTNET-STATE-V1", createdAtMs: 9, genesis: { chainId }, network: { a: 1 }, keys: { v1: H(2) }, blocks };
+  const sealed = await sealSnapshotStream(bundle, SECRET, { batchBytes: 1024 });
+  assert.deepEqual(api.openSnapshot(sealed, SECRET), bundle);
+  assert.ok(sealed.subarray(0, 28).equals(api.sealSnapshot(bundle, SECRET).subarray(0, 28)));
+});
+
+test("L-C: a worker that exceeds its heap limit fails the build with worker_out_of_memory, not the process", { timeout: 60_000 }, async () => {
+  const code = `import { parentPort } from "node:worker_threads"; const hog = []; parentPort.on("message", (m) => { if (m.type !== "build") return; for (;;) hog.push(new Array(1e5).fill({ x: Math.random() })); });`;
+  const builder = api.createSnapshotWorkerBuilder({ secret: SECRET, workerUrl: new URL(`data:text/javascript,${encodeURIComponent(code)}`), resourceLimits: { maxOldGenerationSizeMb: 32, maxYoungGenerationSizeMb: 4 } });
+  const cache = api.createSnapshotCache({ build: ({ signal }: { signal: AbortSignal }) => builder.build(buildInput(2), { signal }), currentHeight: async () => 2, log: silent });
+  try {
+    await cache.refresh();
+    assert.equal(cache.status().lastError, "worker_out_of_memory");
+    assert.equal(builder.running(), false);
+  } finally { builder.terminate(); }
+});
+
+test("L-D: a busy worker does not count toward the backoff", async () => {
+  let calls = 0;
+  const cache = api.createSnapshotCache({ build: async () => { calls += 1; if (calls === 1) throw new api.SnapshotWorkerBusyError(); return { sealed: Buffer.from("ok"), height: 1 }; }, currentHeight: async () => 1, log: silent });
+  await cache.refresh();
+  assert.equal(cache.failures(), 0); assert.equal(cache.status().lastError, null); assert.equal(cache.nextAttemptAtMs(), 0);
+  await cache.refresh();
+  assert.equal(calls, 2); assert.equal(cache.current().height, 1);
+  // A real failure still backs off.
+  const failing = api.createSnapshotCache({ build: async () => { throw new Error("boom"); }, currentHeight: async () => 1, log: silent });
+  await failing.refresh(); assert.equal(failing.failures(), 1);
 });
