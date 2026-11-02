@@ -1164,6 +1164,20 @@ test("the chain job self-dispatches on main only, with its own minimal permissio
   assert.match(chain, /MAX_DISPATCHES_PER_DAY: '\d+'/, "daily chain cap");
   for (const status of ["queued", "pending", "waiting", "requested", "in_progress"]) assert.match(chain, new RegExp(`for status in [^\\n]*\\b${status}\\b`), `skips when a ${status} run exists`);
   assert.match(chain, /select\(\.id != \$GITHUB_RUN_ID\)/, "ignores only the current run");
+  // Red Team S2-5: only a successful keep run chains, and manual dispatches count toward the cap.
+  assert.match(chain, /\[ "\$KEEP_RESULT" = "success" \] \|\| skip/, "needs.keep.result must be success");
+  assert.match(chain, /\[ "\$conclusion" = "success" \] \|\| skip/, "the keep job's API conclusion must be success");
+  assert.match(chain, /runs\?event=workflow_dispatch&created=>=\$since&per_page=100" --jq '\.total_count'/, "every workflow_dispatch run counts toward the cap");
+  assert.doesNotMatch(chain, /triggering_actor/, "the cap does not filter by actor");
+  // Security Low-1: duration comes from the keep job, not the run.
+  assert.match(chain, /actions\/runs\/\$GITHUB_RUN_ID\/jobs/);
+  assert.doesNotMatch(chain, /run_started_at/);
+  // Security Low-2: every skip warns, and a stale published snapshot warns.
+  assert.match(chain, /skip\(\) \{ echo "::warning title=Keeper not chained::\$1"; exit 0; \}/);
+  const run = chain.slice(chain.indexOf("run: |"));
+  assert.doesNotMatch(run.replace(/skip\(\) \{[^}]*\}/, ""), /exit 0/, "no silent skip path");
+  assert.match(chain, /MAX_SNAPSHOT_AGE_MINUTES: '\d+'/);
+  assert.match(chain, /::warning title=Stale published snapshot::state\.enc was last updated/);
 });
 
 // ---- Codex round 4 at 72276b7: the missing-name window and repair installs ----

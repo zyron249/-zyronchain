@@ -104,10 +104,14 @@ jobs:
   # workflow_dispatch events created with GITHUB_TOKEN still create workflow
   # runs (an exception to its no-recursion rule; see docs/OPEN_TESTNET.md
   # "Snapshot keepers"). Only this job gets actions: write, and it never sees
-  # the state secret. It skips when another run of this workflow is queued,
-  # pending, waiting or in progress, when this run lasted under 30 minutes (a
-  # crash loop), when the keep job was cancelled, and when 10 or more
-  # bot-dispatched runs were created in the last 24 hours.
+  # the state secret. It first warns when the published state.enc is older than
+  # MAX_SNAPSHOT_AGE_MINUTES. It chains only when the keep job succeeded (needs
+  # result and the jobs API conclusion), the keep job ran at least
+  # MIN_RUN_MINUTES (measured from its own started_at; shorter means a crash
+  # loop), no other run of this workflow is queued, pending, waiting or in
+  # progress, and fewer than MAX_DISPATCHES_PER_DAY workflow_dispatch runs
+  # (manual or chained) were created in the last 24 hours. Every skip emits a
+  # ::warning::.
   chain:
     needs: keep
     if: always() && github.repository == 'zyron249/-zyronchain' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
@@ -122,32 +126,39 @@ jobs:
           REPO: ${{ github.repository }}
           KEEP_RESULT: ${{ needs.keep.result }}
           WORKFLOW_FILE: open-testnet-snapshot-keeper.yml
+          TAG: open-testnet-state
+          MAX_SNAPSHOT_AGE_MINUTES: '30'
           MIN_RUN_MINUTES: '30'
           MAX_DISPATCHES_PER_DAY: '10'
         run: |
           set -euo pipefail
-          if [ "$KEEP_RESULT" = "cancelled" ] || [ "$KEEP_RESULT" = "skipped" ]; then
-            echo "keep job was $KEEP_RESULT; not chaining"; exit 0
+          skip() { echo "::warning title=Keeper not chained::$1"; exit 0; }
+          now=$(date -u +%s)
+          if asset=$(gh api "repos/$REPO/releases/tags/$TAG" --jq '[.assets[] | select(.name == "state.enc")][0].updated_at // empty' 2>/dev/null) && [ -n "$asset" ]; then
+            age=$(( (now - $(date -u -d "$asset" +%s)) / 60 ))
+            if [ "$age" -gt "$MAX_SNAPSHOT_AGE_MINUTES" ]; then
+              echo "::warning title=Stale published snapshot::state.enc was last updated ${age} min ago (> ${MAX_SNAPSHOT_AGE_MINUTES})"
+            else
+              echo "state.enc age: ${age} min"
+            fi
+          else
+            echo "::warning title=Stale published snapshot::could not read state.enc from release $TAG"
           fi
-          started=$(gh api "repos/$REPO/actions/runs/$GITHUB_RUN_ID" --jq '.run_started_at')
-          minutes=$(( ($(date -u +%s) - $(date -u -d "$started" +%s)) / 60 ))
-          if [ "$minutes" -lt "$MIN_RUN_MINUTES" ]; then
-            echo "this run lasted ${minutes} min (< ${MIN_RUN_MINUTES}); possible crash loop, not chaining"; exit 0
-          fi
+          [ "$KEEP_RESULT" = "success" ] || skip "keep job result is $KEEP_RESULT"
+          job=$(gh api "repos/$REPO/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" --jq '[.jobs[] | select(.name == "keep")][0] | "\(.conclusion) \(.started_at) \(.completed_at)"')
+          read -r conclusion started completed <<<"$job"
+          [ "$conclusion" = "success" ] || skip "keep job conclusion is $conclusion"
+          minutes=$(( ($(date -u -d "$completed" +%s) - $(date -u -d "$started" +%s)) / 60 ))
+          [ "$minutes" -ge "$MIN_RUN_MINUTES" ] || skip "keep job ran ${minutes} min (< ${MIN_RUN_MINUTES}); possible crash loop"
           others=0
           for status in queued pending waiting requested in_progress; do
             n=$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?status=$status&per_page=100" \
               --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID)] | length")
             others=$(( others + n ))
           done
-          if [ "$others" -gt 0 ]; then
-            echo "$others other run(s) of this workflow are active or waiting; not chaining"; exit 0
-          fi
+          [ "$others" -eq 0 ] || skip "$others other run(s) of this workflow are active or waiting"
           since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
-          recent=$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?event=workflow_dispatch&created=>=$since&per_page=100" \
-            --jq '[.workflow_runs[] | select(.triggering_actor.login == "github-actions[bot]")] | length')
-          if [ "$recent" -ge "$MAX_DISPATCHES_PER_DAY" ]; then
-            echo "$recent chained runs in the last 24 h (>= ${MAX_DISPATCHES_PER_DAY}); not chaining"; exit 0
-          fi
+          recent=$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?event=workflow_dispatch&created=>=$since&per_page=100" --jq '.total_count')
+          [ "$recent" -lt "$MAX_DISPATCHES_PER_DAY" ] || skip "$recent workflow_dispatch runs in the last 24 h (>= ${MAX_DISPATCHES_PER_DAY})"
           gh api -X POST "repos/$REPO/actions/workflows/$WORKFLOW_FILE/dispatches" -f ref=main
-          echo "dispatched the next keeper run on main (this run: ${minutes} min)"
+          echo "dispatched the next keeper run on main (keep job ran ${minutes} min)"
