@@ -31,6 +31,27 @@ test("memory report: gateway memoryUsage fields, validator RSS from /proc, one c
   assert.deepEqual(inMb, { gateway: { rss: 80, heapUsed: 1.5 }, snapshotChild: { running: true, maxRss: 2, lastBuildAt: "t" } });
 });
 
+test("memory report: totalRss from Pss, else RssAnon, VmRSS kept as a labelled reference", () => {
+  const status = "Name:\tnode\nVmRSS:\t  120000 kB\nRssAnon:\t   60000 kB\n";
+  const rollup = "00-ff ---p 0 00:00 0 [rollup]\nRss:  120000 kB\nPss:   70000 kB\n";
+  const read = (p: string) => (p.endsWith("smaps_rollup") ? rollup : status);
+  assert.deepEqual(mem.processMemoryBytes(7, read), { pss: 70000 * 1024, rssAnon: 60000 * 1024, vmRss: 120000 * 1024 });
+  const noRollup = mem.processMemoryBytes(7, (p: string) => { if (p.endsWith("smaps_rollup")) throw new Error("ENOENT"); return status; });
+  assert.equal(noRollup.pss, undefined); assert.equal(noRollup.rssAnon, 60000 * 1024);
+  assert.equal(mem.processMemoryBytes(7, () => { throw new Error("gone"); }), undefined);
+  assert.ok(Number.isFinite(mem.processMemoryBytes("self")?.vmRss));
+  const full = mem.processMemoryBytes(7, read);
+  assert.deepEqual(mem.residentMetric([full, full, null]), { key: "pss", label: "Pss" });
+  assert.deepEqual(mem.residentMetric([full, noRollup]), { key: "rssAnon", label: "RssAnon" });
+  assert.deepEqual(mem.residentMetric([{ vmRss: 1 }]), { key: "vmRss", label: "VmRSS" });
+  const MB = 1024 * 1024; const gateway = { rss: 90 * MB, heapUsed: 1, heapTotal: 1, external: 1, arrayBuffers: 1 };
+  const report = mem.memoryReport({ gateway, validators: { v1: 60 * MB, v2: null }, gatewayResident: 50 * MB, totalRssMetric: "Pss", vmRss: { gateway: 90 * MB, validators: { v1: 120 * MB, v2: null } } });
+  assert.equal(report.totalRss, 110 * MB); assert.equal(report.totalRssMetric, "Pss"); assert.equal(report.vmRss.total, 210 * MB);
+  assert.match(mem.formatMemoryLine(report), /^memory: total\(Pss\)=110\.0MB vmrss=210\.0MB gw rss=90\.0 /);
+  const inMb = mem.memoryReportMb(report);
+  assert.equal(inMb.totalRss, 110); assert.equal(inMb.totalRssMetric, "Pss"); assert.equal(inMb.vmRss.validators.v1, 120);
+});
+
 test("snapshot readiness gate: no quorum or a far-behind / rebuilding history defers the build", () => {
   const gate = api.snapshotBuildReadiness;
   assert.equal(gate({ quorumOk: false, tip: 100, historyHeight: 100 }), "node_not_ready");
