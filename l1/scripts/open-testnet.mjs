@@ -821,6 +821,20 @@ export async function readPublishedSnapshotTip(url, secret, { fetchImpl = fetch,
 }
 
 // Caps a follower status at the durable watermark.
+// While no validator answers (cold start, replay, restart), reads that need
+// the chain tip fail with a retryable 503 instead of a generic 500.
+export function nodeNotReadyError() {
+  return Object.assign(new Error("node not ready"), { statusCode: 503, retryAfterSeconds: 5 });
+}
+
+// Maps a gateway handler error to the reply: known errors keep their status
+// and message, unknown ones stay a generic 500.
+export function gatewayErrorReply(error) {
+  const code = Number.isSafeInteger(error?.statusCode) && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 500;
+  const headers = code === 503 && Number.isSafeInteger(error?.retryAfterSeconds) ? { "retry-after": String(error.retryAfterSeconds) } : {};
+  return { code, body: { error: code === 500 ? "internal error" : error.message }, headers };
+}
+
 export function capPeerStatus(status, watermark) {
   // Only the P2P identity/tip shape is served to followers, so a follower on
   // an older binary (strict four-key parser) keeps syncing; the fee hints stay
@@ -1362,7 +1376,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   async function chainStatus() {
     if (statusCache && Date.now() - statusCacheAt < 1_000) return statusCache;
     const [status, protocol] = await Promise.all([anyNode("/status"), anyNode("/protocol")]);
-    if (status.status !== 200) throw new Error("node not ready");
+    if (status.status !== 200) throw nodeNotReadyError();
     const nextProtocol = protocol.status === 200 ? protocol.body.nextVersion : 1;
     statusCache = {
       network: "testnet", valueBearing: false, notice: NOTICE, chainId, genesisHash: status.body.genesisHash,
@@ -1621,7 +1635,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           if (watermark && from > watermark.height) return sendJson(response, 404, { error: "no durable block at that height yet" }, PEER_RPC);
           const capped = watermark ? Math.min(limit, watermark.height - from + 1) : limit;
           const result = await anyNode(`/blocks?from=${from}&limit=${capped}`);
-          return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? { ...result.body, blocks: result.body.blocks.slice(0, capped) } : { error: "node unavailable" }, PEER_RPC);
+          const served = result.status === 200 && Array.isArray(result.body?.blocks);
+          return sendJson(response, served ? 200 : 502, served ? { ...result.body, blocks: result.body.blocks.slice(0, capped) } : { error: "node unavailable" }, PEER_RPC);
         }
         if (path === "/state/snapshot" && stateSecret) {
           const snapshotRate = limits.snapshot.take("global");
@@ -1650,7 +1665,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           } else { from = Number.parseInt(path.slice(7), 10); limit = 1; }
           if (!Number.isSafeInteger(from) || from < 1 || from > tip) return sendJson(response, 404, { error: "no such block" });
           const result = await anyNode(`/blocks?from=${from}&limit=${limit}`);
-          if (result.status !== 200) return sendJson(response, 502, { error: "node unavailable" });
+          if (result.status !== 200 || !Array.isArray(result.body?.blocks) || result.body.blocks.length === 0) return sendJson(response, 502, { error: "node unavailable" });
           const blocks = result.body.blocks.map((block) => ({ ...summarizeBlock(block), ...(watermark ? { durable: block.header.height <= watermark.height } : {}) }));
           return sendJson(response, 200, path === "/blocks" ? { network: "testnet", tip, blocks } : blocks[0]);
         }
@@ -1692,9 +1707,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       }
       return sendJson(response, 405, { error: "method not allowed" });
     } catch (error) {
-      const code = error?.statusCode ?? 500;
-      if (code === 500) console.error(`gateway error: ${error instanceof Error ? error.message : String(error)}`);
-      return sendJson(response, code, { error: code === 500 ? "internal error" : error.message });
+      const reply = gatewayErrorReply(error);
+      if (reply.code === 500) console.error(`gateway error: ${error instanceof Error ? error.message : String(error)}`);
+      return sendJson(response, reply.code, reply.body, reply.headers);
     }
   };
 
