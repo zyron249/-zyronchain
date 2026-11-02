@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import * as keeper from "./open-testnet-snapshot-keeper.mjs";
 import {
-  GITHUB_CALL_TIMEOUT_MS, cancellableSleep, SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, fetchSnapshot, formatLabel,
+  GITHUB_CALL_TIMEOUT_MS, cancellableSleep, classifyLiveChain, LAGGING_RETRY_DELAYS_MS, SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, fetchSnapshot, formatLabel,
   isCompleteAsset, keeperAssetName, parseKeeperAssetName, parseLabel, perGenesisName, publishAsset, publishCycle, readCapped, repairAndCleanup, runKeeper, validateSnapshot
 } from "./open-testnet-snapshot-keeper.mjs";
 
@@ -1873,4 +1873,67 @@ test("#1177 L-2 the rollback counter is carried forward without a tip and over a
   assert.equal(r.published, true);
   assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc").label).rollbackCounter, 2);
   assert.ok(warnings.some((line) => /unlabeled/.test(line)));
+});
+
+// #1177 follow-up: the 404 guard (block 1 hash in the label, lagging vs rollback).
+const BLOCK1 = "c".repeat(64);
+const OTHER_BLOCK1 = "d".repeat(64);
+const guardLabel = { height: 13400, genesis: GENESIS, tipHash: TIP_A, genesisHash: BLOCK1, rollbackCounter: 0 };
+
+test("404 guard: labels carry the block 1 hash", () => {
+  const text = formatLabel(13400, GENESIS, { tipHash: TIP_A, genesisHash: BLOCK1, rollbackCounter: 0 });
+  assert.deepEqual(parseLabel(text), guardLabel);
+});
+
+test("404 guard (a): another block 1 on the gateway is a rollback (fresh TEST genesis)", () => {
+  assert.equal(classifyLiveChain(guardLabel, { genesisHash: OTHER_BLOCK1, maxHeight: 5, hashAtPublished: undefined }), "rollback");
+  assert.equal(classifyLiveChain(guardLabel, { genesisHash: null, maxHeight: 0, hashAtPublished: undefined }), "rollback");
+});
+
+test("404 guard (b): same block 1 and a live tip below the published height is lagging, retried, then only a warning", async () => {
+  assert.equal(classifyLiveChain(guardLabel, { genesisHash: BLOCK1, maxHeight: 13399, hashAtPublished: undefined }), "lagging");
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(13400, GENESIS, { tipHash: TIP_A, genesisHash: BLOCK1, rollbackCounter: 0 }), state: "uploaded", size: 100_000 }] });
+  let checks = 0; const slept = []; const warnings = [];
+  const r = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { ...chainSnapshot(13390, TIP_B), genesisHash: BLOCK1 }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn: (line) => warnings.push(line), sleep: async (ms) => { slept.push(ms); }, liveChain: async () => { checks += 1; return { genesisHash: BLOCK1, maxHeight: 13399, hashAtPublished: undefined }; } });
+  assert.equal(checks, LAGGING_RETRY_DELAYS_MS.length + 1);
+  assert.deepEqual(slept, LAGGING_RETRY_DELAYS_MS);
+  assert.equal(r.published, false);
+  assert.notEqual(r.fork, true);
+  assert.ok(warnings.some((line) => /^LAGGING/.test(line)));
+  assert.equal(state.assets.length, 1, "nothing uploaded or renamed");
+});
+
+test("404 guard (b): a lagging gateway that catches up is checked normally", async () => {
+  const { github } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(13400, GENESIS, { tipHash: TIP_A, genesisHash: BLOCK1, rollbackCounter: 0 }), state: "uploaded", size: 100_000 }] });
+  let checks = 0;
+  const r = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { ...chainSnapshot(13390, TIP_B), genesisHash: BLOCK1 }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {}, liveChain: async () => (++checks < 2 ? { genesisHash: BLOCK1, maxHeight: 13399 } : { genesisHash: BLOCK1, maxHeight: 13405, hashAtPublished: TIP_A }) });
+  assert.deepEqual([r.published, r.upToDate], [false, true]);
+});
+
+test("404 guard (c): same block 1, live tip at or above the published height, missing or other block there is a rollback", async () => {
+  assert.equal(classifyLiveChain(guardLabel, { genesisHash: BLOCK1, maxHeight: 13400, hashAtPublished: null }), "rollback");
+  assert.equal(classifyLiveChain(guardLabel, { genesisHash: BLOCK1, maxHeight: 13500, hashAtPublished: TIP_B }), "rollback");
+  assert.equal(classifyLiveChain(guardLabel, { genesisHash: BLOCK1, maxHeight: 13500, hashAtPublished: TIP_A }), "same");
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(13400, GENESIS, { tipHash: TIP_A, genesisHash: BLOCK1, rollbackCounter: 0 }), state: "uploaded", size: 100_000 }] });
+  const r = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { ...chainSnapshot(13390, TIP_B), genesisHash: BLOCK1 }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {}, liveChain: async () => ({ genesisHash: BLOCK1, maxHeight: 13410, hashAtPublished: null }) });
+  assert.deepEqual([r.published, r.fork, r.rollbackCounter], [true, true, 1]);
+  assert.deepEqual(parseLabel(state.assets.find((asset) => asset.name === "state.enc").label), { height: 13390, genesis: GENESIS, tipHash: TIP_B, genesisHash: BLOCK1, rollbackCounter: 1 });
+});
+
+test("404 guard: an old label without genesisHash keeps the previous behavior and warns", async () => {
+  const old = { height: 13400, genesis: GENESIS, tipHash: TIP_A, rollbackCounter: 0 };
+  assert.equal(classifyLiveChain(old, { genesisHash: BLOCK1, maxHeight: 13399, hashAtPublished: null }), "rollback");
+  assert.equal(classifyLiveChain(old, { genesisHash: BLOCK1, maxHeight: 13500, hashAtPublished: TIP_A }), "same");
+  const { github } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 0 }), state: "uploaded", size: 100_000 }] });
+  const warnings = [];
+  const r = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { ...chainSnapshot(13390, TIP_B), genesisHash: BLOCK1 }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn: (line) => warnings.push(line), sleep: async () => {}, liveChain: async () => ({ genesisHash: BLOCK1, maxHeight: 13399, hashAtPublished: null }) });
+  assert.equal(r.fork, true);
+  assert.ok(warnings.some((line) => /no genesisHash/.test(line)));
+});
+
+test("I1: labels parse regardless of key order and refuse duplicates or unknown keys", () => {
+  const expected = { height: 13400, genesis: GENESIS, tipHash: TIP_A, genesisHash: BLOCK1, rollbackCounter: 2 };
+  assert.deepEqual(parseLabel(`state snapshot rollbacks=2 genesisHash=${BLOCK1} tip=${TIP_A} genesis=${GENESIS} height=13400`), expected);
+  assert.deepEqual(parseLabel(`state snapshot genesis=${GENESIS} height=7`), { height: 7, genesis: GENESIS });
+  for (const bad of [`state snapshot height=7 height=8 genesis=${GENESIS}`, `state snapshot height=7 genesis=${GENESIS} extra=1`, `state snapshot height=7 genesis=${GENESIS}  rollbacks=1`, `state snapshot height=7 genesis=${GENESIS} genesisHash=${BLOCK1} rollbacks=0`]) assert.equal(parseLabel(bad), null, bad);
 });
