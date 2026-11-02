@@ -857,6 +857,19 @@ export class SnapshotBuildTimeoutError extends Error {
 export class SnapshotWorkerBusyError extends Error {
   constructor() { super("snapshot worker is busy"); this.name = "SnapshotWorkerBusyError"; this.code = "busy"; }
 }
+// Validator heap cap. Measured locally (4 validators, 25 min): the live JS
+// heap after a full GC stays ~27 MB, but with no limit V8 keeps adding 256 KB
+// old-space pages of uncollected garbage, so each validator's RSS creeps up
+// ~0.3-0.6 MB/min. A bounded old generation makes V8 collect instead of grow.
+// ZYRON_VALIDATOR_MAX_OLD_MB overrides the default; 0 disables the flag.
+export const VALIDATOR_MAX_OLD_MB_DEFAULT = 64;
+export function validatorNodeFlags(env = process.env) {
+  const raw = env.ZYRON_VALIDATOR_MAX_OLD_MB;
+  if (raw === "0") return [];
+  const value = raw === undefined || raw === "" ? VALIDATOR_MAX_OLD_MB_DEFAULT : Number(raw);
+  const mb = Number.isInteger(value) && value >= 32 && value <= 4096 ? value : VALIDATOR_MAX_OLD_MB_DEFAULT;
+  return [`--max-old-space-size=${mb}`];
+}
 export class SnapshotBuildAbortedError extends Error {
   constructor() { super("snapshot build aborted"); this.name = "SnapshotBuildAbortedError"; this.code = "aborted"; }
 }
@@ -1542,7 +1555,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       "--rpc-rate-limit-exempt", "127.0.0.1"];
     for (const [i, port] of ports.entries()) if (i !== index) args.push("--peer", `http://127.0.0.1:${port}`);
     if (relay) for (const address of relay.addresses()) args.push("--peer", `http://127.0.0.1:${mailboxPort}/x/${address}`);
-    const child = spawn(process.execPath, args, { cwd: l1Root, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [...validatorNodeFlags(), ...args], { cwd: l1Root, stdio: ["ignore", "pipe", "pipe"] });
     const prefix = `[${name}] `;
     for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => {
       if (log) process.stdout.write(chunk.toString("utf8").split("\n").filter(Boolean).map((l) => prefix + l).join("\n") + "\n");
