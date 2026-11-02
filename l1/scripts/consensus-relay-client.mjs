@@ -6,12 +6,13 @@
 //
 //   node scripts/consensus-relay-client.mjs keygen --out <relay-key.hex>
 //   node scripts/consensus-relay-client.mjs run --gateway https://<host> --address ZYN... \
-//     --relay-key <relay-key.hex> --expected-genesis <hash> [--node http://127.0.0.1:9137] [--listen 19540] [--hosted 4]
+//     --relay-key <relay-key.hex> --expected-genesis <hash> [--node http://127.0.0.1:9137] [--listen 21400] [--hosted 4]
 // The local node then uses `--peer http://127.0.0.1:<listen>/h/<i>` for i = 0..hosted-1.
 import { createServer } from "node:http";
 import { chmod, open, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { openTestnetFixedPort } from "./open-testnet-ports.mjs";
 import { createRelayAuthHeader, relayPublicKey, RELAY_AUTH_HEADER, RELAY_CONSENSUS_PATHS, RELAY_READ_PATHS, RELAY_MAX_CONSENSUS_REQUEST_BYTES, RELAY_MAX_REPLY_BYTES } from "./open-testnet/consensus-relay.mjs";
 
 const l1Root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -119,7 +120,7 @@ async function main() {
   if (genesis.genesisHash !== expected) throw new Error(`gateway genesis ${genesis.genesisHash} does not match --expected-genesis; refusing`);
   const client = createRelayClient({ gateway, address, relayKey, chainId: genesis.genesis.chainId, genesisHash: genesis.genesisHash,
     nodeUrl: option(args, "--node", "http://127.0.0.1:9137"), hosted: Number(option(args, "--hosted", "4")) });
-  const port = await client.start(Number(option(args, "--listen", "19540")));
+  const port = await client.start(Number(option(args, "--listen", String(openTestnetFixedPort("consensus-relay-listen")))));
   console.log(`consensus relay client on 127.0.0.1:${port} for ${address}; gateway ${gateway}; genesis ${genesis.genesisHash}`);
 }
 

@@ -41,14 +41,38 @@ transactions practically forever.
   second). A parked transaction whose gap is filled before the TTL becomes
   ready and is not evicted by this policy. Ready transactions never expire
   under this policy.
+- **Parked response (Red Team S1 retest LOW-1):** `POST /tx` answers
+  `{ "txid", "status": "pending" }` for a ready transaction and
+  `{ "txid", "status": "parked", "waitingForNonce": K }` for a parked one,
+  where `K` is the first missing nonce. The gateways keep `accepted: true` and
+  `txid` and say "Parked, waiting for nonce K" instead of "Included in a coming
+  block (about 30 seconds)". `status` is a new field; clients that ignore it
+  are unaffected.
+- **Seen-expired cache (Red Team S1 retest LOW-2):** a parked transaction
+  evicted by the TTL is remembered by txid for 60 minutes
+  (`SEEN_EXPIRED_CACHE_TTL_MS`), at most 10,000 entries
+  (`SEEN_EXPIRED_CACHE_MAX_ENTRIES`, oldest dropped first). While remembered,
+  resubmitting the same signed transaction is refused with
+  `Transaction expired from this node's mempool while parked (nonce N); it is refused until nonce K is submitted first`
+  as long as it would be parked again. Once the gap closes (nonce `K` is
+  pending or confirmed) the same transaction is admitted normally.
+
+  Why a cache and not only "the gap must have closed": the gap check alone
+  needs no new state, but it would refuse the transaction forever if the
+  sender never fills the gap, with no record of why. Combining both keeps the
+  cache bounded and short-lived and never refuses a transaction that could be
+  included now. A newly signed transaction for the same nonce has a different
+  txid and is admitted (subject to the cap), which costs the sender a fresh
+  signature, so anyone who only holds the signed bytes cannot keep a parked
+  transaction alive.
 
 ## Limits
 
-- The TTL counts from admission to this node. A transaction relayed again by a
-  peer after eviction can be admitted again (with a new TTL).
+- The TTL counts from admission to this node. After the seen-expired cache
+  forgets a transaction (60 minutes, or when 10,000 newer evictions push it
+  out), a resubmission of it is admitted again with a new TTL. The cache is
+  per node and is lost on restart.
 - Parking is still possible up to the cap per address; the cap bounds, but
   does not remove, the cost of zero-fee parked transactions while no fee
   policy is active (see Red Team MEDIUM 2, handled separately).
-- Clients still receive "accepted" for a parked transaction; the response has
-  no queued/parked signal yet.
 - The policy is per node and is not enforced on other nodes or in blocks.

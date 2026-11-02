@@ -103,8 +103,10 @@ export class Mempool {
   get effectiveMinTransferFeeAtoms(): number { return this.minTransferFeeAtoms; }
   /** The exact fixed-fee-v1 transfer fee, or undefined when no fixed fee applies. */
   get fixedTransferFee(): number | undefined { return this.fixedTransferFeeAtoms; }
-  /** Node policy only: admission time per txid, in insertion (admission) order. */
-  /** Admission time per `sender:nonce` slot, in admission order; kept across replacement. */
+  /**
+   * Node policy only: admission time per `sender:nonce` slot (not per txid),
+   * in admission order; a same-nonce replacement keeps the slot's time.
+   */
   private readonly admittedAtMs = new Map<string, number>();
 
   constructor(
@@ -193,13 +195,29 @@ export class Mempool {
         throw new Error("Mempool full");
       }
       // A replacement keeps the original admission time and its position in
-      // admission order, so fee bumps cannot extend the parked TTL.
+      // admission order, so fee bumps cannot extend the parked TTL. The
+      // replacement is atomic: if a later capacity check refuses the incoming
+      // transaction, the original is restored unchanged.
       this.deleteTransaction(conflictingId, conflicting, true);
+      try {
+        this.insertAfterCapacity(tx, txBytes, nonceKey, admittedAtMs);
+      } catch (error) {
+        this.store(conflicting, conflictingId, nonceKey, transactionBytes(conflicting), admittedAtMs);
+        throw error;
+      }
+      return;
     } else if (this.maxPendingPerSender !== undefined &&
         (this.pendingBySender.get(tx.sender) ?? 0) >= this.maxPendingPerSender) {
       throw new Error("Per-sender mempool cap exceeded");
     }
+    this.insertAfterCapacity(tx, txBytes, nonceKey, admittedAtMs);
+  }
 
+  /**
+   * Capacity checks (possibly evicting one weaker entry), then the insert.
+   * Throws before any eviction when the transaction does not fit.
+   */
+  private insertAfterCapacity(tx: Transaction, txBytes: number, nonceKey: string, admittedAtMs: number): void {
     if (tx.kind === "mining_claim") {
       const totalCapacity = this.maxNonMiningSize + this.miningReserve;
       const configuredMiningCapacity = this.miningReserve > 0
@@ -231,10 +249,13 @@ export class Mempool {
       }
       this.deleteTransaction(eviction.txid, eviction.tx);
     }
+    this.store(tx, tx.txid, nonceKey, txBytes, admittedAtMs);
+  }
 
+  private store(tx: Transaction, txid: string, nonceKey: string, txBytes: number, admittedAtMs: number): void {
     const stored = structuredClone(tx);
-    this.byId.set(tx.txid, stored);
-    this.nonceIds.set(nonceKey, tx.txid);
+    this.byId.set(txid, stored);
+    this.nonceIds.set(nonceKey, txid);
     const originalAdmittedAtMs = this.admittedAtMs.get(nonceKey);
     this.admittedAtMs.set(nonceKey, originalAdmittedAtMs ?? admittedAtMs);
     this.adjustOccupancy(stored, 1, txBytes);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { buildCommit } from "../src/build-info.js";
 import test from "node:test";
 import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -972,6 +973,7 @@ test("finalized block write uncertainty fail-stops before live state advances", 
     // The fixture genesis is years old in wall-clock time, so the stalled
     // chain is also reported (F-04).
     assert.deepEqual(await readiness.json(), {
+      commit: buildCommit(),
       ready: false,
       height: 0,
       reasons: ["persistence-unhealthy", "stale-tip"]
@@ -1969,7 +1971,7 @@ test("RPC exposes liveness, readiness, and metrics while enforcing per-client re
     // the stalled chain (F-04); the 200 path is covered by f04-readiness-consensus.
     const readiness = await fetch(`${base}/readyz`);
     assert.equal(readiness.status, 503);
-    assert.deepEqual(await readiness.json(), { ready: false, height: 0, reasons: ["stale-tip"] });
+    assert.deepEqual(await readiness.json(), { ready: false, height: 0, reasons: ["stale-tip"], commit: buildCommit() });
 
     const metrics = await fetch(`${base}/metrics`);
     assert.equal(metrics.status, 200);

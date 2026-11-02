@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-labelledby="t">
+<title id="t">ZyronChain</title>
+<circle cx="512" cy="512" r="434" fill="#F9B700"/>
+<g fill="#FFFFFF" transform="translate(4 2)">
+<path d="M322 283H770L457 625H770L696 707H245L562 371H259Z"/>
+<rect x="414" y="193" width="66" height="90"/><rect x="526" y="193" width="66" height="90"/>
+<rect x="414" y="707" width="66" height="100"/><rect x="526" y="707" width="66" height="100"/>
+</g>
+</svg>

@@ -4,10 +4,11 @@
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
-import { assertDisjointPortWindows, EPHEMERAL_PORT_FLOOR, OPEN_TESTNET_PORT_WINDOWS } from "./helpers/open-testnet-ports.js";
+import { assertDisjointPortWindows, assertFixedPortsOutsideWindows, EPHEMERAL_PORT_FLOOR, OPEN_TESTNET_FIXED_PORTS, OPEN_TESTNET_PORT_WINDOWS } from "./helpers/open-testnet-ports.js";
 
 const roots = ["../../test/", "../../scripts/"].map((path) => new URL(path, import.meta.url));
 const claimPattern = /allocateValidatorBasePort\(\s*["']([^"']+)["']/g;
+const fixedClaimPattern = /openTestnetFixedPort\(\s*["']([^"']+)["']/g;
 const hardcodedBasePort = /\bbasePort\s*:\s*\d/;
 
 async function sources(): Promise<Array<{ file: string; text: string }>> {
@@ -39,6 +40,31 @@ test("each open-testnet port window is claimed by exactly one file and all windo
   }
   for (const [window, files] of owners) assert.equal(files.size, 1, `port window ${window} is claimed by more than one file: ${[...files].join(", ")}`);
   for (const window of Object.keys(OPEN_TESTNET_PORT_WINDOWS)) assert.ok(owners.has(window), `port window ${window} is registered but never claimed`);
+});
+
+test("each fixed open-testnet port is outside every window, below 32768, and claimed by exactly one file", async () => {
+  assertFixedPortsOutsideWindows();
+  for (const [name, port] of Object.entries(OPEN_TESTNET_FIXED_PORTS)) {
+    assert.ok(Number.isInteger(port) && port > 0 && port < EPHEMERAL_PORT_FLOOR, `${name} ${port} reaches ${EPHEMERAL_PORT_FLOOR}`);
+    for (const [window, [lo, hi]] of Object.entries(OPEN_TESTNET_PORT_WINDOWS)) assert.ok(port < lo || port >= hi, `${name} ${port} is inside ${window} [${lo}, ${hi})`);
+  }
+  assert.equal(OPEN_TESTNET_FIXED_PORTS["consensus-relay-listen"], 21_400);
+  assert.throws(() => assertFixedPortsOutsideWindows({ probe: 19_540 }), /inside window smoke/);
+  assert.throws(() => assertFixedPortsOutsideWindows({ probe: 40_000 }), /below 32768/);
+
+  const owners = new Map<string, Set<string>>();
+  for (const { file, text } of await sources()) {
+    for (const match of text.matchAll(fixedClaimPattern)) {
+      const name = match[1]!;
+      if (file.endsWith("open-testnet-ports.mjs") || file.endsWith("open-testnet-port-claims.test.ts")) continue;
+      assert.ok(Object.hasOwn(OPEN_TESTNET_FIXED_PORTS, name), `${file} claims unregistered fixed port ${name}`);
+      if (!owners.has(name)) owners.set(name, new Set());
+      owners.get(name)!.add(file);
+    }
+  }
+  for (const [name, files] of owners) assert.equal(files.size, 1, `fixed port ${name} is claimed by more than one file: ${[...files].join(", ")}`);
+  for (const name of Object.keys(OPEN_TESTNET_FIXED_PORTS)) assert.ok(owners.has(name), `fixed port ${name} is registered but never claimed`);
+  assert.deepEqual([...owners.get("consensus-relay-listen")!], ["scripts/consensus-relay-client.mjs"]);
 });
 
 test("no l1 test file passes a hardcoded validator base port", async () => {

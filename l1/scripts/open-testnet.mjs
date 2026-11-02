@@ -23,13 +23,20 @@
 //
 // <secret dir> holds plaintext TEST validator/faucet keys (mode 0600) and the
 // chain data. It must live outside the repository and must never be shared.
+import { formatMemoryLine, gatewayMemory, memoryReport, memoryReportMb, MEMORY_LOG_INTERVAL_MS, processRssBytes } from "./open-testnet/memory-report.mjs";
 import { activeSetSeedFromHistory, createActiveSetTracker } from "./gateway-quorum.mjs";
 import { createFaucetNonceTracker } from "./faucet-nonce.mjs";
+import { FaucetFeeFloorError, MAX_FAUCET_FEE_ATOMS, faucetTransferFeeAtoms } from "./faucet-fee.mjs";
+import { submitAcceptedView } from "./submit-view.mjs";
 import { allocateValidatorBasePort } from "./open-testnet-ports.mjs";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { fork, spawn } from "node:child_process";
+import { createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { gunzipSync } from "node:zlib";
+import { Worker } from "node:worker_threads";
+import { SNAPSHOT_MAGIC, sealSnapshot, snapshotKey } from "./open-testnet/snapshot-seal.mjs";
+import { verifySnapshotBlocks } from "./open-testnet/snapshot-verify.mjs";
+import { HistoryFileError, createHistoryFile } from "./open-testnet/history-file.mjs";
 import { createServer } from "node:http";
 import { createReadStream, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
@@ -43,9 +50,9 @@ const { ZyronChain } = await import(dist("chain.js"));
 const { ChainStore } = await import(dist("storage.js"));
 const { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } = await import(dist("crypto.js"));
 const { createProtocolUpgrade, createProtocolUpgradeApproval, createTransfer } = await import(dist("transaction.js"));
-const { blockHash, expectedValidator } = await import(dist("block.js"));
-const { merkleRoot } = await import(dist("merkle.js"));
+const { expectedValidator } = await import(dist("block.js"));
 const { canonicalJson } = await import(dist("codec.js"));
+const { buildCommit } = await import(dist("build-info.js"));
 const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist("tokenomics.js"));
 const { defaultPublicDistributionRelease } = await import(dist("public-distribution-release.js"));
 const { MEMPOOL_MIN_FEE_ENV, nodeTransferFeeAtoms, parseMempoolMinFeeAtoms } = await import(dist("mempool.js"));
@@ -470,44 +477,14 @@ const FAUCET_DRIP_ATOMS = 100 * ATOMS_PER_ZYN;
 // from this process, so the faucet (and the smoke transfer) pay that floor.
 // The open-testnet genesis has no fee policy. A bad value fails closed here.
 const NODE_TRANSFER_FEE_ATOMS = nodeTransferFeeAtoms(undefined, parseMempoolMinFeeAtoms(process.env[MEMPOOL_MIN_FEE_ENV], MEMPOOL_MIN_FEE_ENV));
-// The faucet and the smoke transfer pay max(own env floor, the target node's
-// GET /status minTransferFeeAtoms), read fresh for every drip. If the node's
-// floor cannot be read or is invalid, the drip FAILS LOUDLY (error-level log
-// and a clear 503 to the caller) instead of sending a transfer that would be
-// rejected.
-export class FaucetFeeFloorError extends Error {
-  constructor(detail) { super(`faucet cannot meet the node's minimum transfer fee: ${detail}`); this.name = "FaucetFeeFloorError"; this.code = "fee-floor"; }
-}
-// Upper bound on the fee the faucet (and the smoke transfer) will pay per
-// transfer: 1,000,000 atoms = 0.01 test ZYN, 1,000x the open-testnet floor of
-// 1,000 atoms and 1/10,000 of a 100 ZYN drip. A node /status reporting a
-// higher floor (or fixed fee) is treated as misconfigured: the drip fails with
-// fee-floor (503, error-level log) and no transfer is sent.
-export const MAX_FAUCET_FEE_ATOMS = 1_000_000;
-// When /status reports fixedTransferFeeAtoms (fee-v1 is active), the faucet
-// pays EXACTLY that fee and the floor logic is not used.
-export function faucetTransferFeeAtoms(envFloorAtoms, statusResponse) {
-  if (!statusResponse || statusResponse.status !== 200 || !statusResponse.body || typeof statusResponse.body !== "object") {
-    throw new FaucetFeeFloorError(`node /status unavailable (status ${statusResponse?.status ?? "none"})`);
-  }
-  const fixed = statusResponse.body.fixedTransferFeeAtoms;
-  if (fixed !== undefined && fixed !== null) {
-    if (typeof fixed !== "number" || !Number.isSafeInteger(fixed) || fixed < 0) throw new FaucetFeeFloorError("node /status has an invalid fixedTransferFeeAtoms");
-    if (fixed > MAX_FAUCET_FEE_ATOMS) throw new FaucetFeeFloorError(`node fixed fee of ${fixed} atoms exceeds MAX_FAUCET_FEE_ATOMS (${MAX_FAUCET_FEE_ATOMS})`);
-    return fixed;
-  }
-  const floor = statusResponse.body.minTransferFeeAtoms;
-  if (typeof floor !== "number" || !Number.isSafeInteger(floor) || floor < 0) throw new FaucetFeeFloorError("node /status has no valid minTransferFeeAtoms");
-  const fee = Math.max(envFloorAtoms, floor);
-  if (!Number.isSafeInteger(fee) || fee < floor) throw new FaucetFeeFloorError(`fee ${fee} atoms is below the node floor of ${floor} atoms`);
-  if (fee > MAX_FAUCET_FEE_ATOMS) throw new FaucetFeeFloorError(`fee floor of ${fee} atoms exceeds MAX_FAUCET_FEE_ATOMS (${MAX_FAUCET_FEE_ATOMS})`);
-  return fee;
-}
+// The faucet fee helper (max(own env floor, node /status floor), the exact
+// fixed fee under fee-v1, capped at MAX_FAUCET_FEE_ATOMS) lives in
+// faucet-fee.mjs so the wallet-testnet gateway uses the same rule.
+export { FaucetFeeFloorError, MAX_FAUCET_FEE_ATOMS, faucetTransferFeeAtoms };
 const DAY_MS = 86_400_000;
 const ADDRESS_PATTERN = /^ZYN[0-9a-f]{40}$/;
 const MAX_BODY_BYTES = 8 * 1024;
 const NOTICE = "TESTNET — tokens have no value. ZyronChain open testnet: test ZYN cannot be bought or sold, is not redeemable for mainnet ZYN, and the network may be reset at any time. Not audited.";
-const SNAPSHOT_MAGIC = "ZYRON-OPEN-TESTNET-STATE-V1";
 const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 const RESERVED_CHAIN_IDS = new Set(["zyron-mainnet-1", "zyron-public-testnet-1"]);
 
@@ -847,6 +824,423 @@ export async function readPublishedSnapshotTip(url, secret, { fetchImpl = fetch,
 }
 
 // Caps a follower status at the durable watermark.
+// Sealed-snapshot cache for GET /state/snapshot. Building a snapshot reads and
+// verifies every validator's history and seals the whole chain, which grew past
+// the keeper's 300 s request timeout once the chain was long. The gateway now
+// builds in the background (at start-up, then whenever the tip has advanced
+// past the cached height, checked every `refreshMs`), one build at a time, and
+// the route serves the newest sealed snapshot immediately. Only one snapshot is
+// kept: a finished build replaces the previous one.
+//
+// Hardening (Security Lows on #1159):
+// - L1: a failed build starts an exponential backoff (`backoffBaseMs` doubling
+//   up to `backoffMaxMs`). Until it ends, refresh() (timer ticks and 503
+//   requests alike) does not start a build, so at most one build runs per
+//   backoff window however many requests arrive. A successful build resets it.
+// - L2: build() is raced against `buildTimeoutMs`. On timeout the single-flight
+//   slot is released (so building() is false and the relay refresh resumes),
+//   the previous cache is kept, and the timeout counts as a failure (backoff).
+//   The abandoned build's late result is ignored.
+// - L3: a snapshot whose age (time since it last covered the tip) exceeds
+//   `maxAgeMs` (ZYRON_SNAPSHOT_MAX_AGE_MS) is not served (503 + Retry-After);
+//   every served snapshot carries x-zyron-snapshot-age-s.
+export const SNAPSHOT_REFRESH_MS = 60_000;
+export const SNAPSHOT_RETRY_AFTER_SECONDS = 30;
+export const SNAPSHOT_BUILD_TIMEOUT_MS = 15 * 60_000;
+export const SNAPSHOT_MAX_AGE_MS = 30 * 60_000;
+export const SNAPSHOT_BACKOFF_BASE_MS = 30_000;
+export const SNAPSHOT_BACKOFF_MAX_MS = 15 * 60_000;
+export class SnapshotBuildTimeoutError extends Error {
+  constructor(ms) { super(`snapshot build timed out after ${ms} ms`); this.name = "SnapshotBuildTimeoutError"; this.code = "build_timeout"; }
+}
+// The worker already runs a build (Security L-D on #1161): not a build
+// failure, so it never counts toward the backoff.
+export class SnapshotWorkerBusyError extends Error {
+  constructor() { super("snapshot worker is busy"); this.name = "SnapshotWorkerBusyError"; this.code = "busy"; }
+}
+// Validator heap cap. Measured locally (4 validators, 25 min): the live JS
+// heap after a full GC stays ~27 MB, but with no limit V8 keeps adding 256 KB
+// old-space pages of uncollected garbage, so each validator's RSS creeps up
+// ~0.3-0.6 MB/min. A bounded old generation makes V8 collect instead of grow.
+// ZYRON_VALIDATOR_MAX_OLD_MB overrides the default; 0 disables the flag.
+export const VALIDATOR_MAX_OLD_MB_DEFAULT = 96;
+export function validatorNodeFlags(env = process.env) {
+  const raw = env.ZYRON_VALIDATOR_MAX_OLD_MB;
+  if (raw === "0") return [];
+  // Strict: digits only; anything else (signs, decimals, spaces, units) is the default.
+  const value = typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : VALIDATOR_MAX_OLD_MB_DEFAULT;
+  const mb = value >= 32 && value <= 4096 ? value : VALIDATOR_MAX_OLD_MB_DEFAULT;
+  return [`--max-old-space-size=${mb}`];
+}
+// A validator killed by a V8 heap OOM aborts (SIGABRT; exit code 134 when a
+// shell reports it).
+export function classifyValidatorExit(code, signal) {
+  if (signal === "SIGABRT" || code === 134) return "oom";
+  return signal ? "signal" : "exit";
+}
+// Validator supervisor: exponential restart backoff (base doubling to max),
+// reset once a validator has run for stableMs, plus per-validator restart
+// counts and the last exit for GET /health.
+export const VALIDATOR_RESTART_BASE_MS = 5_000;
+export const VALIDATOR_RESTART_MAX_MS = 300_000;
+export const VALIDATOR_RESTART_STABLE_MS = 600_000;
+export function createValidatorSupervisor({ baseMs = VALIDATOR_RESTART_BASE_MS, maxMs = VALIDATOR_RESTART_MAX_MS, stableMs = VALIDATOR_RESTART_STABLE_MS, now = Date.now } = {}) {
+  const records = new Map();
+  const record = (name) => { let r = records.get(name); if (!r) { r = { restarts: 0, failures: 0, startedAtMs: undefined, lastExit: undefined }; records.set(name, r); } return r; };
+  return {
+    started(name) { record(name).startedAtMs = now(); },
+    // Returns the delay before the restart.
+    exited(name, { code = null, signal = null } = {}) {
+      const r = record(name); const t = now();
+      if (r.startedAtMs !== undefined && t - r.startedAtMs >= stableMs) r.failures = 0;
+      const delayMs = Math.min(baseMs * 2 ** r.failures, maxMs);
+      r.failures += 1;
+      r.lastExit = { code, signal, atMs: t, reason: classifyValidatorExit(code, signal) };
+      return delayMs;
+    },
+    restarting(name) { record(name).restarts += 1; },
+    status(name) {
+      const r = records.get(name);
+      return { restarts: r?.restarts ?? 0, lastExitCode: r?.lastExit?.code ?? null, lastExitSignal: r?.lastExit?.signal ?? null,
+        lastExitAt: r?.lastExit ? new Date(r.lastExit.atMs).toISOString() : null, lastExitReason: r?.lastExit?.reason ?? null };
+    }
+  };
+}
+export function withSupervisorStatus(validators, supervisor) {
+  return validators.map((v) => ({ ...v, ...supervisor.status(v.name) }));
+}
+export class SnapshotBuildAbortedError extends Error {
+  constructor() { super("snapshot build aborted"); this.name = "SnapshotBuildAbortedError"; this.code = "aborted"; }
+}
+function throwIfSnapshotAborted(signal) { if (signal?.aborted) throw new SnapshotBuildAbortedError(); }
+// Worker heap cap (Security L-C on #1161). Render's instance has 512 MB in
+// total; the worker gets a bounded old generation so a runaway build fails
+// (code worker_out_of_memory) instead of taking the whole service down.
+export const SNAPSHOT_WORKER_RESOURCE_LIMITS = Object.freeze({
+  maxOldGenerationSizeMb: Number(process.env.ZYRON_SNAPSHOT_WORKER_MAX_OLD_MB ?? 192) || 192,
+  maxYoungGenerationSizeMb: 16,
+  stackSizeMb: 4
+});
+// Fixed error codes for GET /health lastError (Security L-B on #1161): the
+// detailed (sanitised) message only goes to the logs.
+// Low-2 (Security on #1162): only codes from this allowlist reach /health;
+// anything else (including Node system error codes) is build_failed.
+export const SNAPSHOT_ERROR_CODES = new Set(["build_timeout", "aborted", "busy", "worker_crashed", "worker_out_of_memory", "history_unavailable", "history_invalid", "history_file_corrupt", "build_failed", "node_not_ready", "history_catching_up"]);
+// Not failures: the build waits for the node or the history to be ready and
+// is retried on the next tick, without backoff and without the 900 s timeout.
+export const SNAPSHOT_DEFERRED_CODES = new Set(["busy", "node_not_ready", "history_catching_up"]);
+// Above this many blocks behind the tip the build does not catch the history
+// up itself (inside its timeout); the background refresher does.
+export const SNAPSHOT_MAX_BUILD_CATCHUP = 2_000;
+// Retry delay for a build deferred by the readiness gate, counted from the
+// end of its in-flight window (#1165 Low-1).
+export const SNAPSHOT_NOT_READY_RETRY_MS = 30_000;
+// Gate for a snapshot build: undefined when it may start, else a deferred code.
+export function snapshotBuildReadiness({ quorumOk, tip, historyHeight, historyRebuilding = false, maxCatchup = SNAPSHOT_MAX_BUILD_CATCHUP }) {
+  if (!quorumOk || !Number.isSafeInteger(tip) || tip < 1) return "node_not_ready";
+  if (historyRebuilding || !Number.isSafeInteger(historyHeight) || tip - historyHeight > maxCatchup) return "history_catching_up";
+  return undefined;
+}
+export function snapshotErrorCode(error) {
+  if (typeof error?.code === "string" && SNAPSHOT_ERROR_CODES.has(error.code)) return error.code;
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (/ERR_WORKER_OUT_OF_MEMORY|out of memory/i.test(message)) return "worker_out_of_memory";
+  if (/snapshot worker (crashed|exited|stopped)/.test(message)) return "worker_crashed";
+  if (/no validator served|snapshot history/.test(message)) return "history_unavailable";
+  if (/does not end at the live tip|does not link|hash does not match|wrong height/.test(message)) return "history_invalid";
+  return "build_failed";
+}
+// lastError as shown in logs and GET /health: one line, at most 200
+// characters, no control characters, any `redact` value (the state secret,
+// private keys) and any 64+ hex-digit run (key- or hash-sized) replaced.
+export function sanitizeSnapshotError(error, { redact = [] } = {}) {
+  let text = error instanceof Error ? error.message : String(error ?? "unknown error");
+  for (const value of redact) if (typeof value === "string" && value.length >= 8) text = text.split(value).join("[redacted]");
+  // Filesystem paths (Security L-B on #1161): never reveal the layout.
+  text = text.replace(/(?:file:\/\/)?(?:[A-Za-z]:)?(?:[\\/][^\s'"`:,()\\/]+){2,}[\\/]?/g, "[path]");
+  text = text.replace(/[0-9a-fA-F]{64,}/g, "[redacted]").replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+  return text.length > 200 ? `${text.slice(0, 197)}...` : text || "unknown error";
+}
+
+// Runs the whole-chain part of a snapshot build (final linkage check,
+// serialise, gzip, seal) in a worker_thread so the gateway's event loop and
+// GET /health never block on it. The worker keeps its own copy of the
+// verified blocks: each build ships only the blocks added since the last one
+// (in chunks, yielding between them). The secret goes to the worker once, in
+// workerData. A worker crash, error or abort (the cache's build timeout)
+// terminates it; the next build starts a fresh worker and ships the whole
+// history again.
+export const SNAPSHOT_WORKER_URL = new URL("./open-testnet/snapshot-worker.mjs", import.meta.url);
+export function createSnapshotWorkerBuilder({ secret, workerUrl = SNAPSHOT_WORKER_URL, chunkSize = 250, resourceLimits = SNAPSHOT_WORKER_RESOURCE_LIMITS } = {}) {
+  let worker; let sent = 0; let nextId = 0; let pending; let lastMemory = null;
+  function stop(reason, code = "worker_crashed") {
+    const current = worker;
+    worker = undefined; sent = 0;
+    if (current) void current.terminate().catch(() => {});
+    const waiting = pending; pending = undefined;
+    const error = code === "aborted" ? new SnapshotBuildAbortedError() : Object.assign(new Error(reason), { code });
+    waiting?.reject(error);
+  }
+  function spawnWorker() {
+    const created = new Worker(workerUrl, { workerData: { secret }, stdout: false, stderr: false, ...(resourceLimits ? { resourceLimits } : {}) });
+    created.unref?.();
+    created.on("message", (message) => {
+      if (created !== worker || !pending || message?.id !== pending.id) return;
+      const waiting = pending; pending = undefined;
+      if (message.memory) lastMemory = { ...message.memory, at: new Date().toISOString() };
+      if (message.type === "built") waiting.resolve({ sealed: Buffer.from(message.sealed), height: message.height });
+      else waiting.reject(new Error(`snapshot worker: ${sanitizeSnapshotError(message.error, { redact: [secret] })}`));
+    });
+    created.on("error", (error) => {
+      if (created !== worker) return;
+      const oom = error?.code === "ERR_WORKER_OUT_OF_MEMORY";
+      stop(oom ? "snapshot worker out of memory" : `snapshot worker crashed (${sanitizeSnapshotError(error, { redact: [secret] })})`, oom ? "worker_out_of_memory" : "worker_crashed");
+    });
+    created.on("exit", (code) => { if (created === worker) stop(`snapshot worker exited (code ${code})`, "worker_crashed"); });
+    return created;
+  }
+  async function build({ blocks, tip, tipHash, chainId, genesisHash, genesis, network, keys, createdAtMs = Date.now() }, { signal } = {}) {
+    if (pending) throw new SnapshotWorkerBusyError();
+    throwIfSnapshotAborted(signal);
+    // Low-1 (Security on #1162): the worker must hold exactly the history up
+    // to this tip. If it holds more (a shorter history after a rebuild),
+    // stop it and ship the history again to a fresh worker.
+    if (worker && sent > blocks.length) stop("snapshot history changed; restarting the worker", "worker_crashed");
+    worker ??= spawnWorker();
+    const target = worker;
+    const onAbort = () => { if (target === worker) stop("snapshot build aborted", "aborted"); };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      // Ship only what the worker does not hold yet (history only grows).
+      while (sent < blocks.length) {
+        throwIfSnapshotAborted(signal);
+        if (target !== worker) throw Object.assign(new Error("snapshot worker stopped while receiving blocks"), { code: "worker_crashed" });
+        const chunk = blocks.slice(sent, sent + chunkSize);
+        target.postMessage({ type: "append", blocks: chunk });
+        sent += chunk.length;
+        await new Promise((done) => setImmediate(done));
+      }
+      throwIfSnapshotAborted(signal);
+      if (target !== worker) throw Object.assign(new Error("snapshot worker stopped while receiving blocks"), { code: "worker_crashed" });
+      const id = ++nextId;
+      const result = new Promise((resolveBuild, rejectBuild) => { pending = { id, resolve: resolveBuild, reject: rejectBuild }; });
+      target.postMessage({ type: "build", id, tip, tipHash, chainId, genesisHash, genesis, network, keys, createdAtMs });
+      return await result;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
+  }
+  return { build, terminate: () => stop("snapshot worker terminated"), running: () => worker !== undefined, lastMemory: () => lastMemory };
+}
+
+// Disk design: the snapshot build runs in a child process with
+// --max-old-space-size and streams the verified NDJSON history file (see
+// open-testnet/history-file.mjs) through gzip and AES-256-GCM into a file.
+// One build at a time (a second call throws SnapshotWorkerBusyError). An
+// abort (the cache's build timeout) kills the child. A child that runs out of
+// heap fails the build with worker_out_of_memory; the gateway keeps running.
+export const SNAPSHOT_CHILD_URL = new URL("./open-testnet/snapshot-build-child.mjs", import.meta.url);
+export const SNAPSHOT_CHILD_MAX_OLD_SPACE_MB = Number(process.env.ZYRON_SNAPSHOT_CHILD_MAX_OLD_MB ?? 128) || 128;
+export function createSnapshotChildBuilder({ secret, outDir, childUrl = SNAPSHOT_CHILD_URL, maxOldSpaceMb = SNAPSHOT_CHILD_MAX_OLD_SPACE_MB, execArgv = [] } = {}) {
+  let lastStats = null; let running; let nextId = 0;
+  async function build({ view, genesis, network, keys, createdAtMs = Date.now(), iv }, { signal } = {}) {
+    if (running) throw new SnapshotWorkerBusyError();
+    throwIfSnapshotAborted(signal);
+    await mkdir(outDir, { recursive: true, mode: 0o700 });
+    const outPath = join(outDir, `build-${process.pid}-${++nextId}.enc`);
+    await rm(outPath, { force: true });
+    const child = fork(fileURLToPath(childUrl), [], { execArgv: [`--max-old-space-size=${maxOldSpaceMb}`, ...execArgv], stdio: ["ignore", "ignore", "pipe", "ipc"], serialization: "json", env: { PATH: process.env.PATH ?? "" } });
+    running = child;
+    let stderrTail = "";
+    child.stderr?.on("data", (chunk) => { stderrTail = (stderrTail + chunk.toString("utf8")).slice(-4096); });
+    try {
+      const reply = await new Promise((done, fail) => {
+        let settled = false;
+        const finish = (fn, value) => { if (!settled) { settled = true; signal?.removeEventListener("abort", onAbort); fn(value); } };
+        const onAbort = () => { child.kill("SIGKILL"); finish(fail, new SnapshotBuildAbortedError()); };
+        signal?.addEventListener("abort", onAbort, { once: true });
+        child.once("message", (message) => finish(done, message));
+        child.once("error", (error) => finish(fail, Object.assign(new Error(`snapshot child failed to start (${sanitizeSnapshotError(error, { redact: [secret] })})`), { code: "worker_crashed" })));
+        // "close" (not "exit"): stderr is fully read by then, so the
+        // out-of-memory message is seen on every platform.
+        child.once("close", (code, exitSignal) => {
+          // V8 aborts on heap exhaustion; on macOS it can die by SIGTRAP or
+          // SIGABRT before stderr carries the message, so count those too.
+          const oom = /out of memory|allocation failed|ERR_WORKER_OUT_OF_MEMORY/i.test(stderrTail)
+            || ["SIGTRAP", "SIGABRT", "SIGILL"].includes(exitSignal) || code === 133 || code === 134;
+          finish(fail, Object.assign(new Error(oom ? "snapshot child out of memory" : `snapshot child exited (code ${code}${exitSignal ? `, signal ${exitSignal}` : ""})`), { code: oom ? "worker_out_of_memory" : "worker_crashed" }));
+        });
+        child.send({ type: "build", view, head: { format: SNAPSHOT_MAGIC, createdAtMs, genesis, network, keys }, secret, outPath, ...(iv ? { iv: Buffer.from(iv).toString("base64") } : {}) }, (error) => {
+          if (error) finish(fail, Object.assign(new Error("snapshot child IPC failed"), { code: "worker_crashed" }));
+        });
+      });
+      if (reply?.type !== "built") {
+        const code = SNAPSHOT_ERROR_CODES.has(reply?.code) ? reply.code : "build_failed";
+        throw Object.assign(new Error(`snapshot child: ${sanitizeSnapshotError(reply?.error, { redact: [secret] })}`), { code });
+      }
+      const sealed = await readFile(outPath);
+      if (sealed.length !== reply.bytes) throw Object.assign(new Error("snapshot child output has the wrong size"), { code: "build_failed" });
+      lastStats = { maxRss: Number.isFinite(reply.maxRssKb) ? reply.maxRssKb * 1024 : null, height: reply.height, bytes: reply.bytes, at: new Date().toISOString() };
+      return { sealed, height: reply.height, maxRssKb: reply.maxRssKb };
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      if (running === child) running = undefined;
+      await rm(outPath, { force: true }).catch(() => {});
+    }
+  }
+  return { build, running: () => running !== undefined, pid: () => running?.pid, lastStats: () => lastStats, terminate: () => { running?.kill("SIGKILL"); } };
+}
+
+export function createSnapshotCache({
+  build, currentHeight, refreshMs = SNAPSHOT_REFRESH_MS, log = (line) => console.error(line), now = Date.now,
+  buildTimeoutMs = SNAPSHOT_BUILD_TIMEOUT_MS, maxAgeMs = SNAPSHOT_MAX_AGE_MS,
+  backoffBaseMs = SNAPSHOT_BACKOFF_BASE_MS, backoffMaxMs = SNAPSHOT_BACKOFF_MAX_MS, redact = [],
+  notReadyRetryMs = SNAPSHOT_NOT_READY_RETRY_MS
+}) {
+  let retryTimer;
+  let cached; let inFlight; let timer; let lastError; let lastErrorCode; let failures = 0; let nextAttemptAtMs = 0;
+  let buildStartedAtMs; let lastBuildMs; let waiting; let retryAfterSettle = false;
+  function withTimeout(promise, controller) {
+    if (!(buildTimeoutMs > 0) || !Number.isFinite(buildTimeoutMs)) return promise;
+    let handle;
+    // On timeout the build is also aborted (the worker builder terminates its
+    // worker), so a hung build does not keep running in the background.
+    const timeout = new Promise((_, reject) => { handle = setTimeout(() => { reject(new SnapshotBuildTimeoutError(buildTimeoutMs)); controller.abort(); }, buildTimeoutMs); });
+    // A late rejection of the abandoned build must not become unhandled.
+    promise.catch(() => {});
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(handle));
+  }
+  function backoffMs() { return failures > 0 ? Math.min(backoffMaxMs, backoffBaseMs * 2 ** (failures - 1)) : 0; }
+  function refresh({ force = false } = {}) {
+    if (inFlight) return inFlight;
+    if (!force && failures > 0 && now() < nextAttemptAtMs) return Promise.resolve(cached);
+    inFlight = (async () => {
+      if (cached && !force) {
+        const height = await currentHeight();
+        // Still the tip: the snapshot is current, so its age restarts.
+        if (!(height > cached.height)) { cached.confirmedAtMs = now(); return cached; }
+      }
+      const startedAtMs = now(); buildStartedAtMs = startedAtMs; lastBuildMs = undefined;
+      const controller = new AbortController();
+      const next = await withTimeout(Promise.resolve().then(() => build({ signal: controller.signal })), controller);
+      const doneAtMs = now(); lastBuildMs = doneAtMs - startedAtMs;
+      cached = { sealed: next.sealed, height: next.height, builtAtMs: doneAtMs, confirmedAtMs: doneAtMs, buildMs: doneAtMs - startedAtMs };
+      lastError = undefined; lastErrorCode = undefined; failures = 0; nextAttemptAtMs = 0; waiting = undefined;
+      return cached;
+    })().catch((error) => {
+      if (buildStartedAtMs !== undefined && lastBuildMs === undefined) lastBuildMs = now() - buildStartedAtMs;
+      const code = snapshotErrorCode(error);
+      const detail = sanitizeSnapshotError(error, { redact });
+      if (SNAPSHOT_DEFERRED_CODES.has(code)) {
+        // Another build holds the worker, or the node/history is not ready:
+        // retry on the next tick, no backoff.
+        waiting = code === "busy" ? undefined : code;
+        log(`snapshot: build skipped (${code})`);
+        // Not ready yet: retry soon (not only at the next refresh tick), once
+        // this in-flight window has ended (see finally below).
+        if (waiting) retryAfterSettle = true;
+        return cached;
+      }
+      lastError = detail; lastErrorCode = code;
+      failures += 1; nextAttemptAtMs = now() + backoffMs();
+      log(`snapshot: background build failed (${code}: ${detail}); next attempt in ${Math.round(backoffMs() / 1000)} s`);
+      return cached;
+    }).finally(() => {
+      inFlight = undefined;
+      // A deferred build (node or history not ready) is retried shortly after
+      // this in-flight window ends, not only on the next refreshMs tick.
+      if (retryAfterSettle && timer && !retryTimer && notReadyRetryMs > 0) {
+        retryTimer = setTimeout(() => { retryTimer = undefined; void refresh(); }, notReadyRetryMs); retryTimer.unref?.();
+      }
+      retryAfterSettle = false;
+    });
+    return inFlight;
+  }
+  // Age = time since the snapshot was last known to cover the chain tip (built,
+  // or re-checked with no new blocks). A stalled rebuild makes it grow.
+  function ageMs() { return cached ? Math.max(0, now() - cached.confirmedAtMs) : undefined; }
+  return {
+    current: () => cached,
+    // The cached snapshot if it is younger than maxAgeMs, else undefined.
+    fresh: () => (cached && !(maxAgeMs > 0 && ageMs() > maxAgeMs) ? cached : undefined),
+    ageSeconds: () => (cached ? Math.floor(ageMs() / 1000) : undefined),
+    building: () => inFlight !== undefined,
+    lastError: () => lastError,
+    lastErrorCode: () => lastErrorCode,
+    failures: () => failures,
+    nextAttemptAtMs: () => nextAttemptAtMs,
+    // Cache status for GET /health (no snapshot bytes, no secrets).
+    status() {
+      const building = inFlight !== undefined && buildStartedAtMs !== undefined && lastBuildMs === undefined;
+      return {
+        building,
+        startedAt: buildStartedAtMs === undefined ? null : new Date(buildStartedAtMs).toISOString(),
+        durationMs: building ? Math.max(0, now() - buildStartedAtMs) : (lastBuildMs ?? null),
+        // A fixed code only; the sanitised detail is in the logs.
+        lastError: lastErrorCode ?? null,
+        waitingFor: waiting ?? null,
+        lastBuiltHeight: cached?.height ?? null,
+        age: cached ? Math.floor(ageMs() / 1000) : null,
+        failures
+      };
+    },
+    refresh,
+    start() {
+      if (timer) return;
+      void refresh();
+      timer = setInterval(() => { void refresh(); }, refreshMs); timer.unref?.();
+    },
+    stop() { if (timer) clearInterval(timer); timer = undefined; if (retryTimer) clearTimeout(retryTimer); retryTimer = undefined; }
+  };
+}
+
+// GET /state/snapshot from the cache. Never builds inline: a missing or stale
+// snapshot answers 503 + Retry-After and asks the cache for a background
+// refresh (which honours the failure backoff). `takeRate` runs only when a
+// snapshot is actually served.
+export function serveSnapshotRoute(response, snapshots, { genesisHash, takeRate = () => ({ allowed: true }), limited = () => {} } = {}) {
+  const fresh = snapshots.fresh();
+  if (!fresh) {
+    void snapshots.refresh();
+    const cached = snapshots.current();
+    const error = cached ? "cached snapshot is older than the max age, retry later" : "snapshot not built yet, retry later";
+    const headers = { "retry-after": String(SNAPSHOT_RETRY_AFTER_SECONDS) };
+    if (cached) headers["x-zyron-snapshot-age-s"] = String(snapshots.ageSeconds());
+    return writeJson(response, 503, { error }, headers);
+  }
+  const rate = takeRate();
+  if (!rate.allowed) return limited(response, rate);
+  const { sealed, height } = fresh;
+  response.writeHead(200, { ...SECURITY, "content-type": "application/octet-stream", "cache-control": "no-store", "content-length": sealed.length,
+    "x-zyron-snapshot-height": String(height), "x-zyron-snapshot-age-s": String(snapshots.ageSeconds()), "x-zyron-genesis-hash": genesisHash });
+  return response.end(sealed);
+}
+
+// The relay's validator-history refresh. A snapshot build extends the same
+// history; while one runs the refresh is skipped rather than queued behind it
+// on the shared lock (the next tick catches up).
+// A refresh skipped because a build is in flight is not lost: it is retried
+// every `retryMs` until the build has ended (a build deferred as
+// history_catching_up calls this from inside its own in-flight window).
+export function createHistoryRefresher({ snapshots, extend, log = (line) => console.error(line), retryMs = 1_000 }) {
+  let running; let retryTimer;
+  function scheduleRetry() {
+    if (retryTimer) return;
+    retryTimer = setTimeout(() => { retryTimer = undefined; void refreshHistory(); }, retryMs); retryTimer.unref?.();
+  }
+  function refreshHistory() {
+    running ??= (async () => {
+      if (snapshots?.building()) { scheduleRetry(); return "skipped"; }
+      await extend();
+      return "extended";
+    })().catch((error) => { log(`relay: validator history refresh failed (${error instanceof Error ? error.message : String(error)})`); return "failed"; })
+      .finally(() => { running = undefined; });
+    return running;
+  }
+  refreshHistory.cancel = () => { if (retryTimer) clearTimeout(retryTimer); retryTimer = undefined; };
+  return refreshHistory;
+}
+
 export function capPeerStatus(status, watermark) {
   // Only the P2P identity/tip shape is served to followers, so a follower on
   // an older binary (strict four-key parser) keeps syncing; the fee hints stay
@@ -857,17 +1251,7 @@ export function capPeerStatus(status, watermark) {
 }
 
 // ---- sealed state snapshots (TEST keys + public blocks) ---------------------------
-function snapshotKey(secret) {
-  assert.ok(typeof secret === "string" && secret.length >= 32, "ZYRON_TESTNET_STATE_SECRET must be at least 32 characters");
-  return createHash("sha256").update(`zyron-open-testnet-state\0${secret}`).digest();
-}
-export function sealSnapshot(bundle, secret) {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", snapshotKey(secret), iv);
-  cipher.setAAD(Buffer.from(SNAPSHOT_MAGIC));
-  const body = Buffer.concat([cipher.update(gzipSync(Buffer.from(JSON.stringify(bundle)))), cipher.final()]);
-  return Buffer.concat([Buffer.from(`${SNAPSHOT_MAGIC}\n`), iv, cipher.getAuthTag(), body]);
-}
+export { sealSnapshot, verifySnapshotBlocks };
 export function openSnapshot(bytes, secret) {
   const header = Buffer.from(`${SNAPSHOT_MAGIC}\n`);
   assert.ok(bytes.length > header.length + 28 && bytes.length <= MAX_SNAPSHOT_BYTES, "snapshot size out of range");
@@ -1129,21 +1513,8 @@ export async function initNetwork(dir, chainId, { onProgress = () => {} } = {}) 
 // certificates for one block, and identical bytes can still be invalid
 // (R28-1059-M1/M2). If no validator serves a valid block at some height,
 // nothing is sealed and the last published snapshot stays in place.
-export function verifySnapshotBlocks(blocks, { tip, tipHash, chainId, genesisHash }) {
-  assert.ok(Array.isArray(blocks) && blocks.length === tip, `snapshot history has ${Array.isArray(blocks) ? blocks.length : "no"} blocks, expected ${tip}`);
-  let previous = genesisHash;
-  for (const [index, block] of blocks.entries()) {
-    const height = index + 1;
-    const header = block?.header;
-    assert.ok(header && typeof header === "object" && header.height === height && header.chainId === chainId, `snapshot block ${height} has the wrong height or chain ID`);
-    assert.equal(header.previousHash, previous, `snapshot block ${height} does not link to block ${height - 1}`);
-    assert.equal(blockHash(header), block.hash, `snapshot block ${height} hash does not match its header`);
-    assert.ok(Array.isArray(block.transactions) && merkleRoot(block.transactions) === header.transactionRoot, `snapshot block ${height} transactions do not match its header`);
-    assert.equal(new Set(block.transactions.map((tx) => tx?.txid)).size, block.transactions.length, `snapshot block ${height} repeats a transaction`);
-    previous = block.hash;
-  }
-  assert.equal(previous, tipHash, "snapshot history does not end at the live tip");
-}
+// verifySnapshotBlocks lives in open-testnet/snapshot-verify.mjs (the
+// snapshot worker runs it too).
 
 // Verified snapshot history: the in-memory chain after the verified blocks.
 // The gateway keeps one and extends it on each build, so full validation is
@@ -1158,12 +1529,20 @@ const yieldToEventLoop = () => new Promise((done) => setImmediate(done));
 // finalized-block validation on top of the verified history; a reader that
 // fails, serves nothing or serves an invalid block is reported (once per
 // build) through onReject and the next reader is tried for that height.
-export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, genesisHash, genesis, history, pageSize = 100, onReject = () => {} } = {}) {
+export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, genesisHash, genesis, history, pageSize = 100, onReject = () => {}, verifyFinal = true, signal } = {}) {
+  throwIfSnapshotAborted(signal);
   const expected = { tip, tipHash, chainId, genesisHash };
   assert.ok(Number.isSafeInteger(tip) && tip >= 1, "snapshot tip must be a positive height");
   const verified = history ?? createSnapshotHistory(genesis);
   assert.equal(verified.chain.genesisHash, genesisHash, "snapshot history is for another genesis");
-  assert.equal(verified.chain.height, verified.blocks.length, "snapshot history is inconsistent");
+  // A history either keeps its blocks in memory (blocks) or in the NDJSON
+  // history file (file, disk design: nothing but the tip in RAM).
+  const file = verified.file;
+  const storedHeight = () => (file ? file.height() : verified.blocks.length);
+  if (verified.chain.height !== storedHeight()) {
+    if (file) throw new HistoryFileError(`holds ${storedHeight()} blocks, the verified chain ${verified.chain.height}`);
+    assert.fail("snapshot history is inconsistent");
+  }
   const reported = new Set();
   const reject = (index, error) => {
     const { name } = readers[index];
@@ -1178,8 +1557,9 @@ export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, ge
     if (height < page.from || height >= page.from + page.blocks.length) {
       let served;
       try {
-        served = await readers[index].read(height, Math.min(pageSize, tip - height + 1));
+        served = await readers[index].read(height, Math.min(pageSize, tip - height + 1), { signal });
       } catch (error) {
+        if (signal?.aborted) throw new SnapshotBuildAbortedError();
         page.failed = true;
         reject(index, error);
         return undefined;
@@ -1199,8 +1579,9 @@ export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, ge
     }
     return page.blocks[height - page.from];
   }
-  while (verified.blocks.length < tip) {
-    const height = verified.blocks.length + 1;
+  while (storedHeight() < tip) {
+    throwIfSnapshotAborted(signal);
+    const height = storedHeight() + 1;
     const failures = new Map();
     let accepted;
     for (let index = 0; index < readers.length && !accepted; index += 1) {
@@ -1229,16 +1610,21 @@ export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, ge
       }
     }
     if (!accepted) throw new Error(`snapshot history: no validator served a block ${height} that passes finalized-block validation`);
-    verified.blocks.push(accepted);
+    if (file) await file.append(accepted); else verified.blocks.push(accepted);
     await yieldToEventLoop();
   }
+  if (file) {
+    if (file.height() < tip) throw new HistoryFileError("did not reach the tip");
+    return undefined;
+  }
   const blocks = verified.blocks.slice(0, tip);
-  verifySnapshotBlocks(blocks, expected);
+  // verifyFinal: false defers this whole-chain pass to the snapshot worker.
+  if (verifyFinal) verifySnapshotBlocks(blocks, expected);
   return blocks;
 }
 
 // ---- run: validators + gateway ---------------------------------------------------
-export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server, verifiedHistory, durable, startupLimits = parseStartupLimits() } = {}) {
+export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server, verifiedHistory, durable, startupLimits = parseStartupLimits(), snapshotRefreshMs = Number(process.env.ZYRON_SNAPSHOT_REFRESH_MS ?? SNAPSHOT_REFRESH_MS) || SNAPSHOT_REFRESH_MS, snapshotBuildTimeoutMs = Number(process.env.ZYRON_SNAPSHOT_BUILD_TIMEOUT_MS ?? SNAPSHOT_BUILD_TIMEOUT_MS) || SNAPSHOT_BUILD_TIMEOUT_MS, snapshotMaxAgeMs = Number(process.env.ZYRON_SNAPSHOT_MAX_AGE_MS ?? SNAPSHOT_MAX_AGE_MS) || SNAPSHOT_MAX_AGE_MS } = {}) {
   const runStartedAtMs = Date.now();
   const genesisPath = join(dir, "genesis.json");
   const genesis = JSON.parse(await readFile(genesisPath, "utf8"));
@@ -1292,6 +1678,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     console.log(`consensus relay: ${relayPeers.size} external peer(s); mailbox on 127.0.0.1:${mailboxPort}`);
   }
 
+  const supervisor = createValidatorSupervisor();
   function startValidator(name) {
     const index = VALIDATOR_NAMES.indexOf(name);
     const args = [dist("cli.js"), "node", "--genesis", genesisPath, "--data", join(dir, `data-${name}`),
@@ -1303,18 +1690,21 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       "--rpc-rate-limit-exempt", "127.0.0.1"];
     for (const [i, port] of ports.entries()) if (i !== index) args.push("--peer", `http://127.0.0.1:${port}`);
     if (relay) for (const address of relay.addresses()) args.push("--peer", `http://127.0.0.1:${mailboxPort}/x/${address}`);
-    const child = spawn(process.execPath, args, { cwd: l1Root, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [...validatorNodeFlags(), ...args], { cwd: l1Root, stdio: ["ignore", "pipe", "pipe"] });
     const prefix = `[${name}] `;
     for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => {
       if (log) process.stdout.write(chunk.toString("utf8").split("\n").filter(Boolean).map((l) => prefix + l).join("\n") + "\n");
     });
     const node = { name, child, port: ports[index], startedAt: Date.now() };
     node.closed = new Promise((done) => child.once("exit", (code, signal) => { node.exit = { code, signal }; done(); }));
+    supervisor.started(name);
     child.once("exit", () => {
       if (shuttingDown || node.stopping) return;
-      // Supervisor: a crashed validator restarts from its durable data directory.
-      console.error(`${name} exited (${JSON.stringify(node.exit)}); restarting in 5s`);
-      setTimeout(() => { if (!shuttingDown) startValidator(name); }, 5_000);
+      // Supervisor: a crashed validator restarts from its durable data
+      // directory, with exponential backoff.
+      const delayMs = supervisor.exited(name, node.exit);
+      console.error(`${name} exited (${JSON.stringify(node.exit)}, ${supervisor.status(name).lastExitReason}); restarting in ${Math.round(delayMs / 1000)}s`);
+      setTimeout(() => { if (!shuttingDown) { supervisor.restarting(name); startValidator(name); } }, delayMs);
     });
     nodes.set(name, node);
     return node;
@@ -1338,7 +1728,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   }
   async function nodeFetch(port, path, init = {}) {
     const response = await fetch(`http://127.0.0.1:${port}${path}`, {
-      ...init, headers: { "x-zyron-rpc-version": "1", ...(init.headers ?? {}) }, signal: AbortSignal.timeout(8_000)
+      ...init, headers: { "x-zyron-rpc-version": "1", ...(init.headers ?? {}) }, signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(8_000)]) : AbortSignal.timeout(8_000)
     });
     const text = await response.text();
     let body;
@@ -1428,17 +1818,37 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     snapshot: new WindowLimiter(30, 3_600_000, 1),
     relayIp: new WindowLimiter(Number(process.env.ZYRON_RELAY_REQUESTS_PER_MINUTE_PER_IP ?? 1200), 60_000)
   };
-  let snapshotCache; let snapshotCacheAt = 0; let snapshotBuild;
   // Verified history (R28-1059): from the restore replay when there was one,
   // otherwise validated from genesis on the first build.
-  const snapshotHistory = verifiedHistory ?? createSnapshotHistory(genesis);
+  const snapshotHistory = { chain: verifiedHistory?.chain ?? new ZyronChain(genesis), blocks: verifiedHistory?.chain ? verifiedHistory.blocks : [] };
+  const restoredBlocks = verifiedHistory?.blocks ?? [];
+  const restoredTip = { height: restoredBlocks.length, tipHash: restoredBlocks.length ? restoredBlocks[restoredBlocks.length - 1].hash : undefined };
+  // Disk design: the verified history lives in an NDJSON file, rebuilt at
+  // every start from the restored (already replay-validated) blocks; RAM then
+  // keeps only the verified chain state and the file's tip and running hash.
+  // If the file cannot be written from the restore, it starts empty with a
+  // fresh chain and the first build re-validates the history from genesis.
+  const historyFile = await createHistoryFile(join(dir, "snapshot-history", "history.ndjson"), { chainId, genesisHash: info.genesisHash });
+  try {
+    for (let index = 0; index < restoredBlocks.length; index += 500) {
+      await historyFile.appendMany(restoredBlocks.slice(index, index + 500));
+      await yieldToEventLoop();
+    }
+    if (historyFile.height() !== snapshotHistory.chain.height) throw new HistoryFileError("restored history does not match the replayed chain");
+  } catch (error) {
+    console.error(`snapshot: history file not built from the restore (${sanitizeSnapshotError(error, { redact: stateSecret ? [stateSecret] : [] })}); re-validating from genesis on the first build`);
+    await historyFile.reset();
+    snapshotHistory.chain = new ZyronChain(genesis);
+  }
+  snapshotHistory.blocks = undefined; snapshotHistory.file = historyFile;
+  // Drop the restored bundle's blocks: they are on disk now.
+  if (verifiedHistory) verifiedHistory.blocks = undefined;
   // Durable watermark (see createDurableWatermark): only when the chain lives
   // in published snapshots. `durable.fetchPublished` reads the newest one.
   let watermark;
   if (durable) {
-    const restoredBlocks = verifiedHistory?.blocks ?? [];
     watermark = createDurableWatermark({
-      height: restoredBlocks.length, tipHash: restoredBlocks.length ? restoredBlocks[restoredBlocks.length - 1].hash : undefined,
+      height: restoredTip.height, tipHash: restoredTip.tipHash,
       fetchPublished: durable.fetchPublished,
       localHashAt: async (height) => { const r = await anyNode(`/blocks?from=${height}&limit=1`); if (r.status !== 200 || !Array.isArray(r.body?.blocks) || !r.body.blocks[0]) throw new Error(`local block ${height} unavailable`); return r.body.blocks[0].hash; },
       log: (line) => console.error(line)
@@ -1453,54 +1863,109 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   const activeSetSeed = activeSetSeedFromHistory(verifiedHistory);
   const activeSetTracker = createActiveSetTracker(genesis.validators, { addressOf: (publicKey) => addressFromPublicKey(publicKey), minValidators: STRICT_MIN_VALIDATORS, ...(activeSetSeed ? { initial: activeSetSeed } : {}) });
   if (log) console.log(`active set seeded from ${activeSetTracker.seededFrom}${activeSetSeed ? ` (height ${activeSetSeed.height}, ${activeSetSeed.validators.length} validators)` : ""}`);
-  // One build at a time: concurrent requests share it, and the verified
-  // history is never extended twice in parallel.
-  function buildSnapshot() {
-    if (snapshotCache && Date.now() - snapshotCacheAt < 60_000) return Promise.resolve(snapshotCache);
-    snapshotBuild ??= buildSnapshotNow().finally(() => { snapshotBuild = undefined; });
-    return snapshotBuild;
-  }
   // One writer at a time for the verified history (snapshot builds and the
   // relay's membership refresh both extend it).
   let historyLock = Promise.resolve();
-  function extendHistory(readers, tip, tipHash) {
-    const run = historyLock.then(() => collectSnapshotBlocks(readers, {
-      tip, tipHash, chainId, genesisHash: info.genesisHash, history: snapshotHistory,
+  // Set when the history file failed validation on read (a snapshot build):
+  // the next extension rebuilds it.
+  let historyNeedsRebuild = false;
+  function extendHistory(readers, tip, tipHash, { verifyFinal = true, signal } = {}) {
+    const collect = (history) => collectSnapshotBlocks(readers, {
+      tip, tipHash, chainId, genesisHash: info.genesisHash, history, verifyFinal, signal,
       onReject: (name, error) => console.error(`snapshot: history from ${name} not used (${error instanceof Error ? error.message : String(error)})`)
-    }));
+    });
+    // Safe rebuild: an empty file and a fresh chain, filled from validator
+    // history with full finalized-block validation. The relay keeps using
+    // the old verified chain until the rebuilt one reaches the tip.
+    async function rebuild(reason) {
+      console.error(`snapshot: rebuilding the history file (${reason})`);
+      historyNeedsRebuild = true;
+      await historyFile.reset();
+      const fresh = { chain: new ZyronChain(genesis), file: historyFile };
+      const result = await collect(fresh);
+      snapshotHistory.chain = fresh.chain; historyNeedsRebuild = false;
+      return result;
+    }
+    const run = historyLock.then(async () => {
+      if (historyNeedsRebuild) return rebuild("marked corrupt");
+      try {
+        return await collect(snapshotHistory);
+      } catch (error) {
+        if (!(error instanceof HistoryFileError)) throw error;
+        return rebuild(sanitizeSnapshotError(error));
+      }
+    });
     historyLock = run.then(() => undefined, () => undefined);
     return run;
   }
   function historyReaders() {
     return VALIDATOR_NAMES.map((name) => ({
       name,
-      async read(from, limit) {
+      async read(from, limit, { signal } = {}) {
         const node = nodes.get(name);
         if (!node || node.exit) throw new Error("validator not running");
-        const result = await nodeFetch(node.port, `/blocks?from=${from}&limit=${limit}`);
+        const result = await nodeFetch(node.port, `/blocks?from=${from}&limit=${limit}`, signal ? { signal } : {});
         if (result.status !== 200 || !Array.isArray(result.body?.blocks)) throw new Error(`block read returned ${result.status}`);
         return result.body.blocks;
       }
     }));
   }
-  let historyRefresh;
-  function refreshHistory() {
-    historyRefresh ??= (async () => {
+  const refreshHistory = createHistoryRefresher({
+    snapshots: { building: () => snapshots?.building() ?? false },
+    extend: async () => {
       const { height: tip, tipHash } = await chainStatus();
-      if (tip > snapshotHistory.chain.height) await extendHistory(historyReaders(), tip, tipHash);
-    })().catch((error) => console.error(`relay: validator history refresh failed (${error instanceof Error ? error.message : String(error)})`)).finally(() => { historyRefresh = undefined; });
-    return historyRefresh;
-  }
-  if (relay) { const timer = setInterval(() => { void refreshHistory(); }, 5_000); timer.unref(); }
-  async function buildSnapshotNow() {
-    const { height: tip, tipHash } = await chainStatus();
-    const blocks = await extendHistory(historyReaders(), tip, tipHash);
+      if (tip > snapshotHistory.chain.height || historyNeedsRebuild) await extendHistory(historyReaders(), tip, tipHash);
+    }
+  });
+  // With the relay on, the history follows the tip every 5 s. Otherwise a
+  // build deferred as history_catching_up starts this refresh (to the tip,
+  // outside the build timeout), so the next build only appends a short delta.
+  // The refresher also runs whenever snapshots are built (stateSecret), so a
+  // restore far behind or a history-file read error recovers without relay.
+  if (relay || stateSecret) { const timer = setInterval(() => { void refreshHistory(); }, 5_000); timer.unref(); }
+  const snapshotBuilder = stateSecret ? createSnapshotChildBuilder({ secret: stateSecret, outDir: join(dir, "snapshot-history", "builds") }) : undefined;
+  async function buildSnapshotNow({ signal } = {}) {
+    // Readiness gate: a build after a restart must not start (and then run
+    // into the 900 s timeout) while the validators lack a quorum or the
+    // history file is far behind; it is skipped and retried next tick.
+    const { validators: statuses } = await cachedValidatorStatuses();
+    const quorumOk = activeSetTracker.evaluate(statuses).ok;
+    let tip; let tipHash;
+    try { ({ height: tip, tipHash } = await chainStatus()); } catch { tip = undefined; }
+    const deferred = snapshotBuildReadiness({ quorumOk, tip, historyHeight: snapshotHistory.chain.height, historyRebuilding: historyNeedsRebuild });
+    if (deferred) {
+      if (deferred === "history_catching_up") void refreshHistory();
+      throw Object.assign(new Error(`snapshot build deferred (${deferred})`), { code: deferred });
+    }
+    await extendHistory(historyReaders(), tip, tipHash, { verifyFinal: false, signal });
+    throwIfSnapshotAborted(signal);
+    const view = historyFile.view();
+    if (view.tip < tip) throw new HistoryFileError(`holds ${view.tip} blocks, below the tip ${tip}`);
     const keys = {};
     for (const name of [...VALIDATOR_NAMES, "oracle1", "oracle2", "oracle3", "founder", "faucet", "liquidity", "ecosystem"]) keys[name] = (await readSecret(join(dir, "keys", `${name}.json`))).privateKey;
-    const sealed = sealSnapshot({ format: SNAPSHOT_MAGIC, createdAtMs: Date.now(), genesis, network: info, keys, blocks }, stateSecret);
-    snapshotCache = { sealed, height: tip }; snapshotCacheAt = Date.now();
-    return snapshotCache;
+    // Full-chain linkage check, serialise, gzip and seal stream from the
+    // history file in a memory-capped child process.
+    try {
+      return await snapshotBuilder.build({ view, genesis, network: info, keys, createdAtMs: Date.now() }, { signal });
+    } catch (error) {
+      if (error?.code === "history_file_corrupt") historyNeedsRebuild = true;
+      throw error;
+    }
   }
+  function currentMemory() {
+    const validators = {};
+    for (const name of VALIDATOR_NAMES) { const node = nodes.get(name); validators[name] = node && !node.exit ? processRssBytes(node.child.pid) ?? null : null; }
+    const childPid = snapshotBuilder?.pid();
+    const lastBuild = snapshotBuilder?.lastStats();
+    const snapshotChild = snapshotBuilder ? { running: childPid !== undefined, rss: childPid !== undefined ? processRssBytes(childPid) ?? null : null, maxRss: lastBuild?.maxRss ?? null, lastBuildAt: lastBuild?.at ?? null } : null;
+    return memoryReport({ gateway: gatewayMemory(), validators, snapshotChild });
+  }
+  const memoryTimer = setInterval(() => { if (log) console.log(formatMemoryLine(currentMemory())); }, Number(process.env.ZYRON_MEMORY_LOG_INTERVAL_MS) || MEMORY_LOG_INTERVAL_MS); memoryTimer.unref();
+  // Background builds (see createSnapshotCache); the route never builds inline.
+  const snapshots = stateSecret ? createSnapshotCache({
+    build: buildSnapshotNow, currentHeight: async () => (await chainStatus()).height,
+    refreshMs: snapshotRefreshMs, buildTimeoutMs: snapshotBuildTimeoutMs, maxAgeMs: snapshotMaxAgeMs, redact: [stateSecret]
+  }) : undefined;
   // Rate-limit identity (P1-02). ZYRON_TRUST_CF_CONNECTING_IP=1 (Render, whose
   // Cloudflare edge sets CF-Connecting-IP): that header. Otherwise, from a
   // loopback tunnel/proxy: the rightmost X-Forwarded-For entry, which that
@@ -1526,7 +1991,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
         faucet.privateKey, faucet.publicKey, status.transactionVersion);
       const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
       // The node's error text is logged by the faucet route, never returned.
-      if (submitted.status < 200 || submitted.status > 299) { faucetNonce.rejected(); throw new Error(`faucet transfer rejected by node (status ${submitted.status}): ${String(submitted.body?.error ?? "").slice(0, 300)}`); }
+      if (submitted.status < 200 || submitted.status > 299) { faucetNonce.rejected(nonce, { status: submitted.status, error: submitted.body?.error }, Date.now()); throw new Error(`faucet transfer rejected by node (status ${submitted.status}): ${String(submitted.body?.error ?? "").slice(0, 300)}`); }
       faucetNonce.accepted(nonce, Date.now());
       return { txid: tx.txid, receiver, amountAtoms: FAUCET_DRIP_ATOMS, nonce };
     });
@@ -1621,7 +2086,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const heights = up.map((v) => v.height);
           // Quorum of the ACTIVE validator set (follows validator_update).
           const { ok, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, activeSetRejected } = activeSetTracker.evaluate(statuses);
-          const validators = statuses.map(({ activeSet: _activeSet, ...rest }) => rest);
+          const validators = withSupervisorStatus(statuses.map(({ activeSet: _activeSet, ...rest }) => rest), supervisor);
           if (ok) everReady = true;
           // Until the validators first reach a quorum, liveness stays 200
           // "starting" while start-up progresses (bounded by the stall window
@@ -1629,7 +2094,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           // always strict.
           if (!ok && !everReady) startup.observe(await startupFingerprint(statuses));
           const { code, status, starting, progress } = startup.liveness({ ok, everReady, path });
-          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
+          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, commit: buildCommit(), persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), ...(snapshots ? { snapshotCache: snapshots.status() } : {}), memory: memoryReportMb(currentMemory()), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
@@ -1650,11 +2115,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? { ...result.body, blocks: result.body.blocks.slice(0, capped) } : { error: "node unavailable" }, PEER_RPC);
         }
         if (path === "/state/snapshot" && stateSecret) {
-          const snapshotRate = limits.snapshot.take("global");
-          if (!snapshotRate.allowed) return limited(response, snapshotRate);
-          const { sealed, height } = await buildSnapshot();
-          response.writeHead(200, { ...SECURITY, "content-type": "application/octet-stream", "cache-control": "no-store", "content-length": sealed.length, "x-zyron-snapshot-height": String(height), "x-zyron-genesis-hash": info.genesisHash });
-          return response.end(sealed);
+          return serveSnapshotRoute(response, snapshots, { genesisHash: info.genesisHash, takeRate: () => limits.snapshot.take("global"), limited });
         }
         if (path === "/" || path === "/explorer") return sendHtml(response);
         if (path === "/api" ) return sendJson(response, 200, { name: "ZyronChain open TESTNET RPC", ...(await chainStatus()), endpoints: ["GET /health", "GET /status", "GET /network", "GET /genesis", "GET /supply", "GET /account/{address}", "GET /balance/{address}", "GET /nonce/{address}", "GET /blocks?from=&limit=", "GET /block/{height}", "GET /peer/status", "GET /peer/blocks?from=&limit=", "POST /tx", "POST /faucet {address}"] });
@@ -1704,7 +2165,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           if (tx.chainId !== chainId) return sendJson(response, 400, { error: `wrong chainId; this testnet is ${chainId}` });
           const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
           if (submitted.status < 200 || submitted.status > 299) return sendJson(response, 400, { error: String(submitted.body?.error ?? "rejected").slice(0, 300) });
-          return sendJson(response, 200, { accepted: true, txid: submitted.body.txid, note: "Included in a coming block (about 30 seconds).", ...submitDurableView((await chainStatus()).height) });
+          return sendJson(response, 200, submitAcceptedView(submitted.body, submitDurableView((await chainStatus()).height)));
         }
         if (path === "/faucet") return await faucetRoute(request, response, ip);
         if (relay && path.startsWith("/relay/v1/")) {
@@ -1729,8 +2190,12 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   gateway.setHandler(handler);
   const port = gateway.listening ? gateway.address().port : await listenGateway(gateway, gatewayPort, host);
   console.log(`ZyronChain open TESTNET gateway on ${host}:${port}; chain ${chainId}; genesis ${info.genesisHash}; validators ${VALIDATOR_NAMES.length}; value-bearing=false`);
+  snapshots?.start();
   async function shutdown() {
-    if (shuttingDown) return; shuttingDown = true;
+    if (shuttingDown) return; shuttingDown = true; clearInterval(memoryTimer);
+    snapshots?.stop();
+    snapshotBuilder?.terminate();
+    await historyFile.close();
     await new Promise((done) => gateway.close(() => done()));
     if (mailbox) await new Promise((done) => mailbox.close(() => done()));
     await Promise.all(VALIDATOR_NAMES.map((name) => stopValidator(name)));
@@ -1754,7 +2219,7 @@ async function smoke() {
   try {
     const info = await initNetwork(join(dir, "net"), "zyron-smoke-testnet-1");
     var smokeSecret = randomBytes(32).toString("base64");
-    network = await runNetwork(join(dir, "net"), { gatewayPort: 0, basePort: await allocateValidatorBasePort("smoke"), log: false, stateSecret: smokeSecret });
+    network = await runNetwork(join(dir, "net"), { gatewayPort: 0, basePort: await allocateValidatorBasePort("smoke"), log: false, stateSecret: smokeSecret, snapshotRefreshMs: 2_000 });
     const base = `http://127.0.0.1:${network.port}`;
     const get = async (p) => { const r = await fetch(base + p); return { status: r.status, body: r.headers.get("content-type")?.includes("json") ? await r.json() : await r.text() }; };
     const post = async (p, b) => { const r = await fetch(base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }); return { status: r.status, body: await r.json() }; };
@@ -1821,8 +2286,14 @@ async function smoke() {
     network.startValidator("v2");
     const rejoined = await until("v2 rejoins the tip", async () => { const h = (await get("/status")).body.height; return (await allAt(h)) ? h : false; }, 360_000);
     // Sealed snapshot -> restore into a fresh directory -> same chain resumes.
-    const snapshotResponse = await fetch(`${base}/state/snapshot`);
-    assert.equal(snapshotResponse.status, 200);
+    // Served from the background cache: wait for a build at or past the tip.
+    const snapshotResponse = await until("a cached snapshot at the rejoined tip", async () => {
+      const r = await fetch(`${base}/state/snapshot`);
+      if (r.status === 503) { assert.ok(Number(r.headers.get("retry-after")) > 0); return false; }
+      assert.equal(r.status, 200);
+      if (Number(r.headers.get("x-zyron-snapshot-height")) >= rejoined) return r;
+      await r.arrayBuffer(); return false;
+    }, 360_000);
     const sealed = Buffer.from(await snapshotResponse.arrayBuffer());
     assert.throws(() => openSnapshot(sealed, "x".repeat(40)));
     const snapHeight = Number(snapshotResponse.headers.get("x-zyron-snapshot-height"));

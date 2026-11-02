@@ -1,0 +1,113 @@
+Hardening batch: fail-first evidence.
+Tests from l1/test/hardening-batch.test.ts and the updated l1/test/mempool-future-nonce-cap.test.ts,
+run against unmodified origin/main e81ab20a (Node v22.19.0), before any source change.
+Command: node --test dist/test/hardening-batch.test.js dist/test/mempool-future-nonce-cap.test.js
+
+not ok 1 - HARDEN-1: a non-2xx /tx that may have relayed reuses the same nonce, keeping the pending prefix
+  error: |-
+    nonces 3 and 4 are still pending; retry 5
+    
+    3 !== 5
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 5
+  actual: 3
+not ok 2 - HARDEN-1: a nonce-conflict rejection proves the nonce is taken, so the tracker advances past it
+  error: |-
+    Expected values to be strictly equal:
+    
+    3 !== 5
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 5
+  actual: 3
+not ok 3 - HARDEN-1: chain state still wins: a nonce the chain has passed is never reused, a regression resets
+  error: |-
+    Expected values to be strictly equal:
+    
+    2 !== 3
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 3
+  actual: 2
+not ok 4 - HARDEN-2: /supply recomputes at most once per SUPPLY_MIN_RECOMPUTE_MS even when the tip moves
+  error: 'bounded recompute interval'
+  expected: true
+  actual: false
+not ok 5 - HARDEN-2: /supply keeps totalSupplyAtoms at the genesis supply and circulating = total - burned - pending - locked
+  error: |-
+    the report states supply never changes
+    + actual - expected
+    
+    + undefined
+    - false
+    
+  expected: false
+not ok 6 - HARDEN-3: both faucets read the fee floor from node /status through the shared helper
+  error: "Cannot find module '<repo>/l1/scripts/faucet-fee.mjs' imported from <repo>/l1/dist/test/hardening-batch.test.js"
+not ok 7 - HARDEN-4: a same-nonce replacement that fails a later capacity check leaves the original in place
+  error: 'original survives a failed replacement'
+  expected: true
+  actual: false
+not ok 8 - HARDEN-4: the admission-time comment describes sender:nonce slots, not txids
+  error: |-
+    The input was expected to not match the regular expression /admission time per txid/i. Input:
+    
+    'import { canonicalJson } from "./codec.js";\n' +
+      'import { FIXED_FEE_MISMATCH_MESSAGE } from "./fee-policy.js";\n' +
+      'import { assertMiningNotRetired, miningWorkHash } from "./mining.js";\n' +
+      'import type { MiningClaimTx, Transaction } from "./types.js";\n' +
+  actual: |-
+    import { canonicalJson } from "./codec.js";
+    import { FIXED_FEE_MISMATCH_MESSAGE } from "./fee-policy.js";
+    import { assertMiningNotRetired, miningWorkHash } from "./mining.js";
+    import type { MiningClaimTx, Transaction } from "./types.js";
+    
+    export interface MempoolOptions {
+not ok 9 - HARDEN-5: node /tx reports a gapped transfer as parked, waiting for the missing nonce
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+    
+    + undefined
+    - 'parked'
+    
+  expected: 'parked'
+not ok 10 - HARDEN-5: the gateway view says parked instead of 'included in ~30s', keeping accepted/txid
+  error: "Cannot find module '<repo>/l1/scripts/submit-view.mjs' imported from <repo>/l1/dist/test/hardening-batch.test.js"
+not ok 11 - HARDEN-6: an expired parked tx cannot be resubmitted with a fresh TTL while its gap is still open
+  error: 'Missing expected exception.'
+not ok 12 - HARDEN-6: the seen-expired cache is bounded by size and TTL constants
+  error: |-
+    The expression evaluated to a falsy value:
+    
+      assert.ok(Number.isSafeInteger(api.SEEN_EXPIRED_CACHE_MAX_ENTRIES) && api.SEEN_EXPIRED_CACHE_MAX_ENTRIES > 0 && api.SEEN_EXPIRED_CACHE_MAX_ENTRIES <= 100_000)
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+not ok 13 - HARDEN-7: buildCommit reads a commit SHA from the environment and never echoes other values
+  error: "Cannot find module '<repo>/l1/dist/src/build-info.js' imported from <repo>/l1/dist/test/hardening-batch.test.js"
+not ok 14 - HARDEN-7: node /readyz exposes the build commit
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+    
+    + undefined
+    - 'fedcba9876543210fedcba9876543210fedcba98'
+    
+  expected: 'fedcba9876543210fedcba9876543210fedcba98'
+ok 15 - FUTURE-CAP: defaults are 16 parked txs per address and a 10 minute TTL
+ok 16 - FUTURE-CAP: the 17th future-nonce tx of one address is rejected; other addresses and ready txs are unaffected
+ok 17 - FUTURE-CAP: the cap is configurable
+ok 18 - FUTURE-CAP: parked txs are evicted after the TTL; ready txs stay
+ok 19 - FUTURE-CAP: a parked tx promoted when its gap fills before the TTL is not evicted
+not ok 20 - FUTURE-CAP: Red Team PoC (gap nonce parks, resubmit says already in mempool) is neutralized
+  error: 'Missing expected exception.'
+# tests 20
+# pass 5
+# fail 15
