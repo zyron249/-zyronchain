@@ -34,6 +34,24 @@ test("watermark advances only to published snapshots that are on this chain", as
   assert.equal(w.height, 5, "the watermark never moves back");
 });
 
+test("watermark status reports when the published snapshot was last seen advancing", async () => {
+  let published: { height: number; tipHash: string } | undefined;
+  const local = new Map([[5, H(5)], [9, H(9)]]);
+  const w = api.createDurableWatermark({ height: 3, tipHash: H(3), fetchPublished: async () => published, localHashAt: async (h: number) => local.get(h) });
+  assert.equal(w.status().lastPublishSeenAtMs, null, "unknown until a published snapshot moves the watermark");
+  await w.refresh();
+  assert.equal(w.status().lastPublishSeenAtMs, null);
+  const before = Date.now();
+  published = { height: 5, tipHash: H(5) }; await w.refresh();
+  const seen = w.status().lastPublishSeenAtMs;
+  assert.ok(seen >= before && seen <= Date.now());
+  await sleep(5);
+  await w.refresh();
+  assert.equal(w.status().lastPublishSeenAtMs, seen, "an unchanged snapshot does not move it");
+  published = { height: 9, tipHash: H(99) }; await w.refresh();
+  assert.equal(w.status().lastPublishSeenAtMs, seen, "a snapshot from another branch does not move it");
+});
+
 test("peer status is capped at the watermark", () => {
   const status = { chainId: "c", genesisHash: H(1), height: 20, tipHash: H(20) };
   assert.deepEqual(api.capPeerStatus(status, { height: 12, tipHash: H(12) }), { ...status, height: 12, tipHash: H(12) });

@@ -1767,3 +1767,105 @@ test("runKeeper starts watch-triggered cycles at most once per WATCH_MIN_GAP_MS"
   const triggered = snapshots.slice(1);
   for (let i = 1; i < triggered.length; i += 1) assert.ok(triggered[i] - triggered[i - 1] >= 2, `cycles at ${triggered.join(",")}`);
 });
+
+// ---- durable lag alarm wiring ----
+test("detectPublishTrail fires only after the trail outlasts the window", () => {
+  const { detectPublishTrail } = keeper;
+  const min = 60_000;
+  const s = (m, built, pub) => ({ ts: T0 + m * min, lastBuiltHeight: built, publishedHeight: pub });
+  assert.deepEqual(detectPublishTrail([], {}), { alarm: false, trail: null, trailMs: null });
+  assert.equal(detectPublishTrail([s(0, 100, 90), s(30, 110, 100)], { maxTrail: 20, windowMs: 20 * min }).alarm, false);
+  const trailing = [s(0, 100, 70), s(10, 110, 70), s(19, 120, 70)];
+  assert.equal(detectPublishTrail(trailing, { maxTrail: 20, windowMs: 20 * min }).alarm, false, "19 min is inside the window");
+  const r = detectPublishTrail([...trailing, s(21, 125, 70)], { maxTrail: 20, windowMs: 20 * min });
+  assert.deepEqual(r, { alarm: true, trail: 55, trailMs: 21 * min });
+  assert.equal(detectPublishTrail([s(0, 100, 70), s(10, 110, 100), s(21, 140, 100)], { maxTrail: 20, windowMs: 20 * min }).alarm, false, "a catch-up restarts the window");
+  assert.equal(detectPublishTrail([s(0, 100, 70), { ts: T0 + 5 * min }, s(21, 125, 70)], { maxTrail: 20, windowMs: 20 * min }).alarm, true, "samples without heights are skipped");
+});
+
+test("lag monitor replays the Nov 2 12966 gap: one annotation per alarm episode", () => {
+  let clock = Date.parse("2026-11-02T14:14:00Z");
+  const errors = [];
+  const m = keeper.createLagMonitor({ now: () => clock, error: (line) => errors.push(line) });
+  // 45 s polls, about 2 blocks/min, durable stuck at 12966 (keeper publishes failing).
+  for (let i = 0; i < 40; i += 1) {
+    m.observe({ maxHeight: 13084 + Math.floor(i * 1.5), durableHeight: 12966, snapshotCache: { lastBuiltHeight: 13084 + Math.floor(i * 1.5) } });
+    clock += 45_000;
+  }
+  const reasons = m.alarms.map((a) => a.reason);
+  assert.ok(reasons.includes("lag"), JSON.stringify(reasons));
+  assert.ok(reasons.includes("trail"), JSON.stringify(reasons));
+  assert.equal(reasons.filter((r) => r === "lag").length, 1, "a continuing episode is reported once");
+  assert.equal(errors.length, m.alarms.length);
+  assert.match(errors[0], /durable lag alarm: durableHeight 12966 trails height by 121 blocks/);
+  assert.equal(m.observe({ maxHeight: 1, durableHeight: 1 }) === null, false);
+  clock -= 1; assert.equal(m.observe({ maxHeight: 1, durableHeight: 1 }), null, "a non-increasing ts is ignored, not thrown");
+});
+
+test("lag monitor stays quiet on a healthy chain and caps its buffer", () => {
+  let clock = T0;
+  const m = keeper.createLagMonitor({ now: () => clock, maxSamples: 50 });
+  for (let i = 0; i < 200; i += 1) {
+    const h = 1000 + i;
+    m.observe({ maxHeight: h, durableHeight: h - 4 - (i % 8), snapshotCache: { lastBuiltHeight: h - 1 } });
+    clock += 45_000;
+  }
+  assert.deepEqual(m.alarms, []);
+  assert.equal(m.samples.length, 50);
+});
+
+test("the keeper's own published height counts for the trail check", () => {
+  let clock = T0;
+  const m = keeper.createLagMonitor({ now: () => clock, maxLag: 1000 });
+  m.notePublished(500);
+  for (let i = 0; i < 40; i += 1) { m.observe({ maxHeight: 505, durableHeight: 400, snapshotCache: { lastBuiltHeight: 505 } }); clock += 45_000; }
+  assert.deepEqual(m.alarms.map((a) => a.reason), [], "published 500 trails 505 by 5 only, though durableHeight is 400");
+});
+
+test("runKeeper with the lag alarm keeps publishing and fails the run at the end", async () => {
+  const time = virtualTime();
+  const { github } = fakeGitHub({ now: time.now });
+  let height = 2000;
+  const fetchImpl = async (url) => {
+    const minutes = Math.floor((time.now() - T0) / 60_000);
+    height = 2000 + minutes * 2;
+    // The gateway's durableHeight never advances (its watermark refresh is broken).
+    if (url.endsWith("/health")) return new Response(JSON.stringify({ status: "ready", maxHeight: height, durableHeight: 1990, snapshotCache: { lastBuiltHeight: height, building: false } }), { status: 200 });
+    return new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": String(height), "x-zyron-genesis-hash": GENESIS } });
+  };
+  const errors = [];
+  const stats = await time.run(runKeeper({
+    fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS,
+    runMs: 60 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000, watchIntervalMs: 45_000,
+    lag: {}, error: (line) => errors.push(line),
+    now: time.now, sleep: time.sleep, log() {}, warn() {}
+  }));
+  assert.ok(stats.published >= 5, `kept publishing after the alarm (published ${stats.published})`);
+  assert.deepEqual(stats.alarms.map((a) => a.reason), ["lag"]);
+  assert.equal(errors.length, 1);
+  assert.equal(exitCodeFor(stats), 1);
+  assert.match(keeper.lagSummary(stats.alarms), /Durable lag alarm: 1 raised; this run fails/);
+  assert.equal(keeper.lagSummary([]), "\nDurable lag alarm: none\n");
+  assert.equal(exitCodeFor({ ...stats, alarms: [] }), 0);
+});
+
+test("runKeeper without lag options does not sample (unchanged behaviour)", async () => {
+  const time = virtualTime();
+  const { github } = fakeGitHub({ now: time.now });
+  const fetchImpl = async (url) => url.endsWith("/health")
+    ? new Response(JSON.stringify({ status: "ready", maxHeight: 9999, durableHeight: 1 }), { status: 200 })
+    : new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": "100", "x-zyron-genesis-hash": GENESIS } });
+  const stats = await time.run(runKeeper({
+    fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS,
+    runMs: 30 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000, watchIntervalMs: 45_000,
+    now: time.now, sleep: time.sleep, log() {}, warn() {}
+  }));
+  assert.equal(stats.alarms, undefined);
+  assert.equal(exitCodeFor(stats), 0);
+});
+
+test("workflow passes no lag override that weakens the defaults", async () => {
+  const workflow = await readFile(new URL("../workflows/open-testnet-snapshot-keeper.yml", import.meta.url), "utf8");
+  assert.doesNotMatch(workflow, /LAG_MAX_BLOCKS|LAG_STALE_MINUTES|PUBLISH_TRAIL_MAX_BLOCKS|LAG_CONSECUTIVE/);
+  assert.match(workflow, /WATCH_INTERVAL_SECONDS: '45'/);
+});
