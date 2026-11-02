@@ -1635,3 +1635,89 @@ test("without the state secret the keeper refuses to run unless explicitly opted
   assert.deepEqual(keeperSecretPolicy({ ZYRON_TESTNET_STATE_SECRET: "s" }), { stateSecret: "s" });
   assert.match(keeperSecretPolicy({ ZYRON_KEEPER_ALLOW_UNAUTHENTICATED: "1" }).warning, /unauthenticated/);
 });
+
+test("fetchSnapshotWithRetry retries 429/502/503 with jittered backoff and never other failures", async () => {
+  const { fetchSnapshotWithRetry, retryDelayMs, SnapshotHttpError } = keeper;
+  const statuses = [503, 502, 429, 200];
+  const delays = [];
+  let calls = 0;
+  const fetchImpl = async () => {
+    const status = statuses[calls++];
+    if (status !== 200) return new Response("busy", { status });
+    return new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": "2200", "x-zyron-genesis-hash": GENESIS } });
+  };
+  const result = await fetchSnapshotWithRetry({ fetchImpl, gateway: "https://gw", expectedGenesis: GENESIS, now: () => T0, retries: 4, retryBaseMs: 1_000, random: () => 0, sleep: async (ms) => { delays.push(ms); } });
+  assert.equal(result.snapshot.height, 2200);
+  assert.deepEqual(delays, [500, 1_000, 2_000]);
+  calls = 0;
+  await assert.rejects(fetchSnapshotWithRetry({ fetchImpl: async () => { calls += 1; return new Response("x", { status: 500 }); }, gateway: "https://gw", expectedGenesis: GENESIS, now: () => T0, retries: 4, sleep: async () => {} }), (error) => error instanceof SnapshotHttpError && error.status === 500);
+  assert.equal(calls, 1, "HTTP 500 is not retried");
+  calls = 0;
+  await assert.rejects(fetchSnapshotWithRetry({ fetchImpl: async () => { calls += 1; return new Response("x", { status: 503 }); }, gateway: "https://gw", expectedGenesis: GENESIS, now: () => T0, retries: 2, sleep: async () => {} }), /HTTP 503/);
+  assert.equal(calls, 3, "stops after the retry budget");
+  calls = 0;
+  await assert.rejects(fetchSnapshotWithRetry({ fetchImpl: async () => { calls += 1; return new Response("x", { status: 503 }); }, gateway: "https://gw", expectedGenesis: GENESIS, now: () => T0, retries: 4, retryBaseMs: 10_000, until: T0 + 1_000, sleep: async () => {} }), /HTTP 503/);
+  assert.equal(calls, 1, "no retry whose delay ends past the deadline");
+  calls = 0;
+  await assert.rejects(fetchSnapshotWithRetry({ fetchImpl: async () => { calls += 1; return new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": "2200", "x-zyron-genesis-hash": OTHER } }); }, gateway: "https://gw", expectedGenesis: GENESIS, now: () => T0, retries: 4, sleep: async () => {} }));
+  assert.equal(calls, 1, "a validation failure is not retried");
+  assert.equal(retryDelayMs(10, { baseMs: 2_000, random: () => 1 }), 30_000, "capped");
+  assert.equal(retryDelayMs(0, { baseMs: 2_000, random: () => 0, retryAfter: 9_000 }), 9_000, "Retry-After raises the delay");
+  assert.equal(retryDelayMs(0, { baseMs: 2_000, random: () => 0, retryAfter: 600_000 }), 30_000, "Retry-After is capped");
+});
+
+test("fetchSnapshot passes its timeout to the request", async () => {
+  let signal;
+  await assert.rejects(fetchSnapshot({ fetchImpl: async (url, init) => { signal = init.signal; return new Response("x", { status: 503 }); }, gateway: "https://gw", expectedGenesis: GENESIS, now: () => T0, timeoutMs: 5 }), /HTTP 503/);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(signal.aborted, true);
+});
+
+test("readSnapshotCache reads lastBuiltHeight and tolerates bad bodies", async () => {
+  const { readSnapshotCache } = keeper;
+  const health = (body, status = 200) => async () => new Response(typeof body === "string" ? body : JSON.stringify(body), { status });
+  assert.deepEqual(await readSnapshotCache({ fetchImpl: health({ snapshotCache: { lastBuiltHeight: 12966, building: false } }), gateway: "https://gw" }), { lastBuiltHeight: 12966, building: false });
+  assert.deepEqual(await readSnapshotCache({ fetchImpl: health({ snapshotCache: { lastBuiltHeight: null, building: true } }), gateway: "https://gw" }), { lastBuiltHeight: null, building: true });
+  assert.deepEqual(await readSnapshotCache({ fetchImpl: health({ snapshotCache: { lastBuiltHeight: "9" } }), gateway: "https://gw" }), { lastBuiltHeight: null, building: false });
+  assert.equal(await readSnapshotCache({ fetchImpl: health({ ok: true }), gateway: "https://gw" }), null);
+  assert.equal(await readSnapshotCache({ fetchImpl: health("not json"), gateway: "https://gw" }), null);
+  assert.equal(await readSnapshotCache({ fetchImpl: health({ snapshotCache: { lastBuiltHeight: 5 } }, 503), gateway: "https://gw" }), null);
+  assert.equal(await readSnapshotCache({ fetchImpl: async () => { throw new Error("down"); }, gateway: "https://gw" }), null);
+});
+
+test("runKeeper with a snapshot watch fetches as soon as a newer build appears, once per built height", async () => {
+  const time = virtualTime();
+  const { github } = fakeGitHub({ now: time.now });
+  let built = null;
+  let height = 2150;
+  const snapshots = [];
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/health")) return new Response(JSON.stringify({ status: "ready", maxHeight: height, snapshotCache: { lastBuiltHeight: built, building: false } }), { status: 200 });
+    snapshots.push((time.now() - T0) / 60_000);
+    // Served only within a short window after each build; 503 otherwise.
+    if (built === null || built <= height) return new Response("busy", { status: 503 });
+    height = built;
+    return new Response(sealed(), { status: 200, headers: { "x-zyron-snapshot-height": String(height), "x-zyron-genesis-hash": GENESIS } });
+  };
+  const schedule = [[3, 2170], [13, 2190]];
+  const origNow = time.now;
+  const now = () => { const minutes = (origNow() - T0) / 60_000; for (const [at, h] of schedule) if (minutes >= at && (built ?? 0) < h) built = h; return origNow(); };
+  const stats = await time.run(runKeeper({
+    fetchImpl, github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS,
+    runMs: 20 * 60_000, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000, watchIntervalMs: 60_000,
+    now, sleep: time.sleep, log() {}, warn() {}
+  }));
+  assert.equal(stats.watchTriggers, 2);
+  assert.equal(stats.lastPublishedHeight, 2190);
+  // t=0 (503), t=3 (watch: 2170), t=13 (watch: 2190, sooner than the 10-min interval from t=3).
+  assert.deepEqual(snapshots, [0, 3, 13]);
+  assert.equal(stats.published, 2);
+});
+
+test("keeper workflow enables the snapshot watch with a short fetch timeout and retries", async () => {
+  const workflow = await readFile(new URL("../workflows/open-testnet-snapshot-keeper.yml", import.meta.url), "utf8");
+  const value = (name) => Number(workflow.match(new RegExp(`${name}: '(\\d+)'`))?.[1]);
+  assert.ok(value("WATCH_INTERVAL_SECONDS") >= 30 && value("WATCH_INTERVAL_SECONDS") <= 60);
+  assert.ok(value("SNAPSHOT_TIMEOUT_SECONDS") > 0 && value("SNAPSHOT_TIMEOUT_SECONDS") < 300);
+  assert.ok(value("SNAPSHOT_RETRIES") >= 1);
+});

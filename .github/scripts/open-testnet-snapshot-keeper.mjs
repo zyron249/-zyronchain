@@ -666,21 +666,83 @@ export async function readCapped(response, maxBytes) {
   return Buffer.concat(chunks, total);
 }
 
-export async function fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now, stateSecret }) {
+// Statuses the gateway returns while its snapshot is not servable right now
+// (building, restarting, rate limited); worth a short retry.
+export const RETRYABLE_SNAPSHOT_STATUSES = new Set([429, 502, 503]);
+export const DEFAULT_SNAPSHOT_TIMEOUT_MS = 300_000;
+const MAX_RETRY_DELAY_MS = 30_000;
+
+export class SnapshotHttpError extends Error {
+  constructor(status, retryAfterMs = null) {
+    super(`snapshot request returned HTTP ${status}`);
+    this.name = "SnapshotHttpError";
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+function retryAfterMs(headers) {
+  const raw = headers?.get?.("retry-after");
+  if (!raw || !/^\d{1,5}$/.test(raw.trim())) return null;
+  return Number(raw.trim()) * 1000;
+}
+
+// Exponential backoff with jitter in [0.5, 1] of the step, capped; a
+// Retry-After header (seconds) raises the delay, still capped.
+export function retryDelayMs(attempt, { baseMs, random = Math.random, retryAfter = null }) {
+  const step = Math.min(MAX_RETRY_DELAY_MS, baseMs * 2 ** attempt);
+  const jittered = Math.round(step * (0.5 + random() * 0.5));
+  return Math.min(MAX_RETRY_DELAY_MS, Math.max(jittered, retryAfter ?? 0));
+}
+
+export async function fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now, stateSecret, timeoutMs = DEFAULT_SNAPSHOT_TIMEOUT_MS }) {
   const requestStartedMs = now();
-  const response = await fetchImpl(`${gateway}/state/snapshot`, { signal: AbortSignal.timeout(300_000) });
+  const response = await fetchImpl(`${gateway}/state/snapshot`, { signal: AbortSignal.timeout(timeoutMs) });
   if (response.status !== 200) {
     await response.body?.cancel().catch(() => {});
-    throw new Error(`snapshot request returned HTTP ${response.status}`);
+    throw new SnapshotHttpError(response.status, retryAfterMs(response.headers));
   }
   const bytes = await readCapped(response, MAX_SNAPSHOT_BYTES);
   const snapshot = checkAuthenticated(validateSnapshot({ status: response.status, headers: response.headers, bytes }, expectedGenesis), bytes, stateSecret);
   return { snapshot, bytes, requestStartedMs };
 }
 
+// fetchSnapshot, retried on 429/502/503 only (never on a validation or
+// authentication failure) with jittered backoff. No retry starts when its
+// delay would end past `until`.
+export async function fetchSnapshotWithRetry({ retries = 0, retryBaseMs = 2_000, random = Math.random, sleep = defaultSleep, until = Infinity, warn = () => {}, ...options }) {
+  for (let attempt = 0; ; attempt += 1) {
+    try { return await fetchSnapshot(options); }
+    catch (error) {
+      if (!(error instanceof SnapshotHttpError) || !RETRYABLE_SNAPSHOT_STATUSES.has(error.status) || attempt >= retries) throw error;
+      const delay = retryDelayMs(attempt, { baseMs: retryBaseMs, random, retryAfter: error.retryAfterMs });
+      if (options.now() + delay > until) throw error;
+      warn(`${error.message}; retry ${attempt + 1}/${retries} in ${delay} ms`);
+      await sleep(delay);
+    }
+  }
+}
+
+// Cheap /health read for the snapshot watch: the gateway's snapshotCache
+// status. Returns null on any error or a body without it.
+export async function readSnapshotCache({ fetchImpl, gateway, signal, timeoutMs = 20_000 }) {
+  try {
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const response = await fetchImpl(`${gateway}/health`, { signal: signal ? AbortSignal.any([timeout, signal]) : timeout });
+    if (response.status !== 200) { await response.body?.cancel().catch(() => {}); return null; }
+    const cache = JSON.parse(await response.text())?.snapshotCache;
+    if (!cache || typeof cache !== "object") return null;
+    const built = Number.isSafeInteger(cache.lastBuiltHeight) && cache.lastBuiltHeight > 0 ? cache.lastBuiltHeight : null;
+    return { lastBuiltHeight: built, building: cache.building === true };
+  } catch {
+    return null;
+  }
+}
+
 // One keeper cycle: download, check, publish state.enc then the per-genesis copy.
-export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity }) {
-  const { snapshot, bytes, requestStartedMs } = await fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now, stateSecret });
+// `fetch` (optional) sets the snapshot timeout and 429/502/503 retries.
+export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, now, log, warn = log, sleep = defaultSleep, swapBy = Infinity, fetch: fetchOptions = {} }) {
+  const { snapshot, bytes, requestStartedMs } = await fetchSnapshotWithRetry({ fetchImpl, gateway, expectedGenesis, now, stateSecret, sleep, warn, until: swapBy, ...fetchOptions });
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   // A download that ended past the deadline starts neither publication
   // (publishAsset also refuses to start after swapBy).
@@ -717,10 +779,14 @@ export async function keepAlive({ fetchImpl, gateway, signal }) {
 
 // Runs two independent loops until the deadline: /health every
 // keepAliveIntervalMs (so a slow publish cycle never lets the instance idle)
-// and a publish cycle every publishIntervalMs.
+// and a publish cycle every publishIntervalMs. With watchIntervalMs set, the
+// wait between cycles also reads /health snapshotCache every watchIntervalMs
+// and starts a cycle as soon as lastBuiltHeight is newer than the last height
+// fetched (once per built height), so short serving windows after each gateway
+// build are not missed.
 export async function runKeeper(options) {
-  const { fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn } = options;
-  const stats = { cycles: 0, published: 0, notNewer: 0, refused: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null, authenticationFailures: 0 };
+  const { fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn, watchIntervalMs = null, fetch: fetchOptions = {} } = options;
+  const stats = { cycles: 0, published: 0, notNewer: 0, refused: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null, authenticationFailures: 0, watchTriggers: 0 };
   const deadline = now() + runMs;
   // Aborted when the publish loop stops, so no pending wait (and no live timer)
   // outlives runKeeper.
@@ -729,6 +795,24 @@ export async function runKeeper(options) {
   const pauseUntil = async (untilMs) => {
     const wait = Math.min(untilMs, deadline) - now();
     if (wait > 0) await sleep(wait, stop.signal);
+  };
+  let lastTriggeredBuilt = null;
+  // Waits until `untilMs`, or less when the watch sees a newer built snapshot.
+  const waitForNextCycle = async (untilMs) => {
+    if (!watchIntervalMs) return pauseUntil(untilMs);
+    const end = Math.min(untilMs, deadline);
+    while (now() < end) {
+      await sleep(Math.min(watchIntervalMs, end - now()), stop.signal);
+      if (now() >= deadline) return;
+      const cache = await readSnapshotCache({ fetchImpl, gateway, signal: stop.signal });
+      const built = cache?.lastBuiltHeight ?? null;
+      if (built !== null && built > (stats.lastHeight ?? 0) && built !== lastTriggeredBuilt) {
+        lastTriggeredBuilt = built;
+        log(`snapshot watch: gateway built height ${built} (last fetched ${stats.lastHeight ?? "-"}); fetching now`);
+        stats.watchTriggers += 1;
+        return;
+      }
+    }
   };
   // Health is polled until the publish loop has stopped, not just until the
   // deadline: a cycle that started before the deadline can still be uploading.
@@ -756,7 +840,7 @@ export async function runKeeper(options) {
       // download or upload starts then.
       if (now() >= deadline) { warn("run deadline reached during repair; skipping publication"); break; }
       try {
-        const result = await publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, now, log, warn, sleep, swapBy: deadline });
+        const result = await publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, now, log, warn, sleep, swapBy: deadline, fetch: fetchOptions });
         stats.lastHeight = result.height;
         if (result.published) { stats.published += 1; stats.lastPublishedHeight = result.height; log(`snapshot sha256 ${result.sha256} size ${result.size}`); }
         else if (result.upToDate) stats.notNewer += 1;
@@ -766,7 +850,7 @@ export async function runKeeper(options) {
         if (error instanceof GenesisMismatchError) { stats.genesisMismatches += 1; warn(error.message); }
         else { stats.failures += 1; warn(`cycle failed: ${error instanceof Error ? error.message : String(error)}`); }
       }
-      await pauseUntil(cycleStartedMs + publishIntervalMs);
+      await waitForNextCycle(cycleStartedMs + publishIntervalMs);
     }
   };
   await Promise.all([keepAliveLoop(), publishLoop().finally(() => { publishStopped = true; markStopped(); stop.abort(); })]);
@@ -817,6 +901,12 @@ async function main() {
     runMs: runMinutes * 60_000,
     publishIntervalMs: envNumber(env, "PUBLISH_INTERVAL_SECONDS", 600, 60, 3600) * 1000,
     keepAliveIntervalMs: envNumber(env, "KEEPALIVE_INTERVAL_SECONDS", 300, 30, 840) * 1000,
+    watchIntervalMs: envNumber(env, "WATCH_INTERVAL_SECONDS", 0, 0, 600) * 1000 || null,
+    fetch: {
+      timeoutMs: envNumber(env, "SNAPSHOT_TIMEOUT_SECONDS", 300, 10, 300) * 1000,
+      retries: envNumber(env, "SNAPSHOT_RETRIES", 0, 0, 10),
+      retryBaseMs: 2_000
+    },
     now: Date.now, sleep: cancellableSleep,
     log: (line) => console.log(`${stamp()} ${line}`),
     warn: (line) => console.log(`::warning::${stamp()} ${line}`)
