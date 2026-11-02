@@ -2184,6 +2184,15 @@ test("#1171 Info: run_minutes must be digits only in both jobs", async () => {
     assert.match(keep.stdout, /::error title=Invalid run_minutes::/);
     assert.equal(run(chainCheck, "RUN_MINUTES", bad).status, 1, JSON.stringify(bad));
   }
+  // The rejected value is never echoed, so a newline cannot inject a workflow command.
+  for (const injected of ["5\n::warning::pwned", "x\r\n::warning title=t::pwned", "::warning::pwned"]) {
+    for (const [script, name] of [[keepStep, "RUN_MINUTES_INPUT"], [chainCheck, "RUN_MINUTES"]]) {
+      const result = run(script, name, injected);
+      assert.equal(result.status, 1, JSON.stringify(injected));
+      assert.deepEqual(result.stdout.split(/\r?\n/).filter(Boolean), ["::error title=Invalid run_minutes::run_minutes must be a positive integer"], `${name} ${JSON.stringify(injected)}`);
+      assert.doesNotMatch(result.stdout + result.stderr, /pwned|::warning/);
+    }
+  }
 });
 
 test("#1171 Info: the failure-streak runs query is limited to main", async () => {
