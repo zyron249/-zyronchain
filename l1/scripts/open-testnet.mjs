@@ -821,6 +821,49 @@ export async function readPublishedSnapshotTip(url, secret, { fetchImpl = fetch,
 }
 
 // Caps a follower status at the durable watermark.
+// Sealed-snapshot cache for GET /state/snapshot. Building a snapshot reads and
+// verifies every validator's history and seals the whole chain, which grew past
+// the keeper's 300 s request timeout once the chain was long. The gateway now
+// builds in the background (at start-up, then whenever the tip has advanced
+// past the cached height, checked every `refreshMs`), one build at a time, and
+// the route serves the newest sealed snapshot immediately. Only one snapshot is
+// kept: a finished build replaces the previous one.
+export const SNAPSHOT_REFRESH_MS = 60_000;
+export const SNAPSHOT_RETRY_AFTER_SECONDS = 30;
+export function createSnapshotCache({ build, currentHeight, refreshMs = SNAPSHOT_REFRESH_MS, log = (line) => console.error(line), now = Date.now }) {
+  let cached; let inFlight; let timer; let lastError;
+  function refresh({ force = false } = {}) {
+    inFlight ??= (async () => {
+      if (cached && !force) {
+        const height = await currentHeight();
+        if (!(height > cached.height)) return cached;
+      }
+      const startedAtMs = now();
+      const next = await build();
+      cached = { sealed: next.sealed, height: next.height, builtAtMs: now(), buildMs: now() - startedAtMs };
+      lastError = undefined;
+      return cached;
+    })().catch((error) => {
+      lastError = error instanceof Error ? error.message : String(error);
+      log(`snapshot: background build failed (${lastError})`);
+      return cached;
+    }).finally(() => { inFlight = undefined; });
+    return inFlight;
+  }
+  return {
+    current: () => cached,
+    building: () => inFlight !== undefined,
+    lastError: () => lastError,
+    refresh,
+    start() {
+      if (timer) return;
+      void refresh();
+      timer = setInterval(() => { void refresh(); }, refreshMs); timer.unref?.();
+    },
+    stop() { if (timer) clearInterval(timer); timer = undefined; }
+  };
+}
+
 export function capPeerStatus(status, watermark) {
   // Only the P2P identity/tip shape is served to followers, so a follower on
   // an older binary (strict four-key parser) keeps syncing; the fee hints stay
@@ -1212,7 +1255,7 @@ export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, ge
 }
 
 // ---- run: validators + gateway ---------------------------------------------------
-export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server, verifiedHistory, durable, startupLimits = parseStartupLimits() } = {}) {
+export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server, verifiedHistory, durable, startupLimits = parseStartupLimits(), snapshotRefreshMs = Number(process.env.ZYRON_SNAPSHOT_REFRESH_MS ?? SNAPSHOT_REFRESH_MS) || SNAPSHOT_REFRESH_MS } = {}) {
   const runStartedAtMs = Date.now();
   const genesisPath = join(dir, "genesis.json");
   const genesis = JSON.parse(await readFile(genesisPath, "utf8"));
@@ -1402,7 +1445,6 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     snapshot: new WindowLimiter(30, 3_600_000, 1),
     relayIp: new WindowLimiter(Number(process.env.ZYRON_RELAY_REQUESTS_PER_MINUTE_PER_IP ?? 1200), 60_000)
   };
-  let snapshotCache; let snapshotCacheAt = 0; let snapshotBuild;
   // Verified history (R28-1059): from the restore replay when there was one,
   // otherwise validated from genesis on the first build.
   const snapshotHistory = verifiedHistory ?? createSnapshotHistory(genesis);
@@ -1427,13 +1469,6 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   const activeSetSeed = activeSetSeedFromHistory(verifiedHistory);
   const activeSetTracker = createActiveSetTracker(genesis.validators, { addressOf: (publicKey) => addressFromPublicKey(publicKey), minValidators: STRICT_MIN_VALIDATORS, ...(activeSetSeed ? { initial: activeSetSeed } : {}) });
   if (log) console.log(`active set seeded from ${activeSetTracker.seededFrom}${activeSetSeed ? ` (height ${activeSetSeed.height}, ${activeSetSeed.validators.length} validators)` : ""}`);
-  // One build at a time: concurrent requests share it, and the verified
-  // history is never extended twice in parallel.
-  function buildSnapshot() {
-    if (snapshotCache && Date.now() - snapshotCacheAt < 60_000) return Promise.resolve(snapshotCache);
-    snapshotBuild ??= buildSnapshotNow().finally(() => { snapshotBuild = undefined; });
-    return snapshotBuild;
-  }
   // One writer at a time for the verified history (snapshot builds and the
   // relay's membership refresh both extend it).
   let historyLock = Promise.resolve();
@@ -1460,6 +1495,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   let historyRefresh;
   function refreshHistory() {
     historyRefresh ??= (async () => {
+      // A snapshot build extends the same history; do not queue behind it on
+      // the shared lock (the next 5 s tick catches up if needed).
+      if (snapshots?.building()) return;
       const { height: tip, tipHash } = await chainStatus();
       if (tip > snapshotHistory.chain.height) await extendHistory(historyReaders(), tip, tipHash);
     })().catch((error) => console.error(`relay: validator history refresh failed (${error instanceof Error ? error.message : String(error)})`)).finally(() => { historyRefresh = undefined; });
@@ -1472,9 +1510,13 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     const keys = {};
     for (const name of [...VALIDATOR_NAMES, "oracle1", "oracle2", "oracle3", "founder", "faucet", "liquidity", "ecosystem"]) keys[name] = (await readSecret(join(dir, "keys", `${name}.json`))).privateKey;
     const sealed = sealSnapshot({ format: SNAPSHOT_MAGIC, createdAtMs: Date.now(), genesis, network: info, keys, blocks }, stateSecret);
-    snapshotCache = { sealed, height: tip }; snapshotCacheAt = Date.now();
-    return snapshotCache;
+    return { sealed, height: tip };
   }
+  // Background builds (see createSnapshotCache); the route never builds inline.
+  const snapshots = stateSecret ? createSnapshotCache({
+    build: buildSnapshotNow, currentHeight: async () => (await chainStatus()).height,
+    refreshMs: snapshotRefreshMs
+  }) : undefined;
   // Rate-limit identity (P1-02). ZYRON_TRUST_CF_CONNECTING_IP=1 (Render, whose
   // Cloudflare edge sets CF-Connecting-IP): that header. Otherwise, from a
   // loopback tunnel/proxy: the rightmost X-Forwarded-For entry, which that
@@ -1624,9 +1666,11 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? { ...result.body, blocks: result.body.blocks.slice(0, capped) } : { error: "node unavailable" }, PEER_RPC);
         }
         if (path === "/state/snapshot" && stateSecret) {
+          const cached = snapshots.current();
+          if (!cached) { void snapshots.refresh(); return sendJson(response, 503, { error: "snapshot not built yet, retry later" }, { "retry-after": String(SNAPSHOT_RETRY_AFTER_SECONDS) }); }
           const snapshotRate = limits.snapshot.take("global");
           if (!snapshotRate.allowed) return limited(response, snapshotRate);
-          const { sealed, height } = await buildSnapshot();
+          const { sealed, height } = cached;
           response.writeHead(200, { ...SECURITY, "content-type": "application/octet-stream", "cache-control": "no-store", "content-length": sealed.length, "x-zyron-snapshot-height": String(height), "x-zyron-genesis-hash": info.genesisHash });
           return response.end(sealed);
         }
@@ -1703,8 +1747,10 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   gateway.setHandler(handler);
   const port = gateway.listening ? gateway.address().port : await listenGateway(gateway, gatewayPort, host);
   console.log(`ZyronChain open TESTNET gateway on ${host}:${port}; chain ${chainId}; genesis ${info.genesisHash}; validators ${VALIDATOR_NAMES.length}; value-bearing=false`);
+  snapshots?.start();
   async function shutdown() {
     if (shuttingDown) return; shuttingDown = true;
+    snapshots?.stop();
     await new Promise((done) => gateway.close(() => done()));
     if (mailbox) await new Promise((done) => mailbox.close(() => done()));
     await Promise.all(VALIDATOR_NAMES.map((name) => stopValidator(name)));
@@ -1728,7 +1774,7 @@ async function smoke() {
   try {
     const info = await initNetwork(join(dir, "net"), "zyron-smoke-testnet-1");
     var smokeSecret = randomBytes(32).toString("base64");
-    network = await runNetwork(join(dir, "net"), { gatewayPort: 0, basePort: await allocateValidatorBasePort("smoke"), log: false, stateSecret: smokeSecret });
+    network = await runNetwork(join(dir, "net"), { gatewayPort: 0, basePort: await allocateValidatorBasePort("smoke"), log: false, stateSecret: smokeSecret, snapshotRefreshMs: 2_000 });
     const base = `http://127.0.0.1:${network.port}`;
     const get = async (p) => { const r = await fetch(base + p); return { status: r.status, body: r.headers.get("content-type")?.includes("json") ? await r.json() : await r.text() }; };
     const post = async (p, b) => { const r = await fetch(base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }); return { status: r.status, body: await r.json() }; };
@@ -1795,8 +1841,14 @@ async function smoke() {
     network.startValidator("v2");
     const rejoined = await until("v2 rejoins the tip", async () => { const h = (await get("/status")).body.height; return (await allAt(h)) ? h : false; }, 360_000);
     // Sealed snapshot -> restore into a fresh directory -> same chain resumes.
-    const snapshotResponse = await fetch(`${base}/state/snapshot`);
-    assert.equal(snapshotResponse.status, 200);
+    // Served from the background cache: wait for a build at or past the tip.
+    const snapshotResponse = await until("a cached snapshot at the rejoined tip", async () => {
+      const r = await fetch(`${base}/state/snapshot`);
+      if (r.status === 503) { assert.ok(Number(r.headers.get("retry-after")) > 0); return false; }
+      assert.equal(r.status, 200);
+      if (Number(r.headers.get("x-zyron-snapshot-height")) >= rejoined) return r;
+      await r.arrayBuffer(); return false;
+    }, 360_000);
     const sealed = Buffer.from(await snapshotResponse.arrayBuffer());
     assert.throws(() => openSnapshot(sealed, "x".repeat(40)));
     const snapHeight = Number(snapshotResponse.headers.get("x-zyron-snapshot-height"));
