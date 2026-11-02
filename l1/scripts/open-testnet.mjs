@@ -770,7 +770,11 @@ async function readSecret(path) {
 // published snapshot that matches this chain. Anything a follower syncs is
 // therefore inside every snapshot a later cold start can restore.
 export function createDurableWatermark({ height = 0, tipHash, fetchPublished, localHashAt, log = () => {} }) {
-  const state = { height, tipHash, checkedAtMs: undefined, lastError: undefined };
+  // lastPublishSeenAtMs: when this gateway first saw (and verified) the
+  // published snapshot at the current durable height. It is an upper bound on
+  // the keeper's publish time (within one watermark refresh), not the keeper's
+  // own clock, and null until a published snapshot moves the watermark.
+  const state = { height, tipHash, checkedAtMs: undefined, lastError: undefined, lastPublishSeenAtMs: undefined };
   let pending;
   async function check() {
     const published = await fetchPublished();
@@ -779,13 +783,13 @@ export function createDurableWatermark({ height = 0, tipHash, fetchPublished, lo
     if (!Number.isSafeInteger(publishedHeight) || publishedHeight <= state.height) { state.checkedAtMs = Date.now(); return state; }
     const local = await localHashAt(publishedHeight);
     if (local !== publishedHash) throw new Error(`published snapshot block ${publishedHeight} (${String(publishedHash).slice(0, 12)}) is not on this chain (${String(local).slice(0, 12)})`);
-    state.height = publishedHeight; state.tipHash = publishedHash; state.checkedAtMs = Date.now(); state.lastError = undefined;
+    state.height = publishedHeight; state.tipHash = publishedHash; state.checkedAtMs = Date.now(); state.lastPublishSeenAtMs = state.checkedAtMs; state.lastError = undefined;
     return state;
   }
   return {
     get height() { return state.height; },
     get tipHash() { return state.tipHash; },
-    status() { return { durableHeight: state.height, durableCheckedAtMs: state.checkedAtMs ?? null, ...(state.lastError ? { durableError: state.lastError } : {}) }; },
+    status() { return { durableHeight: state.height, durableCheckedAtMs: state.checkedAtMs ?? null, lastPublishSeenAtMs: state.lastPublishSeenAtMs ?? null, ...(state.lastError ? { durableError: state.lastError } : {}) }; },
     refresh() {
       pending ??= check().catch((error) => { state.lastError = error instanceof Error ? error.message : String(error); log(`durable watermark: ${state.lastError}`); return state; }).finally(() => { pending = undefined; });
       return pending;
