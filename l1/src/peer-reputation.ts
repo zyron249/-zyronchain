@@ -10,6 +10,8 @@ const REPUTATION_VERSION = 1;
 const BASE_BACKOFF_MS = 30_000;
 const MAX_BACKOFF_MS = 30 * 60_000;
 const MAX_FAILURE_COUNT = 32;
+// Upper bound for a backoff loaded from disk, counted from the restart.
+const MAX_RESTORED_BACKOFF_MS = 4 * BASE_BACKOFF_MS;
 const MAX_STORED_PEERS = 256;
 export const MAX_PEER_REPUTATION_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 export const MAX_PEER_REPUTATION_ENDPOINT_BYTES = 4 * 1024;
@@ -39,7 +41,15 @@ export class PeerReputationStore {
 
   private constructor(private readonly path: string) {}
 
-  static async open(dataDir: string): Promise<PeerReputationStore> {
+  /**
+   * A backoff loaded from disk is capped at MAX_RESTORED_BACKOFF_MS (2 min) from `nowMs`:
+   * failures seen before a restart (often while the peer was rate limiting or
+   * cold-starting) must not keep a restarted follower off its peers for up to
+   * MAX_BACKOFF_MS. The failure count is kept, so a peer that still fails
+   * goes straight back to its long backoff.
+   */
+  static async open(dataDir: string, nowMs = Date.now()): Promise<PeerReputationStore> {
+    assertTimestamp(nowMs);
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     const store = new PeerReputationStore(join(dataDir, "peer-reputation.json"));
     try {
@@ -51,7 +61,10 @@ export class PeerReputationStore {
       assertBoundedHttpReputationJsonStructure(text);
       const value = JSON.parse(text) as unknown;
       const snapshot = validateSnapshot(value);
-      for (const entry of snapshot.peers) store.entries.set(entry.endpoint, entry);
+      const maxBackoffUntilMs = nowMs + MAX_RESTORED_BACKOFF_MS;
+      for (const entry of snapshot.peers) {
+        store.entries.set(entry.endpoint, { ...entry, backoffUntilMs: Math.min(entry.backoffUntilMs, maxBackoffUntilMs) });
+      }
     } catch (error) {
       if (!isMissingFile(error)) throw new Error("Corrupt peer reputation store", { cause: error });
     }

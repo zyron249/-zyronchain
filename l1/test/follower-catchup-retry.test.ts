@@ -10,7 +10,7 @@
 // catch-up on the first tick after the peer recovers, reaching its tip.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -105,5 +105,33 @@ test("follower catch-up: after 429/500 from the only peer and the backoff growin
     }
     await rm(localDir, { recursive: true, force: true });
     await rm(remoteDir, { recursive: true, force: true });
+  }
+});
+
+test("peer reputation: a long backoff persisted before a restart is capped at 2 minutes on load; the failure count is kept", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zyron-follower-retry-load-"));
+  try {
+    const endpoint = "https://gateway.example/peer";
+    const now = T + 3_600_000;
+    // Same shape as op3's data/peer-reputation.json on Nov 1.
+    await writeFile(join(dir, "peer-reputation.json"), `${JSON.stringify({
+      peers: [{ backoffUntilMs: now + 25 * 60_000, consecutiveFailures: 7, endpoint, lastFailureMs: now - 60_000, lastSuccessMs: now - 3_600_000 }],
+      version: 1
+    })}\n`, { mode: 0o600 });
+    const store = await PeerReputationStore.open(dir, now);
+    assert.ok(store.backoffUntil(endpoint) <= now + 120_000, `backoff on load is bounded, got +${store.backoffUntil(endpoint) - now} ms`);
+    assert.equal(store.isAvailable(endpoint, now + 120_000), true, "the peer is eligible again 2 minutes after the restart");
+    assert.equal(store.failureCount(endpoint), 7, "the failure count survives the restart");
+    // A still-failing peer goes straight back to its long backoff.
+    assert.equal(await store.recordFailure(endpoint, now + 120_000), 30 * 60_000);
+
+    // A short persisted backoff is kept as is.
+    await writeFile(join(dir, "peer-reputation.json"), `${JSON.stringify({
+      peers: [{ backoffUntilMs: now + 10_000, consecutiveFailures: 1, endpoint, lastFailureMs: now - 20_000, lastSuccessMs: 0 }],
+      version: 1
+    })}\n`, { mode: 0o600 });
+    assert.equal((await PeerReputationStore.open(dir, now)).backoffUntil(endpoint), now + 10_000);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

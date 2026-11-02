@@ -35,7 +35,7 @@ test("peer reputation survives restart and successful recovery clears backoff", 
     const store = await PeerReputationStore.open(directory);
     assert.equal(await store.recordFailure(peer, now), 30_000);
     assert.equal(await store.recordFailure(peer, now + 30_000), 60_000);
-    const reopened = await PeerReputationStore.open(directory);
+    const reopened = await PeerReputationStore.open(directory, now + 30_000);
     assert.equal(reopened.failureCount(peer), 2);
     assert.equal(reopened.isAvailable(peer, now + 89_999), false);
     assert.equal(reopened.isAvailable(peer, now + 90_000), true);
@@ -139,7 +139,7 @@ test("peer reputation surfaces an ambiguous post-rename publication failure", as
       }),
       /injected-after-rename/
     );
-    const reopened = await PeerReputationStore.open(directory);
+    const reopened = await PeerReputationStore.open(directory, now);
     assert.equal(reopened.failureCount(peer), 1);
     assert.equal(reopened.isAvailable(peer, now), false);
   } finally {
