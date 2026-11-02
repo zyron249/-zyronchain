@@ -257,5 +257,17 @@ test("history file refuses a hard-linked path on create and on read (safe-rebuil
     const again = await hf.createHistoryFile(view.path, { chainId: CHAIN, genesisHash: GENESIS });
     await again.appendMany(syntheticChain(1)); await again.close();
     assert.equal((await readAll(again.view())).length, 1);
+    // Race (Security Low-1): a hard link created between the lstat check and
+    // open() must be refused before any truncation reaches the other name.
+    const victim = join(dir, "victim.ndjson");
+    await writeFile(victim, "KEEP");
+    await assert.rejects(
+      hf.openForWrite(view.path, { beforeOpen: async () => { await rm(view.path); await link(victim, view.path); } }),
+      (e: any) => e?.code === "history_file_corrupt" && /hard link/.test(e.message));
+    assert.equal(await readFile(victim, "utf8"), "KEEP");
+    // A plain existing file is still truncated on create.
+    await rm(view.path); await writeFile(view.path, "old");
+    const fresh = await hf.createHistoryFile(view.path, { chainId: CHAIN, genesisHash: GENESIS }); await fresh.close();
+    assert.equal(await readFile(view.path, "utf8"), "");
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
