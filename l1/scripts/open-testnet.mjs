@@ -29,12 +29,13 @@ import { FaucetFeeFloorError, MAX_FAUCET_FEE_ATOMS, faucetTransferFeeAtoms } fro
 import { submitAcceptedView } from "./submit-view.mjs";
 import { allocateValidatorBasePort } from "./open-testnet-ports.mjs";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { fork, spawn } from "node:child_process";
 import { createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import { Worker } from "node:worker_threads";
 import { SNAPSHOT_MAGIC, sealSnapshot, snapshotKey } from "./open-testnet/snapshot-seal.mjs";
 import { verifySnapshotBlocks } from "./open-testnet/snapshot-verify.mjs";
+import { HistoryFileError, createHistoryFile } from "./open-testnet/history-file.mjs";
 import { createServer } from "node:http";
 import { createReadStream, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
@@ -870,8 +871,11 @@ export const SNAPSHOT_WORKER_RESOURCE_LIMITS = Object.freeze({
 });
 // Fixed error codes for GET /health lastError (Security L-B on #1161): the
 // detailed (sanitised) message only goes to the logs.
+// Low-2 (Security on #1162): only codes from this allowlist reach /health;
+// anything else (including Node system error codes) is build_failed.
+export const SNAPSHOT_ERROR_CODES = new Set(["build_timeout", "aborted", "busy", "worker_crashed", "worker_out_of_memory", "history_unavailable", "history_invalid", "history_file_corrupt", "build_failed"]);
 export function snapshotErrorCode(error) {
-  if (typeof error?.code === "string" && /^[a-z_]{1,40}$/.test(error.code)) return error.code;
+  if (typeof error?.code === "string" && SNAPSHOT_ERROR_CODES.has(error.code)) return error.code;
   const message = error instanceof Error ? error.message : String(error ?? "");
   if (/ERR_WORKER_OUT_OF_MEMORY|out of memory/i.test(message)) return "worker_out_of_memory";
   if (/snapshot worker (crashed|exited|stopped)/.test(message)) return "worker_crashed";
@@ -930,6 +934,10 @@ export function createSnapshotWorkerBuilder({ secret, workerUrl = SNAPSHOT_WORKE
   async function build({ blocks, tip, tipHash, chainId, genesisHash, genesis, network, keys, createdAtMs = Date.now() }, { signal } = {}) {
     if (pending) throw new SnapshotWorkerBusyError();
     throwIfSnapshotAborted(signal);
+    // Low-1 (Security on #1162): the worker must hold exactly the history up
+    // to this tip. If it holds more (a shorter history after a rebuild),
+    // stop it and ship the history again to a fresh worker.
+    if (worker && sent > blocks.length) stop("snapshot history changed; restarting the worker", "worker_crashed");
     worker ??= spawnWorker();
     const target = worker;
     const onAbort = () => { if (target === worker) stop("snapshot build aborted", "aborted"); };
@@ -955,6 +963,58 @@ export function createSnapshotWorkerBuilder({ secret, workerUrl = SNAPSHOT_WORKE
     }
   }
   return { build, terminate: () => stop("snapshot worker terminated"), running: () => worker !== undefined };
+}
+
+// Disk design: the snapshot build runs in a child process with
+// --max-old-space-size and streams the verified NDJSON history file (see
+// open-testnet/history-file.mjs) through gzip and AES-256-GCM into a file.
+// One build at a time (a second call throws SnapshotWorkerBusyError). An
+// abort (the cache's build timeout) kills the child. A child that runs out of
+// heap fails the build with worker_out_of_memory; the gateway keeps running.
+export const SNAPSHOT_CHILD_URL = new URL("./open-testnet/snapshot-build-child.mjs", import.meta.url);
+export const SNAPSHOT_CHILD_MAX_OLD_SPACE_MB = Number(process.env.ZYRON_SNAPSHOT_CHILD_MAX_OLD_MB ?? 128) || 128;
+export function createSnapshotChildBuilder({ secret, outDir, childUrl = SNAPSHOT_CHILD_URL, maxOldSpaceMb = SNAPSHOT_CHILD_MAX_OLD_SPACE_MB, execArgv = [] } = {}) {
+  let running; let nextId = 0;
+  async function build({ view, genesis, network, keys, createdAtMs = Date.now(), iv }, { signal } = {}) {
+    if (running) throw new SnapshotWorkerBusyError();
+    throwIfSnapshotAborted(signal);
+    await mkdir(outDir, { recursive: true, mode: 0o700 });
+    const outPath = join(outDir, `build-${process.pid}-${++nextId}.enc`);
+    await rm(outPath, { force: true });
+    const child = fork(fileURLToPath(childUrl), [], { execArgv: [`--max-old-space-size=${maxOldSpaceMb}`, ...execArgv], stdio: ["ignore", "ignore", "pipe", "ipc"], serialization: "json", env: { PATH: process.env.PATH ?? "" } });
+    running = child;
+    let stderrTail = "";
+    child.stderr?.on("data", (chunk) => { stderrTail = (stderrTail + chunk.toString("utf8")).slice(-4096); });
+    try {
+      const reply = await new Promise((done, fail) => {
+        let settled = false;
+        const finish = (fn, value) => { if (!settled) { settled = true; signal?.removeEventListener("abort", onAbort); fn(value); } };
+        const onAbort = () => { child.kill("SIGKILL"); finish(fail, new SnapshotBuildAbortedError()); };
+        signal?.addEventListener("abort", onAbort, { once: true });
+        child.once("message", (message) => finish(done, message));
+        child.once("error", (error) => finish(fail, Object.assign(new Error(`snapshot child failed to start (${sanitizeSnapshotError(error, { redact: [secret] })})`), { code: "worker_crashed" })));
+        child.once("exit", (code, exitSignal) => {
+          const oom = /heap out of memory|allocation failed/i.test(stderrTail);
+          finish(fail, Object.assign(new Error(oom ? "snapshot child out of memory" : `snapshot child exited (code ${code}${exitSignal ? `, signal ${exitSignal}` : ""})`), { code: oom ? "worker_out_of_memory" : "worker_crashed" }));
+        });
+        child.send({ type: "build", view, head: { format: SNAPSHOT_MAGIC, createdAtMs, genesis, network, keys }, secret, outPath, ...(iv ? { iv: Buffer.from(iv).toString("base64") } : {}) }, (error) => {
+          if (error) finish(fail, Object.assign(new Error("snapshot child IPC failed"), { code: "worker_crashed" }));
+        });
+      });
+      if (reply?.type !== "built") {
+        const code = SNAPSHOT_ERROR_CODES.has(reply?.code) ? reply.code : "build_failed";
+        throw Object.assign(new Error(`snapshot child: ${sanitizeSnapshotError(reply?.error, { redact: [secret] })}`), { code });
+      }
+      const sealed = await readFile(outPath);
+      if (sealed.length !== reply.bytes) throw Object.assign(new Error("snapshot child output has the wrong size"), { code: "build_failed" });
+      return { sealed, height: reply.height, maxRssKb: reply.maxRssKb };
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      if (running === child) running = undefined;
+      await rm(outPath, { force: true }).catch(() => {});
+    }
+  }
+  return { build, running: () => running !== undefined, terminate: () => { running?.kill("SIGKILL"); } };
 }
 
 export function createSnapshotCache({
@@ -1376,7 +1436,14 @@ export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, ge
   assert.ok(Number.isSafeInteger(tip) && tip >= 1, "snapshot tip must be a positive height");
   const verified = history ?? createSnapshotHistory(genesis);
   assert.equal(verified.chain.genesisHash, genesisHash, "snapshot history is for another genesis");
-  assert.equal(verified.chain.height, verified.blocks.length, "snapshot history is inconsistent");
+  // A history either keeps its blocks in memory (blocks) or in the NDJSON
+  // history file (file, disk design: nothing but the tip in RAM).
+  const file = verified.file;
+  const storedHeight = () => (file ? file.height() : verified.blocks.length);
+  if (verified.chain.height !== storedHeight()) {
+    if (file) throw new HistoryFileError(`holds ${storedHeight()} blocks, the verified chain ${verified.chain.height}`);
+    assert.fail("snapshot history is inconsistent");
+  }
   const reported = new Set();
   const reject = (index, error) => {
     const { name } = readers[index];
@@ -1413,9 +1480,9 @@ export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, ge
     }
     return page.blocks[height - page.from];
   }
-  while (verified.blocks.length < tip) {
+  while (storedHeight() < tip) {
     throwIfSnapshotAborted(signal);
-    const height = verified.blocks.length + 1;
+    const height = storedHeight() + 1;
     const failures = new Map();
     let accepted;
     for (let index = 0; index < readers.length && !accepted; index += 1) {
@@ -1444,8 +1511,12 @@ export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, ge
       }
     }
     if (!accepted) throw new Error(`snapshot history: no validator served a block ${height} that passes finalized-block validation`);
-    verified.blocks.push(accepted);
+    if (file) await file.append(accepted); else verified.blocks.push(accepted);
     await yieldToEventLoop();
+  }
+  if (file) {
+    if (file.height() < tip) throw new HistoryFileError("did not reach the tip");
+    return undefined;
   }
   const blocks = verified.blocks.slice(0, tip);
   // verifyFinal: false defers this whole-chain pass to the snapshot worker.
@@ -1646,14 +1717,35 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   };
   // Verified history (R28-1059): from the restore replay when there was one,
   // otherwise validated from genesis on the first build.
-  const snapshotHistory = verifiedHistory ?? createSnapshotHistory(genesis);
+  const snapshotHistory = { chain: verifiedHistory?.chain ?? new ZyronChain(genesis), blocks: verifiedHistory?.chain ? verifiedHistory.blocks : [] };
+  const restoredBlocks = verifiedHistory?.blocks ?? [];
+  const restoredTip = { height: restoredBlocks.length, tipHash: restoredBlocks.length ? restoredBlocks[restoredBlocks.length - 1].hash : undefined };
+  // Disk design: the verified history lives in an NDJSON file, rebuilt at
+  // every start from the restored (already replay-validated) blocks; RAM then
+  // keeps only the verified chain state and the file's tip and running hash.
+  // If the file cannot be written from the restore, it starts empty with a
+  // fresh chain and the first build re-validates the history from genesis.
+  const historyFile = await createHistoryFile(join(dir, "snapshot-history", "history.ndjson"), { chainId, genesisHash: info.genesisHash });
+  try {
+    for (let index = 0; index < restoredBlocks.length; index += 500) {
+      await historyFile.appendMany(restoredBlocks.slice(index, index + 500));
+      await yieldToEventLoop();
+    }
+    if (historyFile.height() !== snapshotHistory.chain.height) throw new HistoryFileError("restored history does not match the replayed chain");
+  } catch (error) {
+    console.error(`snapshot: history file not built from the restore (${sanitizeSnapshotError(error, { redact: stateSecret ? [stateSecret] : [] })}); re-validating from genesis on the first build`);
+    await historyFile.reset();
+    snapshotHistory.chain = new ZyronChain(genesis);
+  }
+  snapshotHistory.blocks = undefined; snapshotHistory.file = historyFile;
+  // Drop the restored bundle's blocks: they are on disk now.
+  if (verifiedHistory) verifiedHistory.blocks = undefined;
   // Durable watermark (see createDurableWatermark): only when the chain lives
   // in published snapshots. `durable.fetchPublished` reads the newest one.
   let watermark;
   if (durable) {
-    const restoredBlocks = verifiedHistory?.blocks ?? [];
     watermark = createDurableWatermark({
-      height: restoredBlocks.length, tipHash: restoredBlocks.length ? restoredBlocks[restoredBlocks.length - 1].hash : undefined,
+      height: restoredTip.height, tipHash: restoredTip.tipHash,
       fetchPublished: durable.fetchPublished,
       localHashAt: async (height) => { const r = await anyNode(`/blocks?from=${height}&limit=1`); if (r.status !== 200 || !Array.isArray(r.body?.blocks) || !r.body.blocks[0]) throw new Error(`local block ${height} unavailable`); return r.body.blocks[0].hash; },
       log: (line) => console.error(line)
@@ -1671,11 +1763,35 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // One writer at a time for the verified history (snapshot builds and the
   // relay's membership refresh both extend it).
   let historyLock = Promise.resolve();
+  // Set when the history file failed validation on read (a snapshot build):
+  // the next extension rebuilds it.
+  let historyNeedsRebuild = false;
   function extendHistory(readers, tip, tipHash, { verifyFinal = true, signal } = {}) {
-    const run = historyLock.then(() => collectSnapshotBlocks(readers, {
-      tip, tipHash, chainId, genesisHash: info.genesisHash, history: snapshotHistory, verifyFinal, signal,
+    const collect = (history) => collectSnapshotBlocks(readers, {
+      tip, tipHash, chainId, genesisHash: info.genesisHash, history, verifyFinal, signal,
       onReject: (name, error) => console.error(`snapshot: history from ${name} not used (${error instanceof Error ? error.message : String(error)})`)
-    }));
+    });
+    // Safe rebuild: an empty file and a fresh chain, filled from validator
+    // history with full finalized-block validation. The relay keeps using
+    // the old verified chain until the rebuilt one reaches the tip.
+    async function rebuild(reason) {
+      console.error(`snapshot: rebuilding the history file (${reason})`);
+      historyNeedsRebuild = true;
+      await historyFile.reset();
+      const fresh = { chain: new ZyronChain(genesis), file: historyFile };
+      const result = await collect(fresh);
+      snapshotHistory.chain = fresh.chain; historyNeedsRebuild = false;
+      return result;
+    }
+    const run = historyLock.then(async () => {
+      if (historyNeedsRebuild) return rebuild("marked corrupt");
+      try {
+        return await collect(snapshotHistory);
+      } catch (error) {
+        if (!(error instanceof HistoryFileError)) throw error;
+        return rebuild(sanitizeSnapshotError(error));
+      }
+    });
     historyLock = run.then(() => undefined, () => undefined);
     return run;
   }
@@ -1699,15 +1815,23 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     }
   });
   if (relay) { const timer = setInterval(() => { void refreshHistory(); }, 5_000); timer.unref(); }
-  const snapshotWorker = stateSecret ? createSnapshotWorkerBuilder({ secret: stateSecret }) : undefined;
+  const snapshotBuilder = stateSecret ? createSnapshotChildBuilder({ secret: stateSecret, outDir: join(dir, "snapshot-history", "builds") }) : undefined;
   async function buildSnapshotNow({ signal } = {}) {
     const { height: tip, tipHash } = await chainStatus();
-    const blocks = await extendHistory(historyReaders(), tip, tipHash, { verifyFinal: false, signal });
+    await extendHistory(historyReaders(), tip, tipHash, { verifyFinal: false, signal });
     throwIfSnapshotAborted(signal);
+    const view = historyFile.view();
+    if (view.tip < tip) throw new HistoryFileError(`holds ${view.tip} blocks, below the tip ${tip}`);
     const keys = {};
     for (const name of [...VALIDATOR_NAMES, "oracle1", "oracle2", "oracle3", "founder", "faucet", "liquidity", "ecosystem"]) keys[name] = (await readSecret(join(dir, "keys", `${name}.json`))).privateKey;
-    // Final linkage check, serialise, gzip and seal run in the worker.
-    return snapshotWorker.build({ blocks, tip, tipHash, chainId, genesisHash: info.genesisHash, genesis, network: info, keys, createdAtMs: Date.now() }, { signal });
+    // Full-chain linkage check, serialise, gzip and seal stream from the
+    // history file in a memory-capped child process.
+    try {
+      return await snapshotBuilder.build({ view, genesis, network: info, keys, createdAtMs: Date.now() }, { signal });
+    } catch (error) {
+      if (error?.code === "history_file_corrupt") historyNeedsRebuild = true;
+      throw error;
+    }
   }
   // Background builds (see createSnapshotCache); the route never builds inline.
   const snapshots = stateSecret ? createSnapshotCache({
@@ -1942,7 +2066,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   async function shutdown() {
     if (shuttingDown) return; shuttingDown = true;
     snapshots?.stop();
-    snapshotWorker?.terminate();
+    snapshotBuilder?.terminate();
+    await historyFile.close();
     await new Promise((done) => gateway.close(() => done()));
     if (mailbox) await new Promise((done) => mailbox.close(() => done()));
     await Promise.all(VALIDATOR_NAMES.map((name) => stopValidator(name)));
