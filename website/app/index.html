@@ -13,14 +13,14 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Zyron Wallet" />
   <meta name="format-detection" content="telephone=no" />
-  <meta name="zyron-build" content="app=af007559d710b79b;release=18b461e274085b891992ecb6a278f3fc48100073" />
+  <meta name="zyron-build" content="app=8fd79ab0760fca88;release=d7037febe1b36ecd55f3d69f85a050bbebe81560" />
   <title>ZyronChain Wallet (testnet)</title>
   <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys stay on this device. This app does not connect and does not show a balance. Sign locally." />
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="icon" type="image/png" sizes="192x192" href="/app/icons/icon-192.png" />
   <link rel="icon" type="image/png" sizes="512x512" href="/app/icons/icon-512.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/app/icons/apple-touch-icon-180.png" />
-  <link rel="stylesheet" href="/app/app.css?v=d3d40a217205" integrity="sha384-lQIFwcwY4awel+HCjV+qopIdk0/xqP7slE8pDj3qyeBGsyzRn5OhtRXpy/B2ZPI/" />
+  <link rel="stylesheet" href="/app/app.css?v=759bb0331b2d" integrity="sha384-yHpyagY50D9HqB7tcPKcucdDOQliKdNi5UecILPU7gXkRqeOjymuAGyhLmlfSCOa" />
 </head>
 <body>
   <div class="app" id="app">
@@ -221,7 +221,7 @@
         <h2 data-i18n="signedHoldTitle">Signed transfer</h2>
         <p class="hint" data-i18n="signedHoldLead">Still on this screen until you dismiss it. Nothing was broadcast. Locking the app keeps it until you unlock and dismiss it.</p>
         <p class="hint" data-i18n="nextBody">This transfer is signed but not broadcast. To send it, copy it, open the wallet testnet page, paste it under "Submit a signed transfer" and press Submit.</p>
-        <p class="hint">To: <span class="address-raw" data-signed-hold-to></span></p>
+        <p class="hint signed-to">To: <span class="address-raw" data-signed-hold-to></span></p>
         <pre data-signed-hold-json></pre>
         <div class="actions">
           <button class="primary" type="button" data-signed-copy data-i18n="copyTx">Copy signed transfer</button>
@@ -263,7 +263,7 @@
         </div>
         <p class="hint" data-i18n="chainHint">Chain ID is filled in with the no-value wallet testnet, zyron-wallet-testnet-1. Change it only for another testnet or devnet.</p>
         <label><span data-i18n="chainId">Chain ID</span><input data-tx-chain autocomplete="off" autocapitalize="none" spellcheck="false" value="zyron-wallet-testnet-1" placeholder="zyron-wallet-testnet-1" /></label>
-        <label><span data-i18n="nonce">Next nonce</span><input data-tx-nonce inputmode="numeric" autocomplete="off" placeholder="1" /></label>
+        <label><span data-i18n="nonce">Next nonce</span><input data-tx-nonce inputmode="numeric" autocomplete="off" value="1" /></label>
         <p class="hint" data-i18n="nonceHint">The nonce is a counter of how many transfers this address has sent. Your first transfer uses 1, the next one 2, and so on. In other words, use the network's current nonce + 1 (1 for a new account). This app does not look it up: the wallet testnet page shows "Next nonce to sign" when you look up your address.</p>
         <label><span data-i18n="receiver">Receiver address</span><input data-tx-to autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ZYN…" /></label>
         <div class="row two">
@@ -405,7 +405,7 @@
       </div>
       <div class="tx-out result" data-tx-out hidden>
         <p class="notice ok" data-tx-summary></p>
-        <p class="hint">To: <span class="address-raw" data-tx-to-grouped></span></p>
+        <p class="hint signed-to">To: <span class="address-raw" data-tx-to-grouped></span></p>
         <div class="notice warn" data-tx-next>
           <strong data-i18n="nextTitle">Not sent yet</strong>
           <span data-i18n="nextBody">This transfer is signed but not broadcast. To send it, copy it, open the wallet testnet page, paste it under "Submit a signed transfer" and press Submit.</span>
@@ -544,7 +544,7 @@
   </div>
   <script src="/app/vendor/noble-scure.js?v=8bc52c47d762" integrity="sha384-8rRjvBX0v19QY1jV/tt980903+713cFYFQwMvCGJR+dGfUXeXlHhGh1Ommt20XpE"></script>
   <script src="/app/vendor/qr.js?v=df7e5ee0f9db" integrity="sha384-2bwjUqdWp2rd2oVGpGSUUj4Ni4z7/DZXDrPTqEayhfrMnv13SkOsI78YyLWJcF4X"></script>
-  <script src="/app/zyron-wallet-core.js?v=9c5d28fe8663" integrity="sha384-Dez5TQOr+smHjGLUi8ZIyF/gj+XmRCCpQkWQR+gL8L7u3SHJBSmtNTyPtVA/3/M6"></script>
-  <script src="/app/app.js?v=864cf2739e0d" integrity="sha384-LRD+hQrvK/Nkli8aiU9ZPRfjuR1M2hs4XoTJ8dyxYlTz7oNYz5ZTU/bqYFloQQqP"></script>
+  <script src="/app/zyron-wallet-core.js?v=83f3e23da7f3" integrity="sha384-D4KMBk+djvIjsIDR3itIlzTJVAirKCY887iKFNem/lAzSgjeDLpxeUMIQEvzy4Cd"></script>
+  <script src="/app/app.js?v=fd6de049d4d9" integrity="sha384-lAbrC2VG03MhbevX3z/srwHq4kUncZSXMYnYItd7K7VbPbgpVZU3NA5cUSvzxkFX"></script>
 </body>
 </html>
