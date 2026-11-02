@@ -1830,3 +1830,47 @@ test("S2-1 a detected rollback fails the run as an alert", () => {
   assert.equal(exitCodeFor({ published: 1, notNewer: 0, genesisMismatches: 0, authenticationFailures: 0, rollbacks: 1 }), 1);
   assert.equal(exitCodeFor({ published: 1, notNewer: 0, genesisMismatches: 0, authenticationFailures: 0, rollbacks: 0 }), 0);
 });
+
+// #1177 Security Medium-1 (PoC repair-reversal.mjs): after a rollback republish
+// the abandoned asset must never become a restorable backup.
+test("#1177 M-1 a rollback moves the abandoned asset aside outside the keeper pattern and repair never reinstalls it", async () => {
+  let t = T0;
+  const { github, state } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 0 }), state: "uploaded", size: 100_000, updated_at: new Date(T0).toISOString() }], now: () => t });
+  const quiet = { log() {}, warn() {}, sleep: async () => {} };
+  const r = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: chainSnapshot(12970, TIP_B), expectedGenesis: GENESIS, requestStartedMs: t, now: () => t, ...quiet, liveHashAt: async () => null });
+  assert.equal(r.fork, true);
+  const aside = state.assets.find((asset) => asset.id === 7);
+  assert.match(aside.name, /^rolledback-\d{13}-[0-9a-f]{8}\.state\.enc$/);
+  assert.equal(parseKeeperAssetName(aside.name), null);
+  for (const h of [12990, 13010, 13030]) { t += 10 * 60_000; await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: chainSnapshot(h, TIP_B, { 12970: TIP_B, 12990: TIP_B, 13010: TIP_B }), expectedGenesis: GENESIS, requestStartedMs: t, now: () => t, ...quiet }); }
+  t += 31 * 60_000;
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => t, ...quiet });
+  Object.assign(state.assets.find((asset) => asset.name === "state.enc"), { size: 0 });
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => t, ...quiet });
+  const installed = parseLabel(state.assets.find((asset) => asset.name === "state.enc").label);
+  assert.equal(installed.tipHash, TIP_B, "repair installs a copy of the live branch");
+  assert.ok(state.assets.some((asset) => asset.id === 7), "the abandoned asset is kept as evidence");
+});
+
+test("#1177 M-1 repair skips copies from before the newest rollback", async () => {
+  const { github, state } = fakeGitHub({ assets: [
+    { id: 1, name: keeperAssetName("prev", "state.enc", T0 - 3_600_000), label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 0 }), state: "uploaded", size: 100_000 },
+    { id: 2, name: keeperAssetName("prev", "state.enc", T0 - 3_000_000), label: formatLabel(13010, GENESIS, { tipHash: TIP_B, rollbackCounter: 1 }), state: "uploaded", size: 100_000 },
+    { id: 3, name: "state.enc", label: formatLabel(13030, GENESIS, { tipHash: TIP_B, rollbackCounter: 1 }), state: "uploaded", size: 0 }
+  ] });
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 2);
+});
+
+test("#1177 L-2 the rollback counter is carried forward without a tip and over an unlabeled asset", async () => {
+  assert.deepEqual(parseLabel(formatLabel(5, GENESIS, { rollbackCounter: 4 })), { height: 5, genesis: GENESIS, rollbackCounter: 4 });
+  const { github, state } = fakeGitHub({ assets: [
+    { id: 7, name: "state.enc", label: "", state: "uploaded", size: 100_000, updated_at: new Date(T0 - 600_000).toISOString() },
+    { id: 8, name: keeperAssetName("prev", "state.enc", T0 - 900_000), label: formatLabel(100, GENESIS, { tipHash: TIP_A, rollbackCounter: 2 }), state: "uploaded", size: 100_000 }
+  ] });
+  const warnings = [];
+  const r = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: { height: 150, genesis: GENESIS }, expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn: (line) => warnings.push(line), sleep: async () => {} });
+  assert.equal(r.published, true);
+  assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc").label).rollbackCounter, 2);
+  assert.ok(warnings.some((line) => /unlabeled/.test(line)));
+});

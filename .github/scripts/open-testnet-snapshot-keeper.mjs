@@ -66,13 +66,15 @@ export const KEEPER_ASSET_MAX_AGE_MS = 30 * 60_000;
 export const GITHUB_CALL_TIMEOUT_MS = 60_000;
 // S2-1: newer labels also carry the tip block hash and a rollback counter
 // (`tip=<64 hex> rollbacks=<n>`). Older labels without them still parse.
-const LABEL_PATTERN = /^state snapshot height=([1-9][0-9]{0,15}) genesis=([0-9a-f]{64})(?: tip=([0-9a-f]{64}) rollbacks=(0|[1-9][0-9]{0,8}))?$/;
+const LABEL_PATTERN = /^state snapshot height=([1-9][0-9]{0,15}) genesis=([0-9a-f]{64})(?:(?: tip=([0-9a-f]{64}))? rollbacks=(0|[1-9][0-9]{0,8}))?$/;
 const HASH_PATTERN = /^[0-9a-f]{64}$/;
 const GENESIS_PATTERN = /^[0-9a-f]{64}$/;
 
 export function formatLabel(height, genesis, { tipHash, rollbackCounter = 0 } = {}) {
   const base = `state snapshot height=${height} genesis=${genesis}`;
-  return tipHash && HASH_PATTERN.test(tipHash) ? `${base} tip=${tipHash} rollbacks=${rollbackCounter}` : base;
+  if (tipHash && HASH_PATTERN.test(tipHash)) return `${base} tip=${tipHash} rollbacks=${rollbackCounter}`;
+  // Low-2 (#1177): a snapshot without a known tip still carries the count forward.
+  return rollbackCounter > 0 ? `${base} rollbacks=${rollbackCounter}` : base;
 }
 
 export function parseLabel(label) {
@@ -80,7 +82,8 @@ export function parseLabel(label) {
   if (!match) return null;
   const height = Number(match[1]);
   if (!Number.isSafeInteger(height)) return null;
-  return match[3] ? { height, genesis: match[2], tipHash: match[3], rollbackCounter: Number(match[4]) } : { height, genesis: match[2] };
+  if (match[3]) return { height, genesis: match[2], tipHash: match[3], rollbackCounter: Number(match[4]) };
+  return match[4] ? { height, genesis: match[2], rollbackCounter: Number(match[4]) } : { height, genesis: match[2] };
 }
 
 export function perGenesisName(genesis) {
@@ -343,7 +346,14 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
   const first = decidePublish({ snapshot, asset: current, expectedGenesis, requestStartedMs, nowMs: now(), liveHashAtPublished: await liveFor(current) });
   if (!first.publish) return { published: false, upToDate: first.upToDate === true, reason: first.reason };
   if (now() > swapBy) return { published: false, reason: "run deadline reached before the upload; left for the next run" };
-  const label = formatLabel(snapshot.height, snapshot.genesis, { tipHash: snapshot.tipHash, rollbackCounter: first.rollbackCounter ?? 0 });
+  // Low-2 (#1177): the counter never goes down, even when an unlabeled asset or
+  // a label without a tip is replaced: the highest count on any copy of `name`
+  // is carried forward.
+  const counter = Math.max(first.rollbackCounter ?? 0, highestRollbackCounter(release.assets, name));
+  const currentLabel = parseLabel(current?.label);
+  if (current && !currentLabel) warn(`replacing an unlabeled ${name}; its tip cannot be checked for a rollback (rollback counter carried forward: ${counter})`);
+  else if (currentLabel?.tipHash && !snapshot.tipHash) warn(`replacing ${name} labeled with tip ${currentLabel.tipHash.slice(0, 12)}… by a snapshot without an authenticated tip; a rollback cannot be checked (rollback counter carried forward: ${counter})`);
+  const label = formatLabel(snapshot.height, snapshot.genesis, { tipHash: snapshot.tipHash, rollbackCounter: counter });
   const fork = first.fork === true ? { fork: true, rollbackCounter: first.rollbackCounter } : {};
   const kept = (what) => `${what}; the upload is kept as a keeper copy`;
   // The temporary name is fixed before the POST, so an upload whose response
@@ -385,7 +395,10 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
   let aside = null;
   let asideName = null;
   if (current) {
-    asideName = keeperAssetName("prev", name, now());
+    // Medium-1 (#1177): on a rollback the abandoned asset is moved aside as
+    // rolledback-<ms>-<hex>.<name>, outside the keeper's copy pattern, so
+    // repair never reinstalls it and cleanup never deletes it (evidence).
+    asideName = first.fork === true ? `rolledback-${String(now()).padStart(13, "0")}-${randomBytes(4).toString("hex")}.${name}` : keeperAssetName("prev", name, now());
     try {
       await renameWithin(github, current.id, asideName, current.label ?? "", { ...timing, untilMs: windowStart + ASIDE_SHARE_MS });
       aside = current;
@@ -602,7 +615,13 @@ export async function repairAndCleanup({ github, tag, expectedGenesis, now, log,
   const ordered = [...groups].sort(([a], [b]) => (b === "state.enc") - (a === "state.enc"));
   for (const [finalName, copies] of ordered) {
     const ranked = [...copies].sort((a, b) => copyRank(b, expectedGenesis) - copyRank(a, expectedGenesis) || b.ms - a.ms);
-    const restorable = ranked.filter((copy) => isRestorableCopy(copy, expectedGenesis));
+    // Medium-1 (#1177): a copy labeled with a lower rollback counter than the
+    // newest one of this name predates a rollback, so its chain may be the
+    // abandoned one: it is never restored or kept as the backup.
+    const epoch = highestRollbackCounter(release.assets, finalName);
+    const restorable = ranked.filter((copy) => isRestorableCopy(copy, expectedGenesis) && (parseLabel(copy.asset.label)?.rollbackCounter ?? 0) >= epoch);
+    const stale = copies.filter((copy) => isRestorableCopy(copy, expectedGenesis) && !restorable.includes(copy));
+    if (stale.length) log(`${stale.length} keeper cop${stale.length === 1 ? "y" : "ies"} of ${finalName} predate rollback ${epoch}; not restorable`);
     const canonical = release.assets.find((asset) => asset.name === finalName) ?? null;
     if (!canonical || isBrokenCanonical(canonical, now())) {
       if (!restorable.length) {
@@ -677,6 +696,16 @@ export function isCompleteAsset(asset) {
 // requires positive evidence of completeness, decides what may be restored).
 function isProvablyIncomplete(asset) {
   return (typeof asset?.state === "string" && asset.state !== "uploaded") || (Number.isSafeInteger(asset?.size) && asset.size <= SNAPSHOT_HEADER.length + 28);
+}
+
+// The highest rollback counter on `name` or any keeper copy of it.
+function highestRollbackCounter(assets, name) {
+  let highest = 0;
+  for (const asset of assets) {
+    if (asset.name !== name && parseKeeperAssetName(asset.name)?.finalName !== name) continue;
+    highest = Math.max(highest, parseLabel(asset.label)?.rollbackCounter ?? 0);
+  }
+  return highest;
 }
 
 // Ranks this keeper's copies: the labeled height for complete copies of the
@@ -842,7 +871,7 @@ export async function keepAlive({ fetchImpl, gateway, signal }) {
 // fetched (once per built height), so short serving windows after each gateway
 // build are not missed.
 export async function runKeeper(options) {
-  const { fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn, watchIntervalMs = null, watchMinGapMs = WATCH_MIN_GAP_MS, fetch: fetchOptions = {} } = options;
+  const { fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn, error: reportError = warn, watchIntervalMs = null, watchMinGapMs = WATCH_MIN_GAP_MS, fetch: fetchOptions = {} } = options;
   const stats = { cycles: 0, published: 0, notNewer: 0, refused: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null, authenticationFailures: 0, watchTriggers: 0, rollbacks: 0 };
   const deadline = now() + runMs;
   // Aborted when the publish loop stops, so no pending wait (and no live timer)
@@ -904,8 +933,9 @@ export async function runKeeper(options) {
       try {
         const result = await publishCycle({ fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, now, log, warn, sleep, swapBy: deadline, fetch: fetchOptions });
         stats.lastHeight = result.height;
-        if (result.fork) { stats.rollbacks += 1; warn(`ROLLBACK DETECTED: the published snapshot was not on the live chain; republished the live chain at height ${result.height} (rollback counter ${result.rollbackCounter}). This run will fail so the rollback is seen; see docs/OPEN_TESTNET.md "Testnet rollback runbook".`); }
         if (result.published) { stats.published += 1; stats.lastPublishedHeight = result.height; log(`snapshot sha256 ${result.sha256} size ${result.size}`); }
+        // Low-1 (#1177): a rollback is reported as an error and ends the run (it fails).
+        if (result.fork) { stats.rollbacks += 1; reportError(`ROLLBACK DETECTED: the published snapshot was not on the live chain; republished the live chain at height ${result.height} (rollback counter ${result.rollbackCounter}). The run stops and fails so the rollback is seen; see docs/OPEN_TESTNET.md "Testnet rollback runbook".`); break; }
         else if (result.upToDate) stats.notNewer += 1;
         else { stats.refused += 1; warn(`state.enc not replaced: ${result.reason}`); }
       } catch (error) {
@@ -974,7 +1004,8 @@ async function main() {
     },
     now: Date.now, sleep: cancellableSleep,
     log: (line) => console.log(`${stamp()} ${line}`),
-    warn: (line) => console.log(`::warning::${stamp()} ${line}`)
+    warn: (line) => console.log(`::warning::${stamp()} ${line}`),
+    error: (line) => console.log(`::error::${stamp()} ${line}`)
   });
   console.log(`${stamp()} done ${JSON.stringify(stats)}`);
   if (env.GITHUB_STEP_SUMMARY) {
