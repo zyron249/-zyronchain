@@ -16,7 +16,7 @@
 .verify-banner[data-kind="asleep"],
 .verify-banner[data-kind="degraded"],
 .verify-banner[data-kind="backoff"],
-.verify-banner[data-kind="unavailable"] { border-color: rgba(255, 196, 102, .5); }
+.verify-banner[data-kind="unavailable"] { border-color: rgba(255, 158, 87, .5); }
 .verify-banner[data-kind="failed"],
 .verify-banner[data-kind="refused"],
 .verify-banner[data-kind="unreachable"] { border-color: rgba(255, 157, 143, .5); }
@@ -65,7 +65,7 @@
 .verify-checks li[data-status="passed"] .verify-status { color: var(--ok); border-color: rgba(143, 227, 196, .45); }
 .verify-checks li[data-status="failed"] .verify-status { color: var(--danger); border-color: rgba(255, 157, 143, .45); }
 .verify-checks li[data-status="not available on this network"] .verify-status,
-.verify-checks li[data-status="not verified in this pass"] .verify-status { color: var(--warn); border-color: rgba(255, 196, 102, .45); }
+.verify-checks li[data-status="not verified in this pass"] .verify-status { color: var(--warn); border-color: rgba(255, 158, 87, .45); }
 .verify-detail { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: var(--fs-0); overflow-wrap: anywhere; }
 .verify-notes { margin: var(--s-4) 0 0; padding-left: 1.1em; }
 .verify-notes li { margin-bottom: var(--s-2); }

@@ -20,13 +20,13 @@
   var SNAP_MS = 520;
 
   var C = {
-    chrome1: "#f4f7f9",
-    chrome2: "#d8dce0",
-    chrome3: "#b1b8c0",
-    dark: "#24282d",
-    blue: "#0a9ff5",
-    cyan: "#4fd8fb",
-    glow: "#1ccbfb"
+    chrome1: "#faf8f2",
+    chrome2: "#e6e1d6",
+    chrome3: "#c2bcae",
+    dark: "#26241f",
+    blue: "#f9b700",
+    cyan: "#ffcc33",
+    glow: "#ffc21a"
   };
 
   // Same state logic as the rest of the node visual: only RUNNING moves; no energy or banned rests (dimmed);

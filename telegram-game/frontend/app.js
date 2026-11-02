@@ -2226,7 +2226,7 @@
     state.confettiStop = window.ZyronPolish.paintConfetti(canvas, false);
   }
 
-  // Zyron Points mark: the transparent ZyronChain wolf + Z (tight crop), 1x/2x/3x so it stays crisp on every
+  // Zyron Points mark: the transparent ZyronChain gold Z coin, 1x/2x/3x so it stays crisp on every
   // screen. Decorative (alt=""): every use sits next to text that already says "Zyron Points" or a "+N" amount.
   function pointsMark(variant) {
     const v = "?v=" + encodeURIComponent(BUILD);
@@ -2351,18 +2351,18 @@
     return svg("svg", { viewBox: "0 0 220 220", class: "node-art" }, [
       svg("defs", {}, [
         svg("radialGradient", { id: "nodeGlow", cx: "50%", cy: "50%", r: "50%" }, [
-          svg("stop", { offset: "0", "stop-color": "#4fd8fb", "stop-opacity": "0.85" }),
-          svg("stop", { offset: "1", "stop-color": "#4fd8fb", "stop-opacity": "0" })
+          svg("stop", { offset: "0", "stop-color": "#ffcc33", "stop-opacity": "0.85" }),
+          svg("stop", { offset: "1", "stop-color": "#ffcc33", "stop-opacity": "0" })
         ])
       ]),
       svg("circle", { class: "glow", cx: "110", cy: "110", r: "78", fill: "url(#nodeGlow)" }),
       // Outer dashed ring: the block chain's track (frontend/blocks.js). Static, so the chain carries the motion.
-      svg("circle", { class: "track-ring", cx: "110", cy: "110", r: String(CHAIN_RING_R), fill: "none", stroke: "rgba(44,104,173,0.6)", "stroke-width": "1.2", "stroke-dasharray": "2 9" }),
+      svg("circle", { class: "track-ring", cx: "110", cy: "110", r: String(CHAIN_RING_R), fill: "none", stroke: "rgba(168, 122, 0,0.6)", "stroke-width": "1.2", "stroke-dasharray": "2 9" }),
       svg("g", { class: "orbit" }, [
-        svg("circle", { cx: "110", cy: "110", r: "78", fill: "none", stroke: "rgba(79,216,251,0.55)", "stroke-width": "1.6", "stroke-dasharray": "5 8" })
+        svg("circle", { cx: "110", cy: "110", r: "78", fill: "none", stroke: "rgba(255, 204, 51,0.55)", "stroke-width": "1.6", "stroke-dasharray": "5 8" })
       ]),
-      svg("polygon", { class: "hex", points: hexPoints(110, 110, 54), fill: "rgba(7,13,24,0.94)", stroke: "#4fd8fb", "stroke-width": "2" }),
-      svg("circle", { class: "core", cx: "110", cy: "110", r: "30", fill: "#0b1526", stroke: "#0a9ff5", "stroke-width": "2.4" }),
+      svg("polygon", { class: "hex", points: hexPoints(110, 110, 54), fill: "rgba(16, 15, 14,0.94)", stroke: "#ffcc33", "stroke-width": "2" }),
+      svg("circle", { class: "core", cx: "110", cy: "110", r: "30", fill: "#1b1b1e", stroke: "#f9b700", "stroke-width": "2.4" }),
       svg("text", { class: "core-label", "data-core-energy": "1", x: "110", y: "116", "text-anchor": "middle", text: String(energy) })
     ]);
   }
@@ -2370,15 +2370,15 @@
   function chestArt(open, extra) {
     return svg("svg", { viewBox: "0 0 120 96", class: "chest-art" + (open ? " is-open" : "") + (extra ? " " + extra : "") }, [
       svg("g", { class: "lid", transform: open ? "rotate(-22 60 42) translate(0 -8)" : null }, [
-        svg("path", { d: "M18 44 V32 Q18 14 60 14 Q102 14 102 32 V44 Z", fill: "#14243d", stroke: "#4fd8fb", "stroke-width": "2" }),
-        svg("path", { d: "M30 30 H90", stroke: "rgba(216,220,224,0.35)", "stroke-width": "2", "stroke-linecap": "round" })
+        svg("path", { d: "M18 44 V32 Q18 14 60 14 Q102 14 102 32 V44 Z", fill: "#201c12", stroke: "#ffcc33", "stroke-width": "2" }),
+        svg("path", { d: "M30 30 H90", stroke: "rgba(230, 225, 214,0.35)", "stroke-width": "2", "stroke-linecap": "round" })
       ]),
-      svg("rect", { x: "12", y: "42", width: "96", height: "42", rx: "8", fill: "#0b1526", stroke: "#4fd8fb", "stroke-width": "2" }),
-      svg("path", { d: "M12 56 H108", stroke: "rgba(79,216,251,0.25)", "stroke-width": "1.5" }),
-      svg("path", { class: "chest-crack", d: "M60 48 L56 58 L64 66 L58 78", fill: "none", stroke: "#f4f7f9", "stroke-width": "1.4", opacity: "0" }),
-      svg("circle", { class: "chest-burst", cx: "60", cy: "50", r: "8", fill: "#4fd8fb", opacity: "0" }),
-      svg("circle", { cx: "60", cy: "62", r: "9", fill: "#d8dce0", stroke: "#0a9ff5", "stroke-width": "2" }),
-      svg("path", { d: "M60 58v8", stroke: "#02050a", "stroke-width": "2", "stroke-linecap": "round" })
+      svg("rect", { x: "12", y: "42", width: "96", height: "42", rx: "8", fill: "#1b1b1e", stroke: "#ffcc33", "stroke-width": "2" }),
+      svg("path", { d: "M12 56 H108", stroke: "rgba(255, 204, 51,0.25)", "stroke-width": "1.5" }),
+      svg("path", { class: "chest-crack", d: "M60 48 L56 58 L64 66 L58 78", fill: "none", stroke: "#faf8f2", "stroke-width": "1.4", opacity: "0" }),
+      svg("circle", { class: "chest-burst", cx: "60", cy: "50", r: "8", fill: "#ffcc33", opacity: "0" }),
+      svg("circle", { cx: "60", cy: "62", r: "9", fill: "#e6e1d6", stroke: "#f9b700", "stroke-width": "2" }),
+      svg("path", { d: "M60 58v8", stroke: "#0a0a0b", "stroke-width": "2", "stroke-linecap": "round" })
     ]);
   }
 
@@ -2828,11 +2828,11 @@
       tg.MainButton.hide();
       return;
     }
-    const params = { color: "#1ccbfb", text_color: "#02050a", is_visible: true, is_active: true };
+    const params = { color: "#ffc21a", text_color: "#0a0a0b", is_visible: true, is_active: true };
     if (state.running) {
       params.text = "Stop node";
-      params.color = "#d8dce0";
-      params.text_color = "#02050a";
+      params.color = "#e6e1d6";
+      params.text_color = "#0a0a0b";
     } else if (state.tab === "chests" && readyChests().length) {
       params.text = "Open supply chest";
     } else if (state.tab !== "home") {
@@ -2889,7 +2889,7 @@
     if (!tg) return;
     // ZYRON CHAIN brand: the app is dark-only and keeps its void background, electric-blue accent and
     // chrome text in every Telegram theme; Telegram's own header/background are painted to match.
-    const header = "#02050a";
+    const header = "#0a0a0b";
     try {
       if (tg.setHeaderColor) tg.setHeaderColor(header);
       if (tg.setBackgroundColor) tg.setBackgroundColor(header);

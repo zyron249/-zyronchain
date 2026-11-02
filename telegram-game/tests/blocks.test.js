@@ -69,7 +69,7 @@ slots.forEach((slot) => {
 assert.strictEqual(opacities[0], 1);
 for (let i = 1; i < opacities.length; i += 1) assert.ok(opacities[i] < opacities[i - 1], "trail fades");
 // Palette only, no external or scripted content.
-const allowed = new Set(["#f4f7f9", "#d8dce0", "#b1b8c0", "#24282d", "#0a9ff5", "#4fd8fb", "#1ccbfb", "none"]);
+const allowed = new Set(["#faf8f2", "#e6e1d6", "#c2bcae", "#26241f", "#f9b700", "#ffcc33", "#ffc21a", "none"]);
 const used = new Set();
 nodes.forEach((n) => {
   ["fill", "stroke"].forEach((k) => {
@@ -81,6 +81,6 @@ nodes.forEach((n) => {
   assert.ok(!["image", "use", "script", "foreignObject", "style"].includes(n.tag), "no external or scripted content: " + n.tag);
   Object.keys(n.attrs).forEach((k) => assert.ok(!/href|^on/i.test(k), "no links or handlers: " + k));
 });
-for (const c of ["#f4f7f9", "#b1b8c0", "#24282d", "#0a9ff5", "#4fd8fb", "#1ccbfb"]) assert.ok(used.has(c), "uses " + c);
+for (const c of ["#faf8f2", "#c2bcae", "#26241f", "#f9b700", "#ffcc33", "#ffc21a"]) assert.ok(used.has(c), "uses " + c);
 
 console.log("blocks ok");

@@ -75,16 +75,23 @@ test("cold start from a snapshot behind the tip: followers never held a block th
   let follower: ChildProcess | undefined;
   const until = async (label: string, check: () => Promise<unknown>, ms = 900_000) => { const end = Date.now() + ms; while (Date.now() < end) { const v = await check().catch(() => undefined); if (v) return v; await sleep(500); } throw new Error(`timed out: ${label}`); };
   const json = async (base: string, p: string) => { const r = await fetch(base + p); return { status: r.status, body: await r.json() }; };
+  // /state/snapshot serves a background-built cache (503 until the first build): wait for one at or past `min`.
+  const snapshotAtLeast = async (base: string, min: number) => await until(`cached snapshot at height >= ${min}`, async () => {
+    const r = await fetch(`${base}/state/snapshot`);
+    const bytes = Buffer.from(await r.arrayBuffer());
+    const height = Number(r.headers.get("x-zyron-snapshot-height"));
+    return r.status === 200 && height >= min ? { bytes, height } : undefined;
+  }) as { bytes: Buffer; height: number };
   try {
     await api.initNetwork(join(root, "a"), chainId);
-    network = await api.runNetwork(join(root, "a"), { gatewayPort: 0, basePort: await allocateValidatorBasePort("durable-watermark"), log: false, stateSecret: secret, durable });
+    network = await api.runNetwork(join(root, "a"), { gatewayPort: 0, basePort: await allocateValidatorBasePort("durable-watermark"), log: false, stateSecret: secret, durable, snapshotRefreshMs: 1_000 });
     const expectedGenesis: string = network.info.genesisHash;
     let base = `http://127.0.0.1:${network.port}`;
     await until("height past v6", async () => (await json(base, "/status")).body.height >= 102);
     assert.equal((await json(base, "/peer/status")).status, 503, "no durable block before the first publish");
-    const snap = await fetch(`${base}/state/snapshot`);
-    publishedSealed = Buffer.from(await snap.arrayBuffer());
-    const h1 = Number(snap.headers.get("x-zyron-snapshot-height"));
+    const snap = await snapshotAtLeast(base, 102);
+    publishedSealed = snap.bytes;
+    const h1 = snap.height;
     await until("chain moves past the published snapshot", async () => (await json(base, "/status")).body.height >= h1 + 3);
     const peerStatus = await until("peer status at watermark", async () => { const s = (await json(base, "/peer/status")).body; return s.height === h1 ? s : undefined; }) as { height: number };
     assert.equal(peerStatus.height, h1);
@@ -134,7 +141,7 @@ test("cold start from a snapshot behind the tip: followers never held a block th
     follower?.kill("SIGTERM"); await sleep(1_000);
     assert.equal(restored.genesisHash, expectedGenesis, "the restore is of the same genesis");
     const restoredBasePort = await allocateValidatorBasePort("durable-watermark");
-    network = await api.runNetwork(join(root, "b"), { gatewayPort: 0, basePort: restoredBasePort, log: false, stateSecret: secret, persistence: { mode: "snapshot-restore", restoredHeight: restored.height }, verifiedHistory: restored.verifiedHistory, durable });
+    network = await api.runNetwork(join(root, "b"), { gatewayPort: 0, basePort: restoredBasePort, log: false, stateSecret: secret, persistence: { mode: "snapshot-restore", restoredHeight: restored.height }, verifiedHistory: restored.verifiedHistory, durable, snapshotRefreshMs: 1_000 });
     base = `http://127.0.0.1:${network.port}`;
     await until("restored chain finalizes past the lost tip", async () => (await json(base, "/status")).body.height > lostTip);
     // A port collision with another test's network would answer with a foreign chain; name the port that answered.
@@ -147,9 +154,9 @@ test("cold start from a snapshot behind the tip: followers never held a block th
     const ps = (await json(base, "/peer/status")).body;
     assert.equal(ps.height, h1, "after the restore, followers still see only the durable prefix");
     // The keeper publishes the restored chain; the follower (same data dir) syncs past the lost tip without a fork.
-    const snap2 = await fetch(`${base}/state/snapshot`);
-    publishedSealed = Buffer.from(await snap2.arrayBuffer());
-    const h2 = Number(snap2.headers.get("x-zyron-snapshot-height"));
+    const snap2 = await snapshotAtLeast(base, lostTip + 1);
+    publishedSealed = snap2.bytes;
+    const h2 = snap2.height;
     assert.ok(h2 > lostTip);
     follower = spawn(process.execPath, [join(l1Root, "dist", "src", "cli.js"), "node", "--genesis", join(root, "a", "genesis.json"), "--data", join(root, "follower"), "--host", "127.0.0.1", "--port", String(followerPort2), "--peer", `${base}/peer`], { cwd: l1Root, stdio: "ignore" });
     const f2 = async () => { const r = await fetch(`http://127.0.0.1:${followerPort2}/status`, { headers: { "x-zyron-rpc-version": "1" } }); return (await r.json()) as { height: number; tipHash: string }; };

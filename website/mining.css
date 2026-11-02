@@ -9,8 +9,8 @@
 .eyebrow, .section-label { margin: 0; font: 600 12px/1.5 ui-monospace, Consolas, monospace; letter-spacing: .14em; text-transform: uppercase; color: var(--cyan); }
 .hero-lede, .section-intro { margin: 0 0 1rem; font-size: 18px; line-height: 1.72; color: var(--text); }
 .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 31px; }
-.secondary-button { display: inline-flex; align-items: center; justify-content: center; min-height: 52px; padding: 0 24px; border-radius: 4px; font-weight: 700; text-decoration: none; background: rgba(8, 16, 30, .6); color: var(--ink); border: 1px solid rgba(216, 220, 224, .32); }
-.secondary-button:hover { background: rgba(10, 159, 245, .12); border-color: rgba(79, 216, 251, .7); color: #fff; }
+.secondary-button { display: inline-flex; align-items: center; justify-content: center; min-height: 52px; padding: 0 24px; border-radius: 4px; font-weight: 700; text-decoration: none; background: rgba(18, 17, 15, .6); color: var(--ink); border: 1px solid rgba(230, 225, 214, .32); }
+.secondary-button:hover { background: rgba(249, 183, 0, .12); border-color: rgba(255, 204, 51, .7); color: #fff; }
 .section { padding: 70px 0; }
 .section h2 { font-size: clamp(30px, 4vw, 46px); margin: 18px 0 24px; color: var(--ink); letter-spacing: -.045em; line-height: 1.1; }
 @media (max-width: 700px) {

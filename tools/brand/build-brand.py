@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-"""ZYRON CHAIN brand asset pipeline (wolf + Z mark).
+"""ZYRON CHAIN brand asset pipeline (gold Z coin mark).
 
-Reproducibly derives every website / PWA / Telegram Mini App brand asset from the two master
-artworks in tools/brand/source/ using Pillow only (no network, no paid services):
+Every website / PWA / Telegram Mini App brand asset is drawn from the vector master
+tools/brand/source/zyron-mark.svg (geometry mirrored in MARK below) with Pillow only, no network:
 
     python3 tools/brand/build-brand.py [--extra-out DIR]
 
---extra-out additionally writes the Telegram profile photo (640x640), bot avatar (512x512) and a
-brand kit (transparent marks, horizontal logo) to DIR for manual upload. Re-run
-`node tools/pwa-wallet/stamp-app.mjs` afterwards so the PWA service worker / SRI pins stay current.
+--extra-out also writes a manual-upload kit (profile photo 640, bot avatar 512, transparent marks,
+horizontal logo, 1200x630 OG image). Re-run `node tools/pwa-wallet/stamp-app.mjs` afterwards so the
+PWA service worker / SRI pins stay current.
 """
 from __future__ import annotations
 
 import argparse
-import base64
-import io
+import shutil
 from pathlib import Path
 
-import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = Path(__file__).resolve().parent / "source"
@@ -27,99 +25,61 @@ BRAND = WEB / "brand"
 APP_ICONS = WEB / "app" / "icons"
 GAME = ROOT / "telegram-game" / "frontend"
 
-# Palette sampled from the master artwork (see tools/brand/README.md).
-VOID = (2, 5, 10)          # #02050a page background
-NAVY = (7, 26, 51)         # #071a33 icon glow centre
-BLUE = (10, 159, 245)      # #0a9ff5 electric blue (median vivid blue in the logo)
+# Palette (see tools/brand/README.md)
+VOID = (10, 10, 11)        # #0a0a0b page background
+PANEL = (20, 20, 22)       # #141416
+GOLD = (249, 183, 0)       # #f9b700 brand gold
+WHITE = (255, 255, 255)
 
-# Mark crop in the 1254x1254 square master: wolf + Z + ring, text-free (text starts at y=911).
-MARK_BOX = (205, 93, 1015, 903)
-# Slightly tighter crop centred on the wolf for tiny favicons.
-TIGHT_BOX = (198, 103, 988, 893)
-TEXT_FADE_FROM = 885       # rows below this fade to black so no text glow leaks into the mark
+# Mark geometry on a 1024 grid (same as source/zyron-mark.svg).
+CIRCLE = (512, 512, 434)
+DX, DY = 4, 2
+Z_POLY = [(322, 283), (770, 283), (457, 625), (770, 625), (696, 707), (245, 707), (562, 371), (259, 371)]
+BARS = [(414, 193, 480, 283), (526, 193, 592, 283), (414, 707, 480, 807), (526, 707, 592, 807)]
 
-
-def load(name: str) -> Image.Image:
-    return Image.open(SRC / name).convert("RGB")
-
-
-def clean_black(img: Image.Image) -> Image.Image:
-    """Lift the near-black background (#010203 noise) to pure black without touching the art."""
-    a = np.asarray(img).astype(np.float32) / 255.0
-    a = np.clip((a - 0.012) / 0.988, 0, 1)
-    return Image.fromarray((a * 255 + 0.5).astype(np.uint8), "RGB")
+FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/sand-box/google/Poppins/Poppins-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+]
 
 
-def crop_mark(square: Image.Image, box) -> Image.Image:
-    a = np.asarray(square).astype(np.float32).copy()
-    top = box[1]
-    for y in range(TEXT_FADE_FROM, box[3]):
-        a[y] *= max(0.0, 1 - (y - TEXT_FADE_FROM) / (box[3] - TEXT_FADE_FROM))
-    return clean_black(Image.fromarray(a.clip(0, 255).astype(np.uint8), "RGB").crop(box))
+def font(px: int) -> ImageFont.FreeTypeFont:
+    for f in FONT_CANDIDATES:
+        if Path(f).exists():
+            return ImageFont.truetype(f, px)
+    return ImageFont.load_default(px)
 
 
-def to_rgba(img: Image.Image, fill_core: bool = True) -> Image.Image:
-    """Exact 'screen' -> alpha conversion for art on black, with the solid wolf interior kept opaque.
-
-    Glow pixels C = a*F over black are unmixed to (F, a) with a = max(C); dark wolf facets inside the
-    silhouette are filled to full opacity so the mark stays solid on any background.
-    """
-    c = np.asarray(img).astype(np.float32) / 255.0
-    screen = np.clip((c.max(axis=2) - 0.02) / 0.98, 0, 1)
-    alpha = screen
-    if fill_core:
-        r, g, b = c[..., 0], c[..., 1], c[..., 2]
-        core = (r > 0.45 * b) & (c.max(axis=2) > 35 / 255)
-        mask = Image.fromarray((core * 255).astype(np.uint8), "L").copy()
-        h, w = core.shape
-        for seed in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]:
-            if mask.getpixel(seed) == 0:
-                ImageDraw.floodfill(mask, seed, 128)
-        filled = np.asarray(mask) != 128
-        # Round morphological closing (Gaussian dilate -> erode, ~36 px) seals the dark fur gaps that open
-        # onto the background, so the silhouette also stays solid on light backgrounds.
-        def blur(m, r):
-            return np.asarray(Image.fromarray((m * 255).astype(np.uint8), "L").filter(ImageFilter.GaussianBlur(r))) / 255.0
-        dilated = blur(filled.astype(np.float32), 22) > 0.05
-        closed = blur(dilated.astype(np.float32), 22) > 0.95
-        filled = filled | closed
-        # Fill holes again now that the gaps are sealed (blue-lit inner ear, the Z counters).
-        mask = Image.fromarray((filled * 255).astype(np.uint8), "L").copy()
-        for seed in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]:
-            if mask.getpixel(seed) == 0:
-                ImageDraw.floodfill(mask, seed, 128)
-        filled = np.asarray(mask) != 128
-        soft = np.asarray(Image.fromarray((filled * 255).astype(np.uint8), "L").filter(ImageFilter.GaussianBlur(1.2))) / 255.0
-        # Erode the soft edge slightly so no dark halo appears around the silhouette.
-        soft = np.clip((soft - 0.35) / 0.65, 0, 1)
-        alpha = np.maximum(screen, soft)
-    safe = np.maximum(alpha, 1e-6)[..., None]
-    fg = np.clip(c / safe, 0, 1)
-    out = np.dstack([fg, alpha]) * 255 + 0.5
-    return Image.fromarray(out.astype(np.uint8), "RGBA")
+def mark(size: int, coin: bool = True, glyph=WHITE, fill=GOLD) -> Image.Image:
+    """Transparent RGBA mark (gold coin + white Z). coin=False draws only the glyph (in `glyph`)."""
+    ss = 4
+    S = size * ss
+    k = S / 1024
+    im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    cx, cy, r = CIRCLE
+    if coin:
+        d.ellipse(((cx - r) * k, (cy - r) * k, (cx + r) * k, (cy + r) * k), fill=fill + (255,))
+    g = glyph + (255,)
+    d.polygon([((x + DX) * k, (y + DY) * k) for x, y in Z_POLY], fill=g)
+    for x0, y0, x1, y1 in BARS:
+        d.rectangle(((x0 + DX) * k, (y0 + DY) * k, (x1 + DX) * k, (y1 + DY) * k), fill=g)
+    return im.resize((size, size), Image.LANCZOS)
 
 
-def resize_rgba(img: Image.Image, size) -> Image.Image:
-    # Premultiplied resampling: no dark/bright fringes at transparent edges.
-    return img.convert("RGBa").resize(size, Image.LANCZOS).convert("RGBA")
+def glow_bg(w: int, h: int, cx: float, cy: float, radius: float, strength: float = 0.28) -> Image.Image:
+    """Near-black background with a soft warm gold glow centred at (cx, cy)."""
+    bg = Image.new("RGB", (w, h), VOID)
+    glow = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(glow).ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill=int(255 * strength))
+    glow = glow.filter(ImageFilter.GaussianBlur(radius * 0.55))
+    return Image.composite(Image.new("RGB", (w, h), (120, 86, 0)), bg, glow)
 
 
-def radial_bg(size: int, inner=NAVY, outer=VOID, reach=0.75) -> Image.Image:
-    y, x = np.mgrid[0:size, 0:size].astype(np.float32)
-    d = np.sqrt((x - size / 2 + 0.5) ** 2 + (y - size / 2 + 0.5) ** 2) / (size * reach)
-    t = np.clip(d, 0, 1)[..., None] ** 1.4
-    col = np.array(inner, np.float32) * (1 - t) + np.array(outer, np.float32) * t
-    return Image.fromarray(col.astype(np.uint8), "RGB")
-
-
-def icon(mark_rgba: Image.Image, size: int, scale: float, rounded: float = 0.0, bg: Image.Image | None = None,
-         sharpen: bool = False) -> Image.Image:
-    canvas = (bg or radial_bg(size)).convert("RGBA")
-    m = int(round(size * scale))
-    mark = resize_rgba(mark_rgba, (m, m))
-    if sharpen:
-        mark = mark.filter(ImageFilter.UnsharpMask(radius=0.6, percent=60, threshold=1))
-    canvas.alpha_composite(mark, ((size - m) // 2, (size - m) // 2))
+def icon(size: int, scale: float, bg: Image.Image | None = None, rounded: float = 0.0) -> Image.Image:
+    canvas = (bg or Image.new("RGB", (size, size), VOID)).convert("RGBA")
+    m = round(size * scale)
+    canvas.alpha_composite(mark(m), ((size - m) // 2, (size - m) // 2))
     if rounded:
         mask = Image.new("L", (size * 4, size * 4), 0)
         ImageDraw.Draw(mask).rounded_rectangle((0, 0, size * 4 - 1, size * 4 - 1), radius=int(size * 4 * rounded), fill=255)
@@ -132,7 +92,7 @@ def save_png(img: Image.Image, path: Path, opaque: bool = False) -> None:
     (img.convert("RGB") if opaque else img).save(path, "PNG", optimize=True)
 
 
-def save_web(img: Image.Image, stem: Path, jpg: bool = True, q: int = 80) -> None:
+def save_web(img: Image.Image, stem: Path, jpg: bool = True, q: int = 82) -> None:
     stem.parent.mkdir(parents=True, exist_ok=True)
     rgb = img.convert("RGB")
     rgb.save(stem.with_suffix(".webp"), "WEBP", quality=q, method=6)
@@ -140,70 +100,67 @@ def save_web(img: Image.Image, stem: Path, jpg: bool = True, q: int = 80) -> Non
         rgb.save(stem.with_suffix(".jpg"), "JPEG", quality=q + 2, optimize=True, progressive=True, subsampling=0)
 
 
-def png_data_uri(img: Image.Image) -> str:
-    buf = io.BytesIO()
-    img.save(buf, "PNG", optimize=True)
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+def wordmark(height: int) -> Image.Image:
+    """'ZYRON' white + 'CHAIN' gold on transparent."""
+    f = font(int(height * 0.82))
+    gap = int(height * 0.28)
+    w1 = f.getlength("ZYRON")
+    w2 = f.getlength("CHAIN")
+    W = int(w1 + gap + w2) + 4
+    im = Image.new("RGBA", (W, height), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    bbox = f.getbbox("ZYRON")
+    y = (height - (bbox[3] - bbox[1])) // 2 - bbox[1]
+    d.text((0, y), "ZYRON", font=f, fill=WHITE + (255,))
+    d.text((w1 + gap, y), "CHAIN", font=f, fill=GOLD + (255,))
+    return im
 
 
-def wordmark(square: Image.Image) -> Image.Image:
-    """'ZYRON CHAIN' chrome lettering from the master, as a tight transparent strip."""
-    a = np.asarray(square).astype(np.float32)
-    band = a[905:1015]
-    lum = band.max(axis=2)
-    ys, xs = np.where(lum > 40)
-    box = (int(xs.min()) - 6, 905 + int(ys.min()) - 6, int(xs.max()) + 7, 905 + int(ys.max()) + 7)
-    return to_rgba(clean_black(square.crop(box)), fill_core=False)
+def banner(w: int, h: int, narrow: bool = False) -> Image.Image:
+    """Hero art: wordmark on the left, gold coin on the right, warm glow, subtle grid."""
+    m = int(h * (0.62 if narrow else 0.70 if w / h > 2.4 else 0.58))
+    mx = int(w * (0.80 if narrow else 0.70 if w / h > 2.4 else 0.75)) - m // 2
+    my = (h - m) // 2 + (int(h * 0.04) if narrow else 0)
+    bg = glow_bg(w, h, mx + m / 2, my + m / 2, m * 0.95, 0.32)
+    d = ImageDraw.Draw(bg)
+    step = max(28, w // 40)
+    for x in range(0, w, step):
+        d.line((x, 0, x, h), fill=(22, 21, 18))
+    for y in range(0, h, step):
+        d.line((0, y, w, y), fill=(22, 21, 18))
+    bg = Image.blend(Image.new("RGB", (w, h), VOID), bg, 1.0)
+    shadow = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(shadow).ellipse((mx, my + m * 0.04, mx + m, my + m * 1.04), fill=150)
+    shadow = shadow.filter(ImageFilter.GaussianBlur(m * 0.06))
+    bg = Image.composite(Image.new("RGB", (w, h), (0, 0, 0)), bg, shadow).convert("RGBA")
+    bg.alpha_composite(mark(m), (mx, my))
+    wm_h = int(h * (0.15 if narrow else 0.17))
+    wm = wordmark(wm_h)
+    tx = int(w * (0.06 if narrow else 0.10 if w / h > 2.4 else 0.07))
+    max_w = mx - tx - int(w * 0.05)
+    if wm.width > max_w:
+        wm = wm.resize((max_w, round(wm.height * max_w / wm.width)), Image.LANCZOS)
+    ty = (h - wm.height) // 2 + (int(h * 0.1) if narrow else 0)
+    bg.alpha_composite(wm, (tx, ty))
+    bar_y = ty + wm.height + int(h * 0.04)
+    ImageDraw.Draw(bg).rectangle((tx, bar_y, tx + int(wm.width * 0.34), bar_y + max(3, h // 160)), fill=GOLD + (255,))
+    return bg.convert("RGB")
 
 
-def banner_variants(banner: Image.Image) -> None:
-    w, h = banner.size
-    for width in (2172, 1600, 1080):
-        img = banner if width == w else banner.resize((width, round(h * width / w)), Image.LANCZOS)
-        save_web(img, BRAND / f"zyron-banner-{width}", jpg=width != 2172, q=78)
-    # Mobile art direction: tighter crop that keeps the wordmark and the wolf.
-    crop = banner.crop((190, 0, 1890, h))
-    for width in (1080, 720):
-        img = crop.resize((width, round(crop.height * width / crop.width)), Image.LANCZOS)
-        save_web(img, BRAND / f"zyron-banner-m-{width}", jpg=width == 720, q=78)
-
-
-def og_image(banner: Image.Image) -> Image.Image:
-    W, H = 1200, 630
-    # Background: the banner itself, cover-scaled, blurred and darkened.
-    scale = max(W / banner.width, H / banner.height)
-    bg = banner.resize((round(banner.width * scale), round(banner.height * scale)), Image.LANCZOS)
-    left, top = (bg.width - W) // 2, (bg.height - H) // 2
-    bg = bg.crop((left, top, left + W, top + H)).filter(ImageFilter.GaussianBlur(18))
-    bg = Image.blend(bg, Image.new("RGB", (W, H), VOID), 0.55)
-    # Sharp banner band (wordmark + wolf), feathered top and bottom into the background.
-    crop = banner.crop((150, 0, 1950, banner.height))
-    bw = W
-    bh = round(crop.height * bw / crop.width)
-    sharp = crop.resize((bw, bh), Image.LANCZOS)
-    y0 = (H - bh) // 2
-    feather = np.ones((bh, bw), np.float32)
-    f = 70
-    ramp = np.linspace(0, 1, f, dtype=np.float32)
-    feather[:f] *= ramp[:, None]
-    feather[-f:] *= ramp[::-1][:, None]
-    mask = Image.fromarray((feather * 255).astype(np.uint8), "L")
-    out = bg.copy()
-    out.paste(sharp, (0, y0), mask)
-    return out
+def og_image() -> Image.Image:
+    return banner(1200, 630)
 
 
 POINTS_MARK_PX = 52  # CSS px of the largest use (balance card); exported at 1x / 2x / 3x
 
 
-def game_points_marks(tight: Image.Image) -> None:
-    """Transparent wolf + Z mark that stands for Zyron Points in ZYRON NODE (replaces the old gold coin)."""
+def game_points_marks() -> None:
     for scale in (1, 2, 3):
         px = POINTS_MARK_PX * scale
-        img = resize_rgba(tight, (px, px))
-        if scale == 1:
-            img = img.filter(ImageFilter.UnsharpMask(radius=0.6, percent=60, threshold=1))
-        save_png(img, GAME / f"points-mark-{px}.png")
+        save_png(mark(px), GAME / f"points-mark-{px}.png")
+
+
+SVG_MARK = (SRC / "zyron-mark.svg")
 
 
 def main() -> None:
@@ -211,92 +168,69 @@ def main() -> None:
     ap.add_argument("--extra-out", type=Path, default=None)
     ap.add_argument("--points-only", action="store_true", help="only write the ZYRON NODE points marks")
     args = ap.parse_args()
-
-    square = load("zyron-chain-logo-square.png")
     if args.points_only:
-        game_points_marks(to_rgba(crop_mark(square, TIGHT_BOX)))
+        game_points_marks()
         return
-    banner = load("zyron-chain-banner.png")
-
-    mark_black = crop_mark(square, MARK_BOX)            # 810x810, ring included, black background
-    mark = to_rgba(mark_black)                         # transparent
-    tight = to_rgba(crop_mark(square, TIGHT_BOX))
-    text = wordmark(square)
 
     # ---- website root (names are part of the website CI contract) ----
-    save_png(resize_rgba(mark, (192, 192)), WEB / "brand-mark.png")
-    save_png(icon(tight, 32, 1.0, rounded=0.22, bg=Image.new("RGB", (32, 32), VOID), sharpen=True), WEB / "favicon-32.png")
-    save_png(icon(tight, 16, 1.0, rounded=0.2, bg=Image.new("RGB", (16, 16), VOID), sharpen=True), BRAND / "favicon-16.png")
-    save_png(icon(tight, 48, 1.0, rounded=0.22, bg=Image.new("RGB", (48, 48), VOID), sharpen=True), BRAND / "favicon-48.png")
-    ico_frames = [icon(tight, s, 1.0, rounded=0.22, bg=Image.new("RGB", (s, s), VOID), sharpen=True) for s in (16, 32, 48)]
-    ico_frames[2].save(WEB / "favicon.ico", sizes=[(16, 16), (32, 32), (48, 48)], append_images=ico_frames[:2])
-    save_png(icon(mark, 180, 0.9), WEB / "apple-touch-icon.png", opaque=True)
-    save_png(icon(mark, 192, 0.9), WEB / "icon-192.png", opaque=True)
-    save_png(icon(mark, 512, 0.9), BRAND / "icon-512.png", opaque=True)
+    save_png(mark(192), WEB / "brand-mark.png")
+    save_png(mark(32), WEB / "favicon-32.png")
+    save_png(mark(16), BRAND / "favicon-16.png")
+    save_png(mark(48), BRAND / "favicon-48.png")
+    frames = [mark(s) for s in (16, 32, 48)]
+    frames[2].save(WEB / "favicon.ico", sizes=[(16, 16), (32, 32), (48, 48)], append_images=frames[:2])
+    save_png(icon(180, 0.84), WEB / "apple-touch-icon.png", opaque=True)
+    save_png(icon(192, 0.84), WEB / "icon-192.png", opaque=True)
+    save_png(icon(512, 0.84), BRAND / "icon-512.png", opaque=True)
 
-    # SVG favicon / logo: system-font vector type + the raster mark (no remote fonts, CSP-safe).
-    fav_uri = png_data_uri(icon(tight, 64, 1.0, rounded=0.22, bg=Image.new("RGB", (64, 64), VOID), sharpen=True))
-    (WEB / "favicon.svg").write_text(
-        '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 96 96" width="96" height="96" role="img" aria-labelledby="t">'
-        '<title id="t">ZyronChain</title>'
-        f'<image width="96" height="96" href="{fav_uri}" xlink:href="{fav_uri}"/></svg>\n', encoding="utf-8")
-    logo_uri = png_data_uri(resize_rgba(mark, (128, 128)))
-    (WEB / "logo.svg").write_text(f'''<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 640 160" width="640" height="160" role="img" aria-labelledby="t d">
-<title id="t">ZyronChain</title><desc id="d">ZYRON CHAIN wolf and Z mark. VERIFIABLE LAYER-1</desc>
-<defs>
-<linearGradient id="chrome" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".46" stop-color="#d8dce0"/><stop offset=".56" stop-color="#8d949a"/><stop offset="1" stop-color="#f4f7f9"/></linearGradient>
-<linearGradient id="blue" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#4fd8fb"/><stop offset="1" stop-color="#0a9ff5"/></linearGradient>
-</defs>
-<image x="0" y="0" width="160" height="160" href="{logo_uri}" xlink:href="{logo_uri}"/>
-<text x="178" y="92" fill="url(#chrome)" font-family="'Segoe UI',Arial,Helvetica,sans-serif" font-size="64" font-weight="700" letter-spacing="6">ZYRON</text>
-<text x="452" y="92" fill="#d8dce0" font-family="'Segoe UI',Arial,Helvetica,sans-serif" font-size="40" font-weight="400" letter-spacing="6">CHAIN</text>
-<rect x="180" y="110" width="440" height="2" fill="url(#blue)" opacity=".85"/>
-<text x="180" y="138" fill="#4fd8fb" font-family="ui-monospace,Consolas,monospace" font-size="16" letter-spacing="5">VERIFIABLE LAYER-1</text>
+    svg = SVG_MARK.read_text(encoding="utf-8")
+    (WEB / "favicon.svg").write_text(svg, encoding="utf-8")
+    shutil.copyfile(SVG_MARK, BRAND / "zyron-mark.svg")
+    inner = svg.split("<title id=\"t\">ZyronChain</title>", 1)[1].rsplit("</svg>", 1)[0]
+    (WEB / "logo.svg").write_text(f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 160" width="680" height="160" role="img" aria-labelledby="t d">
+<title id="t">ZyronChain</title><desc id="d">ZYRON CHAIN gold Z mark. Verifiable Layer-1</desc>
+<g transform="scale(.15625)">{inner}</g>
+<text x="182" y="94" fill="#ffffff" font-family="Poppins,'Segoe UI',Arial,Helvetica,sans-serif" font-size="62" font-weight="700" letter-spacing="3">ZYRON</text>
+<text x="420" y="94" fill="#f9b700" font-family="Poppins,'Segoe UI',Arial,Helvetica,sans-serif" font-size="62" font-weight="700" letter-spacing="3">CHAIN</text>
+<rect x="184" y="112" width="120" height="3" fill="#f9b700"/>
+<text x="184" y="140" fill="#d6d1c6" font-family="ui-monospace,Consolas,monospace" font-size="16" letter-spacing="5">VERIFIABLE LAYER-1</text>
 </svg>
 ''', encoding="utf-8")
 
     # ---- header wordmark + banner + og ----
-    th = 80
-    save_png(resize_rgba(text, (round(text.width * th / text.height), th)), BRAND / "zyron-wordmark.png")
-    banner_variants(banner)
-    og = og_image(banner)
-    og.save(BRAND / "og-image.jpg", "JPEG", quality=84, optimize=True, progressive=True)
+    save_png(wordmark(80), BRAND / "zyron-wordmark.png")
+    for width in (2172, 1600, 1080):
+        save_web(banner(width, round(width * 533 / 1600)), BRAND / f"zyron-banner-{width}", jpg=width != 2172)
+    for width in (1080, 720):
+        save_web(banner(width, round(width * 400 / 720), narrow=True), BRAND / f"zyron-banner-m-{width}", jpg=width == 720)
+    og = og_image()
+    og.save(BRAND / "og-image.jpg", "JPEG", quality=86, optimize=True, progressive=True)
 
-    # ---- PWA wallet (website/app) ----
-    save_png(icon(mark, 192, 0.9), APP_ICONS / "icon-192.png", opaque=True)
-    save_png(icon(mark, 512, 0.9), APP_ICONS / "icon-512.png", opaque=True)
-    save_png(icon(mark, 192, 0.72, bg=radial_bg(192, reach=0.62)), APP_ICONS / "maskable-192.png", opaque=True)
-    save_png(icon(mark, 512, 0.72, bg=radial_bg(512, reach=0.62)), APP_ICONS / "maskable-512.png", opaque=True)
-    save_png(icon(mark, 180, 0.9), APP_ICONS / "apple-touch-icon-180.png", opaque=True)
+    # ---- PWA wallet ----
+    save_png(icon(192, 0.84), APP_ICONS / "icon-192.png", opaque=True)
+    save_png(icon(512, 0.84), APP_ICONS / "icon-512.png", opaque=True)
+    # Maskable: mark inside the 80% safe zone.
+    save_png(icon(192, 0.66, bg=glow_bg(192, 192, 96, 96, 110)), APP_ICONS / "maskable-192.png", opaque=True)
+    save_png(icon(512, 0.66, bg=glow_bg(512, 512, 256, 256, 290)), APP_ICONS / "maskable-512.png", opaque=True)
+    save_png(icon(180, 0.84), APP_ICONS / "apple-touch-icon-180.png", opaque=True)
 
-    # ---- Telegram Mini App (ZYRON NODE) ----
-    save_png(resize_rgba(mark, (420, 420)), GAME / "logo.png")
-    game_points_marks(tight)
+    # ---- Telegram Mini App ----
+    save_png(mark(420), GAME / "logo.png")
+    game_points_marks()
 
     if args.extra_out:
         out = args.extra_out
-        out.mkdir(parents=True, exist_ok=True)
-        save_png(icon(mark, 640, 0.92), out / "telegram-profile-640.png", opaque=True)
-        save_png(clean_black(square).resize((640, 640), Image.LANCZOS), out / "telegram-profile-640-with-text.png", opaque=True)
-        save_png(icon(mark, 512, 0.92), out / "telegram-bot-avatar-512.png", opaque=True)
-        save_png(mark, out / "zyron-wolf-mark-810-transparent.png")
-        save_png(resize_rgba(mark, (1024, 1024)), out / "zyron-wolf-mark-1024-transparent.png")
-        save_png(mark_black, out / "zyron-wolf-mark-810-black.png", opaque=True)
-        save_png(clean_black(square), out / "zyron-chain-logo-1254-black.png", opaque=True)
-        # Horizontal logo: mark + wordmark on transparent.
-        H = 256
-        m = resize_rgba(mark, (H, H))
-        tw = round(text.width * (H * 0.24) / text.height)
-        t = resize_rgba(text, (tw, round(H * 0.24)))
-        horiz = Image.new("RGBA", (H + 24 + tw + 16, H), (0, 0, 0, 0))
-        horiz.alpha_composite(m, (0, 0))
-        horiz.alpha_composite(t, (H + 24, (H - t.height) // 2))
+        save_png(icon(640, 0.86, bg=glow_bg(640, 640, 320, 320, 380)), out / "telegram-profile-640.png", opaque=True)
+        save_png(icon(512, 0.86, bg=glow_bg(512, 512, 256, 256, 300)), out / "telegram-bot-avatar-512.png", opaque=True)
+        save_png(mark(1024), out / "zyron-mark-1024-transparent.png")
+        save_png(icon(1024, 0.86), out / "zyron-mark-1024-black.png", opaque=True)
+        wm = wordmark(160)
+        horiz = Image.new("RGBA", (200 + 40 + wm.width, 200), (0, 0, 0, 0))
+        horiz.alpha_composite(mark(200), (0, 0))
+        horiz.alpha_composite(wm, (240, 20))
         save_png(horiz, out / "zyron-logo-horizontal-transparent.png")
-        bg = Image.new("RGBA", horiz.size, VOID + (255,))
-        bg.alpha_composite(horiz)
-        save_png(bg, out / "zyron-logo-horizontal-black.png", opaque=True)
-        og.save(out / "og-image-1200x630.jpg", "JPEG", quality=88)
-    print("brand assets written")
+        og.save(out / "og-image-1200x630.jpg", "JPEG", quality=90)
+        shutil.copyfile(SVG_MARK, out / "zyron-mark.svg")
 
 
 if __name__ == "__main__":
