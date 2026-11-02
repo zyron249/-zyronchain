@@ -295,7 +295,9 @@
     $('[data-tx-out]').hidden = true;
     $('[data-tx-json]').textContent = '';
     $('[data-tx-to-grouped]').textContent = '';
-    $('[data-tx-nonce]').value = String(core.nextNonce(null));
+    const prefill = core.heldNoncePrefill(state.lastTx); // a held signed transfer keeps its next nonce across lock
+    $('[data-tx-nonce]').value = prefill.value;
+    $('[data-nonce-held-warning]').hidden = !prefill.warn;
     $('[data-review-rows]').textContent = '';
     $('[data-qr]').textContent = '';
     $('[data-created-note]').hidden = true;
@@ -835,6 +837,7 @@
       $('[data-tx-summary]').textContent = t('msgSigned', { txid: tx.txid });
       $('[data-tx-to-grouped]').textContent = core.displayAddress(tx.receiver);
       $('[data-tx-nonce]').value = String(core.nextNonce(tx.nonce)); // the next transfer uses the following nonce
+      $('[data-nonce-held-warning]').hidden = true;
       $('[data-review-confirm-box]').hidden = true;
       $('[data-tx-out]').hidden = false;
       setMessage('[data-tx-copy-result]', '', '');
