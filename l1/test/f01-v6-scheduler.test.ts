@@ -239,5 +239,5 @@ test("F-01 local-devnet --v6 is a test-only mode: refuses --local-v5, default de
   // 6A/#1147: the default check is the v6 devnet; the protocol-1 path is the opt-in v1-legacy script.
   assert.equal(pkg.scripts["devnet:check"], "npm run build && node scripts/local-devnet.mjs --check --v6");
   assert.equal(pkg.scripts["devnet:check:v6"], "npm run devnet:check");
-  assert.equal(pkg.scripts["devnet:check:v1-legacy"], "npm run build && node scripts/local-devnet.mjs --check");
+  assert.equal(pkg.scripts["devnet:check:v1-legacy"], "npm run build && node scripts/local-devnet.mjs --check --v1-legacy");
 });

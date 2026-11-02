@@ -24,7 +24,7 @@ Authorization (`*Authorized=true`) is not activation. Green CI is not activation
 
 | Surface | Status | How | What it is not |
 |---|---|---|---|
-| Local two-validator public-test | Ready | `cd l1 && npm ci && npm run devnet` | Not a hosted testnet. Fresh `zyron-local-<hex>` every run. RPC on `127.0.0.1` only |
+| Local two-validator public-test | Ready | `cd l1 && npm ci && npm run devnet` | Not a hosted testnet. Fresh genesis every run under the fixed local chain ID `zyron-devnet-1`. RPC on `127.0.0.1` only |
 | Automated local check | Ready (known-flaky on v1) | `npm run devnet:check` (v6; alias `devnet:check:v6`), `npm run devnet:check:v1-legacy` | `local-devnet` (v1-legacy) fails by design until #1147 (previously about 50% of the time because of the legacy F-01 split); `local-devnet-v6` runs the same check on protocol v6. Neither is a required check. See [`L1_TEST_RELIABILITY.md`](L1_TEST_RELIABILITY.md) |
 | Local protocol-v5 mining rehearsal | Retired | `cd l1 && npm run mine:local` exits non-zero | Mining is shut down for every genesis |
 | Packaged miner | Retired | `npm run mine` exits non-zero before reading keys | Consensus rejects every `mining_claim` |

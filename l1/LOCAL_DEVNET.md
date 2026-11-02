@@ -54,7 +54,8 @@ npm run devnet:check
 ```
 
 `npm run devnet:check` runs the two-validator devnet under protocol v6 (`--check --v6`);
-`npm run devnet:check:v6` is an alias. The protocol-1 path is `npm run devnet:check:v1-legacy`,
+`npm run devnet:check:v6` is an alias. Plain `npm run devnet` also runs protocol v6 by default.
+The protocol-1 path is an explicit opt-in (`--v1-legacy`: `npm run devnet:v1-legacy`, `npm run devnet:check:v1-legacy`),
 and it **fails by design** at its transfer step until
 [#1147](https://github.com/zyron249/-zyronchain/issues/1147): the CLI never signs transaction
 version 1 (feature 6A), and a protocol-1 chain needs version 1.

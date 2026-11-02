@@ -7,21 +7,21 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseDevnetArgs } from './local-devnet-options.mjs';
 
-const args = process.argv.slice(2);
-const allowed = new Set(['--check', '--help', '--local-v5', '--v6']);
-if (args.some(arg => !allowed.has(arg))) {
-  console.error('Usage: npm run devnet [-- --check | --local-v5] [-- --v6]');
+const options = parseDevnetArgs(process.argv.slice(2));
+if (options.error) {
+  console.error(options.error);
   process.exit(1);
 }
-if (args.includes('--local-v5')) {
+if (options.retiredLocalV5) {
   // RETIRED (owner decision 2026-09-30): mining is shut down for every genesis and
   // consensus rejects every mining_claim, so there is no local mining rehearsal.
   console.error('--local-v5 (local mining rehearsal) is retired: ZyronChain mining is shut down and consensus rejects every mining_claim transaction.');
   process.exit(1);
 }
-if (args.includes('--help')) {
-  console.log('Start a fresh, loopback-only two-validator development chain. Ctrl+C stops both nodes.\n--check verifies transfer, quorum and restart, then removes the temporary chain.\n--local-v5 is retired (mining is shut down) and exits with an error.\n--v6 (F-01 test mode) runs the same disposable loopback chain under consensus protocol v6: heights 1-100 are pre-built offline with a quorum-approved upgrade activating v6 at height 101, so both validators start at height 100 and every block they finalize uses v6. Devnet/test only; never use this on a live network.\nRequires Linux/macOS; on Windows run inside WSL2 on the Linux filesystem.');
+if (options.help) {
+  console.log('Start a fresh, loopback-only two-validator development chain. Ctrl+C stops both nodes.\n--check verifies transfer, quorum and restart, then removes the temporary chain.\n--local-v5 is retired (mining is shut down) and exits with an error.\nThe chain runs consensus protocol v6 by default (--v6 (F-01 test mode) is the explicit spelling): heights 1-100 are pre-built offline with a quorum-approved upgrade activating v6 at height 101, so both validators start at height 100 and every block they finalize uses v6. Devnet/test only; never use this on a live network.\n--v1-legacy opts into the legacy protocol-1 chain. Its transfer step fails by design until #1147, because the CLI never signs transaction version 1 (feature 6A).\nRequires Linux/macOS; on Windows run inside WSL2 on the Linux filesystem.');
   process.exit(0);
 }
 if (process.platform === 'win32') {
@@ -29,8 +29,8 @@ if (process.platform === 'win32') {
   process.exit(1);
 }
 
-const check = args.includes('--check');
-const v6 = args.includes('--v6');
+const check = options.check;
+const v6 = options.protocol === 6;
 const V6_ACTIVATION_HEIGHT = 101;
 const l1Root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cli = join(l1Root, 'dist/src/secure-cli.js');

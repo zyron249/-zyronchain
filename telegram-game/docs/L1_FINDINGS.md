@@ -12,7 +12,7 @@ Governance authorization exists (`publicTestnetAuthorized=true`, `mainnetAuthori
 
 | Name | What it actually is |
 |---|---|
-| `zyron-local-<hex>` | Fresh chain id printed by `cd l1 && npm run devnet`. Local only. New identity every run. |
+| `zyron-devnet-1` | Fixed chain id printed by `cd l1 && npm run devnet`. Local only. Fresh genesis every run. |
 | `zyron-devnet-1` | Example string in `l1/README.md`. Not a live network. |
 | `zyron-render-private-testnet-1` | Ephemeral private Render rehearsal. Not public. |
 | `zyron-testnet-1` | Legacy Python chain id. Not canonical. |

@@ -19,7 +19,7 @@ An open, no-value testnet profile now exists: see [OPEN_TESTNET.md](OPEN_TESTNET
 ## What does not exist in this repository
 
 - No published public wallet RPC, P2P bootstrap, explorer, or faucet for the TypeScript L1.
-- No immutable public-testnet chain ID or genesis hash. `npm run devnet` generates a fresh `zyron-local-<hex>` identity every run.
+- No immutable public-testnet chain ID or genesis hash. `npm run devnet` creates a fresh genesis every run under the fixed local chain ID `zyron-devnet-1` (the CLI signs only fixed testnet/devnet chain IDs, feature 6A).
 - `zyron-devnet-1` appears only as a **local CLI example** in `l1/README.md`. It is not a live network.
 - `zyron-render-private-testnet-1` is the default chain ID of the **ephemeral private Render rehearsal** ([`L1_RENDER_PRIVATE_TESTNET.md`](L1_RENDER_PRIVATE_TESTNET.md)). It is not a public testnet.
 - The historical hostname `https://zyronchain.onrender.com` is quarantined. Do not use it as RPC, explorer, faucet, or bootstrap.
@@ -68,7 +68,7 @@ export ZYRON_KEYSTORE_PASSWORD_FILE=/path/to/tmp/zyron-local-devnet-.../secrets/
 node dist/src/cli.js transfer \
   --key /path/to/tmp/zyron-local-devnet-.../secrets/a.json \
   --rpc http://127.0.0.1:<PORT_A> \
-  --chain-id zyron-local-<hex> \
+  --chain-id zyron-devnet-1 \
   --to ZYN<your-40-hex> \
   --amount-atoms 100000000 \
   --fee-atoms 1000
@@ -96,7 +96,7 @@ Do not expose validator RPC to the Internet. Non-loopback RPC fails closed unles
 
 ## Mining (retired)
 
-Mining is **retired** by owner decision (2026-09-30, confirmed 2026-10-11). Consensus rejects every `mining_claim` transaction for every genesis, on every protocol version (default `npm run devnet` runs protocol v1, and no protocol version re-enables mining). There is no local or public mining path:
+Mining is **retired** by owner decision (2026-09-30, confirmed 2026-10-11). Consensus rejects every `mining_claim` transaction for every genesis, on every protocol version (default `npm run devnet` runs protocol v6, `npm run devnet:v1-legacy` runs protocol v1, and no protocol version re-enables mining). There is no local or public mining path:
 
 - `npm run mine` (the packaged miner) exits non-zero before reading keys or contacting an RPC;
 - `npm run mine:local` / `npm run devnet -- --local-v5` exits non-zero;

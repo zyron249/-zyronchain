@@ -33,7 +33,7 @@ Any other value, including a missing string, a different profile name, or an ext
 
 A chain ID that names `mainnet`, `public-launch` or `value-bearing` as a hyphen-delimited segment (for example `zyron-mainnet-1`) must declare one of the three value-bearing classes. A test class on that chain ID is rejected. Chain IDs that do not name those segments are unchanged. In particular these keep working without `networkClass`:
 
-- local devnet `zyron-local-<hex>`
+- local devnet `zyron-devnet-1` (fresh genesis every run)
 - `zyron-wallet-testnet-1`
 - open testnet `zyron-open-testnet-1` (it uses `fixed-supply-v1`, so it already has the locks, four validators, `publicDistributionRelease` and `threshold-v1`; it does not declare a value-bearing class and its tokens have no value)
 - private testnet `zyron-render-private-testnet-1`
