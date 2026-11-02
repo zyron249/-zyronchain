@@ -36,7 +36,8 @@ import { gunzipSync } from "node:zlib";
 import { Worker } from "node:worker_threads";
 import { SNAPSHOT_MAGIC, sealSnapshot, snapshotKey } from "./open-testnet/snapshot-seal.mjs";
 import { verifySnapshotBlocks } from "./open-testnet/snapshot-verify.mjs";
-import { HistoryFileError, createHistoryFile, resumeHistoryFile } from "./open-testnet/history-file.mjs";
+import { HistoryFileError, createHistoryFile, readHistoryLines, resumeHistoryFile } from "./open-testnet/history-file.mjs";
+import { CHECKPOINT_FILE, CheckpointError, cleanStaleCheckpointTmp, discardCheckpoint, encodeCheckpoint, loadCheckpointChain, parseCheckpointOptions, readCheckpoint, resumeHistoryAtCheckpoint, checkChainSupply, writeCheckpoint } from "./open-testnet/checkpoint-file.mjs";
 import { createServer } from "node:http";
 import { createReadStream, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
@@ -46,7 +47,7 @@ import { fileURLToPath } from "node:url";
 
 const l1Root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const dist = (name) => join(l1Root, "dist/src", name);
-const { ZyronChain } = await import(dist("chain.js"));
+const { ZyronChain, protocolUsesStateV2 } = await import(dist("chain.js"));
 const { ChainStore } = await import(dist("storage.js"));
 const { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } = await import(dist("crypto.js"));
 const { createProtocolUpgrade, createProtocolUpgradeApproval, createTransfer } = await import(dist("transaction.js"));
@@ -1647,7 +1648,7 @@ export async function collectSnapshotBlocks(readers, { tip, tipHash, chainId, ge
 }
 
 // ---- run: validators + gateway ---------------------------------------------------
-export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server, verifiedHistory, durable, startupLimits = parseStartupLimits(), snapshotRefreshMs = Number(process.env.ZYRON_SNAPSHOT_REFRESH_MS ?? SNAPSHOT_REFRESH_MS) || SNAPSHOT_REFRESH_MS, snapshotBuildTimeoutMs = Number(process.env.ZYRON_SNAPSHOT_BUILD_TIMEOUT_MS ?? SNAPSHOT_BUILD_TIMEOUT_MS) || SNAPSHOT_BUILD_TIMEOUT_MS, snapshotMaxAgeMs = Number(process.env.ZYRON_SNAPSHOT_MAX_AGE_MS ?? SNAPSHOT_MAX_AGE_MS) || SNAPSHOT_MAX_AGE_MS } = {}) {
+export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "127.0.0.1", log = true, stateSecret, persistence = { mode: "local-disk" }, server, verifiedHistory, durable, startupLimits = parseStartupLimits(), snapshotRefreshMs = Number(process.env.ZYRON_SNAPSHOT_REFRESH_MS ?? SNAPSHOT_REFRESH_MS) || SNAPSHOT_REFRESH_MS, snapshotBuildTimeoutMs = Number(process.env.ZYRON_SNAPSHOT_BUILD_TIMEOUT_MS ?? SNAPSHOT_BUILD_TIMEOUT_MS) || SNAPSHOT_BUILD_TIMEOUT_MS, snapshotMaxAgeMs = Number(process.env.ZYRON_SNAPSHOT_MAX_AGE_MS ?? SNAPSHOT_MAX_AGE_MS) || SNAPSHOT_MAX_AGE_MS, checkpoint: checkpointOptions = parseCheckpointOptions() } = {}) {
   const runStartedAtMs = Date.now();
   const genesisPath = join(dir, "genesis.json");
   const genesis = JSON.parse(await readFile(genesisPath, "utf8"));
@@ -1862,7 +1863,42 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // extension then matches its tail to the live validators
   // (checkResumedTail) before the chain is used. Any defect falls back to
   // the full rebuild from genesis.
+  // Verified checkpoint (#1193, ZYRON_CHECKPOINT=1, default off): the boot
+  // scan checks only that the checkpoint's history line is byte-equal to the
+  // file and its running hash matches; the blocks below it are not replayed.
+  // Nothing from the checkpoint is used until the live validators serve its
+  // tip (extendHistory). If the scan does not confirm it, the checkpoint is
+  // discarded and the normal resume below replays every line.
+  const checkpointPath = join(dir, "snapshot-history", CHECKPOINT_FILE);
+  let checkpointMark = { height: 0, atMs: Date.now() };
+  async function openHistoryWithCheckpoint() {
+    await cleanStaleCheckpointTmp(join(dir, "snapshot-history"));
+    let record;
+    try { record = await readCheckpoint(checkpointPath, { chainId, genesisHash: info.genesisHash }); } catch (error) {
+      console.error(`snapshot: checkpoint not used (${sanitizeSnapshotError(error, redactSecret)}); full validation from genesis`);
+      await discardCheckpoint(checkpointPath);
+      return false;
+    }
+    if (!record) return false;
+    let resumed;
+    try {
+      resumed = await resumeHistoryAtCheckpoint(historyPath, record, { chainId, genesisHash: info.genesisHash, signal: resumeAbort.signal });
+    } catch (error) {
+      if (resumeAbort.signal.aborted) return true;
+      console.error(`snapshot: checkpoint not used (${sanitizeSnapshotError(error, redactSecret)}); full validation from genesis`);
+      await discardCheckpoint(checkpointPath);
+      return false;
+    }
+    historyFile = resumed.file;
+    resumeCandidate = { checkpoint: record, height: resumed.height, tipHash: resumed.tipHash };
+    checkpointMark = { height: record.height, atMs: Date.now() };
+    console.error(`snapshot: history file resumed at height ${resumed.height} with a checkpoint at ${record.height}${resumed.droppedBytes ? ` (dropped a torn last line of ${resumed.droppedBytes} bytes)` : ""}; matching it to the live chain before use`);
+    snapshotHistory.file = historyFile;
+    return true;
+  }
   async function openHistoryForResume() {
+    if (checkpointOptions.enabled && await openHistoryWithCheckpoint()) return;
+    if (resumeAbort.signal.aborted) return;
     const replay = new ZyronChain(genesis);
     let replayed = 0;
     try {
@@ -1946,6 +1982,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     async function rebuild(reason) {
       console.error(`snapshot: rebuilding the history file (${reason})`);
       historyNeedsRebuild = true;
+      // A checkpoint for the old file content must not survive the reset.
+      if (checkpointOptions.enabled) { await discardCheckpoint(checkpointPath); checkpointMark = { height: 0, atMs: Date.now() }; }
       await historyFile.reset();
       const fresh = { chain: new ZyronChain(genesis), file: historyFile };
       const result = await collect(fresh);
@@ -1955,6 +1993,40 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     const run = historyLock.then(async () => {
       if (historyUnavailable) throw historyUnavailable;
       if (historyNeedsRebuild) return rebuild("marked corrupt");
+      if (resumeCandidate?.checkpoint) {
+        const record = resumeCandidate.checkpoint;
+        // Live tip match FIRST (same rule as checkResumedTail): the
+        // checkpoint height and the file tip must both be on the live chain.
+        let verdict;
+        try {
+          verdict = await checkResumedTail(readers, { height: record.height, tipHash: record.tipHash }, { tip, tipHash, signal })
+            ?? await checkResumedTail(readers, resumeCandidate, { tip, tipHash, signal });
+        } catch (error) {
+          throw new Error(`checkpoint tail not checked yet (${error instanceof Error ? error.message : String(error)})`);
+        }
+        const candidate = resumeCandidate; resumeCandidate = undefined;
+        if (verdict) { await discardCheckpoint(checkpointPath); return rebuild(`checkpoint ${verdict}`); }
+        let chain;
+        try {
+          chain = await loadCheckpointChain(genesis, record);
+          // Blocks after the checkpoint: full finalized-block validation,
+          // read again from the (re-verified) history file.
+          let height = 0;
+          for await (const line of readHistoryLines(historyFile.view(), { signal })) {
+            height += 1;
+            if (height <= record.height) continue;
+            chain.acceptBlock(JSON.parse(line), Date.now());
+            if (height % 20 === 0) await yieldToEventLoop();
+          }
+          if (chain.height !== candidate.height || chain.tip.hash !== candidate.tipHash) throw new CheckpointError("replayed tail does not end at the file tip");
+          checkChainSupply(chain, genesis);
+        } catch (error) {
+          await discardCheckpoint(checkpointPath);
+          return rebuild(`checkpoint rejected (${sanitizeSnapshotError(error)})`);
+        }
+        snapshotHistory.chain = chain;
+        console.error(`snapshot: checkpoint at height ${record.height} matches the live chain; validated ${candidate.height - record.height} tail blocks; continuing from ${candidate.height}`);
+      }
       if (resumeCandidate) {
         let verdict;
         try { verdict = await checkResumedTail(readers, resumeCandidate, { tip, tipHash, signal }); } catch (error) {
@@ -1973,9 +2045,12 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
         return rebuild(sanitizeSnapshotError(error));
       }
     });
-    historyLock = run.then(() => undefined, () => undefined);
+    historyPending += 1;
+    historyLock = run.then(() => undefined, () => undefined).finally(() => { historyPending -= 1; });
     return run;
   }
+  let historyPending = 0;
+  const historyIdle = () => historyPending === 0;
   function historyReaders() {
     return VALIDATOR_NAMES.map((name) => ({
       name,
@@ -1993,8 +2068,43 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     extend: async () => {
       const { height: tip, tipHash } = await chainStatus();
       if (tip > snapshotHistory.chain.height || historyNeedsRebuild) await extendHistory(historyReaders(), tip, tipHash);
+      await maybeWriteCheckpoint();
     }
   });
+  // Checkpoint writes: every everyBlocks blocks or everyMs (and on a clean
+  // SIGTERM), under the history lock, never while a snapshot build runs,
+  // a rebuild is pending or a resume is unconfirmed, and only for a tip on
+  // state v2 whose history line is fsynced.
+  let checkpointWriting = false;
+  async function maybeWriteCheckpoint({ force = false, shutdown: atShutdown = false } = {}) {
+    if (!checkpointOptions.enabled || checkpointWriting) return;
+    const due = () => { const height = snapshotHistory.chain.height; return height > checkpointMark.height && (force || height - checkpointMark.height >= checkpointOptions.everyBlocks || Date.now() - checkpointMark.atMs >= checkpointOptions.everyMs); };
+    if (!due()) return;
+    const run = historyLock.then(async () => {
+      // At shutdown the build child was just killed (no build is running).
+      const building = () => !atShutdown && ((snapshots?.building() ?? false) || snapshotBuilder?.pid() !== undefined);
+      if (!due() || building() || historyNeedsRebuild || resumeCandidate || historyUnavailable || !historyFile) return;
+      const chain = snapshotHistory.chain;
+      if (chain.height !== historyFile.height() || chain.tip.hash !== historyFile.tipHash() || !historyFile.lastLine()) return;
+      if (!protocolUsesStateV2(chain.protocolVersionAt(chain.height))) return;
+      checkpointWriting = true;
+      try {
+        await historyFile.sync();
+        const view = historyFile.view();
+        const started = Date.now();
+        const bytes = encodeCheckpoint({ chainId, genesisHash: info.genesisHash, height: chain.height, tipHash: chain.tip.hash, historyRunningHash: view.runningHash, historyLine: historyFile.lastLine(), state: chain.snapshot() });
+        if (building()) return;
+        await writeCheckpoint(checkpointPath, bytes);
+        checkpointMark = { height: chain.height, atMs: Date.now() };
+        console.error(`snapshot: checkpoint written at height ${chain.height} (${bytes.length} bytes, ${Date.now() - started} ms)`);
+      } catch (error) {
+        checkpointMark = { ...checkpointMark, atMs: Date.now() };
+        console.error(`snapshot: checkpoint not written (${sanitizeSnapshotError(error, redactSecret)})`);
+      } finally { checkpointWriting = false; }
+    });
+    historyLock = run.then(() => undefined, () => undefined);
+    return run;
+  }
   // With the relay on, the history follows the tip every 5 s. Otherwise a
   // build deferred as history_catching_up starts this refresh (to the tip,
   // outside the build timeout), so the next build only appends a short delta.
@@ -2275,6 +2385,16 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     snapshotBuilder?.terminate();
     resumeAbort.abort();
     await historyReady;
+    // Clean shutdown: snapshot builds are stopped and the build child is
+    // killed, so no build runs. Wait up to 5 s for an in-flight history
+    // extension; a long one (a rebuild) is not waited for and no checkpoint
+    // is written.
+    if (checkpointOptions.enabled) {
+      let timer;
+      await Promise.race([historyLock, new Promise((done) => { timer = setTimeout(done, 5_000); })]);
+      clearTimeout(timer);
+      if (historyIdle()) await maybeWriteCheckpoint({ force: true, shutdown: true });
+    }
     await historyFile?.close();
     await new Promise((done) => gateway.close(() => done()));
     if (mailbox) await new Promise((done) => mailbox.close(() => done()));
