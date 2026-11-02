@@ -22,13 +22,13 @@ test("memory report: gateway memoryUsage fields, validator RSS from /proc, one c
   assert.equal(mem.processRssBytes(1234, fakeProc), 81920 * 1024);
   assert.equal(mem.processRssBytes(1234, () => { throw new Error("gone"); }), undefined);
   assert.equal(mem.processRssBytes(-1), undefined);
-  const report = mem.memoryReport({ gateway, validators: { v1: 80 * 1024 * 1024, v2: null }, snapshotChild: { running: true, last: { heapUsed: 100 * 1024 * 1024 } } });
+  const report = mem.memoryReport({ gateway, validators: { v1: 80 * 1024 * 1024, v2: null }, snapshotChild: { maxRss: 100 * 1024 * 1024 } });
   assert.equal(report.totalRss, gateway.rss + 80 * 1024 * 1024);
   const line = mem.formatMemoryLine(report);
-  assert.match(line, /^memory: total=[\d.]+MB gw rss=[\d.]+ heap=[\d.]+\/[\d.]+ ext=[\d.]+ ab=[\d.]+ \| v1=80\.0 v2=\? \| worker heap=100\.0$/);
+  assert.match(line, /^memory: total=[\d.]+MB gw rss=[\d.]+ heap=[\d.]+\/[\d.]+ ext=[\d.]+ ab=[\d.]+ \| v1=80\.0 v2=\? \| child peak=100\.0$/);
   assert.equal(line.includes("\n"), false);
-  const inMb = mem.memoryReportMb({ gateway: { rss: 80 * 1024 * 1024, heapUsed: 1.5 * 1024 * 1024 }, snapshotChild: { running: true, last: { heapUsed: 2 * 1024 * 1024, at: "t" } } });
-  assert.deepEqual(inMb, { gateway: { rss: 80, heapUsed: 1.5 }, snapshotChild: { running: true, last: { heapUsed: 2, at: "t" } } });
+  const inMb = mem.memoryReportMb({ gateway: { rss: 80 * 1024 * 1024, heapUsed: 1.5 * 1024 * 1024 }, snapshotChild: { running: true, maxRss: 2 * 1024 * 1024, lastBuildAt: "t" } });
+  assert.deepEqual(inMb, { gateway: { rss: 80, heapUsed: 1.5 }, snapshotChild: { running: true, maxRss: 2, lastBuildAt: "t" } });
 });
 
 test("snapshot readiness gate: no quorum or a far-behind / rebuilding history defers the build", () => {

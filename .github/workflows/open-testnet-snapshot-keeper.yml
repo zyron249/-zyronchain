@@ -5,7 +5,8 @@ name: Open Testnet Snapshot Keeper
 # disk: on a cold start it restores from the `state.enc` asset of the
 # `open-testnet-state` release. This job polls /health every 5 minutes (the free
 # instance idles out after 15 minutes without inbound traffic) and every
-# 10 minutes downloads the gateway's sealed /state/snapshot and publishes it.
+# 10 minutes (sooner when /health snapshotCache shows a newer build) downloads
+# the gateway's sealed /state/snapshot and publishes it.
 #
 # - The job needs the ZYRON_TESTNET_STATE_SECRET Actions secret (the same value
 #   Render generated for the gateway) to authenticate snapshot reads; it is passed
@@ -86,4 +87,11 @@ jobs:
           RUN_MINUTES: ${{ inputs.run_minutes || '340' }}
           PUBLISH_INTERVAL_SECONDS: '600'
           KEEPALIVE_INTERVAL_SECONDS: '300'
+          # The gateway serves /state/snapshot only for a few minutes after each
+          # build, so between cycles the keeper reads /health snapshotCache every
+          # 45 s and fetches as soon as lastBuiltHeight is newer than the last
+          # height fetched; 429/502/503 get jittered retries.
+          WATCH_INTERVAL_SECONDS: '45'
+          SNAPSHOT_TIMEOUT_SECONDS: '120'
+          SNAPSHOT_RETRIES: '4'
         run: node .github/scripts/open-testnet-snapshot-keeper.mjs
