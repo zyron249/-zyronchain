@@ -9,7 +9,8 @@
 //   node scripts/open-testnet.mjs run  --dir <secret dir> [--port 10000] [--host 127.0.0.1] [--init-if-missing]
 //   node scripts/open-testnet.mjs smoke            (disposable end-to-end check)
 //
-// Persistence for hosts without a disk: with ZYRON_TESTNET_STATE_SECRET set, the
+// Persistence for hosts without a disk: with the seal secret set
+// (ZYRON_TESTNET_STATE_SECRET_FILE, or the ZYRON_TESTNET_STATE_SECRET fallback), the
 // gateway serves GET /state/snapshot, an AES-256-GCM sealed bundle (genesis,
 // TEST keys, finalized blocks). `run --init-if-missing --restore-url <url>`
 // restores a missing directory from such a bundle (re-validating every block)
@@ -23,6 +24,7 @@
 //
 // <secret dir> holds plaintext TEST validator/faucet keys (mode 0600) and the
 // chain data. It must live outside the repository and must never be shared.
+import { loadStateSecret } from "./open-testnet/state-secret.mjs";
 import { formatMemoryLine, gatewayMemory, memoryReport, memoryReportMb, MEMORY_LOG_INTERVAL_MS, processMemoryBytes, processRssBytes, residentMetric } from "./open-testnet/memory-report.mjs";
 import { activeSetSeedFromHistory, createActiveSetTracker } from "./gateway-quorum.mjs";
 import { createFaucetNonceTracker } from "./faucet-nonce.mjs";
@@ -1854,9 +1856,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   const HEALTH_CACHE_MS = 2_000;
   let healthCache; let healthCacheAt = 0; let healthInFlight;
   function cachedValidatorStatuses() {
-    if (healthCache && Date.now() - healthCacheAt < HEALTH_CACHE_MS) return Promise.resolve(healthCache);
+    if (healthCache && performance.now() - healthCacheAt < HEALTH_CACHE_MS) return Promise.resolve(healthCache);
     healthInFlight ??= validatorStatuses().then((validators) => {
-      healthCache = { validators, checkedAtMs: Date.now() }; healthCacheAt = healthCache.checkedAtMs;
+      healthCache = { validators, checkedAtMs: Date.now() }; healthCacheAt = performance.now();
       return healthCache;
     }).finally(() => { healthInFlight = undefined; });
     return healthInFlight;
@@ -2057,8 +2059,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // /health and the log timer share one /proc read per ~1 s (like healthCache).
   let memoryCache; let memoryCacheAt = 0;
   function currentMemory() {
-    if (memoryCache && Date.now() - memoryCacheAt < MEMORY_CACHE_MS) return memoryCache;
-    memoryCache = readCurrentMemory(); memoryCacheAt = Date.now();
+    if (memoryCache && performance.now() - memoryCacheAt < MEMORY_CACHE_MS) return memoryCache;
+    memoryCache = readCurrentMemory(); memoryCacheAt = performance.now();
     return memoryCache;
   }
   function readCurrentMemory() {
@@ -2450,7 +2452,12 @@ if (!invokedDirectly) {
   // --init-if-missing is for hosts without a persistent disk (for example a
   // free web service): a missing directory gets a fresh TEST genesis, so every
   // cold start is a new network with a new genesis hash.
-  const stateSecret = process.env.ZYRON_TESTNET_STATE_SECRET || undefined;
+  // The seal secret: from ZYRON_TESTNET_STATE_SECRET_FILE (preferred, never in
+  // /proc/<pid>/environ) or the ZYRON_TESTNET_STATE_SECRET fallback; either way
+  // it is deleted from process.env here (see open-testnet/state-secret.mjs).
+  const { secret: stateSecret, source: stateSecretSource, envAlsoSet } = loadStateSecret(process.env);
+  if (stateSecretSource === "env") console.log("state secret: from ZYRON_TESTNET_STATE_SECRET (env fallback; still visible in /proc/<pid>/environ to same-uid processes, prefer ZYRON_TESTNET_STATE_SECRET_FILE)");
+  else if (stateSecretSource === "file") console.log(`state secret: from ZYRON_TESTNET_STATE_SECRET_FILE${envAlsoSet ? " (ZYRON_TESTNET_STATE_SECRET is also set and was ignored; remove it so it leaves /proc/<pid>/environ)" : ""}`);
   let persistence = { mode: "local-disk" };
   let verifiedHistory;
   const restoreUrl = option("--restore-url", process.env.ZYRON_TESTNET_STATE_URL || undefined);
