@@ -1,0 +1,28 @@
+Failing-first evidence: l1/test/local-devnet-default-protocol.test.ts run against the merged PR head before the fix (Node v22.19.0), 2026-11-02.
+
+# Subtest: local-devnet defaults to protocol v6 with no flags (plain npm run devnet)
+not ok 1 - local-devnet defaults to protocol v6 with no flags (plain npm run devnet)
+  error: "Cannot find module 'l1/scripts/local-devnet-options.mjs' imported from l1/dist/test/local-devnet-default-protocol.test.js"
+  code: 'ERR_MODULE_NOT_FOUND'
+# Subtest: local-devnet protocol 1 is only reachable through the explicit --v1-legacy opt-in
+not ok 2 - local-devnet protocol 1 is only reachable through the explicit --v1-legacy opt-in
+  error: "Cannot find module 'l1/scripts/local-devnet-options.mjs' imported from l1/dist/test/local-devnet-default-protocol.test.js"
+  code: 'ERR_MODULE_NOT_FOUND'
+# Subtest: local-devnet launcher uses the shared option parser and refuses conflicting protocol flags
+not ok 3 - local-devnet launcher uses the shared option parser and refuses conflicting protocol flags
+  error: |-
+      '  const node = { child, port, exit: null, error: null };\n' +
+  code: 'ERR_ASSERTION'
+      const node = { child, port, exit: null, error: null };
+# Subtest: package scripts: devnet runs the v6 default, protocol-1 scripts pass --v1-legacy explicitly
+not ok 4 - package scripts: devnet runs the v6 default, protocol-1 scripts pass --v1-legacy explicitly
+  error: |-
+  code: 'ERR_ASSERTION'
+# tests 4
+# suites 0
+# pass 0
+# fail 4
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 129.642985
