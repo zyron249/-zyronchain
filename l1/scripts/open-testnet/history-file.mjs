@@ -47,11 +47,20 @@ async function ensurePrivateDir(dir) {
   if (info.isSymbolicLink() || !info.isDirectory()) throw new HistoryFileError("history directory is not a plain directory");
   await chmod(dir, 0o700);
 }
+// Refuses a file with more than one hard link (checked on the open handle, so
+// a link created between lstat and open is caught too).
+async function refuseHardLink(handle) {
+  const info = await handle.stat();
+  if (!info.isFile() || info.nlink > 1) throw new HistoryFileError("history path is a hard link");
+}
 async function openForWrite(path) {
   const existing = await lstat(path).catch((error) => { if (error?.code === "ENOENT") return undefined; throw error; });
   if (existing && (existing.isSymbolicLink() || !existing.isFile())) throw new HistoryFileError("history path is not a regular file");
+  // A hard link would let O_TRUNC and later writes reach another name.
+  if (existing && existing.nlink > 1) throw new HistoryFileError("history path is a hard link");
   let handle;
   try { handle = await open(path, WRITE_FLAGS, 0o600); } catch (error) { if (error?.code === "ELOOP") throw new HistoryFileError("history path is a symlink"); throw error; }
+  try { await refuseHardLink(handle); } catch (error) { await handle.close().catch(() => {}); throw error; }
   await handle.chmod(0o600);
   return handle;
 }
@@ -111,6 +120,7 @@ export async function* readHistoryLines({ path, tip, tipHash, runningHash, chain
   if (tip > 0) {
     let readHandle;
     try { readHandle = await open(path, READ_FLAGS); } catch (error) { throw new HistoryFileError(error?.code === "ELOOP" ? "history path is a symlink" : `read failed (${error?.code ?? "io"})`); }
+    try { await refuseHardLink(readHandle); } catch (error) { await readHandle.close().catch(() => {}); throw error instanceof HistoryFileError ? error : new HistoryFileError(`read failed (${error?.code ?? "io"})`); }
     const stream = readHandle.createReadStream({ highWaterMark: 256 * 1024, autoClose: false });
     try {
       outer: for await (const chunk of stream) {

@@ -236,3 +236,26 @@ test("history file refuses symlinks and keeps the directory 0700 and the file 06
     await assert.rejects(hf.createHistoryFile(join(dirLink, "x.ndjson"), { chainId: CHAIN, genesisHash: GENESIS }), /plain directory/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("history file refuses a hard-linked path on create and on read (safe-rebuild error)", { skip: process.platform === "win32" }, async () => {
+  const { link } = await import("node:fs/promises");
+  const dir = await tempDir();
+  try {
+    const file = await writeHistory(dir, syntheticChain(3));
+    await file.close();
+    const view = file.view();
+    assert.equal((await readAll(view)).length, 3);
+    // Read: a second name for the history file is refused with history_file_corrupt.
+    const other = join(dir, "other.ndjson"); await link(view.path, other);
+    await assert.rejects(readAll(view), (e: any) => e?.code === "history_file_corrupt" && /hard link/.test(e.message));
+    // Create: refused, and the other name keeps its contents (no truncation).
+    const before = await readFile(other, "utf8");
+    await assert.rejects(hf.createHistoryFile(view.path, { chainId: CHAIN, genesisHash: GENESIS }), (e: any) => e?.code === "history_file_corrupt" && /hard link/.test(e.message));
+    assert.equal(await readFile(other, "utf8"), before);
+    // After the extra link is gone the path is usable again.
+    await rm(other);
+    const again = await hf.createHistoryFile(view.path, { chainId: CHAIN, genesisHash: GENESIS });
+    await again.appendMany(syntheticChain(1)); await again.close();
+    assert.equal((await readAll(again.view())).length, 1);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
