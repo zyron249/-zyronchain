@@ -236,3 +236,38 @@ test("history file refuses symlinks and keeps the directory 0700 and the file 06
     await assert.rejects(hf.createHistoryFile(join(dirLink, "x.ndjson"), { chainId: CHAIN, genesisHash: GENESIS }), /plain directory/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("history file refuses a hard-linked path on create and on read (safe-rebuild error)", { skip: process.platform === "win32" }, async () => {
+  const { link } = await import("node:fs/promises");
+  const dir = await tempDir();
+  try {
+    const file = await writeHistory(dir, syntheticChain(3));
+    await file.close();
+    const view = file.view();
+    assert.equal((await readAll(view)).length, 3);
+    // Read: a second name for the history file is refused with history_file_corrupt.
+    const other = join(dir, "other.ndjson"); await link(view.path, other);
+    await assert.rejects(readAll(view), (e: any) => e?.code === "history_file_corrupt" && /hard link/.test(e.message));
+    // Create: refused, and the other name keeps its contents (no truncation).
+    const before = await readFile(other, "utf8");
+    await assert.rejects(hf.createHistoryFile(view.path, { chainId: CHAIN, genesisHash: GENESIS }), (e: any) => e?.code === "history_file_corrupt" && /hard link/.test(e.message));
+    assert.equal(await readFile(other, "utf8"), before);
+    // After the extra link is gone the path is usable again.
+    await rm(other);
+    const again = await hf.createHistoryFile(view.path, { chainId: CHAIN, genesisHash: GENESIS });
+    await again.appendMany(syntheticChain(1)); await again.close();
+    assert.equal((await readAll(again.view())).length, 1);
+    // Race (Security Low-1): a hard link created between the lstat check and
+    // open() must be refused before any truncation reaches the other name.
+    const victim = join(dir, "victim.ndjson");
+    await writeFile(victim, "KEEP");
+    await assert.rejects(
+      hf.openForWrite(view.path, { beforeOpen: async () => { await rm(view.path); await link(victim, view.path); } }),
+      (e: any) => e?.code === "history_file_corrupt" && /hard link/.test(e.message));
+    assert.equal(await readFile(victim, "utf8"), "KEEP");
+    // A plain existing file is still truncated on create.
+    await rm(view.path); await writeFile(view.path, "old");
+    const fresh = await hf.createHistoryFile(view.path, { chainId: CHAIN, genesisHash: GENESIS }); await fresh.close();
+    assert.equal(await readFile(view.path, "utf8"), "");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
