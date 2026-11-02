@@ -725,12 +725,16 @@ export async function fetchSnapshotWithRetry({ retries = 0, retryBaseMs = 2_000,
 
 // Cheap /health read for the snapshot watch: the gateway's snapshotCache
 // status. Returns null on any error or a body without it.
+// /health bodies are small JSON; the keeper reads at most this many bytes.
+export const MAX_HEALTH_BYTES = 64 * 1024;
+// Watch-triggered cycles start at most once per this interval.
+export const WATCH_MIN_GAP_MS = 120_000;
 export async function readSnapshotCache({ fetchImpl, gateway, signal, timeoutMs = 20_000 }) {
   try {
     const timeout = AbortSignal.timeout(timeoutMs);
     const response = await fetchImpl(`${gateway}/health`, { signal: signal ? AbortSignal.any([timeout, signal]) : timeout });
     if (response.status !== 200) { await response.body?.cancel().catch(() => {}); return null; }
-    const cache = JSON.parse(await response.text())?.snapshotCache;
+    const cache = JSON.parse((await readCapped(response, MAX_HEALTH_BYTES)).toString("utf8"))?.snapshotCache;
     if (!cache || typeof cache !== "object") return null;
     const built = Number.isSafeInteger(cache.lastBuiltHeight) && cache.lastBuiltHeight > 0 ? cache.lastBuiltHeight : null;
     return { lastBuiltHeight: built, building: cache.building === true };
@@ -768,7 +772,7 @@ export async function keepAlive({ fetchImpl, gateway, signal }) {
   try {
     const timeout = AbortSignal.timeout(90_000);
     const response = await fetchImpl(`${gateway}/health`, { signal: signal ? AbortSignal.any([timeout, signal]) : timeout });
-    const text = await response.text();
+    const text = (await readCapped(response, MAX_HEALTH_BYTES)).toString("utf8");
     let body = {};
     try { body = JSON.parse(text); } catch {}
     return { status: response.status, phase: body.status ?? body.phase ?? "?", height: body.maxHeight ?? null };
@@ -785,7 +789,7 @@ export async function keepAlive({ fetchImpl, gateway, signal }) {
 // fetched (once per built height), so short serving windows after each gateway
 // build are not missed.
 export async function runKeeper(options) {
-  const { fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn, watchIntervalMs = null, fetch: fetchOptions = {} } = options;
+  const { fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn, watchIntervalMs = null, watchMinGapMs = WATCH_MIN_GAP_MS, fetch: fetchOptions = {} } = options;
   const stats = { cycles: 0, published: 0, notNewer: 0, refused: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null, authenticationFailures: 0, watchTriggers: 0 };
   const deadline = now() + runMs;
   // Aborted when the publish loop stops, so no pending wait (and no live timer)
@@ -797,6 +801,7 @@ export async function runKeeper(options) {
     if (wait > 0) await sleep(wait, stop.signal);
   };
   let lastTriggeredBuilt = null;
+  let lastTriggerMs = null;
   // Waits until `untilMs`, or less when the watch sees a newer built snapshot.
   const waitForNextCycle = async (untilMs) => {
     if (!watchIntervalMs) return pauseUntil(untilMs);
@@ -806,8 +811,12 @@ export async function runKeeper(options) {
       if (now() >= deadline) return;
       const cache = await readSnapshotCache({ fetchImpl, gateway, signal: stop.signal });
       const built = cache?.lastBuiltHeight ?? null;
-      if (built !== null && built > (stats.lastHeight ?? 0) && built !== lastTriggeredBuilt) {
+      // A newer build seen too soon after the last watch trigger waits for a
+      // later poll (or the fallback interval); it is not dropped.
+      const tooSoon = lastTriggerMs !== null && now() - lastTriggerMs < watchMinGapMs;
+      if (built !== null && built > (stats.lastHeight ?? 0) && built !== lastTriggeredBuilt && !tooSoon) {
         lastTriggeredBuilt = built;
+        lastTriggerMs = now();
         log(`snapshot watch: gateway built height ${built} (last fetched ${stats.lastHeight ?? "-"}); fetching now`);
         stats.watchTriggers += 1;
         return;
