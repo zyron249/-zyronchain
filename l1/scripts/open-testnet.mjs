@@ -37,7 +37,7 @@ import { Worker } from "node:worker_threads";
 import { SNAPSHOT_MAGIC, sealSnapshot, snapshotKey } from "./open-testnet/snapshot-seal.mjs";
 import { verifySnapshotBlocks } from "./open-testnet/snapshot-verify.mjs";
 import { HistoryFileError, createHistoryFile, readHistoryLines, resumeHistoryFile } from "./open-testnet/history-file.mjs";
-import { checkPrefixResult, startPrefixWorker } from "./open-testnet/checkpoint-prefix.mjs";
+import { awaitPrefixResult, checkPrefixResult, prefixMemoryGateOpen, prefixWorkerTimeoutMs, readCgroupMemoryCurrent, PREFIX_WORKER_MEMORY_LIMIT_BYTES, startPrefixWorker } from "./open-testnet/checkpoint-prefix.mjs";
 import { CHECKPOINT_FILE, CheckpointError, cleanStaleCheckpointTmp, createPrefixVerifier, discardCheckpoint, encodeCheckpoint, loadCheckpointChain, parseCheckpointOptions, readCheckpoint, resumeHistoryAtCheckpoint, checkChainSupply, writeCheckpoint } from "./open-testnet/checkpoint-file.mjs";
 import { createServer } from "node:http";
 import { createReadStream, realpathSync } from "node:fs";
@@ -1892,13 +1892,23 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     if (prefixJob?.running()) console.error(`snapshot: checkpoint prefix worker cancelled (${why})`);
     prefixJob?.cancel();
   }
-  function maybeStartPrefixWorker() {
+  let prefixMemoryWaitLogged = false;
+  async function maybeStartPrefixWorker() {
     if (prefixJob) return true;
+    // Memory gate: wait until the cgroup's memory.current is below ~400 MB.
+    const current = await (checkpointOptions.memoryCurrent ?? readCgroupMemoryCurrent)();
+    if (!prefixMemoryGateOpen(current, checkpointOptions.prefixMemoryLimitBytes ?? PREFIX_WORKER_MEMORY_LIMIT_BYTES)) {
+      if (!prefixMemoryWaitLogged) { prefixMemoryWaitLogged = true; console.error(`snapshot: checkpoint prefix worker waiting for memory (cgroup memory.current ${Math.round(current / 1048576)} MB)`); }
+      return false;
+    }
+    if (prefixJob || !resumeCandidate?.checkpoint) return Boolean(prefixJob);
+    await checkpointOptions.beforePrefixWorker?.(historyPath);
     if (!prefixWorkerMayStart({ started: false, haveCandidate: Boolean(resumeCandidate?.checkpoint), shuttingDown, historyRebuilding: historyNeedsRebuild, building: (snapshots?.building() ?? false) || snapshotBuilder?.pid() !== undefined })) return false;
-    prefixJob = startPrefixWorker({ historyPath, checkpointPath, chainId, genesisHash: info.genesisHash, genesis });
+    prefixJob = (checkpointOptions.prefixWorkerFactory ?? startPrefixWorker)({ historyPath, checkpointPath, chainId, genesisHash: info.genesisHash, genesis });
     prefixJob.record = resumeCandidate.checkpoint;
     console.error(`snapshot: checkpoint prefix worker started (heights 1..${resumeCandidate.checkpoint.height})`);
-    prefixJob.result.then((r) => console.error(`snapshot: checkpoint prefix worker finished in ${prefixJob.elapsedMs()} ms (${r?.ok ? `checked ${r.height} blocks` : "refused"})`), () => {});
+    const job = prefixJob;
+    job.result.then((r) => console.error(`snapshot: checkpoint prefix worker finished in ${job.elapsedMs()} ms (${r?.ok ? `checked ${r.height} blocks` : r?.io ? "file error" : "refused"}; worker heap peak ${Math.round((r?.heapPeakBytes ?? 0) / 1048576)} MB${current === undefined ? "" : `; cgroup memory.current at start ${Math.round(current / 1048576)} MB`})`), () => {});
     return true;
   }
   async function openHistoryWithCheckpoint() {
@@ -2048,8 +2058,14 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const job = prefixJob?.record === record ? prefixJob : undefined;
           if (job) {
             let result;
-            try { result = await job.result; } catch (error) {
-              if (signal?.aborted || resumeAbort.signal.aborted) throw error;
+            // Bounded wait (Security Low at 39b75f29): on timeout the worker
+            // is cancelled and the serial check runs over the main thread's
+            // own file handle, as it does after a file error in the worker.
+            const deadlineMs = job.startedAt + prefixWorkerTimeoutMs(record.height, checkpointOptions.prefixTimeoutMs);
+            try {
+              result = await awaitPrefixResult(job, { deadlineMs, onFallback: (why) => console.error(`snapshot: checkpoint prefix worker ${why.startsWith("timed") ? "timed out and was cancelled" : `failed (${sanitizeSnapshotError(why)})`}; checking the prefix here`) });
+            } catch (error) {
+              if (shuttingDown || signal?.aborted || resumeAbort.signal.aborted) throw Object.assign(error instanceof Error ? error : new Error(String(error)), { shutdown: true });
               console.error(`snapshot: checkpoint prefix worker failed (${sanitizeSnapshotError(error)}); checking the prefix here`);
             }
             if (result) {
@@ -2076,6 +2092,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           if (chain.height !== candidate.height || chain.tip.hash !== candidate.tipHash) throw new CheckpointError("replayed tail does not end at the file tip");
           checkChainSupply(chain, genesis);
         } catch (error) {
+          // A shutdown (or abort) is not a verdict: keep the good checkpoint
+          // and do not start a rebuild; the next boot checks it again.
+          if (shuttingDown || error?.shutdown || resumeAbort.signal.aborted) { cancelPrefixWorker("shutdown"); resumeCandidate = candidate; throw new Error("checkpoint check stopped by shutdown"); }
           cancelPrefixWorker("checkpoint rejected");
           await discardCheckpoint(checkpointPath);
           return rebuild(`checkpoint rejected (${sanitizeSnapshotError(error)})`);
@@ -2436,7 +2455,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // confirmed the checkpoint; retried each second while the gate is closed.
   if (checkpointOptions.enabled) void (async () => {
     await historyReady;
-    while (!shuttingDown && resumeCandidate?.checkpoint && !maybeStartPrefixWorker()) await sleep(1_000);
+    while (!shuttingDown && resumeCandidate?.checkpoint && !(await maybeStartPrefixWorker())) await sleep(1_000);
   })().catch(() => {});
   const gateway = server ?? createGatewayServer(handler);
   gateway.setHandler(handler);
@@ -2447,8 +2466,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     if (shuttingDown) return; shuttingDown = true; clearInterval(memoryTimer);
     snapshots?.stop();
     snapshotBuilder?.terminate();
-    cancelPrefixWorker("shutdown");
     resumeAbort.abort();
+    cancelPrefixWorker("shutdown");
     await historyReady;
     // Clean shutdown: snapshot builds are stopped and the build child is
     // killed, so no build runs. Wait up to 5 s for an in-flight history

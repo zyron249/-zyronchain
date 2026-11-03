@@ -24,6 +24,8 @@ const { ZyronChain } = await mod("dist/src/chain.js");
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
 // One real network, run with the checkpoint on; its files are the fixture.
+// The host cgroup holds every agent's processes (GBs), so the worker's memory
+// gate reads 0 here unless a test sets memoryCurrent (test 32).
 const root = await mkdtemp(join(tmpdir(), "zyron-ckpt-")); await chmod(root, 0o700);
 const dir = join(root, "net");
 const histDir = join(dir, "snapshot-history");
@@ -38,7 +40,8 @@ let network: any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let genesis: any; let genesisHash: string; let lines: string[] = []; let goodCheckpoint: Buffer; let goodHistory: Buffer;
 let starts = 0;
-const start = async () => api.runNetwork(dir, { gatewayPort: 0, basePort: await allocateValidatorBasePort((starts++ % 2) ? "durable-watermark" : "restore-log-digest"), log: false, stateSecret: secret, snapshotRefreshMs: 1_000, checkpoint: { enabled: true, everyBlocks: 20, everyMs: 600_000 } });
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const start = async (extra: any = {}) => api.runNetwork(dir, { gatewayPort: 0, basePort: await allocateValidatorBasePort((starts++ % 2) ? "durable-watermark" : "restore-log-digest"), log: false, stateSecret: secret, snapshotRefreshMs: 1_000, checkpoint: { enabled: true, everyBlocks: 20, everyMs: 600_000, memoryCurrent: async () => 0, ...extra } });
 const until = async (label: string, check: () => Promise<unknown> | unknown, ms = 600_000) => { const end = Date.now() + ms; while (Date.now() < end) { const v = await Promise.resolve().then(check).catch(() => undefined); if (v) return v; await sleep(250); } throw new Error(`timed out: ${label}\n${logs.slice(-25).join("\n")}`); };
 const json = async (p: string) => { const r = await fetch(`http://127.0.0.1:${network.port}${p}`); return { status: r.status, body: await r.json() }; };
 const lineCount = async () => (await readFile(historyPath, "utf8")).split("\n").filter(Boolean).length;
@@ -51,9 +54,10 @@ const encode = (r: any) => cp.encodeCheckpoint(r) as Buffer;
 const readers = (blocks: any[], count = 4) => Array.from({ length: count }, (_, i) => ({ name: `v${i + 1}`, read: async (from: number, limit: number) => blocks.slice(from - 1, from - 1 + limit) }));
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const blocks = () => lines.map((line) => JSON.parse(line)) as any[];
-async function restart() {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function restart(extra: any = {}) {
   logs.length = 0;
-  network = await start();
+  network = await start(extra);
 }
 async function stop() { await network?.shutdown(); network = undefined; }
 async function restoreGood() { await rm(checkpointPath, { force: true }); await writeFile(historyPath, goodHistory); await writeFile(checkpointPath, goodCheckpoint, { mode: 0o600 }); await chmod(checkpointPath, 0o600); }
@@ -425,4 +429,82 @@ test("21 off by default: without ZYRON_CHECKPOINT=1 nothing is read or written",
   assert.equal(cp.parseCheckpointOptions({}).enabled, false);
   assert.equal(cp.parseCheckpointOptions({ ZYRON_CHECKPOINT: "true" }).enabled, false);
   assert.deepEqual(cp.parseCheckpointOptions({ ZYRON_CHECKPOINT: "1" }), { enabled: true, everyBlocks: 500, everyMs: 600_000 });
+});
+
+// Security Low at 39b75f29: a FIFO swapped in after the boot scan, a worker
+// that never answers, and the start gate on cgroup memory.
+test("28 prefix worker: a FIFO at the history path does not hang open(); it is a file error and the caller falls back", { timeout: 60_000 }, async () => {
+  const f = await workerFixture();
+  try {
+    await rm(f.options.historyPath); execFileSync("mkfifo", ["-m", "600", f.options.historyPath]);
+    const t = Date.now(); const job = pw.startPrefixWorker(f.options);
+    let why = ""; const result = await pw.awaitPrefixResult(job, { deadlineMs: performance.now() + 30_000, onFallback: (w: string) => { why = w; } });
+    assert.equal(result, undefined); assert.match(why, /file error: history path is not a regular file/);
+    assert.ok(Date.now() - t < 20_000, "no hang");
+  } finally { await rm(f.d, { recursive: true, force: true }); }
+});
+test("29 prefix worker timeout: a result that never comes is cancelled at the deadline and the caller falls back", async () => {
+  let cancelled = 0; const job = { result: new Promise(() => {}), cancel: () => { cancelled += 1; } };
+  let why = ""; const t = performance.now();
+  assert.equal(await pw.awaitPrefixResult(job, { deadlineMs: t + 50, onFallback: (w: string) => { why = w; } }), undefined);
+  assert.equal(cancelled, 1); assert.match(why, /timed out/);
+  assert.equal(pw.prefixWorkerTimeoutMs(13_420), 241_560, "about 3x the ~79 s measured");
+  assert.equal(pw.prefixWorkerTimeoutMs(100), pw.PREFIX_WORKER_MIN_TIMEOUT_MS);
+  assert.equal(pw.prefixWorkerTimeoutMs(100, 5), 5);
+  // A cancellation (shutdown) is rethrown, not a fallback.
+  await assert.rejects(pw.awaitPrefixResult({ result: Promise.reject(Object.assign(new Error("c"), { cancelled: true })), cancel() {} }, { deadlineMs: performance.now() + 1_000 }), /c/);
+});
+test("30 memory gate: memory.current below ~400 MB opens it; unreadable cgroup counts as open", async () => {
+  assert.equal(pw.PREFIX_WORKER_MEMORY_LIMIT_BYTES, 400 * 1024 * 1024);
+  assert.equal(pw.prefixMemoryGateOpen(399 * 1024 * 1024), true);
+  assert.equal(pw.prefixMemoryGateOpen(400 * 1024 * 1024), false);
+  assert.equal(pw.prefixMemoryGateOpen(undefined), true);
+  const fake = (files: Record<string, string>) => async (path: string) => { if (path in files) return files[path]; throw new Error("ENOENT"); };
+  assert.equal(await pw.readCgroupMemoryCurrent({ readFileImpl: fake({ "/proc/self/cgroup": "0::/zm1\n", "/sys/fs/cgroup/zm1/memory.current": "123456\n" }) }), 123456);
+  assert.equal(await pw.readCgroupMemoryCurrent({ readFileImpl: fake({}) }), undefined);
+});
+test("31 FIFO swapped in after the boot scan (end to end): the worker does not hang, the prefix is checked serially, the checkpoint is used", { timeout: 600_000 }, async () => {
+  await restoreGood();
+  const real = `${historyPath}.real`; let swapped = false;
+  await restart({ beforePrefixWorker: async (path: string) => { if (swapped) return; swapped = true; await import("node:fs/promises").then((fs) => fs.rename(path, real)); execFileSync("mkfifo", ["-m", "600", path]); } });
+  try {
+    await until("worker file error", () => logs.find((l) => /prefix worker failed \(file error: history path is not a regular file\); checking the prefix here/.test(l)) || logs.find((l) => /finished .*file error/.test(l)), 120_000);
+  } finally { if (swapped) { await rm(historyPath, { force: true }); await import("node:fs/promises").then((fs) => fs.rename(real, historyPath)); } }
+  const matched = await until("checkpoint matched", () => logs.find((l) => /matches the live chain/.test(l))) as string;
+  assert.match(matched, /prefix checked here/);
+  assert.ok(!fellBack(), logs.join("\n"));
+  await stop();
+});
+test("32 worker timeout and memory gate (end to end): the worker waits while memory.current is high; a worker that times out is cancelled and the serial check accepts the checkpoint", { timeout: 900_000 }, async () => {
+  const MB = 1024 * 1024; const at = (re: RegExp) => logs.findIndex((l) => re.test(l));
+  // Memory gate: memory.current stays at 450 MB, so no worker ever starts;
+  // the checkpoint is still accepted through the serial check.
+  await restoreGood();
+  let calls = 0;
+  await restart({ memoryCurrent: async () => { calls += 1; return 450 * MB; } });
+  let matched = await until("checkpoint matched", () => logs.find((l) => /matches the live chain/.test(l))) as string;
+  assert.ok(at(/prefix worker waiting for memory \(cgroup memory.current 450 MB\)/) >= 0, logs.join("\n"));
+  assert.ok(calls >= 1); assert.equal(at(/prefix worker started/), -1, "no worker above the limit");
+  assert.match(matched, /prefix checked here/); assert.ok(!fellBack());
+  await stop();
+  // Timeout: the worker is cancelled at its deadline and the serial check runs.
+  await restoreGood();
+  // A worker that never answers (as one stuck in open() would).
+  let cancels = 0;
+  await restart({ prefixTimeoutMs: 2_000, prefixWorkerFactory: () => { let live = true; return { result: new Promise(() => {}), running: () => live, startedAt: performance.now(), elapsedMs: () => 0, cancel: () => { cancels += 1; live = false; } }; } });
+  matched = await until("checkpoint matched", () => logs.find((l) => /matches the live chain/.test(l))) as string;
+  assert.ok(at(/prefix worker started/) >= 0);
+  assert.ok(at(/timed out and was cancelled; checking the prefix here/) >= 0, logs.join("\n"));
+  assert.ok(cancels >= 1, "the stuck worker was cancelled");
+  assert.match(matched, /prefix checked here/); assert.ok(!fellBack());
+  await stop();
+});
+test("33 shutdown while the checkpoint is being checked keeps the good checkpoint and starts no rebuild", { timeout: 600_000 }, async () => {
+  await restoreGood();
+  await restart({ memoryCurrent: async () => 0 });
+  await until("worker started", () => logs.find((l) => /prefix worker started/.test(l)), 120_000);
+  await stop();
+  assert.ok(!logs.some((l) => /rebuilding the history file|checkpoint not used/.test(l)), logs.join("\n"));
+  assert.ok((await readFile(checkpointPath)).length > 0, "checkpoint kept");
+  assert.ok(cp.decodeCheckpoint(await readFile(checkpointPath), ids()).height >= record().height);
 });
