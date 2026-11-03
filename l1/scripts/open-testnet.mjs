@@ -36,7 +36,7 @@ import { gunzipSync } from "node:zlib";
 import { Worker } from "node:worker_threads";
 import { SNAPSHOT_MAGIC, sealSnapshot, snapshotKey } from "./open-testnet/snapshot-seal.mjs";
 import { verifySnapshotBlocks } from "./open-testnet/snapshot-verify.mjs";
-import { HistoryFileError, createHistoryFile } from "./open-testnet/history-file.mjs";
+import { HistoryFileError, createHistoryFile, resumeHistoryFile } from "./open-testnet/history-file.mjs";
 import { createServer } from "node:http";
 import { createReadStream, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
@@ -1601,6 +1601,29 @@ export async function initNetwork(dir, chainId, { onProgress = () => {} } = {}) 
 // verifySnapshotBlocks lives in open-testnet/snapshot-verify.mjs (the
 // snapshot worker runs it too).
 
+// Resume check (fix A): the resumed history file must end on the live chain.
+// Its last stored height must not be above the live tip, and the block every
+// answering validator serves at that height must have the stored tip hash
+// (at the tip itself, also the live tip hash). Returns undefined when the
+// tail matches, or the mismatch reason (the caller rebuilds from genesis).
+// Throws when fewer than `minAgree` validators answered (try again later).
+export async function checkResumedTail(readers, { height, tipHash: storedHash }, { tip, tipHash, minAgree = Math.floor((2 * readers.length) / 3) + 1, signal } = {}) {
+  if (!Number.isSafeInteger(tip) || tip < 0) throw new Error("live tip unknown");
+  if (height > tip) return `is above the live tip (${height} > ${tip})`;
+  if (height === tip && typeof tipHash === "string" && tipHash !== storedHash) return `hash at the live tip ${tip} does not match`;
+  let agree = 0;
+  for (const reader of readers) {
+    let served;
+    try { served = await reader.read(height, 1, signal ? { signal } : {}); } catch { continue; }
+    const block = Array.isArray(served) ? served[0] : undefined;
+    if (block?.header?.height !== height || typeof block.hash !== "string") continue;
+    if (block.hash !== storedHash) return `hash at height ${height} does not match validator ${reader.name}`;
+    agree += 1;
+  }
+  if (agree < minAgree) throw new Error(`${agree} of ${readers.length} validators served block ${height}, need ${minAgree}`);
+  return undefined;
+}
+
 // Verified snapshot history: the in-memory chain after the verified blocks.
 // The gateway keeps one and extends it on each build, so full validation is
 // paid once per block (validation is replay-priced on a 0.1-CPU host).
@@ -1915,24 +1938,67 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   const snapshotHistory = { chain: verifiedHistory?.chain ?? new ZyronChain(genesis), blocks: verifiedHistory?.chain ? verifiedHistory.blocks : [] };
   const restoredBlocks = verifiedHistory?.blocks ?? [];
   const restoredTip = { height: restoredBlocks.length, tipHash: restoredBlocks.length ? restoredBlocks[restoredBlocks.length - 1].hash : undefined };
-  // Disk design: the verified history lives in an NDJSON file, rebuilt at
-  // every start from the restored (already replay-validated) blocks; RAM then
-  // keeps only the verified chain state and the file's tip and running hash.
-  // If the file cannot be written from the restore, it starts empty with a
-  // fresh chain and the first build re-validates the history from genesis.
-  const historyFile = await createHistoryFile(join(dir, "snapshot-history", "history.ndjson"), { chainId, genesisHash: info.genesisHash });
-  try {
-    for (let index = 0; index < restoredBlocks.length; index += 500) {
-      await historyFile.appendMany(restoredBlocks.slice(index, index + 500));
-      await yieldToEventLoop();
+  const historyPath = join(dir, "snapshot-history", "history.ndjson");
+  const redactSecret = { redact: stateSecret ? [stateSecret] : [] };
+  let historyFile;
+  let resumeCandidate;
+  let historyUnavailable;
+  const resumeAbort = new AbortController();
+  snapshotHistory.blocks = undefined;
+  // Resume (restart on the same network directory, no restored snapshot):
+  // the file an earlier process left is reused instead of re-fetching every
+  // block from the validators, but nothing in it is trusted. In the
+  // background (validators start meanwhile; history users wait on
+  // historyLock), each line is re-checked by resumeHistoryFile and replayed
+  // through full finalized-block validation into a fresh chain. The first
+  // extension then matches its tail to the live validators
+  // (checkResumedTail) before the chain is used. Any defect falls back to
+  // the full rebuild from genesis.
+  async function openHistoryForResume() {
+    const replay = new ZyronChain(genesis);
+    let replayed = 0;
+    try {
+      const resumed = await resumeHistoryFile(historyPath, {
+        chainId, genesisHash: info.genesisHash, signal: resumeAbort.signal,
+        onBlock: async (block) => { replay.acceptBlock(structuredClone(block), Date.now()); replayed += 1; if (replayed % 20 === 0) await yieldToEventLoop(); }
+      });
+      if (replay.height !== resumed.height || replay.tip.hash !== resumed.tipHash) { await resumed.file.close(); throw new HistoryFileError("replayed chain does not match the file tip"); }
+      historyFile = resumed.file;
+      if (resumed.height > 0) resumeCandidate = { chain: replay, height: resumed.height, tipHash: resumed.tipHash };
+      console.error(`snapshot: history file resumed at height ${resumed.height}${resumed.droppedBytes ? ` (dropped a torn last line of ${resumed.droppedBytes} bytes)` : ""}; matching it to the live chain before use`);
+    } catch (error) {
+      if (resumeAbort.signal.aborted) return;
+      if (!error?.missing) console.error(`snapshot: history file not resumed (${sanitizeSnapshotError(error, redactSecret)}); rebuilding from genesis`);
     }
-    if (historyFile.height() !== snapshotHistory.chain.height) throw new HistoryFileError("restored history does not match the replayed chain");
-  } catch (error) {
-    console.error(`snapshot: history file not built from the restore (${sanitizeSnapshotError(error, { redact: stateSecret ? [stateSecret] : [] })}); re-validating from genesis on the first build`);
-    await historyFile.reset();
-    snapshotHistory.chain = new ZyronChain(genesis);
+    historyFile ??= await createHistoryFile(historyPath, { chainId, genesisHash: info.genesisHash });
+    snapshotHistory.file = historyFile;
   }
-  snapshotHistory.blocks = undefined; snapshotHistory.file = historyFile;
+  let historyReady;
+  if (verifiedHistory) {
+    // Disk design: the verified history lives in an NDJSON file, rebuilt at
+    // a restore from the restored (already replay-validated) blocks; RAM then
+    // keeps only the verified chain state and the file's tip and running hash.
+    // If the file cannot be written from the restore, it starts empty with a
+    // fresh chain and the first build re-validates the history from genesis.
+    historyFile = await createHistoryFile(historyPath, { chainId, genesisHash: info.genesisHash });
+    try {
+      for (let index = 0; index < restoredBlocks.length; index += 500) {
+        await historyFile.appendMany(restoredBlocks.slice(index, index + 500));
+        await yieldToEventLoop();
+      }
+      if (historyFile.height() !== snapshotHistory.chain.height) throw new HistoryFileError("restored history does not match the replayed chain");
+    } catch (error) {
+      console.error(`snapshot: history file not built from the restore (${sanitizeSnapshotError(error, redactSecret)}); re-validating from genesis on the first build`);
+      await historyFile.reset();
+      snapshotHistory.chain = new ZyronChain(genesis);
+    }
+    snapshotHistory.file = historyFile;
+  } else {
+    historyReady = openHistoryForResume().catch((error) => {
+      historyUnavailable = error instanceof Error ? error : new Error(String(error));
+      console.error(`snapshot: history file unavailable (${sanitizeSnapshotError(historyUnavailable, redactSecret)})`);
+    });
+  }
   // Drop the restored bundle's blocks: they are on disk now.
   if (verifiedHistory) verifiedHistory.blocks = undefined;
   // Durable watermark (see createDurableWatermark): only when the chain lives
@@ -1957,7 +2023,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   if (log) console.log(`active set seeded from ${activeSetTracker.seededFrom}${activeSetSeed ? ` (height ${activeSetSeed.height}, ${activeSetSeed.validators.length} validators)` : ""}`);
   // One writer at a time for the verified history (snapshot builds and the
   // relay's membership refresh both extend it).
-  let historyLock = Promise.resolve();
+  let historyLock = historyReady ?? Promise.resolve();
   // Set when the history file failed validation on read (a snapshot build):
   // the next extension rebuilds it.
   let historyNeedsRebuild = false;
@@ -1979,7 +2045,19 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       return result;
     }
     const run = historyLock.then(async () => {
+      if (historyUnavailable) throw historyUnavailable;
       if (historyNeedsRebuild) return rebuild("marked corrupt");
+      if (resumeCandidate) {
+        let verdict;
+        try { verdict = await checkResumedTail(readers, resumeCandidate, { tip, tipHash, signal }); } catch (error) {
+          // Too few validators answered: keep the candidate and try again.
+          throw new Error(`resumed history tail not checked yet (${error instanceof Error ? error.message : String(error)})`);
+        }
+        const candidate = resumeCandidate; resumeCandidate = undefined;
+        if (verdict) return rebuild(`resumed history ${verdict}`);
+        snapshotHistory.chain = candidate.chain;
+        console.error(`snapshot: resumed history matches the live chain at height ${candidate.height}; continuing from there`);
+      }
       try {
         return await collect(snapshotHistory);
       } catch (error) {
@@ -2294,7 +2372,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     if (shuttingDown) return; shuttingDown = true; clearInterval(memoryTimer);
     snapshots?.stop();
     snapshotBuilder?.terminate();
-    await historyFile.close();
+    resumeAbort.abort();
+    await historyReady;
+    await historyFile?.close();
     await new Promise((done) => gateway.close(() => done()));
     if (mailbox) await new Promise((done) => mailbox.close(() => done()));
     await Promise.all(VALIDATOR_NAMES.map((name) => stopValidator(name)));
