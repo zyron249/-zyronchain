@@ -142,6 +142,12 @@ test("open testnet binds its port before snapshot restore and resumes the restor
     assert.equal(live.body.persistence.mode, "snapshot-restore");
     assert.equal(live.body.gateway.startedAt, bootGateway.startedAt, "startedAt is stable across boot and ready");
     assert.ok(live.body.gateway.uptimeSec >= bootGateway.uptimeSec);
+    // Read-only host diagnostics: exactly these keys, nothing else.
+    const diag = live.body.diagnostics;
+    assert.deepEqual(Object.keys(diag).sort(), ["cgroup", "filesystems"]);
+    assert.deepEqual(Object.keys(diag.filesystems).sort(), ["dataDir", "tmp"]);
+    assert.deepEqual(Object.keys(diag.cgroup).sort(), ["memoryCurrent", "memoryMax", "shmem"]);
+    for (const fs of Object.values(diag.filesystems) as any[]) if (fs !== null) assert.deepEqual(Object.keys(fs).sort(), ["mountPoint", "type"]);
 
     // One validated replay; the other validators open the verified checkpoint.
     for (const name of ["v1", "v2", "v3", "v4"]) await access(join(target, `data-${name}`, "recovery-checkpoint.json"));
