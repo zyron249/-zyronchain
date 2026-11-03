@@ -43,11 +43,16 @@ async function writeAll(handle, buffer, position) {
 // only advances the in-RAM tip after the line is completely written.
 // Symlinks are refused (lstat on the directory, O_NOFOLLOW on the file), the
 // directory is forced to 0700 and the file to 0600.
-const WRITE_FLAGS = fsConstants.O_WRONLY | fsConstants.O_CREAT | (fsConstants.O_NOFOLLOW ?? 0);
+// O_NONBLOCK: a FIFO swapped in after the lstat check fails open() (ENXIO)
+// instead of blocking it; regular files are unaffected.
+const WRITE_FLAGS = fsConstants.O_WRONLY | fsConstants.O_CREAT | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
 // No O_TRUNC: truncation happens through the handle only after the nlink check
 // on that handle, so a link created between lstat and open never loses data.
 const RESUME_FLAGS = fsConstants.O_RDWR | (fsConstants.O_NOFOLLOW ?? 0);
-const READ_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+// O_NONBLOCK: a FIFO in place of the file must not block open() (the serial
+// prefix check and snapshot builds reopen the path under the history lock);
+// refuseHardLink then refuses anything but a regular file at once.
+const READ_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
 async function ensurePrivateDir(dir) {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const info = await lstat(dir);
@@ -58,7 +63,8 @@ async function ensurePrivateDir(dir) {
 // a link created between lstat and open is caught too).
 async function refuseHardLink(handle) {
   const info = await handle.stat();
-  if (!info.isFile() || info.nlink > 1) throw new HistoryFileError("history path is a hard link");
+  if (!info.isFile()) throw new HistoryFileError("history path is not a regular file");
+  if (info.nlink > 1) throw new HistoryFileError("history path is a hard link");
 }
 // `beforeOpen` is a test hook that runs between the lstat check and open().
 export async function openForWrite(path, { beforeOpen } = {}) {

@@ -231,6 +231,15 @@ test("history file refuses symlinks and keeps the directory 0700 and the file 06
     const readLink = join(hdir, "read-link.ndjson"); await symlink(path, readLink);
     const view = { ...file.view(), path: readLink };
     await assert.rejects((async () => { for await (const _ of hf.readHistoryLines(view)) { /* drain */ } })(), (e: any) => e?.code === "history_file_corrupt");
+    // A FIFO at the path (Security Low at 7d5dcc16): open() does not block
+    // (O_NONBLOCK) and the reader refuses it quickly as not a regular file;
+    // the writer refuses it too.
+    const fifo = join(hdir, "fifo.ndjson");
+    (await import("node:child_process")).execFileSync("mkfifo", ["-m", "600", fifo]);
+    const started = Date.now();
+    await assert.rejects((async () => { for await (const _ of hf.readHistoryLines({ ...file.view(), path: fifo })) { /* drain */ } })(), (e: any) => e?.code === "history_file_corrupt" && /not a regular file/.test(e.message));
+    await assert.rejects(hf.openForWrite(fifo), /not a regular file/);
+    assert.ok(Date.now() - started < 5_000, "a FIFO is refused without blocking");
     // Directory is a symlink: refused.
     const realDir = join(dir, "real"); await mkdir(realDir); const dirLink = join(dir, "dirlink"); await symlink(realDir, dirLink);
     await assert.rejects(hf.createHistoryFile(join(dirLink, "x.ndjson"), { chainId: CHAIN, genesisHash: GENESIS }), /plain directory/);

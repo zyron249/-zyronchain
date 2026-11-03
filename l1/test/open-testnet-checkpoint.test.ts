@@ -463,17 +463,25 @@ test("30 memory gate: memory.current below ~400 MB opens it; unreadable cgroup c
   assert.equal(await pw.readCgroupMemoryCurrent({ readFileImpl: fake({ "/proc/self/cgroup": "0::/zm1\n", "/sys/fs/cgroup/zm1/memory.current": "123456\n" }) }), 123456);
   assert.equal(await pw.readCgroupMemoryCurrent({ readFileImpl: fake({}) }), undefined);
 });
-test("31 FIFO swapped in after the boot scan (end to end): the worker does not hang, the prefix is checked serially, the checkpoint is used", { timeout: 600_000 }, async () => {
+test("31 FIFO swapped in after the boot scan and left in place (end to end): neither the worker nor the main thread hangs; the gateway falls back quickly and stays up", { timeout: 600_000 }, async () => {
   await restoreGood();
+  const fs = await import("node:fs/promises");
   const real = `${historyPath}.real`; let swapped = false;
-  await restart({ beforePrefixWorker: async (path: string) => { if (swapped) return; swapped = true; await import("node:fs/promises").then((fs) => fs.rename(path, real)); execFileSync("mkfifo", ["-m", "600", path]); } });
+  await restart({ beforePrefixWorker: async (path: string) => { if (swapped) return; swapped = true; await fs.rename(path, real); execFileSync("mkfifo", ["-m", "600", path]); } });
   try {
-    await until("worker file error", () => logs.find((l) => /prefix worker failed \(file error: history path is not a regular file\); checking the prefix here/.test(l)) || logs.find((l) => /finished .*file error/.test(l)), 120_000);
-  } finally { if (swapped) { await rm(historyPath, { force: true }); await import("node:fs/promises").then((fs) => fs.rename(real, historyPath)); } }
-  const matched = await until("checkpoint matched", () => logs.find((l) => /matches the live chain/.test(l))) as string;
-  assert.match(matched, /prefix checked here/);
-  assert.ok(!fellBack(), logs.join("\n"));
-  await stop();
+    // The worker reports a file error; the serial check reopens the path
+    // (O_NONBLOCK) and refuses the FIFO at once, so the checkpoint falls back
+    // to a rebuild, whose writer refuses the FIFO too. Nothing blocks.
+    await until("worker file error", () => logs.find((l) => /prefix worker failed \(file error: history path is not a regular file\)/.test(l)), 120_000);
+    await until("quick fallback", () => logs.find((l) => /rebuilding the history file \(checkpoint rejected .*not a regular file/.test(l)), 60_000);
+    assert.ok(!logs.some((l) => /matches the live chain/.test(l)), "the checkpoint is not used");
+    // The main thread (and the history lock holder) is not stuck.
+    const t = Date.now(); assert.equal((await json("/status")).status, 200); assert.ok(Date.now() - t < 5_000);
+    const s0 = Date.now(); await stop(); assert.ok(Date.now() - s0 < 60_000, "shutdown does not hang");
+  } finally {
+    await stop().catch(() => {});
+    if (swapped) { await rm(historyPath, { force: true }); await fs.rename(real, historyPath).catch(() => {}); }
+  }
 });
 test("32 worker timeout and memory gate (end to end): the worker waits while memory.current is high; a worker that times out is cancelled and the serial check accepts the checkpoint", { timeout: 900_000 }, async () => {
   const MB = 1024 * 1024; const at = (re: RegExp) => logs.findIndex((l) => re.test(l));

@@ -121,7 +121,7 @@ export async function readCheckpoint(path, { chainId, genesisHash, maxBytes = CH
   if (info.nlink > 1) fail("path is a hard link");
   if (info.size > maxBytes) fail("file is over the size cap");
   let handle;
-  try { handle = await open(path, fsConstants.O_RDONLY | NOFOLLOW); } catch (error) { fail(error?.code === "ELOOP" ? "path is a symlink" : `open failed (${error?.code ?? "io"})`); }
+  try { handle = await open(path, fsConstants.O_RDONLY | NOFOLLOW | (fsConstants.O_NONBLOCK ?? 0)); } catch (error) { fail(error?.code === "ELOOP" ? "path is a symlink" : `open failed (${error?.code ?? "io"})`); }
   try {
     const opened = await handle.stat();
     if (!opened.isFile() || opened.nlink > 1) fail("path is not a single-link regular file");
