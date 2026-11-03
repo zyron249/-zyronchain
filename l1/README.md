@@ -249,7 +249,7 @@ blocking self-send, lookalike address (shared prefix+suffix of at least 6 hex ch
 differing characters, against at most 250 known addresses), first-time recipient, and amount at or above
 a threshold. It is offline: the optional `--known-file` (`{"contacts":[{"name","address"}],"sent":[],
 "thresholdAtoms":null}`, canonical addresses) never leaves the machine. Warnings never change what a node
-accepts; only the self-send case exits non-zero.
+accepts; only the self-send case exits non-zero. Full guide: [`docs/SEND_CHECK_CLI.md`](../docs/SEND_CHECK_CLI.md).
 
 ```sh
 node dist/src/cli.js send-check --to <ZYN...> --from <ZYN...> --amount-atoms 100000000 --known-file book.json

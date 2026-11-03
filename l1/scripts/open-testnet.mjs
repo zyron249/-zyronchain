@@ -23,7 +23,7 @@
 //
 // <secret dir> holds plaintext TEST validator/faucet keys (mode 0600) and the
 // chain data. It must live outside the repository and must never be shared.
-import { formatMemoryLine, gatewayMemory, memoryReport, memoryReportMb, MEMORY_LOG_INTERVAL_MS, processRssBytes } from "./open-testnet/memory-report.mjs";
+import { formatMemoryLine, gatewayMemory, memoryReport, memoryReportMb, MEMORY_LOG_INTERVAL_MS, processMemoryBytes, processRssBytes, residentMetric } from "./open-testnet/memory-report.mjs";
 import { activeSetSeedFromHistory, createActiveSetTracker } from "./gateway-quorum.mjs";
 import { createFaucetNonceTracker } from "./faucet-nonce.mjs";
 import { FaucetFeeFloorError, MAX_FAUCET_FEE_ATOMS, faucetTransferFeeAtoms } from "./faucet-fee.mjs";
@@ -919,6 +919,91 @@ export function createValidatorSupervisor({ baseMs = VALIDATOR_RESTART_BASE_MS, 
 export function withSupervisorStatus(validators, supervisor) {
   return validators.map((v) => ({ ...v, ...supervisor.status(v.name) }));
 }
+// Validator self-reported memory (via the preload above) for GET /health.
+// One sample per validator (bounded); older than staleMs reads as null.
+export const VALIDATOR_MEMORY_PRELOAD = fileURLToPath(new URL("./open-testnet/validator-memory-preload.cjs", import.meta.url));
+export const VALIDATOR_MEMORY_STALE_MS = 120_000;
+const VALIDATOR_MEMORY_FIELDS = ["heapUsed", "heapTotal", "rss", "external", "arrayBuffers"];
+// Validator child env: the gateway's env plus MALLOC_ARENA_MAX=2 (fewer
+// glibc malloc arenas, which caps the native RssAnon growth seen live) and
+// the fd the memory preload writes to. An explicit MALLOC_ARENA_MAX wins.
+export function validatorChildEnv(env = process.env) {
+  return { ...env, MALLOC_ARENA_MAX: env.MALLOC_ARENA_MAX || "2", ZYRON_VALIDATOR_MEMORY_FD: String(VALIDATOR_MEMORY_FD) };
+}
+export function maxOldSpaceMbFromFlags(flags) {
+  for (const flag of flags) { const m = /^--max-old-space-size=(\d+)$/.exec(flag); if (m) return Number(m[1]); }
+  return null;
+}
+export function createValidatorMemoryTracker({ staleMs = VALIDATOR_MEMORY_STALE_MS, now = Date.now, maxNames = 16 } = {}) {
+  const samples = new Map();
+  const caps = new Map();
+  const dropped = new Map();
+  const toMb = (bytes) => Math.round((bytes / 1048576) * 10) / 10;
+  return {
+    // A (re)started validator: record its cap and drop the old sample.
+    started(name, maxOldSpaceMb) {
+      if (!caps.has(name) && caps.size >= maxNames) return;
+      caps.set(name, Number.isSafeInteger(maxOldSpaceMb) ? maxOldSpaceMb : null); samples.delete(name);
+    },
+    // Ignores anything that is not a well-formed report.
+    message(name, msg) {
+      if (!caps.has(name) || !msg || typeof msg !== "object" || msg.type !== "zyron-validator-memory") return false;
+      const sample = {};
+      for (const field of VALIDATOR_MEMORY_FIELDS) { const v = msg[field]; if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 2 ** 45) return false; sample[field] = v; }
+      samples.set(name, { atMs: now(), ...sample });
+      return true;
+    },
+    status(name) {
+      const s = samples.get(name);
+      const fresh = s && now() - s.atMs <= staleMs && now() >= s.atMs;
+      const out = { maxOldSpaceMb: caps.get(name) ?? null };
+      for (const field of VALIDATOR_MEMORY_FIELDS) out[`${field}Mb`] = fresh ? toMb(s[field]) : null;
+      out.memoryReportedAt = fresh ? new Date(s.atMs).toISOString() : null;
+      const d = dropped.get(name); out.memoryDropped = d ? { oversized: d.oversized, malformed: d.malformed } : { oversized: 0, malformed: 0 };
+      return out;
+    },
+    // Counters from that validator's line reader (dropped reports).
+    reader(name, stats) { if (caps.has(name)) dropped.set(name, stats); }
+  };
+}
+// The preload writes one JSON line per report to a plain pipe on fd 3 (not
+// Node's IPC channel, whose JSON parse runs inside Node and throws an
+// uncaught exception on a malformed line). This reader is the only parser:
+// lines over maxLineBytes are dropped without being buffered, malformed
+// lines are dropped, and both are counted. It never throws.
+export const VALIDATOR_MEMORY_FD = 3;
+export const VALIDATOR_MEMORY_MAX_LINE_BYTES = 4096;
+export function createMemoryLineReader(onMessage, { maxLineBytes = VALIDATOR_MEMORY_MAX_LINE_BYTES } = {}) {
+  let parts = []; let size = 0; let skipping = false;
+  const stats = { lines: 0, oversized: 0, malformed: 0 };
+  const line = (buf) => {
+    stats.lines++;
+    let msg;
+    try { msg = JSON.parse(buf.toString("utf8")); } catch { stats.malformed++; return; }
+    try { if (onMessage(msg) === false) stats.malformed++; } catch { stats.malformed++; }
+  };
+  return {
+    stats,
+    push(chunk) {
+      if (!Buffer.isBuffer(chunk)) chunk = Buffer.from(String(chunk));
+      let start = 0;
+      while (start < chunk.length) {
+        const nl = chunk.indexOf(10, start);
+        const end = nl === -1 ? chunk.length : nl;
+        if (!skipping) {
+          if (size + (end - start) > maxLineBytes) { skipping = true; parts = []; size = 0; stats.oversized++; }
+          else { parts.push(chunk.subarray(start, end)); size += end - start; }
+        }
+        if (nl === -1) break;
+        if (!skipping && size > 0) line(Buffer.concat(parts));
+        parts = []; size = 0; skipping = false; start = nl + 1;
+      }
+    }
+  };
+}
+export function withValidatorMemory(validators, tracker) {
+  return validators.map((v) => ({ ...v, ...tracker.status(v.name) }));
+}
 export class SnapshotBuildAbortedError extends Error {
   constructor() { super("snapshot build aborted"); this.name = "SnapshotBuildAbortedError"; this.code = "aborted"; }
 }
@@ -1689,6 +1774,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   }
 
   const supervisor = createValidatorSupervisor();
+  const validatorMemory = createValidatorMemoryTracker();
   function startValidator(name) {
     const index = VALIDATOR_NAMES.indexOf(name);
     const args = [dist("cli.js"), "node", "--genesis", genesisPath, "--data", join(dir, `data-${name}`),
@@ -1700,7 +1786,13 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       "--rpc-rate-limit-exempt", "127.0.0.1"];
     for (const [i, port] of ports.entries()) if (i !== index) args.push("--peer", `http://127.0.0.1:${port}`);
     if (relay) for (const address of relay.addresses()) args.push("--peer", `http://127.0.0.1:${mailboxPort}/x/${address}`);
-    const child = spawn(process.execPath, [...validatorNodeFlags(), ...args], { cwd: l1Root, stdio: ["ignore", "pipe", "pipe"] });
+    const flags = validatorNodeFlags();
+    const child = spawn(process.execPath, [...flags, "--require", VALIDATOR_MEMORY_PRELOAD, ...args], { cwd: l1Root, stdio: ["ignore", "pipe", "pipe", "pipe"], env: validatorChildEnv() });
+    validatorMemory.started(name, maxOldSpaceMbFromFlags(flags));
+    const memoryReader = createMemoryLineReader((msg) => validatorMemory.message(name, msg));
+    validatorMemory.reader(name, memoryReader.stats);
+    const memoryPipe = child.stdio[VALIDATOR_MEMORY_FD];
+    if (memoryPipe) { memoryPipe.on("data", (chunk) => memoryReader.push(chunk)); memoryPipe.on("error", () => {}); memoryPipe.unref?.(); }
     const prefix = `[${name}] `;
     for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => {
       if (log) process.stdout.write(chunk.toString("utf8").split("\n").filter(Boolean).map((l) => prefix + l).join("\n") + "\n");
@@ -1963,12 +2055,19 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     }
   }
   function currentMemory() {
-    const validators = {};
-    for (const name of VALIDATOR_NAMES) { const node = nodes.get(name); validators[name] = node && !node.exit ? processRssBytes(node.child.pid) ?? null : null; }
+    // totalRss (and the RSS alarm on it) uses Pss, else RssAnon; VmRSS
+    // double-counts shared pages and is kept only as a reference.
+    const procs = {};
+    for (const name of VALIDATOR_NAMES) { const node = nodes.get(name); procs[name] = node && !node.exit ? processMemoryBytes(node.child.pid) ?? null : null; }
+    const self = processMemoryBytes("self");
+    const metric = residentMetric([self, ...Object.values(procs)]);
+    const validators = {}; const validatorsVmRss = {};
+    for (const [name, p] of Object.entries(procs)) { validators[name] = p?.[metric.key] ?? null; validatorsVmRss[name] = p?.vmRss ?? null; }
     const childPid = snapshotBuilder?.pid();
     const lastBuild = snapshotBuilder?.lastStats();
     const snapshotChild = snapshotBuilder ? { running: childPid !== undefined, rss: childPid !== undefined ? processRssBytes(childPid) ?? null : null, maxRss: lastBuild?.maxRss ?? null, lastBuildAt: lastBuild?.at ?? null } : null;
-    return memoryReport({ gateway: gatewayMemory(), validators, snapshotChild });
+    const gateway = gatewayMemory();
+    return memoryReport({ gateway, validators, snapshotChild, gatewayResident: self?.[metric.key], totalRssMetric: metric.label, vmRss: { gateway: self?.vmRss ?? gateway.rss, validators: validatorsVmRss } });
   }
   // Read-only: /tmp and data-dir filesystem types, cgroup memory (GET /health).
   const hostDiagnostics = createHostMemoryDiagnostics({ dataDir: dir });
@@ -2098,7 +2197,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const heights = up.map((v) => v.height);
           // Quorum of the ACTIVE validator set (follows validator_update).
           const { ok, quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, activeSetRejected } = activeSetTracker.evaluate(statuses);
-          const validators = withSupervisorStatus(statuses.map(({ activeSet: _activeSet, ...rest }) => rest), supervisor);
+          const validators = withValidatorMemory(withSupervisorStatus(statuses.map(({ activeSet: _activeSet, ...rest }) => rest), supervisor), validatorMemory);
           if (ok) everReady = true;
           // Until the validators first reach a quorum, liveness stays 200
           // "starting" while start-up progresses (bounded by the stall window
