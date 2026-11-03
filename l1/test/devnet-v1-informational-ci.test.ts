@@ -113,14 +113,14 @@ test("P1-04 classifier CLI: reads the retained validator logs; exits non-zero fo
     };
     const flake = await run(failLog(`Error: Timed out: transfer finalized by both validators last-status=${stalled}`, chain), "failure");
     assert.equal(flake.status, 0, flake.stderr);
-    assert.match(flake.stdout, /^::warning title=Known protocol-v1 flake \(F-01\)/m);
+    assert.match(flake.stdout, /^::warning title=Protocol-v1 F-01 round-timer stall \(fixed in v6\)%2C not a regression::/m);
     assert.match(flake.stdout, /^::group::validator a log \(last 200 lines\)$/m);
     assert.match(flake.stdout, /Round skip quorum not reached: 1\/2/);
     const noLogs = await run(failLog(`Error: Timed out: transfer finalized by both validators last-status=${stalled}`, join(dir, "missing")), "failure");
     assert.equal(noLogs.status, 1, "without validator logs the stall cannot be confirmed");
     const regression = await run(failLog("AssertionError [ERR_ASSERTION]: One validator finalized without quorum", chain), "failure");
     assert.equal(regression.status, 1);
-    assert.match(regression.stdout, /^::error title=Protocol-v1 devnet%3A NOT the known F-01 flake::/m);
+    assert.match(regression.stdout, /^::error title=Protocol-v1 devnet%3A NOT the F-01 round-timer stall::/m);
     const pass = await run(passLog, "success");
     assert.equal(pass.status, 0, pass.stderr);
     assert.match(pass.stdout, /^::notice /m);
@@ -150,7 +150,7 @@ test("P1-04 workflow: both devnet jobs run the unmodified checks and neither swa
     assert.equal(/continue-on-error/.test(block), false, "devnet jobs must not use continue-on-error");
     assert.match(block, /timeout-minutes: 10\n/);
   }
-  assert.match(v1, /name: local-devnet \(protocol v1, informational, known F-01 flake\)/);
+  assert.match(v1, /name: local-devnet \(protocol v1, informational, F-01 round-timer stall, fixed in v6\)/);
   assert.match(v1, /shell: bash\n\s+run: npm run devnet:check 2>&1 \| tee "\$RUNNER_TEMP\/local-devnet-v1\.log"\n/);
   assert.match(v1, /if: always\(\)\n[\s\S]*run: node scripts\/classify-devnet-v1-result\.mjs/);
   assert.match(v6, /run: npm run devnet:check:v6\n/);
