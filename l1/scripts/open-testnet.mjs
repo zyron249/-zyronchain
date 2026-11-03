@@ -1011,10 +1011,10 @@ export const SNAPSHOT_WORKER_RESOURCE_LIMITS = Object.freeze({
 // detailed (sanitised) message only goes to the logs.
 // Low-2 (Security on #1162): only codes from this allowlist reach /health;
 // anything else (including Node system error codes) is build_failed.
-export const SNAPSHOT_ERROR_CODES = new Set(["build_timeout", "aborted", "busy", "worker_crashed", "worker_out_of_memory", "history_unavailable", "history_invalid", "history_file_corrupt", "build_failed", "node_not_ready", "history_catching_up"]);
+export const SNAPSHOT_ERROR_CODES = new Set(["build_timeout", "aborted", "busy", "worker_crashed", "worker_out_of_memory", "history_unavailable", "history_invalid", "history_file_corrupt", "build_failed", "node_not_ready", "history_catching_up", "history_settling"]);
 // Not failures: the build waits for the node or the history to be ready and
 // is retried on the next tick, without backoff and without the 900 s timeout.
-export const SNAPSHOT_DEFERRED_CODES = new Set(["busy", "node_not_ready", "history_catching_up"]);
+export const SNAPSHOT_DEFERRED_CODES = new Set(["busy", "node_not_ready", "history_catching_up", "history_settling"]);
 // Above this many blocks behind the tip the build does not catch the history
 // up itself (inside its timeout); the background refresher does.
 export const SNAPSHOT_MAX_BUILD_CATCHUP = 2_000;
@@ -1022,10 +1022,27 @@ export const SNAPSHOT_MAX_BUILD_CATCHUP = 2_000;
 // end of its in-flight window (#1165 Low-1).
 export const SNAPSHOT_NOT_READY_RETRY_MS = 30_000;
 // Gate for a snapshot build: undefined when it may start, else a deferred code.
-export function snapshotBuildReadiness({ quorumOk, tip, historyHeight, historyRebuilding = false, maxCatchup = SNAPSHOT_MAX_BUILD_CATCHUP }) {
+// history_settling: the history is close to the tip but the background
+// refresher has not yet finished its rebuild/catch-up and one more cycle at
+// the tip (see createHistorySettleTracker). The first build waits for that, so
+// it never overlaps the history rebuild (the post-restart memory peak); it is
+// deferred and retried, never skipped.
+export function snapshotBuildReadiness({ quorumOk, tip, historyHeight, historyRebuilding = false, historySettled = true, maxCatchup = SNAPSHOT_MAX_BUILD_CATCHUP }) {
   if (!quorumOk || !Number.isSafeInteger(tip) || tip < 1) return "node_not_ready";
   if (historyRebuilding || !Number.isSafeInteger(historyHeight) || tip - historyHeight > maxCatchup) return "history_catching_up";
+  if (!historySettled) return "history_settling";
   return undefined;
+}
+// Settled = a background refresh cycle ended with the history at the live tip,
+// then one more cycle did too (consecutive). Latches: once settled, later
+// builds are not gated again (they only append a short delta). A failed or
+// behind cycle before settling restarts the count.
+export function createHistorySettleTracker({ cycles = 2 } = {}) {
+  let streak = 0; let settled = false;
+  return {
+    record(atTip) { if (settled) return; streak = atTip ? streak + 1 : 0; if (streak >= cycles) settled = true; },
+    settled: () => settled
+  };
 }
 export function snapshotErrorCode(error) {
   if (typeof error?.code === "string" && SNAPSHOT_ERROR_CODES.has(error.code)) return error.code;
@@ -2081,11 +2098,19 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       }
     }));
   }
+  // First-build gate (history_settling): counts background refresh cycles
+  // that end with the history at the tip.
+  const historySettle = createHistorySettleTracker();
   const refreshHistory = createHistoryRefresher({
     snapshots: { building: () => snapshots?.building() ?? false },
     extend: async () => {
-      const { height: tip, tipHash } = await chainStatus();
-      if (tip > snapshotHistory.chain.height || historyNeedsRebuild) await extendHistory(historyReaders(), tip, tipHash);
+      try {
+        const { height: tip, tipHash } = await chainStatus();
+        if (tip > snapshotHistory.chain.height || historyNeedsRebuild) await extendHistory(historyReaders(), tip, tipHash);
+        const wasSettled = historySettle.settled();
+        historySettle.record(!historyNeedsRebuild && snapshotHistory.chain.height >= tip);
+        if (!wasSettled && historySettle.settled()) console.log(`snapshot: history settled at height ${snapshotHistory.chain.height}; first build may start`);
+      } catch (error) { historySettle.record(false); throw error; }
     }
   });
   // With the relay on, the history follows the tip every 5 s. Otherwise a
@@ -2103,9 +2128,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     const quorumOk = activeSetTracker.evaluate(statuses).ok;
     let tip; let tipHash;
     try { ({ height: tip, tipHash } = await chainStatus()); } catch { tip = undefined; }
-    const deferred = snapshotBuildReadiness({ quorumOk, tip, historyHeight: snapshotHistory.chain.height, historyRebuilding: historyNeedsRebuild });
+    const deferred = snapshotBuildReadiness({ quorumOk, tip, historyHeight: snapshotHistory.chain.height, historyRebuilding: historyNeedsRebuild, historySettled: historySettle.settled() });
     if (deferred) {
-      if (deferred === "history_catching_up") void refreshHistory();
+      if (deferred === "history_catching_up" || deferred === "history_settling") void refreshHistory();
       throw Object.assign(new Error(`snapshot build deferred (${deferred})`), { code: deferred });
     }
     await extendHistory(historyReaders(), tip, tipHash, { verifyFinal: false, signal });
