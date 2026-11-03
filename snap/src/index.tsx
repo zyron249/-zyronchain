@@ -239,7 +239,8 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
         assertSameAccount(account, signer);
         return signTransfer(unsigned, privateKey);
       });
-      await updateKnown((latest) => recordSent(latest, unsigned.receiver));
+      // Sign-only: the transaction may never be broadcast, so the receiver is
+      // not added to the sent-to history (it gets the first-time warning again).
       return { transaction } as unknown as Json;
     }
 
@@ -315,8 +316,12 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
         assertSameAccount(account, signer);
         return signTransfer(unsigned, privateKey);
       });
-      await updateKnown((latest) => recordSent(latest, unsigned.receiver));
       const txid = await withRpc(async () => submitTransfer(transaction));
+      // Record the receiver only after the gateway accepted the transfer. The
+      // transfer is already submitted, so a failed history write must not turn
+      // into an error (a retry could send twice); the receiver just stays
+      // unknown and gets the first-time warning next time.
+      await updateKnown((latest) => recordSent(latest, unsigned.receiver)).catch(() => undefined);
       return {
         network: 'testnet',
         chainId: status.chainId,

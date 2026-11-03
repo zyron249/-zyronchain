@@ -184,11 +184,16 @@ export const ThresholdConfirmation = ({ origin, thresholdAtoms }: { origin: stri
     <Row label="Requested by">
       <Text>{origin}</Text>
     </Row>
-    <Text>
-      {thresholdAtoms === null
-        ? 'Turn off the large-amount warning.'
-        : `Warn before signing a transfer of ${formatZyn(thresholdAtoms)} ZYN or more.`}
-    </Text>
+    {thresholdAtoms === null ? (
+      <Box>
+        <Text>
+          <Bold>Disable the large-amount warning.</Bold>
+        </Text>
+        <Text>This Snap will no longer warn you before signing a transfer of any size. Approve only if you asked for this.</Text>
+      </Box>
+    ) : (
+      <Text>{`Warn before signing a transfer of ${formatZyn(thresholdAtoms)} ZYN or more.`}</Text>
+    )}
     <Text>This setting stays in this Snap and is never sent anywhere.</Text>
   </Box>
 );

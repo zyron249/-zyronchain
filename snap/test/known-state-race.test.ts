@@ -72,16 +72,13 @@ beforeEach(() => {
 
 const call = async (method: string, params: unknown) =>
   (onRpcRequest as any)({ origin: 'https://zyronchain.com', request: { jsonrpc: '2.0', id: 1, method, params } });
-const transfer = (receiver: string) => ({
-  transaction: { kind: 'transfer', version: 2, chainId: 'zyron-snap-testnet-1', nonce: 1, receiver, amountAtoms: 5, feeAtoms: 100_000 },
-});
 
 describe('warning state is merged into the latest saved state (Codex P2 on #1149)', () => {
   it('a threshold saved while a transfer dialog is open survives that transfer', async () => {
     duringDialog = () => {
       stored = { known: { contacts: [], sent: [], thresholdAtoms: 150_000_000 } };
     };
-    await call('zyron_signTransaction', transfer(RECEIVER));
+    await call('zyron_sendTransfer', { receiver: RECEIVER, amountAtoms: 5 });
     expect(stored?.known.thresholdAtoms).toBe(150_000_000);
     expect(stored?.known.sent).toContain(RECEIVER);
   });
