@@ -43,11 +43,16 @@ async function writeAll(handle, buffer, position) {
 // only advances the in-RAM tip after the line is completely written.
 // Symlinks are refused (lstat on the directory, O_NOFOLLOW on the file), the
 // directory is forced to 0700 and the file to 0600.
-const WRITE_FLAGS = fsConstants.O_WRONLY | fsConstants.O_CREAT | (fsConstants.O_NOFOLLOW ?? 0);
+// O_NONBLOCK: a FIFO swapped in after the lstat check fails open() (ENXIO)
+// instead of blocking it; regular files are unaffected.
+const WRITE_FLAGS = fsConstants.O_WRONLY | fsConstants.O_CREAT | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
 // No O_TRUNC: truncation happens through the handle only after the nlink check
 // on that handle, so a link created between lstat and open never loses data.
 const RESUME_FLAGS = fsConstants.O_RDWR | (fsConstants.O_NOFOLLOW ?? 0);
-const READ_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+// O_NONBLOCK: a FIFO in place of the file must not block open() (the serial
+// prefix check and snapshot builds reopen the path under the history lock);
+// refuseHardLink then refuses anything but a regular file at once.
+const READ_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
 async function ensurePrivateDir(dir) {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const info = await lstat(dir);
@@ -58,7 +63,8 @@ async function ensurePrivateDir(dir) {
 // a link created between lstat and open is caught too).
 async function refuseHardLink(handle) {
   const info = await handle.stat();
-  if (!info.isFile() || info.nlink > 1) throw new HistoryFileError("history path is a hard link");
+  if (!info.isFile()) throw new HistoryFileError("history path is not a regular file");
+  if (info.nlink > 1) throw new HistoryFileError("history path is a hard link");
 }
 // `beforeOpen` is a test hook that runs between the lstat check and open().
 export async function openForWrite(path, { beforeOpen } = {}) {
@@ -81,9 +87,10 @@ export async function createHistoryFile(path, { chainId, genesisHash }) {
   const handle = await openForWrite(path);
   return historyFileApi(path, handle, { chainId, genesisHash, height: 0, tipHash: genesisHash, runningHash: historySeed(genesisHash), bytes: 0 });
 }
-function historyFileApi(path, initialHandle, { chainId, genesisHash, height: startHeight, tipHash: startTip, runningHash: startRunning, bytes: startBytes }) {
+function historyFileApi(path, initialHandle, { chainId, genesisHash, height: startHeight, tipHash: startTip, runningHash: startRunning, bytes: startBytes, lastLine: startLine }) {
   let handle = initialHandle;
-  const state = { height: startHeight, tipHash: startTip, runningHash: startRunning, bytes: startBytes, broken: undefined };
+  // lastLine: the newest line (one block), kept for the checkpoint (#1193).
+  const state = { height: startHeight, tipHash: startTip, runningHash: startRunning, bytes: startBytes, lastLine: startLine, broken: undefined };
   let queue = Promise.resolve();
   const serial = (task) => { const run = queue.then(task); queue = run.then(() => undefined, () => undefined); return run; };
   async function appendBlocks(blocks) {
@@ -99,7 +106,7 @@ function historyFileApi(path, initialHandle, { chainId, genesisHash, height: sta
     if (!lines.length) return;
     const buffer = Buffer.from(`${lines.join("\n")}\n`);
     try { await writeAll(handle, buffer, state.bytes); } catch (error) { state.broken = error instanceof Error ? error.message : String(error); throw error; }
-    state.height = height; state.tipHash = tipHash; state.runningHash = runningHash; state.bytes += buffer.length;
+    state.height = height; state.tipHash = tipHash; state.runningHash = runningHash; state.bytes += buffer.length; state.lastLine = lines[lines.length - 1];
   }
   return {
     path,
@@ -107,12 +114,15 @@ function historyFileApi(path, initialHandle, { chainId, genesisHash, height: sta
     appendMany: (blocks) => serial(() => appendBlocks(blocks)),
     height: () => state.height,
     tipHash: () => state.tipHash,
+    lastLine: () => state.lastLine,
+    // fsync (a checkpoint is renamed only after the history below it is durable).
+    sync: () => serial(() => handle.sync()),
     // What a reader needs to validate the file up to the current tip.
     view: () => ({ path, tip: state.height, tipHash: state.tipHash, runningHash: state.runningHash, chainId, genesisHash }),
     reset: () => serial(async () => {
       await handle.close().catch(() => {});
       handle = await openForWrite(path);
-      state.height = 0; state.tipHash = genesisHash; state.runningHash = historySeed(genesisHash); state.bytes = 0; state.broken = undefined;
+      state.height = 0; state.tipHash = genesisHash; state.runningHash = historySeed(genesisHash); state.bytes = 0; state.lastLine = undefined; state.broken = undefined;
     }),
     close: () => serial(() => handle.close().catch(() => {}))
   };
@@ -144,7 +154,7 @@ export async function resumeHistoryFile(path, { chainId, genesisHash, onBlock = 
   try {
     await refuseHardLink(handle);
     let height = 0; let previous = genesisHash; let running = historySeed(genesisHash);
-    let verifiedBytes = 0; let total = 0;
+    let verifiedBytes = 0; let total = 0; let lastLine;
     let carry = []; let carryBytes = 0;
     // Plain positional reads: a read stream would close the shared handle.
     const buffer = Buffer.allocUnsafe(256 * 1024);
@@ -168,7 +178,7 @@ export async function resumeHistoryFile(path, { chainId, genesisHash, onBlock = 
           if (JSON.stringify(block) !== line) throw new HistoryFileError(`line ${height + 1} is not canonical`);
           try { previous = verifySnapshotBlock(block, { height: height + 1, previous, chainId }); } catch (error) { throw new HistoryFileError(`line ${height + 1}: ${error instanceof Error ? error.message : String(error)}`); }
           try { await onBlock(block, height + 1); } catch (error) { throw new HistoryFileError(`line ${height + 1} refused (${error instanceof Error ? error.message : String(error)})`); }
-          height += 1; running = nextRunningHash(running, line);
+          height += 1; running = nextRunningHash(running, line); lastLine = line;
           verifiedBytes += bytes.length + 1;
         }
         total += chunk.length;
@@ -186,7 +196,7 @@ export async function resumeHistoryFile(path, { chainId, genesisHash, onBlock = 
     // Drop the torn tail (if any) so appends continue after the last line.
     await handle.truncate(verifiedBytes);
     await handle.chmod(0o600);
-    const file = historyFileApi(path, handle, { chainId, genesisHash, height, tipHash: previous, runningHash: running, bytes: verifiedBytes });
+    const file = historyFileApi(path, handle, { chainId, genesisHash, height, tipHash: previous, runningHash: running, bytes: verifiedBytes, lastLine });
     return { file, height, tipHash: previous, droppedBytes };
   } catch (error) {
     await handle.close().catch(() => {});
