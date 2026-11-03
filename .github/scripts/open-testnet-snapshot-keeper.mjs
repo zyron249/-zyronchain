@@ -348,6 +348,7 @@ async function listWithin(github, tag, { untilMs, now }) {
 //     height on BOTH reads (and the re-read has no matching block); otherwise
 //     (it caught up, the block exists with the published hash) "unconfirmed".
 export const CONFIRM_DELAY_MS = 45_000;
+export const UNCONFIRMED_STREAK = 3;
 export async function confirmLiveChain({ label, read, now, sleep, swapBy = Infinity, warn = () => {} }) {
   const first = await read();
   if (first?.hashAtPublished === undefined) return undefined;
@@ -396,7 +397,7 @@ export async function publishAsset({ github, tag, name, bytes, snapshot, expecte
   let release = await github.release(tag);
   let current = release.assets.find((asset) => asset.name === name) ?? null;
   const first = decidePublish({ snapshot, asset: current, expectedGenesis, requestStartedMs, nowMs: now(), ...(await decideLive(current)) });
-  if (!first.publish) return { published: false, upToDate: first.upToDate === true, reason: first.reason };
+  if (!first.publish) return { published: false, upToDate: first.upToDate === true, ...(first.unconfirmed ? { unconfirmed: true } : {}), reason: first.reason };
   if (now() > swapBy) return { published: false, reason: "run deadline reached before the upload; left for the next run" };
   // Low-2 (#1177): the counter never goes down, even when an unlabeled asset or
   // a label without a tip is replaced: the highest count on any copy of `name`
@@ -911,7 +912,7 @@ export async function publishCycle({ fetchImpl, github, gateway, tag, expectedGe
   }
   if (!main.published) log(`state.enc not replaced: ${main.reason}`);
   if (!copy.published) log(`${perGenesisName(snapshot.genesis)} not replaced: ${copy.reason}`);
-  return { height: snapshot.height, genesis: snapshot.genesis, sha256, size: bytes.length, published: main.published, upToDate: !main.published && main.upToDate === true, copyPublished: copy.published, reason: main.reason, ...(main.fork || copy.fork ? { fork: true, rollbackCounter: main.rollbackCounter ?? copy.rollbackCounter } : {}) };
+  return { height: snapshot.height, genesis: snapshot.genesis, sha256, size: bytes.length, published: main.published, upToDate: !main.published && main.upToDate === true, ...(main.unconfirmed ? { unconfirmed: true } : {}), copyPublished: copy.published, reason: main.reason, ...(main.fork || copy.fork ? { fork: true, rollbackCounter: main.rollbackCounter ?? copy.rollbackCounter } : {}) };
 }
 
 // `signal` (optional) aborts the request early, for example when the keeper stops.
@@ -937,7 +938,11 @@ export async function keepAlive({ fetchImpl, gateway, signal }) {
 // build are not missed.
 export async function runKeeper(options) {
   const { fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, runMs, publishIntervalMs, keepAliveIntervalMs, now, sleep, log, warn, error: reportError = warn, publish: runCycle = publishCycle, watchIntervalMs = null, watchMinGapMs = WATCH_MIN_GAP_MS, fetch: fetchOptions = {} } = options;
-  const stats = { cycles: 0, published: 0, notNewer: 0, refused: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null, authenticationFailures: 0, watchTriggers: 0, rollbacks: 0 };
+  const stats = { cycles: 0, published: 0, notNewer: 0, refused: 0, failures: 0, genesisMismatches: 0, lastPublishedHeight: null, lastHeight: null, authenticationFailures: 0, watchTriggers: 0, rollbacks: 0, unconfirmed: 0, unconfirmedAlarm: false };
+  // Low-1 (#1179 review): an unconfirmed rollback is not republished, but
+  // UNCONFIRMED_STREAK cycles in a row (or every cycle of the run) fail the run.
+  let unconfirmedStreak = 0;
+  let resultCycles = 0;
   const deadline = now() + runMs;
   // Aborted when the publish loop stops, so no pending wait (and no live timer)
   // outlives runKeeper.
@@ -998,6 +1003,11 @@ export async function runKeeper(options) {
       try {
         const result = await runCycle({ fetchImpl, github, gateway, tag, expectedGenesis, stateSecret, now, log, warn, sleep, swapBy: deadline, fetch: fetchOptions });
         stats.lastHeight = result.height;
+        resultCycles += 1;
+        if (result.unconfirmed) {
+          stats.unconfirmed += 1; unconfirmedStreak += 1;
+          if (unconfirmedStreak === UNCONFIRMED_STREAK) { stats.unconfirmedAlarm = true; reportError(`ROLLBACK UNCONFIRMED (repeated): ${unconfirmedStreak} cycles in a row could not confirm the published tip on the live chain (${result.reason}); nothing republished, the run will fail`); }
+        } else unconfirmedStreak = 0;
         if (result.published) { stats.published += 1; stats.lastPublishedHeight = result.height; log(`snapshot sha256 ${result.sha256} size ${result.size}`); }
         // Low-1 (#1177): a rollback is reported as an error and ends the run (it fails).
         if (result.fork) { stats.rollbacks += 1; reportError(`ROLLBACK DETECTED: the published snapshot was not on the live chain; republished the live chain at height ${result.height} (rollback counter ${result.rollbackCounter}). The run stops and fails so the rollback is seen; see docs/OPEN_TESTNET.md "Testnet rollback runbook".`); break; }
@@ -1012,6 +1022,10 @@ export async function runKeeper(options) {
     }
   };
   await Promise.all([keepAliveLoop(), publishLoop().finally(() => { publishStopped = true; markStopped(); stop.abort(); })]);
+  if (!stats.unconfirmedAlarm && resultCycles > 0 && stats.unconfirmed === resultCycles) {
+    stats.unconfirmedAlarm = true;
+    reportError(`ROLLBACK UNCONFIRMED (repeated): every cycle of this run (${resultCycles}) could not confirm the published tip on the live chain; nothing republished, the run fails`);
+  }
   return stats;
 }
 
@@ -1023,6 +1037,7 @@ export function exitCodeFor(stats) {
   if (stats.authenticationFailures > 0) return 1;
   // S2-1: a detected rollback (republished live chain) fails the run as an alert.
   if (stats.rollbacks > 0) return 1;
+  if (stats.unconfirmedAlarm) return 1;
   if (stats.published === 0 && stats.notNewer === 0) return 1;
   return 0;
 }
