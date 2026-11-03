@@ -52,3 +52,13 @@ test("live read on this host does not throw and is cached for the ttl", () => {
   const a = get(); assert.ok(a && "filesystems" in a && "cgroup" in a);
   t = 500; assert.equal(get(), a); t = 1000; assert.notEqual(get(), a);
 });
+
+test("the default ttl clock is monotonic (performance.now), not wall-clock time", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(join(l1Root, "scripts/open-testnet/host-diag.mjs"), "utf8");
+  assert.match(src, /createHostMemoryDiagnostics\([^)]*now = \(\) => performance\.now\(\)/);
+  const realNow = Date.now; let calls = 0;
+  Date.now = () => { calls += 1; return realNow(); };
+  try { const get = hd.createHostMemoryDiagnostics({ dataDir: process.cwd() }); get(); get(); } finally { Date.now = realNow; }
+  assert.equal(calls, 0, "a wall-clock jump cannot expire or freeze the cache");
+});

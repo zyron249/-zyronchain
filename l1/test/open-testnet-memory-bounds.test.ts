@@ -58,7 +58,8 @@ test("snapshot readiness gate: no quorum or a far-behind / rebuilding history de
   assert.equal(gate({ quorumOk: true, tip: undefined, historyHeight: 0 }), "node_not_ready");
   assert.equal(gate({ quorumOk: true, tip: 100, historyHeight: 100, historyRebuilding: true }), "history_catching_up");
   assert.equal(gate({ quorumOk: true, tip: 12_684 + 5_000, historyHeight: 12_684 }), "history_catching_up");
-  assert.equal(gate({ quorumOk: true, tip: 12_700, historyHeight: 12_684 }), undefined);
+  assert.equal(gate({ quorumOk: true, tip: 12_700, historyHeight: 12_684, historySettled: true }), undefined);
+  assert.equal(gate({ quorumOk: true, tip: 12_700, historyHeight: 12_684 }), "history_settling", "fail closed without the settle tracker");
 });
 
 test("first build after a restart: a not-ready node is retried at once, without backoff or the 900 s timeout", async () => {

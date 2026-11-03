@@ -45,7 +45,7 @@ export function hostMemoryDiagnostics({ dataDir, read = (path) => readFileSync(p
   };
 }
 // /health is polled; re-read at most once per `ttlMs`.
-export function createHostMemoryDiagnostics(options = {}, { ttlMs = 5_000, now = () => Date.now() } = {}) {
+export function createHostMemoryDiagnostics(options = {}, { ttlMs = 5_000, now = () => performance.now() } = {}) {
   let cached; let at = -Infinity;
   return () => {
     if (now() - at >= ttlMs) { try { cached = hostMemoryDiagnostics(options); } catch { cached = null; } at = now(); }

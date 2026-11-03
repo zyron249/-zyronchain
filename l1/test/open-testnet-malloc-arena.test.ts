@@ -37,3 +37,24 @@ test("re-exec in place: /proc/<pid>/environ of the same pid carries MALLOC_ARENA
   const kept = spawnSync(process.execPath, ["--input-type=module", "-e", probe], { env: { ...env, MALLOC_ARENA_MAX: "8" }, encoding: "utf8" });
   assert.deepEqual(JSON.parse(kept.stdout.trim()), { samePid: true, initial: ["MALLOC_ARENA_MAX=8"] });
 });
+
+// Security Info (#1196 vs #1188): in the "run" command, ensureGatewayMallocArena
+// must stay the first step, before the state secret is read (loadStateSecret
+// in #1188, or a direct read of the env var), so the secret is loaded once in
+// the re-executed process.
+test("run order: ensureGatewayMallocArena runs before any state-secret read", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(join(l1Root, "scripts/open-testnet.mjs"), "utf8");
+  const start = src.indexOf('} else if (command === "run") {');
+  assert.ok(start > 0, "run branch found");
+  const next = src.indexOf("} else if (command ===", start + 1);
+  const run = src.slice(start, next > 0 ? next : undefined).split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  const arena = run.indexOf("ensureGatewayMallocArena();");
+  assert.ok(arena > 0, "run calls ensureGatewayMallocArena");
+  const firstStep = run.slice(run.indexOf("{") + 1, arena).split("\n").filter((l) => l.trim());
+  assert.deepEqual(firstStep, [], "nothing runs before it in the run branch");
+  for (const marker of ["loadStateSecret(", "ZYRON_TESTNET_STATE_SECRET", "stateSecret"]) {
+    const at = run.indexOf(marker);
+    if (at >= 0) assert.ok(at > arena, `${marker} comes after ensureGatewayMallocArena`);
+  }
+});

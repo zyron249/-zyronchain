@@ -14,7 +14,7 @@ test("readiness gate: an unsettled history near the tip defers as history_settli
   const gate = api.snapshotBuildReadiness;
   assert.equal(gate({ quorumOk: true, tip: 100, historyHeight: 100, historySettled: false }), "history_settling");
   assert.equal(gate({ quorumOk: true, tip: 100, historyHeight: 100, historySettled: true }), undefined);
-  assert.equal(gate({ quorumOk: true, tip: 100, historyHeight: 100 }), undefined, "default: settled (callers without a tracker)");
+  assert.equal(gate({ quorumOk: true, tip: 100, historyHeight: 100 }), "history_settling", "default: NOT settled (fail closed when a caller forgets the tracker)");
   // Earlier reasons still win, so waitingFor names the real blocker.
   assert.equal(gate({ quorumOk: false, tip: 100, historyHeight: 100, historySettled: false }), "node_not_ready");
   assert.equal(gate({ quorumOk: true, tip: 100, historyHeight: 100, historyRebuilding: true, historySettled: false }), "history_catching_up");
@@ -30,6 +30,19 @@ test("settle tracker: two consecutive cycles at the tip, a miss restarts the cou
   t.record(false); t.record(true); assert.equal(t.settled(), false, "a behind cycle restarts the count");
   t.record(true); assert.equal(t.settled(), true);
   t.record(false); assert.equal(t.settled(), true, "latched");
+});
+
+test("settle tracker: a history that keeps flipping never settles (fail closed) and logs once per warnEvery unsettled cycles", () => {
+  const warnings: Array<{ cycles: number; flips: number }> = [];
+  const t = api.createHistorySettleTracker({ warnEvery: 10, onStuck: (w: { cycles: number; flips: number }) => warnings.push(w) });
+  for (let i = 0; i < 35; i += 1) t.record(i % 2 === 0);
+  assert.equal(t.settled(), false, "flipping never settles");
+  assert.deepEqual(warnings.map((w) => w.cycles), [10, 20, 30]);
+  assert.equal(warnings[0]?.flips, 9);
+  const throwing = api.createHistorySettleTracker({ warnEvery: 1, onStuck: () => { throw new Error("log failed"); } });
+  throwing.record(false); assert.equal(throwing.settled(), false);
+  throwing.record(true); throwing.record(true); assert.equal(throwing.settled(), true, "a throwing logger does not block settling");
+  assert.equal(api.HISTORY_SETTLE_WARN_CYCLES, 120);
 });
 
 test("first build is deferred during the rebuild, runs once the history settles, and /health says why", async () => {

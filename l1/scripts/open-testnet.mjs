@@ -1037,7 +1037,7 @@ export const SNAPSHOT_NOT_READY_RETRY_MS = 30_000;
 // the tip (see createHistorySettleTracker). The first build waits for that, so
 // it never overlaps the history rebuild (the post-restart memory peak); it is
 // deferred and retried, never skipped.
-export function snapshotBuildReadiness({ quorumOk, tip, historyHeight, historyRebuilding = false, historySettled = true, maxCatchup = SNAPSHOT_MAX_BUILD_CATCHUP }) {
+export function snapshotBuildReadiness({ quorumOk, tip, historyHeight, historyRebuilding = false, historySettled = false, maxCatchup = SNAPSHOT_MAX_BUILD_CATCHUP }) {
   if (!quorumOk || !Number.isSafeInteger(tip) || tip < 1) return "node_not_ready";
   if (historyRebuilding || !Number.isSafeInteger(historyHeight) || tip - historyHeight > maxCatchup) return "history_catching_up";
   if (!historySettled) return "history_settling";
@@ -1047,11 +1047,24 @@ export function snapshotBuildReadiness({ quorumOk, tip, historyHeight, historyRe
 // then one more cycle did too (consecutive). Latches: once settled, later
 // builds are not gated again (they only append a short delta). A failed or
 // behind cycle before settling restarts the count.
-export function createHistorySettleTracker({ cycles = 2 } = {}) {
-  let streak = 0; let settled = false;
+// Security Info on #1195: a history that keeps flipping between at-tip and
+// behind never settles. That stays fail closed (no build), but after every
+// `warnEvery` unsettled cycles `onStuck` is called once so the log shows it.
+export const HISTORY_SETTLE_WARN_CYCLES = 120;
+export function createHistorySettleTracker({ cycles = 2, warnEvery = HISTORY_SETTLE_WARN_CYCLES, onStuck = () => {} } = {}) {
+  let streak = 0; let settled = false; let unsettledCycles = 0; let flips = 0; let last;
   return {
-    record(atTip) { if (settled) return; streak = atTip ? streak + 1 : 0; if (streak >= cycles) settled = true; },
-    settled: () => settled
+    record(atTip) {
+      if (settled) return;
+      if (last !== undefined && last !== Boolean(atTip)) flips += 1;
+      last = Boolean(atTip);
+      streak = atTip ? streak + 1 : 0;
+      if (streak >= cycles) { settled = true; return; }
+      unsettledCycles += 1;
+      if (unsettledCycles % warnEvery === 0) { try { onStuck({ cycles: unsettledCycles, flips }); } catch { /* logging only */ } }
+    },
+    settled: () => settled,
+    stats: () => ({ unsettledCycles, flips })
   };
 }
 export function snapshotErrorCode(error) {
@@ -2032,7 +2045,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   }
   // First-build gate (history_settling): counts background refresh cycles
   // that end with the history at the tip.
-  const historySettle = createHistorySettleTracker();
+  const historySettle = createHistorySettleTracker({
+    onStuck: ({ cycles, flips }) => console.error(`snapshot: history not settled after ${cycles} refresh cycles (${flips} flips between at-tip and behind); first build still waits`)
+  });
   const refreshHistory = createHistoryRefresher({
     snapshots: { building: () => snapshots?.building() ?? false },
     extend: async () => {
@@ -2462,6 +2477,11 @@ if (!invokedDirectly) {
 } else if (command === "run") {
   // Before anything else (no port bound, no file opened): MALLOC_ARENA_MAX=2
   // for the gateway process itself, see open-testnet/malloc-arena.mjs.
+  // ORDER (Security Info, #1196 vs #1188): this must stay the first step of
+  // "run". The state secret (loadStateSecret in #1188) is read only AFTER it,
+  // in the re-executed process, so the secret is loaded once and the re-exec
+  // never runs with a secret already consumed. Guarded by
+  // open-testnet-malloc-arena.test.ts ("run order").
   ensureGatewayMallocArena();
   const dir = resolve(option("--dir"));
   const host = option("--host", "127.0.0.1");
