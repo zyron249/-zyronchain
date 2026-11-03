@@ -29,6 +29,7 @@ import { createFaucetNonceTracker } from "./faucet-nonce.mjs";
 import { FaucetFeeFloorError, MAX_FAUCET_FEE_ATOMS, faucetTransferFeeAtoms } from "./faucet-fee.mjs";
 import { submitAcceptedView } from "./submit-view.mjs";
 import { allocateValidatorBasePort } from "./open-testnet-ports.mjs";
+import { ensureGatewayMallocArena } from "./open-testnet/malloc-arena.mjs";
 import assert from "node:assert/strict";
 import { fork, spawn } from "node:child_process";
 import { createDecipheriv, createHash, randomBytes } from "node:crypto";
@@ -2447,6 +2448,9 @@ if (!invokedDirectly) {
   const result = await initNetwork(dir, option("--chain-id", DEFAULT_CHAIN_ID));
   console.log(JSON.stringify({ chainId: result.chainId, genesisHash: result.genesisHash, faucetAddress: result.faucetAddress, directory: dir }, null, 2));
 } else if (command === "run") {
+  // Before anything else (no port bound, no file opened): MALLOC_ARENA_MAX=2
+  // for the gateway process itself, see open-testnet/malloc-arena.mjs.
+  ensureGatewayMallocArena();
   const dir = resolve(option("--dir"));
   const host = option("--host", "127.0.0.1");
   // Bind the public port first: download/decrypt/replay of a large snapshot on
