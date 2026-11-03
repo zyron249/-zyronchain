@@ -37,7 +37,7 @@ import { Worker } from "node:worker_threads";
 import { SNAPSHOT_MAGIC, sealSnapshot, snapshotKey } from "./open-testnet/snapshot-seal.mjs";
 import { verifySnapshotBlocks } from "./open-testnet/snapshot-verify.mjs";
 import { HistoryFileError, createHistoryFile, readHistoryLines, resumeHistoryFile } from "./open-testnet/history-file.mjs";
-import { CHECKPOINT_FILE, CheckpointError, cleanStaleCheckpointTmp, discardCheckpoint, encodeCheckpoint, loadCheckpointChain, parseCheckpointOptions, readCheckpoint, resumeHistoryAtCheckpoint, checkChainSupply, writeCheckpoint } from "./open-testnet/checkpoint-file.mjs";
+import { CHECKPOINT_FILE, CheckpointError, cleanStaleCheckpointTmp, createPrefixVerifier, discardCheckpoint, encodeCheckpoint, loadCheckpointChain, parseCheckpointOptions, readCheckpoint, resumeHistoryAtCheckpoint, checkChainSupply, writeCheckpoint } from "./open-testnet/checkpoint-file.mjs";
 import { createServer } from "node:http";
 import { createReadStream, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
@@ -1865,7 +1865,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // the full rebuild from genesis.
   // Verified checkpoint (#1193, ZYRON_CHECKPOINT=1, default off): the boot
   // scan checks only that the checkpoint's history line is byte-equal to the
-  // file and its running hash matches; the blocks below it are not replayed.
+  // file and its running hash matches; after the live tip match the blocks
+  // below it get the full signature check (no state replay).
   // Nothing from the checkpoint is used until the live validators serve its
   // tip (extendHistory). If the scan does not confirm it, the checkpoint is
   // discarded and the normal resume below replays every line.
@@ -2011,13 +2012,18 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           chain = await loadCheckpointChain(genesis, record);
           // Blocks after the checkpoint: full finalized-block validation,
           // read again from the (re-verified) history file.
+          // Blocks at or below it: full signature check without the state
+          // replay (createPrefixVerifier); any bad signature rebuilds.
+          const prefix = createPrefixVerifier(chain, genesis, record);
           let height = 0;
           for await (const line of readHistoryLines(historyFile.view(), { signal })) {
             height += 1;
-            if (height <= record.height) continue;
+            if (height <= record.height) { prefix.check(JSON.parse(line)); if (height % 50 === 0) await yieldToEventLoop(); continue; }
+            if (height === record.height + 1) prefix.done();
             chain.acceptBlock(JSON.parse(line), Date.now());
             if (height % 20 === 0) await yieldToEventLoop();
           }
+          prefix.done();
           if (chain.height !== candidate.height || chain.tip.hash !== candidate.tipHash) throw new CheckpointError("replayed tail does not end at the file tip");
           checkChainSupply(chain, genesis);
         } catch (error) {

@@ -32,6 +32,7 @@ const { assertBoundedCheckpointJsonStructure } = await import(dist("checkpoint-j
 const { ZyronChain, protocolUsesStateV2 } = await import(dist("chain.js"));
 const { supplyReport } = await import(dist("supply-report.js"));
 const { spendableAtoms } = await import(dist("allocation-locks.js"));
+const { validateBlockEnvelope } = await import(dist("block.js"));
 const { historySeed, nextRunningHash, resumeHistoryFile } = await import("./history-file.mjs");
 
 export const CHECKPOINT_MAGIC = "zyron-gateway-checkpoint";
@@ -216,6 +217,35 @@ export async function loadCheckpointChain(genesis, record, { onStep } = {}) {
   if (!protocolUsesStateV2(chain.protocolVersionAt(chain.height))) fail("tip is not on state v2");
   checkChainSupply(chain, genesis);
   return chain;
+}
+
+// Prefix signature check (#1197 Security Low): the blocks at or below the
+// checkpoint are not replayed through the state transition, but each one
+// still gets the full finalized-block envelope check acceptBlock applies
+// (structure, hash link to the previous block, expected proposer, proposer
+// signature, round/finality certificates with the attestation signatures,
+// and every transaction signature) against the validator set and protocol
+// version the loaded checkpoint chain reports for that height. Those
+// schedules are bound by the state root, which the live tip match anchors,
+// so an attestation edited below the checkpoint (with the checkpoint
+// resealed) fails here and the caller rebuilds from genesis.
+// Call ONLY after loadCheckpointChain. Returns a checker fed one block at a
+// time in height order from 1 to record.height.
+export function createPrefixVerifier(chain, genesis, record, { nowMs = Date.now() } = {}) {
+  let previous = new ZyronChain(genesis).tip;
+  return {
+    check(block) {
+      const height = previous.header.height + 1;
+      if (height > record.height) fail("prefix check past the checkpoint height");
+      if (block?.header?.height !== height) fail(`prefix block ${height} out of order`);
+      try {
+        validateBlockEnvelope(block, previous, chain.validatorsAt(height), nowMs, true, chain.protocolVersionAt(height));
+      } catch (error) { fail(`prefix block ${height} rejected (${error instanceof Error ? error.message : String(error)})`); }
+      if (height === record.height && block.hash !== record.tipHash) fail("prefix does not end at the checkpoint tip");
+      previous = block;
+    },
+    done() { if (previous.header.height !== record.height) fail(`prefix ends at ${previous.header.height}, checkpoint at ${record.height}`); }
+  };
 }
 
 // Boot scan: resumes the history file (every line re-checked by

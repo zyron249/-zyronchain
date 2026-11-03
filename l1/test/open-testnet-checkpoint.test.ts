@@ -151,6 +151,18 @@ const e2eCases: Array<[string, () => Promise<void>, RegExp]> = [
     const r = record(); r.state.tip.attestations.splice(1);
     await writeFile(checkpointPath, encode(r));
   }, /rebuilding the history file \(checkpoint rejected/],
+  // Security Low on #1197: an attestation signature edited BELOW the
+  // checkpoint, history running hash recomputed and the checkpoint resealed.
+  // The boot scan accepts it; the prefix signature check must refuse it.
+  ["22 attestation signature edited below the checkpoint, checkpoint resealed", async () => {
+    const r = record(); const edited = [...lines]; const at = 50; const b = JSON.parse(edited[at - 1] as string);
+    assert.ok(b.attestations?.length, "block 50 carries attestations");
+    b.attestations[0].signature = "00".repeat(64); edited[at - 1] = JSON.stringify(b);
+    const hf = await mod("scripts/open-testnet/history-file.mjs");
+    let running = hf.historySeed(genesisHash); for (const line of edited.slice(0, r.height)) running = hf.nextRunningHash(running, line);
+    await writeFile(historyPath, `${edited.join("\n")}\n`);
+    await writeFile(checkpointPath, encode({ ...r, historyRunningHash: running }));
+  }, /rebuilding the history file \(checkpoint rejected .*prefix block 50 rejected/],
   ["16 validator schedule changed (schedules are bound by the state-v2 root)", async () => {
     const r = record(); const entry = r.state.validatorSchedule[0]; entry.validators = [...entry.validators].reverse(); await writeFile(checkpointPath, encode(r));
   }, /rebuilding the history file \(checkpoint rejected/]
@@ -225,6 +237,88 @@ test("19 live tip match (checkResumedTail rule): forked checkpoint or height abo
   assert.match(await api.checkResumedTail([...readers(live, 3), ...readers(forked, 1).map((x) => ({ ...x, name: "v4" }))], at, { tip, tipHash }), /validator v4/);
   const down = { name: "down", read: async () => { throw new Error("validator not running"); } };
   await assert.rejects(api.checkResumedTail([...readers(live, 2), down, down], at, { tip, tipHash }), /2 of 4 validators served/);
+});
+
+// Prefix signature check (unit): every block at or below the checkpoint gets
+// the full envelope check; one bad attestation, proposer or transaction
+// signature anywhere in the prefix is refused.
+test("22b prefix verifier: the untampered prefix passes; an edited attestation, proposer signature or reordered line below the checkpoint is refused", async () => {
+  const r = record(); const chain = await cp.loadCheckpointChain(genesis, r);
+  const run = (list: unknown[]) => { const v = cp.createPrefixVerifier(chain, genesis, r); for (const b of list) v.check(b); v.done(); };
+  run(blocks().slice(0, r.height));
+  const att = blocks().slice(0, r.height); att[49].attestations[0].signature = "00".repeat(64);
+  assert.throws(() => run(att), /prefix block 50 rejected/);
+  const late = blocks().slice(0, r.height); const i = r.height - 2; const sig = late[i].attestations[0].signature; late[i].attestations[0].signature = sig.slice(0, -2) + (sig.endsWith("00") ? "01" : "00");
+  assert.throws(() => run(late), new RegExp(`prefix block ${i + 1} rejected`));
+  const prop = blocks().slice(0, r.height); prop[9].signature = "11".repeat(64);
+  assert.throws(() => run(prop), /prefix block 10 rejected/);
+  const swapped = blocks().slice(0, r.height); [swapped[20], swapped[21]] = [swapped[21], swapped[20]];
+  assert.throws(() => run(swapped), /prefix block 21 out of order/);
+  assert.throws(() => run(blocks().slice(0, r.height - 1)), /prefix ends at/);
+});
+
+// A real validator_update in the replayed tail: a fifth validator is added
+// after the checkpoint (signed by the testnet's own validator keys), the tail
+// is replayed with acceptBlock across the activation, and a checkpoint taken
+// after the activation still verifies the whole prefix (old set below the
+// activation, new set above it) through the state-bound schedule.
+test("23 validator_update in the replayed tail: replay across the activation, then a later checkpoint verifies the prefix with both sets", { timeout: 600_000 }, async () => {
+  const { publicKeyFromPrivate, addressFromPublicKey } = await mod("dist/src/crypto.js");
+  const { createValidatorApproval, createValidatorSetUpdate } = await mod("dist/src/transaction.js");
+  const { expectedValidator } = await mod("dist/src/block.js");
+  const { isConsensusV6, signV6, votePayload, V6_COMMIT_VOTE_DOMAIN } = await mod("dist/src/consensus-v6.js");
+  const keyByPub = new Map<string, string>();
+  for (const name of await readdir(join(dir, "keys"))) {
+    const privateKey = JSON.parse(await readFile(join(dir, "keys", name), "utf8")).privateKey;
+    if (typeof privateKey === "string") keyByPub.set(publicKeyFromPrivate(privateKey), privateKey);
+  }
+  const fifthKey = randomBytes(32).toString("hex"); const fifthPub = publicKeyFromPrivate(fifthKey); keyByPub.set(fifthPub, fifthKey);
+  const r = record();
+  const producer = await cp.loadCheckpointChain(genesis, r);
+  const current = producer.validatorsAt(producer.height + 1);
+  for (const v of current) assert.ok(keyByPub.has(v.publicKey), "fixture holds every validator key");
+  const txVersion = producer.protocolVersionAt(producer.height + 1) >= 3 ? 2 : 1;
+  const sender = current[0];
+  const nonce = (producer.getState().snapshot().accounts.find((a: { address: string }) => a.address === sender.address)?.nonce ?? 0) + 1;
+  const activationHeight = producer.height + 1 + 100;
+  const input = { chainId, nonce, sender: sender.address, activationHeight, validators: [...current, { address: addressFromPublicKey(fifthPub), publicKey: fifthPub }] };
+  const approvals = current.map((v: { publicKey: string }) => createValidatorApproval(input, keyByPub.get(v.publicKey)!, v.publicKey, txVersion));
+  const tx = createValidatorSetUpdate({ ...input, approvals, timestampMs: producer.tip.header.timestampMs + 1 }, keyByPub.get(sender.publicKey)!, sender.publicKey, txVersion);
+  const tail: unknown[] = [];
+  const t0 = Math.max(producer.tip.header.timestampMs, Date.now() - 60_000);
+  const produce = (txs: unknown[]) => {
+    const height = producer.height + 1; const set = producer.validatorsAt(height);
+    const at = t0 + (height - r.height) * 20;
+    let block = producer.produceBlock(txs, keyByPub.get(expectedValidator(set, height, 0).publicKey)!, { timestampMs: at });
+    if (isConsensusV6(block.header.version)) {
+      // v6 finality: commit-domain votes for round 0, as the live validators sign them.
+      block = { ...block, commitRound: 0, attestations: set.map((v: { address: string; publicKey: string }) => ({ validator: v.address, publicKey: v.publicKey, signature: signV6(V6_COMMIT_VOTE_DOMAIN, votePayload(chainId, height, 0, block.hash), keyByPub.get(v.publicKey)!) })) };
+    } else for (const v of set) block = producer.attestBlock(block, keyByPub.get(v.publicKey)!);
+    producer.acceptBlock(block, at); tail.push(block);
+  };
+  produce([tx]);
+  while (producer.height < activationHeight + 3) produce([]);
+  assert.equal(producer.validatorsAt(producer.height).length, current.length + 1, "the update activated");
+
+  // Restart path: load the checkpoint, prefix check, acceptBlock replay of the tail.
+  const chain = await cp.loadCheckpointChain(genesis, r);
+  const v = cp.createPrefixVerifier(chain, genesis, r); for (const b of blocks().slice(0, r.height)) v.check(b); v.done();
+  for (const b of tail) chain.acceptBlock(structuredClone(b), Date.now());
+  assert.equal(chain.tip.hash, producer.tip.hash);
+  assert.equal(chain.validatorsAt(chain.height).length, current.length + 1);
+  cp.checkChainSupply(chain, genesis);
+
+  // A checkpoint after the activation: its schedule verifies the old prefix and the new-set blocks.
+  const all = [...blocks().slice(0, r.height), ...tail] as any[];
+  let running = (await mod("scripts/open-testnet/history-file.mjs")).historySeed(genesisHash);
+  const hf = await mod("scripts/open-testnet/history-file.mjs");
+  for (const b of all) running = hf.nextRunningHash(running, JSON.stringify(b));
+  const later = cp.decodeCheckpoint(encode({ chainId, genesisHash, height: chain.height, tipHash: chain.tip.hash, historyRunningHash: running, historyLine: JSON.stringify(all.at(-1)), state: chain.snapshot() }), ids());
+  const loaded = await cp.loadCheckpointChain(genesis, later);
+  const run = (list: unknown[]) => { const w = cp.createPrefixVerifier(loaded, genesis, later); for (const b of list) w.check(b); w.done(); };
+  run(all);
+  const forged = structuredClone(all); forged.at(-2).attestations[0].signature = "00".repeat(64);
+  assert.throws(() => run(forged), new RegExp(`prefix block ${later.height - 1} rejected`));
 });
 
 test("20 load checks: a tip before state v2 is refused; supply must reconcile with genesis and burns; the loader never seeds the active set", async () => {
