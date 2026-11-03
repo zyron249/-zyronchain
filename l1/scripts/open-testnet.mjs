@@ -29,6 +29,8 @@ import { createFaucetNonceTracker } from "./faucet-nonce.mjs";
 import { FaucetFeeFloorError, MAX_FAUCET_FEE_ATOMS, faucetTransferFeeAtoms } from "./faucet-fee.mjs";
 import { submitAcceptedView } from "./submit-view.mjs";
 import { allocateValidatorBasePort } from "./open-testnet-ports.mjs";
+import { ensureGatewayMallocArena } from "./open-testnet/malloc-arena.mjs";
+import { createHostMemoryDiagnostics } from "./open-testnet/host-diag.mjs";
 import assert from "node:assert/strict";
 import { fork, spawn } from "node:child_process";
 import { createDecipheriv, createHash, randomBytes } from "node:crypto";
@@ -666,6 +668,15 @@ export async function listenGateway(server, port, host) {
   });
   return server.address().port;
 }
+// Gateway process start time and uptime for GET /health (booting and ready).
+// Render restarts the container on an out-of-memory kill, which the validator
+// restart counters never see (the gateway itself restarts with them); a watch
+// detects it as a new startedAt or an uptimeSec that went down. uptimeSec uses
+// the monotonic process.uptime(); startedAt is fixed once at module load.
+export const GATEWAY_STARTED_AT_MS = Date.now() - Math.round(process.uptime() * 1000);
+export function gatewayProcessInfo({ startedAtMs = GATEWAY_STARTED_AT_MS, uptimeS = process.uptime() } = {}) {
+  return { startedAt: new Date(startedAtMs).toISOString(), uptimeSec: Math.max(0, Math.floor(uptimeS)) };
+}
 // Startup progress shared by the boot handler and the phase timing log.
 export function createBootState(log = true) {
   const startedAtMs = Date.now();
@@ -688,7 +699,7 @@ export function createBootHandler(boot, { stallMs = BOOT_STALL_MS } = {}) {
     const now = Date.now();
     const sinceProgressMs = now - boot.lastProgressAtMs;
     const stalled = sinceProgressMs > stallMs;
-    const body = { ok: false, status: stalled ? "stalled" : "starting", phase: boot.phase, network: "testnet", valueBearing: false, startedAtMs: boot.startedAtMs, elapsedMs: now - boot.startedAtMs, sinceProgressMs };
+    const body = { ok: false, status: stalled ? "stalled" : "starting", phase: boot.phase, network: "testnet", valueBearing: false, gateway: gatewayProcessInfo(), startedAtMs: boot.startedAtMs, elapsedMs: now - boot.startedAtMs, sinceProgressMs };
     // Liveness: the process is up and start-up is making progress, so the
     // platform health check passes. A stalled start-up answers 503 so the host
     // restarts it. Readiness and every RPC endpoint wait for the validators.
@@ -1010,10 +1021,10 @@ export const SNAPSHOT_WORKER_RESOURCE_LIMITS = Object.freeze({
 // detailed (sanitised) message only goes to the logs.
 // Low-2 (Security on #1162): only codes from this allowlist reach /health;
 // anything else (including Node system error codes) is build_failed.
-export const SNAPSHOT_ERROR_CODES = new Set(["build_timeout", "aborted", "busy", "worker_crashed", "worker_out_of_memory", "history_unavailable", "history_invalid", "history_file_corrupt", "build_failed", "node_not_ready", "history_catching_up"]);
+export const SNAPSHOT_ERROR_CODES = new Set(["build_timeout", "aborted", "busy", "worker_crashed", "worker_out_of_memory", "history_unavailable", "history_invalid", "history_file_corrupt", "build_failed", "node_not_ready", "history_catching_up", "history_settling"]);
 // Not failures: the build waits for the node or the history to be ready and
 // is retried on the next tick, without backoff and without the 900 s timeout.
-export const SNAPSHOT_DEFERRED_CODES = new Set(["busy", "node_not_ready", "history_catching_up"]);
+export const SNAPSHOT_DEFERRED_CODES = new Set(["busy", "node_not_ready", "history_catching_up", "history_settling"]);
 // Above this many blocks behind the tip the build does not catch the history
 // up itself (inside its timeout); the background refresher does.
 export const SNAPSHOT_MAX_BUILD_CATCHUP = 2_000;
@@ -1021,10 +1032,40 @@ export const SNAPSHOT_MAX_BUILD_CATCHUP = 2_000;
 // end of its in-flight window (#1165 Low-1).
 export const SNAPSHOT_NOT_READY_RETRY_MS = 30_000;
 // Gate for a snapshot build: undefined when it may start, else a deferred code.
-export function snapshotBuildReadiness({ quorumOk, tip, historyHeight, historyRebuilding = false, maxCatchup = SNAPSHOT_MAX_BUILD_CATCHUP }) {
+// history_settling: the history is close to the tip but the background
+// refresher has not yet finished its rebuild/catch-up and one more cycle at
+// the tip (see createHistorySettleTracker). The first build waits for that, so
+// it never overlaps the history rebuild (the post-restart memory peak); it is
+// deferred and retried, never skipped.
+export function snapshotBuildReadiness({ quorumOk, tip, historyHeight, historyRebuilding = false, historySettled = false, maxCatchup = SNAPSHOT_MAX_BUILD_CATCHUP }) {
   if (!quorumOk || !Number.isSafeInteger(tip) || tip < 1) return "node_not_ready";
   if (historyRebuilding || !Number.isSafeInteger(historyHeight) || tip - historyHeight > maxCatchup) return "history_catching_up";
+  if (!historySettled) return "history_settling";
   return undefined;
+}
+// Settled = a background refresh cycle ended with the history at the live tip,
+// then one more cycle did too (consecutive). Latches: once settled, later
+// builds are not gated again (they only append a short delta). A failed or
+// behind cycle before settling restarts the count.
+// Security Info on #1195: a history that keeps flipping between at-tip and
+// behind never settles. That stays fail closed (no build), but after every
+// `warnEvery` unsettled cycles `onStuck` is called once so the log shows it.
+export const HISTORY_SETTLE_WARN_CYCLES = 120;
+export function createHistorySettleTracker({ cycles = 2, warnEvery = HISTORY_SETTLE_WARN_CYCLES, onStuck = () => {} } = {}) {
+  let streak = 0; let settled = false; let unsettledCycles = 0; let flips = 0; let last;
+  return {
+    record(atTip) {
+      if (settled) return;
+      if (last !== undefined && last !== Boolean(atTip)) flips += 1;
+      last = Boolean(atTip);
+      streak = atTip ? streak + 1 : 0;
+      if (streak >= cycles) { settled = true; return; }
+      unsettledCycles += 1;
+      if (unsettledCycles % warnEvery === 0) { try { onStuck({ cycles: unsettledCycles, flips }); } catch { /* logging only */ } }
+    },
+    settled: () => settled,
+    stats: () => ({ unsettledCycles, flips })
+  };
 }
 export function snapshotErrorCode(error) {
   if (typeof error?.code === "string" && SNAPSHOT_ERROR_CODES.has(error.code)) return error.code;
@@ -2080,11 +2121,21 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       }
     }));
   }
+  // First-build gate (history_settling): counts background refresh cycles
+  // that end with the history at the tip.
+  const historySettle = createHistorySettleTracker({
+    onStuck: ({ cycles, flips }) => console.error(`snapshot: history not settled after ${cycles} refresh cycles (${flips} flips between at-tip and behind); first build still waits`)
+  });
   const refreshHistory = createHistoryRefresher({
     snapshots: { building: () => snapshots?.building() ?? false },
     extend: async () => {
-      const { height: tip, tipHash } = await chainStatus();
-      if (tip > snapshotHistory.chain.height || historyNeedsRebuild) await extendHistory(historyReaders(), tip, tipHash);
+      try {
+        const { height: tip, tipHash } = await chainStatus();
+        if (tip > snapshotHistory.chain.height || historyNeedsRebuild) await extendHistory(historyReaders(), tip, tipHash);
+        const wasSettled = historySettle.settled();
+        historySettle.record(!historyNeedsRebuild && snapshotHistory.chain.height >= tip);
+        if (!wasSettled && historySettle.settled()) console.log(`snapshot: history settled at height ${snapshotHistory.chain.height}; first build may start`);
+      } catch (error) { historySettle.record(false); throw error; }
     }
   });
   // With the relay on, the history follows the tip every 5 s. Otherwise a
@@ -2102,9 +2153,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     const quorumOk = activeSetTracker.evaluate(statuses).ok;
     let tip; let tipHash;
     try { ({ height: tip, tipHash } = await chainStatus()); } catch { tip = undefined; }
-    const deferred = snapshotBuildReadiness({ quorumOk, tip, historyHeight: snapshotHistory.chain.height, historyRebuilding: historyNeedsRebuild });
+    const deferred = snapshotBuildReadiness({ quorumOk, tip, historyHeight: snapshotHistory.chain.height, historyRebuilding: historyNeedsRebuild, historySettled: historySettle.settled() });
     if (deferred) {
-      if (deferred === "history_catching_up") void refreshHistory();
+      if (deferred === "history_catching_up" || deferred === "history_settling") void refreshHistory();
       throw Object.assign(new Error(`snapshot build deferred (${deferred})`), { code: deferred });
     }
     await extendHistory(historyReaders(), tip, tipHash, { verifyFinal: false, signal });
@@ -2137,6 +2188,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     const gateway = gatewayMemory();
     return memoryReport({ gateway, validators, snapshotChild, gatewayResident: self?.[metric.key], totalRssMetric: metric.label, vmRss: { gateway: self?.vmRss ?? gateway.rss, validators: validatorsVmRss } });
   }
+  // Read-only: /tmp and data-dir filesystem types, cgroup memory (GET /health).
+  const hostDiagnostics = createHostMemoryDiagnostics({ dataDir: dir });
   const memoryTimer = setInterval(() => { if (log) console.log(formatMemoryLine(currentMemory())); }, Number(process.env.ZYRON_MEMORY_LOG_INTERVAL_MS) || MEMORY_LOG_INTERVAL_MS); memoryTimer.unref();
   // Background builds (see createSnapshotCache); the route never builds inline.
   const snapshots = stateSecret ? createSnapshotCache({
@@ -2271,7 +2324,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           // always strict.
           if (!ok && !everReady) startup.observe(await startupFingerprint(statuses));
           const { code, status, starting, progress } = startup.liveness({ ok, everReady, path });
-          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, commit: buildCommit(), persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), ...(snapshots ? { snapshotCache: snapshots.status() } : {}), memory: memoryReportMb(currentMemory()), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
+          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, commit: buildCommit(), gateway: gatewayProcessInfo(), persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), ...(snapshots ? { snapshotCache: snapshots.status() } : {}), memory: memoryReportMb(currentMemory()), diagnostics: hostDiagnostics(), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
@@ -2502,6 +2555,14 @@ if (!invokedDirectly) {
   const result = await initNetwork(dir, option("--chain-id", DEFAULT_CHAIN_ID));
   console.log(JSON.stringify({ chainId: result.chainId, genesisHash: result.genesisHash, faucetAddress: result.faucetAddress, directory: dir }, null, 2));
 } else if (command === "run") {
+  // Before anything else (no port bound, no file opened): MALLOC_ARENA_MAX=2
+  // for the gateway process itself, see open-testnet/malloc-arena.mjs.
+  // ORDER (Security Info, #1196 vs #1188): this must stay the first step of
+  // "run". The state secret (loadStateSecret in #1188) is read only AFTER it,
+  // in the re-executed process, so the secret is loaded once and the re-exec
+  // never runs with a secret already consumed. Guarded by
+  // open-testnet-malloc-arena.test.ts ("run order").
+  ensureGatewayMallocArena();
   const dir = resolve(option("--dir"));
   const host = option("--host", "127.0.0.1");
   // Bind the public port first: download/decrypt/replay of a large snapshot on

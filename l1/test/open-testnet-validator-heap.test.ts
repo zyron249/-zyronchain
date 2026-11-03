@@ -80,6 +80,14 @@ test("/health validator entries carry restarts and the last exit, labelled oom f
   assert.equal(out[2].restarts, 0); assert.equal(out[2].lastExitReason, null);
 });
 
+test("gatewayProcessInfo reports a fixed start time and a whole-second uptime", () => {
+  assert.deepEqual(api.gatewayProcessInfo({ startedAtMs: Date.UTC(2026, 10, 2, 21, 9, 0), uptimeS: 125.9 }), { startedAt: "2026-11-02T21:09:00.000Z", uptimeSec: 125 });
+  assert.equal(api.gatewayProcessInfo({ startedAtMs: 0, uptimeS: -1 }).uptimeSec, 0);
+  const live = api.gatewayProcessInfo();
+  assert.equal(live.startedAt, new Date(api.GATEWAY_STARTED_AT_MS).toISOString());
+  assert.ok(Math.abs(api.GATEWAY_STARTED_AT_MS - (Date.now() - process.uptime() * 1000)) < 5_000);
+});
+
 test("maxOldSpaceMb is the cap actually passed, or null when off", () => {
   assert.equal(api.maxOldSpaceMbFromFlags(api.validatorNodeFlags({})), 96);
   assert.equal(api.maxOldSpaceMbFromFlags(api.validatorNodeFlags({ ZYRON_VALIDATOR_MAX_OLD_MB: "128" })), 128);

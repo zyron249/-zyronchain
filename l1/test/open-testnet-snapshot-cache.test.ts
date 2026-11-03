@@ -471,7 +471,7 @@ test("relay off: restore far behind plus a history read error recovers and build
   let refreshHistory: any;
   const cache = api.createSnapshotCache({
     build: async () => {
-      const deferredCode = api.snapshotBuildReadiness({ quorumOk: true, tip, historyHeight });
+      const deferredCode = api.snapshotBuildReadiness({ quorumOk: true, tip, historyHeight, historySettled: true });
       if (deferredCode) {
         if (deferredCode === "history_catching_up") void refreshHistory();
         throw Object.assign(new Error(`snapshot build deferred (${deferredCode})`), { code: deferredCode });
