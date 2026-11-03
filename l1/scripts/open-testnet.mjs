@@ -667,6 +667,15 @@ export async function listenGateway(server, port, host) {
   });
   return server.address().port;
 }
+// Gateway process start time and uptime for GET /health (booting and ready).
+// Render restarts the container on an out-of-memory kill, which the validator
+// restart counters never see (the gateway itself restarts with them); a watch
+// detects it as a new startedAt or an uptimeSec that went down. uptimeSec uses
+// the monotonic process.uptime(); startedAt is fixed once at module load.
+export const GATEWAY_STARTED_AT_MS = Date.now() - Math.round(process.uptime() * 1000);
+export function gatewayProcessInfo({ startedAtMs = GATEWAY_STARTED_AT_MS, uptimeS = process.uptime() } = {}) {
+  return { startedAt: new Date(startedAtMs).toISOString(), uptimeSec: Math.max(0, Math.floor(uptimeS)) };
+}
 // Startup progress shared by the boot handler and the phase timing log.
 export function createBootState(log = true) {
   const startedAtMs = Date.now();
@@ -689,7 +698,7 @@ export function createBootHandler(boot, { stallMs = BOOT_STALL_MS } = {}) {
     const now = Date.now();
     const sinceProgressMs = now - boot.lastProgressAtMs;
     const stalled = sinceProgressMs > stallMs;
-    const body = { ok: false, status: stalled ? "stalled" : "starting", phase: boot.phase, network: "testnet", valueBearing: false, startedAtMs: boot.startedAtMs, elapsedMs: now - boot.startedAtMs, sinceProgressMs };
+    const body = { ok: false, status: stalled ? "stalled" : "starting", phase: boot.phase, network: "testnet", valueBearing: false, gateway: gatewayProcessInfo(), startedAtMs: boot.startedAtMs, elapsedMs: now - boot.startedAtMs, sinceProgressMs };
     // Liveness: the process is up and start-up is making progress, so the
     // platform health check passes. A stalled start-up answers 503 so the host
     // restarts it. Readiness and every RPC endpoint wait for the validators.
@@ -2297,7 +2306,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           // always strict.
           if (!ok && !everReady) startup.observe(await startupFingerprint(statuses));
           const { code, status, starting, progress } = startup.liveness({ ok, everReady, path });
-          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, commit: buildCommit(), persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), ...(snapshots ? { snapshotCache: snapshots.status() } : {}), memory: memoryReportMb(currentMemory()), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
+          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, commit: buildCommit(), gateway: gatewayProcessInfo(), persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), ...(snapshots ? { snapshotCache: snapshots.status() } : {}), memory: memoryReportMb(currentMemory()), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
