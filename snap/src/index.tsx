@@ -12,6 +12,7 @@ import {
   ALLOWED_ORIGINS,
   DERIVATION_PATH_STRING,
   FIXED_TRANSFER_FEE_ATOMS,
+  MAX_SUPPLY_ATOMS,
   MESSAGE_SIGNING_DOMAIN,
   RPC_METHODS,
 } from './constants';
@@ -19,7 +20,10 @@ import type { Account } from './keys';
 import { getAccount, withAccountKey } from './keys';
 import { RpcError, TESTNET_RPC_URL, getAccountState, getStatus, submitTransfer } from './rpc';
 import { fixedFeeRejection, type FeeGuardInput } from './fee-guard';
-import { FeeRejectedWarning, MessageConfirmation, TransferConfirmation } from './ui';
+import { FeeRejectedWarning, MessageConfirmation, ThresholdConfirmation, TransferConfirmation } from './ui';
+import { loadKnown, updateKnown } from './known-state';
+import type { KnownAddresses, SendWarning } from './send-warnings';
+import { recordSent, sendWarnings, setThreshold } from './send-warnings';
 import { parseMessageRequest, signMessagePayload } from './zyron/message';
 import {
   TransactionRequestError,
@@ -98,6 +102,48 @@ async function confirmOrReject(content: JSXElement): Promise<void> {
   if (approved !== true) {
     throw new UserRejectedRequestError();
   }
+}
+
+/**
+ * Runs the local send-safety checks. A self-send is refused before any dialog;
+ * every other warning is shown in the confirmation (acknowledge-only).
+ *
+ * @param tx - Validated unsigned transfer.
+ * @param tx.receiver - Receiver.
+ * @param tx.amountAtoms - Amount.
+ * @param account - Snap account.
+ * @returns Advisory warnings and the loaded known addresses.
+ */
+async function checkSendWarnings(
+  tx: { receiver: string; amountAtoms: number },
+  account: Account,
+): Promise<{ warnings: SendWarning[]; known: KnownAddresses }> {
+  const known = await loadKnown();
+  const warnings = sendWarnings({ receiver: tx.receiver, amountAtoms: tx.amountAtoms }, account, known);
+  const blocking = warnings.find((warning) => warning.blocking);
+  if (blocking) {
+    throw new InvalidParamsError(blocking.message);
+  }
+  return { warnings, known };
+}
+
+/**
+ * `zyron_setWarningThreshold` params: exactly { thresholdAtoms } (integer atoms or null).
+ *
+ * @param params - Untrusted params.
+ * @returns Threshold or null.
+ */
+function parseThresholdRequest(params: unknown): number | null {
+  assertPlainRecord(params, 'params');
+  const keys = Object.keys(params);
+  if (keys.length !== 1 || keys[0] !== 'thresholdAtoms') {
+    throw new TransactionRequestError('zyron_setWarningThreshold params must be exactly { thresholdAtoms }');
+  }
+  const value = params.thresholdAtoms;
+  if (value !== null && !(typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= MAX_SUPPLY_ATOMS)) {
+    throw new TransactionRequestError(`Invalid thresholdAtoms: must be null or an integer number of atoms between 1 and ${MAX_SUPPLY_ATOMS}`);
+  }
+  return value;
 }
 
 /**
@@ -187,12 +233,14 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
         parseTransferRequest(params.transaction, account, Date.now()),
       );
       await blockRejectedFee({ chainId: unsigned.chainId, feeAtoms: unsigned.feeAtoms });
-      await confirmOrReject(<TransferConfirmation origin={origin} tx={unsigned} />);
-      return withAccountKey((privateKey, signer) => {
+      const checks = await checkSendWarnings(unsigned, account);
+      await confirmOrReject(<TransferConfirmation origin={origin} tx={unsigned} warnings={checks.warnings} />);
+      const transaction = await withAccountKey((privateKey, signer) => {
         assertSameAccount(account, signer);
-        const transaction = signTransfer(unsigned, privateKey);
-        return { transaction } as unknown as Json;
+        return signTransfer(unsigned, privateKey);
       });
+      await updateKnown((latest) => recordSent(latest, unsigned.receiver));
+      return { transaction } as unknown as Json;
     }
 
     case RPC_METHODS.signMessage: {
@@ -253,18 +301,21 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
         throw new InvalidParamsError('Insufficient testnet balance for amount plus fee');
       }
       await blockRejectedFee({ chainId: unsigned.chainId, feeAtoms: unsigned.feeAtoms });
+      const checks = await checkSendWarnings(unsigned, account);
       await confirmOrReject(
         <TransferConfirmation
           origin={origin}
           tx={unsigned}
           submitTo={TESTNET_RPC_URL}
           balanceAtoms={state.balanceAtoms}
+          warnings={checks.warnings}
         />,
       );
       const transaction = await withAccountKey((privateKey, signer) => {
         assertSameAccount(account, signer);
         return signTransfer(unsigned, privateKey);
       });
+      await updateKnown((latest) => recordSent(latest, unsigned.receiver));
       const txid = await withRpc(async () => submitTransfer(transaction));
       return {
         network: 'testnet',
@@ -272,6 +323,15 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
         txid,
         transaction,
       } as unknown as Json;
+    }
+
+    case RPC_METHODS.setWarningThreshold: {
+      const thresholdAtoms = validated(() => parseThresholdRequest(request.params));
+      // Unreadable saved data fails closed before the dialog; the write below re-reads the latest data.
+      await loadKnown();
+      await confirmOrReject(<ThresholdConfirmation origin={origin} thresholdAtoms={thresholdAtoms} />);
+      await updateKnown((latest) => setThreshold(latest, thresholdAtoms));
+      return { thresholdAtoms };
     }
 
     default:
