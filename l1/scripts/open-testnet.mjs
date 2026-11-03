@@ -37,6 +37,7 @@ import { Worker } from "node:worker_threads";
 import { SNAPSHOT_MAGIC, sealSnapshot, snapshotKey } from "./open-testnet/snapshot-seal.mjs";
 import { verifySnapshotBlocks } from "./open-testnet/snapshot-verify.mjs";
 import { HistoryFileError, createHistoryFile, readHistoryLines, resumeHistoryFile } from "./open-testnet/history-file.mjs";
+import { checkPrefixResult, startPrefixWorker } from "./open-testnet/checkpoint-prefix.mjs";
 import { CHECKPOINT_FILE, CheckpointError, cleanStaleCheckpointTmp, createPrefixVerifier, discardCheckpoint, encodeCheckpoint, loadCheckpointChain, parseCheckpointOptions, readCheckpoint, resumeHistoryAtCheckpoint, checkChainSupply, writeCheckpoint } from "./open-testnet/checkpoint-file.mjs";
 import { createServer } from "node:http";
 import { createReadStream, realpathSync } from "node:fs";
@@ -926,10 +927,10 @@ export const SNAPSHOT_WORKER_RESOURCE_LIMITS = Object.freeze({
 // detailed (sanitised) message only goes to the logs.
 // Low-2 (Security on #1162): only codes from this allowlist reach /health;
 // anything else (including Node system error codes) is build_failed.
-export const SNAPSHOT_ERROR_CODES = new Set(["build_timeout", "aborted", "busy", "worker_crashed", "worker_out_of_memory", "history_unavailable", "history_invalid", "history_file_corrupt", "build_failed", "node_not_ready", "history_catching_up"]);
+export const SNAPSHOT_ERROR_CODES = new Set(["build_timeout", "aborted", "busy", "worker_crashed", "worker_out_of_memory", "history_unavailable", "history_invalid", "history_file_corrupt", "build_failed", "node_not_ready", "history_catching_up", "checkpoint_verifying"]);
 // Not failures: the build waits for the node or the history to be ready and
 // is retried on the next tick, without backoff and without the 900 s timeout.
-export const SNAPSHOT_DEFERRED_CODES = new Set(["busy", "node_not_ready", "history_catching_up"]);
+export const SNAPSHOT_DEFERRED_CODES = new Set(["busy", "node_not_ready", "history_catching_up", "checkpoint_verifying"]);
 // Above this many blocks behind the tip the build does not catch the history
 // up itself (inside its timeout); the background refresher does.
 export const SNAPSHOT_MAX_BUILD_CATCHUP = 2_000;
@@ -937,10 +938,17 @@ export const SNAPSHOT_MAX_BUILD_CATCHUP = 2_000;
 // end of its in-flight window (#1165 Low-1).
 export const SNAPSHOT_NOT_READY_RETRY_MS = 30_000;
 // Gate for a snapshot build: undefined when it may start, else a deferred code.
-export function snapshotBuildReadiness({ quorumOk, tip, historyHeight, historyRebuilding = false, maxCatchup = SNAPSHOT_MAX_BUILD_CATCHUP }) {
+export function snapshotBuildReadiness({ quorumOk, tip, historyHeight, historyRebuilding = false, checkpointVerifying = false, maxCatchup = SNAPSHOT_MAX_BUILD_CATCHUP }) {
+  // The boot prefix worker must never overlap a snapshot build (#1197).
+  if (checkpointVerifying) return "checkpoint_verifying";
   if (!quorumOk || !Number.isSafeInteger(tip) || tip < 1) return "node_not_ready";
   if (historyRebuilding || !Number.isSafeInteger(historyHeight) || tip - historyHeight > maxCatchup) return "history_catching_up";
   return undefined;
+}
+// Gate for the boot prefix worker (#1197): never alongside the history
+// rebuild or a snapshot build (in-process or child), one worker per boot.
+export function prefixWorkerMayStart({ started, haveCandidate, shuttingDown, historyRebuilding, building }) {
+  return !started && haveCandidate && !shuttingDown && !historyRebuilding && !building;
 }
 export function snapshotErrorCode(error) {
   if (typeof error?.code === "string" && SNAPSHOT_ERROR_CODES.has(error.code)) return error.code;
@@ -1872,6 +1880,27 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // discarded and the normal resume below replays every line.
   const checkpointPath = join(dir, "snapshot-history", CHECKPOINT_FILE);
   let checkpointMark = { height: 0, atMs: Date.now() };
+  // Boot prefix worker (#1197 option a): one worker checks every block up to
+  // the checkpoint in parallel with startup. Started only after the
+  // validators are started and only while no rebuild or snapshot build runs;
+  // while it runs, builds defer (checkpoint_verifying). Its pass is used only
+  // after the live tip match and the state-root load; until then the gateway
+  // serves via the normal path. No verified height is ever stored: every
+  // boot checks the full prefix.
+  let prefixJob;
+  function cancelPrefixWorker(why) {
+    if (prefixJob?.running()) console.error(`snapshot: checkpoint prefix worker cancelled (${why})`);
+    prefixJob?.cancel();
+  }
+  function maybeStartPrefixWorker() {
+    if (prefixJob) return true;
+    if (!prefixWorkerMayStart({ started: false, haveCandidate: Boolean(resumeCandidate?.checkpoint), shuttingDown, historyRebuilding: historyNeedsRebuild, building: (snapshots?.building() ?? false) || snapshotBuilder?.pid() !== undefined })) return false;
+    prefixJob = startPrefixWorker({ historyPath, checkpointPath, chainId, genesisHash: info.genesisHash, genesis });
+    prefixJob.record = resumeCandidate.checkpoint;
+    console.error(`snapshot: checkpoint prefix worker started (heights 1..${resumeCandidate.checkpoint.height})`);
+    prefixJob.result.then((r) => console.error(`snapshot: checkpoint prefix worker finished in ${prefixJob.elapsedMs()} ms (${r?.ok ? `checked ${r.height} blocks` : "refused"})`), () => {});
+    return true;
+  }
   async function openHistoryWithCheckpoint() {
     await cleanStaleCheckpointTmp(join(dir, "snapshot-history"));
     let record;
@@ -1891,7 +1920,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       return false;
     }
     historyFile = resumed.file;
-    resumeCandidate = { checkpoint: record, height: resumed.height, tipHash: resumed.tipHash };
+    resumeCandidate = { checkpoint: record, height: resumed.height, tipHash: resumed.tipHash, prefixView: resumed.prefixView };
     checkpointMark = { height: record.height, atMs: Date.now() };
     console.error(`snapshot: history file resumed at height ${resumed.height} with a checkpoint at ${record.height}${resumed.droppedBytes ? ` (dropped a torn last line of ${resumed.droppedBytes} bytes)` : ""}; matching it to the live chain before use`);
     snapshotHistory.file = historyFile;
@@ -1983,6 +2012,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     async function rebuild(reason) {
       console.error(`snapshot: rebuilding the history file (${reason})`);
       historyNeedsRebuild = true;
+      cancelPrefixWorker("rebuild");
       // A checkpoint for the old file content must not survive the reset.
       if (checkpointOptions.enabled) { await discardCheckpoint(checkpointPath); checkpointMark = { height: 0, atMs: Date.now() }; }
       await historyFile.reset();
@@ -2006,18 +2036,37 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           throw new Error(`checkpoint tail not checked yet (${error instanceof Error ? error.message : String(error)})`);
         }
         const candidate = resumeCandidate; resumeCandidate = undefined;
-        if (verdict) { await discardCheckpoint(checkpointPath); return rebuild(`checkpoint ${verdict}`); }
-        let chain;
+        if (verdict) { cancelPrefixWorker("tip mismatch"); await discardCheckpoint(checkpointPath); return rebuild(`checkpoint ${verdict}`); }
+        let chain; let prefixChecked = false;
         try {
           chain = await loadCheckpointChain(genesis, record);
+          // Only now (live tip matched, state root loaded) is the worker's
+          // pass consulted. A refusal or a result that does not equal the
+          // record and the main thread's scan rejects the checkpoint; a
+          // worker that crashed, ran out of memory or never started falls
+          // back to the serial check below.
+          const job = prefixJob?.record === record ? prefixJob : undefined;
+          if (job) {
+            let result;
+            try { result = await job.result; } catch (error) {
+              if (signal?.aborted || resumeAbort.signal.aborted) throw error;
+              console.error(`snapshot: checkpoint prefix worker failed (${sanitizeSnapshotError(error)}); checking the prefix here`);
+            }
+            if (result) {
+              const mismatch = checkPrefixResult(result, record, candidate.prefixView);
+              if (mismatch) throw new CheckpointError(`prefix ${mismatch}`);
+              prefixChecked = true;
+            }
+          }
           // Blocks after the checkpoint: full finalized-block validation,
           // read again from the (re-verified) history file.
           // Blocks at or below it: full signature check without the state
           // replay (createPrefixVerifier); any bad signature rebuilds.
-          const prefix = createPrefixVerifier(chain, genesis, record);
+          const prefix = prefixChecked ? { check() {}, done() {} } : createPrefixVerifier(chain, genesis, record);
           let height = 0;
           for await (const line of readHistoryLines(historyFile.view(), { signal })) {
             height += 1;
+            if (height <= record.height && prefixChecked) continue;
             if (height <= record.height) { prefix.check(JSON.parse(line)); if (height % 50 === 0) await yieldToEventLoop(); continue; }
             if (height === record.height + 1) prefix.done();
             chain.acceptBlock(JSON.parse(line), Date.now());
@@ -2027,11 +2076,12 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           if (chain.height !== candidate.height || chain.tip.hash !== candidate.tipHash) throw new CheckpointError("replayed tail does not end at the file tip");
           checkChainSupply(chain, genesis);
         } catch (error) {
+          cancelPrefixWorker("checkpoint rejected");
           await discardCheckpoint(checkpointPath);
           return rebuild(`checkpoint rejected (${sanitizeSnapshotError(error)})`);
         }
         snapshotHistory.chain = chain;
-        console.error(`snapshot: checkpoint at height ${record.height} matches the live chain; validated ${candidate.height - record.height} tail blocks; continuing from ${candidate.height}`);
+        console.error(`snapshot: checkpoint at height ${record.height} matches the live chain; prefix ${prefixChecked ? "checked by the worker" : "checked here"}; validated ${candidate.height - record.height} tail blocks; continuing from ${candidate.height}`);
       }
       if (resumeCandidate) {
         let verdict;
@@ -2118,6 +2168,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   // restore far behind or a history-file read error recovers without relay.
   if (relay || stateSecret) { const timer = setInterval(() => { void refreshHistory(); }, 5_000); timer.unref(); }
   const snapshotBuilder = stateSecret ? createSnapshotChildBuilder({ secret: stateSecret, outDir: join(dir, "snapshot-history", "builds") }) : undefined;
+  let firstBuildLogged = false;
   async function buildSnapshotNow({ signal } = {}) {
     // Readiness gate: a build after a restart must not start (and then run
     // into the 900 s timeout) while the validators lack a quorum or the
@@ -2126,11 +2177,12 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     const quorumOk = activeSetTracker.evaluate(statuses).ok;
     let tip; let tipHash;
     try { ({ height: tip, tipHash } = await chainStatus()); } catch { tip = undefined; }
-    const deferred = snapshotBuildReadiness({ quorumOk, tip, historyHeight: snapshotHistory.chain.height, historyRebuilding: historyNeedsRebuild });
+    const deferred = snapshotBuildReadiness({ quorumOk, tip, historyHeight: snapshotHistory.chain.height, historyRebuilding: historyNeedsRebuild, checkpointVerifying: prefixJob?.running() ?? false });
     if (deferred) {
       if (deferred === "history_catching_up") void refreshHistory();
       throw Object.assign(new Error(`snapshot build deferred (${deferred})`), { code: deferred });
     }
+    if (!firstBuildLogged) { firstBuildLogged = true; console.error(`snapshot: first build started (tip ${tip})`); }
     await extendHistory(historyReaders(), tip, tipHash, { verifyFinal: false, signal });
     throwIfSnapshotAborted(signal);
     const view = historyFile.view();
@@ -2380,6 +2432,12 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   };
 
   for (const name of VALIDATOR_NAMES) startValidator(name);
+  // Prefix worker: after the validators are started and the boot scan has
+  // confirmed the checkpoint; retried each second while the gate is closed.
+  if (checkpointOptions.enabled) void (async () => {
+    await historyReady;
+    while (!shuttingDown && resumeCandidate?.checkpoint && !maybeStartPrefixWorker()) await sleep(1_000);
+  })().catch(() => {});
   const gateway = server ?? createGatewayServer(handler);
   gateway.setHandler(handler);
   const port = gateway.listening ? gateway.address().port : await listenGateway(gateway, gatewayPort, host);
@@ -2389,6 +2447,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     if (shuttingDown) return; shuttingDown = true; clearInterval(memoryTimer);
     snapshots?.stop();
     snapshotBuilder?.terminate();
+    cancelPrefixWorker("shutdown");
     resumeAbort.abort();
     await historyReady;
     // Clean shutdown: snapshot builds are stopped and the build child is

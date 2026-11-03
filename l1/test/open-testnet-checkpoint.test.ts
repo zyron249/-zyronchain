@@ -18,6 +18,8 @@ const mod = (path: string) => import(pathToFileURL(join(l1Root, path)).href);
 const api: any = await mod("scripts/open-testnet.mjs");
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const cp: any = await mod("scripts/open-testnet/checkpoint-file.mjs");
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const pw: any = await mod("scripts/open-testnet/checkpoint-prefix.mjs");
 const { ZyronChain } = await mod("dist/src/chain.js");
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
@@ -96,7 +98,15 @@ test("2 clean resume: only the tail after the checkpoint is validated, no rebuil
   await writeFile(checkpointPath, encode({ chainId, genesisHash, height: older, tipHash: chain.tip.hash, historyRunningHash: running, historyLine: lines[older - 1] as string, state: chain.snapshot() }));
   await restart();
   const matched = await until("checkpoint matched", () => logs.find((l) => /checkpoint at height \d+ matches the live chain/.test(l))) as string;
-  assert.match(matched, new RegExp(`checkpoint at height ${older} matches the live chain; validated ${lines.length - older} tail blocks; continuing from ${lines.length}`));
+  assert.match(matched, new RegExp(`checkpoint at height ${older} matches the live chain; prefix checked by the worker; validated ${lines.length - older} tail blocks; continuing from ${lines.length}`));
+  // Option (a): the worker ran once, and the first snapshot build started
+  // only after it finished (never alongside it).
+  const at = (re: RegExp) => logs.findIndex((l) => re.test(l));
+  const started = at(/checkpoint prefix worker started/); const finished = at(/checkpoint prefix worker finished .*checked \d+ blocks/);
+  assert.ok(started >= 0 && finished > started, logs.join("\n"));
+  assert.equal(logs.filter((l) => /checkpoint prefix worker started/.test(l)).length, 1, "one worker");
+  await until("first build", () => at(/first build started/) >= 0);
+  assert.ok(at(/first build started/) > finished, "the first snapshot build did not overlap the worker");
   assert.ok(!logs.some((l) => /history file resumed at height \d+; matching/.test(l)), "the full-replay resume did not run");
   assert.ok(!fellBack(), logs.join("\n"));
   await until("snapshot built after the checkpoint resume", async () => (await json("/health")).body.snapshotCache?.lastBuiltHeight >= lines.length);
@@ -176,9 +186,81 @@ for (const [name, tamper, expected] of e2eCases) {
     assert.match(line, expected, logs.join("\n"));
     assert.ok(!logs.some((l) => /checkpoint at height \d+ matches the live chain/.test(l)), "checkpoint never used");
     await until("history validated from genesis", () => logs.find((l) => /history file resumed at height \d+; matching|resumed history matches|rebuilding the history file/.test(l)));
+    if (name.startsWith("22 ")) {
+      // The worker refused the prefix, and it had finished before the
+      // rebuild began; no worker runs during or after the rebuild.
+      const at = (re: RegExp) => logs.findIndex((l) => re.test(l));
+      const finished = at(/checkpoint prefix worker finished .*refused/); const rebuilt = at(/rebuilding the history file/);
+      assert.ok(finished >= 0 && rebuilt > finished, logs.join("\n"));
+      assert.ok(!logs.slice(rebuilt).some((l) => /checkpoint prefix worker started/.test(l)));
+      assert.match(line, /worker refused the prefix/);
+    }
     await stop();
   });
 }
+
+// Option (a) unit tests: the worker against the fixture files.
+async function workerFixture(edit?: (lines: string[]) => string[]) {
+  const d = await mkdtemp(join(tmpdir(), "zyron-ckpt-worker-"));
+  const history = join(d, "history.ndjson"); const path = join(d, "checkpoint.json");
+  const hf = await mod("scripts/open-testnet/history-file.mjs");
+  const r = record(); const edited = edit ? edit([...lines]) : [...lines];
+  let running = hf.historySeed(genesisHash); for (const line of edited.slice(0, r.height)) running = hf.nextRunningHash(running, line);
+  await writeFile(history, `${edited.join("\n")}\n`, { mode: 0o600 });
+  await writeFile(path, edit ? encode({ ...r, historyRunningHash: running }) : goodCheckpoint, { mode: 0o600 });
+  const options = { historyPath: history, checkpointPath: path, chainId, genesisHash, genesis };
+  return { d, options, record: cp.decodeCheckpoint(await readFile(path), ids()), mainView: { height: r.height, runningHash: running } };
+}
+test("24 prefix worker: passes the untampered prefix with env {}; its result is accepted only when it equals the record and the main thread's scan", { timeout: 120_000 }, async () => {
+  const f = await workerFixture();
+  try {
+    const job = pw.startPrefixWorker(f.options); const result = await job.result;
+    assert.equal(result.ok, true, result.reason); assert.equal(result.height, f.record.height); assert.equal(result.envKeyCount, 0, "worker env is empty");
+    assert.equal(job.running(), false);
+    assert.equal(pw.checkPrefixResult(result, f.record, f.mainView), undefined);
+    // Results that do not match are refused.
+    assert.match(pw.checkPrefixResult({ ...result, height: result.height - 1 }, f.record, f.mainView), /height/);
+    assert.match(pw.checkPrefixResult({ ...result, runningHash: "ab".repeat(32) }, f.record, f.mainView), /running hash differs from the checkpoint/);
+    assert.match(pw.checkPrefixResult(result, f.record, { ...f.mainView, runningHash: "cd".repeat(32) }), /main thread/);
+    assert.match(pw.checkPrefixResult(result, f.record, undefined), /main thread/);
+    assert.match(pw.checkPrefixResult({ ...result, stateHash: "ef".repeat(32) }, f.record, f.mainView), /different checkpoint/);
+    assert.match(pw.checkPrefixResult({ ...result, tipHash: "12".repeat(32) }, f.record, f.mainView), /tip/);
+    assert.match(pw.checkPrefixResult({ ok: false, reason: "x" }, f.record, f.mainView), /refused/);
+    assert.match(pw.checkPrefixResult(undefined, f.record, f.mainView), /refused/);
+  } finally { await rm(f.d, { recursive: true, force: true }); }
+});
+test("25 prefix worker: an edited attestation below the checkpoint is refused by the worker", { timeout: 120_000 }, async () => {
+  const f = await workerFixture((l) => { const b = JSON.parse(l[49] as string); b.attestations[0].signature = "00".repeat(64); l[49] = JSON.stringify(b); return l; });
+  try {
+    const result = await pw.startPrefixWorker(f.options).result;
+    assert.equal(result.ok, false); assert.match(result.reason, /prefix block 50 rejected/);
+    assert.match(pw.checkPrefixResult(result, f.record, f.mainView), /worker refused the prefix/);
+  } finally { await rm(f.d, { recursive: true, force: true }); }
+});
+test("26 prefix worker cancellation: cancel() terminates it and the result rejects as cancelled", { timeout: 120_000 }, async () => {
+  const f = await workerFixture();
+  try {
+    const job = pw.startPrefixWorker(f.options); job.cancel();
+    await assert.rejects(job.result, (e: { cancelled?: boolean }) => e.cancelled === true);
+    assert.equal(job.running(), false); job.cancel();
+  } finally { await rm(f.d, { recursive: true, force: true }); }
+});
+test("27 prefix worker options and gate: env {}, no SHARE_ENV, ~64 MB heap, no secret in workerData; never alongside a rebuild or a build", async () => {
+  const o = pw.prefixWorkerOptions({ historyPath: "/h", checkpointPath: "/c", chainId, genesisHash, genesis });
+  assert.deepEqual(o.env, {}); assert.equal(o.resourceLimits.maxOldGenerationSizeMb, 64);
+  assert.deepEqual(Object.keys(o.workerData).sort(), ["chainId", "checkpointPath", "genesis", "genesisHash", "historyPath"]);
+  assert.ok(!JSON.stringify(o.workerData).includes(secret), "no secret in workerData");
+  const base = { started: false, haveCandidate: true, shuttingDown: false, historyRebuilding: false, building: false };
+  assert.equal(api.prefixWorkerMayStart(base), true);
+  assert.equal(api.prefixWorkerMayStart({ ...base, historyRebuilding: true }), false, "not during the history rebuild");
+  assert.equal(api.prefixWorkerMayStart({ ...base, building: true }), false, "not during a snapshot build");
+  assert.equal(api.prefixWorkerMayStart({ ...base, started: true }), false, "one worker");
+  assert.equal(api.prefixWorkerMayStart({ ...base, haveCandidate: false }), false);
+  assert.equal(api.prefixWorkerMayStart({ ...base, shuttingDown: true }), false);
+  // While it runs, snapshot builds defer (not a failure).
+  assert.equal(api.snapshotBuildReadiness({ quorumOk: true, tip: 10, historyHeight: 10, checkpointVerifying: true }), "checkpoint_verifying");
+  assert.ok(api.SNAPSHOT_DEFERRED_CODES.has("checkpoint_verifying"));
+});
 
 test("17 leftover tmp files are removed at boot without following symlinks; a crash between write and rename keeps the old file", async () => {
   const d = await mkdtemp(join(tmpdir(), "zyron-ckpt-tmp-"));

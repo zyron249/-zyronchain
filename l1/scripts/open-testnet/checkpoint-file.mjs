@@ -269,5 +269,7 @@ export async function resumeHistoryAtCheckpoint(historyPath, record, { chainId, 
     }
   });
   if (!matched) { await resumed.file.close(); fail(`height ${record.height} is above the history tip ${resumed.height}`); }
+  // The main thread's own view of the prefix, compared with the worker's.
+  resumed.prefixView = { height: record.height, runningHash: running };
   return resumed;
 }
