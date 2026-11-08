@@ -202,3 +202,24 @@ test("restart on the same network directory resumes the history at its stored ti
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a missing history file (ephemeral disk after a container restart) logs one explicit warning; other defects keep the not-resumed line", async () => {
+  const dir = await tempDir();
+  try {
+    let missing: unknown;
+    try { await hf.resumeHistoryFile(join(dir, "snapshot-history", "history.ndjson"), { chainId: CHAIN, genesisHash: GENESIS, onBlock: async () => {} }); } catch (error) { missing = error; }
+    assert.equal((missing as { missing?: boolean })?.missing, true);
+    assert.equal(api.historyResumeSkipMessage(missing), "snapshot: history file absent (ephemeral disk); rebuilding from genesis");
+    const other = api.historyResumeSkipMessage(new hf.HistoryFileError("broken hash link at line 3"));
+    assert.match(other, /^snapshot: history file not resumed \(.*broken hash link.*\); rebuilding from genesis$/);
+    assert.doesNotMatch(other, /absent/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("rate-limiter key bound: 10k default, tunable via ZYRON_RPC_LIMITER_MAX_KEYS within 1000..1000000, junk falls back", () => {
+  assert.equal(api.RATE_LIMITER_MAX_KEYS_DEFAULT, 10_000);
+  assert.equal(api.rateLimiterMaxKeys({}), 10_000);
+  assert.equal(api.rateLimiterMaxKeys({ ZYRON_RPC_LIMITER_MAX_KEYS: "50000" }), 50_000);
+  assert.equal(api.rateLimiterMaxKeys({ ZYRON_RPC_LIMITER_MAX_KEYS: "1000" }), 1_000);
+  for (const bad of ["", "999", "1000001", "1e4.5", "abc", "-5", "12.5"]) assert.equal(api.rateLimiterMaxKeys({ ZYRON_RPC_LIMITER_MAX_KEYS: bad }), 10_000, bad);
+});

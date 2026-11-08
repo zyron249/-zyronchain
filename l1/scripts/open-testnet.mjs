@@ -888,6 +888,26 @@ export function classifyValidatorExit(code, signal) {
   if (signal === "SIGABRT" || code === 134) return "oom";
   return signal ? "signal" : "exit";
 }
+// Why the history resume did not happen, as one log line. A missing file is
+// the normal case after a Render container restart (the free plan's disk is
+// ephemeral), so it gets its own explicit warning instead of silence.
+export function historyResumeSkipMessage(error, redact = {}) {
+  if (error?.missing) return "snapshot: history file absent (ephemeral disk); rebuilding from genesis";
+  return `snapshot: history file not resumed (${sanitizeSnapshotError(error, redact)}); rebuilding from genesis`;
+}
+// Per-limiter key bound for the gateway's rate-limit windows (read, write,
+// faucet, relay). Each tracked key is a Map entry plus an { start, count }
+// object; on the 512MB Render free plan the old 50k bound let a wide key
+// spray hold tens of MB of anon heap. 10k is far above live traffic (a few
+// hundred distinct IPs per window) and stays tunable via
+// ZYRON_RPC_LIMITER_MAX_KEYS (1000..1000000).
+export const RATE_LIMITER_MAX_KEYS_DEFAULT = 10_000;
+export function rateLimiterMaxKeys(env = process.env) {
+  const raw = env.ZYRON_RPC_LIMITER_MAX_KEYS;
+  if (raw === undefined || raw === "") return RATE_LIMITER_MAX_KEYS_DEFAULT;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= 1_000 && n <= 1_000_000 ? n : RATE_LIMITER_MAX_KEYS_DEFAULT;
+}
 // Validator supervisor: exponential restart backoff (base doubling to max),
 // reset once a validator has run for stableMs, plus per-validator restart
 // counts and the last exit for GET /health.
@@ -1936,8 +1956,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     return statusCache;
   }
 
+  const limiterMaxKeys = rateLimiterMaxKeys();
   class WindowLimiter {
-    constructor(limit, windowMs, maxKeys = 50_000) { Object.assign(this, { limit, windowMs, maxKeys, hits: new Map() }); }
+    constructor(limit, windowMs, maxKeys = limiterMaxKeys) { Object.assign(this, { limit, windowMs, maxKeys, hits: new Map() }); }
     take(key, now = Date.now()) {
       let entry = this.hits.get(key);
       if (!entry || now - entry.start >= this.windowMs) {
@@ -1995,7 +2016,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       console.error(`snapshot: history file resumed at height ${resumed.height}${resumed.droppedBytes ? ` (dropped a torn last line of ${resumed.droppedBytes} bytes)` : ""}; matching it to the live chain before use`);
     } catch (error) {
       if (resumeAbort.signal.aborted) return;
-      if (!error?.missing) console.error(`snapshot: history file not resumed (${sanitizeSnapshotError(error, redactSecret)}); rebuilding from genesis`);
+      console.error(historyResumeSkipMessage(error, redactSecret));
     }
     historyFile ??= await createHistoryFile(historyPath, { chainId, genesisHash: info.genesisHash });
     snapshotHistory.file = historyFile;
