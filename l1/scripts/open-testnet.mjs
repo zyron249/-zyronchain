@@ -905,8 +905,30 @@ export const RATE_LIMITER_MAX_KEYS_DEFAULT = 10_000;
 export function rateLimiterMaxKeys(env = process.env) {
   const raw = env.ZYRON_RPC_LIMITER_MAX_KEYS;
   if (raw === undefined || raw === "") return RATE_LIMITER_MAX_KEYS_DEFAULT;
+  if (typeof raw !== "string" || !/^[0-9]+$/.test(raw)) return RATE_LIMITER_MAX_KEYS_DEFAULT;
   const n = Number(raw);
   return Number.isSafeInteger(n) && n >= 1_000 && n <= 1_000_000 ? n : RATE_LIMITER_MAX_KEYS_DEFAULT;
+}
+// Day-window limiters (faucet per-IP / per-address) keep the old 50k bound:
+// at 10k a key spray could fill the table for a whole day and lock out every
+// new faucet user, whereas short-window tables recover within a minute.
+export const DAY_WINDOW_LIMITER_MAX_KEYS = 50_000;
+// Fixed-window per-key limiter with a hard key bound. When full, expired
+// entries are swept; if none expired, a new key is denied (live keys stay).
+export class WindowLimiter {
+  constructor(limit, windowMs, maxKeys = RATE_LIMITER_MAX_KEYS_DEFAULT) { Object.assign(this, { limit, windowMs, maxKeys, hits: new Map() }); }
+  take(key, now = Date.now()) {
+    let entry = this.hits.get(key);
+    if (!entry || now - entry.start >= this.windowMs) {
+      if (!entry && this.hits.size >= this.maxKeys) for (const [k, e] of this.hits) if (now - e.start >= this.windowMs) this.hits.delete(k);
+      if (!entry && this.hits.size >= this.maxKeys) return { allowed: false, retryAfterMs: this.windowMs };
+      entry = { start: now, count: 0 };
+      this.hits.set(key, entry);
+    }
+    if (entry.count >= this.limit) return { allowed: false, retryAfterMs: entry.start + this.windowMs - now };
+    entry.count += 1;
+    return { allowed: true };
+  }
 }
 // Validator supervisor: exponential restart backoff (base doubling to max),
 // reset once a validator has run for stableMs, plus per-validator restart
@@ -1957,29 +1979,14 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   }
 
   const limiterMaxKeys = rateLimiterMaxKeys();
-  class WindowLimiter {
-    constructor(limit, windowMs, maxKeys = limiterMaxKeys) { Object.assign(this, { limit, windowMs, maxKeys, hits: new Map() }); }
-    take(key, now = Date.now()) {
-      let entry = this.hits.get(key);
-      if (!entry || now - entry.start >= this.windowMs) {
-        if (!entry && this.hits.size >= this.maxKeys) for (const [k, e] of this.hits) if (now - e.start >= this.windowMs) this.hits.delete(k);
-        if (!entry && this.hits.size >= this.maxKeys) return { allowed: false, retryAfterMs: this.windowMs };
-        entry = { start: now, count: 0 };
-        this.hits.set(key, entry);
-      }
-      if (entry.count >= this.limit) return { allowed: false, retryAfterMs: entry.start + this.windowMs - now };
-      entry.count += 1;
-      return { allowed: true };
-    }
-  }
   const limits = {
-    read: new WindowLimiter(Number(process.env.ZYRON_RPC_READS_PER_MINUTE ?? 240), 60_000),
-    write: new WindowLimiter(Number(process.env.ZYRON_RPC_TX_PER_MINUTE ?? 10), 60_000),
-    faucetIp: new WindowLimiter(5, DAY_MS),
-    faucetAddress: new WindowLimiter(1, DAY_MS),
+    read: new WindowLimiter(Number(process.env.ZYRON_RPC_READS_PER_MINUTE ?? 240), 60_000, limiterMaxKeys),
+    write: new WindowLimiter(Number(process.env.ZYRON_RPC_TX_PER_MINUTE ?? 10), 60_000, limiterMaxKeys),
+    faucetIp: new WindowLimiter(5, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS),
+    faucetAddress: new WindowLimiter(1, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS),
     faucetGlobal: new WindowLimiter(200, 3_600_000, 1),
     snapshot: new WindowLimiter(30, 3_600_000, 1),
-    relayIp: new WindowLimiter(Number(process.env.ZYRON_RELAY_REQUESTS_PER_MINUTE_PER_IP ?? 1200), 60_000)
+    relayIp: new WindowLimiter(Number(process.env.ZYRON_RELAY_REQUESTS_PER_MINUTE_PER_IP ?? 1200), 60_000, limiterMaxKeys)
   };
   // Verified history (R28-1059): from the restore replay when there was one,
   // otherwise validated from genesis on the first build.

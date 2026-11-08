@@ -221,5 +221,20 @@ test("rate-limiter key bound: 10k default, tunable via ZYRON_RPC_LIMITER_MAX_KEY
   assert.equal(api.rateLimiterMaxKeys({}), 10_000);
   assert.equal(api.rateLimiterMaxKeys({ ZYRON_RPC_LIMITER_MAX_KEYS: "50000" }), 50_000);
   assert.equal(api.rateLimiterMaxKeys({ ZYRON_RPC_LIMITER_MAX_KEYS: "1000" }), 1_000);
-  for (const bad of ["", "999", "1000001", "1e4.5", "abc", "-5", "12.5"]) assert.equal(api.rateLimiterMaxKeys({ ZYRON_RPC_LIMITER_MAX_KEYS: bad }), 10_000, bad);
+  assert.equal(api.rateLimiterMaxKeys({ ZYRON_RPC_LIMITER_MAX_KEYS: "1000000" }), 1_000_000);
+  for (const bad of ["", "999", "1000001", "1e4.5", "abc", "-5", "12.5", " 5000", "5000 ", "\t5000", "1e3", "0x3e8", "+5000", "5000.0"]) assert.equal(api.rateLimiterMaxKeys({ ZYRON_RPC_LIMITER_MAX_KEYS: bad }), 10_000, bad);
+});
+
+test("WindowLimiter saturation: live key stays counted, new key denied when full, expired entries recovered; day-window faucet limiters keep 50k", () => {
+  const l = new api.WindowLimiter(2, 1_000, 3);
+  for (const k of ["a", "b", "c"]) assert.equal(l.take(k, 0).allowed, true);
+  assert.equal(l.take("d", 10).allowed, false);
+  assert.equal(l.hits.has("d"), false);
+  assert.equal(l.take("a", 20).allowed, true);
+  assert.equal(l.take("a", 30).allowed, false);
+  assert.equal(l.hits.get("a").count, 2);
+  assert.equal(l.take("d", 1_000).allowed, true);
+  assert.equal(l.hits.size, 1);
+  assert.equal(api.DAY_WINDOW_LIMITER_MAX_KEYS, 50_000);
+  assert.equal(new api.WindowLimiter(1, 1).maxKeys, 10_000);
 });
