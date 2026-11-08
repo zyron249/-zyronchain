@@ -220,14 +220,24 @@ All times are ET.
 
 - **What happened.** The last keeper run before the incident ended at 10:28 and published 4 of its
   34 cycles. The other 30 failed with 503 while the gateway restarted. Its last publish was height
-  12966. GitHub dropped the next scheduled keeper run. A deploy started at about 10:40, restored
-  from 12966 and replayed until about 11:16. That was the deploy finishing its replay, not a crash.
-  The gateway was ready at 11:18 at height 12967.
-- **Blocks lost.** About 130 (estimate) [TO CONFIRM WITH OPS].
+  12966, which became the restore floor. GitHub dropped the next scheduled keeper run. The highest
+  height seen before the restore was 13131 at 10:40, from Ops' `/health` observations. The deploy of
+  commit 4c0f3bb started at about 10:41, restored from 12966 and replayed until about 11:16. That was
+  the deploy finishing its replay, not a crash. The gateway was ready at 11:18 at height 12967.
+- **Blocks lost.** 165 blocks, heights 12967 to 13131.
 - **Detection.** Between 11:20 and 11:26, `durableHeight` in `/health` stayed at 12966. No alarm
   fired. A keeper run was started by hand at 11:26. At 12:02, `/health` showed `durableHeight` 13045,
   `maxHeight` 13055, status ready, and 4 of 4 validators.
 - **Operator nodes.** The rehearsal node caught up on its own, and its fork check was OK at 12966.
+- **Follower resync.** With the default durable peer cap, followers needed no action: they only
+  received blocks up to `durableHeight` (see
+  [Followers and cold starts](#followers-and-cold-starts-durable-watermark)). Setting
+  `ZYRON_TESTNET_DURABLE_PEERS=0` turns that cap off. To set up a follower, see
+  [Validator onboarding, section 5](VALIDATOR_ONBOARDING.md#5-run-a-follower-against-the-hosted-testnet).
+  Never restore a signing validator's data directory from an old backup or snapshot; see
+  [section 7, Operating rules](VALIDATOR_ONBOARDING.md#7-operating-rules). How a node with the cap
+  disabled that followed the rolled-back blocks checks for the fork and recovers on the same genesis:
+  [TO CONFIRM WITH OPS].
 - **Fixes (merged).** [#1167](https://github.com/zyron249/-zyronchain/pull/1167): between cycles the keeper watches `snapshotCache` in `/health`
   and fetches a new build promptly, with the 10-minute cycle kept as a fallback. [#1170](https://github.com/zyron249/-zyronchain/pull/1170): caps on
   watch-triggered cycles (at most one per 2 minutes) and on `/health` reads (64 KB). [#1171](https://github.com/zyron249/-zyronchain/pull/1171): the
