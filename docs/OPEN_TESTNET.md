@@ -228,10 +228,15 @@ All times are ET.
   fired. A keeper run was started by hand at 11:26. At 12:02, `/health` showed `durableHeight` 13045,
   `maxHeight` 13055, status ready, and 4 of 4 validators.
 - **Operator nodes.** The rehearsal node caught up on its own, and its fork check was OK at 12966.
-- **Fixes.** [#1167](https://github.com/zyron249/-zyronchain/pull/1167) (the keeper publishes right
-  after a new build) and [#1170](https://github.com/zyron249/-zyronchain/pull/1170) (caps on
-  watch-triggered keeper cycles) are merged. A self-chaining keeper and a lag alarm (planned by
-  Nov 5) are in progress.
+- **Fixes (merged).** [#1167](https://github.com/zyron249/-zyronchain/pull/1167): between cycles the keeper watches `snapshotCache` in `/health`
+  and fetches a new build promptly, with the 10-minute cycle kept as a fallback. [#1170](https://github.com/zyron249/-zyronchain/pull/1170): caps on
+  watch-triggered cycles (at most one per 2 minutes) and on `/health` reads (64 KB). [#1171](https://github.com/zyron249/-zyronchain/pull/1171): the
+  keeper starts its next run itself through `workflow_dispatch` on main, so it no longer depends on
+  GitHub's schedule alone. [#1177](https://github.com/zyron249/-zyronchain/pull/1177), [#1179](https://github.com/zyron249/-zyronchain/pull/1179) and [#1181](https://github.com/zyron249/-zyronchain/pull/1181): the keeper detects rollbacks by
+  comparing the published tip hash with the live chain, records a rollback counter in the snapshot
+  label, and fails the run if a rollback stays unconfirmed.
+- **Not active yet.** A durable-lag alarm is proposed in [#1176](https://github.com/zyron249/-zyronchain/pull/1176) and [#1184](https://github.com/zyron249/-zyronchain/pull/1184) but is not merged,
+  so no lag alarm is active.
 
 ## Mempool: future-nonce transactions
 
