@@ -227,3 +227,14 @@ No production activation is considered ready from CI alone; the sustained rehear
 For each drill/release retain: commit/tag, binary checksum/attestation, genesis hash, checkpoint tip+digest, validator/protocol schedules, participating independent operators/failure domains, start/end time, observed RTO, data-loss/RPO observation, alert timestamps, restore validation result, catch-up result and signed incident/drill notes.
 
 The project remains **testnet/devnet** until the external audit, public adversarial soak, production key custody, multi-operator launch rehearsal and genesis/economics/governance gates in `STANDALONE_L1_READINESS.md` are independently closed.
+
+## 9. Manual Render deploy after a security-fix merge
+
+There is no separate merge runbook in this repository; this section is the
+docs-only place for the post-merge Render step.
+
+After merging a security fix to `main`, a manual deploy is required
+(auto-deploy is off on every Render service); the deploy itself needs the
+owner's go-ahead. Do not enable Auto-Deploy in the Render dashboard, and do
+not treat a Blueprint sync or a merge alone as a deploy.
+

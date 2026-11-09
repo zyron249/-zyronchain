@@ -78,6 +78,11 @@ capped at 8 KB.
 
 ## Deploy (Render free web service)
 
+Deploys are manual: the blueprint sets `autoDeploy: false`, and every Render
+service (including `zyron-wallet-testnet-rpc`) must be deployed by hand after
+the owner's go-ahead. Do not enable Auto-Deploy in the dashboard. The
+dashboard Auto-Deploy setting is UNVERIFIED from this repository alone.
+
 The repo cannot create a Render service by itself. In the Render dashboard:
 
 1. **New > Blueprint**, pick this repository, set the Blueprint path to
