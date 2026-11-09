@@ -242,15 +242,18 @@ test("peek is read-only and predicts take: exhausted key, capped /48 and full ta
   assert.equal(JSON.stringify(l.stats()), before, "peek changes no counters");
 });
 
-test("refund undoes one allowed take and frees an unused key's slot", () => {
+test("refund undoes one allowed take (by its receipt) and frees an unused key's slot", () => {
   const l = new api.WindowLimiter(1, DAY, 2, { prefixCap: 1 });
-  assert.equal(l.take(v6(1, 0), 0).allowed, true);
+  const first = l.takeWithReceipt(v6(1, 0), 0);
+  assert.equal(first.allowed, true);
   assert.equal(l.take(v6(1, 1), 1).allowed, false, "/48 capped");
-  assert.equal(l.refund(v6(1, 0), 2), true);
+  assert.equal(l.refund(first.receipt, 2), true);
   assert.equal(l.hits.size, 0);
   assert.equal(l.perPrefix.size, 0);
   assert.equal(l.take(v6(1, 1), 3).allowed, true, "slot freed by the refund");
-  assert.equal(l.refund("never-taken", 4), false);
+  assert.equal(l.refund(first.receipt, 4), false, "a receipt refunds at most once");
+  assert.equal(l.refund(undefined, 4), false);
+  assert.equal("receipt" in l.take("z", 5), false, "take() itself returns no receipt");
 });
 
 // ---- R3-3: faucet route takes the per-IP quota only after the body validates.
@@ -412,7 +415,8 @@ async function faucetWith(limits: any, send: () => Promise<unknown>, ip = "198.5
   const post = async (body: string) => { const r = await fetch(`${base}/faucet`, { method: "POST", headers: { "content-type": "application/json" }, body }); await r.arrayBuffer(); return r.status; };
   return { state, post, close: () => new Promise((done) => server.close(done)) };
 }
-const addr = (n: number) => `ZYN${n.toString(16).padStart(40, "0")}`;
+// Leading "a" keeps test addresses clear of the reserved ZYN000…0/1/2 range.
+const addr = (n: number) => `ZYNa${n.toString(16).padStart(39, "0")}`;
 
 test("#1213-4: when faucetGlobal refuses, faucetIp and faucetAddress are not spent", async () => {
   const limits = api.createGatewayLimits({ env: {}, log: () => {} });
@@ -435,19 +439,30 @@ test("#1213-4: when faucetGlobal refuses, faucetIp and faucetAddress are not spe
   } finally { await gw2.close(); }
 });
 
-test("#1213-4: a failed send refunds faucetIp, faucetAddress and faucetGlobal", async () => {
+test("#1213-6: only a pre-submit send failure refunds; a node rejection, 5xx or timeout keeps every quota spent", async () => {
   const limits = api.createGatewayLimits({ env: {}, log: () => {} });
-  let fail = true;
-  const gw = await faucetWith(limits, async () => { if (fail) throw new Error("node down"); return { txid: "t" }; });
+  let mode = "pre";
+  const gw = await faucetWith(limits, async () => {
+    if (mode === "pre") throw api.markFaucetPreSubmit(new Error("faucet nonce lookup failed (status 502)"));
+    if (mode === "rejected") throw new Error("faucet transfer rejected by node (status 400): nope");
+    if (mode === "timeout") throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+    return { txid: "t" };
+  });
   try {
-    for (let i = 0; i < 5; i += 1) assert.equal(await gw.post(JSON.stringify({ address: addr(1) })), 503);
-    assert.equal(limits.faucetIp.hits.size, 0);
+    for (let i = 0; i < 3; i += 1) assert.equal(await gw.post(JSON.stringify({ address: addr(1) })), 503);
+    assert.equal(limits.faucetIp.hits.size, 0, "pre-submit failures are refunded");
     assert.equal(limits.faucetAddress.hits.size, 0);
     assert.equal(limits.faucetGlobal.hits.size, 0);
-    fail = false;
-    assert.equal(await gw.post(JSON.stringify({ address: addr(1) })), 200, "the same address and IP can still be served");
-    assert.equal(limits.faucetIp.hits.get("198.51.100.7").count, 1);
-    assert.equal(limits.faucetGlobal.hits.get("global").count, 1);
+    mode = "rejected";
+    assert.equal(await gw.post(JSON.stringify({ address: addr(2) })), 503);
+    mode = "timeout";
+    assert.equal(await gw.post(JSON.stringify({ address: addr(3) })), 503);
+    assert.equal(limits.faucetIp.hits.get("198.51.100.7").count, 2, "node rejection and timeout are not refunded");
+    assert.equal(limits.faucetGlobal.hits.get("global").count, 2);
+    assert.equal(limits.faucetAddress.hits.has(addr(2)), true);
+    assert.equal(limits.faucetAddress.hits.has(addr(3)), true);
+    mode = "ok";
+    assert.equal(await gw.post(JSON.stringify({ address: addr(1) })), 200, "an address refunded pre-submit can still be served");
   } finally { await gw.close(); }
 });
 
@@ -463,4 +478,103 @@ test("#1213-5: faucetAttempt caps /faucet attempts per IP per minute before the 
     assert.equal(gw.state.reads, reads, "refused before the body is read");
     assert.equal(limits.faucetIp.hits.size, 0, "attempts never touch the day quota");
   } finally { await gw.close(); }
+});
+
+// ---- #1213-6: reserved receivers and pre-submit marking -----------------------
+test("#1213-6: the gateway's reserved receiver set matches the node's (mining tracker + both activity-window addresses)", async () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mining: any = await import(pathToFileURL(join(l1Root, "dist", "src", "mining.js")).href);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const activity: any = await import(pathToFileURL(join(l1Root, "dist", "src", "activity.js")).href);
+  const node = [mining.MINING_TRACKER_ADDRESS, activity.ACTIVITY_WINDOW_TIME_ADDRESS, activity.ACTIVITY_WINDOW_AMOUNT_ADDRESS];
+  assert.deepEqual([...api.FAUCET_RESERVED_RECEIVERS].sort(), [...node].sort());
+  for (const address of node) {
+    assert.match(address, /^ZYN[0-9a-f]{40}$/, "reserved addresses pass the faucet's address shape check");
+    assert.equal(api.FAUCET_RESERVED_RECEIVERS.has(address), true);
+  }
+  assert.equal(activity.isActivityWindowAddress(activity.ACTIVITY_WINDOW_TIME_ADDRESS), true);
+  assert.equal(activity.isActivityWindowAddress(addr(3)), false, "ordinary addresses are not reserved");
+});
+
+test("#1213-6: a reserved receiver gets 400 before any quota is taken and never reaches send", async () => {
+  const limits = api.createGatewayLimits({ env: {}, log: () => {} });
+  // The send mock behaves like the node: it rejects reserved receivers.
+  const gw = await faucetWith(limits, async () => { throw new Error("faucet transfer rejected by node (status 400): Mining tracker address is protocol-reserved"); });
+  // The node's own constants, so this checks behaviour, not the mirror.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mining: any = await import(pathToFileURL(join(l1Root, "dist", "src", "mining.js")).href);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const activity: any = await import(pathToFileURL(join(l1Root, "dist", "src", "activity.js")).href);
+  try {
+    for (const address of [mining.MINING_TRACKER_ADDRESS, activity.ACTIVITY_WINDOW_TIME_ADDRESS, activity.ACTIVITY_WINDOW_AMOUNT_ADDRESS]) assert.equal(await gw.post(JSON.stringify({ address })), 400, address);
+    assert.equal(gw.state.sends, 0, "no node submission");
+    assert.equal(limits.faucetIp.hits.size, 0);
+    assert.equal(limits.faucetAddress.hits.size, 0);
+    assert.equal(limits.faucetGlobal.hits.size, 0);
+  } finally { await gw.close(); }
+});
+
+test("#1213-6: createFaucetSend marks only failures before POST /tx as preSubmit", async () => {
+  const faucet = { address: `ZYN${"f".repeat(40)}`, privateKey: "k", publicKey: "p" };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const make = (over: any = {}) => {
+    const calls: string[] = [];
+    const anyNode = over.anyNode ?? (async (path: string) => {
+      calls.push(path);
+      if (path === "/status") return { status: 200, body: {} };
+      if (path.startsWith("/nonce/")) return { status: 200, body: { nonce: 0 } };
+      if (path === "/tx") return over.tx ? over.tx() : { status: 200, body: {} };
+      return { status: 404, body: {} };
+    });
+    const send = api.createFaucetSend({
+      chainStatus: over.chainStatus ?? (async () => ({ transactionVersion: 2 })), anyNode, chainId: "zyron-test", faucet,
+      buildTransfer: (tx: { nonce: number }) => ({ ...tx, txid: `tx${tx.nonce}` }),
+      transferFeeAtoms: over.transferFeeAtoms ?? (() => 1_000)
+    });
+    return { send, calls };
+  };
+  const failure = async (send: (r: string) => Promise<unknown>) => { try { await send(addr(5)); } catch (error) { return error as { preSubmit?: boolean; message: string }; } assert.fail("expected a failure"); };
+  // Before POST /tx: chain status, fee floor, nonce lookup.
+  const e1 = await failure(make({ chainStatus: async () => { throw new Error("status down"); } }).send);
+  assert.equal(e1.preSubmit, true);
+  const floor = make({ transferFeeAtoms: () => { throw new (class extends Error { code = "fee-floor"; })("fee floor"); } });
+  const e2 = await failure(floor.send);
+  assert.equal(e2.preSubmit, true);
+  assert.equal(floor.calls.includes("/tx"), false);
+  const nonce = make({ anyNode: async (path: string) => path === "/status" ? { status: 200, body: {} } : { status: 502, body: {} } });
+  const e3 = await failure(nonce.send);
+  assert.equal(e3.preSubmit, true);
+  assert.match(e3.message, /nonce lookup failed/);
+  // POST /tx sent: node rejection, 5xx and timeout are never preSubmit.
+  for (const tx of [() => ({ status: 400, body: { error: "Mining tracker address is protocol-reserved" } }), () => ({ status: 503, body: {} }), () => { throw new Error("The operation was aborted due to timeout"); }]) {
+    const m = make({ tx });
+    const e = await failure(m.send);
+    assert.notEqual(e.preSubmit, true, e.message);
+    assert.equal(m.calls.includes("/tx"), true);
+  }
+  const ok = make();
+  assert.deepEqual(await ok.send(addr(5)), { txid: "tx1", receiver: addr(5), amountAtoms: 100 * 100_000_000, nonce: 1 });
+});
+
+// ---- #1213-7: a refund is bound to the window entry it took from -------------
+test("#1213-7: a refund after the window rolled over credits nothing in the new window", () => {
+  const l = new api.WindowLimiter(1, 1_000, 10, { evictOnFull: true, prefixCap: 2 });
+  const old = l.takeWithReceipt(v6(1, 0), 900);
+  assert.equal(old.allowed, true);
+  assert.equal(l.take(v6(1, 0), 1_000).allowed, false, "same window: limited");
+  assert.equal(l.take(v6(1, 0), 1_900).allowed, true, "new window for the same key");
+  assert.equal(l.refund(old.receipt, 1_901), false, "stale receipt");
+  assert.equal(l.hits.get(v6(1, 0)).count, 1);
+  assert.equal(l.take(v6(1, 0), 1_902).allowed, false, "still limited in the new window");
+  assert.equal(l.prefixBudget.get("2001:0db8:0001::/48").count, 1, "the new window's /48 budget is untouched");
+  // Same for the single-key faucetGlobal table across its hour.
+  const g = api.createGatewayLimits({ env: {}, log: () => {} }).faucetGlobal;
+  const stale = g.takeWithReceipt("global", 0);
+  for (let i = 0; i < 200; i += 1) assert.equal(g.take("global", 3_600_000 + i).allowed, true);
+  assert.equal(g.refund(stale.receipt, 3_600_500), false);
+  assert.equal(g.take("global", 3_600_600).allowed, false, "no extra drip after a stale refund");
+  // Within the same window the receipt still works.
+  const fresh = g.takeWithReceipt("global", 7_200_000);
+  assert.equal(g.refund(fresh.receipt, 7_200_001), true);
+  assert.equal(g.hits.size, 0);
 });

@@ -601,7 +601,9 @@ export const FAUCET_UNAVAILABLE_MESSAGE = "faucet temporarily unavailable, retry
 // - after the body validates, faucetIp, faucetAddress and faucetGlobal are all
 //   peeked, then all taken with no await in between, so a refusal by any of
 //   them spends none of the others;
-// - if the send fails, all three are refunded.
+// - protocol-reserved receivers get a 400 before any of them is taken;
+// - if the send fails BEFORE POST /tx is sent (error.preSubmit), all three
+//   are refunded; a node rejection, 5xx or timeout is never refunded.
 export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody, send, log = (line) => console.error(line), durabilityView = async () => ({}) }) {
   return async (request, response, ip) => {
     const cors = withoutCors(faucetCorsHeaders(request.headers.origin, origins));
@@ -628,6 +630,9 @@ export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody
       const body = await readJsonBody(request);
       const address = body && typeof body === "object" ? body.address : undefined;
       if (typeof address !== "string" || !ADDRESS_PATTERN.test(address) || address === faucetAddress) return reply(400, { error: "body must be {\"address\":\"ZYN...\"}" });
+      // Protocol-reserved receivers are rejected by every node; refuse them
+      // here, before any quota is taken or a transfer is built (#1213-6).
+      if (FAUCET_RESERVED_RECEIVERS.has(address)) return reply(400, { error: "address is protocol-reserved" });
       const spends = [[limits.faucetIp, ip], [limits.faucetAddress, address], [limits.faucetGlobal, "global"]];
       for (const [limiter, key] of spends) {
         const rate = peekLimit(limiter, key);
@@ -636,12 +641,15 @@ export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody
       // No await between the peeks above and these takes.
       const taken = [];
       for (const [limiter, key] of spends) {
-        const rate = limiter.take(key);
+        const rate = typeof limiter.takeWithReceipt === "function" ? limiter.takeWithReceipt(key) : limiter.take(key);
         if (!rate.allowed) { refundAll(taken); return limited(rate); }
-        taken.push([limiter, key]);
+        taken.push([limiter, rate.receipt]);
       }
       let result;
-      try { result = await send(address); } catch (error) { refundAll(taken); throw error; }
+      // Refund only when the send failed before POST /tx left the gateway
+      // (fee floor, chain status or nonce lookup): a node rejection, a 5xx or
+      // a timeout may already be a drip, and is attacker-triggerable (#1213-6).
+      try { result = await send(address); } catch (error) { if (error?.preSubmit === true) refundAll(taken); throw error; }
       // The transfer is already queued: a failed durability lookup must not turn it into an error.
       const durability = await durabilityView().catch(() => ({}));
       return reply(200, { ...result, network: "testnet", valueBearing: false, note: "TESTNET — tokens have no value. Arrives in a coming block (about 30 seconds).", ...durability });
@@ -658,8 +666,48 @@ export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody
     }
   };
 }
+// Receivers every node rejects (mirrors l1/src: MINING_TRACKER_ADDRESS in
+// mining.ts, ACTIVITY_WINDOW_TIME_ADDRESS / ACTIVITY_WINDOW_AMOUNT_ADDRESS in
+// activity.ts; a test keeps them in sync). They pass ADDRESS_PATTERN.
+export const FAUCET_RESERVED_RECEIVERS = new Set([`ZYN${"0".repeat(40)}`, `ZYN${"0".repeat(39)}1`, `ZYN${"0".repeat(39)}2`]);
+// Marks a faucet send failure that happened before POST /tx was sent, so the
+// route may refund the quotas it took.
+export function markFaucetPreSubmit(error) {
+  const marked = error instanceof Error ? error : new Error(String(error));
+  marked.preSubmit = true;
+  return marked;
+}
+// Serialized faucet drips. Every step before POST /tx (chain status, fee
+// floor, nonce lookup, building the transfer) throws with preSubmit=true; the
+// POST /tx call and anything after it never does.
+export function createFaucetSend({ chainStatus, anyNode, chainId, faucet, nonceTracker = createFaucetNonceTracker(), buildTransfer = createTransfer, transferFeeAtoms = (statusResponse) => faucetTransferFeeAtoms(NODE_TRANSFER_FEE_ATOMS, statusResponse), dripAtoms = FAUCET_DRIP_ATOMS, now = Date.now }) {
+  let queue = Promise.resolve();
+  return function faucetSend(receiver) {
+    const run = queue.then(async () => {
+      let tx; let nonce;
+      try {
+        const status = await chainStatus();
+        // Fresh (uncached) read of the node floor; throws FaucetFeeFloorError.
+        const feeAtoms = transferFeeAtoms(await anyNode("/status"));
+        const nonceResponse = await anyNode(`/nonce/${faucet.address}`);
+        if (nonceResponse.status !== 200) throw new Error(`faucet nonce lookup failed (status ${nonceResponse.status})`);
+        // Chain state wins after a restore or a rejected drip (Red Team INFO #9).
+        nonce = nonceTracker.next(nonceResponse.body.nonce, now());
+        tx = buildTransfer({ chainId, nonce, sender: faucet.address, receiver, amountAtoms: dripAtoms, feeAtoms, timestampMs: now() },
+          faucet.privateKey, faucet.publicKey, status.transactionVersion);
+      } catch (error) { throw markFaucetPreSubmit(error); }
+      const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
+      // The node's error text is logged by the faucet route, never returned.
+      if (submitted.status < 200 || submitted.status > 299) { nonceTracker.rejected(nonce, { status: submitted.status, error: submitted.body?.error }, now()); throw new Error(`faucet transfer rejected by node (status ${submitted.status}): ${String(submitted.body?.error ?? "").slice(0, 300)}`); }
+      nonceTracker.accepted(nonce, now());
+      return { txid: tx.txid, receiver, amountAtoms: dripAtoms, nonce };
+    });
+    queue = run.catch(() => undefined);
+    return run;
+  };
+}
 function peekLimit(limiter, key) { return typeof limiter.peek === "function" ? limiter.peek(key, Date.now(), { record: true }) : { allowed: true }; }
-function refundAll(taken) { for (const [limiter, key] of taken) if (typeof limiter.refund === "function") limiter.refund(key); }
+function refundAll(taken) { for (const [limiter, receipt] of taken) if (receipt && typeof limiter.refund === "function") limiter.refund(receipt); }
 const FAUCET_REQUEST_ERRORS = new Set(["content-type must be application/json", "request body too large", "invalid JSON"]);
 const SECURITY = { "x-content-type-options": "nosniff", "x-zyron-network": "testnet-no-value", "referrer-policy": "no-referrer" };
 function writeJson(response, code, body, extra = {}) {
@@ -979,7 +1027,8 @@ const FILL_LEVELS = ["ok", "high", "full"];
 // - fillAlert=true: track 80%/full crossings, call onFill once per crossing,
 //   and report fill / fillAlerts in stats().
 // - peek(key) answers exactly what take(key) would answer at the same moment,
-//   without changing anything; refund(key) undoes one allowed take.
+//   without changing anything; refund(receipt) undoes one allowed take, but
+//   only within the window entry that take spent.
 export class WindowLimiter {
   constructor(limit, windowMs, maxKeys = RATE_LIMITER_MAX_KEYS_DEFAULT, { evictOnFull = false, prefixCap = 0, fillAlert = false, onFill } = {}) {
     Object.assign(this, { limit, windowMs, maxKeys, evictOnFull, prefixCap, fillAlert, hits: new Map(), perPrefix: new Map(), prefixBudget: new Map(), deniedFull: 0, deniedPrefix: 0, evicted: 0, evictedPrefix: 0, fillAlerts: 0 });
@@ -1062,6 +1111,12 @@ export class WindowLimiter {
     return { allowed: true };
   }
   take(key, now = Date.now()) {
+    const { receipt, ...result } = this.takeWithReceipt(key, now);
+    return result;
+  }
+  // take() plus, when allowed, a receipt naming the exact window entry and
+  // /48 budget it spent, so refund() can never credit a later window (#1213-7).
+  takeWithReceipt(key, now = Date.now()) {
     this.#expireFront(now);
     const p = this.#prefixOf(key);
     const budget = p && this.prefixBudgetLimit > 0 ? this.prefixBudget.get(p) : undefined;
@@ -1105,25 +1160,30 @@ export class WindowLimiter {
     this.#trackFill();
     if (entry.count >= this.limit) return { allowed: false, retryAfterMs: entry.start + this.windowMs - now };
     entry.count += 1;
+    let spentBudget;
     if (p && this.prefixBudgetLimit > 0) {
-      if (budget) budget.count += 1;
+      if (budget) { budget.count += 1; spentBudget = budget; }
       else {
         if (this.prefixBudget.size >= this.maxKeys) this.prefixBudget.delete(this.prefixBudget.keys().next().value);
-        this.prefixBudget.set(p, { start: now, count: 1 });
+        spentBudget = { start: now, count: 1 };
+        this.prefixBudget.set(p, spentBudget);
       }
     }
-    return { allowed: true };
+    return { allowed: true, receipt: { key, entry, budget: spentBudget } };
   }
-  // Undo one allowed take of key (for example when the work it paid for
-  // failed). A key left with no uses is dropped so its slot frees too.
-  refund(key, now = Date.now()) {
-    const entry = this.hits.get(key);
-    if (!this.#live(entry, now) || entry.count < 1) return false;
-    entry.count -= 1;
-    if (entry.count === 0) this.#drop(key);
+  // Undo one allowed take, given its receipt from takeWithReceipt(). Only the
+  // very entry (and /48 budget) that take spent is credited: if that window
+  // has since expired or been replaced, nothing is refunded. A key left with
+  // no uses is dropped so its slot frees too.
+  refund(receipt, now = Date.now()) {
+    if (!receipt || typeof receipt !== "object") return false;
+    const { key, entry, budget } = receipt;
+    const current = this.hits.get(key);
+    if (current === undefined || current !== entry || !this.#live(current, now) || current.count < 1) return false;
+    current.count -= 1;
+    if (current.count === 0) this.#drop(key);
     const p = this.#prefixOf(key);
-    const budget = p && this.prefixBudgetLimit > 0 ? this.prefixBudget.get(p) : undefined;
-    if (this.#live(budget, now) && budget.count > 0) budget.count -= 1;
+    if (budget && p && this.prefixBudget.get(p) === budget && this.#live(budget, now) && budget.count > 0) budget.count -= 1;
     return true;
   }
   stats() {
@@ -2443,27 +2503,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     return gatewayClientIdentity(request.socket.remoteAddress, request.headers, { trustCloudflareConnectingIp });
   }
 
-  let faucetQueue = Promise.resolve(); const faucetNonce = createFaucetNonceTracker();
-  function faucetSend(receiver) {
-    const run = faucetQueue.then(async () => {
-      const status = await chainStatus();
-      // Fresh (uncached) read of the node floor; throws FaucetFeeFloorError.
-      const feeAtoms = faucetTransferFeeAtoms(NODE_TRANSFER_FEE_ATOMS, await anyNode("/status"));
-      const nonceResponse = await anyNode(`/nonce/${faucet.address}`);
-      if (nonceResponse.status !== 200) throw new Error(`faucet nonce lookup failed (status ${nonceResponse.status})`);
-      // Chain state wins after a restore or a rejected drip (Red Team INFO #9).
-      const nonce = faucetNonce.next(nonceResponse.body.nonce, Date.now());
-      const tx = createTransfer({ chainId, nonce, sender: faucet.address, receiver, amountAtoms: FAUCET_DRIP_ATOMS, feeAtoms, timestampMs: Date.now() },
-        faucet.privateKey, faucet.publicKey, status.transactionVersion);
-      const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
-      // The node's error text is logged by the faucet route, never returned.
-      if (submitted.status < 200 || submitted.status > 299) { faucetNonce.rejected(nonce, { status: submitted.status, error: submitted.body?.error }, Date.now()); throw new Error(`faucet transfer rejected by node (status ${submitted.status}): ${String(submitted.body?.error ?? "").slice(0, 300)}`); }
-      faucetNonce.accepted(nonce, Date.now());
-      return { txid: tx.txid, receiver, amountAtoms: FAUCET_DRIP_ATOMS, nonce };
-    });
-    faucetQueue = run.catch(() => undefined);
-    return run;
-  }
+  const faucetSend = createFaucetSend({ chainStatus, anyNode, chainId, faucet });
 
   // Blocks above durableHeight are finalized but not yet in a published
   // snapshot: a cold start can replace them (docs/OPEN_TESTNET.md).
