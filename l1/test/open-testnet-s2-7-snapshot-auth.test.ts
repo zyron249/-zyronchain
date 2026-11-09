@@ -2,9 +2,10 @@
 // Stacked on test/s2-7-acceptance (draft #1202). Production path is
 // serveAuthorizedSnapshotRoute — the same helper runNetwork uses.
 //
-// Design (no new Render env): keeper Bearer = stateSecret
-// (ZYRON_TESTNET_STATE_SECRET). Unauthenticated → public bucket. Invalid
-// Bearer → 401 before any snapshots.fresh / takeRate / sealed read.
+// Design (no new Render env): keeper Bearer = HMAC-SHA256(
+//   ZYRON_TESTNET_STATE_SECRET, "zyron-open-testnet-snapshot-keeper-v1") as hex.
+// Raw secret is never accepted or sent. Unauthenticated → public bucket.
+// Invalid Bearer → 401 before any snapshots.fresh / takeRate / sealed read.
 //
 // No live endpoints, no network beyond 127.0.0.1, no real secrets.
 // Fake tokens below are deliberately obvious and never logged by these tests.
@@ -25,11 +26,12 @@ const GENESIS_HASH = H(0);
 /** Obviously fake; never a real keeper credential / state secret. */
 const FAKE_STATE_SECRET = "test-fake-state-secret-0001";
 const FAKE_BAD_TOKEN = "test-fake-invalid-token-9999";
+const keeperAuth = () => ({ authorization: `Bearer ${api.deriveSnapshotKeeperBearer(FAKE_STATE_SECRET)}` });
 
-type SnapCalls = { fresh: number; current: number; refresh: number; sealedReads: number; evict: number };
+type SnapCalls = { fresh: number; current: number; refresh: number; sealedReads: number };
 
 function spySnapshots(sealed = Buffer.from("sealed-fixture")) {
-  const calls: SnapCalls = { fresh: 0, current: 0, refresh: 0, sealedReads: 0, evict: 0 };
+  const calls: SnapCalls = { fresh: 0, current: 0, refresh: 0, sealedReads: 0 };
   const tracked = {
     get sealed() {
       calls.sealedReads += 1;
@@ -52,10 +54,6 @@ function spySnapshots(sealed = Buffer.from("sealed-fixture")) {
     },
     ageSeconds() {
       return 0;
-    },
-    // Cache only holds one entry today; spy records any future eviction hook.
-    evict() {
-      calls.evict += 1;
     }
   };
   return { snapshots, calls, sealed };
@@ -126,23 +124,37 @@ test("S27 guard: acceptance file has no todo marks or STRICT gate", async () => 
   assert.equal(/test\.todo\s*\(/.test(src), false, "must not call test.todo");
 });
 
-test("S27 constant-time bearer compare", () => {
-  assert.equal(api.timingSafeBearerToken(`Bearer ${FAKE_STATE_SECRET}`, FAKE_STATE_SECRET), true);
-  assert.equal(api.timingSafeBearerToken(`Bearer ${FAKE_BAD_TOKEN}`, FAKE_STATE_SECRET), false);
-  assert.equal(api.timingSafeBearerToken(`Bearer ${FAKE_STATE_SECRET}x`, FAKE_STATE_SECRET), false);
-  assert.equal(api.timingSafeBearerToken("Basic nope", FAKE_STATE_SECRET), false);
-  assert.equal(api.timingSafeBearerToken(undefined, FAKE_STATE_SECRET), false);
-  assert.equal(api.timingSafeBearerToken(`Bearer ${FAKE_STATE_SECRET}`, ""), false);
+test("S27 derived keeper bearer: raw secret never accepted; derived value is", () => {
+  const derived = api.deriveSnapshotKeeperBearer(FAKE_STATE_SECRET);
+  assert.equal(typeof derived, "string");
+  assert.equal(derived.length, 64); // sha256 hex
+  assert.notEqual(derived, FAKE_STATE_SECRET);
+  assert.equal(api.snapshotClientRole(`Bearer ${derived}`, FAKE_STATE_SECRET), "keeper");
+  assert.equal(api.snapshotClientRole(`Bearer ${FAKE_STATE_SECRET}`, FAKE_STATE_SECRET), "reject", "raw secret must not authenticate");
+  assert.equal(api.timingSafeBearerToken(`Bearer ${FAKE_STATE_SECRET}`, derived), false);
+  assert.equal(api.timingSafeBearerToken(`Bearer ${derived}`, derived), true);
+});
+
+test("S27 constant-time compare covers length (SHA-256 then timingSafeEqual)", () => {
+  const derived = api.deriveSnapshotKeeperBearer(FAKE_STATE_SECRET);
+  assert.equal(api.timingSafeTokenEqual("short", "much-longer-token-value"), false);
+  assert.equal(api.timingSafeTokenEqual(derived, derived), true);
+  assert.equal(api.timingSafeTokenEqual(derived, derived + "x"), false);
+  assert.equal(api.timingSafeTokenEqual("", "x"), false);
+  assert.equal(api.timingSafeBearerToken(`Bearer ${FAKE_BAD_TOKEN}`, derived), false);
+  assert.equal(api.timingSafeBearerToken(`Bearer ${derived}x`, derived), false);
+  assert.equal(api.timingSafeBearerToken("Basic nope", derived), false);
+  assert.equal(api.timingSafeBearerToken(undefined, derived), false);
+  assert.equal(api.timingSafeBearerToken(`Bearer ${derived}`, ""), false);
   assert.equal(api.snapshotClientRole(undefined, FAKE_STATE_SECRET), "public");
   assert.equal(api.snapshotClientRole("", FAKE_STATE_SECRET), "public");
-  assert.equal(api.snapshotClientRole(`Bearer ${FAKE_STATE_SECRET}`, FAKE_STATE_SECRET), "keeper");
   assert.equal(api.snapshotClientRole(`Bearer ${FAKE_BAD_TOKEN}`, FAKE_STATE_SECRET), "reject");
 });
 
-// ---- S27-T1 ----------------------------------------------------------------
-// Checklist row said "no auth → 401". Patron (2026-11-09) requires a public
-// bucket separate from keeper, with no new env — so unauthenticated is public.
-// T1 asserts public traffic never touches the keeper limiter; T2 covers 401.
+// ---- S27-T1 (amended) ------------------------------------------------------
+// Amended vs original checklist row: unauthenticated requests use only the
+// public bucket and never touch the keeper limiter (Patron separate quotas;
+// no new env). T2 covers invalid-bearer 401 before cache work.
 
 test("S27-T1 snapshot-route-rejects-unauthenticated", async () => {
   const { snapshots, calls } = spySnapshots();
@@ -196,7 +208,7 @@ test("S27-T3 snapshot-public-cannot-exhaust-keeper", async () => {
     const denied = await fetch(gw.url);
     assert.equal(denied.status, 429, "public cap exhausted");
     await denied.arrayBuffer();
-    const keeper = await fetch(gw.url, { headers: bearer(FAKE_STATE_SECRET) });
+    const keeper = await fetch(gw.url, { headers: keeperAuth() });
     assert.equal(keeper.status, 200, `keeper must still succeed after public cap; got ${keeper.status}`);
     await keeper.arrayBuffer();
   } finally {
@@ -204,14 +216,14 @@ test("S27-T3 snapshot-public-cannot-exhaust-keeper", async () => {
   }
 });
 
-// ---- S27-T4 (renamed: quota isolation, not literal cache eviction) ----------
+// ---- S27-T4 (renamed: quota isolation; production cache has no eviction hook) ---
 
 test("S27-T4 snapshot-keeper-not-rate-limited-by-public", async () => {
   const { snapshots, calls } = spySnapshots();
   const limits = snapshotLimits(3);
   const gw = await listenRunNetworkSnapshotPath(snapshots, { limits });
   try {
-    const warm = await fetch(gw.url, { headers: bearer(FAKE_STATE_SECRET) });
+    const warm = await fetch(gw.url, { headers: keeperAuth() });
     assert.equal(warm.status, 200);
     await warm.arrayBuffer();
     const freshAfterWarm = calls.fresh;
@@ -220,9 +232,7 @@ test("S27-T4 snapshot-keeper-not-rate-limited-by-public", async () => {
       const pub = await fetch(gw.url);
       await pub.arrayBuffer();
     }
-    assert.equal(calls.evict, 0, "public flood must not evict keeper-usable cache entry");
-
-    const again = await fetch(gw.url, { headers: bearer(FAKE_STATE_SECRET) });
+    const again = await fetch(gw.url, { headers: keeperAuth() });
     assert.equal(
       again.status,
       200,
@@ -245,7 +255,7 @@ test("S27-T5 snapshot-auth-concurrency-isolation", async () => {
     const publicN = 8;
     const keeperM = 3;
     const publicReqs = Array.from({ length: publicN }, () => fetch(gw.url));
-    const keeperReqs = Array.from({ length: keeperM }, () => fetch(gw.url, { headers: bearer(FAKE_STATE_SECRET) }));
+    const keeperReqs = Array.from({ length: keeperM }, () => fetch(gw.url, { headers: keeperAuth() }));
     const [publicResults, keeperResults] = await Promise.all([Promise.all(publicReqs), Promise.all(keeperReqs)]);
     for (const r of publicResults) await r.arrayBuffer();
     for (const r of keeperResults) await r.arrayBuffer();

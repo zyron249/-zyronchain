@@ -32,10 +32,12 @@ import { allocateValidatorBasePort } from "./open-testnet-ports.mjs";
 import { ensureGatewayMallocArena } from "./open-testnet/malloc-arena.mjs";
 import assert from "node:assert/strict";
 import { fork, spawn } from "node:child_process";
-import { createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import { Worker } from "node:worker_threads";
 import { SNAPSHOT_MAGIC, sealSnapshot, snapshotKey } from "./open-testnet/snapshot-seal.mjs";
+import { deriveSnapshotKeeperBearer, timingSafeBearerToken, timingSafeTokenEqual, SNAPSHOT_KEEPER_BEARER_LABEL } from "./open-testnet/snapshot-bearer.mjs";
+export { deriveSnapshotKeeperBearer, timingSafeBearerToken, timingSafeTokenEqual, SNAPSHOT_KEEPER_BEARER_LABEL };
 import { verifySnapshotBlocks } from "./open-testnet/snapshot-verify.mjs";
 import { HistoryFileError, createHistoryFile, resumeHistoryFile } from "./open-testnet/history-file.mjs";
 import { createServer } from "node:http";
@@ -1324,28 +1326,14 @@ export class WindowLimiter {
   count(key) { return this.hits.get(key)?.count ?? 0; }
 }
 
-// S2-7: constant-time compare of Authorization: Bearer <token> to expected.
-// Returns false for missing/non-Bearer/wrong-length/wrong-value. Zeroizes buffers.
-export function timingSafeBearerToken(header, expected) {
-  if (typeof header !== "string" || typeof expected !== "string" || expected.length === 0) return false;
-  if (!header.startsWith("Bearer ")) return false;
-  const provided = Buffer.from(header.slice("Bearer ".length), "utf8");
-  const wanted = Buffer.from(expected, "utf8");
-  try {
-    return provided.length === wanted.length && timingSafeEqual(provided, wanted);
-  } finally {
-    provided.fill(0);
-    wanted.fill(0);
-  }
-}
-
-// S2-7 role for GET /state/snapshot. Reuses ZYRON_TESTNET_STATE_SECRET (stateSecret)
-// as the keeper bearer — no new Render env. Unauthenticated → public bucket;
-// valid bearer → keeper bucket; anything else → reject before cache work.
+// S2-7 role for GET /state/snapshot. Bearer must be the HMAC-derived keeper
+// token (never the raw ZYRON_TESTNET_STATE_SECRET). Unauthenticated → public
+// bucket; valid derived bearer → keeper; anything else → reject before cache work.
 export function snapshotClientRole(authorizationHeader, stateSecret) {
   if (!stateSecret) return "reject";
   if (authorizationHeader === undefined || authorizationHeader === "") return "public";
-  if (timingSafeBearerToken(authorizationHeader, stateSecret)) return "keeper";
+  const expected = deriveSnapshotKeeperBearer(stateSecret);
+  if (expected && timingSafeBearerToken(authorizationHeader, expected)) return "keeper";
   return "reject";
 }
 
@@ -2369,7 +2357,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? { ...result.body, blocks: result.body.blocks.slice(0, capped) } : { error: "node unavailable" }, PEER_RPC);
         }
         if (path === "/state/snapshot" && stateSecret) {
-          // S2-7: auth/role before any cache work; keeper bearer is stateSecret (no new env).
+          // S2-7: auth/role before any cache work; keeper bearer is HMAC-derived (raw secret never sent).
           return serveAuthorizedSnapshotRoute(response, snapshots, {
             genesisHash: info.genesisHash, stateSecret, authorization: request.headers.authorization,
             limits, limited, sendUnauthorized: (res) => sendJson(res, 401, { error: "unauthorized" })
