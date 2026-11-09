@@ -1,9 +1,14 @@
 # T1 restore trust anchor (open testnet only)
 
-See `docs/specs/s2-3-t1-sealed-summary.md`. Every file here changes only by a reviewed PR
-(Patron and Security; `.github/CODEOWNERS` covers `/l1/trust/`). CI runs
-`l1/scripts/t1-trust-append-only.mjs` on every PR: record and high-water entries are append-only
-(base entries an unchanged prefix of head entries) and pinned keys are only added. The open-testnet boot reads the restore anchor only from these files
+See `docs/specs/s2-3-t1-sealed-summary.md` (section 4). Every file here changes only by a PR.
+Enforcement is: the append-only CI check `l1/scripts/t1-trust-append-only.mjs` (record and
+high-water entries are append-only, base entries an unchanged prefix of head entries; pinned
+keys are only added; every JSON file is byte-canonical, `JSON.stringify(value, null, 2)` plus
+one newline, with no duplicate keys), run as the trusted copy from `main` and again by the
+base-branch `pull_request_target` workflow; plus a Zyron Security review; plus the owner's
+explicit merge OK. `.github/CODEOWNERS` covers `/l1/trust/` but is advisory only (the author
+is the same account as the owner). Branch-protection hardening is an owner decision that is
+still pending. The open-testnet boot reads the restore anchor only from these files
 at the checked-out release ref, never from the gateway, environment variables, options or the
 snapshot.
 

@@ -88,17 +88,42 @@ Both records are hash chains: each entry has `index` (1, 2, ...) and `prev`
 (`SHA-256(canonicalJson(previous entry))`, zeros for the first). An edited, removed or
 reordered entry makes the file invalid (`RESTORE_ANCHOR_CONFIG_INVALID`).
 
-Append-only and PR-only, enforced at review time (a hash chain alone cannot stop a rewrite with
-recomputed `prev` hashes):
-- `.github/CODEOWNERS` lists `/l1/trust/`, so every change to it needs code-owner review.
-- `l1/scripts/t1-trust-append-only.mjs --base <PR base sha>` runs in the Standalone L1 CI job on
-  every pull request. It fails unless the base entries of `t1-summary-record.json` and
+Append-only and PR-only. A hash chain alone cannot stop a rewrite with recomputed `prev`
+hashes, so the files are protected by these controls:
+- CI check: `l1/scripts/t1-trust-append-only.mjs`. It fails unless every trust JSON file at the
+  head is byte-canonical (exactly `JSON.stringify(value, null, 2)` plus one trailing newline,
+  no duplicate object keys), the base entries of `t1-summary-record.json` and
   `t1-high-water.json` are an unchanged prefix of the head entries (byte-identical canonical
-  JSON at the same positions), every base key in `t1-summary-keys.json` is still pinned
-  unchanged at the same position (keys are only added; revocation and rotation go through the
-  record, never through edits), none of these files is deleted, and the local test-fixture
-  marker `TEST-FIXTURE-ONLY-loopback-quorum` is absent. The seal text and the quorum config
-  may change.
+  JSON at the same positions, valid index / prev chain), every base key in
+  `t1-summary-keys.json` is still pinned unchanged at the same position (keys are only added;
+  revocation and rotation go through the record, never through edits; each keyId is derived
+  from its key), none of these files is deleted, and the local test-fixture marker
+  `TEST-FIXTURE-ONLY-loopback-quorum` is absent. The seal text and the quorum config may change.
+  The boot loader applies the same byte-canonical and duplicate-key rule
+  (`RESTORE_ANCHOR_CONFIG_INVALID`).
+  - The script is self-contained (Node built-ins only, no `l1/dist`), so CI runs the TRUSTED
+    copy: in the Standalone L1 job (`.github/workflows/l1.yml`) it is taken with
+    `git show <ref>:l1/scripts/t1-trust-append-only.mjs` from the merge base with `main` (pull
+    requests) or the previous `main` (pushes), never the change's own copy, except when that
+    ref has no script yet (bootstrap, logged as a warning).
+  - Pull requests are compared with `git merge-base origin/main HEAD` (`--merge-base`), not
+    with the PR's base SHA, so a stacked PR retargeted to `main` is compared with `main`.
+    Pushes to `main` are compared with `github.event.before` (`--push-before`); an all-zero
+    before SHA falls back to the first parent (or an empty base for a root commit), and an
+    unknown one fails closed.
+  - `.github/workflows/l1-t1-trust-append-only.yml` repeats the check under
+    `pull_request_target`, so it runs the base branch's workflow and checker, not the PR's,
+    and a PR cannot disable it by editing `l1.yml`. It fetches the PR head as git data only
+    (`git show`), never checks out, installs, builds or runs PR code, uses no secrets and has
+    `contents: read`. Its `edited` trigger re-runs it when a PR is retargeted.
+- Review: every change to `l1/trust/` (and to the checker, the workflows and
+  `l1/src/sealed-summary.ts`) needs a Zyron Security review and the owner's explicit merge OK.
+  This is a process control, not a GitHub-enforced one.
+- `.github/CODEOWNERS` lists `/l1/trust/`, but it is ADVISORY only: the automation and the
+  owner use the same GitHub account, so the author is the code owner and GitHub cannot require
+  an independent code-owner review. Branch-protection hardening (required reviews, required
+  checks) is an owner decision that is still pending; until then no GitHub setting enforces
+  the review or the checks above.
 
 Record kinds: `revoke-key { keyId }` (the key is `revoked: true`), `supersede-key { keyId,
 supersededAtHeight }` (the key only covers summaries with `height < supersededAtHeight`),
@@ -114,6 +139,9 @@ from the superseded list. A new seal enters by one PR that adds the seal text an
 high-water entry together (`t1-build-summary.mjs high-water`); a restore refuses a seal above
 the effective high-water (`RESTORE_SUMMARY_HIGH_WATER_CONFLICT`) or below it
 (`RESTORE_SUMMARY_REPLAY_LOWER_HEIGHT`), and a different seal at the same height (conflict).
+The effective value carries the entry's `tipHash`, and the restore refuses a seal whose
+`tipHash` differs from it (`RESTORE_SUMMARY_HIGH_WATER_CONFLICT`); two live (not superseded)
+entries at the same height with different tips are a conflict too.
 
 ## 5. Provenance: who builds and publishes the summary
 
@@ -125,26 +153,44 @@ the effective high-water (`RESTORE_SUMMARY_HIGH_WATER_CONFLICT`) or below it
 2. The key custodian (Patron) signs it with `t1-sign-summary.mjs` (section 7).
 3. `t1-build-summary.mjs assemble` produces the seal text and checks it against the pinned keys;
    `high-water` produces the appended high-water file.
-4. A PR adds both files; Patron and Security review it; it is merged by a maintainer.
+4. A PR adds both files; Patron and Security review it; it is merged only with the owner's
+   explicit OK.
    `provenance.publisher` and `provenance.workflow` name who built it and with what.
 
 Live quorum tip (restore and builder): `GET {url}/block/{height}` from each pinned validator;
 a block counts only if its hash recomputes over its header, its height and chain ID match, and
 its secp256k1 finality attestations verify against the pinned validator keys. The tip needs at
 least `threshold` distinct trusted attesters (threshold in [floor(2n/3)+1, n], n >= 3) from
-verified sources on at least two distinct URL origins (one host answering for every validator
-is not a quorum). The pinned config must list distinct URLs from at least two origins, each
-`https` on a public host: loopback, localhost, private, link-local, unique-local and
-`.local`/`.internal` hosts are refused (`RESTORE_ANCHOR_CONFIG_INVALID`). `http://127.0.0.1`
-sources are accepted only in a local test fixture trust directory that carries the
-`TEST-FIXTURE-ONLY-loopback-quorum` marker, which the CI check above keeps out of the
-repository. Two verified tips -> `RESTORE_QUORUM_TIP_MISMATCH`; deadline ->
+verified sources on at least two distinct sites (one host answering for every validator is
+not a quorum). The pinned config must list distinct URLs from at least two sites, each
+`https` on a public host.
+
+- Site (`quorumSourceSite`): the host lowercased, with trailing dots, port and scheme
+  dropped, and a DNS name collapsed to its registrable domain by a simple eTLD+1 rule (the
+  last two labels, or three when the second-to-last is a common second-level suffix such as
+  `co`, `com`, `org` under a two-letter country TLD; no public-suffix dependency). An IP
+  literal is its own site. So port, trailing-dot and subdomain variants of one host are one
+  site. The rule is conservative: tenants of one shared hosting suffix count as one site.
+- Non-public hosts are refused (`RESTORE_ANCHOR_CONFIG_INVALID`): localhost, `.local`,
+  `.internal`; IPv4 loopback, unspecified, RFC 1918, CGNAT, link-local, 192.0.0.0/24,
+  documentation ranges, 198.18.0.0/15, multicast and reserved; IPv6 loopback, unspecified,
+  `::/96` and `::ffff:0:0/96`, NAT64 `64:ff9b::/96` and `64:ff9b:1::/48`, 6to4 `2002::/16`,
+  Teredo `2001::/32`, `2001:db8::/32`, unique-local, link-local and multicast.
+- Resolved addresses: before any request the quorum reader resolves every source host (all
+  addresses) and refuses the read (`RESTORE_ANCHOR_CONFIG_INVALID`) if any address is
+  non-public, so a public-looking name that points at a private address (nip.io style) fails.
+  A lookup failure counts that source as not answering. `fetch` resolves the name again, so
+  this does not pin the address against DNS rebinding; the tip relies on the secp256k1
+  attestations, not on the transport.
+- `http://127.0.0.1` sources (each port its own site) are accepted only in a local test fixture
+  trust directory that carries the `TEST-FIXTURE-ONLY-loopback-quorum` marker, which the CI
+  check above keeps out of the repository; they are not resolved. Two verified tips -> `RESTORE_QUORUM_TIP_MISMATCH`; deadline ->
 `RESTORE_QUORUM_TIP_TIMEOUT`; too few -> `RESTORE_QUORUM_TIP_UNAVAILABLE`.
 
 ## 6. Restore checks (order) and refusal codes
 
 `restoreNetwork(dir, bundle, chainId, { restoreAnchor })` with `restoreAnchor = { pinnedKeys,
-readSeal() -> raw text | null, readSuperseded(), readHighWater() -> { height, summaryDigest },
+readSeal() -> raw text | null, readSuperseded(), readHighWater() -> { height, summaryDigest, tipHash? },
 readQuorumTip(height), timeoutMs }`. Every read is bounded by `timeoutMs` (default 30 s; timers
 are cleared). Refusals are `RestoreAnchorError` with a `code`, never a `cause` or `syscall`, so
 `isLocalIoError` never treats them as disk failures and `restoreNetworkWithLocalRetry` (which
@@ -160,7 +206,9 @@ removes this attempt's staging directory. A staging directory left over by a cra
 before the restore runs again from the bundle, and never deleted or promoted: an incomplete one
 like any incomplete network directory (`<staging>.incomplete-<ms>-<pid>/`), and one that already
 holds a completion marker (a crash between the marker and the rename) to
-`<staging>.leftover-<ms>-<pid>`.
+`<staging>.leftover-<ms>-<pid>`. At most 3 such `.leftover-*` directories are kept: with 3
+already there the restore is refused (`RESTORE_STAGING_LEFTOVER_LIMIT`) before anything is
+renamed or written, and an operator inspects and removes them. Nothing is deleted automatically.
 
 | Code | When |
 |---|---|
@@ -178,7 +226,7 @@ holds a completion marker (a crash between the marker and the rename) to
 | `RESTORE_SEAL_VALIDATOR_KEY` | keyId is a validator/oracle/faucet address or key, the seal is signed by one, or a pinned key is one's x-coordinate |
 | `RESTORE_SUMMARY_SUPERSEDED` | Seal or its tip superseded |
 | `RESTORE_SUMMARY_REPLAY_LOWER_HEIGHT` | Below the effective high-water |
-| `RESTORE_SUMMARY_HIGH_WATER_CONFLICT` | Above it, a different seal at it, or no entry |
+| `RESTORE_SUMMARY_HIGH_WATER_CONFLICT` | Above it, a different seal or tip at it, two live tips at one height, or no entry |
 | `RESTORE_SUMMARY_WRONG_CHAIN` | Other chain ID |
 | `RESTORE_SUMMARY_GENESIS_MISMATCH` | Other genesis (impostor bundle) |
 | `RESTORE_SUMMARY_VALIDATOR_SET_MISMATCH` / `RESTORE_SUMMARY_ORACLE_SET_MISMATCH` | Set hash differs |
@@ -189,6 +237,7 @@ holds a completion marker (a crash between the marker and the rename) to
 | `RESTORE_SUMMARY_SUPPLY_MISMATCH` | Total differs, or balances + pending + burned != MAX_SUPPLY_ATOMS (50,000,000 ZYN) |
 | `RESTORE_SUMMARY_BURN_MISMATCH` | Burned atoms differ |
 | `RESTORE_SNAPSHOT_CORRUPT` | Snapshot cannot be opened or replayed (e.g. tampered attestation) |
+| `RESTORE_STAGING_LEFTOVER_LIMIT` | 3 leftover staging directories are already kept beside the target |
 
 ## 7. Key custody, rotation, revocation, compromise
 
@@ -200,8 +249,10 @@ holds a completion marker (a crash between the marker and the rename) to
 - The key is never placed in the gateway, Render, CI, environment variables or logs. The signer
   `t1-sign-summary.mjs --summary <file> --key-file <path>` reads it only from an absolute path
   whose real directory is outside `/workspace` and the repository. It opens the file with
-  `O_NOFOLLOW` (a symlink fails), checks the open descriptor with `fstat` (regular file, mode
-  0600, owned by the user), reads it into a Buffer, builds the KeyObject from that Buffer and
+  `lstat` first (a regular file with exactly one link, not a symlink), then opens it with
+  `O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY` (a symlink fails, a FIFO cannot block) and
+  checks the open descriptor with `fstat` (regular file, the same device and inode as the
+  `lstat`, exactly one link, mode 0600, owned by the user, bounded size), reads it into a Buffer, builds the KeyObject from that Buffer and
   zeroes the Buffer (`fill(0)`). It refuses key material on the command line or in the
   environment and prints only `{"keyId","signature"}`.
 - Independence is weaker than a separate machine: the signer runs on the same shared machine
