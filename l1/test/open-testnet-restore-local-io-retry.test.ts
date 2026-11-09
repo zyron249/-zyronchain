@@ -101,7 +101,7 @@ async function startHost(root: string, secret: string, sealed: Buffer, failures:
   // local live-quorum validators) lets the restore pass its independent anchor.
   const anchorFixture = existsSync(join(root, "source")) ? await startFixtureTrustDir(root, await fixtureSourceOf(join(root, "source"))) : undefined;
   server.once("close", () => { void anchorFixture?.close(); });
-  const child: ChildProcess = spawn(process.execPath, [...(anchorFixture?.nodeArgs ?? []), "--import", pathToFileURL(preload).href, script, "run", "--dir", join(root, "hosted"), "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
+  const child: ChildProcess = spawn(process.execPath, [...(anchorFixture?.nodeArgs ?? []), "--import", pathToFileURL(preload).href, anchorFixture?.script ?? script, "run", "--dir", join(root, "hosted"), "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
     "--chain-id", CHAIN_ID, "--validator-base-port", String(basePort), "--restore-url", `http://127.0.0.1:${snapshotPort}/state.enc`], {
     cwd: l1Root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ZYRON_TESTNET_STATE_SECRET: secret, ZYRON_TEST_RESTORE_EIO_FAILURES: String(failures), PORT: "" }
   });

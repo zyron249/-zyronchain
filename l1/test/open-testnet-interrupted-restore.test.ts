@@ -85,12 +85,12 @@ async function publishSnapshot(root: string) {
   const anchorFixture = await startFixtureTrustDir(root, await fixtureSourceOf(source));
   snapshotServer.once("close", () => { void anchorFixture.close(); });
   const server = snapshotServer;
-  return { source, network, secret, server, nodeArgs: anchorFixture.nodeArgs, url: `http://127.0.0.1:${(server.address() as { port: number }).port}/state.enc` };
+  return { source, network, secret, server, nodeArgs: anchorFixture.nodeArgs, script: anchorFixture.script, url: `http://127.0.0.1:${(server.address() as { port: number }).port}/state.enc` };
 }
 
-async function startHosted(target: string, published: { secret: string; url: string; nodeArgs: string[] }) {
+async function startHosted(target: string, published: { secret: string; url: string; nodeArgs: string[]; script: string }) {
   const basePort = await allocateValidatorBasePort("interrupted-restore");
-  const child = spawn(process.execPath, [...published.nodeArgs, script, "run", "--dir", target, "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
+  const child = spawn(process.execPath, [...published.nodeArgs, published.script, "run", "--dir", target, "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
     "--chain-id", CHAIN_ID, "--validator-base-port", String(basePort), "--restore-url", published.url], {
     cwd: l1Root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ZYRON_TESTNET_STATE_SECRET: published.secret, PORT: "" }
   });

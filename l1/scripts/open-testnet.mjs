@@ -1456,13 +1456,29 @@ function restoreBundleView(bundle) {
 // (<dir>.restore-staging) and renamed onto the target only after every check
 // passed and the completion marker is written, so a refusal or a crash never
 // leaves restore output at the target. A staging directory left by a crash is
-// moved aside like any incomplete network directory (never deleted).
+// moved aside (incomplete: like any incomplete network directory; marked or
+// unexpected: renamed to <staging>.leftover-<ms>-<pid>), never deleted.
 export function restoreStagingDir(dir) { return `${resolve(dir)}.restore-staging`; }
 async function prepareRestoreStaging(dir) {
   const staging = restoreStagingDir(dir);
-  const aside = await moveAsideIncompleteNetworkDir(staging);
+  // An incomplete staging directory is moved aside like any incomplete
+  // network directory (bounded holders, never deleted).
+  let aside = false;
+  try { aside = await moveAsideIncompleteNetworkDir(staging); } catch { aside = false; }
   if (aside) console.error(`moved a restore staging directory left by an interrupted start-up to ${aside}`);
-  if (await lstat(staging).then(() => true, () => false)) throw new Error(`${staging} holds a completed restore that was never moved into place; inspect it and remove it`);
+  // Anything still there (a staging directory that already holds a completion
+  // marker because a crash hit between the marker and the final rename, or one
+  // move-aside refused) is renamed aside under a timestamp suffix, never
+  // deleted and never promoted; the restore then runs again from the bundle.
+  if (await lstat(staging).then(() => true, () => false)) {
+    for (let attempt = 0; ; attempt += 1) {
+      const leftover = `${staging}.leftover-${Date.now()}-${process.pid}${attempt ? `-${attempt}` : ""}`;
+      if (await lstat(leftover).then(() => true, () => false)) continue;
+      await rename(staging, leftover);
+      console.error(`moved a leftover restore staging directory aside to ${leftover}`);
+      break;
+    }
+  }
   return staging;
 }
 async function promoteRestoreStaging(staging, dir) {

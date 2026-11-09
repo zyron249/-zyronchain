@@ -74,7 +74,7 @@ export async function appendHighWater(o) {
   const summary = await readJson(need(o, "summary"));
   api.assertSummarySchema(summary);
   const file = api.parseHighWaterFile(await readJson(join(trustDir, anchor.RESTORE_TRUST_FILES.highWater)));
-  return api.appendHighWaterEntry(file, { chainId: summary.chainId, height: summary.height, summaryDigest: api.restoreSummaryDigest(need(o, "key-id"), summary), reason: need(o, "reason") });
+  return api.appendHighWaterEntry(file, { chainId: summary.chainId, height: summary.height, tipHash: summary.tipHash, summaryDigest: api.restoreSummaryDigest(need(o, "key-id"), summary), reason: need(o, "reason") });
 }
 
 const invokedDirectly = (() => { try { return resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url); } catch { return false; } })();

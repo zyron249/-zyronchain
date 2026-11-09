@@ -523,15 +523,17 @@ export function restoreTrustFromFiles(keysFile: unknown, recordFile: unknown): {
 // ---- the separate append-only high-water record -----------------------------
 
 export const RESTORE_HIGH_WATER_FORMAT = "zyronchain-restore-summary-high-water-v1";
-export interface HighWaterEntry { index: number; prev: string; chainId: string; height: number; summaryDigest: string; reason: string }
+export interface HighWaterEntry { index: number; prev: string; chainId: string; height: number; tipHash: string; summaryDigest: string; reason: string }
 export interface HighWaterFile { format: typeof RESTORE_HIGH_WATER_FORMAT; entries: HighWaterEntry[] }
 
 /**
  * The high-water record is its own append-only log (index + prev hash chain;
  * never derived from the superseded list). Each entry records one seal
- * (chainId, height, summaryDigest) that was accepted for publication by PR.
- * Its effective value for a chain is the highest entry whose seal is not
- * superseded (superseded by digest, or by height and tip). A seal enters the
+ * (chainId, height, tipHash, summaryDigest) that was accepted for publication
+ * by PR. Its effective value for a chain is the highest entry whose seal is
+ * not superseded: a supersede-summary entry matches it by summaryDigest, or
+ * by height and tipHash (a superseded tip), so superseding the tip of the
+ * H+50 seal makes the high-water resolve to the seal at H. A seal enters the
  * record in the same PR that publishes it, before any restore uses it; a seal
  * above the effective value is refused (RESTORE_SUMMARY_HIGH_WATER_CONFLICT),
  * one below it is a replay (RESTORE_SUMMARY_REPLAY_LOWER_HEIGHT).
@@ -542,10 +544,10 @@ export function parseHighWaterFile(value: unknown): HighWaterFile {
   const digests = new Set<string>();
   for (const [position, entry] of value.entries.entries()) {
     const bad = (detail: string): never => refuse(C.anchorConfigInvalid, `high-water entry ${position + 1}: ${detail}`);
-    if (!isPlainObject(entry) || !exactKeys(entry, ["index", "prev", "chainId", "height", "summaryDigest", "reason"])) return bad("malformed");
+    if (!isPlainObject(entry) || !exactKeys(entry, ["index", "prev", "chainId", "height", "tipHash", "summaryDigest", "reason"])) return bad("malformed");
     if (entry.index !== position + 1) return bad("index is not the next index (an entry was removed or reordered)");
     if (entry.prev !== prev) return bad("prev does not match the previous entry (the record was edited)");
-    if (!isTestnetChainId(entry.chainId) || !safeInt(entry.height, 1) || !isHex32(entry.summaryDigest) ||
+    if (!isTestnetChainId(entry.chainId) || !safeInt(entry.height, 1) || !isHex32(entry.tipHash) || !isHex32(entry.summaryDigest) ||
       typeof entry.reason !== "string" || !PRINTABLE.test(entry.reason)) return bad("malformed");
     if (digests.has(entry.summaryDigest)) return bad("a seal is recorded twice");
     digests.add(entry.summaryDigest);
@@ -557,15 +559,16 @@ export function parseHighWaterFile(value: unknown): HighWaterFile {
 /** Effective high-water of a chain: the highest recorded seal not superseded, or null. */
 export function highWaterFor(file: HighWaterFile, chainId: string, superseded: readonly SupersededEntry[] = []): HighWater | null {
   const supersededDigests = new Set(superseded.map((entry) => entry.summaryDigest));
+  const supersededTips = new Set(superseded.map((entry) => `${entry.height}:${entry.tipHash}`));
   let best: HighWaterEntry | undefined;
   for (const entry of file.entries) {
-    if (entry.chainId !== chainId || supersededDigests.has(entry.summaryDigest)) continue;
+    if (entry.chainId !== chainId || supersededDigests.has(entry.summaryDigest) || supersededTips.has(`${entry.height}:${entry.tipHash}`)) continue;
     if (!best || entry.height > best.height) best = entry;
   }
   return best ? { height: best.height, summaryDigest: best.summaryDigest } : null;
 }
 
-export function appendHighWaterEntry(file: HighWaterFile, entry: { chainId: string; height: number; summaryDigest: string; reason: string }): HighWaterFile {
+export function appendHighWaterEntry(file: HighWaterFile, entry: { chainId: string; height: number; tipHash: string; summaryDigest: string; reason: string }): HighWaterFile {
   const current = parseHighWaterFile(file);
   const last = current.entries.at(-1);
   return parseHighWaterFile({ format: RESTORE_HIGH_WATER_FORMAT, entries: [...current.entries, { index: current.entries.length + 1, prev: last ? sha256Hex(canonicalJson(last)) : ZERO_HASH, ...entry }] });
@@ -581,7 +584,38 @@ export interface RestoreAnchorConfig {
 }
 
 /** Strict parse of l1/trust/restore-anchor-config.json. The shipped placeholder has no sources. */
-export function parseRestoreAnchorConfig(value: unknown): RestoreAnchorConfig {
+/**
+ * True for hosts that must never be a production quorum source: localhost
+ * names, loopback, unspecified, private, link-local and unique-local
+ * addresses, and internal-only names.
+ */
+export function isPrivateOrLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal") || host === "") return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
+  }
+  if (host.includes(":")) {
+    return host === "::" || host === "::1" || /^f[cd]/.test(host) || /^fe[89ab]/.test(host) || host.startsWith("::ffff:");
+  }
+  return false;
+}
+
+/** Origin of a quorum source URL (scheme://host:port), or null if it is not a URL. */
+export function quorumSourceOrigin(url: string): string | null {
+  try { return new URL(url).origin; } catch { return null; }
+}
+
+/**
+ * Strict parse of l1/trust/restore-anchor-config.json. The shipped
+ * placeholder has no sources. Production sources are https URLs on public
+ * hosts, every URL distinct, from at least two distinct origins. Loopback
+ * (http://127.0.0.1) sources are accepted only with allowLoopbackFixture,
+ * which only the local test / smoke fixture path sets.
+ */
+export function parseRestoreAnchorConfig(value: unknown, { allowLoopbackFixture = false }: { allowLoopbackFixture?: boolean } = {}): RestoreAnchorConfig {
   const bad = (detail: string): never => refuse(C.anchorConfigInvalid, detail);
   if (!isPlainObject(value) || !exactKeys(value, ["format", "chainId", "quorum"]) || value.format !== RESTORE_CONFIG_FORMAT) return bad("the restore anchor config is malformed");
   if (value.chainId !== null && !isTestnetChainId(value.chainId)) return bad("chainId must be an open-testnet chain ID or null");
@@ -589,12 +623,26 @@ export function parseRestoreAnchorConfig(value: unknown): RestoreAnchorConfig {
   if (!isPlainObject(quorum) || !exactKeys(quorum, ["threshold", "timeoutMs", "validators"]) || !Array.isArray(quorum.validators) ||
     !safeInt(quorum.threshold, 0) || !safeInt(quorum.timeoutMs, 1) || quorum.timeoutMs > 120_000) return bad("quorum must be { threshold, timeoutMs, validators }");
   const keys = new Set<string>();
+  const urls = new Set<string>();
+  const origins = new Set<string>();
   for (const validator of quorum.validators) {
     if (!isPlainObject(validator) || !exactKeys(validator, ["publicKey", "url"]) || typeof validator.publicKey !== "string" || !/^[0-9a-f]{128}$/.test(validator.publicKey) ||
-      typeof validator.url !== "string" || !/^(https:\/\/|http:\/\/127\.0\.0\.1[:/])[ -~]{1,500}$/.test(validator.url)) return bad("a quorum validator entry is malformed");
+      typeof validator.url !== "string" || !/^https?:\/\/[!-~]{1,500}$/.test(validator.url)) return bad("a quorum validator entry is malformed");
+    let parsed: URL;
+    try { parsed = new URL(validator.url); } catch { return bad("a quorum validator URL is not a URL"); }
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) return bad("a quorum validator URL must not carry credentials, a query or a fragment");
+    const loopbackFixture = allowLoopbackFixture && parsed.protocol === "http:" && parsed.hostname === "127.0.0.1";
+    if (!loopbackFixture && (parsed.protocol !== "https:" || isPrivateOrLoopbackHost(parsed.hostname))) {
+      return bad("a quorum validator URL must be https on a public host (loopback, localhost and private hosts only in the local test fixture)");
+    }
     if (keys.has(validator.publicKey)) return bad("a quorum validator is listed twice");
+    const normalized = parsed.href.replace(/\/+$/, "");
+    if (urls.has(normalized)) return bad("two quorum validators share one URL");
     keys.add(validator.publicKey);
+    urls.add(normalized);
+    origins.add(parsed.origin);
   }
+  if (quorum.validators.length > 0 && origins.size < 2) return bad("the quorum validators must come from at least two distinct URL origins");
   const n = quorum.validators.length;
   if (n > 0 && (n < 3 || quorum.threshold < Math.floor((2 * n) / 3) + 1 || quorum.threshold > n)) {
     return bad(`the quorum threshold must be between floor(2n/3)+1 and n, with at least 3 validators (n = ${n})`);

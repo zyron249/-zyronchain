@@ -134,6 +134,13 @@ jobs:
         run: npm run typecheck
       - name: Test
         run: npm test
+      - name: T1 trust files are append-only (PR base vs head)
+        if: github.event_name == 'pull_request'
+        env:
+          T1_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$T1_BASE_SHA"
+          node scripts/t1-trust-append-only.mjs --base "$T1_BASE_SHA"
       - name: Verify reproducible build and release package
         run: |
           # Two clean builds must produce byte-identical packages; packing one

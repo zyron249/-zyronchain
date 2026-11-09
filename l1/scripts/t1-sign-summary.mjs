@@ -6,13 +6,14 @@
 // Signs one open-testnet restore summary with the single-purpose, testnet-only
 // Ed25519 restore-summary key and prints ONLY {"keyId","signature"} on stdout.
 // The private key is read only from --key-file: an absolute path to a regular
-// file (not a symlink) owned by this user with mode 0600, outside /workspace
-// and outside this repository. Key material on the command line or in the
+// file (opened with O_NOFOLLOW, checked on the open descriptor) owned by this
+// user with mode 0600, outside /workspace and outside this repository; it is
+// read into a Buffer that is zeroed once the KeyObject is built. Key material on the command line or in the
 // environment is refused. The key, its path contents and its PEM are never
 // printed or logged; errors are generic.
 import { createPrivateKey } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const l1Root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -53,23 +54,43 @@ export function assertNoEnvKey(env) {
   }
 }
 
-/** Checks the key file location and permissions, then returns its contents. */
+/**
+ * Opens the key file with O_NOFOLLOW (a symlink as the last component fails),
+ * checks the opened descriptor (fstat: regular file, mode 0600, owned by this
+ * user, the same inode as the checked path) and that its real path is outside
+ * /workspace and the repository, and reads it into a Buffer. The caller must
+ * zero the Buffer (fill(0)) after use.
+ */
 export function readKeyFile(keyFile, { uid = process.getuid?.(), forbiddenRoots = FORBIDDEN_ROOTS } = {}) {
   if (!isAbsolute(keyFile)) refuse("--key-file must be an absolute path");
-  let info;
-  try { info = lstatSync(keyFile); } catch { return refuse("the key file cannot be read"); }
-  if (info.isSymbolicLink()) refuse("the key file must not be a symlink");
-  if (!info.isFile()) refuse("the key file must be a regular file");
-  if ((info.mode & 0o777) !== 0o600) refuse("the key file must have mode 0600");
-  if (uid !== undefined && info.uid !== uid) refuse("the key file must be owned by this user");
   let real;
-  try { real = realpathSync(keyFile); } catch { return refuse("the key file cannot be read"); }
+  try { real = realpathSync(dirname(keyFile)); } catch { return refuse("the key file cannot be read"); }
+  const target = join(real, basename(keyFile));
   for (const root of forbiddenRoots) {
-    let resolvedRoot = root;
+    let resolvedRoot = resolve(root);
     try { resolvedRoot = realpathSync(root); } catch { /* root absent */ }
-    if (within(real, resolvedRoot) || within(resolve(keyFile), root)) refuse("the key file must be outside /workspace and outside the repository");
+    if (within(target, resolvedRoot) || within(resolve(keyFile), resolve(root))) refuse("the key file must be outside /workspace and outside the repository");
   }
-  try { return readFileSync(real, "utf8"); } catch { return refuse("the key file cannot be read"); }
+  let fd;
+  try { fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NOCTTY ?? 0)); } catch (error) {
+    return refuse(error?.code === "ELOOP" ? "the key file must not be a symlink" : "the key file cannot be read");
+  }
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile()) refuse("the key file must be a regular file");
+    if ((info.mode & 0o777) !== 0o600) refuse("the key file must have mode 0600");
+    if (uid !== undefined && info.uid !== uid) refuse("the key file must be owned by this user");
+    if (info.size <= 0 || info.size > 16 * 1024) refuse("the key file has an unexpected size");
+    const buffer = Buffer.alloc(info.size);
+    let read = 0;
+    while (read < buffer.length) {
+      const n = readSync(fd, buffer, read, buffer.length - read, read);
+      if (n === 0) break;
+      read += n;
+    }
+    if (read !== buffer.length) { buffer.fill(0); refuse("the key file changed while it was read"); }
+    return buffer;
+  } finally { closeSync(fd); }
 }
 
 export async function signSummaryFile({ summaryPath, keyFile }, deps = {}) {
@@ -78,9 +99,10 @@ export async function signSummaryFile({ summaryPath, keyFile }, deps = {}) {
   try { summary = JSON.parse(readFileSync(resolve(summaryPath), "utf8")); } catch { refuse("the summary file is not JSON"); }
   try { api.assertSummarySchema(summary); } catch { refuse("the summary does not match the v1 schema"); }
   if (!api.isTestnetChainId(summary.chainId)) refuse("this key signs open-testnet summaries only");
-  const pem = readKeyFile(keyFile, deps);
+  const keyBytes = readKeyFile(keyFile, deps);
   let privateKey;
-  try { privateKey = createPrivateKey({ key: pem, format: "pem" }); } catch { refuse("the key file is not a PEM private key"); }
+  try { privateKey = createPrivateKey({ key: keyBytes, format: "pem" }); } catch { privateKey = undefined; } finally { keyBytes.fill(0); }
+  if (!privateKey) refuse("the key file is not a PEM private key");
   if (privateKey.asymmetricKeyType !== "ed25519") refuse("the restore-summary key must be Ed25519");
   const keyId = api.restoreKeyId(api.ed25519RawPublicKeyHex(privateKey));
   const signature = api.signRestoreSummary(keyId, summary, privateKey);

@@ -95,7 +95,7 @@ test("open testnet binds its port before snapshot restore and resumes the restor
 
     const target = join(root, "hosted");
     const basePort = await allocateValidatorBasePort("early-listen");
-    child = spawn(process.execPath, [...anchorFixture.nodeArgs, script, "run", "--dir", target, "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
+    child = spawn(process.execPath, [...anchorFixture.nodeArgs, anchorFixture.script, "run", "--dir", target, "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
       "--chain-id", CHAIN_ID, "--validator-base-port", String(basePort), "--restore-url", `http://127.0.0.1:${snapshotPort}/state.enc`], {
       cwd: l1Root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ZYRON_TESTNET_STATE_SECRET: secret, PORT: "" }
     });

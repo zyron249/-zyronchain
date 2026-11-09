@@ -8,13 +8,13 @@
 // from environment variables, command-line options, the snapshot bundle or
 // the gateway. Nothing here holds or reads a private key. Every failure is a
 // refusal with its own code (RestoreAnchorError, never a local I/O error).
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const l1Root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const anchorApi = await import(join(l1Root, "dist/src/sealed-summary.js"));
-const { RESTORE_ANCHOR_CODES: C, RestoreAnchorError, highWaterFor, parseHighWaterFile, parseRestoreAnchorConfig, restoreTrustFromFiles } = anchorApi;
+const { RESTORE_ANCHOR_CODES: C, RestoreAnchorError, highWaterFor, quorumSourceOrigin, parseHighWaterFile, parseRestoreAnchorConfig, restoreTrustFromFiles } = anchorApi;
 const { blockHash, validateBlockAttestation } = await import(join(l1Root, "dist/src/block.js"));
 const { addressFromPublicKey } = await import(join(l1Root, "dist/src/crypto.js"));
 
@@ -28,14 +28,16 @@ export const RESTORE_TRUST_FILES = Object.freeze({
 });
 export const MAX_SEAL_BYTES = 64 * 1024;
 export const MAX_BLOCK_BYTES = 4 * 1024 * 1024;
-// Test seam: a test preload (node --import) may point the boot at a fixture
-// trust directory. It is not reachable from the environment, the command line
-// or the network; code that can set it can already run anything in-process.
-export const TEST_TRUST_DIR_SYMBOL = Symbol.for("zyronchain.open-testnet.test-restore-trust-dir");
-export function bootRestoreTrustDir() {
-  const override = globalThis[TEST_TRUST_DIR_SYMBOL];
-  return typeof override === "string" && override.length > 0 ? resolve(override) : DEFAULT_RESTORE_TRUST_DIR;
-}
+// There is no runtime override of the trust directory (no env, option,
+// global or preload seam): the boot always reads l1/trust/ next to this
+// script, i.e. the checked-out release ref. Tests run a copy of the scripts
+// in a temporary l1 tree whose trust/ holds fixture files.
+export function bootRestoreTrustDir() { return DEFAULT_RESTORE_TRUST_DIR; }
+// A fixture trust directory written by the local test helper may enable
+// loopback quorum sources with this marker file. The repository's own
+// l1/trust/ must never contain it (checked by t1-trust-append-only.mjs and the
+// T1 tests).
+export const LOOPBACK_FIXTURE_MARKER = "TEST-FIXTURE-ONLY-loopback-quorum";
 
 async function readJson(path, code, label) {
   let text;
@@ -48,7 +50,8 @@ export async function loadRestoreTrust(dir = DEFAULT_RESTORE_TRUST_DIR) {
   const keys = await readJson(join(dir, RESTORE_TRUST_FILES.keys), C.anchorConfigInvalid, "the pinned restore summary key file");
   const record = await readJson(join(dir, RESTORE_TRUST_FILES.record), C.anchorConfigInvalid, "the revoke/supersede record");
   const highWater = parseHighWaterFile(await readJson(join(dir, RESTORE_TRUST_FILES.highWater), C.anchorConfigInvalid, "the high-water record"));
-  const config = parseRestoreAnchorConfig(await readJson(join(dir, RESTORE_TRUST_FILES.config), C.anchorConfigInvalid, "the restore anchor config"));
+  const allowLoopbackFixture = await access(join(dir, LOOPBACK_FIXTURE_MARKER)).then(() => true, () => false);
+  const config = parseRestoreAnchorConfig(await readJson(join(dir, RESTORE_TRUST_FILES.config), C.anchorConfigInvalid, "the restore anchor config"), { allowLoopbackFixture });
   return { ...restoreTrustFromFiles(keys, record), highWater, config };
 }
 
@@ -79,7 +82,9 @@ export async function readSealFile(path) {
  * GET {url}/block/{height} must be a self-consistent block (hash over the
  * header, height, chain ID). A trusted validator counts toward the tip only
  * if its secp256k1 finality attestation on that block verifies. The tip needs
- * `threshold` distinct trusted validators, from at least two sources. A
+ * `threshold` distinct trusted validators, from sources on at least two
+ * distinct URL origins (one host answering for every validator is not a
+ * quorum). A
  * second verified tip, a deadline, or too few verified attestations fail
  * closed, each with its own code.
  */
@@ -89,6 +94,7 @@ export function quorumTipReader({ chainId, threshold, timeoutMs, validators }, {
     if (validators.length === 0 || threshold < 1) throw new RestoreAnchorError(C.quorumTipUnavailable, "no live quorum validators are pinned");
     const deadline = AbortSignal.timeout(timeoutMs);
     const outcomes = await Promise.all(validators.map(async ({ url }) => {
+      const origin = quorumSourceOrigin(url);
       try {
         const result = await fetchBounded(`${url.replace(/\/+$/, "")}/block/${height}`, { fetchImpl, signal: deadline, maxBytes: MAX_BLOCK_BYTES });
         if (result.status !== 200) return { kind: "missing" };
@@ -98,7 +104,7 @@ export function quorumTipReader({ chainId, threshold, timeoutMs, validators }, {
         for (const attestation of block.attestations) {
           try { validateBlockAttestation(block, attestation, allowed); attesters.add(attestation.publicKey); } catch { /* not a trusted, valid attestation */ }
         }
-        return attesters.size > 0 ? { kind: "verified", tipHash: block.hash, attesters } : { kind: "unverified" };
+        return attesters.size > 0 && origin ? { kind: "verified", tipHash: block.hash, attesters, origin } : { kind: "unverified" };
       } catch (error) {
         return { kind: deadline.aborted || error?.name === "TimeoutError" || error?.name === "AbortError" ? "timeout" : "missing" };
       }
@@ -106,14 +112,14 @@ export function quorumTipReader({ chainId, threshold, timeoutMs, validators }, {
     const byHash = new Map();
     for (const outcome of outcomes) {
       if (outcome.kind !== "verified") continue;
-      const entry = byHash.get(outcome.tipHash) ?? { sources: 0, attesters: new Set() };
-      entry.sources += 1;
+      const entry = byHash.get(outcome.tipHash) ?? { origins: new Set(), attesters: new Set() };
+      entry.origins.add(outcome.origin);
       for (const key of outcome.attesters) entry.attesters.add(key);
       byHash.set(outcome.tipHash, entry);
     }
     if (byHash.size > 1) throw new RestoreAnchorError(C.quorumTipMismatch, `trusted validators report ${byHash.size} different verified tips at height ${height}`);
     const [tip] = [...byHash.entries()];
-    if (tip && tip[1].attesters.size >= threshold && tip[1].sources >= 2) return { height, tipHash: tip[0] };
+    if (tip && tip[1].attesters.size >= threshold && tip[1].origins.size >= 2) return { height, tipHash: tip[0] };
     if (outcomes.some((outcome) => outcome.kind === "timeout")) throw new RestoreAnchorError(C.quorumTipTimeout, `the live quorum did not answer within ${timeoutMs} ms`);
     if (outcomes.some((outcome) => outcome.kind === "unverified")) throw new RestoreAnchorError(C.quorumTipUnavailable, `fewer than ${threshold} trusted validator attestations verify at height ${height}`);
     throw new RestoreAnchorError(C.quorumTipUnavailable, `fewer than ${threshold} trusted validators answered for height ${height}`);

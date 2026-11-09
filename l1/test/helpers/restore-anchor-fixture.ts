@@ -7,7 +7,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { once } from "node:events";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -61,38 +61,52 @@ export async function fixtureRestoreAnchor(source: FixtureSource, workDir: strin
 }
 
 /**
- * For CLI restore tests: a fixture trust directory (pinned TEST key, empty
- * records, config) plus local fake validators serving GET /v{n}/block/{h}
- * from the source validators' own logs, and a node --import preload that
- * points the boot at that directory. Spawn with `[...nodeArgs, script, ...]`.
+ * For CLI restore tests: a temporary l1 tree (a copy of l1/scripts, with
+ * dist, node_modules and package.json linked to the real ones) whose trust/
+ * holds fixture files (pinned TEST key, seal, high-water entry, empty record,
+ * config), plus local fake validators, one HTTP server (one URL origin) each,
+ * serving GET /block/{h} from the source validators' own logs. The boot has
+ * no runtime trust-dir override, so CLI tests spawn `script` from this tree.
+ * The fixture trust dir carries the loopback-fixture marker so its
+ * 127.0.0.1 quorum is accepted; the repository's l1/trust/ never does.
  */
-export async function startFixtureTrustDir(root: string, source: FixtureSource): Promise<{ nodeArgs: string[]; trustDir: string; close: () => Promise<void> }> {
-  const trustDir = join(root, "t1-trust");
+export async function startFixtureTrustDir(root: string, source: FixtureSource): Promise<{ script: string; nodeArgs: string[]; trustDir: string; close: () => Promise<void> }> {
+  const tree = join(root, "t1-l1");
+  await cp(join(l1Root, "scripts"), join(tree, "scripts"), { recursive: true });
+  for (const name of ["dist", "node_modules", "package.json"]) await symlink(join(l1Root, name), join(tree, name));
+  const trustDir = join(tree, "trust");
   await mkdir(trustDir, { recursive: true });
   const { seal, summary, summaryDigest, keyId, publicKey } = await fixtureSeal(source, join(root, "t1-summary-replay"));
   const logs = await Promise.all(source.logPaths.map(async (path) => (await readFile(path, "utf8")).split("\n").filter(Boolean)));
-  const server: Server = createServer((request, response) => {
-    const match = /^\/v(\d)\/block\/(\d+)$/.exec(request.url ?? "");
-    const line = match ? logs[Number(match[1]) - 1]?.[Number(match[2]) - 1] : undefined;
-    if (!line) { response.writeHead(404); response.end(); return; }
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(line);
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const port = (server.address() as { port: number }).port;
+  const servers: Server[] = [];
+  const urls: string[] = [];
+  for (const lines of logs) {
+    const server: Server = createServer((request, response) => {
+      const match = /^\/block\/(\d+)$/.exec(request.url ?? "");
+      const line = match ? lines[Number(match[1]) - 1] : undefined;
+      if (!line) { response.writeHead(404); response.end(); return; }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(line);
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    servers.push(server);
+    urls.push(`http://127.0.0.1:${(server.address() as { port: number }).port}`);
+  }
   await writeFile(join(trustDir, bootAnchor.RESTORE_TRUST_FILES.seal), seal);
+  await writeFile(join(trustDir, bootAnchor.LOOPBACK_FIXTURE_MARKER), "TEST FIXTURE ONLY: loopback quorum sources are accepted in this directory.\n");
   const write = (name: string, value: Json) => writeFile(join(trustDir, name), `${JSON.stringify(value, null, 2)}\n`);
   await write("t1-summary-keys.json", { format: anchorApi.RESTORE_KEYS_FORMAT, networkClass: "testnet", purpose: anchorApi.RESTORE_KEY_PURPOSE, keys: [{ keyId, publicKey, addedIn: "TEST-FIXTURE-ONLY" }] });
   await write("t1-summary-record.json", { format: anchorApi.RESTORE_RECORD_FORMAT, entries: [] });
-  await write("t1-high-water.json", anchorApi.appendHighWaterEntry({ format: anchorApi.RESTORE_HIGH_WATER_FORMAT, entries: [] }, { chainId: source.genesis.chainId, height: summary.height, summaryDigest, reason: "TEST-FIXTURE-ONLY seal" }));
+  await write("t1-high-water.json", anchorApi.appendHighWaterEntry({ format: anchorApi.RESTORE_HIGH_WATER_FORMAT, entries: [] }, { chainId: source.genesis.chainId, height: summary.height, tipHash: summary.tipHash, summaryDigest, reason: "TEST-FIXTURE-ONLY seal" }));
   await write("restore-anchor-config.json", {
     format: anchorApi.RESTORE_CONFIG_FORMAT, chainId: source.genesis.chainId,
-    quorum: { threshold: 3, timeoutMs: 30_000, validators: source.genesis.validators.map((validator: Json, index: number) => ({ publicKey: validator.publicKey, url: `http://127.0.0.1:${port}/v${index + 1}` })) }
+    quorum: { threshold: 3, timeoutMs: 30_000, validators: source.genesis.validators.map((validator: Json, index: number) => ({ publicKey: validator.publicKey, url: urls[index] })) }
   });
-  const preload = join(root, "t1-trust-preload.mjs");
-  await writeFile(preload, `globalThis[Symbol.for("zyronchain.open-testnet.test-restore-trust-dir")] = ${JSON.stringify(trustDir)};\n`);
-  return { nodeArgs: ["--import", pathToFileURL(preload).href], trustDir, close: async () => { server.close(); } };
+  return {
+    script: join(tree, "scripts", "open-testnet.mjs"), nodeArgs: [], trustDir,
+    close: async () => { for (const server of servers) { server.closeAllConnections(); server.close(); } }
+  };
 }
 
 let replays = 0;
