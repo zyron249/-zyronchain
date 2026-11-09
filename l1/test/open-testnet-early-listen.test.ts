@@ -108,6 +108,11 @@ test("open testnet binds its port before snapshot restore and resumes the restor
     assert.equal(health.body.status, "starting");
     assert.equal(health.body.phase, "download");
     assert.equal(health.body.valueBearing, false);
+    // Gateway process start/uptime: a watch spots a container restart (OOM)
+    // as a new startedAt or a smaller uptimeSec.
+    const bootGateway = health.body.gateway;
+    assert.ok(Number.isFinite(Date.parse(bootGateway.startedAt)), "gateway.startedAt is an ISO time");
+    assert.ok(Number.isSafeInteger(bootGateway.uptimeSec) && bootGateway.uptimeSec >= 0);
     const ready = await json(`${base}/readyz`);
     assert.equal(ready.status, 503);
     for (const path of ["/status", "/api", "/blocks", "/state/snapshot"]) {
@@ -135,6 +140,8 @@ test("open testnet binds its port before snapshot restore and resumes the restor
     assert.equal(live.status, 200);
     assert.equal(live.body.status, "ready");
     assert.equal(live.body.persistence.mode, "snapshot-restore");
+    assert.equal(live.body.gateway.startedAt, bootGateway.startedAt, "startedAt is stable across boot and ready");
+    assert.ok(live.body.gateway.uptimeSec >= bootGateway.uptimeSec);
 
     // One validated replay; the other validators open the verified checkpoint.
     for (const name of ["v1", "v2", "v3", "v4"]) await access(join(target, `data-${name}`, "recovery-checkpoint.json"));
