@@ -112,13 +112,17 @@ hashes, so the files are protected by these controls:
     trigger re-runs it when a PR is retargeted, so a stacked PR is checked once it targets
     `main`. If the checker is missing on `main` the job fails. Its exact shape is pinned by
     `.github/scripts/verify-l1-t1-trust-append-only-custody.mjs` (an allowlist, with a
-    mutation test). Only this job gives the "cannot be disabled by the PR" property.
+    mutation test): the file must be ASCII with no control character other than LF, only
+    lines matching `^ *#` outside block scalars count as comments, and every other line
+    must match exactly. Only this job gives the "cannot be disabled by the PR" property.
   - Defence in depth: the Standalone L1 job (`.github/workflows/l1.yml`) runs the same check
     as its first step after checkout and Node setup, before `npm ci`, with the checker taken
     by `git show <ref>:l1/scripts/t1-trust-append-only.mjs` from the merge base with `main`
     (pull requests) or the previous `main` (pushes). That ref's copy is used, except when it
     has none yet (bootstrap, logged as a warning). Because `l1.yml` is part of the change, a
-    PR can edit this step; it is not tamper-proof.
+    PR can edit this step; it is not tamper-proof. The custody check parses the `l1` job
+    and requires its header, the checkout and Node setup steps and this step (with its exact
+    `if:`) to match an allowlist, so no install or script step can run before it in that job.
   - Pull requests are compared with `git merge-base origin/main HEAD` (`--merge-base`), not
     with the PR's base SHA. Pushes to `main` are compared with `github.event.before`
     (`--push-before`); an all-zero before SHA falls back to the first parent (or an empty base

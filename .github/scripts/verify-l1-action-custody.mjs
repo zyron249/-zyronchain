@@ -61,14 +61,10 @@ for (const required of ['node-version: [22, 24]', 'npm audit --omit=dev --audit-
 
 // S2-3 T1 pull_request_target checker: exact allowlisted shape (pins, trigger,
 // read-only token, no persisted credentials, head read as data only).
-const { verifyT1AppendOnlyWorkflow, T1_WORKFLOW_PATH } = await import('./verify-l1-t1-trust-append-only-custody.mjs');
+const { verifyT1AppendOnlyWorkflow, verifyL1JobT1Prefix, T1_WORKFLOW_PATH } = await import('./verify-l1-t1-trust-append-only-custody.mjs');
 verifyT1AppendOnlyWorkflow(await readFile(T1_WORKFLOW_PATH, 'utf8'));
-// The l1.yml T1 step (defence in depth) must run before npm ci.
-{
-  const l1Job = workflow.slice(workflow.indexOf('\n  l1:\n'));
-  const t1Step = l1Job.indexOf('- name: T1 trust files are append-only');
-  const npmCi = l1Job.indexOf('run: npm ci');
-  if (t1Step < 0 || npmCi < 0 || t1Step > npmCi) throw new Error('Standalone L1: the T1 append-only step must run before npm ci');
-}
+// The l1.yml T1 step (defence in depth): ASCII bytes, and the l1 job parsed
+// structurally must start with checkout, setup-node and the exact T1 step.
+verifyL1JobT1Prefix(workflow);
 
 console.log('l1-action-custody-policy: ok');
