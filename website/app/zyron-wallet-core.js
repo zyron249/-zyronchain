@@ -81,6 +81,11 @@
     // A backdated or future-dated timestamp cannot extend the exception: it must be within V1_CLOCK_WINDOW_MS of this device's clock.
     if (Math.abs(timestampMs - nowMs) > V1_CLOCK_WINDOW_MS) throw new Error('Transaction version 1 needs a timestamp within 10 minutes of this device clock. Nothing was signed.');
   }
+  // Value to pre-fill in the send form's nonce field: one more than the last nonce this
+  // wallet signed in this session, else 1 (a new account). Never looked up over the network.
+  function nextNonce(lastSignedNonce) {
+    return Number.isSafeInteger(lastSignedNonce) && lastSignedNonce >= 1 && lastSignedNonce < Number.MAX_SAFE_INTEGER ? lastSignedNonce + 1 : 1;
+  }
   // That chain runs protocol version 1 and rejects transaction version 2.
   // Every other testnet or devnet id keeps version 2 as the selectable default.
   // zyron-wallet-testnet-1 defaults to v1 until the hard-coded end of the v1 exception.
@@ -759,7 +764,7 @@
   const api = Object.freeze({
     DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_VERSION_V1, SELF_SEND_MESSAGE, VAULT_KDF, MAX_VAULT_TEXT, BOOK_MAX_CONTACTS, BOOK_MAX_SENT, BOOK_NAME_MAX, LOOKALIKE_MIN_SHARED, LOOKALIKE_MAX_DIFF, LOOKALIKE_MAX_COMPARISONS, LOOKALIKE_MAX_MATCHES, ATOMS_PER_ZYN, FIXED_TRANSFER_FEE_ATOMS, FIXED_SUPPLY_V1_CHAIN_IDS, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
     TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, RENDERABLE_CHAIN_IDS, WALLET_TESTNET_CHAIN_ID, V1_EXCEPTION_END_MS,
-    V1_CLOCK_WINDOW_MS, defaultTransferVersion,
+    V1_CLOCK_WINDOW_MS, defaultTransferVersion, nextNonce,
     wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress, displayAddress, addressDiff,
     passwordStrength, normalizePhrase, generateEntropy, entropyToPhrase, phraseToEntropy, deriveAccount,
     createVault, createVaultSession, openVault, upgradeVaultVerified, upgradeMarker, parseUpgradeMarker, isRollback, assertVaultShape, parseVault, upgradeVault, updateVaultBook,

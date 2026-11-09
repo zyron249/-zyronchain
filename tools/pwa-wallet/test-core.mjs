@@ -635,6 +635,17 @@ await test('transfer builder: only transfers, mining_claim impossible, strict in
   assert.equal(core.defaultTransferVersion('zyron-devnet'), 2);
   assert.equal(core.defaultTransferVersion('zyron-other-testnet'), 2);
   assert.equal(core.defaultTransferVersion(''), 2);
+  assert.equal(core.nextNonce(null), 1, 'no known nonce pre-fills 1');
+  assert.equal(core.nextNonce(undefined), 1);
+  assert.equal(core.nextNonce(0), 1);
+  assert.equal(core.nextNonce(-3), 1);
+  assert.equal(core.nextNonce(1.5), 1);
+  assert.equal(core.nextNonce('4'), 1, 'only a real integer counts as known');
+  assert.equal(core.nextNonce(Number.MAX_SAFE_INTEGER), 1);
+  assert.equal(core.nextNonce(1), 2, 'after signing nonce 1 the field pre-fills 2');
+  assert.equal(core.nextNonce(41), 42);
+  assert.equal(core.buildTransfer({ ...base, nonce: String(core.nextNonce(null)) }, account).nonce, 1, 'the pre-filled value is valid as-is');
+  assert.throws(() => core.buildTransfer({ ...base, nonce: '' }, account), /Nonce must be a whole number >= 1/, 'an emptied nonce field is still rejected');
   assert.equal(core.buildTransfer({ ...base, version: core.defaultTransferVersion(core.WALLET_TESTNET_CHAIN_ID), chainId: core.WALLET_TESTNET_CHAIN_ID }, account).version, 1);
   assert.throws(() => core.buildTransfer({ ...base, nonce: '0' }, account), /Nonce/);
   assert.throws(() => core.buildTransfer({ ...base, version: 3 }, account), /version/);

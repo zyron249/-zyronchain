@@ -295,6 +295,7 @@
     $('[data-tx-out]').hidden = true;
     $('[data-tx-json]').textContent = '';
     $('[data-tx-to-grouped]').textContent = '';
+    $('[data-tx-nonce]').value = String(core.nextNonce(null));
     $('[data-review-rows]').textContent = '';
     $('[data-qr]').textContent = '';
     $('[data-created-note]').hidden = true;
@@ -836,6 +837,7 @@
       $('[data-tx-json]').textContent = JSON.stringify(tx, null, 2);
       $('[data-tx-summary]').textContent = t('msgSigned', { txid: tx.txid });
       $('[data-tx-to-grouped]').textContent = core.displayAddress(tx.receiver);
+      $('[data-tx-nonce]').value = String(core.nextNonce(tx.nonce)); // the next transfer uses the following nonce
       $('[data-review-confirm-box]').hidden = true;
       $('[data-tx-out]').hidden = false;
       setMessage('[data-tx-copy-result]', '', '');

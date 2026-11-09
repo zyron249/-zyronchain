@@ -79,3 +79,132 @@ test("/health validator entries carry restarts and the last exit, labelled oom f
   assert.equal(out[1].lastExitReason, "exit"); assert.equal(out[1].lastExitCode, 1); assert.equal(out[1].restarts, 1);
   assert.equal(out[2].restarts, 0); assert.equal(out[2].lastExitReason, null);
 });
+
+test("gatewayProcessInfo reports a fixed start time and a whole-second uptime", () => {
+  assert.deepEqual(api.gatewayProcessInfo({ startedAtMs: Date.UTC(2026, 10, 2, 21, 9, 0), uptimeS: 125.9 }), { startedAt: "2026-11-02T21:09:00.000Z", uptimeSec: 125 });
+  assert.equal(api.gatewayProcessInfo({ startedAtMs: 0, uptimeS: -1 }).uptimeSec, 0);
+  const live = api.gatewayProcessInfo();
+  assert.equal(live.startedAt, new Date(api.GATEWAY_STARTED_AT_MS).toISOString());
+  assert.ok(Math.abs(api.GATEWAY_STARTED_AT_MS - (Date.now() - process.uptime() * 1000)) < 5_000);
+});
+
+test("maxOldSpaceMb is the cap actually passed, or null when off", () => {
+  assert.equal(api.maxOldSpaceMbFromFlags(api.validatorNodeFlags({})), 96);
+  assert.equal(api.maxOldSpaceMbFromFlags(api.validatorNodeFlags({ ZYRON_VALIDATOR_MAX_OLD_MB: "128" })), 128);
+  assert.equal(api.maxOldSpaceMbFromFlags(api.validatorNodeFlags({ ZYRON_VALIDATOR_MAX_OLD_MB: "0" })), null);
+});
+
+const MB = 1048576;
+const report = { type: "zyron-validator-memory", rss: 120 * MB, heapTotal: 60 * MB, heapUsed: 30.04 * MB, external: 3 * MB, arrayBuffers: 0.5 * MB };
+
+test("validator memory: reported fields in MB, null before the first report", () => {
+  const c = clock(); const t = api.createValidatorMemoryTracker({ now: c.now });
+  t.started("v1", 96);
+  assert.deepEqual(t.status("v1"), { maxOldSpaceMb: 96, heapUsedMb: null, heapTotalMb: null, rssMb: null, externalMb: null, arrayBuffersMb: null, memoryReportedAt: null, memoryDropped: { oversized: 0, malformed: 0 } });
+  assert.equal(t.message("v1", report), true);
+  assert.deepEqual(t.status("v1"), { maxOldSpaceMb: 96, heapUsedMb: 30, heapTotalMb: 60, rssMb: 120, externalMb: 3, arrayBuffersMb: 0.5, memoryReportedAt: new Date(c.now()).toISOString(), memoryDropped: { oversized: 0, malformed: 0 } });
+  t.started("v2", null);
+  assert.equal(t.status("v2").maxOldSpaceMb, null);
+  const [row] = api.withValidatorMemory([{ name: "v1", up: true }], t);
+  assert.equal(row.up, true); assert.equal(row.rssMb, 120);
+});
+
+test("validator memory: a sample older than 2 minutes reads as null", () => {
+  const c = clock(); const t = api.createValidatorMemoryTracker({ now: c.now });
+  t.started("v1", 96); t.message("v1", report);
+  c.advance(120_000); assert.equal(t.status("v1").rssMb, 120);
+  c.advance(1); assert.equal(t.status("v1").rssMb, null); assert.equal(t.status("v1").memoryReportedAt, null);
+  assert.equal(t.status("v1").maxOldSpaceMb, 96);
+});
+
+test("validator memory: a restart drops the old sample; bad messages are ignored", () => {
+  const c = clock(); const t = api.createValidatorMemoryTracker({ now: c.now });
+  t.started("v1", 96); t.message("v1", report);
+  t.started("v1", 96); assert.equal(t.status("v1").rssMb, null);
+  for (const bad of [null, "x", {}, { ...report, type: "other" }, { ...report, rss: "1" }, { ...report, rss: -1 }, { ...report, rss: Infinity }, { ...report, heapUsed: undefined }, { ...report, rss: 2 ** 46 }]) assert.equal(t.message("v1", bad), false);
+  assert.equal(t.status("v1").rssMb, null);
+  assert.equal(t.message("unknown", report), false);
+  // Names are bounded.
+  const b = api.createValidatorMemoryTracker({ maxNames: 2 });
+  b.started("a", 1); b.started("b", 1); b.started("c", 1);
+  assert.equal(b.message("c", report), false);
+});
+
+// Spawns a child the way runNetwork spawns a validator (preload, fd 3 pipe,
+// validatorChildEnv) and wires the gateway-side reader and tracker.
+async function spawnLikeGateway(code: string, ms: number) {
+  const { spawn } = await import("node:child_process");
+  const t = api.createValidatorMemoryTracker(); t.started("v1", null);
+  const reader = api.createMemoryLineReader((msg: unknown) => t.message("v1", msg));
+  t.reader("v1", reader.stats);
+  const child = spawn(process.execPath, ["--require", api.VALIDATOR_MEMORY_PRELOAD, "-e", code], { stdio: ["ignore", "ignore", "inherit", "pipe"], env: api.validatorChildEnv() });
+  const pipe: any = child.stdio[api.VALIDATOR_MEMORY_FD];
+  let peakRss = process.memoryUsage().rss; const rss0 = peakRss;
+  pipe.on("data", (chunk: Buffer) => { reader.push(chunk); peakRss = Math.max(peakRss, process.memoryUsage().rss); });
+  pipe.on("error", () => {});
+  const exit: Promise<number | null> = new Promise((done) => child.once("exit", done));
+  await new Promise((done) => setTimeout(done, ms));
+  child.kill(); await exit;
+  return { t, reader, rssGrowthMb: (peakRss - rss0) / 1048576 };
+}
+
+test("the preload reports process.memoryUsage over the fd 3 pipe and does not keep the child alive", async () => {
+  const { spawn } = await import("node:child_process");
+  const t = api.createValidatorMemoryTracker(); t.started("v1", null);
+  const reader = api.createMemoryLineReader((msg: unknown) => t.message("v1", msg));
+  const child = spawn(process.execPath, ["--require", api.VALIDATOR_MEMORY_PRELOAD, "-e", "setTimeout(() => {}, 3000)"], { stdio: ["ignore", "ignore", "inherit", "pipe"], env: api.validatorChildEnv() });
+  const pipe: any = child.stdio[api.VALIDATOR_MEMORY_FD];
+  const first = new Promise((done) => pipe.on("data", (chunk: Buffer) => { reader.push(chunk); if (reader.stats.lines) done(null); }));
+  await first;
+  assert.ok(t.status("v1").rssMb > 0 && t.status("v1").heapUsedMb > 0);
+  assert.equal(reader.stats.malformed, 0);
+  const code = await new Promise((done) => child.once("exit", done));
+  assert.equal(code, 0);
+});
+
+test("validator child env sets MALLOC_ARENA_MAX=2 (an explicit value wins) and the memory fd", () => {
+  const env = api.validatorChildEnv({ PATH: "/bin" });
+  assert.equal(env.MALLOC_ARENA_MAX, "2"); assert.equal(env.PATH, "/bin"); assert.equal(env.ZYRON_VALIDATOR_MEMORY_FD, "3");
+  assert.equal(api.validatorChildEnv({ MALLOC_ARENA_MAX: "4" }).MALLOC_ARENA_MAX, "4");
+});
+
+test("memory line reader: malformed, oversized and split lines never throw and are counted", () => {
+  const got: unknown[] = [];
+  const r = api.createMemoryLineReader((m: unknown) => { got.push(m); return true; }, { maxLineBytes: 64 });
+  r.push(Buffer.from("not json\n{\"a\":"));
+  r.push(Buffer.from("1}\n\n"));
+  r.push(Buffer.from("x".repeat(50))); r.push(Buffer.from("y".repeat(50))); r.push(Buffer.from("z\n{\"b\":2}\n"));
+  r.push("{\"__proto__\":{\"p\":1}}\n");
+  assert.deepEqual(got.slice(0, 2), [{ a: 1 }, { b: 2 }]);
+  assert.equal(r.stats.malformed, 1); assert.equal(r.stats.oversized, 1);
+  assert.equal(({} as any).p, undefined);
+  const throwing = api.createMemoryLineReader(() => { throw new Error("boom"); });
+  throwing.push("{}\n"); assert.equal(throwing.stats.malformed, 1);
+});
+
+// Security PoC /workspace/zr-poc/1183 Q2-Q4, against the new channel.
+test("PoC Q2: a raw non-JSON line on fd 3 is dropped and counted; the gateway stays up", async () => {
+  let crashed: unknown = null; const onCrash = (e: unknown) => { crashed = e; };
+  process.on("uncaughtException", onCrash);
+  try {
+    const { t, reader } = await spawnLikeGateway("require('fs').writeSync(3,'not json\\n');setTimeout(()=>{},3000)", 1800);
+    assert.equal(crashed, null);
+    assert.ok(reader.stats.malformed >= 1);
+    assert.ok(t.status("v1").memoryDropped.malformed >= 1);
+    assert.ok(t.status("v1").rssMb > 0, "valid reports still accepted");
+  } finally { process.off("uncaughtException", onCrash); }
+});
+
+test("PoC Q3: one 200 MB line is dropped and counted without growing gateway RSS", async () => {
+  const { t, reader, rssGrowthMb } = await spawnLikeGateway("const s='x'.repeat(2e8);require('fs').writeSync(3,JSON.stringify({type:'zyron-validator-memory',pad:s})+'\\n');setTimeout(()=>{},5000)", 4000);
+  assert.equal(reader.stats.oversized, 1);
+  assert.equal(t.status("v1").memoryDropped.oversized, 1);
+  assert.ok(rssGrowthMb < 100, `gateway RSS grew ${rssGrowthMb.toFixed(0)} MB`);
+});
+
+test("PoC Q4: a 2 s flood of lines is parsed, rejected and bounded", async () => {
+  const { t, reader, rssGrowthMb } = await spawnLikeGateway("const fs=require('fs');const e=Date.now();const l=JSON.stringify({type:'x'})+'\\n';const b=l.repeat(500);(function f(){try{fs.writeSync(3,b)}catch{}if(Date.now()-e<1500)setImmediate(f)})();setTimeout(()=>{},3000)", 2500);
+  assert.ok(reader.stats.lines > 1000, `lines ${reader.stats.lines}`);
+  assert.ok(t.status("v1").memoryDropped.malformed > 1000);
+  assert.ok(rssGrowthMb < 100, `gateway RSS grew ${rssGrowthMb.toFixed(0)} MB`);
+});
