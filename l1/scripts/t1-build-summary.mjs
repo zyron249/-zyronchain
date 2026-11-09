@@ -39,7 +39,8 @@ function options(argv) {
 const need = (o, name) => { if (!o[name]) throw new Error(`--${name} is required`); return o[name]; };
 const readJson = async (path) => JSON.parse(await readFile(resolve(path), "utf8"));
 
-export async function buildFromLiveQuorum(o, { fetchImpl = fetch } = {}) {
+// fetchImpl undefined: the quorum reader uses its DNS-pinned fetch.
+export async function buildFromLiveQuorum(o, { fetchImpl } = {}) {
   const trustDir = resolve(o["trust-dir"] ?? anchor.DEFAULT_RESTORE_TRUST_DIR);
   const networkDir = resolve(need(o, "network-dir"));
   const validator = need(o, "validator");

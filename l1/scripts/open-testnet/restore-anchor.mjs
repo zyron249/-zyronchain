@@ -10,6 +10,9 @@
 // refusal with its own code (RestoreAnchorError, never a local I/O error).
 import { lookup as dnsLookup } from "node:dns/promises";
 import { access, readFile } from "node:fs/promises";
+import * as http from "node:http";
+import * as https from "node:https";
+import { isIP } from "node:net";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -68,6 +71,55 @@ async function fetchBounded(url, { fetchImpl, signal, maxBytes }) {
 }
 
 /**
+ * fetch-like GET that connects ONLY to the address that was resolved and
+ * checked before the request (DNS-rebinding pin). `pinned` maps a hostname to
+ * { address, family }. The URL keeps the hostname, so TLS SNI, certificate
+ * verification and the Host header all use the name; only the socket's
+ * address comes from the pin (a custom `lookup` on the request, a fresh
+ * agent per request). A DNS name without a pin is refused; IP literals need
+ * none. Redirects are not followed. The body is capped at `maxBytes`.
+ */
+export function pinnedFetch(pinned, { maxBytes = MAX_BLOCK_BYTES, httpImpl = http, httpsImpl = https } = {}) {
+  return (url, { signal } = {}) => new Promise((resolvePromise, reject) => {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^\[|\]$/g, "");
+    const pin = pinned.get(host);
+    if (!pin && !isIP(host)) { reject(new Error("no checked address is pinned for this host")); return; }
+    const lib = parsed.protocol === "https:" ? httpsImpl : parsed.protocol === "http:" ? httpImpl : undefined;
+    if (!lib) { reject(new Error("unsupported protocol")); return; }
+    const options = { method: "GET", signal, agent: false, headers: { accept: "application/json" } };
+    if (pin) {
+      options.lookup = (_hostname, lookupOptions, callback) => {
+        if (lookupOptions?.all) callback(null, [{ address: pin.address, family: pin.family }]);
+        else callback(null, pin.address, pin.family);
+      };
+    }
+    const request = lib.request(parsed, options, (response) => {
+      const status = response.statusCode ?? 0;
+      const chunks = [];
+      let size = 0;
+      const body = new Promise((resolveBody, rejectBody) => {
+        response.on("data", (chunk) => {
+          size += chunk.length;
+          if (size > maxBytes) { response.destroy(); rejectBody(new Error("response too large")); return; }
+          chunks.push(chunk);
+        });
+        response.on("end", () => resolveBody(Buffer.concat(chunks)));
+        response.on("error", rejectBody);
+      });
+      body.catch(() => {});
+      resolvePromise({
+        status,
+        body: { cancel: async () => { response.destroy(); } },
+        arrayBuffer: async () => { const bytes = await body; return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); }
+      });
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+/**
  * Reads the sealed summary from the pinned repository file (published by PR).
  * A missing file means "nothing sealed" (null: RESTORE_SEAL_MISSING). The raw
  * text is returned unparsed (no trimming); the verifier parses it strictly.
@@ -97,9 +149,9 @@ export async function readSealFile(path) {
  * name that points at a private address (nip.io style) fails. Only the local
  * test fixture's http://127.0.0.1 sources (accepted by the config parser only
  * with the fixture marker) skip this. A lookup failure counts that source as
- * not answering. fetch resolves the name again, so this does not pin the
- * address against DNS rebinding between the check and the request; the
- * secp256k1 attestations, not the transport, are what the tip relies on.
+ * not answering. The request then connects only to the first checked address
+ * (pinnedFetch), so a rebinding answer between the check and the request is
+ * never used. An injected fetchImpl (tests) bypasses the pin.
  */
 export async function assertPublicQuorumResolution(validators, { lookupImpl = dnsLookup, signal } = {}) {
   // A lookup is bounded by the reader's deadline (a hung resolver counts the
@@ -109,11 +161,13 @@ export async function assertPublicQuorumResolution(validators, { lookupImpl = dn
     signal.addEventListener("abort", () => reject(new Error("deadline")), { once: true });
   })]) : promise;
   const failed = new Set();
+  const pinned = new Map();
   await Promise.all(validators.map(async ({ url }) => {
     const parsed = new URL(url);
     if (parsed.protocol === "http:" && parsed.hostname === "127.0.0.1") return;
     if (isPrivateOrLoopbackHost(parsed.hostname)) throw new RestoreAnchorError(C.anchorConfigInvalid, "a quorum source host is not public");
     const host = parsed.hostname.replace(/^\[|\]$/g, "");
+    if (isIP(host)) return;
     let addresses;
     try { addresses = await bounded(lookupImpl(host, { all: true, verbatim: true })); } catch { failed.add(url); return; }
     const list = Array.isArray(addresses) ? addresses : [addresses];
@@ -124,21 +178,24 @@ export async function assertPublicQuorumResolution(validators, { lookupImpl = dn
         throw new RestoreAnchorError(C.anchorConfigInvalid, `the quorum source host ${parsed.hostname} resolves to a private, loopback or non-public address`);
       }
     }
+    const first = typeof list[0] === "string" ? { address: list[0], family: isIP(list[0]) } : { address: list[0].address, family: list[0].family ?? isIP(list[0].address) };
+    pinned.set(host, first);
   }));
-  return failed;
+  return { failed, pinned };
 }
 
-export function quorumTipReader({ chainId, threshold, timeoutMs, validators }, { fetchImpl = fetch, lookupImpl = dnsLookup } = {}) {
+export function quorumTipReader({ chainId, threshold, timeoutMs, validators }, { fetchImpl, lookupImpl = dnsLookup } = {}) {
   const allowed = new Map(validators.map((validator) => [addressFromPublicKey(validator.publicKey), validator.publicKey]));
   return async (height) => {
     if (validators.length === 0 || threshold < 1) throw new RestoreAnchorError(C.quorumTipUnavailable, "no live quorum validators are pinned");
     const deadline = AbortSignal.timeout(timeoutMs);
-    const unresolved = await assertPublicQuorumResolution(validators, { lookupImpl, signal: deadline });
+    const { failed: unresolved, pinned } = await assertPublicQuorumResolution(validators, { lookupImpl, signal: deadline });
+    const fetchFor = fetchImpl ?? pinnedFetch(pinned);
     const outcomes = await Promise.all(validators.map(async ({ url }) => {
       if (unresolved.has(url)) return { kind: "missing" };
       const origin = quorumSourceSite(url);
       try {
-        const result = await fetchBounded(`${url.replace(/\/+$/, "")}/block/${height}`, { fetchImpl, signal: deadline, maxBytes: MAX_BLOCK_BYTES });
+        const result = await fetchBounded(`${url.replace(/\/+$/, "")}/block/${height}`, { fetchImpl: fetchFor, signal: deadline, maxBytes: MAX_BLOCK_BYTES });
         if (result.status !== 200) return { kind: "missing" };
         const block = JSON.parse(result.text);
         if (block?.header?.height !== height || block.header.chainId !== chainId || typeof block.hash !== "string" || blockHash(block.header) !== block.hash || !Array.isArray(block.attestations)) return { kind: "unverified" };
@@ -174,7 +231,7 @@ export function quorumTipReader({ chainId, threshold, timeoutMs, validators }, {
  * pinned key (the shipped placeholder) it throws RESTORE_ANCHOR_MISSING: the
  * boot then refuses and exits (it never creates a fresh genesis).
  */
-export async function createRestoreAnchor({ chainId, trustDir = DEFAULT_RESTORE_TRUST_DIR, fetchImpl = fetch, lookupImpl = dnsLookup } = {}) {
+export async function createRestoreAnchor({ chainId, trustDir = DEFAULT_RESTORE_TRUST_DIR, fetchImpl, lookupImpl = dnsLookup } = {}) {
   const trust = await loadRestoreTrust(trustDir);
   const { config } = trust;
   if (trust.pinnedKeys.length === 0) throw new RestoreAnchorError(C.anchorMissing, "no restore summary key is pinned in the repository (placeholder); a hosted restore is refused until one is pinned by PR");

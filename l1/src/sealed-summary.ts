@@ -645,17 +645,46 @@ export interface RestoreAnchorConfig {
   quorum: { threshold: number; timeoutMs: number; validators: Array<{ publicKey: string; url: string }> };
 }
 
+/** The eight 16-bit groups of an IPv6 address (with an optional dotted IPv4 tail), or null. */
+export function ipv6Groups(address: string): number[] | null {
+  let text = address.toLowerCase().replace(/^\[|\]$/g, "");
+  const zone = text.indexOf("%");
+  if (zone >= 0) text = text.slice(0, zone);
+  const v4Tail = /^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(text);
+  if (v4Tail) {
+    const octets = v4Tail.slice(2).map(Number);
+    if (octets.some((octet) => octet > 255)) return null;
+    text = `${v4Tail[1]}${((octets[0]! << 8) | octets[1]!).toString(16)}:${((octets[2]! << 8) | octets[3]!).toString(16)}`;
+  }
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+  const parse = (part: string): number[] | null => {
+    if (part === "") return [];
+    const groups = part.split(":");
+    return groups.every((group) => /^[0-9a-f]{1,4}$/.test(group)) ? groups.map((group) => parseInt(group, 16)) : null;
+  };
+  const head = parse(halves[0]!);
+  const tail = halves.length === 2 ? parse(halves[1]!) : [];
+  if (!head || !tail) return null;
+  if (halves.length === 1) return head.length === 8 ? head : null;
+  if (head.length + tail.length > 7) return null;
+  return [...head, ...Array<number>(8 - head.length - tail.length).fill(0), ...tail];
+}
+
 /**
  * True for hosts or addresses that must never be a production quorum source:
- * localhost names, loopback, unspecified, private (RFC 1918), CGNAT,
- * link-local, benchmarking (198.18.0.0/15), documentation, multicast and
- * reserved IPv4; IPv6 loopback, unspecified, IPv4-mapped / IPv4-compatible
- * (::/96 and ::ffff:0:0/96), NAT64 (64:ff9b::/96 and 64:ff9b:1::/48), 6to4
- * (2002::/16), Teredo (2001::/32), documentation (2001:db8::/32), unique-local
- * and link-local addresses; and internal-only names. Names are checked
- * here; their resolved addresses are checked by the quorum reader
- * (scripts/open-testnet/restore-anchor.mjs), so a public name that resolves to
- * a private address (nip.io style) is refused too.
+ * localhost names, `.local` and `.internal`; IPv4 unspecified (0/8), RFC 1918,
+ * loopback, CGNAT, link-local, 192.0.0.0/24, the documentation ranges,
+ * 6to4 relay anycast 192.88.99.0/24, benchmarking 198.18.0.0/15, multicast
+ * and reserved; IPv6 ::/8 (unspecified, loopback, IPv4-compatible and
+ * IPv4-mapped), discard 100::/64, NAT64 64:ff9b::/96 and 64:ff9b:1::/48,
+ * Teredo 2001::/32, benchmarking 2001:2::/48, documentation 2001:db8::/32,
+ * 6to4 2002::/16, unique-local fc00::/7, link-local fe80::/10, site-local
+ * fec0::/10 and multicast ff00::/8. An IPv6 literal that does not parse is
+ * refused. Names are checked here; their resolved addresses are checked
+ * (and pinned for the request) by the quorum reader
+ * (scripts/open-testnet/restore-anchor.mjs), so a public name that resolves
+ * to a private address (nip.io style) is refused too.
  */
 export function isPrivateOrLoopbackHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
@@ -664,12 +693,19 @@ export function isPrivateOrLoopbackHost(hostname: string): boolean {
   if (v4) {
     const [a, b, c] = [Number(v4[1]), Number(v4[2]), Number(v4[3])];
     return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) || (a === 192 && b === 0 && (c === 0 || c === 2)) || (a === 198 && (b === 18 || b === 19)) ||
+      (a === 192 && b === 168) || (a === 192 && b === 0 && (c === 0 || c === 2)) || (a === 192 && b === 88 && c === 99) || (a === 198 && (b === 18 || b === 19)) ||
       (a === 198 && b === 51 && c === 100) || (a === 203 && b === 0 && c === 113) || a >= 224;
   }
   if (host.includes(":")) {
-    return host.startsWith("::") || /^f[cd]/.test(host) || /^fe[89ab]/.test(host) || /^ff/.test(host) || /^64:ff9b:/.test(host) ||
-      /^2002:/.test(host) || /^2001:(0{0,4}:|:)/.test(host) || /^2001:db8:/.test(host) || /^0{1,4}:/.test(host);
+    const g = ipv6Groups(host);
+    if (!g) return true;
+    const [g0, g1, g2, g3] = g as [number, number, number, number];
+    return g0 < 0x0100 ||
+      (g0 === 0x0100 && g1 === 0 && g2 === 0 && g3 === 0) ||
+      (g0 === 0x0064 && g1 === 0xff9b) ||
+      (g0 === 0x2001 && (g1 === 0 || g1 === 0x0db8 || (g1 === 0x0002 && g2 === 0))) ||
+      g0 === 0x2002 ||
+      (g0 & 0xfe00) === 0xfc00 || (g0 & 0xffc0) === 0xfe80 || (g0 & 0xffc0) === 0xfec0 || (g0 & 0xff00) === 0xff00;
   }
   return false;
 }
