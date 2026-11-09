@@ -47,7 +47,7 @@ import { createServer } from "node:http";
 import { createReadStream, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const l1Root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -1458,7 +1458,19 @@ function restoreBundleView(bundle) {
 // leaves restore output at the target. A staging directory left by a crash is
 // moved aside (incomplete: like any incomplete network directory; marked or
 // unexpected: renamed to <staging>.leftover-<ms>-<pid>), never deleted.
+// L4-R1: at most MAX_RESTORE_STAGING_LEFTOVERS such leftover directories are
+// kept beside the target. With that many already there, the restore is
+// refused (RESTORE_STAGING_LEFTOVER_LIMIT) before anything is renamed or
+// written, so repeated crashes cannot fill the disk; an operator inspects and
+// removes them. Nothing is ever deleted automatically.
+export const MAX_RESTORE_STAGING_LEFTOVERS = 3;
 export function restoreStagingDir(dir) { return `${resolve(dir)}.restore-staging`; }
+async function countRestoreStagingLeftovers(staging) {
+  const prefix = `${basename(staging)}.leftover-`;
+  let names;
+  try { names = await readdir(dirname(staging)); } catch (error) { if (error?.code === "ENOENT") return 0; throw error; }
+  return names.filter((name) => name.startsWith(prefix)).length;
+}
 async function prepareRestoreStaging(dir) {
   const staging = restoreStagingDir(dir);
   // An incomplete staging directory is moved aside like any incomplete
@@ -1471,6 +1483,10 @@ async function prepareRestoreStaging(dir) {
   // move-aside refused) is renamed aside under a timestamp suffix, never
   // deleted and never promoted; the restore then runs again from the bundle.
   if (await lstat(staging).then(() => true, () => false)) {
+    const leftovers = await countRestoreStagingLeftovers(staging);
+    if (leftovers >= MAX_RESTORE_STAGING_LEFTOVERS) {
+      throw new RestoreAnchorError(RESTORE_ANCHOR_CODES.stagingLeftoverLimit, `${leftovers} leftover restore staging directories are already kept beside ${staging} (limit ${MAX_RESTORE_STAGING_LEFTOVERS}); inspect and remove them before restoring again (nothing is deleted automatically)`);
+    }
     for (let attempt = 0; ; attempt += 1) {
       const leftover = `${staging}.leftover-${Date.now()}-${process.pid}${attempt ? `-${attempt}` : ""}`;
       if (await lstat(leftover).then(() => true, () => false)) continue;
@@ -2631,7 +2647,7 @@ async function smoke() {
     const smokeDigest = restoreAnchorApi.restoreSummaryDigest(smokeKeyId, smokeSummary);
     const smokeAnchor = {
       pinnedKeys: [{ keyId: smokeKeyId, publicKey: smokePublic, revoked: false }], readSeal: async () => smokeSeal, readSuperseded: async () => [],
-      readHighWater: async () => ({ height: smokeSummary.height, summaryDigest: smokeDigest }), readQuorumTip: async () => smokeQuorumTip, timeoutMs: 30_000
+      readHighWater: async () => ({ height: smokeSummary.height, summaryDigest: smokeDigest, tipHash: smokeSummary.tipHash }), readQuorumTip: async () => smokeQuorumTip, timeoutMs: 30_000
     };
     await assert.rejects(restoreNetwork(join(dir, "refused"), openSnapshot(sealed, smokeSecret), info.chainId), (error) => error?.code === RESTORE_ANCHOR_CODES.anchorMissing);
     const restored = await restoreNetwork(join(dir, "restored"), openSnapshot(sealed, smokeSecret), info.chainId, { restoreAnchor: smokeAnchor });

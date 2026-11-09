@@ -51,7 +51,7 @@ export async function fixtureRestoreAnchor(source: FixtureSource, workDir: strin
     pinnedKeys: [{ keyId, publicKey, revoked: false }],
     readSeal: async () => seal,
     readSuperseded: async () => [],
-    readHighWater: async () => ({ height: summary.height, summaryDigest }),
+    readHighWater: async () => ({ height: summary.height, summaryDigest, tipHash: summary.tipHash }),
     timeoutMs: 30_000,
     readQuorumTip: async (height: number) => {
       if (height !== quorumTip.height) throw new Error(`TEST STUB: no live quorum tip at height ${height}`);

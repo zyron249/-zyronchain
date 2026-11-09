@@ -56,7 +56,8 @@ export const RESTORE_ANCHOR_CODES = Object.freeze({
   stateMismatch: "RESTORE_SUMMARY_STATE_MISMATCH",
   supplyMismatch: "RESTORE_SUMMARY_SUPPLY_MISMATCH",
   burnMismatch: "RESTORE_SUMMARY_BURN_MISMATCH",
-  snapshotCorrupt: "RESTORE_SNAPSHOT_CORRUPT"
+  snapshotCorrupt: "RESTORE_SNAPSHOT_CORRUPT",
+  stagingLeftoverLimit: "RESTORE_STAGING_LEFTOVER_LIMIT"
 } as const);
 export type RestoreAnchorCode = typeof RESTORE_ANCHOR_CODES[keyof typeof RESTORE_ANCHOR_CODES];
 const C = RESTORE_ANCHOR_CODES;
@@ -96,7 +97,12 @@ export interface RestoreSummary {
 }
 export interface PinnedRestoreKey { keyId: string; publicKey: string; revoked: boolean; supersededAtHeight?: number }
 export interface SupersededEntry { summaryDigest: string; height: number; tipHash: string }
-export interface HighWater { height: number; summaryDigest: string }
+/**
+ * Effective high-water value. tipHash is optional in the reader contract; when
+ * present (the pinned-file reader always sets it) it must equal the sealed
+ * summary's tipHash.
+ */
+export interface HighWater { height: number; summaryDigest: string; tipHash?: string }
 export interface QuorumTip { height: number; tipHash: string }
 export interface RestoreAnchor {
   pinnedKeys: PinnedRestoreKey[];
@@ -350,12 +356,14 @@ export async function verifyRestoreAnchor(anchor: RestoreAnchor | undefined, vie
     refuse(C.superseded, `the summary or its tip at height ${summary.height} is superseded`);
   }
   const highWater = await boundedRead(() => anchor.readHighWater(), timeoutMs, C.anchorTimeout, C.anchorUnavailable, "the high-water record");
-  if (highWater !== null && highWater !== undefined && (!isPlainObject(highWater) || !safeInt(highWater.height, 0) || typeof highWater.summaryDigest !== "string")) {
+  if (highWater !== null && highWater !== undefined && (!isPlainObject(highWater) || !safeInt(highWater.height, 0) || typeof highWater.summaryDigest !== "string" ||
+    (highWater.tipHash !== undefined && !isHex32(highWater.tipHash)))) {
     refuse(C.anchorConfigInvalid, "the high-water record is malformed");
   }
   if (!highWater) refuse(C.highWaterConflict, "the high-water record has no seal for this chain (the seal was never recorded)");
   if (summary.height < highWater!.height) refuse(C.replayLowerHeight, `summary height ${summary.height} is below the high-water height ${highWater!.height}`);
   if (summary.height > highWater!.height || summaryDigest !== highWater!.summaryDigest) refuse(C.highWaterConflict, "the seal is not the one recorded at the high-water mark");
+  if (highWater!.tipHash !== undefined && highWater!.tipHash !== summary.tipHash) refuse(C.highWaterConflict, "the high-water entry records another tip than the sealed summary");
   if (summary.chainId !== view.chainId) refuse(C.wrongChain, `summary is for ${summary.chainId}, the snapshot for ${view.chainId}`);
   if (summary.genesisHash !== view.genesisHash) refuse(C.genesisMismatch, "summary genesis hash differs from the snapshot genesis");
   if (summary.validatorSetHash !== view.validatorSetHash) refuse(C.validatorSetMismatch, "validator set differs from the summary");
@@ -453,6 +461,54 @@ export type RecordEntry =
   | { index: number; prev: string; kind: "supersede-key"; keyId: string; supersededAtHeight: number; reason: string }
   | { index: number; prev: string; kind: "supersede-summary"; summaryDigest: string; height: number; tipHash: string; reason: string };
 export interface RecordFile { format: typeof RESTORE_RECORD_FORMAT; entries: RecordEntry[] }
+
+// ---- byte-canonical trust files ---------------------------------------------
+
+/**
+ * First duplicated object key in a JSON text, or undefined. The text must
+ * already be valid JSON (JSON.parse silently keeps the last duplicate).
+ */
+export function findDuplicateJsonKey(text: string): string | undefined {
+  const stack: Array<{ keys: Set<string>; expectKey: boolean } | null> = [];
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (c === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+      const top = stack.at(-1);
+      if (top && top.expectKey) {
+        const key = JSON.parse(text.slice(i, j + 1)) as string;
+        if (top.keys.has(key)) return key;
+        top.keys.add(key);
+        top.expectKey = false;
+      }
+      i = j;
+    } else if (c === "{") stack.push({ keys: new Set(), expectKey: true });
+    else if (c === "[") stack.push(null);
+    else if (c === "}" || c === "]") stack.pop();
+    else if (c === ",") { const top = stack.at(-1); if (top) top.expectKey = true; }
+  }
+  return undefined;
+}
+
+/** The one accepted byte form of a trust file: JSON.stringify(value, null, 2), LF, one trailing newline. */
+export function canonicalTrustFileText(value: unknown): string { return `${JSON.stringify(value, null, 2)}\n`; }
+
+/**
+ * Parses an l1/trust/*.json file strictly: valid JSON, no duplicate object
+ * keys, and the bytes must equal canonicalTrustFileText of the parsed value
+ * (2-space indentation in file key order, no other whitespace, no escape or
+ * number variants, LF, one trailing newline). Any deviation is
+ * RESTORE_ANCHOR_CONFIG_INVALID.
+ */
+export function parseTrustFileText(text: string, label: string): unknown {
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { return refuse(C.anchorConfigInvalid, `${label} is not JSON`); }
+  const duplicate = findDuplicateJsonKey(text);
+  if (duplicate !== undefined) return refuse(C.anchorConfigInvalid, `${label} has a duplicate key ${JSON.stringify(duplicate)}`);
+  if (canonicalTrustFileText(value) !== text) return refuse(C.anchorConfigInvalid, `${label} is not byte-canonical (expected JSON.stringify(value, null, 2) plus one trailing newline)`);
+  return value;
+}
 
 /** l1/trust/t1-summary-keys.json: production keyIds are derived from the public key. */
 export function parsePinnedKeysFile(value: unknown): PinnedKeysFile {
@@ -556,16 +612,22 @@ export function parseHighWaterFile(value: unknown): HighWaterFile {
   return value as unknown as HighWaterFile;
 }
 
-/** Effective high-water of a chain: the highest recorded seal not superseded, or null. */
+/**
+ * Effective high-water of a chain: the highest recorded seal not superseded,
+ * or null. It carries the entry's tipHash, which the verifier cross-checks
+ * against the sealed summary. Two live (not superseded) entries at the same
+ * height with different tips are a conflict (RESTORE_SUMMARY_HIGH_WATER_CONFLICT).
+ */
 export function highWaterFor(file: HighWaterFile, chainId: string, superseded: readonly SupersededEntry[] = []): HighWater | null {
   const supersededDigests = new Set(superseded.map((entry) => entry.summaryDigest));
   const supersededTips = new Set(superseded.map((entry) => `${entry.height}:${entry.tipHash}`));
   let best: HighWaterEntry | undefined;
   for (const entry of file.entries) {
     if (entry.chainId !== chainId || supersededDigests.has(entry.summaryDigest) || supersededTips.has(`${entry.height}:${entry.tipHash}`)) continue;
+    if (best && entry.height === best.height && entry.tipHash !== best.tipHash) refuse(C.highWaterConflict, `the high-water record has two live seals with different tips at height ${entry.height}`);
     if (!best || entry.height > best.height) best = entry;
   }
-  return best ? { height: best.height, summaryDigest: best.summaryDigest } : null;
+  return best ? { height: best.height, summaryDigest: best.summaryDigest, tipHash: best.tipHash } : null;
 }
 
 export function appendHighWaterEntry(file: HighWaterFile, entry: { chainId: string; height: number; tipHash: string; summaryDigest: string; reason: string }): HighWaterFile {
@@ -583,22 +645,31 @@ export interface RestoreAnchorConfig {
   quorum: { threshold: number; timeoutMs: number; validators: Array<{ publicKey: string; url: string }> };
 }
 
-/** Strict parse of l1/trust/restore-anchor-config.json. The shipped placeholder has no sources. */
 /**
- * True for hosts that must never be a production quorum source: localhost
- * names, loopback, unspecified, private, link-local and unique-local
- * addresses, and internal-only names.
+ * True for hosts or addresses that must never be a production quorum source:
+ * localhost names, loopback, unspecified, private (RFC 1918), CGNAT,
+ * link-local, benchmarking (198.18.0.0/15), documentation, multicast and
+ * reserved IPv4; IPv6 loopback, unspecified, IPv4-mapped / IPv4-compatible
+ * (::/96 and ::ffff:0:0/96), NAT64 (64:ff9b::/96 and 64:ff9b:1::/48), 6to4
+ * (2002::/16), Teredo (2001::/32), documentation (2001:db8::/32), unique-local
+ * and link-local addresses; and internal-only names. Names are checked
+ * here; their resolved addresses are checked by the quorum reader
+ * (scripts/open-testnet/restore-anchor.mjs), so a public name that resolves to
+ * a private address (nip.io style) is refused too.
  */
 export function isPrivateOrLoopbackHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
   if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal") || host === "") return true;
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
   if (v4) {
-    const [a, b] = [Number(v4[1]), Number(v4[2])];
-    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
+    const [a, b, c] = [Number(v4[1]), Number(v4[2]), Number(v4[3])];
+    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) || (a === 192 && b === 0 && (c === 0 || c === 2)) || (a === 198 && (b === 18 || b === 19)) ||
+      (a === 198 && b === 51 && c === 100) || (a === 203 && b === 0 && c === 113) || a >= 224;
   }
   if (host.includes(":")) {
-    return host === "::" || host === "::1" || /^f[cd]/.test(host) || /^fe[89ab]/.test(host) || host.startsWith("::ffff:");
+    return host.startsWith("::") || /^f[cd]/.test(host) || /^fe[89ab]/.test(host) || /^ff/.test(host) || /^64:ff9b:/.test(host) ||
+      /^2002:/.test(host) || /^2001:(0{0,4}:|:)/.test(host) || /^2001:db8:/.test(host) || /^0{1,4}:/.test(host);
   }
   return false;
 }
@@ -608,10 +679,40 @@ export function quorumSourceOrigin(url: string): string | null {
   try { return new URL(url).origin; } catch { return null; }
 }
 
+// Second-level labels under a two-letter country TLD that act as public
+// suffixes (example.co.uk, example.com.au). A small fixed list, no dependency.
+const CC_SECOND_LEVEL = new Set(["ac", "co", "com", "edu", "gov", "net", "org", "ne", "or", "go", "gen", "ltd", "plc", "nic", "mil"]);
+
+/**
+ * Site of a quorum source URL for the "at least two distinct sources" rule,
+ * or null if it is not a URL. The host is lowercased, trailing dots, port and
+ * scheme are dropped, and a DNS name collapses to its registrable domain with
+ * a simple eTLD+1 rule: the last two labels, or the last three when the
+ * second-to-last label is a common second-level suffix under a two-letter
+ * country TLD. An IP literal is its own site. So v1.example.com,
+ * v2.example.com:8443 and example.com. are one site. The rule is deliberately
+ * conservative: tenants of one shared hosting suffix (x.onrender.com,
+ * y.onrender.com) also count as one site. The local loopback test fixture
+ * (http://127.0.0.1:<port>, accepted only with the fixture marker) keeps
+ * scheme://host:port so a local multi-port fixture still has distinct sources.
+ */
+export function quorumSourceSite(url: string): string | null {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return null; }
+  if (parsed.protocol === "http:" && parsed.hostname === "127.0.0.1") return parsed.origin;
+  const host = parsed.hostname.toLowerCase().replace(/\.+$/, "");
+  if (host.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return host;
+  const labels = host.split(".");
+  if (labels.length <= 2) return host;
+  const take = labels.at(-1)!.length === 2 && CC_SECOND_LEVEL.has(labels.at(-2)!) ? 3 : 2;
+  return labels.slice(-take).join(".");
+}
+
 /**
  * Strict parse of l1/trust/restore-anchor-config.json. The shipped
  * placeholder has no sources. Production sources are https URLs on public
- * hosts, every URL distinct, from at least two distinct origins. Loopback
+ * hosts, every URL distinct, from at least two distinct sites
+ * (quorumSourceSite). Loopback
  * (http://127.0.0.1) sources are accepted only with allowLoopbackFixture,
  * which only the local test / smoke fixture path sets.
  */
@@ -624,7 +725,7 @@ export function parseRestoreAnchorConfig(value: unknown, { allowLoopbackFixture 
     !safeInt(quorum.threshold, 0) || !safeInt(quorum.timeoutMs, 1) || quorum.timeoutMs > 120_000) return bad("quorum must be { threshold, timeoutMs, validators }");
   const keys = new Set<string>();
   const urls = new Set<string>();
-  const origins = new Set<string>();
+  const sites = new Set<string>();
   for (const validator of quorum.validators) {
     if (!isPlainObject(validator) || !exactKeys(validator, ["publicKey", "url"]) || typeof validator.publicKey !== "string" || !/^[0-9a-f]{128}$/.test(validator.publicKey) ||
       typeof validator.url !== "string" || !/^https?:\/\/[!-~]{1,500}$/.test(validator.url)) return bad("a quorum validator entry is malformed");
@@ -640,9 +741,9 @@ export function parseRestoreAnchorConfig(value: unknown, { allowLoopbackFixture 
     if (urls.has(normalized)) return bad("two quorum validators share one URL");
     keys.add(validator.publicKey);
     urls.add(normalized);
-    origins.add(parsed.origin);
+    sites.add(quorumSourceSite(validator.url)!);
   }
-  if (quorum.validators.length > 0 && origins.size < 2) return bad("the quorum validators must come from at least two distinct URL origins");
+  if (quorum.validators.length > 0 && sites.size < 2) return bad("the quorum validators must come from at least two distinct sites (registrable hosts; port, trailing-dot and subdomain variants are one site)");
   const n = quorum.validators.length;
   if (n > 0 && (n < 3 || quorum.threshold < Math.floor((2 * n) / 3) + 1 || quorum.threshold > n)) {
     return bad(`the quorum threshold must be between floor(2n/3)+1 and n, with at least 3 validators (n = ${n})`);

@@ -8,13 +8,14 @@
 // from environment variables, command-line options, the snapshot bundle or
 // the gateway. Nothing here holds or reads a private key. Every failure is a
 // refusal with its own code (RestoreAnchorError, never a local I/O error).
+import { lookup as dnsLookup } from "node:dns/promises";
 import { access, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const l1Root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const anchorApi = await import(join(l1Root, "dist/src/sealed-summary.js"));
-const { RESTORE_ANCHOR_CODES: C, RestoreAnchorError, highWaterFor, quorumSourceOrigin, parseHighWaterFile, parseRestoreAnchorConfig, restoreTrustFromFiles } = anchorApi;
+const { RESTORE_ANCHOR_CODES: C, RestoreAnchorError, highWaterFor, isPrivateOrLoopbackHost, quorumSourceSite, parseHighWaterFile, parseRestoreAnchorConfig, parseTrustFileText, restoreTrustFromFiles } = anchorApi;
 const { blockHash, validateBlockAttestation } = await import(join(l1Root, "dist/src/block.js"));
 const { addressFromPublicKey } = await import(join(l1Root, "dist/src/crypto.js"));
 
@@ -39,10 +40,12 @@ export function bootRestoreTrustDir() { return DEFAULT_RESTORE_TRUST_DIR; }
 // T1 tests).
 export const LOOPBACK_FIXTURE_MARKER = "TEST-FIXTURE-ONLY-loopback-quorum";
 
+// Every trust JSON file must be byte-canonical with no duplicate keys
+// (parseTrustFileText: JSON.stringify(value, null, 2) plus one newline).
 async function readJson(path, code, label) {
   let text;
   try { text = await readFile(path, "utf8"); } catch { throw new RestoreAnchorError(code, `${label} is missing`); }
-  try { return JSON.parse(text); } catch { throw new RestoreAnchorError(code, `${label} is not JSON`); }
+  return parseTrustFileText(text, label);
 }
 
 /** All pinned trust files of a directory, parsed strictly. */
@@ -83,18 +86,57 @@ export async function readSealFile(path) {
  * header, height, chain ID). A trusted validator counts toward the tip only
  * if its secp256k1 finality attestation on that block verifies. The tip needs
  * `threshold` distinct trusted validators, from sources on at least two
- * distinct URL origins (one host answering for every validator is not a
- * quorum). A
+ * distinct sites (quorumSourceSite: registrable host, so one host, its ports
+ * or its subdomains answering for every validator is not a quorum). A
  * second verified tip, a deadline, or too few verified attestations fail
  * closed, each with its own code.
+ *
+ * Before any request, every source host is resolved (all addresses); if any
+ * address is private, loopback or otherwise non-public (isPrivateOrLoopbackHost)
+ * the read is refused with RESTORE_ANCHOR_CONFIG_INVALID, so a public-looking
+ * name that points at a private address (nip.io style) fails. Only the local
+ * test fixture's http://127.0.0.1 sources (accepted by the config parser only
+ * with the fixture marker) skip this. A lookup failure counts that source as
+ * not answering. fetch resolves the name again, so this does not pin the
+ * address against DNS rebinding between the check and the request; the
+ * secp256k1 attestations, not the transport, are what the tip relies on.
  */
-export function quorumTipReader({ chainId, threshold, timeoutMs, validators }, { fetchImpl = fetch } = {}) {
+export async function assertPublicQuorumResolution(validators, { lookupImpl = dnsLookup, signal } = {}) {
+  // A lookup is bounded by the reader's deadline (a hung resolver counts the
+  // source as not answering; the fetch then reports the timeout).
+  const bounded = (promise) => signal ? Promise.race([promise, new Promise((_, reject) => {
+    if (signal.aborted) reject(new Error("deadline"));
+    signal.addEventListener("abort", () => reject(new Error("deadline")), { once: true });
+  })]) : promise;
+  const failed = new Set();
+  await Promise.all(validators.map(async ({ url }) => {
+    const parsed = new URL(url);
+    if (parsed.protocol === "http:" && parsed.hostname === "127.0.0.1") return;
+    if (isPrivateOrLoopbackHost(parsed.hostname)) throw new RestoreAnchorError(C.anchorConfigInvalid, "a quorum source host is not public");
+    const host = parsed.hostname.replace(/^\[|\]$/g, "");
+    let addresses;
+    try { addresses = await bounded(lookupImpl(host, { all: true, verbatim: true })); } catch { failed.add(url); return; }
+    const list = Array.isArray(addresses) ? addresses : [addresses];
+    if (list.length === 0) { failed.add(url); return; }
+    for (const entry of list) {
+      const address = typeof entry === "string" ? entry : entry?.address;
+      if (typeof address !== "string" || isPrivateOrLoopbackHost(address)) {
+        throw new RestoreAnchorError(C.anchorConfigInvalid, `the quorum source host ${parsed.hostname} resolves to a private, loopback or non-public address`);
+      }
+    }
+  }));
+  return failed;
+}
+
+export function quorumTipReader({ chainId, threshold, timeoutMs, validators }, { fetchImpl = fetch, lookupImpl = dnsLookup } = {}) {
   const allowed = new Map(validators.map((validator) => [addressFromPublicKey(validator.publicKey), validator.publicKey]));
   return async (height) => {
     if (validators.length === 0 || threshold < 1) throw new RestoreAnchorError(C.quorumTipUnavailable, "no live quorum validators are pinned");
     const deadline = AbortSignal.timeout(timeoutMs);
+    const unresolved = await assertPublicQuorumResolution(validators, { lookupImpl, signal: deadline });
     const outcomes = await Promise.all(validators.map(async ({ url }) => {
-      const origin = quorumSourceOrigin(url);
+      if (unresolved.has(url)) return { kind: "missing" };
+      const origin = quorumSourceSite(url);
       try {
         const result = await fetchBounded(`${url.replace(/\/+$/, "")}/block/${height}`, { fetchImpl, signal: deadline, maxBytes: MAX_BLOCK_BYTES });
         if (result.status !== 200) return { kind: "missing" };
@@ -132,7 +174,7 @@ export function quorumTipReader({ chainId, threshold, timeoutMs, validators }, {
  * pinned key (the shipped placeholder) it throws RESTORE_ANCHOR_MISSING: the
  * boot then refuses and exits (it never creates a fresh genesis).
  */
-export async function createRestoreAnchor({ chainId, trustDir = DEFAULT_RESTORE_TRUST_DIR, fetchImpl = fetch } = {}) {
+export async function createRestoreAnchor({ chainId, trustDir = DEFAULT_RESTORE_TRUST_DIR, fetchImpl = fetch, lookupImpl = dnsLookup } = {}) {
   const trust = await loadRestoreTrust(trustDir);
   const { config } = trust;
   if (trust.pinnedKeys.length === 0) throw new RestoreAnchorError(C.anchorMissing, "no restore summary key is pinned in the repository (placeholder); a hosted restore is refused until one is pinned by PR");
@@ -146,7 +188,7 @@ export async function createRestoreAnchor({ chainId, trustDir = DEFAULT_RESTORE_
     readSeal: () => readSealFile(join(trustDir, RESTORE_TRUST_FILES.seal)),
     readSuperseded: async () => structuredClone(trust.superseded),
     readHighWater: async () => highWaterFor(trust.highWater, chainId, trust.superseded),
-    readQuorumTip: quorumTipReader({ chainId, threshold: config.quorum.threshold, timeoutMs: config.quorum.timeoutMs, validators: config.quorum.validators }, { fetchImpl })
+    readQuorumTip: quorumTipReader({ chainId, threshold: config.quorum.threshold, timeoutMs: config.quorum.timeoutMs, validators: config.quorum.validators }, { fetchImpl, lookupImpl })
   };
 }
 

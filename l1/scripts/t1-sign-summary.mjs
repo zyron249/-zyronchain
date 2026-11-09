@@ -6,13 +6,14 @@
 // Signs one open-testnet restore summary with the single-purpose, testnet-only
 // Ed25519 restore-summary key and prints ONLY {"keyId","signature"} on stdout.
 // The private key is read only from --key-file: an absolute path to a regular
-// file (opened with O_NOFOLLOW, checked on the open descriptor) owned by this
+// file (lstat first, then opened with O_NOFOLLOW | O_NONBLOCK and checked on
+// the open descriptor: same device and inode as the lstat, one link) owned by this
 // user with mode 0600, outside /workspace and outside this repository; it is
 // read into a Buffer that is zeroed once the KeyObject is built. Key material on the command line or in the
 // environment is refused. The key, its path contents and its PEM are never
 // printed or logged; errors are generic.
 import { createPrivateKey } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,11 +56,16 @@ export function assertNoEnvKey(env) {
 }
 
 /**
- * Opens the key file with O_NOFOLLOW (a symlink as the last component fails),
- * checks the opened descriptor (fstat: regular file, mode 0600, owned by this
- * user, the same inode as the checked path) and that its real path is outside
- * /workspace and the repository, and reads it into a Buffer. The caller must
- * zero the Buffer (fill(0)) after use.
+ * Resolves the key file's directory (realpath) and refuses paths inside
+ * /workspace or the repository. Then lstats the final path (it must be a
+ * regular file with exactly one link, not a symlink), opens it with
+ * O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY (a symlink as the last
+ * component fails; a FIFO or device cannot block the open) and checks the
+ * opened descriptor with fstat: a regular file, the same device and inode as
+ * the lstat (so the path was not swapped between the two), exactly one link
+ * (no hard link from elsewhere), mode 0600, owned by this user, a bounded
+ * size. It reads the file into a Buffer; the caller must zero the Buffer
+ * (fill(0)) after use.
  */
 export function readKeyFile(keyFile, { uid = process.getuid?.(), forbiddenRoots = FORBIDDEN_ROOTS } = {}) {
   if (!isAbsolute(keyFile)) refuse("--key-file must be an absolute path");
@@ -71,17 +77,24 @@ export function readKeyFile(keyFile, { uid = process.getuid?.(), forbiddenRoots 
     try { resolvedRoot = realpathSync(root); } catch { /* root absent */ }
     if (within(target, resolvedRoot) || within(resolve(keyFile), resolve(root))) refuse("the key file must be outside /workspace and outside the repository");
   }
+  let before;
+  try { before = lstatSync(target, { bigint: true }); } catch { return refuse("the key file cannot be read"); }
+  if (before.isSymbolicLink()) refuse("the key file must not be a symlink");
+  if (!before.isFile()) refuse("the key file must be a regular file");
+  if (before.nlink !== 1n) refuse("the key file must have exactly one link (no hard links)");
   let fd;
-  try { fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NOCTTY ?? 0)); } catch (error) {
+  try { fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NONBLOCK ?? 0) | (constants.O_NOCTTY ?? 0)); } catch (error) {
     return refuse(error?.code === "ELOOP" ? "the key file must not be a symlink" : "the key file cannot be read");
   }
   try {
-    const info = fstatSync(fd);
+    const info = fstatSync(fd, { bigint: true });
     if (!info.isFile()) refuse("the key file must be a regular file");
-    if ((info.mode & 0o777) !== 0o600) refuse("the key file must have mode 0600");
-    if (uid !== undefined && info.uid !== uid) refuse("the key file must be owned by this user");
-    if (info.size <= 0 || info.size > 16 * 1024) refuse("the key file has an unexpected size");
-    const buffer = Buffer.alloc(info.size);
+    if (info.dev !== before.dev || info.ino !== before.ino) refuse("the key file changed between the path check and the open");
+    if (info.nlink !== 1n) refuse("the key file must have exactly one link (no hard links)");
+    if ((info.mode & 0o777n) !== 0o600n) refuse("the key file must have mode 0600");
+    if (uid !== undefined && info.uid !== BigInt(uid)) refuse("the key file must be owned by this user");
+    if (info.size <= 0n || info.size > 16n * 1024n) refuse("the key file has an unexpected size");
+    const buffer = Buffer.alloc(Number(info.size));
     let read = 0;
     while (read < buffer.length) {
       const n = readSync(fd, buffer, read, buffer.length - read, read);
