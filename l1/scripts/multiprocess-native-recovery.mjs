@@ -92,6 +92,22 @@ function startNode(label, args) {
   };
 }
 
+const LISTENING_OR_PORT_TAKEN = /node listening on http:\/\/127\.0\.0\.1:\d+|EADDRINUSE/;
+
+// freePort() releases the port before the node binds it, so another socket can take
+// it in between. If the node reports EADDRINUSE, kill it and retry on a fresh port.
+async function startNodeOnFreePort(label, args, processes, attempts = 5) {
+  for (let attempt = 1; ; attempt += 1) {
+    const port = await freePort();
+    const node = startNode(label, [...args, "--port", String(port)]);
+    processes.push(node);
+    const match = await node.waitFor(LISTENING_OR_PORT_TAKEN);
+    if (!match[0].includes("EADDRINUSE")) return { node, port };
+    await stopNode(node, "SIGKILL");
+    if (attempt >= attempts) throw new Error(`${label} could not bind a free RPC port after ${attempts} attempts\n${node.output()}`);
+  }
+}
+
 async function stopNode(processInfo, signal = "SIGTERM") {
   if (!processInfo || processInfo.child.exitCode !== null || processInfo.child.signalCode !== null) return;
   const exit = new Promise((resolveExit) => processInfo.child.once("exit", (code, exitSignal) => resolveExit({ code, exitSignal })));
@@ -175,17 +191,12 @@ const processes = [];
 
 try {
   await writeFile(genesisPath, `${JSON.stringify(genesis, null, 2)}\n`, { mode: 0o644 });
-  const [seedRpc, replicaARpc, replicaBRpc] = await Promise.all([freePort(), freePort(), freePort()]);
-
-  const seed = startNode("seed", [
+  const { node: seed, port: seedRpc } = await startNodeOnFreePort("seed", [
     "--genesis", genesisPath,
     "--data", seedDir,
     "--host", "127.0.0.1",
-    "--port", String(seedRpc),
     "--p2p-listen", "/ip4/127.0.0.1/tcp/0"
-  ]);
-  processes.push(seed);
-  await seed.waitFor(/node listening on http:\/\/127\.0\.0\.1:\d+/);
+  ], processes);
   const nativeMatch = await seed.waitFor(/Native P2P (\/ip4\/127\.0\.0\.1\/tcp\/\d+\/p2p\/[A-Za-z0-9]+)/);
   const seedNative = nativeMatch[1];
   assert.ok(seedNative);
@@ -204,29 +215,23 @@ try {
   assert.equal(malformed.ok, false, "Malformed consensus JSON unexpectedly succeeded");
   assert.equal((await fetchJson(seedRpc, "/status")).height, 10, "Malformed RPC changed finalized height");
 
-  const replicaA = startNode("replica-a", [
-    "--genesis", genesisPath,
-    "--data", replicaADir,
-    "--host", "127.0.0.1",
-    "--port", String(replicaARpc),
-    "--p2p-listen", "/ip4/127.0.0.1/tcp/0",
-    "--p2p-peer", seedNative
+  const [{ node: replicaA, port: replicaARpc }, { node: replicaB, port: replicaBFirstRpc }] = await Promise.all([
+    startNodeOnFreePort("replica-a", [
+      "--genesis", genesisPath,
+      "--data", replicaADir,
+      "--host", "127.0.0.1",
+      "--p2p-listen", "/ip4/127.0.0.1/tcp/0",
+      "--p2p-peer", seedNative
+    ], processes),
+    startNodeOnFreePort("replica-b", [
+      "--genesis", genesisPath,
+      "--data", replicaBDir,
+      "--host", "127.0.0.1",
+      "--p2p-listen", "/ip4/127.0.0.1/tcp/0",
+      "--p2p-peer", seedNative
+    ], processes)
   ]);
-  const replicaB = startNode("replica-b", [
-    "--genesis", genesisPath,
-    "--data", replicaBDir,
-    "--host", "127.0.0.1",
-    "--port", String(replicaBRpc),
-    "--p2p-listen", "/ip4/127.0.0.1/tcp/0",
-    "--p2p-peer", seedNative
-  ]);
-  processes.push(replicaA, replicaB);
-
-  await Promise.all([
-    replicaA.waitFor(/node listening on http:\/\/127\.0\.0\.1:\d+/),
-    replicaB.waitFor(/node listening on http:\/\/127\.0\.0\.1:\d+/)
-  ]);
-  const [a10, b10] = await Promise.all([waitForHeight(replicaARpc, 10), waitForHeight(replicaBRpc, 10)]);
+  const [a10, b10] = await Promise.all([waitForHeight(replicaARpc, 10), waitForHeight(replicaBFirstRpc, 10)]);
   assert.equal(a10.tipHash, canonical.tip.hash);
   assert.equal(b10.tipHash, canonical.tip.hash);
 
@@ -256,16 +261,13 @@ try {
   assert.equal(replay.ok, false, `Finalized replay unexpectedly succeeded over RPC: ${replayBody}`);
   assert.equal((await fetchJson(seedRpc, "/status")).height, 20, "Replay changed finalized height");
 
-  const restartedB = startNode("replica-b-restarted", [
+  const { node: restartedB, port: replicaBRpc } = await startNodeOnFreePort("replica-b-restarted", [
     "--genesis", genesisPath,
     "--data", replicaBDir,
     "--host", "127.0.0.1",
-    "--port", String(replicaBRpc),
     "--p2p-listen", "/ip4/127.0.0.1/tcp/0",
     "--p2p-peer", seedNative
-  ]);
-  processes.push(restartedB);
-  await restartedB.waitFor(/node listening on http:\/\/127\.0\.0\.1:\d+/);
+  ], processes);
   const b20 = await waitForHeight(replicaBRpc, 20);
   assert.equal(b20.tipHash, canonical.tip.hash, "Hard-crashed replica did not catch up to the exact finalized tip");
 
