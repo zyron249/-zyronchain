@@ -1,0 +1,10 @@
+{
+  "format": "zyronchain-restore-anchor-config-v1",
+  "chainId": null,
+  "sealUrl": null,
+  "quorum": {
+    "threshold": 0,
+    "timeoutMs": 30000,
+    "validators": []
+  }
+}

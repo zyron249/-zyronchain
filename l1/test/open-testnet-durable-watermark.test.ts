@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import test from "node:test";
+import { anchorForNetworkDir } from "./helpers/restore-anchor-fixture.js";
 import { allocateValidatorBasePort, freePort } from "./helpers/open-testnet-ports.js";
 
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
@@ -135,7 +136,9 @@ test("cold start from a snapshot behind the tip: followers never held a block th
     // The instance loses its disk; the next start restores the published (stale) snapshot.
     await network.shutdown(); network = undefined;
     const followerPort2 = await freePort();
-    const restored = await api.restoreNetwork(join(root, "b"), api.openSnapshot(publishedSealed, secret), chainId);
+    const publishedBundle = api.openSnapshot(publishedSealed, secret);
+    // S2-3 T1: a fixture seal built from network a's own validator logs at the published height.
+    const restored = await api.restoreNetwork(join(root, "b"), publishedBundle, chainId, { restoreAnchor: await anchorForNetworkDir(join(root, "a"), publishedBundle.blocks.length) });
     assert.ok(restored.height < lostTip, "the restore is behind the tip that was finalized before the restart");
     // The follower now points at the restored gateway (new port, same chain).
     follower?.kill("SIGTERM"); await sleep(1_000);

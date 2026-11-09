@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { anchorForNetworkDir } from "./helpers/restore-anchor-fixture.js";
 
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -48,7 +49,7 @@ test("restore reports progress for every validator copy step: copied files, reco
     const onProgress = (event?: Json) => {
       events.push({ ...(event ?? {}), present: event?.validator && event?.file ? existsSync(join(target, `data-${event.validator}`, event.file)) : undefined, marker: existsSync(join(target, "network.json")) });
     };
-    const restored = await api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress });
+    const restored = await api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress, restoreAnchor: await anchorForNetworkDir(join(root, "source")) });
     assert.equal(restored.height, bundle.blocks.length);
     assert.ok(await api.readNetworkMarker(target));
     assert.ok(events.every((event) => !event.marker), "every progress tick comes before the completion marker");

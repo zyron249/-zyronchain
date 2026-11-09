@@ -14,6 +14,10 @@
 // TEST keys, finalized blocks). `run --init-if-missing --restore-url <url>`
 // restores a missing directory from such a bundle (re-validating every block)
 // before falling back to a fresh genesis.
+// S2-3 T1: the restore must also be bound to an independently sealed summary,
+// configured only by files pinned in l1/trust/ (summary keys, revoke/supersede
+// and high-water records, seal location and live quorum validators); otherwise
+// it is refused and start-up stops. See docs/specs/s2-3-t1-sealed-summary.md.
 //
 // Startup on hosts with a port scan (Render): the gateway binds --port / $PORT
 // before anything slow happens. While the snapshot is downloaded, decrypted and
@@ -32,12 +36,13 @@ import { allocateValidatorBasePort } from "./open-testnet-ports.mjs";
 import { ensureGatewayMallocArena } from "./open-testnet/malloc-arena.mjs";
 import assert from "node:assert/strict";
 import { fork, spawn } from "node:child_process";
-import { createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createDecipheriv, createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import { Worker } from "node:worker_threads";
 import { SNAPSHOT_MAGIC, sealSnapshot, snapshotKey } from "./open-testnet/snapshot-seal.mjs";
 import { verifySnapshotBlocks } from "./open-testnet/snapshot-verify.mjs";
 import { HistoryFileError, createHistoryFile, resumeHistoryFile } from "./open-testnet/history-file.mjs";
+import { bootRestoreTrustDir, createRestoreAnchor, summaryFromValidatorLogs } from "./open-testnet/restore-anchor.mjs";
 import { createServer } from "node:http";
 import { createReadStream, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
@@ -2549,8 +2554,25 @@ async function smoke() {
     assert.throws(() => openSnapshot(sealed, "x".repeat(40)));
     const snapHeight = Number(snapshotResponse.headers.get("x-zyron-snapshot-height"));
     await network.shutdown(); network = undefined;
-    const restored = await restoreNetwork(join(dir, "restored"), openSnapshot(sealed, smokeSecret), info.chainId);
+    // S2-3 T1: the restore needs a sealed summary. The smoke builds it from
+    // the validators' own finalized logs (a quorum tip match at the snapshot
+    // height, state from v1's own log, never from the snapshot) and signs it
+    // with a TEST key generated here and dropped afterwards (never pinned).
+    const smokeKey = generateKeyPairSync("ed25519");
+    const smokePublic = restoreAnchorApi.ed25519RawPublicKeyHex(smokeKey.publicKey);
+    const smokeKeyId = restoreAnchorApi.restoreKeyId(smokePublic);
+    const genesisJson = JSON.parse(await readFile(join(dir, "net", "genesis.json"), "utf8"));
+    const { summary: smokeSummary, quorumTip: smokeQuorumTip } = await summaryFromValidatorLogs({
+      genesis: genesisJson, genesisHash: info.genesisHash, height: snapHeight, workDir: join(dir, "summary-replay"),
+      logPaths: VALIDATOR_NAMES.map((name) => join(dir, "net", `data-${name}`, "blocks.ndjson")),
+      provenance: { publisher: "open-testnet smoke (TEST key)", workflow: "l1/scripts/open-testnet.mjs smoke", commit: "0".repeat(40) }
+    });
+    const smokeSeal = { summary: smokeSummary, keyId: smokeKeyId, signature: restoreAnchorApi.signRestoreSummary(smokeKeyId, smokeSummary, smokeKey.privateKey) };
+    const smokeAnchor = { pinnedKeys: [{ keyId: smokeKeyId, publicKey: smokePublic }], readSeal: async () => structuredClone(smokeSeal), readSuperseded: async () => [], readQuorumTip: async () => smokeQuorumTip };
+    await assert.rejects(restoreNetwork(join(dir, "refused"), openSnapshot(sealed, smokeSecret), info.chainId), (error) => error?.code === RESTORE_ANCHOR_CODES.anchorMissing);
+    const restored = await restoreNetwork(join(dir, "restored"), openSnapshot(sealed, smokeSecret), info.chainId, { restoreAnchor: smokeAnchor });
     assert.equal(restored.genesisHash, info.genesisHash);
+    assert.equal(restored.anchor.keyId, smokeKeyId);
     network = await runNetwork(join(dir, "restored"), { gatewayPort: 0, basePort: await allocateValidatorBasePort("smoke"), log: false, stateSecret: smokeSecret, persistence: { mode: "snapshot-restore" }, verifiedHistory: restored.verifiedHistory });
     const base2 = `http://127.0.0.1:${network.port}`;
     await until("restored chain finalizes past the snapshot", async () => { const s = await (await fetch(`${base2}/status`)).json(); return s.genesisHash === info.genesisHash && s.height > snapHeight; }, 360_000);
@@ -2619,11 +2641,17 @@ if (!invokedDirectly) {
           console.log(`snapshot downloaded (${sealed.length} bytes)`);
           boot.enter("decrypt");
           const bundle = openSnapshot(sealed, stateSecret);
+          // S2-3 T1: the restore is bound to the sealed summary, the keys and
+          // records pinned in l1/trust/ and a live quorum tip match. The
+          // anchor comes only from those repository files (never from the
+          // environment, options, the bundle or the gateway); without it the
+          // restore is refused and start-up stops (fail closed below).
+          const restoreAnchor = await createRestoreAnchor({ chainId, trustDir: bootRestoreTrustDir() });
           boot.enter("replay");
-          const restored = await restoreNetworkWithLocalRetry(dir, bundle, chainId, { onProgress: boot.progress });
+          const restored = await restoreNetworkWithLocalRetry(dir, bundle, chainId, { onProgress: boot.progress, restoreAnchor });
           persistence = { mode: "snapshot-restore", restoredHeight: restored.height, restoredAtMs: Date.now() };
           verifiedHistory = restored.verifiedHistory;
-          console.log(`restored ${restored.chainId} genesis ${restored.genesisHash} at height ${restored.height}`);
+          console.log(`restored ${restored.chainId} genesis ${restored.genesisHash} at height ${restored.height}, bound to sealed summary ${restored.anchor.summaryDigest} (key ${restored.anchor.keyId})`);
         }
       } catch (error) {
         if (error?.localIo) {
@@ -2672,6 +2700,6 @@ if (!invokedDirectly) {
   await smoke();
   process.exit(0);
 } else {
-  console.error("usage: open-testnet.mjs init --dir <dir> [--chain-id id] | run --dir <dir> [--port n] | smoke");
+  console.error("usage: open-testnet.mjs init --dir <dir> [--chain-id id] | run --dir <dir> [--port n] [--init-if-missing --restore-url <url>] | smoke");
   process.exit(2);
 }

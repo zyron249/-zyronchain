@@ -14,6 +14,8 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import test from "node:test";
+import { existsSync } from "node:fs";
+import { fixtureSourceOf, startFixtureTrustDir } from "./helpers/restore-anchor-fixture.js";
 import { allocateValidatorBasePort } from "./helpers/open-testnet-ports.js";
 
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
@@ -95,7 +97,11 @@ async function startHost(root: string, secret: string, sealed: Buffer, failures:
   await writeFile(preload, FAULT_PRELOAD);
   // Per-file disjoint, probed validator port block (see helpers/open-testnet-ports.ts).
   const basePort = await allocateValidatorBasePort("restore-local-io-retry");
-  const child: ChildProcess = spawn(process.execPath, ["--import", pathToFileURL(preload).href, script, "run", "--dir", join(root, "hosted"), "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
+  // S2-3 T1: when a source network exists, a fixture trust directory (TEST key,
+  // local live-quorum validators) lets the restore pass its independent anchor.
+  const anchorFixture = existsSync(join(root, "source")) ? await startFixtureTrustDir(root, await fixtureSourceOf(join(root, "source"))) : undefined;
+  server.once("close", () => { void anchorFixture?.close(); });
+  const child: ChildProcess = spawn(process.execPath, [...(anchorFixture?.nodeArgs ?? []), "--import", pathToFileURL(preload).href, script, "run", "--dir", join(root, "hosted"), "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
     "--chain-id", CHAIN_ID, "--validator-base-port", String(basePort), "--restore-url", `http://127.0.0.1:${snapshotPort}/state.enc`], {
     cwd: l1Root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ZYRON_TESTNET_STATE_SECRET: secret, ZYRON_TEST_RESTORE_EIO_FAILURES: String(failures), PORT: "" }
   });

@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import test from "node:test";
+import { fixtureSourceOf, startFixtureTrustDir } from "./helpers/restore-anchor-fixture.js";
 import { allocateValidatorBasePort } from "./helpers/open-testnet-ports.js";
 
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
@@ -62,6 +63,7 @@ test("open testnet binds its port before snapshot restore and resumes the restor
   const root = await mkdtemp(join(tmpdir(), "zyron-early-listen-"));
   let child: ChildProcess | undefined;
   let snapshotServer: Server | undefined;
+  let anchorFixture: Awaited<ReturnType<typeof startFixtureTrustDir>> | undefined;
   try {
     // A real 100-block v6-prefix network to snapshot.
     const source = join(root, "source");
@@ -74,6 +76,8 @@ test("open testnet binds its port before snapshot restore and resumes the restor
     assert.equal(blocks.length, 100);
     const secret = randomBytes(32).toString("base64");
     const sealed = seal({ format: MAGIC, createdAtMs: Date.now(), genesis, network, keys, blocks }, secret);
+    // S2-3 T1: a fixture trust directory (TEST key, local live-quorum validators) for the restore.
+    anchorFixture = await startFixtureTrustDir(root, await fixtureSourceOf(source));
 
     // Snapshot host: first request fails transiently (503, must be retried);
     // the second is held until the test has observed the "starting" phase.
@@ -91,7 +95,7 @@ test("open testnet binds its port before snapshot restore and resumes the restor
 
     const target = join(root, "hosted");
     const basePort = await allocateValidatorBasePort("early-listen");
-    child = spawn(process.execPath, [script, "run", "--dir", target, "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
+    child = spawn(process.execPath, [...anchorFixture.nodeArgs, script, "run", "--dir", target, "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
       "--chain-id", CHAIN_ID, "--validator-base-port", String(basePort), "--restore-url", `http://127.0.0.1:${snapshotPort}/state.enc`], {
       cwd: l1Root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ZYRON_TESTNET_STATE_SECRET: secret, PORT: "" }
     });
@@ -150,6 +154,7 @@ test("open testnet binds its port before snapshot restore and resumes the restor
     assert.match(log, /snapshot download returned 503; retrying/);
     assert.doesNotMatch(log, /STATE RESTORE FAILED|fresh TEST genesis/);
   } finally {
+    await anchorFixture?.close();
     if (child && child.exitCode === null) { child.kill("SIGTERM"); await Promise.race([once(child, "exit"), sleep(15_000)]); if (child.exitCode === null) child.kill("SIGKILL"); }
     snapshotServer?.close();
     await rm(root, { recursive: true, force: true });

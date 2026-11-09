@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import test from "node:test";
+import { fixtureSourceOf, startFixtureTrustDir } from "./helpers/restore-anchor-fixture.js";
 import { allocateValidatorBasePort } from "./helpers/open-testnet-ports.js";
 
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
@@ -77,15 +78,19 @@ async function publishSnapshot(root: string) {
   const blocks = (await readFile(join(source, "data-v1", "blocks.ndjson"), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
   const secret = randomBytes(32).toString("base64");
   const sealed = seal({ format: MAGIC, createdAtMs: Date.now(), genesis, network, keys, blocks }, secret);
-  const server = createServer((_request, response) => { response.writeHead(200, { "content-type": "application/octet-stream", "content-length": sealed.length }); response.end(sealed); });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  return { source, network, secret, server, url: `http://127.0.0.1:${(server.address() as { port: number }).port}/state.enc` };
+  const snapshotServer = createServer((_request, response) => { response.writeHead(200, { "content-type": "application/octet-stream", "content-length": sealed.length }); response.end(sealed); });
+  snapshotServer.listen(0, "127.0.0.1");
+  await once(snapshotServer, "listening");
+  // S2-3 T1: a fixture trust directory (TEST key, local live-quorum validators) for the restore.
+  const anchorFixture = await startFixtureTrustDir(root, await fixtureSourceOf(source));
+  snapshotServer.once("close", () => { void anchorFixture.close(); });
+  const server = snapshotServer;
+  return { source, network, secret, server, nodeArgs: anchorFixture.nodeArgs, url: `http://127.0.0.1:${(server.address() as { port: number }).port}/state.enc` };
 }
 
-async function startHosted(target: string, published: { secret: string; url: string }) {
+async function startHosted(target: string, published: { secret: string; url: string; nodeArgs: string[] }) {
   const basePort = await allocateValidatorBasePort("interrupted-restore");
-  const child = spawn(process.execPath, [script, "run", "--dir", target, "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
+  const child = spawn(process.execPath, [...published.nodeArgs, script, "run", "--dir", target, "--host", "127.0.0.1", "--port", "0", "--init-if-missing",
     "--chain-id", CHAIN_ID, "--validator-base-port", String(basePort), "--restore-url", published.url], {
     cwd: l1Root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ZYRON_TESTNET_STATE_SECRET: published.secret, PORT: "" }
   });

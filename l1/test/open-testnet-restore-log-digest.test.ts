@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { anchorForNetworkDir } from "./helpers/restore-anchor-fixture.js";
 import { allocateValidatorBasePort } from "./helpers/open-testnet-ports.js";
 
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
@@ -75,7 +76,7 @@ test("restore rejects a validator log that no longer matches the replayed log (s
       if (event?.step === "digested") { hooked += 1; corruptBlockHashSync(join(target, "data-v1", "blocks.ndjson")); }
     };
     await assert.rejects(
-      api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress }),
+      api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress, restoreAnchor: await anchorForNetworkDir(join(root, "source")) }),
       /restored v2 blocks\.ndjson does not match the replayed log/,
       "a validator log corrupted after the validated replay must not be accepted"
     );
@@ -101,7 +102,7 @@ test("restore re-checks the replayed log itself after the validator copies", { t
       if (event?.step === "copy-opened" && event.validator === "v4") { hooked += 1; corruptBlockHashSync(join(target, "data-v1", "blocks.ndjson")); }
     };
     await assert.rejects(
-      api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress }),
+      api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress, restoreAnchor: await anchorForNetworkDir(join(root, "source")) }),
       /restored v1 blocks\.ndjson does not match the replayed log/
     );
     assert.equal(hooked, 1, "the corruption hook ran exactly once");
@@ -126,7 +127,7 @@ test("restore re-checks every validator copy before marking the restore complete
       if (event?.step === "copy-opened" && event.validator === "v4") { hooked += 1; corruptBlockHashSync(join(target, "data-v2", "blocks.ndjson")); }
     };
     await assert.rejects(
-      api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress }),
+      api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress, restoreAnchor: await anchorForNetworkDir(join(root, "source")) }),
       /restored v2 blocks\.ndjson does not match the replayed log/,
       "restore marked complete with a corrupted data-v2"
     );
@@ -142,7 +143,7 @@ test("an untouched restore still succeeds and every validator copy matches the r
   try {
     const bundle = await sourceBundle(root, "zyron-restore-digest-ok-testnet-1");
     const target = join(root, "restored");
-    const restored = await api.restoreNetwork(target, bundle, bundle.genesis.chainId);
+    const restored = await api.restoreNetwork(target, bundle, bundle.genesis.chainId, { restoreAnchor: await anchorForNetworkDir(join(root, "source")) });
     assert.equal(restored.height, bundle.blocks.length);
     const reference = await readFile(join(target, "data-v1", "blocks.ndjson"));
     for (const name of ["v2", "v3", "v4"]) assert.ok((await readFile(join(target, `data-${name}`, "blocks.ndjson"))).equals(reference), name);
@@ -324,7 +325,7 @@ test("snapshot history is extended incrementally and can start from the restore 
     assert.deepEqual(await api.collectSnapshotBlocks([counting], { ...base, tip: blocks.length, tipHash: blocks.at(-1).hash, history }), blocks);
     assert.ok(reads.length > 0 && reads.every((from) => from > 60), `only new blocks are read (${reads.join(",")})`);
 
-    const restored = await api.restoreNetwork(join(root, "restored"), structuredClone(bundle), bundle.genesis.chainId);
+    const restored = await api.restoreNetwork(join(root, "restored"), structuredClone(bundle), bundle.genesis.chainId, { restoreAnchor: await anchorForNetworkDir(join(root, "source")) });
     assert.equal(restored.verifiedHistory?.blocks.length, blocks.length, "the restore hands over the history it replayed");
     reads.length = 0;
     assert.deepEqual(await api.collectSnapshotBlocks([counting], { ...base, tip: blocks.length, tipHash: blocks.at(-1).hash, history: restored.verifiedHistory }), blocks);
@@ -340,7 +341,7 @@ test("the gateway does not seal history corrupted on one validator's disk into t
   try {
     const bundle = await sourceBundle(root, "zyron-snapshot-seal-testnet-1");
     const target = join(root, "restored");
-    await api.restoreNetwork(target, bundle, bundle.genesis.chainId);
+    await api.restoreNetwork(target, bundle, bundle.genesis.chainId, { restoreAnchor: await anchorForNetworkDir(join(root, "source")) });
     // Same-length corruption of block 50 in the first validator's log after
     // the restore; its checkpoint fast path accepts it on open.
     const { original, corrupted } = corruptBlockHashSync(join(target, "data-v1", "blocks.ndjson"));
