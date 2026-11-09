@@ -16,7 +16,9 @@ services:
     buildCommand: npm ci && npm run build
     startCommand: node scripts/public-testnet-rpc.mjs
     healthCheckPath: /health
-    autoDeploy: true
+    autoDeploy: false
+    # All Render services deploy manually. Keep Auto-Deploy Off in the
+    # dashboard; a deploy needs the owner's go-ahead.
     buildFilter:
       paths:
         - src/**
