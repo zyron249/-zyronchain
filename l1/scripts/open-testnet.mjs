@@ -53,6 +53,8 @@ const { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } = await
 const { createProtocolUpgrade, createProtocolUpgradeApproval, createTransfer } = await import(dist("transaction.js"));
 const { expectedValidator } = await import(dist("block.js"));
 const { canonicalJson } = await import(dist("codec.js"));
+const restoreAnchorApi = await import(dist("sealed-summary.js"));
+const { RESTORE_ANCHOR_CODES, RestoreAnchorError, assertReplayMatchesSummary, restoreOracleSetHash, restoreStateFieldsOf, restoreValidatorSetHash, verifyRestoreAnchor } = restoreAnchorApi;
 const { buildCommit } = await import(dist("build-info.js"));
 const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist("tokenomics.js"));
 const { defaultPublicDistributionRelease } = await import(dist("public-distribution-release.js"));
@@ -1364,7 +1366,14 @@ export function capPeerStatus(status, watermark) {
 
 // ---- sealed state snapshots (TEST keys + public blocks) ---------------------------
 export { sealSnapshot, verifySnapshotBlocks };
+// S2-3: an unreadable snapshot (truncated, bad GCM tag, bad gzip/JSON) is
+// refused with RESTORE_SNAPSHOT_CORRUPT; the message is kept.
 export function openSnapshot(bytes, secret) {
+  try { return openSnapshotBytes(bytes, secret); } catch (error) {
+    throw new RestoreAnchorError(RESTORE_ANCHOR_CODES.snapshotCorrupt, error instanceof Error ? error.message : String(error));
+  }
+}
+function openSnapshotBytes(bytes, secret) {
   const header = Buffer.from(`${SNAPSHOT_MAGIC}\n`);
   assert.ok(bytes.length > header.length + 28 && bytes.length <= MAX_SNAPSHOT_BYTES, "snapshot size out of range");
   assert.ok(bytes.subarray(0, header.length).equals(header), "not an open-testnet state snapshot");
@@ -1415,9 +1424,26 @@ export async function copyFileWithProgress(source, destination, onChunk = () => 
     await handle.close();
   }
 }
-export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress = () => {} } = {}) {
+// S2-3 (trust anchor T1, docs/specs/s2-3-t1-sealed-summary.md): a restore is
+// bound to an independently sealed summary (restoreAnchor). Without one, or if
+// any check fails, the restore is refused with a distinct error code before
+// anything is written (checks that need the replay run before network.json).
+// There is no fallback to the snapshot's own content. Refusals are never local
+// I/O errors, so restoreNetworkWithLocalRetry never retries them.
+function restoreBundleView(bundle) {
+  const { genesis, network, keys, blocks } = bundle;
+  const chainPublicKeys = new Set([...(genesis?.validators ?? []).map((v) => v?.publicKey), ...(genesis?.activityOracles ?? [])].filter((key) => typeof key === "string"));
+  for (const privateKey of Object.values(keys ?? {})) { try { chainPublicKeys.add(publicKeyFromPrivate(privateKey)); } catch { /* checked below */ } }
+  const last = Array.isArray(blocks) ? blocks.at(-1) : undefined;
+  return {
+    chainId: genesis?.chainId, genesisHash: network?.genesisHash, height: Array.isArray(blocks) ? blocks.length : 0, tipHash: last?.hash,
+    validatorSetHash: restoreValidatorSetHash(genesis?.validators ?? []), oracleSetHash: restoreOracleSetHash(genesis?.activityOracles ?? []), chainPublicKeys
+  };
+}
+export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress = () => {}, restoreAnchor } = {}) {
   assert.equal(bundle?.format, SNAPSHOT_MAGIC, "unknown snapshot format");
   const { genesis, network, keys, blocks } = bundle;
+  if (!restoreAnchor) throw new RestoreAnchorError(RESTORE_ANCHOR_CODES.anchorMissing, "no independent restore anchor is configured");
   assertTestnetChainId(genesis.chainId);
   if (expectedChainId) assert.equal(genesis.chainId, expectedChainId, "snapshot is for another chain ID");
   assert.equal(network.chainId, genesis.chainId);
@@ -1429,6 +1455,8 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
   assert.equal(addressFromPublicKey(publicKeyFromPrivate(keys.faucet)), network.faucetAddress, "snapshot faucet key mismatch");
   assert.equal(genesis.publicDistributionRelease?.address, network.faucetAddress, "snapshot public-distribution release does not match the faucet");
   assert.ok(Array.isArray(blocks) && blocks.length >= V6_ACTIVATION_HEIGHT - 1, "snapshot has too few blocks");
+  const anchored = await verifyRestoreAnchor(restoreAnchor, restoreBundleView(bundle));
+  onProgress({ step: "anchor-verified" });
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);
   await mkdir(join(dir, "keys"), { mode: 0o700 });
@@ -1441,8 +1469,14 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
   const firstData = join(dir, `data-${first}`);
   await mkdir(firstData, { mode: 0o700 });
   const store = await ChainStore.open(genesis, firstData);
-  for (const block of blocks) { await store.commitFinalizedBlock(block); onProgress({ step: "replay-block" }); }
+  try {
+    for (const block of blocks) { await store.commitFinalizedBlock(block); onProgress({ step: "replay-block" }); }
+  } catch (error) {
+    if (isLocalIoError(error)) throw error;
+    throw new RestoreAnchorError(RESTORE_ANCHOR_CODES.snapshotCorrupt, error instanceof Error ? error.message : String(error));
+  }
   assert.equal(store.chain.height, blocks.length, "snapshot replay height mismatch");
+  assertReplayMatchesSummary(anchored.summary, restoreStateFieldsOf(store.chain));
   const checkpoint = await store.writeRecoveryCheckpoint();
   onProgress({ step: "checkpoint" });
   const replayed = new Map();
@@ -1474,12 +1508,15 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
   // R28-1059-L1: every copy (not only the replayed one) is checked again
   // right before the completion marker.
   for (const name of VALIDATOR_NAMES) await verifyFiles(name, join(dir, `data-${name}`));
+  // The replayed state is checked against the sealed summary once more right
+  // before the completion marker.
+  assertReplayMatchesSummary(anchored.summary, restoreStateFieldsOf(store.chain));
   await writeNetworkMarker(dir, network);
   // The replayed chain (in memory) and its blocks are the start of the
   // gateway's verified snapshot history, so a cold start does not validate
   // the restored history a second time before the first snapshot.
   const verifiedHistory = { chain: store.chain, blocks };
-  return { chainId: genesis.chainId, genesisHash: network.genesisHash, height: blocks.length, tipHash: checkpoint.tipHash, verifiedHistory };
+  return { chainId: genesis.chainId, genesisHash: network.genesisHash, height: blocks.length, tipHash: checkpoint.tipHash, verifiedHistory, anchor: { keyId: anchored.keyId, summaryDigest: anchored.summaryDigest } };
 }
 
 // R37-1072-L1: a local filesystem error while the verified snapshot is written
@@ -1510,10 +1547,10 @@ export function isLocalIoError(error) {
   }
   return false;
 }
-export async function restoreNetworkWithLocalRetry(dir, bundle, expectedChainId, { onProgress = () => {}, restore = restoreNetwork, moveAside = moveAsideIncompleteNetworkDir, sleepImpl = sleep, log = (line) => console.error(line), delays = LOCAL_RESTORE_RETRY_DELAYS_MS } = {}) {
+export async function restoreNetworkWithLocalRetry(dir, bundle, expectedChainId, { onProgress = () => {}, restoreAnchor, restore = restoreNetwork, moveAside = moveAsideIncompleteNetworkDir, sleepImpl = sleep, log = (line) => console.error(line), delays = LOCAL_RESTORE_RETRY_DELAYS_MS } = {}) {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await restore(dir, bundle, expectedChainId, { onProgress });
+      return await restore(dir, bundle, expectedChainId, { onProgress, restoreAnchor });
     } catch (error) {
       if (!isLocalIoError(error)) throw error;
       const message = error instanceof Error ? error.message : String(error);

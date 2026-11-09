@@ -1,0 +1,6 @@
+{
+  "format": "zyronchain-restore-summary-keys-v1",
+  "networkClass": "testnet",
+  "purpose": "open-testnet-restore-summary",
+  "keys": []
+}
