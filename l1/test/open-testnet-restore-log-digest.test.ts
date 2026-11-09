@@ -66,6 +66,8 @@ test("restore rejects a validator log that no longer matches the replayed log (s
     const target = join(root, "restored");
     let calls = 0;
     let hooked = 0;
+    // The restore writes into its staging directory (S2-3 T1) and renames it
+    // onto the target only on success, so the corruption hooks below write there.
     // restoreNetwork calls onProgress synchronously. The "digested" tick comes
     // right after the recovery checkpoint is written and the replayed files are
     // hashed, before any validator copy is made: corrupt the replayed log in
@@ -73,7 +75,7 @@ test("restore rejects a validator log that no longer matches the replayed log (s
     // the former tick count blocks + 1.)
     const onProgress = (event?: Json) => {
       calls += 1;
-      if (event?.step === "digested") { hooked += 1; corruptBlockHashSync(join(target, "data-v1", "blocks.ndjson")); }
+      if (event?.step === "digested") { hooked += 1; corruptBlockHashSync(join(api.restoreStagingDir(target), "data-v1", "blocks.ndjson")); }
     };
     await assert.rejects(
       api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress, restoreAnchor: await anchorForNetworkDir(join(root, "source")) }),
@@ -99,7 +101,7 @@ test("restore re-checks the replayed log itself after the validator copies", { t
     // The tick after the last validator copy (v4) is opened: only data-v1 changes.
     const onProgress = (event?: Json) => {
       calls += 1;
-      if (event?.step === "copy-opened" && event.validator === "v4") { hooked += 1; corruptBlockHashSync(join(target, "data-v1", "blocks.ndjson")); }
+      if (event?.step === "copy-opened" && event.validator === "v4") { hooked += 1; corruptBlockHashSync(join(api.restoreStagingDir(target), "data-v1", "blocks.ndjson")); }
     };
     await assert.rejects(
       api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress, restoreAnchor: await anchorForNetworkDir(join(root, "source")) }),
@@ -124,7 +126,7 @@ test("restore re-checks every validator copy before marking the restore complete
     let hooked = 0;
     const onProgress = (event?: Json) => {
       calls += 1;
-      if (event?.step === "copy-opened" && event.validator === "v4") { hooked += 1; corruptBlockHashSync(join(target, "data-v2", "blocks.ndjson")); }
+      if (event?.step === "copy-opened" && event.validator === "v4") { hooked += 1; corruptBlockHashSync(join(api.restoreStagingDir(target), "data-v2", "blocks.ndjson")); }
     };
     await assert.rejects(
       api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress, restoreAnchor: await anchorForNetworkDir(join(root, "source")) }),

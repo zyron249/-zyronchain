@@ -1213,16 +1213,6 @@ export class ZyronChain {
     return { paused, revoked };
   }
 
-  /**
-   * Read-only copy of the activity-oracle set that governs `height` (the set
-   * consensus applies to activity settlements). Used by the S2-3 T1 restore
-   * summary (src/sealed-summary.ts); it changes no state.
-   */
-  activityOracleSetAt(height: number): ActivityOracleSet {
-    const set = this.oracleSetAt(height);
-    return { ...set, activityOracles: [...set.activityOracles], revokedPublicKeys: [...(set.revokedPublicKeys ?? [])] };
-  }
-
   private oracleSetAt(height: number): ActivityOracleSet {
     const control = this.activityOracleControlAt(height);
     return {

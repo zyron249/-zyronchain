@@ -89,7 +89,8 @@ test("T1 boot CLI: with the placeholder trust files a published snapshot is refu
     });
     let log = "";
     child.stdout!.on("data", (c) => { log += c; }); child.stderr!.on("data", (c) => { log += c; });
-    const [exitCode] = await Promise.race([once(child, "exit"), new Promise<never>((_, reject) => setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`boot did not exit: ${log}`)); }, 90_000))]);
+    let timer: NodeJS.Timeout | undefined;
+    const [exitCode] = await Promise.race([once(child, "exit"), new Promise<never>((_, reject) => { timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`boot did not exit: ${log}`)); }, 90_000); })]).finally(() => clearTimeout(timer));
     assert.equal(exitCode, 1, log);
     assert.match(log, /STATE RESTORE FAILED \(restore refused \[RESTORE_ANCHOR_MISSING\]/);
     assert.match(log, /refusing to create a fresh TEST genesis/);
