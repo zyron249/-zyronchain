@@ -720,6 +720,14 @@ test("M2-R2b non-public sources: site-local fec0::/10, discard 100::/64 and 6to4
   assert.equal(anchorApi.isPrivateOrLoopbackHost("[zz::1]"), true, "an unparsable IPv6 literal is refused");
 });
 
+test("non-public sources: ORCHID 2001:10::/28 and ORCHIDv2 2001:20::/28", () => {
+  for (const host of ["[2001:10::1]", "[2001:20::1]"]) {
+    assert.equal(configCode([`https://${host}/v`, "https://b.example/v", "https://c.example/v", "https://d.example/v"]), C.anchorConfigInvalid, host);
+  }
+  for (const address of ["2001:10::", "2001:10::1", "2001:1f:ffff:ffff:ffff:ffff:ffff:ffff", "2001:20::1", "2001:2f:ffff::1", "2001:0019::abcd"]) assert.equal(anchorApi.isPrivateOrLoopbackHost(address), true, address);
+  for (const address of ["2001:f::1", "2001:30::1", "2001:100::1", "2001:4860:4860::8888", "2001:3::1"]) assert.equal(anchorApi.isPrivateOrLoopbackHost(address), false, address);
+});
+
 test("DNS-rebinding pin: the request connects only to the checked address, with the hostname kept for Host and TLS", { timeout: 30_000 }, async () => {
   // Resolution pins the first checked address of each name.
   const calls: string[] = [];

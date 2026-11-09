@@ -189,7 +189,8 @@ not a quorum). The pinned config must list distinct URLs from at least two sites
   `.internal`; IPv4 0/8, loopback, RFC 1918, CGNAT, link-local, 192.0.0.0/24, documentation
   ranges, 6to4 relay anycast 192.88.99.0/24, 198.18.0.0/15, multicast and reserved; IPv6
   `::/8` (unspecified, loopback, IPv4-compatible and IPv4-mapped), discard `100::/64`, NAT64
-  `64:ff9b::/96` and `64:ff9b:1::/48`, Teredo `2001::/32`, `2001:2::/48`, `2001:db8::/32`,
+  `64:ff9b::/96` and `64:ff9b:1::/48`, Teredo `2001::/32`, `2001:2::/48`, ORCHID `2001:10::/28`,
+  ORCHIDv2 `2001:20::/28`, `2001:db8::/32`,
   6to4 `2002::/16`, unique-local `fc00::/7`, link-local `fe80::/10`, site-local `fec0::/10`
   and multicast `ff00::/8`. IPv6 addresses are parsed into their eight groups first; one that
   does not parse is refused.

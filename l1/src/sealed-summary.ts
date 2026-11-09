@@ -678,7 +678,8 @@ export function ipv6Groups(address: string): number[] | null {
  * 6to4 relay anycast 192.88.99.0/24, benchmarking 198.18.0.0/15, multicast
  * and reserved; IPv6 ::/8 (unspecified, loopback, IPv4-compatible and
  * IPv4-mapped), discard 100::/64, NAT64 64:ff9b::/96 and 64:ff9b:1::/48,
- * Teredo 2001::/32, benchmarking 2001:2::/48, documentation 2001:db8::/32,
+ * Teredo 2001::/32, benchmarking 2001:2::/48, ORCHID 2001:10::/28, ORCHIDv2
+ * 2001:20::/28, documentation 2001:db8::/32,
  * 6to4 2002::/16, unique-local fc00::/7, link-local fe80::/10, site-local
  * fec0::/10 and multicast ff00::/8. An IPv6 literal that does not parse is
  * refused. Names are checked here; their resolved addresses are checked
@@ -703,7 +704,7 @@ export function isPrivateOrLoopbackHost(hostname: string): boolean {
     return g0 < 0x0100 ||
       (g0 === 0x0100 && g1 === 0 && g2 === 0 && g3 === 0) ||
       (g0 === 0x0064 && g1 === 0xff9b) ||
-      (g0 === 0x2001 && (g1 === 0 || g1 === 0x0db8 || (g1 === 0x0002 && g2 === 0))) ||
+      (g0 === 0x2001 && (g1 === 0 || g1 === 0x0db8 || (g1 === 0x0002 && g2 === 0) || (g1 & 0xfff0) === 0x0010 || (g1 & 0xfff0) === 0x0020)) ||
       g0 === 0x2002 ||
       (g0 & 0xfe00) === 0xfc00 || (g0 & 0xffc0) === 0xfe80 || (g0 & 0xffc0) === 0xfec0 || (g0 & 0xff00) === 0xff00;
   }
