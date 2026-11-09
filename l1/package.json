@@ -33,14 +33,14 @@
   "dependencies": {
     "@chainsafe/libp2p-noise": "17.0.0",
     "@chainsafe/libp2p-yamux": "8.0.1",
-    "@libp2p/crypto": "5.1.24",
-    "@libp2p/interface": "3.3.1",
-    "@libp2p/peer-id": "6.0.16",
-    "@libp2p/tcp": "11.0.29",
+    "@libp2p/crypto": "5.2.0",
+    "@libp2p/interface": "3.4.0",
+    "@libp2p/peer-id": "6.0.18",
+    "@libp2p/tcp": "11.0.32",
     "@multiformats/multiaddr": "13.0.3",
     "@noble/curves": "2.4.0",
     "better-sqlite3": "13.0.3",
-    "libp2p": "3.3.12",
+    "libp2p": "3.5.1",
     "pg": "8.23.1"
   },
   "devDependencies": {
