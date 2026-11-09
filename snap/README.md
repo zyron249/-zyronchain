@@ -120,7 +120,7 @@ before saving; disabling shows a dialog that says the warning is being disabled.
 Older installs that still have the pre-#1199 default (`thresholdAtoms: null` with no
 `schemaVersion`) are migrated once on the next read or write: the threshold becomes 1,000 ZYN and
 `schemaVersion` is set to `1`. After that migration, a `null` threshold saved through the confirmed
-disable dialog stays `null`. Corrupt state is never repaired; it still fails closed.
+disable dialog stays `null`. Corrupt state is never repaired; it still fails closed. A `schemaVersion` greater than the Snap understands also fails closed (reinstall to reset).
 
 Only a `zyron_sendTransfer` that the gateway accepted adds its receiver to the sent-to history. A
 sign-only `zyron_signTransaction` and a failed submit do not, so that receiver still gets the

@@ -327,7 +327,9 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
         await updateKnown((latest) => recordSent(latest, unsigned.receiver));
       } catch {
         historySaved = false;
-        await snap
+        // Do not await: a MetaMask alert only resolves when the user dismisses
+        // it, and delaying the txid return can make a dapp retry and send twice.
+        void snap
           .request({
             method: 'snap_dialog',
             params: { type: 'alert', content: <HistorySaveFailedNotice /> },

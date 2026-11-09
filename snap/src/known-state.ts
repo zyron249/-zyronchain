@@ -55,7 +55,12 @@ async function readParsedState(): Promise<ParsedState | null> {
   let version = 0;
   if (Object.prototype.hasOwnProperty.call(stored, 'schemaVersion')) {
     const raw = stored.schemaVersion;
-    if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < 1) {
+    if (
+      typeof raw !== 'number' ||
+      !Number.isSafeInteger(raw) ||
+      raw < 1 ||
+      raw > KNOWN_STATE_VERSION
+    ) {
       throw new Error('Saved send-warning data is unreadable, so nothing was signed. Reinstall the Snap to reset it.');
     }
     version = raw;
@@ -81,7 +86,7 @@ export async function loadKnown(): Promise<KnownAddresses> {
   if (parsed === null) {
     return emptyKnown();
   }
-  if (parsed.version >= KNOWN_STATE_VERSION) {
+  if (parsed.version === KNOWN_STATE_VERSION) {
     return parsed.known;
   }
   // Serialize the upgrade through the same queue as writes so two parallel
