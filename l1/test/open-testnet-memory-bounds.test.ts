@@ -2,6 +2,7 @@
 // gateway structures, and a snapshot build that waits for readiness instead
 // of running into the 900 s timeout after a restart.
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
@@ -31,7 +32,7 @@ test("memory report: gateway memoryUsage fields, validator RSS from /proc, one c
   assert.deepEqual(inMb, { gateway: { rss: 80, heapUsed: 1.5 }, snapshotChild: { running: true, maxRss: 2, lastBuildAt: "t" } });
 });
 
-test("memory report: totalRss from Pss, else RssAnon, VmRSS kept as a labelled reference", () => {
+test("memory report: totalRss from Pss, else RssAnon, VmRSS kept as a labelled reference", (t) => {
   const status = "Name:\tnode\nVmRSS:\t  120000 kB\nRssAnon:\t   60000 kB\n";
   const rollup = "00-ff ---p 0 00:00 0 [rollup]\nRss:  120000 kB\nPss:   70000 kB\n";
   const read = (p: string) => (p.endsWith("smaps_rollup") ? rollup : status);
@@ -39,7 +40,19 @@ test("memory report: totalRss from Pss, else RssAnon, VmRSS kept as a labelled r
   const noRollup = mem.processMemoryBytes(7, (p: string) => { if (p.endsWith("smaps_rollup")) throw new Error("ENOENT"); return status; });
   assert.equal(noRollup.pss, undefined); assert.equal(noRollup.rssAnon, 60000 * 1024);
   assert.equal(mem.processMemoryBytes(7, () => { throw new Error("gone"); }), undefined);
-  assert.ok(Number.isFinite(mem.processMemoryBytes("self")?.vmRss));
+  // /proc/self is Linux-only; portable-miner runs this suite on macos-15 too.
+  // On Linux the assertion stays exactly as strong as before. On other
+  // platforms skip with a clear reason. A Linux host missing /proc must fail.
+  t.test("memory report: /proc/self VmRSS is readable when /proc exists", (st) => {
+    const procSelfStatus = "/proc/self/status";
+    if (!existsSync(procSelfStatus)) {
+      if (process.platform === "linux") {
+        assert.fail(`expected ${procSelfStatus} on linux; refusing to skip`);
+      }
+      return st.skip(`skipping /proc memory check: /proc not available on ${process.platform}`);
+    }
+    assert.ok(Number.isFinite(mem.processMemoryBytes("self")?.vmRss));
+  });
   const full = mem.processMemoryBytes(7, read);
   assert.deepEqual(mem.residentMetric([full, full, null]), { key: "pss", label: "Pss" });
   assert.deepEqual(mem.residentMetric([full, noRollup]), { key: "rssAnon", label: "RssAnon" });

@@ -897,6 +897,109 @@ export function classifyValidatorExit(code, signal) {
   if (signal === "SIGABRT" || code === 134) return "oom";
   return signal ? "signal" : "exit";
 }
+// Why the history resume did not happen, as one log line. A missing file is
+// the normal case after a Render container restart (the free plan's disk is
+// ephemeral), so it gets its own explicit warning instead of silence.
+export function historyResumeSkipMessage(error, redact = {}) {
+  if (error?.missing) return "snapshot: history file absent (ephemeral disk); rebuilding from genesis";
+  return `snapshot: history file not resumed (${sanitizeSnapshotError(error, redact)}); rebuilding from genesis`;
+}
+// Per-limiter key bound for the gateway's rate-limit windows (read, write,
+// faucet, relay). Each tracked key is a Map entry plus an { start, count }
+// object; on the 512MB Render free plan the old 50k bound let a wide key
+// spray hold tens of MB of anon heap. 10k is far above live traffic (a few
+// hundred distinct IPs per window) and stays tunable via
+// ZYRON_RPC_LIMITER_MAX_KEYS (1000..1000000).
+export const RATE_LIMITER_MAX_KEYS_DEFAULT = 10_000;
+export function rateLimiterMaxKeys(env = process.env) {
+  const raw = env.ZYRON_RPC_LIMITER_MAX_KEYS;
+  if (raw === undefined || raw === "") return RATE_LIMITER_MAX_KEYS_DEFAULT;
+  if (typeof raw !== "string" || !/^[0-9]+$/.test(raw)) return RATE_LIMITER_MAX_KEYS_DEFAULT;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= 1_000 && n <= 1_000_000 ? n : RATE_LIMITER_MAX_KEYS_DEFAULT;
+}
+// Day-window limiters (faucet per-IP / per-address) keep the old 50k bound:
+// at 10k a key spray could fill the table for a whole day and lock out every
+// new faucet user, whereas short-window tables recover within a minute.
+export const DAY_WINDOW_LIMITER_MAX_KEYS = 50_000;
+// Per-IPv6-/48 live-key cap for the 60-second tables. One /48 holds 65,536
+// /64 buckets; without a sub-cap a single allocation can fill the whole table.
+// Faucet day-window tables leave this at 0 (out of scope for this change).
+export const RATE_LIMITER_PREFIX_CAP_DEFAULT = 256;
+// IPv6 rate-limit keys look like "ipv6:HHHH:HHHH:HHHH:HHHH/64" (padded). The
+// /48 is the first three hextets. IPv4 and non-ipv6 keys have no prefix.
+export function rateLimiterIpv6Prefix48(key) {
+  const m = /^ipv6:([0-9a-f]{4}):([0-9a-f]{4}):([0-9a-f]{4}):[0-9a-f]{4}\/64$/.exec(key);
+  return m ? `${m[1]}:${m[2]}:${m[3]}::/48` : undefined;
+}
+// Fixed-window per-key limiter with a hard key bound.
+// - evictOnFull=false (default; faucet day windows): when full after sweeping
+//   expired entries, a new key is denied so live keys keep their counts.
+// - evictOnFull=true (60s read/write/relayIp): when full, the oldest live key
+//   is dropped to admit the new one (O(1) via Map insertion order). Tradeoff:
+//   an attacker can push out a victim's live key and reset its quota; we still
+//   pick this because deny-on-full at 10k lets ~170 new keys/s lock out every
+//   new client (Red Team PR1200-1), victims already lose slots at window
+//   boundaries under a spray (PR1200-7), and evictions are counted so a flood
+//   shows up in /health. Eviction happens only to admit a new key.
+// - prefixCap>0: at most that many live keys per IPv6 /48; further /64s from
+//   the same /48 are denied (counted in deniedFull).
+export class WindowLimiter {
+  constructor(limit, windowMs, maxKeys = RATE_LIMITER_MAX_KEYS_DEFAULT, { evictOnFull = false, prefixCap = 0 } = {}) {
+    Object.assign(this, { limit, windowMs, maxKeys, evictOnFull, prefixCap, hits: new Map(), perPrefix: new Map(), deniedFull: 0, evicted: 0 });
+  }
+  #drop(key) {
+    this.hits.delete(key);
+    const p = rateLimiterIpv6Prefix48(key);
+    if (!p) return;
+    const n = (this.perPrefix.get(p) ?? 1) - 1;
+    if (n > 0) this.perPrefix.set(p, n); else this.perPrefix.delete(p);
+  }
+  #expireFront(now) {
+    for (const [k, e] of this.hits) {
+      if (now - e.start < this.windowMs) break;
+      this.#drop(k);
+    }
+  }
+  take(key, now = Date.now()) {
+    this.#expireFront(now);
+    let entry = this.hits.get(key);
+    if (entry && now - entry.start >= this.windowMs) { this.#drop(key); entry = undefined; }
+    if (!entry) {
+      const p = this.prefixCap > 0 ? rateLimiterIpv6Prefix48(key) : undefined;
+      if (p && (this.perPrefix.get(p) ?? 0) >= this.prefixCap) {
+        this.deniedFull += 1;
+        return { allowed: false, retryAfterMs: this.windowMs };
+      }
+      if (this.hits.size >= this.maxKeys) {
+        if (this.evictOnFull) {
+          const oldest = this.hits.keys().next().value;
+          this.#drop(oldest);
+          this.evicted += 1;
+        } else {
+          this.deniedFull += 1;
+          return { allowed: false, retryAfterMs: this.windowMs };
+        }
+      }
+      entry = { start: now, count: 0 };
+      this.hits.set(key, entry);
+      if (p) this.perPrefix.set(p, (this.perPrefix.get(p) ?? 0) + 1);
+    }
+    if (entry.count >= this.limit) return { allowed: false, retryAfterMs: entry.start + this.windowMs - now };
+    entry.count += 1;
+    return { allowed: true };
+  }
+  stats() {
+    return { size: this.hits.size, maxKeys: this.maxKeys, deniedFull: this.deniedFull, evicted: this.evicted };
+  }
+}
+// /health fragment for the gateway rate-limit tables (size / deniedFull /
+// evicted). Keepers and probes watch deniedFull or evicted rising under a spray.
+export function rateLimitersHealth(limits) {
+  const out = {};
+  for (const name of Object.keys(limits)) out[name] = limits[name].stats();
+  return out;
+}
 // Validator supervisor: exponential restart backoff (base doubling to max),
 // reset once a validator has run for stableMs, plus per-validator restart
 // counts and the last exit for GET /health.
@@ -2054,29 +2157,16 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     return statusCache;
   }
 
-  class WindowLimiter {
-    constructor(limit, windowMs, maxKeys = 50_000) { Object.assign(this, { limit, windowMs, maxKeys, hits: new Map() }); }
-    take(key, now = Date.now()) {
-      let entry = this.hits.get(key);
-      if (!entry || now - entry.start >= this.windowMs) {
-        if (!entry && this.hits.size >= this.maxKeys) for (const [k, e] of this.hits) if (now - e.start >= this.windowMs) this.hits.delete(k);
-        if (!entry && this.hits.size >= this.maxKeys) return { allowed: false, retryAfterMs: this.windowMs };
-        entry = { start: now, count: 0 };
-        this.hits.set(key, entry);
-      }
-      if (entry.count >= this.limit) return { allowed: false, retryAfterMs: entry.start + this.windowMs - now };
-      entry.count += 1;
-      return { allowed: true };
-    }
-  }
+  const limiterMaxKeys = rateLimiterMaxKeys();
+  const shortWindowOpts = { evictOnFull: true, prefixCap: RATE_LIMITER_PREFIX_CAP_DEFAULT };
   const limits = {
-    read: new WindowLimiter(Number(process.env.ZYRON_RPC_READS_PER_MINUTE ?? 240), 60_000),
-    write: new WindowLimiter(Number(process.env.ZYRON_RPC_TX_PER_MINUTE ?? 10), 60_000),
-    faucetIp: new WindowLimiter(5, DAY_MS),
-    faucetAddress: new WindowLimiter(1, DAY_MS),
+    read: new WindowLimiter(Number(process.env.ZYRON_RPC_READS_PER_MINUTE ?? 240), 60_000, limiterMaxKeys, shortWindowOpts),
+    write: new WindowLimiter(Number(process.env.ZYRON_RPC_TX_PER_MINUTE ?? 10), 60_000, limiterMaxKeys, shortWindowOpts),
+    faucetIp: new WindowLimiter(5, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS),
+    faucetAddress: new WindowLimiter(1, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS),
     faucetGlobal: new WindowLimiter(200, 3_600_000, 1),
     snapshot: new WindowLimiter(30, 3_600_000, 1),
-    relayIp: new WindowLimiter(Number(process.env.ZYRON_RELAY_REQUESTS_PER_MINUTE_PER_IP ?? 1200), 60_000)
+    relayIp: new WindowLimiter(Number(process.env.ZYRON_RELAY_REQUESTS_PER_MINUTE_PER_IP ?? 1200), 60_000, limiterMaxKeys, shortWindowOpts)
   };
   // Verified history (R28-1059): from the restore replay when there was one,
   // otherwise validated from genesis on the first build.
@@ -2113,7 +2203,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
       console.error(`snapshot: history file resumed at height ${resumed.height}${resumed.droppedBytes ? ` (dropped a torn last line of ${resumed.droppedBytes} bytes)` : ""}; matching it to the live chain before use`);
     } catch (error) {
       if (resumeAbort.signal.aborted) return;
-      if (!error?.missing) console.error(`snapshot: history file not resumed (${sanitizeSnapshotError(error, redactSecret)}); rebuilding from genesis`);
+      console.error(historyResumeSkipMessage(error, redactSecret));
     }
     historyFile ??= await createHistoryFile(historyPath, { chainId, genesisHash: info.genesisHash });
     snapshotHistory.file = historyFile;
@@ -2424,7 +2514,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           // always strict.
           if (!ok && !everReady) startup.observe(await startupFingerprint(statuses));
           const { code, status, starting, progress } = startup.liveness({ ok, everReady, path });
-          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, commit: buildCommit(), gateway: gatewayProcessInfo(), persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), ...(snapshots ? { snapshotCache: snapshots.status() } : {}), memory: memoryReportMb(currentMemory()), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
+          return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, commit: buildCommit(), gateway: gatewayProcessInfo(), persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), ...(snapshots ? { snapshotCache: snapshots.status() } : {}), rateLimiters: rateLimitersHealth(limits), memory: memoryReportMb(currentMemory()), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
