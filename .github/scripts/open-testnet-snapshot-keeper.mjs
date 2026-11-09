@@ -823,7 +823,14 @@ export function retryDelayMs(attempt, { baseMs, random = Math.random, retryAfter
 
 export async function fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now, stateSecret, timeoutMs = DEFAULT_SNAPSHOT_TIMEOUT_MS }) {
   const requestStartedMs = now();
-  const response = await fetchImpl(`${gateway}/state/snapshot`, { signal: AbortSignal.timeout(timeoutMs) });
+  // S2-7: when the state secret is configured, send it as Bearer so the gateway
+  // places this fetch on the keeper quota (same secret already used to open the
+  // sealed body — no new Render/Actions secret). Unauthenticated override still
+  // omits the header and uses the public bucket.
+  const response = await fetchImpl(`${gateway}/state/snapshot`, {
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: stateSecret ? { authorization: `Bearer ${stateSecret}` } : {}
+  });
   if (response.status !== 200) {
     await response.body?.cancel().catch(() => {});
     throw new SnapshotHttpError(response.status, retryAfterMs(response.headers));

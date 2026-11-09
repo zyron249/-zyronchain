@@ -32,7 +32,7 @@ import { allocateValidatorBasePort } from "./open-testnet-ports.mjs";
 import { ensureGatewayMallocArena } from "./open-testnet/malloc-arena.mjs";
 import assert from "node:assert/strict";
 import { fork, spawn } from "node:child_process";
-import { createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import { Worker } from "node:worker_threads";
 import { SNAPSHOT_MAGIC, sealSnapshot, snapshotKey } from "./open-testnet/snapshot-seal.mjs";
@@ -1306,6 +1306,61 @@ export function createSnapshotCache({
   };
 }
 
+// S2-7: fixed-window per-key limiter (exported for acceptance tests).
+export class WindowLimiter {
+  constructor(limit, windowMs, maxKeys = 50_000) { Object.assign(this, { limit, windowMs, maxKeys, hits: new Map() }); }
+  take(key, now = Date.now()) {
+    let entry = this.hits.get(key);
+    if (!entry || now - entry.start >= this.windowMs) {
+      if (!entry && this.hits.size >= this.maxKeys) for (const [k, e] of this.hits) if (now - e.start >= this.windowMs) this.hits.delete(k);
+      if (!entry && this.hits.size >= this.maxKeys) return { allowed: false, retryAfterMs: this.windowMs };
+      entry = { start: now, count: 0 };
+      this.hits.set(key, entry);
+    }
+    if (entry.count >= this.limit) return { allowed: false, retryAfterMs: entry.start + this.windowMs - now };
+    entry.count += 1;
+    return { allowed: true };
+  }
+  count(key) { return this.hits.get(key)?.count ?? 0; }
+}
+
+// S2-7: constant-time compare of Authorization: Bearer <token> to expected.
+// Returns false for missing/non-Bearer/wrong-length/wrong-value. Zeroizes buffers.
+export function timingSafeBearerToken(header, expected) {
+  if (typeof header !== "string" || typeof expected !== "string" || expected.length === 0) return false;
+  if (!header.startsWith("Bearer ")) return false;
+  const provided = Buffer.from(header.slice("Bearer ".length), "utf8");
+  const wanted = Buffer.from(expected, "utf8");
+  try {
+    return provided.length === wanted.length && timingSafeEqual(provided, wanted);
+  } finally {
+    provided.fill(0);
+    wanted.fill(0);
+  }
+}
+
+// S2-7 role for GET /state/snapshot. Reuses ZYRON_TESTNET_STATE_SECRET (stateSecret)
+// as the keeper bearer — no new Render env. Unauthenticated → public bucket;
+// valid bearer → keeper bucket; anything else → reject before cache work.
+export function snapshotClientRole(authorizationHeader, stateSecret) {
+  if (!stateSecret) return "reject";
+  if (authorizationHeader === undefined || authorizationHeader === "") return "public";
+  if (timingSafeBearerToken(authorizationHeader, stateSecret)) return "keeper";
+  return "reject";
+}
+
+// Production /state/snapshot path used by runNetwork: auth/role BEFORE any
+// snapshots.fresh / takeRate / sealed read; separate keeper vs public limiters.
+export function serveAuthorizedSnapshotRoute(response, snapshots, {
+  genesisHash, stateSecret, authorization, limits, limited = () => {},
+  sendUnauthorized = (res) => writeJson(res, 401, { error: "unauthorized" })
+} = {}) {
+  const role = snapshotClientRole(authorization, stateSecret);
+  if (role === "reject") return sendUnauthorized(response);
+  const takeRate = () => (role === "keeper" ? limits.snapshotKeeper.take("keeper") : limits.snapshotPublic.take("public"));
+  return serveSnapshotRoute(response, snapshots, { genesisHash, takeRate, limited });
+}
+
 // GET /state/snapshot from the cache. Never builds inline: a missing or stale
 // snapshot answers 503 + Retry-After and asks the cache for a background
 // refresh (which honours the failure backoff). `takeRate` runs only when a
@@ -1936,28 +1991,15 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     return statusCache;
   }
 
-  class WindowLimiter {
-    constructor(limit, windowMs, maxKeys = 50_000) { Object.assign(this, { limit, windowMs, maxKeys, hits: new Map() }); }
-    take(key, now = Date.now()) {
-      let entry = this.hits.get(key);
-      if (!entry || now - entry.start >= this.windowMs) {
-        if (!entry && this.hits.size >= this.maxKeys) for (const [k, e] of this.hits) if (now - e.start >= this.windowMs) this.hits.delete(k);
-        if (!entry && this.hits.size >= this.maxKeys) return { allowed: false, retryAfterMs: this.windowMs };
-        entry = { start: now, count: 0 };
-        this.hits.set(key, entry);
-      }
-      if (entry.count >= this.limit) return { allowed: false, retryAfterMs: entry.start + this.windowMs - now };
-      entry.count += 1;
-      return { allowed: true };
-    }
-  }
   const limits = {
     read: new WindowLimiter(Number(process.env.ZYRON_RPC_READS_PER_MINUTE ?? 240), 60_000),
     write: new WindowLimiter(Number(process.env.ZYRON_RPC_TX_PER_MINUTE ?? 10), 60_000),
     faucetIp: new WindowLimiter(5, DAY_MS),
     faucetAddress: new WindowLimiter(1, DAY_MS),
     faucetGlobal: new WindowLimiter(200, 3_600_000, 1),
-    snapshot: new WindowLimiter(30, 3_600_000, 1),
+    // S2-7: separate buckets so public 429s cannot starve the keeper.
+    snapshotKeeper: new WindowLimiter(30, 3_600_000, 1),
+    snapshotPublic: new WindowLimiter(30, 3_600_000, 1),
     relayIp: new WindowLimiter(Number(process.env.ZYRON_RELAY_REQUESTS_PER_MINUTE_PER_IP ?? 1200), 60_000)
   };
   // Verified history (R28-1059): from the restore replay when there was one,
@@ -2327,7 +2369,11 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? { ...result.body, blocks: result.body.blocks.slice(0, capped) } : { error: "node unavailable" }, PEER_RPC);
         }
         if (path === "/state/snapshot" && stateSecret) {
-          return serveSnapshotRoute(response, snapshots, { genesisHash: info.genesisHash, takeRate: () => limits.snapshot.take("global"), limited });
+          // S2-7: auth/role before any cache work; keeper bearer is stateSecret (no new env).
+          return serveAuthorizedSnapshotRoute(response, snapshots, {
+            genesisHash: info.genesisHash, stateSecret, authorization: request.headers.authorization,
+            limits, limited, sendUnauthorized: (res) => sendJson(res, 401, { error: "unauthorized" })
+          });
         }
         if (path === "/" || path === "/explorer") return sendHtml(response);
         if (path === "/api" ) return sendJson(response, 200, { name: "ZyronChain open TESTNET RPC", ...(await chainStatus()), endpoints: ["GET /health", "GET /status", "GET /network", "GET /genesis", "GET /supply", "GET /account/{address}", "GET /balance/{address}", "GET /nonce/{address}", "GET /blocks?from=&limit=", "GET /block/{height}", "GET /peer/status", "GET /peer/blocks?from=&limit=", "POST /tx", "POST /faucet {address}"] });
