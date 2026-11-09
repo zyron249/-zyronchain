@@ -1,15 +1,19 @@
-name: T1 Trust Append-Only (base-branch checker)
+name: T1 Trust Append-Only (main checker)
 
 # S2-3 T1 (docs/specs/s2-3-t1-sealed-summary.md): l1/trust/ is append-only.
-# pull_request_target runs THIS file and the checker as they are on the PR's
-# base branch, so a PR cannot disable or edit the check. The PR head is
-# fetched as git data only and read with `git show`; no code from the PR is
-# checked out, installed, built or executed. No secrets are used, the token is
-# read-only and never persisted. `edited` re-runs the check when a PR is
-# retargeted; the comparison is always against the merge base with main.
+# pull_request_target on PRs into main only: GitHub runs THIS file and the
+# checker exactly as they are on main, so a PR cannot disable or edit the
+# check (a stacked PR is checked once it is retargeted to main; `edited`
+# re-runs it then). The PR head is fetched as git data only and read with
+# `git show`; no code from the PR is checked out, installed, built or
+# executed. No secrets are used, the token is read-only and never persisted.
+# The checker must exist on main: if it is missing the job FAILS.
+# .github/scripts/verify-l1-t1-trust-append-only-custody.mjs pins the exact
+# shape of this file; change both together.
 
 on:
   pull_request_target:
+    branches: [main]
     types: [opened, synchronize, reopened, edited]
 
 permissions:
@@ -24,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout base branch (trusted checker)
+      - name: Checkout main (trusted checker)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -46,7 +50,7 @@ jobs:
           # head SHA is still in its history (that run is then superseded).
           git cat-file -e "$PR_HEAD_SHA^{commit}"
           if [ ! -f l1/scripts/t1-trust-append-only.mjs ]; then
-            echo "::warning::Bootstrap: the base branch has no l1/scripts/t1-trust-append-only.mjs yet; nothing to run"
-            exit 0
+            echo "::error::main has no l1/scripts/t1-trust-append-only.mjs; the T1 trust check cannot run"
+            exit 1
           fi
           node l1/scripts/t1-trust-append-only.mjs --merge-base origin/main --head "$PR_HEAD_SHA"

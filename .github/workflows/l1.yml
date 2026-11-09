@@ -130,16 +130,13 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
           cache-dependency-path: l1/package-lock.json
-      - name: Install locked dependencies
-        run: npm ci
-      # S2-3 T1: l1/trust/ is append-only. The checker that runs is the trusted
-      # copy from main (the merge base for a PR, the previous main for a push),
-      # never this change's own copy, except when main has none yet
-      # (bootstrap, logged). PRs are compared with the merge base with main,
-      # so a retargeted stacked PR is re-evaluated. The base-branch workflow
-      # l1-t1-trust-append-only.yml repeats the check under
-      # pull_request_target (also on retarget), so a PR cannot disable it by
-      # editing this file.
+      # S2-3 T1: l1/trust/ is append-only. DEFENCE IN DEPTH only: this file is
+      # the change's own workflow, so a PR can edit it. The tamper-proof check
+      # is l1-t1-trust-append-only.yml (pull_request_target on main). This
+      # step runs before npm ci (no install script of the change has run) and
+      # uses the copy of the checker from main (the merge base for a PR, the
+      # previous main for a push), except when that ref has none yet
+      # (bootstrap, logged). PRs are compared with the merge base with main.
       - name: T1 trust files are append-only (trusted checker from main)
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         shell: bash
@@ -167,6 +164,8 @@ jobs:
             cp scripts/t1-trust-append-only.mjs "$checker"
           fi
           node "$checker" "${mode[@]}"
+      - name: Install locked dependencies
+        run: npm ci
       - name: Typecheck
         run: npm run typecheck
       - name: Test
