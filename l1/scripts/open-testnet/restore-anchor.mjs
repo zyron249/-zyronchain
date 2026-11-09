@@ -1,9 +1,10 @@
 // S2-3 trust anchor T1 for the open-testnet cold-start restore
 // (docs/specs/s2-3-t1-sealed-summary.md). Builds the restoreAnchor that
 // restoreNetwork requires ONLY from files pinned in the repository
-// (l1/trust/): the summary keys, the append-only revoke/supersede record, the
-// append-only high-water record, and the boot config (where the seal is
-// published and which validators form the live quorum). Nothing is taken
+// (l1/trust/, changed only by reviewed PR, read from the checkout of the
+// release ref): the sealed summary itself, the summary keys, the append-only
+// revoke/supersede record, the append-only high-water record, and the boot
+// config (which validators form the live quorum). Nothing is taken
 // from environment variables, command-line options, the snapshot bundle or
 // the gateway. Nothing here holds or reads a private key. Every failure is a
 // refusal with its own code (RestoreAnchorError, never a local I/O error).
@@ -13,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 const l1Root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const anchorApi = await import(join(l1Root, "dist/src/sealed-summary.js"));
-const { RESTORE_ANCHOR_CODES: C, RestoreAnchorError, highWaterFor, parseCanonicalSealText, parseHighWaterFile, parseRestoreAnchorConfig, restoreTrustFromFiles } = anchorApi;
+const { RESTORE_ANCHOR_CODES: C, RestoreAnchorError, highWaterFor, parseHighWaterFile, parseRestoreAnchorConfig, restoreTrustFromFiles } = anchorApi;
 const { blockHash, validateBlockAttestation } = await import(join(l1Root, "dist/src/block.js"));
 const { addressFromPublicKey } = await import(join(l1Root, "dist/src/crypto.js"));
 
@@ -22,6 +23,7 @@ export const RESTORE_TRUST_FILES = Object.freeze({
   keys: "t1-summary-keys.json",
   record: "t1-summary-record.json",
   highWater: "t1-high-water.json",
+  seal: "t1-sealed-summary.txt",
   config: "restore-anchor-config.json"
 });
 export const MAX_SEAL_BYTES = 64 * 1024;
@@ -43,10 +45,10 @@ async function readJson(path, code, label) {
 
 /** All pinned trust files of a directory, parsed strictly. */
 export async function loadRestoreTrust(dir = DEFAULT_RESTORE_TRUST_DIR) {
-  const keys = await readJson(join(dir, RESTORE_TRUST_FILES.keys), C.recordInvalid, "the pinned restore summary key file");
-  const record = await readJson(join(dir, RESTORE_TRUST_FILES.record), C.recordInvalid, "the revoke/supersede record");
-  const highWater = parseHighWaterFile(await readJson(join(dir, RESTORE_TRUST_FILES.highWater), C.recordInvalid, "the high-water record"));
-  const config = parseRestoreAnchorConfig(await readJson(join(dir, RESTORE_TRUST_FILES.config), C.configInvalid, "the restore anchor config"));
+  const keys = await readJson(join(dir, RESTORE_TRUST_FILES.keys), C.anchorConfigInvalid, "the pinned restore summary key file");
+  const record = await readJson(join(dir, RESTORE_TRUST_FILES.record), C.anchorConfigInvalid, "the revoke/supersede record");
+  const highWater = parseHighWaterFile(await readJson(join(dir, RESTORE_TRUST_FILES.highWater), C.anchorConfigInvalid, "the high-water record"));
+  const config = parseRestoreAnchorConfig(await readJson(join(dir, RESTORE_TRUST_FILES.config), C.anchorConfigInvalid, "the restore anchor config"));
   return { ...restoreTrustFromFiles(keys, record), highWater, config };
 }
 
@@ -60,23 +62,16 @@ async function fetchBounded(url, { fetchImpl, signal, maxBytes }) {
 }
 
 /**
- * Reads the published seal from the pinned sealUrl. No sealUrl, a 404 or a
- * missing file means "nothing sealed" (null: RESTORE_SEAL_MISSING). The text
- * must be its own canonical encoding (RESTORE_SEAL_NOT_CANONICAL). Other
- * failures throw (RESTORE_ANCHOR_UNAVAILABLE).
+ * Reads the sealed summary from the pinned repository file (published by PR).
+ * A missing file means "nothing sealed" (null: RESTORE_SEAL_MISSING). The raw
+ * text is returned unparsed (no trimming); the verifier parses it strictly.
+ * Other failures throw (RESTORE_ANCHOR_UNAVAILABLE).
  */
-export async function readSealFrom(sealUrl, { fetchImpl = fetch, timeoutMs = 30_000 } = {}) {
-  if (!sealUrl) return null;
+export async function readSealFile(path) {
   let text;
-  if (sealUrl.startsWith("file:///")) {
-    try { text = await readFile(fileURLToPath(sealUrl), "utf8"); } catch (error) { if (error?.code === "ENOENT") return null; throw new Error("seal file unreadable"); }
-    if (Buffer.byteLength(text) > MAX_SEAL_BYTES) throw new Error("seal file too large");
-  } else {
-    const result = await fetchBounded(sealUrl, { fetchImpl, signal: AbortSignal.timeout(timeoutMs), maxBytes: MAX_SEAL_BYTES });
-    if (result.status === 404) return null;
-    text = result.text;
-  }
-  return parseCanonicalSealText(text);
+  try { text = await readFile(path, "utf8"); } catch (error) { if (error?.code === "ENOENT") return null; throw new Error("the sealed summary file is unreadable"); }
+  if (Buffer.byteLength(text) > MAX_SEAL_BYTES) throw new Error("the sealed summary file is too large");
+  return text;
 }
 
 /**
@@ -120,30 +115,31 @@ export function quorumTipReader({ chainId, threshold, timeoutMs, validators }, {
     const [tip] = [...byHash.entries()];
     if (tip && tip[1].attesters.size >= threshold && tip[1].sources >= 2) return { height, tipHash: tip[0] };
     if (outcomes.some((outcome) => outcome.kind === "timeout")) throw new RestoreAnchorError(C.quorumTipTimeout, `the live quorum did not answer within ${timeoutMs} ms`);
-    if (outcomes.some((outcome) => outcome.kind === "unverified")) throw new RestoreAnchorError(C.quorumTipUnverified, `fewer than ${threshold} trusted validator attestations verify at height ${height}`);
+    if (outcomes.some((outcome) => outcome.kind === "unverified")) throw new RestoreAnchorError(C.quorumTipUnavailable, `fewer than ${threshold} trusted validator attestations verify at height ${height}`);
     throw new RestoreAnchorError(C.quorumTipUnavailable, `fewer than ${threshold} trusted validators answered for height ${height}`);
   };
 }
 
 /**
  * The boot restoreAnchor, from the pinned trust directory only. Throws
- * RESTORE_ANCHOR_RECORD_INVALID / RESTORE_ANCHOR_CONFIG_INVALID for broken or
- * incomplete files. With no pinned key (the shipped placeholder) the restore
- * is refused with RESTORE_ANCHOR_MISSING.
+ * RESTORE_ANCHOR_CONFIG_INVALID for broken or incomplete files. With no
+ * pinned key (the shipped placeholder) it throws RESTORE_ANCHOR_MISSING: the
+ * boot then refuses and exits (it never creates a fresh genesis).
  */
 export async function createRestoreAnchor({ chainId, trustDir = DEFAULT_RESTORE_TRUST_DIR, fetchImpl = fetch } = {}) {
   const trust = await loadRestoreTrust(trustDir);
   const { config } = trust;
-  if (trust.pinnedKeys.length > 0) {
-    if (config.chainId !== chainId) throw new RestoreAnchorError(C.configInvalid, "the restore anchor config is for another chain ID");
-    if (!config.sealUrl) throw new RestoreAnchorError(C.configInvalid, "a summary key is pinned but no sealUrl is configured");
-    if (config.quorum.validators.length === 0) throw new RestoreAnchorError(C.configInvalid, "a summary key is pinned but no live quorum validators are configured");
-  }
+  if (trust.pinnedKeys.length === 0) throw new RestoreAnchorError(C.anchorMissing, "no restore summary key is pinned in the repository (placeholder); a hosted restore is refused until one is pinned by PR");
+  if (config.chainId !== chainId) throw new RestoreAnchorError(C.anchorConfigInvalid, "the restore anchor config is for another chain ID");
+  if (config.quorum.validators.length === 0) throw new RestoreAnchorError(C.anchorConfigInvalid, "a summary key is pinned but no live quorum validators are configured");
   return {
+    // Each read is bounded by the verifier; the quorum reader's own deadline
+    // (config.quorum.timeoutMs) fires first so its timeout keeps its code.
+    timeoutMs: config.quorum.timeoutMs + 1_000,
     pinnedKeys: trust.pinnedKeys,
-    readSeal: () => readSealFrom(config.sealUrl, { fetchImpl }),
+    readSeal: () => readSealFile(join(trustDir, RESTORE_TRUST_FILES.seal)),
     readSuperseded: async () => structuredClone(trust.superseded),
-    readHighWater: async () => highWaterFor(trust.highWater, chainId),
+    readHighWater: async () => highWaterFor(trust.highWater, chainId, trust.superseded),
     readQuorumTip: quorumTipReader({ chainId, threshold: config.quorum.threshold, timeoutMs: config.quorum.timeoutMs, validators: config.quorum.validators }, { fetchImpl })
   };
 }

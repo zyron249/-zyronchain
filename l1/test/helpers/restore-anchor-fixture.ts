@@ -16,8 +16,6 @@ const l1Root = fileURLToPath(new URL("../../../", import.meta.url));
 const anchorApi: any = await import(pathToFileURL(join(l1Root, "dist", "src", "sealed-summary.js")).href);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const bootAnchor: any = await import(pathToFileURL(join(l1Root, "scripts", "open-testnet", "restore-anchor.mjs")).href);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const { canonicalJson }: any = await import(pathToFileURL(join(l1Root, "dist", "src", "codec.js")).href);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -34,7 +32,7 @@ export async function fixtureSourceOf(networkDir: string, height?: number): Prom
   return { genesis, genesisHash: network.genesisHash, logPaths, height: h };
 }
 
-async function fixtureSeal(source: FixtureSource, workDir: string): Promise<{ seal: Json; quorumTip: Json; keyId: string; publicKey: string }> {
+async function fixtureSeal(source: FixtureSource, workDir: string): Promise<{ seal: string; summary: Json; summaryDigest: string; quorumTip: Json; keyId: string; publicKey: string }> {
   const { summary, quorumTip } = await bootAnchor.summaryFromValidatorLogs({
     ...source, workDir,
     provenance: { publisher: "TEST-FIXTURE-ONLY", workflow: "l1/test/helpers/restore-anchor-fixture.ts", commit: "0".repeat(40) }
@@ -42,17 +40,19 @@ async function fixtureSeal(source: FixtureSource, workDir: string): Promise<{ se
   const key = generateKeyPairSync("ed25519");
   const publicKey = anchorApi.ed25519RawPublicKeyHex(key.publicKey);
   const keyId = anchorApi.restoreKeyId(publicKey);
-  return { seal: { summary, keyId, signature: anchorApi.signRestoreSummary(keyId, summary, key.privateKey) }, quorumTip, keyId, publicKey };
+  const seal = anchorApi.restoreSealText(keyId, anchorApi.signRestoreSummary(keyId, summary, key.privateKey), summary);
+  return { seal, summary, summaryDigest: anchorApi.restoreSummaryDigest(keyId, summary), quorumTip, keyId, publicKey };
 }
 
 /** An in-process restoreAnchor around a fresh TEST key. */
 export async function fixtureRestoreAnchor(source: FixtureSource, workDir: string): Promise<Json> {
-  const { seal, quorumTip, keyId, publicKey } = await fixtureSeal(source, workDir);
+  const { seal, summary, summaryDigest, quorumTip, keyId, publicKey } = await fixtureSeal(source, workDir);
   return {
-    pinnedKeys: [{ keyId, publicKey }],
-    readSeal: async () => structuredClone(seal),
+    pinnedKeys: [{ keyId, publicKey, revoked: false }],
+    readSeal: async () => seal,
     readSuperseded: async () => [],
-    readHighWater: async () => null,
+    readHighWater: async () => ({ height: summary.height, summaryDigest }),
+    timeoutMs: 30_000,
     readQuorumTip: async (height: number) => {
       if (height !== quorumTip.height) throw new Error(`TEST STUB: no live quorum tip at height ${height}`);
       return { ...quorumTip };
@@ -69,7 +69,7 @@ export async function fixtureRestoreAnchor(source: FixtureSource, workDir: strin
 export async function startFixtureTrustDir(root: string, source: FixtureSource): Promise<{ nodeArgs: string[]; trustDir: string; close: () => Promise<void> }> {
   const trustDir = join(root, "t1-trust");
   await mkdir(trustDir, { recursive: true });
-  const { seal, keyId, publicKey } = await fixtureSeal(source, join(root, "t1-summary-replay"));
+  const { seal, summary, summaryDigest, keyId, publicKey } = await fixtureSeal(source, join(root, "t1-summary-replay"));
   const logs = await Promise.all(source.logPaths.map(async (path) => (await readFile(path, "utf8")).split("\n").filter(Boolean)));
   const server: Server = createServer((request, response) => {
     const match = /^\/v(\d)\/block\/(\d+)$/.exec(request.url ?? "");
@@ -81,14 +81,13 @@ export async function startFixtureTrustDir(root: string, source: FixtureSource):
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const port = (server.address() as { port: number }).port;
-  const sealPath = join(root, "t1-seal.json");
-  await writeFile(sealPath, canonicalJson(seal));
+  await writeFile(join(trustDir, bootAnchor.RESTORE_TRUST_FILES.seal), seal);
   const write = (name: string, value: Json) => writeFile(join(trustDir, name), `${JSON.stringify(value, null, 2)}\n`);
   await write("t1-summary-keys.json", { format: anchorApi.RESTORE_KEYS_FORMAT, networkClass: "testnet", purpose: anchorApi.RESTORE_KEY_PURPOSE, keys: [{ keyId, publicKey, addedIn: "TEST-FIXTURE-ONLY" }] });
   await write("t1-summary-record.json", { format: anchorApi.RESTORE_RECORD_FORMAT, entries: [] });
-  await write("t1-high-water.json", { format: anchorApi.RESTORE_HIGH_WATER_FORMAT, entries: [] });
+  await write("t1-high-water.json", anchorApi.appendHighWaterEntry({ format: anchorApi.RESTORE_HIGH_WATER_FORMAT, entries: [] }, { chainId: source.genesis.chainId, height: summary.height, summaryDigest, reason: "TEST-FIXTURE-ONLY seal" }));
   await write("restore-anchor-config.json", {
-    format: anchorApi.RESTORE_CONFIG_FORMAT, chainId: source.genesis.chainId, sealUrl: pathToFileURL(sealPath).href,
+    format: anchorApi.RESTORE_CONFIG_FORMAT, chainId: source.genesis.chainId,
     quorum: { threshold: 3, timeoutMs: 30_000, validators: source.genesis.validators.map((validator: Json, index: number) => ({ publicKey: validator.publicKey, url: `http://127.0.0.1:${port}/v${index + 1}` })) }
   });
   const preload = join(root, "t1-trust-preload.mjs");

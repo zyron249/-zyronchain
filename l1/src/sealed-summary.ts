@@ -23,43 +23,48 @@ export const RESTORE_KEYS_FORMAT = "zyronchain-restore-summary-keys-v1";
 export const RESTORE_RECORD_FORMAT = "zyronchain-restore-summary-record-v1";
 export const RESTORE_KEY_PURPOSE = "open-testnet-restore-summary";
 
-/** Every refusal code. Each one is distinct; none is ever a local I/O error. */
+/**
+ * Every refusal code (29). Each one is distinct and none is ever a local I/O
+ * error, so restoreNetworkWithLocalRetry never retries a refusal.
+ */
 export const RESTORE_ANCHOR_CODES = Object.freeze({
   anchorMissing: "RESTORE_ANCHOR_MISSING",
-  sealMissing: "RESTORE_SEAL_MISSING",
+  anchorConfigInvalid: "RESTORE_ANCHOR_CONFIG_INVALID",
   anchorUnavailable: "RESTORE_ANCHOR_UNAVAILABLE",
-  recordInvalid: "RESTORE_ANCHOR_RECORD_INVALID",
-  configInvalid: "RESTORE_ANCHOR_CONFIG_INVALID",
-  quorumTipUnavailable: "RESTORE_QUORUM_TIP_UNAVAILABLE",
-  quorumTipMismatch: "RESTORE_QUORUM_TIP_MISMATCH",
-  quorumTipTimeout: "RESTORE_QUORUM_TIP_TIMEOUT",
-  quorumTipUnverified: "RESTORE_QUORUM_TIP_UNVERIFIED",
-  sealNotCanonical: "RESTORE_SEAL_NOT_CANONICAL",
+  anchorTimeout: "RESTORE_ANCHOR_TIMEOUT",
+  sealMissing: "RESTORE_SEAL_MISSING",
+  sealMalformed: "RESTORE_SEAL_MALFORMED",
+  sealSchemaInvalid: "RESTORE_SEAL_SCHEMA_INVALID",
   invalidSignature: "RESTORE_SEAL_INVALID_SIGNATURE",
   unknownKeyId: "RESTORE_SEAL_UNKNOWN_KEY_ID",
   keyRevoked: "RESTORE_SEAL_KEY_REVOKED",
+  keySuperseded: "RESTORE_SEAL_KEY_SUPERSEDED",
   validatorKey: "RESTORE_SEAL_VALIDATOR_KEY",
-  malformed: "RESTORE_SUMMARY_MALFORMED",
   superseded: "RESTORE_SUMMARY_SUPERSEDED",
   replayLowerHeight: "RESTORE_SUMMARY_REPLAY_LOWER_HEIGHT",
+  highWaterConflict: "RESTORE_SUMMARY_HIGH_WATER_CONFLICT",
   wrongChain: "RESTORE_SUMMARY_WRONG_CHAIN",
   genesisMismatch: "RESTORE_SUMMARY_GENESIS_MISMATCH",
+  validatorSetMismatch: "RESTORE_SUMMARY_VALIDATOR_SET_MISMATCH",
+  oracleSetMismatch: "RESTORE_SUMMARY_ORACLE_SET_MISMATCH",
   stale: "RESTORE_SUMMARY_STALE",
   aboveTip: "RESTORE_SUMMARY_ABOVE_TIP",
+  quorumTipUnavailable: "RESTORE_QUORUM_TIP_UNAVAILABLE",
+  quorumTipTimeout: "RESTORE_QUORUM_TIP_TIMEOUT",
+  quorumTipMismatch: "RESTORE_QUORUM_TIP_MISMATCH",
   tipMismatch: "RESTORE_SUMMARY_TIP_MISMATCH",
   stateMismatch: "RESTORE_SUMMARY_STATE_MISMATCH",
   supplyMismatch: "RESTORE_SUMMARY_SUPPLY_MISMATCH",
   burnMismatch: "RESTORE_SUMMARY_BURN_MISMATCH",
-  validatorSetMismatch: "RESTORE_SUMMARY_VALIDATOR_SET_MISMATCH",
-  oracleSetMismatch: "RESTORE_SUMMARY_ORACLE_SET_MISMATCH",
   snapshotCorrupt: "RESTORE_SNAPSHOT_CORRUPT"
 } as const);
 export type RestoreAnchorCode = typeof RESTORE_ANCHOR_CODES[keyof typeof RESTORE_ANCHOR_CODES];
 const C = RESTORE_ANCHOR_CODES;
+const ALL_CODES = new Set<string>(Object.values(C));
 
 /**
- * A refusal. It never carries a `cause` or a `syscall`, so the restore retry
- * (isLocalIoError) can never mistake it for a local disk failure.
+ * A refusal. It never carries a `cause` or a `syscall`, so isLocalIoError can
+ * never mistake it (or the network error behind it) for a local disk failure.
  */
 export class RestoreAnchorError extends Error {
   readonly code: RestoreAnchorCode;
@@ -70,7 +75,7 @@ export class RestoreAnchorError extends Error {
   }
 }
 export function isRestoreAnchorError(error: unknown): error is RestoreAnchorError {
-  return error instanceof RestoreAnchorError || (typeof (error as { code?: unknown })?.code === "string" && Object.values(C).includes((error as { code: RestoreAnchorCode }).code));
+  return error instanceof RestoreAnchorError || (typeof (error as { code?: unknown })?.code === "string" && ALL_CODES.has((error as { code: string }).code));
 }
 const refuse = (code: RestoreAnchorCode, detail = ""): never => { throw new RestoreAnchorError(code, detail); };
 
@@ -89,25 +94,31 @@ export interface RestoreSummary {
   provenance: RestoreSummaryProvenance;
   sealedAtMs: number;
 }
-export interface RestoreSeal { summary: RestoreSummary; keyId: string; signature: string }
-export interface PinnedRestoreKey { keyId: string; publicKey: string; revoked?: boolean }
+export interface PinnedRestoreKey { keyId: string; publicKey: string; revoked: boolean; supersededAtHeight?: number }
 export interface SupersededEntry { summaryDigest: string; height: number; tipHash: string }
+export interface HighWater { height: number; summaryDigest: string }
 export interface QuorumTip { height: number; tipHash: string }
-export interface HighWater { height: number }
 export interface RestoreAnchor {
   pinnedKeys: PinnedRestoreKey[];
-  readSeal: () => Promise<RestoreSeal | null | undefined>;
+  /** The raw seal text: canonicalJson({ keyId, signature, summary }); null when nothing is sealed. */
+  readSeal: () => Promise<string | null | undefined>;
+  /** Append-only list of superseded summaries / tips. */
   readSuperseded: () => Promise<SupersededEntry[]>;
+  /** Highest non-superseded seal (separate append-only record). */
+  readHighWater: () => Promise<HighWater | null | undefined>;
   readQuorumTip: (height: number) => Promise<QuorumTip>;
-  /** Highest height already sealed (the separate append-only high-water record); null when empty. */
-  readHighWater?: () => Promise<HighWater | null | undefined>;
+  /** Bound on each read (default 30 s); a hang fails closed. */
+  timeoutMs?: number;
 }
+export const DEFAULT_RESTORE_READ_TIMEOUT_MS = 30_000;
 
 export const RESTORE_SUMMARY_FIELDS = ["format", "chainId", "genesisHash", "height", "tipHash", "stateRoot", "totalSupplyAtoms", "burnedAtoms", "validatorSetHash", "oracleSetHash", "provenance", "sealedAtMs"] as const;
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX128 = /^[0-9a-f]{128}$/;
-const ATOMS = /^(0|[1-9][0-9]{0,24})$/;
-const KEY_ID = /^[A-Za-z0-9._-]{1,128}$/;
+const ATOMS = /^(0|[1-9][0-9]*)$/;
+const KEY_ID = /^[A-Za-z0-9._-]{1,64}$/;
+const CHAIN_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const PRINTABLE = /^[\x20-\x7e]{1,128}$/;
 const ZERO_HASH = "0".repeat(64);
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
@@ -115,8 +126,9 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 const exactKeys = (value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): boolean =>
   required.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => required.includes(key) || optional.includes(key));
-const safeInt = (value: unknown, min: number): value is number => Number.isSafeInteger(value) && (value as number) >= min;
+const safeInt = (value: unknown, min: number): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= min && !Object.is(value, -0);
 const sha256Hex = (data: string | Uint8Array): string => createHash("sha256").update(data).digest("hex");
+const isHex32 = (value: unknown): value is string => { if (typeof value !== "string") return false; try { assertHex(value, 32, "hash"); return true; } catch { return false; } };
 
 export function isTestnetChainId(chainId: unknown): chainId is string {
   return typeof chainId === "string" && /^[a-z0-9-]{3,64}$/.test(chainId) && chainId.includes("testnet") && !chainId.includes("mainnet");
@@ -124,8 +136,10 @@ export function isTestnetChainId(chainId: unknown): chainId is string {
 
 /**
  * The signed bytes: domain tag || 0x00 || canonicalJson({ keyId, summary }).
- * canonicalJson sorts object keys and allows only safe integers, so every
- * summary field and the keyId are covered with one encoding.
+ * codec.ts canonicalJson sorts keys by UTF-16 code units and serializes
+ * strings and safe integers as ECMAScript JSON.stringify does; for this
+ * schema (printable-ASCII strings, safe non-negative integers, plain objects)
+ * that is byte-identical to RFC 8785 (JCS).
  */
 export function restoreSealMessage(keyId: string, summary: unknown): Buffer {
   return Buffer.concat([Buffer.from(RESTORE_SEAL_DOMAIN, "utf8"), Buffer.from([0]), Buffer.from(canonicalJson({ keyId, summary }), "utf8")]);
@@ -133,7 +147,11 @@ export function restoreSealMessage(keyId: string, summary: unknown): Buffer {
 export function restoreSummaryDigest(keyId: string, summary: unknown): string {
   return sha256Hex(restoreSealMessage(keyId, summary));
 }
-/** Hash of an ordered key list (order and membership both count). */
+/** The raw seal text a publisher writes: canonicalJson({ keyId, signature, summary }). */
+export function restoreSealText(keyId: string, signature: string, summary: RestoreSummary): string {
+  return canonicalJson({ keyId, signature, summary });
+}
+/** Hash of an ordered key list (order and membership both count): SHA-256(domain || 0x00 || canonicalJson(keys)). */
 export function restoreSetHash(domain: string, publicKeys: readonly string[]): string {
   return sha256Hex(Buffer.concat([Buffer.from(domain, "utf8"), Buffer.from([0]), Buffer.from(canonicalJson([...publicKeys]), "utf8")]));
 }
@@ -144,7 +162,7 @@ export function restoreOracleSetHash(oracles: readonly string[]): string {
   return restoreSetHash(RESTORE_ORACLE_SET_DOMAIN, oracles);
 }
 
-/** keyId of a pinned production key: derived from the raw 32-byte Ed25519 public key. */
+/** keyId of a production key: derived from the raw 32-byte Ed25519 public key. */
 export function restoreKeyId(rawPublicKeyHex: string): string {
   return `t1-${createHash("sha256").update(`${RESTORE_KEY_ID_DOMAIN}\n`).update(Buffer.from(rawPublicKeyHex, "hex")).digest("hex").slice(0, 32)}`;
 }
@@ -161,75 +179,76 @@ export function ed25519RawPublicKeyHex(key: KeyObject): string {
 /** Signs a summary (signer CLI only). Returns the 128-hex Ed25519 signature. */
 export function signRestoreSummary(keyId: string, summary: RestoreSummary, privateKey: KeyObject): string {
   if (privateKey.type !== "private" || privateKey.asymmetricKeyType !== "ed25519") throw new Error("the restore summary key must be an Ed25519 private key");
-  parseRestoreSummary(summary);
+  if (!KEY_ID.test(keyId)) throw new Error("invalid keyId");
+  assertSummarySchema(summary);
   return cryptoSign(null, restoreSealMessage(keyId, summary), privateKey).toString("hex");
 }
 
-/** Strict schema of a v1 summary (checked after the signature). */
-export function parseRestoreSummary(value: unknown): RestoreSummary {
-  if (!isPlainObject(value) || !exactKeys(value, RESTORE_SUMMARY_FIELDS) || value.format !== RESTORE_SUMMARY_FORMAT) return refuse(C.malformed, "summary fields are not exactly the v1 field set");
-  if (!isTestnetChainId(value.chainId)) return refuse(C.malformed, "chainId is not an open-testnet chain ID");
-  for (const field of ["genesisHash", "tipHash", "stateRoot", "validatorSetHash", "oracleSetHash"] as const) {
-    try { assertHex(value[field] as string, 32, field); } catch { return refuse(C.malformed, `${field} must be 32 bytes of lowercase hex`); }
+/** Pinned key list (RESTORE_ANCHOR_CONFIG_INVALID on any deviation). */
+export function assertPinnedKeys(value: unknown): asserts value is PinnedRestoreKey[] {
+  if (!Array.isArray(value) || value.length === 0) refuse(C.anchorConfigInvalid, "no restore summary key is pinned");
+  const ids = new Set<string>();
+  const publics = new Set<string>();
+  for (const entry of value as unknown[]) {
+    if (!isPlainObject(entry) || !exactKeys(entry, ["keyId", "publicKey", "revoked"], ["supersededAtHeight"])) refuse(C.anchorConfigInvalid, "a pinned key entry is not { keyId, publicKey, revoked, supersededAtHeight? }");
+    const e = entry as Record<string, unknown>;
+    if (typeof e.keyId !== "string" || !KEY_ID.test(e.keyId)) refuse(C.anchorConfigInvalid, "a pinned keyId is invalid");
+    if (typeof e.publicKey !== "string" || !HEX64.test(e.publicKey)) refuse(C.anchorConfigInvalid, "a pinned public key is not 32 bytes of lowercase hex");
+    if (typeof e.revoked !== "boolean") refuse(C.anchorConfigInvalid, "revoked must be a boolean");
+    if (Object.hasOwn(e, "supersededAtHeight") && !safeInt(e.supersededAtHeight, 0)) refuse(C.anchorConfigInvalid, "supersededAtHeight must be a non-negative integer");
+    if (ids.has(e.keyId as string) || publics.has(e.publicKey as string)) refuse(C.anchorConfigInvalid, "a pinned key is listed twice");
+    ids.add(e.keyId as string); publics.add(e.publicKey as string);
   }
-  for (const field of ["totalSupplyAtoms", "burnedAtoms"] as const) {
-    if (typeof value[field] !== "string" || !ATOMS.test(value[field] as string)) return refuse(C.malformed, `${field} must be a decimal string`);
-  }
-  if (!safeInt(value.height, 1)) return refuse(C.malformed, "height must be a positive integer");
-  if (!safeInt(value.sealedAtMs, 0)) return refuse(C.malformed, "sealedAtMs must be a non-negative integer");
+}
+
+/** Strict v1 summary schema (RESTORE_SEAL_SCHEMA_INVALID). */
+export function assertSummarySchema(value: unknown): asserts value is RestoreSummary {
+  const bad = (detail: string): never => refuse(C.sealSchemaInvalid, detail);
+  if (!isPlainObject(value) || !exactKeys(value, RESTORE_SUMMARY_FIELDS)) return bad("summary fields are not exactly the v1 field set");
+  if (value.format !== RESTORE_SUMMARY_FORMAT) return bad("unknown summary format");
+  if (typeof value.chainId !== "string" || !CHAIN_ID.test(value.chainId)) return bad("chainId is invalid");
+  for (const field of ["genesisHash", "tipHash", "stateRoot", "validatorSetHash", "oracleSetHash"] as const) if (!isHex32(value[field])) return bad(`${field} must be 32 bytes of lowercase hex`);
+  for (const field of ["totalSupplyAtoms", "burnedAtoms"] as const) if (typeof value[field] !== "string" || !ATOMS.test(value[field] as string)) return bad(`${field} must be a decimal string`);
+  if (!safeInt(value.height, 0)) return bad("height must be a safe non-negative integer");
+  if (!safeInt(value.sealedAtMs, 0)) return bad("sealedAtMs must be a safe non-negative integer");
   const provenance = value.provenance;
-  if (!isPlainObject(provenance) || !exactKeys(provenance, ["publisher", "workflow", "commit"]) ||
-    typeof provenance.publisher !== "string" || !/^[ -~]{1,128}$/.test(provenance.publisher) ||
-    typeof provenance.workflow !== "string" || !/^[ -~]{1,256}$/.test(provenance.workflow) ||
-    typeof provenance.commit !== "string" || !/^[0-9a-f]{40}$/.test(provenance.commit)) {
-    return refuse(C.malformed, "provenance must name the publisher, the workflow and the 40-hex source commit");
+  if (!isPlainObject(provenance) || !exactKeys(provenance, ["commit", "publisher", "workflow"]) || typeof provenance.commit !== "string" || !/^[0-9a-f]{40}$/.test(provenance.commit) ||
+    typeof provenance.publisher !== "string" || !PRINTABLE.test(provenance.publisher) || typeof provenance.workflow !== "string" || !PRINTABLE.test(provenance.workflow)) {
+    return bad("provenance must be exactly { commit (40 hex), publisher, workflow (printable ASCII) }");
   }
-  if (BigInt(value.burnedAtoms as string) > BigInt(value.totalSupplyAtoms as string)) return refuse(C.malformed, "burnedAtoms exceeds totalSupplyAtoms");
-  return structuredClone(value) as unknown as RestoreSummary;
 }
 
 /**
- * Structural check before anything is canonicalized (spec section 3): only
- * plain objects (no arrays, no __proto__ keys), printable-ASCII strings of at
- * most 256 characters, and non-negative safe integers (no -0, NaN, floats,
- * undefined, null or BigInt). For values of this shape codec.ts canonicalJson
- * is byte-identical to RFC 8785 (JCS), so one canonicalizer serves both.
+ * Parses the raw seal text, in this order: not text, not JSON (NaN, +1, 01,
+ * truncated) or not a JSON object -> RESTORE_SEAL_MALFORMED; then
+ * canonicalJson(JSON.parse(raw)) === raw (a throw, e.g. on Infinity, is a
+ * mismatch) and the strict v1 schema -> RESTORE_SEAL_SCHEMA_INVALID (-0,
+ * unsafe integers, whitespace, unsorted or duplicate keys, escapes, non-ASCII).
  */
-export function assertCanonicalShape(value: unknown, path = "seal", depth = 0): void {
-  if (depth > 4) refuse(C.malformed, `${path} is nested too deeply`);
-  if (typeof value === "string") {
-    if (value.length > 256 || !/^[ -~]*$/.test(value)) refuse(C.malformed, `${path} must be printable ASCII (at most 256 characters)`);
-    return;
+export function parseRestoreSealText(raw: unknown): { keyId: string; signature: string; summary: RestoreSummary } {
+  if (typeof raw !== "string") return refuse(C.sealMalformed, "the seal is not text");
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { return refuse(C.sealMalformed, "the seal is not JSON"); }
+  if (!isPlainObject(value)) return refuse(C.sealMalformed, "the seal is not a JSON object");
+  let canonical: string | undefined;
+  try { canonical = canonicalJson(value); } catch { canonical = undefined; }
+  if (!/^[\x20-\x7e]*$/.test(raw) || canonical !== raw) return refuse(C.sealSchemaInvalid, "the seal text is not its own canonical encoding (printable ASCII, sorted keys, no whitespace, no duplicates, safe integers)");
+  if (!exactKeys(value, ["keyId", "signature", "summary"]) || typeof value.keyId !== "string" || !KEY_ID.test(value.keyId) || typeof value.signature !== "string") {
+    return refuse(C.sealSchemaInvalid, "the seal is not exactly { keyId, signature, summary }");
   }
-  if (typeof value === "number") {
-    if (!Number.isSafeInteger(value) || value < 0 || Object.is(value, -0)) refuse(C.malformed, `${path} must be a non-negative safe integer`);
-    return;
-  }
-  if (!isPlainObject(value)) return refuse(C.malformed, `${path} must be a string, an integer or a plain object`);
-  for (const key of Object.keys(value)) {
-    if (key === "__proto__" || !/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(key)) refuse(C.malformed, `${path} has an invalid key`);
-    assertCanonicalShape(value[key], `${path}.${key}`, depth + 1);
-  }
+  assertSummarySchema(value.summary);
+  return { keyId: value.keyId, signature: value.signature, summary: value.summary as RestoreSummary };
 }
 
-/** A published seal file must already be its own canonical encoding. */
-export function parseCanonicalSealText(raw: string): RestoreSeal {
-  let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { return refuse(C.sealNotCanonical, "the seal is not JSON"); }
-  assertCanonicalShape(parsed);
-  if (canonicalJson(parsed) !== raw) return refuse(C.sealNotCanonical, "the seal text is not canonical JSON (sorted keys, no whitespace)");
-  return parsed as RestoreSeal;
-}
+/** Chain keys (secp256k1 public keys and addresses) that may never anchor a restore. */
+export interface ChainKeySet { publicKeys: ReadonlySet<string>; ids: ReadonlySet<string>; xCoordinates: ReadonlySet<string> }
 
-function signedByChainKey(seal: RestoreSeal, chainPublicKeys: ReadonlySet<string>): boolean {
-  if (typeof seal.signature !== "string" || !HEX128.test(seal.signature)) return false;
+function signedByChainKey(seal: { keyId: string; signature: string; summary: RestoreSummary }, publicKeys: ReadonlySet<string>): boolean {
+  if (!HEX128.test(seal.signature)) return false;
   const signature = Buffer.from(seal.signature, "hex");
-  let forms: Buffer[];
-  try {
-    forms = [restoreSealMessage(seal.keyId, seal.summary), Buffer.from(canonicalJson({ domain: RESTORE_SEAL_DOMAIN, payload: { keyId: seal.keyId, summary: seal.summary } }), "utf8")];
-  } catch { return false; }
-  for (const publicKey of chainPublicKeys) {
-    if (!/^[0-9a-f]{128}$/.test(publicKey)) continue;
+  const forms = [restoreSealMessage(seal.keyId, seal.summary), Buffer.from(canonicalJson({ domain: RESTORE_SEAL_DOMAIN, payload: { keyId: seal.keyId, summary: seal.summary } }), "utf8")];
+  for (const publicKey of publicKeys) {
+    if (!HEX128.test(publicKey)) continue;
     const point = Buffer.from(`04${publicKey}`, "hex");
     for (const form of forms) {
       try { if (secp256k1.verify(signature, form, point, { format: "compact" })) return true; } catch { /* not a signature under this key */ }
@@ -238,87 +257,117 @@ function signedByChainKey(seal: RestoreSeal, chainPublicKeys: ReadonlySet<string
   return false;
 }
 
+/**
+ * Verifies a raw seal against pinned keys: config, text, chain keys (when
+ * given), keyId, revocation, rotation, Ed25519 signature. Exported for
+ * tooling and the RFC 8032 vector test.
+ */
+export async function verifyRestoreSeal(raw: unknown, options: { pinnedKeys: unknown; chainKeys?: ChainKeySet }): Promise<{ keyId: string; summary: RestoreSummary; summaryDigest: string }> {
+  try {
+    return verifyRestoreSealChecked(raw, options);
+  } catch (error) {
+    // Never let an uncoded error escape: anything unexpected is a malformed seal.
+    if (isRestoreAnchorError(error)) throw error;
+    return refuse(C.sealMalformed, "the seal could not be checked");
+  }
+}
+function verifyRestoreSealChecked(raw: unknown, options: { pinnedKeys: unknown; chainKeys?: ChainKeySet }): { keyId: string; summary: RestoreSummary; summaryDigest: string } {
+  // Order: malformed, then round-trip and schema, then config, then keys and signature.
+  const seal = parseRestoreSealText(raw);
+  assertPinnedKeys(options?.pinnedKeys);
+  const pinnedKeys = options.pinnedKeys;
+  const chainKeys = options.chainKeys;
+  if (chainKeys) {
+    if (chainKeys.ids.has(seal.keyId) || chainKeys.publicKeys.has(seal.keyId) || signedByChainKey(seal, chainKeys.publicKeys)) {
+      refuse(C.validatorKey, "the seal names or is signed by a validator, oracle or faucet key");
+    }
+    if (pinnedKeys.some((key) => chainKeys.xCoordinates.has(key.publicKey))) refuse(C.validatorKey, "a validator, oracle or faucet key is pinned as a restore summary key");
+  }
+  const key = pinnedKeys.find((entry) => entry.keyId === seal.keyId);
+  if (!key) return refuse(C.unknownKeyId, `keyId ${seal.keyId} is not pinned`);
+  if (key.revoked) refuse(C.keyRevoked, `keyId ${seal.keyId} is revoked`);
+  if (key.supersededAtHeight !== undefined && seal.summary.height >= key.supersededAtHeight) {
+    refuse(C.keySuperseded, `keyId ${seal.keyId} was rotated out at height ${key.supersededAtHeight}`);
+  }
+  // Strict hex before decoding: anchored 128 lowercase hex (signature), 64 (public key).
+  if (!HEX128.test(seal.signature) || !HEX64.test(key.publicKey)) refuse(C.invalidSignature, "the signature is not 64 bytes of lowercase hex");
+  let valid = false;
+  try { valid = cryptoVerify(null, restoreSealMessage(seal.keyId, seal.summary), ed25519PublicKeyObject(key.publicKey), Buffer.from(seal.signature, "hex")); } catch { valid = false; }
+  if (!valid) refuse(C.invalidSignature, "the Ed25519 signature does not cover this keyId and these summary fields");
+  return { keyId: seal.keyId, summary: seal.summary, summaryDigest: restoreSummaryDigest(seal.keyId, seal.summary) };
+}
+
+/** Runs one anchor read with a deadline; a hang, a throw, or anything else fails closed. */
+async function boundedRead<T>(reader: () => Promise<T>, timeoutMs: number, timeoutCode: RestoreAnchorCode, failCode: RestoreAnchorCode, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(reader),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new RestoreAnchorError(timeoutCode, `${label} did not answer within ${timeoutMs} ms`)), timeoutMs); })
+    ]);
+  } catch (error) {
+    if (isRestoreAnchorError(error)) throw new RestoreAnchorError(error.code, error.message.replace(/^restore refused \[[A-Z_]+\]: ?/, ""));
+    // The reader's error is summarised, never attached as a cause.
+    return refuse(failCode, `${label} could not be read`);
+  } finally { if (timer) clearTimeout(timer); }
+}
+
 export interface RestoreBundleView {
   chainId: string;
   genesisHash: string;
-  /** Height and hash of the bundle's last block (checked again after the replay). */
   height: number;
   tipHash: string;
   validatorSetHash: string;
   oracleSetHash: string;
-  /** Every chain key of the network (validators, oracles, faucet and roles; secp256k1 hex). */
-  chainPublicKeys: ReadonlySet<string>;
-}
-
-async function read<T>(reader: () => Promise<T>, code: RestoreAnchorCode, label: string): Promise<T> {
-  try { return await reader(); } catch (error) {
-    if (isRestoreAnchorError(error)) throw error;
-    // The reader's error is summarised, never attached as a cause.
-    return refuse(code, `${label} could not be read`);
-  }
+  chainKeys: ChainKeySet;
 }
 
 /**
- * Pre-write checks (spec section 6). Order: anchor, seal, chain-key
- * signature, keyId, revocation, signature, schema, superseded, lower height,
- * chain, genesis, sets, height, live quorum tip. Returns the verified seal.
+ * Pre-write checks (spec section 6), in order: anchor and config, seal
+ * (text, schema, chain keys, keyId, revocation, rotation, signature),
+ * superseded record, high-water record, chain, genesis, sets, height, live
+ * quorum tip, bundle tip. Returns the verified seal.
  */
 export async function verifyRestoreAnchor(anchor: RestoreAnchor | undefined, view: RestoreBundleView): Promise<{ summary: RestoreSummary; keyId: string; summaryDigest: string }> {
-  if (!anchor || typeof anchor !== "object" || typeof anchor.readSeal !== "function" || typeof anchor.readSuperseded !== "function" || typeof anchor.readQuorumTip !== "function") {
-    return refuse(C.anchorMissing, "no independent restore anchor is configured");
+  if (!anchor || typeof anchor !== "object") return refuse(C.anchorMissing, "no independent restore anchor is configured");
+  for (const reader of ["readSeal", "readSuperseded", "readHighWater", "readQuorumTip"] as const) {
+    if (typeof anchor[reader] !== "function") refuse(C.anchorConfigInvalid, `the restore anchor has no ${reader}`);
   }
-  const pinned = Array.isArray(anchor.pinnedKeys) ? anchor.pinnedKeys : [];
-  if (pinned.length === 0) return refuse(C.anchorMissing, "no restore summary key is pinned");
-  const seal = await read(anchor.readSeal, C.anchorUnavailable, "the sealed summary");
-  if (seal === null || seal === undefined) return refuse(C.sealMissing, "no sealed summary is published for this restore");
-  if (!isPlainObject(seal) || !exactKeys(seal, ["summary", "keyId", "signature"]) || typeof seal.keyId !== "string" || !KEY_ID.test(seal.keyId) || typeof seal.signature !== "string") return refuse(C.malformed, "the seal is not { summary, keyId, signature }");
-  assertCanonicalShape(seal);
-  if (!isPlainObject(seal.summary) || !exactKeys(seal.summary, RESTORE_SUMMARY_FIELDS) || !isPlainObject(seal.summary.provenance) || !exactKeys(seal.summary.provenance, ["publisher", "workflow", "commit"])) {
-    return refuse(C.malformed, "summary fields are not exactly the v1 field set");
+  const timeoutMs = anchor.timeoutMs ?? DEFAULT_RESTORE_READ_TIMEOUT_MS;
+  if (!safeInt(timeoutMs, 1)) refuse(C.anchorConfigInvalid, "timeoutMs must be a positive integer");
+  const raw = await boundedRead(() => anchor.readSeal(), timeoutMs, C.anchorTimeout, C.anchorUnavailable, "the sealed summary");
+  if (raw === null || raw === undefined) {
+    assertPinnedKeys(anchor.pinnedKeys);
+    return refuse(C.sealMissing, "no sealed summary is published for this restore");
   }
-  if (view.chainPublicKeys.has(seal.keyId) || signedByChainKey(seal, view.chainPublicKeys)) {
-    return refuse(C.validatorKey, "the seal names or is signed by a validator, oracle or other chain key");
+  const verified = await verifyRestoreSeal(raw, { pinnedKeys: anchor.pinnedKeys, chainKeys: view.chainKeys });
+  const { summary, summaryDigest } = verified;
+  const superseded = await boundedRead(() => anchor.readSuperseded(), timeoutMs, C.anchorTimeout, C.anchorUnavailable, "the superseded record");
+  if (!Array.isArray(superseded) || !superseded.every((entry) => isPlainObject(entry) && typeof entry.summaryDigest === "string" && typeof entry.tipHash === "string" && safeInt(entry.height, 0))) {
+    refuse(C.anchorConfigInvalid, "the superseded record is malformed");
   }
-  const candidates = pinned.filter((key) => key?.keyId === seal.keyId);
-  if (candidates.length === 0) return refuse(C.unknownKeyId, `keyId ${seal.keyId} is not pinned`);
-  if (candidates.length > 1) return refuse(C.recordInvalid, `keyId ${seal.keyId} is pinned twice`);
-  const key = candidates[0]!;
-  if (view.chainPublicKeys.has(key.publicKey)) return refuse(C.validatorKey, "a chain key is pinned as the restore summary key");
-  if (key.revoked === true) return refuse(C.keyRevoked, `keyId ${seal.keyId} is revoked`);
-  let valid = false;
-  try { valid = HEX128.test(seal.signature) && cryptoVerify(null, restoreSealMessage(seal.keyId, seal.summary), ed25519PublicKeyObject(key.publicKey), Buffer.from(seal.signature, "hex")); } catch { valid = false; }
-  if (!valid) return refuse(C.invalidSignature, "the Ed25519 signature does not cover this keyId and these summary fields");
-  const summary = parseRestoreSummary(seal.summary);
-  const summaryDigest = restoreSummaryDigest(seal.keyId, summary);
-  const superseded = await read(anchor.readSuperseded, C.anchorUnavailable, "the superseded record");
-  if (!Array.isArray(superseded)) return refuse(C.recordInvalid, "the superseded record is not a list");
-  for (const entry of superseded) {
-    if (!isPlainObject(entry) || typeof entry.summaryDigest !== "string" || typeof entry.tipHash !== "string" || !safeInt(entry.height, 1)) return refuse(C.recordInvalid, "a superseded entry is malformed");
+  if (superseded.some((entry) => entry.summaryDigest === summaryDigest || (entry.height === summary.height && entry.tipHash === summary.tipHash))) {
+    refuse(C.superseded, `the summary or its tip at height ${summary.height} is superseded`);
   }
-  if (superseded.some((entry) => entry.summaryDigest === summaryDigest || (entry.height === summary.height && entry.tipHash === summary.tipHash) || entry.tipHash === summary.tipHash)) {
-    return refuse(C.superseded, `the summary or its tip at height ${summary.height} is superseded`);
+  const highWater = await boundedRead(() => anchor.readHighWater(), timeoutMs, C.anchorTimeout, C.anchorUnavailable, "the high-water record");
+  if (highWater !== null && highWater !== undefined && (!isPlainObject(highWater) || !safeInt(highWater.height, 0) || typeof highWater.summaryDigest !== "string")) {
+    refuse(C.anchorConfigInvalid, "the high-water record is malformed");
   }
-  const highest = superseded.reduce((max, entry) => Math.max(max, entry.height), 0);
-  if (highest > summary.height) return refuse(C.replayLowerHeight, `summary height ${summary.height} is below height ${highest} already in the superseded record`);
-  if (typeof anchor.readHighWater === "function") {
-    const highWater = await read(anchor.readHighWater, C.anchorUnavailable, "the high-water record");
-    if (highWater !== null && highWater !== undefined) {
-      if (!isPlainObject(highWater) || !safeInt(highWater.height, 0)) return refuse(C.recordInvalid, "the high-water record is malformed");
-      if (summary.height < highWater.height) return refuse(C.replayLowerHeight, `summary height ${summary.height} is below the high-water height ${highWater.height}`);
-    }
-  }
-  if (summary.chainId !== view.chainId) return refuse(C.wrongChain, `summary is for ${summary.chainId}, the snapshot for ${view.chainId}`);
-  if (summary.genesisHash !== view.genesisHash) return refuse(C.genesisMismatch, "summary genesis hash differs from the snapshot genesis");
-  if (summary.validatorSetHash !== view.validatorSetHash) return refuse(C.validatorSetMismatch, "validator set differs from the summary");
-  if (summary.oracleSetHash !== view.oracleSetHash) return refuse(C.oracleSetMismatch, "oracle set differs from the summary");
-  if (summary.height < view.height) return refuse(C.stale, `summary height ${summary.height} is below the snapshot tip ${view.height}`);
-  if (summary.height > view.height) return refuse(C.aboveTip, `summary height ${summary.height} is above the snapshot tip ${view.height}`);
-  const quorum = await read(() => anchor.readQuorumTip(summary.height), C.quorumTipUnavailable, "the live quorum tip");
+  if (!highWater) refuse(C.highWaterConflict, "the high-water record has no seal for this chain (the seal was never recorded)");
+  if (summary.height < highWater!.height) refuse(C.replayLowerHeight, `summary height ${summary.height} is below the high-water height ${highWater!.height}`);
+  if (summary.height > highWater!.height || summaryDigest !== highWater!.summaryDigest) refuse(C.highWaterConflict, "the seal is not the one recorded at the high-water mark");
+  if (summary.chainId !== view.chainId) refuse(C.wrongChain, `summary is for ${summary.chainId}, the snapshot for ${view.chainId}`);
+  if (summary.genesisHash !== view.genesisHash) refuse(C.genesisMismatch, "summary genesis hash differs from the snapshot genesis");
+  if (summary.validatorSetHash !== view.validatorSetHash) refuse(C.validatorSetMismatch, "validator set differs from the summary");
+  if (summary.oracleSetHash !== view.oracleSetHash) refuse(C.oracleSetMismatch, "oracle set differs from the summary");
+  if (summary.height < view.height) refuse(C.stale, `summary height ${summary.height} is below the snapshot tip ${view.height}`);
+  if (summary.height > view.height) refuse(C.aboveTip, `summary height ${summary.height} is above the snapshot tip ${view.height}`);
+  const quorum = await boundedRead(() => anchor.readQuorumTip(summary.height), timeoutMs, C.quorumTipTimeout, C.quorumTipUnavailable, "the live quorum tip");
   if (!isPlainObject(quorum) || quorum.height !== summary.height || quorum.tipHash !== summary.tipHash) {
-    return refuse(C.quorumTipMismatch, `the live quorum does not report the sealed tip at height ${summary.height}`);
+    refuse(C.quorumTipMismatch, `the live quorum does not report the sealed tip at height ${summary.height}`);
   }
-  if (view.tipHash !== summary.tipHash) return refuse(C.tipMismatch, "the snapshot tip differs from the sealed tip");
-  return { summary, keyId: seal.keyId, summaryDigest };
+  if (view.tipHash !== summary.tipHash) refuse(C.tipMismatch, "the snapshot tip differs from the sealed tip");
+  return verified;
 }
 
 /** The read-only chain view the state fields are computed from. */
@@ -387,11 +436,13 @@ export function buildRestoreSummary(input: {
     throw new Error("summary not built: this validator's tip is not the live quorum tip at that height");
   }
   const { balancesAtoms: _balances, ...stateFields } = fields;
-  return parseRestoreSummary({
+  const summary = {
     format: RESTORE_SUMMARY_FORMAT, chainId: input.chainId, genesisHash: input.genesisHash, ...stateFields,
     validatorSetHash: restoreValidatorSetHash(input.validators), oracleSetHash: restoreOracleSetHash(input.activityOracles),
     provenance: { ...input.provenance }, sealedAtMs: input.sealedAtMs
-  });
+  };
+  assertSummarySchema(summary);
+  return summary;
 }
 
 // ---- pinned keys and the append-only record (repository files) -------------
@@ -399,62 +450,73 @@ export function buildRestoreSummary(input: {
 export interface PinnedKeysFile { format: typeof RESTORE_KEYS_FORMAT; networkClass: "testnet"; purpose: typeof RESTORE_KEY_PURPOSE; keys: Array<{ keyId: string; publicKey: string; addedIn: string }> }
 export type RecordEntry =
   | { index: number; prev: string; kind: "revoke-key"; keyId: string; reason: string }
-  | { index: number; prev: string; kind: "supersede"; summaryDigest: string; height: number; tipHash: string; reason: string };
+  | { index: number; prev: string; kind: "supersede-key"; keyId: string; supersededAtHeight: number; reason: string }
+  | { index: number; prev: string; kind: "supersede-summary"; summaryDigest: string; height: number; tipHash: string; reason: string };
 export interface RecordFile { format: typeof RESTORE_RECORD_FORMAT; entries: RecordEntry[] }
 
+/** l1/trust/t1-summary-keys.json: production keyIds are derived from the public key. */
 export function parsePinnedKeysFile(value: unknown): PinnedKeysFile {
+  const bad = (detail: string): never => refuse(C.anchorConfigInvalid, detail);
   if (!isPlainObject(value) || !exactKeys(value, ["format", "networkClass", "purpose", "keys"]) || value.format !== RESTORE_KEYS_FORMAT ||
-    value.networkClass !== "testnet" || value.purpose !== RESTORE_KEY_PURPOSE || !Array.isArray(value.keys)) return refuse(C.recordInvalid, "the pinned key file is malformed");
-  const ids = new Set<string>();
-  const publics = new Set<string>();
+    value.networkClass !== "testnet" || value.purpose !== RESTORE_KEY_PURPOSE || !Array.isArray(value.keys)) return bad("the pinned key file is malformed");
   for (const entry of value.keys) {
-    if (!isPlainObject(entry) || !exactKeys(entry, ["keyId", "publicKey", "addedIn"]) || typeof entry.keyId !== "string" || typeof entry.publicKey !== "string" || typeof entry.addedIn !== "string") return refuse(C.recordInvalid, "a pinned key entry is malformed");
-    try { ed25519PublicKeyObject(entry.publicKey); } catch { return refuse(C.recordInvalid, "a pinned public key is not a raw Ed25519 key"); }
-    if (restoreKeyId(entry.publicKey) !== entry.keyId) return refuse(C.recordInvalid, "a pinned keyId does not match its public key");
-    if (ids.has(entry.keyId) || publics.has(entry.publicKey)) return refuse(C.recordInvalid, "a pinned key is listed twice");
-    ids.add(entry.keyId); publics.add(entry.publicKey);
+    if (!isPlainObject(entry) || !exactKeys(entry, ["keyId", "publicKey", "addedIn"]) || typeof entry.keyId !== "string" || typeof entry.publicKey !== "string" ||
+      typeof entry.addedIn !== "string" || !PRINTABLE.test(entry.addedIn)) return bad("a pinned key entry is malformed");
+    try { ed25519PublicKeyObject(entry.publicKey); } catch { return bad("a pinned public key is not a raw Ed25519 key"); }
+    if (restoreKeyId(entry.publicKey) !== entry.keyId) return bad("a pinned keyId does not match its public key");
   }
   return value as unknown as PinnedKeysFile;
 }
 
-export function recordEntryHash(entry: RecordEntry): string { return sha256Hex(canonicalJson(entry)); }
+export function recordEntryHash(entry: unknown): string { return sha256Hex(canonicalJson(entry)); }
 
+/** l1/trust/t1-summary-record.json: append-only (index + prev hash chain). */
 export function parseRecordFile(value: unknown): RecordFile {
-  if (!isPlainObject(value) || !exactKeys(value, ["format", "entries"]) || value.format !== RESTORE_RECORD_FORMAT || !Array.isArray(value.entries)) return refuse(C.recordInvalid, "the record file is malformed");
+  if (!isPlainObject(value) || !exactKeys(value, ["format", "entries"]) || value.format !== RESTORE_RECORD_FORMAT || !Array.isArray(value.entries)) return refuse(C.anchorConfigInvalid, "the record file is malformed");
   let prev = ZERO_HASH;
   for (const [position, entry] of value.entries.entries()) {
-    const bad = (detail: string): never => refuse(C.recordInvalid, `record entry ${position + 1}: ${detail}`);
+    const bad = (detail: string): never => refuse(C.anchorConfigInvalid, `record entry ${position + 1}: ${detail}`);
     if (!isPlainObject(entry)) return bad("not an object");
     if (entry.index !== position + 1) return bad("index is not the next index (an entry was removed or reordered)");
     if (entry.prev !== prev) return bad("prev does not match the previous entry (the record was edited)");
-    if (typeof entry.reason !== "string" || entry.reason.length === 0 || entry.reason.length > 500) return bad("reason is missing");
+    if (typeof entry.reason !== "string" || !PRINTABLE.test(entry.reason)) return bad("reason is missing");
     if (entry.kind === "revoke-key") {
       if (!exactKeys(entry, ["index", "prev", "kind", "keyId", "reason"]) || typeof entry.keyId !== "string" || !KEY_ID.test(entry.keyId)) return bad("malformed revoke-key");
-    } else if (entry.kind === "supersede") {
-      if (!exactKeys(entry, ["index", "prev", "kind", "summaryDigest", "height", "tipHash", "reason"]) || typeof entry.summaryDigest !== "string" || !HEX64.test(entry.summaryDigest) ||
-        !safeInt(entry.height, 1) || typeof entry.tipHash !== "string" || !HEX64.test(entry.tipHash)) return bad("malformed supersede");
+    } else if (entry.kind === "supersede-key") {
+      if (!exactKeys(entry, ["index", "prev", "kind", "keyId", "supersededAtHeight", "reason"]) || typeof entry.keyId !== "string" || !KEY_ID.test(entry.keyId) || !safeInt(entry.supersededAtHeight, 0)) return bad("malformed supersede-key");
+    } else if (entry.kind === "supersede-summary") {
+      if (!exactKeys(entry, ["index", "prev", "kind", "summaryDigest", "height", "tipHash", "reason"]) || !isHex32(entry.summaryDigest) || !safeInt(entry.height, 0) || !isHex32(entry.tipHash)) return bad("malformed supersede-summary");
     } else return bad("unknown kind");
-    prev = recordEntryHash(entry as unknown as RecordEntry);
+    prev = recordEntryHash(entry);
   }
   return value as unknown as RecordFile;
 }
 
+type NewRecordEntry =
+  | { kind: "revoke-key"; keyId: string; reason: string }
+  | { kind: "supersede-key"; keyId: string; supersededAtHeight: number; reason: string }
+  | { kind: "supersede-summary"; summaryDigest: string; height: number; tipHash: string; reason: string };
 /** Returns a new record with one entry appended (index and prev filled in). Never edits existing entries. */
-export function appendRecordEntry(record: RecordFile, entry: { kind: "revoke-key"; keyId: string; reason: string } | { kind: "supersede"; summaryDigest: string; height: number; tipHash: string; reason: string }): RecordFile {
+export function appendRecordEntry(record: RecordFile, entry: NewRecordEntry): RecordFile {
   const current = parseRecordFile(record);
   const last = current.entries.at(-1);
   const next = { index: current.entries.length + 1, prev: last ? recordEntryHash(last) : ZERO_HASH, ...entry } as RecordEntry;
   return parseRecordFile({ format: RESTORE_RECORD_FORMAT, entries: [...current.entries, next] });
 }
 
-/** Pinned keys with revocations applied, and the superseded list, from the two repository files. */
+/** Pinned keys with revocations / rotations applied, and the superseded list. */
 export function restoreTrustFromFiles(keysFile: unknown, recordFile: unknown): { pinnedKeys: PinnedRestoreKey[]; superseded: SupersededEntry[] } {
   const keys = parsePinnedKeysFile(keysFile);
   const record = parseRecordFile(recordFile);
-  const revoked = new Set(record.entries.filter((entry) => entry.kind === "revoke-key").map((entry) => entry.keyId));
+  const revoked = new Set<string>();
+  const rotated = new Map<string, number>();
+  for (const entry of record.entries) {
+    if (entry.kind === "revoke-key") revoked.add(entry.keyId);
+    if (entry.kind === "supersede-key") rotated.set(entry.keyId, Math.min(entry.supersededAtHeight, rotated.get(entry.keyId) ?? Number.MAX_SAFE_INTEGER));
+  }
   return {
-    pinnedKeys: keys.keys.map(({ keyId, publicKey }) => ({ keyId, publicKey, ...(revoked.has(keyId) ? { revoked: true } : {}) })),
-    superseded: record.entries.flatMap((entry) => entry.kind === "supersede" ? [{ summaryDigest: entry.summaryDigest, height: entry.height, tipHash: entry.tipHash }] : [])
+    pinnedKeys: keys.keys.map(({ keyId, publicKey }) => ({ keyId, publicKey, revoked: revoked.has(keyId), ...(rotated.has(keyId) ? { supersededAtHeight: rotated.get(keyId)! } : {}) })),
+    superseded: record.entries.flatMap((entry) => entry.kind === "supersede-summary" ? [{ summaryDigest: entry.summaryDigest, height: entry.height, tipHash: entry.tipHash }] : [])
   };
 }
 
@@ -465,31 +527,42 @@ export interface HighWaterEntry { index: number; prev: string; chainId: string; 
 export interface HighWaterFile { format: typeof RESTORE_HIGH_WATER_FORMAT; entries: HighWaterEntry[] }
 
 /**
- * The high-water record lists the heights already sealed for each chain, in
- * strictly increasing order. It is its own file (never derived from the
- * superseded list); a summary below the latest entry is a replay.
+ * The high-water record is its own append-only log (index + prev hash chain;
+ * never derived from the superseded list). Each entry records one seal
+ * (chainId, height, summaryDigest) that was accepted for publication by PR.
+ * Its effective value for a chain is the highest entry whose seal is not
+ * superseded (superseded by digest, or by height and tip). A seal enters the
+ * record in the same PR that publishes it, before any restore uses it; a seal
+ * above the effective value is refused (RESTORE_SUMMARY_HIGH_WATER_CONFLICT),
+ * one below it is a replay (RESTORE_SUMMARY_REPLAY_LOWER_HEIGHT).
  */
 export function parseHighWaterFile(value: unknown): HighWaterFile {
-  if (!isPlainObject(value) || !exactKeys(value, ["format", "entries"]) || value.format !== RESTORE_HIGH_WATER_FORMAT || !Array.isArray(value.entries)) return refuse(C.recordInvalid, "the high-water file is malformed");
+  if (!isPlainObject(value) || !exactKeys(value, ["format", "entries"]) || value.format !== RESTORE_HIGH_WATER_FORMAT || !Array.isArray(value.entries)) return refuse(C.anchorConfigInvalid, "the high-water file is malformed");
   let prev = ZERO_HASH;
-  const last = new Map<string, number>();
+  const digests = new Set<string>();
   for (const [position, entry] of value.entries.entries()) {
-    const bad = (detail: string): never => refuse(C.recordInvalid, `high-water entry ${position + 1}: ${detail}`);
+    const bad = (detail: string): never => refuse(C.anchorConfigInvalid, `high-water entry ${position + 1}: ${detail}`);
     if (!isPlainObject(entry) || !exactKeys(entry, ["index", "prev", "chainId", "height", "summaryDigest", "reason"])) return bad("malformed");
     if (entry.index !== position + 1) return bad("index is not the next index (an entry was removed or reordered)");
     if (entry.prev !== prev) return bad("prev does not match the previous entry (the record was edited)");
-    if (!isTestnetChainId(entry.chainId) || !safeInt(entry.height, 1) || typeof entry.summaryDigest !== "string" || !HEX64.test(entry.summaryDigest) ||
-      typeof entry.reason !== "string" || entry.reason.length === 0 || entry.reason.length > 500) return bad("malformed");
-    if (entry.height <= (last.get(entry.chainId) ?? 0)) return bad("heights must strictly increase per chain");
-    last.set(entry.chainId, entry.height);
+    if (!isTestnetChainId(entry.chainId) || !safeInt(entry.height, 1) || !isHex32(entry.summaryDigest) ||
+      typeof entry.reason !== "string" || !PRINTABLE.test(entry.reason)) return bad("malformed");
+    if (digests.has(entry.summaryDigest)) return bad("a seal is recorded twice");
+    digests.add(entry.summaryDigest);
     prev = sha256Hex(canonicalJson(entry));
   }
   return value as unknown as HighWaterFile;
 }
 
-export function highWaterFor(file: HighWaterFile, chainId: string): HighWater | null {
-  const heights = file.entries.filter((entry) => entry.chainId === chainId).map((entry) => entry.height);
-  return heights.length ? { height: Math.max(...heights) } : null;
+/** Effective high-water of a chain: the highest recorded seal not superseded, or null. */
+export function highWaterFor(file: HighWaterFile, chainId: string, superseded: readonly SupersededEntry[] = []): HighWater | null {
+  const supersededDigests = new Set(superseded.map((entry) => entry.summaryDigest));
+  let best: HighWaterEntry | undefined;
+  for (const entry of file.entries) {
+    if (entry.chainId !== chainId || supersededDigests.has(entry.summaryDigest)) continue;
+    if (!best || entry.height > best.height) best = entry;
+  }
+  return best ? { height: best.height, summaryDigest: best.summaryDigest } : null;
 }
 
 export function appendHighWaterEntry(file: HighWaterFile, entry: { chainId: string; height: number; summaryDigest: string; reason: string }): HighWaterFile {
@@ -504,19 +577,14 @@ export const RESTORE_CONFIG_FORMAT = "zyronchain-restore-anchor-config-v1";
 export interface RestoreAnchorConfig {
   format: typeof RESTORE_CONFIG_FORMAT;
   chainId: string | null;
-  /** Where the publisher puts the seal (https; file: only for local tests). null until configured. */
-  sealUrl: string | null;
   quorum: { threshold: number; timeoutMs: number; validators: Array<{ publicKey: string; url: string }> };
 }
 
 /** Strict parse of l1/trust/restore-anchor-config.json. The shipped placeholder has no sources. */
 export function parseRestoreAnchorConfig(value: unknown): RestoreAnchorConfig {
-  const bad = (detail: string): never => refuse(C.configInvalid, detail);
-  if (!isPlainObject(value) || !exactKeys(value, ["format", "chainId", "sealUrl", "quorum"]) || value.format !== RESTORE_CONFIG_FORMAT) return bad("the restore anchor config is malformed");
+  const bad = (detail: string): never => refuse(C.anchorConfigInvalid, detail);
+  if (!isPlainObject(value) || !exactKeys(value, ["format", "chainId", "quorum"]) || value.format !== RESTORE_CONFIG_FORMAT) return bad("the restore anchor config is malformed");
   if (value.chainId !== null && !isTestnetChainId(value.chainId)) return bad("chainId must be an open-testnet chain ID or null");
-  if (value.sealUrl !== null && (typeof value.sealUrl !== "string" || !/^(https:\/\/|http:\/\/127\.0\.0\.1[:/]|file:\/\/\/)[ -~]{1,500}$/.test(value.sealUrl))) {
-    return bad("sealUrl must be an https URL (or a loopback/file URL for local tests) or null");
-  }
   const quorum = value.quorum;
   if (!isPlainObject(quorum) || !exactKeys(quorum, ["threshold", "timeoutMs", "validators"]) || !Array.isArray(quorum.validators) ||
     !safeInt(quorum.threshold, 0) || !safeInt(quorum.timeoutMs, 1) || quorum.timeoutMs > 120_000) return bad("quorum must be { threshold, timeoutMs, validators }");
