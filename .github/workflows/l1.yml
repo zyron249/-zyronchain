@@ -134,13 +134,41 @@ jobs:
         run: npm run typecheck
       - name: Test
         run: npm test
-      - name: T1 trust files are append-only (PR base vs head)
-        if: github.event_name == 'pull_request'
+      # S2-3 T1: l1/trust/ is append-only. The checker that runs is the trusted
+      # copy from main (the merge base for a PR, the previous main for a push),
+      # never this change's own copy, except when main has none yet
+      # (bootstrap, logged). PRs are compared with the merge base with main,
+      # so a retargeted stacked PR is re-evaluated. The base-branch workflow
+      # l1-t1-trust-append-only.yml repeats the check under
+      # pull_request_target (also on retarget), so a PR cannot disable it by
+      # editing this file.
+      - name: T1 trust files are append-only (trusted checker from main)
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        shell: bash
         env:
-          T1_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          T1_EVENT: ${{ github.event_name }}
+          T1_PUSH_BEFORE: ${{ github.event.before }}
         run: |
-          git fetch --no-tags --depth=1 origin "$T1_BASE_SHA"
-          node scripts/t1-trust-append-only.mjs --base "$T1_BASE_SHA"
+          set -euo pipefail
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git fetch --no-tags --quiet --unshallow origin; fi
+          git fetch --no-tags --quiet origin '+refs/heads/main:refs/remotes/origin/main'
+          if [ "$T1_EVENT" = pull_request ]; then
+            trusted_ref=$(git merge-base origin/main HEAD)
+            mode=(--merge-base origin/main)
+          else
+            trusted_ref="$T1_PUSH_BEFORE"
+            if [[ "$trusted_ref" =~ ^0+$ ]] || ! git rev-parse --verify --quiet "$trusted_ref^{commit}" >/dev/null; then trusted_ref=HEAD^1; fi
+            mode=(--push-before "$T1_PUSH_BEFORE")
+          fi
+          checker="$RUNNER_TEMP/t1-trust-append-only.trusted.mjs"
+          if git cat-file -e "$trusted_ref:l1/scripts/t1-trust-append-only.mjs" 2>/dev/null; then
+            git show "$trusted_ref:l1/scripts/t1-trust-append-only.mjs" > "$checker"
+            echo "Running the trusted checker from $trusted_ref"
+          else
+            echo "::warning::Bootstrap: $trusted_ref has no l1/scripts/t1-trust-append-only.mjs yet; running this change's own copy"
+            cp scripts/t1-trust-append-only.mjs "$checker"
+          fi
+          node "$checker" "${mode[@]}"
       - name: Verify reproducible build and release package
         run: |
           # Two clean builds must produce byte-identical packages; packing one

@@ -1,0 +1,52 @@
+name: T1 Trust Append-Only (base-branch checker)
+
+# S2-3 T1 (docs/specs/s2-3-t1-sealed-summary.md): l1/trust/ is append-only.
+# pull_request_target runs THIS file and the checker as they are on the PR's
+# base branch, so a PR cannot disable or edit the check. The PR head is
+# fetched as git data only and read with `git show`; no code from the PR is
+# checked out, installed, built or executed. No secrets are used, the token is
+# read-only and never persisted. `edited` re-runs the check when a PR is
+# retargeted; the comparison is always against the merge base with main.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  t1-trust-append-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout base branch (trusted checker)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Compare PR head trust files with the merge base with main (data only)
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ && "$PR_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags --quiet origin '+refs/heads/main:refs/remotes/origin/main' "+refs/pull/$PR_NUMBER/head:refs/remotes/pr/head"
+          # A later push may already have moved refs/pull/N/head; the event's
+          # head SHA is still in its history (that run is then superseded).
+          git cat-file -e "$PR_HEAD_SHA^{commit}"
+          if [ ! -f l1/scripts/t1-trust-append-only.mjs ]; then
+            echo "::warning::Bootstrap: the base branch has no l1/scripts/t1-trust-append-only.mjs yet; nothing to run"
+            exit 0
+          fi
+          node l1/scripts/t1-trust-append-only.mjs --merge-base origin/main --head "$PR_HEAD_SHA"
