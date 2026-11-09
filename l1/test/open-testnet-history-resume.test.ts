@@ -202,3 +202,108 @@ test("restart on the same network directory resumes the history at its stored ti
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a missing history file (ephemeral disk after a container restart) logs one explicit warning; other defects keep the not-resumed line", async () => {
+  const dir = await tempDir();
+  try {
+    let missing: unknown;
+    try { await hf.resumeHistoryFile(join(dir, "snapshot-history", "history.ndjson"), { chainId: CHAIN, genesisHash: GENESIS, onBlock: async () => {} }); } catch (error) { missing = error; }
+    assert.equal((missing as { missing?: boolean })?.missing, true);
+    assert.equal(api.historyResumeSkipMessage(missing), "snapshot: history file absent (ephemeral disk); rebuilding from genesis");
+    const other = api.historyResumeSkipMessage(new hf.HistoryFileError("broken hash link at line 3"));
+    assert.match(other, /^snapshot: history file not resumed \(.*broken hash link.*\); rebuilding from genesis$/);
+    assert.doesNotMatch(other, /absent/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("rate-limiter key bound: 10k default, tunable via ZYRON_RPC_LIMITER_MAX_KEYS within 1000..1000000, junk falls back", () => {
+  assert.equal(api.RATE_LIMITER_MAX_KEYS_DEFAULT, 10_000);
+  assert.equal(api.rateLimiterMaxKeys({}), 10_000);
+  assert.equal(api.rateLimiterMaxKeys({ ZYRON_RPC_LIMITER_MAX_KEYS: "50000" }), 50_000);
+  assert.equal(api.rateLimiterMaxKeys({ ZYRON_RPC_LIMITER_MAX_KEYS: "1000" }), 1_000);
+  assert.equal(api.rateLimiterMaxKeys({ ZYRON_RPC_LIMITER_MAX_KEYS: "1000000" }), 1_000_000);
+  for (const bad of ["", "999", "1000001", "1e4.5", "abc", "-5", "12.5", " 5000", "5000 ", "\t5000", "1e3", "0x3e8", "+5000", "5000.0"]) assert.equal(api.rateLimiterMaxKeys({ ZYRON_RPC_LIMITER_MAX_KEYS: bad }), 10_000, bad);
+});
+
+test("WindowLimiter saturation (deny-on-full / faucet path): live key stays counted, new key denied when full, expired entries recovered; day-window faucet limiters keep 50k", () => {
+  // Default (evictOnFull=false) keeps the faucet day-window policy: never push
+  // out a live key to reset its quota. The 60s tables opt into eviction separately.
+  const l = new api.WindowLimiter(2, 1_000, 3);
+  for (const k of ["a", "b", "c"]) assert.equal(l.take(k, 0).allowed, true);
+  assert.equal(l.take("d", 10).allowed, false);
+  assert.equal(l.hits.has("d"), false);
+  assert.equal(l.stats().deniedFull, 1);
+  assert.equal(l.stats().evicted, 0);
+  assert.equal(l.take("a", 20).allowed, true);
+  assert.equal(l.take("a", 30).allowed, false);
+  assert.equal(l.hits.get("a").count, 2);
+  assert.equal(l.take("d", 1_000).allowed, true);
+  assert.equal(l.hits.size, 1);
+  assert.equal(api.DAY_WINDOW_LIMITER_MAX_KEYS, 50_000);
+  assert.equal(api.RATE_LIMITER_PREFIX_CAP_DEFAULT, 256);
+  assert.equal(new api.WindowLimiter(1, 1).maxKeys, 10_000);
+  assert.equal(new api.WindowLimiter(1, 1).evictOnFull, false);
+});
+
+// ---- Red Team PR #1200 follow-up (fail-first against 7e2c363) ----------------
+// (1) 60s tables evict the oldest entry instead of denying when full.
+// (2) At most ~256 live keys per IPv6 /48.
+// (3) /health (via rateLimitersHealth) exposes size, deniedFull, evicted.
+
+test("WindowLimiter 60s tables: when full, admit a new key by evicting the oldest (not deny); count the eviction", () => {
+  // Fail-first against deny-on-full at 7e2c363.
+  const l = new api.WindowLimiter(10, 60_000, 3, { evictOnFull: true });
+  assert.equal(l.take("oldest", 0).allowed, true);
+  assert.equal(l.take("mid", 1).allowed, true);
+  assert.equal(l.take("newest", 2).allowed, true);
+  assert.equal(l.hits.size, 3);
+  const admitted = l.take("fresh", 3);
+  assert.equal(admitted.allowed, true, "new key must be admitted by evicting the oldest");
+  assert.equal(l.hits.has("oldest"), false, "oldest live key is the eviction victim");
+  assert.equal(l.hits.has("fresh"), true);
+  assert.equal(l.hits.size, 3);
+  assert.equal(l.stats().evicted, 1);
+  assert.equal(l.stats().deniedFull, 0);
+  // Eviction is only to admit a new key: an existing live key still hits its own limit.
+  for (let i = 0; i < 9; i += 1) assert.equal(l.take("fresh", 4 + i).allowed, true);
+  assert.equal(l.take("fresh", 20).allowed, false);
+});
+
+test("WindowLimiter: at most 256 live keys per IPv6 /48; further /64s from that /48 are denied and counted", () => {
+  // Fail-first against uncapped /48 sprays at 7e2c363.
+  const l = new api.WindowLimiter(10, 60_000, 10_000, { evictOnFull: true, prefixCap: 256 });
+  const key = (n: number) => `ipv6:2001:0db8:0001:${n.toString(16).padStart(4, "0")}/64`;
+  for (let i = 0; i < 256; i += 1) assert.equal(l.take(key(i), i).allowed, true, `admit /64 ${i}`);
+  assert.equal(l.hits.size, 256);
+  assert.equal(l.take(key(256), 300).allowed, false, "257th /64 from the same /48 is denied");
+  assert.equal(l.hits.has(key(256)), false);
+  assert.equal(l.stats().deniedFull, 1);
+  // A different /48 still gets in.
+  assert.equal(l.take("ipv6:2001:0db8:0002:0000/64", 301).allowed, true);
+  assert.equal(l.hits.size, 257);
+  // IPv4 and non-ipv6 keys are not subject to the /48 cap.
+  assert.equal(l.take("198.51.100.7", 302).allowed, true);
+});
+
+test("rateLimitersHealth exposes size, maxKeys, deniedFull and evicted per table", () => {
+  // Fail-first against missing /health rate-limiter counters at 7e2c363.
+  assert.equal(typeof api.rateLimitersHealth, "function");
+  const read = new api.WindowLimiter(10, 60_000, 2, { evictOnFull: true, prefixCap: 256 });
+  read.take("a", 0);
+  read.take("b", 1);
+  read.take("c", 2); // evicts "a"
+  const write = new api.WindowLimiter(10, 60_000, 1, { evictOnFull: false });
+  write.take("x", 0);
+  assert.equal(write.take("y", 1).allowed, false); // deny-on-full
+  const body = api.rateLimitersHealth({ read, write, relayIp: new api.WindowLimiter(1, 60_000, 10, { evictOnFull: true }) });
+  assert.equal(body.read.size, 2);
+  assert.equal(body.read.maxKeys, 2);
+  assert.equal(body.read.evicted, 1);
+  assert.equal(body.read.deniedFull, 0);
+  assert.equal(body.write.size, 1);
+  assert.equal(body.write.deniedFull, 1);
+  assert.equal(body.write.evicted, 0);
+  assert.equal(body.relayIp.size, 0);
+  assert.equal(body.relayIp.evicted, 0);
+  assert.equal(body.relayIp.deniedFull, 0);
+});

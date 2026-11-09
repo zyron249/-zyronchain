@@ -30,6 +30,24 @@ The open testnet runs the canonical TypeScript L1 (`l1/`) with:
 
 Consensus, governance and block-acceptance endpoints are never exposed. Reads and submissions fail over across validators, so a single validator restart does not interrupt the API.
 
+## Rate limits
+
+The gateway bounds how many distinct client identities each fixed window may track, so a key spray cannot grow the Maps without bound on the 512MB free plan.
+
+| Table | Window | Default max keys | When full | IPv6 /48 sub-cap |
+|---|---|---|---|---|
+| `read` (most GETs except `/health`, `/healthz`, `/readyz`) | 60s | 10k (`ZYRON_RPC_LIMITER_MAX_KEYS`) | **Evict oldest** to admit a new key | 256 live `/64`s |
+| `write` (`POST /tx`) | 60s | 10k | **Evict oldest** | 256 |
+| `relayIp` (`/relay/v1/*`) | 60s | 10k | **Evict oldest** | 256 |
+| `faucetIp` / `faucetAddress` | 1 day | 50k | **Deny** new keys (live keys keep their counts) | none yet (tracked separately) |
+| `faucetGlobal` / `snapshot` | 1h | 1 (global) | Deny | n/a |
+
+Client identity is one key per request: on Render, `CF-Connecting-IP`; behind a loopback proxy, the rightmost `X-Forwarded-For` entry; otherwise the socket peer. IPv6 is bucketed per `/64`.
+
+**/48 neighbour lockout.** At most 256 live keys are kept per IPv6 `/48` on the 60-second tables. A 257th `/64` from the same `/48` is refused with HTTP 429 and a ~60s `Retry-After`. That neighbour recovers within one window; it does not lock the whole table. IPv4 and non-IPv6 keys have no `/48` sub-cap.
+
+**Eviction tradeoff (60s tables).** Evicting the oldest live key to admit a new one means an attacker can push out a victim's entry and reset that victim's per-key quota. Deny-on-full avoided that, but at a 10k cap a spray of about 170 new keys per second locked every new client out of rate-limited GETs for as long as it ran. Eviction runs only to admit a new key; `GET /health` publishes per-table `{ size, maxKeys, deniedFull, evicted }` under `rateLimiters` so a flood shows up. Day-window faucet tables keep deny-on-full so a spray cannot reset a day's faucet quota by eviction.
+
 ## Use it
 
 ```sh
